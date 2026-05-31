@@ -2143,17 +2143,44 @@ function collectMergedResponsePayload(payload, state) {
     if (delta.text != null) state.hasTextDelta = true;
   };
 
-  const collectOutputItem = (item) => {
+  const hasFunctionCallDeltaFor = (index) => {
+    return index != null && state.functionCallDeltaIndexes?.has(index);
+  };
+
+  const appendFunctionCallText = (index, text, fromDelta = false) => {
+    if (
+      index != null
+      && state.lastFunctionCallIndex != null
+      && state.lastFunctionCallIndex !== index
+    ) {
+      state.functionCalls.push('\n\n');
+    }
+    if (index != null) state.lastFunctionCallIndex = index;
+    appendMergedText(state.functionCalls, text);
+    if (fromDelta) {
+      state.hasFunctionCallDelta = true;
+      if (index != null) state.functionCallDeltaIndexes.add(index);
+    }
+  };
+
+  const collectOutputItem = (item, fallbackIndex = null) => {
     if (!item || typeof item !== 'object') return;
+    const outputIndex = item.output_index ?? fallbackIndex;
     if (item.type === 'message') {
       if (state.hasTextDelta) return;
       collectContentParts(item.content);
       return;
     }
     if (item.type === 'function_call') {
-      if (state.hasFunctionCallDelta) return;
+      if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
       if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
       appendMergedText(state.functionCalls, item.arguments);
+      return;
+    }
+    if (item.type === 'custom_tool_call') {
+      if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
+      if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
+      appendMergedText(state.functionCalls, item.input);
       return;
     }
     if (item.type === 'reasoning') {
@@ -2214,26 +2241,28 @@ function collectMergedResponsePayload(payload, state) {
       state.hasReasoningDelta = true;
       break;
     case 'response.function_call_arguments.delta':
-      if (
-        payload.output_index != null
-        && state.lastFunctionCallIndex != null
-        && state.lastFunctionCallIndex !== payload.output_index
-      ) {
-        state.functionCalls.push('\n\n');
+      appendFunctionCallText(payload.output_index, payload.delta, true);
+      break;
+    case 'response.custom_tool_call_input.delta':
+      appendFunctionCallText(payload.output_index, payload.delta, true);
+      break;
+    case 'response.custom_tool_call_input.done':
+      if (!hasFunctionCallDeltaFor(payload.output_index)) {
+        appendFunctionCallText(payload.output_index, payload.input);
       }
-      if (payload.output_index != null) state.lastFunctionCallIndex = payload.output_index;
-      appendMergedText(state.functionCalls, payload.delta);
-      state.hasFunctionCallDelta = true;
+      break;
+    case 'response.output_item.done':
+      collectOutputItem(payload.item, payload.output_index);
       break;
     default:
       break;
   }
 
   if (Array.isArray(payload.output)) {
-    payload.output.forEach(collectOutputItem);
+    payload.output.forEach((item, index) => collectOutputItem(item, index));
   }
   if (payload.response && Array.isArray(payload.response.output)) {
-    payload.response.output.forEach(collectOutputItem);
+    payload.response.output.forEach((item, index) => collectOutputItem(item, index));
   }
 }
 
@@ -2282,7 +2311,8 @@ function composeDebugMergedResponse(data) {
     hasReasoningDelta: false,
     hasTextDelta: false,
     hasFunctionCallDelta: false,
-    lastFunctionCallIndex: null
+    lastFunctionCallIndex: null,
+    functionCallDeltaIndexes: new Set()
   };
   const ssePayloads = parseSSEDataPayloads(raw);
   if (ssePayloads.length > 0) {
