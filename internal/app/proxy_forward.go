@@ -1356,7 +1356,7 @@ func (s *Server) handleCommittedAwareProxyError(
 ) (*proxyResult, cooldown.Action) {
 	if !res.ResponseCommitted {
 		return s.handleProxyErrorResponse(
-			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, false,
 		)
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
@@ -1447,6 +1447,20 @@ func (s *Server) forwardAttempt(
 		reqCtx.debugData = res.DebugData
 	}
 
+	forceReturnClient := false
+	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, plan, res) {
+		if retryBody, ok := codexBodyWithoutEncryptedInputItems(plan.TranslatedBody); ok {
+			retryPlan := plan
+			retryPlan.TranslatedBody = retryBody
+			res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
+				retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+			if res != nil && res.DebugData != nil {
+				reqCtx.debugData = res.DebugData
+			}
+			forceReturnClient = true
+		}
+	}
+
 	// 处理网络错误或异常响应（如空响应）
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
@@ -1475,9 +1489,78 @@ func (s *Server) forwardAttempt(
 
 	// 处理错误响应
 	result, action := s.handleProxyErrorResponse(
-		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, forceReturnClient,
 	)
 	return result, action, nil
+}
+
+func shouldRetryCodexInvalidEncryptedContent(upstreamProtocol protocol.Protocol, plan protocol.TransformPlan, res *fwResult) bool {
+	return upstreamProtocol == protocol.Codex &&
+		!plan.NeedsTransform &&
+		res != nil &&
+		res.Status == http.StatusBadRequest &&
+		isInvalidEncryptedContentError(res.Body)
+}
+
+func isInvalidEncryptedContentError(body []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	code := strings.ToLower(payload.Error.Code)
+	if code == "invalid_encrypted_content" {
+		return true
+	}
+	message := strings.ToLower(payload.Error.Message)
+	return strings.EqualFold(payload.Error.Type, "invalid_request_error") &&
+		strings.Contains(message, "encrypted content") &&
+		(strings.Contains(message, "could not be verified") ||
+			strings.Contains(message, "could not be decrypted") ||
+			strings.Contains(message, "could not be parsed"))
+}
+
+func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := sonic.Unmarshal(body, &root); err != nil {
+		return nil, false
+	}
+	input, ok := root["input"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	filtered := make([]any, 0, len(input))
+	removed := false
+	for _, item := range input {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		typ, _ := obj["type"].(string)
+		_, hasEncryptedContent := obj["encrypted_content"]
+		if typ == "reasoning" || hasEncryptedContent {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !removed {
+		return nil, false
+	}
+
+	root["input"] = filtered
+	retryBody, err := sonic.Marshal(root)
+	if err != nil {
+		return nil, false
+	}
+	return retryBody, true
 }
 
 // ============================================================================

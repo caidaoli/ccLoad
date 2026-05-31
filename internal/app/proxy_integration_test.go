@@ -1793,6 +1793,117 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *testing.T) {
+	t.Parallel()
+
+	const invalidEncryptedContentBody = `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`
+
+	var attempts atomic.Int32
+	var bodies [][]byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ch", channelType: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(bytes.NewReader([]byte(invalidEncryptedContentBody))),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+				))),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-5.5",
+		"input": []map[string]any{
+			{"type": "compaction", "encrypted_content": "drop-compaction"},
+			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("captured bodies=%d, want 2", len(bodies))
+	}
+	if !bytes.Contains(bodies[0], []byte(`"type":"reasoning"`)) {
+		t.Fatalf("first request should include reasoning item, got %s", bodies[0])
+	}
+	if bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) {
+		t.Fatalf("retry request should remove reasoning item, got %s", bodies[1])
+	}
+	if bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) ||
+		bytes.Contains(bodies[1], []byte(`"type":"compaction"`)) {
+		t.Fatalf("retry request should remove encrypted input items, got %s", bodies[1])
+	}
+	if !bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
+		t.Fatalf("retry request should keep non-encrypted input items, got %s", bodies[1])
+	}
+}
+
+func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *testing.T) {
+	t.Parallel()
+
+	const firstError = `{"error":{"message":"The encrypted content could not be verified. Reason: Encrypted content could not be decrypted or parsed.","type":"invalid_request_error","param":"","code":"invalid_encrypted_content"}}`
+	const secondError = `{"error":{"message":"still invalid after retry","type":"invalid_request_error","code":"invalid_encrypted_content"}}`
+
+	var attempts atomic.Int32
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-ch", channelType: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			body := firstError
+			if attempts.Add(1) == 2 {
+				body = secondError
+			}
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(bytes.NewReader([]byte(body))),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-5.5",
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+	}, nil)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected retry failure to return upstream 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
+	}
+	if !strings.Contains(w.Body.String(), "still invalid after retry") {
+		t.Fatalf("expected second upstream error body, got %s", w.Body.String())
+	}
+}
+
 func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	t.Parallel()
 
