@@ -5807,6 +5807,16 @@ body.trend-page .chart-info {
     text-align: right !important;
   }
 
+  .stats-table .stats-col-cost .cost-stack {
+    flex-direction: row;
+    flex-wrap: nowrap;
+    align-items: baseline;
+    justify-content: flex-end;
+    gap: 4px;
+    white-space: nowrap;
+    line-height: 1;
+  }
+
   .stats-table .stats-col-success::before,
   .stats-table .stats-col-error::before,
   .stats-table .stats-col-timing::before,
