@@ -331,6 +331,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	if err != nil {
 		return nil, err
 	}
+	s.unmarkChannelDeleted(id)
 
 	// 获取完整的配置信息
 	config, err := s.GetConfig(ctx, id)
@@ -431,13 +432,14 @@ func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled b
 
 // DeleteConfig 删除渠道配置
 func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
-	// 检查记录是否存在（幂等性）
+	// 检查记录是否存在，但不存在也继续清理残留子数据。
 	if _, err := s.GetConfig(ctx, id); err != nil {
-		if strings.Contains(err.Error(), "not found") {
-			return nil // 记录不存在，直接返回
+		if !strings.Contains(err.Error(), "not found") {
+			return err
 		}
-		return err
 	}
+
+	s.markChannelDeleted(id)
 
 	// 显式删除关联数据，不依赖驱动或 DSN 是否正确启用外键级联。
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
@@ -446,6 +448,15 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel models: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, id); err != nil {
+			return fmt.Errorf("delete channel protocol transforms: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
+			return fmt.Errorf("delete channel url states: %w", err)
+		}
+		if _, err := tx.ExecContext(ctx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
+			return fmt.Errorf("delete channel debug logs: %w", err)
 		}
 		if _, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel logs: %w", err)
@@ -456,6 +467,7 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		return nil
 	})
 	if err != nil {
+		s.unmarkChannelDeleted(id)
 		return err
 	}
 

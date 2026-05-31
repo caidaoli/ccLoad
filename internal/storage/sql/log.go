@@ -145,6 +145,9 @@ func (s *SQLStore) fillLogAuthTokenDescriptions(ctx context.Context, entries []*
 
 // AddLog 添加日志记录
 func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
+	if s.isChannelDeleted(e.ChannelID) {
+		return nil
+	}
 	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
@@ -192,6 +195,7 @@ const logRowParams = 25
 //
 // 两路径仍处于同一事务内，保持原子性。
 func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error {
+	logs = s.filterDeletedChannelLogs(logs)
 	if len(logs) == 0 {
 		return nil
 	}
@@ -225,6 +229,17 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	}
 
 	return tx.Commit()
+}
+
+func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.LogEntry {
+	out := logs[:0]
+	for _, e := range logs {
+		if e == nil || s.isChannelDeleted(e.ChannelID) {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // batchInsertPlainLogs 多值 INSERT 写入无 debug 数据的日志，按 batchSize 分块。
