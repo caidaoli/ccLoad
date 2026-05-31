@@ -3,7 +3,7 @@
 **English | [简体中文](README.md)**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
-[![Gin](https://img.shields.io/badge/Gin-v1.11+-blue.svg)](https://github.com/gin-gonic/gin)
+[![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
@@ -685,10 +685,10 @@ Check out the awesome admin dashboard 👇
 | Component | Version | Purpose | Performance Advantage |
 |-----------|---------|---------|----------------------|
 | **Go** | 1.25.0+ | Runtime | Native concurrency, built-in min function |
-| **Gin** | v1.11.0 | Web Framework | High-performance HTTP routing |
-| **modernc/sqlite** | v1.45.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
-| **MySQL** | v1.9.3 | RDBMS | Optional, for high-concurrency production |
-| **Sonic** | v1.15.0 | JSON Library | 2-3x faster than stdlib |
+| **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
+| **modernc/sqlite** | v1.51.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
+| **Sonic** | v1.15.1 | JSON Library | 2-3x faster than stdlib |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
 ### Architecture Features
@@ -726,6 +726,7 @@ Check out the awesome admin dashboard 👇
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
+  - Recognizes structured quota/model cooldown responses and cools down until the upstream reset time
   - Built-in single-key channel auto-upgrade logic
 - **Multi-URL Selector** (URLSelector):
   - `url_selector.go`: Smart URL selection within a single channel
