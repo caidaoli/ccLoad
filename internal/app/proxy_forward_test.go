@@ -104,6 +104,30 @@ func TestHandleSuccessResponse_ExtractsUsageFromTextPlainSSE(t *testing.T) {
 	}
 }
 
+func TestClassifySSEErrorStatus_RateLimits(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "openai_tokens_rate_limit_exceeded",
+			body: []byte(`{"type":"error","error":{"type":"tokens","code":"rate_limit_exceeded","message":"Rate limit reached for gpt-5.5 in organization org-test on tokens per min (TPM): Limit 40000000, Used 40000000, Requested 29693. Please try again in 44ms.","param":null},"sequence_number":2}`),
+		},
+		{
+			name: "too_many_requests",
+			body: []byte(`{"type":"error","error":{"type":"too_many_requests","code":"too_many_requests","headers":{"x-ms-fe-error":"true"},"message":"Too Many Requests","param":null},"sequence_number":2}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifySSEErrorStatus(tt.body); got != http.StatusTooManyRequests {
+				t.Fatalf("classifySSEErrorStatus()=%d, want %d", got, http.StatusTooManyRequests)
+			}
+		})
+	}
+}
+
 // TestHandleSuccessResponse_StreamDiagMsg_NormalEOF 测试正常EOF时不触发诊断
 // 新逻辑：只有当 streamErr != nil 且未检测到流结束标志时才触发诊断
 // 正常EOF（streamErr == nil）不触发诊断，即使没有流结束标志
