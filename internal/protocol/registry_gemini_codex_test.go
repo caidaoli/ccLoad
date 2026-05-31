@@ -67,6 +67,35 @@ func TestRegistry_TranslateRequest_GeminiToCodex(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_GeminiToCodex_PreservesThinkingLevel(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{
+		"contents":[{"role":"user","parts":[{"text":"think hard"}]}],
+		"generationConfig":{"thinkingConfig":{"thinkingLevel":"high"}}
+	}`)
+	got, err := reg.TranslateRequest(protocol.Gemini, protocol.Codex, "gpt-5-codex", raw, false)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var req struct {
+		Reasoning map[string]any `json:"reasoning"`
+		Include   []string       `json:"include"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal codex request: %v", err)
+	}
+	if req.Reasoning["effort"] != "high" || req.Reasoning["summary"] != "auto" {
+		t.Fatalf("expected high codex reasoning config, got %s", got)
+	}
+	if len(req.Include) != 1 || req.Include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("expected reasoning include, got %s", got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_CodexToGemini(t *testing.T) {
 	t.Parallel()
 

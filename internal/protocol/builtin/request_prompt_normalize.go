@@ -222,6 +222,12 @@ func normalizeGeminiConversation(req geminiRequestPayload) (conversation, error)
 	if err != nil {
 		return conversation{}, err
 	}
+	conv.Sampling = buildGeminiSampling(req.GenerationConfig)
+	if req.GenerationConfig != nil {
+		if thinking := geminiThinkingConfigToThinking(req.GenerationConfig.ThinkingConfig); thinking != nil {
+			conv.Thinking = thinking
+		}
+	}
 
 	if req.SystemInstruction != nil {
 		systemParts, err := extractGeminiParts(req.SystemInstruction.Parts, nil, nil)

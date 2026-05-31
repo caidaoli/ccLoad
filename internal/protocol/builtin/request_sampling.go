@@ -56,6 +56,29 @@ func buildCodexSampling(req codexRequest) *samplingParams {
 	return sp
 }
 
+// buildGeminiSampling 从 Gemini generationConfig 中抽取采样/上限/思考等级。
+// thinkingLevel 优先级高于 thinkingBudget：前者本身就是等级，后者只能按预算粗映射。
+func buildGeminiSampling(cfg *geminiGenerationConfig) *samplingParams {
+	if cfg == nil {
+		return nil
+	}
+	sp := &samplingParams{
+		Temperature: cfg.Temperature,
+		TopP:        cfg.TopP,
+		TopK:        cfg.TopK,
+		MaxTokens:   cfg.MaxOutputTokens,
+		Stop:        trimStringSlice(cfg.StopSequences),
+		Seed:        cfg.Seed,
+	}
+	if cfg.ThinkingConfig != nil {
+		sp.ReasoningEffort = geminiThinkingEffort(cfg.ThinkingConfig)
+	}
+	if samplingParamsIsZero(sp) {
+		return nil
+	}
+	return sp
+}
+
 // parseStopSequences 接受 OpenAI stop 字段的两种形态：字符串或字符串数组。
 // 其它类型静默丢弃，与 OpenAI 官方行为一致。
 func parseStopSequences(raw []byte) []string {
@@ -84,6 +107,22 @@ func parseStopSequences(raw []byte) []string {
 	return nil
 }
 
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := values[:0]
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			out = append(out, value)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
 // openAIReasoningEffortToThinking 把 OpenAI reasoning_effort 枚举映射成
 // Anthropic 风格 thinking 结构，供 Anthropic/Codex/Gemini 编码器复用。
 // 未指定或未识别值返回 nil，保留现有行为（不启用思考）。
@@ -101,6 +140,51 @@ func openAIReasoningEffortToThinking(effort string) *anthropicThinkingConfig {
 		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 16384}
 	default:
 		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 4096}
+	}
+}
+
+func geminiThinkingEffort(cfg *geminiThinkingConfig) string {
+	if cfg == nil {
+		return ""
+	}
+	if level := normalizeGeminiThinkingLevel(cfg.ThinkingLevel); level != "" {
+		return level
+	}
+	if cfg.ThinkingBudget == nil {
+		return ""
+	}
+	if *cfg.ThinkingBudget == 0 {
+		return "minimal"
+	}
+	return mapAnthropicBudgetToOpenAIEffort(*cfg.ThinkingBudget)
+}
+
+func geminiThinkingConfigToThinking(cfg *geminiThinkingConfig) *anthropicThinkingConfig {
+	if cfg == nil {
+		return nil
+	}
+	if level := normalizeGeminiThinkingLevel(cfg.ThinkingLevel); level != "" {
+		return openAIReasoningEffortToThinking(level)
+	}
+	if cfg.ThinkingBudget == nil {
+		return nil
+	}
+	if *cfg.ThinkingBudget == 0 {
+		return &anthropicThinkingConfig{Type: "disabled"}
+	}
+	if *cfg.ThinkingBudget > 0 {
+		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: *cfg.ThinkingBudget}
+	}
+	return openAIReasoningEffortToThinking("medium")
+}
+
+func normalizeGeminiThinkingLevel(level string) string {
+	normalized := strings.ToLower(strings.TrimSpace(level))
+	switch normalized {
+	case "minimal", "low", "medium", "high":
+		return normalized
+	default:
+		return ""
 	}
 }
 

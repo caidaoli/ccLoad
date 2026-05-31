@@ -128,8 +128,9 @@ type geminiGenerationConfig struct {
 }
 
 type geminiThinkingConfig struct {
-	IncludeThoughts bool `json:"includeThoughts,omitempty"`
-	ThinkingBudget  *int `json:"thinkingBudget,omitempty"`
+	IncludeThoughts bool   `json:"includeThoughts,omitempty"`
+	ThinkingBudget  *int   `json:"thinkingBudget,omitempty"`
+	ThinkingLevel   string `json:"thinkingLevel,omitempty"`
 }
 
 // stableSonicCfg 配置 sonic 与 encoding/json 行为一致的 JSON 序列化器：
