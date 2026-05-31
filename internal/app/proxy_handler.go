@@ -375,9 +375,11 @@ func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel str
 
 	// 检查令牌费用限额（2026-01新增）
 	// 设计决策：在请求开始时检查，费用在请求完成后记账。
-	// 这是有意的设计——允许"最多超额一个请求"的窗口。
-	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），
-	// 而此处只能做预检查。如果严格要求"先扣费后请求"，需要复杂的预估+退款机制。
+	// 超额窗口：预检（IsCostLimitExceeded/RLock）与记账（AddCostToCache/Lock）之间是
+	// check-then-act。设了 max_concurrency 时最多超额并发上限个请求；未设上限时 N 个并发
+	// 请求可同时通过预检后全部超额——费用最终都会记账，限额是“滞后 N 个请求才封顶”，非永久绕过。
+	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），此处只能做预检查。
+	// 严格“先扣费后请求”需复杂的预估+退款机制，不值得（YAGNI）。
 	if tokenHash != "" {
 		usedMicro, limitMicro, exceeded := s.authService.IsCostLimitExceeded(tokenHash)
 		if exceeded {

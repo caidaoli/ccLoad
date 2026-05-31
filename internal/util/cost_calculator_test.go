@@ -1174,14 +1174,16 @@ func TestCalculateFastModeCost_Basic(t *testing.T) {
 
 func TestCalculateFastModeCost_WithCache(t *testing.T) {
 	// 场景：Fast mode + 缓存
-	// Input: 1000 × $30 / 1M = $0.030000
+	// [P1-3] 缓存成本基于「基础 input 价 $5」而非 fast 价 $30
+	//   （缓存倍率常量定义为相对基础 input 价，且与标准计费路径 CalculateCostDetailed 一致）
+	// Input:  1000 × $30 / 1M = $0.030000（input/output 仍按 fast 价）
 	// Output: 500 × $150 / 1M = $0.075000
-	// Cache Read: 5000 × ($30 × 0.1) / 1M = $0.015000
-	// 5m Write: 2000 × ($30 × 1.25) / 1M = $0.075000
-	// 1h Write: 1000 × ($30 × 2.0) / 1M = $0.060000
-	// Total: $0.255000
+	// Cache Read: 5000 × ($5 × 0.1) / 1M  = $0.002500
+	// 5m Write:   2000 × ($5 × 1.25) / 1M = $0.012500
+	// 1h Write:   1000 × ($5 × 2.0) / 1M  = $0.010000
+	// Total: $0.130000
 	cost := CalculateFastModeCost(1000, 500, 5000, 2000, 1000)
-	expected := 0.255
+	expected := 0.130
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("Fast mode 缓存成本 = %.6f, 期望 %.6f", cost, expected)
 	}

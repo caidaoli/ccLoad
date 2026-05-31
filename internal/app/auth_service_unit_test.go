@@ -1,12 +1,14 @@
 package app
 
 import (
+	"context"
 	"encoding/hex"
 	"testing"
 	"time"
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
 
 func TestAuthService_GenerateToken_LengthAndHex(t *testing.T) {
@@ -132,6 +134,59 @@ func TestAuthService_CostLimit(t *testing.T) {
 	used, limit, exceeded = s.IsCostLimitExceeded("t1")
 	if used != 110 || limit != 100 || !exceeded {
 		t.Fatalf("t1 after add: got (%d,%d,%v), want (110,100,true)", used, limit, exceeded)
+	}
+}
+
+// reloadStubStore 仅覆盖 ListActiveAuthTokens，用于模拟 DB 返回值。
+// 其余 storage.Store 方法未实现（嵌入 nil 接口），ReloadAuthTokens 不会调用它们。
+type reloadStubStore struct {
+	storage.Store
+	tokens []*model.AuthToken
+}
+
+func (s *reloadStubStore) ListActiveAuthTokens(_ context.Context) ([]*model.AuthToken, error) {
+	return s.tokens, nil
+}
+
+// TestReloadAuthTokens_DoesNotRegressUsage 复现 P0-1：
+// AddCostToCache 只更新内存，DB 由 UpdateTokenStats 异步落盘。
+// 在落盘窗口内触发 ReloadAuthTokens 时，不得用 DB 滞后值覆盖内存实时累加，否则限额被绕过。
+func TestReloadAuthTokens_DoesNotRegressUsage(t *testing.T) {
+	t.Parallel()
+
+	const hash = "p0-token-hash" // DB 中存哈希；ReloadAuthTokens 直接将其作为内存 map key
+	stub := &reloadStubStore{
+		tokens: []*model.AuthToken{{
+			Token:             hash,
+			ID:                1,
+			CostUsedMicroUSD:  100, // DB 落盘值（滞后）
+			CostLimitMicroUSD: 1000,
+		}},
+	}
+
+	s := newTestAuthService(t)
+	s.store = stub
+
+	// 初次加载：内存与 DB 一致
+	if err := s.ReloadAuthTokens(); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	if used, _, _ := s.IsCostLimitExceeded(hash); used != 100 {
+		t.Fatalf("after initial reload used=%d, want 100", used)
+	}
+
+	// 请求完成 → 内存累加 +50；此时 DB 仍滞后为 100（stub 返回值不变）
+	s.AddCostToCache(hash, 50)
+	if used, _, _ := s.IsCostLimitExceeded(hash); used != 150 {
+		t.Fatalf("after AddCostToCache used=%d, want 150", used)
+	}
+
+	// 落盘窗口内再次 reload：DB 仍返回 100，内存累加不得被覆盖
+	if err := s.ReloadAuthTokens(); err != nil {
+		t.Fatalf("second reload: %v", err)
+	}
+	if used, _, _ := s.IsCostLimitExceeded(hash); used != 150 {
+		t.Fatalf("reload regressed in-memory usage: used=%d, want 150 (DB lagging value must not overwrite memory)", used)
 	}
 }
 

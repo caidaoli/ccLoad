@@ -566,6 +566,10 @@ func (s *Server) InvalidateChannelListCache() {
 	if s.channelBalancer != nil {
 		s.channelBalancer.ResetAll()
 	}
+	// 一并失效渠道类型映射缓存，避免 admin CRUD 后 60s TTL 脏读（read-after-write 一致性）
+	s.channelTypesCacheMu.Lock()
+	s.channelTypesCache = nil
+	s.channelTypesCacheMu.Unlock()
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效

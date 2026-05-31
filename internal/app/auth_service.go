@@ -552,6 +552,16 @@ func (s *AuthService) ReloadAuthTokens() error {
 
 	// 原子替换（避免读写竞争）
 	s.authTokensMux.Lock()
+	// [FIX] P0-1: 防止 DB 滞后值覆盖内存实时累加。
+	// AddCostToCache 只更新内存，DB 由 UpdateTokenStats 异步落盘；reload 读到的 DB used
+	// 可能落后于内存累加。内存累加恒 ≥ 已落盘值，故取 max 保留未落盘的记账，避免限额被绕过。
+	// （管理员清零额度应走专门接口同步清内存，不依赖 reload 路径。）
+	for tok, lim := range newTokenCostLimits {
+		if old, ok := s.authTokenCostLimits[tok]; ok && old.usedMicroUSD > lim.usedMicroUSD {
+			lim.usedMicroUSD = old.usedMicroUSD
+			newTokenCostLimits[tok] = lim
+		}
+	}
 	s.authTokens = newTokens
 	s.authTokenIDs = newTokenIDs
 	s.authTokenModels = newTokenModels
