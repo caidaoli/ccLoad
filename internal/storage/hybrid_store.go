@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/model"
@@ -37,6 +38,11 @@ type HybridStore struct {
 	syncWg    sync.WaitGroup
 	stopCh    chan struct{}
 	closeOnce sync.Once
+
+	// 降级可观测性计数器（参照 LogService.logDropCount 模式）
+	// 静默降级在生产中难以察觉，计数器 + 采样告警让运维可见，不改一致性语义
+	sqliteSyncFailCount atomic.Uint64 // SQLite 缓存同步失败累计
+	syncQueueDropCount  atomic.Uint64 // MySQL 同步队列满丢弃累计
 }
 
 // syncTask 同步任务
@@ -80,7 +86,11 @@ func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
 // 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
 func (h *HybridStore) syncToSQLite(op string, fn func() error) {
 	if err := fn(); err != nil {
-		log.Printf("[WARN] SQLite 同步失败 (%s): %v", op, err)
+		count := h.sqliteSyncFailCount.Add(1)
+		// 采样告警：首次必打印，之后每 10 次一次（避免磁盘满时日志洪泛）
+		if count%10 == 1 {
+			log.Printf("[WARN] SQLite 同步失败 (%s): %v (累计失败: %d)", op, err, count)
+		}
 	}
 }
 
@@ -180,7 +190,11 @@ func (h *HybridStore) enqueueLogSync(task *syncTask) {
 	select {
 	case h.syncCh <- task:
 	default:
-		log.Printf("[WARN] MySQL 同步队列已满，丢弃任务: %s", task.operation)
+		count := h.syncQueueDropCount.Add(1)
+		// 队列满=MySQL 备份丢日志（数据丢失），ERROR 级；采样首次必打印
+		if count%10 == 1 {
+			log.Printf("[ERROR] MySQL 同步队列已满，丢弃任务: %s (累计丢弃: %d) - 考虑增大 syncQueueSize", task.operation, count)
+		}
 	}
 }
 

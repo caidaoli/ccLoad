@@ -1057,7 +1057,9 @@ func IsFastModeModel(model string) bool {
 }
 
 // CalculateFastModeCost 计算 Anthropic fast mode 的独立费用
-// Fast mode 使用全上下文统一定价（无 >200K 加价），缓存倍率叠加在 fast 价格之上
+// Fast mode 的 input/output 使用全上下文统一定价（无 >200K 加价）。
+// 缓存倍率（read 0.1 / 5m 1.25 / 1h 2.0）按定义相对「基础 input 价」，
+// 故缓存成本基于基础价 $5 而非 fast 价 $30，与标准路径 CalculateCostDetailed 一致。
 // 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
@@ -1065,20 +1067,22 @@ func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTo
 	}
 
 	// Fast mode 固定价格（全上下文统一，无 >200K 分段）
-	const inputPrice = 30.0   // $30/MTok
+	const inputPrice = 30.0   // $30/MTok（仅 input/output）
 	const outputPrice = 150.0 // $150/MTok
+	// 缓存倍率常量相对「基础 input 价」定义，缓存成本须基于基础价而非 fast 价
+	const baseInputPrice = 5.0 // claude-opus-4-6 基础 input 价 $5/MTok
 
 	cost := float64(inputTokens)*inputPrice/1e6 + float64(outputTokens)*outputPrice/1e6
 
-	// 缓存倍率叠加在 fast mode 价格之上
+	// 缓存成本基于基础 input 价（倍率常量的定义基准）
 	if cacheReadTokens > 0 {
-		cost += float64(cacheReadTokens) * inputPrice * cacheReadMultiplierOpus / 1e6
+		cost += float64(cacheReadTokens) * baseInputPrice * cacheReadMultiplierOpus / 1e6
 	}
 	if cache5mTokens > 0 {
-		cost += float64(cache5mTokens) * inputPrice * cacheWrite5mMultiplier / 1e6
+		cost += float64(cache5mTokens) * baseInputPrice * cacheWrite5mMultiplier / 1e6
 	}
 	if cache1hTokens > 0 {
-		cost += float64(cache1hTokens) * inputPrice * cacheWrite1hMultiplier / 1e6
+		cost += float64(cache1hTokens) * baseInputPrice * cacheWrite1hMultiplier / 1e6
 	}
 
 	return cost
