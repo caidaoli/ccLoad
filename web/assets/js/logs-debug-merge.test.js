@@ -213,6 +213,38 @@ test('合并 SSE responses 时多个 function call 参数应分段显示', () =>
   assert.equal(merged, '{\"a\":1}\n\n{\"b\":2}');
 });
 
+test('合并 SSE responses 时自定义工具调用输入应拼接 delta 且不被 done 重复', () => {
+  const helpers = createHelpers();
+  const patch = [
+    '*** Begin Patch\n',
+    '*** Update File: internal/storage/sql/query.go\n',
+    '@@\n',
+    '-\t\t&c.RPMLimit, &c.ChannelType,\n',
+    '+\t\t&c.RPMLimit, &c.MaxConcurrency, &c.ChannelType,\n',
+    '*** End Patch\n'
+  ].join('');
+  const merged = helpers.composeDebugMergedResponse({
+    resp_body: [
+      'event: response.output_item.added',
+      'data: {"type":"response.output_item.added","item":{"id":"ctc_1","type":"custom_tool_call","status":"in_progress","name":"apply_patch"},"output_index":0}',
+      '',
+      'event: response.custom_tool_call_input.delta',
+      `data: ${JSON.stringify({ type: 'response.custom_tool_call_input.delta', delta: patch.slice(0, 35), output_index: 0 })}`,
+      '',
+      'event: response.custom_tool_call_input.delta',
+      `data: ${JSON.stringify({ type: 'response.custom_tool_call_input.delta', delta: patch.slice(35), output_index: 0 })}`,
+      '',
+      'event: response.custom_tool_call_input.done',
+      `data: ${JSON.stringify({ type: 'response.custom_tool_call_input.done', input: patch, output_index: 0 })}`,
+      '',
+      'event: response.output_item.done',
+      `data: ${JSON.stringify({ type: 'response.output_item.done', item: { type: 'custom_tool_call', input: patch }, output_index: 0 })}`
+    ].join('\n')
+  });
+
+  assert.equal(merged, patch.trim());
+});
+
 test('合并普通 chat completion 时抽取 message.content 并按字面输出紧凑 JSON', () => {
   const helpers = createHelpers();
   const content = '{"type":"change","title":"v2.11.5发布构建成功完成"}';
