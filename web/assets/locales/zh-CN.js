@@ -1164,7 +1164,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.leaveEmptyNoRedirect': '留空则不重定向',
   'channels.fetchModelsSource.api': '从API获取',
   'channels.fetchModelsSource.predefined': '预定义列表',
-  'channels.fetchModelsSuccess': '已同步 {total} 个模型（{source}，移除 {removed} 个旧模型）',
+  'channels.fetchModelsSuccess': '已同步 {total} 个模型（{source}，新增 {added} 个）',
   'channels.fetchModelsFailed': '获取模型列表失败: {error}',
   'channels.noModelsFromApi': '未获取到任何模型',
   'channels.fillApiUrlFirst': '请先填写API URL',

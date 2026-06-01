@@ -1165,7 +1165,7 @@ window.I18N_LOCALES['en'] = {
   'channels.leaveEmptyNoRedirect': 'Leave empty for no redirect',
   'channels.fetchModelsSource.api': 'From API',
   'channels.fetchModelsSource.predefined': 'Predefined list',
-  'channels.fetchModelsSuccess': 'Synced {total} models ({source}, removed {removed} old models)',
+  'channels.fetchModelsSuccess': 'Synced {total} models ({source}, added {added})',
   'channels.fetchModelsFailed': 'Failed to fetch model list: {error}',
   'channels.noModelsFromApi': 'No models retrieved',
   'channels.fillApiUrlFirst': 'Please fill API URL first',
