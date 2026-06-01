@@ -34,13 +34,14 @@ ccLoad solves these pain points through:
 - **Soft error detection**: Automatically detects HTTP 200 responses that are actually errors ("masqueraded responses"), triggering channel cooldown and failover. Common scenarios include:
   - JSON responses containing `{"error": {...}}` structure
   - Responses with `type` field set to `"error"`
+  - Explicit rate limits in SSE `error` events (`rate_limit_exceeded` / `too_many_requests`) are handled as `429`
   - Plain text messages like `"当前模型负载过高"` / `"Current model load too high"` (load warnings)
 
 ## ✨ Key Features
 
 - 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, high-performance caching
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
-- 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), 1308 quota handling (596/597 status codes)
+- 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
 - 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
@@ -61,7 +62,7 @@ ccLoad solves these pain points through:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, one channel serves multiple client protocols
+- 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, preserving sampling and thinking parameters so one channel serves multiple client protocols
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
 - 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
@@ -720,6 +721,7 @@ Check out the awesome admin dashboard 👇
   - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
   - `protocol/registry.go`: Request/response transformer registry
   - `protocol/builtin/`: 18 built-in transform implementations (streaming and non-streaming)
+  - Preserves sampling/limit/stop/seed parameters; Gemini `thinkingConfig.thinkingLevel` maps to the target protocol's reasoning/thinking config
   - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
   - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
 - **Cooldown Manager** (DRY):

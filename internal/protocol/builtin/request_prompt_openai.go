@@ -187,6 +187,9 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 			payload.Stop = raw
 		}
 	}
+	if payload.ReasoningEffort == "" {
+		payload.ReasoningEffort = anthropicThinkingToOpenAIEffort(conv.Thinking)
+	}
 	return marshalStableJSON(payload)
 }
 
@@ -217,6 +220,20 @@ func mapAnthropicBudgetToOpenAIEffort(budget int) string {
 		return "low"
 	default:
 		return "medium"
+	}
+}
+
+func anthropicThinkingToOpenAIEffort(thinking *anthropicThinkingConfig) string {
+	if thinking == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
+	case "enabled":
+		return mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens)
+	case "disabled":
+		return "none"
+	default:
+		return ""
 	}
 }
 

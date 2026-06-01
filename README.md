@@ -36,6 +36,7 @@ ccLoad 一站式解决👇
 - 🔍 **软错误检测**：HTTP 200 伪装成功？逃不过检测！自动识别以下"假成功"：
   - `{"error": {...}}` 结构的 JSON 错误
   - `type` 字段是 `"error"` 的响应
+  - SSE `error` 事件中的明确限流（`rate_limit_exceeded` / `too_many_requests`）按 `429` 处理
   - `"当前模型负载过高"` 之类的纯文本告警
 
 ## ✨ 主要特性
@@ -63,7 +64,7 @@ ccLoad 一站式解决👇
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 一个渠道服务多种客户端协议 |
+| 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 保留采样与思考参数，一个渠道服务多种客户端协议 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
 | 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
@@ -756,6 +757,7 @@ Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
   - `protocol/types.go`：四大协议定义（Anthropic/OpenAI/Gemini/Codex）
   - `protocol/registry.go`：请求/响应转换器注册表
   - `protocol/builtin/`：18个内置转换实现（支持流式与非流式）
+  - 保留采样/上限/停止词/seed 参数；Gemini `thinkingConfig.thinkingLevel` 会映射为目标协议的 reasoning/thinking 配置
   - 两种模式：`upstream`（默认，由上游原生处理）/ `local`（本地翻译）
   - 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
 - **冷却管理器**（DRY原则）：
