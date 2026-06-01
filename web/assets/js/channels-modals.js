@@ -1999,43 +1999,41 @@ function batchDeleteSelectedModels() {
   }, 50);
 }
 
-function replaceModelRowsWithFetchedModels(currentRows, fetchedModels) {
-  const previousRowsByModelKey = new Map();
+function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
+  const existingModelKeys = new Set();
+  const rows = [];
   (currentRows || []).forEach(row => {
     const model = (row?.model || '').trim();
     if (!model) return;
     const modelKey = model.toLowerCase();
-    if (!previousRowsByModelKey.has(modelKey)) {
-      previousRowsByModelKey.set(modelKey, row);
-    }
+    if (existingModelKeys.has(modelKey)) return;
+    existingModelKeys.add(modelKey);
+    rows.push({
+      model,
+      redirect_model: (row?.redirect_model || '').trim()
+    });
   });
 
-  const seen = new Set();
-  const rows = [];
+  let added = 0;
   for (const entry of fetchedModels || []) {
     const modelName = (typeof entry === 'string' ? entry : entry?.model || '').trim();
     if (!modelName) continue;
 
     const modelKey = modelName.toLowerCase();
-    if (seen.has(modelKey)) continue;
-    seen.add(modelKey);
+    if (existingModelKeys.has(modelKey)) continue;
+    existingModelKeys.add(modelKey);
 
-    const existingRow = previousRowsByModelKey.get(modelKey);
     const fetchedRedirect = (typeof entry === 'object' && entry?.redirect_model)
       ? String(entry.redirect_model).trim()
       : modelName;
     rows.push({
       model: modelName,
-      redirect_model: existingRow ? (existingRow.redirect_model || '') : fetchedRedirect
+      redirect_model: fetchedRedirect
     });
+    added++;
   }
 
-  let removed = 0;
-  previousRowsByModelKey.forEach((_, modelKey) => {
-    if (!seen.has(modelKey)) removed++;
-  });
-
-  return { rows, removed };
+  return { rows, added, removed: 0 };
 }
 
 function areModelRowsEqual(left, right) {
@@ -2096,7 +2094,7 @@ async function fetchModelsFromAPI() {
       model: row.model || '',
       redirect_model: row.redirect_model || ''
     }));
-    const replacement = replaceModelRowsWithFetchedModels(redirectTableData, data.models);
+    const replacement = mergeModelRowsWithFetchedModels(redirectTableData, data.models);
     if (replacement.rows.length === 0) {
       throw new Error(window.t('channels.noModelsFromApi'));
     }
@@ -2110,9 +2108,9 @@ async function fetchModelsFromAPI() {
 
     const source = data.source === 'api' ? window.t('channels.fetchModelsSource.api') : window.t('channels.fetchModelsSource.predefined');
     if (window.showSuccess) {
-      window.showSuccess(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, removed: replacement.removed }));
+      window.showSuccess(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, added: replacement.added }));
     } else {
-      alert(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, removed: replacement.removed }));
+      alert(window.t('channels.fetchModelsSuccess', { source, total: redirectTableData.length, added: replacement.added }));
     }
 
   } catch (error) {
