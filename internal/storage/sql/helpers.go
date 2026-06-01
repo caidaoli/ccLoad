@@ -162,15 +162,24 @@ func (s *SQLStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string
 	return ids, nil
 }
 
-// fetchChannelIDsByType 根据渠道类型获取渠道ID集合
+// fetchChannelIDsByType 根据暴露协议获取渠道ID集合：原生 channel_type 或 protocol_transforms 均匹配。
 // 目的：避免跨库JOIN，先解析为ID再过滤logs
 func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string) ([]int64, error) {
 	if channelType == "" {
 		return nil, nil
 	}
 
-	query := "SELECT id FROM channels WHERE channel_type = ?"
-	rows, err := s.db.QueryContext(ctx, query, channelType)
+	query := `
+		SELECT id
+		FROM channels c
+		WHERE c.channel_type = ?
+		   OR EXISTS (
+		       SELECT 1
+		       FROM channel_protocol_transforms cpt
+		       WHERE cpt.channel_id = c.id AND cpt.protocol = ?
+		   )
+	`
+	rows, err := s.db.QueryContext(ctx, query, channelType, channelType)
 	if err != nil {
 		return nil, fmt.Errorf("query channel ids by type: %w", err)
 	}
