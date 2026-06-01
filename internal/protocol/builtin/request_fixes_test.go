@@ -395,6 +395,21 @@ func TestNormalizeAnthropic_ThinkingAndDisableParallel(t *testing.T) {
 	}
 }
 
+func TestConvertAnthropicRequestToOpenAI_PreservesThinkingEffort(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5",
+		"messages":[{"role":"user","content":[{"type":"text","text":"think hard"}]}],
+		"thinking":{"type":"enabled","budget_tokens":16384}
+	}`)
+	out, err := convertAnthropicRequestToOpenAI("gpt-5", raw, false)
+	if err != nil {
+		t.Fatalf("convertAnthropicRequestToOpenAI failed: %v", err)
+	}
+	if !strings.Contains(string(out), `"reasoning_effort":"high"`) {
+		t.Fatalf("expected high reasoning_effort, got %s", out)
+	}
+}
+
 // 覆盖 Codex 入站顶层 parallel_tool_calls=false / 采样 / reasoning 字段透传。
 func TestNormalizeCodex_SamplingReasoningAndParallel(t *testing.T) {
 	temp := 0.7
