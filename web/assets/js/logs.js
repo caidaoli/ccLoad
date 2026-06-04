@@ -566,6 +566,9 @@ async function load(skipLoading = false) {
 
     const data = response.data || [];
 
+    // 把日志中出现的渠道/模型合并进筛选下拉（无需刷新页面）
+    mergeLogsFilterOptions(data);
+
     // 精确计算总页数（基于后端返回的count字段）
     if (typeof response.count === 'number') {
       totalLogs = response.count;
@@ -679,6 +682,9 @@ async function fetchActiveRequests() {
   try {
     const response = await fetchAPIWithAuth('/admin/active-requests');
     const rawActiveRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
+
+    // 进行中的请求（尚未落库）所属渠道/模型也补充进筛选下拉
+    mergeLogsFilterOptions(rawActiveRequests);
 
     // 检测"需要刷新日志"：ID 消失（请求结束）或 fingerprint 变化（渠道/Key/URL 切换 → 上次尝试已失败并写入日志）
     const currentStates = new Map();
@@ -1193,6 +1199,43 @@ async function loadLogsModels(channelType, range) {
   } catch (error) {
     console.error('加载模型列表失败:', error);
   }
+}
+
+// 从日志/活跃请求数据中提取渠道名与模型，去重合并进筛选下拉。
+// 根因：/admin/models 的 distinct 查询滞后于刚落库或进行中的请求，
+// 导致列表里能看到的渠道/模型在下拉里缺失，必须刷新页面才更新。
+// 此处做到“所见即可筛选”，无需刷新。
+function mergeLogsFilterOptions(entries) {
+  if (!Array.isArray(entries) || entries.length === 0) return;
+
+  const channels = Array.isArray(window.logsChannels) ? window.logsChannels : [];
+  const knownNames = new Set(channels.map(ch => ch && ch.name).filter(Boolean));
+  const models = Array.isArray(window.availableLogsModels) ? window.availableLogsModels : [];
+  const knownModels = new Set(models);
+  let changed = false;
+
+  for (const entry of entries) {
+    const name = String(entry?.channel_name || '').trim();
+    if (name && !knownNames.has(name)) {
+      knownNames.add(name);
+      channels.push({ id: Number(entry?.channel_id) || 0, name });
+      changed = true;
+    }
+    for (const raw of [entry?.model, entry?.actual_model]) {
+      const m = String(raw || '').trim();
+      if (m && !knownModels.has(m)) {
+        knownModels.add(m);
+        models.push(m);
+        changed = true;
+      }
+    }
+  }
+
+  if (!changed) return;
+  window.logsChannels = channels;
+  window.availableLogsModels = models;
+  if (logsChannelNameCombobox) logsChannelNameCombobox.refresh();
+  if (logsModelCombobox) logsModelCombobox.refresh();
 }
 
 function initLogsChannelNameCombobox(initialValue) {
