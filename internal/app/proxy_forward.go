@@ -1543,8 +1543,10 @@ func isInvalidEncryptedContentError(body []byte) bool {
 		return true
 	}
 	message := strings.ToLower(payload.Error.Message)
-	return strings.EqualFold(payload.Error.Type, "invalid_request_error") &&
-		strings.Contains(message, "encrypted content") &&
+	if strings.Contains(message, "invalid_encrypted_content") {
+		return true
+	}
+	return strings.Contains(message, "encrypted content") &&
 		(strings.Contains(message, "could not be verified") ||
 			strings.Contains(message, "could not be decrypted") ||
 			strings.Contains(message, "could not be parsed"))
