@@ -1859,6 +1859,91 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	}
 }
 
+func TestProxy_Codex400RetriesWithoutThinkingAndLogsStrategy(t *testing.T) {
+	t.Parallel()
+
+	const unsupportedThinkingBody = `{"error":{"message":"unsupported parameter: reasoning","type":"invalid_request_error","param":"reasoning","code":"unsupported_parameter"}}`
+
+	var attempts atomic.Int32
+	var bodies [][]byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "codex-no-thinking", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(bytes.NewReader([]byte(unsupportedThinkingBody))),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+				))),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-5-codex",
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "content": []map[string]any{{"type": "reasoning_text", "text": "drop thinking"}}},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+		"reasoning": map[string]any{"effort": "medium", "summary": "auto"},
+		"include":   []string{"reasoning.encrypted_content"},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("captured bodies=%d, want 2", len(bodies))
+	}
+	if !bytes.Contains(bodies[0], []byte(`"reasoning"`)) ||
+		!bytes.Contains(bodies[0], []byte(`"include"`)) {
+		t.Fatalf("first request should include thinking controls, got %s", bodies[0])
+	}
+	if bytes.Contains(bodies[1], []byte(`"reasoning"`)) ||
+		bytes.Contains(bodies[1], []byte(`"include"`)) {
+		t.Fatalf("retry request should strip thinking controls, got %s", bodies[1])
+	}
+	if !bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
+		t.Fatalf("retry request should keep message input, got %s", bodies[1])
+	}
+
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, err := env.store.ListLogs(ctx, since, 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		for _, entry := range logs {
+			if entry.StatusCode == http.StatusOK && entry.ChannelID != 0 {
+				if !strings.Contains(entry.Message, "retry_strategy=strip_codex_thinking") {
+					t.Fatalf("success log message=%q, want retry strategy", entry.Message)
+				}
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("expected successful proxy log with retry strategy within deadline")
+}
+
 func TestProxy_AnyrouterCodexInvalidResponsesRequestRetriesWithoutEncryptedContentAndToolSearch(t *testing.T) {
 	t.Parallel()
 

@@ -1473,28 +1473,18 @@ func (s *Server) forwardAttempt(
 	}
 
 	forceReturnClient := false
-	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, plan, res) {
-		if retryBody, ok := codexBodyWithoutEncryptedInputItems(plan.TranslatedBody); ok {
-			retryPlan := plan
-			retryPlan.TranslatedBody = retryBody
-			res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-				retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
-			if res != nil && res.DebugData != nil {
-				reqCtx.debugData = res.DebugData
-			}
-			forceReturnClient = true
+	if retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, plan, res); ok {
+		retryPlan := plan
+		retryPlan.TranslatedBody = retryBody
+		res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
+			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+		if res != nil && res.DebugData != nil {
+			reqCtx.debugData = res.DebugData
 		}
-	} else if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
-		if retryBody, ok := codexBodyWithoutEncryptedContentAndToolSearch(plan.TranslatedBody); ok {
-			retryPlan := plan
-			retryPlan.TranslatedBody = retryBody
-			res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-				retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
-			if res != nil && res.DebugData != nil {
-				reqCtx.debugData = res.DebugData
-			}
-			forceReturnClient = true
+		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
+			res.RetryStrategy = retryStrategy
 		}
+		forceReturnClient = true
 	}
 
 	// 处理网络错误或异常响应（如空响应）
@@ -1589,6 +1579,77 @@ func isInvalidResponsesRequestError(body []byte) bool {
 	return strings.Contains(strings.ToLower(payload.Error.Message), "invalid_responses_request")
 }
 
+func codexRetryBodyFor400(
+	upstreamProtocol protocol.Protocol,
+	cfg *model.Config,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, plan, res) {
+		if retryBody, ok := codexBodyWithoutEncryptedInputItems(plan.TranslatedBody); ok {
+			return retryBody, "strip_codex_encrypted_input", true
+		}
+	}
+	if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
+		if retryBody, ok := codexBodyWithoutEncryptedContentAndToolSearch(plan.TranslatedBody); ok {
+			return retryBody, "strip_codex_encrypted_tool_search", true
+		}
+	}
+	if shouldRetryCodexUnsupportedThinking(upstreamProtocol, res) {
+		if retryBody, ok := codexBodyWithoutThinking(plan.TranslatedBody); ok {
+			return retryBody, "strip_codex_thinking", true
+		}
+	}
+	return nil, "", false
+}
+
+func shouldRetryCodexUnsupportedThinking(upstreamProtocol protocol.Protocol, res *fwResult) bool {
+	return upstreamProtocol == protocol.Codex &&
+		res != nil &&
+		res.Status == http.StatusBadRequest &&
+		isUnsupportedThinkingError(res.Body)
+}
+
+func isUnsupportedThinkingError(body []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+			Param   string `json:"param"`
+			Type    string `json:"type"`
+		} `json:"error"`
+	}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+
+	code := strings.ToLower(strings.TrimSpace(payload.Error.Code))
+	message := strings.ToLower(strings.TrimSpace(payload.Error.Message))
+	param := strings.ToLower(strings.TrimSpace(payload.Error.Param))
+	typ := strings.ToLower(strings.TrimSpace(payload.Error.Type))
+
+	mentionsThinking := strings.Contains(message, "reasoning") ||
+		strings.Contains(message, "thinking") ||
+		strings.Contains(param, "reasoning") ||
+		strings.Contains(param, "thinking")
+	if !mentionsThinking {
+		return false
+	}
+
+	switch code {
+	case "unsupported_parameter", "invalid_request_error", "invalid_responses_request", "unknown_parameter":
+		return true
+	}
+	if typ == "invalid_request_error" {
+		return true
+	}
+	return strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "unknown parameter") ||
+		strings.Contains(message, "not support") ||
+		strings.Contains(message, "does not support") ||
+		strings.Contains(message, "invalid")
+}
+
 func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 	var root map[string]any
 	if err := sonic.Unmarshal(body, &root); err != nil {
@@ -1625,6 +1686,74 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return retryBody, true
+}
+
+func codexBodyWithoutThinking(body []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := sonic.Unmarshal(body, &root); err != nil {
+		return nil, false
+	}
+
+	removed := false
+	if _, ok := root["reasoning"]; ok {
+		delete(root, "reasoning")
+		removed = true
+	}
+	if filterCodexThinkingIncludes(root) {
+		removed = true
+	}
+	if input, ok := root["input"].([]any); ok {
+		filtered := make([]any, 0, len(input))
+		for _, item := range input {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				filtered = append(filtered, item)
+				continue
+			}
+			typ, _ := obj["type"].(string)
+			if typ == "reasoning" {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		root["input"] = filtered
+	}
+	if !removed {
+		return nil, false
+	}
+
+	retryBody, err := sonic.Marshal(root)
+	if err != nil {
+		return nil, false
+	}
+	return retryBody, true
+}
+
+func filterCodexThinkingIncludes(root map[string]any) bool {
+	include, ok := root["include"].([]any)
+	if !ok {
+		return false
+	}
+	filtered := make([]any, 0, len(include))
+	removed := false
+	for _, item := range include {
+		value, ok := item.(string)
+		if ok && strings.HasPrefix(value, "reasoning.") {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !removed {
+		return false
+	}
+	if len(filtered) == 0 {
+		delete(root, "include")
+		return true
+	}
+	root["include"] = filtered
+	return true
 }
 
 func codexBodyWithoutEncryptedContentAndToolSearch(body []byte) ([]byte, bool) {
