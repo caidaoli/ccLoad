@@ -94,6 +94,9 @@ type fwResult struct {
 	// 转发诊断信息（2025-12新增）
 	StreamDiagMsg string // 诊断消息（例如：流中断/不完整、上游响应体读取失败），合并到日志的 Message 字段
 
+	// 重试策略（例如 Codex 400 后剥离 reasoning/thinking 再成功）
+	RetryStrategy string
+
 	// 上游响应字节数（2026-02新增）
 	// 用于499场景诊断：区分客户端在首字节前取消还是接收部分数据后取消
 	BytesReceived int64
@@ -734,6 +737,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 			} else {
 				entry.Message = "ok"
 			}
+			entry.Message = appendRetryStrategyToMessage(entry.Message, res.RetryStrategy)
 		} else {
 			msg := fmt.Sprintf("upstream status %d", p.StatusCode)
 			// 诊断信息优先：body 已存于 fwResult.Body 可随时查阅，但 diag 仅记录在 Message
@@ -773,6 +777,18 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 
 	entry.DebugData = p.DebugData
 	return entry
+}
+
+func appendRetryStrategyToMessage(message, strategy string) string {
+	strategy = strings.TrimSpace(strategy)
+	if strategy == "" {
+		return message
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "ok"
+	}
+	return truncateErr(fmt.Sprintf("%s [retry_strategy=%s]", message, strategy))
 }
 
 // computeRequestCost 集中两处计费分支（buildLogEntry / logFailedAttempt 旁路）。

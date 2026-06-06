@@ -239,6 +239,64 @@ func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 	}
 }
 
+func TestCodexBodyWithoutThinking_RemovesReasoningControls(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5-codex",
+		"reasoning":{"effort":"medium","summary":"auto"},
+		"include":["reasoning.encrypted_content","file_search_call.results"],
+		"input":[
+			{"type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"drop"}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}
+		]
+	}`)
+
+	got, ok := codexBodyWithoutThinking(body)
+	if !ok {
+		t.Fatal("codexBodyWithoutThinking returned ok=false")
+	}
+	text := string(got)
+	if strings.Contains(text, `"reasoning"`) {
+		t.Fatalf("retry body should remove reasoning controls, got %s", text)
+	}
+	if strings.Contains(text, `reasoning.encrypted_content`) {
+		t.Fatalf("retry body should remove reasoning include, got %s", text)
+	}
+	if !strings.Contains(text, `file_search_call.results`) ||
+		!strings.Contains(text, `"type":"message"`) {
+		t.Fatalf("retry body should preserve unrelated include and message input, got %s", text)
+	}
+}
+
+func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5-codex",
+		"reasoning":{"effort":"medium"},
+		"input":[
+			{"type":"reasoning","summary":[]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}
+		]
+	}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"message":"invalid_responses_request: reasoning is unsupported","code":"invalid_responses_request","param":"reasoning","type":"invalid_request_error"}}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+	cfg := &model.Config{Name: "anyrouter-codex"}
+
+	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, cfg, plan, res)
+	if !ok {
+		t.Fatal("codexRetryBodyFor400 returned ok=false")
+	}
+	if strategy != "strip_codex_thinking" {
+		t.Fatalf("strategy=%q, want strip_codex_thinking", strategy)
+	}
+	text := string(got)
+	if strings.Contains(text, `"reasoning"`) ||
+		!strings.Contains(text, `"type":"message"`) {
+		t.Fatalf("unexpected retry body: %s", text)
+	}
+}
+
 func TestTranslatedStreamChunkCompletes(t *testing.T) {
 	t.Parallel()
 
