@@ -154,12 +154,12 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 		st.model = model
 	}
 
-	line := strings.TrimSpace(string(rawJSON))
+	eventType, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
 	}
-	if after, ok := strings.CutPrefix(line, "data:"); ok {
-		line = strings.TrimSpace(after)
+	if isCodexResponseEventType(eventType) {
+		return [][]byte{rawJSON}, nil
 	}
 	if line == "[DONE]" {
 		chunks := make([][]byte, 0, 4)
@@ -223,6 +223,9 @@ func convertOpenAIResponseToCodexStream(_ context.Context, model string, _, _, r
 	var chunk map[string]any
 	if err := sonic.Unmarshal([]byte(line), &chunk); err != nil {
 		return nil, err
+	}
+	if eventName := stringValue(chunk["type"]); isCodexResponseEventType(eventName) {
+		return [][]byte{marshalRawCodexEvent(eventName, line)}, nil
 	}
 	if chunkModel := stringValue(chunk["model"]); chunkModel != "" {
 		st.model = chunkModel
@@ -621,6 +624,10 @@ func encodeCodexOutputContentPart(part conversationPart) (map[string]any, error)
 	default:
 		return nil, nil
 	}
+}
+
+func marshalRawCodexEvent(eventName, payload string) []byte {
+	return []byte(fmt.Sprintf("event: %s\ndata: %s\n\n", eventName, payload))
 }
 
 func codexReasoningItemsFromOpenAIMessage(message map[string]any) []map[string]any {

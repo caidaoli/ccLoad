@@ -3,7 +3,6 @@ package builtin
 import (
 	"context"
 	"encoding/json"
-	"strings"
 
 	"ccLoad/internal/util"
 
@@ -121,6 +120,7 @@ type openAIToGeminiStreamState struct {
 	done             bool
 	doneUsageEmitted bool
 	pendingToolCalls map[int]*pendingToolCall
+	codexState       any
 	usage            struct {
 		promptTokens     int64
 		completionTokens int64
@@ -256,12 +256,9 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 		st.nextToolCallID = 1
 	}
 
-	line := strings.TrimSpace(string(rawJSON))
+	_, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
-	}
-	if after, ok := strings.CutPrefix(line, "data:"); ok {
-		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		return [][]byte{[]byte("data: [DONE]\n\n")}, nil
@@ -347,7 +344,7 @@ func convertGeminiResponseToOpenAIStream(_ context.Context, model string, _, _, 
 	return [][]byte{append([]byte("data: "), append(body, []byte("\n\n")...)...)}, nil
 }
 
-func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+func convertOpenAIResponseToGeminiStream(ctx context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
 	if param == nil {
 		var local any
 		param = &local
@@ -360,12 +357,12 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 		st.model = model
 	}
 
-	line := strings.TrimSpace(string(rawJSON))
+	eventType, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
 	}
-	if after, ok := strings.CutPrefix(line, "data:"); ok {
-		line = strings.TrimSpace(after)
+	if isCodexResponseEventType(eventType) {
+		return convertCodexResponseToGeminiStream(ctx, model, rawReq, translatedReq, rawJSON, &st.codexState)
 	}
 	if line == "[DONE]" {
 		if st.done {
@@ -387,6 +384,9 @@ func convertOpenAIResponseToGeminiStream(_ context.Context, model string, _, _, 
 	var chunk map[string]any
 	if err := sonic.Unmarshal([]byte(line), &chunk); err != nil {
 		return nil, err
+	}
+	if isCodexResponseEventType(stringValue(chunk["type"])) {
+		return convertCodexResponseToGeminiStream(ctx, model, rawReq, translatedReq, rawJSON, &st.codexState)
 	}
 	if chunkModel := stringValue(chunk["model"]); chunkModel != "" && st.model == "" {
 		st.model = chunkModel

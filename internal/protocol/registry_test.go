@@ -386,6 +386,42 @@ func TestRegistry_TranslateResponseStream_OpenAIToCodex(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateResponseStream_OpenAIToCodex_EventHeaderAndResponsesEvents(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		"event: \n" +
+			"data: {\"id\":\"chatcmpl-ws-ingress\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\\u200b\"}}]}\n\n",
+		"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+		"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Codex, "gpt-5.5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if !strings.Contains(result, "event: response.output_text.delta") || !strings.Contains(result, `"delta":"hello"`) {
+		t.Fatalf("expected responses text delta passthrough in Codex output, got:\n%s", result)
+	}
+	if !strings.Contains(result, "event: response.completed") || !strings.Contains(result, `"input_tokens":3`) {
+		t.Fatalf("expected responses completion passthrough in Codex output, got:\n%s", result)
+	}
+}
+
 func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
@@ -845,6 +881,42 @@ func TestRegistry_TranslateResponseStream_OpenAIToAnthropic(t *testing.T) {
 	doneJoined := string(bytes.Join(done, nil))
 	if !strings.Contains(doneJoined, "event: message_delta") || !strings.Contains(doneJoined, "event: message_stop") {
 		t.Fatalf("unexpected anthropic done chunks: %#v", done)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_OpenAIToAnthropic_EventHeaderAndResponsesEvents(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		"event: \n" +
+			"data: {\"id\":\"chatcmpl-ws-ingress\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\\u200b\"}}]}\n\n",
+		"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+		"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Anthropic, "gpt-5.5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if !strings.Contains(result, `"text":"hello"`) {
+		t.Fatalf("expected responses text delta in Anthropic output, got:\n%s", result)
+	}
+	if !strings.Contains(result, "event: message_stop") || !strings.Contains(result, `"input_tokens":3`) {
+		t.Fatalf("expected responses completion and usage in Anthropic output, got:\n%s", result)
 	}
 }
 

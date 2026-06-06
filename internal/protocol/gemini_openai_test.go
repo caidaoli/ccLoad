@@ -89,6 +89,42 @@ func TestRegistry_TranslateResponseStream_OpenAIToGemini(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateResponseStream_OpenAIToGemini_EventHeaderAndResponsesEvents(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	chunks := []string{
+		"event: \n" +
+			"data: {\"id\":\"chatcmpl-ws-ingress\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-5.5\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\\u200b\"}}]}\n\n",
+		"event: response.output_text.delta\n" +
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+		"event: response.completed\n" +
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n",
+	}
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gpt-5.5", nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+
+	result := allOutput.String()
+	if !strings.Contains(result, `"text":"hello"`) {
+		t.Fatalf("expected responses text delta in Gemini output, got:\n%s", result)
+	}
+	if !strings.Contains(result, `"finishReason":"STOP"`) || !strings.Contains(result, `"promptTokenCount":3`) {
+		t.Fatalf("expected responses completion and usage in Gemini output, got:\n%s", result)
+	}
+}
+
 func TestBuildTransformPlan_SupportsGeminiToOpenAI(t *testing.T) {
 	plan, err := protocol.BuildTransformPlan(
 		protocol.Gemini,

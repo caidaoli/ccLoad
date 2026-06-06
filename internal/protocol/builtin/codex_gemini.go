@@ -154,12 +154,9 @@ func convertGeminiResponseToCodexStream(_ context.Context, model string, _, _, r
 		st.nextToolCallID = 1
 	}
 
-	line := strings.TrimSpace(string(rawJSON))
+	_, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
-	}
-	if strings.HasPrefix(line, "data:") {
-		line = strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 	}
 	if line == "[DONE]" {
 		response := map[string]any{
