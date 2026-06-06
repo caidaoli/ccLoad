@@ -1859,6 +1859,75 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 	}
 }
 
+func TestProxy_AnyrouterCodexInvalidResponsesRequestRetriesWithoutEncryptedContentAndToolSearch(t *testing.T) {
+	t.Parallel()
+
+	const invalidResponsesRequestBody = `{"error":{"message":"invalid codex request (request id: req_test)","type":"new_api_error","param":"","code":"invalid_responses_request"}}`
+
+	var attempts atomic.Int32
+	var bodies [][]byte
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "anyrouter-codex", channelType: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
+	}, map[int]string{0: "https://codex-upstream.example.com"})
+
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(r.Body)
+			bodies = append(bodies, body)
+			if attempts.Add(1) == 1 {
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(bytes.NewReader([]byte(invalidResponsesRequestBody))),
+				}, nil
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(bytes.NewReader([]byte(
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`,
+				))),
+			}, nil
+		}),
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model": "gpt-5.5",
+		"input": []map[string]any{
+			{"type": "reasoning", "summary": []any{}, "encrypted_content": "drop-reasoning"},
+			{"type": "tool_search_call", "call_id": "search_1", "status": "completed", "arguments": "{}"},
+			{"type": "tool_search_output", "call_id": "search_1", "status": "completed", "tools": []any{}},
+			{"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "hi"}}},
+		},
+		"include": []string{"reasoning.encrypted_content"},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("captured bodies=%d, want 2", len(bodies))
+	}
+	if !bytes.Contains(bodies[0], []byte(`"encrypted_content"`)) ||
+		!bytes.Contains(bodies[0], []byte(`"type":"tool_search_call"`)) ||
+		!bytes.Contains(bodies[0], []byte(`"type":"tool_search_output"`)) {
+		t.Fatalf("first request should include encrypted content and tool search history, got %s", bodies[0])
+	}
+	if bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) ||
+		bytes.Contains(bodies[1], []byte(`"type":"tool_search_call"`)) ||
+		bytes.Contains(bodies[1], []byte(`"type":"tool_search_output"`)) {
+		t.Fatalf("retry request should remove encrypted content and tool search history, got %s", bodies[1])
+	}
+	if !bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) ||
+		!bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
+		t.Fatalf("retry request should keep sanitized reasoning summary and messages, got %s", bodies[1])
+	}
+}
+
 func TestProxy_CodexInvalidEncryptedContentWrappedRequestErrorRetries(t *testing.T) {
 	t.Parallel()
 

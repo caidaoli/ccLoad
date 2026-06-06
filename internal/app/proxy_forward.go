@@ -1484,6 +1484,17 @@ func (s *Server) forwardAttempt(
 			}
 			forceReturnClient = true
 		}
+	} else if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
+		if retryBody, ok := codexBodyWithoutEncryptedContentAndToolSearch(plan.TranslatedBody); ok {
+			retryPlan := plan
+			retryPlan.TranslatedBody = retryBody
+			res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
+				retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+			if res != nil && res.DebugData != nil {
+				reqCtx.debugData = res.DebugData
+			}
+			forceReturnClient = true
+		}
 	}
 
 	// 处理网络错误或异常响应（如空响应）
@@ -1552,6 +1563,32 @@ func isInvalidEncryptedContentError(body []byte) bool {
 			strings.Contains(message, "could not be parsed"))
 }
 
+func shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol protocol.Protocol, cfg *model.Config, res *fwResult) bool {
+	return upstreamProtocol == protocol.Codex &&
+		cfg != nil &&
+		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") &&
+		res != nil &&
+		res.Status == http.StatusBadRequest &&
+		isInvalidResponsesRequestError(res.Body)
+}
+
+func isInvalidResponsesRequestError(body []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return false
+	}
+	code := strings.ToLower(payload.Error.Code)
+	if code == "invalid_responses_request" {
+		return true
+	}
+	return strings.Contains(strings.ToLower(payload.Error.Message), "invalid_responses_request")
+}
+
 func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 	var root map[string]any
 	if err := sonic.Unmarshal(body, &root); err != nil {
@@ -1588,6 +1625,64 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return retryBody, true
+}
+
+func codexBodyWithoutEncryptedContentAndToolSearch(body []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := sonic.Unmarshal(body, &root); err != nil {
+		return nil, false
+	}
+
+	removed := removeEncryptedContentFields(root)
+	if input, ok := root["input"].([]any); ok {
+		filtered := make([]any, 0, len(input))
+		for _, item := range input {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				filtered = append(filtered, item)
+				continue
+			}
+			typ, _ := obj["type"].(string)
+			if strings.HasPrefix(typ, "tool_search_") {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, item)
+		}
+		root["input"] = filtered
+	}
+	if !removed {
+		return nil, false
+	}
+
+	retryBody, err := sonic.Marshal(root)
+	if err != nil {
+		return nil, false
+	}
+	return retryBody, true
+}
+
+func removeEncryptedContentFields(value any) bool {
+	removed := false
+	switch v := value.(type) {
+	case map[string]any:
+		if _, ok := v["encrypted_content"]; ok {
+			delete(v, "encrypted_content")
+			removed = true
+		}
+		for _, child := range v {
+			if removeEncryptedContentFields(child) {
+				removed = true
+			}
+		}
+	case []any:
+		for _, child := range v {
+			if removeEncryptedContentFields(child) {
+				removed = true
+			}
+		}
+	}
+	return removed
 }
 
 // ============================================================================
