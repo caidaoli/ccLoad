@@ -25,6 +25,7 @@ type openAIToAnthropicStreamState struct {
 	reasoningStarted bool
 	reasoningText    string
 	pendingToolCalls map[int]*openAIAnthropicPendingTool
+	codexState       any
 	usage            struct {
 		promptTokens             int64
 		completionTokens         int64
@@ -441,15 +442,15 @@ func convertAnthropicResponseToOpenAIStream(_ context.Context, model string, _, 
 	return nil, nil
 }
 
-func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, _, rawJSON []byte, param *any) ([][]byte, error) {
+func convertOpenAIResponseToAnthropicStream(ctx context.Context, model string, rawReq, translatedReq, rawJSON []byte, param *any) ([][]byte, error) {
 	st := initOpenAIToAnthropicStreamState(param, model)
 
-	line := strings.TrimSpace(string(rawJSON))
+	eventType, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
 	}
-	if after, ok := strings.CutPrefix(line, "data:"); ok {
-		line = strings.TrimSpace(after)
+	if isCodexResponseEventType(eventType) {
+		return convertOpenAIAnthropicCodexEvent(ctx, model, rawReq, translatedReq, rawJSON, st)
 	}
 	if line == "[DONE]" {
 		if st.done {
@@ -461,6 +462,9 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 	var chunk map[string]any
 	if err := sonic.Unmarshal([]byte(line), &chunk); err != nil {
 		return nil, err
+	}
+	if isCodexResponseEventType(stringValue(chunk["type"])) {
+		return convertOpenAIAnthropicCodexEvent(ctx, model, rawReq, translatedReq, rawJSON, st)
 	}
 	applyOpenAIAnthropicChunk(st, chunk)
 
@@ -497,6 +501,69 @@ func convertOpenAIResponseToAnthropicStream(_ context.Context, model string, _, 
 		return nil, nil
 	}
 	return outputs, nil
+}
+
+func convertOpenAIAnthropicCodexEvent(ctx context.Context, model string, rawReq, translatedReq, rawJSON []byte, st *openAIToAnthropicStreamState) ([][]byte, error) {
+	param := openAIAnthropicCodexStateParam(st)
+	chunks, err := convertCodexResponseToAnthropicStream(ctx, model, rawReq, translatedReq, rawJSON, param)
+	if err != nil {
+		return nil, err
+	}
+	syncOpenAIAnthropicFromCodexState(st)
+	return chunks, nil
+}
+
+func openAIAnthropicCodexStateParam(st *openAIToAnthropicStreamState) *any {
+	if st == nil {
+		var local any
+		return &local
+	}
+	if st.codexState == nil {
+		codexSt := &codexToAnthropicStreamState{
+			model:      st.model,
+			responseID: st.responseID,
+			started:    st.messageStartSent || st.started,
+			openBlock:  st.textBlockStarted,
+			blockIndex: st.blockIndex,
+		}
+		if st.textBlockStarted {
+			codexSt.lastBlock = "text"
+		}
+		if st.usage.seen {
+			codexSt.usage.inputTokens = st.usage.promptTokens
+			codexSt.usage.outputTokens = st.usage.completionTokens
+			codexSt.usage.cachedTokens = st.usage.cachedTokens
+			codexSt.usage.cacheCreationInputTokens = st.usage.cacheCreationInputTokens
+			codexSt.usage.reasoningTokens = st.usage.reasoningTokens
+			codexSt.usage.seen = true
+		}
+		st.codexState = codexSt
+	}
+	return &st.codexState
+}
+
+func syncOpenAIAnthropicFromCodexState(st *openAIToAnthropicStreamState) {
+	if st == nil {
+		return
+	}
+	codexSt, _ := st.codexState.(*codexToAnthropicStreamState)
+	if codexSt == nil {
+		return
+	}
+	st.model = codexSt.model
+	st.responseID = codexSt.responseID
+	st.started = codexSt.started
+	st.messageStartSent = codexSt.started
+	st.textBlockStarted = codexSt.openBlock && codexSt.lastBlock == "text"
+	st.blockIndex = codexSt.blockIndex
+	if codexSt.usage.seen {
+		st.usage.promptTokens = codexSt.usage.inputTokens
+		st.usage.completionTokens = codexSt.usage.outputTokens
+		st.usage.cachedTokens = codexSt.usage.cachedTokens
+		st.usage.cacheCreationInputTokens = codexSt.usage.cacheCreationInputTokens
+		st.usage.reasoningTokens = codexSt.usage.reasoningTokens
+		st.usage.seen = true
+	}
 }
 
 func initAnthropicToOpenAIStreamState(param *any, model string) *anthropicToOpenAIStreamState {

@@ -17,3 +17,29 @@ func parseSSEEventBlock(raw string) (eventType string, data string) {
 	data = strings.TrimSpace(strings.Join(dataLines, ""))
 	return eventType, data
 }
+
+func parseSSEEventBlockOrRaw(raw string) (eventType string, data string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", ""
+	}
+	eventType, data = parseSSEEventBlock(raw)
+	if data != "" || hasSSEField(raw) {
+		return eventType, data
+	}
+	return "", raw
+}
+
+func hasSSEField(raw string) bool {
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimLeft(strings.TrimRight(line, "\r"), " \t")
+		if strings.HasPrefix(line, "event:") || strings.HasPrefix(line, "data:") {
+			return true
+		}
+	}
+	return false
+}
+
+func isCodexResponseEventType(value string) bool {
+	return strings.HasPrefix(value, "response.")
+}

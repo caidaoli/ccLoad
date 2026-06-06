@@ -206,12 +206,9 @@ func convertGeminiResponseToAnthropicStream(_ context.Context, model string, _, 
 		st.nextToolCallID = 1
 	}
 
-	line := strings.TrimSpace(string(rawJSON))
+	_, line := parseSSEEventBlockOrRaw(string(rawJSON))
 	if line == "" {
 		return nil, nil
-	}
-	if after, ok := strings.CutPrefix(line, "data:"); ok {
-		line = strings.TrimSpace(after)
 	}
 	if line == "[DONE]" {
 		if st.done {
