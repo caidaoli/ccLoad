@@ -908,16 +908,13 @@ func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
 		t.Errorf("grok-imagine-video 无duration时应返回0, 实际: %.6f", cost)
 	}
 
-	// 视频模型模糊匹配：确认模型被识别
+	// 视频模型没有 duration 解析链路，不能假装已支持计费。
 	pricing, ok := getPricing("grok-imagine-video")
 	if !ok {
 		pricing, ok = fuzzyMatchModel("grok-imagine-video")
 	}
-	if !ok {
-		t.Fatal("grok-imagine-video 应被定价表识别")
-	}
-	if !floatEquals(pricing.CostPerSecond, 0.05, 0.000001) {
-		t.Errorf("grok-imagine-video CostPerSecond = %.4f, 期望 0.05", pricing.CostPerSecond)
+	if ok {
+		t.Fatalf("grok-imagine-video should not be priced without duration billing support: %+v", pricing)
 	}
 }
 

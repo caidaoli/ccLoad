@@ -46,6 +46,41 @@ func (l *channelRPMLimiter) allow(channelID int64, limit int) bool {
 	return l.reserve(channelID, limit).allowed
 }
 
+func (l *channelRPMLimiter) RemoveChannel(channelID int64) {
+	if l == nil || channelID <= 0 {
+		return
+	}
+	l.mu.Lock()
+	delete(l.requests, channelID)
+	l.mu.Unlock()
+}
+
+func (l *channelRPMLimiter) CleanupExpired() {
+	if l == nil {
+		return
+	}
+
+	cutoff := l.now().Add(-time.Minute)
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	for channelID, events := range l.requests {
+		kept := 0
+		for _, ts := range events {
+			if ts.After(cutoff) {
+				events[kept] = ts
+				kept++
+			}
+		}
+		if kept == 0 {
+			delete(l.requests, channelID)
+			continue
+		}
+		l.requests[channelID] = events[:kept]
+	}
+}
+
 func (l *channelRPMLimiter) reserve(channelID int64, limit int) channelRPMReservation {
 	if l == nil || channelID <= 0 || limit <= 0 {
 		return channelRPMReservation{allowed: true}
@@ -75,11 +110,7 @@ func (l *channelRPMLimiter) reserve(channelID int64, limit int) channelRPMReserv
 				retryAfter = 0
 			}
 		}
-		if len(events) == 0 {
-			delete(l.requests, channelID)
-		} else {
-			l.requests[channelID] = events
-		}
+		l.requests[channelID] = events
 		return channelRPMReservation{allowed: false, retryAfter: retryAfter}
 	}
 

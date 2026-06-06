@@ -278,28 +278,31 @@ func convertCodexResponseToGeminiStream(_ context.Context, model string, rawReq,
 	if err := sonic.Unmarshal([]byte(line), &payload); err != nil {
 		return nil, err
 	}
-	if response, _ := payload["response"].(map[string]any); response != nil {
+	response, _ := payload["response"].(map[string]any)
+	if response != nil {
 		if responseID := stringValue(response["id"]); responseID != "" {
 			st.responseID = responseID
 		}
 		if responseModel := stringValue(response["model"]); responseModel != "" {
 			st.model = responseModel
 		}
-		if eventType == "response.completed" || stringValue(payload["type"]) == "response.completed" {
-			includeUsage := false
-			var promptTokens, candidateTokens, totalTokens int64
+	}
+	if eventType == "response.completed" || stringValue(payload["type"]) == "response.completed" {
+		includeUsage := false
+		var promptTokens, candidateTokens, totalTokens int64
+		if response != nil {
 			if usage := codexUsageFromMap(response["usage"]); usage != nil {
 				promptTokens = usage.inputTokens
 				candidateTokens = usage.outputTokens
 				totalTokens = usage.totalTokens
 				includeUsage = true
 			}
-			body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, nil, "STOP", promptTokens, candidateTokens, totalTokens, includeUsage))
-			if err != nil {
-				return nil, err
-			}
-			return [][]byte{body}, nil
 		}
+		body, err := marshalDataSSE(buildGeminiPayloadFromParts(st.model, st.responseID, nil, "STOP", promptTokens, candidateTokens, totalTokens, includeUsage))
+		if err != nil {
+			return nil, err
+		}
+		return [][]byte{body}, nil
 	}
 	if eventType == "response.output_text.delta" || stringValue(payload["type"]) == "response.output_text.delta" {
 		if content := stringValue(payload["delta"]); content != "" {

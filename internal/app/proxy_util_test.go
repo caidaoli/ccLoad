@@ -200,6 +200,20 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	}
 }
 
+func TestReplaceModelInPathOnlyRewritesGeminiModelsSegment(t *testing.T) {
+	t.Parallel()
+
+	got := replaceModelInPath(
+		"/v1beta/projects/gemini-2.5-pro/models/gemini-2.5-pro:generateContent",
+		"gemini-2.5-pro",
+		"gemini-2.5-flash",
+	)
+	want := "/v1beta/projects/gemini-2.5-pro/models/gemini-2.5-flash:generateContent"
+	if got != want {
+		t.Fatalf("replaceModelInPath()=%q, want %q", got, want)
+	}
+}
+
 func TestCopyRequestHeaders_StripsHopByHopAndAuth(t *testing.T) {
 	req, err := http.NewRequest(http.MethodGet, "https://example.com", nil)
 	if err != nil {

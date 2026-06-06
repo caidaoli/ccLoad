@@ -288,6 +288,41 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 	}
 }
 
+func TestHybridStoreCleanupLogsBeforeIgnoresSQLiteCacheFailure(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	h := NewHybridStore(sqlite, mysql)
+	defer func() { _ = h.Close() }()
+
+	ctx := context.Background()
+	oldTime := time.Now().Add(-2 * time.Hour)
+	if err := mysql.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: oldTime},
+		ChannelID:  1,
+		Model:      "gpt-4o",
+		StatusCode: 200,
+		Duration:   0.1,
+	}); err != nil {
+		t.Fatalf("AddLog to mysql failed: %v", err)
+	}
+
+	if err := sqlite.Close(); err != nil {
+		t.Fatalf("close sqlite cache failed: %v", err)
+	}
+
+	if err := h.CleanupLogsBefore(ctx, time.Now()); err != nil {
+		t.Fatalf("CleanupLogsBefore returned sqlite cache error: %v", err)
+	}
+
+	logs, err := mysql.ListLogs(ctx, time.Now().Add(-24*time.Hour), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("ListLogs from mysql failed: %v", err)
+	}
+	if len(logs) != 0 {
+		t.Fatalf("mysql still has %d old logs, want 0", len(logs))
+	}
+}
+
 func TestHybridStore_AddLog_SyncsToMySQL(t *testing.T) {
 	mysql := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)

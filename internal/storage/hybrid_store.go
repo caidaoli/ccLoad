@@ -566,10 +566,13 @@ func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time
 }
 
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	if err := h.sqlite.CleanupLogsBefore(ctx, cutoff); err != nil {
+	if err := h.mysql.CleanupLogsBefore(ctx, cutoff); err != nil {
 		return err
 	}
-	return h.mysql.CleanupLogsBefore(ctx, cutoff)
+	h.syncToSQLite("CleanupLogsBefore", func() error {
+		return h.sqlite.CleanupLogsBefore(ctx, cutoff)
+	})
+	return nil
 }
 
 // === Metrics & Statistics ===

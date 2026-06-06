@@ -1,9 +1,12 @@
 package app
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 type channelRPMFakeClock struct {
@@ -85,5 +88,77 @@ func TestChannelRPMLimiterReportsRetryAfter(t *testing.T) {
 	}
 	if result.retryAfter != time.Second {
 		t.Fatalf("retryAfter=%v, want %v", result.retryAfter, time.Second)
+	}
+}
+
+func TestChannelRPMLimiterRemoveChannelClearsRequests(t *testing.T) {
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	limiter := newChannelRPMLimiter(clock.Now)
+
+	if !limiter.allow(7, 1) {
+		t.Fatal("first request rejected")
+	}
+	if limiter.allow(7, 1) {
+		t.Fatal("second request allowed before removal")
+	}
+
+	limiter.RemoveChannel(7)
+	if !limiter.allow(7, 1) {
+		t.Fatal("request rejected after channel RPM state removal")
+	}
+}
+
+func TestChannelRPMLimiterCleanupExpiredRemovesEmptyChannels(t *testing.T) {
+	clock := &channelRPMFakeClock{now: time.Unix(1000, 0)}
+	limiter := newChannelRPMLimiter(clock.Now)
+
+	if !limiter.allow(7, 1) {
+		t.Fatal("first request rejected")
+	}
+
+	clock.Advance(time.Minute + time.Second)
+	limiter.CleanupExpired()
+
+	limiter.mu.Lock()
+	_, exists := limiter.requests[7]
+	limiter.mu.Unlock()
+	if exists {
+		t.Fatal("expired channel RPM state was not removed")
+	}
+}
+
+func TestDeleteChannelByIDRemovesChannelRPMState(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:        "rpm-channel",
+		ChannelType: "openai",
+		URL:         "https://example.com",
+		Priority:    1,
+		Enabled:     true,
+		RPMLimit:    1,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	if !srv.channelRPMLimiter.allow(cfg.ID, cfg.RPMLimit) {
+		t.Fatal("first request rejected")
+	}
+
+	deleted, err := srv.deleteChannelByID(ctx, cfg.ID)
+	if err != nil || !deleted {
+		t.Fatalf("deleteChannelByID deleted=%v err=%v, want true,nil", deleted, err)
+	}
+
+	srv.channelRPMLimiter.mu.Lock()
+	_, exists := srv.channelRPMLimiter.requests[cfg.ID]
+	srv.channelRPMLimiter.mu.Unlock()
+	if exists {
+		t.Fatal("deleteChannelByID did not remove channel RPM state")
 	}
 }

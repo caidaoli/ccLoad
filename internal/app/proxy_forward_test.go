@@ -314,6 +314,18 @@ func TestTranslatedStreamChunkCompletes(t *testing.T) {
 	}
 }
 
+func TestParseSSEEventChunkJoinsDataLinesWithNewline(t *testing.T) {
+	t.Parallel()
+
+	eventType, data := parseSSEEventChunk([]byte("event: test\ndata: first\ndata: second\n\n"))
+	if eventType != "test" {
+		t.Fatalf("eventType=%q, want test", eventType)
+	}
+	if got, want := string(data), "first\nsecond"; got != want {
+		t.Fatalf("data=%q, want %q", got, want)
+	}
+}
+
 func TestDetectProtocolFromSSEPrefix_SkipsUndecisiveEvents(t *testing.T) {
 	t.Parallel()
 

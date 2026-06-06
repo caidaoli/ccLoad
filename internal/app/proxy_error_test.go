@@ -9,6 +9,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
@@ -87,6 +88,57 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				t.Errorf("期望 action=%v, 实际=%v", tt.expectedAction, action)
 			}
 		})
+	}
+}
+
+type failingTokenStatsStore struct {
+	storage.Store
+	err error
+}
+
+func (s *failingTokenStatsStore) UpdateTokenStats(
+	context.Context,
+	string,
+	bool,
+	float64,
+	bool,
+	float64,
+	int64,
+	int64,
+	int64,
+	int64,
+	float64,
+) error {
+	return s.err
+}
+
+func TestApplyTokenStatsUpdateAddsCostToCacheWhenStoreFails(t *testing.T) {
+	const tokenHash = "limited-token"
+
+	auth := newTestAuthService(t)
+	auth.authTokenCostLimits[tokenHash] = tokenCostLimit{
+		usedMicroUSD:  0,
+		limitMicroUSD: 1000,
+	}
+
+	srv := &Server{
+		store:       &failingTokenStatsStore{err: errors.New("database down")},
+		authService: auth,
+	}
+
+	srv.applyTokenStatsUpdate(tokenStatsUpdate{
+		tokenHash:      tokenHash,
+		isSuccess:      true,
+		costUSD:        0.0002,
+		costMultiplier: 1,
+	})
+
+	used, limit, exceeded := auth.IsCostLimitExceeded(tokenHash)
+	if want := util.USDToMicroUSD(0.0002); used != want {
+		t.Fatalf("used=%d, want %d; DB failure must not block in-memory cost accounting", used, want)
+	}
+	if limit != 1000 || exceeded {
+		t.Fatalf("limit/exceeded=(%d,%v), want (1000,false)", limit, exceeded)
 	}
 }
 

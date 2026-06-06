@@ -431,7 +431,7 @@ func (p *sseUsageParser) parseBuffer() error {
 			p.dataLines = append(p.dataLines, dataLine)
 		} else if line == "" && len(p.dataLines) > 0 {
 			// 事件结束，解析数据
-			if err := p.parseEvent(p.eventType, strings.Join(p.dataLines, "")); err != nil {
+			if err := p.parseEvent(p.eventType, strings.Join(p.dataLines, "\n")); err != nil {
 				// 记录错误但继续处理（容错设计）
 				log.Printf("[WARN] SSE 事件解析失败 (type=%s): %v", p.eventType, err)
 			}

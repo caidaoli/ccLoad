@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -197,9 +198,15 @@ type geminiModelsResponse struct {
 // FetchModels 从 Gemini API 获取可用模型列表。
 func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
 	// Gemini Models API: https://ai.google.dev/api/rest/v1beta/models/list
-	endpoint := baseURL + "/v1beta/models?key=" + apiKey
+	endpoint, err := url.Parse(baseURL + "/v1beta/models")
+	if err != nil {
+		return nil, fmt.Errorf("解析请求 URL 失败: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("key", apiKey)
+	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
