@@ -1249,5 +1249,8 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	if s.urlSelector != nil {
 		s.urlSelector.RemoveChannel(id)
 	}
+	if s.channelRPMLimiter != nil {
+		s.channelRPMLimiter.RemoveChannel(id)
+	}
 	return true, nil
 }

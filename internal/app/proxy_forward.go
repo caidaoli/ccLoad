@@ -407,7 +407,7 @@ func parseSSEEventChunk(chunk []byte) (eventType string, data []byte) {
 	if len(dataLines) == 0 {
 		return eventType, nil
 	}
-	return eventType, bytes.Join(dataLines, nil)
+	return eventType, bytes.Join(dataLines, []byte{'\n'})
 }
 
 func ssePayloadType(data []byte) string {

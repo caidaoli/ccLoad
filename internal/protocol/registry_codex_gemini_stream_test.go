@@ -66,4 +66,36 @@ func TestRegistryCodexGeminiStream(t *testing.T) {
 			t.Fatalf("unexpected completion chunk: %#v", done)
 		}
 	})
+
+	t.Run("completion without response still emits stop", func(t *testing.T) {
+		var state any
+		if _, err := reg.TranslateResponseStream(
+			context.Background(),
+			protocol.Codex,
+			protocol.Gemini,
+			"gemini-2.5-pro",
+			nil,
+			nil,
+			[]byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5-codex\"}}\n\n"),
+			&state,
+		); err != nil {
+			t.Fatalf("response.created failed: %v", err)
+		}
+		done, err := reg.TranslateResponseStream(
+			context.Background(),
+			protocol.Codex,
+			protocol.Gemini,
+			"gemini-2.5-pro",
+			nil,
+			nil,
+			[]byte("event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n"),
+			&state,
+		)
+		if err != nil {
+			t.Fatalf("response.completed failed: %v", err)
+		}
+		if len(done) != 1 || !strings.Contains(string(done[0]), `"responseId":"resp_1"`) || !strings.Contains(string(done[0]), `"finishReason":"STOP"`) {
+			t.Fatalf("unexpected completion chunk: %#v", done)
+		}
+	})
 }

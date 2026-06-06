@@ -799,7 +799,7 @@ func (s *Server) stateCleanupLoop() {
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
-	log.Print("[INFO] 后台状态清理循环已启动（每小时清理过期的轮询状态和计数器）")
+	log.Print("[INFO] 后台状态清理循环已启动（每小时清理过期的轮询、计数器和 RPM 状态）")
 
 	for {
 		select {
@@ -816,6 +816,10 @@ func (s *Server) stateCleanupLoop() {
 			// 避免渠道删除后计数器累积导致内存泄漏
 			if s.keySelector != nil {
 				s.keySelector.CleanupInactiveCounters(24 * time.Hour)
+			}
+
+			if s.channelRPMLimiter != nil {
+				s.channelRPMLimiter.CleanupExpired()
 			}
 		}
 	}

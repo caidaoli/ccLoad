@@ -780,6 +780,12 @@ func TestClassify400Error(t *testing.T) {
 			reason:       "包含 api key 特征应判定为 Key 级错误",
 		},
 		{
+			name:         "generic_message_mentions_api_key",
+			responseBody: []byte(`{"error": {"message": "Gateway rejected request; check API key configuration in dashboard"}}`),
+			expected:     ErrorLevelChannel,
+			reason:       "泛泛提到 api key 不应误判为 Key 级错误",
+		},
+		{
 			name:         "bad_request_params",
 			responseBody: []byte(`{"error": {"message": "Missing required parameter: 'model'"}}`),
 			expected:     ErrorLevelChannel,

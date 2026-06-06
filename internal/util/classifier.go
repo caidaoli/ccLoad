@@ -622,7 +622,10 @@ func classify400Error(responseBody []byte) ErrorLevel {
 
 	// Key 级特征（罕见）
 	if strings.Contains(bodyLower, "invalid_api_key") ||
-		strings.Contains(bodyLower, "api key") {
+		strings.Contains(bodyLower, "invalid api key") ||
+		strings.Contains(bodyLower, "incorrect api key") ||
+		strings.Contains(bodyLower, "malformed api key") ||
+		strings.Contains(bodyLower, "api key you provided is malformed") {
 		return ErrorLevelKey
 	}
 

@@ -252,23 +252,23 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
-		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
-		if strings.Contains(err.Error(), "token not found") {
-			return
-		}
-		log.Printf("[ERROR] 更新令牌统计失败 hash=%s: %v", upd.tokenHash, err)
-		return // 数据库更新失败，不更新内存缓存，保持一致性
-	}
-
-	// 数据库更新成功后，同步更新费用缓存（用于限额检查，2026-01新增）
-	if upd.isSuccess && upd.costUSD > 0 {
+	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
+	if upd.isSuccess && upd.costUSD > 0 && s.authService != nil {
 		multiplier := upd.costMultiplier
 		if multiplier < 0 {
 			multiplier = 1
 		}
 		// multiplier == 0 时成本为 0（免费渠道）
 		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD*multiplier))
+	}
+
+	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
+		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
+		if strings.Contains(err.Error(), "token not found") {
+			return
+		}
+		log.Printf("[ERROR] 更新令牌统计失败 hash=%s: %v", upd.tokenHash, err)
+		return
 	}
 }
 
@@ -305,7 +305,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 			log.Printf("[WARN] 计费 cost=0 但有 token 消耗（可能定价缺失） model=%s in=%d out=%d cache_r=%d cache_5m=%d cache_1h=%d",
 				actualModel, res.InputTokens, res.OutputTokens, res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens)
 		}
-		// 注意：费用缓存更新已移至 applyTokenStatsUpdate，确保数据库先写成功
+		// 注意：费用缓存更新已移至 applyTokenStatsUpdate，并先于 DB 落盘以避免限额 fail-open。
 	}
 
 	upd := tokenStatsUpdate{

@@ -223,13 +223,17 @@ func TestOpenAIModelsFetcher_APIError(t *testing.T) {
 // ============================================================
 
 func TestGeminiModelsFetcher(t *testing.T) {
+	apiKey := "test+key&scope=models"
 	fetcher := &GeminiModelsFetcher{
 		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
 			if r.URL.Path != "/v1beta/models" {
 				t.Fatalf("期望路径 /v1beta/models, 实际 %s", r.URL.Path)
 			}
-			if r.URL.Query().Get("key") != "test-key" {
+			if r.URL.Query().Get("key") != apiKey {
 				t.Fatalf("URL应包含API key参数, 实际 query=%s", r.URL.RawQuery)
+			}
+			if r.URL.Query().Get("scope") != "" {
+				t.Fatalf("API key 中的 & 不应生成额外 query 参数, 实际 query=%s", r.URL.RawQuery)
 			}
 			return newJSONResponse(http.StatusOK, `{
 				"models": [
@@ -242,7 +246,7 @@ func TestGeminiModelsFetcher(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	models, err := fetcher.FetchModels(ctx, "https://gemini.test", "test-key")
+	models, err := fetcher.FetchModels(ctx, "https://gemini.test", apiKey)
 	if err != nil {
 		t.Fatalf("获取失败: %v", err)
 	}

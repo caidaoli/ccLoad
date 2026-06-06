@@ -466,7 +466,17 @@ func replaceModelInPath(path string, originalModel string, actualModel string) s
 	if originalModel == "" || actualModel == "" || originalModel == actualModel {
 		return path
 	}
-	return strings.Replace(path, originalModel, actualModel, 1)
+	modelPrefix := "/models/"
+	needle := modelPrefix + originalModel
+	idx := strings.Index(path, needle)
+	if idx == -1 {
+		return path
+	}
+	end := idx + len(needle)
+	if end < len(path) && path[end] != ':' && path[end] != '/' {
+		return path
+	}
+	return path[:idx+len(modelPrefix)] + actualModel + path[end:]
 }
 
 func buildGeminiGeneratePath(model string, isStreaming bool) string {
