@@ -107,9 +107,9 @@ test('日志页顶部筛选栏通过共享渲染器输出页面专用布局类',
   assert.match(html, /data-page-filters="logs"/);
   assert.match(filtersHtml, /class="filter-controls\s+logs-filter-controls"/);
   assert.match(filtersHtml, /class="filter-group\s+logs-filter-group"/);
-  assert.match(filtersHtml, /class="filter-info\s+logs-filter-info"/);
+  assert.doesNotMatch(filtersHtml, /class="filter-info\s+logs-filter-info"/);
   assert.match(filtersHtml, /class="logs-filter-summary-row"/);
-  assert.match(filtersHtml, /<div class="filter-actions filter-actions--page logs-filter-actions">[\s\S]*id="btn_filter"/);
+  assert.match(filtersHtml, /<div class="filter-actions filter-actions--page logs-filter-actions">[\s\S]*id="btn_clear_filters"[\s\S]*id="btn_filter"/);
 });
 
 test('日志页为来源筛选和来源 badge 预留 DOM/CSS 契约', () => {
@@ -119,12 +119,14 @@ test('日志页为来源筛选和来源 badge 预留 DOM/CSS 契约', () => {
   assert.match(css, /\.log-source-badge\s*\{/);
 });
 
-test('日志页桌面筛选摘要行摊平到共享 flex 容器，避免挤压筛选控件', () => {
+test('日志页桌面筛选按钮固定在筛选栏最右侧', () => {
   const desktopCss = css.split(/@media\s*\(max-width:\s*768px\)/)[0];
   const summaryMatch = desktopCss.match(/\.logs-filter-summary-row\s*\{[^}]+\}/);
   assert.ok(summaryMatch, '缺少日志页桌面筛选摘要行样式');
 
-  assert.match(summaryMatch[0], /display:\s*contents/);
+  assert.match(summaryMatch[0], /display:\s*flex/);
+  assert.match(summaryMatch[0], /margin-left:\s*auto/);
+  assert.match(summaryMatch[0], /justify-content:\s*flex-end/);
 });
 
 test('日志页窄屏筛选栏压缩标签和按钮布局', () => {

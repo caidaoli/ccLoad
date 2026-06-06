@@ -36,11 +36,11 @@
               </label>
             </div>`;
     const statsInfo = `<div class="${infoClass}"><span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span></div>`;
+    const filterButtonControl = '<button id="btn_filter" type="button" class="btn btn-primary filter-btn" data-i18n="common.filter">筛选</button>';
+    const clearButtonControl = '<button id="btn_clear_filters" type="button" class="btn btn-secondary filter-btn" data-i18n="common.clear">清空</button>';
     const filterButton = `<div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
-              <button id="btn_filter" type="button" class="btn btn-primary filter-btn" data-i18n="common.filter">筛选</button>
+              ${filterButtonControl}
             </div>`;
-    const logsInfo = `<div class="${infoClass}"><span data-i18n="logs.showPrefix">显示</span><span id="displayedCount">0</span>/<span id="totalCount">0</span><span data-i18n="logs.recordsSuffix">条</span></div>`;
-
     return {
       channelType: buildFilterGroup(
         `${buildFilterLabel('f_channel_type', 'stats.channelType', '渠道类型')}
@@ -117,11 +117,13 @@
               `, 'filter-control--compact')}`,
         groupClass
       ),
-      logsInfo,
       statsInfo,
       hideZeroSuccess,
       filterButton,
-      logsSummary: `<div class="logs-filter-summary-row">${logsInfo}${filterButton}</div>`,
+      logsSummary: `<div class="logs-filter-summary-row"><div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
+              ${clearButtonControl}
+              ${filterButtonControl}
+            </div></div>`,
       statsSummary: `<div class="stats-filter-summary-row">${hideZeroSuccess}${statsInfo}${filterButton}</div>`
     };
   }

@@ -182,6 +182,16 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 	})
 }
 
+func TestAppendRetryStrategyToMessageUsesCompactDisplay(t *testing.T) {
+	t.Parallel()
+
+	got := appendRetryStrategyToMessage("ok", "strip_codex_encrypted_tool_search")
+	want := "ok [strip_codex_encrypted_tool_search]"
+	if got != want {
+		t.Fatalf("appendRetryStrategyToMessage()=%q, want %q", got, want)
+	}
+}
+
 func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *testing.T) {
 	t.Parallel()
 

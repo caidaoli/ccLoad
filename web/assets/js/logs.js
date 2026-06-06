@@ -600,8 +600,6 @@ async function load(skipLoading = false) {
       tbody.insertBefore(fragment, firstRow);
     }
 
-    updateStats(data);
-
     // 第一页时获取并显示进行中的请求（并开启轮询，做到真正“实时”）
     if (currentLogsPage === 1) {
       ensureActiveRequestsPollingStarted();
@@ -1034,15 +1032,6 @@ function updatePagination() {
   if (last2El) last2El.disabled = nextDisabled;
 }
 
-function updateStats(data) {
-  // 更新筛选器统计信息
-  const displayedCountEl = document.getElementById('displayedCount');
-  const totalCountEl = document.getElementById('totalCount');
-
-  if (displayedCountEl) displayedCountEl.textContent = data.length;
-  if (totalCountEl) totalCountEl.textContent = totalLogs || data.length;
-}
-
 function firstLogsPage() {
   if (currentLogsPage > 1) {
     currentLogsPage = 1;
@@ -1123,10 +1112,58 @@ function applyFilter() {
   load();
 }
 
+function getDefaultLogsFilters() {
+  if (window.FilterState && typeof window.FilterState.restore === 'function') {
+    return window.FilterState.restore({
+      search: '',
+      savedFilters: null,
+      fields: LOGS_FILTER_FIELDS
+    });
+  }
+
+  return LOGS_FILTER_FIELDS.reduce((values, field) => {
+    values[field.key] = Object.prototype.hasOwnProperty.call(field, 'defaultValue')
+      ? field.defaultValue
+      : '';
+    return values;
+  }, {});
+}
+
+async function resetLogsFilters() {
+  const defaults = getDefaultLogsFilters();
+
+  currentLogsCustomTimeRange = null;
+  currentChannelType = defaults.channelType || 'all';
+  currentLogsPage = 1;
+  totalLogsPages = 1;
+  rememberExactLogsFilters({
+    ...defaults,
+    channelNameExact: false,
+    modelExact: false
+  });
+
+  applyLogsFilterValues(defaults);
+  await loadLogsModels(currentChannelType, defaults.range || 'today');
+  await syncLogSourceVisibility();
+
+  window.persistFilterState({
+    key: LOGS_FILTER_KEY,
+    values: getLogsFilters(),
+    search: location.search,
+    pathname: location.pathname,
+    fields: LOGS_FILTER_FIELDS,
+    preserveExistingParams: true,
+    historyMethod: 'replaceState'
+  });
+  load();
+}
+
 function applyLogsFilterValues(filters) {
   window.applyFilterControlValues(filters, {
+    range: 'f_hours',
     logSource: 'f_log_source',
-    status: 'f_status'
+    status: 'f_status',
+    authToken: 'f_auth_token'
   });
 
   // 渠道名通过 combobox 恢复
@@ -1326,6 +1363,7 @@ async function initFilters(restoredFilters) {
 
   // 事件监听
   document.getElementById('btn_filter').addEventListener('click', applyFilter);
+  document.getElementById('btn_clear_filters')?.addEventListener('click', resetLogsFilters);
   document.getElementById('f_log_source')?.addEventListener('change', applyFilter);
 
   window.bindFilterApplyInputs({
