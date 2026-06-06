@@ -32,9 +32,13 @@ test('page-filters 渲染 logs 布局时保留专用 class 和关键筛选控件
   assert.match(html, /class="filter-bar logs-filter-bar mt-2"/);
   assert.match(html, /class="filter-controls logs-filter-controls"/);
   assert.match(html, /class="filter-group logs-filter-group"/);
-  assert.match(html, /class="filter-info logs-filter-info"/);
+  assert.doesNotMatch(html, /class="filter-info logs-filter-info"/);
   assert.match(html, /class="filter-actions filter-actions--page logs-filter-actions"/);
-  assert.match(html, /class="logs-filter-summary-row"[\s\S]*id="displayedCount"[\s\S]*id="btn_filter"/);
+  assert.match(html, /class="logs-filter-summary-row"[\s\S]*id="btn_clear_filters"[\s\S]*id="btn_filter"/);
+  assert.doesNotMatch(html, /id="displayedCount"/);
+  assert.doesNotMatch(html, /id="totalCount"/);
+  assert.doesNotMatch(html, /data-i18n="logs\.showPrefix"/);
+  assert.doesNotMatch(html, /data-i18n="logs\.recordsSuffix"/);
   assert.match(html, /id="f_channel_type"/);
   assert.match(html, /id="f_hours"/);
   // 渠道ID已移除，渠道名与模型均改为 combobox

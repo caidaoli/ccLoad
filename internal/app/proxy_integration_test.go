@@ -1933,7 +1933,7 @@ func TestProxy_Codex400RetriesWithoutThinkingAndLogsStrategy(t *testing.T) {
 		}
 		for _, entry := range logs {
 			if entry.StatusCode == http.StatusOK && entry.ChannelID != 0 {
-				if !strings.Contains(entry.Message, "retry_strategy=strip_codex_thinking") {
+				if !strings.Contains(entry.Message, "[strip_codex_thinking]") {
 					t.Fatalf("success log message=%q, want retry strategy", entry.Message)
 				}
 				return

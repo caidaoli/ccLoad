@@ -35,3 +35,13 @@ test('logs.js 使用集中绑定处理分页、弹窗和响应折叠', () => {
   assert.doesNotMatch(script, /onclick="toggleResponse/);
   assert.match(script, /initLogsPageActions\(\);/);
 });
+
+test('logs.js 绑定清空筛选按钮并恢复默认筛选值', () => {
+  assert.doesNotMatch(script, /displayedCount/);
+  assert.match(script, /function getDefaultLogsFilters\(\)/);
+  assert.match(script, /function resetLogsFilters\(\)/);
+  assert.match(script, /document\.getElementById\('btn_clear_filters'\)\?\.addEventListener\('click', resetLogsFilters\)/);
+  assert.match(script, /window\.FilterState\.restore\(\{\s*search:\s*''[\s\S]*fields:\s*LOGS_FILTER_FIELDS/);
+  assert.match(script, /rememberExactLogsFilters\(\{\s*\.\.\.defaults,\s*channelNameExact:\s*false,\s*modelExact:\s*false\s*\}\)/);
+  assert.match(script, /historyMethod:\s*'replaceState'/);
+});

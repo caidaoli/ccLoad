@@ -701,8 +701,6 @@ window.I18N_LOCALES['en'] = {
   'logs.statusCode': 'Status',
   'logs.logSource': 'Source',
   'logs.statusPlaceholder': 'e.g. 200 / 403',
-  'logs.showPrefix': '#',
-  'logs.recordsSuffix': '',
   'logs.colTime': 'Time',
   'logs.colIP': 'IP',
   'logs.colTokenDesc': 'Token',

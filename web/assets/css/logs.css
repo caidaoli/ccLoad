@@ -451,7 +451,11 @@
     }
 
     .logs-filter-summary-row {
-      display: contents;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      margin-left: auto;
+      flex: 0 0 auto;
     }
 
     .logs-filter-actions {

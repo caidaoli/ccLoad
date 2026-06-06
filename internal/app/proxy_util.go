@@ -788,7 +788,7 @@ func appendRetryStrategyToMessage(message, strategy string) string {
 	if message == "" {
 		message = "ok"
 	}
-	return truncateErr(fmt.Sprintf("%s [retry_strategy=%s]", message, strategy))
+	return truncateErr(fmt.Sprintf("%s [%s]", message, strategy))
 }
 
 // computeRequestCost 集中两处计费分支（buildLogEntry / logFailedAttempt 旁路）。

@@ -700,8 +700,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.statusCode': '状态码',
   'logs.logSource': '来源',
   'logs.statusPlaceholder': '如 200 / 403',
-  'logs.showPrefix': '显示',
-  'logs.recordsSuffix': '条',
   'logs.colTime': '时间',
   'logs.colIP': 'IP',
   'logs.colTokenDesc': '令牌',
