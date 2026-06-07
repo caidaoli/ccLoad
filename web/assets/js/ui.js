@@ -253,8 +253,127 @@
     return el;
   }
 
+  // ---- 活动请求指示器（脉冲 + 角标 + favicon/标题）----
+  const ACTIVE_POLL_MS = 2000;
+  let _activeTimer = null;
+  let _activeWrap = null;        // .brand-icon-wrap 元素
+  let _activeBadge = null;       // .brand-badge 元素
+  let _faviconBase = null;       // 预加载的 favicon 底图 Image
+  let _origFaviconHref = null;   // 原始 favicon href（用于归零恢复）
+  let _origTitle = null;         // 原始页面标题
+  let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon/标题
+
+  function badgeLabel(count) {
+    return count > 9 ? '9+' : String(count);
+  }
+
+  function getFaviconLink() {
+    let link = document.querySelector('link[rel~="icon"]');
+    if (!link) {
+      link = document.createElement('link');
+      link.rel = 'icon';
+      document.head.appendChild(link);
+    }
+    if (_origFaviconHref === null) {
+      _origFaviconHref = link.getAttribute('href') || '/web/favicon.svg';
+    }
+    return link;
+  }
+
+  // 预加载 favicon 底图（首次异步，之后同步回调）
+  function ensureFaviconBase(cb) {
+    if (_faviconBase) { cb(); return; }
+    const img = new Image();
+    img.onload = () => { _faviconBase = img; cb(); };
+    img.onerror = () => { _faviconBase = null; };
+    img.src = '/web/favicon.svg';
+  }
+
+  // 在 favicon 右上角画橙色数字角标
+  function drawFaviconBadge(count) {
+    if (!_faviconBase) return;
+    const S = 64, r = 12, cx = 50, cy = 14, ring = 2; // 小角标：不遮挡 CC 字母
+    const canvas = document.createElement('canvas');
+    canvas.width = S; canvas.height = S;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    ctx.clearRect(0, 0, S, S);
+    ctx.drawImage(_faviconBase, 0, 0, S, S);
+
+    const text = badgeLabel(count);
+    // 外描边：先画大白圆再画橙圆，保留完整橙区给文字（避免居中描边吃掉内部空间）
+    ctx.beginPath(); ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
+    ctx.fillStyle = '#ffffff'; ctx.fill();
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fillStyle = '#f97316'; ctx.fill();
+
+    // 字号按位数两档自适应（1~9 单字符 / 9+ 双字符）
+    const fs = text.length >= 2 ? 14 : 18;
+    ctx.fillStyle = '#ffffff';
+    ctx.font = `bold ${fs}px ui-sans-serif, system-ui, -apple-system, sans-serif`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, cx, cy + 1);
+
+    try {
+      const link = getFaviconLink();
+      link.removeAttribute('type'); // dataURL 是 PNG，移除原 image/x-icon 声明，交给浏览器内容嗅探
+      link.href = canvas.toDataURL('image/png');
+    } catch (_) { /* 编码失败：保持原 favicon */ }
+  }
+
+  function restoreFavicon() {
+    if (_origFaviconHref !== null) getFaviconLink().href = _origFaviconHref;
+  }
+
+  // 标题计数前缀：(N) 原标题
+  function updateDocTitleCount(count) {
+    if (_origTitle === null) _origTitle = document.title;
+    document.title = count > 0 ? `(${badgeLabel(count)}) ${_origTitle}` : _origTitle;
+  }
+
+  function updateActiveIndicator(count) {
+    // 页面内 logo：脉冲 + 角标
+    if (_activeWrap) {
+      _activeWrap.classList.toggle('is-active', count > 0);
+      if (_activeBadge) _activeBadge.textContent = badgeLabel(count);
+    }
+    // 标签页 favicon 角标 + 标题计数（仅在数量变化时重绘，省 toDataURL 开销）
+    if (count !== _lastBadgeCount) {
+      _lastBadgeCount = count;
+      updateDocTitleCount(count);
+      if (count > 0) ensureFaviconBase(() => drawFaviconBadge(count));
+      else restoreFavicon();
+    }
+  }
+
+  async function pollActiveRequests() {
+    try {
+      const payload = await fetchAPIWithAuth('/admin/active-requests');
+      updateActiveIndicator(typeof payload.count === 'number' ? payload.count : 0);
+    } catch (_) { /* 静默：未登录或网络异常不打断页面 */ }
+  }
+
+  function startActiveRequestsPolling() {
+    if (_activeTimer) return;
+    pollActiveRequests();
+    _activeTimer = setInterval(() => {
+      if (document.hidden) return;
+      pollActiveRequests();
+    }, ACTIVE_POLL_MS);
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) pollActiveRequests();
+    });
+  }
+
   function buildTopbar(active) {
     const bar = h('header', { class: 'topbar' });
+
+    // CC 图标 + 脉冲/角标包装
+    const iconImg = h('img', { class: 'brand-icon', src: '/web/favicon.svg', alt: 'Logo' });
+    _activeBadge = h('span', { class: 'brand-badge' }, '0');
+    _activeWrap = h('div', { class: 'brand-icon-wrap' }, [iconImg, _activeBadge]);
+
     const left = h('div', { class: 'topbar-left' }, [
       h('a', {
         class: 'brand',
@@ -263,7 +382,7 @@
         rel: 'noopener noreferrer',
         title: t('nav.githubRepo')
       }, [
-        h('img', { class: 'brand-icon', src: '/web/favicon.svg', alt: 'Logo' }),
+        _activeWrap,
         h('div', { class: 'brand-text' }, 'Claude Code & Codex Proxy')
       ])
     ]);
@@ -380,6 +499,9 @@
 
     // 初始化版本显示
     initVersionDisplay();
+
+    // 启动活动请求指示器轮询
+    if (isLoggedIn()) startActiveRequestsPolling();
   }
 
   // 通知系统（全局复用，DRY）
