@@ -31,7 +31,7 @@ function protocolTransformModeLabel(mode) {
 }
 
 function hasExactURLMarker(url) {
-  return String(url || '').includes('#');
+  return String(url || '').trim().endsWith('#');
 }
 
 function hasExactURLInEditor() {

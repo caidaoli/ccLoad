@@ -376,6 +376,7 @@
                         <span class="models-hint inline-url-header-hint" data-i18n="channels.multiUrlStrategyHint">多URL时自动启用智能调度：基于延迟加权随机分发请求，失败URL独立冷却（2min→30min指数退避），优先探索未测试的URL</span>
                       </div>
                     </th>
+                    <th class="inline-url-col-exact" data-i18n="channels.fullUrl">完整URL</th>
                     <th class="inline-url-col-actions"></th>
                   </tr>
                 </thead>
@@ -1104,6 +1105,12 @@
           placeholder="https://api.example.com"
           style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px;">
       </td>
+      <td class="inline-url-col-exact inline-url-cell-center" data-mobile-label="{{mobileLabelExactURL}}">
+        <label class="inline-url-exact-label" data-i18n-title="channels.fullUrlTitle" title="使用输入的完整URL，不自动追加协议路径">
+          <input type="checkbox" class="inline-url-exact-checkbox" data-index="{{index}}" {{exactURLChecked}}>
+          <span data-i18n="channels.fullUrlShort">完整</span>
+        </label>
+      </td>
       <td class="inline-url-col-actions inline-url-cell-center" data-mobile-label="{{mobileLabelActions}}">
         <div class="inline-url-actions">
           <button type="button" class="inline-url-test-btn" data-index="{{index}}" data-i18n-title="channels.testThisUrl"
@@ -1129,7 +1136,7 @@
 
   <template id="tpl-url-empty">
     <tr>
-      <td colspan="3" style="padding: 20px; text-align: center; color: var(--neutral-500);">
+      <td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">
         {{message}}
       </td>
     </tr>
