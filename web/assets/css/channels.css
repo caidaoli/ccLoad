@@ -1947,6 +1947,32 @@
       min-width: 0;
     }
 
+    .inline-url-col-exact {
+      width: 88px;
+      white-space: nowrap;
+      text-align: center;
+    }
+
+    .inline-url-exact-label {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      min-width: 0;
+      color: var(--neutral-700);
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .inline-url-exact-label input {
+      width: 14px;
+      height: 14px;
+      margin: 0;
+    }
+
     .inline-url-col-actions {
       width: 96px;
       white-space: nowrap;
@@ -3159,7 +3185,7 @@
       }
 
       .inline-url-table tbody .mobile-inline-row {
-        grid-template-columns: 36px minmax(0, 1fr) auto auto;
+        grid-template-columns: 36px minmax(0, 1fr) auto auto auto;
         align-items: center;
         gap: 8px 4px;
       }
@@ -3232,7 +3258,7 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-actions {
         order: 3;
-        grid-column: 3;
+        grid-column: 4;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -3244,7 +3270,18 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-toggle {
         order: 4;
-        grid-column: 4;
+        grid-column: 5;
+        grid-row: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding-top: 0;
+        border-top: none;
+      }
+
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-exact {
+        order: 5;
+        grid-column: 3;
         grid-row: 1;
         display: flex;
         align-items: center;
@@ -3254,6 +3291,7 @@
       }
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-url::before,
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-exact::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-status::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-latency::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-requests::before,
