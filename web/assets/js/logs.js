@@ -16,9 +16,7 @@ let logsExactModelValue = '';
 let logsDefaultTestContent = 'sonnet 4.0的发布日期是什么'; // 默认测试内容（从设置加载）
 let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|navigate
 
-const ACTIVE_REQUESTS_POLL_INTERVAL_MS = 2000;
-let activeRequestsPollTimer = null;
-let activeRequestsFetchInFlight = false;
+let latestActiveRequests = []; // 缓存 ui.js 最近一次推送的活动请求，供 load() 即时刷新
 let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
 let logsLoadInFlight = false;
 let logsLoadPending = false;
@@ -358,14 +356,6 @@ function buildLogChannelDisplay(entry) {
   const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
   return `<span class="log-channel-cell">${channelHtml}<sup class="log-channel-multiplier-badge">${multiplierText}</sup></span>`;
 }
-
-function ensureActiveRequestsPollingStarted() {
-  if (activeRequestsPollTimer) return;
-  activeRequestsPollTimer = setInterval(async () => {
-    if (currentLogsPage !== 1) return;
-    await fetchActiveRequests();
-  }, ACTIVE_REQUESTS_POLL_INTERVAL_MS);
-}
 // 生成流式标志HTML（公共函数，避免重复）
 function getStreamFlagHtml(isStreaming) {
   return isStreaming
@@ -591,7 +581,7 @@ async function load(skipLoading = false) {
 
     renderLogs(data);
 
-    // 立即恢复 pending 行（后续 fetchActiveRequests 会再更新）
+    // 立即恢复 pending 行（后续活动请求推送会再更新）
     if (skipLoading && pendingRows.length > 0) {
       const tbody = document.getElementById('tbody');
       const firstRow = tbody.firstChild;
@@ -600,10 +590,9 @@ async function load(skipLoading = false) {
       tbody.insertBefore(fragment, firstRow);
     }
 
-    // 第一页时获取并显示进行中的请求（并开启轮询，做到真正“实时”）
+    // 第一页时用最近一次推送的数据即时刷新进行中请求（轮询由 ui.js 统一驱动）
     if (currentLogsPage === 1) {
-      ensureActiveRequestsPollingStarted();
-      await fetchActiveRequests();
+      handleActiveRequestsData(latestActiveRequests);
     } else {
       lastActiveRequestStates = null;
       clearActiveRequestsRows();
@@ -661,64 +650,62 @@ function shouldSkipActiveRequestsFetch(hours, status, logSource) {
   return logSource !== 'proxy' && logSource !== 'all';
 }
 
-// 获取进行中的请求
-async function fetchActiveRequests() {
-  if (activeRequestsFetchInFlight) return;
+// 处理从 ui.js 推送的活动请求数据（不再自行发起网络请求）
+function handleActiveRequestsData(rawActiveRequests) {
+  latestActiveRequests = Array.isArray(rawActiveRequests) ? rawActiveRequests : [];
 
-  // 优化：当筛选条件不可能匹配进行中请求时，跳过请求
+  // 非第一页不展示进行中请求
+  if (currentLogsPage !== 1) {
+    if (lastActiveRequestStates !== null) {
+      lastActiveRequestStates = null;
+      clearActiveRequestsRows();
+    }
+    return;
+  }
+
+  // 筛选条件不匹配时跳过
   const hours = (document.getElementById('f_hours')?.value || '').trim();
   const status = (document.getElementById('f_status')?.value || '').trim();
   const logSource = (document.getElementById('f_log_source')?.value || 'proxy').trim();
-  // 进行中的请求只存在于"本日"，且没有状态码
   if (shouldSkipActiveRequestsFetch(hours, status, logSource)) {
     clearActiveRequestsRows();
     lastActiveRequestStates = null;
     return;
   }
 
-  activeRequestsFetchInFlight = true;
-  try {
-    const response = await fetchAPIWithAuth('/admin/active-requests');
-    const rawActiveRequests = (response.success && Array.isArray(response.data)) ? response.data : [];
+  // 进行中的请求（尚未落库）所属渠道/模型也补充进筛选下拉
+  mergeLogsFilterOptions(latestActiveRequests);
 
-    // 进行中的请求（尚未落库）所属渠道/模型也补充进筛选下拉
-    mergeLogsFilterOptions(rawActiveRequests);
-
-    // 检测"需要刷新日志"：ID 消失（请求结束）或 fingerprint 变化（渠道/Key/URL 切换 → 上次尝试已失败并写入日志）
-    const currentStates = new Map();
-    for (const req of rawActiveRequests) {
-      if (req && (req.id !== undefined && req.id !== null)) {
-        currentStates.set(String(req.id), activeRequestFingerprint(req));
-      }
+  // 检测"需要刷新日志"：ID 消失（请求结束）或 fingerprint 变化（渠道/Key/URL 切换 → 上次尝试已失败并写入日志）
+  const currentStates = new Map();
+  for (const req of latestActiveRequests) {
+    if (req && (req.id !== undefined && req.id !== null)) {
+      currentStates.set(String(req.id), activeRequestFingerprint(req));
     }
-    if (lastActiveRequestStates !== null) {
-      let needRefresh = false;
-      for (const [id, lastFp] of lastActiveRequestStates) {
-        const currentFp = currentStates.get(id);
-        if (currentFp === undefined) {
-          needRefresh = true; // 请求消失 = 已结束
-          break;
-        }
-        if (lastFp && currentFp && lastFp !== currentFp) {
-          needRefresh = true; // 同 ID 切换了渠道/Key/URL = 上次尝试已写日志
-          break;
-        }
-      }
-      if (needRefresh && currentLogsPage === 1) {
-        scheduleLoad();
-      }
-    }
-    lastActiveRequestStates = currentStates;
-
-    // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
-    const activeRequests = filterActiveRequests(rawActiveRequests);
-
-    renderActiveRequests(activeRequests);
-  } catch (e) {
-    // 静默失败，不影响主日志显示
-  } finally {
-    activeRequestsFetchInFlight = false;
   }
+  if (lastActiveRequestStates !== null) {
+    let needRefresh = false;
+    for (const [id, lastFp] of lastActiveRequestStates) {
+      const currentFp = currentStates.get(id);
+      if (currentFp === undefined) {
+        needRefresh = true; // 请求消失 = 已结束
+        break;
+      }
+      if (lastFp && currentFp && lastFp !== currentFp) {
+        needRefresh = true; // 同 ID 切换了渠道/Key/URL = 上次尝试已写日志
+        break;
+      }
+    }
+    if (needRefresh && currentLogsPage === 1) {
+      scheduleLoad();
+    }
+  }
+  lastActiveRequestStates = currentStates;
+
+  // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
+  const activeRequests = filterActiveRequests(latestActiveRequests);
+
+  renderActiveRequests(activeRequests);
 }
 
 // 渲染进行中的请求（插入到表格顶部）
@@ -1682,18 +1669,10 @@ window.initPageBootstrap({
 
   load();
 
-  // 页面可见性变化时暂停/恢复轮询（减少 HF 等高延迟环境的无效请求）
-  document.addEventListener('visibilitychange', () => {
-    if (document.hidden) {
-      if (activeRequestsPollTimer) {
-        clearInterval(activeRequestsPollTimer);
-        activeRequestsPollTimer = null;
-      }
-    } else if (currentLogsPage === 1) {
-      ensureActiveRequestsPollingStarted();
-      fetchActiveRequests();
-    }
-  });
+  // 订阅 ui.js 的活动请求推送（全站唯一轮询源，可见性由 ui.js 统一管理）
+  if (typeof window.onActiveRequestsData === 'function') {
+    window.onActiveRequestsData(handleActiveRequestsData);
+  }
 
   // ESC键关闭模态框
   document.addEventListener('keydown', (e) => {

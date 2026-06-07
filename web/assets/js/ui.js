@@ -254,14 +254,16 @@
   }
 
   // ---- 活动请求指示器（脉冲 + 角标 + favicon/标题）----
+  // 全站唯一轮询源：拉取完整 payload 后自己消费 count，同时推送 data 给订阅者（如 logs.js）
   const ACTIVE_POLL_MS = 2000;
   let _activeTimer = null;
   let _activeWrap = null;        // .brand-icon-wrap 元素
   let _activeBadge = null;       // .brand-badge 元素
   let _faviconBase = null;       // 预加载的 favicon 底图 Image
   let _origFaviconHref = null;   // 原始 favicon href（用于归零恢复）
-  let _origTitle = null;         // 原始页面标题
-  let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon/标题
+  let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon
+  const _activeDataListeners = [];  // 订阅者回调列表
+  let _lastActiveData = null;       // 最近一次推送的数据（新订阅者立即获得，规避时序竞争）
 
   function badgeLabel(count) {
     return count > 9 ? '9+' : String(count);
@@ -326,22 +328,15 @@
     if (_origFaviconHref !== null) getFaviconLink().href = _origFaviconHref;
   }
 
-  // 标题计数前缀：(N) 原标题
-  function updateDocTitleCount(count) {
-    if (_origTitle === null) _origTitle = document.title;
-    document.title = count > 0 ? `(${badgeLabel(count)}) ${_origTitle}` : _origTitle;
-  }
-
   function updateActiveIndicator(count) {
     // 页面内 logo：脉冲 + 角标
     if (_activeWrap) {
       _activeWrap.classList.toggle('is-active', count > 0);
       if (_activeBadge) _activeBadge.textContent = badgeLabel(count);
     }
-    // 标签页 favicon 角标 + 标题计数（仅在数量变化时重绘，省 toDataURL 开销）
+    // 标签页 favicon 角标（仅在数量变化时重绘，省 toDataURL 开销）
     if (count !== _lastBadgeCount) {
       _lastBadgeCount = count;
-      updateDocTitleCount(count);
       if (count > 0) ensureFaviconBase(() => drawFaviconBadge(count));
       else restoreFavicon();
     }
@@ -350,7 +345,14 @@
   async function pollActiveRequests() {
     try {
       const payload = await fetchAPIWithAuth('/admin/active-requests');
-      updateActiveIndicator(typeof payload.count === 'number' ? payload.count : 0);
+      const count = typeof payload.count === 'number' ? payload.count : 0;
+      updateActiveIndicator(count);
+      // 推送完整数据给订阅者
+      const data = (payload.success && Array.isArray(payload.data)) ? payload.data : [];
+      _lastActiveData = data;
+      for (const cb of _activeDataListeners) {
+        try { cb(data, count); } catch (_) { /* 订阅者异常不影响主逻辑 */ }
+      }
     } catch (_) { /* 静默：未登录或网络异常不打断页面 */ }
   }
 
@@ -361,9 +363,32 @@
       if (document.hidden) return;
       pollActiveRequests();
     }, ACTIVE_POLL_MS);
-    document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) pollActiveRequests();
-    });
+    document.addEventListener('visibilitychange', _onActiveVisibilityChange);
+  }
+
+  function stopActiveRequestsPolling() {
+    if (_activeTimer) {
+      clearInterval(_activeTimer);
+      _activeTimer = null;
+    }
+  }
+
+  function _onActiveVisibilityChange() {
+    if (document.hidden) {
+      stopActiveRequestsPolling();
+    } else {
+      startActiveRequestsPolling();
+    }
+  }
+
+  // 供其他页面模块（如 logs.js）订阅活动请求数据，避免重复轮询
+  function onActiveRequestsData(callback) {
+    if (typeof callback !== 'function') return;
+    _activeDataListeners.push(callback);
+    // 已有最近数据则立即回调，避免新订阅者等到下个轮询周期
+    if (_lastActiveData !== null) {
+      try { callback(_lastActiveData); } catch (_) { /* 订阅者异常不影响主逻辑 */ }
+    }
   }
 
   function buildTopbar(active) {
@@ -503,6 +528,9 @@
     // 启动活动请求指示器轮询
     if (isLoggedIn()) startActiveRequestsPolling();
   }
+
+  // 供其他模块订阅活动请求数据（全站唯一轮询源，避免重复请求）
+  window.onActiveRequestsData = onActiveRequestsData;
 
   // 通知系统（全局复用，DRY）
   function ensureNotifyHost() {
