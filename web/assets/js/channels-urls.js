@@ -1,16 +1,38 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
+const INLINE_EXACT_URL_MARKER = '#';
+
+function isExactInlineURL(url) {
+  return String(url || '').trim().endsWith(INLINE_EXACT_URL_MARKER);
+}
+
+function stripInlineExactURLMarker(url) {
+  const value = String(url || '').trim();
+  if (!value.endsWith(INLINE_EXACT_URL_MARKER)) return value;
+  return value.slice(0, -INLINE_EXACT_URL_MARKER.length).trim();
+}
+
+function withInlineExactURLMarker(url, exact) {
+  const cleanURL = stripInlineExactURLMarker(url);
+  if (!cleanURL) return '';
+  return exact ? `${cleanURL}${INLINE_EXACT_URL_MARKER}` : cleanURL;
+}
+
+function normalizeInlineURLValue(url) {
+  return withInlineExactURLMarker(url, isExactInlineURL(url));
+}
+
 function parseChannelURLs(input) {
   if (!input || !input.trim()) return [];
 
   return input
     .split('\n')
-    .map(url => url.trim())
+    .map(normalizeInlineURLValue)
     .filter(Boolean);
 }
 
 function getValidInlineURLs() {
   return inlineURLTableData
-    .map(url => (url || '').trim())
+    .map(normalizeInlineURLValue)
     .filter(Boolean);
 }
 
@@ -70,11 +92,14 @@ function shouldShowURLExtras() {
 }
 
 function createURLRow(index) {
+  const rawURL = inlineURLTableData[index] || '';
   const tplData = {
     index: index,
     displayIndex: index + 1,
-    url: inlineURLTableData[index] || '',
+    url: stripInlineExactURLMarker(rawURL),
+    exactURLChecked: isExactInlineURL(rawURL) ? 'checked' : '',
     mobileLabelUrl: window.t('channels.tableApiUrl'),
+    mobileLabelExactURL: window.t('channels.fullUrl'),
     mobileLabelActions: window.t('common.actions')
   };
 
@@ -88,7 +113,7 @@ function createURLRow(index) {
 
   // 多URL已保存渠道：注入统计列和禁用按钮
   if (shouldShowURLExtras()) {
-    const url = (inlineURLTableData[index] || '').trim();
+    const url = normalizeInlineURLValue(inlineURLTableData[index]);
     const stat = urlStatsMap[url];
     const actionsTd = row.querySelectorAll('td');
     const lastTd = actionsTd[actionsTd.length - 1]; // actions列
@@ -155,6 +180,13 @@ function initInlineURLTableEventDelegation() {
     if (input) {
       const index = parseInt(input.dataset.index, 10);
       updateInlineURL(index, input.value);
+      return;
+    }
+
+    const exactCheckbox = e.target.closest('.inline-url-exact-checkbox');
+    if (exactCheckbox) {
+      const index = parseInt(exactCheckbox.dataset.index, 10);
+      updateInlineURLExact(index, exactCheckbox.checked);
     }
   });
 
@@ -226,7 +258,28 @@ function addInlineURL() {
 }
 
 function updateInlineURL(index, value) {
-  const nextValue = (value || '').trim();
+  const keepExactURL = isExactInlineURL(inlineURLTableData[index]) || isExactInlineURL(value);
+  const nextValue = withInlineExactURLMarker(value, keepExactURL);
+  if (inlineURLTableData[index] === nextValue) return;
+
+  inlineURLTableData[index] = nextValue;
+  syncInlineURLInput();
+  if (typeof syncProtocolTransformModeForURLs === 'function') {
+    syncProtocolTransformModeForURLs();
+  }
+  if (typeof scheduleChannelDuplicateHintCheck === 'function') {
+    scheduleChannelDuplicateHintCheck();
+  }
+  markChannelFormDirty();
+
+  if (isExactInlineURL(value)) {
+    renderInlineURLTable();
+  }
+}
+
+function updateInlineURLExact(index, checked) {
+  const cleanURL = stripInlineExactURLMarker(inlineURLTableData[index]);
+  const nextValue = cleanURL ? withInlineExactURLMarker(cleanURL, checked) : (checked ? INLINE_EXACT_URL_MARKER : '');
   if (inlineURLTableData[index] === nextValue) return;
 
   inlineURLTableData[index] = nextValue;
@@ -334,7 +387,7 @@ async function testInlineURL(index, buttonElement) {
   }
 
   const firstModel = models[0];
-  const url = (inlineURLTableData[index] || '').trim();
+  const url = normalizeInlineURLValue(inlineURLTableData[index]);
   if (!url) {
     alert(window.t('channels.fillApiUrlFirst'));
     return;
