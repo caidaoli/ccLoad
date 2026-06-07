@@ -424,6 +424,60 @@ body {
   box-shadow: 0 4px 16px rgba(99, 102, 241, 0.35);
 }
 
+/* 活动请求指示器：脉冲呼吸 + 角标 */
+.brand-icon-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.brand-icon-wrap.is-active .brand-icon {
+  animation: brand-pulse 1.2s ease-in-out infinite;
+}
+
+.brand-badge {
+  position: absolute;
+  top: -7px;
+  right: -9px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: linear-gradient(135deg, #fb923c, #f97316);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #fff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
+}
+
+.brand-icon-wrap.is-active .brand-badge {
+  display: flex;
+}
+
+@keyframes brand-pulse {
+  0%, 100% {
+    transform: scale(1);
+    box-shadow: 0 4px 16px rgba(59, 130, 246, 0.35);
+  }
+  50% {
+    transform: scale(1.18);
+    box-shadow: 0 6px 22px rgba(59, 130, 246, 0.75);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .brand-icon-wrap.is-active .brand-icon {
+    animation: none;
+  }
+}
+
 .brand-text {
   color: var(--topbar-fg);
   font-weight: var(--font-semibold);
