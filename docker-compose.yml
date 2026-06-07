@@ -13,7 +13,7 @@ services:
       - SQLITE_PATH=/app/data/ccload.db
       - GIN_MODE=release
       # 必填：未设置将无法启动
-      - CCLOAD_PASS=your_admin_password
+      - CCLOAD_PASS=${CCLOAD_PASS:-your_admin_password}
       # 可选：启动时预置 API 访问令牌，格式 token 或 token|描述，逗号分隔
       # - CCLOAD_API_TOKENS=token1|production,token2|development
       - TZ=Asia/Shanghai
