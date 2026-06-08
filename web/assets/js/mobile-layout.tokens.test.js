@@ -7,12 +7,13 @@ const tokensCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'
 const tokensHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'tokens.html'), 'utf8');
 const tokensScript = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
 
-test('tokens 桌面宽表为 Windows DPI 缩放保留固定列宽和横向滚动', () => {
+test('tokens 桌面宽表在 Windows DPI 缩放下不引入页面横向滚动', () => {
   assert.match(tokensScript, /<colgroup>[\s\S]*class="tokens-colgroup-description"[\s\S]*class="tokens-colgroup-token-usage"[\s\S]*class="tokens-colgroup-actions"[\s\S]*<\/colgroup>/);
-  assert.match(tokensCss, /\.tokens-table\s*\{[\s\S]*?table-layout:\s*fixed;[\s\S]*?min-width:\s*1770px;/);
-  assert.match(tokensCss, /\.tokens-colgroup-description\s*\{[\s\S]*?width:\s*520px;/);
-  assert.match(tokensCss, /\.tokens-colgroup-token-usage\s*\{[\s\S]*?width:\s*170px;/);
-  assert.match(tokensCss, /\.tokens-colgroup-actions\s*\{[\s\S]*?width:\s*96px;/);
+  assert.match(tokensCss, /\.tokens-table\s*\{[\s\S]*?table-layout:\s*fixed;[\s\S]*?width:\s*100%;/);
+  assert.doesNotMatch(tokensCss, /\.tokens-table\s*\{[\s\S]*?min-width:\s*1770px;/);
+  assert.match(tokensCss, /\.tokens-colgroup-description\s*\{[\s\S]*?width:\s*20%;/);
+  assert.match(tokensCss, /\.tokens-colgroup-token-usage\s*\{[\s\S]*?width:\s*11%;/);
+  assert.match(tokensCss, /\.tokens-colgroup-actions\s*\{[\s\S]*?width:\s*8%;/);
   assert.match(tokensCss, /\.tokens-col-description\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
   assert.match(tokensCss, /\.tokens-col-stream\s+\.metric-value,\s*[\r\n\s]*\.tokens-col-non-stream\s+\.metric-value\s*\{[\s\S]*?font-size:\s*18px;/);
   assert.doesNotMatch(tokensCss, /\.tokens-actions-col\s*\{[\s\S]*?width:\s*260px;/);

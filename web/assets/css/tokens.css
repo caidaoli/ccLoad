@@ -50,49 +50,49 @@
     }
     .tokens-table {
       table-layout: fixed;
-      min-width: 1770px;
+      width: 100%;
     }
     .tokens-colgroup-description {
-      width: 520px;
+      width: 20%;
     }
     .tokens-colgroup-token {
-      width: 150px;
+      width: 11%;
     }
     .tokens-colgroup-calls {
-      width: 96px;
+      width: 6%;
     }
     .tokens-colgroup-success-rate {
-      width: 90px;
+      width: 5%;
     }
     .tokens-colgroup-rpm {
-      width: 112px;
+      width: 7%;
     }
     .tokens-colgroup-token-usage {
-      width: 170px;
+      width: 11%;
     }
     .tokens-colgroup-cost {
-      width: 110px;
+      width: 7%;
     }
     .tokens-colgroup-concurrency {
-      width: 76px;
+      width: 5%;
     }
     .tokens-colgroup-stream {
-      width: 102px;
+      width: 6%;
     }
     .tokens-colgroup-non-stream {
-      width: 112px;
+      width: 6%;
     }
     .tokens-colgroup-last-used {
-      width: 130px;
+      width: 8%;
     }
     .tokens-colgroup-actions {
-      width: 96px;
+      width: 8%;
     }
     .token-table thead {
       background: var(--neutral-100);
     }
     .token-table th {
-      padding: 12px 16px;
+      padding: 12px 10px;
       text-align: left;
       font-size: 13px;
       font-weight: 600;
@@ -100,7 +100,7 @@
       border-bottom: 1px solid var(--neutral-200);
     }
     .token-table td {
-      padding: 12px 16px;
+      padding: 12px 10px;
       border-bottom: 1px solid var(--neutral-100);
       font-size: 14px;
       box-sizing: border-box;
@@ -1097,7 +1097,7 @@
       to { transform: translateY(0); opacity: 1; }
     }
     .tokens-actions-col {
-      width: 96px;
+      width: 8%;
     }
     @media (max-width: 768px) {
       .token-table {
