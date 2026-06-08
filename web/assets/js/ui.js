@@ -265,7 +265,11 @@
   const _activeDataListeners = [];  // 订阅者回调列表
   let _lastActiveData = null;       // 最近一次推送的数据（新订阅者立即获得，规避时序竞争）
 
-  function badgeLabel(count) {
+  function brandBadgeLabel(count) {
+    return count > 999 ? '999+' : String(count);
+  }
+
+  function faviconBadgeLabel(count) {
     return count > 9 ? '9+' : String(count);
   }
 
@@ -302,7 +306,7 @@
     ctx.clearRect(0, 0, S, S);
     ctx.drawImage(_faviconBase, 0, 0, S, S);
 
-    const text = badgeLabel(count);
+    const text = faviconBadgeLabel(count);
     // 外描边：先画大白圆再画橙圆，保留完整橙区给文字（避免居中描边吃掉内部空间）
     ctx.beginPath(); ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff'; ctx.fill();
@@ -332,7 +336,7 @@
     // 页面内 logo：脉冲 + 角标
     if (_activeWrap) {
       _activeWrap.classList.toggle('is-active', count > 0);
-      if (_activeBadge) _activeBadge.textContent = badgeLabel(count);
+      if (_activeBadge) _activeBadge.textContent = brandBadgeLabel(count);
     }
     // 标签页 favicon 角标（仅在数量变化时重绘，省 toDataURL 开销）
     if (count !== _lastBadgeCount) {
