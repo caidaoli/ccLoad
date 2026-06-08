@@ -8,13 +8,17 @@ const tokensHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'tokens.html
 const tokensScript = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
 
 test('tokens 桌面宽表在 Windows DPI 缩放下不引入页面横向滚动', () => {
-  assert.match(tokensScript, /<colgroup>[\s\S]*class="tokens-colgroup-description"[\s\S]*class="tokens-colgroup-token-usage"[\s\S]*class="tokens-colgroup-actions"[\s\S]*<\/colgroup>/);
+  assert.match(tokensScript, /<colgroup>[\s\S]*class="tokens-colgroup-token"[\s\S]*class="tokens-colgroup-token-usage"[\s\S]*class="tokens-colgroup-actions"[\s\S]*<\/colgroup>/);
+  assert.doesNotMatch(tokensScript, /class="tokens-colgroup-description"/);
   assert.match(tokensCss, /\.tokens-table\s*\{[\s\S]*?table-layout:\s*fixed;[\s\S]*?width:\s*100%;/);
   assert.doesNotMatch(tokensCss, /\.tokens-table\s*\{[\s\S]*?min-width:\s*1770px;/);
-  assert.match(tokensCss, /\.tokens-colgroup-description\s*\{[\s\S]*?width:\s*20%;/);
-  assert.match(tokensCss, /\.tokens-colgroup-token-usage\s*\{[\s\S]*?width:\s*11%;/);
-  assert.match(tokensCss, /\.tokens-colgroup-actions\s*\{[\s\S]*?width:\s*8%;/);
-  assert.match(tokensCss, /\.tokens-col-description\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
+  assert.doesNotMatch(tokensCss, /\.tokens-colgroup-description\s*\{/);
+  assert.match(tokensCss, /\.tokens-colgroup-token\s*\{[\s\S]*?width:\s*24%;/);
+  assert.match(tokensCss, /\.tokens-colgroup-token-usage\s*\{[\s\S]*?width:\s*12%;/);
+  assert.match(tokensCss, /\.tokens-colgroup-actions\s*\{[\s\S]*?width:\s*9%;/);
+  assert.match(tokensCss, /\.token-row-description\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
+  assert.match(tokensScript, /function\s+formatLastUsedHtml[\s\S]*?token-last-used-date[\s\S]*?token-last-used-time/);
+  assert.match(tokensHtml, /<td class="tokens-col-last-used"[^>]*>\{\{\{lastUsed\}\}\}<\/td>/);
   assert.match(tokensCss, /\.tokens-col-stream\s+\.metric-value,\s*[\r\n\s]*\.tokens-col-non-stream\s+\.metric-value\s*\{[\s\S]*?font-size:\s*18px;/);
   assert.doesNotMatch(tokensCss, /\.tokens-actions-col\s*\{[\s\S]*?width:\s*260px;/);
 });
@@ -23,13 +27,14 @@ test('tokens 页为手机卡片布局补齐模板标签和按钮布局', () => {
   assert.match(tokensScript, /table\.className\s*=\s*'mobile-card-table tokens-table'/);
   assert.doesNotMatch(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?min-width:\s*980px;/);
   assert.match(tokensHtml, /<template id="tpl-token-row">[\s\S]*?class="mobile-card-row token-card-row"/);
-  assert.match(tokensHtml, /class="[^"]*tokens-col-description[^"]*"[^>]*data-mobile-label="\{\{mobileLabelDescription\}\}"/);
+  assert.doesNotMatch(tokensHtml, /class="[^"]*tokens-col-description/);
+  assert.match(tokensHtml, /class="[^"]*tokens-col-token[^"]*"[^>]*data-mobile-label="\{\{mobileLabelToken\}\}"[\s\S]*class="token-row-description">\{\{description\}\}/);
   assert.match(tokensHtml, /class="[^"]*tokens-col-concurrency[^"]*"[^>]*data-mobile-label="\{\{mobileLabelConcurrency\}\}"/);
   assert.match(tokensHtml, /class="[^"]*tokens-col-actions[^"]*"[^>]*data-mobile-label="\{\{mobileLabelActions\}\}"/);
-  assert.match(tokensScript, /mobileLabelDescription:\s*t\('tokens\.table\.description'\)/);
+  assert.doesNotMatch(tokensScript, /mobileLabelDescription:\s*t\('tokens\.table\.description'\)/);
   assert.match(tokensScript, /mobileLabelConcurrency:\s*t\('tokens\.table\.concurrency'\)/);
   assert.match(tokensScript, /mobileLabelActions:\s*t\('tokens\.table\.actions'\)/);
-  assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+\.tokens-col-description,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token-usage,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-last-used,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-actions\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+\.tokens-col-token,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token-usage,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-last-used,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-actions\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(tokensCss, /\.token-row-actions\s*\{[\s\S]*?justify-content:\s*center;[\s\S]*?flex-wrap:\s*nowrap;/);
 });
 
@@ -39,8 +44,8 @@ test('tokens 页手机卡片将统计标签和值压缩为左右同行', () => {
 });
 
 test('tokens 页手机卡片将描述令牌和调用次数压缩为单行主信息', () => {
-  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-description,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?align-items:\s*center;/);
-  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-description::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?align-items:\s*center;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
   assert.match(tokensScript, /function\s+buildCallsHtml[\s\S]*?class="token-call-stats"/);
   assert.match(tokensScript, /token-call-badge token-call-badge--success/);
   assert.match(tokensScript, /token-call-badge token-call-badge--failure/);

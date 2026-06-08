@@ -424,9 +424,9 @@
   <!-- 令牌行模板 -->
   <template id="tpl-token-row">
     <tr class="mobile-card-row token-card-row" data-token-id="{{id}}">
-      <td class="tokens-col-description" data-mobile-label="{{mobileLabelDescription}}">{{description}}</td>
       <td class="tokens-col-token" data-mobile-label="{{mobileLabelToken}}">
-        <div><span class="token-display token-display-{{statusClass}}">{{maskedToken}}</span></div>
+        <div class="token-row-primary"><span class="token-display token-display-{{statusClass}}">{{maskedToken}}</span></div>
+        <div class="token-row-description">{{description}}</div>
         <div class="token-row-meta">{{createdAt}}{{createdLabel}} · {{expiresAt}}</div>
       </td>
       <td class="tokens-col-calls" data-mobile-label="{{mobileLabelCalls}}">{{{callsHtml}}}</td>
@@ -437,7 +437,7 @@
       <td class="tokens-col-concurrency" data-mobile-label="{{mobileLabelConcurrency}}">{{{concurrencyHtml}}}</td>
       <td class="tokens-col-stream {{streamCellClass}}" data-mobile-label="{{mobileLabelStream}}">{{{streamAvgHtml}}}</td>
       <td class="tokens-col-non-stream {{nonStreamCellClass}}" data-mobile-label="{{mobileLabelNonStream}}">{{{nonStreamAvgHtml}}}</td>
-      <td class="tokens-col-last-used" data-mobile-label="{{mobileLabelLastUsed}}">{{lastUsed}}</td>
+      <td class="tokens-col-last-used" data-mobile-label="{{mobileLabelLastUsed}}">{{{lastUsed}}}</td>
       <td class="tokens-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="token-row-actions">
           <button type="button" class="btn-copy-token btn-icon token-row-action-btn" data-token="{{token}}"

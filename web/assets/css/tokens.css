@@ -52,11 +52,8 @@
       table-layout: fixed;
       width: 100%;
     }
-    .tokens-colgroup-description {
-      width: 20%;
-    }
     .tokens-colgroup-token {
-      width: 11%;
+      width: 24%;
     }
     .tokens-colgroup-calls {
       width: 6%;
@@ -65,28 +62,28 @@
       width: 5%;
     }
     .tokens-colgroup-rpm {
-      width: 7%;
+      width: 8%;
     }
     .tokens-colgroup-token-usage {
-      width: 11%;
+      width: 12%;
     }
     .tokens-colgroup-cost {
-      width: 7%;
+      width: 8%;
     }
     .tokens-colgroup-concurrency {
-      width: 5%;
+      width: 6%;
     }
     .tokens-colgroup-stream {
-      width: 6%;
+      width: 7%;
     }
     .tokens-colgroup-non-stream {
-      width: 6%;
+      width: 7%;
     }
     .tokens-colgroup-last-used {
       width: 8%;
     }
     .tokens-colgroup-actions {
-      width: 8%;
+      width: 9%;
     }
     .token-table thead {
       background: var(--neutral-100);
@@ -217,8 +214,10 @@
       gap: 4px;
       flex-wrap: nowrap;
     }
-    .tokens-col-description {
+    .token-row-description {
       font-weight: 500;
+      margin-top: 7px;
+      color: var(--neutral-800);
       overflow-wrap: anywhere;
       word-break: break-word;
     }
@@ -250,6 +249,17 @@
     }
     .tokens-col-last-used {
       color: var(--neutral-600);
+    }
+    .token-last-used {
+      display: inline-flex;
+      flex-direction: column;
+      gap: 2px;
+      line-height: 1.35;
+      white-space: nowrap;
+    }
+    .token-last-used-date,
+    .token-last-used-time {
+      display: block;
     }
     .tokens-col-actions {
       white-space: nowrap;
@@ -1116,18 +1126,14 @@
       .tokens-create-btn {
         width: 100%;
       }
-      .tokens-table .tokens-col-description,
       .tokens-table .tokens-col-token,
       .tokens-table .tokens-col-token-usage,
       .tokens-table .tokens-col-last-used,
       .tokens-table .tokens-col-actions {
         grid-column: 1 / -1;
       }
-      .tokens-table .tokens-col-description {
-        order: 1;
-      }
       .tokens-table .tokens-col-token {
-        order: 2;
+        order: 1;
       }
       .tokens-table .tokens-col-calls {
         order: 10;
@@ -1159,13 +1165,11 @@
       .tokens-table .tokens-col-actions {
         order: 30;
       }
-      .tokens-table .tokens-col-description,
       .tokens-table .tokens-col-token {
         display: flex !important;
         align-items: center;
         gap: 8px 12px;
       }
-      .tokens-table .tokens-col-description::before,
       .tokens-table .tokens-col-token::before {
         width: auto !important;
         margin-bottom: 0 !important;
@@ -1175,11 +1179,12 @@
       .tokens-table .tokens-col-token {
         flex-wrap: wrap;
       }
-      .tokens-table .tokens-col-token > div:first-of-type {
+      .tokens-table .tokens-col-token .token-row-primary {
         flex: 0 0 auto;
         min-width: 0;
       }
-      .tokens-table .tokens-col-token > div:last-of-type {
+      .tokens-table .tokens-col-token .token-row-description,
+      .tokens-table .tokens-col-token .token-row-meta {
         flex: 0 0 100%;
         margin-top: 0 !important;
       }

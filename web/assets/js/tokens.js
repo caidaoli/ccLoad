@@ -247,7 +247,6 @@
       
       table.innerHTML = `
         <colgroup>
-          <col class="tokens-colgroup-description">
           <col class="tokens-colgroup-token">
           <col class="tokens-colgroup-calls">
           <col class="tokens-colgroup-success-rate">
@@ -262,7 +261,6 @@
         </colgroup>
         <thead>
           <tr>
-            <th>${t('tokens.table.description')}</th>
             <th>${t('tokens.table.token')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.callCount')}</th>
             <th class="tokens-table-head-center">${t('tokens.table.successRate')}</th>
@@ -317,7 +315,7 @@
       const locale = window.i18n?.getLocale?.() || 'en';
       const status = getTokenStatus(token);
       const createdAt = new Date(token.created_at).toLocaleString(locale);
-      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString(locale) : t('tokens.neverUsed');
+      const lastUsed = formatLastUsedHtml(token.last_used_at, locale);
       const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
 
       // 计算统计信息
@@ -365,7 +363,6 @@
         nonStreamAvgHtml: nonStreamAvgHtml,
         nonStreamCellClass: nonStreamCellClass,
         lastUsed: lastUsed,
-        mobileLabelDescription: t('tokens.table.description'),
         mobileLabelToken: t('tokens.table.token'),
         mobileLabelCalls: t('tokens.table.callCount'),
         mobileLabelSuccessRate: t('tokens.table.successRate'),
@@ -378,6 +375,26 @@
         mobileLabelLastUsed: t('tokens.table.lastUsed'),
         mobileLabelActions: t('tokens.table.actions')
       });
+    }
+
+    function formatLastUsedHtml(value, locale) {
+      if (!value) {
+        return `<span class="token-value-muted">${t('tokens.neverUsed')}</span>`;
+      }
+
+      const usedAt = new Date(value);
+      if (Number.isNaN(usedAt.getTime())) {
+        return '<span class="token-value-muted">-</span>';
+      }
+
+      const dateText = usedAt.toLocaleDateString(locale);
+      const timeText = usedAt.toLocaleTimeString(locale, { hour12: false });
+      return `
+        <span class="token-last-used">
+          <span class="token-last-used-date">${dateText}</span>
+          <span class="token-last-used-time">${timeText}</span>
+        </span>
+      `;
     }
 
     /**
@@ -555,7 +572,7 @@
       const locale = window.i18n?.getLocale?.() || 'en';
       const status = getTokenStatus(token);
       const createdAt = new Date(token.created_at).toLocaleString(locale);
-      const lastUsed = token.last_used_at ? new Date(token.last_used_at).toLocaleString(locale) : t('tokens.neverUsed');
+      const lastUsed = formatLastUsedHtml(token.last_used_at, locale);
       const expiresAt = token.expires_at ? new Date(token.expires_at).toLocaleString(locale) : t('tokens.expiryNever');
 
       // 计算统计信息
@@ -583,9 +600,9 @@
 
       return `
         <tr class="mobile-card-row token-card-row" data-token-id="${token.id}">
-          <td class="tokens-col-description" data-mobile-label="${t('tokens.table.description')}">${escapeHtml(token.description)}</td>
           <td class="tokens-col-token" data-mobile-label="${t('tokens.table.token')}">
-            <div><span class="token-display token-display-${status.class}">${escapeHtml(maskedToken)}</span></div>
+            <div class="token-row-primary"><span class="token-display token-display-${status.class}">${escapeHtml(maskedToken)}</span></div>
+            <div class="token-row-description">${escapeHtml(token.description)}</div>
             <div class="token-row-meta">${createdAt}${t('tokens.createdSuffix')} · ${expiresAt}</div>
           </td>
           <td class="tokens-col-calls" data-mobile-label="${t('tokens.table.callCount')}">${callsHtml}</td>
