@@ -48,6 +48,46 @@
       width: 100%;
       border-collapse: collapse;
     }
+    .tokens-table {
+      table-layout: fixed;
+      min-width: 1770px;
+    }
+    .tokens-colgroup-description {
+      width: 520px;
+    }
+    .tokens-colgroup-token {
+      width: 150px;
+    }
+    .tokens-colgroup-calls {
+      width: 96px;
+    }
+    .tokens-colgroup-success-rate {
+      width: 90px;
+    }
+    .tokens-colgroup-rpm {
+      width: 112px;
+    }
+    .tokens-colgroup-token-usage {
+      width: 170px;
+    }
+    .tokens-colgroup-cost {
+      width: 110px;
+    }
+    .tokens-colgroup-concurrency {
+      width: 76px;
+    }
+    .tokens-colgroup-stream {
+      width: 102px;
+    }
+    .tokens-colgroup-non-stream {
+      width: 112px;
+    }
+    .tokens-colgroup-last-used {
+      width: 130px;
+    }
+    .tokens-colgroup-actions {
+      width: 96px;
+    }
     .token-table thead {
       background: var(--neutral-100);
     }
@@ -63,6 +103,8 @@
       padding: 12px 16px;
       border-bottom: 1px solid var(--neutral-100);
       font-size: 14px;
+      box-sizing: border-box;
+      vertical-align: middle;
     }
     .tokens-table-head-center {
       text-align: center !important;
@@ -177,6 +219,8 @@
     }
     .tokens-col-description {
       font-weight: 500;
+      overflow-wrap: anywhere;
+      word-break: break-word;
     }
     .token-row-meta {
       margin-top: 4px;
@@ -372,6 +416,7 @@
     }
     .token-rpm {
       font-weight: 500;
+      white-space: nowrap;
     }
     .token-rpm--low {
       color: var(--success-600);
@@ -394,6 +439,16 @@
       font-size: 15px;
       font-weight: 700;
     }
+    .tokens-table .metric-value {
+      margin-bottom: 0;
+      font-size: 15px;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+    .tokens-col-stream .metric-value,
+    .tokens-col-non-stream .metric-value {
+      font-size: 18px;
+    }
     /* 响应时间颜色 */
     .response-fast {
       color: var(--success-700);
@@ -412,6 +467,9 @@
       grid-template-columns: repeat(2, minmax(0, max-content));
       gap: 4px;
       justify-content: center;
+    }
+    .tokens-col-token-usage > .token-usage-metrics {
+      grid-template-columns: minmax(0, max-content);
     }
     .token-usage-item {
       display: inline-flex;
@@ -1039,7 +1097,7 @@
       to { transform: translateY(0); opacity: 1; }
     }
     .tokens-actions-col {
-      width: 260px;
+      width: 96px;
     }
     @media (max-width: 768px) {
       .token-table {
@@ -1047,6 +1105,10 @@
         background: transparent;
         box-shadow: none;
         border-radius: 0;
+      }
+      .tokens-table {
+        min-width: 0;
+        table-layout: auto;
       }
       .tokens-hero-bar {
         align-items: stretch;

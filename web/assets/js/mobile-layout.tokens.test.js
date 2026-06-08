@@ -7,6 +7,17 @@ const tokensCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'
 const tokensHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'tokens.html'), 'utf8');
 const tokensScript = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
 
+test('tokens 桌面宽表为 Windows DPI 缩放保留固定列宽和横向滚动', () => {
+  assert.match(tokensScript, /<colgroup>[\s\S]*class="tokens-colgroup-description"[\s\S]*class="tokens-colgroup-token-usage"[\s\S]*class="tokens-colgroup-actions"[\s\S]*<\/colgroup>/);
+  assert.match(tokensCss, /\.tokens-table\s*\{[\s\S]*?table-layout:\s*fixed;[\s\S]*?min-width:\s*1770px;/);
+  assert.match(tokensCss, /\.tokens-colgroup-description\s*\{[\s\S]*?width:\s*520px;/);
+  assert.match(tokensCss, /\.tokens-colgroup-token-usage\s*\{[\s\S]*?width:\s*170px;/);
+  assert.match(tokensCss, /\.tokens-colgroup-actions\s*\{[\s\S]*?width:\s*96px;/);
+  assert.match(tokensCss, /\.tokens-col-description\s*\{[\s\S]*?overflow-wrap:\s*anywhere;/);
+  assert.match(tokensCss, /\.tokens-col-stream\s+\.metric-value,\s*[\r\n\s]*\.tokens-col-non-stream\s+\.metric-value\s*\{[\s\S]*?font-size:\s*18px;/);
+  assert.doesNotMatch(tokensCss, /\.tokens-actions-col\s*\{[\s\S]*?width:\s*260px;/);
+});
+
 test('tokens 页为手机卡片布局补齐模板标签和按钮布局', () => {
   assert.match(tokensScript, /table\.className\s*=\s*'mobile-card-table tokens-table'/);
   assert.doesNotMatch(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?min-width:\s*980px;/);
