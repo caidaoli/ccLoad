@@ -246,6 +246,20 @@
       table.className = 'mobile-card-table tokens-table';
       
       table.innerHTML = `
+        <colgroup>
+          <col class="tokens-colgroup-description">
+          <col class="tokens-colgroup-token">
+          <col class="tokens-colgroup-calls">
+          <col class="tokens-colgroup-success-rate">
+          <col class="tokens-colgroup-rpm">
+          <col class="tokens-colgroup-token-usage">
+          <col class="tokens-colgroup-cost">
+          <col class="tokens-colgroup-concurrency">
+          <col class="tokens-colgroup-stream">
+          <col class="tokens-colgroup-non-stream">
+          <col class="tokens-colgroup-last-used">
+          <col class="tokens-colgroup-actions">
+        </colgroup>
         <thead>
           <tr>
             <th>${t('tokens.table.description')}</th>
