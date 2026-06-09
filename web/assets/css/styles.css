@@ -404,6 +404,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-4);
+  min-width: 0;
 }
 
 .brand {
@@ -489,6 +490,7 @@ body {
   align-items: center;
   gap: var(--space-2);
   flex: 1;
+  min-width: 0;
   justify-content: center;
 }
 
@@ -520,6 +522,7 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex: 0 0 auto;
 }
 
 /* 版本+GitHub组 */
@@ -4911,6 +4914,67 @@ body.trend-page .chart-info {
   .modal-content {
     width: 90%;
     padding: var(--space-3);
+  }
+}
+
+@media (max-width: 1800px) and (min-width: 769px) {
+  .topbar {
+    padding: 0 var(--space-4);
+    gap: var(--space-3);
+  }
+
+  .topnav {
+    justify-content: center;
+    overflow-x: auto;
+    scrollbar-width: thin;
+  }
+
+  .topnav-link {
+    gap: 6px;
+    padding: 7px 9px;
+    font-size: var(--text-sm);
+  }
+}
+
+@media (max-width: 1280px) and (min-width: 769px) {
+  :root {
+    --topbar-offset: 108px;
+  }
+
+  .topbar {
+    height: auto;
+    min-height: var(--topbar-height);
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px var(--space-4);
+  }
+
+  .topbar-left {
+    order: 1;
+    flex: 1 1 0;
+  }
+
+  .topbar-right {
+    order: 2;
+    margin-left: auto;
+    gap: var(--space-2);
+  }
+
+  .topnav {
+    order: 3;
+    flex: 0 0 100%;
+    width: 100%;
+    justify-content: flex-start;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .topnav-link {
+    padding: 6px 8px;
+  }
+
+  .main-content {
+    padding: var(--space-2);
   }
 }
 
