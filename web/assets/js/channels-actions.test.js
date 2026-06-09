@@ -6,6 +6,7 @@ const path = require('node:path');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'channels.css'), 'utf8');
 const modalsJs = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
+const keysJs = fs.readFileSync(path.join(__dirname, 'channels-keys.js'), 'utf8');
 
 test('渠道卡片模板包含复制操作按钮', () => {
   const templateMatch = html.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
@@ -171,6 +172,42 @@ test('新一轮批量模型刷新开始前会先清空上一轮行内结果', ()
     modalsJs,
     /if \(mode === 'replace'[\s\S]*?return;\s*\}\s*[\r\n]+\s*if \(typeof clearAllBatchRefreshResults === 'function'\) \{\s*clearAllBatchRefreshResults\(\);\s*\}[\s\S]*?const actionBtnIDs = \['batchRefreshMergeBtn'/m
   );
+});
+
+test('排序弹窗卡片背景使用主题变量，暗色模式不露白', () => {
+  const sortItemStyle = css.match(/\.sort-item\s*\{[^}]+\}/);
+  assert.ok(sortItemStyle, '缺少 .sort-item 样式');
+
+  assert.match(sortItemStyle[0], /background:\s*var\(--surface-bg-strong\)/);
+  assert.doesNotMatch(sortItemStyle[0], /background:\s*(?:white|#fff(?:fff)?)\b/i);
+});
+
+test('渠道弹窗内联按钮和错误详情使用主题变量，暗色模式不露白', () => {
+  const keyActionsTemplate = html.match(/<template id="tpl-key-actions">[\s\S]*?<\/template>/);
+  assert.ok(keyActionsTemplate, '缺少 tpl-key-actions 模板');
+  const urlRowTemplate = html.match(/<template id="tpl-url-row">[\s\S]*?<\/template>/);
+  assert.ok(urlRowTemplate, '缺少 tpl-url-row 模板');
+
+  assert.match(html, /id="toggleInlineKeyBtn"[\s\S]*?background:\s*var\(--surface-bg-strong\)/);
+  assert.match(html, /id="keyStatusFilter"[\s\S]*?background:\s*var\(--field-bg\)/);
+  assert.doesNotMatch(keyActionsTemplate[0], /background:\s*(?:white|#fff(?:fff)?)\b/i);
+  assert.doesNotMatch(urlRowTemplate[0], /background:\s*(?:white|#fff(?:fff)?)\b/i);
+
+  assert.match(keysJs, /background:\s*var\(--surface-bg-strong\)/);
+  assert.match(keysJs, /btn\.style\.background\s*=\s*'var\(--surface-bg-strong\)'/);
+  assert.doesNotMatch(keysJs, /btn\.style\.background\s*=\s*'white'/);
+
+  const dirtyPriorityStyle = css.match(/\.ch-priority-input\.is-dirty\s*\{[^}]+\}/);
+  assert.ok(dirtyPriorityStyle, '缺少 .ch-priority-input.is-dirty 样式');
+  assert.doesNotMatch(dirtyPriorityStyle[0], /#fffbeb|white|#fff/i);
+
+  const refreshDetailStyle = css.match(/\.channel-refresh-result__detail\s+pre\s*\{[^}]+\}/);
+  assert.ok(refreshDetailStyle, '缺少刷新错误详情样式');
+  assert.doesNotMatch(refreshDetailStyle[0], /background:\s*(?:rgba\(255,\s*255,\s*255|#fff(?:fff)?|white)/i);
+
+  const refreshActionStyle = css.match(/\.channel-refresh-result-action\s*\{[^}]+\}/);
+  assert.ok(refreshActionStyle, '缺少刷新错误操作样式');
+  assert.doesNotMatch(refreshActionStyle[0], /background:\s*(?:rgba\(255,\s*255,\s*255|#fff(?:fff)?|white)/i);
 });
 
 test('排序卡片模板保留 data-channel-id 但不再显示渠道 ID 文案', () => {

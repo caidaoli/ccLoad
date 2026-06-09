@@ -1216,6 +1216,20 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
     let currentView = 'table'; // 当前视图: 'table' | 'chart'
     let chartInstances = {}; // ECharts 实例缓存
 
+    function getStatsChartTheme() {
+      return typeof window.getChartTheme === 'function'
+        ? window.getChartTheme()
+        : {
+          mutedText: '#6b7280',
+          strongText: '#111827',
+          tooltipBg: 'rgba(255, 255, 255, 0.98)',
+          tooltipBorder: 'rgba(17, 24, 39, 0.16)',
+          tooltipText: '#111827',
+          axisLine: 'rgba(17, 24, 39, 0.16)',
+          surface: '#ffffff'
+        };
+    }
+
     // 切换视图
     function switchView(view) {
       currentView = view;
@@ -1326,6 +1340,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         chartInstances[containerId] = echarts.init(container);
       }
       const chart = chartInstances[containerId];
+      const chartTheme = getStatsChartTheme();
 
       // 转换数据格式并排序（成本场景的值为 {standard, effective}，其他场景为数字）
       const data = Object.entries(dataMap)
@@ -1347,7 +1362,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             left: 'center',
             top: 'center',
             textStyle: {
-              color: '#999',
+              color: chartTheme.mutedText,
               fontSize: 14
             }
           }
@@ -1368,9 +1383,9 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       const option = {
         tooltip: {
           trigger: 'item',
-          backgroundColor: 'rgba(0, 0, 0, 0.85)',
-          borderColor: 'rgba(255, 255, 255, 0.1)',
-          textStyle: { color: '#fff', fontSize: 12 },
+          backgroundColor: chartTheme.tooltipBg,
+          borderColor: chartTheme.tooltipBorder,
+          textStyle: { color: chartTheme.tooltipText, fontSize: 12 },
           formatter: function(params) {
             const value = params.value;
             let formattedValue;
@@ -1397,10 +1412,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           right: 10,
           top: 20,
           bottom: 20,
-          textStyle: { fontSize: 11, color: '#666' },
-          pageIconColor: '#666',
-          pageIconInactiveColor: '#ccc',
-          pageTextStyle: { color: '#666' },
+          textStyle: { fontSize: 11, color: chartTheme.mutedText },
+          pageIconColor: chartTheme.mutedText,
+          pageIconInactiveColor: chartTheme.axisLine,
+          pageTextStyle: { color: chartTheme.mutedText },
           formatter: function(name) {
             const item = data.find(d => d.name === name);
             if (item && total > 0) {
@@ -1418,7 +1433,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
           avoidLabelOverlap: true,
           itemStyle: {
             borderRadius: 4,
-            borderColor: '#fff',
+            borderColor: chartTheme.surface,
             borderWidth: 2
           },
           label: {
@@ -1451,4 +1466,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       Object.values(chartInstances).forEach(chart => {
         if (chart) chart.resize();
       });
+    });
+
+    window.addEventListener('ccload:themechange', function() {
+      if (currentView === 'chart') {
+        renderCharts();
+      }
     });

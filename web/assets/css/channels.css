@@ -781,7 +781,7 @@
     }
 
     .ch-priority-input.is-dirty {
-      background: #fffbeb;
+      background: rgba(245, 158, 11, 0.16);
     }
 
     .ch-priority-label {
@@ -1224,9 +1224,9 @@
       overflow: auto;
       padding: 8px;
       border-radius: 6px;
-      background: rgba(255, 255, 255, 0.75);
-      border: 1px solid #fecaca;
-      color: #7f1d1d;
+      background: rgba(220, 38, 38, 0.10);
+      border: 1px solid rgba(248, 113, 113, 0.36);
+      color: var(--error-400);
       font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
       font-size: 12px;
       line-height: 1.5;
@@ -1237,10 +1237,10 @@
     .channel-refresh-result-action {
       flex: 0 0 auto;
       padding: 1px 6px;
-      border: 1px solid rgba(185, 28, 28, 0.26);
+      border: 1px solid rgba(248, 113, 113, 0.36);
       border-radius: 5px;
-      background: rgba(255, 255, 255, 0.72);
-      color: #991b1b;
+      background: rgba(220, 38, 38, 0.10);
+      color: var(--error-400);
       font-size: 12px;
       line-height: 1.4;
       cursor: pointer;
@@ -1248,8 +1248,8 @@
     }
 
     .channel-refresh-result-action:hover {
-      background: #ffffff;
-      border-color: rgba(185, 28, 28, 0.45);
+      background: rgba(220, 38, 38, 0.16);
+      border-color: rgba(248, 113, 113, 0.52);
     }
 
     .ch-timing {
@@ -2140,7 +2140,7 @@
     .sort-item {
       margin-bottom: 8px;
       padding: 12px 16px;
-      background: white;
+      background: var(--surface-bg-strong);
       border: 1px solid var(--neutral-300);
       border-radius: 8px;
       cursor: move;

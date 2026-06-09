@@ -214,6 +214,31 @@
     if (meta) meta.setAttribute('content', resolvedTheme === 'dark' ? '#0f172a' : '#3b82f6');
   }
 
+  function getThemeCssVar(style, name, fallback) {
+    const value = style ? style.getPropertyValue(name).trim() : '';
+    return value || fallback;
+  }
+
+  function getChartTheme() {
+    const root = document.documentElement;
+    const style = window.getComputedStyle ? getComputedStyle(root) : null;
+    const resolvedTheme = root.dataset.resolvedTheme || root.dataset.theme || 'light';
+    const isDark = resolvedTheme === 'dark';
+
+    return {
+      text: getThemeCssVar(style, '--neutral-700', isDark ? '#e5e7eb' : '#374151'),
+      mutedText: getThemeCssVar(style, '--neutral-500', isDark ? '#9ca3af' : '#6b7280'),
+      strongText: getThemeCssVar(style, '--neutral-900', isDark ? '#f9fafb' : '#111827'),
+      axisLine: getThemeCssVar(style, '--surface-border-strong', isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(17, 24, 39, 0.16)'),
+      splitLine: getThemeCssVar(style, '--surface-border', isDark ? 'rgba(255, 255, 255, 0.12)' : 'rgba(17, 24, 39, 0.10)'),
+      surface: getThemeCssVar(style, '--surface-bg-strong', isDark ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.98)'),
+      surfaceMuted: getThemeCssVar(style, '--surface-bg-muted', isDark ? 'rgba(31, 41, 55, 0.78)' : 'rgba(243, 244, 246, 0.90)'),
+      tooltipBg: getThemeCssVar(style, '--surface-bg-strong', isDark ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.98)'),
+      tooltipBorder: getThemeCssVar(style, '--surface-border-strong', isDark ? 'rgba(255, 255, 255, 0.18)' : 'rgba(17, 24, 39, 0.16)'),
+      tooltipText: getThemeCssVar(style, '--neutral-900', isDark ? '#f9fafb' : '#111827')
+    };
+  }
+
   function refreshThemeSwitcher(root = document) {
     const trigger = root.querySelector ? root.querySelector('.theme-trigger') : null;
     if (trigger) {
@@ -234,6 +259,9 @@
     document.documentElement.style.colorScheme = resolvedTheme;
     setThemeMetaColor(resolvedTheme);
     refreshThemeSwitcher();
+    window.dispatchEvent(new CustomEvent('ccload:themechange', {
+      detail: { mode: currentThemeMode, resolvedTheme }
+    }));
   }
 
   function setThemeMode(mode) {
@@ -672,6 +700,7 @@
 
   // 供其他模块订阅活动请求数据（全站唯一轮询源，避免重复请求）
   window.onActiveRequestsData = onActiveRequestsData;
+  window.getChartTheme = getChartTheme;
 
   // 通知系统（全局复用，DRY）
   function ensureNotifyHost() {

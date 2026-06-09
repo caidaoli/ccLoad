@@ -90,7 +90,7 @@ function buildActionsHtml(index) {
   const toggleColor = isDisabled ? 'color: #16a34a;' : 'color: #9333ea;';
   const toggleBtn = `<button type="button" class="key-action-btn" data-action="toggle-disabled" data-index="${index}"
     title="${toggleTitle}"
-    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; ${toggleColor} cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
+    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); ${toggleColor} cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
 
   const tpl = document.getElementById('tpl-key-actions');
   if (tpl) {
@@ -359,8 +359,8 @@ function initKeyTableEventDelegation() {
   tbody.addEventListener('mouseout', (e) => {
     const btn = e.target.closest('.key-action-btn');
     if (btn) {
-      btn.style.background = 'white';
-      btn.style.borderColor = 'var(--neutral-200)';
+      btn.style.background = 'var(--surface-bg-strong)';
+      btn.style.borderColor = 'var(--surface-border-strong)';
       btn.style.color = 'var(--neutral-500)';
     }
   });

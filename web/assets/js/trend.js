@@ -16,6 +16,23 @@
     window.availableModels = []; // 可用模型列表
     window.authTokens = []; // 令牌列表
 
+    function getTrendChartTheme() {
+      return typeof window.getChartTheme === 'function'
+        ? window.getChartTheme()
+        : {
+          text: '#374151',
+          mutedText: '#6b7280',
+          strongText: '#111827',
+          axisLine: '#e5e7eb',
+          splitLine: 'rgba(148, 163, 184, 0.25)',
+          surface: '#ffffff',
+          surfaceMuted: 'rgba(148, 163, 184, 0.10)',
+          tooltipBg: 'rgba(255, 255, 255, 0.98)',
+          tooltipBorder: 'rgba(17, 24, 39, 0.16)',
+          tooltipText: '#111827'
+        };
+    }
+
     const TREND_FILTER_KEY = 'trend.filters';
     const TREND_FILTER_LEGACY_KEYS = {
       range: 'trend.range',
@@ -860,6 +877,7 @@
       const useLatencyAxis = (trendType === 'first_byte' || trendType === 'duration');
       const yAxisMin = useLatencyAxis ? latencyAxisMin : 0;
       const yAxisMax = useLatencyAxis ? latencyAxisMax : null;
+      const chartTheme = getTrendChartTheme();
 
       const option = {
         backgroundColor: 'transparent',
@@ -869,17 +887,17 @@
         tooltip: {
           trigger: 'axis',
           confine: true,
-          backgroundColor: 'rgba(0, 0, 0, 0.85)',
-          borderColor: 'rgba(255, 255, 255, 0.1)',
+          backgroundColor: chartTheme.tooltipBg,
+          borderColor: chartTheme.tooltipBorder,
           borderWidth: 1,
           textStyle: {
-            color: '#fff',
+            color: chartTheme.tooltipText,
             fontSize: 12
           },
           axisPointer: {
             type: 'cross',
             crossStyle: {
-              color: '#999',
+              color: chartTheme.mutedText,
               width: 1,
               type: 'dashed'
             }
@@ -892,9 +910,9 @@
             let html = `<div style="font-weight: 600; margin-bottom: 6px;">${params[0].axisValue}</div>`;
             if (totalReq != null) {
               const hint = totalReq === 0
-                ? `<span style="color: rgba(203, 213, 225, 0.95);">${t('trend.noRequestInPeriod')}</span>`
+                ? `<span style="color: ${chartTheme.mutedText};">${t('trend.noRequestInPeriod')}</span>`
                 : '';
-              html += `<div style="margin-bottom: 8px; color: rgba(226, 232, 240, 0.95); font-size: 12px;">${t('trend.requestCount')}: ${totalReq}${hint}</div>`;
+              html += `<div style="margin-bottom: 8px; color: ${chartTheme.text}; font-size: 12px;">${t('trend.requestCount')}: ${totalReq}${hint}</div>`;
             }
             params.forEach(param => {
               const color = param.color;
@@ -951,18 +969,18 @@
           left: 16,
           right: 16,
           textStyle: {
-            color: '#666',
+            color: chartTheme.mutedText,
             fontSize: 11
           },
           itemWidth: 20,
           itemHeight: 8,
           itemGap: 12,
           type: 'scroll',
-          pageIconColor: '#666',
-          pageIconInactiveColor: '#ccc',
+          pageIconColor: chartTheme.mutedText,
+          pageIconInactiveColor: chartTheme.axisLine,
           pageIconSize: 12,
           pageTextStyle: {
-            color: '#666',
+            color: chartTheme.mutedText,
             fontSize: 10
           }
         },
@@ -979,15 +997,15 @@
           data: timestamps,
           axisLine: {
             lineStyle: {
-              color: '#e5e7eb'
+              color: chartTheme.axisLine
             }
           },
           axisTick: {
             alignWithLabel: true,
-            lineStyle: { color: '#e5e7eb' }
+            lineStyle: { color: chartTheme.axisLine }
           },
           axisLabel: {
-            color: '#6b7280',
+            color: chartTheme.mutedText,
             fontSize: 11,
             rotate: xAxisRotate,
             hideOverlap: true,
@@ -996,7 +1014,7 @@
           splitLine: {
             show: true,
             lineStyle: {
-              color: 'rgba(148, 163, 184, 0.25)',
+              color: chartTheme.splitLine,
               type: 'dashed'
             }
           }
@@ -1008,11 +1026,11 @@
           max: yAxisMax,
           axisLine: {
             lineStyle: {
-              color: '#e5e7eb'
+              color: chartTheme.axisLine
             }
           },
           axisLabel: {
-            color: '#6b7280',
+            color: chartTheme.mutedText,
             fontSize: 11,
             formatter: function(value) {
               if (trendType === 'first_byte' || trendType === 'duration') {
@@ -1041,7 +1059,7 @@
           },
           splitLine: {
             lineStyle: {
-              color: 'rgba(148, 163, 184, 0.25)',
+              color: chartTheme.splitLine,
               type: 'dashed'
             }
           }
@@ -1061,15 +1079,15 @@
             start: 0,
             end: 100,
             height: 20,
-            borderColor: '#e5e7eb',
-            backgroundColor: 'rgba(148, 163, 184, 0.10)',
+            borderColor: chartTheme.axisLine,
+            backgroundColor: chartTheme.surfaceMuted,
             fillerColor: 'rgba(59, 130, 246, 0.16)',
             handleStyle: {
               color: '#3b82f6',
               borderColor: '#3b82f6'
             },
             textStyle: {
-              color: '#6b7280',
+              color: chartTheme.mutedText,
               fontSize: 10
             }
           }
@@ -1169,6 +1187,7 @@ function shouldShowZoom(points, hours, trendType) {
       if (!series || series.length === 0) return;
       const base = series[0];
       if (!base || !Array.isArray(base.data)) return;
+      const chartTheme = getTrendChartTheme();
 
       const values = base.data.filter(v => typeof v === 'number' && Number.isFinite(v) && v > 0);
       if (values.length < 5) return;
@@ -1185,13 +1204,13 @@ function shouldShowZoom(points, hours, trendType) {
           color: 'rgba(100, 116, 139, 0.55)'
         },
         label: {
-          color: '#334155',
+          color: chartTheme.strongText,
           fontSize: 11,
           position: 'insideEndTop',
           padding: [2, 6],
           borderRadius: 4,
-          backgroundColor: 'rgba(255, 255, 255, 0.85)',
-          borderColor: 'rgba(148, 163, 184, 0.55)',
+          backgroundColor: chartTheme.surface,
+          borderColor: chartTheme.axisLine,
           borderWidth: 1,
           formatter: (p) => {
             const v = p && p.value != null ? p.value : null;
@@ -1209,7 +1228,7 @@ function shouldShowZoom(points, hours, trendType) {
         symbol: 'pin',
         symbolSize: 34,
         label: {
-          color: '#0f172a',
+          color: chartTheme.strongText,
           fontSize: 10,
           formatter: (p) => (p && p.value != null ? `${Number(p.value).toFixed(1)}s` : '')
         },
@@ -1555,6 +1574,12 @@ function shouldShowZoom(points, hours, trendType) {
       window.addEventListener('resize', () => {
         if (window.chartInstance) {
           window.chartInstance.resize();
+        }
+      });
+
+      window.addEventListener('ccload:themechange', () => {
+        if (window.chartInstance && window.trendData && window.trendData.length) {
+          renderChart();
         }
       });
 
