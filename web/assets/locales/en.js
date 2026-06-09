@@ -72,6 +72,10 @@ window.I18N_LOCALES['en'] = {
   'nav.modelTest': 'Model Test',
   'nav.settings': 'Settings',
   'nav.githubRepo': 'GitHub Repository',
+  'theme.label': 'Color scheme',
+  'theme.system': 'Follow System',
+  'theme.light': 'Light',
+  'theme.dark': 'Dark',
 
   // ============================================================
   // Login Page

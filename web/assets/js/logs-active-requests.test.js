@@ -43,7 +43,7 @@ test('进行中请求令牌列按 token_id 显示令牌描述', () => {
 
   assert.equal(
     buildActiveRequestTokenDescDisplay({ token_id: 7 }),
-    '<span title="Ops &lt;Main&gt;">Ops &lt;Main&gt;</span>'
+    '<span title="Ops &lt;Main&gt;">Ops.in&gt;</span>'
   );
   assert.equal(
     buildActiveRequestTokenDescDisplay({ token_id: 8 }),

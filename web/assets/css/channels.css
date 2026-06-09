@@ -82,8 +82,8 @@
 
     .content-area > header .glass-card,
     .filter-bar {
-      background: rgba(255, 255, 255, 0.97);
-      border-color: rgba(148, 163, 184, 0.18);
+      background: var(--glass-bg);
+      border-color: var(--glass-border);
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
     }
 
@@ -497,6 +497,7 @@
     #channelModal .inline-table th {
       padding: 4px 8px;
       line-height: 1.2;
+      background-color: var(--surface-bg-muted);
     }
 
     #channelModal .inline-table td {
@@ -531,7 +532,7 @@
     }
 
     .channel-hover-key-toggle-btn:hover {
-      background: var(--neutral-50) !important;
+      background: var(--surface-hover) !important;
       border-color: var(--neutral-400) !important;
     }
 
@@ -549,8 +550,8 @@
     }
 
     .table-container {
-      background: rgba(255, 255, 255, 0.97);
-      border-color: rgba(148, 163, 184, 0.18);
+      background: var(--table-bg);
+      border-color: var(--surface-border);
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
     }
 
@@ -573,17 +574,17 @@
       white-space: nowrap;
       user-select: none;
       text-align: center;
-      background: #eff1f7;
+      background: var(--surface-bg-muted);
       color: var(--neutral-900);
       font-size: 13px;
       font-weight: 700;
-      border-bottom: 1px solid #d9e0e7;
+      border-bottom: 1px solid var(--surface-border);
     }
 
     .channel-table td {
       padding: 6px 10px;
       color: var(--neutral-800);
-      border-bottom: 1px solid #e3e8ee;
+      border-bottom: 1px solid var(--surface-border);
     }
 
     .channel-table td.ch-col-priority,
@@ -610,15 +611,15 @@
 
     .channel-table tbody tr {
       transition: background 0.15s ease;
-      background: rgba(255, 255, 255, 0.98);
+      background: var(--table-bg);
     }
 
     .channel-table tbody tr:nth-child(odd) {
-      background: #ffffff;
+      background: var(--table-bg);
     }
 
     .channel-table tbody tr:nth-child(even) {
-      background: #f8fafc;
+      background: var(--surface-bg-muted);
     }
 
     .channel-table tbody tr:last-child td {
@@ -626,7 +627,7 @@
     }
 
     .channel-table tbody tr:hover {
-      background: #f0ece5;
+      background: var(--surface-hover);
     }
 
     /* 列宽定义 */
@@ -686,7 +687,7 @@
       height: 30px;
       border: 1px solid var(--neutral-300);
       border-radius: 8px;
-      background: #ffffff;
+      background: var(--field-bg);
       overflow: hidden;
       box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.04);
     }
@@ -700,7 +701,7 @@
       width: 56px;
       height: 30px;
       border: 0;
-      background: #ffffff;
+      background: var(--field-bg);
       color: var(--neutral-900);
       font-size: 13px;
       font-weight: 700;
@@ -1634,8 +1635,7 @@
       text-align: center;
       font-size: var(--text-sm);
       color: var(--neutral-900);
-      background: rgba(255, 255, 255, 0.9);
-      color-scheme: light;
+      background: var(--field-bg);
       -webkit-text-fill-color: var(--neutral-900);
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
@@ -1644,7 +1644,7 @@
       outline: none;
       border-color: var(--primary-500);
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-      background: white;
+      background: var(--field-bg-focus);
     }
 
     .logs-pagination-card .logs-jump-input::placeholder {
@@ -1899,9 +1899,8 @@
     }
 
     .modal-inline-input {
-      background: rgba(255, 255, 255, 0.9);
+      background: var(--field-bg) !important;
       color: var(--neutral-900);
-      color-scheme: light;
       backdrop-filter: blur(8px);
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
@@ -1910,7 +1909,7 @@
       outline: none;
       border-color: var(--primary-500) !important;
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
-      background: white;
+      background: var(--field-bg-focus) !important;
     }
 
     .modal-inline-input::placeholder {
@@ -1918,16 +1917,15 @@
     }
 
     .modal-inline-select {
-      background: rgba(255, 255, 255, 0.9);
+      background: var(--field-bg) !important;
       color: var(--neutral-900);
-      color-scheme: light;
       -webkit-text-fill-color: var(--neutral-900);
       backdrop-filter: blur(8px);
     }
 
     .modal-inline-select option {
       color: var(--neutral-900);
-      background: white;
+      background: var(--surface-bg-strong);
     }
 
     .inline-url-col-select {
@@ -2044,7 +2042,7 @@
       justify-content: center;
       padding: 0;
       color: var(--neutral-500);
-      background: white;
+      background: var(--surface-bg);
       cursor: pointer;
       transition: all 0.2s;
     }
@@ -2065,7 +2063,7 @@
     }
 
     .redirect-lowercase-btn:hover {
-      background: var(--primary-50);
+      background: var(--surface-hover);
       border-color: var(--primary-500);
       color: var(--primary-600);
     }
@@ -2364,14 +2362,42 @@
 
     .model-select {
       color: var(--neutral-900);
-      background: rgba(255, 255, 255, 0.9);
-      color-scheme: light;
+      background: var(--field-bg);
       -webkit-text-fill-color: var(--neutral-900);
     }
 
     .model-select option {
       color: var(--neutral-900);
-      background: white;
+      background: var(--surface-bg-strong);
+    }
+
+    #channelModal .inline-table-container,
+    #channelModal .inline-table,
+    #channelModal .inline-key-table,
+    #channelModal .inline-url-table,
+    #channelModal .redirect-model-table {
+      background: var(--table-bg);
+    }
+
+    #channelModal .inline-table tbody tr {
+      background: var(--table-bg);
+    }
+
+    #channelModal .inline-table tbody tr:nth-child(even) {
+      background: var(--surface-bg-muted);
+    }
+
+    #channelModal .inline-table td {
+      background: inherit;
+    }
+
+    #channelModal .key-action-btn,
+    #channelModal .inline-url-test-btn,
+    #channelModal .inline-url-delete-btn,
+    #channelModal .channel-hover-key-toggle-btn {
+      background: var(--surface-bg) !important;
+      color: var(--neutral-600) !important;
+      border-color: var(--surface-border) !important;
     }
 
     .channel-batch-float {
@@ -2399,7 +2425,7 @@
       padding: 14px 24px;
       border: 1.5px solid var(--neutral-200);
       border-radius: var(--radius-xl);
-      background: #ffffff;
+      background: var(--surface-bg-strong);
       box-shadow: var(--shadow-xl);
     }
 
@@ -2924,9 +2950,9 @@
         width: 100%;
         box-sizing: border-box;
         padding: 10px 12px;
-        border: 1px solid var(--neutral-200);
+        border: 1px solid var(--surface-border);
         border-radius: 14px;
-        background: rgba(255, 255, 255, 0.98);
+        background: var(--surface-bg-strong);
         box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
       }
 
@@ -3011,9 +3037,9 @@
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px 12px;
         padding: 14px;
-        border: 1px solid rgba(148, 163, 184, 0.22);
+        border: 1px solid var(--surface-border);
         border-radius: 16px;
-        background: rgba(255, 255, 255, 0.98);
+        background: var(--surface-bg-strong);
         box-shadow: 0 8px 24px rgba(15, 23, 42, 0.06);
         position: relative;
       }
@@ -3100,8 +3126,8 @@
       .channel-table .ch-col-cost,
       .channel-table .ch-col-last-success,
       .channel-table .ch-col-enabled {
-        background: rgba(248, 250, 252, 0.9);
-        border: 1px solid var(--neutral-200);
+        background: var(--surface-bg-muted);
+        border: 1px solid var(--surface-border);
         border-radius: 12px;
         padding: 10px 12px;
       }
@@ -3127,6 +3153,15 @@
       .channel-table .ch-col-priority .ch-priority-stack,
       .channel-table .ch-col-cost .cost-stack {
         margin-left: auto;
+      }
+
+      .channel-table .ch-col-cost .cost-stack {
+        flex-direction: row;
+        flex-wrap: nowrap;
+        align-items: baseline;
+        gap: 8px;
+        white-space: nowrap;
+        text-align: right;
       }
 
       .channel-table .ch-col-priority .ch-priority-editor-wrap {
