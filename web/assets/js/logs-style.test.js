@@ -68,6 +68,48 @@ test('日志页跳转输入框使用主题变量适配暗色模式', () => {
   assert.doesNotMatch(focusBlockMatch[0], /background:\s*white/);
 });
 
+test('日志页进行中请求行通过变量适配主题，亮色默认保持 warning 底', () => {
+  const pendingRowMatch = css.match(/\.logs-table tr\.pending-row td\s*\{[^}]+\}/);
+  const pendingHoverMatch = css.match(/\.logs-table tr\.pending-row:hover td\s*\{[^}]+\}/);
+  const rootBlock = css.match(/:root\s*\{[^}]+\}/);
+
+  assert.ok(pendingRowMatch, '缺少进行中请求行样式');
+  assert.ok(pendingHoverMatch, '缺少进行中请求行 hover 样式');
+  assert.ok(rootBlock, '缺少 pending 默认主题变量');
+
+  assert.match(pendingRowMatch[0], /background:\s*var\(--logs-pending-row-bg\)/);
+  assert.match(pendingHoverMatch[0], /background:\s*var\(--logs-pending-row-hover-bg\)/);
+  assert.match(rootBlock[0], /--logs-pending-row-bg:\s*var\(--warning-50\)/);
+  assert.match(rootBlock[0], /--logs-pending-row-hover-bg:\s*var\(--warning-100\)/);
+  assert.match(rootBlock[0], /--logs-pending-badge-bg:\s*var\(--warning-100\)/);
+  assert.match(rootBlock[0], /--logs-pending-badge-fg:\s*var\(--warning-700\)/);
+  assert.doesNotMatch(rootBlock[0], /rgba\(8,\s*145,\s*178,/);
+});
+
+test('暗色主题使用低饱和青蓝色表示日志进行中请求', () => {
+  const darkBlock = css.match(/html\[data-theme="dark"\]\s*\{[^}]+\}/);
+  const systemDarkBlock = css.match(/html\[data-theme="system"\]\[data-resolved-theme="dark"\]\s*\{[^}]+\}/);
+
+  assert.ok(darkBlock, '缺少日志暗色主题 pending 变量覆盖');
+  assert.ok(systemDarkBlock, '缺少日志系统暗色主题 pending 变量覆盖');
+
+  for (const block of [darkBlock[0], systemDarkBlock[0]]) {
+    assert.match(block, /--logs-pending-row-bg:\s*rgba\(14,\s*116,\s*144,\s*0\.16\)/);
+    assert.match(block, /--logs-pending-row-hover-bg:\s*rgba\(14,\s*116,\s*144,\s*0\.24\)/);
+    assert.match(block, /--logs-pending-badge-bg:\s*rgba\(14,\s*116,\s*144,\s*0\.22\)/);
+    assert.match(block, /--logs-pending-badge-fg:\s*#67e8f9/);
+    assert.doesNotMatch(block, /120,\s*53,\s*15|146,\s*64,\s*14|var\(--warning-50\)|var\(--warning-100\)/);
+  }
+});
+
+test('日志页进行中标签通过 pending 变量适配主题', () => {
+  const pendingStatusMatch = css.match(/\.status-pending\s*\{[^}]+\}/);
+  assert.ok(pendingStatusMatch, '缺少 .status-pending 样式');
+
+  assert.match(pendingStatusMatch[0], /background:\s*var\(--logs-pending-badge-bg\)/);
+  assert.match(pendingStatusMatch[0], /color:\s*var\(--logs-pending-badge-fg\)/);
+});
+
 test('日志页分页信息区收紧按钮间距', () => {
   const controlsMatch = css.match(/\.logs-pagination-controls\s*\{[^}]+\}/);
   const infoMatch = css.match(/\.logs-pagination-info\s*\{[^}]+\}/);

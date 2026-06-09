@@ -1,3 +1,24 @@
+    :root {
+      --channel-cooldown-row-bg-start: #fff7ed;
+      --channel-cooldown-row-bg-end: #fffbeb;
+      --channel-cooldown-row-hover-bg-start: #ffedd5;
+      --channel-cooldown-row-hover-bg-end: #fef9c3;
+    }
+
+    html[data-theme="dark"] {
+      --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
+      --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
+      --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
+      --channel-cooldown-row-hover-bg-end: rgba(120, 53, 15, 0.30);
+    }
+
+    html[data-theme="system"][data-resolved-theme="dark"] {
+      --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
+      --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
+      --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
+      --channel-cooldown-row-hover-bg-end: rgba(120, 53, 15, 0.30);
+    }
+
     /* 响应式布局样式 */
     @media (max-width: 640px) {
 
@@ -1318,11 +1339,11 @@
     }
 
     .channel-table tbody tr.channel-card-cooldown {
-      background: linear-gradient(135deg, #fff7ed 0%, #fffbeb 100%);
+      background: linear-gradient(135deg, var(--channel-cooldown-row-bg-start) 0%, var(--channel-cooldown-row-bg-end) 100%);
     }
 
     .channel-table tbody tr.channel-card-cooldown:hover {
-      background: linear-gradient(135deg, #ffedd5 0%, #fef9c3 100%);
+      background: linear-gradient(135deg, var(--channel-cooldown-row-hover-bg-start) 0%, var(--channel-cooldown-row-hover-bg-end) 100%);
     }
 
     .channel-table-row.channel-card-cooldown::before {

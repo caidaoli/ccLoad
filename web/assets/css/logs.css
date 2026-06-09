@@ -1,3 +1,24 @@
+    :root {
+      --logs-pending-row-bg: var(--warning-50);
+      --logs-pending-row-hover-bg: var(--warning-100);
+      --logs-pending-badge-bg: var(--warning-100);
+      --logs-pending-badge-fg: var(--warning-700);
+    }
+
+    html[data-theme="dark"] {
+      --logs-pending-row-bg: rgba(14, 116, 144, 0.16);
+      --logs-pending-row-hover-bg: rgba(14, 116, 144, 0.24);
+      --logs-pending-badge-bg: rgba(14, 116, 144, 0.22);
+      --logs-pending-badge-fg: #67e8f9;
+    }
+
+    html[data-theme="system"][data-resolved-theme="dark"] {
+      --logs-pending-row-bg: rgba(14, 116, 144, 0.16);
+      --logs-pending-row-hover-bg: rgba(14, 116, 144, 0.24);
+      --logs-pending-badge-bg: rgba(14, 116, 144, 0.22);
+      --logs-pending-badge-fg: #67e8f9;
+    }
+
     /* API Key 测试按钮样式 */
 
     /* 列显隐切换按钮 */
@@ -1006,8 +1027,8 @@
       border-radius: 4px;
       font-size: 0.85em;
       font-weight: 500;
-      background: var(--warning-100);
-      color: var(--warning-700);
+      background: var(--logs-pending-badge-bg);
+      color: var(--logs-pending-badge-fg);
       animation: pulse-pending 1.5s ease-in-out infinite;
     }
 
@@ -1025,9 +1046,9 @@
 
     /* 进行中行高亮 */
     .logs-table tr.pending-row td {
-      background: var(--warning-50);
+      background: var(--logs-pending-row-bg);
     }
 
     .logs-table tr.pending-row:hover td {
-      background: var(--warning-100);
+      background: var(--logs-pending-row-hover-bg);
     }
