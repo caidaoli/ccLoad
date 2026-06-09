@@ -391,7 +391,22 @@ function buildActiveRequestTokenDescDisplay(req) {
   const token = (Array.isArray(authTokens) ? authTokens : [])
     .find(item => Number(item?.id) === tokenId);
   const label = token?.description || `Token #${tokenId}`;
-  return `<span title="${escapeHtml(label)}">${escapeHtml(label)}</span>`;
+  const labelText = String(label || '');
+  const displayLabel = token?.description && labelText.length > 7
+    ? `${labelText.slice(0, 3)}.${labelText.slice(-3)}`
+    : labelText;
+  return `<span title="${escapeHtml(label)}">${escapeHtml(displayLabel)}</span>`;
+}
+
+function formatLogTokenDescLabel(label) {
+  const text = String(label || '');
+  return text.length > 7 ? `${text.slice(0, 3)}.${text.slice(-3)}` : text;
+}
+
+function buildLogTokenDescDisplay(label) {
+  const text = String(label || '');
+  if (!text) return '<span style="color: var(--neutral-500);">-</span>';
+  return `<span class="logs-token-desc-text" title="${escapeHtml(text)}">${escapeHtml(formatLogTokenDescLabel(text))}</span>`;
 }
 
 function renderLogSourceBadge(logSource) {
@@ -846,9 +861,7 @@ function renderLogs(data) {
       '<span style="color: var(--neutral-400);">-</span>';
 
     // 0.5. API访问令牌描述
-    const tokenDescDisplay = entry.auth_token_description
-      ? `<span title="${escapeHtml(entry.auth_token_description)}">${escapeHtml(entry.auth_token_description)}</span>`
-      : '<span style="color: var(--neutral-500);">-</span>';
+    const tokenDescDisplay = buildLogTokenDescDisplay(entry.auth_token_description);
 
     // 1. 渠道信息显示（鼠标移上去时显示URL）
     const configDisplay = buildLogChannelDisplay(entry);

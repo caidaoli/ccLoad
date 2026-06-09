@@ -38,14 +38,25 @@ test('tokens 页为手机卡片布局补齐模板标签和按钮布局', () => {
   assert.match(tokensCss, /\.token-row-actions\s*\{[\s\S]*?justify-content:\s*center;[\s\S]*?flex-wrap:\s*nowrap;/);
 });
 
+test('tokens 页手机卡片使用单列信息流，避免字段挤到令牌右侧', () => {
+  assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+colgroup\s*\{[\s\S]*?display:\s*none;/);
+  assert.match(tokensCss, /\.tokens-table\s+tbody\s*\{[\s\S]*?width:\s*100%;/);
+  assert.match(tokensCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.tokens-table\s+tbody\s+\.token-card-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
+  assert.match(tokensCss, /\.tokens-table\s+tbody\s+\.token-card-row\s*\{[\s\S]*?width:\s*100%;[\s\S]*?box-sizing:\s*border-box;/);
+  assert.match(tokensCss, /\.tokens-table\s+tbody\s+\.token-card-row\s*>\s*td\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+});
+
 test('tokens 页手机卡片将统计标签和值压缩为左右同行', () => {
   assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-calls,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-success-rate,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-rpm,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token-usage,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-cost,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-concurrency,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-stream,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-non-stream,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-last-used\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?align-items:\s*center;[\s\S]*?justify-content:\s*space-between;/);
   assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-calls::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-success-rate::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-rpm::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token-usage::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-cost::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-concurrency::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-stream::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-non-stream::before,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-last-used::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
 });
 
-test('tokens 页手机卡片将描述令牌和调用次数压缩为单行主信息', () => {
-  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s*\{[\s\S]*?display:\s*flex\s*!important;[\s\S]*?align-items:\s*center;/);
-  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token::before\s*\{[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
+test('tokens 页手机卡片令牌主信息使用稳定两列布局避免文字重叠', () => {
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s*\{[\s\S]*?display:\s*grid\s*!important;[\s\S]*?grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\);[\s\S]*?align-items:\s*center;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token::before\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1;[\s\S]*?width:\s*auto\s*!important;[\s\S]*?margin-bottom:\s*0\s*!important;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s+\.token-row-primary\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?min-width:\s*0;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s+\.token-row-description,\s*[\r\n\s]*\.tokens-table\s+\.tokens-col-token\s+\.token-row-meta\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;[\s\S]*?min-width:\s*0;[\s\S]*?overflow-wrap:\s*anywhere;/);
+  assert.match(tokensCss, /\.tokens-table\s+\.tokens-col-token\s+\.token-display\s*\{[\s\S]*?white-space:\s*nowrap;[\s\S]*?word-break:\s*normal;/);
   assert.match(tokensScript, /function\s+buildCallsHtml[\s\S]*?class="token-call-stats"/);
   assert.match(tokensScript, /token-call-badge token-call-badge--success/);
   assert.match(tokensScript, /token-call-badge token-call-badge--failure/);
@@ -171,10 +182,10 @@ test('tokens 模型选择和导入弹窗把热点内联样式迁到 tokens.css',
   assert.doesNotMatch(tokensHtml, /<template id="tpl-token-row">[\s\S]*?style=/);
   assert.doesNotMatch(tokensScript, /class="model-option-item"[\s\S]*?style=/);
   assert.doesNotMatch(tokensScript, /class="model-option-checkbox"[\s\S]*?style=/);
-  assert.match(tokensCss, /#selectAllContainer\s*\{[\s\S]*?padding:\s*8px 12px;[\s\S]*?background:\s*var\(--neutral-50\);/);
+  assert.match(tokensCss, /#selectAllContainer\s*\{[\s\S]*?padding:\s*8px 12px;[\s\S]*?background:\s*var\(--surface-bg-muted\);/);
   assert.match(tokensCss, /\.model-option-item\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;[\s\S]*?padding:\s*8px 12px;/);
   assert.match(tokensCss, /\.model-import-textarea\s*\{[\s\S]*?min-height:\s*160px;[\s\S]*?font-family:/);
-  assert.match(tokensCss, /\.token-model-import-preview\s*\{[\s\S]*?background:\s*var\(--success-50\);/);
+  assert.match(tokensCss, /\.token-model-import-preview\s*\{[\s\S]*?background:\s*var\(--token-import-preview-bg\);/);
   assert.match(tokensCss, /\.token-row-meta\s*\{[\s\S]*?font-size:\s*12px;[\s\S]*?color:\s*var\(--neutral-500\);/);
   assert.match(tokensCss, /\.token-row-action-btn\s*\{[\s\S]*?width:\s*28px;[\s\S]*?height:\s*28px;[\s\S]*?padding:\s*0;/);
 });

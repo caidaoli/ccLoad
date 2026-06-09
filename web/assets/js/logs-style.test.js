@@ -51,14 +51,21 @@ test('日志页底部分页使用专用紧凑样式类', () => {
   assert.match(html, /id="logs_jump_page"[\s\S]*class="logs-jump-input"/);
 });
 
-test('日志页跳转输入框显式锁定浅色背景和文字颜色', () => {
+test('日志页跳转输入框使用主题变量适配暗色模式', () => {
   const styleBlockMatch = css.match(/\.logs-jump-input\s*\{[^}]+\}/);
   assert.ok(styleBlockMatch, '缺少 .logs-jump-input 样式');
 
   const styleBlock = styleBlockMatch[0];
-  assert.match(styleBlock, /background:\s*rgba\(255,\s*255,\s*255,\s*0\.9\)/);
+  assert.match(styleBlock, /background:\s*var\(--field-bg\)/);
   assert.match(styleBlock, /color:\s*var\(--neutral-900\)/);
-  assert.match(styleBlock, /color-scheme:\s*light/);
+  assert.match(styleBlock, /border:\s*1px\s+solid\s+var\(--neutral-300\)/);
+  assert.doesNotMatch(styleBlock, /background:\s*(?:white|rgba\(255,\s*255,\s*255,\s*0\.9\))/);
+  assert.doesNotMatch(styleBlock, /color-scheme:\s*light/);
+
+  const focusBlockMatch = css.match(/\.logs-jump-input:focus\s*\{[^}]+\}/);
+  assert.ok(focusBlockMatch, '缺少 .logs-jump-input:focus 样式');
+  assert.match(focusBlockMatch[0], /background:\s*var\(--field-bg-focus\)/);
+  assert.doesNotMatch(focusBlockMatch[0], /background:\s*white/);
 });
 
 test('日志页分页信息区收紧按钮间距', () => {
@@ -245,6 +252,45 @@ test('日志页渠道按钮在表格内必须左对齐并允许 flex 收缩', ()
   const styleBlock = channelLinkMatch[0];
   assert.match(styleBlock, /text-align:\s*left/);
   assert.match(styleBlock, /min-width:\s*0/);
+});
+
+test('日志页列显隐菜单使用主题变量适配暗色模式', () => {
+  const menuMatch = css.match(/\.logs-col-toggle-menu\s*\{[^}]+\}/);
+  const itemHoverMatch = css.match(/\.logs-col-toggle-item:hover\s*\{[^}]+\}/);
+  const checkMatch = css.match(/\.logs-col-toggle-check\s*\{[^}]+\}/);
+  assert.ok(menuMatch, '缺少列显隐菜单样式');
+  assert.ok(itemHoverMatch, '缺少列显隐菜单 hover 样式');
+  assert.ok(checkMatch, '缺少列显隐菜单勾选框样式');
+
+  assert.match(menuMatch[0], /background:\s*var\(--surface-bg-strong\)/);
+  assert.match(menuMatch[0], /border:\s*1px\s+solid\s+var\(--surface-border\)/);
+  assert.match(menuMatch[0], /color:\s*var\(--neutral-900\)/);
+  assert.match(itemHoverMatch[0], /background:\s*var\(--surface-hover\)/);
+  assert.match(checkMatch[0], /background:\s*var\(--field-bg\)/);
+});
+
+test('Debug 日志不可用设置说明使用主题变量适配暗色模式', () => {
+  const unavailableMatch = css.match(/\.debug-log-unavailable\s*\{[^}]+\}/);
+  const rowMatch = css.match(/\.debug-log-unavailable__row\s*\{[^}]+\}/);
+  assert.ok(unavailableMatch, '缺少 Debug 日志不可用容器样式');
+  assert.ok(rowMatch, '缺少 Debug 日志设置行样式');
+
+  assert.match(unavailableMatch[0], /background:\s*var\(--surface-bg-muted\)/);
+  assert.match(unavailableMatch[0], /border:\s*1px\s+solid\s+var\(--surface-border\)/);
+  assert.match(rowMatch[0], /background:\s*var\(--surface-bg-strong\)/);
+  assert.match(rowMatch[0], /border:\s*1px\s+solid\s+var\(--surface-border\)/);
+  assert.doesNotMatch(rowMatch[0], /background:\s*white/);
+});
+
+test('日志页令牌列超过 7 个字符时显示首尾三位并保留完整 title', () => {
+  assert.match(logsSource, /function\s+formatLogTokenDescLabel\(label\)/);
+  assert.match(logsSource, /String\(label\s*\|\|\s*''\)/);
+  assert.match(logsSource, /text\.length\s*>\s*7/);
+  assert.match(logsSource, /text\.slice\(0,\s*3\).*text\.slice\(-3\)/s);
+  assert.match(logsSource, /function\s+buildLogTokenDescDisplay\(label\)/);
+  assert.match(logsSource, /title="\$\{escapeHtml\(text\)\}"/);
+  assert.match(logsSource, /escapeHtml\(formatLogTokenDescLabel\(text\)\)/);
+  assert.match(logsSource, /const tokenDescDisplay = buildLogTokenDescDisplay\(entry\.auth_token_description\);/);
 });
 
 test('进行中请求复用日志表格列类名和共享字体类', () => {

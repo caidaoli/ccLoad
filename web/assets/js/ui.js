@@ -134,6 +134,10 @@
     { key: 'model-test', labelKey: 'nav.modelTest', href: '/web/model-test.html', icon: iconTest },
     { key: 'settings', labelKey: 'nav.settings', href: '/web/settings.html', icon: iconSettings },
   ];
+  const THEME_STORAGE_KEY = 'ccload_theme';
+  const THEME_MODES = ['system', 'light', 'dark'];
+  let systemThemeQuery = null;
+  let currentThemeMode = 'system';
 
   function h(tag, attrs = {}, children = []) {
     const el = document.createElement(tag);
@@ -172,6 +176,15 @@
   function iconTest() {
     return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>`);
   }
+  function iconThemeSystem() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3a9 9 0 100 18 9 9 0 000-18z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3.6 9h16.8M3.6 15h16.8"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3c2 2.2 3 5.2 3 9s-1 6.8-3 9c-2-2.2-3-5.2-3-9s1-6.8 3-9z"/>`);
+  }
+  function iconThemeLight() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M7.05 16.95l-1.414 1.414m12.728 0l-1.414-1.414M7.05 7.05L5.636 5.636"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 12a4 4 0 11-8 0 4 4 0 018 0z"/>`);
+  }
+  function iconThemeDark() {
+    return svg(`<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20.354 15.354A9 9 0 118.646 3.646 7 7 0 0020.354 15.354z"/>`);
+  }
   function svg(inner) {
     const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
     el.setAttribute('fill', 'none');
@@ -181,6 +194,82 @@
     el.innerHTML = inner;
     return el;
   }
+
+  function getStoredTheme() {
+    try {
+      const saved = localStorage.getItem(THEME_STORAGE_KEY);
+      return THEME_MODES.includes(saved) ? saved : 'system';
+    } catch (_) {
+      return 'system';
+    }
+  }
+
+  function resolveTheme(mode) {
+    if (mode !== 'system') return mode;
+    return systemThemeQuery && systemThemeQuery.matches ? 'dark' : 'light';
+  }
+
+  function setThemeMetaColor(resolvedTheme) {
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', resolvedTheme === 'dark' ? '#0f172a' : '#3b82f6');
+  }
+
+  function refreshThemeSwitcher(root = document) {
+    const trigger = root.querySelector ? root.querySelector('.theme-trigger') : null;
+    if (trigger) {
+      trigger.replaceChildren(getThemeIcon(currentThemeMode));
+    }
+    root.querySelectorAll && root.querySelectorAll('.theme-option').forEach((option) => {
+      const active = option.getAttribute('data-theme-mode') === currentThemeMode;
+      option.setAttribute('aria-pressed', active ? 'true' : 'false');
+      option.classList.toggle('active', active);
+    });
+  }
+
+  function applyStoredTheme() {
+    currentThemeMode = getStoredTheme();
+    const resolvedTheme = resolveTheme(currentThemeMode);
+    document.documentElement.dataset.theme = currentThemeMode;
+    document.documentElement.dataset.resolvedTheme = resolvedTheme;
+    document.documentElement.style.colorScheme = resolvedTheme;
+    setThemeMetaColor(resolvedTheme);
+    refreshThemeSwitcher();
+  }
+
+  function setThemeMode(mode) {
+    if (!THEME_MODES.includes(mode)) return;
+    try {
+      localStorage.setItem(THEME_STORAGE_KEY, mode);
+    } catch (_) { /* 存储失败时只应用当前页面 */ }
+    currentThemeMode = mode;
+    applyStoredTheme();
+  }
+
+  function initTheme() {
+    systemThemeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
+    applyStoredTheme();
+    if (systemThemeQuery && !systemThemeQuery._ccloadThemeBound) {
+      systemThemeQuery.addEventListener('change', applyStoredTheme);
+      systemThemeQuery._ccloadThemeBound = true;
+    }
+  }
+
+  function setThemeSwitcherOpen(switcher, open) {
+    if (!switcher) return;
+    if (open) switcher.classList.add('open');
+    else switcher.classList.remove('open');
+    const trigger = switcher.querySelector('.theme-trigger');
+    if (trigger) trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  function closeThemeSwitchers(except = null) {
+    document.querySelectorAll('.theme-switcher.open').forEach((switcher) => {
+      if (switcher !== except) setThemeSwitcherOpen(switcher, false);
+    });
+  }
+
+  initTheme();
+  document.addEventListener('click', () => closeThemeSwitchers());
 
   function isLoggedIn() {
     const token = localStorage.getItem('ccload_token');
@@ -450,9 +539,11 @@
 
     // 语言切换器
     const langSwitcher = window.i18n ? window.i18n.createLanguageSwitcher() : null;
+    const themeSwitcher = buildThemeSwitcher();
 
     const right = h('div', { class: 'topbar-right' }, [
       versionGroup,
+      themeSwitcher,
       langSwitcher,
       h('button', {
         id: 'auth-btn',
@@ -463,6 +554,52 @@
     ].filter(Boolean));
     bar.appendChild(left); bar.appendChild(nav); bar.appendChild(right);
     return bar;
+  }
+
+  function buildThemeSwitcher() {
+    const modes = [
+      { mode: 'system', labelKey: 'theme.system', icon: iconThemeSystem },
+      { mode: 'light', labelKey: 'theme.light', icon: iconThemeLight },
+      { mode: 'dark', labelKey: 'theme.dark', icon: iconThemeDark },
+    ];
+    const trigger = h('button', {
+      type: 'button',
+      class: 'theme-trigger',
+      title: t('theme.label'),
+      'aria-label': t('theme.label'),
+      'aria-expanded': 'false',
+      onclick: (event) => {
+        event.stopPropagation();
+        const switcher = event.currentTarget.closest('.theme-switcher');
+        const nextOpen = !switcher.classList.contains('open');
+        closeThemeSwitchers(switcher);
+        setThemeSwitcherOpen(switcher, nextOpen);
+      }
+    }, [getThemeIcon(currentThemeMode)]);
+    const menu = h('div', {
+      class: 'theme-menu',
+      role: 'menu',
+      onclick: (event) => event.stopPropagation()
+    }, modes.map(({ mode, labelKey, icon }) => h('button', {
+      type: 'button',
+      class: 'theme-option',
+      role: 'menuitemradio',
+      'data-theme-mode': mode,
+      'aria-pressed': mode === currentThemeMode ? 'true' : 'false',
+      onclick: (event) => {
+        setThemeMode(mode);
+        setThemeSwitcherOpen(event.currentTarget.closest('.theme-switcher'), false);
+      }
+    }, [icon(), h('span', { 'data-i18n': labelKey }, t(labelKey))])));
+    const switcher = h('div', { class: 'theme-switcher' }, [trigger, menu]);
+    refreshThemeSwitcher(switcher);
+    return switcher;
+  }
+
+  function getThemeIcon(mode) {
+    if (mode === 'light') return iconThemeLight();
+    if (mode === 'dark') return iconThemeDark();
+    return iconThemeSystem();
   }
 
   async function onLogout() {

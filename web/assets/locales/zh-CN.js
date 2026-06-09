@@ -72,6 +72,10 @@ window.I18N_LOCALES['zh-CN'] = {
   'nav.modelTest': '模型测试',
   'nav.settings': '设置',
   'nav.githubRepo': 'GitHub仓库',
+  'theme.label': '配色方案',
+  'theme.system': '跟随系统',
+  'theme.light': '亮色',
+  'theme.dark': '暗色',
 
   // ============================================================
   // 登录页
