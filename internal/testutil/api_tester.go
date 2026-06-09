@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
@@ -124,11 +125,20 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	if strings.TrimSpace(testContent) == "" {
 		testContent = "test"
 	}
+	sessionID := newTestSessionID()
+	turnID := newTestSessionID()
+	windowID := sessionID + ":0"
+	turnMetadata, err := newCodexTurnMetadata(sessionID, turnID, windowID)
+	if err != nil {
+		return "", nil, nil, err
+	}
 
 	body, err := buildRequestFromTemplate("codex", map[string]any{
-		"MODEL":   req.Model,
-		"STREAM":  req.Stream,
-		"CONTENT": testContent,
+		"MODEL":           req.Model,
+		"STREAM":          req.Stream,
+		"CONTENT":         testContent,
+		"SESSION_ID":      sessionID,
+		"INSTALLATION_ID": newTestSessionID(),
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -139,14 +149,39 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	h := make(http.Header)
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
-	h.Set("User-Agent", "codex_cli_rs/0.41.0 (Mac OS 26.0.0; arm64) iTerm.app/3.6.1")
-	h.Set("Openai-Beta", "responses=experimental")
-	h.Set("Originator", "codex_cli_rs")
+	h.Set("X-Api-Key", apiKey)
+	h.Set("User-Agent", "codex-tui/0.137.0 (Mac OS 26.5.1; arm64) iTerm.app/3.7.0beta3 (codex-tui; 0.137.0)")
+	h.Set("Originator", "codex-tui")
+	h.Set("Session-Id", sessionID)
+	h.Set("Thread-Id", sessionID)
+	h.Set("X-Client-Request-Id", sessionID)
+	h.Set("X-Codex-Beta-Features", "terminal_resize_reflow")
+	h.Set("X-Codex-Turn-Metadata", turnMetadata)
+	h.Set("X-Codex-Window-Id", windowID)
 	if req.Stream {
 		h.Set("Accept", "text/event-stream")
 	}
 
 	return fullURL, h, body, nil
+}
+
+func newCodexTurnMetadata(sessionID, turnID, windowID string) (string, error) {
+	payload := map[string]any{
+		"session_id":              sessionID,
+		"thread_id":               sessionID,
+		"thread_source":           "user",
+		"turn_id":                 turnID,
+		"workspaces":              map[string]any{},
+		"sandbox":                 "none",
+		"turn_started_at_unix_ms": time.Now().UnixMilli(),
+		"request_kind":            "turn",
+		"window_id":               windowID,
+	}
+	data, err := sonic.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("marshal codex turn metadata: %w", err)
+	}
+	return string(data), nil
 }
 
 // extractCodexResponseText 从Codex响应中提取文本（消除6层嵌套）

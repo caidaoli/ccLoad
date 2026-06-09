@@ -2,7 +2,19 @@
   "model": "{{MODEL}}",
   "stream": "{{STREAM}}",
   "store": false,
+  "parallel_tool_calls": true,
+  "prompt_cache_key": "{{SESSION_ID}}",
   "instructions": "You are Codex, a coding agent based on GPT-5. You and the user share one workspace, and your job is to collaborate with them until their goal is genuinely handled.\n\n",
+  "reasoning": {
+    "effort": "low"
+  },
+  "text": {
+    "verbosity": "low"
+  },
+  "tool_choice": "auto",
+  "client_metadata": {
+    "x-codex-installation-id": "{{INSTALLATION_ID}}"
+  },
   "input": [
     {
       "type": "message",
@@ -17,5 +29,6 @@
   ],
   "include": [
     "reasoning.encrypted_content"
-  ]
+  ],
+  "tools": []
 }
