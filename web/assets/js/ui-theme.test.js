@@ -137,6 +137,42 @@ test('暗色主题为可点击详情提供可读颜色', () => {
   assert.match(sharedCss, /html\[data-theme="dark"\]\s+\.has-upstream-detail,\s*[\r\n\s]*html\[data-theme="system"\]\[data-resolved-theme="dark"\]\s+\.has-upstream-detail\s*\{[\s\S]*?color:\s*var\(--primary-300\)/);
 });
 
+test('渠道最后失败详情使用主题变量适配暗色模式', () => {
+  const rootRule = getRuleBody(channelsCss, ':root');
+  const darkRule = getRuleBody(channelsCss, 'html[data-theme="dark"]');
+  const systemDarkRule = getRuleBody(channelsCss, 'html[data-theme="system"][data-resolved-theme="dark"]');
+  const requestRule = getRuleBody(channelsCss, '.ch-last-request');
+  const summaryRule = getRuleBody(channelsCss, '.ch-last-request__detail summary');
+  const panelRule = getRuleBody(channelsCss, '.ch-last-request__panel');
+  const preRule = getRuleBody(channelsCss, '.ch-last-request__detail pre');
+  const copyRule = getRuleBody(channelsCss, '.ch-last-request__copy');
+
+  assert.match(rootRule, /--channel-last-request-bg:/);
+  assert.match(rootRule, /--channel-last-request-summary-fg:/);
+  assert.match(rootRule, /--channel-last-request-panel-bg:/);
+  assert.match(darkRule, /--channel-last-request-bg:/);
+  assert.match(darkRule, /--channel-last-request-summary-fg:/);
+  assert.match(darkRule, /--channel-last-request-panel-bg:/);
+  assert.match(systemDarkRule, /--channel-last-request-bg:/);
+  assert.match(systemDarkRule, /--channel-last-request-summary-fg:/);
+  assert.match(systemDarkRule, /--channel-last-request-panel-bg:/);
+
+  assert.match(requestRule, /background:\s*var\(--channel-last-request-bg\)/);
+  assert.match(requestRule, /border:\s*1px\s+solid\s+var\(--channel-last-request-border\)/);
+  assert.match(requestRule, /color:\s*var\(--channel-last-request-fg\)/);
+  assert.match(summaryRule, /color:\s*var\(--channel-last-request-summary-fg\)/);
+  assert.match(panelRule, /background:\s*var\(--channel-last-request-panel-bg\)/);
+  assert.match(panelRule, /border:\s*1px\s+solid\s+var\(--channel-last-request-border\)/);
+  assert.match(preRule, /background:\s*var\(--channel-last-request-pre-bg\)/);
+  assert.match(preRule, /color:\s*var\(--channel-last-request-pre-fg\)/);
+  assert.match(copyRule, /background:\s*var\(--channel-last-request-copy-bg\)/);
+  assert.match(copyRule, /color:\s*var\(--channel-last-request-copy-fg\)/);
+
+  for (const rule of [requestRule, panelRule, preRule, copyRule]) {
+    assert.doesNotMatch(rule, /background:\s*#fff(?:7f7)?\s*;/);
+  }
+});
+
 test('暗色主题为模型测试和日志页渠道链接提供可读颜色', () => {
   assert.match(sharedCss, /html\[data-theme="dark"\]\s+\.model-test-table\s+\.channel-link,\s*[\r\n\s]*html\[data-theme="system"\]\[data-resolved-theme="dark"\]\s+\.model-test-table\s+\.channel-link,\s*[\r\n\s]*html\[data-theme="dark"\]\s+\.logs-table\s+\.channel-link,\s*[\r\n\s]*html\[data-theme="system"\]\[data-resolved-theme="dark"\]\s+\.logs-table\s+\.channel-link\s*\{[\s\S]*?color:\s*var\(--primary-300\)/);
 });
