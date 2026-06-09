@@ -5,6 +5,8 @@ const path = require('node:path');
 
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const themeInitSource = fs.readFileSync(path.join(__dirname, 'theme-init.js'), 'utf8');
+const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
+const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 const tokensCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'), 'utf8');
 const logsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
@@ -131,6 +133,26 @@ test('令牌、统计和日志列表背景必须使用主题变量', () => {
   assert.doesNotMatch(statsTotalRule, /background:\s*linear-gradient\(180deg,\s*#eff6ff/);
   assert.match(logsOddRule, /background:\s*var\(--table-bg\)/);
   assert.match(logsEvenRule, /background:\s*var\(--surface-bg-muted\)/);
+});
+
+test('统计和趋势图表从主题变量派生暗色模式配色', () => {
+  const statsInitChartBtnRule = getRuleBody(sharedCss, '.stats-view-init-chart .view-toggle-btn[data-view="chart"]');
+
+  assert.match(uiSource, /function\s+getChartTheme\(\)/);
+  assert.match(uiSource, /window\.getChartTheme\s*=\s*getChartTheme/);
+  assert.match(statsSource, /window\.getChartTheme\(\)/);
+  assert.match(trendSource, /window\.getChartTheme\(\)/);
+
+  assert.match(statsInitChartBtnRule, /background:\s*var\(--surface-bg-strong\)/);
+  assert.doesNotMatch(statsInitChartBtnRule, /var\(--white\)/);
+
+  assert.doesNotMatch(statsSource, /textStyle:\s*\{\s*fontSize:\s*11,\s*color:\s*'#666'\s*\}/);
+  assert.doesNotMatch(statsSource, /pageIconColor:\s*'#666'/);
+  assert.doesNotMatch(statsSource, /pageIconInactiveColor:\s*'#ccc'/);
+  assert.doesNotMatch(statsSource, /borderColor:\s*'#fff'/);
+  assert.doesNotMatch(trendSource, /textStyle:\s*\{\s*[\s\S]*?color:\s*'#666'[\s\S]*?\}/);
+  assert.doesNotMatch(trendSource, /axisLine:\s*\{[\s\S]*?color:\s*'#e5e7eb'[\s\S]*?\}/);
+  assert.doesNotMatch(trendSource, /backgroundColor:\s*'rgba\(255,\s*255,\s*255,\s*0\.85\)'/);
 });
 
 test('暗色主题为可点击详情提供可读颜色', () => {

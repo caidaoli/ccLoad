@@ -435,7 +435,7 @@
                 <span data-i18n="channels.exportKeys">导出</span>
               </button>
               <button type="button" id="toggleInlineKeyBtn" class="channel-hover-key-toggle-btn" data-action="toggle-inline-key-visibility"
-                style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-300); background: white; color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;"
+                style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; padding: 0; display: inline-flex; align-items: center; justify-content: center; transition: all 0.2s;"
                 data-i18n-title="channels.toggleKeyVisibility" title="显示/隐藏API Key">
                 <svg id="inlineEyeIcon" width="13" height="13" viewBox="0 0 16 16" fill="none"
                   xmlns="http://www.w3.org/2000/svg">
@@ -483,7 +483,7 @@
                   <th data-i18n="channels.tableApiKey">API Key</th>
                   <th style="width: 200px;">
                     <select id="keyStatusFilter" class="modal-inline-select" data-change-action="filter-keys-by-status"
-                      style="width: 100%; padding: 4px 8px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: white;">
+                      style="width: 100%; padding: 4px 8px; border: 1px solid var(--surface-border-strong); border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--field-bg); color: var(--neutral-900);">
                       <option value="all" data-i18n="channels.keyStatusAll">全部</option>
                       <option value="normal" data-i18n="channels.keyStatusNormal">正常</option>
                       <option value="cooldown" data-i18n="channels.keyStatusCooldown">冷却中</option>
@@ -1066,7 +1066,7 @@
     <div class="inline-key-actions" style="display: flex; gap: 6px; justify-content: center;">
       <button type="button" class="key-action-btn" data-action="copy" data-index="{{index}}"
         data-i18n-title="channels.copyThisKey" title="复制此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path
             d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z"
@@ -1076,14 +1076,14 @@
       </button>
       <button type="button" class="key-action-btn" data-action="test" data-index="{{index}}"
         data-i18n-title="channels.testThisKey" title="测试此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M4 2L12 8L4 14V2Z" fill="currentColor" />
         </svg>
       </button>
       <button type="button" class="key-action-btn" data-action="delete" data-index="{{index}}"
         data-i18n-title="channels.deleteThisKey" title="删除此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path
             d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"
@@ -1117,14 +1117,14 @@
         <div class="inline-url-actions">
           <button type="button" class="inline-url-test-btn" data-index="{{index}}" data-i18n-title="channels.testThisUrl"
             title="测试此URL"
-            style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+            style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
             <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path d="M4 2L12 8L4 14V2Z" fill="currentColor" />
             </svg>
           </button>
           <button type="button" class="inline-url-delete-btn" data-index="{{index}}" data-i18n-title="channels.deleteThisUrl"
             title="删除此URL"
-            style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--neutral-200); background: white; color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+            style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
             <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
               <path
                 d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"

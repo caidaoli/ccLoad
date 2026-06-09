@@ -4153,7 +4153,7 @@ a.model-tag.model-link:hover {
 }
 
 .stats-view-init-chart .view-toggle-btn[data-view="chart"] {
-  background: var(--white);
+  background: var(--surface-bg-strong);
   color: var(--primary-600);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
 }
