@@ -867,7 +867,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.deleteProgressChannelStart': 'Processing {channel_name}(#{channel_id})',
   'modelTest.deleteProgressChannelDone': '{channel_name}(#{channel_id}) deleted',
   'modelTest.deleteProgressChannelFailed': '{channel_name}(#{channel_id}) delete failed: {error}',
-  'modelTest.moreModels': 'and {count} more model(s)',
+  'modelTest.moreModels': ' and more, {total} model(s) in total',
   'modelTest.moreChannels': '{count} more channel(s) omitted',
   'modelTest.deleteSuccessSummary': 'Delete completed: {success_channels} channels succeeded, {failed_channels} channels failed',
   'modelTest.deletePartialFailed': 'Delete completed: {success_channels} channels succeeded, {failed_channels} channels failed. Failed details: {details}',

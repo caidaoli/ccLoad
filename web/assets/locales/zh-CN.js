@@ -866,7 +866,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.deleteProgressChannelStart': '开始处理 {channel_name}(#{channel_id})',
   'modelTest.deleteProgressChannelDone': '{channel_name}(#{channel_id}) 删除完成',
   'modelTest.deleteProgressChannelFailed': '{channel_name}(#{channel_id}) 删除失败：{error}',
-  'modelTest.moreModels': '等{count}个模型',
+  'modelTest.moreModels': ' 等，共 {total} 个模型',
   'modelTest.moreChannels': '其余 {count} 个渠道已省略',
   'modelTest.deleteSuccessSummary': '删除完成：成功 {success_channels} 个渠道，失败 {failed_channels} 个渠道',
   'modelTest.deletePartialFailed': '删除完成：成功 {success_channels} 个渠道，失败 {failed_channels} 个渠道。失败详情：{details}',
