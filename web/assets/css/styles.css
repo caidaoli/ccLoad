@@ -603,7 +603,8 @@ body {
   border-radius: var(--radius-lg);
   color: var(--topbar-fg);
   text-decoration: none;
-  font-weight: var(--font-medium);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
   white-space: nowrap;
   transition: background var(--duration-fast) var(--timing-function), color var(--duration-fast);
 }
@@ -5586,18 +5587,18 @@ body.trend-page .chart-info {
 }
 
 .page-title {
-  font-size: var(--text-2xl);
+  font-size: var(--text-lg);
   color: var(--neutral-900);
   font-weight: var(--font-bold);
 }
 
 .page-subtitle {
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
   color: var(--neutral-600);
 }
 
 .section-title {
-  font-size: var(--text-xl);
+  font-size: var(--text-lg);
   color: var(--neutral-800);
   font-weight: var(--font-semibold);
 }
