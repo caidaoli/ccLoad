@@ -1556,7 +1556,7 @@ function formatDeletePlanPreview(deletePlan, maxChannels = 8, maxModelsPerChanne
     const visibleModels = models.slice(0, maxModelsPerChannel);
     const hiddenModelCount = Math.max(0, models.length - visibleModels.length);
     const moreModelsText = hiddenModelCount > 0
-      ? ` ${i18nText('modelTest.moreModels', `等${hiddenModelCount}个模型`, { count: hiddenModelCount })}`
+      ? i18nText('modelTest.moreModels', ` 等，共 ${models.length} 个模型`, { total: models.length })
       : '';
 
     lines.push(`- ${channelName}(#${channelId}): ${visibleModels.join(', ')}${moreModelsText}`);
