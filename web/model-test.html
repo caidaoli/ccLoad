@@ -150,7 +150,8 @@
       <td class="model-test-col-name truncate-cell" data-mobile-label="{{mobileLabelName}}">
         <button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}</button>
       </td>
-      <td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}">{{channelPriority}}</td>
+      <td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}"><input class="ch-priority-input" type="number" min="-99999" max="99999" step="1" value="{{channelPriority}}" data-channel-id="{{channelId}}" data-original-priority="{{channelPriority}}"></td>
+      <td class="model-test-col-enabled" data-mobile-label="{{mobileLabelEnabled}}"><button class="channel-enable-switch {{toggleSwitchClass}}" data-channel-id="{{channelId}}" data-enabled="{{channelEnabled}}" role="switch" aria-checked="{{channelEnabled}}" title="{{toggleTitle}}" aria-label="{{toggleTitle}}"><span class="channel-enable-switch__knob" aria-hidden="true"></span></button></td>
       <td class="model-test-col-first-byte first-byte-duration" data-mobile-label="{{mobileLabelFirstByte}}">-</td>
       <td class="model-test-col-duration duration" data-mobile-label="{{mobileLabelDuration}}">-</td>
       <td class="model-test-col-input input-tokens" data-mobile-label="{{mobileLabelInput}}">-</td>

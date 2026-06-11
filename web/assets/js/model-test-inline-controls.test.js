@@ -207,10 +207,10 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
 });
 
-test('model-test 页按模型测试渠道表在渠道名称后显示优先级', () => {
+test('model-test 页按模型测试渠道表在渠道名称后显示可编辑优先级和启用开关', () => {
   assert.match(
     script,
-    /const MODEL_MODE_HEAD = `[\s\S]*?data-i18n="modelTest\.channelName"[\s\S]*?data-i18n="channels\.table\.priority" data-sort-key="priority">优先级<\/th>[\s\S]*?\$\{RESPONSE_HEAD_HTML\}/
+    /const MODEL_MODE_HEAD = `[\s\S]*?data-i18n="modelTest\.channelName"[\s\S]*?data-i18n="channels\.table\.priority" data-sort-key="priority">优先级<\/th>[\s\S]*?data-i18n="channels\.table\.enabled" data-sort-key="enabled">启用<\/th>[\s\S]*?\$\{RESPONSE_HEAD_HTML\}/
   );
   assert.doesNotMatch(
     script.match(/const CHANNEL_MODE_HEAD = `[\s\S]*?`;/)[0],
@@ -218,11 +218,19 @@ test('model-test 页按模型测试渠道表在渠道名称后显示优先级', 
   );
   assert.match(
     html,
-    /tpl-channel-row-by-model[\s\S]*?class="channel-link"[\s\S]*?{{channelName}}<\/button>[\s\S]*?<td class="model-test-col-priority channel-priority" data-mobile-label="{{mobileLabelPriority}}">{{channelPriority}}<\/td>/
+    /tpl-channel-row-by-model[\s\S]*?class="channel-link"[\s\S]*?{{channelName}}<\/button>[\s\S]*?<td class="model-test-col-priority channel-priority"[\s\S]*?<input class="ch-priority-input"[\s\S]*?value="{{channelPriority}}"[\s\S]*?<\/td>[\s\S]*?<td class="model-test-col-enabled"[\s\S]*?class="channel-enable-switch {{toggleSwitchClass}}"[\s\S]*?data-enabled="{{channelEnabled}}"[\s\S]*?<\/td>/
   );
   assert.match(
     script,
-    /channelPriority:\s*formatChannelPriority\(ch\.priority\)/
+    /channelPriority:\s*String\(priorityValue\)/
+  );
+  assert.match(
+    script,
+    /channelEnabled:\s*String\(isEnabled\)/
+  );
+  assert.match(
+    script,
+    /toggleSwitchClass:\s*isEnabled\s*\?\s*'channel-enable-switch--on'\s*:\s*'channel-enable-switch--off'/
   );
 
   const getResultRowMobileLabels = vm.runInNewContext(
@@ -237,17 +245,21 @@ test('model-test 页按模型测试渠道表在渠道名称后显示优先级', 
     getResultRowMobileLabels('modelTest.channel', '渠道').mobileLabelPriority,
     'channels.table.priority:优先级'
   );
+  assert.equal(
+    getResultRowMobileLabels('modelTest.channel', '渠道').mobileLabelEnabled,
+    'channels.table.enabled:启用'
+  );
 
   const getResultTableColspan = vm.runInNewContext(`
     const TEST_MODE_MODEL = 'model';
     const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
     const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
-    const MODEL_MODE_EXTRA_COLSPAN = 1;
+    const MODEL_MODE_EXTRA_COLSPAN = 2;
     let testMode = TEST_MODE_MODEL;
     function isFirstByteColumnVisible() { return true; }
     (${extractFunction(script, 'getResultTableColspan')})
   `, {});
-  assert.equal(getResultTableColspan(), '12');
+  assert.equal(getResultTableColspan(), '13');
 
   const getRowSortValue = vm.runInNewContext(
     `(${extractFunction(script, 'getRowSortValue')})`,
@@ -260,13 +272,28 @@ test('model-test 页按模型测试渠道表在渠道名称后显示优先级', 
   const row = {
     children: [],
     querySelector(selector) {
-      if (selector === '.channel-priority') {
-        return { textContent: '120' };
+      if (selector === '.ch-priority-input') {
+        return { value: '120' };
+      }
+      if (selector === '.channel-enable-switch') {
+        return { dataset: { enabled: 'true' } };
       }
       return null;
     }
   };
   assert.equal(getRowSortValue(row, 'priority'), 120);
+  assert.equal(getRowSortValue(row, 'enabled'), 1);
+
+  const disabledRow = {
+    children: [],
+    querySelector(selector) {
+      if (selector === '.channel-enable-switch') {
+        return { dataset: { enabled: 'false' } };
+      }
+      return null;
+    }
+  };
+  assert.equal(getRowSortValue(disabledRow, 'enabled'), 0);
 });
 
 test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选框', () => {

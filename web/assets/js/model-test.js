@@ -42,7 +42,7 @@ const deletePreviewConfirmBtn = document.getElementById('deletePreviewConfirmBtn
 
 const RESULT_TABLE_COLSPAN_WITH_FIRST_BYTE = 11;
 const RESULT_TABLE_COLSPAN_NO_FIRST_BYTE = 10;
-const MODEL_MODE_EXTRA_COLSPAN = 1;
+const MODEL_MODE_EXTRA_COLSPAN = 2;
 const SORT_DIRECTION_ASC = 1;
 const SORT_DIRECTION_DESC = -1;
 const SORT_DIRECTION_NONE = 0;
@@ -100,6 +100,7 @@ const MODEL_MODE_HEAD = `
   <th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"></th>
   <th class="table-col-channel" data-i18n="modelTest.channelName" data-sort-key="name">渠道</th>
   <th class="table-col-priority" data-i18n="channels.table.priority" data-sort-key="priority">优先级</th>
+  <th class="table-col-enabled" data-i18n="channels.table.enabled" data-sort-key="enabled">启用</th>
   <th class="first-byte-col table-col-duration" data-i18n="modelTest.firstByteDuration" data-sort-key="firstByteDuration">首字</th>
   <th class="table-col-duration" data-i18n="modelTest.totalDuration" data-sort-key="duration">总耗时</th>
   <th class="table-col-metric" data-i18n="common.input" data-sort-key="inputTokens">输入</th>
@@ -140,6 +141,123 @@ function formatChannelPriority(priority) {
   if (!text) return '-';
   const value = Number(text);
   return Number.isFinite(value) ? String(value) : '-';
+}
+
+const MODEL_TEST_PRIORITY_MIN = -99999;
+const MODEL_TEST_PRIORITY_MAX = 99999;
+let modelTestPrioritySaveTimers = new Map();
+
+function normalizeModelTestPriorityValue(value, fallback) {
+  const fallbackValue = Number.isFinite(Number(fallback)) ? Number(fallback) : 0;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return Math.trunc(fallbackValue);
+  return Math.max(MODEL_TEST_PRIORITY_MIN, Math.min(MODEL_TEST_PRIORITY_MAX, Math.trunc(num)));
+}
+
+function updateLocalModelTestChannelPriority(channelId, priority) {
+  if (!Array.isArray(channelsList)) return;
+  channelsList.forEach((ch) => {
+    if (Number(ch.id) === channelId) ch.priority = priority;
+  });
+}
+
+async function saveModelTestInlinePriority(input) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  if (!Number.isFinite(channelId) || channelId <= 0) return;
+
+  const originalPriority = normalizeModelTestPriorityValue(input.dataset.originalPriority, 0);
+  const nextPriority = normalizeModelTestPriorityValue(input.value, originalPriority);
+  input.value = String(nextPriority);
+  if (nextPriority === originalPriority) {
+    input.classList.remove('is-dirty');
+    return;
+  }
+
+  input.dataset.originalPriority = String(nextPriority);
+  input.disabled = true;
+
+  try {
+    await fetchDataWithAuth('/admin/channels/batch-priority', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ updates: [{ id: channelId, priority: nextPriority }] })
+    });
+    input.classList.remove('is-dirty');
+    updateLocalModelTestChannelPriority(channelId, nextPriority);
+  } catch (error) {
+    console.error('Update channel priority failed:', error);
+    input.dataset.originalPriority = String(originalPriority);
+    input.value = String(originalPriority);
+    input.classList.remove('is-dirty');
+  } finally {
+    input.disabled = false;
+  }
+}
+
+function queueModelTestPrioritySave(input, delay = 1000) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  if (!Number.isFinite(channelId) || channelId <= 0) return;
+  input.classList.add('is-dirty');
+  const existingTimer = modelTestPrioritySaveTimers.get(channelId);
+  if (existingTimer) clearTimeout(existingTimer);
+  const timer = setTimeout(() => {
+    modelTestPrioritySaveTimers.delete(channelId);
+    saveModelTestInlinePriority(input);
+  }, delay);
+  modelTestPrioritySaveTimers.set(channelId, timer);
+}
+
+function flushModelTestPrioritySave(input) {
+  if (!input) return;
+  const channelId = Number(input.dataset.channelId);
+  const existingTimer = modelTestPrioritySaveTimers.get(channelId);
+  if (existingTimer) {
+    clearTimeout(existingTimer);
+    modelTestPrioritySaveTimers.delete(channelId);
+  }
+  return saveModelTestInlinePriority(input);
+}
+
+function updateLocalModelTestChannelEnabled(channelId, enabled) {
+  if (!Array.isArray(channelsList)) return;
+  channelsList.forEach((ch) => {
+    if (Number(ch.id) === channelId) ch.enabled = enabled;
+  });
+}
+
+function applyModelTestRowEnabledStyle(row, enabled) {
+  if (!row) return;
+  const btn = row.querySelector('.channel-enable-switch');
+  if (btn) {
+    btn.dataset.enabled = String(enabled);
+    btn.setAttribute('aria-checked', String(enabled));
+    btn.classList.toggle('channel-enable-switch--on', enabled);
+    btn.classList.toggle('channel-enable-switch--off', !enabled);
+    btn.title = enabled ? i18nText('channels.toggleDisable', '禁用') : i18nText('channels.toggleEnable', '启用');
+    btn.setAttribute('aria-label', btn.title);
+  }
+  row.style.background = enabled ? '' : 'rgba(148, 163, 184, 0.14)';
+  row.style.color = enabled ? '' : 'var(--color-text-secondary)';
+}
+
+async function toggleModelTestChannelEnabled(row, channelId, newEnabled) {
+  updateLocalModelTestChannelEnabled(channelId, newEnabled);
+  applyModelTestRowEnabledStyle(row, newEnabled);
+
+  try {
+    const resp = await fetchAPIWithAuth(`/admin/channels/${channelId}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: newEnabled })
+    });
+    if (!resp.success) throw new Error(resp.error || 'failed');
+  } catch (e) {
+    console.error('Toggle channel enabled failed:', e);
+    updateLocalModelTestChannelEnabled(channelId, !newEnabled);
+    applyModelTestRowEnabledStyle(row, !newEnabled);
+  }
 }
 
 function normalizeModelTestCostMultiplier(multiplier) {
@@ -417,6 +535,7 @@ function getResultRowMobileLabels(nameKey, nameFallback) {
     mobileLabelSelect: '',
     mobileLabelName: i18nText(nameKey, nameFallback),
     mobileLabelPriority: i18nText('channels.table.priority', '优先级'),
+    mobileLabelEnabled: i18nText('channels.table.enabled', '启用'),
     mobileLabelFirstByte: i18nText('modelTest.firstByteDuration', '首字'),
     mobileLabelDuration: i18nText('modelTest.totalDuration', '总耗时'),
     mobileLabelInput: i18nText('common.input', '输入'),
@@ -541,8 +660,14 @@ function getRowSortValue(row, key) {
   switch (key) {
     case 'name':
       return row.children[1]?.textContent?.trim() || '';
-    case 'priority':
-      return parseNumericCellValue(row.querySelector('.channel-priority')?.textContent);
+    case 'priority': {
+      const priorityInput = row.querySelector('.ch-priority-input');
+      return parseNumericCellValue(priorityInput ? priorityInput.value : row.querySelector('.channel-priority')?.textContent);
+    }
+    case 'enabled': {
+      const btn = row.querySelector('.channel-enable-switch');
+      return btn?.dataset?.enabled === 'true' ? 1 : 0;
+    }
     case 'firstByteDuration':
       return parseNumericCellValue(row.querySelector('.first-byte-duration')?.textContent);
     case 'duration':
@@ -1077,11 +1202,15 @@ function renderModelModeRows() {
     const channelName = isEnabled
       ? baseName
       : `${baseName} [${i18nText('common.disabled', '已禁用')}]`;
+    const priorityValue = (ch.priority !== null && ch.priority !== undefined && Number.isFinite(Number(ch.priority))) ? Number(ch.priority) : 0;
 
     const row = TemplateEngine.render('tpl-channel-row-by-model', {
       channelId: String(ch.id),
       channelName,
-      channelPriority: formatChannelPriority(ch.priority),
+      channelPriority: String(priorityValue),
+      channelEnabled: String(isEnabled),
+      toggleSwitchClass: isEnabled ? 'channel-enable-switch--on' : 'channel-enable-switch--off',
+      toggleTitle: isEnabled ? i18nText('channels.toggleDisable', '禁用') : i18nText('channels.toggleEnable', '启用'),
       costMultiplier: normalizeModelTestCostMultiplier(ch.cost_multiplier),
       model,
       ...getResultRowMobileLabels('modelTest.channel', '渠道')
@@ -2342,6 +2471,18 @@ function bindEvents() {
   });
 
   tbody.addEventListener('click', (event) => {
+    // Enable switch toggle
+    const enableSwitch = event.target.closest('.channel-enable-switch');
+    if (enableSwitch) {
+      const row = enableSwitch.closest('tr');
+      const channelId = parseInt(enableSwitch.dataset.channelId, 10);
+      if (Number.isFinite(channelId) && channelId > 0 && row) {
+        const currentEnabled = enableSwitch.dataset.enabled === 'true';
+        toggleModelTestChannelEnabled(row, channelId, !currentEnabled);
+      }
+      return;
+    }
+
     // Click on response cell to show upstream detail
     const responseCell = event.target.closest('.response');
     if (responseCell) {
@@ -2359,6 +2500,31 @@ function bindEvents() {
     if (Number.isFinite(channelId) && channelId > 0 && typeof openLogChannelEditor === 'function') {
       openLogChannelEditor(channelId);
     }
+  });
+
+  tbody.addEventListener('input', (event) => {
+    const input = event.target.closest('.ch-priority-input');
+    if (!input) return;
+    queueModelTestPrioritySave(input);
+  });
+
+  tbody.addEventListener('keydown', (event) => {
+    const input = event.target.closest('.ch-priority-input');
+    if (!input) return;
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      flushModelTestPrioritySave(input);
+    } else if (event.key === 'Escape') {
+      const originalPriority = normalizeModelTestPriorityValue(input.dataset.originalPriority, 0);
+      input.value = String(originalPriority);
+      input.classList.remove('is-dirty');
+    }
+  });
+
+  tbody.addEventListener('focusout', (event) => {
+    const input = event.target.closest('.ch-priority-input');
+    if (!input) return;
+    flushModelTestPrioritySave(input);
   });
 
   tbody.addEventListener('change', (event) => {
