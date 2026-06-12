@@ -200,7 +200,7 @@ test('stats 页将成功率并到成功计数后并收紧 RPM 显示', () => {
 
 test('trend 页手机端堆叠头部工具栏并释放图表高度', () => {
   assert.match(trendHtml, /class="flex justify-between items-center mb-6 trend-chart-header"/);
-  assert.match(trendHtml, /class="text-xl font-semibold trend-chart-title"/);
+  assert.match(trendHtml, /class="text-lg font-semibold trend-chart-title"/);
   assert.match(trendHtml, /class="[^"]*trend-chart-toolbar[^"]*"/);
   assert.match(trendHtml, /id="chart"\s+class="w-full h-full hidden"/);
   assert.match(trendScript, /const trendTypeGroup = document\.getElementById\('trend-type-group'\)/);
