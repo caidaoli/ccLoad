@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func assertClassifyError(t *testing.T, err error, wantStatus int, wantLevel ErrorLevel, wantRetry bool, reason string) {
@@ -643,6 +644,96 @@ func TestClassifyRateLimitError(t *testing.T) {
 }
 
 // TestClassifySSEError 测试SSE error事件分类
+func TestParseRetryAfterSecondsCooldownUntil(t *testing.T) {
+	now := time.Now()
+
+	tests := []struct {
+		name            string
+		message         string
+		wantOK          bool
+		wantDurationSec int
+	}{
+		{
+			name:            "codex_rolling_spend_limit",
+			message:         "Codex rolling spend limit exceeded. Used $20.03 in the last 3 hours, limit is $20.00. Please retry after 2196 seconds.",
+			wantOK:          true,
+			wantDurationSec: 2196,
+		},
+		{
+			name:            "retry_after_60",
+			message:         "Rate limited. Please retry after 60 seconds.",
+			wantOK:          true,
+			wantDurationSec: 60,
+		},
+		{
+			name:            "retry_after_singular",
+			message:         "Please retry after 1 second",
+			wantOK:          true,
+			wantDurationSec: 1,
+		},
+		{
+			name:    "retry_in_not_matched",
+			message: "Please retry in 59.4s",
+			wantOK:  false,
+		},
+		{
+			name:    "no_retry_keyword",
+			message: "Rate limit exceeded",
+			wantOK:  false,
+		},
+		{
+			name:    "retry_after_zero",
+			message: "Please retry after 0 seconds",
+			wantOK:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			until, ok := parseRetryAfterSecondsCooldownUntil(tt.message, now)
+			if ok != tt.wantOK {
+				t.Fatalf("ok: 期望 %v, 实际 %v", tt.wantOK, ok)
+			}
+			if !ok {
+				return
+			}
+			gotSec := int(until.Sub(now).Seconds())
+			if gotSec != tt.wantDurationSec {
+				t.Errorf("冷却秒数: 期望 %d, 实际 %d", tt.wantDurationSec, gotSec)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_CodexRollingSpendLimit(t *testing.T) {
+	body := []byte(`{"error":{"message":"Codex rolling spend limit exceeded. Used $20.03 in the last 3 hours, limit is $20.00. Please retry after 2196 seconds.","type":"rate_limit_error","param":null,"code":"rate_limit_exceeded"}}`)
+
+	result := ClassifyHTTPResponseWithMeta(429, nil, body)
+
+	if result.Level != ErrorLevelKey {
+		t.Errorf("错误级别: 期望 Key, 实际 %v", result.Level)
+	}
+	if !result.HasKeyCooldownUntil {
+		t.Fatal("应该包含精确冷却截止时间")
+	}
+	if result.KeyCooldownReason != "RATE_LIMIT_RETRY_AFTER" {
+		t.Errorf("冷却原因: 期望 RATE_LIMIT_RETRY_AFTER, 实际 %s", result.KeyCooldownReason)
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_429NoRetryAfterInBody(t *testing.T) {
+	body := []byte(`{"error":{"message":"Rate limit exceeded","type":"rate_limit_error","code":"rate_limit_exceeded"}}`)
+
+	result := ClassifyHTTPResponseWithMeta(429, nil, body)
+
+	if result.HasKeyCooldownUntil {
+		t.Error("无 retry after 文案时不应返回精确冷却时间")
+	}
+	if result.Level != ErrorLevelKey {
+		t.Errorf("错误级别: 期望 Key, 实际 %v", result.Level)
+	}
+}
+
 func TestClassifySSEError(t *testing.T) {
 	tests := []struct {
 		name         string
