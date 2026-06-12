@@ -2931,6 +2931,10 @@ body {
   width: 76px;
 }
 
+.table-col-enabled {
+  width: 64px;
+}
+
 .table-col-speed {
   width: 96px;
 }
