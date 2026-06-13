@@ -507,5 +507,6 @@ func (s *Server) writeFinalProxyResponse(
 		return
 	}
 
+	disableResponseWriteTimeout(c.Writer, "最终响应")
 	c.JSON(finalStatus, gin.H{"error": "no upstream available"})
 }

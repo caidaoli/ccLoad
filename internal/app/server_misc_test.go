@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"net"
 	"net/http"
@@ -18,6 +19,8 @@ import (
 
 type deadlineRecorderResponseWriter struct {
 	header         http.Header
+	body           bytes.Buffer
+	statusCode     int
 	writeDeadline  time.Time
 	deadlineCalled bool
 }
@@ -30,10 +33,12 @@ func (w *deadlineRecorderResponseWriter) Header() http.Header {
 }
 
 func (w *deadlineRecorderResponseWriter) Write(data []byte) (int, error) {
-	return len(data), nil
+	return w.body.Write(data)
 }
 
-func (w *deadlineRecorderResponseWriter) WriteHeader(_ int) {}
+func (w *deadlineRecorderResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+}
 
 func (w *deadlineRecorderResponseWriter) SetWriteDeadline(t time.Time) error {
 	w.deadlineCalled = true
