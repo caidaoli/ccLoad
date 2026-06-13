@@ -54,6 +54,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 			COALESCE(model, '') AS model,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
+			SUM(CASE WHEN status_code = 429 THEN 1 ELSE 0 END) AS rate_limited,
 			COALESCE(AVG(CASE WHEN first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END), 0) AS avg_first_byte_time,
 			COALESCE(AVG(CASE WHEN duration > 0 AND status_code >= 200 AND status_code < 300 THEN duration ELSE NULL END), 0) AS avg_duration,
 			SUM(COALESCE(input_tokens, 0)) AS input_tokens,
@@ -92,7 +93,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 	var result []model.HealthTimelineRow
 	for rows.Next() {
 		var r model.HealthTimelineRow
-		if err := rows.Scan(&r.BucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount,
+		if err := rows.Scan(&r.BucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount, &r.RateLimitedCount,
 			&r.AvgFirstByteTime, &r.AvgDuration, &r.InputTokens, &r.OutputTokens,
 			&r.CacheReadTokens, &r.CacheCreationTokens, &r.TotalCost, &r.EffectiveCost); err != nil {
 			continue

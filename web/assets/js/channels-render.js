@@ -478,13 +478,19 @@ function buildChannelHealthIndicator(timeline, currentRate) {
     }
 
     const rate = point.rate;
+    const rateLimited = point.rate_limited || 0;
+    const realErrors = (point.error || 0) - rateLimited;
 
-    const className = rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
+    // 配色：所有失败都是限流 → 蓝色；有真实错误 → 按成功率分级(绿/橙/红)
+    const className = (realErrors === 0 && rateLimited > 0)
+      ? 'rate-limited'
+      : rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
 
     const d = new Date(point.ts);
     const timeStr = `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
     let title = `${timeStr}\n${window.t('stats.tooltipSuccess')}: ${point.success || 0} / ${window.t('stats.tooltipFailed')}: ${point.error || 0}`;
+    if (rateLimited > 0) title += ` (${window.t('stats.tooltipRateLimited')}: ${rateLimited})`;
     if (point.avg_first_byte_time > 0) title += `\n${window.t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
     if (point.avg_duration > 0) title += `\n${window.t('stats.tooltipDuration')}: ${point.avg_duration.toFixed(2)}s`;
 

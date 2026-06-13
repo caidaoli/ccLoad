@@ -512,6 +512,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 		p.SuccessRate = successRate
 		p.SuccessCount = row.Success
 		p.ErrorCount = row.ErrorCount
+		p.RateLimitedCount = row.RateLimitedCount
 		p.AvgFirstByteTime = row.AvgFirstByteTime
 		p.AvgDuration = row.AvgDuration
 		p.TotalInputTokens = row.InputTokens
@@ -562,6 +563,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 			}
 			ch[i].SuccessCount += pt.SuccessCount
 			ch[i].ErrorCount += pt.ErrorCount
+			ch[i].RateLimitedCount += pt.RateLimitedCount
 			if total := ch[i].SuccessCount + ch[i].ErrorCount; total > 0 {
 				ch[i].SuccessRate = float64(ch[i].SuccessCount) / float64(total)
 			}

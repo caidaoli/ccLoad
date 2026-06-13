@@ -635,6 +635,7 @@ window.I18N_LOCALES['en'] = {
   'stats.healthNoData': 'No data',
   'stats.tooltipSuccess': 'Success',
   'stats.tooltipFailed': 'Failed',
+  'stats.tooltipRateLimited': 'Rate Limited',
   'stats.tooltipTTFT': 'TTFT',
   'stats.tooltipDuration': 'Duration',
   'stats.tooltipInput': 'Input',

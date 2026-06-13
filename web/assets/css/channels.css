@@ -1572,6 +1572,10 @@
       background: #ef4444;
     }
 
+    .health-block.rate-limited {
+      background: #facc15;
+    }
+
     .health-block.unknown {
       background: #d1d5db;
     }
