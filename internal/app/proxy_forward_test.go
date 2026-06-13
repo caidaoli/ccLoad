@@ -297,6 +297,43 @@ func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t
 	}
 }
 
+func TestCodexRetryBodyFor400_AnyrouterStripsCompactionItem(t *testing.T) {
+	// 线上案例：Codex Desktop 0.140 alpha 在 fork 线程时插入空占位项
+	// {"type":"compaction"}，anyrouter(new-api) 校验不识别该类型直接 400，
+	// 且 body 无 encrypted_content / tool_search_* 可剥离。
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"reasoning":{"effort":"xhigh"},
+		"include":["reasoning.encrypted_content"],
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]},
+			{"type":"compaction"},
+			{"type":"reasoning","summary":[]}
+		]
+	}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"message":"invalid codex request (request id: x)","type":"new_api_error","param":"","code":"invalid_responses_request"}}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+	cfg := &model.Config{Name: "anyrouter-codex"}
+
+	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, cfg, plan, res)
+	if !ok {
+		t.Fatal("codexRetryBodyFor400 returned ok=false")
+	}
+	if strategy != "strip_codex_encrypted_tool_search" {
+		t.Fatalf("strategy=%q, want strip_codex_encrypted_tool_search", strategy)
+	}
+	text := string(got)
+	if strings.Contains(text, `"compaction"`) {
+		t.Fatalf("retry body should remove compaction item, got %s", text)
+	}
+	if !strings.Contains(text, `"type":"message"`) || !strings.Contains(text, `"type":"reasoning"`) {
+		t.Fatalf("retry body should preserve message and reasoning items, got %s", text)
+	}
+}
+
 func TestTranslatedStreamChunkCompletes(t *testing.T) {
 	t.Parallel()
 

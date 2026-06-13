@@ -1772,7 +1772,8 @@ func codexBodyWithoutEncryptedContentAndToolSearch(body []byte) ([]byte, bool) {
 				continue
 			}
 			typ, _ := obj["type"].(string)
-			if strings.HasPrefix(typ, "tool_search_") {
+			// compaction 是 Codex 客户端 fork 线程时的空占位项，new-api 校验不识别
+			if strings.HasPrefix(typ, "tool_search_") || typ == "compaction" {
 				removed = true
 				continue
 			}
