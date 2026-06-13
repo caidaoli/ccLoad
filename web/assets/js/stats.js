@@ -949,7 +949,13 @@
         }
 
         const rate = point.rate;
-        const className = rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
+        const rateLimited = point.rate_limited || 0;
+        const realErrors = (point.error || 0) - rateLimited;
+
+        // 配色：所有失败都是限流 → 蓝色；有真实错误 → 按成功率分级(绿/橙/红)
+        const className = (realErrors === 0 && rateLimited > 0)
+          ? 'rate-limited'
+          : rate >= 0.95 ? 'healthy' : rate >= 0.80 ? 'warning' : 'critical';
 
         // 快速时间格式化（避免 toLocaleString 的性能开销）
         const d = new Date(point.ts);
@@ -958,6 +964,7 @@
         // 构建 tooltip - 使用条件拼接减少数组操作
         let title = `${timeStr}
 ${t('stats.tooltipSuccess')}: ${point.success || 0} / ${t('stats.tooltipFailed')}: ${point.error || 0}`;
+        if (rateLimited > 0) title += ` (${t('stats.tooltipRateLimited')}: ${rateLimited})`;
         if (point.avg_first_byte_time > 0) title += `
 ${t('stats.tooltipTTFT')}: ${point.avg_first_byte_time.toFixed(2)}s`;
         if (point.avg_duration > 0) title += `

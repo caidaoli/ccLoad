@@ -634,6 +634,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'stats.healthNoData': '无数据',
   'stats.tooltipSuccess': '成功',
   'stats.tooltipFailed': '失败',
+  'stats.tooltipRateLimited': '限流',
   'stats.tooltipTTFT': '首字',
   'stats.tooltipDuration': '耗时',
   'stats.tooltipInput': '输入',

@@ -40,6 +40,7 @@ type HealthPoint struct {
 	SuccessRate              float64   `json:"rate"`                  // 成功率 (0-1), -1表示无数据
 	SuccessCount             int       `json:"success"`               // 成功次数
 	ErrorCount               int       `json:"error"`                 // 失败次数
+	RateLimitedCount         int       `json:"rate_limited"`          // 429限流次数（ErrorCount的子集）
 	AvgFirstByteTime         float64   `json:"avg_first_byte_time"`   // 平均上游首块响应体时间(秒)
 	AvgDuration              float64   `json:"avg_duration"`          // 平均耗时(秒)
 	TotalInputTokens         int64     `json:"input_tokens"`          // 输入Token
@@ -112,6 +113,7 @@ type HealthTimelineRow struct {
 	Model               string
 	Success             int
 	ErrorCount          int
+	RateLimitedCount    int // 429 限流次数（ErrorCount 的子集）
 	AvgFirstByteTime    float64
 	AvgDuration         float64
 	InputTokens         int64
