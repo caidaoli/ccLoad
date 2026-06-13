@@ -37,6 +37,8 @@ const (
 )
 
 func writeResponseWithHeaders(w http.ResponseWriter, status int, hdr http.Header, body []byte) {
+	disableResponseWriteTimeout(w, "最终响应")
+
 	if hdr != nil {
 		filterAndWriteResponseHeaders(w, hdr)
 	} else if len(body) > 0 {

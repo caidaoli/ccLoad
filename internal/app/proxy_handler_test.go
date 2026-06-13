@@ -11,6 +11,8 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/util"
+
+	"github.com/gin-gonic/gin"
 )
 
 func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
@@ -33,6 +35,28 @@ func TestHandleProxyRequest_UnknownPathReturns404(t *testing.T) {
 
 	if body := w.Body.String(); !bytes.Contains([]byte(body), []byte("unsupported path")) {
 		t.Fatalf("响应内容缺少错误信息，实际: %s", body)
+	}
+}
+
+func TestWriteFinalProxyResponse_DisablesWriteTimeoutForJSONFallback(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	w := &deadlineRecorderResponseWriter{}
+	c, _ := gin.CreateTestContext(w)
+	c.Request = newRequest(http.MethodPost, "/v1/chat/completions", nil)
+	reqCtx := &proxyRequestContext{
+		startTime: time.Now(),
+		clientIP:  "127.0.0.1",
+	}
+
+	srv.writeFinalProxyResponse(c, reqCtx, "gpt-test", false, &proxyResult{status: 0}, 1)
+
+	if !w.deadlineCalled {
+		t.Fatal("SetWriteDeadline was not called")
+	}
+	if !w.writeDeadline.IsZero() {
+		t.Fatalf("writeDeadline=%v, want zero time", w.writeDeadline)
 	}
 }
 

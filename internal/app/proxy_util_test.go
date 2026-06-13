@@ -14,14 +14,14 @@ import (
 func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 	t.Parallel()
 
-	w := newRecorder()
+	w := &deadlineRecorderResponseWriter{}
 	hdr := http.Header{}
 	hdr.Set("Content-Type", "text/plain; charset=utf-8")
 	hdr.Set("Connection", "keep-alive") // hop-by-hop should be stripped
 
 	writeResponseWithHeaders(w, http.StatusBadGateway, hdr, []byte("oops"))
 
-	if got := w.Code; got != http.StatusBadGateway {
+	if got := w.statusCode; got != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, got)
 	}
 	if got := w.Header().Get("Content-Type"); got != "text/plain; charset=utf-8" {
@@ -30,7 +30,7 @@ func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 	if got := w.Header().Get("Connection"); got != "" {
 		t.Fatalf("expected hop-by-hop header stripped, got %q", got)
 	}
-	if got := w.Body.String(); got != "oops" {
+	if got := w.body.String(); got != "oops" {
 		t.Fatalf("expected body preserved, got %q", got)
 	}
 }
@@ -38,14 +38,28 @@ func TestWriteResponseWithHeaders_PreservesContentType(t *testing.T) {
 func TestWriteResponseWithHeaders_DefaultsToJSONContentTypeWhenBodyLooksJSON(t *testing.T) {
 	t.Parallel()
 
-	w := newRecorder()
+	w := &deadlineRecorderResponseWriter{}
 	writeResponseWithHeaders(w, http.StatusBadGateway, nil, []byte(`{"error":"x"}`))
 
-	if got := w.Code; got != http.StatusBadGateway {
+	if got := w.statusCode; got != http.StatusBadGateway {
 		t.Fatalf("expected status %d, got %d", http.StatusBadGateway, got)
 	}
 	if got := w.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
 		t.Fatalf("expected Content-Type json, got %q", got)
+	}
+}
+
+func TestWriteResponseWithHeaders_DisablesWriteTimeoutBeforeWriting(t *testing.T) {
+	t.Parallel()
+
+	w := &deadlineRecorderResponseWriter{}
+	writeResponseWithHeaders(w, http.StatusBadGateway, nil, []byte(`{"error":"x"}`))
+
+	if !w.deadlineCalled {
+		t.Fatal("SetWriteDeadline was not called")
+	}
+	if !w.writeDeadline.IsZero() {
+		t.Fatalf("writeDeadline=%v, want zero time", w.writeDeadline)
 	}
 }
 
