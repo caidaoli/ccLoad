@@ -49,6 +49,13 @@ func (rc *onceCloseReadCloser) Close() error {
 	return closeErr
 }
 
+func disableResponseWriteTimeout(w http.ResponseWriter, requestKind string) {
+	rc := http.NewResponseController(w)
+	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
+		log.Printf("[WARN] 无法禁用%s请求的 WriteTimeout: %v", requestKind, err)
+	}
+}
+
 // prependToBody 将前缀数据合并到resp.Body（用于恢复已探测的数据）
 func prependToBody(resp *http.Response, prefix []byte) {
 	resp.Body = readerWithCloser{
@@ -703,10 +710,9 @@ func (s *Server) handleSuccessResponse(
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
 	// Go 1.20+ http.ResponseController 支持动态调整 WriteDeadline
 	if reqCtx.isStreaming {
-		rc := http.NewResponseController(w)
-		if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-			log.Printf("[WARN] 无法禁用流式请求的 WriteTimeout: %v", err)
-		}
+		disableResponseWriteTimeout(w, "流式")
+	} else {
+		disableResponseWriteTimeout(w, "非流式")
 	}
 
 	streamWriter := w
@@ -855,6 +861,9 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	translatedHeader := resp.Header.Clone()
 	translatedHeader.Set("Content-Type", "application/json")
 	translatedHeader.Del("Content-Encoding")
+
+	disableResponseWriteTimeout(w, "非流式")
+
 	filterAndWriteResponseHeaders(w, translatedHeader)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = w.Write(translatedBody)
@@ -884,10 +893,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
-	rc := http.NewResponseController(w)
-	if err := rc.SetWriteDeadline(time.Time{}); err != nil {
-		log.Printf("[WARN] 无法禁用流式请求的 WriteTimeout: %v", err)
-	}
+	disableResponseWriteTimeout(w, "流式")
 
 	deferredWriter := newDeferredResponseWriter(w)
 	filterAndWriteResponseHeaders(deferredWriter, resp.Header)
