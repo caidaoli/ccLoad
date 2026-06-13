@@ -16,6 +16,45 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type deadlineRecorderResponseWriter struct {
+	header         http.Header
+	writeDeadline  time.Time
+	deadlineCalled bool
+}
+
+func (w *deadlineRecorderResponseWriter) Header() http.Header {
+	if w.header == nil {
+		w.header = make(http.Header)
+	}
+	return w.header
+}
+
+func (w *deadlineRecorderResponseWriter) Write(data []byte) (int, error) {
+	return len(data), nil
+}
+
+func (w *deadlineRecorderResponseWriter) WriteHeader(_ int) {}
+
+func (w *deadlineRecorderResponseWriter) SetWriteDeadline(t time.Time) error {
+	w.deadlineCalled = true
+	w.writeDeadline = t
+	return nil
+}
+
+func TestDisableResponseWriteTimeoutClearsDeadline(t *testing.T) {
+	t.Parallel()
+
+	w := &deadlineRecorderResponseWriter{}
+	disableResponseWriteTimeout(w, "非流式")
+
+	if !w.deadlineCalled {
+		t.Fatal("SetWriteDeadline was not called")
+	}
+	if !w.writeDeadline.IsZero() {
+		t.Fatalf("writeDeadline=%v, want zero time", w.writeDeadline)
+	}
+}
+
 func TestServer_SetupRoutes_CORSPreflightBypassesAuth(t *testing.T) {
 	srv := newInMemoryServer(t)
 
