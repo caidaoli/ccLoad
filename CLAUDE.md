@@ -46,12 +46,14 @@ web/               # 前端（HTML + assets/{css,js,locales}）
 - **597** SSE error 事件（HTTP 200 + 错误体）→ `classifySSEError()` 按 error.type 动态判定（api_error/overloaded_error → 渠道级）
 - **598** 上游首字节超时 → 渠道级
 - **599** 流式响应中断 → 渠道级
+- **429** 限流不计入健康度统计（`GetChannelSuccessRates` 的 eligible 口径剔除）；健康时间线独立统计 `rate_limited` 字段用于前端黄色指示
 
 ## 上游超时（`server.go:loadChannelTypeTimeouts`）
 
 - 全局：`upstream_first_byte_timeout`（默认 0=禁用，**仅流式生效**）、`non_stream_timeout`（默认 120s）
 - 按渠道类型覆盖：`{type}_first_byte_timeout` / `{type}_non_stream_timeout`（type ∈ anthropic/codex/openai/gemini），**0=回退全局**；按运行时上游协议匹配
 - 首字节超时触发 → 598（渠道级，见自定义状态码）
+- **响应写超时**：流式与非流式响应在最终写回前统一调用 `disableResponseWriteTimeout()`（`proxy_forward.go:52`），防止 Go `http.Server.WriteTimeout` 截断响应体
 
 ## 渠道/Key/URL 选择
 
