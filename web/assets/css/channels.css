@@ -612,6 +612,12 @@
       box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
     }
 
+    /* 渠道表格需要 overflow:visible 以便失败详情弹层不被裁剪
+       （table-layout:fixed 保证表格本身不会横向溢出） */
+    .channel-table-container {
+      overflow: visible;
+    }
+
     /* ===== 渠道表格布局 ===== */
     .channel-table {
       table-layout: fixed;
