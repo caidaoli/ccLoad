@@ -222,7 +222,7 @@ html[data-theme="dark"] {
   align-items: center;
   background:
     linear-gradient(180deg, rgba(5, 12, 28, 0.68), rgba(5, 12, 28, 0.46)),
-    url('../images/ccload.jpg') center / cover no-repeat;
+    url('../images/ccload.jpg?v=20260614-2') center / cover no-repeat;
   position: relative;
   overflow: hidden;
 }
