@@ -1,0 +1,12 @@
+# www 目录 .gitignore
+# 这些文件是从其他位置复制来的，不应提交到版本控制
+
+# 从 web 复制的共享资源
+assets/css/styles.css
+assets/js/i18n.js
+assets/js/theme-init.js
+
+# 从 web 复制的图标
+favicon.svg
+favicon.ico
+apple-touch-icon.png

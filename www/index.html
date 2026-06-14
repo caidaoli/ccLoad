@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ccLoad - Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务</title>
+  <meta name="description" content="ccLoad 是一个高性能 AI API 代理服务，支持 Claude Code/Codex/Gemini/OpenAI 多协议，提供智能路由、自动故障切换、实时监控和成本控制功能">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
+
+  <!-- 主题初始化（避免闪烁） -->
+  <script src="assets/js/theme-init.js"></script>
+
+  <!-- 样式 -->
+  <link rel="stylesheet" href="assets/css/www.css">
+
+  <!-- 语言包 + i18n -->
+  <script defer src="assets/locales/zh-CN.js"></script>
+  <script defer src="assets/locales/en.js"></script>
+  <script defer src="assets/js/i18n.js"></script>
+
+  <!-- 脚本 -->
+  <script defer src="assets/js/nav.js"></script>
+  <script defer src="assets/js/www.js"></script>
+</head>
+<body class="www-page www-home">
+  <!-- 导航栏由 nav.js 动态生成 -->
+
+  <!-- Hero 区域 -->
+  <section class="www-hero">
+    <div class="www-hero-content">
+      <h1 class="www-hero-title" data-i18n="www.home.hero.title">ccLoad</h1>
+      <p class="www-hero-subtitle" data-i18n="www.home.hero.subtitle">
+        Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务
+      </p>
+      <p class="www-hero-subtitle" data-i18n="www.home.hero.description">
+        智能路由 · 自动故障切换 · 实时监控 · 成本控制
+      </p>
+      <div class="www-hero-actions">
+        <a href="#quickstart" class="www-btn www-btn-primary" data-i18n="www.home.hero.getStarted">
+          快速开始
+        </a>
+        <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn www-btn-secondary">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+            <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
+          </svg>
+          <span data-i18n="www.home.hero.viewGithub">GitHub</span>
+        </a>
+      </div>
+    </div>
+  </section>
+
+  <!-- 核心特性 -->
+  <section class="www-section">
+    <div class="www-container">
+      <h2 class="www-section-title" data-i18n="www.home.features.title">核心特性</h2>
+      <div class="www-feature-grid">
+        <!-- 智能路由 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🎯</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.routing.title">智能路由</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.routing.desc">
+            基于优先级和健康度的智能请求分发，平滑加权轮询确保流量均衡
+          </p>
+        </div>
+
+        <!-- 自动故障切换 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🔄</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.failover.title">自动故障切换</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.failover.desc">
+            渠道故障时秒级切换，指数退避冷却机制避免雪崩
+          </p>
+        </div>
+
+        <!-- 实时监控 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">📊</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.monitoring.title">实时监控</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.monitoring.desc">
+            详细的请求统计、成本分析、趋势图表，实时请求监控大屏
+          </p>
+        </div>
+
+        <!-- 成本控制 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">💰</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.cost.title">成本控制</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.cost.desc">
+            渠道每日成本限额、API 令牌费用限额，精确到微美元
+          </p>
+        </div>
+
+        <!-- 多 API 兼容 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🔌</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.multiapi.title">多 API 兼容</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.multiapi.desc">
+            Claude/Codex/Gemini/OpenAI 四大协议完全兼容，一套配置走天下
+          </p>
+        </div>
+
+        <!-- 本地 Token 计算 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">⚡</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.token.title">本地 Token 计算</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.token.desc">
+            &lt;5ms 响应，93%+ 准确度，无需调用 API 即可计算 Token 数量
+          </p>
+        </div>
+
+        <!-- 协议转换 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🔀</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.protocol.title">协议转换</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.protocol.desc">
+            Anthropic/OpenAI/Gemini/Codex 互转，保留采样与思考参数
+          </p>
+        </div>
+
+        <!-- 软错误检测 -->
+        <div class="www-feature-card">
+          <span class="www-feature-icon">🛡️</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.detection.title">软错误检测</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.detection.desc">
+            HTTP 200 伪装的错误也能检测，SSE 流式响应中的限流标记识别
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 部署方式 -->
+  <section class="www-section" style="background: var(--color-bg-elevated);">
+    <div class="www-container">
+      <h2 class="www-section-title" data-i18n="www.home.deployment.title">部署方式</h2>
+      <div class="www-deployment-grid">
+        <!-- Docker -->
+        <div class="www-deployment-card">
+          <span class="www-deployment-icon">🐳</span>
+          <h3 class="www-deployment-title" data-i18n="www.home.deployment.docker.title">Docker 部署</h3>
+          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.docker.difficulty">难度：⭐⭐</span>
+          <p class="www-deployment-desc" data-i18n="www.home.deployment.docker.desc">
+            推荐生产环境使用，稳定可靠，支持 SQLite 和 MySQL
+          </p>
+          <a href="install.html#docker" class="www-btn www-btn-primary" data-i18n="www.home.deployment.docker.learnMore">
+            查看详情
+          </a>
+        </div>
+
+        <!-- Hugging Face -->
+        <div class="www-deployment-card">
+          <span class="www-deployment-icon">🤗</span>
+          <h3 class="www-deployment-title" data-i18n="www.home.deployment.hf.title">Hugging Face</h3>
+          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.hf.difficulty">难度：⭐</span>
+          <p class="www-deployment-desc" data-i18n="www.home.deployment.hf.desc">
+            免费托管，自动 HTTPS，开箱即用，2 CPU + 16GB RAM
+          </p>
+          <a href="install.html#huggingface" class="www-btn www-btn-primary" data-i18n="www.home.deployment.hf.learnMore">
+            查看详情
+          </a>
+        </div>
+
+        <!-- 源码编译 -->
+        <div class="www-deployment-card">
+          <span class="www-deployment-icon">🔧</span>
+          <h3 class="www-deployment-title" data-i18n="www.home.deployment.source.title">源码编译</h3>
+          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.source.difficulty">难度：⭐⭐⭐</span>
+          <p class="www-deployment-desc" data-i18n="www.home.deployment.source.desc">
+            适合开发者，支持魔改，需要 Go 1.25+ 环境
+          </p>
+          <a href="install.html#source" class="www-btn www-btn-primary" data-i18n="www.home.deployment.source.learnMore">
+            查看详情
+          </a>
+        </div>
+
+        <!-- 二进制下载 -->
+        <div class="www-deployment-card">
+          <span class="www-deployment-icon">📦</span>
+          <h3 class="www-deployment-title" data-i18n="www.home.deployment.binary.title">二进制下载</h3>
+          <span class="www-deployment-difficulty" data-i18n="www.home.deployment.binary.difficulty">难度：⭐⭐</span>
+          <p class="www-deployment-desc" data-i18n="www.home.deployment.binary.desc">
+            懒人福音，下载即用，支持多平台（Linux/macOS/Windows）
+          </p>
+          <a href="install.html#binary" class="www-btn www-btn-primary" data-i18n="www.home.deployment.binary.learnMore">
+            查看详情
+          </a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 快速开始 -->
+  <section class="www-section" id="quickstart">
+    <div class="www-container">
+      <h2 class="www-section-title" data-i18n="www.home.quickstart.title">快速开始</h2>
+
+      <div class="www-tabs">
+        <div class="www-tab-list">
+          <button class="www-tab-button active" data-i18n="www.home.quickstart.docker">Docker</button>
+          <button class="www-tab-button" data-i18n="www.home.quickstart.hf">Hugging Face</button>
+          <button class="www-tab-button" data-i18n="www.home.quickstart.source">源码编译</button>
+          <button class="www-tab-button" data-i18n="www.home.quickstart.binary">二进制</button>
+        </div>
+
+        <!-- Docker -->
+        <div class="www-tab-panel active">
+          <div class="www-code-block">
+            <div class="www-code-header">
+              <span class="www-code-lang">bash</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code># 下载 docker-compose.yml 和 .env 配置文件
+curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
+
+# 编辑 .env 设置管理密码
+nano .env  # 设置 CCLOAD_PASS=your_password
+
+# 启动服务
+docker-compose up -d
+
+# 访问管理界面
+# http://localhost:8080/web/</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Hugging Face -->
+        <div class="www-tab-panel">
+          <div class="www-code-block">
+            <div class="www-code-header">
+              <span class="www-code-lang">步骤</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code>1. 登录 Hugging Face: https://huggingface.co
+2. 创建新 Space: New Space -> Docker -> SDK: Docker
+3. 创建 Dockerfile:
+   FROM ghcr.io/caidaoli/ccload:latest
+4. 配置环境变量 (Settings -> Variables):
+   CCLOAD_PASS=your_admin_password
+5. 等待构建完成（约 2-3 分钟）
+6. 访问你的 Space URL</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 源码编译 -->
+        <div class="www-tab-panel">
+          <div class="www-code-block">
+            <div class="www-code-header">
+              <span class="www-code-lang">bash</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code># 克隆仓库
+git clone https://github.com/caidaoli/ccLoad.git
+cd ccLoad
+
+# 设置环境变量
+export CCLOAD_PASS=your_admin_password
+
+# 构建（必须 -tags sonic）
+make build
+
+# 运行
+./ccload
+
+# 访问 http://localhost:8080/web/</code></pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- 二进制 -->
+        <div class="www-tab-panel">
+          <div class="www-code-block">
+            <div class="www-code-header">
+              <span class="www-code-lang">bash</span>
+              <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            </div>
+            <div class="www-code-content">
+              <pre><code># 前往 GitHub Releases 页面下载对应平台的二进制文件
+# https://github.com/caidaoli/ccLoad/releases
+
+# Linux/macOS 示例
+wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
+chmod +x ccload-linux-amd64
+
+# 设置环境变量并运行
+export CCLOAD_PASS=your_admin_password
+./ccload-linux-amd64
+
+# 访问 http://localhost:8080/web/</code></pre>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 页脚由 www.js 动态生成 -->
+</body>
+</html>

@@ -23,7 +23,7 @@ LDFLAGS = -s -w \
 	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
 	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
 
-.PHONY: help build docker-build web-test verify-web generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+.PHONY: help build docker-build web-test verify-web www-setup www-run generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -34,6 +34,8 @@ help:
 	@echo "  docker-build      - 构建 Docker 镜像（自动注入版本信息）"
 	@echo "  web-test          - 运行 web 前端 node:test 测试"
 	@echo "  verify-web        - 执行 web 前端验证"
+	@echo "  www-setup         - 设置 www 介绍网站（复制共享资源）"
+	@echo "  www-run           - 本地运行 www 网站（使用 Python 简易服务器）"
 	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
@@ -67,6 +69,25 @@ web-test:
 	@node --test web/assets/js/*.test.js
 
 verify-web: web-test
+
+# 设置 www 介绍网站（复制共享资源，使其完全独立）
+www-setup:
+	@echo "设置 www 介绍网站..."
+	@mkdir -p www/assets/{css,js,locales}
+	@echo "复制共享资源（CSS、JS、图标）..."
+	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
+	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
+	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
+	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png www/ 2>/dev/null || true
+	@echo "✓ www 设置完成，现在是完全独立的静态网站"
+
+# 本地运行 www 网站（预览效果）
+WWW_PORT ?= 8888
+www-run: www-setup
+	@echo "启动 www 介绍网站预览服务器..."
+	@echo "访问地址: http://localhost:$(WWW_PORT)/"
+	@echo "按 Ctrl+C 停止服务"
+	@cd www && python3 -m http.server $(WWW_PORT)
 
 # 创建必要的目录
 
