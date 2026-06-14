@@ -43,10 +43,13 @@ func setupStaticFiles(r *gin.Engine) {
 		log.Fatalf("[FATAL] 嵌入文件系统未初始化，请在 main 中调用 SetEmbedFS")
 	}
 
+	// 管理后台静态文件服务（/web/）
 	// 使用路由组为静态文件启用 zstd 压缩
 	// 已压缩的文件类型（图片、字体等）在中间件内自动跳过
 	webGroup := r.Group("/web", ZstdMiddleware())
-	webGroup.GET("/*filepath", serveStaticFile)
+	webGroup.GET("/*filepath", func(c *gin.Context) {
+		serveStaticFileFrom(c, embedFS)
+	})
 }
 
 // isTestMode 检测是否在 Go 测试环境中运行
@@ -59,9 +62,9 @@ func isTestMode() bool {
 	return false
 }
 
-// serveStaticFile 处理静态文件请求
-func serveStaticFile(c *gin.Context) {
-	if embedFS == nil {
+// serveStaticFileFrom 处理静态文件请求（从指定的文件系统）
+func serveStaticFileFrom(c *gin.Context, fileSystem fs.FS) {
+	if fileSystem == nil {
 		c.Status(http.StatusNotFound)
 		return
 	}
@@ -87,7 +90,7 @@ func serveStaticFile(c *gin.Context) {
 	}
 
 	// 检查文件是否存在
-	info, err := fs.Stat(embedFS, reqPath)
+	info, err := fs.Stat(fileSystem, reqPath)
 	if err != nil {
 		c.Status(http.StatusNotFound)
 		return
@@ -96,7 +99,7 @@ func serveStaticFile(c *gin.Context) {
 	// 如果是目录，尝试返回 index.html
 	if info.IsDir() {
 		reqPath = path.Join(reqPath, "index.html")
-		if _, err = fs.Stat(embedFS, reqPath); err != nil {
+		if _, err = fs.Stat(fileSystem, reqPath); err != nil {
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -106,15 +109,15 @@ func serveStaticFile(c *gin.Context) {
 
 	// 根据文件类型设置缓存策略
 	if ext == ".html" {
-		serveHTMLWithVersion(c, reqPath)
+		serveHTMLWithVersionFrom(c, fileSystem, reqPath)
 	} else {
-		serveStaticWithCache(c, reqPath, ext)
+		serveStaticWithCacheFrom(c, fileSystem, reqPath, ext)
 	}
 }
 
-// serveHTMLWithVersion 处理 HTML 文件，替换版本号占位符
-func serveHTMLWithVersion(c *gin.Context, filePath string) {
-	content, err := fs.ReadFile(embedFS, filePath)
+// serveHTMLWithVersionFrom 处理 HTML 文件，替换版本号占位符（从指定的文件系统）
+func serveHTMLWithVersionFrom(c *gin.Context, fileSystem fs.FS, filePath string) {
+	content, err := fs.ReadFile(fileSystem, filePath)
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
@@ -129,8 +132,8 @@ func serveHTMLWithVersion(c *gin.Context, filePath string) {
 	c.String(http.StatusOK, html)
 }
 
-// serveStaticWithCache 处理静态资源，设置缓存策略
-func serveStaticWithCache(c *gin.Context, filePath, ext string) {
+// serveStaticWithCacheFrom 处理静态资源，设置缓存策略（从指定的文件系统）
+func serveStaticWithCacheFrom(c *gin.Context, fileSystem fs.FS, filePath, ext string) {
 	// 缓存策略：
 	// - dev 版本：不缓存，方便开发调试
 	// - manifest.json/favicon：短缓存（无版本号控制）
@@ -149,7 +152,7 @@ func serveStaticWithCache(c *gin.Context, filePath, ext string) {
 	}
 
 	// 读取文件内容
-	content, err := fs.ReadFile(embedFS, filePath)
+	content, err := fs.ReadFile(fileSystem, filePath)
 	if err != nil {
 		c.Status(http.StatusInternalServerError)
 		return
