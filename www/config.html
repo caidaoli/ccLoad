@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title data-i18n="www.config.title">配置手册 - ccLoad</title>
-  <meta name="description" content="ccLoad 环境变量、存储模式、渠道配置、令牌限额和系统热配置说明">
+  <title data-i18n="www.config.title">Configuration Guide - ccLoad</title>
+  <meta name="description" data-i18n-content="www.config.meta.description" content="Configure ccLoad environment variables, storage modes, channel routing, token limits, cost controls and runtime settings.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -22,15 +22,15 @@
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
       <span class="www-eyebrow">Configuration</span>
-      <h1 class="www-page-title" data-i18n="www.config.title">配置手册</h1>
+      <h1 class="www-page-title" data-i18n="www.config.title">Configuration Guide</h1>
       <p class="www-page-subtitle" data-i18n="www.config.subtitle">
-        先配置启动安全项，再通过管理后台热更新渠道、限额和超时策略。
+        Set the secure startup options first, then tune channels, limits, and timeout policy from the admin console.
       </p>
-      <div class="www-badge-row" aria-label="配置分类">
-        <span class="www-badge">环境变量</span>
-        <span class="www-badge">存储模式</span>
-        <span class="www-badge">渠道策略</span>
-        <span class="www-badge">成本限额</span>
+      <div class="www-badge-row" aria-label="Configuration categories">
+        <span class="www-badge">Environment</span>
+        <span class="www-badge">Storage</span>
+        <span class="www-badge">Channel Policy</span>
+        <span class="www-badge">Cost Limits</span>
       </div>
     </div>
   </header>
@@ -39,74 +39,74 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>启动环境变量</h2>
-          <p>启动项解决的是“服务能不能安全跑起来”。运行后可热更新的系统策略，不应该塞回环境变量里。</p>
+          <h2>Startup Environment Variables</h2>
+          <p>Startup variables answer one question: can the service boot safely? Runtime policies that can be hot-updated should stay in the admin console, not in environment variables.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>变量</th>
-                <th>默认值</th>
-                <th>用途</th>
-                <th>建议</th>
+                <th>Variable</th>
+                <th>Default</th>
+                <th>Purpose</th>
+                <th>Recommendation</th>
               </tr>
             </thead>
             <tbody>
               <tr>
                 <td><code>CCLOAD_PASS</code></td>
-                <td>无</td>
-                <td>管理后台登录密码，未设置会直接退出。</td>
-                <td>生产必填，使用平台 Secret 或 Docker Secret。</td>
+                <td>None</td>
+                <td>Admin console password. The service exits when it is not set.</td>
+                <td>Required in production. Use platform Secrets or Docker Secrets.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_API_TOKENS</code></td>
-                <td>无</td>
-                <td>启动时预置 API 访问令牌，支持 <code>token|描述</code>。</td>
-                <td>适合自动恢复；常规管理优先用后台令牌页。</td>
+                <td>None</td>
+                <td>Pre-provisions API access tokens at startup. Supports <code>token|description</code>.</td>
+                <td>Useful for automated recovery. Prefer the token page for normal management.</td>
               </tr>
               <tr>
                 <td><code>API_TOKENS</code></td>
-                <td>无</td>
-                <td><code>CCLOAD_API_TOKENS</code> 的兼容别名。</td>
-                <td>不要和 <code>CCLOAD_API_TOKENS</code> 设置成不同值。</td>
+                <td>None</td>
+                <td>Compatibility alias for <code>CCLOAD_API_TOKENS</code>.</td>
+                <td>Do not set it to a different value from <code>CCLOAD_API_TOKENS</code>.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
-                <td>无</td>
-                <td>MySQL DSN，设置后使用 MySQL，否则使用 SQLite。</td>
-                <td>多实例、Hugging Face 长期运行或外部备份时设置。</td>
+                <td>None</td>
+                <td>MySQL DSN. When set, ccLoad uses MySQL; otherwise it uses SQLite.</td>
+                <td>Set it for multiple instances, long-running Hugging Face deployments or external backup.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ENABLE_SQLITE_REPLICA</code></td>
                 <td><code>0</code></td>
-                <td>混合存储开关：写 MySQL，读 SQLite 副本。</td>
-                <td>Hugging Face Spaces 推荐配合 MySQL 使用。</td>
+                <td>Hybrid storage switch: write MySQL, read from a SQLite replica.</td>
+                <td>Recommended with MySQL on Hugging Face Spaces.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_SQLITE_LOG_DAYS</code></td>
                 <td><code>7</code></td>
-                <td>混合模式启动时从 MySQL 恢复日志的天数。</td>
-                <td><code>-1</code> 全量，<code>0</code> 不恢复日志。</td>
+                <td>Number of log days restored from MySQL on hybrid startup.</td>
+                <td><code>-1</code> restores all logs; <code>0</code> restores no logs.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ALLOW_INSECURE_TLS</code></td>
                 <td><code>0</code></td>
-                <td>允许跳过上游 TLS 证书校验。</td>
-                <td>只用于受控内网排障，生产不要开。</td>
+                <td>Allows skipping upstream TLS certificate verification.</td>
+                <td>Use only for controlled internal debugging. Do not enable in production.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MAX_CONCURRENCY</code></td>
                 <td><code>1000</code></td>
-                <td>全局最大并发代理请求数。</td>
-                <td>按机器资源和上游限制调低，不要无限放开。</td>
+                <td>Global maximum concurrent proxy requests.</td>
+                <td>Tune it to machine resources and upstream limits. Do not leave concurrency unbounded.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MAX_BODY_BYTES</code></td>
                 <td><code>10485760</code></td>
-                <td>请求体最大字节数，Images API 自动放宽到 20MB。</td>
-                <td>公网部署保持默认，避免大包拖垮服务。</td>
+                <td>Maximum request body size. Images API automatically raises this to 20MB.</td>
+                <td>Keep the default for public deployments to avoid oversized requests overwhelming the service.</td>
               </tr>
             </tbody>
           </table>
@@ -117,38 +117,38 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>存储模式</h2>
-          <p>先按部署场景选存储，不要为了“看起来生产化”默认上 MySQL。单机 SQLite 更简单，也更少运维面。</p>
+          <h2>Storage Modes</h2>
+          <p>Choose storage by deployment shape. Do not add MySQL just to look production-grade; SQLite is simpler and has less operational surface for single-instance deployments.</p>
         </div>
 
         <div class="www-data-table-wrapper">
           <table class="www-data-table">
             <thead>
               <tr>
-                <th>模式</th>
-                <th>配置</th>
-                <th>适用场景</th>
-                <th>取舍</th>
+                <th>Mode</th>
+                <th>Configuration</th>
+                <th>Use Case</th>
+                <th>Trade-off</th>
               </tr>
             </thead>
             <tbody>
               <tr>
-                <td>纯 SQLite</td>
-                <td>不设置 <code>CCLOAD_MYSQL</code></td>
-                <td>本地开发、个人部署、单实例服务。</td>
-                <td>最简单；不适合多实例共享。</td>
+                <td>SQLite only</td>
+                <td>Do not set <code>CCLOAD_MYSQL</code></td>
+                <td>Local development, personal deployments and single-instance services.</td>
+                <td>Simplest path; not suitable for shared multi-instance state.</td>
               </tr>
               <tr>
-                <td>纯 MySQL</td>
-                <td>设置 <code>CCLOAD_MYSQL</code></td>
-                <td>标准生产环境、外部备份、跨机器迁移。</td>
-                <td>持久化强；读写延迟取决于数据库。</td>
+                <td>MySQL only</td>
+                <td>Set <code>CCLOAD_MYSQL</code></td>
+                <td>Standard production, external backups and migration across machines.</td>
+                <td>Strong persistence; read/write latency depends on the database.</td>
               </tr>
               <tr>
-                <td>混合模式</td>
+                <td>Hybrid</td>
                 <td><code>CCLOAD_MYSQL</code> + <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code></td>
-                <td>Hugging Face Spaces、MySQL 延迟高但需要持久化。</td>
-                <td>写主库、读本地缓存；复杂度更高。</td>
+                <td>Hugging Face Spaces or high-latency MySQL when persistence is still required.</td>
+                <td>Writes go to MySQL and reads use local cache; higher complexity.</td>
               </tr>
             </tbody>
           </table>
@@ -159,36 +159,36 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>渠道配置</h2>
-          <p>渠道是 ccLoad 的核心数据结构：一个渠道可以有多个 Key、多个上游 URL、独立冷却、RPM/并发限制和协议转换策略。</p>
+          <h2>Channel Configuration</h2>
+          <p>Channels are ccLoad's core runtime objects. A channel can have multiple keys, multiple upstream URLs, independent cooldown, RPM/concurrency limits and protocol transform policy.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>基础字段</h3>
+            <h3>Core fields</h3>
             <ul class="www-check-list">
-              <li><code>name</code>：渠道名，必须可读，日志和统计都依赖它。</li>
-              <li><code>type</code>：Anthropic、OpenAI、Gemini、Codex 等上游协议类型。</li>
-              <li><code>url</code>：支持逗号分隔多 URL；末尾 <code>#</code> 表示精确上游 URL，不自动拼路径。</li>
-              <li><code>api_key</code>：支持单 Key 或多 Key，系统在渠道内做 Key 级重试。</li>
-              <li><code>priority</code>：优先级越高越先用，同优先级走平滑加权轮询。</li>
+              <li><code>name</code>: readable channel name used by logs and statistics.</li>
+              <li><code>type</code>: upstream protocol type such as Anthropic, OpenAI, Gemini or Codex.</li>
+              <li><code>url</code>: supports comma-separated URLs; a trailing <code>#</code> marks an exact upstream URL and disables automatic path joining.</li>
+              <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
+              <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
             </ul>
           </article>
 
           <article class="www-info-card">
-            <h3>保护字段</h3>
+            <h3>Protection fields</h3>
             <ul class="www-check-list">
-              <li><code>rpm_limit</code>：渠道 60 秒滚动请求上限，<code>0</code> 表示无限制。</li>
-              <li><code>max_concurrency</code>：渠道同时在飞请求上限，流式请求到结束才释放槽位。</li>
-              <li><code>daily_cost_limit</code>：渠道每日成本限额，达到后跳过该渠道。</li>
-              <li><code>cost_multiplier</code>：渠道倍率，按倍率后成本做限额统计。</li>
-              <li><code>scheduled_check_enabled</code>：定时探活，配合检测模型使用。</li>
+              <li><code>rpm_limit</code>: rolling 60-second request cap for the channel; <code>0</code> means unlimited.</li>
+              <li><code>max_concurrency</code>: maximum in-flight requests for the channel. Streaming requests release the slot only when the stream ends.</li>
+              <li><code>daily_cost_limit</code>: daily channel cost limit. The channel is skipped after the limit is reached.</li>
+              <li><code>cost_multiplier</code>: channel multiplier used for effective-cost limits and accounting.</li>
+              <li><code>scheduled_check_enabled</code>: enables scheduled probing, usually paired with a check model.</li>
             </ul>
           </article>
         </div>
 
         <div class="www-callout www-mt-8">
-          <strong>多 URL 是同一渠道内部的容灾，不是渠道优先级替代品。</strong>系统会探索优先并按 1/EWMA 延迟加权选择，失败 URL 独立指数退避，不拖累同渠道其他 URL。
+          <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
         </div>
       </div>
     </section>
@@ -196,40 +196,40 @@
     <section class="www-section" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>管理后台热配置</h2>
-          <p>这些设置保存在数据库里，支持运行时调整。它们属于策略，不属于启动参数。</p>
+          <h2>Runtime Settings in the Admin Console</h2>
+          <p>These settings are stored in the database and can be adjusted at runtime. They are policy, not startup configuration.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
-            <h3>重试与冷却</h3>
-            <p>Key 级错误在渠道内换 Key；5xx、598、599 等渠道级错误触发渠道切换。冷却使用指数退避，默认最高 30 分钟。</p>
+            <h3>Retries and cooldown</h3>
+            <p>Key-level errors retry another key inside the channel; 5xx, 598 and 599 channel-level errors trigger channel failover. Cooldown uses exponential backoff and defaults to a 30-minute cap.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
-            <h3>协议超时</h3>
-            <p>支持全局首字超时、非流式超时，也支持 Anthropic/Codex/OpenAI/Gemini 按上游协议覆盖。</p>
+            <h3>Protocol timeouts</h3>
+            <p>Supports global first-byte timeout and non-stream timeout, plus Anthropic, Codex, OpenAI and Gemini overrides by upstream protocol.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📈</span>
-            <h3>健康度排序</h3>
-            <p>启用后按历史成功率动态调优有效优先级，并用置信度因子避免小样本渠道被过早打死。</p>
+            <h3>Health-based sorting</h3>
+            <p>When enabled, ccLoad adjusts effective priority by historical success rate and uses a confidence factor to avoid over-penalizing small samples.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">💳</span>
-            <h3>令牌限额</h3>
-            <p>Auth Token 可配置允许模型、允许渠道、成本限额和统计范围；费用使用微美元整数避免浮点误差。</p>
+            <h3>Token limits</h3>
+            <p>Auth tokens can restrict allowed models, allowed channels, cost limits and statistics scope. Costs use integer micro-dollars to avoid floating-point drift.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🧩</span>
-            <h3>自定义请求规则</h3>
-            <p>按渠道改写 Header 和 JSON Body，支持 remove/override/append；认证头被保护，禁止 CRLF 注入。</p>
+            <h3>Custom request rules</h3>
+            <p>Rewrite headers and JSON bodies per channel with remove, override and append operations. Authentication headers are protected and CRLF injection is blocked.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🧪</span>
-            <h3>渠道检测</h3>
-            <p>手动测试和定时检测都会计入渠道 RPM 限制。检测模型建议选择低成本、稳定可用的模型。</p>
+            <h3>Channel checks</h3>
+            <p>Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
           </article>
         </div>
       </div>
@@ -238,32 +238,32 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>安全底线</h2>
-          <p>代理服务的风险不是页面不好看，是把上游 Key 和管理入口暴露给不该访问的人。</p>
+          <h2>Security Baseline</h2>
+          <p>The real proxy-service risk is not UI polish; it is exposing upstream keys or the admin surface to the wrong audience.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>上线前检查</h3>
+            <h3>Pre-production checklist</h3>
             <ul class="www-check-list">
-              <li>强密码设置在 Secret，不提交到仓库。</li>
-              <li>至少创建一个 API 访问令牌，否则 `/v1/*` 会按设计返回 401。</li>
-              <li>公网环境限制管理后台访问来源，或放到受保护网络后面。</li>
-              <li>不要打开 `CCLOAD_ALLOW_INSECURE_TLS` 作为长期方案。</li>
+              <li>Store the strong password in Secrets, not in the repository.</li>
+              <li>Create at least one API access token; otherwise `/v1/*` returns 401 by design.</li>
+              <li>Restrict admin-console access on public deployments or place it behind a protected network.</li>
+              <li>Do not use `CCLOAD_ALLOW_INSECURE_TLS` as a long-term setting.</li>
             </ul>
           </article>
           <article class="www-info-card">
-            <h3>配置示例</h3>
+            <h3>Configuration example</h3>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">.env</span>
-                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
                 <pre><code>CCLOAD_PASS=your_strong_admin_password
 CCLOAD_API_TOKENS=client_token|production
 
-# 可选：MySQL / 混合模式
+# Optional: MySQL / hybrid mode
 CCLOAD_MYSQL=user:pass@tcp(host:3306)/ccload?charset=utf8mb4
 CCLOAD_ENABLE_SQLITE_REPLICA=1
 CCLOAD_SQLITE_LOG_DAYS=7</code></pre>

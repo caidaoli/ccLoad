@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title data-i18n="www.install.title">部署安装 - ccLoad</title>
-  <meta name="description" content="ccLoad Docker、Hugging Face、源码编译和二进制部署指南">
+  <title data-i18n="www.install.title">Deploy ccLoad - Docker, Hugging Face, Source and Binary</title>
+  <meta name="description" data-i18n-content="www.install.meta.description" content="Deploy ccLoad with Docker, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
@@ -22,11 +22,11 @@
   <header class="www-page-hero">
     <div class="www-page-hero-inner">
       <span class="www-eyebrow">Install</span>
-      <h1 class="www-page-title" data-i18n="www.install.title">部署安装</h1>
+      <h1 class="www-page-title" data-i18n="www.install.title">Deploy ccLoad</h1>
       <p class="www-page-subtitle" data-i18n="www.install.subtitle">
-        从本地试用到生产部署，按场景选择最少配置路径。
+        Pick the smallest deployment path that fits your runtime, from local testing to production.
       </p>
-      <div class="www-badge-row" aria-label="部署方式">
+      <div class="www-badge-row" aria-label="Deployment options">
         <span class="www-badge">Docker</span>
         <span class="www-badge">Hugging Face Spaces</span>
         <span class="www-badge">Go 1.25+</span>
@@ -39,35 +39,35 @@
     <section class="www-section">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>先选部署路径</h2>
-          <p>ccLoad 的根配置只有一个硬要求：生产环境必须设置 `CCLOAD_PASS`。存储默认 SQLite，需要多实例或 Hugging Face 持久化时再接 MySQL。</p>
+          <h2>Choose the deployment path first</h2>
+          <p>ccLoad has one hard startup requirement: set `CCLOAD_PASS` in production. Storage defaults to SQLite; add MySQL only when you need multi-instance deployment or persistent Hugging Face storage.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🐳</span>
             <h3>Docker Compose</h3>
-            <p>推荐路径。镜像、端口、环境变量和数据卷都集中在 `docker-compose.yml`，适合服务器长期运行。</p>
+            <p>Recommended path. Image, ports, environment variables and volumes live in `docker-compose.yml`, which is suitable for long-running servers.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#docker">查看 Docker 步骤</a>
+              <a class="www-btn www-btn-primary" href="#docker">View Docker steps</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🤗</span>
             <h3>Hugging Face Spaces</h3>
-            <p>适合低成本托管。Space 默认公网可访问，必须配置管理密码和 API 访问令牌。</p>
+            <p>Good for low-cost hosting. Spaces are publicly reachable by default, so admin passwords and API access tokens are mandatory.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#huggingface">查看 Spaces 步骤</a>
+              <a class="www-btn www-btn-primary" href="#huggingface">View Spaces steps</a>
             </div>
           </article>
 
           <article class="www-doc-card">
             <span class="www-doc-icon">🔧</span>
-            <h3>源码或二进制</h3>
-            <p>适合开发调试、私有环境和轻量部署。源码构建必须带 `-tags sonic`。</p>
+            <h3>Source or Binary</h3>
+            <p>Use this for development, private environments and lightweight deployments. Source builds must use `-tags sonic`.</p>
             <div class="www-card-actions">
-              <a class="www-btn www-btn-primary" href="#source-binary">查看运行方式</a>
+              <a class="www-btn www-btn-primary" href="#source-binary">View runtime options</a>
             </div>
           </article>
         </div>
@@ -77,27 +77,27 @@
     <section class="www-section" id="docker">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>Docker 部署</h2>
-          <p>这是生产环境最少踩坑的路径。先拉取 compose 和环境变量模板，只改密码，然后启动。</p>
+          <h2>Docker Deployment</h2>
+          <p>This is the production path with the fewest moving parts. Download the compose file and environment template, set the password, then start the service.</p>
         </div>
 
         <div class="www-step-list">
           <div class="www-step">
             <div>
-              <h3>准备配置</h3>
-              <p>复制官方 `docker-compose.yml` 和 `.env.example`，将 `.env` 里的 `CCLOAD_PASS` 改成强密码。</p>
+              <h3>Prepare configuration</h3>
+              <p>Copy the official `docker-compose.yml` and `.env.example`, then set a strong `CCLOAD_PASS` in `.env`.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>启动服务</h3>
-              <p>默认监听 `8080`，管理后台在 `/web/`，API 代理在 `/v1/*` 和 `/v1beta/*`。</p>
+              <h3>Start the service</h3>
+              <p>The default port is `8080`; the admin console is under `/web/`, and API proxy endpoints are under `/v1/*` and `/v1beta/*`.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
-              <h3>配置访问令牌</h3>
-              <p>登录管理后台后进入令牌页创建 API token。没有 token 时代理接口会返回 401，这是安全默认值。</p>
+              <h3>Create access tokens</h3>
+              <p>After logging in to the admin console, create API tokens on the token page. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
             </div>
           </div>
         </div>
@@ -105,13 +105,13 @@
         <div class="www-code-block">
           <div class="www-code-header">
             <span class="www-code-lang">bash</span>
-            <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
           </div>
           <div class="www-code-content">
             <pre><code>curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
 
-# 必填：设置管理后台密码
+# Required: set the admin console password
 nano .env
 
 docker-compose up -d
@@ -120,7 +120,7 @@ docker-compose logs -f ccload</code></pre>
         </div>
 
         <div class="www-callout">
-          <strong>MySQL 不是默认必需品。</strong>单机部署先用 SQLite。需要外部持久化、多实例或 Hugging Face 重启后保留数据，再设置 `CCLOAD_MYSQL`。
+          <strong>MySQL is not required by default.</strong> Start with SQLite for single-instance deployments. Set `CCLOAD_MYSQL` only when you need external persistence, multiple instances or data retention after Hugging Face restarts.
         </div>
       </div>
     </section>
@@ -129,27 +129,27 @@ docker-compose logs -f ccload</code></pre>
       <div class="www-container">
         <div class="www-section-header">
           <h2>Hugging Face Spaces</h2>
-          <p>Spaces 适合快速公开部署。根因风险是 `/tmp` 重启清空，所以长期使用要接外部 MySQL，并启用 SQLite 副本提升读取速度。</p>
+          <p>Spaces work well for quick public deployments. The operational risk is that `/tmp` is cleared on restart, so long-term usage should use external MySQL and optionally enable the SQLite replica for faster reads.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-info-card">
-            <h3>Space 设置</h3>
+            <h3>Space settings</h3>
             <ul class="www-check-list">
-              <li>新建 Space，SDK 选择 Docker。</li>
-              <li>`Dockerfile` 使用 `ghcr.io/caidaoli/ccload:latest`。</li>
-              <li>Secrets 添加 `CCLOAD_PASS`，不要写进公开文件。</li>
-              <li>生产访问前，在管理后台创建 API 访问令牌。</li>
+              <li>Create a Space and choose Docker as the SDK.</li>
+              <li>Use `ghcr.io/caidaoli/ccload:latest` in `Dockerfile`.</li>
+              <li>Add `CCLOAD_PASS` in Secrets; do not put it in public files.</li>
+              <li>Create an API access token in the admin console before production access.</li>
             </ul>
           </article>
 
           <article class="www-info-card">
-            <h3>持久化建议</h3>
+            <h3>Persistence guidance</h3>
             <ul class="www-check-list">
-              <li>临时测试：只设 `CCLOAD_PASS`，使用默认 SQLite。</li>
-              <li>长期使用：设置 `CCLOAD_MYSQL`。</li>
-              <li>高频读取：额外设置 `CCLOAD_ENABLE_SQLITE_REPLICA=1`。</li>
-              <li>日志恢复窗口用 `CCLOAD_SQLITE_LOG_DAYS` 控制。</li>
+              <li>Temporary testing: set only `CCLOAD_PASS` and use the default SQLite storage.</li>
+              <li>Long-term usage: set `CCLOAD_MYSQL`.</li>
+              <li>High-read workloads: also set `CCLOAD_ENABLE_SQLITE_REPLICA=1`.</li>
+              <li>Control the log restore window with `CCLOAD_SQLITE_LOG_DAYS`.</li>
             </ul>
           </article>
         </div>
@@ -157,7 +157,7 @@ docker-compose logs -f ccload</code></pre>
         <div class="www-code-block">
           <div class="www-code-header">
             <span class="www-code-lang">Dockerfile</span>
-            <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
           </div>
           <div class="www-code-content">
             <pre><code>FROM ghcr.io/caidaoli/ccload:latest
@@ -173,19 +173,19 @@ EXPOSE 7860</code></pre>
     <section class="www-section" id="source-binary">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>源码编译与二进制运行</h2>
-          <p>源码路径用于开发和定制，二进制路径用于不想维护构建环境的轻量部署。两者都需要先设置 `CCLOAD_PASS`。</p>
+          <h2>Source Builds and Binary Runtime</h2>
+          <p>Use source builds for development and customization, and binaries when you do not want to maintain a build environment. Both require `CCLOAD_PASS` before startup.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-doc-card">
             <span class="www-doc-icon">⚙️</span>
-            <h3>源码编译</h3>
-            <p>项目构建必须启用 `sonic` 标签。直接用 `make build`，不要手写一套分叉构建脚本。</p>
+            <h3>Source build</h3>
+            <p>Builds must enable the `sonic` tag. Use `make build` directly instead of maintaining a forked build script.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
-                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
                 <pre><code>git clone https://github.com/caidaoli/ccLoad.git
@@ -200,12 +200,12 @@ make build
 
           <article class="www-doc-card">
             <span class="www-doc-icon">📦</span>
-            <h3>二进制运行</h3>
-            <p>从 Releases 下载对应平台的产物，赋权后直接运行。版本固定比 `latest` 更容易回滚。</p>
+            <h3>Binary runtime</h3>
+            <p>Download the artifact for your platform from Releases, make it executable and run it. Pinning a version is easier to roll back than tracking `latest`.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
-                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
               </div>
               <div class="www-code-content">
                 <pre><code>wget https://github.com/caidaoli/ccLoad/releases/download/v2.x.x/ccload-linux-amd64
@@ -223,23 +223,23 @@ export CCLOAD_PASS=your_admin_password
     <section class="www-section" id="verify" style="background: var(--color-bg-elevated);">
       <div class="www-container">
         <div class="www-section-header">
-          <h2>部署后验证</h2>
-          <p>先验证进程活着，再验证配置入口，最后用真实 token 打代理请求。不要跳过 401，401 往往说明令牌还没配置。</p>
+          <h2>Post-deployment verification</h2>
+          <p>Verify the process first, then the configuration entry point, then send a real proxy request with a real token. Do not ignore 401 responses; they usually mean tokens have not been configured yet.</p>
         </div>
 
         <div class="www-code-block">
           <div class="www-code-header">
             <span class="www-code-lang">bash</span>
-            <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+            <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
           </div>
           <div class="www-code-content">
             <pre><code>curl -s http://localhost:8080/health
 curl -s http://localhost:8080/public/summary
 
-# 管理后台
+# Admin console
 # http://localhost:8080/web/
 
-# API 代理端点示例
+# API proxy endpoint examples
 # POST http://localhost:8080/v1/messages
 # POST http://localhost:8080/v1/chat/completions
 # POST http://localhost:8080/v1beta/models/{model}:generateContent</code></pre>
