@@ -9,6 +9,8 @@ ccLoad 项目的官方介绍网站，**完全独立的静态网站**，可以复
 - ✅ **主题切换**：支持 light/dark/system 三种模式
 - ✅ **响应式设计**：完美适配移动端、平板、桌面
 - ✅ **零框架依赖**：纯原生 JavaScript，轻量高效（< 20KB）
+- ✅ **真实内容页**：安装、配置、API 使用、反馈支持均已补全
+- ✅ **独立视觉资源**：包含项目主图和管理后台截图，可脱离仓库部署
 
 ## 快速开始
 
@@ -89,14 +91,34 @@ cp -r www /path/to/webroot/
 ### ✅ 首页（index.html）
 - Hero 区域
 - 8 个核心特性卡片
+- 管理后台预览截图
 - 4 种部署方式卡片
 - 快速开始 Tab 切换
 - 代码复制功能
 
+### ✅ 安装指南（install.html）
+- Docker Compose 部署
+- Hugging Face Spaces 部署
+- 源码编译与二进制运行
+- 部署后验证命令
+
+### ✅ 配置手册（config.html）
+- 启动环境变量表
+- SQLite / MySQL / Hybrid 存储模式对比
+- 渠道配置说明
+- 管理后台热配置说明
+- 安全上线检查
+
+### ✅ API 使用（usage.html）
+- Anthropic / OpenAI / Gemini / Token 统计示例
+- 端点速查表
+- 管理后台使用说明
+- 渠道管理 API 与 CSV 导入导出
+
 ### ✅ 反馈渠道（feedback.html）
-- GitHub Issues 链接
-- GitHub Discussions 链接
-- Star 支持链接
+- Bug、功能建议、讨论、安全问题分流
+- 贡献代码入口
+- 高质量反馈模板
 
 ### ✅ 基础组件
 - 导航栏（支持移动端汉堡菜单）
@@ -105,26 +127,6 @@ cp -r www /path/to/webroot/
 - 代码块（带复制按钮）
 - Tab 切换
 - 页脚
-
-## 待完善功能
-
-### 🚧 安装指南（install.html）
-需要补充：
-- Docker 部署详细步骤
-- Hugging Face 部署说明
-- 源码编译流程
-- 二进制下载和使用
-
-### 🚧 配置文档（config.html）
-需要补充：
-- 环境变量配置表
-- 数据库选择对比
-- 渠道配置说明
-
-### 🚧 使用指南（usage.html）
-需要补充：
-- API 调用示例（Claude/Codex/Gemini/OpenAI）
-- 管理界面使用说明
 
 ## 文档
 

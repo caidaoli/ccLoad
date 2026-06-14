@@ -4,12 +4,14 @@
 window.I18N_LOCALES = window.I18N_LOCALES || {};
 window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {}, {
   // 导航
-  'www.nav.home': '首页',
-  'www.nav.install': '安装',
-  'www.nav.config': '配置',
-  'www.nav.usage': '使用',
-  'www.nav.feedback': '反馈',
-  'www.nav.admin': '管理后台',
+  'www.nav.home': '产品概览',
+  'www.nav.install': '部署安装',
+  'www.nav.config': '配置手册',
+  'www.nav.usage': 'API 使用',
+  'www.nav.feedback': '反馈支持',
+  'www.nav.github': 'GitHub',
+  'www.nav.switchLanguage': '切换语言',
+  'www.nav.switchTheme': '切换主题',
 
   // 首页 - Hero
   'www.home.hero.title': 'ccLoad',
@@ -63,13 +65,21 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.home.quickstart.source': '源码编译',
   'www.home.quickstart.binary': '二进制',
 
-  // 页脚
-  'www.footer.resources': '资源',
-  'www.footer.releases': '版本发布',
-  'www.footer.documentation': '文档',
-  'www.footer.community': '社区',
-  'www.footer.links': '链接',
-  'www.footer.adminPanel': '管理后台',
+  // 安装页
+  'www.install.title': '部署安装',
+  'www.install.subtitle': '从本地试用到生产部署，按场景选择最少配置路径',
+
+  // 配置页
+  'www.config.title': '配置手册',
+  'www.config.subtitle': '先配置启动安全项，再通过管理后台热更新渠道、限额和超时策略',
+
+  // 使用页
+  'www.usage.title': 'API 使用',
+  'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，客户端只需要换 base URL 和访问令牌',
+
+  // 反馈页
+  'www.feedback.title': '反馈支持',
+  'www.feedback.subtitle': 'Bug、功能建议、使用讨论和安全问题分别走清晰渠道，别把问题埋在聊天记录里',
 
   // 通用
   'www.common.copy': '复制',

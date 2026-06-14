@@ -148,6 +148,8 @@ cp ../web/assets/css/styles.css assets/css/
 cp ../web/assets/js/i18n.js assets/js/
 cp ../web/assets/js/theme-init.js assets/js/
 cp ../web/favicon.* ../web/apple-touch-icon.png .
+mkdir -p assets/images
+cp ../images/ccload.jpg ../images/ccload-dashboard.jpeg ../images/ccload-logs.jpg assets/images/
 
 # 现在 www 目录完全独立，可以复制到任何地方
 ```
@@ -172,6 +174,10 @@ www/
 │   │   ├── theme-init.js   # 主题初始化（复制自 web）
 │   │   ├── nav.js          # 导航组件
 │   │   └── www.js          # 交互逻辑
+│   ├── images/
+│   │   ├── ccload.jpg
+│   │   ├── ccload-dashboard.jpeg
+│   │   └── ccload-logs.jpg
 │   └── locales/
 │       ├── zh-CN.js        # 中文语言包
 │       └── en.js           # 英文语言包

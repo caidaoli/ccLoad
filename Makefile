@@ -23,7 +23,7 @@ LDFLAGS = -s -w \
 	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
 	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
 
-.PHONY: help build docker-build web-test verify-web www-setup www-run generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+.PHONY: help build docker-build web-test verify-web www-setup www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -36,6 +36,7 @@ help:
 	@echo "  verify-web        - 执行 web 前端验证"
 	@echo "  www-setup         - 设置 www 介绍网站（复制共享资源）"
 	@echo "  www-run           - 本地运行 www 网站（使用 Python 简易服务器）"
+	@echo "  www-release       - 使用 rsync 发布 www 到 racknerd"
 	@echo "  generate-plist    - 从模板生成 plist 文件（自动读取 .env 配置）"
 	@echo "  install-service   - 安装 LaunchAgent 服务"
 	@echo "  uninstall-service - 卸载 LaunchAgent 服务"
@@ -73,21 +74,35 @@ verify-web: web-test
 # 设置 www 介绍网站（复制共享资源，使其完全独立）
 www-setup:
 	@echo "设置 www 介绍网站..."
-	@mkdir -p www/assets/{css,js,locales}
+	@mkdir -p www/assets/{css,js,locales,images}
 	@echo "复制共享资源（CSS、JS、图标）..."
 	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
 	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png www/ 2>/dev/null || true
+	@cp -f images/ccload.jpg images/ccload-dashboard.jpeg images/ccload-logs.jpg www/assets/images/ 2>/dev/null || true
 	@echo "✓ www 设置完成，现在是完全独立的静态网站"
 
 # 本地运行 www 网站（预览效果）
 WWW_PORT ?= 8888
+WWW_RELEASE_HOST ?= racknerd
+WWW_RELEASE_PATH ?= /var/www/ccload.xyz
+WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
+WWW_RELEASE_SSH ?= ssh -T
+WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
 www-run: www-setup
 	@echo "启动 www 介绍网站预览服务器..."
 	@echo "访问地址: http://localhost:$(WWW_PORT)/"
 	@echo "按 Ctrl+C 停止服务"
 	@cd www && python3 -m http.server $(WWW_PORT)
+
+www-release: www-setup
+	@echo "检查远端发布环境..."
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'command -v rsync >/dev/null || { echo "远端缺少 rsync，请先在服务器执行: apt-get update && apt-get install -y rsync" >&2; exit 127; }'
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'mkdir -p "$(WWW_RELEASE_PATH)"'
+	@echo "同步 www 到 $(WWW_RELEASE_TARGET)..."
+	@rsync -e "$(WWW_RELEASE_SSH)" $(WWW_RELEASE_RSYNC_FLAGS) www/ $(WWW_RELEASE_TARGET)/
+	@echo "✓ www 已同步到 $(WWW_RELEASE_TARGET)"
 
 # 创建必要的目录
 
