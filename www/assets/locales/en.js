@@ -14,6 +14,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.nav.switchTheme': 'Switch theme',
 
   // Home - Hero
+  'www.home.meta.title': 'ccLoad - AI API Gateway for Claude Code, Codex, Gemini and OpenAI',
+  'www.home.meta.description': 'ccLoad is a high-performance AI API gateway for Claude Code, Codex, Gemini and OpenAI-compatible clients with smart routing, automatic failover, real-time monitoring and cost control.',
   'www.home.hero.title': 'ccLoad',
   'www.home.hero.subtitle': 'Claude Code & Codex & Gemini & OpenAI Compatible API Proxy',
   'www.home.hero.description': 'Smart Routing · Auto Failover · Real-time Monitoring · Cost Control',
@@ -38,6 +40,18 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.protocol.desc': 'Transform between Anthropic/OpenAI/Gemini/Codex, preserving sampling and thinking params',
   'www.home.features.detection.title': 'Soft Error Detection',
   'www.home.features.detection.desc': 'Detect errors disguised as HTTP 200, identify rate-limit markers in SSE streams',
+
+  // Home - Admin preview
+  'www.home.admin.title': 'Not a black-box proxy',
+  'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency and failure reasons into one console. When routing looks wrong, read the data; when upstreams fail, read the logs.',
+  'www.home.admin.item1': 'Track requests, tokens, cost and latency by channel, model and token.',
+  'www.home.admin.item2': 'Separate success, failure, rate limits, first-byte timeouts and stream interruptions in live logs.',
+  'www.home.admin.item3': 'Configure multiple URLs, multiple keys, RPM limits, concurrency limits and daily cost limits per channel.',
+  'www.home.admin.item4': 'Use debug logs to inspect masked upstream requests and responses when tracking protocol transform issues.',
+  'www.home.admin.usage': 'View API usage',
+  'www.home.admin.config': 'View configuration',
+  'www.home.admin.imageAlt': 'ccLoad admin dashboard statistics screenshot',
+  'www.home.admin.caption': 'The admin console exposes runtime state and cost accounting, so you do not have to guess.',
 
   // Home - Deployment
   'www.home.deployment.title': 'Deployment Options',
@@ -67,18 +81,22 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Install
   'www.install.title': 'Deploy ccLoad',
+  'www.install.meta.description': 'Deploy ccLoad with Docker, Hugging Face Spaces, source builds or release binaries. Configure secure startup options, storage and API tokens for production.',
   'www.install.subtitle': 'Pick the smallest deployment path that fits your runtime, from local testing to production.',
 
   // Config
   'www.config.title': 'Configuration Guide',
+  'www.config.meta.description': 'Configure ccLoad environment variables, storage modes, channel routing, token limits, cost controls and runtime settings.',
   'www.config.subtitle': 'Set the secure startup options first, then tune channels, limits, and timeout policy from the admin console.',
 
   // Usage
   'www.usage.title': 'API Usage',
+  'www.usage.meta.description': 'Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints. Includes client examples, token setup and admin console guidance.',
   'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints. Clients only need a new base URL and token.',
 
   // Feedback
   'www.feedback.title': 'Support',
+  'www.feedback.meta.description': 'Get support for ccLoad bugs, feature requests, discussions, pull requests and security reports.',
   'www.feedback.subtitle': 'Use the right channel for bugs, feature requests, usage discussions, and security reports.',
 
   // Common

@@ -14,6 +14,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.nav.switchTheme': '切换主题',
 
   // 首页 - Hero
+  'www.home.meta.title': 'ccLoad - Claude Code、Codex、Gemini、OpenAI 多协议 AI API 网关',
+  'www.home.meta.description': 'ccLoad 是一个高性能 AI API 网关，支持 Claude Code、Codex、Gemini、OpenAI 兼容客户端，提供智能路由、自动故障切换、实时监控和成本控制。',
   'www.home.hero.title': 'ccLoad',
   'www.home.hero.subtitle': 'Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务',
   'www.home.hero.description': '智能路由 · 自动故障切换 · 实时监控 · 成本控制',
@@ -38,6 +40,18 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.home.features.protocol.desc': 'Anthropic/OpenAI/Gemini/Codex 互转，保留采样与思考参数',
   'www.home.features.detection.title': '软错误检测',
   'www.home.features.detection.desc': 'HTTP 200 伪装的错误也能检测，SSE 流式响应中的限流标记识别',
+
+  // 首页 - 管理后台预览
+  'www.home.admin.title': '不是黑盒代理',
+  'www.home.admin.desc': 'ccLoad 把渠道、模型、令牌、成本、首字延迟和失败原因放到同一个后台里。路由策略出了问题，看数据；上游异常，看日志。',
+  'www.home.admin.item1': '按渠道、模型、令牌统计请求量、Token、成本和延迟。',
+  'www.home.admin.item2': '实时日志区分成功、失败、限流、首字超时和流式中断。',
+  'www.home.admin.item3': '渠道支持多 URL、多 Key、RPM 限制、并发限制和每日成本限额。',
+  'www.home.admin.item4': '调试日志可查看脱敏后的上游请求与响应，定位协议转换问题。',
+  'www.home.admin.usage': '查看使用指南',
+  'www.home.admin.config': '查看配置手册',
+  'www.home.admin.imageAlt': 'ccLoad 管理后台统计界面截图',
+  'www.home.admin.caption': '管理后台把运行状态和成本口径暴露出来，不靠猜。',
 
   // 首页 - 部署方式
   'www.home.deployment.title': '部署方式',
@@ -67,18 +81,22 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
 
   // 安装页
   'www.install.title': '部署安装',
+  'www.install.meta.description': 'ccLoad Docker、Hugging Face Spaces、源码编译和二进制部署指南，覆盖安全启动项、存储和 API 令牌配置。',
   'www.install.subtitle': '从本地试用到生产部署，按场景选择最少配置路径',
 
   // 配置页
   'www.config.title': '配置手册',
+  'www.config.meta.description': 'ccLoad 环境变量、存储模式、渠道路由、令牌限额、成本控制和运行时配置说明。',
   'www.config.subtitle': '先配置启动安全项，再通过管理后台热更新渠道、限额和超时策略',
 
   // 使用页
   'www.usage.title': 'API 使用',
+  'www.usage.meta.description': 'ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例，包含客户端调用、令牌配置和管理后台说明。',
   'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，客户端只需要换 base URL 和访问令牌',
 
   // 反馈页
   'www.feedback.title': '反馈支持',
+  'www.feedback.meta.description': 'ccLoad Bug 反馈、功能建议、使用讨论、Pull Request 和安全问题提交入口。',
   'www.feedback.subtitle': 'Bug、功能建议、使用讨论和安全问题分别走清晰渠道，别把问题埋在聊天记录里',
 
   // 通用
