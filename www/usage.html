@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title data-i18n="www.usage.title">使用指南 - ccLoad</title>
-  <meta name="description" content="ccLoad 使用指南">
+  <title data-i18n="www.usage.title">API 使用 - ccLoad</title>
+  <meta name="description" content="ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例和管理后台说明">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/www.css">
@@ -18,13 +19,300 @@
   <script defer src="assets/js/www.js"></script>
 </head>
 <body class="www-page www-usage">
-  <main class="www-main">
-    <div class="www-content">
-      <h1 style="margin: 4rem 0 2rem; text-align: center;" data-i18n="www.usage.title">使用指南</h1>
-      <p style="text-align: center; color: var(--color-text-secondary); margin-bottom: 4rem;">
-        详细使用文档正在完善中...
+  <header class="www-page-hero">
+    <div class="www-page-hero-inner">
+      <span class="www-eyebrow">API Usage</span>
+      <h1 class="www-page-title" data-i18n="www.usage.title">API 使用</h1>
+      <p class="www-page-subtitle" data-i18n="www.usage.subtitle">
+        ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，客户端只需要换 base URL 和访问令牌。
       </p>
+      <div class="www-badge-row" aria-label="兼容协议">
+        <span class="www-badge">Anthropic Messages</span>
+        <span class="www-badge">OpenAI Chat</span>
+        <span class="www-badge">Gemini v1beta</span>
+        <span class="www-badge">Codex</span>
+      </div>
     </div>
+  </header>
+
+  <main class="www-main">
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>调用前准备</h2>
+          <p>先在管理后台创建 API 访问令牌，再把客户端 base URL 指向 ccLoad。不要把上游 Key 发给客户端，客户端只持有 ccLoad token。</p>
+        </div>
+
+        <div class="www-step-list">
+          <div class="www-step">
+            <div>
+              <h3>登录管理后台</h3>
+              <p>访问 <code>http://localhost:8080/web/</code>，使用 <code>CCLOAD_PASS</code> 登录。</p>
+            </div>
+          </div>
+          <div class="www-step">
+            <div>
+              <h3>添加渠道</h3>
+              <p>进入渠道页，配置上游类型、URL、API Key、优先级、模型和限额。多 URL 用逗号分隔。</p>
+            </div>
+          </div>
+          <div class="www-step">
+            <div>
+              <h3>创建访问令牌</h3>
+              <p>进入令牌页创建客户端 token，并按需限制模型、渠道或成本。没有 token 时代理接口返回 401。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" style="background: var(--color-bg-elevated);">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>端点速查</h2>
+          <p>协议转换开启后，同一个上游渠道可以服务不同客户端协议。默认 upstream 模式会尽量保持上游原生语义。</p>
+        </div>
+
+        <div class="www-data-table-wrapper">
+          <table class="www-data-table">
+            <thead>
+              <tr>
+                <th>客户端</th>
+                <th>端点</th>
+                <th>用途</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>Anthropic / Claude Code</td>
+                <td><code>POST /v1/messages</code></td>
+                <td>Messages API，支持流式与非流式。</td>
+              </tr>
+              <tr>
+                <td>OpenAI 兼容客户端</td>
+                <td><code>POST /v1/chat/completions</code></td>
+                <td>Chat Completions，适合 OpenAI SDK 直接替换 base URL。</td>
+              </tr>
+              <tr>
+                <td>Gemini 客户端</td>
+                <td><code>POST /v1beta/models/{model}:generateContent</code></td>
+                <td>Gemini generateContent 兼容端点。</td>
+              </tr>
+              <tr>
+                <td>Token 统计</td>
+                <td><code>POST /v1/messages/count_tokens</code></td>
+                <td>本地 Token 估算，无需转发到上游。</td>
+              </tr>
+              <tr>
+                <td>健康检查</td>
+                <td><code>GET /health</code></td>
+                <td>进程存活检查，适合容器健康探针。</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" id="api-examples">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>API 调用示例</h2>
+          <p>下面的 `Authorization` 使用 ccLoad 访问令牌，不是上游供应商 Key。</p>
+        </div>
+
+        <div class="www-tabs">
+          <div class="www-tab-list" role="tablist" aria-label="API 示例">
+            <button class="www-tab-button active">Anthropic</button>
+            <button class="www-tab-button">OpenAI</button>
+            <button class="www-tab-button">Gemini</button>
+            <button class="www-tab-button">Token 统计</button>
+          </div>
+
+          <div class="www-tab-panel active">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/v1/messages \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -H "anthropic-version: 2023-06-01" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "max_tokens": 1024,
+    "messages": [
+      {"role": "user", "content": "Hello from ccLoad"}
+    ]
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="www-tab-panel">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/v1/chat/completions \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5",
+    "messages": [
+      {"role": "user", "content": "Hello from OpenAI-compatible client"}
+    ],
+    "stream": true
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="www-tab-panel">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST "http://localhost:8080/v1beta/models/gemini-2.5-pro:generateContent" \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "contents": [
+      {
+        "role": "user",
+        "parts": [{"text": "Hello from Gemini-compatible client"}]
+      }
+    ]
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="www-tab-panel">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/v1/messages/count_tokens \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "claude-sonnet-4-6",
+    "messages": [
+      {"role": "user", "content": "Count this locally"}
+    ]
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" style="background: var(--color-bg-elevated);">
+      <div class="www-container">
+        <div class="www-split">
+          <div>
+            <div class="www-section-header">
+              <h2>管理后台怎么用</h2>
+              <p>后台不是装饰页面，它是运行时控制面：渠道配置、令牌限额、日志追踪、统计趋势和调试日志都在这里闭环。</p>
+            </div>
+            <ul class="www-check-list">
+              <li>渠道页：增删改查上游渠道，导入导出 CSV，测试渠道可用性。</li>
+              <li>令牌页：给不同客户端分配 token、模型范围、渠道范围和成本限制。</li>
+              <li>日志页：按状态码、渠道、模型、令牌筛选请求，定位失败原因。</li>
+              <li>统计页：看请求数、Token、成本、首字延迟和健康度。</li>
+              <li>趋势页：按时间范围观察 RPM、成本和延迟走势。</li>
+            </ul>
+          </div>
+          <figure class="www-media-frame">
+            <img src="assets/images/ccload-dashboard.jpeg" alt="ccLoad 管理后台统计界面截图">
+            <figcaption class="www-media-caption">统计视图把渠道、模型、成本和延迟放在同一个工作面。</figcaption>
+          </figure>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>渠道管理 API</h2>
+          <p>Web 界面适合日常操作；批量导入、自动化初始化和迁移可以直接走管理 API。</p>
+        </div>
+
+        <div class="www-doc-grid">
+          <article class="www-info-card">
+            <h3>添加渠道</h3>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/admin/channels \
+  -H "Authorization: Bearer admin_session_or_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Claude-API",
+    "type": "anthropic",
+    "url": "https://api.anthropic.com",
+    "api_key": "sk-ant-xxx",
+    "priority": 10,
+    "models": ["claude-sonnet-4-6"],
+    "enabled": true
+  }'</code></pre>
+              </div>
+            </div>
+          </article>
+
+          <article class="www-info-card">
+            <h3>CSV 导入导出</h3>
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -H "Authorization: Bearer your_token" \
+  http://localhost:8080/admin/channels/export > channels.csv
+
+curl -X POST -H "Authorization: Bearer your_token" \
+  -F "file=@channels.csv" \
+  http://localhost:8080/admin/channels/import</code></pre>
+              </div>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" style="background: var(--color-bg-elevated);">
+      <div class="www-container">
+        <div class="www-split">
+          <figure class="www-media-frame">
+            <img src="assets/images/ccload-logs.jpg" alt="ccLoad 请求日志界面截图">
+            <figcaption class="www-media-caption">日志页用于追踪失败、限流、首字延迟和上游返回信息。</figcaption>
+          </figure>
+          <div>
+            <div class="www-section-header">
+              <h2>排障看日志，不靠猜</h2>
+              <p>ccLoad 会把 499、596、597、598、599 等自定义状态码落进日志，区分客户端取消、配额超限、SSE 错误、首字超时和流中断。</p>
+            </div>
+            <div class="www-callout">
+              <strong>429 不计入健康度成功率。</strong>它会作为限流维度单独显示，避免把“上游限流”误判成渠道坏了。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 </body>
 </html>

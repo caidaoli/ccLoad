@@ -4,12 +4,14 @@
 window.I18N_LOCALES = window.I18N_LOCALES || {};
 window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   // Navigation
-  'www.nav.home': 'Home',
-  'www.nav.install': 'Install',
-  'www.nav.config': 'Config',
-  'www.nav.usage': 'Usage',
-  'www.nav.feedback': 'Feedback',
-  'www.nav.admin': 'Admin',
+  'www.nav.home': 'Overview',
+  'www.nav.install': 'Deploy',
+  'www.nav.config': 'Configure',
+  'www.nav.usage': 'API Usage',
+  'www.nav.feedback': 'Support',
+  'www.nav.github': 'GitHub',
+  'www.nav.switchLanguage': 'Switch language',
+  'www.nav.switchTheme': 'Switch theme',
 
   // Home - Hero
   'www.home.hero.title': 'ccLoad',
@@ -63,13 +65,21 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.quickstart.source': 'From Source',
   'www.home.quickstart.binary': 'Binary',
 
-  // Footer
-  'www.footer.resources': 'Resources',
-  'www.footer.releases': 'Releases',
-  'www.footer.documentation': 'Documentation',
-  'www.footer.community': 'Community',
-  'www.footer.links': 'Links',
-  'www.footer.adminPanel': 'Admin Panel',
+  // Install
+  'www.install.title': 'Deploy ccLoad',
+  'www.install.subtitle': 'Pick the smallest deployment path that fits your runtime, from local testing to production.',
+
+  // Config
+  'www.config.title': 'Configuration Guide',
+  'www.config.subtitle': 'Set the secure startup options first, then tune channels, limits, and timeout policy from the admin console.',
+
+  // Usage
+  'www.usage.title': 'API Usage',
+  'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints. Clients only need a new base URL and token.',
+
+  // Feedback
+  'www.feedback.title': 'Support',
+  'www.feedback.subtitle': 'Use the right channel for bugs, feature requests, usage discussions, and security reports.',
 
   // Common
   'www.common.copy': 'Copy',

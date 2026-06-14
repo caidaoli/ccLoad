@@ -3,10 +3,11 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title data-i18n="www.feedback.title">反馈与支持 - ccLoad</title>
-  <meta name="description" content="ccLoad 反馈与支持">
+  <title data-i18n="www.feedback.title">反馈支持 - ccLoad</title>
+  <meta name="description" content="ccLoad Bug 反馈、功能建议、讨论、Pull Request 和安全问题提交入口">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
+  <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js"></script>
   <link rel="stylesheet" href="assets/css/www.css">
@@ -18,42 +19,146 @@
   <script defer src="assets/js/www.js"></script>
 </head>
 <body class="www-page www-feedback">
-  <main class="www-main">
-    <div class="www-content">
-      <h1 style="margin: 4rem 0 2rem; text-align: center;" data-i18n="www.feedback.title">反馈与支持</h1>
-
-      <section style="max-width: 800px; margin: 0 auto;">
-        <div style="margin-bottom: 3rem;">
-          <h2 style="margin-bottom: 1rem;">GitHub Issues</h2>
-          <p style="color: var(--color-text-secondary); margin-bottom: 1rem;">
-            报告 Bug、提出功能建议
-          </p>
-          <a href="https://github.com/caidaoli/ccLoad/issues" target="_blank" rel="noopener" class="www-btn www-btn-primary">
-            前往 Issues
-          </a>
-        </div>
-
-        <div style="margin-bottom: 3rem;">
-          <h2 style="margin-bottom: 1rem;">GitHub Discussions</h2>
-          <p style="color: var(--color-text-secondary); margin-bottom: 1rem;">
-            讨论使用问题、分享经验
-          </p>
-          <a href="https://github.com/caidaoli/ccLoad/discussions" target="_blank" rel="noopener" class="www-btn www-btn-primary">
-            前往 Discussions
-          </a>
-        </div>
-
-        <div style="margin-bottom: 3rem;">
-          <h2 style="margin-bottom: 1rem;">⭐ Star 支持</h2>
-          <p style="color: var(--color-text-secondary); margin-bottom: 1rem;">
-            如果 ccLoad 对你有帮助，欢迎点个 Star 支持！
-          </p>
-          <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn www-btn-primary">
-            前往 GitHub
-          </a>
-        </div>
-      </section>
+  <header class="www-page-hero">
+    <div class="www-page-hero-inner">
+      <span class="www-eyebrow">Support</span>
+      <h1 class="www-page-title" data-i18n="www.feedback.title">反馈支持</h1>
+      <p class="www-page-subtitle" data-i18n="www.feedback.subtitle">
+        Bug、功能建议、使用讨论和安全问题分别走清晰渠道，别把问题埋在聊天记录里。
+      </p>
     </div>
+  </header>
+
+  <main class="www-main">
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>按问题类型选择入口</h2>
+          <p>反馈入口越具体，修复越快。缺日志、缺版本、缺复现步骤的问题只能来回追问。</p>
+        </div>
+
+        <div class="www-doc-grid www-doc-grid-3">
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🐞</span>
+            <h3>Bug 报告</h3>
+            <p>请求失败、协议转换异常、统计口径错误、界面行为异常，都走 Issues。</p>
+            <ul class="www-check-list">
+              <li>带上 ccLoad 版本和部署方式。</li>
+              <li>贴请求端点、状态码和日志片段。</li>
+              <li>说明期望行为和实际行为。</li>
+            </ul>
+            <div class="www-card-actions">
+              <a href="https://github.com/caidaoli/ccLoad/issues/new" target="_blank" rel="noopener" class="www-btn www-btn-primary">提交 Issue</a>
+            </div>
+          </article>
+
+          <article class="www-doc-card">
+            <span class="www-doc-icon">💡</span>
+            <h3>功能建议</h3>
+            <p>新协议、新供应商、统计维度、部署支持或管理后台改进，先讲清楚使用场景。</p>
+            <ul class="www-check-list">
+              <li>说明当前绕路方案。</li>
+              <li>说明新增能力要服务谁。</li>
+              <li>避免“以后可能需要”的空需求。</li>
+            </ul>
+            <div class="www-card-actions">
+              <a href="https://github.com/caidaoli/ccLoad/issues" target="_blank" rel="noopener" class="www-btn www-btn-primary">查看 Issues</a>
+            </div>
+          </article>
+
+          <article class="www-doc-card">
+            <span class="www-doc-icon">💬</span>
+            <h3>使用讨论</h3>
+            <p>部署选型、渠道配置、模型选择、成本策略这类不一定是 Bug 的问题，走 Discussions。</p>
+            <ul class="www-check-list">
+              <li>描述部署环境。</li>
+              <li>说明当前配置结构。</li>
+              <li>贴最小必要日志，不要贴完整密钥。</li>
+            </ul>
+            <div class="www-card-actions">
+              <a href="https://github.com/caidaoli/ccLoad/discussions" target="_blank" rel="noopener" class="www-btn www-btn-primary">进入讨论区</a>
+            </div>
+          </article>
+
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🔐</span>
+            <h3>安全问题</h3>
+            <p>鉴权绕过、敏感信息泄露、请求规则注入、TLS 风险等问题不要公开贴利用细节。</p>
+            <ul class="www-check-list">
+              <li>先在 GitHub 私密渠道联系维护者。</li>
+              <li>给出影响范围和最小复现。</li>
+              <li>不要把上游 Key、令牌或密码贴到公开 Issue。</li>
+            </ul>
+            <div class="www-card-actions">
+              <a href="https://github.com/caidaoli/ccLoad/security" target="_blank" rel="noopener" class="www-btn www-btn-primary">安全入口</a>
+            </div>
+          </article>
+
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🛠️</span>
+            <h3>贡献代码</h3>
+            <p>修复 Bug 或补功能请保持改动聚焦。大范围重构先开 Issue 对齐边界。</p>
+            <ul class="www-check-list">
+              <li>Go 构建和测试必须带 <code>-tags sonic</code>。</li>
+              <li>前端验证优先运行 <code>make verify-web</code>。</li>
+              <li>不要混入无关格式化和生成文件。</li>
+            </ul>
+            <div class="www-card-actions">
+              <a href="https://github.com/caidaoli/ccLoad/pulls" target="_blank" rel="noopener" class="www-btn www-btn-primary">查看 PR</a>
+            </div>
+          </article>
+
+          <article class="www-doc-card">
+            <span class="www-doc-icon">⭐</span>
+            <h3>项目链接</h3>
+            <p>源码、版本发布、许可证和 README 都在 GitHub。部署前优先看当前版本的 README。</p>
+            <div class="www-link-list">
+              <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener">GitHub 仓库</a>
+              <a href="https://github.com/caidaoli/ccLoad/releases" target="_blank" rel="noopener">版本发布</a>
+              <a href="https://github.com/caidaoli/ccLoad/blob/master/README.md" target="_blank" rel="noopener">中文 README</a>
+              <a href="https://github.com/caidaoli/ccLoad/blob/master/LICENSE" target="_blank" rel="noopener">MIT License</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section" style="background: var(--color-bg-elevated);">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>高质量反馈模板</h2>
+          <p>问题越可复现，越容易直接修。下面这份信息足够定位大多数部署、代理和前端问题。</p>
+        </div>
+
+        <div class="www-code-block">
+          <div class="www-code-header">
+            <span class="www-code-lang">markdown</span>
+            <button class="www-code-copy" data-i18n="www.common.copy">复制</button>
+          </div>
+          <div class="www-code-content">
+            <pre><code>## 环境
+- ccLoad 版本：
+- 部署方式：Docker / Hugging Face / 源码 / 二进制
+- 存储模式：SQLite / MySQL / Hybrid
+- 客户端：Claude Code / Codex / OpenAI SDK / Gemini SDK / curl
+
+## 现象
+- 请求端点：
+- 返回状态码：
+- 期望行为：
+- 实际行为：
+
+## 复现步骤
+1.
+2.
+3.
+
+## 日志
+请贴脱敏后的日志片段，不要贴 API Key、访问令牌或管理密码。</code></pre>
+          </div>
+        </div>
+      </div>
+    </section>
   </main>
 </body>
 </html>

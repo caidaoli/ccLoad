@@ -91,47 +91,6 @@
       // 创建页脚
       const footerHTML = `
         <footer class="www-footer">
-          <div class="www-footer-content">
-            <div class="www-footer-section">
-              <h4 class="www-footer-title" data-i18n="www.footer.resources">资源</h4>
-              <a href="https://github.com/caidaoli/ccLoad" class="www-footer-link" target="_blank" rel="noopener">
-                GitHub
-              </a>
-              <a href="https://github.com/caidaoli/ccLoad/releases" class="www-footer-link" target="_blank" rel="noopener" data-i18n="www.footer.releases">
-                版本发布
-              </a>
-              <a href="https://github.com/caidaoli/ccLoad/blob/master/README.md" class="www-footer-link" target="_blank" rel="noopener" data-i18n="www.footer.documentation">
-                文档
-              </a>
-            </div>
-
-            <div class="www-footer-section">
-              <h4 class="www-footer-title" data-i18n="www.footer.community">社区</h4>
-              <a href="https://github.com/caidaoli/ccLoad/issues" class="www-footer-link" target="_blank" rel="noopener">
-                Issues
-              </a>
-              <a href="https://github.com/caidaoli/ccLoad/discussions" class="www-footer-link" target="_blank" rel="noopener">
-                Discussions
-              </a>
-              <a href="https://github.com/caidaoli/ccLoad/pulls" class="www-footer-link" target="_blank" rel="noopener">
-                Pull Requests
-              </a>
-            </div>
-
-            <div class="www-footer-section">
-              <h4 class="www-footer-title" data-i18n="www.footer.links">链接</h4>
-              <a href="/web/index.html" class="www-footer-link" data-i18n="www.footer.adminPanel">
-                管理后台
-              </a>
-              <a href="https://www.anthropic.com" class="www-footer-link" target="_blank" rel="noopener">
-                Anthropic
-              </a>
-              <a href="https://github.com/caidaoli" class="www-footer-link" target="_blank" rel="noopener">
-                @caidaoli
-              </a>
-            </div>
-          </div>
-
           <div class="www-footer-bottom">
             <p>
               © 2025 ccLoad ·
