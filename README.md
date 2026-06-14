@@ -1,8 +1,10 @@
-![ccLoad说明](images/ccload.jpg)
+![ccLoad admin dashboard](images/ccload.jpg)
 
-# ccLoad - Claude Code & Codex & Gemini & OpenAI 兼容 API 代理服务
+# ccLoad
 
-**[English](README_EN.md) | 简体中文**
+**AI API gateway for Claude Code, Codex, Gemini, and OpenAI.**
+
+**English | [简体中文](README.zh-CN.md)**
 
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
@@ -11,103 +13,92 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> 🚀 高性能AI API透明代理 | 多渠道智能调度 | 故障秒切 | 实时监控 | 开箱即用
+> Smart routing | Automatic failover | Exponential cooldown | Multi-URL scheduling | Protocol transforms | Live monitoring | Cost control
 
-兄弟们，用Claude API是不是有这些烦恼：渠道太多管不过来、限流了手动切换、挂了只能干等？ccLoad帮你全搞定！一个Go语言写的高性能代理服务，支持Claude Code、Codex、Gemini、OpenAI四大平台。**智能路由+自动故障切换+实时监控**，让你的API调用稳如老狗🐶
+ccLoad removes the operational mess of running multiple AI API upstreams. It keeps Claude Code, Codex, Gemini, and OpenAI-compatible clients on one stable gateway, then handles upstream selection, failover, cooldown, protocol conversion, request visibility, and cost limits in the service instead of in every client script.
 
-## 🎯 痛点解决
+## 🎯 What ccLoad Solves
 
-用 Claude API 的兄弟们，这些场景是不是似曾相识👇
+Common failure modes when you run several AI API channels:
 
-- 😫 **渠道管理累死人**：手里一堆API渠道，有的快过期，有的有限额，切来切去头都大
-- 🔄 **手动切换烦透了**：这个渠道挂了换那个，那个限流了再换，一天光切渠道了
-- 🤯 **故障来了手忙脚乱**：渠道突然 502/504，只能干等着，影响工作进度
-- 👀 **请求发出去就像石沉大海**：发完请求傻等，不知道卡在哪一步，焦虑感拉满
-- 🎭 **上游骗你说成功了**：返回 200 状态码，结果响应内容是报错，坑得你一脸懵
+- **Manual channel switching**: Different keys, validity windows, quotas, and upstream URLs quickly become hard to manage.
+- **Rate limits and upstream failures**: `429`, `502`, `504`, expired keys, and overloaded providers should not stop the client workflow.
+- **Opaque request status**: Without live request visibility, long streaming requests become guesswork.
+- **HTTP 200 with error content**: Some upstreams return a successful HTTP status while the response body is an actual error.
+- **Cost drift**: Shared gateways need per-channel and per-token limits, not spreadsheet accounting after the bill arrives.
 
-ccLoad 一站式解决👇
+ccLoad handles those cases with:
 
-- 🎯 **智能路由**：高优先级渠道优先用，同级按平滑加权轮询分流，更均匀
-- 🔀 **自动故障切换**：渠道挂了秒切，你甚至感知不到
-- ⏰ **指数级冷却**：故障渠道自动休息，2分钟→4分钟→8分钟，不会反复踩坑
-- 🌐 **多URL智能调度**：一个渠道配多个URL，按延迟加权随机分流，慢的自动少用
-- 🙌 **零手动干预**：躺平就行，系统全自动处理
-- 📊 **实时请求监控**：正在跑的请求一目了然，告别盲等
-- 🔍 **软错误检测**：HTTP 200 伪装成功？逃不过检测！自动识别以下"假成功"：
-  - `{"error": {...}}` 结构的 JSON 错误
-  - `type` 字段是 `"error"` 的响应
-  - SSE `error` 事件中的明确限流（`rate_limit_exceeded` / `too_many_requests`）按 `429` 处理
-  - `"当前模型负载过高"` 之类的纯文本告警
+- **Smart routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin.
+- **Automatic failover**: Failed keys, channels, and URLs are skipped according to the classified error type.
+- **Exponential cooldown**: Unhealthy upstreams back off automatically instead of being hammered by retries.
+- **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
+- **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
+- **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
+- **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
+  - JSON responses containing `{"error": {...}}` structure
+  - Responses with `type` field set to `"error"`
+  - Explicit rate limits in SSE `error` events (`rate_limit_exceeded` / `too_many_requests`) are handled as `429`
+  - Plain text messages like `"当前模型负载过高"` / `"Current model load too high"` (load warnings)
 
-## ✨ 主要特性
+## ✨ Key Features
 
-这波配置真的很顶👇
+- 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, high-performance caching
+- 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
+- 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
+- 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
+- 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
+- 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
+- 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
+- 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
+- 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
+- 🔒 **Secure Authentication** - Token-based admin interface and API access control
+- 🏷️ **Build Tags** - GOTAGS support, high-performance JSON library enabled by default
+- 🐳 **Docker Support** - Multi-arch images (amd64/arm64), automated CI/CD
+- ☁️ **Cloud Native** - Container deployment support, GitHub Actions auto-build
+- 🤗 **Hugging Face** - One-click deployment to Hugging Face Spaces, free hosting
+- 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
+- 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
+- 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
+- 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
+- ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
+- 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
+- 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
+- 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
+- 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
+- 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, preserving sampling and thinking parameters so one channel serves multiple client protocols
+- 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
+- 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
+- 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
+- 🎛️ **Log Column Customization** - Show/hide table columns per preference, settings persist in browser localStorage
 
-| 能力 | 亮点 | 效果 |
-|------|------|------|
-| 🚀 **性能怪兽** | Gin框架 + Sonic JSON | 1000+并发，高性能缓存 |
-| 🧮 **本地算Token** | 不调API就能估算消耗 | 响应<5ms，准确度93%+ |
-| 🎯 **错误分类器** | Key级/渠道级/客户端错误 | 200伪装错误也能揪出来 |
-| 🔀 **智能调度** | 优先级+平滑加权轮询+健康度排序 | 烂渠道自动靠边站 |
-| 🛡️ **故障秒切** | 指数退避冷却机制 | 2min→4min→8min→30min |
-| 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
-| 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
-| 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
-| 🤗 **白嫖福利** | Hugging Face免费托管 | 个人用完全够了 |
-| 💰 **成本限额** | 渠道每日成本上限 | 达到限额自动跳过 |
-| 🚦 **渠道RPM限制** | 每渠道滚动60秒请求上限 | 0=不限，超限自动跳过 |
-| 🚧 **渠道并发限制** | 每渠道同时在飞请求上限 | 0=不限，超限自动跳过 |
-| 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
-| ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
-| 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
-| 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
-| 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
-| 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 保留采样与思考参数，一个渠道服务多种客户端协议 |
-| 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
-| 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
-| 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
-| 🎛️ **日志列自定义** | 表格列显隐可配置，设置持久化到浏览器 | 按需查看，减少信息噪音 |
-
-## 🏗️ 架构概览
-
-想知道ccLoad怎么跑起来的？其实很简单👇
-
-从你的应用发请求到API返回结果，中间经过这几层：
-- **认证层** - 验证你的访问权限，拒绝白嫖党
-- **路由分发** - 判断请求协议与路径，按 Claude Code、Codex、Gemini、OpenAI 分流处理
-- **协议转换** - 客户端用OpenAI格式？上游是Anthropic？自动翻译，无感切换
-- **智能调度** - 从一堆渠道里选个最靠谱的给你用
-- **故障切换** - 选中的渠道挂了？秒切备用，你根本感知不到
-
-核心亮点：**存储层用工厂模式**，SQLite和MySQL共享代码，消除了467行重复代码（DRY原则拉满）。数据层架构清晰，想换数据库？改个环境变量就完事👇
+## 🏗️ Architecture Overview
 
 ```mermaid
 graph TB
-    subgraph "客户端"
-        A[用户应用] --> B[ccLoad代理]
+    subgraph "Client"
+        A[User App] --> B[ccLoad Proxy]
     end
-    
-    subgraph "ccLoad服务"
-        B --> C[认证层]
-        C --> D[路由分发]
-        D --> E[渠道选择器]
-        E --> F[负载均衡器]
 
-        subgraph "核心组件"
-            F --> G[渠道A<br/>优先级:10]
-            F --> H[渠道B<br/>优先级:5]
-            F --> I[渠道C<br/>优先级:5]
-            G --> G1[URL选择器<br/>加权随机]
-            H --> H1[URL选择器<br/>加权随机]
-            I --> I1[URL选择器<br/>加权随机]
+    subgraph "ccLoad Service"
+        B --> C[Auth Layer]
+        C --> D[Route Dispatcher]
+        D --> E[Channel Selector]
+        E --> F[Load Balancer]
+
+        subgraph "Core Components"
+            F --> G[Channel A<br/>Priority:10]
+            F --> H[Channel B<br/>Priority:5]
+            F --> I[Channel C<br/>Priority:5]
+            G --> G1[URL Selector<br/>Weighted Random]
+            H --> H1[URL Selector<br/>Weighted Random]
+            I --> I1[URL Selector<br/>Weighted Random]
         end
-        
-        subgraph "存储层"
-            J[(存储工厂)]
-            J3[Schema定义层]
-            J4[统一SQL层]
+
+        subgraph "Storage Layer"
+            J[(Storage Factory)]
+            J3[Schema Definition]
+            J4[Unified SQL Layer]
             J1[(SQLite)]
             J2[(MySQL)]
             J --> J3
@@ -115,55 +106,53 @@ graph TB
             J4 --> J1
             J4 --> J2
         end
-        
-        subgraph "监控层"
-            K[日志系统]
-            L[统计分析]
-            M[趋势图表]
+
+        subgraph "Monitoring Layer"
+            K[Log System]
+            L[Stats Analysis]
+            M[Trend Charts]
         end
     end
-    
-    subgraph "上游服务"
+
+    subgraph "Upstream Services"
         G1 --> N[Claude API]
         H1 --> O[Claude API]
         I1 --> P[Claude API]
     end
-    
+
     E <--> J
     F <--> J
     K <--> J
     L <--> J
     M <--> J
-    
+
     style B fill:#4F46E5,stroke:#000,color:#fff
     style F fill:#059669,stroke:#000,color:#fff
     style E fill:#0EA5E9,stroke:#000,color:#fff
 ```
 
-## 🚀 快速开始
+## 🚀 Quick Start
 
-3分钟部署，选一个适合你的方式👇
+Choose the deployment method that suits you best:
 
-| 部署方式 | 难度 | 成本 | 适合谁 | HTTPS | 持久化 |
-|---------|------|------|--------|-------|--------|
-| 🐳 **Docker** | ⭐⭐ | 需VPS | 生产环境、追求稳定 | 需配置 | ✅ |
-| 🤗 **Hugging Face** | ⭐ | **白嫖** | 个人玩家、先体验一下 | ✅自动 | ✅ |
-| 🔧 **源码编译** | ⭐⭐⭐ | 需服务器 | 爱折腾、想魔改 | 需配置 | ✅ |
-| 📦 **二进制** | ⭐⭐ | 需服务器 | 懒人福音、轻量部署 | 需配置 | ✅ |
+| Method | Difficulty | Cost | Use Case | HTTPS | Persistence |
+|--------|------------|------|----------|-------|-------------|
+| 🐳 **Docker** | ⭐⭐ | VPS required | Production, high performance | Config required | ✅ |
+| 🤗 **Hugging Face** | ⭐ | **Free** | Personal use, quick trial | ✅ Auto | ✅ |
+| 🔧 **Source Build** | ⭐⭐⭐ | Server required | Development, customization | Config required | ✅ |
+| 📦 **Binary** | ⭐⭐ | Server required | Lightweight, simple setup | Config required | ✅ |
 
-### 方式一：Docker 部署（推荐）💪
+### Method 1: Docker Deployment (Recommended)
 
-兄弟们，生产环境就选这个！镜像已经打好了，直接拉下来用，稳定又省心。
-
-**使用预构建镜像（推荐）**：
+**Using pre-built images (Recommended)**:
 ```bash
-# 方式 1: 使用 docker-compose（最简单）
+# Option 1: Using docker-compose (Simplest)
 curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
 curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
-# 编辑 .env 文件设置密码
+# Edit .env file to set password
 docker-compose up -d
 
-# 方式 2: 直接运行镜像
+# Option 2: Run image directly
 docker pull ghcr.io/caidaoli/ccload:latest
 docker run -d --name ccload \
   -p 8080:8080 \
@@ -172,18 +161,16 @@ docker run -d --name ccload \
   ghcr.io/caidaoli/ccload:latest
 ```
 
-**从源码构建**：
-
-想自己编译镜像？也行，适合对官方镜像不放心的同学👇
+**Building from source**:
 ```bash
-# 克隆项目
+# Clone project
 git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
-# 使用 docker-compose 构建并运行
+# Build and run with docker-compose
 docker-compose -f docker-compose.build.yml up -d
 
-# 或手动构建
+# Or build manually
 docker build -t ccload:local .
 docker run -d --name ccload \
   -p 8080:8080 \
@@ -192,60 +179,56 @@ docker run -d --name ccload \
   ccload:local
 ```
 
-### 方式二：源码编译
-
-爱折腾的兄弟看过来！想魔改代码就选这个，Go环境准备好就能跑👇
+### Method 2: Source Build
 
 ```bash
-# 克隆项目
+# Clone project
 git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
-# 构建项目（默认使用高性能 JSON 库）
+# Build project (uses high-performance JSON library by default)
 go build -tags sonic -o ccload .
 
-# 或使用 Makefile
+# Or use Makefile
 make build
 
-# 直接运行开发模式
+# Run in development mode
 go run -tags sonic .
-# 或
+# Or
 make dev
 ```
 
-### 方式三：二进制下载
-
-懒人福音！不想装Docker，也不想装Go？直接下个可执行文件就完事👇
+### Method 3: Binary Download
 
 ```bash
-# 从 GitHub Releases 下载对应平台的二进制文件
+# Download binary for your platform from GitHub Releases
 wget https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64
 chmod +x ccload-linux-amd64
 ./ccload-linux-amd64
 ```
 
-### 方式四：Hugging Face Spaces 部署
+### Method 4: Hugging Face Spaces Deployment
 
-白嫖党狂喜时刻！Hugging Face提供免费Docker托管，HTTPS自动配，个人用绝对够👇
+Hugging Face Spaces provides free container hosting with Docker support, ideal for personal and small team use.
 
-#### 部署步骤
+#### Deployment Steps
 
-1. **登录 Hugging Face**
+1. **Login to Hugging Face**
 
-   访问 [huggingface.co](https://huggingface.co) 并登录你的账户
+   Visit [huggingface.co](https://huggingface.co) and log into your account
 
-2. **创建新 Space**
+2. **Create New Space**
 
-   - 点击右上角 "New" → "Space"
-   - **Space name**: `ccload`（或自定义名称）
+   - Click "New" → "Space" in the top right
+   - **Space name**: `ccload` (or custom name)
    - **License**: `MIT`
    - **Select the SDK**: `Docker`
-   - **Visibility**: `Public` 或 `Private`（私有需付费订阅）
-   - 点击 "Create Space"
+   - **Visibility**: `Public` or `Private` (private requires paid subscription)
+   - Click "Create Space"
 
-3. **创建 Dockerfile**
+3. **Create Dockerfile**
 
-   在 Space 仓库中创建 `Dockerfile` 文件，内容如下：
+   Create a `Dockerfile` in the Space repository:
 
    ```dockerfile
    FROM ghcr.io/caidaoli/ccload:latest
@@ -255,22 +238,22 @@ chmod +x ccload-linux-amd64
    EXPOSE 7860
    ```
 
-   可以通过以下方式创建：
+   Create via:
 
-   **方式 A - Web 界面**（推荐）:
-   - 在 Space 页面点击 "Files" 标签
-   - 点击 "Add file" → "Create a new file"
-   - 文件名输入 `Dockerfile`
-   - 粘贴上述内容
-   - 点击 "Commit new file to main"
+   **Method A - Web Interface** (Recommended):
+   - Click "Files" tab on Space page
+   - Click "Add file" → "Create a new file"
+   - Enter `Dockerfile` as filename
+   - Paste the content above
+   - Click "Commit new file to main"
 
-   **方式 B - Git 命令行**:
+   **Method B - Git Command Line**:
    ```bash
-   # 克隆你的 Space 仓库
+   # Clone your Space repository
    git clone https://huggingface.co/spaces/YOUR_USERNAME/ccload
    cd ccload
 
-   # 创建 Dockerfile
+   # Create Dockerfile
    cat > Dockerfile << 'EOF'
    FROM ghcr.io/caidaoli/ccload:latest
    ENV TZ=Asia/Shanghai
@@ -279,183 +262,176 @@ chmod +x ccload-linux-amd64
    EXPOSE 7860
    EOF
 
-   # 提交并推送
+   # Commit and push
    git add Dockerfile
    git commit -m "Add Dockerfile for ccLoad deployment"
    git push
    ```
 
-4. **配置环境变量（Secrets）**
+4. **Configure Environment Variables (Secrets)**
 
-   在 Space 设置页面（Settings → Variables and secrets → New secret）添加：
+   In Space settings (Settings → Variables and secrets → New secret):
 
-   | 变量名 | 值 | 必填 | 说明 |
-   |--------|-----|------|------|
-   | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
-   | `CCLOAD_API_TOKENS` | `token1\|生产,token2\|开发` | 可选 | 启动时预置 API 访问令牌 |
+   | Variable | Value | Required | Description |
+   |----------|-------|----------|-------------|
+   | `CCLOAD_PASS` | `your_admin_password` | ✅ **Required** | Admin interface password |
+   | `CCLOAD_API_TOKENS` | `token1\|production,token2\|development` | Optional | Pre-seed API access tokens on startup |
 
-   **注意**:
-   - API 访问令牌可通过 `CCLOAD_API_TOKENS` 预置，也可在 Web 管理界面 `/web/tokens.html` 配置
-   - `PORT` 和 `SQLITE_PATH` 已在 Dockerfile 中设置，无需配置
-   - Hugging Face Spaces 重启后 `/tmp` 目录会清空
+   **Note**: API access tokens can be pre-seeded with `CCLOAD_API_TOKENS` or managed in the Web admin interface `/web/tokens.html`.
 
-5. **等待构建和启动**
+5. **Wait for Build and Startup**
 
-   推送 Dockerfile 后，Hugging Face 会自动：
-   - 拉取预构建镜像（约 30 秒）
-   - 启动应用容器（约 10 秒）
-   - 总耗时约 1-2 分钟（比从源码构建快 3-5 倍）
+   After pushing Dockerfile, Hugging Face will automatically:
+   - Pull pre-built image (~30 seconds)
+   - Start application container (~10 seconds)
+   - Total time ~1-2 minutes (3-5x faster than source build)
 
-6. **访问应用**
+6. **Access Application**
 
-   构建完成后，通过以下地址访问：
-   - **应用地址**: `https://YOUR_USERNAME-ccload.hf.space`
-   - **管理界面**: `https://YOUR_USERNAME-ccload.hf.space/web/`
-   - **API 端点**: `https://YOUR_USERNAME-ccload.hf.space/v1/messages`
+   After build completes, access via:
+   - **App URL**: `https://YOUR_USERNAME-ccload.hf.space`
+   - **Admin Interface**: `https://YOUR_USERNAME-ccload.hf.space/web/`
+   - **API Endpoint**: `https://YOUR_USERNAME-ccload.hf.space/v1/messages`
 
-   **首次访问提示**:
-   - 如果 Space 处于休眠状态，首次访问需等待 20-30 秒唤醒
-   - 后续访问会立即响应
+   **First Access Note**:
+   - If Space is sleeping, first access takes 20-30 seconds to wake
+   - Subsequent accesses respond immediately
 
-#### Hugging Face 部署特点
+#### Hugging Face Deployment Characteristics
 
-**优势**:
-- ✅ **完全免费**: 公开 Space 永久免费，包含 CPU 和存储
-- ✅ **极速部署**: 使用预构建镜像，1-2 分钟即可完成（比源码构建快 3-5 倍）
-- ✅ **自动 HTTPS**: 无需配置 SSL 证书，自动提供安全连接
-- ✅ **自动重启**: 应用崩溃后自动重启
-- ✅ **版本控制**: 基于 Git，方便回滚和协作
-- ✅ **简单维护**: 仅需 5 行 Dockerfile，无需管理源码
+**Advantages**:
+- ✅ **Completely Free**: Public Spaces are permanently free with CPU and storage
+- ✅ **Fast Deployment**: Pre-built image, 1-2 minutes (3-5x faster than source build)
+- ✅ **Auto HTTPS**: No SSL certificate configuration needed
+- ✅ **Auto Restart**: Automatic restart after crashes
+- ✅ **Version Control**: Git-based, easy rollback and collaboration
+- ✅ **Simple Maintenance**: Only 5-line Dockerfile, no source code management
 
-**限制**:
-- ⚠️ **资源限制**: 免费版提供 2 CPU + 16GB RAM
-- ⚠️ **休眠策略**: 48 小时无访问会进入休眠，首次访问需等待唤醒（约 20-30 秒）
-- ⚠️ **固定端口**: 必须使用 7860 端口
-- ⚠️ **公网访问**: Space 默认公开，必须通过 Web 管理界面配置 API 访问令牌才能访问 /v1/* API（否则 401）
+**Limitations**:
+- ⚠️ **Resource Limits**: Free tier provides 2 CPU + 16GB RAM
+- ⚠️ **Sleep Policy**: 48 hours without access triggers sleep, first access takes ~20-30s to wake
+- ⚠️ **Fixed Port**: Must use port 7860
+- ⚠️ **Public Access**: Spaces are public by default, must configure API tokens via Web admin to access /v1/* APIs (otherwise 401)
 
-#### 数据持久化
+#### Data Persistence
 
-**重要**: Hugging Face Spaces 的存储策略
+**Important**: Hugging Face Spaces Storage Policy
 
-由于 Hugging Face Spaces 的限制（`/tmp` 目录重启后清空），**强烈推荐使用外部 MySQL 数据库**实现完整的数据持久化：
+Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **we strongly recommend using an external MySQL database** for complete data persistence:
 
-**方案一：混合存储模式（推荐，性能最优）**
-- ✅ **极速查询**: 所有读写走本地 SQLite，延迟 <1ms（免费 MySQL 延迟 800ms+）
-- ✅ **重启不丢数据**: 异步同步到 MySQL，启动时自动恢复
-- ✅ **统计缓存**: 智能 TTL 缓存，减少重复聚合查询
-- 配置方法: 在 Secrets 中添加 `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`
+**Option 1: Hybrid Storage Mode (Recommended, Best Performance)**
+- ✅ **Ultra-fast queries**: All reads/writes go through local SQLite, latency <1ms (free MySQL has 800ms+ latency)
+- ✅ **Restart-safe**: Async sync to MySQL, auto-restore on startup
+- ✅ **Stats caching**: Smart TTL cache reduces repetitive aggregate queries
+- Configuration: Add `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
 
-**Dockerfile 示例（混合模式）**:
+**Dockerfile Example (Hybrid Mode)**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
-# Secrets 中配置: CCLOAD_MYSQL + CCLOAD_ENABLE_SQLITE_REPLICA=1
+# Configure in Secrets: CCLOAD_MYSQL + CCLOAD_ENABLE_SQLITE_REPLICA=1
 EXPOSE 7860
 ```
 
-**方案二：纯 MySQL 模式**
-- ✅ **完整持久化**: 渠道配置、日志记录、统计数据全部保留
-- ✅ **重启不丢数据**: 数据存储在外部数据库，不受 Space 重启影响
-- ⚠️ **查询较慢**: 免费 MySQL 延迟较高，统计页面响应慢
-- 配置方法: 在 Secrets 中添加 `CCLOAD_MYSQL` 环境变量
+**Option 2: Pure MySQL Mode**
+- ✅ **Complete Persistence**: Channel configs, logs, and stats all preserved
+- ✅ **Restart-Safe**: Data stored externally, unaffected by Space restarts
+- ⚠️ **Slower Queries**: Free MySQL has higher latency, stats pages respond slowly
+- Configuration: Add `CCLOAD_MYSQL` environment variable in Secrets
 
-**推荐的免费 MySQL 服务**:
-- [TiDB Cloud Serverless](https://tidbcloud.com/) - 免费 5GB 存储，MySQL 兼容，无连接数限制，推荐首选
-- [Aiven for MySQL](https://aiven.io/) - 免费 1GB 存储，支持多区域部署
+**Recommended Free MySQL Services**:
+- [TiDB Cloud Serverless](https://tidbcloud.com/) - Free 5GB storage, MySQL compatible, no connection limits, recommended first choice
+- [Aiven for MySQL](https://aiven.io/) - Free 1GB storage, multi-region support
 
-**MySQL 配置示例（以 TiDB Cloud 为例）**:
-1. 注册 [TiDB Cloud](https://tidbcloud.com/) 账户
-2. 创建 Serverless Cluster（免费）
-3. 获取连接信息，格式为：`user:password@tcp(host:4000)/database?tls=true`
-4. 在 Hugging Face Space 的 Secrets 中添加 `CCLOAD_MYSQL` 变量
-5. **（可选）启用混合模式**: 添加 `CCLOAD_ENABLE_SQLITE_REPLICA=1` 获得最佳性能
-6. 重启 Space，所有数据将自动持久化到 MySQL
+**MySQL Configuration Example (TiDB Cloud)**:
+1. Register for [TiDB Cloud](https://tidbcloud.com/) account
+2. Create Serverless Cluster (free)
+3. Get connection info, format: `user:password@tcp(host:4000)/database?tls=true`
+4. Add `CCLOAD_MYSQL` variable in Hugging Face Space Secrets
+5. **(Optional) Enable Hybrid Mode**: Add `CCLOAD_ENABLE_SQLITE_REPLICA=1` for best performance
+6. Restart Space, all data will auto-persist to MySQL
 
-**Dockerfile 示例（纯 MySQL）**:
+**Dockerfile Example (Pure MySQL)**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
-# 不需要 SQLITE_PATH，使用 CCLOAD_MYSQL 环境变量
+# No SQLITE_PATH needed, uses CCLOAD_MYSQL environment variable
 EXPOSE 7860
 ```
 
-**方案三：仅本地存储（不推荐）**
-- ⚠️ **数据丢失**: Space 重启后 `/tmp` 目录会清空，渠道配置会丢失
-- ⚠️ **手动恢复**: 需要重新通过 Web 界面或 CSV 导入配置渠道
-- 使用场景: 仅用于临时测试
+**Option 3: Local Storage Only (Not Recommended)**
+- ⚠️ **Data Loss**: `/tmp` clears on Space restart, channel config lost
+- ⚠️ **Manual Recovery**: Must re-import via Web interface or CSV
+- Use case: Temporary testing only
 
-#### 更新部署
+#### Update Deployment
 
-由于使用预构建镜像，更新非常简单：
+With pre-built images, updates are simple:
 
-**自动更新**:
-- 当官方发布新版本镜像（`ghcr.io/caidaoli/ccload:latest`）时
-- 在 Space 设置中点击 "Factory rebuild" 即可自动拉取最新镜像
-- 或等待 Hugging Face 自动重启（通常 48 小时后）
+**Auto Update**:
+- When new version image (`ghcr.io/caidaoli/ccload:latest`) is released
+- Click "Factory rebuild" in Space settings to pull latest image
+- Or wait for Hugging Face auto-restart (typically after 48 hours)
 
-**手动触发更新**:
+**Manual Trigger Update**:
 ```bash
-# 在 Space 仓库中添加一个空提交来触发重建
+# Add empty commit to trigger rebuild
 git commit --allow-empty -m "Trigger rebuild to pull latest image"
 git push
 ```
 
-**版本锁定**（可选）:
-如果需要锁定特定版本，修改 Dockerfile：
+**Version Pinning** (Optional):
+To lock specific version, modify Dockerfile:
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.19.0  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:2.19.0  # Specify version
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
 EXPOSE 7860
 ```
 
-### 基本配置
+### Basic Configuration
 
-部署完了就该配置了！选SQLite还是MySQL？看你场景👇
-
-**SQLite 模式（默认）**：
-个人用或小团队，这个最省心，零配置，单文件搞定👇
+**SQLite Mode (Default)**:
 ```bash
-# 设置环境变量
+# Set environment variables
 export CCLOAD_PASS=your_admin_password
 export PORT=8080
 export SQLITE_PATH=./data/ccload.db
 
-# 或使用 .env 文件
+# Or use .env file
 echo "CCLOAD_PASS=your_admin_password" > .env
 echo "PORT=8080" >> .env
 echo "SQLITE_PATH=./data/ccload.db" >> .env
 
-# 启动服务
+# Start service
 ./ccload
 ```
 
-**MySQL 模式**：
-生产环境or高并发？上MySQL稳定性更好，多实例也不怕👇
+**MySQL Mode**:
 ```bash
-# 1. 创建 MySQL 数据库
+# 1. Create MySQL database
 mysql -u root -p -e "CREATE DATABASE ccload CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
 
-# 2. 设置环境变量
+# 2. Set environment variables
 export CCLOAD_PASS=your_admin_password
 export CCLOAD_MYSQL="user:password@tcp(localhost:3306)/ccload?charset=utf8mb4"
 export PORT=8080
 
-# 或使用 .env 文件
+# Or use .env file
 echo "CCLOAD_PASS=your_admin_password" > .env
 echo "CCLOAD_MYSQL=user:password@tcp(localhost:3306)/ccload?charset=utf8mb4" >> .env
 echo "PORT=8080" >> .env
 
-# 3. 启动服务（自动创建表结构）
+# 3. Start service (auto-creates tables)
 ./ccload
 ```
 
 **Docker + MySQL**:
 ```bash
-# 方式 1: docker-compose（推荐）
+# Option 1: docker-compose (Recommended)
 cat > docker-compose.mysql.yml << 'EOF'
 version: '3.8'
 services:
@@ -494,7 +470,7 @@ EOF
 
 docker-compose -f docker-compose.mysql.yml up -d
 
-# 方式 2: 直接运行（需要已有 MySQL 服务）
+# Option 2: Direct run (requires existing MySQL service)
 docker run -d --name ccload \
   -p 8080:8080 \
   -e CCLOAD_PASS=your_admin_password \
@@ -502,20 +478,18 @@ docker run -d --name ccload \
   ghcr.io/caidaoli/ccload:latest
 ```
 
-服务启动后访问：
-- 管理界面：`http://localhost:8080/web/`
-- API 代理：`POST http://localhost:8080/v1/messages`
-- **API 令牌管理**：`http://localhost:8080/web/tokens.html` - 通过 Web 界面配置 API 访问令牌
+After service starts, access:
+- Admin Interface: `http://localhost:8080/web/`
+- API Proxy: `POST http://localhost:8080/v1/messages`
+- **API Token Management**: `http://localhost:8080/web/tokens.html` - Configure API access tokens via Web interface
 
-## 📖 使用说明
+## 📖 Usage Guide
 
-配好了就该用起来了！看看怎么调用API👇
+### API Proxy
 
-### API 代理
+**Claude API Proxy (Requires Auth)**:
 
-**Claude API 代理（需授权）**：
-
-先在Web界面配个令牌，然后就能用了。把ccLoad当Claude官方API用就行👇
+First, configure API access token in Web admin interface `http://localhost:8080/web/tokens.html`, then use that token to access API:
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages \
@@ -535,9 +509,7 @@ curl -X POST http://localhost:8080/v1/messages \
   }'
 ```
 
-**OpenAI 兼容 API 代理（Chat Completions）**：
-
-用OpenAI SDK的兄弟有福了！直接换个base_url就能用，原来的代码一行不用改👇
+**OpenAI Compatible API Proxy (Chat Completions)**:
 
 ```bash
 curl -X POST http://localhost:8080/v1/chat/completions \
@@ -554,9 +526,9 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-### 本地 Token 计数
+### Local Token Counting
 
-发请求前想知道要花多少Token？用这个接口秒算，不花一分钱👇
+Quickly estimate request token consumption (no upstream API call needed):
 
 ```bash
 curl -X POST http://localhost:8080/v1/messages/count_tokens \
@@ -569,27 +541,25 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
     "system": "You are a helpful assistant."
   }'
 
-# 响应示例
+# Response example
 # {
 #   "input_tokens": 28
 # }
 ```
 
-**特点**：
-- ✅ 符合 Anthropic 官方 API 规范
-- ✅ 本地计算，响应 <5ms，不消耗 API 配额
-- ✅ 准确度 93%+（与官方 API 对比）
-- ✅ 支持系统提示词、工具定义、大规模工具场景
-- ✅ 需授权令牌访问（在 Web 管理界面 `/web/tokens.html` 配置令牌）
+**Features**:
+- ✅ Compliant with Anthropic official API spec
+- ✅ Local computation, <5ms response, no API quota consumption
+- ✅ 93%+ accuracy (compared to official API)
+- ✅ Supports system prompts, tool definitions, large-scale tool scenarios
+- ✅ Requires auth token (configure at `/web/tokens.html`)
 
-### 渠道管理
+### Channel Management
 
-Web界面和API都能管理渠道，看你喜欢哪种👇
-
-通过 Web 界面 `/web/channels.html` 或 API 管理渠道：
+Manage channels via Web interface `/web/channels.html` or API:
 
 ```bash
-# 添加渠道（支持多URL，逗号分隔）
+# Add channel (supports multiple URLs, comma-separated)
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
@@ -604,34 +574,34 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-> **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+> **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
 
-> **RPM限制说明**：`rpm_limit` 是渠道级请求数上限，按滚动 60 秒窗口统计；`0` 表示不限制。代理转发、手动测试、单 URL 测试和定时检测都会计入，达到上限后该渠道会被跳过；多 URL 故障重试按实际发出的上游 HTTP 请求计数。计数保存在当前进程内，服务重启会清空，多实例部署时各实例独立统计。
+> **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
 
-> **并发限制说明**：`max_concurrency` 是渠道级同时在飞请求上限；`0` 表示不限制。槽位从发起上游请求前占用，到响应体关闭后释放，流式请求会占用到流结束；达到上限后该渠道会被跳过，不触发冷却。计数保存在当前进程内，多实例部署时各实例独立统计。
+> **Concurrency Limit Note**: `max_concurrency` is a per-channel cap on simultaneous in-flight upstream requests; `0` means unlimited. A slot is acquired before the upstream request starts and released when the response body is closed, so streaming requests hold the slot until the stream ends. Over-limit channels are skipped without cooldown. The counter is in-memory and per instance.
 
-### 自定义请求规则（高级）
+### Custom Request Rules (Advanced)
 
-渠道编辑弹窗底部「高级」按钮可打开二级模态，按渠道粒度改写转发给上游的 **HTTP 请求头** 与 **JSON 请求体**，常用于 `User-Agent` 覆写、强制版本头、微调 `thinking` / `max_tokens` 等字段。规则按配置顺序生效，保存后对该渠道后续所有请求立即生效。
+The "Advanced" button in the channel editor opens a secondary modal that lets you rewrite the **HTTP headers** and **JSON request body** forwarded upstream at channel granularity. Typical use cases include `User-Agent` override, forcing API version headers, or tweaking fields like `thinking` / `max_tokens`. Rules apply in configured order and take effect for all subsequent requests on that channel as soon as they are saved.
 
-**动作矩阵**:
+**Action matrix**:
 
-| 对象 | `remove` | `override` | `append` |
+| Target | `remove` | `override` | `append` |
 |---|---|---|---|
-| HTTP Header | 删除指定 header（支持对多值头按 token 精确剔除，如 `Anthropic-Beta`） | `Header.Set` 替换所有值 | `Header.Add` 追加一个值（多值头语义） |
-| JSON Body | 按点分路径删除 key / 数组元素 | 按路径设置值，不存在则创建中间节点 | 不支持（JSON 语义模糊） |
+| HTTP Header | Delete the named header (supports token-level removal on multi-value headers such as `Anthropic-Beta`) | `Header.Set` replaces all values | `Header.Add` appends a value (multi-value semantics) |
+| JSON Body | Delete a field/array element by dotted path | Set the value at a path, creating intermediate nodes as needed | Not supported (ambiguous in JSON) |
 
-**JSON 路径语法**:
-- 点分路径 + 数字数组下标：`thinking.budget_tokens`、`messages.0.role`、`generation_config.temperature`
-- 值支持任意 JSON 字面量：数字 `0.7`、布尔 `true`、字符串 `"claude-opus-4-6"`、对象 `{"type":"adaptive"}`、数组 `["a","b"]`
+**JSON path syntax**:
+- Dotted path + numeric array index: `thinking.budget_tokens`, `messages.0.role`, `generation_config.temperature`
+- Values accept any JSON literal: number `0.7`, boolean `true`, string `"claude-opus-4-6"`, object `{"type":"adaptive"}`, array `["a","b"]`
 
-**安全约束**（硬保护，前端校验被绕过也由后端兜底）:
-- **认证头黑名单**：`Authorization`、`x-api-key`、`x-goog-api-key`（大小写不敏感）任何规则一律忽略并写 `slog.Warn`
-- **CRLF 注入防御**：header 名称/值禁止包含 `\r\n`
-- **非 JSON body 静默跳过**：`Content-Type` 不含 `application/json`、body 为空、或反序列化失败时原样透传，不阻断请求
-- **容量上限**：单渠道 header 规则 ≤ 32 条、body 规则 ≤ 32 条、单条 value ≤ 8 KB；违反返回 400
+**Safety constraints** (hard-enforced server-side even if the frontend is bypassed):
+- **Auth header blacklist**: any rule targeting `Authorization`, `x-api-key`, or `x-goog-api-key` (case-insensitive) is silently ignored and logged via `slog.Warn`
+- **CRLF injection guard**: header names/values must not contain `\r\n`
+- **Non-JSON body passthrough**: requests without `application/json` content type, empty bodies, or bodies that fail to deserialize are forwarded untouched without blocking
+- **Capacity caps**: ≤ 32 header rules and ≤ 32 body rules per channel, each value ≤ 8 KB; violations return HTTP 400
 
-**典型示例**:
+**Typical example**:
 ```jsonc
 {
   "custom_request_rules": {
@@ -649,517 +619,478 @@ curl -X POST http://localhost:8080/admin/channels \
 }
 ```
 
-> **与内置逻辑的关系**：自定义规则在 anyrouter 的 `anthropic-beta` 注入**之后**生效，可覆盖或移除 beta flag；anyrouter 的 adaptive thinking 注入会检测到用户已显式设置 `thinking` 而不再覆盖。认证头无论何时都不可改写。
+> **Interaction with built-in logic**: Custom rules run **after** the anyrouter `anthropic-beta` injection, so they can override or remove the beta flag. The anyrouter adaptive-thinking injection detects a user-provided `thinking` field and leaves it untouched. Authentication headers remain unmodifiable at all times.
 
-### 批量数据管理
+### Batch Data Management
 
-渠道多了手动加太累？支持CSV导入导出，Excel编辑完直接导入👇
+Supports CSV format for channel config import/export:
 
-**导出配置**:
+**Export Config**:
 ```bash
-# Web界面: 访问 /web/channels.html，点击"导出CSV"按钮
-# API调用:
+# Web interface: Visit /web/channels.html, click "Export CSV" button
+# API call:
 curl -H "Authorization: Bearer your_token" \
   http://localhost:8080/admin/channels/export > channels.csv
 ```
 
-**导入配置**:
+**Import Config**:
 ```bash
-# Web界面: 访问 /web/channels.html，点击"导入CSV"按钮
-# API调用:
+# Web interface: Visit /web/channels.html, click "Import CSV" button
+# API call:
 curl -X POST -H "Authorization: Bearer your_token" \
   -F "file=@channels.csv" \
   http://localhost:8080/admin/channels/import
 ```
 
-**CSV格式示例**:
+**CSV Format Example**:
 ```csv
 name,api_key,url,priority,models,enabled
 Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
 Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
 ```
 
-**特性**:
-- 支持中英文列名自动映射
-- 智能数据验证和错误提示
-- 增量导入和覆盖更新
-- UTF-8编码，Excel兼容
+**Features**:
+- Auto column name mapping (Chinese/English)
+- Smart data validation with error messages
+- Incremental import and overwrite update
+- UTF-8 encoding, Excel compatible
 
-## 📊 监控指标
+## 📊 Monitoring Metrics
 
-管理后台有多香？一看便知👇
+Check out the awesome admin dashboard 👇
 
-![ccLoad管理界面](images/ccload-dashboard.jpeg)
-![ccLoad日志界面](images/ccload-logs.jpg)
-*实时监控大屏：Claude Code、Codex、OpenAI、Gemini四大平台数据一目了然*
+![ccLoad Dashboard](images/ccload-dashboard.jpeg)
+![ccLoad Logs](images/ccload-logs.jpg)
+*Real-time Monitoring Dashboard: Claude Code, Codex, OpenAI, and Gemini platform metrics at a glance*
 
-**核心功能**：
-- 📈 **24小时趋势图** - 请求量一目了然，高峰低谷清清楚楚
-- 🔴 **实时错误日志** - 哪个渠道炸了，秒级发现
-- 📊 **渠道调用统计** - 谁在干活谁在摸鱼，数据说话
-- ⚡ **性能指标** - 延迟、成功率，性能瓶颈无处藏
-- 💰 **Token用量统计** - 钱花哪了心里有数：
-  - 自定义时间范围，想看哪段看哪段
-  - 按API令牌分类，多租户也能分账
-  - 支持Gemini/OpenAI缓存Token展示
+**Core Features**:
+- 📈 **24-hour Trend Charts** - Request volumes clearly visualized with peaks and valleys
+- 🔴 **Real-time Error Logs** - Instantly detect which channel has issues
+- 📊 **Channel Call Statistics** - See which channels are performing well with data-backed insights
+- ⚡ **Performance Metrics** - Latency, success rates, and bottleneck detection
+- 💰 **Token Usage Stats** - Know exactly where your budget goes:
+  - Custom time range selector for flexible analysis
+  - Per API token ID classification for multi-tenant billing
+  - Supports Gemini/OpenAI cache token visualization
 
-- 🎛️ **日志列显隐自定义** - 点击齿轮图标按需显示/隐藏列，设置自动保存到浏览器
+- 🎛️ **Log Column Customization** - Click the gear icon to show/hide columns, settings auto-saved to browser
 
-**界面亮点**：
-- 🎨 渐变紫色主题，看着舒服
-- 📱 响应式设计，手机电脑都好用
-- ⚡ 数据实时刷新，不用手动F5
-- 📊 多维度统计卡片，关键数据一屏看完
+**UI Highlights**:
+- 🎨 Modern gradient purple theme for comfortable viewing
+- 📱 Responsive design works great on mobile and desktop
+- ⚡ Real-time data refresh without manual page reload
+- 📊 Multi-dimensional stat cards show key metrics on one screen
+  - Cached query optimization
+  - Gemini/OpenAI Cache Token (Cache Read) display
 
-## 🔧 技术栈
+## 🔧 Tech Stack
 
-想知道ccLoad用了啥技术？看这里👇
+### Core Dependencies
 
-### 核心依赖
+| Component | Version | Purpose | Performance Advantage |
+|-----------|---------|---------|----------------------|
+| **Go** | 1.25.0+ | Runtime | Native concurrency, built-in min function |
+| **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
+| **modernc/sqlite** | v1.51.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
+| **Sonic** | v1.15.1 | JSON Library | 2-3x faster than stdlib |
+| **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
-| 组件 | 版本 | 用途 | 性能优势 |
-|------|------|------|----------|
-| **Go** | 1.25.0+ | 运行时环境 | 原生并发支持，内置 min 函数 |
-| **Gin** | v1.12.0 | Web框架 | 高性能HTTP路由 |
-| **modernc/sqlite** | v1.51.0 | 嵌入式数据库 | 纯Go实现，零CGO依赖，单文件存储（默认） |
-| **MySQL** | v1.10.0 | 关系型数据库 | 可选，适合高并发生产环境 |
-| **Sonic** | v1.15.1 | JSON库 | 比标准库快2-3倍 |
-| **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
+### Architecture Features
 
-### 架构特点
+**Modular Architecture**:
+- **Proxy Module Split** (SRP):
+  - `proxy_handler.go`: HTTP entry, concurrency control, route selection
+  - `proxy_forward.go`: Core forwarding logic, request building, response handling
+  - `proxy_error.go`: Error handling, cooldown decisions, retry logic
+  - `proxy_util.go`: Constants, type definitions, utility functions
+  - `proxy_stream.go`: Streaming responses, first byte detection
+  - `proxy_gemini.go`: Gemini API special handling
+  - `proxy_sse_parser.go`: SSE parser (defensive handling, Gemini/OpenAI cache token parsing)
+  - `proxy_debug.go`: Upstream request/response debug capture (with sensitive header masking)
+- **Admin Module Split** (SRP):
+  - `admin_channels.go`: Channel CRUD
+  - `admin_stats.go`: Stats analysis API
+  - `admin_cooldown.go`: Cooldown management API
+  - `admin_csv.go`: CSV import/export
+  - `admin_types.go`: Admin API type definitions
+  - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model restrictions)
+  - `admin_settings.go`: System settings management
+  - `admin_models.go`: Model list management
+  - `admin_testing.go`: Channel testing (with protocol transform testing)
+  - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
+  - `channel_check_scheduler.go`: Scheduled channel check scheduler
+  - `detection_log.go`: Detection result to LogEntry builder
+- **Protocol Transform System** (2026-04 new):
+  - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
+  - `protocol/registry.go`: Request/response transformer registry
+  - `protocol/builtin/`: 18 built-in transform implementations (streaming and non-streaming)
+  - Preserves sampling/limit/stop/seed parameters; Gemini `thinkingConfig.thinkingLevel` maps to the target protocol's reasoning/thinking config
+  - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
+  - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
+- **Cooldown Manager** (DRY):
+  - `cooldown/manager.go`: Unified cooldown decision engine
+  - Eliminates duplicate code, unified cooldown logic
+  - Distinguishes network vs HTTP error classification
+  - Recognizes structured quota/model cooldown responses and cools down until the upstream reset time
+  - Built-in single-key channel auto-upgrade logic
+- **Multi-URL Selector** (URLSelector):
+  - `url_selector.go`: Smart URL selection within a single channel
+  - Explore-first: Unvisited URLs get priority to collect latency data
+  - Weighted random: Weight = 1/EWMA latency, lower latency = higher selection probability
+  - Independent cooldown: Failed URLs cool down independently without affecting other URLs
+  - BaseURL tracking: Active requests, logs, and UI carry upstream URL throughout
+- **Storage Layer Refactor** (2025-12 optimization, eliminated 467 lines of duplicate code):
+  - `storage/schema/`: Unified schema definition (supports SQLite/MySQL differences)
+  - `storage/sql/`: Common SQL implementation layer (SQLite/MySQL shared)
+  - `storage/factory.go`: Factory pattern auto-selects database
+  - Composite index optimization, stats query performance improved
+- **OpenAI service_tier Pricing** (2026-03 new):
+  - `util.OpenAIServiceTierMultiplier()`: Returns multiplier for priority/flex/default tiers
+  - `LogEntry.ServiceTier`: Persisted to database, log cost column shows tier annotation
+  - Supports GPT-5.4, GPT-5.4-pro, and other latest model pricing
+- **Responses image_generation Tool Billing** (2026-05 new):
+  - Parses Responses API `tool_usage.image_gen` and the `image_generation` tool model
+  - Bills `gpt-image-2` by text input, image input, and image output tokens
+  - Streaming/non-streaming proxy paths and channel tests share the same usage parser to keep cost accounting consistent
+- **Tiered Pricing**:
+  - GPT-5.4: Input price auto-steps down after token threshold
+  - Qwen-Plus: Lower price tier kicks in after threshold
+  - Gemini long-context: Price doubles above threshold
+  - Cache discounts: Claude/Opus independent multipliers, OpenAI cache hit 50% discount
 
-代码写得怎么样？来看看这些亮点👇
+**Multi-level Cache System**:
+- Channel config cache (60s TTL)
+- Round-robin pointer cache (in-memory)
+- Cooldown state inline (channels/api_keys tables store directly)
+- Error classification cache (1000 capacity)
 
-**模块化架构**（SOLID原则实践）:
-- **proxy模块拆分**（SRP原则）：
-  - `proxy_handler.go`：HTTP入口、并发控制、路由选择
-  - `proxy_forward.go`：核心转发逻辑、请求构建、响应处理
-  - `proxy_error.go`：错误处理、冷却决策、重试逻辑
-  - `proxy_util.go`：常量、类型定义、工具函数
-  - `proxy_stream.go`：流式响应、首字节检测
-  - `proxy_gemini.go`：Gemini API特殊处理
-  - `proxy_sse_parser.go`：SSE解析器（防御性处理，支持 Gemini/OpenAI 缓存 Token 解析）
-  - `proxy_debug.go`：上游请求/响应调试捕获（含敏感头脱敏）
-- **admin模块拆分**（SRP原则）：
-  - `admin_channels.go`：渠道CRUD操作
-  - `admin_stats.go`：统计分析API
-  - `admin_cooldown.go`：冷却管理API
-  - `admin_csv.go`：CSV导入导出
-  - `admin_types.go`：管理API类型定义
-  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型限制）
-  - `admin_settings.go`：系统设置管理
-  - `admin_models.go`：模型列表管理
-  - `admin_testing.go`：渠道测试功能（支持协议转换测试）
-  - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
-  - `channel_check_scheduler.go`：渠道定时检测调度器
-  - `detection_log.go`：检测日志构建（定时检测结果→LogEntry）
-- **协议转换系统**（2026-04新增）：
-  - `protocol/types.go`：四大协议定义（Anthropic/OpenAI/Gemini/Codex）
-  - `protocol/registry.go`：请求/响应转换器注册表
-  - `protocol/builtin/`：18个内置转换实现（支持流式与非流式）
-  - 保留采样/上限/停止词/seed 参数；Gemini `thinkingConfig.thinkingLevel` 会映射为目标协议的 reasoning/thinking 配置
-  - 两种模式：`upstream`（默认，由上游原生处理）/ `local`（本地翻译）
-  - 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
-- **冷却管理器**（DRY原则）：
-  - `cooldown/manager.go`：统一冷却决策引擎
-  - 消除重复代码，冷却逻辑统一管理
-  - 区分网络错误和HTTP错误的分类策略
-  - 识别结构化配额/模型冷却响应，按上游返回的重置时间精确冷却
-  - 内置单Key渠道自动升级逻辑
-- **多URL选择器**（URLSelector）：
-  - `url_selector.go`：单渠道多URL智能调度
-  - 探索优先：未访问过的URL优先尝试，确保收集延迟数据
-  - 加权随机：权重=1/EWMA延迟，延迟低的URL自动多分流
-  - 独立冷却：故障URL指数退避，不影响同渠道其他URL
-  - BaseURL追踪：活跃请求、日志和UI全链路携带上游URL
-- **存储层重构**（2025-12优化，消除467行重复代码）：
-  - `storage/schema/`：统一Schema定义（支持SQLite/MySQL差异）
-  - `storage/sql/`：通用SQL实现层（SQLite/MySQL共享）
-  - `storage/factory.go`：工厂模式自动选择数据库
-  - 复合索引优化，统计查询性能提升
-- **OpenAI service_tier 定价**（2026-03新增）：
-  - `util.OpenAIServiceTierMultiplier()`：返回 priority/flex/default 层级对应倍率
-  - `LogEntry.ServiceTier`：持久化到数据库，日志成本列显示层级标注
-  - 支持 GPT-5.4、GPT-5.4-pro 等最新模型定价
-- **Responses image_generation 工具计费**（2026-05新增）：
-  - 解析 Responses API 的 `tool_usage.image_gen` 与 `image_generation` 工具模型
-  - `gpt-image-2` 按文本输入、图像输入、图像输出 token 分项计费
-  - 流式/非流式代理链路与渠道测试共用同一 usage 解析器，避免费用口径漂移
-- **分层定价（Tiered Pricing）**：
-  - GPT-5.4：超过阈值 token 后输入价格自动降档
-  - Qwen-Plus：超过阈值后触发低价区间
-  - Gemini 长上下文：超过阈值后价格翻倍
-  - 缓存折扣：Claude/Opus 独立乘数，OpenAI 缓存命中50%折扣
+**Async Processing Architecture**:
+- Log system (1000 buffer + single worker, guarantees FIFO order)
+- Token/log cleanup (background goroutine, periodic maintenance)
 
-**多级缓存系统**（性能拉满）:
-- 渠道配置缓存（60秒TTL）- 减少数据库查询
-- 轮询指针缓存（内存）- 毫秒级选择
-- 冷却状态内联（直接存表）- 无需JOIN，速度飞起
-- 错误分类缓存（1000容量）- 重复错误秒判
+**Unified Response System**:
+- `StandardResponse[T]` generic struct (DRY)
+- `ResponseHelper` utility class with 9 shortcut methods
+- Auto-extracts app-level error codes, unified JSON format
 
-**异步处理架构**（响应贼快）:
-- 日志系统（1000条缓冲 + 单worker，保证FIFO顺序）
-- Token/日志清理（后台协程，定期维护）
+**Connection Pool Optimization**:
+- SQLite: 10 connections for memory mode / 5 for file mode, 5-minute lifetime
+- HTTP client: 100 max connections, 30s timeout, keepalive optimization
+- TLS: Session cache (1024 capacity), reduces handshake latency
 
-**统一响应系统**（代码复用典范）:
-- `StandardResponse[T]` 泛型结构体（DRY原则）- 一个结构搞定所有响应
-- `ResponseHelper` 辅助类及9个快捷方法 - 少写重复代码
-- 自动提取应用级错误码，统一JSON格式 - 前端调用更方便
+## 🔧 Configuration
 
-**连接池优化**（榨干性能）:
-- SQLite: 内存模式10个连接/文件模式5个连接，5分钟生命周期
-- HTTP客户端: 100最大连接，30秒超时，keepalive优化
-- TLS: 会话缓存（1024容量），减少握手耗时
+### Environment Variables
 
-## 🔧 配置说明
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
+| `CCLOAD_API_TOKENS` | None | Pre-seed API access tokens on startup. Format: `token1,token2` or `token1\|production,token2\|development`; existing tokens are not overwritten |
+| `API_TOKENS` | None | Compatibility alias for `CCLOAD_API_TOKENS`; startup fails if both variables are set with different values |
+| `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
+| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (-1=all, 0=no logs) |
+| `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
+| `PORT` | `8080` | Service port |
+| `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
+| `GIN_LOG` | `true` | Gin access log switch (`false`/`0`/`no`/`off` to disable) |
+| `TRUSTED_PROXIES` | Private ranges + Loopback + `100.64.0.0/10` | Trusted proxy CIDRs (comma-separated); `none` = trust no proxies |
+| `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
+| `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
+| `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
+| `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, Images API auto-expands to 20MB) |
+| `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
+| `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
+| `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
+| `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | Rate limit error (429) initial cooldown (seconds) |
+| `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | Exponential backoff cooldown max (seconds, 30 minutes) |
+| `CCLOAD_COOLDOWN_MIN_SEC` | `10` | Exponential backoff cooldown min (seconds) |
 
-想精细调优？这些配置项了解一下👇
+> If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 
-### 环境变量
+#### Hybrid Storage Mode (MySQL Primary + SQLite Cache)
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
-| `CCLOAD_API_TOKENS` | 无 | 启动时预置 API 访问令牌，格式：`token1,token2` 或 `token1\|生产,token2\|开发`；已存在的 token 不会被覆盖 |
-| `API_TOKENS` | 无 | `CCLOAD_API_TOKENS` 的兼容别名；两个变量同时设置且值不一致时启动失败 |
-| `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**设置后使用 MySQL，否则使用 SQLite** |
-| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，见下方说明） |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从 MySQL 恢复日志的天数（-1=全量，0=不恢复日志） |
-| `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
-| `PORT` | `8080` | 服务端口 |
-| `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
-| `GIN_LOG` | `true` | Gin 访问日志开关（`false`/`0`/`no`/`off` 关闭） |
-| `TRUSTED_PROXIES` | 私有网段 + Loopback + `100.64.0.0/10` | 可信代理 CIDR 列表（逗号分隔）；`none`=不信任任何代理 |
-| `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（仅 SQLite 模式） |
-| `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
-| `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
-| `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，Images API自动放宽至20MB） |
-| `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | 超时错误(597/598)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | 限流错误(429)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | 指数退避冷却上限（秒，30分钟） |
-| `CCLOAD_COOLDOWN_MIN_SEC` | `10` | 指数退避冷却下限（秒） |
+HuggingFace Spaces and similar environments lose local data on restart, but free MySQL has high query latency (800ms+). Hybrid mode offers the best of both worlds:
 
-> 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
-
-#### 混合存储模式（MySQL 主 + SQLite 缓存）
-
-HuggingFace Spaces 等环境重启后本地数据会丢失，但免费 MySQL 查询延迟较高（800ms+）。混合模式两全其美：
-
-- **MySQL 主存储**：写操作先写 MySQL，确保数据持久化
-- **SQLite 本地缓存**：读操作走本地 SQLite，延迟 <1ms
-- **启动恢复**：从 MySQL 恢复数据到 SQLite，支持按天数恢复日志
-- **日志特殊处理**：先写 SQLite（快），再异步同步到 MySQL（备份）
+- **MySQL Primary Storage**: Write operations go to MySQL first, ensuring data persistence
+- **SQLite Local Cache**: Read operations go through local SQLite, latency <1ms
+- **Startup Recovery**: Restore data from MySQL to SQLite, supports restoring logs by days
+- **Log Special Handling**: Write to SQLite first (fast), then async sync to MySQL (backup)
 
 ```bash
-# 启用混合模式
+# Enable hybrid mode
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
-export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
+export CCLOAD_SQLITE_LOG_DAYS=7  # Restore last 7 days of logs (optional)
 ```
 
-**三种存储模式**：
-| 模式 | 配置 | 适用场景 |
-|------|------|---------|
-| 纯 SQLite | 不设置 `CCLOAD_MYSQL` | 本地开发、单机部署 |
-| 纯 MySQL | 设置 `CCLOAD_MYSQL` | 标准生产环境 |
-| 混合模式 | 设置 `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces |
+**Three Storage Modes**:
+| Mode | Configuration | Use Case |
+|------|---------------|----------|
+| Pure SQLite | Don't set `CCLOAD_MYSQL` | Local dev, single instance |
+| Pure MySQL | Set `CCLOAD_MYSQL` | Standard production |
+| Hybrid Mode | Set `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces |
 
-### Web 管理配置（支持热重载）
+### Web Admin Configuration (Hot Reload Supported)
 
-这些配置在Web界面就能改，不用重启服务，改完立即生效👇
+These settings have been migrated to database, managed via Web interface `/web/settings.html`, changes take effect immediately without restart:
 
-| 配置项 | 默认值 | 说明 |
-|--------|--------|------|
-| `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
-| `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
-| `upstream_first_byte_timeout` | `0` | 上游首个有效流内容超时（秒，0=禁用，仅流式） |
-| `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
-| `anthropic_first_byte_timeout` | `0` | Anthropic 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
-| `anthropic_non_stream_timeout` | `0` | Anthropic 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `codex_first_byte_timeout` | `0` | Codex 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
-| `codex_non_stream_timeout` | `0` | Codex 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `openai_first_byte_timeout` | `0` | OpenAI 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
-| `openai_non_stream_timeout` | `0` | OpenAI 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `gemini_first_byte_timeout` | `0` | Gemini 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
-| `gemini_non_stream_timeout` | `0` | Gemini 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `enable_health_score` | `false` | 启用基于健康度的渠道动态排序 |
-| `success_rate_penalty_weight` | `100` | 成功率惩罚权重（见下方说明） |
-| `health_score_window_minutes` | `30` | 成功率统计时间窗口（分钟） |
-| `health_score_update_interval` | `30` | 成功率缓存更新间隔（秒） |
-| `health_min_confident_sample` | `20` | 置信样本量阈值（样本量达到此值时惩罚全额生效） |
-| `channel_check_interval_hours` | `0` | 渠道定时检测间隔（小时，0=禁用） |
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
+| `max_key_retries` | `3` | Max key retries within single channel |
+| `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
+| `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
+| `anthropic_first_byte_timeout` | `0` | Anthropic first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `anthropic_non_stream_timeout` | `0` | Anthropic non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `codex_first_byte_timeout` | `0` | Codex first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `codex_non_stream_timeout` | `0` | Codex non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `openai_first_byte_timeout` | `0` | OpenAI first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `openai_non_stream_timeout` | `0` | OpenAI non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `gemini_first_byte_timeout` | `0` | Gemini first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
+| `gemini_non_stream_timeout` | `0` | Gemini non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |
+| `enable_health_score` | `false` | Enable health-based dynamic channel sorting |
+| `success_rate_penalty_weight` | `100` | Success rate penalty weight (see below) |
+| `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |
+| `health_score_update_interval` | `30` | Success rate cache update interval (seconds) |
+| `health_min_confident_sample` | `20` | Confidence sample threshold (full penalty at this sample size) |
+| `channel_check_interval_hours` | `0` | Scheduled channel check interval (hours, 0=disabled) |
 
-分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
+Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
 
-#### 健康度排序说明
+#### Health Score Sorting
 
-想让烂渠道自动靠边站？启用健康度排序就行了👇
-
-启用 `enable_health_score` 后，系统会根据渠道的历史成功率动态调整优先级，成功率低的渠道优先级自动降低：
+When `enable_health_score` is enabled, the system dynamically adjusts priority based on channel success rate:
 
 ```
-置信度 = min(1.0, 样本量 / health_min_confident_sample)
-有效优先级 = 基础优先级 - (失败率 × success_rate_penalty_weight × 置信度)
+confidence = min(1.0, sample_count / health_min_confident_sample)
+effective_priority = base_priority - (failure_rate × success_rate_penalty_weight × confidence)
 ```
 
-**置信度因子**：解决新渠道或低流量渠道因样本量小导致的过度惩罚问题。样本量越小，置信度越低，惩罚打折越多。
+**Confidence Factor**: Solves over-penalization of new or low-traffic channels due to small sample sizes. Smaller samples = lower confidence = more penalty discount.
 
-**示例**（`success_rate_penalty_weight = 100`，`health_min_confident_sample = 20`）：
+**Example** (`success_rate_penalty_weight = 100`, `health_min_confident_sample = 20`):
 
-| 渠道 | 基础优先级 | 成功率 | 样本量 | 置信度 | 惩罚值 | 有效优先级 |
-|------|-----------|--------|--------|--------|--------|-----------|
+| Channel | Base Priority | Success Rate | Samples | Confidence | Penalty | Effective Priority |
+|---------|---------------|--------------|---------|------------|---------|-------------------|
 | A | 100 | 95% | 100 | 1.0 | 5 | **95** |
 | B | 90 | 70% | 80 | 1.0 | 30 | **60** |
 | C | 80 | 60% | 4 | 0.2 | 8 | **72** |
 | D | 70 | 100% | 50 | 1.0 | 0 | **70** |
 
-基础优先级排序：A > B > C > D
-**有效优先级排序：A (95) > C (72) > D (70) > B (60)**
+Base priority order: A > B > C > D
+**Effective priority order: A (95) > C (72) > D (70) > B (60)**
 
-**动态排序效果**：
-- 渠道 B 原本排第二，但 70% 成功率导致惩罚 30，降至最后
-- 渠道 D 原本排最后，但 100% 成功率使其超越 B 和 C
-- 渠道 C 成功率仅 60%，但样本量 4（置信度 0.2）使惩罚从 40 降为 8，避免新渠道被过早淘汰
+#### API Access Token Configuration
 
-**权重调优建议**：
-- 默认值 100 适合渠道优先级间隔为 10 的场景
-- 权重 100 时：10% 失败率 = 降一档优先级（满置信度时）
-- 若优先级间隔为 5，可调整为 50
-- `health_min_confident_sample` 建议根据日均请求量调整，默认 20 适合中等流量场景
+**Important**: API access tokens are normally managed in the Web admin interface; Docker and CI deployments can pre-seed them with an environment variable.
 
-#### API 访问令牌配置
+- Visit `http://localhost:8080/web/tokens.html` for token management
+- Set `CCLOAD_API_TOKENS=token1|production,token2|development` to create missing tokens on startup
+- Provisioning is idempotent: existing tokens keep their description, limits, model/channel restrictions, and statistics
+- Only missing tokens are created; existing tokens are never modified
+- Supports add, delete, view tokens
+- All tokens stored in database with persistence
+- Without any tokens configured, all `/v1/*` and `/v1beta/*` APIs return `401 Unauthorized`
 
-**划重点**：API令牌默认在Web界面管理；Docker/CI 迁移场景可用环境变量预置👇
+⚠️ **Security notes**:
+- In production, prefer Docker Secrets, Kubernetes Secrets, or platform encrypted Secrets over plain environment variables
+- In CI/CD, do not print full environment variables to logs
+- After provisioning, remove `CCLOAD_API_TOKENS` from deployment config if automatic recovery is no longer needed
+- Restrict access to container inspect output, orchestration dashboards, and deployment configuration
 
-- 访问 `http://localhost:8080/web/tokens.html` 进行令牌管理
-- 启动时可设置 `CCLOAD_API_TOKENS=token1|生产,token2|开发` 自动创建缺失令牌
-- 预置逻辑是幂等的：已存在的 token 保留原描述、限额、模型/渠道限制和统计数据
-- 支持添加、删除、查看令牌
-- 所有令牌存储在数据库中，支持持久化
-- 未配置任何令牌时，所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`
+**Advanced Token Features** (2026-01 New):
+- **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded
+- **Model Restrictions**: Restrict which models a token can access for fine-grained access control
+- **First Byte Time**: Records streaming request TTFB (milliseconds) for upstream latency diagnosis
 
-⚠️ **安全提示**：
-- 生产环境优先使用 Docker Secrets、Kubernetes Secrets 或平台加密 Secrets，避免把 token 明文写进普通环境变量
-- CI/CD 中不要打印完整环境变量，避免日志泄露
-- 预置完成后如不再需要自动恢复，可从部署配置中移除 `CCLOAD_API_TOKENS`
-- 限制容器 inspect、编排平台控制台和部署配置的访问权限
+#### Behavior Summary
 
-**令牌高级功能**（2026-01新增）：
-- **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
-- **模型限制**：限制令牌可访问的模型列表，增强访问控制
-- **首字节时间**：记录流式请求的 TTFB（毫秒），便于诊断上游延迟
+- `CCLOAD_PASS` not set: Program fails to start and exits (secure default)
+- No API access tokens configured: All `/v1/*` and `/v1beta/*` APIs return `401 Unauthorized`. Configure tokens via Web interface `/web/tokens.html`
+- Public endpoints: `GET /health` (health check) and `GET /public/summary` (stats summary) require no auth, all others require auth token
 
-#### 行为摘要
+### Docker Images
 
-兄弟们注意这几条安全策略👇
+Project supports multi-arch Docker images:
 
-- 未设置 `CCLOAD_PASS`：程序启动失败并退出（安全第一）
-- 未配置 API 访问令牌：所有 `/v1/*` 与 `/v1beta/*` API 返回 `401 Unauthorized`，去Web界面 `/web/tokens.html` 配置令牌
-- 公开端点：`GET /health`（健康检查）和 `GET /public/summary`（统计摘要）无需认证，其他都要授权
+- **Supported Architectures**: `linux/amd64`, `linux/arm64`
+- **Image Registry**: `ghcr.io/caidaoli/ccload`
+- **Available Tags**:
+  - `latest` - Latest stable version
+  - `2.19.0` - Specific version number
+  - `2.19` - Major.minor version
+  - `2` - Major version
 
-### Docker 镜像
-
-多架构镜像都准备好了，amd64/arm64随便选👇
-
-- **支持架构**：`linux/amd64`, `linux/arm64`
-- **镜像仓库**：`ghcr.io/caidaoli/ccload`
-- **可用标签**：
-  - `latest` - 最新稳定版本
-  - `2.19.0` - 具体版本号
-  - `2.19` - 主要.次要版本
-  - `2` - 主要版本
-
-### 镜像标签说明
+### Image Tag Guide
 
 ```bash
-# 拉取最新版本
+# Pull latest version
 docker pull ghcr.io/caidaoli/ccload:latest
 
-# 拉取指定版本
+# Pull specific version
 docker pull ghcr.io/caidaoli/ccload:2.19.0
 
-# 指定架构（Docker 通常自动选择）
+# Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
 docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 ```
 
-### 数据库结构
+### Database Structure
 
-想了解数据怎么存的？看这里👇
-
-**存储架构（工厂模式）**:
+**Storage Architecture (Factory Pattern)**:
 ```
 storage/
-├── store.go         # Store 接口（统一契约）
-├── factory.go       # NewStore() 自动选择数据库
-├── schema/          # 统一 Schema 定义层（2025-12 新增）
-│   ├── tables.go    # 表结构定义（DefineXxxTable 函数）
-│   └── builder.go   # Schema 构建器（支持 SQLite/MySQL 差异）
-├── sql/             # 通用 SQL 实现层（2025-12 重构，消除 467 行重复代码）
-│   ├── store_impl.go      # SQLStore 核心实现
-│   ├── config.go          # 渠道配置 CRUD
-│   ├── apikey.go          # API 密钥 CRUD
-│   ├── cooldown.go        # 冷却管理
-│   ├── log.go             # 日志存储
-│   ├── metrics.go             # 指标统计
-│   ├── metrics_filter.go      # 过滤条件交集支持
-│   ├── metrics_aggregate_rows.go  # 聚合行处理
-│   ├── metrics_finalize.go    # 终结化处理
-│   ├── auth_tokens.go         # API 访问令牌
-│   ├── auth_token_stats.go    # 令牌统计
-│   ├── admin_sessions.go  # 管理会话
-│   ├── system_settings.go # 系统设置
-│   └── helpers.go         # 辅助函数
-└── sqlite/          # SQLite 特定（仅测试文件）
+├── store.go         # Store interface (unified contract)
+├── factory.go       # NewStore() auto-selects database
+├── schema/          # Unified schema definition layer (2025-12 new)
+│   ├── tables.go    # Table definitions (DefineXxxTable functions)
+│   └── builder.go   # Schema builder (supports SQLite/MySQL differences)
+├── sql/             # Common SQL implementation layer (2025-12 refactor, eliminated 467 lines)
+│   ├── store_impl.go      # SQLStore core implementation
+│   ├── config.go          # Channel config CRUD
+│   ├── apikey.go          # API key CRUD
+│   ├── cooldown.go        # Cooldown management
+│   ├── log.go             # Log storage
+│   ├── metrics.go             # Metrics stats
+│   ├── metrics_filter.go      # Filter intersection support
+│   ├── metrics_aggregate_rows.go  # Aggregate row processing
+│   ├── metrics_finalize.go    # Finalization processing
+│   ├── auth_tokens.go         # API access tokens
+│   ├── auth_token_stats.go    # Token statistics
+│   ├── admin_sessions.go  # Admin sessions
+│   ├── system_settings.go # System settings
+│   └── helpers.go         # Helper functions
+└── sqlite/          # SQLite specific (test files only)
 ```
 
-**数据库选择逻辑**:
-- 设置 `CCLOAD_MYSQL` 环境变量 → 使用 MySQL
-- 未设置 → 使用 SQLite（默认）
+**Database Selection Logic**:
+- `CCLOAD_MYSQL` environment variable set → Uses MySQL
+- Not set → Uses SQLite (default)
 
-**核心表结构**（SQLite 和 MySQL 共用）:
-- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name，含协议转换配置、定时检测配置、RPM/并发限制配置）
-- `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
-- `logs` - 请求日志（含base_url上游URL追踪）
-- `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
-- `key_rr` - 轮询指针（channel_id → idx）
-- `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
-- `admin_sessions` - 管理会话
-- `system_settings` - 系统配置（支持热重载）
+**Core Table Structure** (SQLite and MySQL shared):
+- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM/concurrency limit config)
+- `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
+- `logs` - Request logs (with base_url upstream URL tracking)
+- `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
+- `key_rr` - Round-robin pointers (channel_id → idx)
+- `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
+- `admin_sessions` - Admin sessions
+- `system_settings` - System config (hot reload support)
 
-**架构特性** (✅ 2025-12月 ~ 2026-04月持续优化):
-- ✅ **统一SQL层**（重构）：SQLite/MySQL共享`storage/sql/`实现，消除467行重复代码
-- ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
-- ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
-- ✅ 冷却数据内联（废弃独立 cooldowns 表，减少 JOIN 开销）
-- ✅ 性能索引优化（渠道选择延迟↓30-50%，Key 查找延迟↓40-60%）
-- ✅ 复合索引优化（统计查询性能提升）
-- ✅ 外键约束（级联删除，保证数据一致性）
-- ✅ 多 Key 支持（sequential/round_robin 策略）
-- ✅ 自动迁移（启动时自动创建/更新表结构）
-- ✅ Token统计增强（支持时间范围选择、按令牌ID分类、缓存优化）
-- ✅ **service_tier 成本计量**：日志持久化 service_tier 字段，成本列展示层级提示
-- ✅ **Responses 图像工具成本计量**：`image_generation` 工具调用费用并入日志、统计和限额口径
-- ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
-- ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
-- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
-- ✅ **调试日志**：上游请求/响应原始数据捕获，敏感头脱敏，独立清理策略
-- ✅ **渠道定时检测**：后台定时探测渠道可用性，支持指定检测模型
-- ✅ **渠道RPM限制**：每渠道滚动60秒请求数上限，`0` 表示无限制，超限自动跳过该渠道
-- ✅ **渠道并发限制**：每渠道同时在飞请求数上限，`0` 表示无限制，超限自动跳过该渠道
+**Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
+- ✅ **Unified SQL Layer** (refactor): SQLite/MySQL share `storage/sql/` implementation, eliminated 467 lines of duplicate code
+- ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
+- ✅ Factory pattern unified interface (OCP, easy to extend new storage)
+- ✅ Cooldown data inline (deprecated separate cooldowns table, reduces JOIN overhead)
+- ✅ Performance index optimization (channel selection latency ↓30-50%, key lookup latency ↓40-60%)
+- ✅ Composite index optimization (stats query performance improved)
+- ✅ Foreign key constraints (cascade delete, ensures data consistency)
+- ✅ Multi-key support (sequential/round_robin strategies)
+- ✅ Auto migration (auto creates/updates table structure on startup)
+- ✅ Token stats enhancement (time range selection, per-token ID classification, cache optimization)
+- ✅ **service_tier cost tracking**: Logs persist service_tier field, cost column shows tier label
+- ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
+- ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
+- ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
+- ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
+- ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
+- ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
+- ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped
+- ✅ **Channel concurrency limits**: Per-channel in-flight request caps, `0` means unlimited, over-limit channels are skipped
 
-**向后兼容迁移**:
-- 自动检测并修复重复渠道名称
-- 智能添加 UNIQUE 约束，确保数据完整性
-- 启动时自动执行，无需手动干预
-- 日志数据库已合并到主数据库（单一数据源）
+**Backward Compatible Migration**:
+- Auto-detects and fixes duplicate channel names
+- Intelligently adds UNIQUE constraints, ensures data integrity
+- Runs automatically on startup, no manual intervention needed
+- Log database merged into main database (single data source)
 
-## 🛡️ 安全考虑
+## 🛡️ Security Considerations
 
-兄弟们，安全这块不能马虎！注意这几点👇
+- Production must set strong password `CCLOAD_PASS`
+- Configure API access tokens via Web admin `/web/tokens.html` to protect API endpoint access
+- API keys used only in memory, not logged
+- Tokens stored in client localStorage, 24-hour expiry
+- Recommend using HTTPS reverse proxy
+- Docker images run as non-root user for enhanced security
 
-- 生产环境**务必**设置强密码 `CCLOAD_PASS`，别用123456
-- 在Web界面 `/web/tokens.html` 配好API令牌，保护你的接口
-- API Key只在内存用，日志里不记录，放心
-- Token存在浏览器localStorage，24小时过期，安全又方便
-- 建议套一层HTTPS反向代理（nginx/Caddy），别裸奔
-- Docker镜像用非root用户跑，黑客拿到容器也搞不了大事
+### Token Authentication System
 
-### Token 认证系统
+ccLoad uses token-based authentication for simple and efficient secure access control.
 
-基于Token的认证，简单又高效👇
+**Auth Methods**:
+- **Admin Interface**: Login gets 24-hour token, stored in `localStorage`
+- **API Endpoints**: Support `Authorization: Bearer <token>` header auth
 
-**认证方式**：
-- **管理界面**：登录后获取24小时有效期的Token，存储在 `localStorage`
-- **API端点**：支持 `Authorization: Bearer <token>` 头认证
+**Core Features**:
+- ✅ **Stateless Auth**: Tokens don't depend on server sessions, naturally supports horizontal scaling
+- ✅ **Unified Auth System**: API and admin interface use same token mechanism
+- ✅ **Simple Architecture**: Pure token auth, simple reliable code (KISS principle)
+- ✅ **CORS Support**: Token stored in localStorage, fully supports cross-origin access
 
-**核心特性**：
-- ✅ **无状态认证**：Token不依赖服务端Session，水平扩展随便搞
-- ✅ **统一认证体系**：API和Web用同一套Token，简单
-- ✅ **简洁架构**：纯Token认证，代码又少又稳（KISS原则）
-- ✅ **跨域支持**：Token存localStorage，跨域访问完全OK
-
-**使用示例**：
-
-看个例子就懂了👇
+**Usage Example**:
 ```bash
-# 1. 登录获取Token
+# 1. Login to get token
 curl -X POST http://localhost:8080/login \
   -H "Content-Type: application/json" \
   -d '{"password":"your_admin_password"}' | jq
 
-# 响应示例：
+# Response example:
 # {
 #   "status": "success",
-#   "token": "abc123...",  # 64字符十六进制Token
-#   "expiresIn": 86400     # 24小时（秒）
+#   "token": "abc123...",  # 64-char hex token
+#   "expiresIn": 86400     # 24 hours (seconds)
 # }
 
-# 2. 使用Token访问管理API
+# 2. Use token to access admin API
 curl http://localhost:8080/admin/channels \
   -H "Authorization: Bearer <your_token>"
 
-# 3. 登出（可选，Token会在24小时后自动过期）
+# 3. Logout (optional, token auto-expires after 24 hours)
 curl -X POST http://localhost:8080/logout \
   -H "Authorization: Bearer <your_token>"
 ```
 
-
 ## 🔄 CI/CD
 
-GitHub Actions全自动化，推个tag就能发版👇
+Project uses GitHub Actions for automated CI/CD:
 
-- **触发条件**：推送版本标签（`v*`）或手动触发
-- **构建输出**：多架构 Docker 镜像推送到 GitHub Container Registry
-- **版本管理**：自动生成语义化版本标签
-- **缓存优化**：利用 GitHub Actions 缓存加速构建
+- **Trigger Conditions**: Push version tags (`v*`) or manual trigger
+- **Build Output**: Multi-arch Docker images pushed to GitHub Container Registry
+- **Version Management**: Auto-generates semantic version tags
+- **Cache Optimization**: Uses GitHub Actions cache to accelerate builds
 
+## 🤝 Contributing
 
+Issues and Pull Requests welcome!
 
-## 🤝 贡献
+### Troubleshooting
 
-欢迎贡献代码！发现Bug或有新想法？来提Issue或PR吧👇
-
-- 提Issue：https://github.com/caidaoli/ccLoad/issues
-- 提PR：Fork项目→改代码→提交PR
-- 代码规范：遵循项目现有风格，保持KISS原则
-
-### 故障排除
-
-遇到问题了？常见坑在这里👇
-
-**端口被占用**：
-
-8080端口已经被占了？换个端口或干掉占用的进程👇
+**Port In Use**:
 ```bash
-# 查找并终止占用 8080 端口的进程
+# Find and kill process using port 8080
 lsof -i :8080 && kill -9 <PID>
 ```
 
-**容器问题**：
-
-Docker容器起不来？看看日志找找原因👇
+**Container Issues**:
 ```bash
-# 查看容器日志
+# View container logs
 docker logs ccload -f
-# 检查容器健康状态
+# Check container health status
 docker inspect ccload --format='{{.State.Health.Status}}'
 ```
 
-**配置验证**：
-
-想确认服务启动成功？试试这几个命令👇
+**Config Validation**:
 ```bash
-# 测试服务健康状态（轻量级健康检查，<5ms）
+# Test service health (lightweight health check, <5ms)
 curl -s http://localhost:8080/health
-# 或查看统计摘要（返回业务数据，50-200ms）
+# Or view stats summary (returns business data, 50-200ms)
 curl -s http://localhost:8080/public/summary
-# 检查环境变量配置
+# Check environment variable config
 env | grep CCLOAD
 ```
 
-## 📄 许可证
+## 📄 License
 
 MIT License
