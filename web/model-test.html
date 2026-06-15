@@ -17,6 +17,7 @@
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/sse-merge.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
 </head>
@@ -180,6 +181,7 @@
         <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
         <button type="button" class="upstream-tab" data-tab="response" data-i18n="channels.test.tabResponse">Response</button>
         <button type="button" class="upstream-copy-btn upstream-copy-btn--tabs" data-copy-target="upstreamReqRaw" data-i18n="common.copy">复制</button>
+        <button type="button" id="upstreamMergeBtn" class="upstream-copy-btn upstream-merge-btn" data-action="merge-upstream-response" data-i18n="logs.debugMerge" aria-pressed="false" hidden>合并</button>
       </div>
       <div id="upstreamTabRequest" class="upstream-tab-panel active">
         <div class="upstream-field upstream-field--full">
@@ -189,6 +191,7 @@
       <div id="upstreamTabResponse" class="upstream-tab-panel">
         <div class="upstream-field upstream-field--full">
           <pre id="upstreamRespRaw" class="upstream-pre upstream-pre--full"></pre>
+          <pre id="upstreamRespMerged" class="upstream-pre upstream-pre--full" hidden></pre>
         </div>
       </div>
     </div>
