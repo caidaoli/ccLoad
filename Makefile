@@ -89,7 +89,7 @@ WWW_RELEASE_HOST ?= racknerd
 WWW_RELEASE_PATH ?= /var/www/ccload.xyz
 WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
 WWW_RELEASE_SSH ?= ssh -T
-WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
+WWW_RELEASE_RSYNC_FLAGS ?= -az --delete --chmod=D755,F644
 www-run: www-setup
 	@echo "启动 www 介绍网站预览服务器..."
 	@echo "访问地址: http://localhost:$(WWW_PORT)/"
