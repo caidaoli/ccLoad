@@ -49,6 +49,7 @@ const SORT_DIRECTION_NONE = 0;
 const ALL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
+let upstreamMergedVisible = false;
 
 function getFetchModelsBtn() {
   return document.getElementById('fetchModelsBtn');
@@ -2612,19 +2613,104 @@ function composeRawResponse(data) {
   return parts.join('\n');
 }
 
+function composeMergedResponse(data) {
+  const raw = String(data.responseBody || '').replace(/\r\n/g, '\n').trim();
+  if (!raw) return '';
+
+  const state = {
+    reasoning: [],
+    text: [],
+    functionCalls: [],
+    hasReasoningDelta: false,
+    hasTextDelta: false,
+    hasFunctionCallDelta: false,
+    lastFunctionCallIndex: null,
+    functionCallDeltaIndexes: new Set()
+  };
+  const ssePayloads = window.SSEMerge.parsePayloads(raw);
+  if (ssePayloads.length > 0) {
+    ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
+  } else {
+    try {
+      window.SSEMerge.collectPayload(JSON.parse(raw), state);
+    } catch {
+      return tryFormatJSON(raw);
+    }
+  }
+
+  const sections = [];
+  [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
+    const text = bucket.join('').trim();
+    if (text) sections.push(text);
+  });
+
+  return sections.join('\n\n') || tryFormatJSON(raw);
+}
+
+function getMergedRenderMode(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed) return 'text';
+  const isJson = (trimmed.startsWith('{') && trimmed.endsWith('}'))
+    || (trimmed.startsWith('[') && trimmed.endsWith(']'));
+  if (!isJson) return 'text';
+  try {
+    JSON.parse(trimmed);
+    return 'json';
+  } catch {
+    return 'text';
+  }
+}
+
+function updateUpstreamResponseActionButtons() {
+  const responseActive = !!document.getElementById('upstreamTabResponse')?.classList.contains('active');
+  const copyBtn = document.querySelector('#upstreamDetailModal .upstream-copy-btn--tabs');
+  if (copyBtn) {
+    copyBtn.dataset.copyTarget = responseActive
+      ? (upstreamMergedVisible ? 'upstreamRespMerged' : 'upstreamRespRaw')
+      : 'upstreamReqRaw';
+  }
+
+  const mergeBtn = document.getElementById('upstreamMergeBtn');
+  if (mergeBtn) {
+    mergeBtn.hidden = !responseActive;
+  }
+}
+
+function setUpstreamMergedVisible(visible) {
+  upstreamMergedVisible = !!visible;
+
+  const raw = document.getElementById('upstreamRespRaw');
+  const merged = document.getElementById('upstreamRespMerged');
+  if (raw) raw.hidden = upstreamMergedVisible;
+  if (merged) merged.hidden = !upstreamMergedVisible;
+
+  const mergeBtn = document.getElementById('upstreamMergeBtn');
+  if (mergeBtn) {
+    const key = upstreamMergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
+    mergeBtn.classList.toggle('active', upstreamMergedVisible);
+    mergeBtn.setAttribute('aria-pressed', upstreamMergedVisible ? 'true' : 'false');
+    mergeBtn.dataset.i18n = key;
+    mergeBtn.textContent = (typeof i18nText === 'function' ? i18nText(key) : '') || (upstreamMergedVisible ? '原始' : '合并');
+  }
+
+  updateUpstreamResponseActionButtons();
+}
+
 function showUpstreamDetailModal(data) {
   if (!data) return;
 
   window.setHighlightedCodeContent('upstreamReqRaw', composeRawRequest(data), 'request');
   window.setHighlightedCodeContent('upstreamRespRaw', composeRawResponse(data), 'response');
+  const mergedResponse = composeMergedResponse(data);
+  window.setHighlightedCodeContent('upstreamRespMerged', mergedResponse, getMergedRenderMode(mergedResponse));
 
   // Reset to Request tab
   const modal = document.getElementById('upstreamDetailModal');
   modal.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
   document.getElementById('upstreamTabRequest').classList.add('active');
   document.getElementById('upstreamTabResponse').classList.remove('active');
-  const copyBtn = modal.querySelector('.upstream-copy-btn--tabs');
-  if (copyBtn) copyBtn.dataset.copyTarget = 'upstreamReqRaw';
+  setUpstreamMergedVisible(false);
+  updateUpstreamResponseActionButtons();
 
   modal.classList.add('show');
 }
@@ -2642,7 +2728,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// Tab switch + copy button delegation for upstream detail modal
+// Tab switch + copy/merge button delegation for upstream detail modal
 document.addEventListener('click', (e) => {
   const tab = e.target.closest('#upstreamDetailModal .upstream-tab');
   if (tab) {
@@ -2650,10 +2736,13 @@ document.addEventListener('click', (e) => {
     document.querySelectorAll('#upstreamDetailModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
     document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
     document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
-    const copyBtn = document.querySelector('#upstreamDetailModal .upstream-copy-btn--tabs');
-    if (copyBtn) {
-      copyBtn.dataset.copyTarget = target === 'response' ? 'upstreamRespRaw' : 'upstreamReqRaw';
-    }
+    updateUpstreamResponseActionButtons();
+    return;
+  }
+
+  const mergeBtn = e.target.closest('#upstreamDetailModal [data-action="merge-upstream-response"]');
+  if (mergeBtn) {
+    setUpstreamMergedVisible(!upstreamMergedVisible);
     return;
   }
 
