@@ -89,7 +89,7 @@ WWW_RELEASE_HOST ?= racknerd
 WWW_RELEASE_PATH ?= /var/www/ccload.xyz
 WWW_RELEASE_TARGET ?= $(WWW_RELEASE_HOST):$(WWW_RELEASE_PATH)
 WWW_RELEASE_SSH ?= ssh -T
-WWW_RELEASE_RSYNC_FLAGS ?= -az --delete --chmod=D755,F644
+WWW_RELEASE_RSYNC_FLAGS ?= -az --delete
 www-run: www-setup
 	@echo "启动 www 介绍网站预览服务器..."
 	@echo "访问地址: http://localhost:$(WWW_PORT)/"
@@ -102,6 +102,8 @@ www-release: www-setup
 	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'mkdir -p "$(WWW_RELEASE_PATH)"'
 	@echo "同步 www 到 $(WWW_RELEASE_TARGET)..."
 	@rsync -e "$(WWW_RELEASE_SSH)" $(WWW_RELEASE_RSYNC_FLAGS) www/ $(WWW_RELEASE_TARGET)/
+	@echo "修正远程文件权限..."
+	@$(WWW_RELEASE_SSH) $(WWW_RELEASE_HOST) 'find "$(WWW_RELEASE_PATH)" -type d -exec chmod 755 {} \; && find "$(WWW_RELEASE_PATH)" -type f -exec chmod 644 {} \;'
 	@echo "✓ www 已同步到 $(WWW_RELEASE_TARGET)"
 
 # 创建必要的目录
