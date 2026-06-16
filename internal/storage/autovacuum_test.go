@@ -38,7 +38,7 @@ func TestSQLiteAutoVacuumEnabled(t *testing.T) {
 	t.Logf("✓ auto_vacuum=INCREMENTAL 已启用")
 }
 
-func TestSQLiteAutoVacuumOnExistingDB(t *testing.T) {
+func TestSQLiteAutoVacuumOnExistingDBDoesNotRunFullVacuumOnStartup(t *testing.T) {
 	testDB := t.TempDir() + "/test_autovacuum_existing.db"
 	defer func() { _ = os.Remove(testDB) }()
 
@@ -60,7 +60,7 @@ func TestSQLiteAutoVacuumOnExistingDB(t *testing.T) {
 	}
 	_ = db.Close()
 
-	// 第二步：通过 createSQLiteStore 打开（应该自动启用 auto_vacuum）
+	// 第二步：通过 createSQLiteStore 打开非空旧库，不应为了切换 auto_vacuum 执行完整 VACUUM。
 	store, err := createSQLiteStore(testDB)
 	if err != nil {
 		t.Fatalf("创建存储失败: %v", err)
@@ -79,9 +79,40 @@ func TestSQLiteAutoVacuumOnExistingDB(t *testing.T) {
 		t.Fatalf("查询 auto_vacuum 失败: %v", err)
 	}
 
-	if mode != 2 {
-		t.Errorf("期望已有数据的数据库被迁移到 auto_vacuum=2, 实际为 %d", mode)
+	if mode != 0 {
+		t.Errorf("期望已有数据的旧库保持 auto_vacuum=0，避免启动完整 VACUUM，实际为 %d", mode)
 	}
 
-	t.Logf("✓ 已有数据的数据库成功启用 auto_vacuum=INCREMENTAL")
+	t.Logf("✓ 已有数据的旧库启动时未执行完整 VACUUM")
+}
+
+func TestSQLiteAutoVacuumOnExistingEmptyDB(t *testing.T) {
+	testDB := t.TempDir() + "/test_autovacuum_empty_existing.db"
+	defer func() { _ = os.Remove(testDB) }()
+
+	db, err := sql.Open("sqlite", "file:"+testDB)
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	_ = db.Close()
+
+	store, err := createSQLiteStore(testDB)
+	if err != nil {
+		t.Fatalf("创建存储失败: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	db2, err := sql.Open("sqlite", "file:"+testDB)
+	if err != nil {
+		t.Fatalf("重新打开数据库失败: %v", err)
+	}
+	defer func() { _ = db2.Close() }()
+
+	var mode int
+	if err := db2.QueryRowContext(context.Background(), "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		t.Fatalf("查询 auto_vacuum 失败: %v", err)
+	}
+	if mode != 2 {
+		t.Errorf("期望空旧库 auto_vacuum=2 (INCREMENTAL), 实际为 %d", mode)
+	}
 }
