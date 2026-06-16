@@ -27,6 +27,11 @@ const (
 
 // migrateSQLite 执行SQLite数据库迁移
 func migrateSQLite(ctx context.Context, db *sql.DB) error {
+	// 步骤 1：开启 auto_vacuum（必须在创建表之前设置）
+	if err := ensureSQLiteAutoVacuum(ctx, db); err != nil {
+		return fmt.Errorf("enable auto_vacuum: %w", err)
+	}
+
 	return migrate(ctx, db, DialectSQLite)
 }
 
@@ -494,4 +499,36 @@ func recordMigrationTx(ctx context.Context, tx *sql.Tx, version string, dialect 
 	}
 	_, err := tx.ExecContext(ctx, insertSQL, version)
 	return err
+}
+
+// ensureSQLiteAutoVacuum 确保 SQLite 开启 auto_vacuum=INCREMENTAL
+// 必须在创建任何表之前调用（auto_vacuum 是数据库级全局设置）
+func ensureSQLiteAutoVacuum(ctx context.Context, db *sql.DB) error {
+	// 读取当前 auto_vacuum 设置
+	var currentMode int
+	if err := db.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&currentMode); err != nil {
+		return fmt.Errorf("query auto_vacuum: %w", err)
+	}
+
+	// 2 = INCREMENTAL（按需释放空闲页）
+	// 0 = NONE（默认值，不自动回收）
+	// 1 = FULL（每次提交都整理，性能开销大）
+	if currentMode == 2 {
+		return nil // 已启用
+	}
+
+	// 设置 auto_vacuum = INCREMENTAL
+	if _, err := db.ExecContext(ctx, "PRAGMA auto_vacuum = INCREMENTAL"); err != nil {
+		return fmt.Errorf("set auto_vacuum: %w", err)
+	}
+
+	// SQLite 要求：auto_vacuum 设置后必须执行 VACUUM 才能生效
+	// 无论是空库还是已有数据，都需要执行一次 VACUUM
+	// 空库：VACUUM 几乎无成本（< 1ms）
+	// 已有数据：一次性重建代价，但之后永久生效
+	if _, err := db.ExecContext(ctx, "VACUUM"); err != nil {
+		return fmt.Errorf("VACUUM to activate auto_vacuum: %w", err)
+	}
+
+	return nil
 }
