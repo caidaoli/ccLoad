@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"sync"
 	"time"
 
@@ -143,6 +144,7 @@ func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) erro
 	// 分批删除避免长时间锁表（P2优化）
 	cutoffMs := cutoff.UnixMilli()
 	const batchSize = 5000
+	var deleted int64
 
 	for {
 		var query string
@@ -159,11 +161,43 @@ func (s *SQLStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) erro
 			return err
 		}
 		affected, _ := result.RowsAffected()
+		deleted += affected
 		if affected < batchSize {
 			break // 已删完
 		}
 	}
+	s.runSQLiteIncrementalVacuum(ctx, deleted)
 	return nil
+}
+
+func (s *SQLStore) runSQLiteIncrementalVacuum(ctx context.Context, deletedRows int64) {
+	if !s.IsSQLite() || deletedRows <= 0 {
+		return
+	}
+
+	var mode int
+	if err := s.db.QueryRowContext(ctx, "PRAGMA auto_vacuum").Scan(&mode); err != nil {
+		log.Printf("[WARN] SQLite 查询 auto_vacuum 失败: %v", err)
+		return
+	}
+	if mode != 2 {
+		return
+	}
+
+	var freePages int64
+	if err := s.db.QueryRowContext(ctx, "PRAGMA freelist_count").Scan(&freePages); err != nil {
+		log.Printf("[WARN] SQLite 查询 freelist_count 失败: %v", err)
+		return
+	}
+	if freePages <= 0 {
+		return
+	}
+
+	const maxIncrementalVacuumPages int64 = 4096
+	pages := min(freePages, maxIncrementalVacuumPages)
+	if _, err := s.db.ExecContext(ctx, fmt.Sprintf("PRAGMA incremental_vacuum(%d)", pages)); err != nil {
+		log.Printf("[WARN] SQLite incremental_vacuum(%d) 失败: %v", pages, err)
+	}
 }
 
 // ============================================================================

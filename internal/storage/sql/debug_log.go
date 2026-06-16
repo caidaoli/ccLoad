@@ -40,12 +40,22 @@ func (s *SQLStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.
 
 // CleanupDebugLogsBefore 清理过期的调试日志
 func (s *SQLStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs WHERE created_at < ?`, cutoff.Unix())
-	return err
+	result, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs WHERE created_at < ?`, cutoff.Unix())
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	s.runSQLiteIncrementalVacuum(ctx, affected)
+	return nil
 }
 
 // TruncateDebugLogs 清空所有调试日志
 func (s *SQLStore) TruncateDebugLogs(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs`)
-	return err
+	result, err := s.db.ExecContext(ctx, `DELETE FROM debug_logs`)
+	if err != nil {
+		return err
+	}
+	affected, _ := result.RowsAffected()
+	s.runSQLiteIncrementalVacuum(ctx, affected)
+	return nil
 }
