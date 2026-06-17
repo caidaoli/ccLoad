@@ -1073,6 +1073,65 @@ func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
 	}
 }
 
+func TestHandleError_GlobalFixedWindowQuotaCoolsChannelUntilRetryClock(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-global-fixed-window-quota")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      "sk-global-fixed-window-0",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+		{
+			ChannelID:   cfg.ID,
+			KeyIndex:    1,
+			APIKey:      "sk-global-fixed-window-1",
+			KeyStrategy: model.KeyStrategySequential,
+		},
+	})
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     429,
+		ErrorBody:      []byte(`{"error":{"message":"当前公益站使用人数较多，本时段全站额度已用完，请在 明天 12:00 后再试。（traceid: 29038189-54e3-472e-b821-e7a5ebef3795）","type":"rate_limit_error","param":null,"code":"global_fixed_window_quota_exhausted","trace_id":"29038189-54e3-472e-b821-e7a5ebef3795"}}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
+	after := time.Now()
+
+	if action != ActionRetryChannel {
+		t.Fatalf("expected ActionRetryChannel, got %v", action)
+	}
+
+	if cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && cooldownUntil.After(time.Now()) {
+		t.Fatalf("global fixed-window quota should not cool key, got %s", cooldownUntil.Format(time.RFC3339))
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+
+	channelCooldownUntil := time.Unix(channelCfg.CooldownUntil, 0)
+	beforeExpected := nextBeijingTime(before, 1, 12, 0)
+	afterExpected := nextBeijingTime(after, 1, 12, 0)
+	if channelCfg.CooldownUntil == 0 ||
+		(!sameTimeSecond(channelCooldownUntil, beforeExpected) &&
+			!sameTimeSecond(channelCooldownUntil, afterExpected)) {
+		t.Fatalf("channel cooldownUntil=%s, want %s or %s",
+			channelCooldownUntil.Format(time.RFC3339),
+			beforeExpected.Format(time.RFC3339),
+			afterExpected.Format(time.RFC3339))
+	}
+}
+
 // ========== 辅助函数 ==========
 
 func nextLocalMidnight(now time.Time) time.Time {

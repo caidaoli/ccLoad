@@ -36,6 +36,9 @@ var retryInDurationRegex = regexp.MustCompile(`(?i)\bretry\s+in\s+([0-9]+(?:\.[0
 // retryAfterSecondsRegex 匹配 Codex rolling spend limit 文案中的 “Please retry after 2196 seconds”。
 var retryAfterSecondsRegex = regexp.MustCompile(`(?i)\bretry\s+after\s+([0-9]+)\s*seconds?\b`)
 
+// globalFixedWindowRetryClockRegex 匹配“请在 今天 12:00 后再试”这类全站固定窗口限额文案。
+var globalFixedWindowRetryClockRegex = regexp.MustCompile(`(今天|明天)\s*(\d{1,2})\s*[:：]\s*(\d{1,2})`)
+
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
 	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
@@ -92,10 +95,13 @@ type StatusCodeMeta struct {
 
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
-	Level               ErrorLevel
-	KeyCooldownUntil    time.Time
-	HasKeyCooldownUntil bool
-	KeyCooldownReason   string
+	Level                   ErrorLevel
+	KeyCooldownUntil        time.Time
+	HasKeyCooldownUntil     bool
+	KeyCooldownReason       string
+	ChannelCooldownUntil    time.Time
+	HasChannelCooldownUntil bool
+	ChannelCooldownReason   string
 }
 
 // sseErrorResponse SSE error事件的JSON结构（Anthropic API / 88code API）
@@ -252,6 +258,10 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 //   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
 //   - 其他状态码：走表驱动分类（statusCodeMetaMap）
 func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, responseBody []byte) HTTPResponseClassification {
+	return classifyHTTPResponseWithMetaAt(statusCode, headers, responseBody, time.Now())
+}
+
+func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) HTTPResponseClassification {
 	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
 	// 1308错误表示达到使用上限，应该触发Key级冷却
 	if resetTime, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
@@ -263,13 +273,19 @@ func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, r
 		}
 	}
 
-	if cooldownUntil, reason, ok := parseStructuredQuotaCooldown(responseBody, time.Now()); ok {
-		return HTTPResponseClassification{
-			Level:               ErrorLevelKey,
-			KeyCooldownUntil:    cooldownUntil,
-			HasKeyCooldownUntil: true,
-			KeyCooldownReason:   reason,
+	if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(responseBody, now); ok {
+		classification := HTTPResponseClassification{Level: level}
+		switch level {
+		case ErrorLevelChannel:
+			classification.ChannelCooldownUntil = cooldownUntil
+			classification.HasChannelCooldownUntil = true
+			classification.ChannelCooldownReason = reason
+		default:
+			classification.KeyCooldownUntil = cooldownUntil
+			classification.HasKeyCooldownUntil = true
+			classification.KeyCooldownReason = reason
 		}
+		return classification
 	}
 
 	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
@@ -440,14 +456,14 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 	}
 }
 
-func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, bool) {
+func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, ErrorLevel, bool) {
 	if len(responseBody) == 0 {
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	}
 
 	quotaErr, ok := parseStructuredQuotaError(responseBody)
 	if !ok {
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	}
 
 	code := quotaErr.code
@@ -457,33 +473,38 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 	switch {
 	case code == "MODEL_COOLDOWN":
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
-			return until, "model_cooldown", true
+			return until, "model_cooldown", ErrorLevelKey, true
 		}
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
 		if until, ok := parseRetryInCooldownUntil(message, now); ok {
-			return until, "RESOURCE_EXHAUSTED_RETRY_IN", true
+			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
 		}
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	case code == "API_KEY_QUOTA_EXHAUSTED":
-		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", true
+		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", ErrorLevelKey, true
 	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):
-		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", true
+		return now.Add(30 * time.Minute), "FREE_TIER_BUDGET_EXCEEDED", ErrorLevelKey, true
 	case code == "DAILY_LIMIT_EXCEEDED" ||
 		(code == "USAGE_LIMIT_EXCEEDED" && strings.Contains(messageUpper, "DAILY_LIMIT_EXCEEDED")):
-		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", true
+		return nextLocalMidnight(now), "DAILY_LIMIT_EXCEEDED", ErrorLevelKey, true
+	case code == "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED":
+		if until, ok := parseGlobalFixedWindowQuotaCooldownUntil(message, now); ok {
+			return until, "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED", ErrorLevelChannel, true
+		}
+		return time.Time{}, "", ErrorLevelNone, false
 	case strings.Contains(message, "用量上限"):
 		if until, ok := parseBeijingTomorrowResetTime(message, now); ok {
-			return until, "BEIJING_RELATIVE_QUOTA_RESET", true
+			return until, "BEIJING_RELATIVE_QUOTA_RESET", ErrorLevelKey, true
 		}
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	case code == "RATE_LIMIT_EXCEEDED":
 		if until, ok := parseRetryAfterSecondsCooldownUntil(message, now); ok {
-			return until, "RATE_LIMIT_RETRY_AFTER", true
+			return until, "RATE_LIMIT_RETRY_AFTER", ErrorLevelKey, true
 		}
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	default:
-		return time.Time{}, "", false
+		return time.Time{}, "", ErrorLevelNone, false
 	}
 }
 
@@ -596,6 +617,38 @@ func parseRetryAfterSecondsCooldownUntil(message string, now time.Time) (time.Ti
 		return time.Time{}, false
 	}
 	return now.Add(time.Duration(seconds) * time.Second), true
+}
+
+func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (time.Time, bool) {
+	matches := globalFixedWindowRetryClockRegex.FindStringSubmatch(message)
+	if matches == nil {
+		return time.Time{}, false
+	}
+
+	hour, err := strconv.Atoi(matches[2])
+	if err != nil || hour < 0 || hour > 23 {
+		return time.Time{}, false
+	}
+
+	minute, err := strconv.Atoi(matches[3])
+	if err != nil || minute < 0 || minute > 59 {
+		return time.Time{}, false
+	}
+
+	dayOffset := 0
+	if matches[1] == "明天" {
+		dayOffset = 1
+	}
+
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	localNow := now.In(loc)
+	y, mon, d := localNow.Date()
+	until := time.Date(y, mon, d+dayOffset, hour, minute, 0, 0, loc)
+	if !until.After(localNow) {
+		return time.Time{}, false
+	}
+
+	return until, true
 }
 
 func nextLocalMidnight(now time.Time) time.Time {
