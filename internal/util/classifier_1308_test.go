@@ -167,3 +167,31 @@ func TestClassifyHTTPResponseWithMeta_GeminiResourceExhaustedUsesRetryIn(t *test
 			maxUntil.Format(time.RFC3339Nano))
 	}
 }
+
+func TestClassifyHTTPResponseWithMeta_GlobalFixedWindowQuotaUsesRetryClock(t *testing.T) {
+	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
+	now := time.Date(2026, 6, 17, 11, 30, 0, 0, loc)
+	body := []byte(`{"error":{"message":"当前公益站使用人数较多，本时段全站额度已用完，请在 今天 12:00 后再试。（traceid: 29038189-54e3-472e-b821-e7a5ebef3795）","type":"rate_limit_error","param":null,"code":"global_fixed_window_quota_exhausted","trace_id":"29038189-54e3-472e-b821-e7a5ebef3795"}}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+
+	if got.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", got.Level)
+	}
+	if got.HasKeyCooldownUntil {
+		t.Fatal("global fixed-window quota must not be represented as key cooldown")
+	}
+	if !got.HasChannelCooldownUntil {
+		t.Fatal("expected fixed channel cooldown until")
+	}
+	if got.ChannelCooldownReason != "GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED" {
+		t.Fatalf("ChannelCooldownReason=%q, want GLOBAL_FIXED_WINDOW_QUOTA_EXHAUSTED", got.ChannelCooldownReason)
+	}
+
+	want := time.Date(2026, 6, 17, 12, 0, 0, 0, loc)
+	if !got.ChannelCooldownUntil.Equal(want) {
+		t.Fatalf("ChannelCooldownUntil=%s, want %s",
+			got.ChannelCooldownUntil.Format(time.RFC3339),
+			want.Format(time.RFC3339))
+	}
+}

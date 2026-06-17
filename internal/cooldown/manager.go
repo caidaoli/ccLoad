@@ -92,6 +92,9 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 		decision.keyCooldownUntil = classification.KeyCooldownUntil
 		decision.hasKeyCooldownUntil = classification.HasKeyCooldownUntil
 		decision.keyCooldownReason = classification.KeyCooldownReason
+		decision.channelCooldownUntil = classification.ChannelCooldownUntil
+		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
+		decision.channelCooldownReason = classification.ChannelCooldownReason
 	}
 
 	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
