@@ -140,6 +140,7 @@ func NewServer(store storage.Store) *Server {
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）
 	transport := buildHTTPTransport(skipTLSVerify)
 	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
+	logHostOverrides(getHostOverrides())
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 
@@ -458,10 +459,18 @@ func readThroughChannelCache[T any](
 	return readStore()
 }
 
+// getHostOverrides 延迟解析域名→IP覆盖表（CCLOAD_HOST_OVERRIDES）。
+// 必须延迟到首次调用时求值：包级变量初始化早于 main() 中的 godotenv.Load()，
+// 此时 .env 尚未加载，os.Getenv 读到空值。sync.OnceValue 保证只解析一次且并发安全。
+var getHostOverrides = sync.OnceValue(func() map[string]string {
+	return parseHostOverrides(os.Getenv("CCLOAD_HOST_OVERRIDES"))
+})
+
 // buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）
 // 参数:
 //   - skipTLSVerify: 是否跳过TLS证书验证
 func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
+	overrides := getHostOverrides()
 	dialer := &net.Dialer{
 		Timeout:   config.HTTPDialTimeout,
 		KeepAlive: config.HTTPKeepAliveInterval,
@@ -472,13 +481,17 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 		},
 	}
 
+	// DNS覆盖：在拨号层替换域名为指定IP，保留TLS SNI/证书/Host头不受影响。
+	// 走代理（HTTP/SOCKS5）时 DNS 在代理端解析，此包装不影响。
+	dialCtx := wrapDialerWithHostOverrides(dialer.DialContext, overrides)
+
 	transport := &http.Transport{
 		Proxy:               http.ProxyFromEnvironment, // 支持 HTTPS_PROXY/HTTP_PROXY/NO_PROXY
 		MaxIdleConns:        config.HTTPMaxIdleConns,
 		MaxIdleConnsPerHost: config.HTTPMaxIdleConnsPerHost,
 		IdleConnTimeout:     90 * time.Second, // 空闲连接90秒后关闭，避免僵尸连接
 		MaxConnsPerHost:     config.HTTPMaxConnsPerHost,
-		DialContext:         dialer.DialContext,
+		DialContext:         dialCtx,
 		TLSHandshakeTimeout: config.HTTPTLSHandshakeTimeout,
 		DisableCompression:  false,
 		DisableKeepAlives:   false,
