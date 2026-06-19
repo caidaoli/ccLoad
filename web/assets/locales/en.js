@@ -234,6 +234,8 @@ window.I18N_LOCALES['en'] = {
   'channels.maxConcurrencyPlaceholder': '0=No limit',
   'channels.costMultiplier': 'Cost Multiplier',
   'channels.costMultiplierPlaceholder': 'Default 1',
+  'channels.proxyURL': 'Proxy',
+  'channels.proxyURLPlaceholder': 'http:// | socks5://',
 
   // Delete Confirmation (flattened keys)
   'channels.confirmDeleteTitle': 'Confirm Delete',
