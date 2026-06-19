@@ -2031,6 +2031,7 @@
       line-height: 1;
       cursor: pointer;
       user-select: none;
+      vertical-align: middle;
     }
 
     .inline-url-exact-label input {
