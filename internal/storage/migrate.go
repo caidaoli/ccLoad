@@ -128,6 +128,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels cost_multiplier: %w", err)
 			}
+			if err := ensureChannelsProxyURL(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels proxy_url: %w", err)
+			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels url to text: %w", err)

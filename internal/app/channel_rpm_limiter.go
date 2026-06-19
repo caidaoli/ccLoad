@@ -155,7 +155,7 @@ func (s *Server) doUpstreamRequest(cfg *model.Config, req *http.Request) (*http.
 	if err != nil {
 		return nil, err
 	}
-	resp, err := s.client.Do(req)
+	resp, err := s.getClientForChannel(cfg).Do(req)
 	if err != nil {
 		release()
 		return nil, err

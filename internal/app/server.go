@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
 	"sync"
@@ -48,7 +50,9 @@ type Server struct {
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
-	client                        *http.Client          // HTTP客户端
+	client                        *http.Client          // HTTP客户端（全局默认）
+	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
+	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -157,6 +161,7 @@ func NewServer(store storage.Store) *Server {
 			Transport: transport,
 			Timeout:   0, // 不设置全局超时，避免中断长时间任务
 		},
+		skipTLSVerify: skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -486,6 +491,57 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	}
 
 	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
+}
+
+// getClientForChannel 返回渠道对应的 HTTP 客户端。
+// 无代理或空串 → 全局 client；相同 proxyURL 共享 Transport 和连接池。
+func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
+	if cfg.ProxyURL == "" {
+		return s.client
+	}
+	if v, ok := s.proxyTransports.Load(cfg.ProxyURL); ok {
+		return v.(*http.Client)
+	}
+
+	t, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify)
+	if err != nil {
+		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
+		return s.client
+	}
+	c := &http.Client{Transport: t, Timeout: 0}
+	if actual, loaded := s.proxyTransports.LoadOrStore(cfg.ProxyURL, c); loaded {
+		t.CloseIdleConnections()
+		return actual.(*http.Client)
+	}
+	log.Printf("[INFO] 渠道 %d 使用独立代理: %s", cfg.ID, cfg.ProxyURL)
+	return c
+}
+
+// buildChannelProxyTransport 构建带代理的 Transport（HTTP/HTTPS 直连，SOCKS5 用自定义 Dialer）。
+func buildChannelProxyTransport(rawProxyURL string, skipTLSVerify bool) (*http.Transport, error) {
+	u, err := neturl.Parse(rawProxyURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse proxy url: %w", err)
+	}
+
+	base := buildHTTPTransport(skipTLSVerify)
+
+	switch u.Scheme {
+	case "http", "https":
+		base.Proxy = http.ProxyURL(u)
+	case "socks5", "socks5h":
+		dialer, err := newSOCKS5Dialer(u)
+		if err != nil {
+			return nil, err
+		}
+		base.Proxy = nil
+		base.DialContext = dialer
+		base.ForceAttemptHTTP2 = false // SOCKS5 自定义 Dialer 与 HTTP/2 TLS 协商不兼容
+	default:
+		return nil, fmt.Errorf("unsupported proxy scheme: %q", u.Scheme)
+	}
+
+	return base, nil
 }
 
 // GetConfig 获取渠道配置（实现cooldown.ConfigGetter接口）
@@ -944,6 +1000,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		log.Print("[WARN]  Server关闭超时，部分后台任务可能未完成")
 		err = ctx.Err()
 	}
+
+	// 关闭渠道级代理 Transport 的空闲连接
+	s.proxyTransports.Range(func(_, v any) bool {
+		v.(*http.Client).CloseIdleConnections()
+		return true
+	})
 
 	// 无论成功还是超时，都要关闭数据库连接
 	if closer, ok := s.store.(interface{ Close() error }); ok {
