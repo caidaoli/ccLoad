@@ -542,6 +542,9 @@ async function editChannel(id) {
 
   invokeChannelEditorAction('resetCustomRulesState', channel.custom_request_rules || null);
 
+  const proxyUrlInput = document.getElementById('channelProxyURL');
+  if (proxyUrlInput) proxyUrlInput.value = channel.proxy_url || '';
+
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
 }
@@ -761,7 +764,8 @@ async function saveChannel(event) {
     enabled: document.getElementById('channelEnabled').checked,
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
     scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
-    custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null
+    custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
+    proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim()
   };
 
   if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {

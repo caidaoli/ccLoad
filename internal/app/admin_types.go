@@ -35,6 +35,7 @@ type ChannelRequest struct {
 	DailyCostLimit        float64                   `json:"daily_cost_limit"` // 每日成本限额（美元），0表示无限制
 	CostMultiplier        float64                   `json:"cost_multiplier"`  // 成本倍率（默认1，0=免费，>=0）
 	CustomRequestRules    *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
+	ProxyURL              string                    `json:"proxy_url,omitempty"` // 渠道级代理（http/https/socks5/socks5h）
 }
 
 func validateChannelBaseURL(raw string) (string, error) {
@@ -196,6 +197,19 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CustomRequestRules = nil
 	}
 
+	cr.ProxyURL = strings.TrimSpace(cr.ProxyURL)
+	if cr.ProxyURL != "" {
+		pu, err := neturl.Parse(cr.ProxyURL)
+		if err != nil || pu.Host == "" {
+			return fmt.Errorf("invalid proxy_url: %q", cr.ProxyURL)
+		}
+		switch pu.Scheme {
+		case "http", "https", "socks5", "socks5h":
+		default:
+			return fmt.Errorf("invalid proxy_url scheme: %q (allowed: http, https, socks5, socks5h)", pu.Scheme)
+		}
+	}
+
 	if cr.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be >= 0 (got %d)", cr.RPMLimit)
 	}
@@ -241,6 +255,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		DailyCostLimit:        cr.DailyCostLimit,
 		CostMultiplier:        cr.CostMultiplier,
 		CustomRequestRules:    cr.CustomRequestRules,
+		ProxyURL:              cr.ProxyURL,
 	}
 }
 
