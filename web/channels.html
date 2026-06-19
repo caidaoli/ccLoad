@@ -682,6 +682,13 @@
         <h2 class="modal-title" data-i18n="channels.customRules.modalTitle">自定义请求规则</h2>
         <button type="button" class="close-btn" data-action="close-custom-rules-modal">&times;</button>
       </div>
+      <div style="display: flex; align-items: center; gap: 8px; margin: 0 0 12px 0;">
+        <label class="form-label" for="channelProxyURL" style="margin: 0; white-space: nowrap;"
+          data-i18n="channels.proxyURL">代理</label>
+        <input type="text" id="channelProxyURL" class="form-input" value="" style="flex: 1;"
+          data-i18n-placeholder="channels.proxyURLPlaceholder"
+          placeholder="http:// | socks5://">
+      </div>
       <div class="custom-rules-tabs" role="tablist">
         <button type="button" class="custom-rules-tab-button active" data-custom-rules-tab="headers"
           role="tab" aria-selected="true">

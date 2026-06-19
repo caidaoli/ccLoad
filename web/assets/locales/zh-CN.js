@@ -234,6 +234,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.maxConcurrencyPlaceholder': '0=无限制',
   'channels.costMultiplier': '成本倍率',
   'channels.costMultiplierPlaceholder': '默认1',
+  'channels.proxyURL': '代理',
+  'channels.proxyURLPlaceholder': 'http:// | socks5://',
 
   // 删除确认（扁平化键名）
   'channels.confirmDeleteTitle': '确认删除',
