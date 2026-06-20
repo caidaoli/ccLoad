@@ -801,7 +801,8 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 	return nil
 }
 
-// GetChannelSuccessRates 获取指定时间窗口内各渠道的成功率和样本量
+// GetChannelSuccessRates 获取健康度排序使用的各渠道成功率和样本量。
+// 注意：这不是统计页/健康时间线口径；统计页会把 429 计入 error 并额外暴露 rate_limited。
 // 返回 map[channelID]ChannelHealthStats
 func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
 	sinceBucket := since.UnixMilli() / minuteMs

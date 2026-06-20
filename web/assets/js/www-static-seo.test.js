@@ -38,6 +38,7 @@ test('www i18n supports SEO-relevant attributes', () => {
 test('www documents recently added operational features', () => {
   const index = read(path.join(wwwDir, 'index.html'));
   const config = read(path.join(wwwDir, 'config.html'));
+  const usage = read(path.join(wwwDir, 'usage.html'));
   const en = read(path.join(wwwDir, 'assets', 'locales', 'en.js'));
   const zh = read(path.join(wwwDir, 'assets', 'locales', 'zh-CN.js'));
 
@@ -49,6 +50,10 @@ test('www documents recently added operational features', () => {
   }
 
   assert.match(config, /CCLOAD_HOST_OVERRIDES/, 'DNS host override env var is missing');
+  assert.match(config, /Invalid entries fail startup/, 'DNS host override fail-fast behavior is missing');
   assert.match(config, /proxy_url/, 'channel-level proxy field is missing');
   assert.match(config, /socks5h/, 'SOCKS5 hostname-resolving proxy support is missing');
+  assert.match(usage, /UI timeline success rate includes 429/, '429 UI success-rate scope is missing');
+  assert.match(usage, /health-score sorting excludes 429/, '429 health-score sorting scope is missing');
+  assert.doesNotMatch(usage, /429 is excluded from health success rate/, 'stale 429 success-rate wording must be removed');
 });

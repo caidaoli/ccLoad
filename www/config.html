@@ -100,7 +100,7 @@
                 <td><code>CCLOAD_HOST_OVERRIDES</code></td>
                 <td>None</td>
                 <td>Pins upstream hostnames to fixed IPs before dialing. Format: <code>host=ip,host2=ip2</code>.</td>
-                <td>Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged.</td>
+                <td>Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged. Invalid entries fail startup.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MAX_CONCURRENCY</code></td>
