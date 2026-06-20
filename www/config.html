@@ -97,6 +97,12 @@
                 <td>Use only for controlled internal debugging. Do not enable in production.</td>
               </tr>
               <tr>
+                <td><code>CCLOAD_HOST_OVERRIDES</code></td>
+                <td>None</td>
+                <td>Pins upstream hostnames to fixed IPs before dialing. Format: <code>host=ip,host2=ip2</code>.</td>
+                <td>Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged.</td>
+              </tr>
+              <tr>
                 <td><code>CCLOAD_MAX_CONCURRENCY</code></td>
                 <td><code>1000</code></td>
                 <td>Global maximum concurrent proxy requests.</td>
@@ -172,6 +178,7 @@
               <li><code>url</code>: supports comma-separated URLs; a trailing <code>#</code> marks an exact upstream URL and disables automatic path joining.</li>
               <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
+              <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
             </ul>
           </article>
 
@@ -189,6 +196,9 @@
 
         <div class="www-callout www-mt-8">
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
+        </div>
+        <div class="www-callout www-mt-4">
+          <strong>Provider fixed-window quota is treated as a real channel cooldown.</strong> When an upstream response includes a concrete reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
         </div>
       </div>
     </section>
@@ -266,7 +276,10 @@ CCLOAD_API_TOKENS=client_token|production
 # Optional: MySQL / hybrid mode
 CCLOAD_MYSQL=user:pass@tcp(host:3306)/ccload?charset=utf8mb4
 CCLOAD_ENABLE_SQLITE_REPLICA=1
-CCLOAD_SQLITE_LOG_DAYS=7</code></pre>
+CCLOAD_SQLITE_LOG_DAYS=7
+
+# Optional: bypass broken upstream DNS
+CCLOAD_HOST_OVERRIDES=anyrouter.top=47.246.23.200</code></pre>
               </div>
             </div>
           </article>

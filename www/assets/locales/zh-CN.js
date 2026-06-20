@@ -40,6 +40,12 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.home.features.protocol.desc': 'Anthropic/OpenAI/Gemini/Codex 互转，保留采样与思考参数',
   'www.home.features.detection.title': '软错误检测',
   'www.home.features.detection.desc': 'HTTP 200 伪装的错误也能检测，SSE 流式响应中的限流标记识别',
+  'www.home.features.proxy.title': '渠道级代理',
+  'www.home.features.proxy.desc': '单个渠道可独立使用 HTTP、HTTPS、SOCKS5 或 SOCKS5H 代理，不污染全局代理策略',
+  'www.home.features.dns.title': 'DNS 主机覆盖',
+  'www.home.features.dns.desc': '上游 DNS 故障时可将域名钉到固定 IP，同时保留 TLS SNI、证书校验和 Host 头',
+  'www.home.features.quota.title': '配额感知冷却',
+  'www.home.features.quota.desc': '识别供应商固定窗口配额响应，按真实 reset 时间冷却渠道，而不是盲猜退避时间',
 
   // 首页 - 管理后台预览
   'www.home.admin.title': '不是黑盒代理',

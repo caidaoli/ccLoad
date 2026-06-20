@@ -34,3 +34,21 @@ test('www i18n supports SEO-relevant attributes', () => {
   assert.match(source, /\[data-i18n-alt\]/, 'image alt translation support is required');
   assert.match(source, /\[data-i18n-aria-label\]/, 'aria-label translation support is required');
 });
+
+test('www documents recently added operational features', () => {
+  const index = read(path.join(wwwDir, 'index.html'));
+  const config = read(path.join(wwwDir, 'config.html'));
+  const en = read(path.join(wwwDir, 'assets', 'locales', 'en.js'));
+  const zh = read(path.join(wwwDir, 'assets', 'locales', 'zh-CN.js'));
+
+  const featureKeys = ['proxy', 'dns', 'quota'];
+  for (const key of featureKeys) {
+    assert.match(index, new RegExp(`www\\.home\\.features\\.${key}\\.title`), `${key} feature card is missing`);
+    assert.match(en, new RegExp(`www\\.home\\.features\\.${key}\\.title`), `${key} English title is missing`);
+    assert.match(zh, new RegExp(`www\\.home\\.features\\.${key}\\.title`), `${key} Chinese title is missing`);
+  }
+
+  assert.match(config, /CCLOAD_HOST_OVERRIDES/, 'DNS host override env var is missing');
+  assert.match(config, /proxy_url/, 'channel-level proxy field is missing');
+  assert.match(config, /socks5h/, 'SOCKS5 hostname-resolving proxy support is missing');
+});
