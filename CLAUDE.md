@@ -56,7 +56,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 - **596** 1308 配额超限 → Key 级冷却,不计健康度
 - **597** SSE error(HTTP 200+错误体)→ `classifySSEError` 按 error.type 动态判级
 - **598** 首字节超时 → 渠道级;**599** 流式中断 → 渠道级
-- **429** 不计入健康度统计;独立 `rate_limited` 字段供前端黄色指示
+- **429** 仍计入成功率统计与排序;额外用 `rate_limited` 字段(ErrorCount 子集),前端对「纯限流」时间桶独立配色不渲染为故障
 
 ## 关键机制(要点,细节读对应文件)
 

@@ -508,6 +508,10 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 
 // getClientForChannel 返回渠道对应的 HTTP 客户端。
 // 无代理或空串 → 全局 client；相同 proxyURL 共享 Transport 和连接池。
+//
+// 缓存按 proxyURL 永久保留：渠道改 proxyURL 后旧 client 不再被引用，
+// 其空闲连接随 IdleConnTimeout 自然回收，进程退出时由 Shutdown 统一关闭。
+// 这是有界泄漏（proxyURL 种类有限），故意不引入 LRU/引用计数（YAGNI）。
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 	if cfg.ProxyURL == "" {
 		return s.client
