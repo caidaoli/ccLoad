@@ -801,6 +801,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.DELETE("/channels/:id/models", s.HandleDeleteModels)   // 删除渠道模型
 		admin.POST("/channels/:id/test", s.HandleChannelTest)
 		admin.POST("/channels/:id/test-url", s.HandleChannelURLTest)
+		admin.POST("/channels/:id/chat", s.HandleChannelChat)
 		admin.POST("/channels/:id/cooldown", s.HandleSetChannelCooldown)
 		admin.POST("/channels/:id/keys/:keyIndex/cooldown", s.HandleSetKeyCooldown)
 		admin.DELETE("/channels/:id/keys/:keyIndex", s.HandleDeleteAPIKey)

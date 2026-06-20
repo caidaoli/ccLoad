@@ -20,16 +20,46 @@
   <script defer src="/web/assets/js/sse-merge.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
-        <section class="glass-card mt-2 mb-2 overflow-visible">
+        <section id="modelTestCard" class="glass-card mt-2 mb-2 overflow-visible">
           <!-- 模式切换 -->
-          <div class="model-test-tabs">
-            <button id="modeTabChannel" type="button" class="mode-tab-btn active" data-action="set-test-mode" data-mode="channel" data-i18n="modelTest.mode.channel">按渠道测试</button>
-            <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model" data-i18n="modelTest.mode.model">按模型测试</button>
+          <div class="model-test-mode-header">
+            <div class="model-test-tabs">
+              <button id="modeTabChannel" type="button" class="mode-tab-btn active" data-action="set-test-mode" data-mode="channel" data-i18n="modelTest.mode.channel">按渠道测试</button>
+              <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model" data-i18n="modelTest.mode.model">按模型测试</button>
+              <button id="modeTabChat" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="chat" data-i18n="modelTest.mode.chat">对话</button>
+            </div>
+            <div id="chatToolbar" class="chat-toolbar hidden">
+              <label class="chat-control">
+                <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
+                <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
+              </label>
+              <label class="chat-control">
+                <span class="chat-control__label" data-i18n="common.model">模型</span>
+                <div class="filter-combobox-wrapper chat-model-combobox">
+                  <input
+                    id="chatModelSelect"
+                    class="filter-select filter-combobox"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                    data-i18n-placeholder="modelTest.modelInputPlaceholder"
+                    placeholder="输入或选择模型"
+                  >
+                  <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                </div>
+              </label>
+              <label class="chat-control chat-control--stream">
+                <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
+                <span class="chat-control__label" data-i18n="modelTest.stream">流式</span>
+              </label>
+              <button id="chatClearBtn" type="button" class="btn btn-secondary" data-action="clear-chat" data-i18n="modelTest.chat.clear">清空</button>
+            </div>
           </div>
 
           <!-- 控制栏 -->
@@ -121,10 +151,87 @@
               </tbody>
             </table>
           </div>
+
+          <!-- 对话面板（chat 模式时替换测试表格区域） -->
+          <div id="chatPanel" class="chat-panel hidden">
+            <div id="chatMessages" class="chat-messages"></div>
+            <div class="chat-input-area">
+              <div class="chat-input-stack">
+                <div id="chatImagePreviewList" class="chat-image-preview-list"></div>
+                <textarea
+                  id="chatInput"
+                  class="chat-input"
+                  rows="1"
+                  data-i18n-placeholder="modelTest.chat.inputPlaceholder"
+                  placeholder="输入消息..."
+                ></textarea>
+              </div>
+              <div class="chat-input-tools">
+                <input id="chatImageInput" type="file" accept="image/*" multiple class="chat-image-input-hidden" data-change-action="add-chat-images">
+                <button
+                  id="chatImageUploadBtn"
+                  type="button"
+                  class="chat-tool-toggle chat-image-upload-btn"
+                  data-action="select-chat-image"
+                  data-i18n-title="modelTest.chat.uploadImage"
+                  title="上传图片"
+                  aria-label="上传图片"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                    <rect x="3" y="5" width="18" height="14" rx="2"></rect>
+                    <circle cx="9" cy="10" r="1.5"></circle>
+                    <path d="M21 16l-5.2-5.2a1 1 0 0 0-1.4 0L7 18"></path>
+                  </svg>
+                </button>
+                <div class="chat-thinking-control">
+                  <svg class="chat-thinking-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                    <path d="M9 18h6"></path>
+                    <path d="M10 22h4"></path>
+                    <path d="M8.5 14.5A6 6 0 1 1 15.5 14.5c-.6.45-.9 1.08-.9 1.8V17H9.4v-.7c0-.72-.3-1.35-.9-1.8Z"></path>
+                    <path d="M19 7.7c.36-.68 1.02-1.02 1.72-.86.77.17 1.28.77 1.28 1.5 0 1.32-1.72 1.38-1.72 2.56"></path>
+                    <path d="M20.28 14h.01"></path>
+                  </svg>
+                  <div class="filter-combobox-wrapper chat-thinking-combobox">
+                    <input
+                      id="chatThinkingLevel"
+                      class="filter-select filter-combobox chat-thinking-level-input"
+                      type="text"
+                      autocomplete="off"
+                      spellcheck="false"
+                      data-i18n-title="modelTest.chat.thinkingLevel"
+                      title="思考等级"
+                      aria-label="思考等级"
+                    >
+                    <div id="chatThinkingLevelDropdown" class="filter-dropdown" role="listbox" aria-label="思考等级"></div>
+                  </div>
+                </div>
+                <button
+                  id="chatBuiltinSearchToggle"
+                  type="button"
+                  class="chat-tool-toggle chat-tool-toggle--search"
+                  data-action="toggle-chat-builtin-search"
+                  aria-pressed="false"
+                  data-i18n-title="modelTest.chat.builtinSearch"
+                  data-i18n-aria-label="modelTest.chat.builtinSearch"
+                  title="模型内置搜索"
+                  aria-label="模型内置搜索"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M3 12h18"></path>
+                    <path d="M12 3c2.25 2.46 3.5 5.46 3.5 9s-1.25 6.54-3.5 9"></path>
+                    <path d="M12 3C9.75 5.46 8.5 8.46 8.5 12s1.25 6.54 3.5 9"></path>
+                  </svg>
+                </button>
+              </div>
+              <button id="chatSendBtn" type="button" class="btn btn-primary chat-send-btn" data-action="send-chat-message" data-i18n="modelTest.chat.send">发送</button>
+            </div>
+          </div>
         </section>
       </div>
     </main>
   </div>
+
   <!-- 模型行模板 -->
   <template id="tpl-model-row">
     <tr class="mobile-card-row model-test-row" data-model="{{model}}" data-channel-id="{{channelId}}" data-cost-multiplier="{{costMultiplier}}">

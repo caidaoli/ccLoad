@@ -2,12 +2,35 @@ package testutil
 
 import "fmt"
 
+// ChatImageURL describes an image URL content block in chat test messages.
+type ChatImageURL struct {
+	URL    string `json:"url"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// ChatContentBlock describes a structured text or image block in chat test messages.
+type ChatContentBlock struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+}
+
+// ChatMessage 多轮对话消息
+type ChatMessage struct {
+	Role          string             `json:"role"`
+	Content       any                `json:"content"`
+	ContentBlocks []ChatContentBlock `json:"-"`
+}
+
 // TestChannelRequest 渠道测试请求结构
 type TestChannelRequest struct {
 	Model             string            `json:"model" binding:"required"`
 	MaxTokens         int               `json:"max_tokens,omitempty"`         // 可选，默认512
 	Stream            bool              `json:"stream,omitempty"`             // 可选，流式响应
-	Content           string            `json:"content,omitempty"`            // 可选，测试内容，默认"test"
+	Content           string            `json:"content,omitempty"`            // 可选，测试内容，默认"test"；Messages 非空时忽略
+	Messages          []ChatMessage     `json:"messages,omitempty"`           // 可选，多轮对话消息；非空时覆盖 Content
+	ThinkingEffort    string            `json:"thinking_effort,omitempty"`    // 可选，思考等级：none/minimal/low/medium/high
+	BuiltinSearch     bool              `json:"builtin_search,omitempty"`     // 可选，启用模型内置搜索工具
 	Headers           map[string]string `json:"headers,omitempty"`            // 可选，自定义请求头
 	ChannelType       string            `json:"channel_type,omitempty"`       // 可选，旧调用方兼容字段
 	ProtocolTransform string            `json:"protocol_transform,omitempty"` // 可选，客户端协议；默认等于渠道原生协议
