@@ -8,7 +8,7 @@ import (
 )
 
 // parseHostOverrides 解析 "host1=ip1,host2=ip2" 格式的域名→IP 覆盖映射。
-// 跳过格式不正确的条目（无 '=' 或多个 '='）。空串返回 nil。
+// 跳过无 '=' 的条目，以及 value 不是合法 IP 的条目（含 "x=y=z" 脏数据）。空串返回 nil。
 func parseHostOverrides(raw string) map[string]string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -26,7 +26,10 @@ func parseHostOverrides(raw string) map[string]string {
 		if host == "" || ip == "" {
 			continue
 		}
-		if strings.Contains(ip, "=") {
+		// value 必须是合法 IP：否则会被当作域名再走一次系统 DNS，静默吞掉配置错误。
+		// net.ParseIP 同时拒绝 "x=y=z" 这类多等号脏数据，无需单独判 '='。
+		if net.ParseIP(ip) == nil {
+			log.Printf("[WARN] CCLOAD_HOST_OVERRIDES 跳过无效 IP: %q=%q", host, ip)
 			continue
 		}
 		result[host] = ip

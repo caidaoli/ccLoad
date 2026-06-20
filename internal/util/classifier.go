@@ -640,6 +640,8 @@ func parseGlobalFixedWindowQuotaCooldownUntil(message string, now time.Time) (ti
 		dayOffset = 1
 	}
 
+	// 刻意硬编码东八区：此分支只解析中文公益站文案（"明天 12:00"），
+	// 其重置时刻是站点北京时间，与部署机器的 time.Local 无关。
 	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
 	localNow := now.In(loc)
 	y, mon, d := localNow.Date()

@@ -49,6 +49,12 @@ func (rc *onceCloseReadCloser) Close() error {
 	return closeErr
 }
 
+// disableResponseWriteTimeout 清除响应写超时（http.Server.WriteTimeout），
+// 避免大响应或长流式在写回客户端时被传输层截断。
+//
+// 流式与非流式都需要：非流式大 body 一次性写回也可能超过 WriteTimeout。
+// 代价是慢速客户端可拖长写阻塞，但请求整体已受 nonStreamTimeout 的 context 约束，
+// 且最大并发由 concurrencySem 封顶，DoS 面有界——故彻底清零而非另设写 deadline。
 func disableResponseWriteTimeout(w http.ResponseWriter, requestKind string) {
 	rc := http.NewResponseController(w)
 	if err := rc.SetWriteDeadline(time.Time{}); err != nil {

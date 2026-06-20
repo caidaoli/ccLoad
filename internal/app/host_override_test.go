@@ -17,6 +17,8 @@ func TestParseHostOverrides(t *testing.T) {
 		{"multiple", "a.com=1.2.3.4,b.com=5.6.7.8", map[string]string{"a.com": "1.2.3.4", "b.com": "5.6.7.8"}},
 		{"whitespace trimmed", " a.com = 1.2.3.4 , b.com=5.6.7.8 ", map[string]string{"a.com": "1.2.3.4", "b.com": "5.6.7.8"}},
 		{"skip malformed", "good.com=1.2.3.4,bad,also=good=2.3.4.5", map[string]string{"good.com": "1.2.3.4"}},
+		{"skip non-ip value", "good.com=1.2.3.4,bad.com=example.org", map[string]string{"good.com": "1.2.3.4"}},
+		{"all invalid", "a.com=not-an-ip,b.com=999.999.999.999", nil},
 		{"ipv6 value", "v6.com=::1", map[string]string{"v6.com": "::1"}},
 	}
 
