@@ -49,11 +49,11 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Home - Admin preview
   'www.home.admin.title': 'Not a black-box proxy',
-  'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency and failure reasons into one console. When routing looks wrong, read the data; when upstreams fail, read the logs.',
+  'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and chat-style model testing into one console. When routing looks wrong, read the data; when upstreams fail, read the logs.',
   'www.home.admin.item1': 'Track requests, tokens, cost and latency by channel, model and token.',
-  'www.home.admin.item2': 'Separate success, failure, rate limits, first-byte timeouts and stream interruptions in live logs.',
+  'www.home.admin.item2': 'Run chat-style model testing with image upload, reasoning level, built-in search and streaming controls.',
   'www.home.admin.item3': 'Configure multiple URLs, multiple keys, RPM limits, concurrency limits and daily cost limits per channel.',
-  'www.home.admin.item4': 'Use debug logs to inspect masked upstream requests and responses when tracking protocol transform issues.',
+  'www.home.admin.item4': 'Export conversations as Markdown or HTML, then inspect masked upstream requests and responses when tracking protocol transform issues.',
   'www.home.admin.usage': 'View API usage',
   'www.home.admin.config': 'View configuration',
   'www.home.admin.imageAlt': 'ccLoad admin dashboard statistics screenshot',

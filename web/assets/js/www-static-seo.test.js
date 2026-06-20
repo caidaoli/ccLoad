@@ -57,3 +57,23 @@ test('www documents recently added operational features', () => {
   assert.match(usage, /health-score sorting excludes 429/, '429 health-score sorting scope is missing');
   assert.doesNotMatch(usage, /429 is excluded from health success rate/, 'stale 429 success-rate wording must be removed');
 });
+
+test('www homepage documents model test chat capabilities', () => {
+  const index = read(path.join(wwwDir, 'index.html'));
+  const en = read(path.join(wwwDir, 'assets', 'locales', 'en.js'));
+  const zh = read(path.join(wwwDir, 'assets', 'locales', 'zh-CN.js'));
+
+  const adminKeys = ['desc', 'item2'];
+  for (const key of adminKeys) {
+    assert.match(index, new RegExp(`www\\.home\\.admin\\.${key}`), `${key} homepage admin copy is missing`);
+    assert.match(en, new RegExp(`www\\.home\\.admin\\.${key}`), `${key} English copy is missing`);
+    assert.match(zh, new RegExp(`www\\.home\\.admin\\.${key}`), `${key} Chinese copy is missing`);
+  }
+
+  assert.match(en, /chat-style model testing/i, 'English homepage should mention chat-style model testing');
+  assert.match(en, /image upload/i, 'English homepage should mention image upload');
+  assert.match(en, /export conversations/i, 'English homepage should mention chat export');
+  assert.match(zh, /对话式模型测试/, 'Chinese homepage should mention chat-style model testing');
+  assert.match(zh, /图片上传/, 'Chinese homepage should mention image upload');
+  assert.match(zh, /导出对话/, 'Chinese homepage should mention chat export');
+});

@@ -67,6 +67,7 @@ ccLoad handles those cases with:
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 - 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, preserving sampling and thinking parameters so one channel serves multiple client protocols
+- 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
 - 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
@@ -667,6 +668,10 @@ Check out the awesome admin dashboard 👇
 - 📈 **24-hour Trend Charts** - Request volumes clearly visualized with peaks and valleys
 - 🔴 **Real-time Error Logs** - Instantly detect which channel has issues
 - 📊 **Channel Call Statistics** - See which channels are performing well with data-backed insights
+- 💬 **Model Testing Workbench** - Test by channel, by model, or in a chat-style model testing workflow:
+  - Upload or paste images in chat mode to verify multimodal requests directly
+  - Toggle reasoning level, built-in search, and streaming to inspect transformed upstream behavior
+  - Export conversations as Markdown or HTML for review, incident notes, or regression records
 - ⚡ **Performance Metrics** - Latency, success rates, and bottleneck detection
 - 💰 **Token Usage Stats** - Know exactly where your budget goes:
   - Custom time range selector for flexible analysis
