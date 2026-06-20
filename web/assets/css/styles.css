@@ -354,6 +354,8 @@ input[type="radio"]:focus-visible {
 html {
   scroll-behavior: smooth;
   font-size: 16px;
+  /* 保留垂直滚动条空间，避免页面内容增减导致视口宽度跳变（解决跨页面/跨模式切换横向晃动） */
+  scrollbar-gutter: stable;
 }
 
 body {
@@ -7252,4 +7254,73 @@ body.trend-page .chart-info {
   .chat-input {
     flex-basis: 100%;
   }
+}
+
+/* ===== Chat Export Dropdown（对话导出下拉菜单） ===== */
+.chat-export-dropdown {
+  position: relative;
+  display: inline-flex;
+}
+
+.chat-export-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-export-trigger .chat-export-icon {
+  flex: 0 0 auto;
+}
+
+.chat-export-trigger .chat-export-arrow {
+  flex: 0 0 auto;
+  transition: transform var(--duration-fast) var(--timing-function);
+}
+
+.chat-export-dropdown.open .chat-export-trigger .chat-export-arrow {
+  transform: rotate(180deg);
+}
+
+.chat-export-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  min-width: 200px;
+  padding: 4px 0;
+  background: var(--surface-bg-strong);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(-8px);
+  transition: opacity var(--duration-fast) var(--timing-function),
+              transform var(--duration-fast) var(--timing-function),
+              visibility var(--duration-fast) var(--timing-function);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.chat-export-dropdown.open .chat-export-menu {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+}
+
+.chat-export-item {
+  display: block;
+  width: 100%;
+  padding: 10px 16px;
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--neutral-700);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--timing-function);
+  white-space: nowrap;
+}
+
+.chat-export-item:hover {
+  background: var(--neutral-100);
 }

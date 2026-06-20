@@ -671,6 +671,9 @@ function initModelTestActions() {
       'select-chat-image': () => document.getElementById('chatImageInput')?.click(),
       'toggle-chat-builtin-search': () => toggleChatBuiltinSearch(),
       'clear-chat': () => clearChat(),
+      'toggle-chat-export-menu': () => toggleChatExportMenu(),
+      'export-chat-md': () => { closeChatExportMenu(); exportChatAsMarkdown(); },
+      'export-chat-html': () => { closeChatExportMenu(); exportChatAsHTML(); },
       'remove-chat-image': (actionTarget) => removeChatImage(actionTarget.dataset.imageId)
     },
     change: {
@@ -3189,6 +3192,166 @@ function clearChat() {
   renderChatImagePreviews();
 }
 
+/** 构造导出文件名：chat-YYYYMMDD-HHmmss.<ext> */
+function buildChatExportFilename(ext) {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+  return `chat-${stamp}.${ext}`;
+}
+
+/** 触发浏览器下载 Blob */
+function downloadChatBlob(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/** 将 chatMessages 转为 Markdown 文本 */
+function buildChatMarkdownText() {
+  if (!Array.isArray(chatMessages) || chatMessages.length === 0) return '';
+  const channelName = chatChannel?.name || '-';
+  const modelName = chatModel || '-';
+  const exportTime = new Date().toLocaleString();
+  const lines = [];
+  lines.push(`# ${i18nText('modelTest.chat.exportTitle', '对话导出')}`);
+  lines.push('');
+  lines.push(`- ${i18nText('modelTest.channel', '渠道')}: ${channelName}`);
+  lines.push(`- ${i18nText('common.model', '模型')}: ${modelName}`);
+  lines.push(`- ${i18nText('modelTest.chat.exportTime', '导出时间')}: ${exportTime}`);
+  lines.push('');
+  lines.push('---');
+  lines.push('');
+
+  chatMessages.forEach((msg) => {
+    const roleLabel = msg.role === 'user'
+      ? i18nText('modelTest.chat.roleUser', '用户')
+      : i18nText('modelTest.chat.roleAssistant', '助手');
+    lines.push(`## ${roleLabel}`);
+    lines.push('');
+    if (typeof msg.content === 'string') {
+      lines.push(msg.content);
+    } else if (Array.isArray(msg.content)) {
+      msg.content.forEach((block) => {
+        if (!block || typeof block !== 'object') return;
+        if (block.type === 'text') {
+          lines.push(String(block.text || ''));
+        } else if (block.type === 'image_url') {
+          const url = String(block.image_url?.url || '');
+          if (url) lines.push(`![image](${url})`);
+        }
+      });
+    }
+    lines.push('');
+  });
+  return lines.join('\n');
+}
+
+/** 导出对话为 Markdown 文件 */
+function exportChatAsMarkdown() {
+  const text = buildChatMarkdownText();
+  if (!text) {
+    if (typeof window.showError === 'function') {
+      window.showError(i18nText('modelTest.chat.exportEmpty', '暂无对话内容'));
+    }
+    return;
+  }
+  downloadChatBlob(text, buildChatExportFilename('md'), 'text/markdown;charset=utf-8');
+}
+
+/** 构造导出 HTML（抓取 #chatMessages 已渲染 DOM + 内联精简样式） */
+function buildChatExportHTML() {
+  const messagesEl = document.getElementById('chatMessages');
+  if (!messagesEl || !messagesEl.innerHTML.trim()) return '';
+  const esc = (typeof window.escapeHtml === 'function')
+    ? window.escapeHtml
+    : (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const channelName = esc(chatChannel?.name || '-');
+  const modelName = esc(chatModel || '-');
+  const exportTime = esc(new Date().toLocaleString());
+  const title = esc(i18nText('modelTest.chat.exportTitle', '对话导出'));
+  const channelLabel = esc(i18nText('modelTest.channel', '渠道'));
+  const modelLabel = esc(i18nText('common.model', '模型'));
+  const timeLabel = esc(i18nText('modelTest.chat.exportTime', '导出时间'));
+
+  const css = `:root{color-scheme:light dark}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:880px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1f2937;background:#f9fafb}header{border-bottom:1px solid #e5e7eb;padding-bottom:12px;margin-bottom:20px}header h1{margin:0 0 8px;font-size:20px}header .meta{font-size:13px;color:#6b7280}header .meta span{margin-right:14px}.chat-message{display:flex;margin:12px 0}.chat-message--user{justify-content:flex-end}.chat-message--assistant{justify-content:flex-start}.chat-message-content{max-width:78%;padding:10px 14px;border-radius:12px;word-break:break-word}.chat-message--user .chat-message-content{background:#3b82f6;color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}.chat-message--assistant .chat-message-content{background:#fff;color:#1f2937;border:1px solid #e5e7eb;border-bottom-left-radius:4px}.chat-message--assistant .chat-message-content pre{background:#f3f4f6;border:1px solid #e5e7eb;padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}.chat-message--assistant .chat-message-content code{background:#f3f4f6;padding:0 4px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular","Menlo",monospace;font-size:13px}.chat-message--assistant .chat-message-content pre code{background:transparent;padding:0}.chat-message--assistant .chat-message-content p{margin:6px 0}.chat-message--assistant .chat-message-content table{border-collapse:collapse;margin:8px 0}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border:1px solid #e5e7eb;padding:6px 10px}.chat-image-preview-thumb{max-width:240px;max-height:240px;border-radius:8px;margin:4px 0;display:block}.chat-thinking{background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px}.chat-thinking-summary{font-weight:600;cursor:pointer}.chat-thinking-content{white-space:pre-wrap;margin-top:6px;color:#78350f}.chat-cursor{display:none}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}header{border-bottom-color:#1f2937}header .meta{color:#9ca3af}.chat-message--assistant .chat-message-content{background:#1e293b;color:#e5e7eb;border-color:#334155}.chat-message--assistant .chat-message-content pre,.chat-message--assistant .chat-message-content code{background:#0f172a;border-color:#334155}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border-color:#334155}.chat-thinking{background:rgba(251,191,36,.1);border-color:#b45309;color:#fcd34d}.chat-thinking-content{color:#fde68a}}@media print{body{background:#fff}}`;
+
+  return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${title} - ${modelName}</title>
+<style>${css}</style>
+</head>
+<body>
+<header>
+  <h1>${title}</h1>
+  <div class="meta">
+    <span>${channelLabel}: ${channelName}</span>
+    <span>${modelLabel}: ${modelName}</span>
+    <span>${timeLabel}: ${exportTime}</span>
+  </div>
+</header>
+<main>
+${messagesEl.innerHTML}
+</main>
+</body>
+</html>`;
+}
+
+/** 导出对话为 HTML 文件 */
+function exportChatAsHTML() {
+  const html = buildChatExportHTML();
+  if (!html) {
+    if (typeof window.showError === 'function') {
+      window.showError(i18nText('modelTest.chat.exportEmpty', '暂无对话内容'));
+    }
+    return;
+  }
+  downloadChatBlob(html, buildChatExportFilename('html'), 'text/html;charset=utf-8');
+}
+
+/** 切换导出下拉菜单显隐 */
+function toggleChatExportMenu() {
+  const dropdown = document.getElementById('chatExportDropdown');
+  if (!dropdown) return;
+  const isOpen = dropdown.classList.toggle('open');
+  const trigger = document.getElementById('chatExportTrigger');
+  if (trigger) trigger.setAttribute('aria-expanded', String(isOpen));
+}
+
+/** 关闭导出下拉菜单 */
+function closeChatExportMenu() {
+  const dropdown = document.getElementById('chatExportDropdown');
+  if (!dropdown) return;
+  dropdown.classList.remove('open');
+  const trigger = document.getElementById('chatExportTrigger');
+  if (trigger) trigger.setAttribute('aria-expanded', 'false');
+}
+
+/** 注册全局监听：外部点击 / Esc 关闭导出菜单（仅绑定一次） */
+function initChatExportDropdown() {
+  if (window.__chatExportDropdownBound) return;
+  window.__chatExportDropdownBound = true;
+
+  document.addEventListener('click', (e) => {
+    const dropdown = document.getElementById('chatExportDropdown');
+    if (!dropdown || !dropdown.classList.contains('open')) return;
+    if (!dropdown.contains(e.target)) closeChatExportMenu();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') closeChatExportMenu();
+  });
+}
+
 /** textarea 随内容自动调整高度 */
 function autoResizeChatInput() {
   const el = document.getElementById('chatInput');
@@ -3402,6 +3565,7 @@ async function bootstrap() {
   };
   initModelTestActions();
   bindEvents();
+  initChatExportDropdown();
   await loadChannels();
   await loadDefaultTestContent();
   updateHeadByMode();

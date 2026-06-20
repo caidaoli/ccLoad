@@ -34,32 +34,51 @@
               <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model" data-i18n="modelTest.mode.model">按模型测试</button>
               <button id="modeTabChat" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="chat" data-i18n="modelTest.mode.chat">对话</button>
             </div>
-            <div id="chatToolbar" class="chat-toolbar hidden">
-              <label class="chat-control">
-                <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
-                <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
-              </label>
-              <label class="chat-control">
-                <span class="chat-control__label" data-i18n="common.model">模型</span>
-                <div class="filter-combobox-wrapper chat-model-combobox">
-                  <input
-                    id="chatModelSelect"
-                    class="filter-select filter-combobox"
-                    type="text"
-                    autocomplete="off"
-                    spellcheck="false"
-                    data-i18n-placeholder="modelTest.modelInputPlaceholder"
-                    placeholder="输入或选择模型"
-                  >
-                  <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
-                </div>
-              </label>
-              <label class="chat-control chat-control--stream">
-                <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
-                <span class="chat-control__label" data-i18n="modelTest.stream">流式</span>
-              </label>
-              <button id="chatClearBtn" type="button" class="btn btn-secondary" data-action="clear-chat" data-i18n="modelTest.chat.clear">清空</button>
+          </div>
+
+          <!-- 对话工具栏（chat 模式下显示，独立于模式切换栏，避免 tabs 位置跳动） -->
+          <div id="chatToolbar" class="chat-toolbar hidden">
+            <label class="chat-control">
+              <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
+              <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
+            </label>
+            <label class="chat-control">
+              <span class="chat-control__label" data-i18n="common.model">模型</span>
+              <div class="filter-combobox-wrapper chat-model-combobox">
+                <input
+                  id="chatModelSelect"
+                  class="filter-select filter-combobox"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                  data-i18n-placeholder="modelTest.modelInputPlaceholder"
+                  placeholder="输入或选择模型"
+                >
+                <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+              </div>
+            </label>
+            <label class="chat-control chat-control--stream">
+              <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
+              <span class="chat-control__label" data-i18n="modelTest.stream">流式</span>
+            </label>
+            <div id="chatExportDropdown" class="chat-export-dropdown">
+              <button id="chatExportTrigger" type="button" class="btn btn-secondary chat-export-trigger" data-action="toggle-chat-export-menu" aria-haspopup="true" aria-expanded="false">
+                <svg class="chat-export-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                  <polyline points="17 8 12 3 7 8"></polyline>
+                  <line x1="12" y1="3" x2="12" y2="15"></line>
+                </svg>
+                <span data-i18n="modelTest.chat.export">导出</span>
+                <svg class="chat-export-arrow" width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                  <path d="M2.5 4.5L6 8L9.5 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </button>
+              <div class="chat-export-menu" role="menu">
+                <button type="button" class="chat-export-item" role="menuitem" data-action="export-chat-md" data-i18n="modelTest.chat.exportMd">导出为 Markdown</button>
+                <button type="button" class="chat-export-item" role="menuitem" data-action="export-chat-html" data-i18n="modelTest.chat.exportHtml">导出为 HTML</button>
+              </div>
             </div>
+            <button id="chatClearBtn" type="button" class="btn btn-secondary" data-action="clear-chat" data-i18n="modelTest.chat.clear">清空</button>
           </div>
 
           <!-- 控制栏 -->
