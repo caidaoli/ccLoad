@@ -32,6 +32,25 @@ function extractFunction(source, name) {
   assert.fail(`函数 ${name} 大括号未闭合`);
 }
 
+function extractCssRules(css, selector) {
+  const rules = [];
+  let searchFrom = 0;
+
+  while (searchFrom < css.length) {
+    const index = css.indexOf(selector, searchFrom);
+    if (index < 0) break;
+
+    const braceStart = css.indexOf('{', index);
+    const braceEnd = css.indexOf('}', braceStart);
+    assert.ok(braceStart >= 0 && braceEnd >= 0, `CSS rule ${selector} 大括号未闭合`);
+    rules.push(css.slice(braceStart + 1, braceEnd));
+    searchFrom = braceEnd + 1;
+  }
+
+  assert.ok(rules.length > 0, `缺少 CSS rule ${selector}`);
+  return rules;
+}
+
 function createDomElement(tagName, attrs = {}) {
   const element = {
     tagName: String(tagName || '').toUpperCase(),
@@ -205,6 +224,302 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /id="protocolTransformOptions"/);
   assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
   assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
+});
+
+test('model-test 对话面板 hidden 状态必须覆盖 chat-panel 的 display 规则', () => {
+  assert.match(sharedCss, /\.chat-panel\.hidden\s*\{[\s\S]*?display:\s*none\s*!important;[\s\S]*?\}/);
+});
+
+test('model-test 对话面板提供独立流式开关并随请求发送', () => {
+  assert.match(html, /id="chatStreamEnabled"/);
+  assert.match(html, /id="chatChannelSelectContainer"[\s\S]*?id="chatModelSelect"[\s\S]*?id="chatStreamEnabled"[\s\S]*?id="chatClearBtn"/);
+  assert.match(script, /const chatStreamEnabled = document\.getElementById\('chatStreamEnabled'\)\?\.checked !== false;/);
+  assert.match(script, /body:\s*JSON\.stringify\(\{[\s\S]*?model:\s*chatModel,[\s\S]*?stream:\s*chatStreamEnabled,[\s\S]*?messages:\s*chatMessages/);
+  assert.doesNotMatch(script, /body:\s*JSON\.stringify\(\{ model: chatModel,\s*stream: true,\s*messages: chatMessages \}\)/);
+});
+
+test('model-test 对话输入区提供思考等级和内置搜索开关并随请求发送', () => {
+  assert.match(html, /id="chatInput"[\s\S]*?id="chatThinkingLevel"[\s\S]*?id="chatBuiltinSearchToggle"[\s\S]*?id="chatSendBtn"/);
+  assert.match(html, /class="chat-thinking-icon"[\s\S]*?<div class="filter-combobox-wrapper chat-thinking-combobox">[\s\S]*?id="chatThinkingLevel"[\s\S]*?class="filter-select filter-combobox chat-thinking-level-input"[\s\S]*?id="chatThinkingLevelDropdown"[\s\S]*?class="filter-dropdown"/);
+  assert.doesNotMatch(html, /<select id="chatThinkingLevel"/);
+  assert.doesNotMatch(html, /<option value="(?:|none|minimal|low|medium|high)"/);
+  assert.match(html, /id="chatBuiltinSearchToggle"[\s\S]*?aria-pressed="false"[\s\S]*?data-i18n-title="modelTest\.chat\.builtinSearch"/);
+  assert.match(html, /id="chatBuiltinSearchToggle"[\s\S]*?<circle cx="12" cy="12" r="9"/);
+  assert.match(script, /let chatThinkingCombobox = null;/);
+  assert.match(script, /let chatThinkingEffort = '';/);
+  assert.match(script, /function getChatThinkingOptions\(\)/);
+  assert.match(script, /function getChatThinkingLabel\(value\)/);
+  assert.match(script, /function getChatThinkingEffort\(\)/);
+  assert.match(script, /chatThinkingCombobox = window\.createSearchableCombobox\(\{[\s\S]*?attachMode:\s*true,[\s\S]*?inputId:\s*'chatThinkingLevel',[\s\S]*?dropdownId:\s*'chatThinkingLevelDropdown',[\s\S]*?allowCustomInput:\s*false,[\s\S]*?getOptions:\s*getChatThinkingOptions,[\s\S]*?onSelect:\s*\(value\)\s*=>\s*\{[\s\S]*?chatThinkingEffort = String\(value \|\| ''\)\.trim\(\);/);
+  assert.match(script, /function isChatBuiltinSearchEnabled\(\)/);
+  assert.match(script, /'toggle-chat-builtin-search':\s*\(\)\s*=> toggleChatBuiltinSearch\(\)/);
+  assert.match(script, /thinking_effort:\s*chatThinkingEffort/);
+  assert.match(script, /builtin_search:\s*chatBuiltinSearch/);
+  assert.match(sharedCss, /\.chat-input-tools\s*\{/);
+  assert.match(sharedCss, /\.chat-thinking-icon\s*\{/);
+  assert.match(sharedCss, /\.chat-thinking-combobox\s*\{/);
+  assert.match(sharedCss, /\.chat-thinking-level-input\s*\{/);
+  assert.match(sharedCss, /\.chat-tool-toggle--search\s*\{/);
+  assert.match(sharedCss, /\.chat-tool-toggle\[aria-pressed="true"\]\s*\{/);
+});
+
+test('model-test 思考等级 combobox 使用枚举值而不是显示文本', () => {
+  const sandbox = {
+    i18nText: (_key, fallback) => fallback
+  };
+
+  vm.runInNewContext(`
+    let chatThinkingEffort = 'high';
+    ${extractFunction(script, 'getChatThinkingOptions')}
+    ${extractFunction(script, 'getChatThinkingLabel')}
+    ${extractFunction(script, 'getChatThinkingEffort')}
+
+    globalThis.result = {
+      values: getChatThinkingOptions().map(option => option.value),
+      highLabel: getChatThinkingLabel('high'),
+      fallbackLabel: getChatThinkingLabel('unexpected'),
+      effort: getChatThinkingEffort()
+    };
+  `, sandbox);
+
+  assert.deepEqual(Array.from(sandbox.result.values), ['', 'none', 'minimal', 'low', 'medium', 'high']);
+  assert.equal(sandbox.result.highLabel, '高');
+  assert.equal(sandbox.result.fallbackLabel, '默认');
+  assert.equal(sandbox.result.effort, 'high');
+});
+
+test('model-test 对话输入区支持上传和粘贴图片并发送多模态内容块', () => {
+  assert.match(html, /id="chatImagePreviewList"/);
+  assert.match(html, /id="chatImageInput"[\s\S]*type="file"[\s\S]*accept="image\/\*"[\s\S]*multiple/);
+  assert.match(html, /id="chatImageUploadBtn"[\s\S]*data-action="select-chat-image"[\s\S]*data-i18n-title="modelTest\.chat\.uploadImage"/);
+  assert.match(script, /let chatPendingImages = \[\];/);
+  assert.match(script, /function handleChatPaste\(event\)/);
+  assert.match(script, /function addChatImageFiles\(files\)/);
+  assert.match(script, /function buildChatUserContent\(text,\s*images\)/);
+  assert.match(script, /function renderChatImagePreviews\(\)/);
+  assert.match(script, /function renderChatUserContent\(target,\s*content\)/);
+  assert.match(script, /'select-chat-image':\s*\(\)\s*=> document\.getElementById\('chatImageInput'\)\?\.click\(\)/);
+  assert.match(script, /'remove-chat-image':\s*\(actionTarget\)\s*=> removeChatImage\(actionTarget\.dataset\.imageId\)/);
+  assert.match(script, /'add-chat-images':\s*\(actionTarget\)\s*=> addChatImageFiles\(actionTarget\.files\)/);
+  assert.match(script, /chatInput\.addEventListener\('paste',\s*handleChatPaste\)/);
+  assert.match(script, /const userContent = buildChatUserContent\(content,\s*chatPendingImages\)/);
+  assert.match(script, /chatMessages\.push\(\{ role: 'user', content: userContent \}\)/);
+  assert.match(sharedCss, /\.chat-image-preview-list\s*\{/);
+  assert.match(sharedCss, /\.chat-image-upload-btn\s*\{/);
+});
+
+test('model-test 构建图片消息时文本保持文本、图片转 image_url 块', () => {
+  const sandbox = {};
+  vm.runInNewContext(`
+    ${extractFunction(script, 'buildChatUserContent')}
+    globalThis.result = {
+      textOnly: buildChatUserContent('hello', []),
+      imageOnly: buildChatUserContent('', [{ id: 'img1', dataUrl: 'data:image/png;base64,aW1n', mimeType: 'image/png', name: 'p.png' }]),
+      mixed: buildChatUserContent('describe', [{ id: 'img1', dataUrl: 'data:image/png;base64,aW1n', mimeType: 'image/png', name: 'p.png' }])
+    };
+  `, sandbox);
+
+  assert.equal(sandbox.result.textOnly, 'hello');
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sandbox.result.imageOnly)),
+    [
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,aW1n'
+        }
+      }
+    ]
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sandbox.result.mixed)),
+    [
+      {
+        type: 'text',
+        text: 'describe'
+      },
+      {
+        type: 'image_url',
+        image_url: {
+          url: 'data:image/png;base64,aW1n'
+        }
+      }
+    ]
+  );
+});
+
+test('model-test 对话控件跟随对话标签显示在同一行', () => {
+  assert.match(html, /<div class="model-test-mode-header">[\s\S]*?<div class="model-test-tabs">[\s\S]*?id="modeTabChat"[\s\S]*?<\/div>[\s\S]*?<div id="chatToolbar" class="chat-toolbar hidden">[\s\S]*?id="chatChannelSelectContainer"[\s\S]*?id="chatModelSelect"[\s\S]*?id="chatStreamEnabled"[\s\S]*?id="chatClearBtn"[\s\S]*?<\/div>[\s\S]*?<\/div>/);
+  assert.match(html, /id="chatClearBtn"[\s\S]*data-i18n="modelTest\.chat\.clear">清空<\/button>/);
+  const chatPanelMatch = html.match(/<div id="chatPanel" class="chat-panel hidden">([\s\S]*?)<\/div>\s*<\/section>/);
+  assert.ok(chatPanelMatch, '缺少 chatPanel');
+  assert.doesNotMatch(chatPanelMatch[1], /id="chatToolbar"/);
+  assert.match(script, /const chatToolbar = document\.getElementById\('chatToolbar'\);/);
+  assert.match(script, /chatToolbar\?\.classList\.toggle\('hidden',\s*!isChatMode\)/);
+  const modeHeaderRules = extractCssRules(sharedCss, '.model-test-mode-header');
+  assert.ok(
+    modeHeaderRules.some(rule => /display:\s*flex;/.test(rule) && /align-items:\s*center;/.test(rule)),
+    'model-test-mode-header 必须横向承载 tabs 和对话控件'
+  );
+
+  const chatToolbarRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-toolbar');
+  assert.ok(
+    chatToolbarRules.some(rule =>
+      /margin-left:\s*0;/.test(rule) &&
+      /margin-bottom:\s*0;/.test(rule) &&
+      /justify-content:\s*flex-start;/.test(rule)
+    ),
+    'chat-toolbar 必须左对齐并跟随 tabs'
+  );
+  chatToolbarRules.forEach((rule) => {
+    assert.doesNotMatch(rule, /margin-left:\s*auto/);
+    assert.doesNotMatch(rule, /justify-content:\s*flex-end/);
+  });
+
+  const hiddenRules = extractCssRules(sharedCss, '.chat-toolbar.hidden');
+  assert.ok(
+    hiddenRules.some(rule => /display:\s*none\s*!important;/.test(rule)),
+    'chat-toolbar hidden 状态必须强制隐藏'
+  );
+
+  const chatControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control');
+  assert.ok(
+    chatControlRules.some(rule => /flex-shrink:\s*0;/.test(rule) && /min-width:\s*max-content;/.test(rule)),
+    'Firefox 下对话控件必须禁止收缩，空间不足时换行而不是互相遮挡'
+  );
+
+  const chatControlLabelRules = extractCssRules(sharedCss, '.chat-control__label');
+  assert.ok(
+    chatControlLabelRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
+    '对话控件标签必须禁止收缩，避免 Firefox 下文字被下拉框压住'
+  );
+
+  const chatChannelControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control:first-child');
+  assert.ok(
+    chatChannelControlRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
+    '渠道控件必须按内容宽度显示，不能把模型控件推远'
+  );
+  chatChannelControlRules.forEach((rule) => {
+    assert.doesNotMatch(rule, /flex:\s*1 1 220px/);
+  });
+  assert.match(html, /id="chatChannelSelectContainer" class="chat-channel-combobox"/);
+  const chatChannelComboboxRules = extractCssRules(sharedCss, '.chat-channel-combobox');
+  assert.ok(
+    chatChannelComboboxRules.some(rule => /width:\s*250px;/.test(rule) && /flex:\s*0 0 250px;/.test(rule) && /max-width:\s*250px;/.test(rule)),
+    '渠道下拉自身宽度必须固定为 250px，避免 Firefox 下挤压后续控件'
+  );
+  assert.ok(
+    chatChannelComboboxRules.some(rule => /width:\s*100%;/.test(rule) && /flex:\s*1 1 auto;/.test(rule) && /max-width:\s*none;/.test(rule)),
+    '移动端渠道下拉必须恢复 100% 宽度'
+  );
+
+  const chatModelControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control:nth-child(2)');
+  assert.ok(
+    chatModelControlRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
+    '模型控件必须按内容宽度显示，不能把输入框拉到遮挡标签'
+  );
+  chatModelControlRules.forEach((rule) => {
+    assert.doesNotMatch(rule, /flex:\s*1 1 360px/);
+  });
+
+  const chatModelComboboxRules = extractCssRules(sharedCss, '.chat-model-combobox');
+  assert.ok(
+    chatModelComboboxRules.some(rule => /width:\s*250px;/.test(rule) && /flex:\s*0 0 250px;/.test(rule) && /max-width:\s*250px;/.test(rule)),
+    '模型下拉宽度必须固定为 250px，避免 Firefox 下遮挡标签'
+  );
+  assert.ok(
+    chatModelComboboxRules.some(rule => /width:\s*100%;/.test(rule) && /flex:\s*1 1 auto;/.test(rule) && /max-width:\s*none;/.test(rule)),
+    '移动端模型下拉必须恢复 100% 宽度'
+  );
+});
+
+test('model-test 对话模式最大化使用卡片剩余高度', () => {
+  assert.match(script, /const modelTestCard = document\.getElementById\('modelTestCard'\);/);
+  assert.match(script, /modelTestCard\?\.classList\.toggle\('model-test-card--chat-mode',\s*isChatMode\)/);
+  assert.match(sharedCss, /\.model-test-card--chat-mode\s*\{[\s\S]*?height:\s*calc\(100dvh - var\(--topbar-offset, 0px\) - 32px\);[\s\S]*?max-height:\s*calc\(100dvh - var\(--topbar-offset, 0px\) - 32px\);[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;[\s\S]*?\}/);
+  extractCssRules(sharedCss, '.model-test-card--chat-mode').forEach((rule) => {
+    assert.doesNotMatch(rule, /min-height:/);
+  });
+  assert.match(sharedCss, /\.chat-panel\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;[\s\S]*?\}/);
+  assert.match(sharedCss, /\.model-test-card--chat-mode \.chat-panel\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?\}/);
+  assert.match(sharedCss, /\.chat-messages\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;[\s\S]*?\}/);
+  assert.match(sharedCss, /\.chat-input-area\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?\}/);
+  assert.doesNotMatch(sharedCss, /\.chat-panel\s*\{[\s\S]*?height:\s*calc\(100vh - 220px\)/);
+});
+
+test('model-test 渠道下拉标记停用渠道但不阻止选择', () => {
+  assert.match(script, /function formatModelTestChannelOptionLabel\(ch\)/);
+  assert.match(script, /function getModelTestChannelOptionClass\(ch\)/);
+  assert.match(script, /initialLabel = selectedChannel \? formatModelTestChannelOptionLabel\(selectedChannel\) : ''/);
+  assert.match(script, /initialLabel: chatChannel \? formatModelTestChannelOptionLabel\(chatChannel\) : ''/);
+  assert.equal([...script.matchAll(/label: formatModelTestChannelOptionLabel\(ch\)/g)].length, 2);
+  assert.equal([...script.matchAll(/className: getModelTestChannelOptionClass\(ch\)/g)].length, 2);
+  assert.match(sharedCss, /\.filter-dropdown-item--disabled\s*\{/);
+  assert.match(sharedCss, /\.filter-dropdown-item--disabled:hover\s*\{/);
+  const labelFormatter = extractFunction(script, 'formatModelTestChannelOptionLabel');
+  assert.doesNotMatch(labelFormatter, /common\.disabled/);
+  assert.doesNotMatch(labelFormatter, /\[已禁用\]/);
+  assert.doesNotMatch(script, /disabled:\s*ch\.enabled === false/);
+});
+
+test('model-test 对话切换渠道后重置为新渠道首个模型', () => {
+  const sandbox = {
+    chatChannel: {
+      models: [
+        { model: 'new-channel-model-a' },
+        { model: 'new-channel-model-b' }
+      ]
+    },
+    chatModel: 'old-channel-model',
+    setValueCalls: [],
+    chatModelCombobox: {
+      refreshCalled: 0,
+      refresh() {
+        this.refreshCalled += 1;
+      },
+      setValue(value, label) {
+        sandbox.setValueCalls.push([value, label]);
+      }
+    }
+  };
+
+  vm.runInNewContext(`
+    ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'refreshChatModelOptions')}
+
+    refreshChatModelOptions();
+    globalThis.result = {
+      chatModel,
+      refreshCalled: chatModelCombobox.refreshCalled,
+      setValueCalls
+    };
+  `, sandbox);
+
+  assert.equal(sandbox.result.chatModel, 'new-channel-model-a');
+  assert.equal(sandbox.result.refreshCalled, 1);
+  assert.deepEqual(sandbox.result.setValueCalls, [['new-channel-model-a', 'new-channel-model-a']]);
+});
+
+test('model-test 对话流把思考内容渲染到独立折叠区且不写入历史正文', () => {
+  assert.match(script, /let accThinking = '';/);
+  assert.match(script, /typeof evt\.thinking_delta === 'string'/);
+  assert.match(script, /renderChatThinking\(assistantBubble,\s*accThinking,\s*true\)/);
+  assert.match(script, /function renderChatThinking\(bubble,\s*thinking,\s*streaming = false\)/);
+  assert.match(script, /className = 'chat-thinking'/);
+  assert.match(script, /setAttribute\('data-i18n',\s*'modelTest\.chat\.thinking'\)/);
+  assert.match(script, /chatMessages\.push\(\{ role: 'assistant', content: accText \}\)/);
+  assert.doesNotMatch(script, /chatMessages\.push\(\{ role: 'assistant', content: accThinking/);
+  assert.match(sharedCss, /\.chat-thinking\s*\{/);
+  assert.match(sharedCss, /\.chat-thinking-content\s*\{/);
+});
+
+test('model-test 对话 Markdown 渲染必须消毒后写入 DOM', () => {
+  assert.match(script, /function renderChatMarkdown\(target,\s*markdown,\s*options = \{\}\)/);
+  assert.match(script, /function sanitizeChatMarkdownHTML\(html\)/);
+  assert.match(script, /const ALLOWED_CHAT_MARKDOWN_TAGS = new Set/);
+  assert.match(script, /template\.innerHTML = String\(html \|\| ''\)/);
+  assert.match(script, /renderChatMarkdown\(contentEl,\s*accText,\s*\{ cursor: true \}\)/);
+  assert.doesNotMatch(script, /innerHTML\s*=\s*window\.marked\.parse/);
 });
 
 test('model-test 页按模型测试渠道表在渠道名称后显示可编辑优先级和启用开关', () => {
@@ -488,7 +803,7 @@ test('model-test.js 渠道编辑器保存后重新加载渠道并保留测试表
 
 test('model-test.js 渠道搜索下拉在重建时通过 initialValue/initialLabel 保持显示当前渠道', () => {
   assert.match(script, /const initialValue = selectedChannel \? String\(selectedChannel\.id\) : '';/);
-  assert.match(script, /const initialLabel = selectedChannel \? `\[\$\{getChannelType\(selectedChannel\)\}\] \$\{selectedChannel\.name\}` : '';/);
+  assert.match(script, /const initialLabel = selectedChannel \? formatModelTestChannelOptionLabel\(selectedChannel\) : '';/);
   assert.match(script, /initialValue,\s*\n\s*initialLabel,/);
 });
 

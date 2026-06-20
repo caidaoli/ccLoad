@@ -58,6 +58,72 @@ func TestOpenAITesterBuild_AddsSessionIDHeader(t *testing.T) {
 	}
 }
 
+func TestOpenAITesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model:          "gpt-test",
+		Content:        "hello",
+		ThinkingEffort: "high",
+		BuiltinSearch:  true,
+	}
+
+	_, _, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	if got, _ := payload["reasoning_effort"].(string); got != "high" {
+		t.Fatalf("reasoning_effort = %q, want high; body=%s", got, body)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools invalid: %#v; body=%s", payload["tools"], body)
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tools[0] invalid: %#v; body=%s", tools[0], body)
+	}
+	if got, _ := tool["type"].(string); got != "web_search" {
+		t.Fatalf("tools[0].type = %q, want web_search; body=%s", got, body)
+	}
+	if got, _ := payload["tool_choice"].(string); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto; body=%s", got, body)
+	}
+}
+
+func TestOpenAITesterBuild_SupportsStructuredImageMessages(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model: "gpt-test",
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				ContentBlocks: []ChatContentBlock{
+					{Type: "text", Text: "describe"},
+					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+				},
+			},
+		},
+	}
+
+	_, _, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	bodyText := string(body)
+	if !strings.Contains(bodyText, `"type":"text"`) || !strings.Contains(bodyText, `"text":"describe"`) {
+		t.Fatalf("openai body missing text block: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"type":"image_url"`) || !strings.Contains(bodyText, `"url":"data:image/png;base64,aW1n"`) {
+		t.Fatalf("openai body missing image_url block: %s", bodyText)
+	}
+}
+
 func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", Stream: true}
@@ -167,6 +233,272 @@ func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
 	}
 }
 
+func TestCodexTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model:          "gpt-5.5",
+		Content:        "hello",
+		Stream:         true,
+		ThinkingEffort: "medium",
+		BuiltinSearch:  true,
+	}
+
+	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	reasoning, ok := payload["reasoning"].(map[string]any)
+	if !ok {
+		t.Fatalf("reasoning missing or invalid; body=%s", body)
+	}
+	if got, _ := reasoning["effort"].(string); got != "medium" {
+		t.Fatalf("reasoning.effort = %q, want medium; body=%s", got, body)
+	}
+	if got, _ := reasoning["summary"].(string); got != "auto" {
+		t.Fatalf("reasoning.summary = %q, want auto; body=%s", got, body)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools invalid: %#v; body=%s", payload["tools"], body)
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tools[0] invalid: %#v; body=%s", tools[0], body)
+	}
+	if got, _ := tool["type"].(string); got != "web_search" {
+		t.Fatalf("tools[0].type = %q, want web_search; body=%s", got, body)
+	}
+	if got, _ := payload["tool_choice"].(string); got != "auto" {
+		t.Fatalf("tool_choice = %q, want auto; body=%s", got, body)
+	}
+}
+
+func TestCodexTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model: "gpt-5.5",
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				ContentBlocks: []ChatContentBlock{
+					{Type: "text", Text: "describe"},
+					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+				},
+			},
+		},
+	}
+
+	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	bodyText := string(body)
+	if !strings.Contains(bodyText, `"type":"input_text"`) || !strings.Contains(bodyText, `"text":"describe"`) {
+		t.Fatalf("codex body missing input_text block: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"type":"input_image"`) || !strings.Contains(bodyText, `"image_url":"data:image/png;base64,aW1n"`) {
+		t.Fatalf("codex body missing input_image block: %s", bodyText)
+	}
+}
+
+func TestCodexTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", ThinkingEffort: "none"}
+
+	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	if _, ok := payload["reasoning"]; ok {
+		t.Fatalf("reasoning should be removed when thinking_effort=none; body=%s", body)
+	}
+	if _, ok := payload["include"]; ok {
+		t.Fatalf("include should be removed when thinking_effort=none; body=%s", body)
+	}
+}
+
+func TestCodexTesterBuild_UsesMessagesAsResponsesInput(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model:  "gpt-5.5",
+		Stream: true,
+		Messages: []ChatMessage{
+			{Role: "user", Content: "macbook m5有几款"},
+			{Role: "assistant", Content: "Test received. How can I help?"},
+			{Role: "user", Content: "联网搜索一下"},
+		},
+	}
+
+	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("input length = %d, want 3; body=%s", len(input), body)
+	}
+
+	want := []struct {
+		role     string
+		partType string
+		text     string
+	}{
+		{"user", "input_text", "macbook m5有几款"},
+		{"assistant", "output_text", "Test received. How can I help?"},
+		{"user", "input_text", "联网搜索一下"},
+	}
+	for i, tc := range want {
+		item, ok := input[i].(map[string]any)
+		if !ok {
+			t.Fatalf("input[%d] invalid: %#v; body=%s", i, input[i], body)
+		}
+		if got, _ := item["type"].(string); got != "message" {
+			t.Fatalf("input[%d].type = %q, want message; body=%s", i, got, body)
+		}
+		if got, _ := item["role"].(string); got != tc.role {
+			t.Fatalf("input[%d].role = %q, want %q; body=%s", i, got, tc.role, body)
+		}
+		content, ok := item["content"].([]any)
+		if !ok || len(content) != 1 {
+			t.Fatalf("input[%d].content invalid: %#v; body=%s", i, item["content"], body)
+		}
+		part, ok := content[0].(map[string]any)
+		if !ok {
+			t.Fatalf("input[%d].content[0] invalid: %#v; body=%s", i, content[0], body)
+		}
+		if got, _ := part["type"].(string); got != tc.partType {
+			t.Fatalf("input[%d].content[0].type = %q, want %q; body=%s", i, got, tc.partType, body)
+		}
+		if got, _ := part["text"].(string); got != tc.text {
+			t.Fatalf("input[%d].content[0].text = %q, want %q; body=%s", i, got, tc.text, body)
+		}
+	}
+
+	if strings.Contains(string(body), `"text":"test"`) {
+		t.Fatalf("body should not fall back to test content when messages are present: %s", body)
+	}
+}
+
+func TestGeminiTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model:          "gemini-test",
+		Content:        "hello",
+		ThinkingEffort: "medium",
+		BuiltinSearch:  true,
+	}
+
+	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	generationConfig, ok := payload["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid; body=%s", body)
+	}
+	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingConfig missing or invalid; body=%s", body)
+	}
+	if got, _ := thinkingConfig["includeThoughts"].(bool); !got {
+		t.Fatalf("includeThoughts = %v, want true; body=%s", got, body)
+	}
+	if got, _ := thinkingConfig["thinkingBudget"].(float64); got != 4096 {
+		t.Fatalf("thinkingBudget = %v, want 4096; body=%s", got, body)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools invalid: %#v; body=%s", payload["tools"], body)
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tools[0] invalid: %#v; body=%s", tools[0], body)
+	}
+	if _, ok := tool["googleSearch"].(map[string]any); !ok {
+		t.Fatalf("tools[0].googleSearch missing; body=%s", body)
+	}
+}
+
+func TestGeminiTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "gemini-test", Content: "hello", ThinkingEffort: "none"}
+
+	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	generationConfig, ok := payload["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid; body=%s", body)
+	}
+	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingConfig missing or invalid; body=%s", body)
+	}
+	if got, _ := thinkingConfig["thinkingBudget"].(float64); got != 0 {
+		t.Fatalf("thinkingBudget = %v, want 0; body=%s", got, body)
+	}
+	if _, ok := thinkingConfig["includeThoughts"]; ok {
+		t.Fatalf("includeThoughts should be omitted when thinking is disabled; body=%s", body)
+	}
+}
+
+func TestGeminiTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model: "gemini-test",
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				ContentBlocks: []ChatContentBlock{
+					{Type: "text", Text: "describe"},
+					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+				},
+			},
+		},
+	}
+
+	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	bodyText := string(body)
+	if !strings.Contains(bodyText, `"text":"describe"`) {
+		t.Fatalf("gemini body missing text part: %s", bodyText)
+	}
+	if !strings.Contains(bodyText, `"inlineData"`) || !strings.Contains(bodyText, `"mimeType":"image/png"`) || !strings.Contains(bodyText, `"data":"aW1n"`) {
+		t.Fatalf("gemini body missing inlineData image part: %s", bodyText)
+	}
+}
+
 func TestAnthropicTesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com/custom/messages#"}
 	req := &TestChannelRequest{Model: "claude-test", Content: "hello"}
@@ -181,5 +513,121 @@ func TestAnthropicTesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	}
 	if strings.Contains(fullURL, "/v1/messages") {
 		t.Fatalf("fullURL should not append Anthropic endpoint path: %q", fullURL)
+	}
+}
+
+func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model:          "claude-test",
+		Content:        "hello",
+		ThinkingEffort: "high",
+		BuiltinSearch:  true,
+	}
+
+	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking missing or invalid; body=%s", body)
+	}
+	if got, _ := thinking["type"].(string); got != "enabled" {
+		t.Fatalf("thinking.type = %q, want enabled; body=%s", got, body)
+	}
+	if got, _ := thinking["budget_tokens"].(float64); got != 16384 {
+		t.Fatalf("budget_tokens = %v, want 16384; body=%s", got, body)
+	}
+	tools, ok := payload["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools invalid: %#v; body=%s", payload["tools"], body)
+	}
+	tool, ok := tools[0].(map[string]any)
+	if !ok {
+		t.Fatalf("tools[0] invalid: %#v; body=%s", tools[0], body)
+	}
+	if got, _ := tool["type"].(string); got != "web_search_20250305" {
+		t.Fatalf("tools[0].type = %q, want web_search_20250305; body=%s", got, body)
+	}
+	if got, _ := tool["name"].(string); got != "web_search" {
+		t.Fatalf("tools[0].name = %q, want web_search; body=%s", got, body)
+	}
+}
+
+func TestAnthropicTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "claude-test", Content: "hello", ThinkingEffort: "none"}
+
+	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	thinking, ok := payload["thinking"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinking missing or invalid; body=%s", body)
+	}
+	if got, _ := thinking["type"].(string); got != "disabled" {
+		t.Fatalf("thinking.type = %q, want disabled; body=%s", got, body)
+	}
+}
+
+func TestAnthropicTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{
+		Model: "claude-test",
+		Messages: []ChatMessage{
+			{
+				Role: "user",
+				ContentBlocks: []ChatContentBlock{
+					{Type: "text", Text: "describe"},
+					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+				},
+			},
+		},
+	}
+
+	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) != 1 {
+		t.Fatalf("messages missing or invalid: %s", body)
+	}
+	message, ok := messages[0].(map[string]any)
+	if !ok {
+		t.Fatalf("message missing or invalid: %s", body)
+	}
+	content, ok := message["content"].([]any)
+	if !ok || len(content) != 2 {
+		t.Fatalf("content missing or invalid: %s", body)
+	}
+	textPart, ok := content[0].(map[string]any)
+	if !ok || textPart["type"] != "text" || textPart["text"] != "describe" {
+		t.Fatalf("anthropic body missing text part: %s", body)
+	}
+	imagePart, ok := content[1].(map[string]any)
+	if !ok || imagePart["type"] != "image" {
+		t.Fatalf("anthropic body missing image part: %s", body)
+	}
+	source, ok := imagePart["source"].(map[string]any)
+	if !ok || source["type"] != "base64" || source["media_type"] != "image/png" || source["data"] != "aW1n" {
+		t.Fatalf("anthropic body missing image source block: %s", body)
 	}
 }

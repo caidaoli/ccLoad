@@ -1,5 +1,6 @@
 const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
+const TEST_MODE_CHAT = 'chat';
 
 let channelsList = [];
 let selectedChannel = null;
@@ -10,6 +11,17 @@ let testMode = TEST_MODE_CHANNEL;
 let isDeletingModels = false;
 let isAddingModels = false;
 let isTestingModels = false;
+
+// Chat 模式状态
+let chatMessages = [];
+let chatChannel = null;
+let chatModel = '';
+let isChatSending = false;
+let chatChannelCombobox = null;
+let chatModelCombobox = null;
+let chatThinkingCombobox = null;
+let chatThinkingEffort = '';
+let chatPendingImages = [];
 
 let channelSelectCombobox = null;
 let modelSelectCombobox = null;
@@ -25,6 +37,7 @@ const protocolTransformContainer = document.getElementById('protocolTransformCon
 const protocolTransformOptions = document.getElementById('protocolTransformOptions');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
+const chatToolbar = document.getElementById('chatToolbar');
 
 const addModelsModal = document.getElementById('addModelsModal');
 const addModelsTextarea = document.getElementById('addModelsTextarea');
@@ -114,6 +127,100 @@ const MODEL_MODE_HEAD = `
 `;
 
 const i18nText = window.i18nText;
+
+const ALLOWED_CHAT_MARKDOWN_TAGS = new Set([
+  'A', 'BLOCKQUOTE', 'BR', 'CODE', 'DEL', 'EM', 'HR', 'LI', 'OL', 'P',
+  'PRE', 'STRONG', 'TABLE', 'TBODY', 'TD', 'TH', 'THEAD', 'TR', 'UL'
+]);
+const DROP_CHAT_MARKDOWN_CONTENT_TAGS = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META']);
+
+function sanitizeChatMarkdownHTML(html) {
+  const template = document.createElement('template');
+  template.innerHTML = String(html || '');
+  sanitizeChatMarkdownNode(template.content);
+  return template.innerHTML;
+}
+
+function sanitizeChatMarkdownNode(root) {
+  Array.from(root.childNodes || []).forEach((node) => {
+    if (node.nodeType !== 1) return;
+
+    const tagName = node.tagName.toUpperCase();
+    if (DROP_CHAT_MARKDOWN_CONTENT_TAGS.has(tagName)) {
+      node.remove();
+      return;
+    }
+
+    sanitizeChatMarkdownNode(node);
+    if (!ALLOWED_CHAT_MARKDOWN_TAGS.has(tagName)) {
+      unwrapChatMarkdownElement(node);
+      return;
+    }
+
+    sanitizeChatMarkdownAttributes(node, tagName);
+  });
+}
+
+function unwrapChatMarkdownElement(element) {
+  const parent = element.parentNode;
+  if (!parent) {
+    element.remove();
+    return;
+  }
+  while (element.firstChild) {
+    parent.insertBefore(element.firstChild, element);
+  }
+  element.remove();
+}
+
+function sanitizeChatMarkdownAttributes(element, tagName) {
+  Array.from(element.attributes || []).forEach((attr) => {
+    const name = attr.name.toLowerCase();
+    const value = attr.value;
+    const allowed =
+      (tagName === 'A' && ((name === 'href' && isSafeChatMarkdownHref(value)) || name === 'title')) ||
+      ((tagName === 'TD' || tagName === 'TH') && name === 'align' && /^(left|center|right)$/i.test(value)) ||
+      (tagName === 'CODE' && name === 'class' && /^language-[a-z0-9_-]+$/i.test(value));
+
+    if (!allowed) {
+      element.removeAttribute(attr.name);
+    }
+  });
+
+  if (tagName === 'A' && element.hasAttribute('href')) {
+    element.setAttribute('target', '_blank');
+    element.setAttribute('rel', 'noopener noreferrer');
+  }
+}
+
+function isSafeChatMarkdownHref(href) {
+  const value = String(href || '').trim();
+  if (!value) return false;
+  if (value.startsWith('#') || value.startsWith('/')) return true;
+  try {
+    const parsed = new URL(value, window.location.origin);
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:' || parsed.protocol === 'mailto:';
+  } catch (_) {
+    return false;
+  }
+}
+
+function renderChatMarkdown(target, markdown, options = {}) {
+  if (!target) return;
+
+  const text = String(markdown || '');
+  if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
+    target.innerHTML = sanitizeChatMarkdownHTML(window.marked.parse(text));
+  } else {
+    target.textContent = text;
+  }
+
+  if (options.cursor) {
+    const cursor = document.createElement('span');
+    cursor.className = 'chat-cursor';
+    target.appendChild(cursor);
+  }
+}
 
 function normalizeProtocol(value) {
   return String(value || '').trim().toLowerCase();
@@ -559,10 +666,16 @@ function initModelTestActions() {
       'fetch-and-add-models': () => fetchAndAddModels(),
       'open-add-models-modal': () => openAddModelsModal(),
       'delete-selected-models': () => deleteSelectedModels(),
-      'run-model-tests': () => runModelTests()
+      'run-model-tests': () => runModelTests(),
+      'send-chat-message': () => sendChatMessage(),
+      'select-chat-image': () => document.getElementById('chatImageInput')?.click(),
+      'toggle-chat-builtin-search': () => toggleChatBuiltinSearch(),
+      'clear-chat': () => clearChat(),
+      'remove-chat-image': (actionTarget) => removeChatImage(actionTarget.dataset.imageId)
     },
     change: {
-      'toggle-all-models': (actionTarget) => toggleAllModels(actionTarget.checked)
+      'toggle-all-models': (actionTarget) => toggleAllModels(actionTarget.checked),
+      'add-chat-images': (actionTarget) => addChatImageFiles(actionTarget.files)
     }
   });
 }
@@ -1247,14 +1360,30 @@ function renderRowsByMode() {
 
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
+  const isChatMode = testMode === TEST_MODE_CHAT;
   const fetchModelsBtn = getFetchModelsBtn();
   const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
 
   const modeTabChannel = document.getElementById('modeTabChannel');
   const modeTabModel = document.getElementById('modeTabModel');
-  modeTabChannel.classList.toggle('active', !isModelMode);
+  const modeTabChat = document.getElementById('modeTabChat');
+  modeTabChannel.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
   modeTabModel.classList.toggle('active', isModelMode);
+  if (modeTabChat) modeTabChat.classList.toggle('active', isChatMode);
+
+  // chat 模式：隐藏测试工具栏与表格，显示对话面板
+  const tableContainer = document.querySelector('.model-test-table-container');
+  const chatPanel = document.getElementById('chatPanel');
+  const modelTestCard = document.getElementById('modelTestCard');
+  if (toolbar) toolbar.style.display = isChatMode ? 'none' : '';
+  if (tableContainer) tableContainer.style.display = isChatMode ? 'none' : '';
+  chatToolbar?.classList.toggle('hidden', !isChatMode);
+  if (chatPanel) chatPanel.classList.toggle('hidden', !isChatMode);
+  modelTestCard?.classList.toggle('model-test-card--chat-mode', isChatMode);
+
+  if (isChatMode) return;
+
   toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
@@ -2305,9 +2434,18 @@ async function onChannelChange() {
   renderModelModeRows();
 }
 
+function formatModelTestChannelOptionLabel(ch) {
+  if (!ch) return '';
+  return `[${getChannelType(ch)}] ${ch.name}`;
+}
+
+function getModelTestChannelOptionClass(ch) {
+  return ch?.enabled === false ? 'filter-dropdown-item--disabled' : '';
+}
+
 function renderSearchableChannelSelect() {
   const initialValue = selectedChannel ? String(selectedChannel.id) : '';
-  const initialLabel = selectedChannel ? `[${getChannelType(selectedChannel)}] ${selectedChannel.name}` : '';
+  const initialLabel = selectedChannel ? formatModelTestChannelOptionLabel(selectedChannel) : '';
   channelSelectCombobox = createSearchableCombobox({
     container: 'testChannelSelectContainer',
     inputId: 'testChannelSelect',
@@ -2318,7 +2456,8 @@ function renderSearchableChannelSelect() {
     initialLabel,
     getOptions: () => channelsList.map(ch => ({
       value: String(ch.id),
-      label: `[${getChannelType(ch)}] ${ch.name}`
+      label: formatModelTestChannelOptionLabel(ch),
+      className: getModelTestChannelOptionClass(ch)
     })),
     onSelect: async (value) => {
       const channelId = parseInt(value, 10);
@@ -2537,11 +2676,18 @@ function bindEvents() {
 }
 
 function setTestMode(mode) {
-  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL) return;
+  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT) return;
   if (testMode === mode) return;
 
   testMode = mode;
   clearProgress();
+
+  if (testMode === TEST_MODE_CHAT) {
+    updateModeUI();
+    initChatPanel();
+    return;
+  }
+
   if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
     selectedProtocol = getChannelType(selectedChannel);
   }
@@ -2563,6 +2709,493 @@ window.runModelTests = runModelTests;
 window.fetchAndAddModels = fetchAndAddModels;
 window.openAddModelsModal = openAddModelsModal;
 window.deleteSelectedModels = deleteSelectedModels;
+
+// ===== Chat 模式实现 =====
+
+function getChatThinkingOptions() {
+  return [
+    { value: '', label: i18nText('modelTest.chat.thinkingDefault', '默认') },
+    { value: 'none', label: i18nText('modelTest.chat.thinkingNone', '关闭') },
+    { value: 'minimal', label: i18nText('modelTest.chat.thinkingMinimal', '最少') },
+    { value: 'low', label: i18nText('modelTest.chat.thinkingLow', '低') },
+    { value: 'medium', label: i18nText('modelTest.chat.thinkingMedium', '中') },
+    { value: 'high', label: i18nText('modelTest.chat.thinkingHigh', '高') }
+  ];
+}
+
+function getChatThinkingLabel(value) {
+  const normalized = String(value || '').trim();
+  const options = getChatThinkingOptions();
+  return (options.find(option => option.value === normalized) || options[0]).label;
+}
+
+/**
+ * 初始化对话面板：创建渠道/模型 combobox，绑定输入框快捷键。
+ * 每次切换到 chat 模式时调用；combobox 只创建一次。
+ */
+function initChatPanel() {
+  if (typeof window.createSearchableCombobox !== 'function') return;
+
+  // 渠道 combobox（复用 channelsList）
+  if (!chatChannelCombobox) {
+    chatChannelCombobox = window.createSearchableCombobox({
+      container: 'chatChannelSelectContainer',
+      inputId: 'chatChannelSelect',
+      dropdownId: 'chatChannelSelectDropdown',
+      placeholder: i18nText('modelTest.searchChannel', '搜索渠道...'),
+      minWidth: 200,
+      initialValue: chatChannel ? String(chatChannel.id) : '',
+      initialLabel: chatChannel ? formatModelTestChannelOptionLabel(chatChannel) : '',
+      getOptions: () => channelsList.map(ch => ({
+        value: String(ch.id),
+        label: formatModelTestChannelOptionLabel(ch),
+        className: getModelTestChannelOptionClass(ch)
+      })),
+      onSelect: (value) => {
+        const channelId = parseInt(value, 10);
+        chatChannel = channelsList.find(c => c.id === channelId) || null;
+        refreshChatModelOptions();
+      }
+    });
+  } else {
+    chatChannelCombobox.refresh();
+  }
+
+  // 模型 combobox（attach 到预置的 input/dropdown 元素）
+  if (!chatModelCombobox) {
+    chatModelCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'chatModelSelect',
+      dropdownId: 'chatModelSelectDropdown',
+      allowCustomInput: true,
+      initialValue: chatModel,
+      initialLabel: chatModel,
+      getOptions: () => {
+        const models = chatChannel ? (chatChannel.models || []).map(e => getModelName(e)).filter(Boolean) : [];
+        return models.map(m => ({ value: m, label: m }));
+      },
+      onSelect: (value) => {
+        chatModel = String(value || '').trim();
+      },
+      onCancel: () => {
+        const inputEl = document.getElementById('chatModelSelect');
+        if (inputEl) chatModel = inputEl.value.trim() || chatModel;
+      }
+    });
+  } else {
+    chatModelCombobox.refresh();
+  }
+
+  // 思考等级 combobox（固定枚举，不允许提交自定义显示文本）
+  if (!chatThinkingCombobox) {
+    chatThinkingCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'chatThinkingLevel',
+      dropdownId: 'chatThinkingLevelDropdown',
+      allowCustomInput: false,
+      initialValue: chatThinkingEffort,
+      initialLabel: getChatThinkingLabel(chatThinkingEffort),
+      getOptions: getChatThinkingOptions,
+      onSelect: (value) => {
+        chatThinkingEffort = String(value || '').trim();
+      },
+      onCancel: () => {
+        chatThinkingCombobox?.setValue(chatThinkingEffort, getChatThinkingLabel(chatThinkingEffort));
+      }
+    });
+  } else {
+    chatThinkingCombobox.refresh();
+    chatThinkingCombobox.setValue(chatThinkingEffort, getChatThinkingLabel(chatThinkingEffort));
+  }
+
+  // 输入框快捷键（只绑定一次）
+  const chatInput = document.getElementById('chatInput');
+  if (chatInput && !chatInput._chatBound) {
+    chatInput._chatBound = true;
+    chatInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        sendChatMessage();
+      }
+    });
+    chatInput.addEventListener('input', autoResizeChatInput);
+    chatInput.addEventListener('paste', handleChatPaste);
+  }
+}
+
+/** 刷新模型下拉选项，并在有模型时自动选择第一个 */
+function refreshChatModelOptions() {
+  if (!chatModelCombobox) return;
+  chatModelCombobox.refresh();
+
+  const models = chatChannel ? (chatChannel.models || []).map(e => getModelName(e)).filter(Boolean) : [];
+  chatModel = models[0] || '';
+  chatModelCombobox.setValue(chatModel, chatModel);
+}
+
+function getChatThinkingEffort() {
+  return chatThinkingEffort;
+}
+
+function isChatBuiltinSearchEnabled() {
+  return document.getElementById('chatBuiltinSearchToggle')?.getAttribute('aria-pressed') === 'true';
+}
+
+function toggleChatBuiltinSearch() {
+  const toggle = document.getElementById('chatBuiltinSearchToggle');
+  if (!toggle) return;
+  const enabled = toggle.getAttribute('aria-pressed') === 'true';
+  toggle.setAttribute('aria-pressed', enabled ? 'false' : 'true');
+}
+
+function buildChatUserContent(text, images) {
+  const trimmedText = String(text || '').trim();
+  const normalizedImages = Array.isArray(images) ? images.filter(image => image && image.dataUrl) : [];
+  if (normalizedImages.length === 0) {
+    return trimmedText;
+  }
+  const content = [];
+  if (trimmedText) {
+    content.push({ type: 'text', text: trimmedText });
+  }
+  normalizedImages.forEach((image) => {
+    content.push({
+      type: 'image_url',
+      image_url: {
+        url: image.dataUrl
+      }
+    });
+  });
+  return content;
+}
+
+function renderChatImagePreviews() {
+  const list = document.getElementById('chatImagePreviewList');
+  if (!list) return;
+  list.innerHTML = '';
+  chatPendingImages.forEach((image) => {
+    const item = document.createElement('div');
+    item.className = 'chat-image-preview-item';
+
+    const img = document.createElement('img');
+    img.className = 'chat-image-preview-thumb';
+    img.src = image.dataUrl;
+    img.alt = image.name || 'image';
+
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'chat-image-preview-remove';
+    removeBtn.setAttribute('data-action', 'remove-chat-image');
+    removeBtn.setAttribute('data-image-id', image.id);
+    removeBtn.setAttribute('aria-label', '删除图片');
+    removeBtn.textContent = '×';
+
+    item.appendChild(img);
+    item.appendChild(removeBtn);
+    list.appendChild(item);
+  });
+}
+
+function removeChatImage(imageID) {
+  const normalized = String(imageID || '').trim();
+  if (!normalized) return;
+  chatPendingImages = chatPendingImages.filter(image => image.id !== normalized);
+  renderChatImagePreviews();
+}
+
+function readChatImageFile(file) {
+  return new Promise((resolve, reject) => {
+    if (!(file instanceof File)) {
+      reject(new Error('invalid file'));
+      return;
+    }
+    if (!String(file.type || '').startsWith('image/')) {
+      reject(new Error('not image'));
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve({
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        name: file.name || 'image',
+        mimeType: file.type || 'image/*',
+        dataUrl: String(reader.result || '')
+      });
+    };
+    reader.onerror = () => reject(reader.error || new Error('read failed'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addChatImageFiles(files) {
+  const list = Array.from(files || []).filter(Boolean);
+  if (list.length === 0) return;
+  const nextImages = [];
+  for (const file of list) {
+    try {
+      nextImages.push(await readChatImageFile(file));
+    } catch (_) {
+      continue;
+    }
+  }
+  if (nextImages.length === 0) return;
+  chatPendingImages = chatPendingImages.concat(nextImages);
+  renderChatImagePreviews();
+  const input = document.getElementById('chatImageInput');
+  if (input) input.value = '';
+}
+
+function handleChatPaste(event) {
+  const files = Array.from(event?.clipboardData?.files || []).filter(file => String(file.type || '').startsWith('image/'));
+  if (files.length === 0) return;
+  event.preventDefault();
+  addChatImageFiles(files);
+}
+
+function renderChatUserContent(target, content) {
+  if (!target) return;
+  if (typeof content === 'string') {
+    target.textContent = content;
+    return;
+  }
+  if (!Array.isArray(content)) {
+    target.textContent = String(content || '');
+    return;
+  }
+  target.textContent = '';
+  content.forEach((block) => {
+    if (!block || typeof block !== 'object') return;
+    if (block.type === 'text') {
+      const textEl = document.createElement('div');
+      textEl.textContent = String(block.text || '');
+      target.appendChild(textEl);
+      return;
+    }
+    if (block.type === 'image_url') {
+      const url = String(block.image_url?.url || '');
+      if (!url) return;
+      const img = document.createElement('img');
+      img.className = 'chat-image-preview-thumb';
+      img.src = url;
+      img.alt = 'user image';
+      target.appendChild(img);
+    }
+  });
+}
+
+/** 发送消息：追加用户消息 → POST /admin/channels/:id/chat (SSE) → 实时渲染 delta */
+async function sendChatMessage() {
+  if (isChatSending) return;
+
+  const inputEl = document.getElementById('chatInput');
+  const content = inputEl?.value?.trim();
+  if (!content && chatPendingImages.length === 0) {
+    showError(i18nText('modelTest.chat.emptyInput', '请输入消息'));
+    return;
+  }
+  if (!chatChannel) {
+    showError(i18nText('modelTest.chat.selectChannel', '请先选择渠道'));
+    return;
+  }
+  const currentModel = document.getElementById('chatModelSelect')?.value?.trim() || chatModel;
+  if (!currentModel) {
+    showError(i18nText('modelTest.chat.selectModel', '请先选择模型'));
+    return;
+  }
+  chatModel = currentModel;
+
+  const userContent = buildChatUserContent(content, chatPendingImages);
+  chatMessages.push({ role: 'user', content: userContent });
+  appendChatBubble('user', userContent);
+  inputEl.value = '';
+  chatPendingImages = [];
+  renderChatImagePreviews();
+  autoResizeChatInput();
+
+  isChatSending = true;
+  const sendBtn = document.getElementById('chatSendBtn');
+  if (sendBtn) {
+    sendBtn.disabled = true;
+    sendBtn.textContent = i18nText('modelTest.chat.sending', '发送中...');
+  }
+
+  const assistantBubble = appendChatBubble('assistant', '');
+  const contentEl = assistantBubble?.querySelector('.chat-message-content');
+  renderChatMarkdown(contentEl, '', { cursor: true });
+
+  let accText = '';
+  let accThinking = '';
+  let hasError = false;
+
+  try {
+    const token = localStorage.getItem('ccload_token');
+    const chatStreamEnabled = document.getElementById('chatStreamEnabled')?.checked !== false;
+    const chatThinkingEffort = getChatThinkingEffort();
+    const chatBuiltinSearch = isChatBuiltinSearchEnabled();
+    const resp = await fetch(`/admin/channels/${chatChannel.id}/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        model: chatModel,
+        stream: chatStreamEnabled,
+        messages: chatMessages,
+        thinking_effort: chatThinkingEffort,
+        builtin_search: chatBuiltinSearch
+      }),
+    });
+
+    if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buf.indexOf('\n\n')) !== -1) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of block.split('\n')) {
+          if (!line.startsWith('data:')) continue;
+          const payload = line.slice(5).trim();
+          if (!payload || payload === '[DONE]') continue;
+          try {
+            const evt = JSON.parse(payload);
+            if (evt.error) {
+              hasError = true;
+              if (contentEl) {
+                contentEl.textContent = evt.error;
+                assistantBubble?.classList.add('chat-message--error');
+              }
+            } else if (typeof evt.thinking_delta === 'string') {
+              accThinking += evt.thinking_delta;
+              renderChatThinking(assistantBubble, accThinking, true);
+              const messagesEl = document.getElementById('chatMessages');
+              if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+            } else if (typeof evt.delta === 'string') {
+              accText += evt.delta;
+              renderChatMarkdown(contentEl, accText, { cursor: true });
+              const messagesEl = document.getElementById('chatMessages');
+              if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+            }
+          } catch (_) { /* ignore malformed event */ }
+        }
+      }
+    }
+
+    if (!hasError) {
+      renderChatThinking(assistantBubble, accThinking, false);
+      renderChatMarkdown(contentEl, accText || '');
+      if (accText) {
+        chatMessages.push({ role: 'assistant', content: accText });
+      } else {
+        chatMessages.pop();
+      }
+    }
+  } catch (e) {
+    chatMessages.pop();
+    if (contentEl) {
+      contentEl.textContent = e.message || i18nText('modelTest.chat.error', '发送失败');
+      assistantBubble?.classList.add('chat-message--error');
+    }
+  } finally {
+    contentEl?.querySelector('.chat-cursor')?.remove();
+    isChatSending = false;
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = i18nText('modelTest.chat.send', '发送');
+    }
+    const messagesEl = document.getElementById('chatMessages');
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+}
+
+/**
+ * 在消息列表中追加一个气泡，返回 bubble 元素。
+ * @param {'user'|'assistant'} role
+ * @param {string|Array<any>} content
+ */
+function appendChatBubble(role, content) {
+  const messagesEl = document.getElementById('chatMessages');
+  if (!messagesEl) return null;
+
+  const bubble = document.createElement('div');
+  bubble.className = `chat-message chat-message--${role}`;
+
+  const contentEl = document.createElement('div');
+  contentEl.className = 'chat-message-content';
+
+  if (content) {
+    if (role === 'assistant') {
+      renderChatMarkdown(contentEl, content);
+    } else {
+      renderChatUserContent(contentEl, content);
+    }
+  }
+
+  bubble.appendChild(contentEl);
+  messagesEl.appendChild(bubble);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+  return bubble;
+}
+
+function renderChatThinking(bubble, thinking, streaming = false) {
+  if (!bubble) return;
+  const text = String(thinking || '').trim();
+  let thinkingEl = bubble.querySelector('.chat-thinking');
+  if (!text) {
+    thinkingEl?.remove();
+    return;
+  }
+
+  if (!thinkingEl) {
+    thinkingEl = document.createElement('details');
+    thinkingEl.className = 'chat-thinking';
+    thinkingEl.open = true;
+
+    const summary = document.createElement('summary');
+    summary.className = 'chat-thinking-summary';
+    summary.setAttribute('data-i18n', 'modelTest.chat.thinking');
+    summary.textContent = i18nText('modelTest.chat.thinking', '思考');
+
+    const contentEl = document.createElement('div');
+    contentEl.className = 'chat-thinking-content';
+
+    thinkingEl.appendChild(summary);
+    thinkingEl.appendChild(contentEl);
+    bubble.insertBefore(thinkingEl, bubble.firstChild);
+  }
+
+  const contentEl = thinkingEl.querySelector('.chat-thinking-content');
+  if (contentEl) {
+    contentEl.textContent = text;
+  }
+  thinkingEl.open = streaming;
+}
+
+/** 清空对话历史与消息列表 DOM */
+function clearChat() {
+  chatMessages = [];
+  chatPendingImages = [];
+  const messagesEl = document.getElementById('chatMessages');
+  if (messagesEl) messagesEl.innerHTML = '';
+  renderChatImagePreviews();
+}
+
+/** textarea 随内容自动调整高度 */
+function autoResizeChatInput() {
+  const el = document.getElementById('chatInput');
+  if (!el) return;
+  el.style.height = 'auto';
+  el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+}
 
 function tryFormatJSON(str) {
   if (!str) return '';

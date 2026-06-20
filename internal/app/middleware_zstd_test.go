@@ -324,6 +324,32 @@ func TestZstdMiddleware_SkipAlreadyCompressedContentType(t *testing.T) {
 	}
 }
 
+func TestZstdMiddleware_SkipEventStreamContentType(t *testing.T) {
+	t.Parallel()
+
+	r := gin.New()
+	r.Group("/admin", ZstdMiddleware()).GET("/chat", func(c *gin.Context) {
+		c.Writer.Header().Set("Content-Type", "text/event-stream")
+		c.Writer.WriteHeader(http.StatusOK)
+		_, _ = c.Writer.Write([]byte("data: {\"delta\":\"hello\"}\n\n"))
+		c.Writer.Flush()
+	})
+
+	req := newRequest(http.MethodGet, "/admin/chat", nil)
+	req.Header.Set("Accept-Encoding", "zstd")
+	w := serveHTTP(t, r, req)
+
+	if got := w.Header().Get("Content-Encoding"); got != "" {
+		t.Fatalf("Content-Encoding=%q, want empty for text/event-stream", got)
+	}
+	if got := w.Body.String(); got != "data: {\"delta\":\"hello\"}\n\n" {
+		t.Fatalf("body=%q, want raw SSE payload", got)
+	}
+	if !w.Flushed {
+		t.Fatal("expected SSE response to flush immediately")
+	}
+}
+
 // TestZstdMiddleware_LargeResponseChunked 验证多次分块写入（>64KiB）后解压内容完整。
 func TestZstdMiddleware_LargeResponseChunked(t *testing.T) {
 	t.Parallel()

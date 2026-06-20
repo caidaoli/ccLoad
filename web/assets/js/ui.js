@@ -1406,7 +1406,7 @@
    * @param {HTMLElement|string} [config.container] - 容器元素或ID（生成模式必需）
    * @param {string} config.inputId - input 元素 ID
    * @param {string} config.dropdownId - 下拉框元素 ID
-   * @param {Function} config.getOptions - 获取选项列表的函数，返回 [{value, label}]
+   * @param {Function} config.getOptions - 获取选项列表的函数，返回 [{value, label, className?}]
    * @param {Function} config.onSelect - 选中回调 (value, label) => void
    * @param {Function} [config.onCancel] - 取消选择回调
    * @param {string} [config.placeholder] - placeholder 文本
@@ -1645,6 +1645,9 @@
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
         row.textContent = item.label;
+        if (item.className) {
+          row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
+        }
 
         if (item.value === currentValue) row.classList.add('selected');
         if (idx === activeIndex) row.classList.add('active');

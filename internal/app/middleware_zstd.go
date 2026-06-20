@@ -142,6 +142,9 @@ func shouldBypassResponse(h http.Header) bool {
 	if ct == "" {
 		return false
 	}
+	if strings.HasPrefix(ct, "text/event-stream") {
+		return true
+	}
 	if strings.HasPrefix(ct, "image/") ||
 		strings.HasPrefix(ct, "video/") ||
 		strings.HasPrefix(ct, "audio/") {
