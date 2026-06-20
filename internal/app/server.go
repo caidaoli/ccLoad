@@ -463,7 +463,11 @@ func readThroughChannelCache[T any](
 // 必须延迟到首次调用时求值：包级变量初始化早于 main() 中的 godotenv.Load()，
 // 此时 .env 尚未加载，os.Getenv 读到空值。sync.OnceValue 保证只解析一次且并发安全。
 var getHostOverrides = sync.OnceValue(func() map[string]string {
-	return parseHostOverrides(os.Getenv("CCLOAD_HOST_OVERRIDES"))
+	overrides, err := parseHostOverrides(os.Getenv("CCLOAD_HOST_OVERRIDES"))
+	if err != nil {
+		log.Fatalf("[FATAL] CCLOAD_HOST_OVERRIDES 配置错误: %v", err)
+	}
+	return overrides
 })
 
 // buildHTTPTransport 构建HTTP Transport（DRY：统一配置逻辑）

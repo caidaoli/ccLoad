@@ -2,43 +2,45 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net"
 	"strings"
 )
 
 // parseHostOverrides 解析 "host1=ip1,host2=ip2" 格式的域名→IP 覆盖映射。
-// 跳过无 '=' 的条目，以及 value 不是合法 IP 的条目（含 "x=y=z" 脏数据）。空串返回 nil。
-func parseHostOverrides(raw string) map[string]string {
+// 空串返回 nil；非空配置必须全部合法，配置错误由调用方 fail-fast。
+func parseHostOverrides(raw string) (map[string]string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
 
 	result := make(map[string]string)
 	for entry := range strings.SplitSeq(raw, ",") {
-		parts := strings.SplitN(strings.TrimSpace(entry), "=", 2)
-		if len(parts) != 2 {
+		entry = strings.TrimSpace(entry)
+		if entry == "" { // 容忍尾随/连续逗号产生的空条目
 			continue
 		}
-		host := strings.TrimSpace(parts[0])
-		ip := strings.TrimSpace(parts[1])
+		host, ip, ok := strings.Cut(entry, "=")
+		if !ok {
+			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: want host=ip", entry)
+		}
+		host = strings.TrimSpace(host)
+		ip = strings.TrimSpace(ip)
 		if host == "" || ip == "" {
-			continue
+			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: host and ip are required", entry)
 		}
-		// value 必须是合法 IP：否则会被当作域名再走一次系统 DNS，静默吞掉配置错误。
-		// net.ParseIP 同时拒绝 "x=y=z" 这类多等号脏数据，无需单独判 '='。
 		if net.ParseIP(ip) == nil {
-			log.Printf("[WARN] CCLOAD_HOST_OVERRIDES 跳过无效 IP: %q=%q", host, ip)
-			continue
+			return nil, fmt.Errorf("invalid CCLOAD_HOST_OVERRIDES entry %q: %q is not an IP address", entry, ip)
 		}
 		result[host] = ip
 	}
 
 	if len(result) == 0 {
-		return nil
+		return nil, nil
 	}
-	return result
+	return result, nil
 }
 
 // dialContextFunc 是 net.Dialer.DialContext 的函数签名。

@@ -307,7 +307,7 @@ curl -X POST -H "Authorization: Bearer your_token" \
               <p>ccLoad records custom status codes such as 499, 596, 597, 598 and 599 to separate client cancellations, quota exhaustion, SSE errors, first-byte timeouts and stream interruptions.</p>
             </div>
             <div class="www-callout">
-              <strong>429 is excluded from health success rate.</strong>It is displayed as a separate rate-limit dimension, so upstream throttling is not mistaken for a broken channel.
+              <strong>429 has two explicit success-rate scopes.</strong> UI timeline success rate includes 429 as an error and exposes it again as the <code>rate_limited</code> subset for pure rate-limit coloring; health-score sorting excludes 429 so key-level throttling does not demote an otherwise healthy channel.
             </div>
           </div>
         </div>
