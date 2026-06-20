@@ -40,6 +40,12 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.protocol.desc': 'Transform between Anthropic/OpenAI/Gemini/Codex, preserving sampling and thinking params',
   'www.home.features.detection.title': 'Soft Error Detection',
   'www.home.features.detection.desc': 'Detect errors disguised as HTTP 200, identify rate-limit markers in SSE streams',
+  'www.home.features.proxy.title': 'Per-channel Proxy',
+  'www.home.features.proxy.desc': 'Route individual channels through HTTP, HTTPS, SOCKS5 or SOCKS5H proxies without changing global proxy policy',
+  'www.home.features.dns.title': 'DNS Host Override',
+  'www.home.features.dns.desc': 'Pin broken upstream hostnames to fixed IPs while preserving TLS SNI, certificates and Host headers',
+  'www.home.features.quota.title': 'Quota-aware Cooldown',
+  'www.home.features.quota.desc': 'Understand provider fixed-window quota responses and cool down the channel until the real reset time',
 
   // Home - Admin preview
   'www.home.admin.title': 'Not a black-box proxy',
