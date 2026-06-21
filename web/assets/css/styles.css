@@ -6957,6 +6957,56 @@ body.trend-page .chart-info {
   color: var(--color-text-secondary);
 }
 
+/* 消息复制按钮：hover 气泡时浮现 */
+.chat-message {
+  position: relative;
+}
+
+.chat-message-copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
+}
+
+.chat-message:hover .chat-message-copy-btn,
+.chat-message-copy-btn:focus-visible {
+  opacity: 0.8;
+}
+
+.chat-message-copy-btn:hover {
+  opacity: 1;
+  background: rgba(0, 0, 0, 0.08);
+  border-color: var(--color-border);
+}
+
+.chat-message--user .chat-message-copy-btn:hover {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.chat-message-copy-btn svg {
+  pointer-events: none;
+}
+
+.chat-message-copy-btn--copied {
+  opacity: 1 !important;
+  color: var(--color-success, #16a34a);
+  border-color: currentColor;
+}
+
 /* Markdown 内容 */
 .chat-message-content {
   min-height: 1em;
