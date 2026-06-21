@@ -39,10 +39,6 @@
           <!-- 对话工具栏（chat 模式下显示，独立于模式切换栏，避免 tabs 位置跳动） -->
           <div id="chatToolbar" class="chat-toolbar hidden">
             <label class="chat-control">
-              <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
-              <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
-            </label>
-            <label class="chat-control">
               <span class="chat-control__label" data-i18n="common.model">模型</span>
               <div class="filter-combobox-wrapper chat-model-combobox">
                 <input
@@ -56,6 +52,10 @@
                 >
                 <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
               </div>
+            </label>
+            <label class="chat-control">
+              <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
+              <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
             </label>
             <label class="chat-control chat-control--stream">
               <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
