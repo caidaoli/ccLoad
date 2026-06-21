@@ -133,30 +133,30 @@ function createURLRow(index) {
     requestsTd.setAttribute('data-mobile-label', window.t('channels.urlRequests'));
     requestsTd.innerHTML = formatURLRequests(stat);
 
-    const toggleTd = document.createElement('td');
-    toggleTd.className = 'inline-url-cell-center inline-url-col-toggle';
-    toggleTd.setAttribute('data-mobile-label', window.t('channels.urlToggle'));
     if (url) {
       const isDisabled = stat && stat.disabled;
       const toggleBtn = document.createElement('button');
       toggleBtn.type = 'button';
-      toggleBtn.className = `inline-url-toggle-btn ${isDisabled ? 'inline-url-toggle-btn--disabled' : 'inline-url-toggle-btn--enabled'}`;
+      // 与同行其他按钮（测试/删除）保持中性灰色风格，状态仅由图标形状与 tooltip 表达
+      toggleBtn.className = 'inline-url-toggle-btn';
+      toggleBtn.style.cssText = 'width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;';
       toggleBtn.title = isDisabled ? window.t('channels.urlEnable') : window.t('channels.urlDisable');
       toggleBtn.innerHTML = isDisabled
-        ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
-        : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+        : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
       toggleBtn.dataset.url = url;
       toggleBtn.dataset.disabled = isDisabled ? '1' : '0';
       toggleBtn.addEventListener('click', () => toggleURLDisabled(toggleBtn));
-      toggleTd.appendChild(toggleBtn);
-    } else {
-      toggleTd.innerHTML = '<span class="inline-url-status-placeholder">--</span>';
+      // 合并到 actions 容器内部，作为首个按钮，与 Key 表 actions 容器结构保持一致
+      const actionsContainer = lastTd.querySelector('.inline-url-actions');
+      if (actionsContainer) {
+        actionsContainer.insertBefore(toggleBtn, actionsContainer.firstChild);
+      }
     }
 
     row.insertBefore(statusTd, lastTd);
     row.insertBefore(latencyTd, lastTd);
     row.insertBefore(requestsTd, lastTd);
-    row.insertBefore(toggleTd, lastTd);
   }
 
   return row;
@@ -532,14 +532,9 @@ function updateURLStatsHeader() {
   requestsTh.className = 'url-stats-th inline-url-col-requests';
   requestsTh.textContent = window.t('channels.urlRequests');
 
-  const toggleTh = document.createElement('th');
-  toggleTh.className = 'url-stats-th inline-url-col-toggle';
-  toggleTh.textContent = window.t('channels.urlToggle');
-
   thead.insertBefore(statusTh, actionsTh);
   thead.insertBefore(latencyTh, actionsTh);
   thead.insertBefore(requestsTh, actionsTh);
-  thead.insertBefore(toggleTh, actionsTh);
 }
 
 async function toggleURLDisabled(btn) {

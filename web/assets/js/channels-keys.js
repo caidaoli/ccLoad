@@ -63,8 +63,10 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
 function buildCooldownHtml(index) {
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
   if (keyCooldown && keyCooldown.disabled) {
-    return `<span style="color: #9333ea; font-size: 12px; font-weight: 500; background: linear-gradient(135deg, #f3e8ff 0%, #e9d5ff 100%); padding: 2px 8px; border-radius: 4px; border: 1px solid #c084fc; white-space: nowrap;"
-      data-i18n="channels.statusDisabled">⏸ ${window.t('channels.statusDisabled')}</span>`;
+    // 与 URL 表的禁用徽章保持一致：橙色圆点 + 文字
+    return '<span class="inline-url-status-badge inline-url-status-badge--disabled">'
+      + '<span class="inline-url-status-dot inline-url-status-dot--disabled"></span>'
+      + `${window.t('channels.statusDisabled')}</span>`;
   }
   if (keyCooldown && keyCooldown.cooldown_remaining_ms > 0) {
     const cooldownText = humanizeMS(keyCooldown.cooldown_remaining_ms);
@@ -84,13 +86,15 @@ function buildActionsHtml(index) {
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
   const isDisabled = keyCooldown && keyCooldown.disabled;
   const toggleTitle = isDisabled ? window.t('channels.enableThisKey') : window.t('channels.disableThisKey');
+  // 图标语义与 URL 表保持一致：图标表示「当前状态」，title 表示点击后的动作
   const toggleIcon = isDisabled
-    ? '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M4 8L7 11L12 5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>'
-    : '<svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><line x1="3" y1="3" x2="13" y2="13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>';
-  const toggleColor = isDisabled ? 'color: #16a34a;' : 'color: #9333ea;';
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" xmlns="http://www.w3.org/2000/svg"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+  // 开关按钮与同行其他按钮（复制/测试/删除）保持一致的中性灰色风格，
+  // 状态语义仅由图标形状（🚫/✓）和 tooltip 表达
   const toggleBtn = `<button type="button" class="key-action-btn" data-action="toggle-disabled" data-index="${index}"
     title="${toggleTitle}"
-    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); ${toggleColor} cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
+    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
 
   const tpl = document.getElementById('tpl-key-actions');
   if (tpl) {
@@ -126,10 +130,9 @@ function createKeyRow(index) {
   const row = TemplateEngine.render('tpl-key-row', rowData);
   if (!row) return null;
 
-  // 禁用状态：半透明 + 输入框只读
+  // 禁用状态：输入框只读（不设整行半透明，与 URL 表保持一致，状态通过徽章/开关颜色表达）
   const keyCooldown = currentChannelKeyCooldowns.find(kc => kc.key_index === index);
   if (keyCooldown && keyCooldown.disabled) {
-    row.style.opacity = '0.5';
     const input = row.querySelector('.inline-key-input');
     if (input) input.readOnly = true;
   }
