@@ -2739,7 +2739,36 @@ function getChatThinkingLabel(value) {
 function initChatPanel() {
   if (typeof window.createSearchableCombobox !== 'function') return;
 
-  // 渠道 combobox（复用 channelsList）
+  // 模型 combobox（先选模型，渠道随之过滤）
+  if (!chatModelCombobox) {
+    chatModelCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'chatModelSelect',
+      dropdownId: 'chatModelSelectDropdown',
+      allowCustomInput: true,
+      initialValue: chatModel,
+      initialLabel: chatModel,
+      getOptions: () => getAllChatModelOptions().map(m => ({ value: m, label: m })),
+      onSelect: (value) => {
+        chatModel = String(value || '').trim();
+        refreshChatChannelsByModel();
+      },
+      onCancel: () => {
+        const inputEl = document.getElementById('chatModelSelect');
+        if (inputEl) {
+          const next = inputEl.value.trim();
+          if (next && next !== chatModel) {
+            chatModel = next;
+            refreshChatChannelsByModel();
+          }
+        }
+      }
+    });
+  } else {
+    chatModelCombobox.refresh();
+  }
+
+  // 渠道 combobox（仅显示支持当前模型的渠道）
   if (!chatChannelCombobox) {
     chatChannelCombobox = window.createSearchableCombobox({
       container: 'chatChannelSelectContainer',
@@ -2749,7 +2778,7 @@ function initChatPanel() {
       minWidth: 200,
       initialValue: chatChannel ? String(chatChannel.id) : '',
       initialLabel: chatChannel ? formatModelTestChannelOptionLabel(chatChannel) : '',
-      getOptions: () => channelsList.map(ch => ({
+      getOptions: () => getChannelsForChatModel().map(ch => ({
         value: String(ch.id),
         label: formatModelTestChannelOptionLabel(ch),
         className: getModelTestChannelOptionClass(ch)
@@ -2757,36 +2786,10 @@ function initChatPanel() {
       onSelect: (value) => {
         const channelId = parseInt(value, 10);
         chatChannel = channelsList.find(c => c.id === channelId) || null;
-        refreshChatModelOptions();
       }
     });
   } else {
     chatChannelCombobox.refresh();
-  }
-
-  // 模型 combobox（attach 到预置的 input/dropdown 元素）
-  if (!chatModelCombobox) {
-    chatModelCombobox = window.createSearchableCombobox({
-      attachMode: true,
-      inputId: 'chatModelSelect',
-      dropdownId: 'chatModelSelectDropdown',
-      allowCustomInput: true,
-      initialValue: chatModel,
-      initialLabel: chatModel,
-      getOptions: () => {
-        const models = chatChannel ? (chatChannel.models || []).map(e => getModelName(e)).filter(Boolean) : [];
-        return models.map(m => ({ value: m, label: m }));
-      },
-      onSelect: (value) => {
-        chatModel = String(value || '').trim();
-      },
-      onCancel: () => {
-        const inputEl = document.getElementById('chatModelSelect');
-        if (inputEl) chatModel = inputEl.value.trim() || chatModel;
-      }
-    });
-  } else {
-    chatModelCombobox.refresh();
   }
 
   // 思考等级 combobox（固定枚举，不允许提交自定义显示文本）
@@ -2811,6 +2814,16 @@ function initChatPanel() {
     chatThinkingCombobox.setValue(chatThinkingEffort, getChatThinkingLabel(chatThinkingEffort));
   }
 
+  // 初始化默认选择：未选模型时自动选第一个，并联动渠道
+  if (!chatModel) {
+    const allModels = getAllChatModelOptions();
+    if (allModels.length > 0) {
+      chatModel = allModels[0];
+      chatModelCombobox.setValue(chatModel, chatModel);
+    }
+  }
+  refreshChatChannelsByModel();
+
   // 输入框快捷键（只绑定一次）
   const chatInput = document.getElementById('chatInput');
   if (chatInput && !chatInput._chatBound) {
@@ -2826,14 +2839,38 @@ function initChatPanel() {
   }
 }
 
-/** 刷新模型下拉选项，并在有模型时自动选择第一个 */
-function refreshChatModelOptions() {
-  if (!chatModelCombobox) return;
-  chatModelCombobox.refresh();
+/** 收集所有渠道的模型并集（去重 + 字母排序），供 chat 模式模型下拉使用 */
+function getAllChatModelOptions() {
+  const set = new Set();
+  channelsList.forEach(ch => {
+    (ch.models || []).forEach(entry => {
+      const m = getModelName(entry);
+      if (m) set.add(m);
+    });
+  });
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
 
-  const models = chatChannel ? (chatChannel.models || []).map(e => getModelName(e)).filter(Boolean) : [];
-  chatModel = models[0] || '';
-  chatModelCombobox.setValue(chatModel, chatModel);
+/** 当前 chatModel 下可用的渠道列表；未选模型时返回全部渠道 */
+function getChannelsForChatModel() {
+  if (!chatModel) return channelsList.slice();
+  return channelsList.filter(ch => isModelSupported(ch, chatModel));
+}
+
+/** 模型变更后刷新渠道下拉，自动选第一个支持该模型的渠道 */
+function refreshChatChannelsByModel() {
+  if (!chatChannelCombobox) return;
+  chatChannelCombobox.refresh();
+
+  const list = getChannelsForChatModel();
+  if (!chatChannel || !list.find(c => c.id === chatChannel.id)) {
+    chatChannel = list[0] || null;
+  }
+  if (chatChannel) {
+    chatChannelCombobox.setValue(String(chatChannel.id), formatModelTestChannelOptionLabel(chatChannel));
+  } else {
+    chatChannelCombobox.setValue('', '');
+  }
 }
 
 function getChatThinkingEffort() {
