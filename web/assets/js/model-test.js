@@ -3114,6 +3114,7 @@ async function sendChatMessage() {
                 contentEl.textContent = evt.error;
                 assistantBubble?.classList.add('chat-message--error');
               }
+              if (assistantBubble) assistantBubble._rawText = String(evt.error || '');
             } else if (typeof evt.thinking_delta === 'string') {
               accThinking += evt.thinking_delta;
               renderChatThinking(assistantBubble, accThinking, true);
@@ -3122,6 +3123,7 @@ async function sendChatMessage() {
             } else if (typeof evt.delta === 'string') {
               accText += evt.delta;
               renderChatMarkdown(contentEl, accText, { cursor: true });
+              if (assistantBubble) assistantBubble._rawText = accText;
               const messagesEl = document.getElementById('chatMessages');
               if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
             }
@@ -3133,6 +3135,7 @@ async function sendChatMessage() {
     if (!hasError) {
       renderChatThinking(assistantBubble, accThinking, false);
       renderChatMarkdown(contentEl, accText || '');
+      if (assistantBubble) assistantBubble._rawText = accText || '';
       if (accText) {
         chatMessages.push({ role: 'assistant', content: accText });
       } else {
@@ -3145,6 +3148,7 @@ async function sendChatMessage() {
       contentEl.textContent = e.message || i18nText('modelTest.chat.error', '发送失败');
       assistantBubble?.classList.add('chat-message--error');
     }
+    if (assistantBubble) assistantBubble._rawText = String(e?.message || i18nText('modelTest.chat.error', '发送失败'));
   } finally {
     contentEl?.querySelector('.chat-cursor')?.remove();
     isChatSending = false;
@@ -3155,6 +3159,22 @@ async function sendChatMessage() {
     const messagesEl = document.getElementById('chatMessages');
     if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
+}
+
+/**
+ * 提取对话消息的可复制纯文本：
+ * - string直接返回
+ * - 多模态数组仅拼接 text 块（忽略 image_url）
+ */
+function extractChatMessageRawText(content) {
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    return content
+      .filter(item => item && item.type === 'text' && typeof item.text === 'string')
+      .map(item => item.text)
+      .join('\n');
+  }
+  return '';
 }
 
 /**
@@ -3181,6 +3201,20 @@ function appendChatBubble(role, content) {
   }
 
   bubble.appendChild(contentEl);
+
+  // 复制按钮：hover 浮现，点击走 .chat-message-copy-btn 委托
+  const copyLabel = i18nText('common.copy', '复制');
+  const copyBtn = document.createElement('button');
+  copyBtn.type = 'button';
+  copyBtn.className = 'chat-message-copy-btn';
+  copyBtn.setAttribute('data-action', 'copy-chat-message');
+  copyBtn.setAttribute('aria-label', copyLabel);
+  copyBtn.title = copyLabel;
+  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+  bubble.appendChild(copyBtn);
+
+  bubble._rawText = extractChatMessageRawText(content);
+
   messagesEl.appendChild(bubble);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return bubble;
@@ -3563,6 +3597,20 @@ document.addEventListener('keydown', (e) => {
 
 // Tab switch + copy/merge button delegation for upstream detail modal
 document.addEventListener('click', (e) => {
+  // 对话气泡复制按钮
+  const chatCopyBtn = e.target.closest('.chat-message-copy-btn');
+  if (chatCopyBtn) {
+    e.preventDefault();
+    const bubble = chatCopyBtn.closest('.chat-message');
+    const text = bubble?._rawText || '';
+    if (!text) return;
+    navigator.clipboard.writeText(text).then(() => {
+      chatCopyBtn.classList.add('chat-message-copy-btn--copied');
+      setTimeout(() => chatCopyBtn.classList.remove('chat-message-copy-btn--copied'), 1500);
+    }).catch(() => { /* 静默失败 */ });
+    return;
+  }
+
   const tab = e.target.closest('#upstreamDetailModal .upstream-tab');
   if (tab) {
     const target = tab.dataset.tab;
