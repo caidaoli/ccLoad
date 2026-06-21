@@ -2961,6 +2961,9 @@ body {
 }
 
 .mode-tab-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   padding: 8px 14px;
   font-size: 13px;
   border: 1px solid var(--color-border);
@@ -2968,12 +2971,27 @@ body {
   background: var(--color-bg-secondary);
   color: var(--color-text-secondary);
   cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.mode-tab-btn svg {
+  flex-shrink: 0;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+}
+
+.mode-tab-btn:hover svg {
+  opacity: 1;
 }
 
 .mode-tab-btn.active {
   background: var(--primary-500);
   border-color: var(--primary-500);
   color: white;
+}
+
+.mode-tab-btn.active svg {
+  opacity: 1;
 }
 
 .model-test-mode-header {
