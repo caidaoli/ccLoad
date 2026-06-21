@@ -2,6 +2,19 @@ const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 const TEST_MODE_CHAT = 'chat';
 
+// localStorage keys
+const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
+const STORAGE_KEY_SELECTED_CHANNEL_ID = 'ccload_model_test_channel_id';
+const STORAGE_KEY_SELECTED_MODEL_TYPE = 'ccload_model_test_model_type';
+const STORAGE_KEY_SELECTED_MODEL_NAME = 'ccload_model_test_model_name';
+const STORAGE_KEY_SELECTED_PROTOCOL = 'ccload_model_test_protocol';
+const STORAGE_KEY_STREAM_ENABLED = 'ccload_model_test_stream_enabled';
+const STORAGE_KEY_CHAT_MODEL = 'ccload_model_test_chat_model';
+const STORAGE_KEY_CHAT_CHANNEL_ID = 'ccload_model_test_chat_channel_id';
+const STORAGE_KEY_CHAT_STREAM_ENABLED = 'ccload_model_test_chat_stream_enabled';
+const STORAGE_KEY_CHAT_THINKING_EFFORT = 'ccload_model_test_chat_thinking_effort';
+const STORAGE_KEY_CHAT_BUILTIN_SEARCH = 'ccload_model_test_chat_builtin_search';
+
 let channelsList = [];
 let selectedChannel = null;
 let selectedModelType = '';
@@ -1162,12 +1175,14 @@ function ensureModelSelectCombobox() {
       const nextModelName = String(value || '').trim();
       const modelChanged = nextModelName !== selectedModelName;
       selectedModelName = nextModelName;
+      saveSelectedModelNameToStorage(selectedModelName);
       if (modelChanged && testMode === TEST_MODE_MODEL) {
         renderModelModeRows();
       }
     },
     onCancel: () => {
       selectedModelName = getModelInputValue() || selectedModelName;
+      saveSelectedModelNameToStorage(selectedModelName);
     }
   });
 }
@@ -2465,6 +2480,7 @@ function renderSearchableChannelSelect() {
     onSelect: async (value) => {
       const channelId = parseInt(value, 10);
       selectedChannel = channelsList.find(c => c.id === channelId) || null;
+      saveSelectedChannelIdToStorage(selectedChannel ? selectedChannel.id : null);
       await onChannelChange();
     }
   });
@@ -2482,12 +2498,24 @@ async function loadChannels(options = {}) {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
 
+    // 恢复选择或从 localStorage 加载
     if (preserveSelection && preservedChannelId !== null) {
       selectedChannel = channelsList.find(c => c.id === preservedChannelId) || null;
+    } else if (!preserveSelection) {
+      const storedChannelId = loadSelectedChannelIdFromStorage();
+      if (storedChannelId !== null) {
+        selectedChannel = channelsList.find(c => c.id === storedChannelId) || null;
+      }
     }
+
     if (preserveSelection) {
       if (preservedModelType) selectedModelType = preservedModelType;
       if (preservedModelName) selectedModelName = preservedModelName;
+    } else {
+      const storedModelType = loadSelectedModelTypeFromStorage();
+      const storedModelName = loadSelectedModelNameFromStorage();
+      if (storedModelType) selectedModelType = storedModelType;
+      if (storedModelName) selectedModelName = storedModelName;
     }
 
     renderSearchableChannelSelect();
@@ -2495,6 +2523,13 @@ async function loadChannels(options = {}) {
 
     if (preserveSelection && preservedProtocol) {
       selectedProtocol = preservedProtocol;
+    } else if (!preserveSelection) {
+      const storedProtocol = loadSelectedProtocolFromStorage();
+      if (storedProtocol) {
+        selectedProtocol = storedProtocol;
+      } else {
+        selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+      }
     } else {
       selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
     }
@@ -2537,7 +2572,15 @@ function bindEvents() {
   const streamEnabled = document.getElementById('streamEnabled');
   if (streamEnabled) {
     streamEnabled.addEventListener('change', () => {
+      saveStreamEnabledToStorage(streamEnabled.checked);
       applyFirstByteVisibility();
+    });
+  }
+
+  const chatStreamEnabled = document.getElementById('chatStreamEnabled');
+  if (chatStreamEnabled) {
+    chatStreamEnabled.addEventListener('change', () => {
+      saveChatStreamEnabledToStorage(chatStreamEnabled.checked);
     });
   }
 
@@ -2547,6 +2590,7 @@ function bindEvents() {
     if (target.disabled) return;
 
     selectedProtocol = normalizeProtocol(target.value) || selectedProtocol;
+    saveSelectedProtocolToStorage(selectedProtocol);
     clearProgress();
 
     if (testMode === TEST_MODE_MODEL) {
@@ -2575,8 +2619,10 @@ function bindEvents() {
   if (modelTypeSelect) {
     modelTypeSelect.addEventListener('change', () => {
       selectedModelType = normalizeProtocol(modelTypeSelect.value) || selectedModelType;
+      saveSelectedModelTypeToStorage(selectedModelType);
       if (selectedModelType) {
         selectedProtocol = selectedModelType;
+        saveSelectedProtocolToStorage(selectedProtocol);
       }
       clearProgress();
       renderProtocolTransformOptions();
@@ -2683,6 +2729,7 @@ function setTestMode(mode) {
   if (testMode === mode) return;
 
   testMode = mode;
+  saveTestModeToStorage(mode);
   clearProgress();
 
   if (testMode === TEST_MODE_CHAT) {
@@ -2712,6 +2759,196 @@ window.runModelTests = runModelTests;
 window.fetchAndAddModels = fetchAndAddModels;
 window.openAddModelsModal = openAddModelsModal;
 window.deleteSelectedModels = deleteSelectedModels;
+
+// ===== localStorage 持久化 =====
+
+function saveTestModeToStorage(mode) {
+  try {
+    localStorage.setItem(STORAGE_KEY_TEST_MODE, mode);
+  } catch (_) { /* ignore */ }
+}
+
+function loadTestModeFromStorage() {
+  try {
+    const mode = localStorage.getItem(STORAGE_KEY_TEST_MODE);
+    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT) {
+      return mode;
+    }
+  } catch (_) { /* ignore */ }
+  return TEST_MODE_CHANNEL;
+}
+
+function saveSelectedChannelIdToStorage(channelId) {
+  try {
+    if (channelId !== null && Number.isFinite(Number(channelId))) {
+      localStorage.setItem(STORAGE_KEY_SELECTED_CHANNEL_ID, String(channelId));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_SELECTED_CHANNEL_ID);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadSelectedChannelIdFromStorage() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY_SELECTED_CHANNEL_ID);
+    if (value) {
+      const channelId = parseInt(value, 10);
+      if (Number.isFinite(channelId)) return channelId;
+    }
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+function saveSelectedModelTypeToStorage(modelType) {
+  try {
+    if (modelType) {
+      localStorage.setItem(STORAGE_KEY_SELECTED_MODEL_TYPE, modelType);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_SELECTED_MODEL_TYPE);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadSelectedModelTypeFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SELECTED_MODEL_TYPE) || '';
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+function saveSelectedModelNameToStorage(modelName) {
+  try {
+    if (modelName) {
+      localStorage.setItem(STORAGE_KEY_SELECTED_MODEL_NAME, modelName);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_SELECTED_MODEL_NAME);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadSelectedModelNameFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SELECTED_MODEL_NAME) || '';
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+function saveSelectedProtocolToStorage(protocol) {
+  try {
+    if (protocol) {
+      localStorage.setItem(STORAGE_KEY_SELECTED_PROTOCOL, protocol);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_SELECTED_PROTOCOL);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadSelectedProtocolFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_SELECTED_PROTOCOL) || '';
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+function saveStreamEnabledToStorage(enabled) {
+  try {
+    localStorage.setItem(STORAGE_KEY_STREAM_ENABLED, enabled ? '1' : '0');
+  } catch (_) { /* ignore */ }
+}
+
+function loadStreamEnabledFromStorage() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY_STREAM_ENABLED);
+    if (value === '0') return false;
+    if (value === '1') return true;
+  } catch (_) { /* ignore */ }
+  return true; // 默认开启流式
+}
+
+function saveChatModelToStorage(model) {
+  try {
+    if (model) {
+      localStorage.setItem(STORAGE_KEY_CHAT_MODEL, model);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_CHAT_MODEL);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadChatModelFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_CHAT_MODEL) || '';
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+function saveChatChannelIdToStorage(channelId) {
+  try {
+    if (channelId !== null && Number.isFinite(Number(channelId))) {
+      localStorage.setItem(STORAGE_KEY_CHAT_CHANNEL_ID, String(channelId));
+    } else {
+      localStorage.removeItem(STORAGE_KEY_CHAT_CHANNEL_ID);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadChatChannelIdFromStorage() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY_CHAT_CHANNEL_ID);
+    if (value) {
+      const channelId = parseInt(value, 10);
+      if (Number.isFinite(channelId)) return channelId;
+    }
+  } catch (_) { /* ignore */ }
+  return null;
+}
+
+function saveChatStreamEnabledToStorage(enabled) {
+  try {
+    localStorage.setItem(STORAGE_KEY_CHAT_STREAM_ENABLED, enabled ? '1' : '0');
+  } catch (_) { /* ignore */ }
+}
+
+function loadChatStreamEnabledFromStorage() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY_CHAT_STREAM_ENABLED);
+    if (value === '0') return false;
+    if (value === '1') return true;
+  } catch (_) { /* ignore */ }
+  return true; // 默认开启流式
+}
+
+function saveChatThinkingEffortToStorage(effort) {
+  try {
+    if (effort) {
+      localStorage.setItem(STORAGE_KEY_CHAT_THINKING_EFFORT, effort);
+    } else {
+      localStorage.removeItem(STORAGE_KEY_CHAT_THINKING_EFFORT);
+    }
+  } catch (_) { /* ignore */ }
+}
+
+function loadChatThinkingEffortFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_CHAT_THINKING_EFFORT) || '';
+  } catch (_) { /* ignore */ }
+  return '';
+}
+
+function saveChatBuiltinSearchToStorage(enabled) {
+  try {
+    localStorage.setItem(STORAGE_KEY_CHAT_BUILTIN_SEARCH, enabled ? '1' : '0');
+  } catch (_) { /* ignore */ }
+}
+
+function loadChatBuiltinSearchFromStorage() {
+  try {
+    const value = localStorage.getItem(STORAGE_KEY_CHAT_BUILTIN_SEARCH);
+    if (value === '1') return true;
+    if (value === '0') return false;
+  } catch (_) { /* ignore */ }
+  return false; // 默认关闭内置搜索
+}
 
 // ===== Chat 模式实现 =====
 
@@ -2751,6 +2988,7 @@ function initChatPanel() {
       getOptions: () => getAllChatModelOptions().map(m => ({ value: m, label: m })),
       onSelect: (value) => {
         chatModel = String(value || '').trim();
+        saveChatModelToStorage(chatModel);
         refreshChatChannelsByModel();
       },
       onCancel: () => {
@@ -2759,6 +2997,7 @@ function initChatPanel() {
           const next = inputEl.value.trim();
           if (next && next !== chatModel) {
             chatModel = next;
+            saveChatModelToStorage(chatModel);
             refreshChatChannelsByModel();
           }
         }
@@ -2786,6 +3025,7 @@ function initChatPanel() {
       onSelect: (value) => {
         const channelId = parseInt(value, 10);
         chatChannel = channelsList.find(c => c.id === channelId) || null;
+        saveChatChannelIdToStorage(chatChannel ? chatChannel.id : null);
       }
     });
   } else {
@@ -2804,6 +3044,7 @@ function initChatPanel() {
       getOptions: getChatThinkingOptions,
       onSelect: (value) => {
         chatThinkingEffort = String(value || '').trim();
+        saveChatThinkingEffortToStorage(chatThinkingEffort);
       },
       onCancel: () => {
         chatThinkingCombobox?.setValue(chatThinkingEffort, getChatThinkingLabel(chatThinkingEffort));
@@ -2820,6 +3061,7 @@ function initChatPanel() {
     if (allModels.length > 0) {
       chatModel = allModels[0];
       chatModelCombobox.setValue(chatModel, chatModel);
+      saveChatModelToStorage(chatModel);
     }
   }
   refreshChatChannelsByModel();
@@ -2865,6 +3107,7 @@ function refreshChatChannelsByModel() {
   const list = getChannelsForChatModel();
   if (!chatChannel || !list.find(c => c.id === chatChannel.id)) {
     chatChannel = list[0] || null;
+    saveChatChannelIdToStorage(chatChannel ? chatChannel.id : null);
   }
   if (chatChannel) {
     chatChannelCombobox.setValue(String(chatChannel.id), formatModelTestChannelOptionLabel(chatChannel));
@@ -2885,7 +3128,9 @@ function toggleChatBuiltinSearch() {
   const toggle = document.getElementById('chatBuiltinSearchToggle');
   if (!toggle) return;
   const enabled = toggle.getAttribute('aria-pressed') === 'true';
-  toggle.setAttribute('aria-pressed', enabled ? 'false' : 'true');
+  const nextEnabled = !enabled;
+  toggle.setAttribute('aria-pressed', nextEnabled ? 'true' : 'false');
+  saveChatBuiltinSearchToStorage(nextEnabled);
 }
 
 function buildChatUserContent(text, images) {
@@ -3651,11 +3896,55 @@ async function bootstrap() {
   initModelTestActions();
   bindEvents();
   initChatExportDropdown();
+
+  // 从 localStorage 恢复测试模式
+  testMode = loadTestModeFromStorage();
+
+  // 从 localStorage 恢复流式开关
+  const streamEnabled = document.getElementById('streamEnabled');
+  if (streamEnabled) {
+    streamEnabled.checked = loadStreamEnabledFromStorage();
+  }
+
+  // 从 localStorage 恢复对话模式状态
+  const chatStreamEnabled = document.getElementById('chatStreamEnabled');
+  if (chatStreamEnabled) {
+    chatStreamEnabled.checked = loadChatStreamEnabledFromStorage();
+  }
+
+  chatModel = loadChatModelFromStorage();
+  const storedChatChannelId = loadChatChannelIdFromStorage();
+  chatThinkingEffort = loadChatThinkingEffortFromStorage();
+
+  const chatBuiltinSearchToggle = document.getElementById('chatBuiltinSearchToggle');
+  if (chatBuiltinSearchToggle) {
+    const builtinSearchEnabled = loadChatBuiltinSearchFromStorage();
+    chatBuiltinSearchToggle.setAttribute('aria-pressed', builtinSearchEnabled ? 'true' : 'false');
+  }
+
   await loadChannels();
+
+  // 恢复对话渠道选择（必须在 loadChannels 之后）
+  if (storedChatChannelId !== null) {
+    chatChannel = channelsList.find(c => c.id === storedChatChannelId) || null;
+  }
+
   await loadDefaultTestContent();
   updateHeadByMode();
   updateModeUI();
   renderRowsByMode();
+
+  // 根据恢复的模式初始化 UI
+  const modeTabChannel = document.getElementById('modeTabChannel');
+  const modeTabModel = document.getElementById('modeTabModel');
+  const modeTabChat = document.getElementById('modeTabChat');
+  modeTabChannel?.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
+  modeTabModel?.classList.toggle('active', testMode === TEST_MODE_MODEL);
+  modeTabChat?.classList.toggle('active', testMode === TEST_MODE_CHAT);
+
+  if (testMode === TEST_MODE_CHAT) {
+    initChatPanel();
+  }
 }
 
 window.initPageBootstrap({
