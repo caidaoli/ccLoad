@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -486,8 +488,8 @@ func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing
 	}
 
 	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
-	ok := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL)
-	if !ok {
+	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL)
+	if !attempt.handled {
 		t.Fatal("expected non-stream chat response to be handled without URL fallback")
 	}
 
@@ -507,6 +509,376 @@ func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing
 	}
 	if strings.Contains(body, `"error"`) {
 		t.Fatalf("non-stream success must not be emitted as error, got:\n%s", body)
+	}
+}
+
+func TestHandleChannelChatWritesErrorWhenAllURLsFailBeforeResponse(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-network-error",
+		URL:          "http://missing-chat-upstream.invalid",
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"error"`) {
+		t.Fatalf("expected chat error event when upstream request fails, got:\n%s", body)
+	}
+	if !strings.Contains(body, "网络请求失败") {
+		t.Fatalf("expected network failure message, got:\n%s", body)
+	}
+}
+
+func TestHandleChannelChatFallsBackAfterRetryableHTTPError(t *testing.T) {
+	failCalls := 0
+	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failCalls++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = io.WriteString(w, `{"error":{"type":"server_error","message":"bad gateway"}}`)
+	}))
+	defer failUpstream.Close()
+
+	okCalls := 0
+	okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		okCalls++
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"fallback answer"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer okUpstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-http-fallback",
+		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	srv.urlSelector.RecordLatency(created.ID, failUpstream.URL, 10*time.Millisecond)
+	srv.urlSelector.RecordLatency(created.ID, okUpstream.URL, 100*time.Millisecond)
+	srv.urlSelector.CooldownURL(created.ID, okUpstream.URL)
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if failCalls != 1 || okCalls != 1 {
+		t.Fatalf("expected one failed call and one fallback call, failCalls=%d okCalls=%d", failCalls, okCalls)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"delta":"fallback answer"`) {
+		t.Fatalf("expected fallback answer, got:\n%s", body)
+	}
+	if strings.Contains(body, `"error"`) {
+		t.Fatalf("retryable HTTP error must not be emitted before fallback succeeds, got:\n%s", body)
+	}
+}
+
+func TestHandleChannelChatDisablesServerWriteTimeoutForDelayedStreamBody(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		time.Sleep(80 * time.Millisecond)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"after wait"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-write-timeout",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	router := gin.New()
+	router.POST("/admin/channels/:id/chat", srv.HandleChannelChat)
+	app := httptest.NewUnstartedServer(router)
+	app.Config.WriteTimeout = 30 * time.Millisecond
+	app.Start()
+	defer app.Close()
+
+	payload, err := sonic.Marshal(map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal request failed: %v", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, app.URL+"/admin/channels/"+fmt.Sprintf("%d", created.ID)+"/chat", bytes.NewReader(payload))
+	if err != nil {
+		t.Fatalf("NewRequest failed: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	client := app.Client()
+	client.Timeout = 2 * time.Second
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("chat request failed: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read chat response failed: %v", err)
+	}
+	if !strings.Contains(string(body), `"delta":"after wait"`) {
+		t.Fatalf("expected delayed stream body to survive WriteTimeout, got:\n%s", string(body))
+	}
+}
+
+func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.T) {
+	releaseBody := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() { close(releaseBody) })
+	}
+	defer release()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		<-releaseBody
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"too late"}}]}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.firstByteTimeout = 25 * time.Millisecond
+	cfg := &model.Config{
+		ID:           77,
+		Name:         "chat-first-content-timeout",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		Stream:      true,
+		ChannelType: "openai",
+		Messages: []testutil.ChatMessage{
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	reqCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/77/chat", nil).WithContext(reqCtx))
+
+	done := make(chan chatURLAttemptResult, 1)
+	go func() {
+		done <- srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL)
+	}()
+
+	select {
+	case attempt := <-done:
+		if !attempt.handled {
+			t.Fatal("expected timeout to be handled as final chat error")
+		}
+	case <-time.After(120 * time.Millisecond):
+		t.Fatal("streamChatWithURL did not stop at first content timeout")
+	}
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "首个有效流内容超时") {
+		t.Fatalf("expected first content timeout error event, got:\n%s", body)
+	}
+}
+
+func TestHandleChannelChatDoesNotWriteSyntheticOneMillisecondURLLatency(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"ok"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	unusedUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatalf("unused upstream should not be called")
+	}))
+	defer unusedUpstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-selector-latency",
+		URL:          upstream.URL + "\n" + unusedUpstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	srv.urlSelector.RecordLatency(created.ID, upstream.URL, 80*time.Millisecond)
+	srv.urlSelector.RecordLatency(created.ID, unusedUpstream.URL, 800*time.Millisecond)
+	srv.urlSelector.CooldownURL(created.ID, unusedUpstream.URL)
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if !strings.Contains(w.Body.String(), `"delta":"ok"`) {
+		t.Fatalf("expected successful chat response, got:\n%s", w.Body.String())
+	}
+	stats := srv.urlSelector.GetURLStats(created.ID, []string{upstream.URL})
+	if len(stats) != 1 {
+		t.Fatalf("expected one URL stat, got %d", len(stats))
+	}
+	if stats[0].LatencyMs < 70 {
+		t.Fatalf("chat handler must not overwrite URL latency with synthetic 1ms, got %.3fms", stats[0].LatencyMs)
+	}
+}
+
+func TestChatRequestErrorResultClassifiesLimitAndNetworkFailures(t *testing.T) {
+	start := time.Now()
+	req := &testutil.TestChannelRequest{Stream: true}
+	timeout := &channelTestTimeout{}
+
+	tests := []struct {
+		name        string
+		err         error
+		wantStatus  int
+		wantMessage string
+		wantKey     string
+	}{
+		{
+			name:        "network",
+			err:         errors.New("dial tcp refused"),
+			wantStatus:  0,
+			wantMessage: "网络请求失败",
+		},
+		{
+			name:        "rpm",
+			err:         ErrChannelRPMExceeded,
+			wantStatus:  http.StatusTooManyRequests,
+			wantMessage: "渠道已达到RPM限制",
+			wantKey:     "rpm_limited",
+		},
+		{
+			name:        "concurrency",
+			err:         &channelConcurrencyExceededError{active: 1, limit: 1},
+			wantStatus:  http.StatusTooManyRequests,
+			wantMessage: "渠道已达到并发限制",
+			wantKey:     "concurrency_limited",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := chatRequestErrorResult(start, req, timeout, tt.err)
+			if tt.wantStatus > 0 {
+				if statusCode, _ := getResultInt(result["status_code"]); statusCode != tt.wantStatus {
+					t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, tt.wantStatus, result)
+				}
+			} else if _, ok := result["status_code"]; ok {
+				t.Fatalf("network error should not invent status_code, result=%+v", result)
+			}
+			if errMsg, _ := result["error"].(string); !strings.Contains(errMsg, tt.wantMessage) {
+				t.Fatalf("error=%q, want containing %q", errMsg, tt.wantMessage)
+			}
+			if tt.wantKey != "" {
+				if got, _ := result[tt.wantKey].(bool); !got {
+					t.Fatalf("expected %s=true, result=%+v", tt.wantKey, result)
+				}
+			}
+		})
+	}
+
+	timeout.firstStreamContentTimedOut.Store(true)
+	result := chatRequestErrorResult(start, req, timeout, context.Canceled)
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
 	}
 }
 
