@@ -224,6 +224,13 @@ function renderChatMarkdown(target, markdown, options = {}) {
   const text = String(markdown || '');
   if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
     target.innerHTML = sanitizeChatMarkdownHTML(window.marked.parse(text));
+
+    // 对代码块应用语法高亮
+    if (typeof window.hljs !== 'undefined') {
+      target.querySelectorAll('pre code').forEach((block) => {
+        window.hljs.highlightElement(block);
+      });
+    }
   } else {
     target.textContent = text;
   }
