@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
+	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -95,45 +98,60 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	c.Header("Cache-Control", "no-cache")
 	c.Header("X-Accel-Buffering", "no")
 	c.Status(http.StatusOK)
+	disableResponseWriteTimeout(c.Writer, "聊天流式")
 
+	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		ok := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url)
-		if ok {
-			if selector != nil {
-				selector.RecordLatency(cfg.ID, entry.url, time.Millisecond)
-			}
+		attempt := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url)
+		if attempt.handled {
 			return
 		}
+		lastResult = attempt.result
 		if idx == len(orderedURLs)-1 {
 			break
 		}
-		if selector != nil {
+
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(attempt.result)
+		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}
+		if !continueFallback {
+			break
+		}
 	}
+
+	if lastResult != nil {
+		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
+		return
+	}
+	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
+}
+
+type chatURLAttemptResult struct {
+	handled bool
+	result  map[string]any
 }
 
 // streamChatWithURL 对单个 URL 发起对话请求并写入前端 SSE。
-// 返回 true 表示已成功写入响应（无论是否出错），false 表示应 fallback 到下一个 URL。
+// handled=true 表示已经写入最终响应；handled=false 时 result 交给调用方决定是否 fallback。
 func (s *Server) streamChatWithURL(
 	c *gin.Context,
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, selectedURL string,
-) bool {
+) chatURLAttemptResult {
 	req, requestPlan, cancel, err := s.buildTestUpstreamRequest(c.Request.Context(), cfg, apiKey, testReq, clientProtocol, selectedURL)
 	if err != nil {
 		writeChatErrorEvent(c, err.Error())
-		return true
+		return chatURLAttemptResult{handled: true}
 	}
 	defer cancel()
 
 	start := time.Now()
 	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
-		// 网络层错误，尝试 fallback
-		return false
+		return chatURLAttemptResult{result: chatRequestErrorResult(start, testReq, requestPlan.timeout, err)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
@@ -143,25 +161,97 @@ func (s *Server) streamChatWithURL(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		msg := extractChatUpstreamError(resp.StatusCode, body)
-		writeChatErrorEvent(c, msg)
-		return true
+		return chatURLAttemptResult{result: map[string]any{
+			"success":                false,
+			"status_code":            resp.StatusCode,
+			"duration_ms":            time.Since(start).Milliseconds(),
+			"error":                  msg,
+			"raw_response":           string(body),
+			"upstream_response_body": string(body),
+			"response_headers":       flattenHeader(resp.Header),
+		}}
 	}
 
 	if !isSSE {
 		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start)
-		return true
+		return chatURLAttemptResult{handled: true}
 	}
 
-	requestPlan.timeout.markFirstStreamContent()
+	firstContentMarked := false
+	markFirstContent := func() {
+		if firstContentMarked {
+			return
+		}
+		firstContentMarked = true
+		requestPlan.timeout.markFirstStreamContent()
+	}
 
+	var streamErr error
 	if clientProtocol == requestPlan.upstreamProtocol {
 		// 原生协议：直接透传 SSE，提取 delta 文本
-		streamChatNative(c, resp.Body)
+		streamErr = streamChatNativeWithFirstContent(c, resp.Body, markFirstContent)
 	} else {
 		// 协议转换：先翻译再透传
-		streamChatTranslated(c, resp, requestPlan, testReq, s)
+		streamErr = streamChatTranslated(c, resp, requestPlan, testReq, s, markFirstContent)
 	}
-	return true
+	if streamErr != nil {
+		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, streamErr)
+		writeChatErrorEvent(c, chatErrorMessageFromResult(result))
+	}
+	return chatURLAttemptResult{handled: true}
+}
+
+func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) map[string]any {
+	if errors.Is(err, ErrChannelRPMExceeded) {
+		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+	}
+	if errors.Is(err, ErrChannelConcurrencyExceeded) {
+		return channelConcurrencyExceededTestResult(start, err)
+	}
+
+	errorMsg := "网络请求失败: " + err.Error()
+	statusCode := 0
+	if timeout != nil && timeout.firstStreamContentTimeoutTriggered() {
+		threshold := timeout.firstByteTimeout
+		errorMsg = fmt.Sprintf(
+			"上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v",
+			time.Since(start).Seconds(),
+			threshold,
+			err,
+		)
+		statusCode = util.StatusFirstByteTimeout
+	} else if testReq != nil && !testReq.Stream && timeout != nil && timeout.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+		errorMsg = fmt.Sprintf(
+			"非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v",
+			time.Since(start).Seconds(),
+			timeout.nonStreamTimeout,
+			err,
+		)
+		statusCode = http.StatusGatewayTimeout
+	}
+
+	result := map[string]any{
+		"success":     false,
+		"error":       errorMsg,
+		"duration_ms": time.Since(start).Milliseconds(),
+	}
+	if statusCode > 0 {
+		result["status_code"] = statusCode
+	}
+	return result
+}
+
+func chatErrorMessageFromResult(result map[string]any) string {
+	if result == nil {
+		return "渠道测试失败"
+	}
+	if msg, _ := result["error"].(string); strings.TrimSpace(msg) != "" {
+		return msg
+	}
+	if statusCode, ok := getResultInt(result["status_code"]); ok && statusCode > 0 {
+		return fmt.Sprintf("上游返回错误 HTTP %d", statusCode)
+	}
+	return "渠道测试失败"
 }
 
 func (s *Server) streamChatNonStreamResponse(
@@ -215,18 +305,26 @@ func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
 	writeChatFrontendChunks(c, chatDoneEventChunk())
 }
 
-// streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
 func streamChatNative(c *gin.Context, body io.Reader) {
+	_ = streamChatNativeWithFirstContent(c, body, nil)
+}
+
+// streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
+func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstContent func()) error {
 	frontendState := &chatFrontendStreamState{}
-	_ = streamTransformSSEEvents(c.Request.Context(), body, c.Writer, nil,
+	return streamTransformSSEEvents(c.Request.Context(), body, c.Writer, nil,
 		func(rawEvent []byte) ([][]byte, error) {
-			return chatFrontendChunksFromSSEEventWithState(rawEvent, frontendState), nil
+			chunks := chatFrontendChunksFromSSEEventWithState(rawEvent, frontendState)
+			if len(chunks) > 0 && onFirstContent != nil {
+				onFirstContent()
+			}
+			return chunks, nil
 		},
 	)
 }
 
 // streamChatTranslated 协议转换时：翻译 SSE 事件后再提取 delta 写给前端。
-func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *channelTestRequestPlan, testReq *testutil.TestChannelRequest, s *Server) {
+func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *channelTestRequestPlan, testReq *testutil.TestChannelRequest, s *Server, onFirstContent func()) error {
 	var state any
 	frontendState := &chatFrontendStreamState{}
 	ctx := c.Request.Context()
@@ -239,7 +337,7 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	}
 
 	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
-	_ = streamTransformSSEEvents(ctx, src, c.Writer,
+	return streamTransformSSEEvents(ctx, src, c.Writer,
 		nil,
 		func(rawEvent []byte) ([][]byte, error) {
 			translated, err := s.protocolRegistry.TranslateResponseStream(
@@ -258,6 +356,9 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			var chunks [][]byte
 			for _, chunk := range translated {
 				chunks = append(chunks, chatFrontendChunksFromSSEEventWithState(chunk, frontendState)...)
+			}
+			if len(chunks) > 0 && onFirstContent != nil {
+				onFirstContent()
 			}
 			return chunks, nil
 		},
