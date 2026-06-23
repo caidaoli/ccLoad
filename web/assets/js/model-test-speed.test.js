@@ -36,7 +36,26 @@ test('model-test 页表头、模板和文案新增速度列', () => {
   assert.match(html, /class="model-test-col-speed speed" data-mobile-label="\{\{mobileLabelSpeed\}\}">-<\/td>/);
   assert.match(html, /class="model-test-empty-row"><td colspan="11" data-i18n="modelTest\.selectChannelFirst">请先选择渠道<\/td><\/tr>/);
   assert.match(zhLocale, /'modelTest\.speed': '速度\(tok\/s\)'/);
-  assert.match(enLocale, /'modelTest\.speed': 'Speed \(tok\/s\)'/);
+  assert.match(enLocale, /'modelTest\.speed': 'Tok\/s'/);
+});
+
+test('model-test 英文表头使用紧凑通用简称避免固定列重叠', () => {
+  assert.match(enLocale, /'modelTest\.firstByteDuration': 'TTFB'/);
+  assert.match(enLocale, /'modelTest\.totalDuration': 'Total'/);
+  assert.match(enLocale, /'modelTest\.speed': 'Tok\/s'/);
+  assert.match(enLocale, /'modelTest\.cacheRead': 'Cache R'/);
+  assert.match(enLocale, /'modelTest\.cacheCreate': 'Cache W'/);
+  assert.match(enLocale, /'modelTest\.responseContent': 'Response'/);
+});
+
+test('model-test 指标列宽必须容纳英文缓存简称', () => {
+  const styles = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
+  assert.match(styles, /\.table-col-metric\s*\{\s*width:\s*76px;\s*\}/);
+});
+
+test('model-test 启用列宽必须容纳英文 Enabled 表头', () => {
+  const styles = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
+  assert.match(styles, /\.table-col-enabled\s*\{\s*width:\s*72px;\s*\}/);
 });
 
 test('model-test 页速度列使用专用列宽，避免标题挤到缓读列', () => {
