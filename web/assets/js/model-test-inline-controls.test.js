@@ -951,7 +951,7 @@ test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
   assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
 
-test('按协议测试时模型模式按类型和协议联动模型与渠道', () => {
+test('按协议测试时模型模式只提供当前类型和协议都可测试的模型', () => {
   const sandbox = {
     ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini'],
     selectedModelType: 'anthropic',
@@ -976,14 +976,14 @@ test('按协议测试时模型模式按类型和协议联动模型与渠道', ()
     ${extractFunction(script, 'getChannelsSupportingModel')}
   `, sandbox);
 
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'claude-4', 'gpt-4.1']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7']);
   assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('anthropic')), ['claude-3.7', 'claude-4']);
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'claude-3.7').map((channel) => channel.id),
     [3]
   );
   sandbox.selectedModelType = 'openai';
-  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['claude-3.7', 'gpt-4.1']);
+  assert.deepEqual(Array.from(sandbox.getAllModelsForProtocol('openai')), ['gpt-4.1']);
   assert.deepEqual(
     sandbox.getChannelsSupportingModel('openai', 'gpt-4.1').map((channel) => channel.id),
     [2]
@@ -1035,13 +1035,12 @@ test('切换类型后会回退到该类型下的首个可用模型', () => {
       { id: 2, channel_type: 'openai', models: ['gpt-4.1', 'gpt-4.1-mini'] }
     ],
     modelSelectCombobox: { refreshCalled: 0, refresh() { this.refreshCalled += 1; } },
-    lastModelValue: '',
-    setModelInputValue(value) { globalThis.lastModelValue = value; },
-    getModelInputValue() { return ''; },
     ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini']
   };
 
   vm.runInNewContext(`
+    function getModelInputValue() { return ''; }
+    function setModelInputValue(value) { globalThis.lastModelValue = value; }
     ${extractFunction(script, 'normalizeProtocol')}
     ${extractFunction(script, 'getModelName')}
     ${extractFunction(script, 'getChannelType')}
@@ -1059,6 +1058,52 @@ test('切换类型后会回退到该类型下的首个可用模型', () => {
   sandbox.populateModelSelector();
   assert.equal(sandbox.selectedModelName, 'gpt-4.1');
   assert.equal(sandbox.modelSelectCombobox.refreshCalled, 1);
+});
+
+test('按模型测试恢复状态时会丢弃当前协议下无法渲染渠道的模型', () => {
+  const sandbox = {
+    TEST_MODE_MODEL: 'model',
+    TEST_MODE_CHANNEL: 'channel',
+    testMode: 'model',
+    selectedProtocol: 'anthropic',
+    selectedModelType: 'codex',
+    selectedModelName: 'gpt-5.4',
+    channelsList: [
+      { id: 1, name: 'codex-native-only', channel_type: 'codex', protocol_transforms: [], priority: 50, models: ['gpt-5.4'] },
+      { id: 2, name: 'codex-anthropic-ready', channel_type: 'codex', protocol_transforms: ['anthropic'], priority: 40, models: ['codex-ready'] }
+    ],
+    modelSelectCombobox: { refreshCalled: 0, refresh() { this.refreshCalled += 1; } },
+    lastModelValue: '',
+    ALL_PROTOCOLS: ['anthropic', 'codex', 'openai', 'gemini']
+  };
+
+  vm.runInNewContext(`
+    function getModelInputValue() { return ''; }
+    function setModelInputValue(value) { globalThis.lastModelValue = value; }
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getModelName')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'getExposedProtocols')}
+    ${extractFunction(script, 'getSupportedProtocols')}
+    ${extractFunction(script, 'channelExposesProtocol')}
+    ${extractFunction(script, 'channelSupportsProtocol')}
+    ${extractFunction(script, 'channelMatchesModelType')}
+    ${extractFunction(script, 'getAvailableChannelTypes')}
+    ${extractFunction(script, 'ensureSelectedModelType')}
+    ${extractFunction(script, 'getAllModelsForProtocol')}
+    ${extractFunction(script, 'isModelSupported')}
+    ${extractFunction(script, 'getChannelsSupportingModel')}
+    ${extractFunction(script, 'populateModelSelector')}
+  `, sandbox);
+
+  sandbox.populateModelSelector();
+
+  assert.equal(sandbox.selectedModelName, 'codex-ready');
+  assert.equal(sandbox.lastModelValue, 'codex-ready');
+  assert.deepEqual(
+    sandbox.getChannelsSupportingModel('anthropic', sandbox.selectedModelName).map((channel) => channel.id),
+    [2]
+  );
 });
 
 test('model-test.js 开始测试时发送 protocol_transform 而不是 channel_type', () => {
@@ -1169,6 +1214,75 @@ test('按渠道测试时协议选项不再因渠道未配置 protocol_transforms
 
   sandbox.renderProtocolTransformOptions();
   assert.doesNotMatch(sandbox.protocolTransformOptions.innerHTML, /\bdisabled\b/);
+});
+
+test('按模型测试从按渠道测试返回时恢复模型模式的协议转换', () => {
+  const sandbox = {
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    TEST_MODE_CHAT: 'chat',
+    testMode: 'model',
+    selectedProtocol: 'codex',
+    selectedModelType: 'codex',
+    selectedChannel: { channel_type: 'anthropic' },
+    calls: []
+  };
+
+  vm.runInNewContext(`
+    function saveTestModeToStorage(mode) { calls.push(['saveMode', mode]); }
+    function clearProgress() {}
+    function updateModeUI() {}
+    function updateHeadByMode() {}
+    function initChatPanel() {}
+    function renderProtocolTransformOptions() {}
+    function populateModelSelector() { calls.push(['populate', selectedProtocol]); }
+    function renderRowsByMode() { calls.push(['render', selectedProtocol]); }
+    let selectedModelModeProtocol = '';
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'setTestMode')}
+  `, sandbox);
+
+  sandbox.setTestMode('channel');
+  assert.equal(sandbox.selectedProtocol, 'anthropic');
+
+  sandbox.setTestMode('model');
+  assert.equal(sandbox.selectedProtocol, 'codex');
+  assert.equal(JSON.stringify(sandbox.calls.slice(-2)), JSON.stringify([['populate', 'codex'], ['render', 'codex']]));
+});
+
+test('按模型测试从非模型初始模式进入时使用持久化的模型协议', () => {
+  const sandbox = {
+    TEST_MODE_CHANNEL: 'channel',
+    TEST_MODE_MODEL: 'model',
+    TEST_MODE_CHAT: 'chat',
+    testMode: 'channel',
+    selectedProtocol: 'anthropic',
+    selectedModelType: 'codex',
+    selectedChannel: { channel_type: 'anthropic' },
+    calls: []
+  };
+
+  vm.runInNewContext(`
+    function saveTestModeToStorage(mode) { calls.push(['saveMode', mode]); }
+    function loadSelectedProtocolFromStorage() { return 'codex'; }
+    function clearProgress() {}
+    function updateModeUI() {}
+    function updateHeadByMode() {}
+    function initChatPanel() {}
+    function renderProtocolTransformOptions() {}
+    function populateModelSelector() { calls.push(['populate', selectedProtocol]); }
+    function renderRowsByMode() { calls.push(['render', selectedProtocol]); }
+    let selectedModelModeProtocol = '';
+    ${extractFunction(script, 'normalizeProtocol')}
+    ${extractFunction(script, 'getChannelType')}
+    ${extractFunction(script, 'setTestMode')}
+  `, sandbox);
+
+  sandbox.setTestMode('model');
+
+  assert.equal(sandbox.selectedProtocol, 'codex');
+  assert.equal(JSON.stringify(sandbox.calls.slice(-2)), JSON.stringify([['populate', 'codex'], ['render', 'codex']]));
 });
 
 test('applyTestResultToRow 在失败时优先展示结构化上游错误而不是泛化状态文案', () => {

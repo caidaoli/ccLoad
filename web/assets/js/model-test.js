@@ -20,6 +20,7 @@ let selectedChannel = null;
 let selectedModelType = '';
 let selectedModelName = '';
 let selectedProtocol = '';
+let selectedModelModeProtocol = '';
 let testMode = TEST_MODE_CHANNEL;
 let isDeletingModels = false;
 let isAddingModels = false;
@@ -1042,7 +1043,7 @@ function getAllModelsForProtocol(protocol) {
   const normalizedProtocol = normalizeProtocol(protocol);
   const modelSet = new Set();
   channelsList.forEach(ch => {
-    const include = channelMatchesModelType(ch) || channelExposesProtocol(ch, normalizedProtocol);
+    const include = channelMatchesModelType(ch) && channelExposesProtocol(ch, normalizedProtocol);
     if (!include) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
@@ -2540,6 +2541,9 @@ async function loadChannels(options = {}) {
     } else {
       selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
     }
+    if (testMode === TEST_MODE_MODEL) {
+      selectedModelModeProtocol = selectedProtocol;
+    }
 
     populateModelTypeSelect();
     renderProtocolTransformOptions();
@@ -2597,6 +2601,9 @@ function bindEvents() {
     if (target.disabled) return;
 
     selectedProtocol = normalizeProtocol(target.value) || selectedProtocol;
+    if (testMode === TEST_MODE_MODEL) {
+      selectedModelModeProtocol = selectedProtocol;
+    }
     saveSelectedProtocolToStorage(selectedProtocol);
     clearProgress();
 
@@ -2629,6 +2636,7 @@ function bindEvents() {
       saveSelectedModelTypeToStorage(selectedModelType);
       if (selectedModelType) {
         selectedProtocol = selectedModelType;
+        selectedModelModeProtocol = selectedProtocol;
         saveSelectedProtocolToStorage(selectedProtocol);
       }
       clearProgress();
@@ -2735,6 +2743,11 @@ function setTestMode(mode) {
   if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT) return;
   if (testMode === mode) return;
 
+  const previousMode = testMode;
+  if (previousMode === TEST_MODE_MODEL && selectedProtocol) {
+    selectedModelModeProtocol = selectedProtocol;
+  }
+
   testMode = mode;
   saveTestModeToStorage(mode);
   clearProgress();
@@ -2752,6 +2765,13 @@ function setTestMode(mode) {
   updateModeUI();
 
   if (testMode === TEST_MODE_MODEL) {
+    if (!selectedModelModeProtocol) {
+      selectedModelModeProtocol = loadSelectedProtocolFromStorage() || selectedProtocol;
+    }
+    if (selectedModelModeProtocol) {
+      selectedProtocol = selectedModelModeProtocol;
+      renderProtocolTransformOptions();
+    }
     populateModelSelector();
   }
 
