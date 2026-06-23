@@ -14,6 +14,7 @@ const STORAGE_KEY_CHAT_CHANNEL_ID = 'ccload_model_test_chat_channel_id';
 const STORAGE_KEY_CHAT_STREAM_ENABLED = 'ccload_model_test_chat_stream_enabled';
 const STORAGE_KEY_CHAT_THINKING_EFFORT = 'ccload_model_test_chat_thinking_effort';
 const STORAGE_KEY_CHAT_BUILTIN_SEARCH = 'ccload_model_test_chat_builtin_search';
+const STORAGE_KEY_CHAT_MESSAGES = 'ccload_model_test_chat_messages';
 
 let channelsList = [];
 let selectedChannel = null;
@@ -2977,6 +2978,33 @@ function loadChatBuiltinSearchFromStorage() {
   return false; // 默认关闭内置搜索
 }
 
+function saveChatMessagesToStorage() {
+  try {
+    const data = JSON.stringify({
+      messages: chatMessages,
+      model: chatModel,
+      channelId: chatChannel?.id || null,
+    });
+    localStorage.setItem(STORAGE_KEY_CHAT_MESSAGES, data);
+  } catch (_) { /* quota exceeded or serialization error */ }
+}
+
+function loadChatMessagesFromStorage() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY_CHAT_MESSAGES);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !Array.isArray(data.messages)) return null;
+    return data;
+  } catch (_) {
+    return null;
+  }
+}
+
+function clearChatMessagesFromStorage() {
+  localStorage.removeItem(STORAGE_KEY_CHAT_MESSAGES);
+}
+
 // ===== Chat 模式实现 =====
 
 function getChatThinkingOptions() {
@@ -3105,6 +3133,23 @@ function initChatPanel() {
     });
     chatInput.addEventListener('input', autoResizeChatInput);
     chatInput.addEventListener('paste', handleChatPaste);
+  }
+
+  // Restore persisted chat messages
+  const savedChat = loadChatMessagesFromStorage();
+  if (savedChat && savedChat.messages.length > 0) {
+    chatMessages = savedChat.messages;
+    if (savedChat.model) {
+      chatModel = savedChat.model;
+      const chatModelInput = document.getElementById('chatModelSelect');
+      if (chatModelInput) chatModelInput.value = chatModel;
+    }
+    // Rebuild bubbles from saved messages
+    for (const msg of chatMessages) {
+      appendChatBubble(msg.role, msg.content);
+    }
+    const messagesEl = document.getElementById('chatMessages');
+    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 }
 
@@ -3318,6 +3363,7 @@ async function sendChatMessage() {
 
   const userContent = buildChatUserContent(content, chatPendingImages);
   chatMessages.push({ role: 'user', content: userContent });
+  saveChatMessagesToStorage();
   appendChatBubble('user', userContent);
   inputEl.value = '';
   chatPendingImages = [];
@@ -3398,6 +3444,11 @@ async function sendChatMessage() {
               if (assistantBubble) assistantBubble._rawText = accText;
               const messagesEl = document.getElementById('chatMessages');
               if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+            } else if (evt.summary) {
+              if (assistantBubble) {
+                assistantBubble._chatSummary = evt.summary;
+                renderChatBubbleStats(assistantBubble, evt.summary);
+              }
             }
           } catch (_) { /* ignore malformed event */ }
         }
@@ -3410,12 +3461,14 @@ async function sendChatMessage() {
       if (assistantBubble) assistantBubble._rawText = accText || '';
       if (accText) {
         chatMessages.push({ role: 'assistant', content: accText });
+        saveChatMessagesToStorage();
       } else {
         chatMessages.pop();
       }
     }
   } catch (e) {
     chatMessages.pop();
+    saveChatMessagesToStorage();
     if (contentEl) {
       contentEl.textContent = e.message || i18nText('modelTest.chat.error', '发送失败');
       assistantBubble?.classList.add('chat-message--error');
@@ -3492,6 +3545,50 @@ function appendChatBubble(role, content) {
   return bubble;
 }
 
+/**
+ * 在 assistant 气泡右下方渲染 token 统计信息。
+ * @param {HTMLElement} bubble
+ * @param {object} summary - { first_byte_ms, duration_ms, input_tokens, output_tokens, cache_read, cache_create, speed, cost_usd }
+ */
+function renderChatBubbleStats(bubble, summary) {
+  if (!bubble || !summary) return;
+  let statsEl = bubble.querySelector('.chat-message-stats');
+  if (statsEl) statsEl.remove();
+
+  const parts = [];
+  if (summary.first_byte_ms != null && summary.first_byte_ms > 0) {
+    parts.push(i18nText('modelTest.chat.statsFirstByte', '首字') + ' ' + formatDurationMs(summary.first_byte_ms));
+  }
+  if (summary.duration_ms != null && summary.duration_ms > 0) {
+    parts.push(i18nText('modelTest.chat.statsDuration', '耗时') + ' ' + formatDurationMs(summary.duration_ms));
+  }
+  if (summary.input_tokens != null && summary.input_tokens > 0) {
+    parts.push(i18nText('common.input', '输入') + ' ' + summary.input_tokens);
+  }
+  if (summary.output_tokens != null && summary.output_tokens > 0) {
+    parts.push(i18nText('common.output', '输出') + ' ' + summary.output_tokens);
+  }
+  if (summary.cache_read != null && summary.cache_read > 0) {
+    parts.push(i18nText('modelTest.cacheRead', '缓读') + ' ' + summary.cache_read);
+  }
+  if (summary.cache_create != null && summary.cache_create > 0) {
+    parts.push(i18nText('modelTest.cacheCreate', '缓建') + ' ' + summary.cache_create);
+  }
+  if (summary.speed != null && summary.speed > 0) {
+    parts.push(summary.speed.toFixed(1) + ' tok/s');
+  }
+  if (summary.cost_usd != null && summary.cost_usd > 0) {
+    parts.push('$' + summary.cost_usd.toFixed(4));
+  }
+
+  if (parts.length === 0) return;
+
+  statsEl = document.createElement('div');
+  statsEl.className = 'chat-message-stats';
+  statsEl.textContent = parts.join(' · ');
+  bubble.appendChild(statsEl);
+}
+
 function renderChatThinking(bubble, thinking, streaming = false) {
   if (!bubble) return;
   const text = String(thinking || '').trim();
@@ -3530,6 +3627,7 @@ function renderChatThinking(bubble, thinking, streaming = false) {
 function clearChat() {
   chatMessages = [];
   chatPendingImages = [];
+  clearChatMessagesFromStorage();
   const messagesEl = document.getElementById('chatMessages');
   if (messagesEl) messagesEl.innerHTML = '';
   renderChatImagePreviews();

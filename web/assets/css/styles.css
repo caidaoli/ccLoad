@@ -7025,6 +7025,24 @@ body.trend-page .chart-info {
   border-color: currentColor;
 }
 
+/* Token 统计信息条（气泡右下方） */
+.chat-message-stats {
+  margin-top: 8px;
+  padding-top: 6px;
+  border-top: 1px solid var(--color-border);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--color-text-secondary);
+  text-align: right;
+  opacity: 0.7;
+  transition: opacity 0.15s ease;
+  word-break: break-all;
+}
+
+.chat-message:hover .chat-message-stats {
+  opacity: 1;
+}
+
 /* Markdown 内容 */
 .chat-message-content {
   min-height: 1em;

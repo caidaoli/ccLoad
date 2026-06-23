@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	neturl "net/url"
 	"strings"
@@ -104,6 +105,8 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	for idx, entry := range orderedURLs {
 		attempt := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url)
 		if attempt.handled {
+			// Write chat log from stream result
+			s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult)
 			return
 		}
 		lastResult = attempt.result
@@ -128,8 +131,64 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 }
 
 type chatURLAttemptResult struct {
-	handled bool
-	result  map[string]any
+	handled      bool
+	result       map[string]any
+	streamResult *chatStreamResult
+}
+
+// chatStreamResult collects timing and usage from a chat stream for the summary event.
+type chatStreamResult struct {
+	start            time.Time
+	firstContentTime time.Time
+	usageParser      *sseUsageParser
+	model            string
+	channelType      string
+}
+
+func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRequest) []byte {
+	if sr == nil {
+		return nil
+	}
+	summary := map[string]any{}
+
+	durationMs := time.Since(sr.start).Milliseconds()
+	summary["duration_ms"] = durationMs
+
+	if !sr.firstContentTime.IsZero() {
+		summary["first_byte_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
+	}
+
+	if sr.usageParser != nil {
+		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
+		summary["input_tokens"] = input
+		summary["output_tokens"] = output
+		summary["cache_read"] = cacheRead
+		summary["cache_create"] = cacheCreation
+
+		if output > 0 && durationMs > 0 {
+			speed := float64(output) / (float64(durationMs) / 1000.0)
+			summary["speed"] = math.Round(speed*10) / 10
+		}
+
+		// Calculate cost
+		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
+		if input+output+cacheRead > 0 {
+			cost := util.CalculateCostDetailed(
+				testReq.Model,
+				input, output, cacheRead,
+				cache5m, cache1h,
+			) + sr.usageParser.GetToolCostUSD()
+			summary["cost_usd"] = cost
+		} else if toolCost := sr.usageParser.GetToolCostUSD(); toolCost > 0 {
+			summary["cost_usd"] = toolCost
+		}
+	}
+
+	jsonBytes, err := sonic.Marshal(map[string]any{"summary": summary})
+	if err != nil {
+		return nil
+	}
+	return []byte("data: " + string(jsonBytes) + "\n\n")
 }
 
 // streamChatWithURL 对单个 URL 发起对话请求并写入前端 SSE。
@@ -173,8 +232,15 @@ func (s *Server) streamChatWithURL(
 	}
 
 	if !isSSE {
-		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start)
+		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg)
 		return chatURLAttemptResult{handled: true}
+	}
+
+	sr := &chatStreamResult{
+		start:       start,
+		usageParser: newSSEUsageParser(cfg.GetChannelType()),
+		model:       testReq.Model,
+		channelType: cfg.GetChannelType(),
 	}
 
 	firstContentMarked := false
@@ -183,22 +249,28 @@ func (s *Server) streamChatWithURL(
 			return
 		}
 		firstContentMarked = true
+		sr.firstContentTime = time.Now()
 		requestPlan.timeout.markFirstStreamContent()
 	}
 
 	var streamErr error
 	if clientProtocol == requestPlan.upstreamProtocol {
 		// 原生协议：直接透传 SSE，提取 delta 文本
-		streamErr = streamChatNativeWithFirstContent(c, resp.Body, markFirstContent)
+		streamErr = streamChatNativeWithFirstContent(c, resp.Body, markFirstContent, sr)
 	} else {
 		// 协议转换：先翻译再透传
-		streamErr = streamChatTranslated(c, resp, requestPlan, testReq, s, markFirstContent)
+		streamErr = streamChatTranslated(c, resp, requestPlan, testReq, s, markFirstContent, sr)
 	}
 	if streamErr != nil {
 		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, streamErr)
 		writeChatErrorEvent(c, chatErrorMessageFromResult(result))
 	}
-	return chatURLAttemptResult{handled: true}
+
+	// Write summary event after stream ends
+	if summaryChunk := chatSummaryEventChunk(sr, testReq); len(summaryChunk) > 0 {
+		writeChatFrontendChunks(c, summaryChunk)
+	}
+	return chatURLAttemptResult{handled: true, streamResult: sr}
 }
 
 func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) map[string]any {
@@ -261,6 +333,7 @@ func (s *Server) streamChatNonStreamResponse(
 	testReq *testutil.TestChannelRequest,
 	contentType string,
 	start time.Time,
+	cfg *model.Config,
 ) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -278,6 +351,8 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
 	writeChatNonStreamResult(c, result)
+	writeChatNonStreamSummary(c, result)
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, "", c.ClientIP(), 0, result))
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -306,13 +381,93 @@ func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
 }
 
 func streamChatNative(c *gin.Context, body io.Reader) {
-	_ = streamChatNativeWithFirstContent(c, body, nil)
+	_ = streamChatNativeWithFirstContent(c, body, nil, nil)
+}
+
+func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
+	success, _ := result["success"].(bool)
+	if !success {
+		return
+	}
+	summary := map[string]any{}
+	if v, ok := result["duration_ms"]; ok {
+		summary["duration_ms"] = v
+	}
+	if v, ok := result["first_byte_duration_ms"]; ok {
+		summary["first_byte_ms"] = v
+	}
+	if usage, ok := result["usage"].(map[string]any); ok {
+		if v, ok := usage["input_tokens"]; ok {
+			summary["input_tokens"] = v
+		}
+		if v, ok := usage["output_tokens"]; ok {
+			summary["output_tokens"] = v
+		}
+		if v, ok := usage["cache_read_input_tokens"]; ok {
+			summary["cache_read"] = v
+		}
+		if v, ok := usage["cache_creation_input_tokens"]; ok {
+			summary["cache_create"] = v
+		}
+	}
+	if v, ok := result["cost_usd"]; ok {
+		summary["cost_usd"] = v
+	}
+	durationMs, _ := result["duration_ms"].(int64)
+	outputTokens := 0
+	if usage, ok := result["usage"].(map[string]any); ok {
+		outputTokens = usageInt(usage, "output_tokens")
+	}
+	if outputTokens > 0 && durationMs > 0 {
+		speed := float64(outputTokens) / (float64(durationMs) / 1000.0)
+		summary["speed"] = math.Round(speed*10) / 10
+	}
+
+	jsonBytes, err := sonic.Marshal(map[string]any{"summary": summary})
+	if err != nil {
+		return
+	}
+	writeChatFrontendChunks(c, []byte("data: "+string(jsonBytes)+"\n\n"))
+}
+
+func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, apiKey string, sr *chatStreamResult) {
+	if sr == nil {
+		return
+	}
+	result := map[string]any{
+		"success":     true,
+		"duration_ms": time.Since(sr.start).Milliseconds(),
+	}
+	if !sr.firstContentTime.IsZero() {
+		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
+	}
+	if sr.usageParser != nil {
+		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
+		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
+		if input+output+cacheRead+cacheCreation > 0 {
+			result["usage"] = map[string]any{
+				"input_tokens": input, "output_tokens": output,
+				"cache_read_input_tokens": cacheRead, "cache_creation_input_tokens": cacheCreation,
+			}
+		}
+		if input+output+cacheRead > 0 {
+			result["cost_usd"] = util.CalculateCostDetailed(testReq.Model, input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
+		}
+	}
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
-func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstContent func()) error {
+func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstContent func(), sr *chatStreamResult) error {
 	frontendState := &chatFrontendStreamState{}
-	return streamTransformSSEEvents(c.Request.Context(), body, c.Writer, nil,
+	return streamTransformSSEEvents(c.Request.Context(), body, c.Writer,
+		func(rawEvent []byte) error {
+			// Feed raw SSE bytes to usage parser as side-channel
+			if sr != nil && sr.usageParser != nil {
+				_ = sr.usageParser.Feed(rawEvent)
+			}
+			return nil
+		},
 		func(rawEvent []byte) ([][]byte, error) {
 			chunks := chatFrontendChunksFromSSEEventWithState(rawEvent, frontendState)
 			if len(chunks) > 0 && onFirstContent != nil {
@@ -324,7 +479,7 @@ func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstCon
 }
 
 // streamChatTranslated 协议转换时：翻译 SSE 事件后再提取 delta 写给前端。
-func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *channelTestRequestPlan, testReq *testutil.TestChannelRequest, s *Server, onFirstContent func()) error {
+func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *channelTestRequestPlan, testReq *testutil.TestChannelRequest, s *Server, onFirstContent func(), sr *chatStreamResult) error {
 	var state any
 	frontendState := &chatFrontendStreamState{}
 	ctx := c.Request.Context()
@@ -338,7 +493,12 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 
 	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
 	return streamTransformSSEEvents(ctx, src, c.Writer,
-		nil,
+		func(rawEvent []byte) error {
+			if sr != nil && sr.usageParser != nil {
+				_ = sr.usageParser.Feed(rawEvent)
+			}
+			return nil
+		},
 		func(rawEvent []byte) ([][]byte, error) {
 			translated, err := s.protocolRegistry.TranslateResponseStream(
 				ctx,
