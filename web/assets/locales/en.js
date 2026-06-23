@@ -826,6 +826,8 @@ window.I18N_LOCALES['en'] = {
   'modelTest.chat.thinkingLow': 'Low',
   'modelTest.chat.thinkingMedium': 'Medium',
   'modelTest.chat.thinkingHigh': 'High',
+  'modelTest.chat.statsFirstByte': 'TTFB',
+  'modelTest.chat.statsDuration': 'Total',
   'modelTest.chat.builtinSearch': 'Built-in search',
   'modelTest.protocolTransform': 'Protocol Transform',
   'modelTest.searchChannel': 'Search channel...',
