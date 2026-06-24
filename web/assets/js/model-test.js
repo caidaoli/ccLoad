@@ -4047,14 +4047,16 @@ async function bootstrap() {
     chatBuiltinSearchToggle.setAttribute('aria-pressed', builtinSearchEnabled ? 'true' : 'false');
   }
 
-  await loadChannels();
+  // 并行化：loadChannels 与 loadDefaultTestContent 互不依赖，同时发出
+  await Promise.all([
+    loadChannels(),
+    loadDefaultTestContent()
+  ]);
 
   // 恢复对话渠道选择（必须在 loadChannels 之后）
   if (storedChatChannelId !== null) {
     chatChannel = channelsList.find(c => c.id === storedChatChannelId) || null;
   }
-
-  await loadDefaultTestContent();
   updateHeadByMode();
   updateModeUI();
   renderRowsByMode();
