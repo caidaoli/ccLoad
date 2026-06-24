@@ -1541,33 +1541,35 @@ function shouldShowZoom(points, hours, trendType) {
       restoreChannelState();
       applyRangeUI();
 
-      await window.initChannelTypeFilter('f_channel_type', window.currentChannelType, async (value) => {
-        window.currentChannelType = value;
-        persistState();
-        window.visibleChannels.clear();
-        await loadModels(value);
-        loadData();
-      });
-
       bindToggles();
       bindChannelFilterControls();
 
       // 初始化渠道名 combobox
       initTrendChannelNameCombobox(window.currentChannelName);
 
-      // 加载模型列表（传入当前渠道类型）
-      await loadModels(window.currentChannelType);
+      // 并行化：三个独立的初始化请求同时发出，消除串行等待
+      // initChannelTypeFilter / loadModels / initAuthTokenFilter 互不依赖
+      const [, , authTokens] = await Promise.all([
+        window.initChannelTypeFilter('f_channel_type', window.currentChannelType, async (value) => {
+          window.currentChannelType = value;
+          persistState();
+          window.visibleChannels.clear();
+          await loadModels(value);
+          loadData();
+        }),
+        loadModels(window.currentChannelType),
+        window.initAuthTokenFilter({
+          selectId: 'f_auth_token',
+          value: window.currentAuthToken,
+          loadOptions: {
+            tokenPrefix: t('trend.tokenPrefix'),
+            restoreValue: window.currentAuthToken
+          }
+        })
+      ]);
+      window.authTokens = authTokens;
 
-      // 加载令牌列表
-      window.authTokens = await window.initAuthTokenFilter({
-        selectId: 'f_auth_token',
-        value: window.currentAuthToken,
-        loadOptions: {
-          tokenPrefix: t('trend.tokenPrefix'),
-          restoreValue: window.currentAuthToken
-        }
-      });
-
+      // 数据加载（依赖 model/token select 已填充）
       loadData();
 
       // 修复：全局注册resize监听器（仅一次，避免内存泄漏）

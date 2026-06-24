@@ -1142,7 +1142,8 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         });
       }
 
-      await window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
+      // 并行化：渠道类型过滤器初始化与数据加载同时进行，消除串行等待
+      const channelTypeReady = window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
         currentChannelType = value;
         window.persistFilterState({
           key: STATS_FILTER_KEY,
@@ -1163,10 +1164,10 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         });
       }
 
-      loadStats().then(() => {
-        // 数据加载完成后恢复视图状态
-        restoreViewState();
-      });
+      await Promise.all([
+        loadStats().then(() => restoreViewState()),
+        channelTypeReady
+      ]);
 
       // 注册语言切换回调，重新渲染动态内容
       window.i18n.onLocaleChange(() => {
