@@ -83,11 +83,11 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			expectArgsLen: 1,
 		},
 		{
-			name: "detection source expands to two args",
+			name: "detection source expands to all detection args",
 			filter: &model.LogFilter{
 				LogSource: model.LogSourceDetection,
 			},
-			expectArgsLen: 2,
+			expectArgsLen: 3,
 		},
 	}
 
@@ -111,8 +111,19 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			if clause == "" {
 				t.Error("expected non-empty clause")
 			}
-			if tt.filter != nil && tt.filter.LogSource == model.LogSourceDetection && clause != "log_source IN (?, ?)" {
+			if tt.filter != nil && tt.filter.LogSource == model.LogSourceDetection && clause != "log_source IN (?, ?, ?)" {
 				t.Errorf("unexpected detection clause: %q", clause)
+			}
+			if tt.filter != nil && tt.filter.LogSource == model.LogSourceDetection {
+				want := []any{model.LogSourceScheduledCheck, model.LogSourceManualTest, model.LogSourceManualChat}
+				if len(args) != len(want) {
+					return
+				}
+				for i, arg := range want {
+					if args[i] != arg {
+						t.Fatalf("detection arg[%d]=%v, want %v; args=%v", i, args[i], arg, args)
+					}
+				}
 			}
 			if tt.filter == nil && clause != "log_source = ?" {
 				t.Errorf("unexpected nil-filter clause: %q", clause)

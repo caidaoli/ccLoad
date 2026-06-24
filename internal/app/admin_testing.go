@@ -49,6 +49,7 @@ type channelTestRequestPlan struct {
 	requestBody      []byte
 	clientBody       []byte
 	timeout          *channelTestTimeout
+	debugCapture     *debugCapture
 }
 
 type channelTestTimeout struct {
@@ -690,10 +691,14 @@ func (s *Server) testChannelAPIWithURL(
 	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
 		if errors.Is(err, ErrChannelRPMExceeded) {
-			return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+			result := channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+			result["is_streaming"] = testReq.Stream
+			return attachTestDebugData(requestPlan, nil, result)
 		}
 		if errors.Is(err, ErrChannelConcurrencyExceeded) {
-			return channelConcurrencyExceededTestResult(start, err)
+			result := channelConcurrencyExceededTestResult(start, err)
+			result["is_streaming"] = testReq.Stream
+			return attachTestDebugData(requestPlan, nil, result)
 		}
 		errorMsg := "网络请求失败: " + err.Error()
 		statusCode := 0
@@ -709,9 +714,13 @@ func (s *Server) testChannelAPIWithURL(
 		if statusCode > 0 {
 			result["status_code"] = statusCode
 		}
-		return result
+		result["is_streaming"] = testReq.Stream
+		return attachTestDebugData(requestPlan, nil, result)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if requestPlan.debugCapture != nil {
+		requestPlan.debugCapture.wrapResponseBody(resp)
+	}
 
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")
@@ -719,8 +728,9 @@ func (s *Server) testChannelAPIWithURL(
 
 	// 通用结果初始化
 	result := map[string]any{
-		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code": resp.StatusCode,
+		"success":      resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code":  resp.StatusCode,
+		"is_streaming": testReq.Stream,
 	}
 
 	// 始终返回上游请求原始数据，便于调试排查（不依赖 debug_log_enabled）
@@ -738,9 +748,9 @@ func (s *Server) testChannelAPIWithURL(
 
 	if isEventStream {
 		if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
-			return s.parseTestTranslatedSSEResponse(ctx, requestPlan, testReq, resp, start, result)
+			return attachTestDebugData(requestPlan, resp, s.parseTestTranslatedSSEResponse(ctx, requestPlan, testReq, resp, start, result))
 		}
-		return s.parseTestNativeSSEResponse(ctx, requestPlan, testReq, resp, contentType, start, result)
+		return attachTestDebugData(requestPlan, resp, s.parseTestNativeSSEResponse(ctx, requestPlan, testReq, resp, contentType, start, result))
 	}
 
 	// 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
@@ -752,14 +762,15 @@ func (s *Server) testChannelAPIWithURL(
 			errorMsg = timeoutMsg
 			statusCode = timeoutStatus
 		}
-		return map[string]any{
-			"success":     false,
-			"error":       errorMsg,
-			"duration_ms": time.Since(start).Milliseconds(),
-			"status_code": statusCode,
-		}
+		return attachTestDebugData(requestPlan, resp, map[string]any{
+			"success":      false,
+			"error":        errorMsg,
+			"duration_ms":  time.Since(start).Milliseconds(),
+			"status_code":  statusCode,
+			"is_streaming": testReq.Stream,
+		})
 	}
-	return s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result)
+	return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result))
 }
 
 // parseTestNonStreamResponse 解析非流式响应（成功/失败两路），写入 result 并返回。
@@ -896,8 +907,17 @@ func (s *Server) buildTestUpstreamRequest(
 		req.Header.Set(key, value)
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 
 	return req, requestPlan, timeout.cancelAll, nil
+}
+
+func attachTestDebugData(requestPlan *channelTestRequestPlan, resp *http.Response, result map[string]any) map[string]any {
+	if result == nil || requestPlan == nil || requestPlan.debugCapture == nil {
+		return result
+	}
+	result["debug_data"] = requestPlan.debugCapture.buildEntry(resp)
+	return result
 }
 
 // parseTestTranslatedSSEResponse 处理需要跨协议翻译的 SSE 响应分支。

@@ -35,6 +35,7 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		Duration:      float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
 		FirstByteTime: float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
 		Cost:          getResultFloat64OrDefault(result, "cost_usd", 0),
+		IsStreaming:   getResultBoolOrDefault(result, "is_streaming", false),
 	}
 	if cfg != nil {
 		entry.ChannelID = cfg.ID
@@ -48,6 +49,9 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 	}
 	populateDetectionUsage(entry, result, channelType)
 	entry.Message = detectionMessage(result)
+	if debugData, ok := getResultDebugData(result, "debug_data"); ok {
+		entry.DebugData = debugData
+	}
 	return entry
 }
 
@@ -172,6 +176,24 @@ func getResultFloat64OrDefault(result map[string]any, key string, fallback float
 	default:
 		return fallback
 	}
+}
+
+func getResultBoolOrDefault(result map[string]any, key string, fallback bool) bool {
+	if result == nil {
+		return fallback
+	}
+	if value, ok := result[key].(bool); ok {
+		return value
+	}
+	return fallback
+}
+
+func getResultDebugData(result map[string]any, key string) (*model.DebugLogEntry, bool) {
+	if result == nil {
+		return nil, false
+	}
+	value, ok := result[key].(*model.DebugLogEntry)
+	return value, ok && value != nil
 }
 
 func getNestedMap(result map[string]any, outerKey, innerKey string) (map[string]any, bool) {
