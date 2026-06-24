@@ -551,7 +551,7 @@
       margin-right: 6px;
       border-radius: 50%;
       background: var(--info-500, #3b82f6);
-      animation: debug-log-status-pulse 1.2s ease-in-out infinite;
+      animation: none;
     }
 
     .debug-log-status--finished {
@@ -1029,7 +1029,7 @@
       font-weight: 500;
       background: var(--logs-pending-badge-bg);
       color: var(--logs-pending-badge-fg);
-      animation: pulse-pending 1.5s ease-in-out infinite;
+      animation: none;
     }
 
     @keyframes pulse-pending {

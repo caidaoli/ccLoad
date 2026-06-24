@@ -79,7 +79,7 @@
   --info-600: #0891b2;
 
   /* 玻璃态效果 */
-  --glass-bg: rgba(255, 255, 255, 0.95);
+  --glass-bg: rgba(255, 255, 255, 0.98);
   --glass-border: rgba(17, 24, 39, 0.10);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.1);
   --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.15);
@@ -214,7 +214,7 @@ html[data-theme="dark"] {
   --table-row-hover: rgba(255, 255, 255, 0.05);
   --body-fg: var(--neutral-800);
   --muted-fg: var(--neutral-600);
-  --glass-bg: rgba(17, 24, 39, 0.82);
+  --glass-bg: rgba(17, 24, 39, 0.92);
   --glass-border: rgba(255, 255, 255, 0.12);
   --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.34);
   --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.45);
@@ -258,7 +258,7 @@ html[data-theme="dark"] {
     --table-row-hover: rgba(255, 255, 255, 0.05);
     --body-fg: var(--neutral-800);
     --muted-fg: var(--neutral-600);
-    --glass-bg: rgba(17, 24, 39, 0.82);
+    --glass-bg: rgba(17, 24, 39, 0.92);
     --glass-border: rgba(255, 255, 255, 0.12);
     --glass-shadow: 0 8px 32px rgba(0, 0, 0, 0.34);
     --glass-shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.45);
@@ -447,11 +447,11 @@ body {
 }
 
 .animate-pulse {
-  animation: pulse 2s infinite;
+  animation: none;
 }
 
 .animate-float {
-  animation: float 3s ease-in-out infinite;
+  animation: none;
 }
 
 /* ===== 布局组件 ===== */
@@ -498,7 +498,6 @@ body {
   justify-content: space-between;
   padding: 0 var(--space-6);
   background: var(--glass-bg);
-  backdrop-filter: blur(18px) saturate(160%);
   border-bottom: 1px solid var(--glass-border);
   z-index: 300;
 }
@@ -538,7 +537,7 @@ body {
 }
 
 .brand-icon-wrap.is-active .brand-icon {
-  animation: brand-pulse 1.2s ease-in-out infinite;
+  animation: none;
 }
 
 .brand-badge {
@@ -780,7 +779,6 @@ body {
 /* ===== 卡片组件 ===== */
 .glass-card {
   background: var(--glass-bg);
-  backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   /* box-shadow: var(--glass-shadow); */
@@ -816,7 +814,6 @@ body {
 /* ===== 英雄标题 ===== */
 .hero-header {
   background: var(--surface-gradient);
-  backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-2xl);
   padding: var(--space-6);
@@ -867,7 +864,6 @@ body {
 /* ===== 渠道卡片 ===== */
 .channel-card {
   background: var(--surface-gradient);
-  backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-xl);
   padding: var(--space-5);
@@ -1005,7 +1001,6 @@ body {
 /* ===== 总览卡片 ===== */
 .summary-card {
   background: var(--surface-gradient);
-  backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-xl);
   padding: var(--space-5);
@@ -1151,7 +1146,6 @@ body {
 
 .metric-card {
   background: var(--glass-bg);
-  backdrop-filter: blur(12px);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-xl);
   padding: var(--space-6);
@@ -1220,7 +1214,6 @@ body {
   padding: 2px;
   border-radius: 10px;
   border: 1px solid var(--surface-border);
-  backdrop-filter: blur(30px) saturate(1.8);
   box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
 }
 
@@ -1553,7 +1546,6 @@ body {
 
 .btn-secondary {
   background: var(--glass-bg);
-  backdrop-filter: blur(8px);
   color: var(--neutral-800);
   border: 1px solid var(--glass-border);
 }
@@ -1634,7 +1626,6 @@ body {
   font-size: var(--text-base);
   color: var(--neutral-900);
   background: var(--field-bg);
-  backdrop-filter: blur(8px);
   transition: all var(--duration-fast) var(--timing-function);
 }
 
@@ -1658,7 +1649,6 @@ body {
   margin-bottom: var(--space-8);
   padding: var(--space-4);
   background: var(--surface-bg);
-  backdrop-filter: blur(8px);
   border-radius: var(--radius-xl);
   border: 1px solid var(--surface-border);
 }
@@ -1795,7 +1785,7 @@ body {
 
 .status-dot.online {
   background: var(--success-500);
-  animation: pulse 2s infinite;
+  animation: none;
 }
 
 .status-dot.offline {
@@ -1804,7 +1794,7 @@ body {
 
 .status-dot.warning {
   background: var(--warning-500);
-  animation: pulse 2s infinite;
+  animation: none;
 }
 
 /* ===== 网格系统 ===== */
@@ -1833,7 +1823,7 @@ body {
 .loading-skeleton {
   background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
   background-size: 200% 100%;
-  animation: shimmerBg 1.5s infinite;
+  animation: none;
   border-radius: var(--radius-base);
 }
 
@@ -2506,7 +2496,6 @@ body {
 /* ===== 筛选器组件 ===== */
 .filter-bar {
   background: var(--glass-bg);
-  backdrop-filter: blur(10px);
   border: 1px solid var(--glass-border);
   border-radius: 12px;
   padding: var(--space-4);
@@ -3523,12 +3512,12 @@ body {
   color: #dc2626;
   border: 1px solid #fca5a5;
   box-shadow: 0 1px 3px rgba(220, 38, 38, 0.1);
-  animation: cooldown-pulse 2s infinite;
+  animation: none;
 }
 
 .cooldown-icon {
   font-size: 0.875rem;
-  animation: cooldown-spin 3s linear infinite;
+  animation: none;
 }
 
 .channel-card-cooldown {
@@ -3545,7 +3534,7 @@ body {
   height: 3px;
   background: linear-gradient(90deg, #dc2626, #ef4444, #dc2626);
   border-radius: 12px 12px 0 0;
-  animation: cooldown-bar 2s ease-in-out infinite;
+  animation: none;
 }
 
 @keyframes cooldown-pulse {
@@ -4715,7 +4704,7 @@ body.trend-page .chart-info {
   position: absolute;
   background: rgba(255, 255, 255, 0.1);
   border-radius: var(--radius-full);
-  animation: float 6s ease-in-out infinite;
+  animation: none;
 }
 
 .shape-1 {
@@ -4770,7 +4759,6 @@ body.trend-page .chart-info {
 
 .login-container {
   background: var(--surface-bg-strong);
-  backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-2xl);
   box-shadow: 0 20px 40px rgba(0, 0, 0, 0.12);
@@ -5017,7 +5005,6 @@ body.trend-page .chart-info {
 
 .features-showcase {
   background: var(--surface-bg-strong);
-  backdrop-filter: blur(16px) saturate(180%);
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-2xl);
   padding: var(--space-8);
