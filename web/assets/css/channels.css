@@ -1969,7 +1969,6 @@
     .modal-inline-input {
       background: var(--field-bg) !important;
       color: var(--neutral-900);
-      backdrop-filter: blur(8px);
       transition: border-color 0.2s, box-shadow 0.2s, background 0.2s;
     }
 
@@ -1988,7 +1987,6 @@
       background: var(--field-bg) !important;
       color: var(--neutral-900);
       -webkit-text-fill-color: var(--neutral-900);
-      backdrop-filter: blur(8px);
     }
 
     .modal-inline-select option {
@@ -2988,7 +2986,6 @@
 
       #channelModal.modal,
       #channelModal .channel-editor-modal {
-        backdrop-filter: none;
       }
 
       #channelModal .channel-editor-modal {
@@ -3032,8 +3029,6 @@
         background: transparent;
         box-shadow: none;
         border-top: none;
-        backdrop-filter: none;
-        -webkit-backdrop-filter: none;
       }
 
       .channel-editor-footer-actions .btn {

@@ -18,9 +18,10 @@ let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|nav
 
 let latestActiveRequests = []; // 缓存 ui.js 最近一次推送的活动请求，供 load() 即时刷新
 let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
+let _lastRenderedFingerprint = '';
 let logsLoadInFlight = false;
 let logsLoadPending = false;
-let logsLoadScheduled = false;
+// logsLoadScheduled 已被 _scheduleLoadTimer 取代
 
 // === 列显隐 ===
 const LOGS_COL_STORAGE_KEY = 'ccload_logs_columns';
@@ -224,13 +225,13 @@ function appendLogsTimeRangeParams(params, filters) {
   return params;
 }
 
+let _scheduleLoadTimer = null;
 function scheduleLoad() {
-  if (logsLoadScheduled) return;
-  logsLoadScheduled = true;
-  setTimeout(() => {
-    logsLoadScheduled = false;
+  if (_scheduleLoadTimer) clearTimeout(_scheduleLoadTimer);
+  _scheduleLoadTimer = setTimeout(() => {
+    _scheduleLoadTimer = null;
     load(true); // 自动刷新时跳过 loading 状态，避免闪烁
-  }, 0);
+  }, 2000);
 }
 
 function toUnixMs(value) {
@@ -722,25 +723,28 @@ function handleActiveRequestsData(rawActiveRequests) {
   // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
   const activeRequests = filterActiveRequests(latestActiveRequests);
 
+  // 数据未变时跳过 DOM 操作
+  const newFingerprint = activeRequests.map(r => activeRequestFingerprint(r) + '|' + (r.client_first_byte_time || 0)).join('\n');
+  if (newFingerprint === _lastRenderedFingerprint) return;
+  _lastRenderedFingerprint = newFingerprint;
+
   renderActiveRequests(activeRequests);
 }
 
-// 渲染进行中的请求（插入到表格顶部）
+// 渲染进行中的请求（按 ID diff 更新，避免无意义的 DOM churn）
 function renderActiveRequests(activeRequests) {
-  // 移除旧的进行中行
-  clearActiveRequestsRows();
-
-  if (!activeRequests || activeRequests.length === 0) return;
-
   const tbody = document.getElementById('tbody');
-  const firstRow = tbody.firstChild;
+  if (!tbody) return;
+
+  const activeIds = new Set();
   const totalCols = getTableColspan();
   const logMobileLabels = getLogMobileLabels();
+  const firstNonPending = tbody.querySelector('tr:not(.pending-row)');
 
-  // 使用 DocumentFragment 批量构建，减少 DOM 操作
-  const fragment = document.createDocumentFragment();
+  for (const req of (activeRequests || [])) {
+    const id = String(req.id);
+    activeIds.add(id);
 
-  for (const req of activeRequests) {
     const startMs = toUnixMs(req.start_time);
     const elapsedRaw = startMs ? Math.max(0, (Date.now() - startMs) / 1000) : null;
     const elapsed = elapsedRaw !== null ? elapsedRaw.toFixed(1) : '-';
@@ -764,10 +768,23 @@ function renderActiveRequests(activeRequests) {
 
     const infoContent = buildActiveRequestInfoContent(req);
 
-    const row = document.createElement('tr');
-    row.className = 'mobile-card-row pending-row';
-    if (totalCols < 8) {
-      row.innerHTML = `
+    let existingRow = tbody.querySelector(`tr.pending-row[data-req-id="${id}"]`);
+
+    if (existingRow) {
+      // 更新现有行的动态字段
+      const timingCell = existingRow.querySelector('.logs-col-timing');
+      if (timingCell) timingCell.innerHTML = `${durationDisplay} ${streamFlag}`;
+      const channelCell = existingRow.querySelector('.logs-col-channel');
+      if (channelCell) channelCell.innerHTML = channelDisplay;
+      const msgCell = existingRow.querySelector('.logs-col-message');
+      if (msgCell) msgCell.innerHTML = infoContent;
+    } else {
+      // 创建新行
+      const row = document.createElement('tr');
+      row.className = 'mobile-card-row pending-row';
+      row.setAttribute('data-req-id', id);
+      if (totalCols < 8) {
+        row.innerHTML = `
             <td colspan="${totalCols}">
               <span class="status-pending">进行中</span>
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
@@ -777,8 +794,8 @@ function renderActiveRequests(activeRequests) {
               <span style="margin-left: 8px;">${infoContent}</span>
             </td>
           `;
-    } else {
-      row.innerHTML = `
+      } else {
+        row.innerHTML = `
             <td class="logs-col-time" data-mobile-label="${logMobileLabels.time}" style="white-space: nowrap;">${formatTime(req.start_time)}</td>
             <td class="logs-col-ip logs-mono-text" data-mobile-label="${logMobileLabels.ip}" style="white-space: nowrap;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</td>
             <td class="${tokenDescCellClass}" data-mobile-label="${logMobileLabels.tokenDesc}" style="white-space: nowrap;">${tokenDescDisplay}</td>
@@ -796,12 +813,17 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-cost mobile-empty-cell" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-message" data-mobile-label="${logMobileLabels.message}">${infoContent}</td>
           `;
+      }
+      tbody.insertBefore(row, firstNonPending);
     }
-    fragment.appendChild(row);
   }
 
-  // 一次性插入所有 pending 行
-  tbody.insertBefore(fragment, firstRow);
+  // 移除已消失的 pending 行
+  tbody.querySelectorAll('tr.pending-row').forEach(row => {
+    if (!activeIds.has(row.getAttribute('data-req-id'))) {
+      row.remove();
+    }
+  });
 }
 
 // ✅ 动态计算列数（避免硬编码维护成本）
