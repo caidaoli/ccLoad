@@ -333,6 +333,105 @@ func TestHandleChannelChatWritesOnlyUpstreamEvents(t *testing.T) {
 	}
 }
 
+func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/chat/completions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"logged answer"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	srv.configService.mu.Lock()
+	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	srv.configService.mu.Unlock()
+
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-log-stream-debug",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	started := time.Now()
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if got := w.Body.String(); !strings.Contains(got, `"delta":"logged answer"`) {
+		t.Fatalf("expected frontend answer, got:\n%s", got)
+	}
+
+	logs, err := srv.store.ListLogsRange(
+		ctx,
+		started.Add(-time.Second),
+		time.Now().Add(time.Second),
+		10,
+		0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil {
+		t.Fatalf("ListLogsRange failed: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1; logs=%+v", len(logs), logs)
+	}
+	entry := logs[0]
+	if entry.LogSource != model.LogSourceManualChat {
+		t.Fatalf("log_source=%q, want %q", entry.LogSource, model.LogSourceManualChat)
+	}
+	if entry.StatusCode != http.StatusOK {
+		t.Fatalf("status_code=%d, want 200; entry=%+v", entry.StatusCode, entry)
+	}
+	if !entry.IsStreaming {
+		t.Fatalf("is_streaming=false, want true; entry=%+v", entry)
+	}
+	if entry.Message != "ok" {
+		t.Fatalf("message=%q, want ok", entry.Message)
+	}
+
+	debugLog, err := srv.store.GetDebugLogByLogID(ctx, entry.ID)
+	if err != nil {
+		t.Fatalf("GetDebugLogByLogID failed: %v", err)
+	}
+	if debugLog == nil {
+		t.Fatal("debug log should be persisted for chat detection log")
+	}
+	if debugLog.RespStatus != http.StatusOK {
+		t.Fatalf("debug resp status=%d, want 200", debugLog.RespStatus)
+	}
+	if !strings.Contains(string(debugLog.RespBody), "logged answer") {
+		t.Fatalf("debug response body missing upstream stream: %q", string(debugLog.RespBody))
+	}
+}
+
 func TestHandleChannelChatStreamsUpstreamDeltaThroughZstdMiddleware(t *testing.T) {
 	releaseSecond := make(chan struct{})
 	var releaseOnce sync.Once

@@ -200,13 +200,14 @@ test('model-test 页速度列参与排序并使用移动端标签', () => {
 });
 
 test('model-test 页速度单元格只显示数值不重复单位，且保留一位小数', () => {
+  const applyResultSource = extractFunction(script, 'applyTestResultToRow');
   assert.doesNotMatch(
-    script,
+    applyResultSource,
     /speedDisplay[^]*tok\/s/,
     '速度列单元格不应重复拼接 tok/s'
   );
   assert.match(
-    script,
+    applyResultSource,
     /speedDisplay[^]*testSpeed\.toFixed\(1\)/,
     '速度列应使用一位小数格式渲染'
   );

@@ -143,6 +143,9 @@ type chatStreamResult struct {
 	usageParser      *sseUsageParser
 	model            string
 	channelType      string
+	statusCode       int
+	errorResult      map[string]any
+	debugData        *model.DebugLogEntry
 }
 
 func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRequest) []byte {
@@ -210,9 +213,12 @@ func (s *Server) streamChatWithURL(
 	start := time.Now()
 	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
-		return chatURLAttemptResult{result: chatRequestErrorResult(start, testReq, requestPlan.timeout, err)}
+		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, nil, chatRequestErrorResult(start, testReq, requestPlan.timeout, err))}
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if requestPlan.debugCapture != nil {
+		requestPlan.debugCapture.wrapResponseBody(resp)
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 	isSSE := strings.Contains(strings.ToLower(contentType), "text/event-stream")
@@ -220,19 +226,20 @@ func (s *Server) streamChatWithURL(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		msg := extractChatUpstreamError(resp.StatusCode, body)
-		return chatURLAttemptResult{result: map[string]any{
+		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, resp, map[string]any{
 			"success":                false,
 			"status_code":            resp.StatusCode,
+			"is_streaming":           testReq.Stream,
 			"duration_ms":            time.Since(start).Milliseconds(),
 			"error":                  msg,
 			"raw_response":           string(body),
 			"upstream_response_body": string(body),
 			"response_headers":       flattenHeader(resp.Header),
-		}}
+		})}
 	}
 
 	if !isSSE {
-		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg)
+		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey)
 		return chatURLAttemptResult{handled: true}
 	}
 
@@ -241,6 +248,7 @@ func (s *Server) streamChatWithURL(
 		usageParser: newSSEUsageParser(cfg.GetChannelType()),
 		model:       testReq.Model,
 		channelType: cfg.GetChannelType(),
+		statusCode:  resp.StatusCode,
 	}
 
 	firstContentMarked := false
@@ -263,6 +271,10 @@ func (s *Server) streamChatWithURL(
 	}
 	if streamErr != nil {
 		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, streamErr)
+		if _, ok := result["status_code"]; !ok && resp.StatusCode > 0 {
+			result["status_code"] = resp.StatusCode
+		}
+		sr.errorResult = result
 		writeChatErrorEvent(c, chatErrorMessageFromResult(result))
 	}
 
@@ -270,15 +282,24 @@ func (s *Server) streamChatWithURL(
 	if summaryChunk := chatSummaryEventChunk(sr, testReq); len(summaryChunk) > 0 {
 		writeChatFrontendChunks(c, summaryChunk)
 	}
+	if requestPlan.debugCapture != nil {
+		sr.debugData = requestPlan.debugCapture.buildEntry(resp)
+	}
 	return chatURLAttemptResult{handled: true, streamResult: sr}
 }
 
 func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) map[string]any {
+	isStream := testReq != nil && testReq.Stream
+
 	if errors.Is(err, ErrChannelRPMExceeded) {
-		return channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+		result := channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
+		result["is_streaming"] = isStream
+		return result
 	}
 	if errors.Is(err, ErrChannelConcurrencyExceeded) {
-		return channelConcurrencyExceededTestResult(start, err)
+		result := channelConcurrencyExceededTestResult(start, err)
+		result["is_streaming"] = isStream
+		return result
 	}
 
 	errorMsg := "网络请求失败: " + err.Error()
@@ -303,9 +324,10 @@ func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelReques
 	}
 
 	result := map[string]any{
-		"success":     false,
-		"error":       errorMsg,
-		"duration_ms": time.Since(start).Milliseconds(),
+		"success":      false,
+		"error":        errorMsg,
+		"duration_ms":  time.Since(start).Milliseconds(),
+		"is_streaming": isStream,
 	}
 	if statusCode > 0 {
 		result["status_code"] = statusCode
@@ -334,6 +356,7 @@ func (s *Server) streamChatNonStreamResponse(
 	contentType string,
 	start time.Time,
 	cfg *model.Config,
+	apiKey string,
 ) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -346,13 +369,15 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 
 	result := map[string]any{
-		"success":     resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code": resp.StatusCode,
+		"success":      resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code":  resp.StatusCode,
+		"is_streaming": false,
 	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
+	result = attachTestDebugData(requestPlan, resp, result)
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, "", c.ClientIP(), 0, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, result))
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -435,8 +460,18 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		return
 	}
 	result := map[string]any{
-		"success":     true,
-		"duration_ms": time.Since(sr.start).Milliseconds(),
+		"success":      true,
+		"status_code":  sr.statusCode,
+		"is_streaming": true,
+		"duration_ms":  time.Since(sr.start).Milliseconds(),
+		"message":      "ok",
+	}
+	if sr.errorResult != nil {
+		result = sr.errorResult
+		result["is_streaming"] = true
+		if _, ok := result["status_code"]; !ok && sr.statusCode > 0 {
+			result["status_code"] = sr.statusCode
+		}
 	}
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
@@ -453,6 +488,9 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		if input+output+cacheRead > 0 {
 			result["cost_usd"] = util.CalculateCostDetailed(testReq.Model, input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
 		}
+	}
+	if sr.debugData != nil {
+		result["debug_data"] = sr.debugData
 	}
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, result))
 }

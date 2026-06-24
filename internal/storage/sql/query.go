@@ -81,7 +81,7 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	switch filter.LogSource {
 	case model.LogSourceAll:
 	case model.LogSourceDetection:
-		wb.AddCondition("log_source IN (?, ?)", model.LogSourceScheduledCheck, model.LogSourceManualTest)
+		wb.AddCondition("log_source IN (?, ?, ?)", model.LogSourceScheduledCheck, model.LogSourceManualTest, model.LogSourceManualChat)
 	case "":
 		wb.AddCondition("log_source = ?", model.LogSourceProxy)
 	default:

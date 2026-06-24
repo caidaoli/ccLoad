@@ -2,6 +2,7 @@ package sql_test
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
@@ -46,6 +47,56 @@ func TestLog_AddAndList(t *testing.T) {
 	}
 	if len(logs) > 0 && logs[0].Model != "gpt-4" {
 		t.Errorf("model: got %q, want %q", logs[0].Model, "gpt-4")
+	}
+}
+
+func TestLog_AddLogPersistsDebugData(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "add_log_debug.db")
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "add-log-debug-channel")
+
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:       newJSONTime(now),
+		Model:      "gpt-4",
+		ChannelID:  channelID,
+		StatusCode: 200,
+		Message:    "ok",
+		DebugData: &model.DebugLogEntry{
+			CreatedAt:   now.Unix(),
+			ReqMethod:   http.MethodPost,
+			ReqURL:      "https://api.example.com/v1/chat/completions",
+			ReqHeaders:  `{"Content-Type":"application/json"}`,
+			ReqBody:     []byte(`{"model":"gpt-4"}`),
+			RespStatus:  200,
+			RespHeaders: `{"Content-Type":"application/json"}`,
+			RespBody:    []byte(`{"ok":true}`),
+		},
+	}); err != nil {
+		t.Fatalf("add log with debug data: %v", err)
+	}
+
+	logs, err := store.ListLogsRange(ctx, now.Add(-time.Minute), now.Add(time.Minute), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1", len(logs))
+	}
+	debugLog, err := store.GetDebugLogByLogID(ctx, logs[0].ID)
+	if err != nil {
+		t.Fatalf("get debug log: %v", err)
+	}
+	if debugLog == nil {
+		t.Fatal("debug log should be persisted for AddLog")
+	}
+	if debugLog.RespStatus != http.StatusOK {
+		t.Fatalf("debug resp status=%d, want 200", debugLog.RespStatus)
+	}
+	if string(debugLog.RespBody) != `{"ok":true}` {
+		t.Fatalf("debug resp body=%q", string(debugLog.RespBody))
 	}
 }
 

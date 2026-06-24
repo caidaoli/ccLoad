@@ -732,6 +732,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.sourceAll': '全部日志',
   'logs.sourceScheduledCheckBadge': '定时',
   'logs.sourceManualTestBadge': '手动',
+  'logs.sourceManualChatBadge': '对话',
   'logs.loading': '正在加载日志...',
   'logs.noData': '暂无日志数据',
   'logs.adjustFilter': '请调整筛选条件或检查时间范围',

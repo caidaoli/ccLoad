@@ -165,6 +165,10 @@ test('日志页为来源筛选和来源 badge 预留 DOM/CSS 契约', () => {
   const filtersHtml = renderLogsFilters();
   assert.match(filtersHtml, /id="f_log_source"/);
   assert.match(logsSource, /log-source-badge/);
+  assert.match(logsSource, /case 'manual_chat':/);
+  assert.match(logsSource, /logs\.sourceManualChatBadge/);
+  assert.match(zhLocale, /'logs\.sourceManualChatBadge': '对话'/);
+  assert.match(enLocale, /'logs\.sourceManualChatBadge': 'Chat'/);
   assert.match(css, /\.log-source-badge\s*\{/);
 });
 

@@ -733,6 +733,7 @@ window.I18N_LOCALES['en'] = {
   'logs.sourceAll': 'All Logs',
   'logs.sourceScheduledCheckBadge': 'Scheduled',
   'logs.sourceManualTestBadge': 'Manual',
+  'logs.sourceManualChatBadge': 'Chat',
   'logs.loading': 'Loading logs...',
   'logs.noData': 'No log data',
   'logs.adjustFilter': 'Please adjust filter criteria or check time range',
