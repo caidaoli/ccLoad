@@ -141,7 +141,7 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 
 func promotesFixedKeyCooldownToChannel(reason string) bool {
 	switch reason {
-	case "model_cooldown", "RESOURCE_EXHAUSTED_RETRY_IN", "RATE_LIMIT_RETRY_AFTER":
+	case "model_cooldown", "RESOURCE_EXHAUSTED_RETRY_IN", "RATE_LIMIT_RETRY_AFTER", "USAGE_LIMIT_REACHED":
 		return true
 	default:
 		return false

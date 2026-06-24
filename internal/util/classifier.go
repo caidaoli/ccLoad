@@ -116,27 +116,32 @@ type sseErrorResponse struct {
 }
 
 type structuredQuotaErrorResponse struct {
-	Code         any             `json:"code"`
-	Message      string          `json:"message"`
-	ResetSeconds int64           `json:"reset_seconds"`
-	ResetTime    string          `json:"reset_time"`
-	Status       string          `json:"status"`
-	Error        json.RawMessage `json:"error"`
+	Code            any             `json:"code"`
+	Message         string          `json:"message"`
+	ResetSeconds    int64           `json:"reset_seconds"`
+	ResetsInSeconds int64           `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64           `json:"resets_at"`         // unix 时间戳
+	ResetTime       string          `json:"reset_time"`
+	Status          string          `json:"status"`
+	Error           json.RawMessage `json:"error"`
 }
 
 type structuredQuotaErrorObject struct {
-	Type         any    `json:"type"`
-	Code         any    `json:"code"`
-	Message      string `json:"message"`
-	ResetSeconds int64  `json:"reset_seconds"`
-	ResetTime    string `json:"reset_time"`
-	Status       string `json:"status"`
+	Type            any    `json:"type"`
+	Code            any    `json:"code"`
+	Message         string `json:"message"`
+	ResetSeconds    int64  `json:"reset_seconds"`
+	ResetsInSeconds int64  `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64  `json:"resets_at"`         // unix 时间戳
+	ResetTime       string `json:"reset_time"`
+	Status          string `json:"status"`
 }
 
 type structuredQuotaError struct {
 	code         string
 	message      string
 	resetSeconds int64
+	resetsAt     int64 // unix 时间戳（秒）
 	resetTime    string
 	status       string
 }
@@ -503,6 +508,13 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 			return until, "RATE_LIMIT_RETRY_AFTER", ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
+	case code == "USAGE_LIMIT_REACHED":
+		// 上游 usage limit（如 Claude Plus 计划限额），优先用 resets_in_seconds / resets_at
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "USAGE_LIMIT_REACHED", ErrorLevelKey, true
+		}
+		// 没有精确重置时间，默认30分钟
+		return now.Add(30 * time.Minute), "USAGE_LIMIT_REACHED", ErrorLevelKey, true
 	default:
 		return time.Time{}, "", ErrorLevelNone, false
 	}
@@ -517,7 +529,8 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 	parsed := structuredQuotaError{
 		code:         normalizeStructuredScalar(errResp.Code),
 		message:      errResp.Message,
-		resetSeconds: errResp.ResetSeconds,
+		resetSeconds: coalesceInt64(errResp.ResetSeconds, errResp.ResetsInSeconds),
+		resetsAt:     errResp.ResetsAt,
 		resetTime:    errResp.ResetTime,
 		status:       strings.ToUpper(strings.TrimSpace(errResp.Status)),
 	}
@@ -541,7 +554,10 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 					parsed.message = errorObj.Message
 				}
 				if parsed.resetSeconds == 0 {
-					parsed.resetSeconds = errorObj.ResetSeconds
+					parsed.resetSeconds = coalesceInt64(errorObj.ResetSeconds, errorObj.ResetsInSeconds)
+				}
+				if parsed.resetsAt == 0 {
+					parsed.resetsAt = errorObj.ResetsAt
 				}
 				if parsed.resetTime == "" {
 					parsed.resetTime = errorObj.ResetTime
@@ -554,6 +570,15 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 	}
 
 	return parsed, parsed.code != "" || parsed.message != "" || parsed.status != ""
+}
+
+func coalesceInt64(values ...int64) int64 {
+	for _, v := range values {
+		if v != 0 {
+			return v
+		}
+	}
+	return 0
 }
 
 func normalizeStructuredScalar(value any) string {
@@ -580,6 +605,14 @@ func structuredScalarString(value any) string {
 func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) (time.Time, bool) {
 	if quotaErr.resetSeconds > 0 {
 		return now.Add(time.Duration(quotaErr.resetSeconds) * time.Second), true
+	}
+
+	// resets_at: unix 时间戳（秒），必须在当前时刻之后
+	if quotaErr.resetsAt > 0 {
+		until := time.Unix(quotaErr.resetsAt, 0)
+		if until.After(now) {
+			return until, true
+		}
 	}
 
 	if quotaErr.resetTime == "" {
