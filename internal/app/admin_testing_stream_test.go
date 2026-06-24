@@ -652,6 +652,70 @@ func TestHandleChannelChatWritesErrorWhenAllURLsFailBeforeResponse(t *testing.T)
 	}
 }
 
+func TestHandleChannelChatPersistsLogOnHTTPError(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = io.WriteString(w, `{"error":{"type":"permission_error","message":"forbidden"}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:         "chat-http-error-log",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	started := time.Now()
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, _ := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	logs, err := srv.store.ListLogsRange(
+		ctx,
+		started.Add(-time.Second),
+		time.Now().Add(time.Second),
+		10,
+		0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil {
+		t.Fatalf("ListLogsRange failed: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1", len(logs))
+	}
+	entry := logs[0]
+	if entry.StatusCode != http.StatusForbidden {
+		t.Fatalf("status_code=%d, want 403", entry.StatusCode)
+	}
+	if entry.LogSource != model.LogSourceManualChat {
+		t.Fatalf("log_source=%q, want %q", entry.LogSource, model.LogSourceManualChat)
+	}
+}
+
 func TestHandleChannelChatFallsBackAfterRetryableHTTPError(t *testing.T) {
 	failCalls := 0
 	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
