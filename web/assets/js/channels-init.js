@@ -212,11 +212,15 @@ window.initPageBootstrap({
       updateBatchChannelSelectionUI();
     }
 
-    await window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios');
-
+    // 并行化第一批：渠道类型渲染、目标渠道查询、不依赖 initialType 的设置请求同时发起
     const savedFilters = loadChannelsFilters();
     channelsCurrentPage = Math.max(1, parseInt(savedFilters?.page, 10) || 1);
-    const targetChannel = await getTargetChannel();
+    const [, targetChannel] = await Promise.all([
+      window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios'),
+      getTargetChannel(),
+      loadDefaultTestContent(),
+      loadChannelStatsRange()
+    ]);
     const targetChannelType = targetChannel?.channel_type || null;
     const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
 
@@ -269,35 +273,32 @@ window.initPageBootstrap({
       saveChannelsFilters();
     }
 
-    await window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
-      filters.channelType = type;
-      filters.model = 'all';
-      filters.modelExact = false;
-      filters.search = '';
-      filters.searchExact = false;
-      channelsCurrentPage = 1;
-      if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
-        modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
-      } else {
-        const modelFilterEl = document.getElementById('modelFilter');
-        if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
-      }
-      if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
-        channelNameCombobox.setValue('', getChannelNameAllLabel());
-      }
-      saveChannelsFilters();
-      loadChannelsFilterOptions(type, filters.status);
-      loadChannels(type);
-    });
-
-    await loadDefaultTestContent();
-    await loadChannelStatsRange();
-
+    // 并行化第二批：依赖 initialType 的请求 + stats（channelStatsRange 已在第一批设置）
     await Promise.all([
+      window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
+        filters.channelType = type;
+        filters.model = 'all';
+        filters.modelExact = false;
+        filters.search = '';
+        filters.searchExact = false;
+        channelsCurrentPage = 1;
+        if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
+          modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
+        } else {
+          const modelFilterEl = document.getElementById('modelFilter');
+          if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
+        }
+        if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
+          channelNameCombobox.setValue('', getChannelNameAllLabel());
+        }
+        saveChannelsFilters();
+        loadChannelsFilterOptions(type, filters.status);
+        loadChannels(type);
+      }),
       loadChannelsFilterOptions(initialType, filters.status),
-      loadChannels(initialType)
+      loadChannels(initialType),
+      loadChannelStats()
     ]);
-    await loadChannelStats();
     highlightFromHash();
     window.addEventListener('hashchange', highlightFromHash);
 

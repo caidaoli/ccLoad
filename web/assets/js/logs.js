@@ -1368,22 +1368,24 @@ async function initFilters(restoredFilters) {
   initLogsChannelNameCombobox(restoredFilters.channelName || '');
   initLogsModelCombobox(restoredFilters.model || '');
   applyLogsFilterValues(restoredFilters);
-  await syncLogSourceVisibility();
-
-  authTokens = await window.initAuthTokenFilter({
-    selectId: 'f_auth_token',
-    value: authToken,
-    onChange: () => {
-      window.persistFilterState({
-        key: LOGS_FILTER_KEY,
-        getValues: getLogsFilters
-      });
-      currentLogsPage = 1;
-      load();
-    }
-  });
-
-  await loadLogsModels(currentChannelType, range);
+  // 并行化：三个独立网络请求同时发起（高 RTT 环境下节省 ~2 个往返延迟）
+  const [, tokens] = await Promise.all([
+    syncLogSourceVisibility(),
+    window.initAuthTokenFilter({
+      selectId: 'f_auth_token',
+      value: authToken,
+      onChange: () => {
+        window.persistFilterState({
+          key: LOGS_FILTER_KEY,
+          getValues: getLogsFilters
+        });
+        currentLogsPage = 1;
+        load();
+      }
+    }),
+    loadLogsModels(currentChannelType, range)
+  ]);
+  authTokens = tokens;
 
   // 事件监听
   document.getElementById('btn_filter').addEventListener('click', applyFilter);
