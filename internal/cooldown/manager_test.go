@@ -1132,6 +1132,101 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsChannelUntilRetryClock(t *testin
 	}
 }
 
+func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-usage-limit-multi-key")
+	keys := make([]*model.APIKey, 2)
+	for i := 0; i < 2; i++ {
+		keys[i] = &model.APIKey{
+			ChannelID:   cfg.ID,
+			KeyIndex:    i,
+			APIKey:      "sk-usage-" + string(rune('a'+i)),
+			KeyStrategy: model.KeyStrategySequential,
+		}
+	}
+	_ = store.CreateAPIKeysBatch(ctx, keys)
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     429,
+		ErrorBody:      []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
+
+	if action != ActionRetryKey {
+		t.Fatalf("expected ActionRetryKey, got %v", action)
+	}
+
+	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+	if !exists {
+		t.Fatal("expected key cooldown")
+	}
+
+	duration := cooldownUntil.Sub(before)
+	if duration < 7250*time.Second || duration > 7270*time.Second {
+		t.Fatalf("cooldown duration=%v, want about 7260s", duration)
+	}
+
+	// 渠道不应被冷却
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+		t.Fatal("channel should not be cooled for multi-key usage limit")
+	}
+}
+
+func TestHandleError_UsageLimitReachedSingleKeyCoolsChannel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-usage-limit-single-key")
+	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-single-usage",
+		KeyStrategy: model.KeyStrategySequential,
+	}})
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		KeyIndex:       0,
+		StatusCode:     429,
+		ErrorBody:      []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`),
+		IsNetworkError: false,
+		Headers:        nil,
+	})
+
+	if action != ActionRetryChannel {
+		t.Fatalf("expected ActionRetryChannel, got %v", action)
+	}
+
+	// 单Key渠道应升级为渠道冷却
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.CooldownUntil == 0 || time.Unix(channelCfg.CooldownUntil, 0).Before(time.Now()) {
+		t.Fatal("channel should be cooled for single-key usage limit")
+	}
+
+	channelDuration := time.Unix(channelCfg.CooldownUntil, 0).Sub(before)
+	if channelDuration < 7250*time.Second || channelDuration > 7270*time.Second {
+		t.Fatalf("channel cooldown duration=%v, want about 7260s", channelDuration)
+	}
+}
+
 // ========== 辅助函数 ==========
 
 func nextLocalMidnight(now time.Time) time.Time {
