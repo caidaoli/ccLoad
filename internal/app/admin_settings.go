@@ -56,6 +56,8 @@ func (s *Server) AdminGetSetting(c *gin.Context) {
 		return
 	}
 
+	// 配置项变更频率极低，允许浏览器缓存 5 分钟
+	c.Header("Cache-Control", "private, max-age=300")
 	RespondJSON(c, http.StatusOK, setting)
 }
 
