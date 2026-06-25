@@ -1076,10 +1076,21 @@
   }
 
   async function initAuthTokenFilter(options = {}) {
-    if (typeof window.loadAuthTokensIntoSelect !== 'function') return [];
-
     const selectId = options.selectId;
     if (!selectId) return [];
+
+    if (Array.isArray(options.preloadedTokens)) {
+      fillAuthTokenSelect(selectId, options.preloadedTokens, options.loadOptions);
+      const el = document.getElementById(selectId);
+      if (!el) return options.preloadedTokens;
+      el.value = options.value || '';
+      if (typeof options.onChange === 'function') {
+        el.addEventListener('change', options.onChange);
+      }
+      return options.preloadedTokens;
+    }
+
+    if (typeof window.loadAuthTokensIntoSelect !== 'function') return [];
 
     const tokens = await window.loadAuthTokensIntoSelect(selectId, options.loadOptions);
     const el = document.getElementById(selectId);
@@ -2186,23 +2197,27 @@
    * @param {string} [opts.restoreValue] - 恢复选中值
    * @returns {Promise<Array>} 令牌数组
    */
+  function fillAuthTokenSelect(selectId, tokens, opts) {
+    const o = opts || {};
+    const select = document.getElementById(selectId);
+    if (select && tokens.length > 0) {
+      select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
+      tokens.forEach(token => {
+        const option = document.createElement('option');
+        option.value = token.id;
+        option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
+        select.appendChild(option);
+      });
+      if (o.restoreValue) select.value = o.restoreValue;
+    }
+  }
+
   async function loadAuthTokensIntoSelect(selectId, opts) {
     const o = opts || {};
     try {
       const data = await fetchDataWithAuth('/admin/auth-tokens');
       const tokens = (data && data.tokens) || [];
-
-      const select = document.getElementById(selectId);
-      if (select && tokens.length > 0) {
-        select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
-        tokens.forEach(token => {
-          const option = document.createElement('option');
-          option.value = token.id;
-          option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
-          select.appendChild(option);
-        });
-        if (o.restoreValue) select.value = o.restoreValue;
-      }
+      fillAuthTokenSelect(selectId, tokens, o);
       return tokens;
     } catch (error) {
       console.error('Failed to load auth tokens:', error);
