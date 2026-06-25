@@ -18,7 +18,6 @@ let logChannelClickAction = 'edit'; // 日志页渠道名点击行为：edit|nav
 
 let latestActiveRequests = []; // 缓存 ui.js 最近一次推送的活动请求，供 load() 即时刷新
 let lastActiveRequestStates = null; // Map<id, fingerprint>：上次活跃请求状态，用于检测请求结束/渠道切换
-let _lastRenderedFingerprint = '';
 let logsLoadInFlight = false;
 let logsLoadPending = false;
 // logsLoadScheduled 已被 _scheduleLoadTimer 取代
@@ -722,11 +721,6 @@ function handleActiveRequestsData(rawActiveRequests) {
 
   // 根据当前筛选条件过滤（只影响展示，不影响完成检测）
   const activeRequests = filterActiveRequests(latestActiveRequests);
-
-  // 数据未变时跳过 DOM 操作
-  const newFingerprint = activeRequests.map(r => activeRequestFingerprint(r) + '|' + (r.client_first_byte_time || 0)).join('\n');
-  if (newFingerprint === _lastRenderedFingerprint) return;
-  _lastRenderedFingerprint = newFingerprint;
 
   renderActiveRequests(activeRequests);
 }
