@@ -1075,6 +1075,21 @@
     return el;
   }
 
+  function fillAuthTokenSelect(selectId, tokens, opts) {
+    const o = opts || {};
+    const select = document.getElementById(selectId);
+    if (select && tokens.length > 0) {
+      select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
+      tokens.forEach(token => {
+        const option = document.createElement('option');
+        option.value = token.id;
+        option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
+        select.appendChild(option);
+      });
+      if (o.restoreValue) select.value = o.restoreValue;
+    }
+  }
+
   async function initAuthTokenFilter(options = {}) {
     const selectId = options.selectId;
     if (!selectId) return [];
@@ -1286,6 +1301,7 @@
   window.applyFilterControlValues = applyFilterControlValues;
   window.persistFilterState = persistFilterState;
   window.initSavedDateRangeFilter = initSavedDateRangeFilter;
+  window.fillAuthTokenSelect = fillAuthTokenSelect;
   window.initAuthTokenFilter = initAuthTokenFilter;
   window.calculateTokenSpeed = calculateTokenSpeed;
   window.formatCost = formatCost;
@@ -2189,35 +2205,12 @@
     select.addEventListener('change', (e) => onChange(e.target.value));
   }
 
-  /**
-   * 加载令牌列表并填充下拉框
-   * @param {string} selectId - select 元素 ID
-   * @param {Object} [opts] - 选项
-   * @param {string} [opts.tokenPrefix] - 令牌显示前缀（默认 'Token #'）
-   * @param {string} [opts.restoreValue] - 恢复选中值
-   * @returns {Promise<Array>} 令牌数组
-   */
-  function fillAuthTokenSelect(selectId, tokens, opts) {
-    const o = opts || {};
-    const select = document.getElementById(selectId);
-    if (select && tokens.length > 0) {
-      select.innerHTML = `<option value="">${window.t('stats.allTokens')}</option>`;
-      tokens.forEach(token => {
-        const option = document.createElement('option');
-        option.value = token.id;
-        option.textContent = token.description || `${o.tokenPrefix || 'Token #'}${token.id}`;
-        select.appendChild(option);
-      });
-      if (o.restoreValue) select.value = o.restoreValue;
-    }
-  }
-
   async function loadAuthTokensIntoSelect(selectId, opts) {
     const o = opts || {};
     try {
       const data = await fetchDataWithAuth('/admin/auth-tokens');
       const tokens = (data && data.tokens) || [];
-      fillAuthTokenSelect(selectId, tokens, o);
+      window.fillAuthTokenSelect(selectId, tokens, o);
       return tokens;
     } catch (error) {
       console.error('Failed to load auth tokens:', error);
