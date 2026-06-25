@@ -370,15 +370,27 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	channelType := c.Query("channel_type")
 	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
 
-	models, err := s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, logFilter)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+	var (
+		models                 []string
+		channels               []model.ChannelNameID
+		wg                     sync.WaitGroup
+		modelsErr, channelsErr error
+	)
+
+	wg.Go(func() {
+		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, logFilter)
+	})
+	wg.Go(func() {
+		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, logFilter)
+	})
+	wg.Wait()
+
+	if modelsErr != nil {
+		RespondError(c, http.StatusInternalServerError, modelsErr)
 		return
 	}
-
-	channels, err := s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, logFilter)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+	if channelsErr != nil {
+		RespondError(c, http.StatusInternalServerError, channelsErr)
 		return
 	}
 
