@@ -61,8 +61,7 @@ func NewRequest(method, target string, body []byte) *http.Request {
 	return NewRequestReader(method, target, reader)
 }
 
-// NewJSONRequest 创建 JSON 请求
-func NewJSONRequest(method, target string, v any) (*http.Request, error) {
+func newJSONRequest(method, target string, v any) (*http.Request, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
@@ -76,7 +75,7 @@ func NewJSONRequest(method, target string, v any) (*http.Request, error) {
 func MustNewJSONRequest(t testing.TB, method, target string, v any) *http.Request {
 	t.Helper()
 
-	req, err := NewJSONRequest(method, target, v)
+	req, err := newJSONRequest(method, target, v)
 	if err != nil {
 		t.Fatalf("marshal json failed: %v", err)
 	}
