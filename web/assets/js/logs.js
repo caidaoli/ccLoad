@@ -534,28 +534,6 @@ function calculateLogSpeed(entry) {
   );
 }
 
-// 加载默认测试内容（从系统设置）
-async function loadDefaultTestContent() {
-  try {
-    const setting = await fetchDataWithAuth('/admin/settings/channel_test_content');
-    if (setting && setting.value) {
-      logsDefaultTestContent = setting.value;
-    }
-  } catch (e) {
-    console.warn('加载默认测试内容失败，使用内置默认值', e);
-  }
-}
-
-async function loadLogChannelClickAction() {
-  try {
-    const setting = await fetchDataWithAuth('/admin/settings/log_channel_click_action');
-    const value = String(setting?.value || '').trim().toLowerCase();
-    logChannelClickAction = value === 'navigate' ? 'navigate' : 'edit';
-  } catch (e) {
-    logChannelClickAction = 'edit';
-  }
-}
-
 async function load(skipLoading = false) {
   if (logsLoadInFlight) {
     logsLoadPending = true;
@@ -1103,16 +1081,6 @@ function jumpToPage() {
 
   // 清空输入框
   jumpPageInput.value = '';
-}
-
-function changePageSize() {
-  const newPageSize = parseInt(document.getElementById('page_size').value);
-  if (newPageSize !== logsPageSize) {
-    logsPageSize = newPageSize;
-    currentLogsPage = 1;
-    totalLogsPages = 1;
-    load();
-  }
 }
 
 function applyFilter() {
@@ -2189,233 +2157,6 @@ function composeDebugRawResponse(data) {
   return parts.join('\n');
 }
 
-function appendMergedText(bucket, value) {
-  if (!bucket || value == null) return;
-  if (Array.isArray(value)) {
-    value.forEach(item => appendMergedText(bucket, item));
-    return;
-  }
-  if (typeof value === 'object') {
-    if (typeof value.text === 'string') {
-      appendMergedText(bucket, value.text);
-      return;
-    }
-    if (typeof value.content === 'string') {
-      appendMergedText(bucket, value.content);
-      return;
-    }
-    try {
-      bucket.push(JSON.stringify(value));
-    } catch {
-      // ignore values that cannot be rendered
-    }
-    return;
-  }
-  const text = String(value);
-  if (text) bucket.push(text);
-}
-
-function collectMergedResponsePayload(payload, state) {
-  if (!payload || typeof payload !== 'object' || !state) return;
-
-  const collectContentParts = (content) => {
-    if (!Array.isArray(content)) {
-      appendMergedText(state.text, content);
-      return;
-    }
-    content.forEach(part => {
-      if (!part || typeof part !== 'object') {
-        appendMergedText(state.text, part);
-        return;
-      }
-      appendMergedText(state.text, part.text ?? part.content);
-    });
-  };
-
-  const collectMessage = (message) => {
-    if (!message || typeof message !== 'object') return;
-    appendMergedText(state.reasoning, message.reasoning_content);
-    appendMergedText(state.reasoning, message.reasoning);
-    appendMergedText(state.text, message.content);
-    appendMergedText(state.text, message.refusal);
-  };
-
-  const collectAnthropicDelta = (payload) => {
-    const delta = payload.delta;
-    if (!delta || typeof delta !== 'object') return;
-
-    appendMergedText(state.reasoning, delta.thinking);
-    appendMergedText(state.text, delta.text);
-
-    if (delta.partial_json != null) {
-      if (
-        payload.index != null
-        && state.lastFunctionCallIndex != null
-        && state.lastFunctionCallIndex !== payload.index
-      ) {
-        state.functionCalls.push('\n\n');
-      }
-      if (payload.index != null) state.lastFunctionCallIndex = payload.index;
-      appendMergedText(state.functionCalls, delta.partial_json);
-      state.hasFunctionCallDelta = true;
-    }
-
-    if (delta.thinking != null) state.hasReasoningDelta = true;
-    if (delta.text != null) state.hasTextDelta = true;
-  };
-
-  const hasFunctionCallDeltaFor = (index) => {
-    return index != null && state.functionCallDeltaIndexes?.has(index);
-  };
-
-  const appendFunctionCallText = (index, text, fromDelta = false) => {
-    if (
-      index != null
-      && state.lastFunctionCallIndex != null
-      && state.lastFunctionCallIndex !== index
-    ) {
-      state.functionCalls.push('\n\n');
-    }
-    if (index != null) state.lastFunctionCallIndex = index;
-    appendMergedText(state.functionCalls, text);
-    if (fromDelta) {
-      state.hasFunctionCallDelta = true;
-      if (index != null) state.functionCallDeltaIndexes.add(index);
-    }
-  };
-
-  const collectOutputItem = (item, fallbackIndex = null) => {
-    if (!item || typeof item !== 'object') return;
-    const outputIndex = item.output_index ?? fallbackIndex;
-    if (item.type === 'message') {
-      if (state.hasTextDelta) return;
-      collectContentParts(item.content);
-      return;
-    }
-    if (item.type === 'function_call') {
-      if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
-      if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
-      appendMergedText(state.functionCalls, item.arguments);
-      return;
-    }
-    if (item.type === 'custom_tool_call') {
-      if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
-      if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
-      appendMergedText(state.functionCalls, item.input);
-      return;
-    }
-    if (item.type === 'reasoning') {
-      if (state.hasReasoningDelta) return;
-      appendMergedText(state.reasoning, item.summary || item.content);
-    }
-  };
-
-  const collectGeminiCandidate = (candidate) => {
-    if (!candidate || typeof candidate !== 'object') return;
-    const parts = candidate.content?.parts;
-    if (!Array.isArray(parts)) {
-      appendMergedText(state.text, candidate.content?.text ?? candidate.content);
-      return;
-    }
-    parts.forEach(part => {
-      if (!part || typeof part !== 'object') {
-        appendMergedText(state.text, part);
-        return;
-      }
-      const target = part.thought === true ? state.reasoning : state.text;
-      appendMergedText(target, part.text ?? part.content);
-    });
-  };
-
-  if (Array.isArray(payload.choices)) {
-    payload.choices.forEach(choice => {
-      if (!choice || typeof choice !== 'object') return;
-      const delta = choice.delta || null;
-      if (delta && typeof delta === 'object') {
-        appendMergedText(state.reasoning, delta.reasoning_content);
-        appendMergedText(state.reasoning, delta.reasoning);
-        appendMergedText(state.text, delta.content);
-        if (delta.reasoning_content != null || delta.reasoning != null) state.hasReasoningDelta = true;
-        if (delta.content != null) state.hasTextDelta = true;
-      }
-      collectMessage(choice.message);
-    });
-  }
-
-  if (Array.isArray(payload.candidates)) {
-    payload.candidates.forEach(collectGeminiCandidate);
-  }
-
-  switch (payload.type) {
-    case 'content_block_delta':
-      collectAnthropicDelta(payload);
-      break;
-    case 'response.output_text.delta':
-    case 'response.refusal.delta':
-      appendMergedText(state.text, payload.delta);
-      state.hasTextDelta = true;
-      break;
-    case 'response.reasoning_text.delta':
-    case 'response.reasoning_summary_text.delta':
-    case 'response.reasoning.delta':
-      appendMergedText(state.reasoning, payload.delta);
-      state.hasReasoningDelta = true;
-      break;
-    case 'response.function_call_arguments.delta':
-      appendFunctionCallText(payload.output_index, payload.delta, true);
-      break;
-    case 'response.custom_tool_call_input.delta':
-      appendFunctionCallText(payload.output_index, payload.delta, true);
-      break;
-    case 'response.custom_tool_call_input.done':
-      if (!hasFunctionCallDeltaFor(payload.output_index)) {
-        appendFunctionCallText(payload.output_index, payload.input);
-      }
-      break;
-    case 'response.output_item.done':
-      collectOutputItem(payload.item, payload.output_index);
-      break;
-    default:
-      break;
-  }
-
-  if (Array.isArray(payload.output)) {
-    payload.output.forEach((item, index) => collectOutputItem(item, index));
-  }
-  if (payload.response && Array.isArray(payload.response.output)) {
-    payload.response.output.forEach((item, index) => collectOutputItem(item, index));
-  }
-}
-
-function parseSSEDataPayloads(body) {
-  const payloads = [];
-  let dataLines = [];
-
-  const flush = () => {
-    if (dataLines.length === 0) return;
-    const raw = dataLines.join('\n').trim();
-    dataLines = [];
-    if (!raw || raw === '[DONE]') return;
-    try {
-      payloads.push(JSON.parse(raw));
-    } catch {
-      // Non-JSON SSE data is not useful for merged LLM content.
-    }
-  };
-
-  String(body || '').replace(/\r\n/g, '\n').split('\n').forEach(line => {
-    if (line.startsWith('data:')) {
-      const value = line.slice(5);
-      dataLines.push(value.startsWith(' ') ? value.slice(1) : value);
-      return;
-    }
-    if (line === '') flush();
-  });
-  flush();
-
-  return payloads;
-}
-
 function composeDebugMergedResponse(data) {
   let raw = String(data?.resp_body || '').replace(/\r\n/g, '\n');
   if (!raw) return '';
@@ -2435,12 +2176,12 @@ function composeDebugMergedResponse(data) {
     lastFunctionCallIndex: null,
     functionCallDeltaIndexes: new Set()
   };
-  const ssePayloads = parseSSEDataPayloads(raw);
+  const ssePayloads = window.SSEMerge.parsePayloads(raw);
   if (ssePayloads.length > 0) {
-    ssePayloads.forEach(payload => collectMergedResponsePayload(payload, state));
+    ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
   } else {
     try {
-      collectMergedResponsePayload(JSON.parse(raw), state);
+      window.SSEMerge.collectPayload(JSON.parse(raw), state);
     } catch {
       return formatJsonSafe(raw);
     }

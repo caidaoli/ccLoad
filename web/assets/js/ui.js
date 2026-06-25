@@ -360,16 +360,6 @@
     return el;
   }
 
-  // 新版本图标（小圆点）
-  function iconNewVersion() {
-    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    el.setAttribute('viewBox', '0 0 8 8');
-    el.setAttribute('fill', 'var(--success-500)');
-    el.style.cssText = 'width: 8px; height: 8px; margin-left: 4px;';
-    el.innerHTML = '<circle cx="4" cy="4" r="4"/>';
-    return el;
-  }
-
   // ---- 活动请求指示器（脉冲 + 角标 + favicon/标题）----
   // 全站唯一轮询源：拉取完整 payload 后自己消费 count，同时推送 data 给订阅者（如 logs.js）
   const ACTIVE_POLL_MS = 2000;

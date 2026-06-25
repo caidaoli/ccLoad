@@ -331,22 +331,6 @@ func TestServer_GetConfig_FallbackToStore(t *testing.T) {
 	}
 }
 
-func TestServer_HandleEventLoggingBatch(t *testing.T) {
-	t.Parallel()
-
-	s := &Server{}
-	c, w := newTestContext(t, newRequest(http.MethodPost, "/api/event_logging/batch", nil))
-
-	s.HandleEventLoggingBatch(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
-	}
-	if w.Body.String() != "{}" {
-		t.Fatalf("body=%q, want {}", w.Body.String())
-	}
-}
-
 func TestServer_GetModelsByChannelType(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

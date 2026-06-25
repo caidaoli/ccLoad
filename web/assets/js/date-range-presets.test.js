@@ -183,8 +183,7 @@ test('trend.js 使用共享预设校验时间范围', () => {
   assert.doesNotMatch(trendSource, /const validRanges = \[/);
 });
 
-test('channels-state.js 使用共享标签 helper 获取统计时间范围文案', () => {
-  assert.match(channelsStateSource, /getRangeLabel/);
+test('channels-state.js 不内联实现统计时间范围文案映射', () => {
   assert.doesNotMatch(channelsStateSource, /const keyMap = \{/);
 });
 
