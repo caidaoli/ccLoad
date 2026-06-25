@@ -329,7 +329,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
-		{"channel_check_interval_hours", "5", "int", "渠道定时检测间隔(小时,0=关闭,修改后重启生效)", "5"},
+		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)", "5"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名行为(edit=打开编辑器,navigate=跳转到渠道管理定位)", "edit"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置
@@ -400,6 +400,20 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}
 
 	// 清理已废弃的配置项
+
+	// 迁移 channel_check_interval_hours 类型：int → float（支持分钟级小数间隔）
+	{
+		keyCol := "key"
+		if dialect == DialectMySQL {
+			keyCol = "`key`"
+		}
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
+		if _, err := db.ExecContext(ctx, typeSQL); err != nil {
+			return fmt.Errorf("migrate channel_check_interval_hours type: %w", err)
+		}
+	}
+
 	obsoleteKeys := []string{
 		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
 	}

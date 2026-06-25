@@ -965,7 +965,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.gemini_non_stream_timeout': 'Gemini non-stream request timeout (seconds, 0 = use global non-stream timeout)',
   'settings.desc.model_fuzzy_match': 'Use substring fuzzy match when model matching fails (latest version selected for multiple matches)',
   'settings.desc.channel_test_content': 'Default content for channel testing',
-  'settings.desc.channel_check_interval_hours': 'Scheduled channel check interval (hours, 0 = disabled, restart required)',
+  'settings.desc.channel_check_interval_hours': 'Scheduled channel check interval (hours, decimals ok e.g. 0.5 = 30 min, 0 = disabled, restart required)',
   'settings.desc.channel_stats_range': 'Channel stats cost time range',
   'settings.desc.enable_health_score': 'Enable dynamic channel sorting based on health score',
   'settings.desc.success_rate_penalty_weight': 'Success rate penalty weight (multiplied by failure rate)',

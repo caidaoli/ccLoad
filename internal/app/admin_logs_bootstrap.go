@@ -17,7 +17,7 @@ import (
 type LogsBootstrapResponse struct {
 	ChannelTestContent        string                `json:"channel_test_content"`
 	LogChannelClickAction     string                `json:"log_channel_click_action"`
-	ChannelCheckIntervalHours int                   `json:"channel_check_interval_hours"`
+	ChannelCheckIntervalHours float64               `json:"channel_check_interval_hours"`
 	AuthTokens                []*model.AuthToken    `json:"auth_tokens"`
 	Models                    []string              `json:"models"`
 	Channels                  []model.ChannelNameID `json:"channels"`
@@ -89,7 +89,7 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 			return
 		}
 		if setting != nil {
-			n, _ := strconv.Atoi(setting.Value) // 转换失败时 n == 0，符合预期
+			n, _ := strconv.ParseFloat(setting.Value, 64)
 			mu.Lock()
 			resp.ChannelCheckIntervalHours = n
 			mu.Unlock()

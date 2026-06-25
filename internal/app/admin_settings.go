@@ -202,10 +202,6 @@ func validateSettingValue(key, valueType, value string) error {
 			if intVal < 1 {
 				return fmt.Errorf("max_key_retries must be >= 1")
 			}
-		case "channel_check_interval_hours":
-			if intVal < 0 {
-				return fmt.Errorf("channel_check_interval_hours must be >= 0")
-			}
 		case "log_retention_days":
 			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {
 				return fmt.Errorf("log_retention_days must be %d (永久) or %d-%d", LogRetentionDaysDisabled, LogRetentionDaysMin, LogRetentionDaysMax)
@@ -213,6 +209,18 @@ func validateSettingValue(key, valueType, value string) error {
 		default:
 			if intVal < -1 {
 				return fmt.Errorf("value must be >= -1")
+			}
+		}
+
+	case "float":
+		floatVal, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return fmt.Errorf("not a valid number")
+		}
+		switch key {
+		case "channel_check_interval_hours":
+			if floatVal < 0 {
+				return fmt.Errorf("channel_check_interval_hours must be >= 0")
 			}
 		}
 

@@ -44,18 +44,19 @@ func TestNormalizeChannelCheckIntervalHours(t *testing.T) {
 
 	tests := []struct {
 		name string
-		in   int
-		want int
+		in   float64
+		want float64
 	}{
 		{name: "positive_kept", in: 5, want: 5},
+		{name: "decimal_kept", in: 0.5, want: 0.5},
 		{name: "zero_disables", in: 0, want: 0},
-		{name: "negative_clamped_to_zero", in: -3, want: 0},
+		{name: "negative_clamped_to_zero", in: -0.1, want: 0},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := normalizeChannelCheckIntervalHours(tt.in); got != tt.want {
-				t.Fatalf("normalizeChannelCheckIntervalHours(%d) = %d, want %d", tt.in, got, tt.want)
+				t.Fatalf("normalizeChannelCheckIntervalHours(%v) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
 	}
