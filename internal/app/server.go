@@ -764,9 +764,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		public.GET("/version", s.HandlePublicVersion)
 	}
 
-	// 事件日志（公开访问，兼容性占位接口）
-	r.POST("/api/event_logging/batch", s.HandleEventLoggingBatch)
-
 	// 登录相关（公开访问）
 	r.POST("/login", s.authService.HandleLogin)
 	r.POST("/logout", s.authService.HandleLogout)
@@ -815,7 +812,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/stats/filter-options", s.HandleStatsFilterOptions)
-		admin.GET("/cooldown/stats", s.HandleCooldownStats)
 		admin.GET("/models", s.HandleGetModels)
 
 		// API访问令牌管理
@@ -841,11 +837,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	r.GET("/", func(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/web/index.html")
 	})
-}
-
-// HandleEventLoggingBatch 返回空JSON响应（兼容性占位接口）
-func (s *Server) HandleEventLoggingBatch(c *gin.Context) {
-	c.JSON(http.StatusOK, gin.H{})
 }
 
 // Token清理循环（定期清理过期Token）

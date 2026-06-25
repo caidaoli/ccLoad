@@ -5,6 +5,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
+const sseMergeSource = fs.readFileSync(path.join(__dirname, 'sse-merge.js'), 'utf8');
 const logsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
 
 function extractFunction(source, name) {
@@ -33,11 +34,12 @@ function extractFunction(source, name) {
 function createHelpers() {
   const sandbox = { window: {} };
   vm.createContext(sandbox);
+  // sse-merge.js 是 appendMergedText / collectMergedResponsePayload / parseSSEDataPayloads 的
+  // 规范实现，通过 IIFE 将自身挂到 window.SSEMerge；logs.js 的 composeDebugMergedResponse
+  // 已改为调用 window.SSEMerge.* 而非内联副本。
+  vm.runInContext(sseMergeSource, sandbox);
   vm.runInContext(`
 ${extractFunction(logsSource, 'formatJsonSafe')}
-${extractFunction(logsSource, 'appendMergedText')}
-${extractFunction(logsSource, 'collectMergedResponsePayload')}
-${extractFunction(logsSource, 'parseSSEDataPayloads')}
 ${extractFunction(logsSource, 'composeDebugMergedResponse')}
 this.__logsDebugMergeTest = {
   composeDebugMergedResponse

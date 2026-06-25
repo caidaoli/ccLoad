@@ -311,25 +311,6 @@ func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string
 	return channelTypes, nil
 }
 
-// HandleCooldownStats 获取当前冷却状态监控指标
-// GET /admin/cooldown/stats
-func (s *Server) HandleCooldownStats(c *gin.Context) {
-	// 优先走缓存层，缓存不可用时自动降级到数据库查询
-	channelCooldowns, _ := s.getAllChannelCooldowns(c.Request.Context())
-	keyCooldowns, _ := s.getAllKeyCooldowns(c.Request.Context())
-
-	var keyCount int
-	for _, m := range keyCooldowns {
-		keyCount += len(m)
-	}
-
-	response := gin.H{
-		"channel_cooldowns": len(channelCooldowns),
-		"key_cooldowns":     keyCount,
-	}
-	RespondJSON(c, http.StatusOK, response)
-}
-
 // HandleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
 // GET /public/channel-types
 // 编译时常量，浏览器缓存24小时减少HF Spaces等高延迟环境的网络往返

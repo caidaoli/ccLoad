@@ -265,14 +265,6 @@ function formatDurationMs(durationMs) {
     : '-';
 }
 
-function formatChannelPriority(priority) {
-  if (priority === null || priority === undefined) return '-';
-  const text = String(priority).trim();
-  if (!text) return '-';
-  const value = Number(text);
-  return Number.isFinite(value) ? String(value) : '-';
-}
-
 const MODEL_TEST_PRIORITY_MIN = -99999;
 const MODEL_TEST_PRIORITY_MAX = 99999;
 let modelTestPrioritySaveTimers = new Map();
@@ -1034,10 +1026,6 @@ function getExposedProtocols(channel) {
 
 function channelExposesProtocol(channel, protocol) {
   return getExposedProtocols(channel).includes(normalizeProtocol(protocol));
-}
-
-function channelSupportsProtocol(channel, protocol) {
-  return getSupportedProtocols(channel).includes(normalizeProtocol(protocol));
 }
 
 function getAllModelsForProtocol(protocol) {

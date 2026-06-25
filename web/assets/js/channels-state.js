@@ -96,39 +96,6 @@ function formatCompactNumber(num) {
   return num.toString();
 }
 
-function formatSuccessRate(success, total) {
-  if (success === null || success === undefined || total === null || total === undefined) return '--';
-  const succ = Number(success);
-  const ttl = Number(total);
-  if (!Number.isFinite(succ) || !Number.isFinite(ttl) || ttl <= 0) return '--';
-  return ((succ / ttl) * 100).toFixed(1) + '%';
-}
-
-function formatAvgFirstByte(value) {
-  if (value === null || value === undefined) return '--';
-  const num = Number(value);
-  if (!Number.isFinite(num) || num <= 0) return '--';
-  return num.toFixed(2) + window.t('common.seconds');
-}
-
-function formatCostValue(cost, effectiveCost) {
-  if (cost === null || cost === undefined) return '--';
-  const num = Number(cost);
-  if (!Number.isFinite(num)) return '--';
-  if (num === 0) return '$0.00';
-  if (num < 0) return '--';
-  if (effectiveCost !== undefined && effectiveCost !== null) {
-    return formatCostPair(num, effectiveCost);
-  }
-  return formatCost(num);
-}
-
-function getStatsRangeLabel(range) {
-  return window.getRangeLabel
-    ? window.getRangeLabel(range)
-    : window.t('index.timeRange.today');
-}
-
 function formatTimestampForFilename() {
   const pad = (n) => String(n).padStart(2, '0');
   const now = new Date();

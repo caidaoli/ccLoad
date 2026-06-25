@@ -829,11 +829,6 @@
       }
     }
 
-    // 加载令牌列表
-    async function loadAuthTokens() {
-      authTokens = await window.loadAuthTokensIntoSelect('f_auth_token', { tokenPrefix: t('stats.tokenPrefix') });
-    }
-
     // 格式化 RPM（每分钟请求数）带颜色
     function formatRpm(rpm) {
       if (rpm < 0.01) return '';
