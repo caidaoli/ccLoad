@@ -1222,17 +1222,22 @@ function getLogSourceFilterElements() {
   return { group, select };
 }
 
-async function syncLogSourceVisibility() {
+async function syncLogSourceVisibility(preloadedIntervalHours) {
   const { group, select } = getLogSourceFilterElements();
   if (!group || !select) return false;
 
   let scheduledCheckEnabledByConfig = false;
-  try {
-    const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
-    const intervalHours = Number(setting && setting.value);
-    scheduledCheckEnabledByConfig = Number.isFinite(intervalHours) && intervalHours > 0;
-  } catch (error) {
-    console.warn('Failed to load channel check interval setting for logs filter', error);
+  if (preloadedIntervalHours !== undefined) {
+    // 预加载路径：跳过 fetch，直接使用 bootstrap 数据
+    scheduledCheckEnabledByConfig = Number.isFinite(preloadedIntervalHours) && preloadedIntervalHours > 0;
+  } else {
+    try {
+      const setting = await fetchDataWithAuth('/admin/settings/channel_check_interval_hours');
+      const intervalHours = Number(setting && setting.value);
+      scheduledCheckEnabledByConfig = Number.isFinite(intervalHours) && intervalHours > 0;
+    } catch (error) {
+      console.warn('Failed to load channel check interval setting for logs filter', error);
+    }
   }
 
   group.hidden = !scheduledCheckEnabledByConfig;
@@ -1341,7 +1346,7 @@ function initLogsModelCombobox(initialValue) {
   });
 }
 
-async function initFilters(restoredFilters) {
+async function initFilters(restoredFilters, preloaded) {
   const range = restoredFilters.range || 'today';
   const authToken = restoredFilters.authToken || '';
 
@@ -1369,8 +1374,9 @@ async function initFilters(restoredFilters) {
   initLogsModelCombobox(restoredFilters.model || '');
   applyLogsFilterValues(restoredFilters);
   // 并行化：三个独立网络请求同时发起（高 RTT 环境下节省 ~2 个往返延迟）
+  // 若有 preloaded 数据则跳过对应的网络请求
   const [, tokens] = await Promise.all([
-    syncLogSourceVisibility(),
+    syncLogSourceVisibility(preloaded ? preloaded.channelCheckIntervalHours : undefined),
     window.initAuthTokenFilter({
       selectId: 'f_auth_token',
       value: authToken,
@@ -1381,9 +1387,10 @@ async function initFilters(restoredFilters) {
         });
         currentLogsPage = 1;
         load();
-      }
+      },
+      ...(preloaded ? { preloadedTokens: preloaded.authTokens } : {})
     }),
-    loadLogsModels(currentChannelType, range)
+    preloaded ? Promise.resolve() : loadLogsModels(currentChannelType, range)
   ]);
   authTokens = tokens;
 
@@ -1679,8 +1686,15 @@ window.initPageBootstrap({
   }, hasUrlParams ? u : null);
   currentChannelType = restoredFilters.channelType || 'all';
 
-  // 并行初始化：渠道类型 + 默认测试内容同时加载（节省一次 RTT）
-  await Promise.all([
+  // 构造 bootstrap 请求参数（和 loadLogsModels 一致）
+  const bootstrapParams = new URLSearchParams();
+  appendLogsTimeRangeParams(bootstrapParams, { range: restoredFilters.range || 'today' });
+  if (currentChannelType && currentChannelType !== 'all') {
+    bootstrapParams.set('channel_type', currentChannelType);
+  }
+
+  // Wave 1：channel-types（浏览器缓存）+ bootstrap（合并 5 个请求）
+  const [, bootstrap] = await Promise.all([
     window.initChannelTypeFilter('f_channel_type', currentChannelType, async (value) => {
       currentChannelType = value;
       window.persistFilterState({
@@ -1691,11 +1705,25 @@ window.initPageBootstrap({
       await loadLogsModels(value);
       load();
     }),
-    loadDefaultTestContent(),
-    loadLogChannelClickAction()
+    fetchDataWithAuth('/admin/logs/bootstrap?' + bootstrapParams.toString()).catch(() => null)
   ]);
 
-  await initFilters(restoredFilters);
+  // 从 bootstrap 数据应用设置（bootstrap 失败时各字段回退到原有 fetch 路径）
+  if (bootstrap) {
+    if (bootstrap.channel_test_content) logsDefaultTestContent = bootstrap.channel_test_content;
+    const clickAction = String(bootstrap.log_channel_click_action || '').trim().toLowerCase();
+    logChannelClickAction = clickAction === 'navigate' ? 'navigate' : 'edit';
+    window.availableLogsModels = [...new Set(bootstrap.models || [])];
+    window.logsChannels = bootstrap.channels || [];
+    if (logsChannelNameCombobox) logsChannelNameCombobox.refresh();
+    if (logsModelCombobox) logsModelCombobox.refresh();
+  }
+
+  // Wave 2：initFilters（有预加载则跳过内部 fetch）
+  await initFilters(restoredFilters, bootstrap ? {
+    channelCheckIntervalHours: bootstrap.channel_check_interval_hours,
+    authTokens: bootstrap.auth_tokens || []
+  } : undefined);
 
   if (!hasUrlParams && savedFilters) {
     window.persistFilterState({
