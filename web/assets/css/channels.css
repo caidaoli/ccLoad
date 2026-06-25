@@ -2986,6 +2986,7 @@
 
       #channelModal.modal,
       #channelModal .channel-editor-modal {
+        backdrop-filter: none;
       }
 
       #channelModal .channel-editor-modal {
