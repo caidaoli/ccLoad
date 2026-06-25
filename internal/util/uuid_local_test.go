@@ -42,17 +42,3 @@ func TestNewUUIDv5Deterministic(t *testing.T) {
 		t.Fatalf("different name must produce different UUIDv5")
 	}
 }
-
-// TestNewUUIDv5KnownVector 校验与原 newCodexUUIDv5 行为完全一致：
-// 输入 (NameSpaceOID, "ccload:codex:prompt-cache:apikey-x") 在重构前后必须相同。
-func TestNewUUIDv5KnownVector(t *testing.T) {
-	got := NewUUIDv5(NameSpaceOID, "ccload:codex:prompt-cache:apikey-x")
-	// 该值由 RFC 4122 算法决定，重构不改变；仅校验稳定性 + 形态。
-	if !uuidV5Pattern.MatchString(got) {
-		t.Fatalf("invalid UUIDv5: %q", got)
-	}
-	again := NewUUIDv5(NameSpaceOID, "ccload:codex:prompt-cache:apikey-x")
-	if got != again {
-		t.Fatalf("non-deterministic UUIDv5: %q vs %q", got, again)
-	}
-}
