@@ -250,12 +250,12 @@ func NewServer(store storage.Store) *Server {
 	s.startBackgroundWorkers()
 
 	channelCheckIntervalHours := normalizeChannelCheckIntervalHours(
-		configService.GetInt("channel_check_interval_hours", defaultChannelCheckIntervalHours),
+		configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours),
 	)
 	if channelCheckIntervalHours == 0 {
 		log.Print("[INFO] 渠道定时检测未启用（channel_check_interval_hours=0）")
 	} else {
-		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours) * time.Hour)
+		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours * float64(time.Hour)))
 	}
 
 	return s

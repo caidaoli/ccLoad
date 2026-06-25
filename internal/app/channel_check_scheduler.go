@@ -12,8 +12,8 @@ import (
 
 const defaultChannelCheckIntervalHours = 0
 
-func normalizeChannelCheckIntervalHours(hours int) int {
-	if hours < 0 {
+func normalizeChannelCheckIntervalHours(hours float64) float64 {
+	if hours <= 0 {
 		return 0
 	}
 	return hours
