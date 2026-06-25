@@ -102,9 +102,9 @@ func TestOpenAITesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 		Messages: []ChatMessage{
 			{
 				Role: "user",
-				ContentBlocks: []ChatContentBlock{
+				ContentBlocks: []chatContentBlock{
 					{Type: "text", Text: "describe"},
-					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+					{Type: "image_url", ImageURL: &chatImageURL{URL: "data:image/png;base64,aW1n"}},
 				},
 			},
 		},
@@ -285,9 +285,9 @@ func TestCodexTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 		Messages: []ChatMessage{
 			{
 				Role: "user",
-				ContentBlocks: []ChatContentBlock{
+				ContentBlocks: []chatContentBlock{
 					{Type: "text", Text: "describe"},
-					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+					{Type: "image_url", ImageURL: &chatImageURL{URL: "data:image/png;base64,aW1n"}},
 				},
 			},
 		},
@@ -477,9 +477,9 @@ func TestGeminiTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 		Messages: []ChatMessage{
 			{
 				Role: "user",
-				ContentBlocks: []ChatContentBlock{
+				ContentBlocks: []chatContentBlock{
 					{Type: "text", Text: "describe"},
-					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+					{Type: "image_url", ImageURL: &chatImageURL{URL: "data:image/png;base64,aW1n"}},
 				},
 			},
 		},
@@ -589,9 +589,9 @@ func TestAnthropicTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 		Messages: []ChatMessage{
 			{
 				Role: "user",
-				ContentBlocks: []ChatContentBlock{
+				ContentBlocks: []chatContentBlock{
 					{Type: "text", Text: "describe"},
-					{Type: "image_url", ImageURL: &ChatImageURL{URL: "data:image/png;base64,aW1n"}},
+					{Type: "image_url", ImageURL: &chatImageURL{URL: "data:image/png;base64,aW1n"}},
 				},
 			},
 		},

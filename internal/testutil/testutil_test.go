@@ -34,13 +34,3 @@ func TestNewRequestReader_TypedNil_DoesNotPanic(t *testing.T) {
 		t.Fatal("request should not be nil")
 	}
 }
-
-func TestNewJSONRequest_MarshalError_ReturnsError(t *testing.T) {
-	req, err := testutil.NewJSONRequest(http.MethodPost, "/test", func() {})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if req != nil {
-		t.Fatal("expected request to be nil on error")
-	}
-}

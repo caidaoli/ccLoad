@@ -49,7 +49,7 @@ func parseDataURLImage(dataURL string) (mimeType, data string, ok bool) {
 	return mimeType, data, true
 }
 
-func chatMessageContentBlocks(msg ChatMessage) []ChatContentBlock {
+func chatMessageContentBlocks(msg ChatMessage) []chatContentBlock {
 	if len(msg.ContentBlocks) > 0 {
 		return msg.ContentBlocks
 	}
@@ -58,15 +58,15 @@ func chatMessageContentBlocks(msg ChatMessage) []ChatContentBlock {
 		if strings.TrimSpace(content) == "" {
 			return nil
 		}
-		return []ChatContentBlock{{Type: "text", Text: content}}
-	case []ChatContentBlock:
+		return []chatContentBlock{{Type: "text", Text: content}}
+	case []chatContentBlock:
 		return content
 	case []any:
 		raw, err := sonic.Marshal(content)
 		if err != nil {
 			return nil
 		}
-		var blocks []ChatContentBlock
+		var blocks []chatContentBlock
 		if err := sonic.Unmarshal(raw, &blocks); err != nil {
 			return nil
 		}

@@ -2,24 +2,22 @@ package testutil
 
 import "fmt"
 
-// ChatImageURL describes an image URL content block in chat test messages.
-type ChatImageURL struct {
+type chatImageURL struct {
 	URL    string `json:"url"`
 	Detail string `json:"detail,omitempty"`
 }
 
-// ChatContentBlock describes a structured text or image block in chat test messages.
-type ChatContentBlock struct {
+type chatContentBlock struct {
 	Type     string        `json:"type"`
 	Text     string        `json:"text,omitempty"`
-	ImageURL *ChatImageURL `json:"image_url,omitempty"`
+	ImageURL *chatImageURL `json:"image_url,omitempty"`
 }
 
 // ChatMessage 多轮对话消息
 type ChatMessage struct {
 	Role          string             `json:"role"`
 	Content       any                `json:"content"`
-	ContentBlocks []ChatContentBlock `json:"-"`
+	ContentBlocks []chatContentBlock `json:"-"`
 }
 
 // TestChannelRequest 渠道测试请求结构
