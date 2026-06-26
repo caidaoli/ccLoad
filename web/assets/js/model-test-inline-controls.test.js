@@ -186,6 +186,27 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
 });
 
+test('model-test 控制标签在工具栏内不可被压缩换行', () => {
+  assert.match(
+    sharedCss,
+    /\.model-test-control__label\s*\{[^}]*white-space:\s*nowrap;[^}]*flex:\s*0\s+0\s+auto;/,
+    '渠道、模型、协议等短标签必须保持单行，不能被 flex 压成竖排'
+  );
+});
+
+test('model-test 按渠道测试的渠道下拉框固定宽度且不挤压协议标签', () => {
+  assert.match(
+    sharedCss,
+    /#channelSelectorLabel\s*\{[^}]*flex:\s*0\s+0\s+auto;/,
+    '渠道选择控件本身不能被 flex 压缩，否则固定宽度下拉框会溢出遮挡后续协议标签'
+  );
+  assert.match(
+    sharedCss,
+    /#testChannelSelectContainer\s*\{[^}]*width:\s*250px;[^}]*flex:\s*0\s+0\s+250px;/,
+    '渠道下拉框容器必须固定为 250px'
+  );
+});
+
 test('model-test 对话面板提供独立流式开关并随请求发送', () => {
   assert.match(html, /id="chatStreamEnabled"/);
   assert.match(html, /id="chatModelSelect"[\s\S]*?id="chatChannelSelectContainer"[\s\S]*?id="chatStreamEnabled"[\s\S]*?id="chatClearBtn"/);
