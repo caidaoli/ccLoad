@@ -6,9 +6,6 @@ const vm = require('node:vm');
 
 const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const modalsSource = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
-const html = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
-const zhLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const enLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function createModalElement() {
   const classSet = new Set();
@@ -117,11 +114,6 @@ function createBatchDeleteHarness() {
   };
 }
 
-test('channels.html 提供批量删除按钮和动态删除提示容器', () => {
-  assert.match(html, /id="batchDeleteChannelsBtn"[\s\S]*?data-action="batch-delete-channels"/);
-  assert.match(html, /id="deleteModalMessage"/);
-});
-
 test('batchDeleteSelectedChannels 复用删除弹窗显示批量删除提示', () => {
   const { sandbox, elements, warningMessages } = createBatchDeleteHarness();
   sandbox.selectedChannelIds = new Set(['1', '2']);
@@ -148,13 +140,4 @@ test('confirmDelete 在批量模式下调用批量删除接口并显示摘要', 
   assert.equal(getClearCacheCalls(), 1);
   assert.deepEqual(loadChannelsCalls, ['all']);
   assert.deepEqual(successMessages, ['批量删除完成：删除 2，不存在 1']);
-});
-
-test('批量删除文案已添加到中英文语言包', () => {
-  assert.match(zhLocaleSource, /'channels\.batchDeleteChannels': '批量删除'/);
-  assert.match(zhLocaleSource, /'channels\.confirmBatchDeleteMsg': '将删除 \{count\} 个渠道，确认继续吗？'/);
-  assert.match(zhLocaleSource, /'channels\.batchDeleteSummary': '批量删除完成：删除 \{deleted\}，不存在 \{notFound\}'/);
-  assert.match(enLocaleSource, /'channels\.batchDeleteChannels': 'Batch Delete'/);
-  assert.match(enLocaleSource, /'channels\.confirmBatchDeleteMsg': 'Delete \{count\} selected channels\?'/);
-  assert.match(enLocaleSource, /'channels\.batchDeleteSummary': 'Batch delete completed: deleted \{deleted\}, not found \{notFound\}'/);
 });

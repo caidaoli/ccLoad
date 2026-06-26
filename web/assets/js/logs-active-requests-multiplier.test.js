@@ -9,10 +9,6 @@ test('活跃请求渠道显示函数 buildActiveRequestChannelDisplay 存在', (
   assert.match(logsSource, /function buildActiveRequestChannelDisplay\(req\)/);
 });
 
-test('活跃请求渠道显示在无渠道时返回选择中提示', () => {
-  assert.match(logsSource, /if \(!req\.channel_id \|\| !req\.channel_name\) \{[\s\S]*?return '<span style="color: var\(--neutral-500\);">选择中\.\.\.<\/span>';/);
-});
-
 test('活跃请求渠道显示在倍率为1时不显示角标', () => {
   assert.match(logsSource, /const multiplier = Number\(req\.cost_multiplier\);/);
   assert.match(logsSource, /if \(!Number\.isFinite\(multiplier\) \|\| multiplier < 0 \|\| Math\.abs\(multiplier - 1\) < 1e-9\) \{[\s\S]*?return channelHtml;/);

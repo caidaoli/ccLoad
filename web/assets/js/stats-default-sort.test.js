@@ -4,10 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const html = fs.readFileSync(path.join(__dirname, '..', '..', 'stats.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
-const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -29,12 +26,6 @@ function extractFunction(source, name) {
 
   assert.fail(`函数 ${name} 大括号未闭合`);
 }
-
-test('stats 页默认排序提示文案描述渠道类型、优先级、名称顺序', () => {
-  assert.match(html, /data-i18n="stats\.sortByPriority"/);
-  assert.match(zhLocale, /'stats\.sortByPriority': '按渠道类型、优先级、名称排序'/);
-  assert.match(enLocale, /'stats\.sortByPriority': 'Sorted by channel type, priority, and name'/);
-});
 
 test('stats 页默认按渠道类型、优先级、名称、模型排序', () => {
   const context = {

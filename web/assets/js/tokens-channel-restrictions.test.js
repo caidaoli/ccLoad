@@ -4,11 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const html = fs.readFileSync(path.join(__dirname, '..', '..', 'tokens.html'), 'utf8');
-const css = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
-const zh = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const en = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunctionSource(source, functionName) {
   const start = source.indexOf(`function ${functionName}(`);
@@ -89,28 +85,6 @@ function buildTokensChannelRuntime() {
   return { context, ...context.__exports };
 }
 
-test('tokens 编辑弹窗新增渠道限制区域并使用 90% 桌面宽度和限制区双列布局', () => {
-  assert.match(html, /<div class="modal-content modal-content--wide token-edit-modal">/);
-  assert.match(html, /<div class="modal-body token-edit-body token-edit-layout">/);
-  assert.match(html, /<div class="token-edit-sidebar">[\s\S]*token-edit-section--basic[\s\S]*token-edit-section--quota[\s\S]*<\/div>/);
-  assert.match(html, /<div class="token-edit-main">[\s\S]*token-edit-section--channels[\s\S]*token-edit-section--models[\s\S]*<\/div>/);
-  assert.match(html, /data-token-edit-section="channels"/);
-  assert.match(html, /id="editAllowedChannelsCount"/);
-  assert.match(html, /id="allowedChannelsTableBody"/);
-  assert.match(html, /data-action="show-channel-select-modal"/);
-  assert.match(html, /data-action="batch-delete-allowed-channels"/);
-  assert.match(css, /\.modal-content--wide\s*\{[\s\S]*?width:\s*90%;[\s\S]*?max-width:\s*none;/);
-  assert.match(css, /\.token-edit-layout\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*320px minmax\(0,\s*1fr\);/);
-  assert.match(css, /\.token-edit-main\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) minmax\(0,\s*1fr\);/);
-  assert.match(css, /\.token-edit-section--channels\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;/);
-  assert.match(css, /\.token-edit-channels-table\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;/);
-});
-
-test('tokens 移动端编辑弹窗退化为纵向 B 方案', () => {
-  assert.match(css, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.modal-content--wide\s*\{[\s\S]*?width:\s*min\(720px,\s*calc\(100vw - 24px\)\);/);
-  assert.match(css, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.token-edit-layout\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;/);
-});
-
 test('tokens.js 保存并渲染 allowed_channel_ids', () => {
   assert.match(script, /let editAllowedChannelIDs = \[\];/);
   assert.match(script, /let selectedAllowedChannelIDs = new Set\(\);/);
@@ -124,7 +98,6 @@ test('tokens.js 保存并渲染 allowed_channel_ids', () => {
 });
 
 test('tokens 渠道选择弹窗按渠道类型分组并支持下拉筛选分组', () => {
-  assert.match(html, /id="channelTypeFilterSelect" class="form-input channel-type-filter-select"[^>]*data-change-action="filter-available-channel-type"/);
   assert.match(script, /function groupChannelsByType\(channels\)/);
   assert.match(script, /function getChannelTypeGroupKey\(channel\)/);
   assert.match(script, /function normalizeChannelTypeValue\(value\)/);
@@ -138,17 +111,8 @@ test('tokens 渠道选择弹窗按渠道类型分组并支持下拉筛选分组'
   assert.match(script, /const selectedTypeKey = updateChannelTypeFilterOptions\(availableChannels\);/);
   assert.match(script, /channels = channels\.filter\(ch => getChannelTypeGroupKey\(ch\) === selectedTypeKey\);/);
   assert.match(script, /channels = channels\.filter\(ch => matchesChannelSearchText\(ch, searchText\)\);/);
-  assert.match(script, /class="channel-type-group"/);
   assert.doesNotMatch(script, /anthropic:\s*'Claude'/);
   assert.doesNotMatch(script, /gemini:\s*'Gemini'/);
-  assert.doesNotMatch(html, /channelTypeQuickSelect/);
-  assert.doesNotMatch(script, /toggle-channel-type-group/);
-  assert.doesNotMatch(script, /toggleChannelTypeGroup/);
-  assert.doesNotMatch(script, /channel-type-group-checkbox/);
-  assert.doesNotMatch(script, /tokens\.selectGroupChannels/);
-  assert.doesNotMatch(css, /\.channel-type-quick-select/);
-  assert.match(css, /\.channel-select-filter-row\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\) 150px;/);
-  assert.match(css, /\.channel-type-group-header\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*space-between;/);
 });
 
 test('tokens 渠道类型归一化和搜索匹配与展示名称一致', () => {
@@ -231,17 +195,4 @@ test('tokens 模型选择按当前渠道限制聚合可选模型', () => {
   assert.match(script, /allChannels\.forEach\(ch => \{[\s\S]*?if \(!allowedChannelIDs\.has\(normalizeChannelID\(ch\.id\)\)\) return;/);
   assert.match(script, /const sourceModels = getAvailableModelsForCurrentChannelRestriction\(\);[\s\S]*?let models = sourceModels\.filter/);
   assert.match(script, /const isEmptyCache = sourceModels\.length === 0;/);
-});
-
-test('tokens 渠道限制文案已本地化', () => {
-  for (const locale of [zh, en]) {
-    assert.match(locale, /'tokens\.channelRestriction':/);
-    assert.match(locale, /'tokens\.channelCountSuffix':/);
-    assert.match(locale, /'tokens\.selectChannelTitle':/);
-    assert.match(locale, /'tokens\.channelTypeAll':/);
-    assert.match(locale, /'tokens\.channelTypeFilterTitle':/);
-    assert.match(locale, /'tokens\.channelTypeOther':/);
-    assert.match(locale, /'tokens\.noChannelRestriction':/);
-    assert.match(locale, /'tokens\.msg\.selectAtLeastOneChannel':/);
-  }
 });

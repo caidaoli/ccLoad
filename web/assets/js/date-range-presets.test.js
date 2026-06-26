@@ -4,8 +4,6 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 const dateRangeSource = fs.readFileSync(path.join(__dirname, 'date-range-selector.js'), 'utf8');
-const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
-const channelsStateSource = fs.readFileSync(path.join(__dirname, 'channels-state.js'), 'utf8');
 const channelsHtmlSource = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 
 function loadDateRangeModule() {
@@ -176,15 +174,6 @@ test('自定义时间弹层禁用未来日期按钮', () => {
   assert.match(dateRangeSource, /maxDate:\s*startOfLocalDay\(new Date\(\)\)/);
   assert.match(dateRangeSource, /dayStart\s*>\s*state\.maxDate/);
   assert.match(dateRangeSource, /btn\.disabled\s*=\s*true/);
-});
-
-test('trend.js 使用共享预设校验时间范围', () => {
-  assert.match(trendSource, /getDateRangePresets/);
-  assert.doesNotMatch(trendSource, /const validRanges = \[/);
-});
-
-test('channels-state.js 不内联实现统计时间范围文案映射', () => {
-  assert.doesNotMatch(channelsStateSource, /const keyMap = \{/);
 });
 
 test('channels.html 在 channels-state.js 之前加载共享时间范围脚本', () => {

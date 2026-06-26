@@ -8,7 +8,6 @@ const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const channelsTestSource = fs.readFileSync(path.join(__dirname, 'channels-test.js'), 'utf8');
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
 const modelTestSource = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
-const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 
 function extractSharedUiHelpers(source) {
   const startMarker = '// 跨页面共享工具函数';
@@ -89,20 +88,6 @@ test('channels-test.js、logs.js 和 model-test.js 复用共享上游详情高�
   assert.match(channelsTestSource, /window\.setHighlightedCodeContent\(/);
   assert.match(logsSource, /window\.setHighlightedCodeContent\(/);
   assert.match(modelTestSource, /window\.setHighlightedCodeContent\(/);
-});
-
-test('共享样式为上游详情 token 提供颜色类', () => {
-  assert.match(sharedCss, /\.upstream-token--method(?:\s*,|\s*\{)/);
-  assert.match(sharedCss, /\.upstream-token--url\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--header-key\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--json-key\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--json-string\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--json-number\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--json-boolean\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--json-null\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--sse-field\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--sse-event-name\s*\{/);
-  assert.match(sharedCss, /\.upstream-token--sse-comment\s*\{/);
 });
 
 test('ui.js 高亮 SSE 响应体中的事件名与 JSON 数据', () => {

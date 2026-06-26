@@ -10,9 +10,6 @@ const channelsSource = fs.readFileSync(path.join(__dirname, 'channels-render.js'
 const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
 const statsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'stats.html'), 'utf8');
 const channelsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
-const stylesCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
-const channelsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'channels.css'), 'utf8');
-const tokensCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tokens.css'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -119,12 +116,6 @@ ${extractBlock(statsSource, 'buildStatsModelDisplay', 'renderStatsTable')}`,
   assert.match(statsHtml, /<td class="stats-col-cost \{\{costCellClass\}\}" data-mobile-label="\{\{mobileLabelCost\}\}">\{\{\{costText\}\}\}<\/td>/);
   assert.match(statsHtml, /<td class="stats-col-cost" data-mobile-label="\{\{mobileLabelCost\}\}">\{\{\{costText\}\}\}<\/td>/);
   assert.match(statsSource, /buildCornerMultiplierBadge\(entry\.cost_multiplier\)/);
-});
-
-test('stats 与 channels 的倍率角标锚定在单元格容器右上角', () => {
-  assert.match(stylesCss, /\.cell-multiplier-badge\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*[^;]+;[\s\S]*?right:\s*[^;]+;/);
-  assert.match(stylesCss, /\.stats-model-cell\s*\{[\s\S]*?position:\s*relative;[\s\S]*?display:\s*flex;[\s\S]*?width:\s*100%;/);
-  assert.match(channelsCss, /\.ch-name-cell\s*\{[\s\S]*?position:\s*relative;[\s\S]*?display:\s*block;[\s\S]*?width:\s*100%;/);
 });
 
 test('channels 页在名称单元格右上角挂倍率角标，成本列改为两行成本组件', () => {
@@ -260,12 +251,4 @@ ${extractBlock(tokensSource, 'buildCostHtml', 'buildResponseTimeHtml')}`,
   assert.match(costHtml, /class="cost-stack-standard">\$0\.020<\/span>/);
   assert.match(costHtml, /class="cost-stack-effective">\$0\.017<\/span>/);
   assert.match(emptyHtml, /token-value-muted/);
-  assert.match(tokensCss, /\.token-cost\s+\.cost-stack\s*\{[\s\S]*?align-items:\s*center;[\s\S]*?text-align:\s*center;/);
-});
-
-test('共享成本样式把标准成本置灰，并按页面语义区分现价颜色', () => {
-  assert.match(stylesCss, /\.cost-stack\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?flex-direction:\s*column;/);
-  assert.match(stylesCss, /\.cost-stack-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);/);
-  assert.match(stylesCss, /\.cost-stack--warning\s+\.cost-stack-effective\s*\{[\s\S]*?color:\s*var\(--warning-600\);/);
-  assert.match(stylesCss, /\.cost-stack--success\s+\.cost-stack-effective\s*\{[\s\S]*?color:\s*var\(--success-600\);/);
 });

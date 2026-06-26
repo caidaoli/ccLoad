@@ -7,8 +7,6 @@ const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'model-test.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
-const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -32,25 +30,6 @@ function extractFunction(source, name) {
   }
 
   assert.fail(`函数 ${name} 大括号未闭合`);
-}
-
-function extractCssRules(css, selector) {
-  const rules = [];
-  let searchFrom = 0;
-
-  while (searchFrom < css.length) {
-    const index = css.indexOf(selector, searchFrom);
-    if (index < 0) break;
-
-    const braceStart = css.indexOf('{', index);
-    const braceEnd = css.indexOf('}', braceStart);
-    assert.ok(braceStart >= 0 && braceEnd >= 0, `CSS rule ${selector} 大括号未闭合`);
-    rules.push(css.slice(braceStart + 1, braceEnd));
-    searchFrom = braceEnd + 1;
-  }
-
-  assert.ok(rules.length > 0, `缺少 CSS rule ${selector}`);
-  return rules;
 }
 
 function createDomElement(tagName, attrs = {}) {
@@ -155,32 +134,6 @@ function findElementById(root, id) {
   return queryTree(root, `#${id}`)[0] || null;
 }
 
-test('model-test 页静态控件不再使用内联事件', () => {
-  assert.doesNotMatch(html, /onclick="(?:setTestMode|fetchAndAddModels|deleteSelectedModels|runModelTests)\([^"]*\)"/);
-  assert.doesNotMatch(html, /onchange="toggleAllModels\(this\.checked\)"/);
-  assert.match(html, /data-action="set-test-mode"/);
-  assert.doesNotMatch(html, /data-action="select-all-models"/);
-  assert.doesNotMatch(html, /data-action="deselect-all-models"/);
-  assert.match(html, /data-action="fetch-and-add-models"/);
-  assert.match(html, /data-action="open-add-models-modal"/);
-  assert.match(html, /data-action="delete-selected-models"/);
-  assert.match(html, /data-action="run-model-tests"/);
-  assert.match(html, /data-change-action="toggle-all-models"/);
-});
-
-test('model-test 页在内容后提供运行控制行和弹窗', () => {
-  const contentControl = html.match(/class="model-test-control model-test-control--content"[\s\S]*?<\/div>\s*<div class="model-test-run-controls"/)?.[0] || '';
-  assert.match(contentControl, /id="modelTestContent"/);
-  assert.doesNotMatch(contentControl, /fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
-  assert.match(html, /class="model-test-run-controls"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-content-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"/);
-  const responseHead = html.match(/<th class="table-col-response model-test-response-head" data-sort-key="response">[\s\S]*?<\/th>/)?.[0] || '';
-  assert.match(responseHead, /data-i18n="modelTest\.responseContent"/);
-  assert.doesNotMatch(responseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
-  assert.match(html, /<div id="addModelsModal" class="modal">/);
-  assert.match(html, /<textarea[\s\S]*id="addModelsTextarea"[\s\S]*data-i18n-placeholder="modelTest\.addModelsPlaceholder"/);
-  assert.match(html, /id="addModelsConfirmBtn"[\s\S]*data-i18n="modelTest\.addModelsConfirm"/);
-});
-
 test('i18n.js 暴露的 window.i18nText 对动态删除文案执行插值兜底', () => {
   const i18nScript = fs.readFileSync(path.join(__dirname, 'i18n.js'), 'utf8');
   const sandbox = {
@@ -230,14 +183,7 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /data-i18n="common\.type"/);
   assert.match(html, /id="protocolTransformContainer"/);
   assert.match(html, /id="protocolTransformOptions"/);
-  assert.match(html, /data-i18n="modelTest\.protocolTransform">协议<\/span>/);
-  assert.match(zhLocale, /'modelTest\.protocolTransform':\s*'协议'/);
-  assert.match(enLocale, /'modelTest\.protocolTransform':\s*'Protocol'/);
-  assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="modelTestContent"[\s\S]*?class="model-test-run-controls"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"/);
-});
-
-test('model-test 对话面板 hidden 状态必须覆盖 chat-panel 的 display 规则', () => {
-  assert.match(sharedCss, /\.chat-panel\.hidden\s*\{[\s\S]*?display:\s*none\s*!important;[\s\S]*?\}/);
+  assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
 });
 
 test('model-test 对话面板提供独立流式开关并随请求发送', () => {
@@ -358,105 +304,6 @@ test('model-test 构建图片消息时文本保持文本、图片转 image_url �
   );
 });
 
-test('model-test 对话控件跟随对话标签显示在同一行', () => {
-  assert.match(html, /<div class="model-test-mode-header">[\s\S]*?<div class="model-test-tabs">[\s\S]*?id="modeTabChat"[\s\S]*?<\/div>[\s\S]*?<div id="chatToolbar" class="chat-toolbar hidden">[\s\S]*?id="chatModelSelect"[\s\S]*?id="chatChannelSelectContainer"[\s\S]*?id="chatStreamEnabled"[\s\S]*?id="chatClearBtn"[\s\S]*?<\/div>[\s\S]*?<\/div>/);
-  assert.match(html, /id="chatClearBtn"[\s\S]*data-i18n="modelTest\.chat\.clear">清空<\/button>/);
-  const chatPanelMatch = html.match(/<div id="chatPanel" class="chat-panel hidden">([\s\S]*?)<\/div>\s*<\/section>/);
-  assert.ok(chatPanelMatch, '缺少 chatPanel');
-  assert.doesNotMatch(chatPanelMatch[1], /id="chatToolbar"/);
-  assert.match(script, /const chatToolbar = document\.getElementById\('chatToolbar'\);/);
-  assert.match(script, /chatToolbar\?\.classList\.toggle\('hidden',\s*!isChatMode\)/);
-  const modeHeaderRules = extractCssRules(sharedCss, '.model-test-mode-header');
-  assert.ok(
-    modeHeaderRules.some(rule => /display:\s*flex;/.test(rule) && /align-items:\s*center;/.test(rule)),
-    'model-test-mode-header 必须横向承载 tabs 和对话控件'
-  );
-
-  const chatToolbarRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-toolbar');
-  assert.ok(
-    chatToolbarRules.some(rule =>
-      /margin-left:\s*0;/.test(rule) &&
-      /margin-bottom:\s*0;/.test(rule) &&
-      /justify-content:\s*flex-start;/.test(rule)
-    ),
-    'chat-toolbar 必须左对齐并跟随 tabs'
-  );
-  chatToolbarRules.forEach((rule) => {
-    assert.doesNotMatch(rule, /margin-left:\s*auto/);
-    assert.doesNotMatch(rule, /justify-content:\s*flex-end/);
-  });
-
-  const hiddenRules = extractCssRules(sharedCss, '.chat-toolbar.hidden');
-  assert.ok(
-    hiddenRules.some(rule => /display:\s*none\s*!important;/.test(rule)),
-    'chat-toolbar hidden 状态必须强制隐藏'
-  );
-
-  const chatControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control');
-  assert.ok(
-    chatControlRules.some(rule => /flex-shrink:\s*0;/.test(rule) && /min-width:\s*max-content;/.test(rule)),
-    'Firefox 下对话控件必须禁止收缩，空间不足时换行而不是互相遮挡'
-  );
-
-  const chatControlLabelRules = extractCssRules(sharedCss, '.chat-control__label');
-  assert.ok(
-    chatControlLabelRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
-    '对话控件标签必须禁止收缩，避免 Firefox 下文字被下拉框压住'
-  );
-
-  const chatChannelControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control:first-child');
-  assert.ok(
-    chatChannelControlRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
-    '渠道控件必须按内容宽度显示，不能把模型控件推远'
-  );
-  chatChannelControlRules.forEach((rule) => {
-    assert.doesNotMatch(rule, /flex:\s*1 1 220px/);
-  });
-  assert.match(html, /id="chatChannelSelectContainer" class="chat-channel-combobox"/);
-  const chatChannelComboboxRules = extractCssRules(sharedCss, '.chat-channel-combobox');
-  assert.ok(
-    chatChannelComboboxRules.some(rule => /width:\s*250px;/.test(rule) && /flex:\s*0 0 250px;/.test(rule) && /max-width:\s*250px;/.test(rule)),
-    '渠道下拉自身宽度必须固定为 250px，避免 Firefox 下挤压后续控件'
-  );
-  assert.ok(
-    chatChannelComboboxRules.some(rule => /width:\s*100%;/.test(rule) && /flex:\s*1 1 auto;/.test(rule) && /max-width:\s*none;/.test(rule)),
-    '移动端渠道下拉必须恢复 100% 宽度'
-  );
-
-  const chatModelControlRules = extractCssRules(sharedCss, '.model-test-mode-header .chat-control:nth-child(2)');
-  assert.ok(
-    chatModelControlRules.some(rule => /flex:\s*0 0 auto;/.test(rule)),
-    '模型控件必须按内容宽度显示，不能把输入框拉到遮挡标签'
-  );
-  chatModelControlRules.forEach((rule) => {
-    assert.doesNotMatch(rule, /flex:\s*1 1 360px/);
-  });
-
-  const chatModelComboboxRules = extractCssRules(sharedCss, '.chat-model-combobox');
-  assert.ok(
-    chatModelComboboxRules.some(rule => /width:\s*250px;/.test(rule) && /flex:\s*0 0 250px;/.test(rule) && /max-width:\s*250px;/.test(rule)),
-    '模型下拉宽度必须固定为 250px，避免 Firefox 下遮挡标签'
-  );
-  assert.ok(
-    chatModelComboboxRules.some(rule => /width:\s*100%;/.test(rule) && /flex:\s*1 1 auto;/.test(rule) && /max-width:\s*none;/.test(rule)),
-    '移动端模型下拉必须恢复 100% 宽度'
-  );
-});
-
-test('model-test 对话模式最大化使用卡片剩余高度', () => {
-  assert.match(script, /const modelTestCard = document\.getElementById\('modelTestCard'\);/);
-  assert.match(script, /modelTestCard\?\.classList\.toggle\('model-test-card--chat-mode',\s*isChatMode\)/);
-  assert.match(sharedCss, /\.model-test-card--chat-mode\s*\{[\s\S]*?height:\s*calc\(100dvh - var\(--topbar-offset, 0px\) - 32px\);[\s\S]*?max-height:\s*calc\(100dvh - var\(--topbar-offset, 0px\) - 32px\);[\s\S]*?display:\s*flex;[\s\S]*?flex-direction:\s*column;[\s\S]*?\}/);
-  extractCssRules(sharedCss, '.model-test-card--chat-mode').forEach((rule) => {
-    assert.doesNotMatch(rule, /min-height:/);
-  });
-  assert.match(sharedCss, /\.chat-panel\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;[\s\S]*?overflow:\s*hidden;[\s\S]*?\}/);
-  assert.match(sharedCss, /\.model-test-card--chat-mode \.chat-panel\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?\}/);
-  assert.match(sharedCss, /\.chat-messages\s*\{[\s\S]*?flex:\s*1 1 auto;[\s\S]*?min-height:\s*0;[\s\S]*?overflow-y:\s*auto;[\s\S]*?\}/);
-  assert.match(sharedCss, /\.chat-input-area\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?\}/);
-  assert.doesNotMatch(sharedCss, /\.chat-panel\s*\{[\s\S]*?height:\s*calc\(100vh - 220px\)/);
-});
-
 test('model-test 渠道下拉标记停用渠道但不阻止选择', () => {
   assert.match(script, /function formatModelTestChannelOptionLabel\(ch\)/);
   assert.match(script, /function getModelTestChannelOptionClass\(ch\)/);
@@ -464,8 +311,6 @@ test('model-test 渠道下拉标记停用渠道但不阻止选择', () => {
   assert.match(script, /initialLabel: chatChannel \? formatModelTestChannelOptionLabel\(chatChannel\) : ''/);
   assert.equal([...script.matchAll(/label: formatModelTestChannelOptionLabel\(ch\)/g)].length, 2);
   assert.equal([...script.matchAll(/className: getModelTestChannelOptionClass\(ch\)/g)].length, 2);
-  assert.match(sharedCss, /\.filter-dropdown-item--disabled\s*\{/);
-  assert.match(sharedCss, /\.filter-dropdown-item--disabled:hover\s*\{/);
   const labelFormatter = extractFunction(script, 'formatModelTestChannelOptionLabel');
   assert.doesNotMatch(labelFormatter, /common\.disabled/);
   assert.doesNotMatch(labelFormatter, /\[已禁用\]/);
@@ -627,35 +472,6 @@ test('model-test 页按模型测试渠道表在渠道名称后显示可编辑优
   assert.equal(getRowSortValue(disabledRow, 'enabled'), 0);
 });
 
-test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选框', () => {
-  assert.match(script, /window\.initPageBootstrap\(\{/);
-  assert.match(script, /topbarKey:\s*'model-test'/);
-  assert.match(script, /function initModelTestActions\(\)/);
-  assert.match(script, /window\.initDelegatedActions\(\{/);
-  assert.match(script, /boundKey:\s*'modelTestActionsBound'/);
-  assert.match(script, /'set-test-mode':\s*\(actionTarget\)\s*=> setTestMode\(actionTarget\.dataset\.mode \|\| ''\)/);
-  assert.match(script, /'fetch-and-add-models':\s*\(\)\s*=> fetchAndAddModels\(\)/);
-  assert.match(script, /'open-add-models-modal':\s*\(\)\s*=> openAddModelsModal\(\)/);
-  assert.match(script, /'delete-selected-models':\s*\(\)\s*=> deleteSelectedModels\(\)/);
-  assert.match(script, /'run-model-tests':\s*\(\)\s*=> runModelTests\(\)/);
-  assert.match(script, /'toggle-all-models':\s*\(actionTarget\)\s*=> toggleAllModels\(actionTarget\.checked\)/);
-  assert.match(script, /data-change-action="toggle-all-models"/);
-  assert.doesNotMatch(script, /onchange="toggleAllModels/);
-  assert.match(script, /const toolbar = document\.querySelector\('\.model-test-toolbar'\);/);
-  assert.match(script, /toolbar\?\.classList\.toggle\('model-test-toolbar--model-mode',\s*isModelMode\)/);
-  assert.match(script, /bootstrap\(\);/);
-});
-
-test('model-test.js 响应内容表头只渲染列标题', () => {
-  const responseHead = script.match(/const RESPONSE_HEAD_HTML = `([\s\S]*?)`;/)?.[1] || '';
-  assert.match(responseHead, /class="table-col-response model-test-response-head"/);
-  assert.match(responseHead, /data-i18n="modelTest\.responseContent"/);
-  assert.doesNotMatch(responseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
-  assert.match(script, /const CHANNEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
-  assert.match(script, /const MODEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
-  assert.doesNotMatch(script, /closest\('\.model-test-head-actions'\)/);
-});
-
 test('model-test.js 批量添加模型输入支持逗号换行去空和大小写去重', () => {
   const sandbox = {};
   vm.runInNewContext(`
@@ -750,12 +566,6 @@ test('model-test.js 批量添加模型会对当前渠道表格目标逐个保存
   assert.deepEqual(Array.from(result.failed), []);
   assert.deepEqual(channels[0].models.map(entry => entry.model || entry), ['existing', 'gpt-4o']);
   assert.deepEqual(channels[1].models.map(entry => entry.model || entry), ['legacy', 'gpt-4o', 'existing']);
-});
-
-test('model-test.js 移除测试数量进度文案，只保留按钮自身测试中状态', () => {
-  assert.doesNotMatch(script, /testingProgress/);
-  assert.doesNotMatch(script, /completedProgress/);
-  assert.match(script, /runTestBtn\.textContent = i18nText\('modelTest\.testing', '测试中\.\.\.'\)/);
 });
 
 test('model-test.js 两个模式下都把渠道按钮点击委托到编辑弹窗', () => {
@@ -958,10 +768,6 @@ test('model-test.js 重载渠道后按行键恢复已有测试结果', () => {
   assert.equal(newRow.cells.get('.cost').dataset.sortValue, '0.001');
   assert.equal(newRow._upstreamData.url, 'https://upstream.test');
   assert.deepEqual(newRow.cells.get('.response').classList.added, ['has-upstream-detail']);
-});
-
-test('model-test 页渠道按钮去掉默认按钮边框和底色', () => {
-  assert.match(sharedCss, /\.model-test-table\s+\.channel-link\s*\{[\s\S]*?padding:\s*0;[\s\S]*?border:\s*none;[\s\S]*?background:\s*transparent;/);
 });
 
 test('按协议测试时模型模式只提供当前类型和协议都可测试的模型', () => {

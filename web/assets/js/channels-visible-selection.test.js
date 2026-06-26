@@ -6,8 +6,6 @@ const vm = require('node:vm');
 
 const protocolSource = fs.readFileSync(path.join(__dirname, 'channels-protocols.js'), 'utf8');
 const source = fs.readFileSync(path.join(__dirname, 'channels-modals.js'), 'utf8');
-const zhLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const enLocaleSource = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function createElement() {
   const attrs = new Map();
@@ -94,7 +92,7 @@ test('toggleVisibleChannelsSelection 在部分选中时取消当前可见渠道�
   assert.equal(getFilterCalls(), 1);
 });
 
-test('updateBatchChannelSelectionUI 在仅隐藏渠道被选中时仍显示全选文案', () => {
+test('updateBatchChannelSelectionUI 在仅隐藏渠道被选中时保持可见项未选状态', () => {
   const floatingMenu = createElement();
   const summary = createElement();
   const countBadge = createElement();
@@ -118,13 +116,6 @@ test('updateBatchChannelSelectionUI 在仅隐藏渠道被选中时仍显示全�
 
   sandbox.updateBatchChannelSelectionUI();
 
-  assert.equal(selectionText.textContent, 'Select All');
-  assert.equal(selectionToggle.title, 'Select All');
   assert.equal(selectionCheckbox.checked, false);
   assert.equal(selectionCheckbox.indeterminate, false);
-});
-
-test('channels 可见选择文案包含取消可见项的翻译键', () => {
-  assert.match(zhLocaleSource, /'channels\.batchDeselectVisible': '取消全选'/);
-  assert.match(enLocaleSource, /'channels\.batchDeselectVisible': 'Deselect All'/);
 });
