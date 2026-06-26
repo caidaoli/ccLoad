@@ -194,11 +194,13 @@
     }
 
     .channel-editor-modal {
-      width: 90vw;
-      max-width: 90vw;
-      height: 90vh;
-      max-height: 90vh;
+      width: 100%;
+      max-width: 100%;
+      height: 100%;
+      max-height: 100%;
+      margin: 0;
       padding: 14px 20px;
+      border-radius: 0;
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -214,45 +216,46 @@
     }
 
     .channel-editor-body {
+      --channel-editor-section-header-height: 36px;
+      --channel-editor-table-row-height: 36px;
+      --channel-editor-table-header-height: 38px;
       display: flex;
       flex-direction: column;
       gap: 4px;
       flex: 1 1 auto;
       min-height: 0;
-      overflow-y: auto;
-      overflow-x: hidden;
-      scrollbar-gutter: auto;
+      overflow: hidden;
     }
 
-    #channelModal .channel-editor-body,
     #channelModal .inline-table-container {
+      --channel-editor-table-visible-rows: 2;
+      --channel-editor-table-visible-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-table-visible-rows) * var(--channel-editor-table-row-height)));
+      min-height: 0;
+      max-height: var(--channel-editor-table-visible-height);
+      overflow-y: auto;
+      overflow-x: hidden;
       scrollbar-width: thin;
       scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
     }
 
-    #channelModal .channel-editor-body::-webkit-scrollbar,
     #channelModal .inline-table-container::-webkit-scrollbar {
       width: 6px;
       height: 6px;
     }
 
-    #channelModal .channel-editor-body::-webkit-scrollbar-track,
     #channelModal .inline-table-container::-webkit-scrollbar-track {
       background: transparent;
     }
 
-    #channelModal .channel-editor-body::-webkit-scrollbar-thumb,
     #channelModal .inline-table-container::-webkit-scrollbar-thumb {
       background: rgba(100, 116, 139, 0.35);
       border-radius: 999px;
     }
 
-    #channelModal .channel-editor-body::-webkit-scrollbar-thumb:hover,
     #channelModal .inline-table-container::-webkit-scrollbar-thumb:hover {
       background: rgba(100, 116, 139, 0.55);
     }
 
-    #channelModal .channel-editor-body::-webkit-scrollbar-button,
     #channelModal .inline-table-container::-webkit-scrollbar-button {
       display: none;
       width: 0;
@@ -261,6 +264,34 @@
 
     .channel-editor-group {
       margin: 0;
+    }
+
+    #channelModal .channel-editor-group--urls,
+    #channelModal .channel-editor-group--keys {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      flex: 0 0 auto;
+    }
+
+    #channelModal .channel-editor-group--urls > div {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+    }
+
+    #channelModal .channel-editor-group--models {
+      display: flex;
+      flex-direction: column;
+      flex: 1 1 auto;
+      min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
+    }
+
+    #channelModal .channel-editor-group--models .inline-table-container {
+      flex: 1 1 auto;
+      min-height: var(--channel-editor-table-visible-height);
+      max-height: none;
+      overflow-y: auto;
     }
 
     .channel-editor-group--primary {
@@ -541,14 +572,6 @@
       border-width: 1px;
       border-radius: 8px;
       font-size: 14px;
-    }
-
-    #channelModal .inline-table-container.tall {
-      --channel-model-visible-rows: 8;
-      --channel-editor-table-row-height: 36px;
-      --channel-editor-table-header-height: 38px;
-      min-height: 0;
-      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-model-visible-rows) * var(--channel-editor-table-row-height)));
     }
 
     #channelModal .inline-table th {
@@ -2754,12 +2777,13 @@
       }
 
       .channel-editor-modal {
-        width: min(100%, calc(100vw - 16px));
-        max-width: none;
-        margin: 8px;
+        width: 100%;
+        max-width: 100%;
+        height: 100%;
+        margin: 0;
         padding: 16px;
-        min-height: calc(100vh - 16px);
-        max-height: calc(100vh - 16px);
+        min-height: 100%;
+        max-height: 100%;
         font-size: 14px;
       }
 
@@ -2772,7 +2796,6 @@
         flex: none;
         min-height: auto;
         overflow: visible;
-        scrollbar-gutter: auto;
       }
 
       .channel-editor-group--primary {
@@ -3013,7 +3036,9 @@
         overflow-y: auto;
       }
 
-      #channelModal .inline-table-container.tall {
+      #channelModal .inline-table-container,
+      #channelModal .inline-table-container.tall,
+      #channelModal .channel-editor-group--models .inline-table-container {
         max-height: none;
         min-height: 0;
         height: auto;
