@@ -2238,11 +2238,6 @@ body {
     width: 100%;
   }
 
-  #runTestBtn {
-    width: 100%;
-    grid-column: 1 / -1;
-  }
-
   .settings-save-actions {
     justify-content: stretch;
   }
@@ -3040,7 +3035,7 @@ body {
 .model-test-response-head-inner {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 8px;
   width: 100%;
   min-width: 0;
@@ -3051,10 +3046,6 @@ body {
   align-items: center;
   gap: 4px;
   min-width: 0;
-}
-
-.model-test-head-actions {
-  margin-left: auto;
 }
 
 .model-test-control {
@@ -3094,6 +3085,40 @@ body {
   min-width: 220px;
 }
 
+.model-test-content-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.model-test-content-row .model-test-inline-input {
+  flex: 1 1 auto;
+  min-width: 96px;
+}
+
+.model-test-content-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+
+.model-test-run-controls {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  margin-left: auto;
+  min-width: 0;
+}
+
 .model-test-control--name-filter {
   display: none;
 }
@@ -3131,14 +3156,17 @@ body {
 }
 
 .model-test-toolbar-btn {
-  padding: 8px 14px;
-  font-size: 13px;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.2;
 }
 
-.model-test-head-actions .model-test-toolbar-btn {
+.model-test-content-actions .model-test-toolbar-btn {
   flex: 0 0 auto;
   width: auto;
-  min-width: 96px;
+  min-width: 72px;
+  padding: 7px 9px;
+  white-space: nowrap;
 }
 
 .model-test-toolbar-btn--danger {
@@ -6448,9 +6476,18 @@ body.trend-page .chart-info {
   #modelTypeLabel,
   #modelSelectorLabel,
   #protocolTransformContainer,
-  .model-test-toolbar-toggles,
-  .model-test-control--content {
+  .model-test-control--content,
+  .model-test-run-controls {
     grid-column: 1 / -1;
+  }
+
+  .model-test-control--protocol .channel-editor-radio-group {
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+
+  .model-test-control--protocol .channel-editor-radio-option {
+    flex: 0 1 auto;
   }
 
   .model-test-control--name-filter {
@@ -6482,9 +6519,26 @@ body.trend-page .chart-info {
   .model-test-toolbar-toggles {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: nowrap;
     flex: 0 0 auto;
+  }
+
+  .model-test-run-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+    flex-wrap: nowrap;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .model-test-run-controls::-webkit-scrollbar {
+    display: none;
   }
 
   .model-test-control,
@@ -6564,6 +6618,34 @@ body.trend-page .chart-info {
     white-space: nowrap;
   }
 
+  .model-test-content-row {
+    display: flex;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .model-test-content-row .model-test-inline-input {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .model-test-content-actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+    max-width: 100%;
+  }
+
+  .model-test-content-actions .model-test-toolbar-btn {
+    flex: 0 0 auto;
+    width: auto;
+    min-width: 56px;
+    padding: 8px 4px;
+  }
+
   .model-test-table.mobile-card-table thead {
     display: table-header-group;
   }
@@ -6583,18 +6665,8 @@ body.trend-page .chart-info {
     text-align: left;
   }
 
-  .model-test-table.mobile-card-table thead .model-test-response-head-inner {
-    flex-wrap: wrap;
-    align-items: flex-start;
-  }
-
   .model-test-table.mobile-card-table thead .model-test-response-head-line {
     width: 100%;
-  }
-
-  .model-test-table.mobile-card-table thead .model-test-head-actions {
-    width: 100%;
-    margin-left: 0;
   }
 
   .model-test-toggle {

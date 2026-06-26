@@ -830,7 +830,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.chat.statsFirstByte': 'TTFB',
   'modelTest.chat.statsDuration': 'Total',
   'modelTest.chat.builtinSearch': 'Built-in search',
-  'modelTest.protocolTransform': 'Protocol Transform',
+  'modelTest.protocolTransform': 'Protocol',
   'modelTest.searchChannel': 'Search channel...',
   'modelTest.content': 'Content',
   'modelTest.modelInputPlaceholder': 'Type or select model',
