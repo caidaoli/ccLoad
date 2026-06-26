@@ -3064,12 +3064,21 @@ body {
   min-width: 160px;
 }
 
-.model-test-control--protocol {
+#channelSelectorLabel {
   flex: 0 0 auto;
 }
 
-.model-test-control--protocol .model-test-control__label {
-  white-space: nowrap;
+#testChannelSelectContainer {
+  width: 250px;
+  flex: 0 0 250px;
+}
+
+#testChannelSelectContainer .filter-combobox-wrapper {
+  width: 100%;
+}
+
+.model-test-control--protocol {
+  flex: 0 0 auto;
 }
 
 .model-test-control--protocol .channel-editor-radio-group {
@@ -3127,6 +3136,11 @@ body {
 .model-test-progress {
   color: var(--color-text-secondary);
   font-size: 13px;
+}
+
+.model-test-control__label {
+  white-space: nowrap;
+  flex: 0 0 auto;
 }
 
 .model-test-model-combobox {
