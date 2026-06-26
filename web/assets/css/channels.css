@@ -620,6 +620,7 @@
 
     /* ===== 渠道表格布局 ===== */
     .channel-table {
+      min-width: 1360px;
       table-layout: fixed;
     }
 
@@ -703,9 +704,25 @@
     }
 
     .ch-col-name {
-      width: 480px;
-      min-width: 480px;
-      max-width: 480px;
+      width: 360px;
+      min-width: 360px;
+      max-width: 360px;
+    }
+
+    .ch-col-models {
+      width: 160px;
+      min-width: 160px;
+      max-width: 160px;
+    }
+
+    @media (min-width: 769px) and (max-width: 1360px) {
+      .channel-table {
+        min-width: 1200px;
+      }
+
+      .channel-table .ch-col-models {
+        display: none;
+      }
     }
 
     .ch-col-priority {
@@ -827,15 +844,17 @@
     }
 
     .ch-col-duration {
-      width: 184px;
-      min-width: 184px;
-      max-width: 184px;
+      width: 160px;
+      min-width: 160px;
+      max-width: 160px;
       white-space: normal;
       text-align: center;
     }
 
     .ch-col-usage {
       width: 100px;
+      min-width: 100px;
+      max-width: 100px;
       line-height: 1.35;
       text-align: center;
     }
@@ -3048,6 +3067,7 @@
 
       .channel-table {
         width: 100%;
+        min-width: 0;
         table-layout: auto;
         border-collapse: separate;
         border-spacing: 0;

@@ -101,12 +101,6 @@ const RESPONSE_HEAD_HTML = `
       <div class="model-test-response-head-line">
         <span class="model-test-response-head-label" data-i18n="modelTest.responseContent">响应内容</span>
       </div>
-      <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
-        <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
-        <button id="addModelsBtn" type="button" data-action="open-add-models-modal" class="btn btn-secondary model-test-toolbar-btn hidden" data-i18n="modelTest.addModels">添加模型</button>
-        <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
-        <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
-      </div>
     </div>
   </th>
 `;
@@ -859,10 +853,7 @@ function bindSortableHeaders() {
     th.style.cursor = 'pointer';
     th.style.whiteSpace = 'nowrap';
     th.style.verticalAlign = 'middle';
-    th.onclick = (event) => {
-      const clickTarget = event.target instanceof Element ? event.target : null;
-      if (clickTarget?.closest('.model-test-head-actions')) return;
-
+    th.onclick = () => {
       const key = th.dataset.sortKey || '';
       if (!key) return;
 

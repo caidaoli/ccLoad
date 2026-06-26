@@ -7,6 +7,8 @@ const vm = require('node:vm');
 const html = fs.readFileSync(path.join(__dirname, '..', '..', 'model-test.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
 const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
+const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
+const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -166,8 +168,14 @@ test('model-test 页静态控件不再使用内联事件', () => {
   assert.match(html, /data-change-action="toggle-all-models"/);
 });
 
-test('model-test 页在按模型测试表头提供批量添加模型按钮和弹窗', () => {
-  assert.match(html, /id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"/);
+test('model-test 页在内容后提供运行控制行和弹窗', () => {
+  const contentControl = html.match(/class="model-test-control model-test-control--content"[\s\S]*?<\/div>\s*<div class="model-test-run-controls"/)?.[0] || '';
+  assert.match(contentControl, /id="modelTestContent"/);
+  assert.doesNotMatch(contentControl, /fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
+  assert.match(html, /class="model-test-run-controls"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-content-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"/);
+  const responseHead = html.match(/<th class="table-col-response model-test-response-head" data-sort-key="response">[\s\S]*?<\/th>/)?.[0] || '';
+  assert.match(responseHead, /data-i18n="modelTest\.responseContent"/);
+  assert.doesNotMatch(responseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
   assert.match(html, /<div id="addModelsModal" class="modal">/);
   assert.match(html, /<textarea[\s\S]*id="addModelsTextarea"[\s\S]*data-i18n-placeholder="modelTest\.addModelsPlaceholder"/);
   assert.match(html, /id="addModelsConfirmBtn"[\s\S]*data-i18n="modelTest\.addModelsConfirm"/);
@@ -222,8 +230,10 @@ test('model-test 页在按模型测试模式下提供类型筛选并保留协议
   assert.match(html, /data-i18n="common\.type"/);
   assert.match(html, /id="protocolTransformContainer"/);
   assert.match(html, /id="protocolTransformOptions"/);
-  assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
-  assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
+  assert.match(html, /data-i18n="modelTest\.protocolTransform">协议<\/span>/);
+  assert.match(zhLocale, /'modelTest\.protocolTransform':\s*'协议'/);
+  assert.match(enLocale, /'modelTest\.protocolTransform':\s*'Protocol'/);
+  assert.match(html, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="modelTestContent"[\s\S]*?class="model-test-run-controls"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"/);
 });
 
 test('model-test 对话面板 hidden 状态必须覆盖 chat-panel 的 display 规则', () => {
@@ -636,11 +646,14 @@ test('model-test.js 使用集中绑定处理页面控件和重渲染表头复选
   assert.match(script, /bootstrap\(\);/);
 });
 
-test('model-test.js 将表头操作按钮渲染进响应内容列并阻止按钮点击触发表头排序', () => {
-  assert.match(script, /const RESPONSE_HEAD_HTML = `[\s\S]*?class="table-col-response model-test-response-head"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?`;/);
+test('model-test.js 响应内容表头只渲染列标题', () => {
+  const responseHead = script.match(/const RESPONSE_HEAD_HTML = `([\s\S]*?)`;/)?.[1] || '';
+  assert.match(responseHead, /class="table-col-response model-test-response-head"/);
+  assert.match(responseHead, /data-i18n="modelTest\.responseContent"/);
+  assert.doesNotMatch(responseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
   assert.match(script, /const CHANNEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
   assert.match(script, /const MODEL_MODE_HEAD = `[\s\S]*?\$\{RESPONSE_HEAD_HTML\}[\s\S]*?`;/);
-  assert.match(script, /th\.onclick = \(event\) => \{[\s\S]*?closest\('\.model-test-head-actions'\)[\s\S]*?return;/);
+  assert.doesNotMatch(script, /closest\('\.model-test-head-actions'\)/);
 });
 
 test('model-test.js 批量添加模型输入支持逗号换行去空和大小写去重', () => {

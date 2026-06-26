@@ -131,23 +131,33 @@
                 </div>
               </label>
               <div id="protocolTransformContainer" class="model-test-control model-test-control--protocol">
-                <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议转换</span>
-                <div id="protocolTransformOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="协议转换"></div>
+                <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
+                <div id="protocolTransformOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="协议"></div>
               </div>
-              <div class="model-test-toolbar-toggles">
-                <label class="model-test-toggle">
-                  <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
-                  <span data-i18n="modelTest.stream">流式</span>
-                </label>
-                <label class="model-test-toggle">
-                  <span data-i18n="modelTest.concurrency">并发</span>
-                  <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
-                </label>
+              <div class="model-test-control model-test-control--content">
+                <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>
+                <div class="model-test-content-row">
+                  <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
+                </div>
               </div>
-              <label class="model-test-control model-test-control--content">
-                <span class="model-test-control__label" data-i18n="modelTest.content">内容</span>
-                <input type="text" id="modelTestContent" value="" class="model-test-inline-input" data-i18n-placeholder="common.loading" placeholder="加载中...">
-              </label>
+              <div class="model-test-run-controls">
+                <div class="model-test-toolbar-toggles">
+                  <label class="model-test-toggle">
+                    <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
+                    <span data-i18n="modelTest.stream">流式</span>
+                  </label>
+                  <label class="model-test-toggle">
+                    <span data-i18n="modelTest.concurrency">并发</span>
+                    <input type="number" id="concurrency" value="5" min="1" max="20" class="model-test-concurrency-input">
+                  </label>
+                </div>
+                <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-content-actions">
+                  <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
+                  <button id="addModelsBtn" type="button" data-action="open-add-models-modal" class="btn btn-secondary model-test-toolbar-btn hidden" data-i18n="modelTest.addModels">添加模型</button>
+                  <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
+                  <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
+                </div>
+              </div>
             </div>
             <div class="model-test-toolbar-section model-test-toolbar-section--meta">
               <label class="model-test-control model-test-control--name-filter">
@@ -177,12 +187,6 @@
                     <div class="model-test-response-head-inner">
                       <div class="model-test-response-head-line">
                         <span class="model-test-response-head-label" data-i18n="modelTest.responseContent">响应内容</span>
-                      </div>
-                      <div class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions">
-                        <button id="fetchModelsBtn" type="button" data-action="fetch-and-add-models" class="btn btn-secondary model-test-toolbar-btn" data-i18n="modelTest.fetchModels">获取模型</button>
-                        <button id="addModelsBtn" type="button" data-action="open-add-models-modal" class="btn btn-secondary model-test-toolbar-btn hidden" data-i18n="modelTest.addModels">添加模型</button>
-                        <button id="deleteModelsBtn" type="button" data-action="delete-selected-models" class="btn btn-secondary model-test-toolbar-btn model-test-toolbar-btn--danger" data-i18n="modelTest.deleteModels">删除模型</button>
-                        <button id="runTestBtn" type="button" data-action="run-model-tests" class="btn btn-primary model-test-toolbar-btn" data-i18n="modelTest.startTest">开始测试</button>
                       </div>
                     </div>
                   </th>

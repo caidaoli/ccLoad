@@ -93,6 +93,9 @@ test('channels 页为手机卡片式表格预留移动端标签与样式', () =>
 
   const mobileCssMatch = channelsCss.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-table-container\s*\{[\s\S]*?overflow-x:\s*visible;[\s\S]*?\.channel-table\s+thead\s+th:not\(\.ch-col-checkbox\)\s*\{[\s\S]*?display:\s*none;[\s\S]*?\.channel-table\s+tbody\s+tr\s*\{[\s\S]*?display:\s*grid;[\s\S]*?\.channel-table\s+td\[data-mobile-label\]::before\s*\{/);
   assert.ok(mobileCssMatch, '缺少渠道表格手机卡片布局样式');
+  const mobileTableRule = channelsCss.match(/@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-table\s*\{([^}]+)\}/);
+  assert.ok(mobileTableRule, '缺少渠道表格手机端基础规则');
+  assert.match(mobileTableRule[1], /min-width:\s*0;/);
 
   assert.match(channelsCss, /\.channel-table\s+\.ch-col-priority\s*\{[^}]*order:\s*10;/);
   assert.match(channelsCss, /\.channel-table\s+\.ch-col-enabled\s*\{[^}]*order:\s*11;/);

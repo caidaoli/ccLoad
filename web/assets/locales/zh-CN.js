@@ -829,7 +829,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.chat.statsFirstByte': '首字',
   'modelTest.chat.statsDuration': '耗时',
   'modelTest.chat.builtinSearch': '模型内置搜索',
-  'modelTest.protocolTransform': '协议转换',
+  'modelTest.protocolTransform': '协议',
   'modelTest.searchChannel': '搜索渠道...',
   'modelTest.content': '内容',
   'modelTest.modelInputPlaceholder': '输入或选择模型',

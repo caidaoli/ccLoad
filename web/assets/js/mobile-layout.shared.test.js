@@ -246,6 +246,10 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   const lastControlRule = getLastRuleBody(sharedCss, '.model-test-control');
   const lastFilterRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--filters');
   const lastActionsRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--actions');
+  const lastContentRowRule = getLastRuleBody(sharedCss, '.model-test-content-row');
+  const lastContentActionsRule = getLastRuleBody(sharedCss, '.model-test-content-actions');
+  const lastRunControlsRule = getLastRuleBody(sharedCss, '.model-test-run-controls');
+  const lastProtocolRadioRule = getLastRuleBody(sharedCss, '.model-test-control--protocol .channel-editor-radio-group');
   const lastMetaRule = getLastRuleBody(sharedCss, '.model-test-toolbar-section--meta');
   const lastNameFilterRule = getLastRuleBody(sharedCss, '.model-test-control--name-filter');
   const lastProgressRule = getLastRuleBody(sharedCss, '.model-test-progress:not(:empty)');
@@ -256,7 +260,8 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestHtml, /class="model-test-toolbar-toggles"/);
   assert.match(modelTestHtml, /class="model-test-control model-test-control--type hidden"/);
   assert.match(modelTestHtml, /id="protocolTransformContainer"/);
-  assert.match(modelTestHtml, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="modelTestContent"/);
+  assert.match(modelTestHtml, /data-i18n="modelTest\.protocolTransform">协议<\/span>/);
+  assert.match(modelTestHtml, /id="modelTypeLabel"[\s\S]*?id="modelSelectorLabel"[\s\S]*?id="protocolTransformContainer"[\s\S]*?id="modelTestContent"[\s\S]*?class="model-test-run-controls"[\s\S]*?class="model-test-toolbar-toggles"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?id="fetchModelsBtn"/);
   assert.doesNotMatch(modelTestHtml, /data-action="select-all-models"/);
   assert.doesNotMatch(modelTestHtml, /data-action="deselect-all-models"/);
   assert.match(modelTestHtml, /class="model-test-toolbar-section model-test-toolbar-section--meta"[\s\S]*?id="modelTestMobileNameFilter"[\s\S]*?id="testProgress"/);
@@ -265,7 +270,13 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestHtml, /class="modern-table model-test-table mobile-card-table"/);
   assert.doesNotMatch(modelTestHtml, /class="modern-table model-test-table mobile-card-table mobile-card-table--selectable"/);
   assert.match(modelTestHtml, /<th class="table-col-select mobile-card-select-header"><input type="checkbox" id="selectAllCheckbox" data-change-action="toggle-all-models"><\/th>/);
-  assert.match(modelTestHtml, /<th class="table-col-response model-test-response-head" data-sort-key="response">[\s\S]*?data-i18n="modelTest\.responseContent"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-head-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"[\s\S]*?<\/th>/);
+  const contentControl = modelTestHtml.match(/class="model-test-control model-test-control--content"[\s\S]*?<\/div>\s*<div class="model-test-run-controls"/)?.[0] || '';
+  assert.match(contentControl, /id="modelTestContent"/);
+  assert.doesNotMatch(contentControl, /fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
+  assert.match(modelTestHtml, /class="model-test-run-controls"[\s\S]*?id="streamEnabled"[\s\S]*?id="concurrency"[\s\S]*?class="model-test-toolbar-section model-test-toolbar-section--actions model-test-content-actions"[\s\S]*?id="fetchModelsBtn"[\s\S]*?id="addModelsBtn"[\s\S]*?id="deleteModelsBtn"[\s\S]*?id="runTestBtn"/);
+  const staticResponseHead = modelTestHtml.match(/<th class="table-col-response model-test-response-head" data-sort-key="response">[\s\S]*?<\/th>/)?.[0] || '';
+  assert.match(staticResponseHead, /data-i18n="modelTest\.responseContent"/);
+  assert.doesNotMatch(staticResponseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
   assert.match(modelTestHtml, /<template id="tpl-model-row">[\s\S]*?class="mobile-card-row model-test-row"/);
   assert.match(modelTestHtml, /class="[^"]*model-test-col-name[^"]*"[^>]*data-mobile-label="\{\{mobileLabelName\}\}"/);
   assert.match(modelTestHtml, /class="model-test-col-response[^"]*"[^>]*data-mobile-label="\{\{mobileLabelResponse\}\}"/);
@@ -275,15 +286,18 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(modelTestScript, /mobileNameFilterInput\.addEventListener\('input',/);
   assert.match(modelTestScript, /getResultRowMobileLabels\('common\.model'/);
   assert.match(modelTestScript, /mobileLabelResponse:\s*i18nText\('modelTest\.responseContent'/);
-  assert.match(modelTestScript, /const RESPONSE_HEAD_HTML = `[\s\S]*?model-test-response-head[\s\S]*?fetchModelsBtn[\s\S]*?runTestBtn[\s\S]*?`;/);
+  const dynamicResponseHead = modelTestScript.match(/const RESPONSE_HEAD_HTML = `([\s\S]*?)`;/)?.[1] || '';
+  assert.match(dynamicResponseHead, /model-test-response-head/);
+  assert.doesNotMatch(dynamicResponseHead, /model-test-head-actions|fetchModelsBtn|addModelsBtn|deleteModelsBtn|runTestBtn/);
   assert.match(sharedCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
-  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelTypeLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*#protocolTransformContainer,\s*[\r\n\s]*\.model-test-toolbar-toggles,\s*[\r\n\s]*\.model-test-control--content\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
+  assert.match(sharedCss, /#channelSelectorLabel,\s*[\r\n\s]*#modelTypeLabel,\s*[\r\n\s]*#modelSelectorLabel,\s*[\r\n\s]*#protocolTransformContainer,\s*[\r\n\s]*\.model-test-control--content,\s*[\r\n\s]*\.model-test-run-controls\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
   assert.match(sharedCss, /\.model-test-control--name-filter\s*\{[\s\S]*?display:\s*none;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--actions\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-toolbar-toggles\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
-  assert.match(sharedCss, /\.model-test-toolbar-section--actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*1\s+1\s+0;/);
+  assert.match(sharedCss, /\.model-test-content-actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;/);
+  assert.match(sharedCss, /\.model-test-run-controls\s*\{[\s\S]*?display:\s*flex;[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(lastActionsRule, /gap:\s*4px|gap:\s*6px/);
   assert.match(lastFilterRule, /grid-template-columns:\s*minmax\(0,\s*1fr\)/);
   assert.doesNotMatch(lastFilterRule, /minmax\(88px,\s*104px\)\s+minmax\(0,\s*1fr\)/);
@@ -304,6 +318,12 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(lastActionsRule, /display:\s*flex/);
   assert.match(lastActionsRule, /flex-wrap:\s*nowrap/);
   assert.doesNotMatch(lastActionsRule, /grid-template-columns/);
+  assert.match(lastContentRowRule, /display:\s*flex/);
+  assert.match(lastContentActionsRule, /display:\s*flex/);
+  assert.match(lastContentActionsRule, /flex-wrap:\s*nowrap/);
+  assert.match(lastRunControlsRule, /display:\s*flex/);
+  assert.match(lastRunControlsRule, /flex-wrap:\s*nowrap/);
+  assert.match(lastProtocolRadioRule, /flex-wrap:\s*wrap/);
   assert.match(lastMetaRule, /display:\s*flex/);
   assert.match(lastMetaRule, /flex-wrap:\s*nowrap/);
   assert.doesNotMatch(lastMetaRule, /grid-template-columns/);
@@ -311,7 +331,7 @@ test('model-test 页为手机卡片布局补齐模板标签和重排样式', () 
   assert.match(lastTogglesRule, /flex-wrap:\s*nowrap/);
   assert.match(lastTogglesRule, /flex:\s*0\s+0\s+auto/);
   assert.doesNotMatch(lastTogglesRule, /grid-template-columns/);
-  assert.match(sharedCss, /\.model-test-response-head-inner\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*space-between;[\s\S]*?align-items:\s*center;/);
+  assert.match(sharedCss, /\.model-test-response-head-inner\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*flex-start;[\s\S]*?align-items:\s*center;/);
   assert.match(sharedCss, /\.model-test-table\.mobile-card-table\s+thead\s*\{[\s\S]*?display:\s*table-header-group;/);
   assert.match(sharedCss, /\.model-test-table\.mobile-card-table\s+thead\s+th:not\(\.model-test-response-head\)\s*\{[\s\S]*?display:\s*none;/);
   assert.match(sharedCss, /\.model-test-table\s+\.model-test-col-name,\s*[\r\n\s]*\.model-test-table\s+\.model-test-col-response\s*\{[\s\S]*?grid-column:\s*1\s*\/\s*-1;/);
@@ -342,8 +362,10 @@ test('model-test 页在紧凑桌面宽度下工具栏只保留筛选和状态区
 test('model-test 页桌面端将内容紧贴并发右侧并保持操作按钮贴右', () => {
   assert.match(sharedCss, /\.model-test-toolbar-section--filters\s*\{[\s\S]*?flex-wrap:\s*nowrap;/);
   assert.match(sharedCss, /\.model-test-control--content\s*\{[\s\S]*?flex:\s*1\s+1\s+360px;/);
-  assert.match(sharedCss, /\.model-test-response-head-inner\s*\{[\s\S]*?justify-content:\s*space-between;/);
-  assert.match(sharedCss, /\.model-test-head-actions\s*\{[\s\S]*?margin-left:\s*auto;[\s\S]*?justify-content:\s*flex-end;/);
+  assert.match(sharedCss, /\.model-test-content-row\s*\{[\s\S]*?display:\s*flex;[\s\S]*?align-items:\s*center;/);
+  assert.match(sharedCss, /\.model-test-content-actions\s*\{[\s\S]*?margin-left:\s*auto;[\s\S]*?justify-content:\s*flex-end;/);
+  assert.match(sharedCss, /\.model-test-content-actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?min-width:\s*72px;/);
+  assert.doesNotMatch(sharedCss, /\.model-test-head-actions/);
 });
 
 test('model-test 页在中等桌面宽度下将筛选独占第一行，状态区落到第二行', () => {
@@ -357,7 +379,7 @@ test('model-test 页在中等桌面宽度下将筛选独占第一行，状态区
   assert.doesNotMatch(mediumDesktopCss, /\.model-test-toolbar-section--actions\s*\{/);
 });
 
-test('model-test 页在窄桌面宽度下保持单列工具栏并让表头按钮自适应', () => {
+test('model-test 页在窄桌面宽度下保持单列工具栏并让内容操作按钮自适应', () => {
   const narrowDesktopSection = sharedCss.match(/@media\s*\(max-width:\s*959px\)\s*and\s*\(min-width:\s*769px\)\s*\{[\s\S]*?\n\}/);
   assert.ok(narrowDesktopSection, '缺少 model-test 窄桌面断点');
 
@@ -365,5 +387,5 @@ test('model-test 页在窄桌面宽度下保持单列工具栏并让表头按钮
   assert.match(narrowDesktopCss, /\.model-test-toolbar\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\);/);
   assert.match(narrowDesktopCss, /\.model-test-toolbar-section--filters,\s*[\r\n\s]*\.model-test-toolbar-section--meta\s*\{[\s\S]*?width:\s*100%;/);
   assert.match(narrowDesktopCss, /\.model-test-toolbar-section--meta\s*\{[\s\S]*?justify-content:\s*flex-start;/);
-  assert.match(sharedCss, /\.model-test-head-actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
+  assert.match(sharedCss, /\.model-test-content-actions\s+\.model-test-toolbar-btn\s*\{[\s\S]*?flex:\s*0\s+0\s+auto;[\s\S]*?width:\s*auto;/);
 });
