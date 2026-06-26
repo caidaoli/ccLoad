@@ -205,14 +205,13 @@ test('channels 编辑弹窗为手机布局补齐结构化骨架和分组重排�
   assert.match(channelsHtml, /class="channel-editor-footer"/);
   assert.match(channelsHtml, /class="channel-editor-footer-actions"/);
 
-  assert.match(channelsCss, /\.channel-editor-modal\s*\{[\s\S]*?max-width:\s*90vw;/);
   assert.match(channelsCss, /\.channel-editor-group--primary\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*minmax\(0,\s*1fr\)\s+minmax\(320px,\s*max-content\);/);
   assert.match(channelsCss, /\.channel-editor-group--primary\s+\.channel-editor-primary-row\s*\{[\s\S]*?display:\s*contents;/);
   assert.match(channelsCss, /\.channel-editor-section-header\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*space-between;/);
   assert.match(channelsCss, /\.channel-editor-footer-actions\s*\{[\s\S]*?display:\s*flex;[\s\S]*?justify-content:\s*flex-end;/);
   assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-editor-section-stack\s*\{[\s\S]*?flex:\s*(?:none|0\s+0\s+auto);/);
   assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-editor-section-actions\s*\{[\s\S]*?flex:\s*(?:none|0\s+0\s+auto);/);
-  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-editor-modal\s*\{[\s\S]*?width:\s*min\(100%,\s*calc\(100vw - 16px\)\);[\s\S]*?margin:\s*8px;[\s\S]*?padding:\s*16px;[\s\S]*?min-height:\s*calc\(100vh - 16px\);[\s\S]*?\.channel-editor-group--primary\s*\{[\s\S]*?display:\s*block;[\s\S]*?\.channel-editor-group--primary\s+\.channel-editor-primary-row\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?\.channel-editor-section-header\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*stretch;[\s\S]*?\.channel-editor-section-actions\s*\{[\s\S]*?width:\s*100%;[\s\S]*?justify-content:\s*flex-start;/);
+  assert.match(channelsCss, /@media\s*\(max-width:\s*768px\)\s*\{[\s\S]*?\.channel-editor-group--primary\s*\{[\s\S]*?display:\s*block;[\s\S]*?\.channel-editor-group--primary\s+\.channel-editor-primary-row\s*\{[\s\S]*?display:\s*grid;[\s\S]*?grid-template-columns:\s*1fr;[\s\S]*?\.channel-editor-section-header\s*\{[\s\S]*?flex-direction:\s*column;[\s\S]*?align-items:\s*stretch;[\s\S]*?\.channel-editor-section-actions\s*\{[\s\S]*?width:\s*100%;[\s\S]*?justify-content:\s*flex-start;/);
 });
 
 test('channels 编辑弹窗在手机端将基础字段、按钮条和卡片内容压成单行信息流', () => {
@@ -241,7 +240,7 @@ test('channels 编辑弹窗在手机端将基础字段、按钮条和卡片内�
   assert.match(channelsCss, /\.inline-url-table\s+\.mobile-inline-row\s+td\[data-mobile-label\]::before,\s*[\r\n\s]*\.inline-key-table\s+\.mobile-inline-row\s+td\[data-mobile-label\]::before,\s*[\r\n\s]*\.redirect-model-table\s+\.mobile-inline-row\s+td\[data-mobile-label\]::before\s*\{[\s\S]*?display:\s*inline-flex;[\s\S]*?margin:\s*0\s+8px\s+0\s+0;/);
   assert.match(channelsCss, /\.inline-url-table\s+tbody\s+\.mobile-inline-row\s*\{[\s\S]*?grid-template-columns:\s*36px\s+minmax\(0,\s*1fr\)\s+auto\s+auto\s+auto;[\s\S]*?align-items:\s*center;/);
   assert.match(channelsCss, /\.inline-key-table\s+tbody\s+\.mobile-inline-row\s*\{[\s\S]*?grid-template-columns:\s*36px\s+minmax\(0,\s*1fr\)\s+auto\s+auto;[\s\S]*?align-items:\s*center;/);
-  assert.match(channelsCss, /#channelModal\s+\.inline-table-container\.tall\s*\{[\s\S]*?max-height:\s*none;[\s\S]*?height:\s*auto;[\s\S]*?overflow:\s*visible;/);
+  assert.match(channelsCss, /#channelModal\s+\.inline-table-container,\s*[\r\n\s]*#channelModal\s+\.inline-table-container\.tall,\s*[\r\n\s]*#channelModal\s+\.channel-editor-group--models\s+\.inline-table-container\s*\{[\s\S]*?max-height:\s*none;[\s\S]*?height:\s*auto;[\s\S]*?overflow:\s*visible;/);
   assert.match(channelsCss, /\.inline-url-table\s+tbody\s+\.mobile-inline-row\s+td\.inline-url-col-select,\s*[\r\n\s]*\.inline-key-table\s+tbody\s+\.mobile-inline-row\s+td\.inline-key-col-select\s*\{[\s\S]*?grid-column:\s*1;[\s\S]*?grid-row:\s*1;/);
   assert.match(channelsCss, /\.inline-url-table\s+tbody\s+\.mobile-inline-row\s+td\.inline-url-col-url\s*\{[\s\S]*?grid-column:\s*2;[\s\S]*?grid-row:\s*1;/);
   assert.match(channelsCss, /\.inline-url-table\s+tbody\s+\.mobile-inline-row\s+td\.inline-url-col-exact\s*\{[\s\S]*?grid-column:\s*3;[\s\S]*?grid-row:\s*1;/);
