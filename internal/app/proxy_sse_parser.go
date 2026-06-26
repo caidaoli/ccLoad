@@ -458,9 +458,13 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
 	// [WARN] 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
-	if eventType == "error" {
+	// [PATCH] 兼容不规范上游：部分上游（如 sub2api）只发 `data: {"type":"error",...}`
+	// 而不带 `event: error` 行，导致 eventType 为空、错误帧漏判被当成正常输出，
+	// 最终记成 200/0token 假成功且不重试。这里增加 JSON body 回退检测，
+	// 与 isHeartbeatEvent 的 JSON 回退对称。
+	if eventType == "error" || isErrorPayload(data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error事件: %s", data)
-		// [INFO] 新增：存储错误事件的完整JSON（用于流结束后触发冷却逻辑）
+		// [INFO] 存储错误事件的完整JSON（用于流结束后触发冷却逻辑）
 		p.lastError = []byte(data)
 		return nil // 不解析usage，避免误判
 	}
@@ -565,6 +569,33 @@ func isHeartbeatEvent(eventType, data string) bool {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal([]byte(data), &event) == nil && event.Type == "ping"
+}
+
+// [PATCH] isErrorPayload 检测 data 字段本身是否为一个 error 事件 JSON。
+// 用于兼容只发 `data: {"type":"error",...}` 而不带 `event: error` 行的不规范上游。
+// 判定依据（任一成立）：
+//   - 顶层 type == "error"（Anthropic 风格: {"type":"error","error":{...}}）
+//   - 顶层存在非空 error 对象（其他聚合站风格: {"error":{...}}）
+func isErrorPayload(data string) bool {
+	if data == "" {
+		return false
+	}
+	var event struct {
+		Type  string          `json:"type"`
+		Error json.RawMessage `json:"error"`
+	}
+	if json.Unmarshal([]byte(data), &event) != nil {
+		return false
+	}
+	if event.Type == "error" {
+		return true
+	}
+	// error 字段存在且为非空的 JSON 对象（排除 null / 空对象 / 空串）
+	trimmed := strings.TrimSpace(string(event.Error))
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
+		return false
+	}
+	return strings.HasPrefix(trimmed, "{")
 }
 
 func (p *jsonUsageParser) Feed(data []byte) error {
