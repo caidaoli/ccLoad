@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const logsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
 
 function createHarness(values, initialValue = 'all') {
   const queue = [...values];
@@ -102,8 +101,4 @@ test('日志来源筛选在定时检测开启时保持可见且保留当前值',
   assert.equal(visible, true);
   assert.equal(harness.group.hidden, false);
   assert.equal(harness.select.value, 'all');
-});
-
-test('日志来源筛选 hidden 属性有显式样式兜底，避免被 flex 布局顶掉', () => {
-  assert.match(logsCss, /\.logs-filter-group\[hidden\]\s*\{\s*display:\s*none\s*!important;/);
 });

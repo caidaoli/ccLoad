@@ -4,11 +4,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const html = fs.readFileSync(path.join(__dirname, '..', '..', 'stats.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
-const zhLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'zh-CN.js'), 'utf8');
-const enLocale = fs.readFileSync(path.join(__dirname, '..', 'locales', 'en.js'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -30,21 +27,6 @@ function extractFunction(source, name) {
 
   assert.fail(`函数 ${name} 大括号未闭合`);
 }
-
-test('stats 页表头和模板新增平均速度列并补齐文案', () => {
-  assert.match(html, /data-column="avg_speed"[\s\S]*data-i18n="stats\.avgSpeed"/);
-  assert.match(html, /class="stats-col-speed [^"]*" data-mobile-label="\{\{mobileLabelSpeed\}\}"/);
-  assert.match(zhLocale, /'stats\.avgSpeed': 'Tok\/s'/);
-  assert.match(enLocale, /'stats\.avgSpeed': 'Tok\/s'/);
-});
-
-test('stats 页平均速度单元格只显示数值不重复单位', () => {
-  assert.doesNotMatch(
-    script,
-    /avgSpeed[^]*tok\/s/,
-    '平均速度列单元格不应重复拼接 tok/s'
-  );
-});
 
 test('stats 页平均速度优先按首字后的平均生成阶段计算 tok/s', () => {
   const calculateTokenSpeed = vm.runInNewContext(

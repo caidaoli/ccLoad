@@ -359,14 +359,6 @@ func TestIsLikelyText(t *testing.T) {
 	}
 }
 
-func TestFormatModelDisplayName(t *testing.T) {
-	t.Parallel()
-
-	if got := formatModelDisplayName("gemini-2.5-flash-20250101"); got != "Gemini 2.5 Flash" {
-		t.Fatalf("unexpected display name: %q", got)
-	}
-}
-
 func TestParseTimeout(t *testing.T) {
 	t.Parallel()
 

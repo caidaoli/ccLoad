@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const logsCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'logs.css'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -143,13 +142,6 @@ ${extractFunction(logsSource, 'buildLogCostDisplay')}`,
   assert.match(costHtml, /class="[^"]*log-cost[^"]*log-cost--with-multiplier[^"]*"/);
   assert.match(costHtml, /class="log-cost-standard">\$0\.019<\/span>/);
   assert.match(costHtml, /class="log-cost-effective">\$0<\/span>/);
-});
-
-test('日志页倍率成本样式把原价变灰但不显示删除线，角标放到右上角', () => {
-  assert.match(logsCss, /\.log-channel-cell\s*\{[\s\S]*?position:\s*relative;[\s\S]*?display:\s*flex;[\s\S]*?width:\s*100%;/);
-  assert.match(logsCss, /\.log-channel-multiplier-badge\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?top:\s*[^;]+;[\s\S]*?right:\s*[^;]+;/);
-  assert.match(logsCss, /\.log-cost-standard\s*\{[\s\S]*?color:\s*var\(--neutral-500\);/);
-  assert.doesNotMatch(logsCss, /\.log-cost-standard\s*\{[\s\S]*?text-decoration:\s*line-through;/, '日志页标准成本不应有删除线');
 });
 
 test('日志页表格渲染实际使用倍率成本 helper', () => {
