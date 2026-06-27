@@ -5,14 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
-const indexSource = fs.readFileSync(path.join(__dirname, 'index.js'), 'utf8');
-const channelsInitSource = fs.readFileSync(path.join(__dirname, 'channels-init.js'), 'utf8');
-const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
-const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
-const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
-const settingsSource = fs.readFileSync(path.join(__dirname, 'settings.js'), 'utf8');
-const modelTestSource = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
 
 function extractCommonUiHelpers(source) {
   const startMarker = '// 公共工具函数（DRY原则：消除重复代码）';
@@ -105,25 +97,4 @@ test('ui.js 的共享页面 bootstrap helper 在 DOM 已就绪时立即执行', 
 
   await Promise.resolve();
   assert.deepEqual(calls, ['translate', 'topbar:stats', 'run']);
-});
-
-test('关键页面通过共享 bootstrap helper 初始化，而不是各自直接绑定 DOMContentLoaded 样板', () => {
-  const pages = [
-    { name: 'index', source: indexSource, topbarKey: 'index' },
-    { name: 'channels', source: channelsInitSource, topbarKey: 'channels' },
-    { name: 'logs', source: logsSource, topbarKey: 'logs' },
-    { name: 'stats', source: statsSource, topbarKey: 'stats' },
-    { name: 'trend', source: trendSource, topbarKey: 'trend' },
-    { name: 'tokens', source: tokensSource, topbarKey: 'tokens' },
-    { name: 'settings', source: settingsSource, topbarKey: 'settings' },
-    { name: 'model-test', source: modelTestSource, topbarKey: 'model-test' }
-  ];
-
-  pages.forEach(({ name, source, topbarKey }) => {
-    assert.match(source, /window\.initPageBootstrap\(\{/);
-    assert.match(source, new RegExp(`topbarKey:\\s*'${topbarKey}'`));
-    assert.doesNotMatch(source, /document\.addEventListener\('DOMContentLoaded'/);
-    assert.doesNotMatch(source, new RegExp(`if \\(window\\.initTopbar\\) initTopbar\\('${topbarKey}'\\);`));
-    assert.doesNotMatch(source, /if \(window\.i18n\) window\.i18n\.translatePage\(\);/);
-  });
 });

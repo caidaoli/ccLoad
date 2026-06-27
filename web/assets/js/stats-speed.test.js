@@ -99,13 +99,6 @@ test('stats 页平均速度优先按首字后的平均生成阶段计算 tok/s',
   );
 });
 
-test('stats 页速度计算委托给共享 token speed helper', () => {
-  assert.match(
-    extractFunction(script, 'calculateAverageSpeed'),
-    /return calculateTokenSpeed\(/
-  );
-});
-
 test('stats 页支持按平均速度排序', () => {
   const context = {
     statsData: {

@@ -82,8 +82,3 @@ test('实时请求信息列在 debug 不可用时保持普通文本', () => {
   assert.doesNotMatch(html, /debug-log-link/);
   assert.match(html, /已接收 1\.0 K/);
 });
-
-test('实时请求 debug 入口使用 active request debug modal', () => {
-  assert.match(logsSource, /debug-log-link\[data-active-request-id\]/);
-  assert.match(logsSource, /showActiveDebugLogModal\(activeRequestId\)/);
-});

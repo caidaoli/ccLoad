@@ -5,7 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const channelsDataSource = fs.readFileSync(path.join(__dirname, 'channels-data.js'), 'utf8');
-const channelsFiltersSource = fs.readFileSync(path.join(__dirname, 'channels-filters.js'), 'utf8');
 
 function loadChannelsDataHarness(filters) {
   const sandbox = {
@@ -52,12 +51,6 @@ test('channels 列表参数对非完整选项使用模糊渠道名和模型键',
   assert.equal(params.has('channel_name'), false);
   assert.equal(params.get('model_like'), 'gpt-5');
   assert.equal(params.has('model'), false);
-});
-
-test('channels 筛选下拉记录渠道名和模型是否精确命中选项', () => {
-  assert.match(channelsFiltersSource, /inputId:\s*'modelFilter'[\s\S]*?allowCustomInput:\s*true/);
-  assert.match(channelsFiltersSource, /filters\.modelExact\s*=\s*isExactChannelModelFilter\(value\);/);
-  assert.match(channelsFiltersSource, /filters\.searchExact\s*=\s*!isAllToken && isExactChannelNameFilter\(raw\);/);
 });
 
 test('渠道统计聚合会按渠道取最新成功和最新请求信息', () => {

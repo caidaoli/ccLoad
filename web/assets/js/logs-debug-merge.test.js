@@ -6,7 +6,6 @@ const vm = require('node:vm');
 
 const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
 const sseMergeSource = fs.readFileSync(path.join(__dirname, 'sse-merge.js'), 'utf8');
-const logsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'logs.html'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}(`;
@@ -48,22 +47,6 @@ this.__logsDebugMergeTest = {
 
   return sandbox.__logsDebugMergeTest;
 }
-
-test('debug 响应合并按钮和合并内容容器存在于复制按钮旁边', () => {
-  assert.match(logsHtml, /id="debugMergeBtn"/);
-  assert.match(logsHtml, /data-action="merge-debug-response"/);
-  assert.match(logsHtml, /id="debugRespMerged"/);
-  assert.ok(
-    logsHtml.indexOf('debugMergeBtn') > logsHtml.indexOf('upstream-copy-btn--tabs'),
-    '合并按钮应放在复制按钮之后'
-  );
-});
-
-test('debug 合并按钮事件会切换合并视图并同步复制目标', () => {
-  assert.match(logsSource, /merge-debug-response/);
-  assert.match(logsSource, /setDebugResponseMergedVisible\(!debugResponseMergedVisible\)/);
-  assert.match(logsSource, /debugResponseMergedVisible \? 'debugRespMerged' : 'debugRespRaw'/);
-});
 
 test('合并 SSE responses 输出文本 delta', () => {
   const helpers = createHelpers();

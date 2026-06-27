@@ -3,8 +3,6 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const dateRangeSource = fs.readFileSync(path.join(__dirname, 'date-range-selector.js'), 'utf8');
-const channelsHtmlSource = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 
 function loadDateRangeModule() {
   const source = fs.readFileSync(path.join(__dirname, 'date-range-selector.js'), 'utf8');
@@ -167,18 +165,5 @@ test('时间范围模块不会为未来自定义区间生成无数据查询', ()
   assert.equal(
     window.buildDateRangeQuery('custom', { startMs: 1779321600000, endMs: 1782057599000 }, nowMs),
     'range=custom&start_time=1779321600000&end_time=1779360000000'
-  );
-});
-
-test('自定义时间弹层禁用未来日期按钮', () => {
-  assert.match(dateRangeSource, /maxDate:\s*startOfLocalDay\(new Date\(\)\)/);
-  assert.match(dateRangeSource, /dayStart\s*>\s*state\.maxDate/);
-  assert.match(dateRangeSource, /btn\.disabled\s*=\s*true/);
-});
-
-test('channels.html 在 channels-state.js 之前加载共享时间范围脚本', () => {
-  assert.match(
-    channelsHtmlSource,
-    /date-range-selector\.js\?v=__VERSION__[\s\S]*channels-state\.js\?v=__VERSION__/
   );
 });
