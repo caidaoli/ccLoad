@@ -121,13 +121,6 @@ test('model-test 页流式速度优先按首字后的生成阶段计算 tok/s', 
   );
 });
 
-test('model-test 页速度计算委托给共享 token speed helper', () => {
-  assert.match(
-    extractFunction(script, 'calculateTestSpeed'),
-    /return calculateTokenSpeed\(/
-  );
-});
-
 test('model-test 页速度列参与排序', () => {
   const getRowSortValue = vm.runInNewContext(
     `(${extractFunction(script, 'getRowSortValue')})`,

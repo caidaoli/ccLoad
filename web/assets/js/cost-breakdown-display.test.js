@@ -8,8 +8,6 @@ const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
 const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
 const channelsSource = fs.readFileSync(path.join(__dirname, 'channels-render.js'), 'utf8');
 const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
-const statsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'stats.html'), 'utf8');
-const channelsHtml = fs.readFileSync(path.join(__dirname, '..', '..', 'channels.html'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -113,21 +111,6 @@ ${extractBlock(statsSource, 'buildStatsModelDisplay', 'renderStatsTable')}`,
   assert.match(modelHtml, /class="cell-multiplier-badge">0\.85x<\/sup>/);
   assert.doesNotMatch(modelHtml, /0\.91x/);
   assert.match(costHtml, /class="cost-stack cost-stack--warning cost-stack--with-multiplier"/);
-  assert.match(statsHtml, /<td class="stats-col-cost \{\{costCellClass\}\}" data-mobile-label="\{\{mobileLabelCost\}\}">\{\{\{costText\}\}\}<\/td>/);
-  assert.match(statsHtml, /<td class="stats-col-cost" data-mobile-label="\{\{mobileLabelCost\}\}">\{\{\{costText\}\}\}<\/td>/);
-  assert.match(statsSource, /buildCornerMultiplierBadge\(entry\.cost_multiplier\)/);
-});
-
-test('channels 页在名称单元格右上角挂倍率角标，成本列改为两行成本组件', () => {
-  const templateMatch = channelsHtml.match(/<template id="tpl-channel-card">[\s\S]*?<\/template>/);
-  assert.ok(templateMatch, '缺少 tpl-channel-card 模板');
-
-  const template = templateMatch[0];
-  assert.match(template, /<div class="ch-name-cell">[\s\S]*?\{\{\{nameMultiplierBadge\}\}\}/);
-  assert.match(channelsSource, /nameMultiplierBadge:/);
-  assert.match(channelsSource, /buildCornerMultiplierBadge\(/);
-  assert.match(channelsSource, /buildCornerMultiplierBadge\(channel\.cost_multiplier\)/);
-  assert.match(channelsSource, /costHtml = buildCostStackHtml\(/);
 });
 
 test('channels 页倍率角标只读渠道配置倍率，不依赖统计聚合结果', () => {

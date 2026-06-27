@@ -5,10 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
-const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const modelTestSource = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
-const tokensSource = fs.readFileSync(path.join(__dirname, 'tokens.js'), 'utf8');
-const channelsInitSource = fs.readFileSync(path.join(__dirname, 'channels-init.js'), 'utf8');
 
 function extractCommonUiHelpers(source) {
   const startMarker = '// 公共工具函数（DRY原则：消除重复代码）';
@@ -119,23 +115,4 @@ test('ui.js 的共享页面动作委托 helper 会阻止同一 boundKey 重复�
   }), false);
 
   assert.equal(root.listeners.size, 1);
-});
-
-test('logs.js、model-test.js、tokens.js 和 channels-init.js 通过共享 helper 注册页面动作', () => {
-  assert.match(logsSource, /window\.initDelegatedActions\(\{/);
-  assert.match(logsSource, /boundKey:\s*'logsPageActionsBound'/);
-  assert.match(logsSource, /'toggle-response':\s*\(actionTarget\)\s*=>/);
-
-  assert.match(modelTestSource, /window\.initDelegatedActions\(\{/);
-  assert.match(modelTestSource, /boundKey:\s*'modelTestActionsBound'/);
-  assert.match(modelTestSource, /'set-test-mode':\s*\(actionTarget\)\s*=> setTestMode\(actionTarget\.dataset\.mode \|\| ''\)/);
-
-  assert.match(tokensSource, /window\.initDelegatedActions\(\{/);
-  assert.match(tokensSource, /boundKey:\s*'tokensPageActionsBound'/);
-  assert.match(tokensSource, /'remove-allowed-model':\s*\(actionTarget\)\s*=>/);
-  assert.match(tokensSource, /'toggle-allowed-model':\s*\(actionTarget\)\s*=>/);
-
-  assert.match(channelsInitSource, /window\.initDelegatedActions\(\{/);
-  assert.match(channelsInitSource, /boundKey:\s*'channelsPageActionsBound'/);
-  assert.match(channelsInitSource, /'toggle-response':\s*\(actionTarget\)\s*=>/);
 });

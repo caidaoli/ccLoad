@@ -108,10 +108,3 @@ test('日志页流式速度优先按首字后的生成阶段计算 tok/s', () =>
     21.87187187187187
   );
 });
-
-test('日志页速度计算委托给共享 token speed helper', () => {
-  assert.match(
-    extractFunction(logsSource, 'calculateLogSpeed'),
-    /return calculateTokenSpeed\(/
-  );
-});

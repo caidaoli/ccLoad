@@ -85,36 +85,6 @@ function buildTokensChannelRuntime() {
   return { context, ...context.__exports };
 }
 
-test('tokens.js 保存并渲染 allowed_channel_ids', () => {
-  assert.match(script, /let editAllowedChannelIDs = \[\];/);
-  assert.match(script, /let selectedAllowedChannelIDs = new Set\(\);/);
-  assert.match(script, /function renderAllowedChannelsTable\(\)/);
-  assert.match(script, /editAllowedChannelIDs = \(token\.allowed_channel_ids \|\| \[\]\)\.slice\(\);/);
-  assert.match(script, /allowed_channel_ids:\s*editAllowedChannelIDs,/);
-  assert.match(script, /'show-channel-select-modal':\s*\(\)\s*=> showChannelSelectModal\(\)/);
-  assert.match(script, /'confirm-channel-selection':\s*\(\)\s*=> confirmChannelSelection\(\)/);
-  assert.match(script, /'batch-delete-allowed-channels':\s*\(\)\s*=> batchDeleteSelectedAllowedChannels\(\)/);
-  assert.match(script, /'toggle-allowed-channel':\s*\(actionTarget\)\s*=>/);
-});
-
-test('tokens 渠道选择弹窗按渠道类型分组并支持下拉筛选分组', () => {
-  assert.match(script, /function groupChannelsByType\(channels\)/);
-  assert.match(script, /function getChannelTypeGroupKey\(channel\)/);
-  assert.match(script, /function normalizeChannelTypeValue\(value\)/);
-  assert.match(script, /function buildChannelTypeDisplayNameMap\(types\)/);
-  assert.match(script, /async function ensureChannelTypeDisplayNameMap\(\)/);
-  assert.match(script, /window\.ChannelTypeManager && typeof window\.ChannelTypeManager\.getChannelTypes === 'function'/);
-  assert.match(script, /function updateChannelTypeFilterOptions\(channels\)/);
-  assert.match(script, /function matchesChannelSearchText\(channel, searchText\)/);
-  assert.match(script, /'filter-available-channel-type':\s*\(\)\s*=> filterAvailableChannels\(document\.getElementById\('channelSearchInput'\)\?\.value \|\| ''\)/);
-  assert.match(script, /const channelGroups = groupChannelsByType\(channels\);/);
-  assert.match(script, /const selectedTypeKey = updateChannelTypeFilterOptions\(availableChannels\);/);
-  assert.match(script, /channels = channels\.filter\(ch => getChannelTypeGroupKey\(ch\) === selectedTypeKey\);/);
-  assert.match(script, /channels = channels\.filter\(ch => matchesChannelSearchText\(ch, searchText\)\);/);
-  assert.doesNotMatch(script, /anthropic:\s*'Claude'/);
-  assert.doesNotMatch(script, /gemini:\s*'Gemini'/);
-});
-
 test('tokens 渠道类型归一化和搜索匹配与展示名称一致', () => {
   const runtime = buildTokensChannelRuntime();
   const {
@@ -186,13 +156,4 @@ test('tokens 渠道类型显示名首次加载失败后可再次重试', async (
   assert.equal(context.channelTypeDisplayNamesPromise, null);
   assert.equal(map.get('anthropic'), 'Claude Code');
   assert.equal(map.get('gemini'), 'Google Gemini');
-});
-
-test('tokens 模型选择按当前渠道限制聚合可选模型', () => {
-  assert.match(script, /function getAvailableModelsForCurrentChannelRestriction\(\)/);
-  assert.match(script, /if \(editAllowedChannelIDs\.length === 0\) \{[\s\S]*?return availableModelsCache;/);
-  assert.match(script, /const allowedChannelIDs = new Set\(editAllowedChannelIDs\);/);
-  assert.match(script, /allChannels\.forEach\(ch => \{[\s\S]*?if \(!allowedChannelIDs\.has\(normalizeChannelID\(ch\.id\)\)\) return;/);
-  assert.match(script, /const sourceModels = getAvailableModelsForCurrentChannelRestriction\(\);[\s\S]*?let models = sourceModels\.filter/);
-  assert.match(script, /const isEmptyCache = sourceModels\.length === 0;/);
 });

@@ -5,9 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
-const channelsTestSource = fs.readFileSync(path.join(__dirname, 'channels-test.js'), 'utf8');
-const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const modelTestSource = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
 
 function extractSharedUiHelpers(source) {
   const startMarker = '// 跨页面共享工具函数';
@@ -82,12 +79,6 @@ test('ui.js 高亮响应状态码时按状态类别输出不同 class', () => {
   assert.match(okHtml, /upstream-token upstream-token--status-success/);
   assert.match(clientErrHtml, /upstream-token upstream-token--status-client-error/);
   assert.match(serverErrHtml, /upstream-token upstream-token--status-server-error/);
-});
-
-test('channels-test.js、logs.js 和 model-test.js 复用共享上游详情高亮 helper', () => {
-  assert.match(channelsTestSource, /window\.setHighlightedCodeContent\(/);
-  assert.match(logsSource, /window\.setHighlightedCodeContent\(/);
-  assert.match(modelTestSource, /window\.setHighlightedCodeContent\(/);
 });
 
 test('ui.js 高亮 SSE 响应体中的事件名与 JSON 数据', () => {

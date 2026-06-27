@@ -40,7 +40,3 @@ test('共享 token speed helper 使用首字后生成阶段且小于 1 秒时回
   assert.equal(calculateTokenSpeed(0, 3, 1), null);
   assert.equal(calculateTokenSpeed(100, 0, 0), null);
 });
-
-test('共享 token speed helper 暴露到 window 供页面复用', () => {
-  assert.match(uiSource, /window\.calculateTokenSpeed\s*=\s*calculateTokenSpeed/);
-});

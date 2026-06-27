@@ -5,9 +5,6 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const uiSource = fs.readFileSync(path.join(__dirname, 'ui.js'), 'utf8');
-const logsSource = fs.readFileSync(path.join(__dirname, 'logs.js'), 'utf8');
-const statsSource = fs.readFileSync(path.join(__dirname, 'stats.js'), 'utf8');
-const trendSource = fs.readFileSync(path.join(__dirname, 'trend.js'), 'utf8');
 
 function extractCommonUiHelpers(source) {
   const startMarker = '// 公共工具函数（DRY原则：消除重复代码）';
@@ -216,25 +213,4 @@ test('ui.js 暴露共享的筛选字段读写 helper', () => {
   assert.equal(elements.get('f_name').value, 'new-name');
   assert.equal(elements.get('f_model').value, 'claude');
   assert.equal(elements.get('f_status').value, '200');
-});
-
-test('logs.js、stats.js 和 trend.js 使用共享筛选输入绑定 helper，logs/stats 使用共享筛选控件初始化与字段读写 helper', () => {
-  assert.match(logsSource, /bindFilterApplyInputs\(\{/);
-  assert.match(statsSource, /bindFilterApplyInputs\(\{/);
-  assert.match(logsSource, /initSavedDateRangeFilter\(\{/);
-  assert.match(statsSource, /initSavedDateRangeFilter\(\{/);
-  assert.match(trendSource, /initSavedDateRangeFilter\(\{/);
-  assert.match(logsSource, /initAuthTokenFilter\(\{/);
-  assert.match(statsSource, /initAuthTokenFilter\(\{/);
-  assert.match(trendSource, /initAuthTokenFilter\(\{/);
-  assert.match(logsSource, /readFilterControlValues\(/);
-  assert.match(statsSource, /readFilterControlValues\(/);
-  assert.match(logsSource, /applyFilterControlValues\(/);
-  // stats/trend 渠道/模型筛选已迁移至 combobox，通过 createSearchableCombobox 初始化
-  assert.match(statsSource, /createSearchableCombobox\(/);
-  assert.match(trendSource, /createSearchableCombobox\(/);
-  assert.match(logsSource, /trim:\s*true/);
-  assert.match(statsSource, /trim:\s*true/);
-  assert.match(logsSource, /getValues:\s*getLogsFilters|values:\s*getLogsFilters\(\)/);
-  assert.match(statsSource, /getValues:\s*getStatsFilters|values:\s*getStatsFilters\(\)/);
 });

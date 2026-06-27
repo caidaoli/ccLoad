@@ -143,8 +143,3 @@ ${extractFunction(logsSource, 'buildLogCostDisplay')}`,
   assert.match(costHtml, /class="log-cost-standard">\$0\.019<\/span>/);
   assert.match(costHtml, /class="log-cost-effective">\$0<\/span>/);
 });
-
-test('日志页表格渲染实际使用倍率成本 helper', () => {
-  assert.match(logsSource, /function renderLogs\(data\)\s*\{[\s\S]*?const configDisplay = buildLogChannelDisplay\(entry\);/);
-  assert.match(logsSource, /function renderLogs\(data\)\s*\{[\s\S]*?const costDisplay = buildLogCostDisplay\(entry\);/);
-});

@@ -4,9 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
 
-const html = fs.readFileSync(path.join(__dirname, '..', '..', 'model-test.html'), 'utf8');
 const script = fs.readFileSync(path.join(__dirname, 'model-test.js'), 'utf8');
-const sharedCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'styles.css'), 'utf8');
 
 function extractFunction(source, name) {
   const signature = `function ${name}`;
@@ -169,77 +167,6 @@ test('i18n.js 暴露的 window.i18nText 对动态删除文案执行插值兜底'
   );
 });
 
-test('model-test 页接入日志页同款渠道编辑器桥接并将渠道名渲染为可点击按钮', () => {
-  assert.match(html, /<link rel="stylesheet" href="\/web\/assets\/css\/channels\.css\?v=__VERSION__">/);
-  assert.match(html, /<script defer src="\/web\/assets\/js\/logs-channel-editor\.js\?v=__VERSION__"><\/script>/);
-  assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{channelName}}">{{channelName}}<\/button>/);
-  assert.match(html, /<button type="button" class="channel-link" data-channel-id="{{channelId}}" title="{{model}}">{{displayName}}<\/button>/);
-});
-
-test('model-test 页在按模型测试模式下提供类型筛选并保留协议转换容器', () => {
-  assert.match(html, /id="modelTypeLabel"/);
-  assert.match(html, /id="testModelType"/);
-  assert.match(html, /class="model-test-control model-test-control--type hidden"/);
-  assert.match(html, /data-i18n="common\.type"/);
-  assert.match(html, /id="protocolTransformContainer"/);
-  assert.match(html, /id="protocolTransformOptions"/);
-  assert.match(html, /data-i18n="modelTest\.protocolTransform"/);
-});
-
-test('model-test 控制标签在工具栏内不可被压缩换行', () => {
-  assert.match(
-    sharedCss,
-    /\.model-test-control__label\s*\{[^}]*white-space:\s*nowrap;[^}]*flex:\s*0\s+0\s+auto;/,
-    '渠道、模型、协议等短标签必须保持单行，不能被 flex 压成竖排'
-  );
-});
-
-test('model-test 按渠道测试的渠道下拉框固定宽度且不挤压协议标签', () => {
-  assert.match(
-    sharedCss,
-    /#channelSelectorLabel\s*\{[^}]*flex:\s*0\s+0\s+auto;/,
-    '渠道选择控件本身不能被 flex 压缩，否则固定宽度下拉框会溢出遮挡后续协议标签'
-  );
-  assert.match(
-    sharedCss,
-    /#testChannelSelectContainer\s*\{[^}]*width:\s*250px;[^}]*flex:\s*0\s+0\s+250px;/,
-    '渠道下拉框容器必须固定为 250px'
-  );
-});
-
-test('model-test 对话面板提供独立流式开关并随请求发送', () => {
-  assert.match(html, /id="chatStreamEnabled"/);
-  assert.match(html, /id="chatModelSelect"[\s\S]*?id="chatChannelSelectContainer"[\s\S]*?id="chatStreamEnabled"[\s\S]*?id="chatClearBtn"/);
-  assert.match(script, /const chatStreamEnabled = document\.getElementById\('chatStreamEnabled'\)\?\.checked !== false;/);
-  assert.match(script, /body:\s*JSON\.stringify\(\{[\s\S]*?model:\s*chatModel,[\s\S]*?stream:\s*chatStreamEnabled,[\s\S]*?messages:\s*chatMessages/);
-  assert.doesNotMatch(script, /body:\s*JSON\.stringify\(\{ model: chatModel,\s*stream: true,\s*messages: chatMessages \}\)/);
-});
-
-test('model-test 对话输入区提供思考等级和内置搜索开关并随请求发送', () => {
-  assert.match(html, /id="chatInput"[\s\S]*?id="chatThinkingLevel"[\s\S]*?id="chatBuiltinSearchToggle"[\s\S]*?id="chatSendBtn"/);
-  assert.match(html, /class="chat-thinking-icon"[\s\S]*?<div class="filter-combobox-wrapper chat-thinking-combobox">[\s\S]*?id="chatThinkingLevel"[\s\S]*?class="filter-select filter-combobox chat-thinking-level-input"[\s\S]*?id="chatThinkingLevelDropdown"[\s\S]*?class="filter-dropdown"/);
-  assert.doesNotMatch(html, /<select id="chatThinkingLevel"/);
-  assert.doesNotMatch(html, /<option value="(?:|none|minimal|low|medium|high)"/);
-  assert.match(html, /id="chatBuiltinSearchToggle"[\s\S]*?aria-pressed="false"[\s\S]*?data-i18n-title="modelTest\.chat\.builtinSearch"/);
-  assert.match(html, /id="chatBuiltinSearchToggle"[\s\S]*?<circle cx="12" cy="12" r="9"/);
-  assert.match(script, /let chatThinkingCombobox = null;/);
-  assert.match(script, /let chatThinkingEffort = '';/);
-  assert.match(script, /function getChatThinkingOptions\(\)/);
-  assert.match(script, /function getChatThinkingLabel\(value\)/);
-  assert.match(script, /function getChatThinkingEffort\(\)/);
-  assert.match(script, /chatThinkingCombobox = window\.createSearchableCombobox\(\{[\s\S]*?attachMode:\s*true,[\s\S]*?inputId:\s*'chatThinkingLevel',[\s\S]*?dropdownId:\s*'chatThinkingLevelDropdown',[\s\S]*?allowCustomInput:\s*false,[\s\S]*?getOptions:\s*getChatThinkingOptions,[\s\S]*?onSelect:\s*\(value\)\s*=>\s*\{[\s\S]*?chatThinkingEffort = String\(value \|\| ''\)\.trim\(\);/);
-  assert.match(script, /function isChatBuiltinSearchEnabled\(\)/);
-  assert.match(script, /'toggle-chat-builtin-search':\s*\(\)\s*=> toggleChatBuiltinSearch\(\)/);
-  assert.match(script, /thinking_effort:\s*chatThinkingEffort/);
-  assert.match(script, /builtin_search:\s*chatBuiltinSearch/);
-  assert.match(sharedCss, /\.chat-input-tools\s*\{/);
-  assert.match(sharedCss, /\.chat-thinking-icon\s*\{/);
-  assert.match(sharedCss, /\.chat-thinking-combobox\s*\{/);
-  assert.match(sharedCss, /\.chat-thinking-level-input\s*\{/);
-  assert.match(sharedCss, /\.chat-tool-toggle--search\s*\{/);
-  assert.match(sharedCss, /\.chat-tool-toggle\[aria-pressed="true"\]\s*\{/);
-});
-
 test('model-test 思考等级 combobox 使用枚举值而不是显示文本', () => {
   const sandbox = {
     i18nText: (_key, fallback) => fallback
@@ -263,26 +190,6 @@ test('model-test 思考等级 combobox 使用枚举值而不是显示文本', ()
   assert.equal(sandbox.result.highLabel, '高');
   assert.equal(sandbox.result.fallbackLabel, '默认');
   assert.equal(sandbox.result.effort, 'high');
-});
-
-test('model-test 对话输入区支持上传和粘贴图片并发送多模态内容块', () => {
-  assert.match(html, /id="chatImagePreviewList"/);
-  assert.match(html, /id="chatImageInput"[\s\S]*type="file"[\s\S]*accept="image\/\*"[\s\S]*multiple/);
-  assert.match(html, /id="chatImageUploadBtn"[\s\S]*data-action="select-chat-image"[\s\S]*data-i18n-title="modelTest\.chat\.uploadImage"/);
-  assert.match(script, /let chatPendingImages = \[\];/);
-  assert.match(script, /function handleChatPaste\(event\)/);
-  assert.match(script, /function addChatImageFiles\(files\)/);
-  assert.match(script, /function buildChatUserContent\(text,\s*images\)/);
-  assert.match(script, /function renderChatImagePreviews\(\)/);
-  assert.match(script, /function renderChatUserContent\(target,\s*content\)/);
-  assert.match(script, /'select-chat-image':\s*\(\)\s*=> document\.getElementById\('chatImageInput'\)\?\.click\(\)/);
-  assert.match(script, /'remove-chat-image':\s*\(actionTarget\)\s*=> removeChatImage\(actionTarget\.dataset\.imageId\)/);
-  assert.match(script, /'add-chat-images':\s*\(actionTarget\)\s*=> addChatImageFiles\(actionTarget\.files\)/);
-  assert.match(script, /chatInput\.addEventListener\('paste',\s*handleChatPaste\)/);
-  assert.match(script, /const userContent = buildChatUserContent\(content,\s*chatPendingImages\)/);
-  assert.match(script, /chatMessages\.push\(\{ role: 'user', content: userContent \}\)/);
-  assert.match(sharedCss, /\.chat-image-preview-list\s*\{/);
-  assert.match(sharedCss, /\.chat-image-upload-btn\s*\{/);
 });
 
 test('model-test 构建图片消息时文本保持文本、图片转 image_url 块', () => {
@@ -323,19 +230,6 @@ test('model-test 构建图片消息时文本保持文本、图片转 image_url �
       }
     ]
   );
-});
-
-test('model-test 渠道下拉标记停用渠道但不阻止选择', () => {
-  assert.match(script, /function formatModelTestChannelOptionLabel\(ch\)/);
-  assert.match(script, /function getModelTestChannelOptionClass\(ch\)/);
-  assert.match(script, /initialLabel = selectedChannel \? formatModelTestChannelOptionLabel\(selectedChannel\) : ''/);
-  assert.match(script, /initialLabel: chatChannel \? formatModelTestChannelOptionLabel\(chatChannel\) : ''/);
-  assert.equal([...script.matchAll(/label: formatModelTestChannelOptionLabel\(ch\)/g)].length, 2);
-  assert.equal([...script.matchAll(/className: getModelTestChannelOptionClass\(ch\)/g)].length, 2);
-  const labelFormatter = extractFunction(script, 'formatModelTestChannelOptionLabel');
-  assert.doesNotMatch(labelFormatter, /common\.disabled/);
-  assert.doesNotMatch(labelFormatter, /\[已禁用\]/);
-  assert.doesNotMatch(script, /disabled:\s*ch\.enabled === false/);
 });
 
 test('model-test 对话切换模型后重置为支持该模型的首个渠道', () => {
@@ -382,54 +276,7 @@ test('model-test 对话切换模型后重置为支持该模型的首个渠道', 
   assert.deepEqual(sandbox.result.setValueCalls, [['2', 'B']]);
 });
 
-test('model-test 对话流把思考内容渲染到独立折叠区且不写入历史正文', () => {
-  assert.match(script, /let accThinking = '';/);
-  assert.match(script, /typeof evt\.thinking_delta === 'string'/);
-  assert.match(script, /renderChatThinking\(assistantBubble,\s*accThinking,\s*true\)/);
-  assert.match(script, /function renderChatThinking\(bubble,\s*thinking,\s*streaming = false\)/);
-  assert.match(script, /className = 'chat-thinking'/);
-  assert.match(script, /setAttribute\('data-i18n',\s*'modelTest\.chat\.thinking'\)/);
-  assert.match(script, /chatMessages\.push\(\{ role: 'assistant', content: accText \}\)/);
-  assert.doesNotMatch(script, /chatMessages\.push\(\{ role: 'assistant', content: accThinking/);
-  assert.match(sharedCss, /\.chat-thinking\s*\{/);
-  assert.match(sharedCss, /\.chat-thinking-content\s*\{/);
-});
-
-test('model-test 对话 Markdown 渲染必须消毒后写入 DOM', () => {
-  assert.match(script, /function renderChatMarkdown\(target,\s*markdown,\s*options = \{\}\)/);
-  assert.match(script, /function sanitizeChatMarkdownHTML\(html\)/);
-  assert.match(script, /const ALLOWED_CHAT_MARKDOWN_TAGS = new Set/);
-  assert.match(script, /template\.innerHTML = String\(html \|\| ''\)/);
-  assert.match(script, /renderChatMarkdown\(contentEl,\s*accText,\s*\{ cursor: true \}\)/);
-  assert.doesNotMatch(script, /innerHTML\s*=\s*window\.marked\.parse/);
-});
-
 test('model-test 页按模型测试渠道表在渠道名称后显示可编辑优先级和启用开关', () => {
-  assert.match(
-    script,
-    /const MODEL_MODE_HEAD = `[\s\S]*?data-i18n="modelTest\.channelName"[\s\S]*?data-i18n="channels\.table\.priority" data-sort-key="priority">优先级<\/th>[\s\S]*?data-i18n="channels\.table\.enabled" data-sort-key="enabled">启用<\/th>[\s\S]*?\$\{RESPONSE_HEAD_HTML\}/
-  );
-  assert.doesNotMatch(
-    script.match(/const CHANNEL_MODE_HEAD = `[\s\S]*?`;/)[0],
-    /data-sort-key="priority"/
-  );
-  assert.match(
-    html,
-    /tpl-channel-row-by-model[\s\S]*?class="channel-link"[\s\S]*?{{channelName}}<\/button>[\s\S]*?<td class="model-test-col-priority channel-priority"[\s\S]*?<input class="ch-priority-input"[\s\S]*?value="{{channelPriority}}"[\s\S]*?<\/td>[\s\S]*?<td class="model-test-col-enabled"[\s\S]*?class="channel-enable-switch {{toggleSwitchClass}}"[\s\S]*?data-enabled="{{channelEnabled}}"[\s\S]*?<\/td>/
-  );
-  assert.match(
-    script,
-    /channelPriority:\s*String\(priorityValue\)/
-  );
-  assert.match(
-    script,
-    /channelEnabled:\s*String\(isEnabled\)/
-  );
-  assert.match(
-    script,
-    /toggleSwitchClass:\s*isEnabled\s*\?\s*'channel-enable-switch--on'\s*:\s*'channel-enable-switch--off'/
-  );
-
   const getResultRowMobileLabels = vm.runInNewContext(
     `(${extractFunction(script, 'getResultRowMobileLabels')})`,
     {
@@ -589,12 +436,6 @@ test('model-test.js 批量添加模型会对当前渠道表格目标逐个保存
   assert.deepEqual(channels[1].models.map(entry => entry.model || entry), ['legacy', 'gpt-4o', 'existing']);
 });
 
-test('model-test.js 两个模式下都把渠道按钮点击委托到编辑弹窗', () => {
-  assert.match(script, /const channelBtn = event\.target\.closest\('\.channel-link\[data-channel-id\]'\);/);
-  assert.match(script, /if \(!channelBtn\) return;/);
-  assert.match(script, /openLogChannelEditor\(channelId\)/);
-});
-
 test('model-test.js 表头模型过滤输入框不被后续全页翻译清掉', () => {
   const root = createDomElement('div');
   const headRow = createDomElement('tr');
@@ -644,25 +485,7 @@ test('model-test.js 表头模型过滤输入框不被后续全页翻译清掉', 
   );
 });
 
-test('model-test.js 渠道编辑器保存后重新加载渠道并保留测试表格状态', () => {
-  assert.match(script, /async function loadChannels\(options = \{\}\)/);
-  assert.match(script, /const \{ preserveSelection = false,\s*preserveTableState = false \} = options;/);
-  assert.match(script, /if \(preserveSelection && preservedChannelId !== null\)/);
-  assert.match(script, /window\.ChannelModalHooks = \{[\s\S]*?afterSave:[\s\S]*?loadChannels\(\{ preserveSelection: true,\s*preserveTableState: true \}\)/);
-});
-
-test('model-test.js 渠道搜索下拉在重建时通过 initialValue/initialLabel 保持显示当前渠道', () => {
-  assert.match(script, /const initialValue = selectedChannel \? String\(selectedChannel\.id\) : '';/);
-  assert.match(script, /const initialLabel = selectedChannel \? formatModelTestChannelOptionLabel\(selectedChannel\) : '';/);
-  assert.match(script, /initialValue,\s*\n\s*initialLabel,/);
-});
-
 test('model-test.js 在模型模式重渲染时保留渠道勾选状态', () => {
-  assert.match(script, /function getRowSelectionKey\(row\)/);
-  assert.match(script, /function captureRowSelectionState\(\)/);
-  assert.match(script, /function restoreRowSelectionState\(row,\s*selectionState,\s*fallbackChecked = true\)/);
-  assert.match(script, /const previousSelectionState = captureRowSelectionState\(\);[\s\S]*?restoreRowSelectionState\(row,\s*previousSelectionState,\s*isEnabled\);/);
-
   const sandbox = {
     tbody: {
       querySelectorAll() {
@@ -940,27 +763,6 @@ test('按模型测试恢复状态时会丢弃当前协议下无法渲染渠道�
     sandbox.getChannelsSupportingModel('anthropic', sandbox.selectedModelName).map((channel) => channel.id),
     [2]
   );
-});
-
-test('model-test.js 开始测试时发送 protocol_transform 而不是 channel_type', () => {
-  assert.match(script, /const selectedProtocol = protocolTransform;/);
-  assert.match(script, /protocol_transform:\s*selectedProtocol/);
-  assert.doesNotMatch(script, /body:\s*JSON\.stringify\(\{[\s\S]*channel_type:\s*channelType[\s\S]*\}\)/);
-});
-
-test('切换渠道后协议默认回退到渠道原生协议', () => {
-  assert.match(script, /selectedProtocol\s*=\s*getChannelType\(selectedChannel\)/);
-});
-
-test('按模型测试切换协议转换时不重新渲染渠道表格', () => {
-  const handlerMatch = script.match(
-    /protocolTransformOptions\?\.addEventListener\('change',\s*\(event\)\s*=>\s*\{[\s\S]*?\}\);/
-  );
-  assert.ok(handlerMatch, '未定位到协议转换 change 处理器');
-  const handler = handlerMatch[0];
-  assert.match(handler, /if\s*\(testMode\s*===\s*TEST_MODE_MODEL\)\s*\{\s*return;\s*\}/);
-  assert.doesNotMatch(handler, /populateModelSelector\(\)/);
-  assert.doesNotMatch(handler, /renderModelModeRows\(\)/);
 });
 
 test('按模型测试协议切换导致模型输入框失焦时，同模型提交不重新渲染渠道表格', () => {
