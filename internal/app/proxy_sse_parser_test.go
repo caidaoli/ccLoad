@@ -130,6 +130,55 @@ func TestSSEUsageParser_StreamOutputIgnoresHeartbeat(t *testing.T) {
 	}
 }
 
+// [PATCH] TestSSEUsageParser_JSONOnlyErrorFrame 复现不规范上游 bug：
+// 上游只发 `data: {"type":"error",...}` 而不带 `event: error` 行（如 sub2api）。
+// 修复前：errorType 为空 → 漏判 → hasStreamOutput=true、lastError=nil → 200/0token 假成功不重试。
+// 修复后：isErrorPayload 兜底识别 → lastError 被设置、不计为流输出 → 触发现有重试逻辑。
+func TestSSEUsageParser_JSONOnlyErrorFrame(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	// 先来几个 ping，再来一个无 event 行的 JSON error 帧
+	stream := "data: {\"type\": \"ping\"}\n\n" +
+		"data: {\"type\": \"ping\"}\n\n" +
+		"data: {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Concurrency limit exceeded for account, please retry later\"}}\n\n"
+	if err := parser.Feed([]byte(stream)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatalf("JSON-only error frame must not count as stream output")
+	}
+	if parser.GetLastError() == nil {
+		t.Fatalf("JSON-only error frame must be captured as lastError for retry")
+	}
+}
+
+// [PATCH] TestSSEUsageParser_JSONOnlyErrorFrameNestedOnly 覆盖只有 error 对象、无顶层 type 的格式。
+func TestSSEUsageParser_JSONOnlyErrorFrameNestedOnly(t *testing.T) {
+	parser := newSSEUsageParser("openai")
+	if err := parser.Feed([]byte("data: {\"error\":{\"message\":\"upstream boom\",\"type\":\"server_error\"}}\n\n")); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.GetLastError() == nil {
+		t.Fatalf("nested error object must be captured as lastError")
+	}
+}
+
+// [PATCH] TestSSEUsageParser_NormalContentNotMisflaggedAsError 确保正常内容不被误判为 error。
+func TestSSEUsageParser_NormalContentNotMisflaggedAsError(t *testing.T) {
+	parser := newSSEUsageParser("anthropic")
+	// 正常文本增量 + 一个 error 字段为 null 的帧，都不应被判成 error
+	stream := "data: {\"type\":\"content_block_delta\",\"delta\":{\"type\":\"text_delta\",\"text\":\"hi\"}}\n\n" +
+		"data: {\"type\":\"message_delta\",\"error\":null,\"usage\":{\"output_tokens\":5}}\n\n"
+	if err := parser.Feed([]byte(stream)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.GetLastError() != nil {
+		t.Fatalf("normal content must not be flagged as error, got: %s", parser.GetLastError())
+	}
+	if !parser.HasStreamOutput() {
+		t.Fatalf("normal content delta must count as stream output")
+	}
+}
+
 // ============================================================================
 // 边界测试：分块读取（真实SSE流场景）
 // ============================================================================
