@@ -779,6 +779,7 @@ func (s *Server) handleSuccessResponse(
 	var streamComplete bool
 	if parser != nil {
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+		result.ReasoningTokens = parser.GetReasoningTokens()
 		result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 		result.ToolCostUSD = parser.GetToolCostUSD()
 		result.ThinkingEffort = parser.GetThinkingEffort()
@@ -884,6 +885,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		ResponseCommitted: true,
 	}
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
@@ -972,6 +974,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		ResponseCommitted: deferredWriter.Committed(),
 	}
 	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ReasoningTokens = parser.GetReasoningTokens()
 	result.Cache5mInputTokens = parser.Cache5mInputTokens
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier

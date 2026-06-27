@@ -231,6 +231,24 @@ func TestExtractThinkingEffortReadsCodexReasoningEffort(t *testing.T) {
 	}
 }
 
+func TestBuildLogEntry_CopiesReasoningTokens(t *testing.T) {
+	t.Parallel()
+
+	entry := buildLogEntry(logEntryParams{
+		RequestModel: "gpt-5-codex",
+		StatusCode:   http.StatusOK,
+		Result: &fwResult{
+			InputTokens:     10,
+			OutputTokens:    20,
+			ReasoningTokens: 1234,
+		},
+	})
+
+	if entry.ReasoningTokens != 1234 {
+		t.Fatalf("reasoning_tokens=%d, want 1234", entry.ReasoningTokens)
+	}
+}
+
 func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *testing.T) {
 	t.Parallel()
 

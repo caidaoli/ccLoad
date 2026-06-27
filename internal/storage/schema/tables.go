@@ -164,6 +164,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("thinking_effort VARCHAR(32) NOT NULL DEFAULT ''").
 		Column("input_tokens INT NOT NULL DEFAULT 0").
 		Column("output_tokens INT NOT NULL DEFAULT 0").
+		Column("reasoning_tokens INT NOT NULL DEFAULT 0").
 		Column("cache_read_input_tokens INT NOT NULL DEFAULT 0").
 		Column("cache_creation_input_tokens INT NOT NULL DEFAULT 0"). // 5m+1h缓存总和（兼容字段）
 		Column("cache_5m_input_tokens INT NOT NULL DEFAULT 0").       // 5分钟缓存写入Token数（新增2025-12）

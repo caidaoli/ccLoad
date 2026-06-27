@@ -371,20 +371,33 @@ function thinkingEffortBadgeText(value) {
   return normalizeThinkingEffortDisplay(value);
 }
 
-function buildThinkingEffortBadge(thinkingEffort) {
-  const effort = normalizeThinkingEffortDisplay(thinkingEffort);
-  if (!effort) return '';
-  const title = `思考等级: ${effort}`;
-  return `<sup class="thinking-effort-badge" title="${escapeHtml(title)}">${escapeHtml(thinkingEffortBadgeText(effort))}</sup>`;
+function normalizeReasoningTokens(value) {
+  const n = Number(value);
+  return Number.isFinite(n) && n > 0 ? Math.trunc(n) : 0;
 }
 
-function buildLogModelDisplay(model, actualModel, thinkingEffort) {
+function buildThinkingEffortBadge(thinkingEffort, reasoningTokens) {
+  const effort = normalizeThinkingEffortDisplay(thinkingEffort);
+  const tokens = normalizeReasoningTokens(reasoningTokens);
+  if (!effort && tokens === 0) return '';
+  const text = [thinkingEffortBadgeText(effort), tokens > 0 ? String(tokens) : '']
+    .filter(Boolean)
+    .join(' ');
+  const titleParts = [];
+  if (effort) titleParts.push(`思考等级: ${escapeHtml(effort)}`);
+  if (tokens > 0) titleParts.push(`思考/推理Token: ${tokens}`);
+  const title = titleParts.join('&#10;');
+  return `<sup class="thinking-effort-badge" title="${title}">${escapeHtml(text)}</sup>`;
+}
+
+function buildLogModelDisplay(model, actualModel, thinkingEffort, reasoningTokens) {
   if (!model) {
     return '<span style="color: var(--neutral-500);">-</span>';
   }
 
   const redirected = actualModel && actualModel !== model;
   const effort = normalizeThinkingEffortDisplay(thinkingEffort);
+  const tokens = normalizeReasoningTokens(reasoningTokens);
   const classes = ['model-tag'];
   const titleParts = [];
   if (redirected) {
@@ -396,10 +409,14 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort) {
     classes.push('model-thinking');
     titleParts.push(`思考等级: ${escapeHtml(effort)}`);
   }
+  if (tokens > 0) {
+    classes.push('model-thinking');
+    titleParts.push(`思考/推理Token: ${tokens}`);
+  }
   const title = titleParts.length > 0 ? ` title="${titleParts.join('&#10;')}"` : '';
   const redirectBadge = redirected ? '<sup class="redirect-badge">↪</sup>' : '';
-  const badgeHtml = redirectBadge || effort
-    ? `<span class="model-badges">${redirectBadge}${buildThinkingEffortBadge(effort)}</span>`
+  const badgeHtml = redirectBadge || effort || tokens > 0
+    ? `<span class="model-badges">${redirectBadge}${buildThinkingEffortBadge(effort, tokens)}</span>`
     : '';
 
   return `<span class="model-display">
@@ -776,7 +793,7 @@ function renderActiveRequests(activeRequests) {
     }
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
-    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort);
+    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
 
@@ -916,7 +933,7 @@ function renderLogs(data) {
     const statusCode = entry.status_code;
 
     // 3. 模型显示（支持重定向与思考等级角标）
-    const modelDisplay = buildLogModelDisplay(entry.model, entry.actual_model, entry.thinking_effort);
+    const modelDisplay = buildLogModelDisplay(entry.model, entry.actual_model, entry.thinking_effort, entry.reasoning_tokens);
 
     // 4. 响应时间显示(流式/非流式)
     const hasDuration = entry.duration !== undefined && entry.duration !== null;

@@ -87,6 +87,7 @@ type fwResult struct {
 	// Token统计（2025-11新增，从SSE响应中提取）
 	InputTokens              int
 	OutputTokens             int
+	ReasoningTokens          int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int // 5m+1h缓存总和（兼容字段）
 	Cache5mInputTokens       int // 5分钟缓存写入Token数（新增2025-12）
@@ -903,6 +904,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		// Token统计（2025-11新增，从SSE响应中提取）
 		entry.InputTokens = res.InputTokens
 		entry.OutputTokens = res.OutputTokens
+		entry.ReasoningTokens = res.ReasoningTokens
 		entry.CacheReadInputTokens = res.CacheReadInputTokens
 		entry.CacheCreationInputTokens = res.CacheCreationInputTokens
 		entry.Cache5mInputTokens = res.Cache5mInputTokens

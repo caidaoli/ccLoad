@@ -1142,12 +1142,14 @@ func populateTestSSEUsageAndCost(
 func normalizedTestUsage(parser usageParser) (map[string]any, bool) {
 	input, output, cacheRead, cacheCreation := parser.GetUsage()
 	cache5m, cache1h, _ := parser.GetCacheBreakdown()
-	if input+output+cacheRead+cacheCreation+cache5m+cache1h == 0 {
+	reasoningTokens := parser.GetReasoningTokens()
+	if input+output+cacheRead+cacheCreation+cache5m+cache1h+reasoningTokens == 0 {
 		return nil, false
 	}
 	return map[string]any{
 		"input_tokens":                input,
 		"output_tokens":               output,
+		"reasoning_tokens":            reasoningTokens,
 		"cache_read_input_tokens":     cacheRead,
 		"cache_creation_input_tokens": cacheCreation,
 		"cache_5m_input_tokens":       cache5m,

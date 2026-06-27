@@ -164,6 +164,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
 		{name: "service_tier", definition: "TEXT NOT NULL DEFAULT ''"}, // OpenAI service_tier: priority/flex
 		{name: "thinking_effort", definition: "TEXT NOT NULL DEFAULT ''"},
+		{name: "reasoning_tokens", definition: "INTEGER NOT NULL DEFAULT 0"},
 	}); err != nil {
 		return err
 	}
@@ -304,6 +305,7 @@ func ensureLogsActualModelMySQL(ctx context.Context, db *sql.DB) error {
 func ensureLogsThinkingEffortMySQL(ctx context.Context, db *sql.DB) error {
 	return ensureMySQLColumns(ctx, db, "logs", []mysqlColumnDef{
 		{name: "thinking_effort", definition: "VARCHAR(32) NOT NULL DEFAULT '' COMMENT '请求或上游返回的思考等级'"},
+		{name: "reasoning_tokens", definition: "INT NOT NULL DEFAULT 0 COMMENT '思考/推理Token数'"},
 	})
 }
 
