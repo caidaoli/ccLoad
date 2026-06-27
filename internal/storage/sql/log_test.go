@@ -50,6 +50,39 @@ func TestLog_AddAndList(t *testing.T) {
 	}
 }
 
+func TestLog_AddAndListPersistsReasoningTokens(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "logs_reasoning_tokens.db")
+
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "log-reasoning-token-channel")
+
+	now := time.Now()
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:            newJSONTime(now),
+		Model:           "gpt-5-codex",
+		ChannelID:       channelID,
+		StatusCode:      200,
+		Message:         "success",
+		ThinkingEffort:  "xhigh",
+		ReasoningTokens: 1234,
+	}); err != nil {
+		t.Fatalf("add log: %v", err)
+	}
+
+	logs, err := store.ListLogs(ctx, now.Add(-time.Hour), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1", len(logs))
+	}
+	if logs[0].ReasoningTokens != 1234 {
+		t.Fatalf("reasoning_tokens=%d, want 1234", logs[0].ReasoningTokens)
+	}
+}
+
 func TestLog_AddLogPersistsDebugData(t *testing.T) {
 	t.Parallel()
 

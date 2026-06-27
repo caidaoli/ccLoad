@@ -372,6 +372,22 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
 }
 
+func TestSSEUsageParser_CodexReasoningTokens(t *testing.T) {
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":1234,"output_tokens_details":{"reasoning_tokens":987},"total_tokens":11543}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	if got := parser.GetReasoningTokens(); got != 987 {
+		t.Fatalf("reasoning tokens=%d, want 987", got)
+	}
+}
+
 func TestSSEUsageParser_RecoversAfterOversizedEvent(t *testing.T) {
 	parser := newSSEUsageParser("codex")
 	chunks := []string{
@@ -710,6 +726,69 @@ func TestSSEUsageParser_GeminiThoughtsTokenCount(t *testing.T) {
 	// 输出token = candidatesTokenCount(50) + thoughtsTokenCount(100) = 150
 	if output != 150 {
 		t.Errorf("OutputTokens = %d, 期望 150 (candidatesTokenCount + thoughtsTokenCount)", output)
+	}
+	if got := parser.GetReasoningTokens(); got != 100 {
+		t.Fatalf("reasoning tokens=%d, want 100", got)
+	}
+}
+
+func TestSSEUsageParser_GeminiReasoningTokenAliases(t *testing.T) {
+	tests := []struct {
+		name       string
+		payload    string
+		want       int
+		wantOutput int
+	}{
+		{
+			name:       "snake case usage metadata",
+			payload:    `{"usage_metadata":{"prompt_token_count":100,"candidates_token_count":20,"thoughts_token_count":333,"total_token_count":453}}`,
+			want:       333,
+			wantOutput: 353,
+		},
+		{
+			name:       "total thought tokens",
+			payload:    `{"usage":{"promptTokenCount":100,"candidatesTokenCount":20,"totalThoughtTokens":444,"totalTokenCount":564}}`,
+			want:       444,
+			wantOutput: 464,
+		},
+		{
+			name:       "snake total thought tokens",
+			payload:    `{"usage":{"prompt_token_count":100,"candidates_token_count":20,"total_thought_tokens":555,"total_token_count":675}}`,
+			want:       555,
+			wantOutput: 575,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := newSSEUsageParser("gemini")
+			if err := parser.Feed([]byte("data: " + tt.payload + "\n\n")); err != nil {
+				t.Fatalf("Feed失败: %v", err)
+			}
+			_, output, _, _ := parser.GetUsage()
+			if output != tt.wantOutput {
+				t.Fatalf("output tokens=%d, want %d", output, tt.wantOutput)
+			}
+			if got := parser.GetReasoningTokens(); got != tt.want {
+				t.Fatalf("reasoning tokens=%d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSSEUsageParser_AnthropicThinkingTokens(t *testing.T) {
+	sseData := `event: message_delta
+data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":333,"output_tokens_details":{"thinking_tokens":222}}}
+
+`
+
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	if got := parser.GetReasoningTokens(); got != 222 {
+		t.Fatalf("reasoning tokens=%d, want 222", got)
 	}
 }
 

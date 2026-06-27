@@ -21,6 +21,7 @@ import (
 type usageAccumulator struct {
 	InputTokens              int
 	OutputTokens             int
+	ReasoningTokens          int
 	CacheReadInputTokens     int
 	CacheCreationInputTokens int
 	Cache5mInputTokens       int
@@ -104,6 +105,7 @@ type usageParser interface {
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
 	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
 	GetThinkingEffort() string
+	GetReasoningTokens() int
 	GetLastError() []byte   // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 	HasStreamOutput() bool  // 返回是否已经看到非心跳的可见响应内容
@@ -120,6 +122,10 @@ func (u *usageAccumulator) GetToolCostUSD() float64 {
 
 func (u *usageAccumulator) GetThinkingEffort() string {
 	return normalizeThinkingEffort(u.ThinkingEffort)
+}
+
+func (u *usageAccumulator) GetReasoningTokens() int {
+	return u.ReasoningTokens
 }
 
 const (
@@ -190,6 +196,7 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 	if p.scanner.usageVersion > p.scanVersion {
 		p.InputTokens = p.scanner.InputTokens
 		p.OutputTokens = p.scanner.OutputTokens
+		p.ReasoningTokens = p.scanner.ReasoningTokens
 		p.CacheReadInputTokens = p.scanner.CacheReadInputTokens
 		p.CacheCreationInputTokens = p.scanner.CacheCreationInputTokens
 		p.Cache5mInputTokens = p.scanner.Cache5mInputTokens
@@ -637,7 +644,7 @@ func (p *jsonUsageParser) scanJSONUsage(data []byte) {
 				continue
 			}
 			switch p.scanPendingKey {
-			case "usage", "usageMetadata", "tool_usage":
+			case "usage", "usageMetadata", "usage_metadata", "tool_usage":
 				if b == '{' {
 					p.startJSONValueCapture(b)
 					continue
@@ -763,7 +770,7 @@ func (p *jsonUsageParser) finishJSONValueCapture() {
 	discard := p.scanCaptureDiscard
 	if !discard && len(p.scanCaptureBuf) > 0 {
 		switch key {
-		case "usage", "usageMetadata":
+		case "usage", "usageMetadata", "usage_metadata":
 			var usage map[string]any
 			if err := json.Unmarshal(p.scanCaptureBuf, &usage); err == nil {
 				p.applyUsageMap(usage)
@@ -825,6 +832,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		} else {
 			p.ServiceTier = sseParser.ServiceTier
 			p.ThinkingEffort = sseParser.GetThinkingEffort()
+			p.ReasoningTokens = sseParser.GetReasoningTokens()
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
 			return sseParser.GetUsage()
 		}
@@ -1041,6 +1049,15 @@ func usageInt(m map[string]any, key string) int {
 	}
 }
 
+func usageFirstInt(m map[string]any, keys ...string) int {
+	for _, key := range keys {
+		if val := usageInt(m, key); val > 0 {
+			return val
+		}
+	}
+	return 0
+}
+
 func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
 	if usage == nil {
 		return
@@ -1094,10 +1111,16 @@ func hasGeminiUsageFields(usage map[string]any) bool {
 	if _, ok := usage["usageMetadata"].(map[string]any); ok {
 		return true
 	}
+	if _, ok := usage["usage_metadata"].(map[string]any); ok {
+		return true
+	}
 	// 检查直接字段格式(至少有一个Gemini特有字段)
-	_, hasPromptCount := usage["promptTokenCount"].(float64)
-	_, hasCandidatesCount := usage["candidatesTokenCount"].(float64)
-	return hasPromptCount || hasCandidatesCount
+	return usageFirstInt(usage,
+		"promptTokenCount", "prompt_token_count",
+		"candidatesTokenCount", "candidates_token_count",
+		"thoughtsTokenCount", "thoughts_token_count",
+		"totalThoughtTokens", "total_thought_tokens",
+	) > 0
 }
 
 // hasOpenAIChatUsageFields 检测是否为OpenAI Chat Completions格式
@@ -1119,38 +1142,43 @@ func hasAnthropicUsageFields(usage map[string]any) bool {
 
 // applyGeminiUsage 处理Gemini格式的usage
 func (u *usageAccumulator) applyGeminiUsage(usage map[string]any) {
-	if val, ok := usage["promptTokenCount"].(float64); ok {
-		u.InputTokens = int(val)
+	if nested, ok := usage["usageMetadata"].(map[string]any); ok {
+		usage = nested
+	} else if nested, ok := usage["usage_metadata"].(map[string]any); ok {
+		usage = nested
+	}
+
+	if val := usageFirstInt(usage, "promptTokenCount", "prompt_token_count"); val > 0 {
+		u.InputTokens = val
 	}
 
 	// 输出token = candidatesTokenCount + thoughtsTokenCount
 	// Gemini 2.5 Pro等模型的思考token需要计入输出
-	var outputTokens int
-	if val, ok := usage["candidatesTokenCount"].(float64); ok {
-		outputTokens = int(val)
-	}
-	if val, ok := usage["thoughtsTokenCount"].(float64); ok {
-		outputTokens += int(val)
+	outputTokens := usageFirstInt(usage, "candidatesTokenCount", "candidates_token_count")
+	reasoningTokens := usageFirstInt(usage,
+		"thoughtsTokenCount", "thoughts_token_count",
+		"totalThoughtTokens", "total_thought_tokens",
+	)
+	if reasoningTokens > 0 {
+		u.ReasoningTokens = reasoningTokens
+		outputTokens += reasoningTokens
 	}
 
 	// 备选方案：当candidatesTokenCount为0时，尝试从totalTokenCount推算
 	// 某些Gemini模型的流式响应中candidatesTokenCount始终为0
 	if outputTokens == 0 {
-		if total, ok := usage["totalTokenCount"].(float64); ok {
-			if prompt, ok := usage["promptTokenCount"].(float64); ok {
-				calculated := int(total) - int(prompt)
-				if calculated > 0 {
-					outputTokens = calculated
-				}
-			}
+		total := usageFirstInt(usage, "totalTokenCount", "total_token_count")
+		prompt := usageFirstInt(usage, "promptTokenCount", "prompt_token_count")
+		if calculated := total - prompt; calculated > 0 {
+			outputTokens = calculated
 		}
 	}
 
 	u.OutputTokens = outputTokens
 
 	// Gemini缓存字段: cachedContentTokenCount
-	if val, ok := usage["cachedContentTokenCount"].(float64); ok {
-		u.CacheReadInputTokens = int(val)
+	if val := usageFirstInt(usage, "cachedContentTokenCount", "cached_content_token_count"); val > 0 {
+		u.CacheReadInputTokens = val
 	}
 }
 
@@ -1167,6 +1195,19 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 		if val, ok := details["cached_tokens"].(float64); ok {
 			u.CacheReadInputTokens = int(val)
 		}
+	}
+	if details, ok := usage["completion_tokens_details"].(map[string]any); ok {
+		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
+			u.ReasoningTokens = val
+		}
+	}
+	if details, ok := usage["output_tokens_details"].(map[string]any); ok {
+		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
+			u.ReasoningTokens = val
+		}
+	}
+	if val := usageFirstInt(usage, "reasoning_tokens", "thinking_tokens"); val > 0 {
+		u.ReasoningTokens = val
 	}
 }
 
@@ -1209,6 +1250,18 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 			u.CacheReadInputTokens = int(val)
 		}
 	}
+
+	if details, ok := usage["output_tokens_details"].(map[string]any); ok {
+		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
+			u.ReasoningTokens = val
+		}
+	}
+	if val := usageFirstInt(usage,
+		"reasoning_tokens", "thinking_tokens",
+		"total_thought_tokens", "totalThoughtTokens",
+	); val > 0 {
+		u.ReasoningTokens = val
+	}
 }
 
 // getUsageKeys 获取usage map的所有key用于日志
@@ -1239,6 +1292,9 @@ func extractUsage(payload map[string]any) map[string]any {
 	}
 	// Gemini格式: {"usageMetadata": {...}}
 	if usageMetadata, ok := payload["usageMetadata"].(map[string]any); ok {
+		return usageMetadata
+	}
+	if usageMetadata, ok := payload["usage_metadata"].(map[string]any); ok {
 		return usageMetadata
 	}
 

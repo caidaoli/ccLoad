@@ -167,6 +167,9 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
 		summary["input_tokens"] = input
 		summary["output_tokens"] = output
+		if reasoningTokens := sr.usageParser.GetReasoningTokens(); reasoningTokens > 0 {
+			summary["reasoning_tokens"] = reasoningTokens
+		}
 		summary["cache_read"] = cacheRead
 		summary["cache_create"] = cacheCreation
 
@@ -446,6 +449,9 @@ func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
 		if v, ok := usage["output_tokens"]; ok {
 			summary["output_tokens"] = v
 		}
+		if v, ok := usage["reasoning_tokens"]; ok {
+			summary["reasoning_tokens"] = v
+		}
 		if v, ok := usage["cache_read_input_tokens"]; ok {
 			summary["cache_read"] = v
 		}
@@ -497,9 +503,11 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	if sr.usageParser != nil {
 		input, output, cacheRead, cacheCreation := sr.usageParser.GetUsage()
 		cache5m, cache1h, _ := sr.usageParser.GetCacheBreakdown()
-		if input+output+cacheRead+cacheCreation > 0 {
+		reasoningTokens := sr.usageParser.GetReasoningTokens()
+		if input+output+cacheRead+cacheCreation+reasoningTokens > 0 {
 			result["usage"] = map[string]any{
 				"input_tokens": input, "output_tokens": output,
+				"reasoning_tokens":        reasoningTokens,
 				"cache_read_input_tokens": cacheRead, "cache_creation_input_tokens": cacheCreation,
 			}
 		}

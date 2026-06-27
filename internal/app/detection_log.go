@@ -117,6 +117,7 @@ func normalizeDetectionUsage(usage map[string]any, channelType string) (map[stri
 	return map[string]any{
 		"input_tokens":                input,
 		"output_tokens":               output,
+		"reasoning_tokens":            accumulator.ReasoningTokens,
 		"cache_read_input_tokens":     cacheRead,
 		"cache_creation_input_tokens": cacheCreation,
 		"cache_5m_input_tokens":       accumulator.Cache5mInputTokens,
@@ -127,6 +128,7 @@ func normalizeDetectionUsage(usage map[string]any, channelType string) (map[stri
 func populateLogEntryUsage(entry *model.LogEntry, usage map[string]any) {
 	entry.InputTokens = getMapIntOrDefault(usage, "input_tokens", 0)
 	entry.OutputTokens = getMapIntOrDefault(usage, "output_tokens", 0)
+	entry.ReasoningTokens = getMapIntOrDefault(usage, "reasoning_tokens", 0)
 	entry.CacheReadInputTokens = getMapIntOrDefault(usage, "cache_read_input_tokens", 0)
 	entry.Cache5mInputTokens = getMapIntOrDefault(usage, "cache_5m_input_tokens", 0)
 	entry.Cache1hInputTokens = getMapIntOrDefault(usage, "cache_1h_input_tokens", 0)
