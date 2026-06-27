@@ -529,7 +529,7 @@ func streamChatNativeWithFirstContent(c *gin.Context, body io.Reader, onFirstCon
 		},
 		func(rawEvent []byte) ([][]byte, error) {
 			chunks := chatFrontendChunksFromSSEEventWithState(rawEvent, frontendState)
-			if len(chunks) > 0 && onFirstContent != nil {
+			if chatFrontendChunksHaveVisibleContent(chunks) && onFirstContent != nil {
 				onFirstContent()
 			}
 			return chunks, nil
@@ -569,7 +569,7 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			for _, chunk := range translated {
 				chunks = append(chunks, chatFrontendChunksFromSSEEventWithState(chunk, frontendState)...)
 			}
-			if len(chunks) > 0 && onFirstContent != nil {
+			if chatFrontendChunksHaveVisibleContent(chunks) && onFirstContent != nil {
 				onFirstContent()
 			}
 			return chunks, nil
@@ -626,6 +626,39 @@ func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFronten
 		}
 	}
 	return chunks
+}
+
+func chatFrontendChunksHaveVisibleContent(chunks [][]byte) bool {
+	for _, chunk := range chunks {
+		if chatFrontendChunkHasVisibleContent(chunk) {
+			return true
+		}
+	}
+	return false
+}
+
+func chatFrontendChunkHasVisibleContent(chunk []byte) bool {
+	for _, line := range strings.Split(string(chunk), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var obj map[string]any
+		if err := sonic.Unmarshal([]byte(payload), &obj); err != nil {
+			continue
+		}
+		if delta, _ := obj["delta"].(string); delta != "" {
+			return true
+		}
+		if thinking, _ := obj["thinking_delta"].(string); thinking != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func chatChunksFromTextDelta(delta string, state *chatFrontendStreamState) [][]byte {

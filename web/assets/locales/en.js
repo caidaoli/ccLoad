@@ -816,6 +816,8 @@ window.I18N_LOCALES['en'] = {
   'modelTest.chat.roleAssistant': 'Assistant',
   'modelTest.chat.sending': 'Sending...',
   'modelTest.chat.error': 'Send failed',
+  'modelTest.chat.refreshMessage': 'Retry',
+  'modelTest.chat.editMessage': 'Edit',
   'modelTest.chat.selectChannel': 'Select a channel first',
   'modelTest.chat.selectModel': 'Select a model first',
   'modelTest.chat.emptyInput': 'Please enter a message',

@@ -29,6 +29,7 @@ let isTestingModels = false;
 
 // Chat 模式状态
 let chatMessages = [];
+let chatMessageSummaries = [];
 let chatChannel = null;
 let chatModel = '';
 let isChatSending = false;
@@ -679,6 +680,8 @@ function initModelTestActions() {
       'select-chat-image': () => document.getElementById('chatImageInput')?.click(),
       'toggle-chat-builtin-search': () => toggleChatBuiltinSearch(),
       'clear-chat': () => clearChat(),
+      'retry-chat-message': (actionTarget) => retryChatMessage(actionTarget),
+      'edit-chat-message': (actionTarget) => editChatMessage(actionTarget),
       'toggle-chat-export-menu': () => toggleChatExportMenu(),
       'export-chat-md': () => { closeChatExportMenu(); exportChatAsMarkdown(); },
       'export-chat-html': () => { closeChatExportMenu(); exportChatAsHTML(); },
@@ -2961,6 +2964,7 @@ function saveChatMessagesToStorage() {
   try {
     const data = JSON.stringify({
       messages: chatMessages,
+      summaries: chatMessageSummaries.slice(0, chatMessages.length),
       model: chatModel,
       channelId: chatChannel?.id || null,
     });
@@ -2982,6 +2986,35 @@ function loadChatMessagesFromStorage() {
 
 function clearChatMessagesFromStorage() {
   localStorage.removeItem(STORAGE_KEY_CHAT_MESSAGES);
+}
+
+function cloneChatSummary(summary) {
+  if (!summary || typeof summary !== 'object') return null;
+  try {
+    return JSON.parse(JSON.stringify(summary));
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeChatMessageSummaries(summaries, messageCount) {
+  return Array.from({ length: messageCount }, (_, index) => cloneChatSummary(Array.isArray(summaries) ? summaries[index] : null));
+}
+
+function pushChatMessage(message, summary = null) {
+  chatMessages.push(message);
+  chatMessageSummaries.push(cloneChatSummary(summary));
+  return chatMessages.length - 1;
+}
+
+function popChatMessage() {
+  chatMessages.pop();
+  chatMessageSummaries.pop();
+}
+
+function trimChatHistory(length) {
+  chatMessages = chatMessages.slice(0, length);
+  chatMessageSummaries = chatMessageSummaries.slice(0, length);
 }
 
 // ===== Chat 模式实现 =====
@@ -3118,17 +3151,13 @@ function initChatPanel() {
   const savedChat = loadChatMessagesFromStorage();
   if (savedChat && savedChat.messages.length > 0) {
     chatMessages = savedChat.messages;
+    chatMessageSummaries = normalizeChatMessageSummaries(savedChat.summaries, chatMessages.length);
     if (savedChat.model) {
       chatModel = savedChat.model;
       const chatModelInput = document.getElementById('chatModelSelect');
       if (chatModelInput) chatModelInput.value = chatModel;
     }
-    // Rebuild bubbles from saved messages
-    for (const msg of chatMessages) {
-      appendChatBubble(msg.role, msg.content);
-    }
-    const messagesEl = document.getElementById('chatMessages');
-    if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
+    renderChatMessages();
   }
 }
 
@@ -3319,6 +3348,94 @@ function renderChatUserContent(target, content) {
   });
 }
 
+function cloneChatMessageContent(content) {
+  if (typeof content === 'string') return content;
+  try {
+    return JSON.parse(JSON.stringify(content));
+  } catch (_) {
+    return extractChatMessageRawText(content);
+  }
+}
+
+function extractChatMessageImages(content) {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter(block => block && block.type === 'image_url' && typeof block.image_url?.url === 'string' && block.image_url.url)
+    .map((block, index) => ({
+      id: `${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`,
+      name: `image-${index + 1}`,
+      mimeType: 'image/*',
+      dataUrl: block.image_url.url
+    }));
+}
+
+function setChatComposerContent(content) {
+  const inputEl = document.getElementById('chatInput');
+  if (inputEl) {
+    inputEl.value = extractChatMessageRawText(content);
+    autoResizeChatInput();
+    inputEl.focus();
+  }
+  chatPendingImages = extractChatMessageImages(content);
+  renderChatImagePreviews();
+}
+
+function renderChatMessages() {
+  const messagesEl = document.getElementById('chatMessages');
+  if (!messagesEl) return;
+  messagesEl.innerHTML = '';
+  chatMessages.forEach((msg, index) => {
+    const bubble = appendChatBubble(msg.role, msg.content, index);
+    if (msg.role === 'assistant') {
+      renderChatBubbleStats(bubble, chatMessageSummaries[index]);
+    }
+  });
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function getUserChatMessageFromAction(actionTarget) {
+  const bubble = actionTarget?.closest?.('.chat-message');
+  const index = Number.parseInt(bubble?.dataset.chatIndex || '', 10);
+  if (!Number.isInteger(index) || index < 0 || index >= chatMessages.length) return null;
+  const message = chatMessages[index];
+  if (!message || message.role !== 'user') return null;
+  return { index, message };
+}
+
+async function retryChatMessage(actionTarget) {
+  if (isChatSending) return;
+  const found = getUserChatMessageFromAction(actionTarget);
+  if (!found) return;
+  if (!chatChannel) {
+    showError(i18nText('modelTest.chat.selectChannel', '请先选择渠道'));
+    return;
+  }
+  const currentModel = document.getElementById('chatModelSelect')?.value?.trim() || chatModel;
+  if (!currentModel) {
+    showError(i18nText('modelTest.chat.selectModel', '请先选择模型'));
+    return;
+  }
+
+  const content = cloneChatMessageContent(found.message.content);
+  trimChatHistory(found.index);
+  saveChatMessagesToStorage();
+  renderChatMessages();
+  setChatComposerContent(content);
+  await sendChatMessage();
+}
+
+function editChatMessage(actionTarget) {
+  if (isChatSending) return;
+  const found = getUserChatMessageFromAction(actionTarget);
+  if (!found) return;
+
+  const content = cloneChatMessageContent(found.message.content);
+  trimChatHistory(found.index);
+  saveChatMessagesToStorage();
+  renderChatMessages();
+  setChatComposerContent(content);
+}
+
 /** 发送消息：追加用户消息 → POST /admin/channels/:id/chat (SSE) → 实时渲染 delta */
 async function sendChatMessage() {
   if (isChatSending) return;
@@ -3341,9 +3458,9 @@ async function sendChatMessage() {
   chatModel = currentModel;
 
   const userContent = buildChatUserContent(content, chatPendingImages);
-  chatMessages.push({ role: 'user', content: userContent });
+  const userMessageIndex = pushChatMessage({ role: 'user', content: userContent });
   saveChatMessagesToStorage();
-  appendChatBubble('user', userContent);
+  appendChatBubble('user', userContent, userMessageIndex);
   inputEl.value = '';
   chatPendingImages = [];
   renderChatImagePreviews();
@@ -3362,6 +3479,7 @@ async function sendChatMessage() {
 
   let accText = '';
   let accThinking = '';
+  let assistantSummary = null;
   let hasError = false;
 
   try {
@@ -3425,8 +3543,9 @@ async function sendChatMessage() {
               if (messagesEl) messagesEl.scrollTop = messagesEl.scrollHeight;
             } else if (evt.summary) {
               if (assistantBubble) {
-                assistantBubble._chatSummary = evt.summary;
-                renderChatBubbleStats(assistantBubble, evt.summary);
+                assistantSummary = cloneChatSummary(evt.summary);
+                assistantBubble._chatSummary = assistantSummary;
+                renderChatBubbleStats(assistantBubble, assistantSummary);
               }
             }
           } catch (_) { /* ignore malformed event */ }
@@ -3439,14 +3558,15 @@ async function sendChatMessage() {
       renderChatMarkdown(contentEl, accText || '');
       if (assistantBubble) assistantBubble._rawText = accText || '';
       if (accText) {
-        chatMessages.push({ role: 'assistant', content: accText });
+        const assistantMessageIndex = pushChatMessage({ role: 'assistant', content: accText }, assistantSummary);
+        if (assistantBubble) assistantBubble.dataset.chatIndex = String(assistantMessageIndex);
         saveChatMessagesToStorage();
       } else {
-        chatMessages.pop();
+        popChatMessage();
       }
     }
   } catch (e) {
-    chatMessages.pop();
+    popChatMessage();
     saveChatMessagesToStorage();
     if (contentEl) {
       contentEl.textContent = e.message || i18nText('modelTest.chat.error', '发送失败');
@@ -3485,13 +3605,17 @@ function extractChatMessageRawText(content) {
  * 在消息列表中追加一个气泡，返回 bubble 元素。
  * @param {'user'|'assistant'} role
  * @param {string|Array<any>} content
+ * @param {number|null} messageIndex
  */
-function appendChatBubble(role, content) {
+function appendChatBubble(role, content, messageIndex = null) {
   const messagesEl = document.getElementById('chatMessages');
   if (!messagesEl) return null;
 
   const bubble = document.createElement('div');
   bubble.className = `chat-message chat-message--${role}`;
+  if (Number.isInteger(messageIndex) && messageIndex >= 0) {
+    bubble.dataset.chatIndex = String(messageIndex);
+  }
 
   const contentEl = document.createElement('div');
   contentEl.className = 'chat-message-content';
@@ -3506,22 +3630,41 @@ function appendChatBubble(role, content) {
 
   bubble.appendChild(contentEl);
 
-  // 复制按钮：hover 浮现，点击走 .chat-message-copy-btn 委托
+  const footerEl = document.createElement('div');
+  footerEl.className = 'chat-message-footer';
   const copyLabel = i18nText('common.copy', '复制');
-  const copyBtn = document.createElement('button');
-  copyBtn.type = 'button';
-  copyBtn.className = 'chat-message-copy-btn';
-  copyBtn.setAttribute('data-action', 'copy-chat-message');
-  copyBtn.setAttribute('aria-label', copyLabel);
-  copyBtn.title = copyLabel;
-  copyBtn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
-  bubble.appendChild(copyBtn);
+  if (role === 'user') {
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'chat-message-footer-actions';
+    actionsEl.appendChild(createChatActionButton('retry-chat-message', i18nText('modelTest.chat.refreshMessage', '刷新'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"></path><path d="M21 3v6h-6"></path></svg>'));
+    actionsEl.appendChild(createChatActionButton('edit-chat-message', i18nText('modelTest.chat.editMessage', '修改'), '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>'));
+    actionsEl.appendChild(createChatActionButton('copy-chat-message', copyLabel, '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>', 'chat-message-copy-btn'));
+    footerEl.appendChild(actionsEl);
+  } else {
+    footerEl.appendChild(createChatActionButton('copy-chat-message', copyLabel, '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>', 'chat-message-copy-btn'));
+    const statsEl = document.createElement('div');
+    statsEl.className = 'chat-message-stats';
+    statsEl.hidden = true;
+    footerEl.appendChild(statsEl);
+  }
+  bubble.appendChild(footerEl);
 
   bubble._rawText = extractChatMessageRawText(content);
 
   messagesEl.appendChild(bubble);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   return bubble;
+}
+
+function createChatActionButton(action, label, iconHTML, extraClass = '') {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = ['chat-message-action-btn', extraClass].filter(Boolean).join(' ');
+  btn.setAttribute('data-action', action);
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  btn.innerHTML = iconHTML;
+  return btn;
 }
 
 /**
@@ -3532,7 +3675,6 @@ function appendChatBubble(role, content) {
 function renderChatBubbleStats(bubble, summary) {
   if (!bubble || !summary) return;
   let statsEl = bubble.querySelector('.chat-message-stats');
-  if (statsEl) statsEl.remove();
 
   const parts = [];
   if (summary.first_byte_ms != null && summary.first_byte_ms > 0) {
@@ -3560,12 +3702,19 @@ function renderChatBubbleStats(bubble, summary) {
     parts.push('$' + summary.cost_usd.toFixed(4));
   }
 
-  if (parts.length === 0) return;
-
-  statsEl = document.createElement('div');
-  statsEl.className = 'chat-message-stats';
+  if (!statsEl) {
+    const footerEl = bubble.querySelector('.chat-message-footer') || bubble.appendChild(document.createElement('div'));
+    footerEl.classList.add('chat-message-footer');
+    statsEl = document.createElement('div');
+    statsEl.className = 'chat-message-stats';
+    footerEl.appendChild(statsEl);
+  }
+  if (parts.length === 0) {
+    statsEl.hidden = true;
+    return;
+  }
+  statsEl.hidden = false;
   statsEl.textContent = parts.join(' · ');
-  bubble.appendChild(statsEl);
 }
 
 function renderChatThinking(bubble, thinking, streaming = false) {
@@ -3605,6 +3754,7 @@ function renderChatThinking(bubble, thinking, streaming = false) {
 /** 清空对话历史与消息列表 DOM */
 function clearChat() {
   chatMessages = [];
+  chatMessageSummaries = [];
   chatPendingImages = [];
   clearChatMessagesFromStorage();
   const messagesEl = document.getElementById('chatMessages');
@@ -3700,7 +3850,7 @@ function buildChatExportHTML() {
   const modelLabel = esc(i18nText('common.model', '模型'));
   const timeLabel = esc(i18nText('modelTest.chat.exportTime', '导出时间'));
 
-  const css = `:root{color-scheme:light dark}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:880px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1f2937;background:#f9fafb}header{border-bottom:1px solid #e5e7eb;padding-bottom:12px;margin-bottom:20px}header h1{margin:0 0 8px;font-size:20px}header .meta{font-size:13px;color:#6b7280}header .meta span{margin-right:14px}.chat-message{display:flex;margin:12px 0}.chat-message--user{justify-content:flex-end}.chat-message--assistant{justify-content:flex-start}.chat-message-content{max-width:78%;padding:10px 14px;border-radius:12px;word-break:break-word}.chat-message--user .chat-message-content{background:#3b82f6;color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}.chat-message--assistant .chat-message-content{background:#fff;color:#1f2937;border:1px solid #e5e7eb;border-bottom-left-radius:4px}.chat-message--assistant .chat-message-content pre{background:#f3f4f6;border:1px solid #e5e7eb;padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}.chat-message--assistant .chat-message-content code{background:#f3f4f6;padding:0 4px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular","Menlo",monospace;font-size:13px}.chat-message--assistant .chat-message-content pre code{background:transparent;padding:0}.chat-message--assistant .chat-message-content p{margin:6px 0}.chat-message--assistant .chat-message-content table{border-collapse:collapse;margin:8px 0}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border:1px solid #e5e7eb;padding:6px 10px}.chat-image-preview-thumb{max-width:240px;max-height:240px;border-radius:8px;margin:4px 0;display:block}.chat-thinking{background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px}.chat-thinking-summary{font-weight:600;cursor:pointer}.chat-thinking-content{white-space:pre-wrap;margin-top:6px;color:#78350f}.chat-cursor{display:none}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}header{border-bottom-color:#1f2937}header .meta{color:#9ca3af}.chat-message--assistant .chat-message-content{background:#1e293b;color:#e5e7eb;border-color:#334155}.chat-message--assistant .chat-message-content pre,.chat-message--assistant .chat-message-content code{background:#0f172a;border-color:#334155}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border-color:#334155}.chat-thinking{background:rgba(251,191,36,.1);border-color:#b45309;color:#fcd34d}.chat-thinking-content{color:#fde68a}}@media print{body{background:#fff}}`;
+  const css = `:root{color-scheme:light dark}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:880px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1f2937;background:#f9fafb}header{border-bottom:1px solid #e5e7eb;padding-bottom:12px;margin-bottom:20px}header h1{margin:0 0 8px;font-size:20px}header .meta{font-size:13px;color:#6b7280}header .meta span{margin-right:14px}.chat-message{display:flex;margin:12px 0}.chat-message--user{justify-content:flex-end}.chat-message--assistant{justify-content:flex-start}.chat-message-content{max-width:78%;padding:10px 14px;border-radius:12px;word-break:break-word}.chat-message--user .chat-message-content{background:#3b82f6;color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}.chat-message--assistant .chat-message-content{background:#fff;color:#1f2937;border:1px solid #e5e7eb;border-bottom-left-radius:4px}.chat-message-footer{display:none}.chat-message--assistant .chat-message-content pre{background:#f3f4f6;border:1px solid #e5e7eb;padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}.chat-message--assistant .chat-message-content code{background:#f3f4f6;padding:0 4px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular","Menlo",monospace;font-size:13px}.chat-message--assistant .chat-message-content pre code{background:transparent;padding:0}.chat-message--assistant .chat-message-content p{margin:6px 0}.chat-message--assistant .chat-message-content table{border-collapse:collapse;margin:8px 0}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border:1px solid #e5e7eb;padding:6px 10px}.chat-image-preview-thumb{max-width:240px;max-height:240px;border-radius:8px;margin:4px 0;display:block}.chat-thinking{background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px}.chat-thinking-summary{font-weight:600;cursor:pointer}.chat-thinking-content{white-space:pre-wrap;margin-top:6px;color:#78350f}.chat-cursor{display:none}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}header{border-bottom-color:#1f2937}header .meta{color:#9ca3af}.chat-message--assistant .chat-message-content{background:#1e293b;color:#e5e7eb;border-color:#334155}.chat-message--assistant .chat-message-content pre,.chat-message--assistant .chat-message-content code{background:#0f172a;border-color:#334155}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border-color:#334155}.chat-thinking{background:rgba(251,191,36,.1);border-color:#b45309;color:#fcd34d}.chat-thinking-content{color:#fde68a}}@media print{body{background:#fff}}`;
 
   return `<!doctype html>
 <html lang="zh-CN">

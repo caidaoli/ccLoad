@@ -7020,8 +7020,9 @@ body.trend-page .chart-info {
 /* 消息气泡 */
 .chat-message {
   max-width: 80%;
-  padding: 10px 14px;
-  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   line-height: 1.6;
   word-break: break-word;
   font-size: 14px;
@@ -7029,34 +7030,46 @@ body.trend-page .chart-info {
 
 .chat-message--user {
   align-self: flex-end;
-  background: var(--primary-500);
-  color: #fff;
-  border-bottom-right-radius: 4px;
-  white-space: pre-wrap;
+  align-items: flex-end;
 }
 
 .chat-message--assistant {
   align-self: flex-start;
-  background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
-  border-bottom-left-radius: 4px;
+  align-items: flex-start;
 }
 
-.chat-message--error {
+.chat-message--error .chat-message-content {
   background: rgba(239, 68, 68, 0.08);
   border-color: rgba(239, 68, 68, 0.3);
   color: var(--color-text-secondary);
 }
 
-/* 消息复制按钮：hover 气泡时浮现 */
-.chat-message {
-  position: relative;
+/* 消息底部动作行 */
+.chat-message-footer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 24px;
+  color: var(--color-text-secondary);
 }
 
-.chat-message-copy-btn {
-  position: absolute;
-  top: 4px;
-  right: 4px;
+.chat-message--user .chat-message-footer {
+  justify-content: flex-end;
+}
+
+.chat-message--assistant .chat-message-footer {
+  justify-content: space-between;
+}
+
+.chat-message-footer-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.chat-message-action-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -7068,27 +7081,19 @@ body.trend-page .chart-info {
   background: transparent;
   color: inherit;
   cursor: pointer;
-  opacity: 0;
+  opacity: 0.72;
   transition: opacity 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.chat-message:hover .chat-message-copy-btn,
-.chat-message-copy-btn:focus-visible {
-  opacity: 0.8;
-}
-
-.chat-message-copy-btn:hover {
+.chat-message-action-btn:hover,
+.chat-message-action-btn:focus-visible {
   opacity: 1;
   background: rgba(0, 0, 0, 0.08);
   border-color: var(--color-border);
+  outline: none;
 }
 
-.chat-message--user .chat-message-copy-btn:hover {
-  background: rgba(255, 255, 255, 0.18);
-  border-color: rgba(255, 255, 255, 0.3);
-}
-
-.chat-message-copy-btn svg {
+.chat-message-action-btn svg {
   pointer-events: none;
 }
 
@@ -7098,11 +7103,12 @@ body.trend-page .chart-info {
   border-color: currentColor;
 }
 
-/* Token 统计信息条（气泡右下方） */
+/* Token 统计信息条 */
 .chat-message-stats {
-  margin-top: 8px;
-  padding-top: 6px;
-  border-top: 1px solid var(--color-border);
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: calc(100% - 32px);
+  margin-left: auto;
   font-size: 11px;
   line-height: 1.4;
   color: var(--color-text-secondary);
@@ -7112,13 +7118,34 @@ body.trend-page .chart-info {
   word-break: break-all;
 }
 
-.chat-message:hover .chat-message-stats {
+.chat-message-stats[hidden] {
+  display: none;
+}
+
+.chat-message:hover .chat-message-stats,
+.chat-message:hover .chat-message-action-btn {
   opacity: 1;
 }
 
 /* Markdown 内容 */
 .chat-message-content {
   min-height: 1em;
+  padding: 10px 14px;
+  border-radius: 12px;
+  word-break: break-word;
+}
+
+.chat-message--user .chat-message-content {
+  background: var(--primary-500);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  white-space: pre-wrap;
+}
+
+.chat-message--assistant .chat-message-content {
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-bottom-left-radius: 4px;
 }
 
 .chat-thinking {
