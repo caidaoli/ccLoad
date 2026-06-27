@@ -38,6 +38,13 @@ let chatModelCombobox = null;
 let chatThinkingCombobox = null;
 let chatThinkingEffort = '';
 let chatPendingImages = [];
+let chatAdvancedOptions = {
+  systemPrompt: '',
+  temperature: null,
+  topP: null,
+  contextMessages: null,
+  maxTokens: null
+};
 
 let channelSelectCombobox = null;
 let modelSelectCombobox = null;
@@ -679,6 +686,9 @@ function initModelTestActions() {
       'send-chat-message': () => sendChatMessage(),
       'select-chat-image': () => document.getElementById('chatImageInput')?.click(),
       'toggle-chat-builtin-search': () => toggleChatBuiltinSearch(),
+      'open-chat-advanced-options': () => openChatAdvancedOptionsModal(),
+      'close-chat-advanced-options': () => closeChatAdvancedOptionsModal(),
+      'save-chat-advanced-options': () => saveChatAdvancedOptionsFromModal(),
       'clear-chat': () => clearChat(),
       'retry-chat-message': (actionTarget) => retryChatMessage(actionTarget),
       'edit-chat-message': (actionTarget) => editChatMessage(actionTarget),
@@ -2651,9 +2661,18 @@ function bindEvents() {
       closeAddModelsModal();
     }
   });
+  const chatAdvancedOptionsModal = document.getElementById('chatAdvancedOptionsModal');
+  chatAdvancedOptionsModal?.addEventListener('click', (event) => {
+    if (event.target === chatAdvancedOptionsModal) {
+      closeChatAdvancedOptionsModal();
+    }
+  });
   document.addEventListener('keydown', (event) => {
     if (event.key === 'Escape' && addModelsModal?.classList.contains('show')) {
       closeAddModelsModal();
+    }
+    if (event.key === 'Escape' && chatAdvancedOptionsModal?.classList.contains('show')) {
+      closeChatAdvancedOptionsModal();
     }
   });
 
@@ -2958,6 +2977,105 @@ function loadChatBuiltinSearchFromStorage() {
     if (value === '0') return false;
   } catch (_) { /* ignore */ }
   return false; // 默认关闭内置搜索
+}
+
+function getChatAdvancedOptionsAPI() {
+  return window.ModelTestAdvancedOptions || null;
+}
+
+function normalizeChatAdvancedOptions(options) {
+  const api = getChatAdvancedOptionsAPI();
+  if (api && typeof api.normalizeOptions === 'function') {
+    return api.normalizeOptions(options);
+  }
+  return {
+    systemPrompt: '',
+    temperature: null,
+    topP: null,
+    contextMessages: null,
+    maxTokens: null
+  };
+}
+
+function loadChatAdvancedOptionsFromStorage() {
+  const api = getChatAdvancedOptionsAPI();
+  if (api && typeof api.loadOptions === 'function') {
+    return api.loadOptions(localStorage);
+  }
+  return normalizeChatAdvancedOptions(null);
+}
+
+function saveChatAdvancedOptionsToStorage(options) {
+  const api = getChatAdvancedOptionsAPI();
+  if (api && typeof api.saveOptions === 'function') {
+    return api.saveOptions(localStorage, options);
+  }
+  return normalizeChatAdvancedOptions(options);
+}
+
+function chatAdvancedOptionsEnabled(options = chatAdvancedOptions) {
+  const normalized = normalizeChatAdvancedOptions(options);
+  return Boolean(
+    normalized.systemPrompt ||
+    normalized.temperature !== null ||
+    normalized.topP !== null ||
+    (normalized.contextMessages !== null && normalized.contextMessages > 0) ||
+    normalized.maxTokens !== null
+  );
+}
+
+function updateChatAdvancedOptionsButton() {
+  const btn = document.getElementById('chatAdvancedOptionsBtn');
+  if (!btn) return;
+  btn.classList.toggle('active', chatAdvancedOptionsEnabled());
+  btn.setAttribute('aria-pressed', chatAdvancedOptionsEnabled() ? 'true' : 'false');
+}
+
+function formatChatAdvancedInputValue(value) {
+  return value === null || value === undefined ? '' : String(value);
+}
+
+function setChatAdvancedOptionsForm(options) {
+  const normalized = normalizeChatAdvancedOptions(options);
+  const systemPrompt = document.getElementById('chatAdvancedSystemPrompt');
+  const temperature = document.getElementById('chatAdvancedTemperature');
+  const topP = document.getElementById('chatAdvancedTopP');
+  const contextMessages = document.getElementById('chatAdvancedContextMessages');
+  const maxTokens = document.getElementById('chatAdvancedMaxTokens');
+
+  if (systemPrompt) systemPrompt.value = normalized.systemPrompt;
+  if (temperature) temperature.value = formatChatAdvancedInputValue(normalized.temperature);
+  if (topP) topP.value = formatChatAdvancedInputValue(normalized.topP);
+  if (contextMessages) contextMessages.value = formatChatAdvancedInputValue(normalized.contextMessages);
+  if (maxTokens) maxTokens.value = formatChatAdvancedInputValue(normalized.maxTokens);
+}
+
+function collectChatAdvancedOptionsForm() {
+  return normalizeChatAdvancedOptions({
+    systemPrompt: document.getElementById('chatAdvancedSystemPrompt')?.value || '',
+    temperature: document.getElementById('chatAdvancedTemperature')?.value || '',
+    topP: document.getElementById('chatAdvancedTopP')?.value || '',
+    contextMessages: document.getElementById('chatAdvancedContextMessages')?.value || '',
+    maxTokens: document.getElementById('chatAdvancedMaxTokens')?.value || ''
+  });
+}
+
+function openChatAdvancedOptionsModal() {
+  const modal = document.getElementById('chatAdvancedOptionsModal');
+  if (!modal) return;
+  setChatAdvancedOptionsForm(chatAdvancedOptions);
+  modal.classList.add('show');
+  setTimeout(() => document.getElementById('chatAdvancedSystemPrompt')?.focus(), 0);
+}
+
+function closeChatAdvancedOptionsModal() {
+  document.getElementById('chatAdvancedOptionsModal')?.classList.remove('show');
+}
+
+function saveChatAdvancedOptionsFromModal() {
+  chatAdvancedOptions = saveChatAdvancedOptionsToStorage(collectChatAdvancedOptionsForm());
+  updateChatAdvancedOptionsButton();
+  closeChatAdvancedOptionsModal();
 }
 
 function saveChatMessagesToStorage() {
@@ -3487,19 +3605,23 @@ async function sendChatMessage() {
     const chatStreamEnabled = document.getElementById('chatStreamEnabled')?.checked !== false;
     const chatThinkingEffort = getChatThinkingEffort();
     const chatBuiltinSearch = isChatBuiltinSearchEnabled();
+    const advancedAPI = getChatAdvancedOptionsAPI();
+    const basePayload = {
+      model: chatModel,
+      stream: chatStreamEnabled,
+      thinking_effort: chatThinkingEffort,
+      builtin_search: chatBuiltinSearch
+    };
+    const requestPayload = advancedAPI && typeof advancedAPI.buildChatRequestPayload === 'function'
+      ? advancedAPI.buildChatRequestPayload(basePayload, chatMessages, chatAdvancedOptions)
+      : { ...basePayload, messages: chatMessages };
     const resp = await fetch(`/admin/channels/${chatChannel.id}/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({
-        model: chatModel,
-        stream: chatStreamEnabled,
-        messages: chatMessages,
-        thinking_effort: chatThinkingEffort,
-        builtin_search: chatBuiltinSearch
-      }),
+      body: JSON.stringify(requestPayload),
     });
 
     if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
@@ -4169,6 +4291,8 @@ async function bootstrap() {
   chatModel = loadChatModelFromStorage();
   const storedChatChannelId = loadChatChannelIdFromStorage();
   chatThinkingEffort = loadChatThinkingEffortFromStorage();
+  chatAdvancedOptions = loadChatAdvancedOptionsFromStorage();
+  updateChatAdvancedOptionsButton();
 
   const chatBuiltinSearchToggle = document.getElementById('chatBuiltinSearchToggle');
   if (chatBuiltinSearchToggle) {

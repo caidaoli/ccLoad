@@ -6998,6 +6998,12 @@ body.trend-page .chart-info {
   white-space: nowrap;
 }
 
+.chat-advanced-trigger.active {
+  border-color: var(--primary-500);
+  color: var(--primary-600);
+  background: var(--primary-50);
+}
+
 .chat-model-combobox {
   width: 250px;
   flex: 0 0 250px;
@@ -7399,6 +7405,58 @@ body.trend-page .chart-info {
   flex-shrink: 0;
 }
 
+.chat-advanced-modal-content {
+  width: min(640px, calc(100vw - 24px));
+}
+
+.chat-advanced-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  margin-top: 12px;
+}
+
+.chat-advanced-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+
+.chat-advanced-field--full {
+  grid-column: 1 / -1;
+}
+
+.chat-advanced-label {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.chat-advanced-input,
+.chat-advanced-textarea {
+  width: 100%;
+}
+
+.chat-advanced-textarea {
+  min-height: 112px;
+  resize: vertical;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  background: var(--color-bg-secondary);
+  color: var(--color-text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  outline: none;
+}
+
+.chat-advanced-textarea:focus {
+  border-color: var(--primary-500);
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
 /* 打字机光标 */
 .chat-cursor {
   display: inline-block;
@@ -7439,6 +7497,10 @@ body.trend-page .chart-info {
 
   .chat-input {
     flex-basis: 100%;
+  }
+
+  .chat-advanced-form {
+    grid-template-columns: 1fr;
   }
 }
 
