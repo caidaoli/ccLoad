@@ -466,14 +466,10 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 问题：anyrouter等聚合服务使用非标准事件类型（如"."），导致usage丢失
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
-	// [WARN] 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
-	// [PATCH] 兼容不规范上游：部分上游（如 sub2api）只发 `data: {"type":"error",...}`
-	// 而不带 `event: error` 行，导致 eventType 为空、错误帧漏判被当成正常输出，
-	// 最终记成 200/0token 假成功且不重试。这里增加 JSON body 回退检测，
-	// 与 isHeartbeatEvent 的 JSON 回退对称。
+	// 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
+	// 兼容不带 event: error 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
 	if eventType == "error" || isErrorPayload(data) {
-		log.Printf("[WARN]  [SSE错误事件] 上游返回error事件: %s", data)
-		// [INFO] 存储错误事件的完整JSON（用于流结束后触发冷却逻辑）
+		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.lastError = []byte(data)
 		return nil // 不解析usage，避免误判
 	}
@@ -583,13 +579,10 @@ func isHeartbeatEvent(eventType, data string) bool {
 	return json.Unmarshal([]byte(data), &event) == nil && event.Type == "ping"
 }
 
-// [PATCH] isErrorPayload 检测 data 字段本身是否为一个 error 事件 JSON。
-// 用于兼容只发 `data: {"type":"error",...}` 而不带 `event: error` 行的不规范上游。
-// 判定依据（任一成立）：
-//   - 顶层 type == "error"（Anthropic 风格: {"type":"error","error":{...}}）
-//   - 顶层存在非空 error 对象（其他聚合站风格: {"error":{...}}）
+// isErrorPayload 检测 data 是否为 error 事件 JSON，用于兼容不带 event: error 行的不规范上游。
+// 判定：顶层 type=="error"（Anthropic 风格）或顶层 error 字段为非空对象（聚合站风格）。
 func isErrorPayload(data string) bool {
-	if data == "" {
+	if data == "" || !strings.Contains(data, `"error"`) {
 		return false
 	}
 	var event struct {
