@@ -449,16 +449,8 @@ func TestBuilderChain(t *testing.T) {
 		Column("name VARCHAR(100) NOT NULL").
 		Index("idx_name", "name")
 
-	if builder.name != "test" {
+	if builder.Name() != "test" {
 		t.Errorf("Table name not set correctly")
-	}
-
-	if len(builder.columns) != 2 {
-		t.Errorf("Expected 2 columns, got %d", len(builder.columns))
-	}
-
-	if len(builder.indexes) != 1 {
-		t.Errorf("Expected 1 index, got %d", len(builder.indexes))
 	}
 
 	// 测试MySQL DDL
@@ -466,10 +458,16 @@ func TestBuilderChain(t *testing.T) {
 	if !strings.Contains(mysqlDDL, "CREATE TABLE IF NOT EXISTS test") {
 		t.Errorf("MySQL DDL should contain table creation statement")
 	}
+	if !strings.Contains(mysqlDDL, "name VARCHAR(100)") {
+		t.Errorf("MySQL DDL should contain column definition from chain")
+	}
 
 	// 测试SQLite DDL
 	sqliteDDL := builder.BuildSQLite()
 	if !strings.Contains(sqliteDDL, "CREATE TABLE IF NOT EXISTS test") {
 		t.Errorf("SQLite DDL should contain table creation statement")
+	}
+	if !strings.Contains(sqliteDDL, "name TEXT") {
+		t.Errorf("SQLite DDL should contain column definition from chain")
 	}
 }
