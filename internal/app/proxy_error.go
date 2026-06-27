@@ -119,6 +119,7 @@ func (s *Server) logProxyResult(
 		StartTime:      reqCtx.attemptStartTime,
 		DebugData:      reqCtx.debugData,
 		CostMultiplier: cfg.CostMultiplier,
+		ThinkingEffort: reqCtx.thinkingEffort,
 	}))
 }
 

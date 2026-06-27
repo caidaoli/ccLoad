@@ -140,6 +140,9 @@ func ensureLogsNewColumns(ctx context.Context, db *sql.DB, dialect Dialect) erro
 		if err := ensureLogsServiceTierMySQL(ctx, db); err != nil {
 			return err
 		}
+		if err := ensureLogsThinkingEffortMySQL(ctx, db); err != nil {
+			return err
+		}
 		return ensureLogsLogSourceMySQL(ctx, db)
 	}
 	// SQLite: 使用PRAGMA table_info检查列
@@ -160,6 +163,7 @@ func ensureLogsColumnsSQLite(ctx context.Context, db *sql.DB) error {
 		{name: "api_key_hash", definition: "TEXT NOT NULL DEFAULT ''"}, // API Key SHA256（用于精确定位 key_index）
 		{name: "base_url", definition: "TEXT NOT NULL DEFAULT ''"},     // 请求使用的上游URL（多URL场景）
 		{name: "service_tier", definition: "TEXT NOT NULL DEFAULT ''"}, // OpenAI service_tier: priority/flex
+		{name: "thinking_effort", definition: "TEXT NOT NULL DEFAULT ''"},
 	}); err != nil {
 		return err
 	}
@@ -294,6 +298,12 @@ func ensureLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB) error {
 func ensureLogsActualModelMySQL(ctx context.Context, db *sql.DB) error {
 	return ensureMySQLColumns(ctx, db, "logs", []mysqlColumnDef{
 		{name: "actual_model", definition: "VARCHAR(191) NOT NULL DEFAULT '' COMMENT '实际转发的模型(空表示未重定向)'"},
+	})
+}
+
+func ensureLogsThinkingEffortMySQL(ctx context.Context, db *sql.DB) error {
+	return ensureMySQLColumns(ctx, db, "logs", []mysqlColumnDef{
+		{name: "thinking_effort", definition: "VARCHAR(32) NOT NULL DEFAULT '' COMMENT '请求或上游返回的思考等级'"},
 	})
 }
 

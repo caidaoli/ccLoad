@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -429,6 +430,81 @@ func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *te
 	}
 	if !strings.Contains(string(debugLog.RespBody), "logged answer") {
 		t.Fatalf("debug response body missing upstream stream: %q", string(debugLog.RespBody))
+	}
+}
+
+func TestHandleChannelChatLogsThinkingEffortFromUpstreamRequestBody(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if !strings.Contains(string(body), `"output_config":{"effort":"high"}`) {
+			t.Fatalf("upstream request missing output_config.effort high: %s", body)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"answer"}}]}`+"\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:        "chat-thinking-from-upstream-request",
+		URL:         upstream.URL,
+		Priority:    1,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-4o-mini"},
+		},
+		Enabled: true,
+		CustomRequestRules: &model.CustomRequestRules{
+			Body: []model.CustomBodyRule{
+				{Action: model.RuleActionOverride, Path: "output_config.effort", Value: json.RawMessage(`"high"`)},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	started := time.Now()
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":  "gpt-4o-mini",
+		"stream": true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "hi"},
+		},
+	})
+	c, _ := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	logs, err := srv.store.ListLogsRange(
+		ctx,
+		started.Add(-time.Second),
+		time.Now().Add(time.Second),
+		10,
+		0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil {
+		t.Fatalf("ListLogsRange failed: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("len(logs)=%d, want 1; logs=%+v", len(logs), logs)
+	}
+	if got := logs[0].ThinkingEffort; got != "high" {
+		t.Fatalf("thinking_effort=%q, want high", got)
 	}
 }
 

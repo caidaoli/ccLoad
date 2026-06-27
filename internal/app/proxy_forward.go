@@ -235,11 +235,12 @@ func (s *Server) handleErrorResponse(
 	duration := reqCtx.Duration().Seconds()
 
 	return &fwResult{
-		Status:        resp.StatusCode,
-		Header:        hdrClone,
-		Body:          rb,
-		FirstByteTime: readStats.firstByteSec,
-		StreamDiagMsg: diagMsg,
+		Status:         resp.StatusCode,
+		Header:         hdrClone,
+		Body:           rb,
+		FirstByteTime:  readStats.firstByteSec,
+		StreamDiagMsg:  diagMsg,
+		ThinkingEffort: extractThinkingEffortFromJSON(rb),
 	}, duration, nil
 }
 
@@ -780,6 +781,7 @@ func (s *Server) handleSuccessResponse(
 		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
 		result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
 		result.ToolCostUSD = parser.GetToolCostUSD()
+		result.ThinkingEffort = parser.GetThinkingEffort()
 
 		if errorEvent := parser.GetLastError(); errorEvent != nil {
 			result.SSEErrorEvent = errorEvent
@@ -886,6 +888,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
+	result.ThinkingEffort = parser.GetThinkingEffort()
 
 	return result, reqCtx.Duration().Seconds(), nil
 }
@@ -973,6 +976,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.Cache1hInputTokens = parser.Cache1hInputTokens
 	result.ServiceTier = parser.ServiceTier
 	result.ToolCostUSD = parser.GetToolCostUSD()
+	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.SSEErrorEvent = parser.GetLastError()
 	streamComplete := parser.IsStreamComplete() || translatedComplete
 

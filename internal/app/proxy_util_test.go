@@ -206,6 +206,31 @@ func TestAppendRetryStrategyToMessageUsesCompactDisplay(t *testing.T) {
 	}
 }
 
+func TestExtractThinkingEffortPrefersOutputConfigEffortOverThinkingType(t *testing.T) {
+	t.Parallel()
+
+	got := extractThinkingEffortFromJSON([]byte(`{
+		"thinking": {"type": "disabled"},
+		"output_config": {"effort": "high"},
+		"stream": true
+	}`))
+	if got != "high" {
+		t.Fatalf("thinking_effort=%q, want high", got)
+	}
+}
+
+func TestExtractThinkingEffortReadsCodexReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	got := extractThinkingEffortFromJSON([]byte(`{
+		"reasoning": {"effort": "xhigh"},
+		"stream": true
+	}`))
+	if got != "xhigh" {
+		t.Fatalf("thinking_effort=%q, want xhigh", got)
+	}
+}
+
 func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *testing.T) {
 	t.Parallel()
 
