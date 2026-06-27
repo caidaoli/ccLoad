@@ -234,6 +234,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if clientProtocol == protocol.Anthropic {
 		all = stripAnthropicBillingHeaders(all)
 	}
+	thinkingEffort := extractThinkingEffortFromJSON(all)
 
 	tokenHashStr := ""
 	if v, ok := c.Get("token_hash"); ok {
@@ -246,6 +247,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	// 注册活跃请求（内存状态，用于前端实时显示）
 	activeID := s.activeRequests.Register(startTime, originalModel, c.ClientIP(), isStreaming)
+	s.activeRequests.SetThinkingEffort(activeID, thinkingEffort)
 	defer s.activeRequests.Remove(activeID)
 
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
@@ -268,13 +270,14 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	if len(cands) == 0 {
 		s.AddLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{Time: time.Now()},
-			Model:       originalModel,
-			LogSource:   model.LogSourceProxy,
-			StatusCode:  503,
-			Message:     "no available upstream (all cooled or none)",
-			IsStreaming: isStreaming,
-			ClientIP:    c.ClientIP(),
+			Time:           model.JSONTime{Time: time.Now()},
+			Model:          originalModel,
+			LogSource:      model.LogSourceProxy,
+			StatusCode:     503,
+			Message:        "no available upstream (all cooled or none)",
+			IsStreaming:    isStreaming,
+			ClientIP:       c.ClientIP(),
+			ThinkingEffort: thinkingEffort,
 		})
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "no available upstream (all cooled or none)"})
 		return
@@ -312,6 +315,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		clientIP:       c.ClientIP(),
 		activeReqID:    activeID,
 		startTime:      startTime,
+		thinkingEffort: thinkingEffort,
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {

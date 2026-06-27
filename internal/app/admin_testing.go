@@ -465,7 +465,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 	requestedModel := testReq.Model
 	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testResult))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
@@ -737,6 +737,9 @@ func (s *Server) testChannelAPIWithURL(
 	result["upstream_request_url"] = requestPlan.fullURL
 	result["upstream_request_headers"] = maskSensitiveHeaderMap(flattenHeader(req.Header))
 	result["upstream_request_body"] = string(requestPlan.requestBody)
+	if effort := testRequestThinkingEffort(testReq, requestPlan); effort != "" {
+		result["thinking_effort"] = effort
+	}
 
 	// 附带响应头与类型，便于排查（不含请求头以避免泄露）
 	if len(resp.Header) > 0 {
@@ -1157,6 +1160,9 @@ func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil
 	if ok {
 		result["usage"] = usage
 	}
+	if effort := parser.GetThinkingEffort(); effort != "" {
+		result["thinking_effort"] = effort
+	}
 
 	billableInput, output, cacheRead, _ := parser.GetUsage()
 	cache5m, cache1h, _ := parser.GetCacheBreakdown()
@@ -1172,6 +1178,18 @@ func populateTestNormalizedUsageAndCost(result map[string]any, testReq *testutil
 	} else if toolCost := parser.GetToolCostUSD(); toolCost > 0 {
 		result["cost_usd"] = toolCost
 	}
+}
+
+func testRequestThinkingEffort(testReq *testutil.TestChannelRequest, requestPlan *channelTestRequestPlan) string {
+	if requestPlan != nil {
+		if effort := extractThinkingEffortFromJSON(requestPlan.requestBody); effort != "" {
+			return effort
+		}
+	}
+	if testReq == nil {
+		return ""
+	}
+	return normalizeThinkingEffort(testReq.ThinkingEffort)
 }
 
 // parseTestNativeSSEResponse 处理客户端协议与上游协议一致时的原生 SSE 解析。

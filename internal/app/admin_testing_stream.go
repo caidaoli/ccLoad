@@ -125,7 +125,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, lastResult))
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -145,6 +145,7 @@ type chatStreamResult struct {
 	model            string
 	channelType      string
 	statusCode       int
+	requestThinking  string
 	errorResult      map[string]any
 	debugData        *model.DebugLogEntry
 }
@@ -210,11 +211,16 @@ func (s *Server) streamChatWithURL(
 		return chatURLAttemptResult{handled: true}
 	}
 	defer cancel()
+	requestThinking := testRequestThinkingEffort(testReq, requestPlan)
 
 	start := time.Now()
 	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil {
-		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, nil, chatRequestErrorResult(start, testReq, requestPlan.timeout, err))}
+		result := chatRequestErrorResult(start, testReq, requestPlan.timeout, err)
+		if requestThinking != "" {
+			result["thinking_effort"] = requestThinking
+		}
+		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, nil, result)}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if requestPlan.debugCapture != nil {
@@ -227,7 +233,7 @@ func (s *Server) streamChatWithURL(
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))
 		msg := extractChatUpstreamError(resp.StatusCode, body)
-		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, resp, map[string]any{
+		result := map[string]any{
 			"success":                false,
 			"status_code":            resp.StatusCode,
 			"is_streaming":           testReq.Stream,
@@ -236,20 +242,25 @@ func (s *Server) streamChatWithURL(
 			"raw_response":           string(body),
 			"upstream_response_body": string(body),
 			"response_headers":       flattenHeader(resp.Header),
-		})}
+		}
+		if requestThinking != "" {
+			result["thinking_effort"] = requestThinking
+		}
+		return chatURLAttemptResult{result: attachTestDebugData(requestPlan, resp, result)}
 	}
 
 	if !isSSE {
-		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey)
+		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey, requestThinking)
 		return chatURLAttemptResult{handled: true}
 	}
 
 	sr := &chatStreamResult{
-		start:       start,
-		usageParser: newSSEUsageParser(cfg.GetChannelType()),
-		model:       testReq.Model,
-		channelType: cfg.GetChannelType(),
-		statusCode:  resp.StatusCode,
+		start:           start,
+		usageParser:     newSSEUsageParser(cfg.GetChannelType()),
+		model:           testReq.Model,
+		channelType:     cfg.GetChannelType(),
+		statusCode:      resp.StatusCode,
+		requestThinking: requestThinking,
 	}
 
 	firstContentMarked := false
@@ -358,6 +369,7 @@ func (s *Server) streamChatNonStreamResponse(
 	start time.Time,
 	cfg *model.Config,
 	apiKey string,
+	requestThinking string,
 ) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -374,11 +386,14 @@ func (s *Server) streamChatNonStreamResponse(
 		"status_code":  resp.StatusCode,
 		"is_streaming": false,
 	}
+	if requestThinking != "" {
+		result["thinking_effort"] = requestThinking
+	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
 	result = attachTestDebugData(requestPlan, resp, result)
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, requestThinking, result))
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -489,11 +504,14 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		if input+output+cacheRead > 0 {
 			result["cost_usd"] = util.CalculateCostDetailed(testReq.Model, input, output, cacheRead, cache5m, cache1h) + sr.usageParser.GetToolCostUSD()
 		}
+		if effort := sr.usageParser.GetThinkingEffort(); effort != "" {
+			result["thinking_effort"] = effort
+		}
 	}
 	if sr.debugData != nil {
 		result["debug_data"] = sr.debugData
 	}
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, sr.requestThinking, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。

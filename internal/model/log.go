@@ -82,6 +82,7 @@ type LogEntry struct {
 	ClientIP             string   `json:"client_ip"`              // 客户端IP地址（新增2025-12）
 	BaseURL              string   `json:"base_url,omitempty"`     // 请求使用的上游URL（多URL场景）
 	ServiceTier          string   `json:"service_tier,omitempty"` // OpenAI service_tier: "priority"(2x)/"flex"(0.5x)
+	ThinkingEffort       string   `json:"thinking_effort,omitempty"`
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
 	InputTokens              int     `json:"input_tokens"`

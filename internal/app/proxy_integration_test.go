@@ -181,6 +181,99 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 }
 
+func TestProxy_LogsThinkingEffortFromRequestAndJSONResponseOverride(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"chatcmpl-1","thinking":{"level":"high"},"choices":[{"message":{"content":"hello"}}],"usage":{"prompt_tokens":10,"completion_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "json-thinking", models: "gpt-4", apiKey: "sk-json-thinking"},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":            "gpt-4",
+		"reasoning_effort": "low",
+		"messages":         []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-4")
+	if entry.ThinkingEffort != "high" {
+		t.Fatalf("ThinkingEffort=%q, want high", entry.ThinkingEffort)
+	}
+}
+
+func TestProxy_LogsThinkingEffortFromRequestAndSSEOverride(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		chunks := []string{
+			`event: response.created` + "\n" + `data: {"type":"response.created","response":{"reasoning":{"effort":"medium"}}}`,
+			`event: response.completed` + "\n" + `data: {"type":"response.completed","response":{"usage":{"input_tokens":10,"output_tokens":5}}}`,
+		}
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "%s\n\n", chunk)
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "sse-thinking", models: "gpt-5-codex", apiKey: "sk-sse-thinking", channelType: util.ChannelTypeCodex},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+		"model":     "gpt-5-codex",
+		"stream":    true,
+		"reasoning": map[string]any{"effort": "high"},
+		"input":     "hi",
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-5-codex")
+	if entry.ThinkingEffort != "medium" {
+		t.Fatalf("ThinkingEffort=%q, want medium", entry.ThinkingEffort)
+	}
+}
+
+func waitForProxyLog(t testing.TB, env *proxyTestEnv, modelName string) *model.LogEntry {
+	t.Helper()
+
+	ctx := context.Background()
+	since := time.Now().Add(-time.Minute)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, err := env.store.ListLogs(ctx, since, 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err != nil {
+			t.Fatalf("ListLogs failed: %v", err)
+		}
+		for _, entry := range logs {
+			if entry.Model == modelName && entry.ChannelID != 0 {
+				return entry
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("proxy log for model %q not found within deadline", modelName)
+	return nil
+}
+
 func TestProxy_SkipsChannelAfterRPMLimitExceeded(t *testing.T) {
 	t.Parallel()
 

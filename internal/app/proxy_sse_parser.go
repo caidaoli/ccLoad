@@ -27,6 +27,7 @@ type usageAccumulator struct {
 	Cache1hInputTokens       int
 	ToolCostUSD              float64
 	ServiceTier              string // OpenAI service_tier: "priority"/"flex"/"default"
+	ThinkingEffort           string
 	usageVersion             int
 	imageGenerationToolModel string
 	toolUsageSeen            bool
@@ -102,9 +103,10 @@ type usageParser interface {
 	GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int)
 	GetCacheBreakdown() (cache5m, cache1h int, serviceTier string) // 返回缓存分桶与 OpenAI service_tier
 	GetToolCostUSD() float64                                       // 返回 Responses 工具调用的额外费用
-	GetLastError() []byte                                          // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
-	IsStreamComplete() bool                                        // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
-	HasStreamOutput() bool                                         // 返回是否已经看到非心跳的可见响应内容
+	GetThinkingEffort() string
+	GetLastError() []byte   // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
+	IsStreamComplete() bool // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
+	HasStreamOutput() bool  // 返回是否已经看到非心跳的可见响应内容
 }
 
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
@@ -114,6 +116,10 @@ func (u *usageAccumulator) GetCacheBreakdown() (cache5m, cache1h int, serviceTie
 
 func (u *usageAccumulator) GetToolCostUSD() float64 {
 	return u.ToolCostUSD
+}
+
+func (u *usageAccumulator) GetThinkingEffort() string {
+	return normalizeThinkingEffort(u.ThinkingEffort)
 }
 
 const (
@@ -192,6 +198,9 @@ func (p *sseUsageParser) scanUsageFragments(data []byte) {
 	}
 	if p.scanner.ServiceTier != "" {
 		p.ServiceTier = p.scanner.ServiceTier
+	}
+	if p.scanner.ThinkingEffort != "" {
+		p.ThinkingEffort = p.scanner.ThinkingEffort
 	}
 	if p.scanner.ToolCostUSD > 0 {
 		p.ToolCostUSD = p.scanner.ToolCostUSD
@@ -495,6 +504,9 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 			p.ServiceTier = tier
 		}
 	}
+	if effort := extractThinkingEffortFromPayload(event); effort != "" {
+		p.ThinkingEffort = effort
+	}
 
 	usage := extractUsage(event)
 
@@ -788,6 +800,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 			log.Printf("[WARN] 类 SSE 格式的 usage 解析失败: %v", err)
 		} else {
 			p.ServiceTier = sseParser.ServiceTier
+			p.ThinkingEffort = sseParser.GetThinkingEffort()
 			p.ToolCostUSD = sseParser.GetToolCostUSD()
 			return sseParser.GetUsage()
 		}
@@ -803,6 +816,9 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 	// Anthropic fast mode: 从 usage.speed 推断计费层级
 	p.applyUsageMap(usage)
 	p.applyToolUsageFromPayload(payload)
+	if effort := extractThinkingEffortFromPayload(payload); effort != "" {
+		p.ThinkingEffort = effort
+	}
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
 	if tier, ok := payload["service_tier"].(string); ok && tier != "" {

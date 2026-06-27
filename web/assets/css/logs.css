@@ -995,6 +995,14 @@
       padding-right: 18px;
     }
 
+    .model-tag.model-thinking {
+      padding-right: 84px;
+    }
+
+    .model-tag.model-redirected.model-thinking {
+      padding-right: 104px;
+    }
+
     .model-text {
       display: inline-block;
       max-width: 200px;
@@ -1018,6 +1026,28 @@
       line-height: 1;
       transform: scale(0.9);
       transform-origin: top right;
+    }
+
+    .thinking-effort-badge {
+      position: absolute;
+      top: -6px;
+      right: -4px;
+      min-width: 16px;
+      background: var(--primary-600);
+      color: white;
+      font-size: 0.65em;
+      padding: 2px 6px;
+      border-radius: 8px;
+      font-weight: 700;
+      line-height: 1;
+      text-align: center;
+      white-space: nowrap;
+      transform: scale(0.9);
+      transform-origin: top right;
+    }
+
+    .model-tag.model-redirected.model-thinking .redirect-badge {
+      right: 78px;
     }
 
     /* 进行中状态样式 */

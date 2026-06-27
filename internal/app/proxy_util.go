@@ -116,6 +116,9 @@ type fwResult struct {
 	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x
 	ServiceTier string
 
+	// ThinkingEffort 记录请求或上游响应声明的思考等级；上游响应非空时覆盖请求值。
+	ThinkingEffort string
+
 	// Debug日志数据（debug开启时填充，传递到日志写入管道）
 	DebugData *model.DebugLogEntry
 }
@@ -148,6 +151,7 @@ type proxyRequestContext struct {
 	attemptStartTime time.Time            // 渠道内单次 Key/URL 尝试开始时间
 	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
 	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
+	thinkingEffort   string
 }
 
 // proxyResult 代理请求结果
@@ -665,6 +669,92 @@ func isAnthropicBillingHeaderSystemBlock(raw json.RawMessage) bool {
 // 日志和字符串处理工具函数
 // ============================================================================
 
+func normalizeThinkingEffort(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func extractThinkingEffortFromJSON(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	return extractThinkingEffortFromPayload(payload)
+}
+
+func extractThinkingEffortFromPayload(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+
+	if response, ok := payload["response"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(response); effort != "" {
+			return effort
+		}
+	}
+	if message, ok := payload["message"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(message); effort != "" {
+			return effort
+		}
+	}
+
+	for _, key := range []string{"reasoning_effort", "thinking_effort", "thinkingLevel", "thinking_level"} {
+		if effort := stringMapValue(payload, key); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if reasoning, ok := payload["reasoning"].(map[string]any); ok {
+		if effort := firstStringMapValue(reasoning, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if outputConfig, ok := payload["output_config"].(map[string]any); ok {
+		if effort := firstStringMapValue(outputConfig, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	if thinkingConfig, ok := payload["thinkingConfig"].(map[string]any); ok {
+		if effort := firstStringMapValue(thinkingConfig, "thinkingLevel", "thinking_level", "effort", "level"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+	if generationConfig, ok := payload["generationConfig"].(map[string]any); ok {
+		if effort := extractThinkingEffortFromPayload(generationConfig); effort != "" {
+			return effort
+		}
+	}
+
+	if thinking, ok := payload["thinking"].(map[string]any); ok {
+		if effort := firstStringMapValue(thinking, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+			return normalizeThinkingEffort(effort)
+		}
+	}
+
+	return ""
+}
+
+func firstStringMapValue(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		if value := stringMapValue(values, key); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func stringMapValue(values map[string]any, key string) string {
+	value, ok := values[key].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(value)
+}
+
 // logEntryParams 日志条目构建参数（避免多个 string 参数顺序混淆）
 type logEntryParams struct {
 	RequestModel   string // 客户端请求的原始模型名称
@@ -682,6 +772,7 @@ type logEntryParams struct {
 	StartTime      time.Time            // 渠道尝试开始时间（用于日志记录）
 	DebugData      *model.DebugLogEntry // Debug日志数据
 	CostMultiplier float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
+	ThinkingEffort string
 }
 
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
@@ -703,6 +794,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		ClientIP:    p.ClientIP,
 		BaseURL:     p.BaseURL,
 	}
+	entry.ThinkingEffort = normalizeThinkingEffort(p.ThinkingEffort)
 
 	// 成本倍率快照：0 表示免费渠道；负数兜底为 1（保护存量数据）
 	if p.CostMultiplier >= 0 {
@@ -777,6 +869,11 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.Message = "unknown"
 	}
 
+	if p.Result != nil {
+		if effort := normalizeThinkingEffort(p.Result.ThinkingEffort); effort != "" {
+			entry.ThinkingEffort = effort
+		}
+	}
 	entry.DebugData = p.DebugData
 	return entry
 }

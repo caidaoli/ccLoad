@@ -28,6 +28,7 @@ type ActiveRequest struct {
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
 	CostMultiplier      float64 `json:"cost_multiplier"`                  // 渠道成本倍率
 	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
+	ThinkingEffort      string  `json:"thinking_effort,omitempty"`
 }
 
 type activeRequest struct {
@@ -44,10 +45,19 @@ type activeRequest struct {
 	BaseURL     string
 
 	CostMultiplier float64 // 渠道成本倍率
+	ThinkingEffort string
 	debugCapture   *debugCapture
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
+}
+
+func (m *activeRequestManager) SetThinkingEffort(id int64, thinkingEffort string) {
+	m.mu.Lock()
+	if req, ok := m.requests[id]; ok {
+		req.ThinkingEffort = normalizeThinkingEffort(thinkingEffort)
+	}
+	m.mu.Unlock()
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
@@ -190,6 +200,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			BytesReceived:     req.bytesCounter.Load(),
 			CostMultiplier:    req.CostMultiplier,
 			DebugLogAvailable: req.debugCapture != nil,
+			ThinkingEffort:    req.ThinkingEffort,
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
 			view.ClientFirstByteTime = float64(usec) / 1e6

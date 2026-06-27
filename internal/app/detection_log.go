@@ -22,20 +22,21 @@ func selectScheduledCheckModel(cfg *model.Config) (string, string) {
 	return "", "scheduled_check_model 不在渠道模型列表中"
 }
 
-func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP string, authTokenID int64, result map[string]any) *model.LogEntry {
+func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP string, authTokenID int64, requestThinkingEffort string, result map[string]any) *model.LogEntry {
 	entry := &model.LogEntry{
-		Time:          model.JSONTime{Time: time.Now()},
-		LogSource:     logSource,
-		Model:         requestModel,
-		ClientIP:      clientIP,
-		APIKeyUsed:    apiKeyUsed,
-		AuthTokenID:   authTokenID,
-		BaseURL:       getResultString(result, "base_url"),
-		StatusCode:    getResultIntOrDefault(result, "status_code", 0),
-		Duration:      float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
-		FirstByteTime: float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
-		Cost:          getResultFloat64OrDefault(result, "cost_usd", 0),
-		IsStreaming:   getResultBoolOrDefault(result, "is_streaming", false),
+		Time:           model.JSONTime{Time: time.Now()},
+		LogSource:      logSource,
+		Model:          requestModel,
+		ClientIP:       clientIP,
+		APIKeyUsed:     apiKeyUsed,
+		AuthTokenID:    authTokenID,
+		BaseURL:        getResultString(result, "base_url"),
+		StatusCode:     getResultIntOrDefault(result, "status_code", 0),
+		Duration:       float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
+		FirstByteTime:  float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
+		Cost:           getResultFloat64OrDefault(result, "cost_usd", 0),
+		IsStreaming:    getResultBoolOrDefault(result, "is_streaming", false),
+		ThinkingEffort: detectionThinkingEffort(requestThinkingEffort, result),
 	}
 	if cfg != nil {
 		entry.ChannelID = cfg.ID
@@ -53,6 +54,19 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 		entry.DebugData = debugData
 	}
 	return entry
+}
+
+func detectionThinkingEffort(requestThinkingEffort string, result map[string]any) string {
+	effort := normalizeThinkingEffort(requestThinkingEffort)
+	if upstream := extractThinkingEffortFromPayload(result); upstream != "" {
+		effort = upstream
+	}
+	if apiResponse, ok := getResultMap(result, "api_response"); ok {
+		if upstream := extractThinkingEffortFromPayload(apiResponse); upstream != "" {
+			effort = upstream
+		}
+	}
+	return effort
 }
 
 func detectionSkipLog(cfg *model.Config, logSource, modelName, reason string) *model.LogEntry {

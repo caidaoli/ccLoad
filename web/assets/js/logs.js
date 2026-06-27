@@ -363,6 +363,49 @@ function getStreamFlagHtml(isStreaming) {
     : '<span class="stream-flag placeholder">流</span>';
 }
 
+function normalizeThinkingEffortDisplay(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function thinkingEffortBadgeText(value) {
+  return normalizeThinkingEffortDisplay(value);
+}
+
+function buildThinkingEffortBadge(thinkingEffort) {
+  const effort = normalizeThinkingEffortDisplay(thinkingEffort);
+  if (!effort) return '';
+  const title = `思考等级: ${effort}`;
+  return `<sup class="thinking-effort-badge" title="${escapeHtml(title)}">${escapeHtml(thinkingEffortBadgeText(effort))}</sup>`;
+}
+
+function buildLogModelDisplay(model, actualModel, thinkingEffort) {
+  if (!model) {
+    return '<span style="color: var(--neutral-500);">-</span>';
+  }
+
+  const redirected = actualModel && actualModel !== model;
+  const effort = normalizeThinkingEffortDisplay(thinkingEffort);
+  const classes = ['model-tag'];
+  const titleParts = [];
+  if (redirected) {
+    classes.push('model-redirected');
+    titleParts.push(`请求模型: ${escapeHtml(model)}`);
+    titleParts.push(`实际模型: ${escapeHtml(actualModel)}`);
+  }
+  if (effort) {
+    classes.push('model-thinking');
+    titleParts.push(`思考等级: ${escapeHtml(effort)}`);
+  }
+  const title = titleParts.length > 0 ? ` title="${titleParts.join('&#10;')}"` : '';
+  const redirectBadge = redirected ? '<sup class="redirect-badge">↪</sup>' : '';
+
+  return `<span class="${classes.join(' ')}"${title}>
+      <span class="model-text">${escapeHtml(model)}</span>
+      ${redirectBadge}
+      ${buildThinkingEffortBadge(effort)}
+    </span>`;
+}
+
 function getLogMobileLabels() {
   return {
     time: escapeHtml(t('logs.colTime')),
@@ -729,6 +772,7 @@ function renderActiveRequests(activeRequests) {
     }
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
+    const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
 
@@ -761,7 +805,7 @@ function renderActiveRequests(activeRequests) {
               <span class="status-pending">进行中</span>
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
               <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
-              <span style="margin-left: 8px;">${escapeHtml(req.model || '-')}</span>
+              <span style="margin-left: 8px;">${modelDisplay}</span>
               <span style="margin-left: 8px;">${durationDisplay} ${streamFlag}</span>
               <span style="margin-left: 8px;">${infoContent}</span>
             </td>
@@ -773,7 +817,7 @@ function renderActiveRequests(activeRequests) {
             <td class="${tokenDescCellClass}" data-mobile-label="${logMobileLabels.tokenDesc}" style="white-space: nowrap;">${tokenDescDisplay}</td>
             <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${keyDisplay}</td>
             <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${channelDisplay}</td>
-            <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}"><span class="model-tag">${escapeHtml(req.model || '-')}</span></td>
+            <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
             <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="status-pending">进行中</span></td>
             <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${durationDisplay} ${streamFlag}</td>
             <td class="logs-col-speed mobile-empty-cell" data-mobile-label="${logMobileLabels.speed}" style="text-align: right; white-space: nowrap;"></td>
@@ -867,21 +911,8 @@ function renderLogs(data) {
       'status-success' : 'status-error';
     const statusCode = entry.status_code;
 
-    // 3. 模型显示（支持重定向角标）
-    let modelDisplay;
-    if (entry.model) {
-      if (entry.actual_model && entry.actual_model !== entry.model) {
-        // 有重定向：显示角标 + tooltip
-        modelDisplay = `<span class="model-tag model-redirected" title="请求模型: ${escapeHtml(entry.model)}&#10;实际模型: ${escapeHtml(entry.actual_model)}">
-              <span class="model-text">${escapeHtml(entry.model)}</span>
-              <sup class="redirect-badge">↪</sup>
-            </span>`;
-      } else {
-        modelDisplay = `<span class="model-tag">${escapeHtml(entry.model)}</span>`;
-      }
-    } else {
-      modelDisplay = '<span style="color: var(--neutral-500);">-</span>';
-    }
+    // 3. 模型显示（支持重定向与思考等级角标）
+    const modelDisplay = buildLogModelDisplay(entry.model, entry.actual_model, entry.thinking_effort);
 
     // 4. 响应时间显示(流式/非流式)
     const hasDuration = entry.duration !== undefined && entry.duration !== null;
