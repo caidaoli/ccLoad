@@ -95,6 +95,47 @@ func TestOpenAITesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 	}
 }
 
+func TestOpenAITesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	temperature := 0.7
+	topP := 0.9
+	req := &TestChannelRequest{
+		Model:        "gpt-test",
+		Content:      "hello",
+		SystemPrompt: "answer tersely",
+		Temperature:  &temperature,
+		TopP:         &topP,
+		MaxTokens:    2048,
+	}
+
+	_, _, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	if got, _ := payload["temperature"].(float64); got != 0.7 {
+		t.Fatalf("temperature = %v, want 0.7; body=%s", got, body)
+	}
+	if got, _ := payload["top_p"].(float64); got != 0.9 {
+		t.Fatalf("top_p = %v, want 0.9; body=%s", got, body)
+	}
+	if got, _ := payload["max_tokens"].(float64); got != 2048 {
+		t.Fatalf("max_tokens = %v, want 2048; body=%s", got, body)
+	}
+	messages, ok := payload["messages"].([]any)
+	if !ok || len(messages) < 2 {
+		t.Fatalf("messages invalid: %#v; body=%s", payload["messages"], body)
+	}
+	system, ok := messages[0].(map[string]any)
+	if !ok || system["role"] != "system" || system["content"] != "answer tersely" {
+		t.Fatalf("first message should be system prompt, got %#v; body=%s", messages[0], body)
+	}
+}
+
 func TestOpenAITesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	req := &TestChannelRequest{
@@ -328,6 +369,61 @@ func TestCodexTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
 	}
 }
 
+func TestCodexTesterBuild_PrependsSystemPromptAsDeveloperInputAndAppliesSampling(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	temperature := 0.3
+	topP := 0.95
+	req := &TestChannelRequest{
+		Model:        "gpt-5.5",
+		Content:      "hello",
+		SystemPrompt: "prefer short answers",
+		Temperature:  &temperature,
+		TopP:         &topP,
+		MaxTokens:    4096,
+	}
+
+	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	instructions, _ := payload["instructions"].(string)
+	if !strings.Contains(instructions, "You are Codex") {
+		t.Fatalf("instructions should preserve template prompt, got %q; body=%s", instructions, body)
+	}
+	if strings.Contains(instructions, "prefer short answers") {
+		t.Fatalf("user system prompt should not be appended to instructions, instructions=%q; body=%s", instructions, body)
+	}
+	input, ok := payload["input"].([]any)
+	if !ok || len(input) < 2 {
+		t.Fatalf("input invalid: %#v; body=%s", payload["input"], body)
+	}
+	developer, ok := input[0].(map[string]any)
+	if !ok {
+		t.Fatalf("first input invalid: %#v; body=%s", input[0], body)
+	}
+	if developer["role"] != "developer" || developer["content"] != "prefer short answers" {
+		t.Fatalf("first input should be developer system prompt, got %#v; body=%s", developer, body)
+	}
+	user, _ := input[1].(map[string]any)
+	if user["role"] != "user" {
+		t.Fatalf("second input should remain the user message, got %#v; body=%s", user, body)
+	}
+	if got, _ := payload["temperature"].(float64); got != 0.3 {
+		t.Fatalf("temperature = %v, want 0.3; body=%s", got, body)
+	}
+	if got, _ := payload["top_p"].(float64); got != 0.95 {
+		t.Fatalf("top_p = %v, want 0.95; body=%s", got, body)
+	}
+	if got, _ := payload["max_output_tokens"].(float64); got != 4096 {
+		t.Fatalf("max_output_tokens = %v, want 4096; body=%s", got, body)
+	}
+}
+
 func TestCodexTesterBuild_UsesMessagesAsResponsesInput(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	req := &TestChannelRequest{
@@ -438,6 +534,55 @@ func TestGeminiTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 	}
 	if _, ok := tool["googleSearch"].(map[string]any); !ok {
 		t.Fatalf("tools[0].googleSearch missing; body=%s", body)
+	}
+}
+
+func TestGeminiTesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	temperature := 0.5
+	topP := 0.8
+	req := &TestChannelRequest{
+		Model:        "gemini-test",
+		Content:      "hello",
+		SystemPrompt: "use metric units",
+		Temperature:  &temperature,
+		TopP:         &topP,
+		MaxTokens:    1024,
+	}
+
+	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	systemInstruction, ok := payload["systemInstruction"].(map[string]any)
+	if !ok {
+		t.Fatalf("systemInstruction missing or invalid; body=%s", body)
+	}
+	parts, ok := systemInstruction["parts"].([]any)
+	if !ok || len(parts) != 1 {
+		t.Fatalf("systemInstruction.parts invalid: %#v; body=%s", systemInstruction["parts"], body)
+	}
+	part, ok := parts[0].(map[string]any)
+	if !ok || part["text"] != "use metric units" {
+		t.Fatalf("systemInstruction text invalid: %#v; body=%s", parts[0], body)
+	}
+	generationConfig, ok := payload["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid; body=%s", body)
+	}
+	if got, _ := generationConfig["temperature"].(float64); got != 0.5 {
+		t.Fatalf("temperature = %v, want 0.5; body=%s", got, body)
+	}
+	if got, _ := generationConfig["topP"].(float64); got != 0.8 {
+		t.Fatalf("topP = %v, want 0.8; body=%s", got, body)
+	}
+	if got, _ := generationConfig["maxOutputTokens"].(float64); got != 1024 {
+		t.Fatalf("maxOutputTokens = %v, want 1024; body=%s", got, body)
 	}
 }
 
@@ -564,6 +709,51 @@ func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T
 	}
 	if got, _ := tool["name"].(string); got != "web_search" {
 		t.Fatalf("tools[0].name = %q, want web_search; body=%s", got, body)
+	}
+}
+
+func TestAnthropicTesterBuild_AppendsSystemPromptAndAppliesSampling(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	temperature := 0.2
+	topP := 0.85
+	req := &TestChannelRequest{
+		Model:        "claude-test",
+		Content:      "hello",
+		SystemPrompt: "keep the answer direct",
+		Temperature:  &temperature,
+		TopP:         &topP,
+		MaxTokens:    8192,
+	}
+
+	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	if got, _ := payload["temperature"].(float64); got != 0.2 {
+		t.Fatalf("temperature = %v, want 0.2; body=%s", got, body)
+	}
+	if got, _ := payload["top_p"].(float64); got != 0.85 {
+		t.Fatalf("top_p = %v, want 0.85; body=%s", got, body)
+	}
+	if got, _ := payload["max_tokens"].(float64); got != 8192 {
+		t.Fatalf("max_tokens = %v, want 8192; body=%s", got, body)
+	}
+	system, ok := payload["system"].([]any)
+	if !ok || len(system) < 3 {
+		t.Fatalf("system invalid: %#v; body=%s", payload["system"], body)
+	}
+	first, _ := system[0].(map[string]any)
+	last, _ := system[len(system)-1].(map[string]any)
+	if !strings.Contains(first["text"].(string), "Claude Code") {
+		t.Fatalf("template system prompt should be preserved, first=%#v; body=%s", first, body)
+	}
+	if last["type"] != "text" || last["text"] != "keep the answer direct" {
+		t.Fatalf("user system prompt should be appended last, last=%#v; body=%s", last, body)
 	}
 }
 

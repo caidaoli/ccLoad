@@ -19,6 +19,7 @@
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/sse-merge.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -84,6 +85,7 @@
               <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
               <span class="chat-control__label" data-i18n="modelTest.stream">流式</span>
             </label>
+            <button id="chatAdvancedOptionsBtn" type="button" class="btn btn-secondary chat-advanced-trigger" data-action="open-chat-advanced-options" data-i18n="modelTest.chat.advanced">高级</button>
             <div id="chatExportDropdown" class="chat-export-dropdown">
               <button id="chatExportTrigger" type="button" class="btn btn-secondary chat-export-trigger" data-action="toggle-chat-export-menu" aria-haspopup="true" aria-expanded="false">
                 <svg class="chat-export-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
@@ -276,6 +278,49 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <!-- 对话高级选项弹窗 -->
+  <div id="chatAdvancedOptionsModal" class="modal">
+    <div class="modal-content modal-content--md chat-advanced-modal-content">
+      <div class="modal-header modal-header--compact">
+        <h2 class="modal-title" data-i18n="modelTest.chat.advancedTitle">高级选项</h2>
+        <button type="button" class="close-btn" data-action="close-chat-advanced-options" aria-label="Close">&times;</button>
+      </div>
+      <div class="chat-advanced-form">
+        <label class="chat-advanced-field chat-advanced-field--full">
+          <span class="chat-advanced-label" data-i18n="modelTest.chat.systemPrompt">提示词</span>
+          <textarea
+            id="chatAdvancedSystemPrompt"
+            class="chat-advanced-textarea"
+            rows="4"
+            spellcheck="false"
+            data-i18n-placeholder="modelTest.chat.systemPromptPlaceholder"
+            placeholder="追加到协议模板提示词后"
+          ></textarea>
+        </label>
+        <label class="chat-advanced-field">
+          <span class="chat-advanced-label" data-i18n="modelTest.chat.temperature">模型温度</span>
+          <input id="chatAdvancedTemperature" type="number" min="0" max="2" step="0.01" class="form-input chat-advanced-input" data-i18n-placeholder="modelTest.chat.emptyDefault" placeholder="留空使用默认">
+        </label>
+        <label class="chat-advanced-field">
+          <span class="chat-advanced-label" data-i18n="modelTest.chat.topP">Top-P</span>
+          <input id="chatAdvancedTopP" type="number" min="0" max="1" step="0.01" class="form-input chat-advanced-input" data-i18n-placeholder="modelTest.chat.emptyDefault" placeholder="留空使用默认">
+        </label>
+        <label class="chat-advanced-field">
+          <span class="chat-advanced-label" data-i18n="modelTest.chat.contextMessages">上下文数量</span>
+          <input id="chatAdvancedContextMessages" type="number" min="0" step="1" class="form-input chat-advanced-input" data-i18n-placeholder="modelTest.chat.contextMessagesPlaceholder" placeholder="0 或留空表示不限">
+        </label>
+        <label class="chat-advanced-field">
+          <span class="chat-advanced-label" data-i18n="modelTest.chat.maxTokens">最大 Token 数</span>
+          <input id="chatAdvancedMaxTokens" type="number" min="1" step="1" class="form-input chat-advanced-input" data-i18n-placeholder="modelTest.chat.emptyDefault" placeholder="留空使用默认">
+        </label>
+      </div>
+      <div class="confirm-actions confirm-actions--end">
+        <button type="button" class="btn btn-secondary" data-action="close-chat-advanced-options" data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="save-chat-advanced-options" data-i18n="common.save">保存</button>
+      </div>
+    </div>
   </div>
 
   <!-- 模型行模板 -->

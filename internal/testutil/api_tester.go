@@ -284,6 +284,82 @@ func patchBodyObject(body []byte, mutate func(map[string]any)) ([]byte, error) {
 	return sonic.Marshal(obj)
 }
 
+func hasTestSamplingOptions(req *TestChannelRequest) bool {
+	return req != nil && (req.Temperature != nil || req.TopP != nil || req.MaxTokens > 0 || strings.TrimSpace(req.SystemPrompt) != "")
+}
+
+func setOpenAILikeSampling(obj map[string]any, req *TestChannelRequest, maxTokensKey string) {
+	if req.Temperature != nil {
+		obj["temperature"] = *req.Temperature
+	}
+	if req.TopP != nil {
+		obj["top_p"] = *req.TopP
+	}
+	if req.MaxTokens > 0 {
+		obj[maxTokensKey] = req.MaxTokens
+	}
+}
+
+func appendOpenAISystemPrompt(obj map[string]any, prompt string) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	systemMessage := map[string]any{"role": "system", "content": prompt}
+	messages, _ := obj["messages"].([]any)
+	obj["messages"] = append([]any{systemMessage}, messages...)
+}
+
+func prependCodexDeveloperPrompt(obj map[string]any, prompt string) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	developerMessage := map[string]any{"role": "developer", "content": prompt}
+	input, _ := obj["input"].([]any)
+	obj["input"] = append([]any{developerMessage}, input...)
+}
+
+func setGeminiGenerationOption(generationConfig map[string]any, key string, value any) {
+	if value != nil {
+		generationConfig[key] = value
+	}
+}
+
+func applyGeminiSamplingAndSystemPrompt(obj map[string]any, req *TestChannelRequest) {
+	if req.Temperature != nil || req.TopP != nil || req.MaxTokens > 0 {
+		generationConfig, _ := obj["generationConfig"].(map[string]any)
+		if generationConfig == nil {
+			generationConfig = map[string]any{}
+		}
+		if req.Temperature != nil {
+			setGeminiGenerationOption(generationConfig, "temperature", *req.Temperature)
+		}
+		if req.TopP != nil {
+			setGeminiGenerationOption(generationConfig, "topP", *req.TopP)
+		}
+		if req.MaxTokens > 0 {
+			setGeminiGenerationOption(generationConfig, "maxOutputTokens", req.MaxTokens)
+		}
+		obj["generationConfig"] = generationConfig
+	}
+
+	if prompt := strings.TrimSpace(req.SystemPrompt); prompt != "" {
+		obj["systemInstruction"] = map[string]any{
+			"parts": []any{map[string]any{"text": prompt}},
+		}
+	}
+}
+
+func appendAnthropicSystemPrompt(obj map[string]any, prompt string) {
+	prompt = strings.TrimSpace(prompt)
+	if prompt == "" {
+		return
+	}
+	system, _ := obj["system"].([]any)
+	obj["system"] = append(system, map[string]any{"type": "text", "text": prompt})
+}
+
 func normalizeTestThinkingEffort(effort string) string {
 	switch strings.ToLower(strings.TrimSpace(effort)) {
 	case "":
@@ -330,10 +406,12 @@ func appendTestTool(obj map[string]any, tool map[string]any) {
 
 func applyOpenAITestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
-	if effort == "" && !req.BuiltinSearch {
+	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
 	return patchBodyObject(body, func(obj map[string]any) {
+		setOpenAILikeSampling(obj, req, "max_tokens")
+		appendOpenAISystemPrompt(obj, req.SystemPrompt)
 		if effort == "none" {
 			delete(obj, "reasoning_effort")
 		} else if effort != "" {
@@ -348,10 +426,12 @@ func applyOpenAITestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 
 func applyCodexTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
-	if effort == "" && !req.BuiltinSearch {
+	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
 	return patchBodyObject(body, func(obj map[string]any) {
+		setOpenAILikeSampling(obj, req, "max_output_tokens")
+		prependCodexDeveloperPrompt(obj, req.SystemPrompt)
 		if effort == "none" {
 			delete(obj, "reasoning")
 			delete(obj, "include")
@@ -371,10 +451,11 @@ func applyCodexTestOptions(body []byte, req *TestChannelRequest) ([]byte, error)
 
 func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
-	if effort == "" && !req.BuiltinSearch {
+	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
 	return patchBodyObject(body, func(obj map[string]any) {
+		applyGeminiSamplingAndSystemPrompt(obj, req)
 		if effort != "" {
 			generationConfig, _ := obj["generationConfig"].(map[string]any)
 			if generationConfig == nil {
@@ -395,10 +476,12 @@ func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 
 func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, error) {
 	effort := normalizeTestThinkingEffort(req.ThinkingEffort)
-	if effort == "" && !req.BuiltinSearch {
+	if effort == "" && !req.BuiltinSearch && !hasTestSamplingOptions(req) {
 		return body, nil
 	}
 	return patchBodyObject(body, func(obj map[string]any) {
+		setOpenAILikeSampling(obj, req, "max_tokens")
+		appendAnthropicSystemPrompt(obj, req.SystemPrompt)
 		if effort == "none" {
 			obj["thinking"] = map[string]any{"type": "disabled"}
 		} else if effort != "" {
