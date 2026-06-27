@@ -996,6 +996,51 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 	}
 }
 
+func TestStreamChatWithURLDoesNotTreatDoneEventAsFirstContent(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	cfg := &model.Config{
+		ID:           78,
+		Name:         "chat-done-is-not-content",
+		URL:          upstream.URL,
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}
+	testReq := &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		Stream:      true,
+		ChannelType: "openai",
+		Messages: []testutil.ChatMessage{
+			{Role: "user", Content: "hi"},
+		},
+	}
+
+	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/78/chat", nil))
+	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
+	if !attempt.handled {
+		t.Fatal("expected stream attempt to be handled")
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `"duration_ms"`) {
+		t.Fatalf("expected summary duration, got:\n%s", body)
+	}
+	if strings.Contains(body, `"first_byte_ms"`) {
+		t.Fatalf("DONE control event must not produce first_byte_ms, got:\n%s", body)
+	}
+}
+
 func TestHandleChannelChatDoesNotWriteSyntheticOneMillisecondURLLatency(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

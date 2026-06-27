@@ -815,6 +815,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.chat.roleAssistant': '助手',
   'modelTest.chat.sending': '发送中...',
   'modelTest.chat.error': '发送失败',
+  'modelTest.chat.refreshMessage': '刷新',
+  'modelTest.chat.editMessage': '修改',
   'modelTest.chat.selectChannel': '请先选择渠道',
   'modelTest.chat.selectModel': '请先选择模型',
   'modelTest.chat.emptyInput': '请输入消息',
