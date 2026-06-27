@@ -73,14 +73,16 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic_PreservesThinkingLevel(t *t
 	}
 	var req struct {
 		Thinking struct {
-			Type         string `json:"type"`
-			BudgetTokens int    `json:"budget_tokens"`
+			Type string `json:"type"`
 		} `json:"thinking"`
+		OutputConfig struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
 	}
 	if err := json.Unmarshal(got, &req); err != nil {
 		t.Fatalf("unmarshal anthropic request: %v", err)
 	}
-	if req.Thinking.Type != "enabled" || req.Thinking.BudgetTokens != 16384 {
+	if req.Thinking.Type != "adaptive" || req.OutputConfig.Effort != "high" {
 		t.Fatalf("expected high thinking config, got %s", got)
 	}
 }

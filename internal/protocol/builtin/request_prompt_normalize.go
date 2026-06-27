@@ -87,7 +87,15 @@ func normalizeAnthropicConversation(req anthropicMessagesRequest) (conversation,
 		conv.ToolChoice.DisableParallel = disable
 	}
 	if req.Thinking != nil && strings.TrimSpace(req.Thinking.Type) != "" {
-		conv.Thinking = req.Thinking
+		thinking := *req.Thinking
+		if req.OutputConfig != nil {
+			thinking.Effort = normalizeAnthropicOutputEffort(req.OutputConfig.Effort)
+		}
+		conv.Thinking = &thinking
+	} else if req.OutputConfig != nil {
+		if effort := normalizeAnthropicOutputEffort(req.OutputConfig.Effort); effort != "" {
+			conv.Thinking = &anthropicThinkingConfig{Type: "adaptive", Effort: effort}
+		}
 	}
 
 	if req.System != nil {

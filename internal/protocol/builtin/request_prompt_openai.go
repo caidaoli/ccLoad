@@ -228,6 +228,8 @@ func anthropicThinkingToOpenAIEffort(thinking *anthropicThinkingConfig) string {
 		return ""
 	}
 	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
+	case "adaptive":
+		return normalizeAnthropicOutputEffort(thinking.Effort)
 	case "enabled":
 		return mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens)
 	case "disabled":

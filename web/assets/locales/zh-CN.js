@@ -1286,5 +1286,5 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.customRules.helpBody': '用于改写发送给上游的 JSON 请求体字段（仅对 JSON body 生效，二进制/表单请求自动跳过）。\n\n支持两种动作：\n • 移除 (remove)：按路径删除字段\n • 覆盖 (override)：按路径设置值（不存在则创建）\n\n路径语法：点分路径 + 数字数组索引\n • 顶层字段：temperature\n • 嵌套字段：thinking.budget_tokens\n • 数组元素：messages.0.role\n\n值支持任意 JSON 字面量：\n • 数字：0.7\n • 布尔：true\n • 字符串：必须带引号 "claude-opus-4-5"\n • 对象：{"type":"adaptive"}\n • 数组：["a","b"]\n\n示例：\n 1. 强制开启自适应思考 → 动作=覆盖, 路径=thinking, 值={"type":"adaptive"}\n 2. 限制 max_tokens → 动作=覆盖, 路径=max_tokens, 值=4096\n 3. 移除 stop_sequences → 动作=移除, 路径=stop_sequences',
   'channels.customRules.anyrouterHintTitle': '系统自动注入规则（anyrouter 渠道）',
   'channels.customRules.anyrouterHintBeta': '请求头追加 anthropic-beta: context-1m-2025-08-07（可被下方自定义规则覆盖或移除）',
-  'channels.customRules.anyrouterHintThinking': '请求参数注入 thinking.type = adaptive（仅 /v1/messages 且未声明 thinking 时生效）'
+  'channels.customRules.anyrouterHintThinking': '/v1/messages 缺失 thinking 时补 thinking.type=adaptive；旧 thinking.type=enabled 会归一为 output_config.effort'
 };

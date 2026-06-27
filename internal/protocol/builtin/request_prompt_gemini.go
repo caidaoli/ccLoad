@@ -111,12 +111,18 @@ func buildGeminiGenerationConfig(conv conversation) *geminiGenerationConfig {
 }
 
 // buildGeminiThinkingConfig 把 Anthropic 顶层 thinking 映射成 Gemini thinkingConfig；
-// disabled/未设置 → 显式 thinkingBudget=0 关闭，enabled+budget_tokens → 透传预算并请求返回思考摘要。
+// disabled/未设置 → 显式 thinkingBudget=0 关闭，effort/budget → thinkingBudget。
 func buildGeminiThinkingConfig(thinking *anthropicThinkingConfig) *geminiThinkingConfig {
 	if thinking == nil {
 		return nil
 	}
 	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
+	case "adaptive":
+		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
+			b := anthropicEffortToBudget(effort)
+			return &geminiThinkingConfig{IncludeThoughts: true, ThinkingBudget: &b}
+		}
+		return nil
 	case "enabled":
 		cfg := &geminiThinkingConfig{IncludeThoughts: true}
 		if thinking.BudgetTokens > 0 {
@@ -129,6 +135,17 @@ func buildGeminiThinkingConfig(thinking *anthropicThinkingConfig) *geminiThinkin
 		return &geminiThinkingConfig{ThinkingBudget: &zero}
 	default:
 		return nil
+	}
+}
+
+func anthropicEffortToBudget(effort string) int {
+	switch normalizeAnthropicOutputEffort(effort) {
+	case "low":
+		return 1024
+	case "high":
+		return 16384
+	default:
+		return 4096
 	}
 }
 

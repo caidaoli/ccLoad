@@ -402,10 +402,8 @@ func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, er
 		if effort == "none" {
 			obj["thinking"] = map[string]any{"type": "disabled"}
 		} else if effort != "" {
-			obj["thinking"] = map[string]any{
-				"type":          "enabled",
-				"budget_tokens": testThinkingBudget(effort),
-			}
+			obj["thinking"] = map[string]any{"type": "adaptive"}
+			obj["output_config"] = map[string]any{"effort": testCodexReasoningEffort(effort)}
 		}
 		if req.BuiltinSearch {
 			appendTestTool(obj, map[string]any{

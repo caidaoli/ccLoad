@@ -381,19 +381,16 @@ func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
 	}
 }
 
-// maybeInjectAnyrouterAdaptiveThinking 为 anyrouter 渠道的 /v1/messages 请求注入 adaptive thinking。
-// Why: anyrouter 在上游侧要求显式声明 thinking.type=adaptive 才能启用自适应思考，缺失时行为不可预期。
-// How to apply: 仅对 Anthropic 渠道、名称含 anyrouter、路径为 /v1/messages 时生效。
-// 若 body 已有 thinking.type=enabled（旧格式），补丁成 adaptive 并补充 output_config.effort；
-// 若 body 尚无 thinking，直接注入 thinking.type=adaptive。
-func maybeInjectAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string, body []byte) []byte {
+// normalizeAnyrouterAdaptiveThinking 为 anyrouter 的 Anthropic /v1/messages 请求补齐 adaptive thinking。
+// 自动注入只针对 anyrouter；普通 Anthropic 渠道不做兜底改写。
+func normalizeAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string, body []byte) []byte {
 	if len(body) == 0 || cfg == nil {
 		return body
 	}
 	if cfg.GetChannelType() != util.ChannelTypeAnthropic {
 		return body
 	}
-	if !strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
+	if !isAnyrouterChannel(cfg) {
 		return body
 	}
 	if requestPath != "/v1/messages" {
@@ -411,20 +408,17 @@ func maybeInjectAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string,
 		}
 		typ, _ := thinkMap["type"].(string)
 		if typ != "enabled" {
-			// 已是 adaptive/disabled，不处理
 			return body
 		}
-		// type=enabled 被 Claude 4 系列拒绝，转换为 adaptive + output_config.effort
-		effort := "medium"
+		effort := "high"
 		if budget, ok := thinkMap["budget_tokens"].(float64); ok && budget > 0 {
-			effort = anyrouterBudgetToEffort(int(budget))
+			effort = anthropicBudgetToEffort(int(budget))
 		}
 		obj["thinking"] = map[string]string{"type": "adaptive"}
-		if _, hasOutputConfig := obj["output_config"]; !hasOutputConfig {
-			obj["output_config"] = map[string]string{"effort": effort}
-		}
+		setAnthropicOutputEffort(obj, effort)
 	} else {
 		obj["thinking"] = map[string]string{"type": "adaptive"}
+		setAnthropicOutputEffort(obj, "high")
 	}
 	newBody, err := sonic.Marshal(obj)
 	if err != nil {
@@ -433,8 +427,30 @@ func maybeInjectAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string,
 	return newBody
 }
 
-// anyrouterBudgetToEffort 把 Anthropic budget_tokens 映射成 output_config.effort 档位。
-func anyrouterBudgetToEffort(budget int) string {
+func isAnyrouterChannel(cfg *model.Config) bool {
+	if cfg == nil {
+		return false
+	}
+	haystack := strings.ToLower(cfg.Name + "\n" + cfg.URL)
+	return strings.Contains(haystack, "anyrouter")
+}
+
+func setAnthropicOutputEffort(obj map[string]any, effort string) {
+	if effort == "" {
+		return
+	}
+	outputConfig, _ := obj["output_config"].(map[string]any)
+	if outputConfig == nil {
+		outputConfig = map[string]any{}
+		obj["output_config"] = outputConfig
+	}
+	if _, exists := outputConfig["effort"]; !exists {
+		outputConfig["effort"] = effort
+	}
+}
+
+// anthropicBudgetToEffort 把旧 Anthropic budget_tokens 映射成 output_config.effort 档位。
+func anthropicBudgetToEffort(budget int) string {
 	switch {
 	case budget >= 16384:
 		return "high"
