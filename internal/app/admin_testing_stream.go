@@ -71,6 +71,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	}
 
 	// 模型重定向
+	originalModel := testReq.Model
 	if redirectModel, ok := cfg.GetRedirectModel(testReq.Model); ok && redirectModel != "" {
 		testReq.Model = redirectModel
 	}
@@ -103,10 +104,10 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		attempt := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url)
+		attempt := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url, originalModel)
 		if attempt.handled {
 			// Write chat log from stream result
-			s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult)
+			s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
 			return
 		}
 		lastResult = attempt.result
@@ -125,7 +126,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, lastResult))
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -204,6 +205,7 @@ func (s *Server) streamChatWithURL(
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, selectedURL string,
+	originalModel string,
 ) chatURLAttemptResult {
 	req, requestPlan, cancel, err := s.buildTestUpstreamRequest(c.Request.Context(), cfg, apiKey, testReq, clientProtocol, selectedURL)
 	if err != nil {
@@ -250,7 +252,7 @@ func (s *Server) streamChatWithURL(
 	}
 
 	if !isSSE {
-		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey, requestThinking)
+		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey, requestThinking, originalModel)
 		return chatURLAttemptResult{handled: true}
 	}
 
@@ -370,6 +372,7 @@ func (s *Server) streamChatNonStreamResponse(
 	cfg *model.Config,
 	apiKey string,
 	requestThinking string,
+	originalModel string,
 ) {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -393,7 +396,7 @@ func (s *Server) streamChatNonStreamResponse(
 	result = attachTestDebugData(requestPlan, resp, result)
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, requestThinking, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), 0, requestThinking, result))
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -471,7 +474,7 @@ func writeChatNonStreamSummary(c *gin.Context, result map[string]any) {
 	writeChatFrontendChunks(c, []byte("data: "+string(jsonBytes)+"\n\n"))
 }
 
-func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, apiKey string, sr *chatStreamResult) {
+func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *testutil.TestChannelRequest, apiKey string, sr *chatStreamResult, originalModel string) {
 	if sr == nil {
 		return
 	}
@@ -511,7 +514,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	if sr.debugData != nil {
 		result["debug_data"] = sr.debugData
 	}
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, testReq.Model, testReq.Model, apiKey, c.ClientIP(), 0, sr.requestThinking, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), 0, sr.requestThinking, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。

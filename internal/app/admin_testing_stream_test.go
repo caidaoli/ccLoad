@@ -663,7 +663,7 @@ func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing
 	}
 
 	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
-	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL)
+	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
 	if !attempt.handled {
 		t.Fatal("expected non-stream chat response to be handled without URL fallback")
 	}
@@ -978,7 +978,7 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 
 	done := make(chan chatURLAttemptResult, 1)
 	go func() {
-		done <- srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL)
+		done <- srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
 	}()
 
 	select {

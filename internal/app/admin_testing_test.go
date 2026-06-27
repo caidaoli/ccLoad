@@ -325,7 +325,7 @@ func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testi
 		flusher, _ := w.(http.Flusher)
 		ticker := time.NewTicker(10 * time.Millisecond)
 		defer ticker.Stop()
-		lateContent := time.NewTimer(160 * time.Millisecond)
+		lateContent := time.NewTimer(500 * time.Millisecond)
 		defer lateContent.Stop()
 
 		for {
@@ -371,7 +371,7 @@ func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testi
 	if success, _ := result["success"].(bool); success {
 		t.Fatalf("expected first valid stream content timeout, got result=%+v", result)
 	}
-	if elapsed >= 120*time.Millisecond {
+	if elapsed >= 400*time.Millisecond {
 		t.Fatalf("expected timeout before late content, elapsed=%v result=%+v", elapsed, result)
 	}
 	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {

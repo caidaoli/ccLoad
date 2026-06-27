@@ -1048,8 +1048,7 @@
 
     .thinking-effort-badge {
       min-width: 16px;
-      background: var(--primary-600);
-      color: white;
+      color: var(--primary-600);
       font-size: 0.65em;
       padding: 2px 6px;
       border-radius: 8px;
