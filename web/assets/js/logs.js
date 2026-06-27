@@ -398,11 +398,15 @@ function buildLogModelDisplay(model, actualModel, thinkingEffort) {
   }
   const title = titleParts.length > 0 ? ` title="${titleParts.join('&#10;')}"` : '';
   const redirectBadge = redirected ? '<sup class="redirect-badge">↪</sup>' : '';
+  const badgeHtml = redirectBadge || effort
+    ? `<span class="model-badges">${redirectBadge}${buildThinkingEffortBadge(effort)}</span>`
+    : '';
 
-  return `<span class="${classes.join(' ')}"${title}>
-      <span class="model-text">${escapeHtml(model)}</span>
-      ${redirectBadge}
-      ${buildThinkingEffortBadge(effort)}
+  return `<span class="model-display">
+      <span class="${classes.join(' ')}"${title}>
+        <span class="model-text">${escapeHtml(model)}</span>
+      </span>
+      ${badgeHtml}
     </span>`;
 }
 
