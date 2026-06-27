@@ -133,13 +133,13 @@ func openAIReasoningEffortToThinking(effort string) *anthropicThinkingConfig {
 	case "none":
 		return &anthropicThinkingConfig{Type: "disabled"}
 	case "minimal", "low":
-		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 1024}
+		return &anthropicThinkingConfig{Type: "adaptive", Effort: "low"}
 	case "medium", "auto":
-		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 4096}
+		return &anthropicThinkingConfig{Type: "adaptive", Effort: "medium"}
 	case "high":
-		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 16384}
+		return &anthropicThinkingConfig{Type: "adaptive", Effort: "high"}
 	default:
-		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: 4096}
+		return &anthropicThinkingConfig{Type: "adaptive", Effort: "medium"}
 	}
 }
 
@@ -173,7 +173,7 @@ func geminiThinkingConfigToThinking(cfg *geminiThinkingConfig) *anthropicThinkin
 		return &anthropicThinkingConfig{Type: "disabled"}
 	}
 	if *cfg.ThinkingBudget > 0 {
-		return &anthropicThinkingConfig{Type: "enabled", BudgetTokens: *cfg.ThinkingBudget}
+		return &anthropicThinkingConfig{Type: "adaptive", Effort: mapAnthropicBudgetToOpenAIEffort(*cfg.ThinkingBudget)}
 	}
 	return openAIReasoningEffortToThinking("medium")
 }

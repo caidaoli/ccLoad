@@ -253,7 +253,7 @@ func TestOpenAIToAnthropic_SamplingPropagation(t *testing.T) {
 	body := string(raw)
 	for _, frag := range []string{
 		`"max_tokens":2048`, `"temperature":0.3`, `"top_p":0.9`, `"top_k":40`,
-		`"stop_sequences":["stop1","stop2"]`, `"thinking":{"type":"enabled","budget_tokens":16384}`,
+		`"stop_sequences":["stop1","stop2"]`, `"thinking":{"type":"adaptive"}`, `"output_config":{"effort":"high"}`,
 	} {
 		if !strings.Contains(body, frag) {
 			t.Fatalf("expected fragment %s in body: %s", frag, body)
@@ -399,7 +399,8 @@ func TestConvertAnthropicRequestToOpenAI_PreservesThinkingEffort(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5",
 		"messages":[{"role":"user","content":[{"type":"text","text":"think hard"}]}],
-		"thinking":{"type":"enabled","budget_tokens":16384}
+		"thinking":{"type":"adaptive"},
+		"output_config":{"effort":"high"}
 	}`)
 	out, err := convertAnthropicRequestToOpenAI("gpt-5", raw, false)
 	if err != nil {
@@ -441,8 +442,8 @@ func TestNormalizeCodex_SamplingReasoningAndParallel(t *testing.T) {
 		len(conv.Sampling.Stop) != 1 || conv.Sampling.Stop[0] != "END" {
 		t.Fatalf("sampling mismatch: %+v", conv.Sampling)
 	}
-	if conv.Thinking == nil || conv.Thinking.Type != "enabled" || conv.Thinking.BudgetTokens != 16384 {
-		t.Fatalf("expected Thinking{enabled,16384} from reasoning.effort=high, got %+v", conv.Thinking)
+	if conv.Thinking == nil || conv.Thinking.Type != "adaptive" || conv.Thinking.Effort != "high" {
+		t.Fatalf("expected Thinking{adaptive,high} from reasoning.effort=high, got %+v", conv.Thinking)
 	}
 }
 
@@ -498,7 +499,8 @@ func TestConvertCodexRequestToAnthropic_FieldsPreserved(t *testing.T) {
 	for _, want := range []string{
 		`"temperature":0.3`, `"top_p":0.95`, `"max_tokens":4096`,
 		`"stop_sequences":["BYE"]`,
-		`"thinking":{"type":"enabled","budget_tokens":16384}`,
+		`"thinking":{"type":"adaptive"}`,
+		`"output_config":{"effort":"high"}`,
 		`"disable_parallel_tool_use":true`,
 	} {
 		if !strings.Contains(body, want) {

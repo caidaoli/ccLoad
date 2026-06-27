@@ -185,7 +185,7 @@ func applyCodexSampling(out *codexRequestPayload, sp *samplingParams) {
 }
 
 // buildCodexReasoningConfig 在以下情形输出 reasoning 配置：
-// 1. Anthropic 顶层 thinking.type=enabled（来自 Anthropic 客户端）
+// 1. Anthropic 顶层 thinking.type=adaptive/enabled（来自 Anthropic 客户端）
 // 2. OpenAI 顶层 reasoning_effort 非空（来自 OpenAI 客户端，优先直通枚举值）
 // 未触发返回 nil，避免给非 reasoning 模型硬塞导致上游 400。
 func buildCodexReasoningConfig(conv conversation) map[string]any {
@@ -198,7 +198,20 @@ func buildCodexReasoningConfig(conv conversation) map[string]any {
 		}
 	}
 	thinking := conv.Thinking
-	if thinking == nil || strings.ToLower(strings.TrimSpace(thinking.Type)) != "enabled" {
+	if thinking == nil {
+		return nil
+	}
+	typ := strings.ToLower(strings.TrimSpace(thinking.Type))
+	if typ == "adaptive" {
+		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
+			return map[string]any{
+				"effort":  effort,
+				"summary": "auto",
+			}
+		}
+		return nil
+	}
+	if typ != "enabled" {
 		return nil
 	}
 	return map[string]any{

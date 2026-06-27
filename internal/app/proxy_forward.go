@@ -89,8 +89,8 @@ func (s *Server) buildProxyRequest(
 	// 1. 构建完整 URL
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
 
-	// 1.5 anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking
-	body = maybeInjectAnyrouterAdaptiveThinking(cfg, requestPath, body)
+	// 1.5 anyrouter Anthropic thinking 兜底归一
+	body = normalizeAnyrouterAdaptiveThinking(cfg, requestPath, body)
 
 	// 1.6 自定义请求体规则（仅对 JSON body 生效）
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())

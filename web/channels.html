@@ -714,7 +714,7 @@
         <div class="custom-rules-anyrouter-hint-title" data-i18n="channels.customRules.anyrouterHintTitle">系统自动注入规则（anyrouter 渠道）</div>
         <ul class="custom-rules-anyrouter-hint-list">
           <li data-i18n="channels.customRules.anyrouterHintBeta">请求头追加 anthropic-beta: context-1m-2025-08-07（可被下方自定义规则覆盖或移除）</li>
-          <li data-i18n="channels.customRules.anyrouterHintThinking">请求参数注入 thinking.type = adaptive（仅 /v1/messages 且未声明 thinking 时生效）</li>
+          <li data-i18n="channels.customRules.anyrouterHintThinking">/v1/messages 缺失 thinking 时补 thinking.type=adaptive；旧 thinking.type=enabled 会归一为 output_config.effort</li>
         </ul>
       </div>
       <div class="custom-rules-panel" id="customRulesPanelHeaders">

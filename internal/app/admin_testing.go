@@ -881,10 +881,10 @@ func (s *Server) buildTestUpstreamRequest(
 		return nil, nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
 
-	// anyrouter 渠道：为 /v1/messages 自动注入 adaptive thinking（与代理链路保持一致）
+	// anyrouter Anthropic thinking 兜底归一（与代理链路保持一致）
 	if requestPlan.upstreamProtocol == "anthropic" {
 		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
-			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
+			requestPlan.requestBody = normalizeAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
 		}
 	}
 

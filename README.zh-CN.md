@@ -652,7 +652,7 @@ curl -X POST http://localhost:8080/admin/channels \
 }
 ```
 
-> **与内置逻辑的关系**：自定义规则在 anyrouter 的 `anthropic-beta` 注入**之后**生效，可覆盖或移除 beta flag；anyrouter 的 adaptive thinking 注入会检测到用户已显式设置 `thinking` 而不再覆盖。认证头无论何时都不可改写。
+> **与内置逻辑的关系**：自定义规则在 anyrouter 的 `anthropic-beta` 注入和 anyrouter adaptive thinking 兜底之后生效，可覆盖或移除这些字段。项目生成的 Anthropic 请求用 `thinking.type=adaptive` + `output_config.effort` 控制思考深度；anyrouter `/v1/messages` 额外补齐缺失 thinking 并归一旧的 `thinking.type=enabled`。认证头无论何时都不可改写。
 
 ### 批量数据管理
 

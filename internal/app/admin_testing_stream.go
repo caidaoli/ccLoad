@@ -7,7 +7,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	neturl "net/url"
 	"strings"
 	"time"
 
@@ -543,13 +542,6 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	var state any
 	frontendState := &chatFrontendStreamState{}
 	ctx := c.Request.Context()
-
-	// anyrouter 注入
-	if requestPlan.upstreamProtocol == "anthropic" {
-		if parsed, err := neturl.Parse(requestPlan.fullURL); err == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
-			requestPlan.requestBody = maybeInjectAnyrouterAdaptiveThinking(&model.Config{}, "/v1/messages", requestPlan.requestBody)
-		}
-	}
 
 	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
 	return streamTransformSSEEvents(ctx, src, c.Writer,

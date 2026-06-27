@@ -620,7 +620,7 @@ The "Advanced" button in the channel editor opens a secondary modal that lets yo
 }
 ```
 
-> **Interaction with built-in logic**: Custom rules run **after** the anyrouter `anthropic-beta` injection, so they can override or remove the beta flag. The anyrouter adaptive-thinking injection detects a user-provided `thinking` field and leaves it untouched. Authentication headers remain unmodifiable at all times.
+> **Interaction with built-in logic**: Custom rules run **after** the anyrouter `anthropic-beta` injection and anyrouter adaptive-thinking fallback, so they can override or remove those fields. Generated Anthropic requests use `thinking.type=adaptive` plus `output_config.effort` for thinking depth; anyrouter `/v1/messages` additionally fills missing thinking and normalizes legacy `thinking.type=enabled`. Authentication headers remain unmodifiable at all times.
 
 ### Batch Data Management
 

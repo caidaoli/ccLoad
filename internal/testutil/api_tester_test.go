@@ -538,11 +538,18 @@ func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T
 	if !ok {
 		t.Fatalf("thinking missing or invalid; body=%s", body)
 	}
-	if got, _ := thinking["type"].(string); got != "enabled" {
-		t.Fatalf("thinking.type = %q, want enabled; body=%s", got, body)
+	if got, _ := thinking["type"].(string); got != "adaptive" {
+		t.Fatalf("thinking.type = %q, want adaptive; body=%s", got, body)
 	}
-	if got, _ := thinking["budget_tokens"].(float64); got != 16384 {
-		t.Fatalf("budget_tokens = %v, want 16384; body=%s", got, body)
+	if _, ok := thinking["budget_tokens"]; ok {
+		t.Fatalf("thinking.budget_tokens should not be sent; body=%s", body)
+	}
+	outputConfig, ok := payload["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config missing or invalid; body=%s", body)
+	}
+	if got, _ := outputConfig["effort"].(string); got != "high" {
+		t.Fatalf("output_config.effort = %q, want high; body=%s", got, body)
 	}
 	tools, ok := payload["tools"].([]any)
 	if !ok || len(tools) != 1 {

@@ -55,9 +55,7 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 			out.StopSequences = sp.Stop
 		}
 	}
-	if conv.Thinking != nil && strings.TrimSpace(conv.Thinking.Type) != "" {
-		out.Thinking = conv.Thinking
-	}
+	applyAnthropicThinking(&out, conv.Thinking)
 	if len(systemParts) > 0 {
 		blocks, err := encodeAnthropicBlocks(systemParts)
 		if err != nil {
@@ -150,6 +148,61 @@ func encodeAnthropicRequest(model string, conv conversation, stream bool) ([]byt
 		return nil, fmt.Errorf("%w: no convertible anthropic messages", protocol.ErrUnsupportedRequestShape)
 	}
 	return marshalStableJSON(out)
+}
+
+func applyAnthropicThinking(out *anthropicMessagesRequest, thinking *anthropicThinkingConfig) {
+	if out == nil || thinking == nil {
+		return
+	}
+	typ := strings.ToLower(strings.TrimSpace(thinking.Type))
+	if typ == "" {
+		return
+	}
+	if typ == "disabled" {
+		out.Thinking = &anthropicThinkingConfig{Type: "disabled"}
+		return
+	}
+	out.Thinking = &anthropicThinkingConfig{Type: "adaptive"}
+	if effort := anthropicOutputEffortFromThinking(thinking); effort != "" {
+		out.OutputConfig = &anthropicOutputConfig{Effort: effort}
+	}
+}
+
+func anthropicOutputEffortFromThinking(thinking *anthropicThinkingConfig) string {
+	if thinking == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
+	case "adaptive":
+		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
+			return effort
+		}
+		if thinking.BudgetTokens > 0 {
+			return mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens)
+		}
+	case "enabled":
+		if thinking.BudgetTokens > 0 {
+			return mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens)
+		}
+		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
+			return effort
+		}
+		return "medium"
+	}
+	return ""
+}
+
+func normalizeAnthropicOutputEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "minimal", "low":
+		return "low"
+	case "medium", "auto":
+		return "medium"
+	case "high":
+		return "high"
+	default:
+		return ""
+	}
 }
 
 func singleAnthropicTextContent(parts []conversationPart) (string, bool) {
