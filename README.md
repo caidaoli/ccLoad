@@ -1071,6 +1071,20 @@ Project uses GitHub Actions for automated CI/CD:
 
 Issues and Pull Requests welcome!
 
+### Development Checks
+
+Use `sonic` for Go commands. Before sending a change, run the checks that match the touched area:
+
+```bash
+go test -tags sonic ./internal/...
+make race-fast      # high-value race subset
+make race           # full race suite
+make verify-web     # frontend node:test checks
+golangci-lint run ./...
+```
+
+`make race-fast` keeps the common race-sensitive packages fast enough for local iteration; use `make race` before larger or concurrency-sensitive changes. Override `RACE_P` or `RACE_PARALLEL` only when the machine needs a different parallelism cap.
+
 ### Troubleshooting
 
 **Port In Use**:

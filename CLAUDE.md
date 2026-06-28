@@ -10,8 +10,10 @@
 ```bash
 make build          # 构建(注入版本号+strip)
 make dev            # 开发运行
+go test -tags sonic ./internal/...
+make race-fast      # 高价值 race 子集
+make race           # 全量 race(可用 RACE_P/RACE_PARALLEL 调并行度)
 make verify-web     # 前端验证(含 node:test)
-go test -tags sonic -race ./internal/...
 golangci-lint run ./...   # 提交前必须零警告
 ```
 

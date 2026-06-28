@@ -1134,6 +1134,20 @@ GitHub Actions 负责自动构建和发布：
 - 提PR：Fork项目→改代码→提交PR
 - 代码规范：遵循项目现有风格，保持KISS原则
 
+### 开发验证
+
+Go 命令必须带 `sonic`。提交改动前，按影响范围跑对应验证：
+
+```bash
+go test -tags sonic ./internal/...
+make race-fast      # 高价值 race 子集
+make race           # 全量 race
+make verify-web     # 前端 node:test 验证
+golangci-lint run ./...
+```
+
+`make race-fast` 用于本地快速迭代常见并发敏感包；大改动或并发相关改动再跑 `make race`。机器并行度不合适时再覆盖 `RACE_P` 或 `RACE_PARALLEL`。
+
 ### 故障排除
 
 常见问题排查：
