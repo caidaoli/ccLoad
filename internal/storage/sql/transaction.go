@@ -30,12 +30,28 @@ func (s *SQLStore) WithTransaction(ctx context.Context, fn func(*sql.Tx) error) 
 	return withTransaction(ctx, s.db, fn)
 }
 
+type transactionRetryPolicy struct {
+	maxRetries int
+	delay      func(attempt int) time.Duration
+}
+
+var defaultTransactionRetryPolicy = transactionRetryPolicy{
+	maxRetries: 12,
+	delay: func(attempt int) time.Duration {
+		return calculateBackoffDelay(attempt, 25*time.Millisecond)
+	},
+}
+
 // withTransaction 核心事务执行逻辑（私有函数，遵循DRY原则）
 // [INFO] KISS原则：简单的事务模板，自动处理提交/回滚
 // [INFO] 安全性：panic恢复 + defer回滚双重保障
 // [FIX] P1-5: 对齐注释和实现，说明实际重试次数
 // [FIX] 后续优化: 支持 context.Deadline 限制总重试时间
 func withTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) error {
+	return withTransactionWithRetryPolicy(ctx, db, fn, defaultTransactionRetryPolicy)
+}
+
+func withTransactionWithRetryPolicy(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error, policy transactionRetryPolicy) error {
 	// 增加死锁重试机制
 	// 问题: SQLite在高并发事务下可能返回"database is deadlocked"错误
 	// 解决: 自动重试带指数退避，最多12次重试（attempt 0-11）
@@ -51,11 +67,17 @@ func withTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) er
 	// 注意：实际等待时间有 50%-99.5% 的随机抖动，避免惊群效应
 	// 注意：如果 context 有 deadline，会在到达 deadline 时提前退出
 
-	const maxRetries = 12
-	const baseDelay = 25 * time.Millisecond
-
 	// 检查 context 是否有 deadline（用于限制总重试时间）
 	deadline, hasDeadline := ctx.Deadline()
+
+	maxRetries := policy.maxRetries
+	if maxRetries <= 0 {
+		maxRetries = defaultTransactionRetryPolicy.maxRetries
+	}
+	delay := policy.delay
+	if delay == nil {
+		delay = defaultTransactionRetryPolicy.delay
+	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		err := executeSingleTransaction(ctx, db, fn)
@@ -68,7 +90,7 @@ func withTransaction(ctx context.Context, db *sql.DB, fn func(*sql.Tx) error) er
 		// BUSY错误且还有重试机会
 		if attempt < maxRetries-1 {
 			// 计算下次重试的等待时间
-			nextDelay := calculateBackoffDelay(attempt, baseDelay)
+			nextDelay := delay(attempt)
 
 			// 如果有 deadline，检查是否会超时
 			if hasDeadline {

@@ -20,6 +20,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -57,6 +58,7 @@ var (
 )
 
 func init() {
+	authPasswordHashCost = bcrypt.MinCost
 	util.SetModelsFetcherHTTPClientForTesting(sharedTestHTTPClient)
 }
 
