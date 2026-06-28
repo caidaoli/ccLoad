@@ -58,7 +58,7 @@ func TestOpenAITesterBuild_AddsSessionIDHeader(t *testing.T) {
 	}
 }
 
-func TestOpenAITesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
+func TestOpenAITesterBuild_AppliesThinkingEffortAndWebSearchOptions(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	req := &TestChannelRequest{
 		Model:          "gpt-test",
@@ -79,19 +79,15 @@ func TestOpenAITesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 	if got, _ := payload["reasoning_effort"].(string); got != "high" {
 		t.Fatalf("reasoning_effort = %q, want high; body=%s", got, body)
 	}
-	tools, ok := payload["tools"].([]any)
-	if !ok || len(tools) != 1 {
-		t.Fatalf("tools invalid: %#v; body=%s", payload["tools"], body)
-	}
-	tool, ok := tools[0].(map[string]any)
+	searchOptions, ok := payload["web_search_options"].(map[string]any)
 	if !ok {
-		t.Fatalf("tools[0] invalid: %#v; body=%s", tools[0], body)
+		t.Fatalf("web_search_options missing or invalid; body=%s", body)
 	}
-	if got, _ := tool["type"].(string); got != "web_search" {
-		t.Fatalf("tools[0].type = %q, want web_search; body=%s", got, body)
+	if len(searchOptions) != 0 {
+		t.Fatalf("web_search_options = %#v, want empty object; body=%s", searchOptions, body)
 	}
-	if got, _ := payload["tool_choice"].(string); got != "auto" {
-		t.Fatalf("tool_choice = %q, want auto; body=%s", got, body)
+	if _, ok := payload["tools"]; ok {
+		t.Fatalf("OpenAI chat search must use web_search_options, not tools; body=%s", body)
 	}
 }
 

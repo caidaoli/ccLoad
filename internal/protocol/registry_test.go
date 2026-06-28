@@ -1238,31 +1238,39 @@ func TestRegistry_TranslateRequest_CodexToOpenAI(t *testing.T) {
 	}
 }
 
-func TestRegistry_TranslateRequest_CodexToOpenAI_BuiltinWebSearch(t *testing.T) {
+func TestRegistry_TranslateRequest_CodexToOpenAI_MapsBuiltinWebSearchToOptions(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{"model":"gpt-4o","tools":[{"type":"web_search","user_location":{"type":"approximate","country":"US"}}],"tool_choice":{"type":"web_search"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	raw := []byte(`{"model":"gpt-4o","tools":[{"type":"web_search","search_context_size":"high","user_location":{"type":"approximate","country":"US"}}],"tool_choice":{"type":"web_search"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
 	got, err := reg.TranslateRequest(protocol.Codex, protocol.OpenAI, "gpt-4o", raw, false)
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	var req struct {
-		Tools      []map[string]any `json:"tools"`
-		ToolChoice map[string]any   `json:"tool_choice"`
-	}
+	var req map[string]any
 	if err := json.Unmarshal(got, &req); err != nil {
 		t.Fatalf("unmarshal translated request: %v", err)
 	}
-	if len(req.Tools) != 1 || req.Tools[0]["type"] != "web_search" {
-		t.Fatalf("unexpected builtin tools: %+v", req.Tools)
+	searchOptions, ok := req["web_search_options"].(map[string]any)
+	if !ok {
+		t.Fatalf("web_search_options missing or invalid: %s", got)
 	}
-	location, ok := req.Tools[0]["user_location"].(map[string]any)
-	if !ok || location["country"] != "US" || location["type"] != "approximate" {
-		t.Fatalf("unexpected builtin tool options: %+v", req.Tools[0])
+	if gotSize := searchOptions["search_context_size"]; gotSize != "high" {
+		t.Fatalf("search_context_size = %#v, want high; body=%s", gotSize, got)
 	}
-	if req.ToolChoice["type"] != "web_search" {
-		t.Fatalf("unexpected builtin tool choice: %+v", req.ToolChoice)
+	location, ok := searchOptions["user_location"].(map[string]any)
+	if !ok || location["type"] != "approximate" {
+		t.Fatalf("user_location missing or invalid: %#v; body=%s", searchOptions["user_location"], got)
+	}
+	approximate, ok := location["approximate"].(map[string]any)
+	if !ok || approximate["country"] != "US" {
+		t.Fatalf("user_location.approximate missing or invalid: %#v; body=%s", location["approximate"], got)
+	}
+	if _, ok := req["tools"]; ok {
+		t.Fatalf("OpenAI chat search must use web_search_options, not tools: %s", got)
+	}
+	if _, ok := req["tool_choice"]; ok {
+		t.Fatalf("OpenAI chat search must not reuse web_search tool_choice: %s", got)
 	}
 }
 

@@ -418,8 +418,7 @@ func applyOpenAITestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 			obj["reasoning_effort"] = effort
 		}
 		if req.BuiltinSearch {
-			appendTestTool(obj, map[string]any{"type": "web_search"})
-			obj["tool_choice"] = "auto"
+			obj["web_search_options"] = map[string]any{}
 		}
 	})
 }
