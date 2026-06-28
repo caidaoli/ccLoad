@@ -244,6 +244,21 @@ func TestHandleChannelChatWritesOnlyUpstreamEvents(t *testing.T) {
 			http.NotFound(w, r)
 			return
 		}
+		body, _ := io.ReadAll(r.Body)
+		var payload map[string]any
+		if err := sonic.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("unmarshal upstream request failed: %v; body=%s", err, body)
+		}
+		searchOptions, ok := payload["web_search_options"].(map[string]any)
+		if !ok {
+			t.Fatalf("OpenAI chat request missing web_search_options: %s", body)
+		}
+		if len(searchOptions) != 0 {
+			t.Fatalf("OpenAI chat web_search_options = %#v, want empty object: %s", searchOptions, body)
+		}
+		if _, ok := payload["tools"]; ok {
+			t.Fatalf("OpenAI chat search must use web_search_options, not tools: %s", body)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		close(upstreamHeaders)
@@ -277,8 +292,9 @@ func TestHandleChannelChatWritesOnlyUpstreamEvents(t *testing.T) {
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":          "gpt-4o-mini",
+		"stream":         true,
+		"builtin_search": true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
