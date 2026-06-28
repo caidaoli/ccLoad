@@ -24,6 +24,74 @@ func marshalEventSSE(event string, payload any) ([]byte, error) {
 	return append(prefix, append(body, []byte("\n\n")...)...), nil
 }
 
+type anthropicStreamUsage struct {
+	inputTokens              int64
+	outputTokens             int64
+	cacheReadInputTokens     int64
+	cacheCreationInputTokens int64
+	reasoningTokens          int64
+}
+
+func anthropicStreamUsageFromCounts(inputTokens, outputTokens, cachedTokens, cacheCreationInputTokens, reasoningTokens int64, seen bool) anthropicStreamUsage {
+	if !seen {
+		return anthropicStreamUsage{}
+	}
+	return anthropicStreamUsage{
+		inputTokens:              max(inputTokens-cachedTokens, 0),
+		outputTokens:             outputTokens,
+		cacheReadInputTokens:     cachedTokens,
+		cacheCreationInputTokens: cacheCreationInputTokens,
+		reasoningTokens:          reasoningTokens,
+	}
+}
+
+func anthropicStreamUsagePayload(usage anthropicStreamUsage) map[string]any {
+	payload := map[string]any{
+		"input_tokens":  usage.inputTokens,
+		"output_tokens": usage.outputTokens,
+	}
+	if usage.cacheReadInputTokens > 0 {
+		payload["cache_read_input_tokens"] = usage.cacheReadInputTokens
+	}
+	if usage.cacheCreationInputTokens > 0 {
+		payload["cache_creation_input_tokens"] = usage.cacheCreationInputTokens
+	}
+	if usage.reasoningTokens > 0 {
+		payload["reasoning_tokens"] = usage.reasoningTokens
+	}
+	return payload
+}
+
+func anthropicMessageStartSSE(model, responseID string, usage anthropicStreamUsage) ([]byte, error) {
+	if responseID == "" {
+		responseID = "msg-proxy"
+	}
+	return marshalEventSSE("message_start", map[string]any{
+		"type": "message_start",
+		"message": map[string]any{
+			"id":            responseID,
+			"type":          "message",
+			"role":          "assistant",
+			"content":       []any{},
+			"model":         model,
+			"stop_reason":   nil,
+			"stop_sequence": nil,
+			"usage":         anthropicStreamUsagePayload(usage),
+		},
+	})
+}
+
+func anthropicTextBlockStartSSE(index int) ([]byte, error) {
+	return marshalEventSSE("content_block_start", map[string]any{
+		"type":  "content_block_start",
+		"index": index,
+		"content_block": map[string]any{
+			"type": "text",
+			"text": "",
+		},
+	})
+}
+
 func mapOpenAIFinishReasonToGemini(reason string) string {
 	switch reason {
 	case "":

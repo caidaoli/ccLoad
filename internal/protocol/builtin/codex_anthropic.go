@@ -713,41 +713,28 @@ func handleCodexResponseCompleted(st *codexToAnthropicStreamState) ([][]byte, er
 // Callers are responsible for emitting the appropriate content_block_start
 // depending on whether the first block is text, thinking, or tool_use.
 func codexAnthropicMessageStartChunk(st *codexToAnthropicStreamState) ([]byte, error) {
-	inputTokens := int64(0)
-	cacheReadTokens := int64(0)
-	cacheCreationTokens := int64(0)
-	if st != nil && st.usage.seen {
-		inputTokens = max(st.usage.inputTokens-st.usage.cachedTokens, 0)
-		cacheReadTokens = st.usage.cachedTokens
-		cacheCreationTokens = st.usage.cacheCreationInputTokens
+	return anthropicMessageStartSSE(st.model, st.responseID, codexAnthropicStartUsage(st))
+}
+
+func codexAnthropicStartUsage(st *codexToAnthropicStreamState) anthropicStreamUsage {
+	if st == nil {
+		return anthropicStreamUsage{}
 	}
-	usage := map[string]any{
-		"input_tokens":  inputTokens,
-		"output_tokens": 0,
+	return anthropicStreamUsageFromCounts(st.usage.inputTokens, 0, st.usage.cachedTokens, st.usage.cacheCreationInputTokens, 0, st.usage.seen)
+}
+
+func codexAnthropicDeltaUsage(st *codexToAnthropicStreamState) anthropicStreamUsage {
+	if st == nil {
+		return anthropicStreamUsage{}
 	}
-	if cacheReadTokens > 0 {
-		usage["cache_read_input_tokens"] = cacheReadTokens
-	}
-	if cacheCreationTokens > 0 {
-		usage["cache_creation_input_tokens"] = cacheCreationTokens
-	}
-	msgID := st.responseID
-	if msgID == "" {
-		msgID = "msg-proxy"
-	}
-	return marshalEventSSE("message_start", map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            msgID,
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []any{},
-			"model":         st.model,
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage":         usage,
-		},
-	})
+	return anthropicStreamUsageFromCounts(
+		st.usage.inputTokens,
+		st.usage.outputTokens,
+		st.usage.cachedTokens,
+		st.usage.cacheCreationInputTokens,
+		st.usage.reasoningTokens,
+		st.usage.seen,
+	)
 }
 
 // codexAnthropicStartChunks emits message_start + text content_block_start.
@@ -757,14 +744,7 @@ func codexAnthropicStartChunks(st *codexToAnthropicStreamState) ([][]byte, error
 	if err != nil {
 		return nil, err
 	}
-	blockStart, err := marshalEventSSE("content_block_start", map[string]any{
-		"type":  "content_block_start",
-		"index": st.blockIndex,
-		"content_block": map[string]any{
-			"type": "text",
-			"text": "",
-		},
-	})
+	blockStart, err := anthropicTextBlockStartSSE(st.blockIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -791,40 +771,13 @@ func codexAnthropicStopChunks(st *codexToAnthropicStreamState) ([][]byte, error)
 		}
 		outputs = append(outputs, blockStop)
 	}
-	outputTokens := int64(0)
-	cacheReadTokens := int64(0)
-	cacheCreationTokens := int64(0)
-	reasoningTokens := int64(0)
-	if st != nil && st.usage.seen {
-		outputTokens = st.usage.outputTokens
-		cacheReadTokens = st.usage.cachedTokens
-		cacheCreationTokens = st.usage.cacheCreationInputTokens
-		reasoningTokens = st.usage.reasoningTokens
-	}
-	usage := map[string]any{
-		"output_tokens": outputTokens,
-	}
-	if cacheReadTokens > 0 {
-		usage["cache_read_input_tokens"] = cacheReadTokens
-	}
-	if cacheCreationTokens > 0 {
-		usage["cache_creation_input_tokens"] = cacheCreationTokens
-	}
-	if reasoningTokens > 0 {
-		usage["reasoning_tokens"] = reasoningTokens
-	}
-	inputTokens := int64(0)
-	if st != nil && st.usage.seen {
-		inputTokens = max(st.usage.inputTokens-st.usage.cachedTokens, 0)
-	}
-	usage["input_tokens"] = inputTokens
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   codexAnthropicStopReason(st),
 			"stop_sequence": nil,
 		},
-		"usage": usage,
+		"usage": anthropicStreamUsagePayload(codexAnthropicDeltaUsage(st)),
 	})
 	if err != nil {
 		return nil, err

@@ -70,16 +70,6 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
 	t.Parallel()
 
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "invalid_allowed_channel_ids.db")
-
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("create sqlite store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	ctx := context.Background()
 	token := &model.AuthToken{
 		Token:             "bad-channel-json-token",
 		Description:       "Bad Channel JSON Token",
@@ -87,36 +77,27 @@ func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
 		AllowedChannelIDs: []int64{1},
 		CreatedAt:         time.Now(),
 	}
-	if err := store.CreateAuthToken(ctx, token); err != nil {
-		t.Fatalf("create auth token: %v", err)
-	}
-
-	if err := store.Close(); err != nil {
-		t.Fatalf("close store: %v", err)
-	}
-
-	db, err := sql.Open("sqlite", "file:"+dbPath)
-	if err != nil {
-		t.Fatalf("open sqlite db: %v", err)
-	}
-	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET allowed_channel_ids = ? WHERE id = ?`, `{not-json`, token.ID)
-	_ = db.Close()
-	if err != nil {
-		t.Fatalf("tamper allowed_channel_ids: %v", err)
-	}
-
-	store2, err := storage.CreateSQLiteStore(dbPath)
-	if err == nil {
-		_ = store2.Close()
-		t.Fatal("expected reopen sqlite store to fail due to invalid allowed_channel_ids json")
-	}
+	assertInvalidAuthTokenJSONReturnsError(t, "invalid_allowed_channel_ids.db", "allowed_channel_ids", token)
 }
 
 func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
 	t.Parallel()
 
+	token := &model.AuthToken{
+		Token:         "bad-json-token",
+		Description:   "Bad JSON Token",
+		IsActive:      true,
+		AllowedModels: []string{"gpt-4"},
+		CreatedAt:     time.Now(),
+	}
+	assertInvalidAuthTokenJSONReturnsError(t, "invalid_allowed_models.db", "allowed_models", token)
+}
+
+func assertInvalidAuthTokenJSONReturnsError(t *testing.T, dbName, column string, token *model.AuthToken) {
+	t.Helper()
+
 	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "invalid_allowed_models.db")
+	dbPath := filepath.Join(tmp, dbName)
 
 	store, err := storage.CreateSQLiteStore(dbPath)
 	if err != nil {
@@ -125,13 +106,6 @@ func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	ctx := context.Background()
-	token := &model.AuthToken{
-		Token:         "bad-json-token",
-		Description:   "Bad JSON Token",
-		IsActive:      true,
-		AllowedModels: []string{"gpt-4"},
-		CreatedAt:     time.Now(),
-	}
 	if err := store.CreateAuthToken(ctx, token); err != nil {
 		t.Fatalf("create auth token: %v", err)
 	}
@@ -144,16 +118,16 @@ func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
-	_, err = db.ExecContext(ctx, `UPDATE auth_tokens SET allowed_models = ? WHERE id = ?`, `{not-json`, token.ID)
+	_, err = db.ExecContext(ctx, "UPDATE auth_tokens SET "+column+" = ? WHERE id = ?", `{not-json`, token.ID)
 	_ = db.Close()
 	if err != nil {
-		t.Fatalf("tamper allowed_models: %v", err)
+		t.Fatalf("tamper %s: %v", column, err)
 	}
 
 	store2, err := storage.CreateSQLiteStore(dbPath)
 	if err == nil {
 		_ = store2.Close()
-		t.Fatal("expected reopen sqlite store to fail due to invalid allowed_models json")
+		t.Fatalf("expected reopen sqlite store to fail due to invalid %s json", column)
 	}
 }
 

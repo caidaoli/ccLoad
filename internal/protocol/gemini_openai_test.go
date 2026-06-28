@@ -104,19 +104,7 @@ func TestRegistry_TranslateResponseStream_OpenAIToGemini_EventHeaderAndResponses
 			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5.5\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n",
 	}
 
-	var state any
-	var allOutput bytes.Buffer
-	for _, chunk := range chunks {
-		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gpt-5.5", nil, nil, []byte(chunk), &state)
-		if err != nil {
-			t.Fatalf("TranslateResponseStream failed: %v", err)
-		}
-		for _, b := range out {
-			allOutput.Write(b)
-		}
-	}
-
-	result := allOutput.String()
+	result := translateResponseStreamChunks(t, reg, protocol.OpenAI, protocol.Gemini, "gpt-5.5", chunks...)
 	if !strings.Contains(result, `"text":"hello"`) {
 		t.Fatalf("expected responses text delta in Gemini output, got:\n%s", result)
 	}

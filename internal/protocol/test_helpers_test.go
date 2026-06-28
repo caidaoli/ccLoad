@@ -1,9 +1,14 @@
 package protocol_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/protocol/builtin"
 )
 
 type sseEvent struct {
@@ -43,6 +48,49 @@ func parseSSEEvents(t *testing.T, stream string) []sseEvent {
 	}
 
 	return events
+}
+
+func translateResponseStreamChunks(t *testing.T, reg *protocol.Registry, source, target protocol.Protocol, model string, chunks ...string) string {
+	t.Helper()
+
+	var state any
+	var allOutput bytes.Buffer
+	for _, chunk := range chunks {
+		out, err := reg.TranslateResponseStream(context.Background(), source, target, model, nil, nil, []byte(chunk), &state)
+		if err != nil {
+			t.Fatalf("TranslateResponseStream failed: %v", err)
+		}
+		for _, b := range out {
+			allOutput.Write(b)
+		}
+	}
+	return allOutput.String()
+}
+
+func assertAnthropicStreamTextTranslation(t *testing.T, source protocol.Protocol, model string, rawReq, translatedReq []byte, textChunk, doneChunk, wantText string) {
+	t.Helper()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	var state any
+	chunks, err := reg.TranslateResponseStream(context.Background(), source, protocol.Anthropic, model, rawReq, translatedReq, []byte(textChunk), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream failed: %v", err)
+	}
+	joined := string(bytes.Join(chunks, nil))
+	if !strings.Contains(joined, "event: message_start") || !strings.Contains(joined, "event: content_block_delta") || !strings.Contains(joined, `"text":"`+wantText+`"`) {
+		t.Fatalf("unexpected translated stream chunks: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), source, protocol.Anthropic, model, rawReq, translatedReq, []byte(doneChunk), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	doneJoined := string(bytes.Join(done, nil))
+	if !strings.Contains(doneJoined, "event: message_delta") || !strings.Contains(doneJoined, "event: message_stop") {
+		t.Fatalf("unexpected anthropic done chunks: %#v", done)
+	}
 }
 
 func mustJSONMap(t *testing.T, raw []byte) map[string]any {

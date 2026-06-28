@@ -56,6 +56,41 @@ func runChannelRequestFieldValidation(
 	}
 }
 
+func runChannelRequestNonNegativeLimitValidation(t *testing.T, fieldName string, positive int, setField func(*ChannelRequest, int)) {
+	t.Helper()
+
+	t.Run("zero means unlimited", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, 0)
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("positive limit allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, positive)
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil", err)
+		}
+	})
+
+	t.Run("negative limit rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		setField(req, -1)
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error")
+		}
+		if !strings.Contains(err.Error(), fieldName) {
+			t.Fatalf("expected %s error, got %v", fieldName, err)
+		}
+	})
+}
+
 // TestChannelRequestValidation_ChannelType 测试 channel_type 白名单校验
 func TestChannelRequestValidation_ChannelType(t *testing.T) {
 	tests := []channelRequestFieldCase{
@@ -315,68 +350,14 @@ func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {
 }
 
 func TestChannelRequestValidation_RPMLimit(t *testing.T) {
-	t.Run("zero means unlimited", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.RPMLimit = 0
-
-		if err := req.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v, want nil", err)
-		}
-	})
-
-	t.Run("positive limit allowed", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.RPMLimit = 120
-
-		if err := req.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v, want nil", err)
-		}
-	})
-
-	t.Run("negative limit rejected", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.RPMLimit = -1
-
-		err := req.Validate()
-		if err == nil {
-			t.Fatal("Validate() error = nil, want error")
-		}
-		if !strings.Contains(err.Error(), "rpm_limit") {
-			t.Fatalf("expected rpm_limit error, got %v", err)
-		}
+	runChannelRequestNonNegativeLimitValidation(t, "rpm_limit", 120, func(req *ChannelRequest, value int) {
+		req.RPMLimit = value
 	})
 }
 
 func TestChannelRequestValidation_MaxConcurrency(t *testing.T) {
-	t.Run("zero means unlimited", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.MaxConcurrency = 0
-
-		if err := req.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v, want nil", err)
-		}
-	})
-
-	t.Run("positive limit allowed", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.MaxConcurrency = 2
-
-		if err := req.Validate(); err != nil {
-			t.Fatalf("Validate() error = %v, want nil", err)
-		}
-	})
-
-	t.Run("negative limit rejected", func(t *testing.T) {
-		req := newValidChannelRequest()
-		req.MaxConcurrency = -1
-
-		err := req.Validate()
-		if err == nil {
-			t.Fatal("Validate() error = nil, want error")
-		}
-		if !strings.Contains(err.Error(), "max_concurrency") {
-			t.Fatalf("expected max_concurrency error, got %v", err)
-		}
+	runChannelRequestNonNegativeLimitValidation(t, "max_concurrency", 2, func(req *ChannelRequest, value int) {
+		req.MaxConcurrency = value
 	})
 }
 

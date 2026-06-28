@@ -14,6 +14,70 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	ctx := context.Background()
 
+	createModelConfig := func(t testing.TB, name, channelType string, transforms []string, priority int, modelName string) {
+		t.Helper()
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name:               name,
+			URL:                "https://example.com",
+			Priority:           priority,
+			Enabled:            true,
+			ChannelType:        channelType,
+			ProtocolTransforms: transforms,
+			ModelEntries: []model.ModelEntry{
+				{Model: modelName},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig %s failed: %v", name, err)
+		}
+	}
+
+	assertOpenAIModelListed := func(t testing.TB, req *http.Request, wantID, failurePrefix string) {
+		t.Helper()
+		c, w := newTestContext(t, req)
+
+		server.handleListOpenAIModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		for _, item := range resp.Data {
+			if item.ID == wantID {
+				return
+			}
+		}
+		t.Fatalf("%s, got %+v", failurePrefix, resp.Data)
+	}
+
+	assertGeminiModelListed := func(t testing.TB, wantName, failurePrefix string) {
+		t.Helper()
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
+
+		server.handleListGeminiModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Models []struct {
+				Name string `json:"name"`
+			} `json:"models"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		for _, item := range resp.Models {
+			if item.Name == wantName {
+				return
+			}
+		}
+		t.Fatalf("%s, got %+v", failurePrefix, resp.Models)
+	}
+
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "g1",
 		URL:         "https://example.com",
@@ -186,44 +250,8 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	})
 
 	t.Run("handleListOpenAIModels includes transformed gemini channel", func(t *testing.T) {
-		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               "g2-oai",
-			URL:                "https://example.com",
-			Priority:           3,
-			Enabled:            true,
-			ChannelType:        "gemini",
-			ProtocolTransforms: []string{"openai"},
-			ModelEntries: []model.ModelEntry{
-				{Model: "gemini-2.5-pro"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("CreateConfig transformed gemini failed: %v", err)
-		}
-
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
-
-		server.handleListOpenAIModels(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		found := false
-		for _, item := range resp.Data {
-			if item.ID == "gemini-2.5-pro" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected transformed gemini model in openai model list, got %+v", resp.Data)
-		}
+		createModelConfig(t, "g2-oai", "gemini", []string{"openai"}, 3, "gemini-2.5-pro")
+		assertOpenAIModelListed(t, newRequest(http.MethodGet, "/v1/models", nil), "gemini-2.5-pro", "expected transformed gemini model in openai model list")
 	})
 
 	t.Run("handleListOpenAIModels returns codex view for openai upstream with codex transform", func(t *testing.T) {
@@ -270,85 +298,13 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	})
 
 	t.Run("handleListOpenAIModels returns openai view for codex upstream with openai transform", func(t *testing.T) {
-		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               "c2-openai",
-			URL:                "https://example.com",
-			Priority:           3,
-			Enabled:            true,
-			ChannelType:        "codex",
-			ProtocolTransforms: []string{"openai"},
-			ModelEntries: []model.ModelEntry{
-				{Model: "gpt-4o"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("CreateConfig codex->openai failed: %v", err)
-		}
-
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))
-
-		server.handleListOpenAIModels(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp struct {
-			Data []struct {
-				ID string `json:"id"`
-			} `json:"data"`
-		}
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		found := false
-		for _, item := range resp.Data {
-			if item.ID == "gpt-4o" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected openai-exposed codex model in list, got %+v", resp.Data)
-		}
+		createModelConfig(t, "c2-openai", "codex", []string{"openai"}, 3, "gpt-4o")
+		assertOpenAIModelListed(t, newRequest(http.MethodGet, "/v1/models", nil), "gpt-4o", "expected openai-exposed codex model in list")
 	})
 
 	t.Run("handleListGeminiModels exposes openai channels that declare gemini transform", func(t *testing.T) {
-		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               "o2-gemini",
-			URL:                "https://example.com",
-			Priority:           4,
-			Enabled:            true,
-			ChannelType:        "openai",
-			ProtocolTransforms: []string{"gemini"},
-			ModelEntries: []model.ModelEntry{
-				{Model: "gpt-4.1"},
-			},
-		})
-		if err != nil {
-			t.Fatalf("CreateConfig transformed openai failed: %v", err)
-		}
-
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1beta/models", nil))
-
-		server.handleListGeminiModels(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp struct {
-			Models []struct {
-				Name string `json:"name"`
-			} `json:"models"`
-		}
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		found := false
-		for _, item := range resp.Models {
-			if item.Name == "models/gpt-4.1" {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected transformed openai gemini model in list, got %+v", resp.Models)
-		}
+		createModelConfig(t, "o2-gemini", "openai", []string{"gemini"}, 4, "gpt-4.1")
+		assertGeminiModelListed(t, "models/gpt-4.1", "expected transformed openai gemini model in list")
 	})
 
 	t.Run("handleListOpenAIModels returns anthropic style for anthropic view", func(t *testing.T) {
