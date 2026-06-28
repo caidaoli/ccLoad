@@ -1,0 +1,5 @@
+{
+  "exclude": [
+    "web/assets/js/*.min.js"
+  ]
+}

@@ -51,6 +51,7 @@ com.ccload.service.plist
 .serena
 .gocache
 .gomodcache
+.codegraph/
 AGENTS.md
 dist
 *.bak
