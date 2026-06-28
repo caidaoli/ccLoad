@@ -94,6 +94,11 @@
                 <td>Chat Completions, suitable for OpenAI SDKs with only a base URL change.</td>
               </tr>
               <tr>
+                <td>Codex clients</td>
+                <td><code>POST /v1/responses</code></td>
+                <td>Responses-compatible endpoint for Codex-style requests and streams.</td>
+              </tr>
+              <tr>
                 <td>Gemini clients</td>
                 <td><code>POST /v1beta/models/{model}:generateContent</code></td>
                 <td>Gemini generateContent-compatible endpoint.</td>
@@ -114,6 +119,53 @@
       </div>
     </section>
 
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>Built-in Search Across Protocols</h2>
+          <p>ccLoad keeps model search requests in the native shape required by the runtime upstream protocol. It does not pretend web search is a normal function tool.</p>
+        </div>
+
+        <div class="www-data-table-wrapper">
+          <table class="www-data-table">
+            <thead>
+              <tr>
+                <th>Protocol</th>
+                <th>Search request shape</th>
+                <th>Transform behavior</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>OpenAI Chat</td>
+                <td><code>"web_search_options": {}</code></td>
+                <td>OpenAI upstreams receive native Chat Completions search options; Codex <code>web_search</code> tools are converted to this shape when forwarding to OpenAI.</td>
+              </tr>
+              <tr>
+                <td>Codex Responses</td>
+                <td><code>"tools": [{"type": "web_search"}]</code></td>
+                <td>Codex upstreams receive the Responses tool form, including search options and tool choice when present.</td>
+              </tr>
+              <tr>
+                <td>Gemini</td>
+                <td><code>"tools": [{"googleSearch": {}}]</code></td>
+                <td>Gemini channels receive the Google Search tool shape instead of OpenAI or Codex fields.</td>
+              </tr>
+              <tr>
+                <td>Anthropic</td>
+                <td><code>"web_search_20250305"</code></td>
+                <td>Anthropic channels receive the Anthropic web search tool form with the standard tool name.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="www-callout">
+          <strong>Search remains an upstream capability.</strong> If the selected provider, model or route does not support built-in search, disable search for that request or channel instead of expecting ccLoad to emulate browser access.
+        </div>
+      </div>
+    </section>
+
     <section class="www-section" id="api-examples">
       <div class="www-container">
         <div class="www-section-header">
@@ -126,6 +178,7 @@
             <button class="www-tab-button active">Anthropic</button>
             <button class="www-tab-button">OpenAI</button>
             <button class="www-tab-button">Gemini</button>
+            <button class="www-tab-button">Codex</button>
             <button class="www-tab-button">Token Count</button>
           </div>
 
@@ -164,8 +217,38 @@
   -d '{
     "model": "gpt-5",
     "messages": [
-      {"role": "user", "content": "Hello from OpenAI-compatible client"}
+      {"role": "user", "content": "Search for current ccLoad release notes"}
     ],
+    "web_search_options": {},
+    "stream": true
+  }'</code></pre>
+              </div>
+            </div>
+          </div>
+
+          <div class="www-tab-panel">
+            <div class="www-code-block">
+              <div class="www-code-header">
+                <span class="www-code-lang">bash</span>
+                <button class="www-code-copy" data-i18n="www.common.copy">Copy</button>
+              </div>
+              <div class="www-code-content">
+                <pre><code>curl -X POST http://localhost:8080/v1/responses \
+  -H "Authorization: Bearer your_ccload_token" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "gpt-5-codex",
+    "input": [
+      {
+        "type": "message",
+        "role": "user",
+        "content": [
+          {"type": "input_text", "text": "Search for current ccLoad release notes"}
+        ]
+      }
+    ],
+    "tools": [{"type": "web_search"}],
+    "tool_choice": "auto",
     "stream": true
   }'</code></pre>
               </div>

@@ -90,7 +90,7 @@ cp -r www /path/to/webroot/
 
 ### ✅ 首页（index.html）
 - Hero 区域
-- 8 个核心特性卡片
+- 核心特性卡片
 - 管理后台预览截图
 - 4 种部署方式卡片
 - 快速开始 Tab 切换
@@ -110,8 +110,9 @@ cp -r www /path/to/webroot/
 - 安全上线检查
 
 ### ✅ API 使用（usage.html）
-- Anthropic / OpenAI / Gemini / Token 统计示例
+- Anthropic / OpenAI / Gemini / Codex / Token 统计示例
 - 端点速查表
+- 多协议内置搜索映射说明
 - 管理后台使用说明
 - 渠道管理 API 与 CSV 导入导出
 
