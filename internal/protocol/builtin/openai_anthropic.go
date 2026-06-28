@@ -1109,7 +1109,7 @@ func openAIAnthropicEnsureTextBlockOpen(st *openAIToAnthropicStreamState) ([][]b
 	if st.textBlockStarted {
 		return outputs, nil
 	}
-	blockStart, err := openAIAnthropicTextBlockStart(st.blockIndex)
+	blockStart, err := anthropicTextBlockStartSSE(st.blockIndex)
 	if err != nil {
 		return nil, err
 	}
@@ -1119,52 +1119,28 @@ func openAIAnthropicEnsureTextBlockOpen(st *openAIToAnthropicStreamState) ([][]b
 }
 
 func openAIAnthropicMessageStart(st *openAIToAnthropicStreamState) ([]byte, error) {
-	inputTokens := int64(0)
-	cacheReadTokens := int64(0)
-	cacheCreationTokens := int64(0)
-	if st != nil && st.usage.seen {
-		inputTokens = max(st.usage.promptTokens-st.usage.cachedTokens, 0)
-		cacheReadTokens = st.usage.cachedTokens
-		cacheCreationTokens = st.usage.cacheCreationInputTokens
-	}
-	usage := map[string]any{
-		"input_tokens":  inputTokens,
-		"output_tokens": 0,
-	}
-	if cacheReadTokens > 0 {
-		usage["cache_read_input_tokens"] = cacheReadTokens
-	}
-	if cacheCreationTokens > 0 {
-		usage["cache_creation_input_tokens"] = cacheCreationTokens
-	}
-	msgID := st.responseID
-	if msgID == "" {
-		msgID = "msg-proxy"
-	}
-	return marshalEventSSE("message_start", map[string]any{
-		"type": "message_start",
-		"message": map[string]any{
-			"id":            msgID,
-			"type":          "message",
-			"role":          "assistant",
-			"content":       []any{},
-			"model":         st.model,
-			"stop_reason":   nil,
-			"stop_sequence": nil,
-			"usage":         usage,
-		},
-	})
+	return anthropicMessageStartSSE(st.model, st.responseID, openAIAnthropicStartUsage(st))
 }
 
-func openAIAnthropicTextBlockStart(index int) ([]byte, error) {
-	return marshalEventSSE("content_block_start", map[string]any{
-		"type":  "content_block_start",
-		"index": index,
-		"content_block": map[string]any{
-			"type": "text",
-			"text": "",
-		},
-	})
+func openAIAnthropicStartUsage(st *openAIToAnthropicStreamState) anthropicStreamUsage {
+	if st == nil {
+		return anthropicStreamUsage{}
+	}
+	return anthropicStreamUsageFromCounts(st.usage.promptTokens, 0, st.usage.cachedTokens, st.usage.cacheCreationInputTokens, 0, st.usage.seen)
+}
+
+func openAIAnthropicDeltaUsage(st *openAIToAnthropicStreamState) anthropicStreamUsage {
+	if st == nil {
+		return anthropicStreamUsage{}
+	}
+	return anthropicStreamUsageFromCounts(
+		st.usage.promptTokens,
+		st.usage.completionTokens,
+		st.usage.cachedTokens,
+		st.usage.cacheCreationInputTokens,
+		st.usage.reasoningTokens,
+		st.usage.seen,
+	)
 }
 
 func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, error) {
@@ -1172,7 +1148,7 @@ func openAIAnthropicStartChunks(st *openAIToAnthropicStreamState) ([][]byte, err
 	if err != nil {
 		return nil, err
 	}
-	blockStart, err := openAIAnthropicTextBlockStart(0)
+	blockStart, err := anthropicTextBlockStartSSE(0)
 	if err != nil {
 		return nil, err
 	}
@@ -1208,40 +1184,13 @@ func openAIAnthropicStopChunks(st *openAIToAnthropicStreamState, stopReason stri
 		}
 		outputs = append(outputs, blockStop)
 	}
-	outputTokens := int64(0)
-	cacheReadTokens := int64(0)
-	cacheCreationTokens := int64(0)
-	reasoningTokens := int64(0)
-	if st != nil && st.usage.seen {
-		outputTokens = st.usage.completionTokens
-		cacheReadTokens = st.usage.cachedTokens
-		cacheCreationTokens = st.usage.cacheCreationInputTokens
-		reasoningTokens = st.usage.reasoningTokens
-	}
-	usage := map[string]any{
-		"output_tokens": outputTokens,
-	}
-	if cacheReadTokens > 0 {
-		usage["cache_read_input_tokens"] = cacheReadTokens
-	}
-	if cacheCreationTokens > 0 {
-		usage["cache_creation_input_tokens"] = cacheCreationTokens
-	}
-	if reasoningTokens > 0 {
-		usage["reasoning_tokens"] = reasoningTokens
-	}
-	inputTokens := int64(0)
-	if st != nil && st.usage.seen {
-		inputTokens = max(st.usage.promptTokens-st.usage.cachedTokens, 0)
-	}
-	usage["input_tokens"] = inputTokens
 	messageDelta, err := marshalEventSSE("message_delta", map[string]any{
 		"type": "message_delta",
 		"delta": map[string]any{
 			"stop_reason":   stopReason,
 			"stop_sequence": nil,
 		},
-		"usage": usage,
+		"usage": anthropicStreamUsagePayload(openAIAnthropicDeltaUsage(st)),
 	})
 	if err != nil {
 		return nil, err
