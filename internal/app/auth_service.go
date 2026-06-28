@@ -65,6 +65,8 @@ type tokenCostLimit struct {
 	limitMicroUSD int64
 }
 
+var authPasswordHashCost = bcrypt.DefaultCost
+
 // NewAuthService 创建认证服务实例
 // 初始化时自动从数据库加载API访问令牌和管理员会话
 func NewAuthService(
@@ -73,7 +75,7 @@ func NewAuthService(
 	store storage.Store,
 ) *AuthService {
 	// 密码bcrypt哈希（安全存储）
-	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	passwordHash, err := bcrypt.GenerateFromPassword([]byte(password), authPasswordHashCost)
 	if err != nil {
 		log.Fatalf("[FATAL] 密码哈希失败: %v", err)
 	}

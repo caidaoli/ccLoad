@@ -4,12 +4,23 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	_ "modernc.org/sqlite"
 )
+
+var fastTransactionRetryPolicy = transactionRetryPolicy{
+	maxRetries: 12,
+	delay:      func(int) time.Duration { return 10 * time.Millisecond },
+}
+
+var instantTransactionRetryPolicy = transactionRetryPolicy{
+	maxRetries: 12,
+	delay:      func(int) time.Duration { return 0 },
+}
 
 // TestWithTransaction_ContextDeadline 验证 context.Deadline 限制总重试时间
 // [FIX] 后续优化: 防止事务重试超过 context 的 deadline
@@ -22,19 +33,17 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 		}
 		defer func() { _ = db.Close() }()
 
-		// 创建一个 500ms deadline 的 context
-		ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 		defer cancel()
 
 		attemptCount := 0
 		start := time.Now()
 
 		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
+		err = withTransactionWithRetryPolicy(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
-			// 模拟 SQLite BUSY 错误
 			return errors.New("database is locked")
-		})
+		}, fastTransactionRetryPolicy)
 
 		elapsed := time.Since(start)
 
@@ -43,8 +52,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 			t.Fatal("期望失败，但成功了")
 		}
 
-		// 验证：耗时应该接近 500ms，而不是 51.2s（12 次重试的理论最大值）
-		if elapsed > 1*time.Second {
+		if elapsed > 200*time.Millisecond {
 			t.Errorf("重试耗时过长: %v（应该在 deadline 前退出）", elapsed)
 		}
 
@@ -58,7 +66,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 			t.Errorf("重试次数过多: %d（应该在 deadline 前退出）", attemptCount)
 		}
 
-		t.Logf("✅ context.Deadline 生效: 耗时 %v, 重试 %d 次后提前退出", elapsed, attemptCount)
+		t.Logf("context.Deadline 生效: 耗时 %v, 重试 %d 次后提前退出", elapsed, attemptCount)
 	})
 
 	t.Run("没有 deadline 时应该正常重试到最大次数", func(t *testing.T) {
@@ -74,11 +82,10 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 
 		attemptCount := 0
 
-		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
+		err = withTransactionWithRetryPolicy(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			return errors.New("database is locked")
-		})
+		}, instantTransactionRetryPolicy)
 
 		// 验证：应该重试到最大次数
 		if attemptCount != 12 {
@@ -90,7 +97,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 			t.Fatal("期望失败，但成功了或错误为空")
 		}
 
-		t.Logf("✅ 无 deadline 时正常重试到最大次数: %d 次", attemptCount)
+		t.Logf("无 deadline 时正常重试到最大次数: %d 次", attemptCount)
 	})
 
 	t.Run("context 取消时应该立即退出", func(t *testing.T) {
@@ -116,14 +123,13 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 			cancel()
 		}()
 
-		// 模拟一个总是返回 BUSY 错误的事务
-		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
+		err = withTransactionWithRetryPolicy(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			if attemptCount == 1 {
 				closeFirstAttempt()
 			}
 			return errors.New("database is locked")
-		})
+		}, fastTransactionRetryPolicy)
 		closeFirstAttempt()
 
 		elapsed := time.Since(start)
@@ -138,7 +144,7 @@ func TestWithTransaction_ContextDeadline(t *testing.T) {
 			t.Fatal("期望失败，但成功了")
 		}
 
-		t.Logf("✅ context 取消时立即退出: 耗时 %v, 重试 %d 次", elapsed, attemptCount)
+		t.Logf("context 取消时立即退出: 耗时 %v, 重试 %d 次", elapsed, attemptCount)
 	})
 }
 
@@ -152,27 +158,24 @@ func TestWithTransaction_DeadlineRealWorld(t *testing.T) {
 		}
 		defer func() { _ = db.Close() }()
 
-		// 模拟 HTTP 请求的 1 秒超时
-		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
 		defer cancel()
 
 		attemptCount := 0
 		start := time.Now()
 
-		// 模拟事务操作（总是失败）
-		err = withTransaction(ctx, db, func(_ *sql.Tx) error {
+		err = withTransactionWithRetryPolicy(ctx, db, func(_ *sql.Tx) error {
 			attemptCount++
 			return errors.New("database is deadlocked")
-		})
+		}, fastTransactionRetryPolicy)
 		if err == nil {
 			t.Fatal("期望事务失败，但成功了")
 		}
 
 		elapsed := time.Since(start)
 
-		// 验证：应该在 1 秒左右退出
-		if elapsed > 1500*time.Millisecond {
-			t.Errorf("超时控制失效: 耗时 %v（应该约 1s）", elapsed)
+		if elapsed > 250*time.Millisecond {
+			t.Errorf("超时控制失效: 耗时 %v（应该在测试 deadline 附近退出）", elapsed)
 		}
 
 		// 验证：不应该达到 12 次重试
@@ -180,6 +183,21 @@ func TestWithTransaction_DeadlineRealWorld(t *testing.T) {
 			t.Errorf("重试次数过多: %d（应该被 deadline 提前终止）", attemptCount)
 		}
 
-		t.Logf("✅ HTTP 超时传播到事务层: 耗时 %v, 重试 %d 次后退出", elapsed, attemptCount)
+		t.Logf("HTTP 超时传播到事务层: 耗时 %v, 重试 %d 次后退出", elapsed, attemptCount)
 	})
+}
+
+func TestWithTransaction_DefaultRetryPolicyUsesExponentialBackoff(t *testing.T) {
+	for attempt, minDelay := range []time.Duration{
+		12 * time.Millisecond,
+		25 * time.Millisecond,
+		50 * time.Millisecond,
+	} {
+		t.Run(fmt.Sprintf("attempt_%d", attempt), func(t *testing.T) {
+			delay := defaultTransactionRetryPolicy.delay(attempt)
+			if delay < minDelay {
+				t.Fatalf("delay=%v, want >= %v", delay, minDelay)
+			}
+		})
+	}
 }

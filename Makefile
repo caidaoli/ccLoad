@@ -10,6 +10,10 @@ BINARY_NAME = ccload
 LOG_DIR = logs
 PROJECT_DIR = $(shell pwd)
 GOTAGS ?= sonic
+RACE_PACKAGES ?= ./internal/...
+RACE_FAST_PACKAGES ?= ./internal/protocol/... ./internal/app ./internal/storage/sql
+RACE_P ?= $(shell sysctl -n hw.physicalcpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+RACE_PARALLEL ?= $(RACE_P)
 
 # 版本信息
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo "dev")
@@ -23,7 +27,7 @@ LDFLAGS = -s -w \
 	-X '$(VERSION_PKG).BuildTime=$(BUILD_TIME)' \
 	-X $(VERSION_PKG).BuiltBy=$(BUILT_BY)
 
-.PHONY: help build docker-build web-test verify-web www-setup www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
+.PHONY: help build docker-build web-test verify-web race-fast race www-setup www-run www-release generate-plist inject-env-vars install-service uninstall-service start stop restart status logs clean
 
 # 默认目标
 help:
@@ -34,6 +38,8 @@ help:
 	@echo "  docker-build      - 构建 Docker 镜像（自动注入版本信息）"
 	@echo "  web-test          - 运行 web 前端 node:test 测试"
 	@echo "  verify-web        - 执行 web 前端验证"
+	@echo "  race-fast         - 运行高价值 race 测试子集"
+	@echo "  race              - 运行全量 race 测试（显式并行度）"
 	@echo "  www-setup         - 设置 www 介绍网站（复制共享资源）"
 	@echo "  www-run           - 本地运行 www 网站（使用 Python 简易服务器）"
 	@echo "  www-release       - 使用 rsync 发布 www 到 racknerd"
@@ -70,6 +76,14 @@ web-test: www-setup
 	@node --test web/assets/js/*.test.js
 
 verify-web: web-test
+
+race-fast:
+	@echo "运行 race-fast: -p $(RACE_P) -parallel $(RACE_PARALLEL) $(RACE_FAST_PACKAGES)"
+	@go test -tags "$(GOTAGS)" -race -p "$(RACE_P)" -parallel "$(RACE_PARALLEL)" $(RACE_FAST_PACKAGES)
+
+race:
+	@echo "运行全量 race: -p $(RACE_P) -parallel $(RACE_PARALLEL) $(RACE_PACKAGES)"
+	@go test -tags "$(GOTAGS)" -race -p "$(RACE_P)" -parallel "$(RACE_PARALLEL)" $(RACE_PACKAGES)
 
 # 设置 www 介绍网站（复制共享资源，使其完全独立）
 www-setup:

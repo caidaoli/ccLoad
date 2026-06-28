@@ -215,7 +215,7 @@ func (s *Server) describeChannelTestTimeoutError(start time.Time, testReq *testu
 }
 
 func testStreamParserHasFirstContent(parser usageParser) bool {
-	return parser != nil && (parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete())
+	return parser != nil && (parser.GetLastError() != nil || parser.HasStreamOutput())
 }
 
 func markTestFirstStreamContent(requestPlan *channelTestRequestPlan, result map[string]any, start time.Time) {
@@ -1248,6 +1248,13 @@ func (s *Server) parseTestNativeSSEResponse(
 	result["raw_response"] = collector.rawResponse()
 	result["upstream_response_body"] = collector.rawResponse()
 	populateTestSSEUsageAndCost(result, testReq, usageParser, collector.lastUsage)
+
+	if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, ctx.Err()); ok {
+		result["success"] = false
+		result["status_code"] = timeoutStatus
+		result["error"] = timeoutMsg
+		return result
+	}
 
 	if collector.lastErrMsg != "" {
 		// 软错误：HTTP 200 但 SSE 流携带错误事件（余额不足、配额耗尽等）
