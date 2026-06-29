@@ -203,14 +203,16 @@ func encodeOpenAIRequest(model string, conv conversation, stream bool) ([]byte, 
 	return marshalStableJSON(payload)
 }
 
-// normalizeOpenAIEffort 把 OpenAI reasoning_effort 枚举收敛到 Codex 接受的档位
-// （low/medium/high）。minimal 归入 low，auto 归入 medium。
+// normalizeOpenAIEffort 把 OpenAI reasoning_effort 枚举收敛到 Codex 接受的档位。
+// minimal 归入 low，auto 归入 medium。
 func normalizeOpenAIEffort(effort string) string {
 	switch effort {
 	case "minimal", "low":
 		return "low"
 	case "high":
 		return "high"
+	case "xhigh":
+		return "xhigh"
 	case "auto", "medium":
 		return "medium"
 	default:
