@@ -364,7 +364,10 @@ function getStreamFlagHtml(isStreaming) {
 }
 
 function normalizeThinkingEffortDisplay(value) {
-  return String(value || '').trim().toLowerCase();
+  const effort = String(value || '').trim().toLowerCase();
+  // thinking.type=disabled 表示思考关闭，等同未设置思考等级，不作为 badge 展示
+  if (effort === 'disabled') return '';
+  return effort;
 }
 
 function thinkingEffortBadgeText(value) {
