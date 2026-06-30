@@ -147,6 +147,7 @@ var imageGenerationFallbackCostByModel = map[string]imageGenerationFallbackPrici
 // - Gemini: https://ai.google.dev/gemini-api/docs/pricing
 var basePricing = map[string]ModelPricing{
 	// ========== Claude 模型 ==========
+	"claude-sonnet-5":   {InputPrice: 3.00, OutputPrice: 15.00}, // 同 claude-sonnet-4-6
 	"claude-sonnet-4-6": {InputPrice: 3.00, OutputPrice: 15.00}, // 全1M窗口统一价格
 	"claude-sonnet-4-5": {
 		InputPrice: 3.00, OutputPrice: 15.00,
@@ -1142,7 +1143,7 @@ func getOpenAICacheMultiplier(model string) float64 {
 // 桶内顺序就是匹配优先级。
 var fuzzyPrefixes = []string{
 	// Claude模型（按版本降序，具体版本优先，通用兜底在最后）
-	"claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-1",
+	"claude-sonnet-5", "claude-sonnet-4-6", "claude-sonnet-4-5", "claude-haiku-4-5", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-1",
 	"claude-sonnet-4-0", "claude-opus-4-0", "claude-3-7-sonnet",
 	"claude-3-5-sonnet", "claude-3-5-haiku",
 	"claude-3-opus", "claude-3-sonnet", "claude-3-haiku",
