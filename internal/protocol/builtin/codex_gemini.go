@@ -44,7 +44,7 @@ type codexToGeminiStreamState struct {
 	toolNameMap        map[string]string
 }
 
-func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
+func convertCodexRequestToGemini(model string, rawJSON []byte, _ bool) ([]byte, error) {
 	var req codexRequest
 	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func convertCodexRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, erro
 	if err != nil {
 		return nil, err
 	}
-	return encodeGeminiRequest(conv)
+	return encodeGeminiRequestForModel(model, conv)
 }
 
 func convertGeminiRequestToCodex(model string, rawJSON []byte, stream bool) ([]byte, error) {

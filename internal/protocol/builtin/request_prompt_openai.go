@@ -211,7 +211,7 @@ func normalizeOpenAIEffort(effort string) string {
 		return "low"
 	case "high":
 		return "high"
-	case "xhigh":
+	case "max", "xhigh":
 		return "xhigh"
 	case "auto", "medium":
 		return "medium"
@@ -241,7 +241,7 @@ func anthropicThinkingToOpenAIEffort(thinking *anthropicThinkingConfig) string {
 	}
 	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
 	case "adaptive":
-		return normalizeAnthropicOutputEffort(thinking.Effort)
+		return normalizeOpenAIEffort(normalizeAnthropicOutputEffort(thinking.Effort))
 	case "enabled":
 		return mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens)
 	case "disabled":

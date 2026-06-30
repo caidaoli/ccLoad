@@ -147,7 +147,7 @@ func convertOpenAIRequestToGemini(model string, rawJSON []byte, _ bool) ([]byte,
 	if err != nil {
 		return nil, err
 	}
-	return encodeGeminiRequest(conv)
+	return encodeGeminiRequestForModel(model, conv)
 }
 
 func convertGeminiRequestToOpenAI(model string, rawJSON []byte, stream bool) ([]byte, error) {

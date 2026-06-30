@@ -205,7 +205,7 @@ func buildCodexReasoningConfig(conv conversation) map[string]any {
 	if typ == "adaptive" {
 		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
 			return map[string]any{
-				"effort":  effort,
+				"effort":  normalizeOpenAIEffort(effort),
 				"summary": "auto",
 			}
 		}

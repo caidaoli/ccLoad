@@ -94,7 +94,7 @@ type anthropicToGeminiStreamState struct {
 	blockIgnored   bool // for redacted_thinking and future block types that should be silently ignored
 }
 
-func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, error) {
+func convertAnthropicRequestToGemini(model string, rawJSON []byte, _ bool) ([]byte, error) {
 	var req anthropicMessagesRequest
 	if err := sonic.Unmarshal(rawJSON, &req); err != nil {
 		return nil, err
@@ -104,7 +104,7 @@ func convertAnthropicRequestToGemini(_ string, rawJSON []byte, _ bool) ([]byte, 
 	if err != nil {
 		return nil, err
 	}
-	return encodeGeminiRequest(conv)
+	return encodeGeminiRequestForModel(model, conv)
 }
 
 func convertGeminiRequestToAnthropic(model string, rawJSON []byte, stream bool) ([]byte, error) {
