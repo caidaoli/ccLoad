@@ -366,6 +366,8 @@ func normalizeTestThinkingEffort(effort string) string {
 		return ""
 	case "none", "minimal", "low", "medium", "high":
 		return strings.ToLower(strings.TrimSpace(effort))
+	case "max", "xhigh":
+		return "xhigh"
 	case "auto":
 		return "medium"
 	default:
@@ -379,7 +381,7 @@ func testThinkingBudget(effort string) int {
 		return 1024
 	case "medium":
 		return 4096
-	case "high":
+	case "high", "xhigh":
 		return 16384
 	default:
 		return 0
@@ -392,8 +394,42 @@ func testCodexReasoningEffort(effort string) string {
 		return "low"
 	case "high":
 		return "high"
+	case "xhigh":
+		return "xhigh"
 	case "medium":
 		return "medium"
+	default:
+		return ""
+	}
+}
+
+func testAnthropicOutputEffort(effort string) string {
+	switch normalizeTestThinkingEffort(effort) {
+	case "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high":
+		return "high"
+	case "xhigh":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func testGeminiUsesThinkingLevel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "gemini-3")
+}
+
+func testGeminiThinkingLevel(effort string) string {
+	switch normalizeTestThinkingEffort(effort) {
+	case "minimal", "low":
+		return "low"
+	case "medium":
+		return "medium"
+	case "high", "xhigh":
+		return "high"
 	default:
 		return ""
 	}
@@ -460,9 +496,15 @@ func applyGeminiTestOptions(body []byte, req *TestChannelRequest) ([]byte, error
 			if generationConfig == nil {
 				generationConfig = map[string]any{}
 			}
-			thinkingConfig := map[string]any{"thinkingBudget": testThinkingBudget(effort)}
-			if effort != "none" {
+			thinkingConfig := map[string]any{}
+			if testGeminiUsesThinkingLevel(req.Model) && effort != "none" {
+				thinkingConfig["thinkingLevel"] = testGeminiThinkingLevel(effort)
 				thinkingConfig["includeThoughts"] = true
+			} else {
+				thinkingConfig["thinkingBudget"] = testThinkingBudget(effort)
+				if effort != "none" {
+					thinkingConfig["includeThoughts"] = true
+				}
 			}
 			generationConfig["thinkingConfig"] = thinkingConfig
 			obj["generationConfig"] = generationConfig
@@ -485,7 +527,7 @@ func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, er
 			obj["thinking"] = map[string]any{"type": "disabled"}
 		} else if effort != "" {
 			obj["thinking"] = map[string]any{"type": "adaptive"}
-			obj["output_config"] = map[string]any{"effort": testCodexReasoningEffort(effort)}
+			obj["output_config"] = map[string]any{"effort": testAnthropicOutputEffort(effort)}
 		}
 		if req.BuiltinSearch {
 			appendTestTool(obj, map[string]any{

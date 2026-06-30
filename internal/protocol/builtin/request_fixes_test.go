@@ -506,6 +506,35 @@ func TestConvertAnthropicRequestToCodex_MapsMaxOutputConfigEffortToXHigh(t *test
 	}
 }
 
+func TestConvertAnthropicRequestToGemini3_MapsMaxOutputConfigEffortToThinkingLevel(t *testing.T) {
+	raw := []byte(`{
+		"model":"gpt-5",
+		"messages":[{"role":"user","content":[{"type":"text","text":"think hard"}]}],
+		"thinking":{"type":"adaptive","display":"summarized"},
+		"output_config":{"effort":"max"}
+	}`)
+	out, err := convertAnthropicRequestToGemini("gemini-3.5-flash", raw, true)
+	if err != nil {
+		t.Fatalf("convertAnthropicRequestToGemini failed: %v", err)
+	}
+	var req geminiRequestPayload
+	if err := json.Unmarshal(out, &req); err != nil {
+		t.Fatalf("unmarshal gemini request failed: %v", err)
+	}
+	if req.GenerationConfig == nil || req.GenerationConfig.ThinkingConfig == nil {
+		t.Fatalf("expected thinkingConfig, got body %s", out)
+	}
+	if got := req.GenerationConfig.ThinkingConfig.ThinkingLevel; got != "high" {
+		t.Fatalf("thinkingLevel=%q, want high; body=%s", got, out)
+	}
+	if req.GenerationConfig.ThinkingConfig.ThinkingBudget != nil {
+		t.Fatalf("Gemini 3 thinkingConfig must not include thinkingBudget with thinkingLevel; body=%s", out)
+	}
+	if !req.GenerationConfig.ThinkingConfig.IncludeThoughts {
+		t.Fatalf("expected includeThoughts=true, body=%s", out)
+	}
+}
+
 func TestConvertAnthropicRequestToCodex_LiftsMessageSystemRole(t *testing.T) {
 	raw := []byte(`{
 		"model":"gpt-5-codex",

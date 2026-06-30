@@ -30,7 +30,7 @@ type TestChannelRequest struct {
 	Content           string            `json:"content,omitempty"`            // 可选，测试内容，默认"test"；Messages 非空时忽略
 	Messages          []ChatMessage     `json:"messages,omitempty"`           // 可选，多轮对话消息；非空时覆盖 Content
 	SystemPrompt      string            `json:"system_prompt,omitempty"`      // 可选，按协议注入的系统提示词
-	ThinkingEffort    string            `json:"thinking_effort,omitempty"`    // 可选，思考等级：none/minimal/low/medium/high
+	ThinkingEffort    string            `json:"thinking_effort,omitempty"`    // 可选，思考等级：none/minimal/low/medium/high/xhigh(max)
 	BuiltinSearch     bool              `json:"builtin_search,omitempty"`     // 可选，启用模型内置搜索工具
 	Headers           map[string]string `json:"headers,omitempty"`            // 可选，自定义请求头
 	ChannelType       string            `json:"channel_type,omitempty"`       // 可选，旧调用方兼容字段

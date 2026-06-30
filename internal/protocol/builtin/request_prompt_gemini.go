@@ -11,6 +11,10 @@ import (
 )
 
 func encodeGeminiRequest(conv conversation) ([]byte, error) {
+	return encodeGeminiRequestForModel("", conv)
+}
+
+func encodeGeminiRequestForModel(model string, conv conversation) ([]byte, error) {
 	systemParts, turns, err := splitConversationForSystem(conv)
 	if err != nil {
 		return nil, err
@@ -80,7 +84,7 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 			return nil, err
 		}
 	}
-	payload.GenerationConfig = buildGeminiGenerationConfig(conv)
+	payload.GenerationConfig = buildGeminiGenerationConfig(model, conv)
 	if len(payload.Contents) == 0 {
 		return nil, fmt.Errorf("%w: no convertible gemini contents", protocol.ErrUnsupportedRequestShape)
 	}
@@ -88,7 +92,7 @@ func encodeGeminiRequest(conv conversation) ([]byte, error) {
 }
 
 // buildGeminiGenerationConfig 聚合采样/上限参数与思考配置，未命中任何字段时返回 nil。
-func buildGeminiGenerationConfig(conv conversation) *geminiGenerationConfig {
+func buildGeminiGenerationConfig(model string, conv conversation) *geminiGenerationConfig {
 	cfg := &geminiGenerationConfig{}
 	if sp := conv.Sampling; sp != nil {
 		cfg.Temperature = sp.Temperature
@@ -102,7 +106,7 @@ func buildGeminiGenerationConfig(conv conversation) *geminiGenerationConfig {
 		}
 		cfg.Seed = sp.Seed
 	}
-	cfg.ThinkingConfig = buildGeminiThinkingConfig(conv.Thinking)
+	cfg.ThinkingConfig = buildGeminiThinkingConfig(model, conv.Thinking)
 	if cfg.ThinkingConfig == nil && cfg.Temperature == nil && cfg.TopP == nil && cfg.TopK == nil &&
 		cfg.MaxOutputTokens == nil && len(cfg.StopSequences) == 0 && cfg.Seed == nil {
 		return nil
@@ -111,26 +115,39 @@ func buildGeminiGenerationConfig(conv conversation) *geminiGenerationConfig {
 }
 
 // buildGeminiThinkingConfig 把 Anthropic 顶层 thinking 映射成 Gemini thinkingConfig；
-// disabled/未设置 → 显式 thinkingBudget=0 关闭，effort/budget → thinkingBudget。
-func buildGeminiThinkingConfig(thinking *anthropicThinkingConfig) *geminiThinkingConfig {
+// Gemini 3 使用 thinkingLevel，旧模型继续用 thinkingBudget。
+func buildGeminiThinkingConfig(model string, thinking *anthropicThinkingConfig) *geminiThinkingConfig {
 	if thinking == nil {
 		return nil
 	}
+	useLevel := geminiUsesThinkingLevel(model)
 	switch strings.ToLower(strings.TrimSpace(thinking.Type)) {
 	case "adaptive":
 		if effort := normalizeAnthropicOutputEffort(thinking.Effort); effort != "" {
+			if useLevel {
+				return &geminiThinkingConfig{IncludeThoughts: true, ThinkingLevel: geminiThinkingLevelFromEffort(effort)}
+			}
 			b := anthropicEffortToBudget(effort)
 			return &geminiThinkingConfig{IncludeThoughts: true, ThinkingBudget: &b}
 		}
 		return nil
 	case "enabled":
 		cfg := &geminiThinkingConfig{IncludeThoughts: true}
+		if useLevel {
+			if thinking.BudgetTokens > 0 {
+				cfg.ThinkingLevel = geminiThinkingLevelFromEffort(mapAnthropicBudgetToOpenAIEffort(thinking.BudgetTokens))
+			}
+			return cfg
+		}
 		if thinking.BudgetTokens > 0 {
 			b := thinking.BudgetTokens
 			cfg.ThinkingBudget = &b
 		}
 		return cfg
 	case "disabled":
+		if useLevel {
+			return nil
+		}
 		zero := 0
 		return &geminiThinkingConfig{ThinkingBudget: &zero}
 	default:
@@ -138,11 +155,27 @@ func buildGeminiThinkingConfig(thinking *anthropicThinkingConfig) *geminiThinkin
 	}
 }
 
+func geminiUsesThinkingLevel(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.Contains(model, "gemini-3")
+}
+
+func geminiThinkingLevelFromEffort(effort string) string {
+	switch normalizeAnthropicOutputEffort(effort) {
+	case "low":
+		return "low"
+	case "high", "max":
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
 func anthropicEffortToBudget(effort string) int {
 	switch normalizeAnthropicOutputEffort(effort) {
 	case "low":
 		return 1024
-	case "high":
+	case "high", "max":
 		return 16384
 	default:
 		return 4096

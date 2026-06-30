@@ -58,6 +58,65 @@ func TestRegistry_TranslateRequest_AnthropicToGemini(t *testing.T) {
 	}
 }
 
+func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{
+		"model":"gpt-5",
+		"messages":[{"role":"user","content":[{"type":"text","text":"think hard"}]}],
+		"thinking":{"type":"adaptive","display":"summarized"},
+		"output_config":{"effort":"max"}
+	}`)
+	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-3.5-flash", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got, &body); err != nil {
+		t.Fatalf("unmarshal translated request failed: %v", err)
+	}
+	generationConfig, ok := body["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected generationConfig, got: %s", got)
+	}
+	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected thinkingConfig, got: %s", got)
+	}
+	if thinkingConfig["thinkingLevel"] != "high" {
+		t.Fatalf("thinkingLevel=%v, want high; body=%s", thinkingConfig["thinkingLevel"], got)
+	}
+	if _, ok := thinkingConfig["thinkingBudget"]; ok {
+		t.Fatalf("Gemini 3 thinkingConfig must not include thinkingBudget: %s", got)
+	}
+	if thinkingConfig["includeThoughts"] != true {
+		t.Fatalf("expected includeThoughts=true, body=%s", got)
+	}
+}
+
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_MapsXHighToClaudeMax(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-5.5","messages":[{"role":"user","content":"think hard"}],"reasoning_effort":"xhigh"}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Anthropic, "claude-sonnet-4-6", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(got, &body); err != nil {
+		t.Fatalf("unmarshal translated request failed: %v", err)
+	}
+	outputConfig, ok := body["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected output_config, got: %s", got)
+	}
+	if outputConfig["effort"] != "max" {
+		t.Fatalf("output_config.effort=%v, want max; body=%s", outputConfig["effort"], got)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_GeminiToAnthropic(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

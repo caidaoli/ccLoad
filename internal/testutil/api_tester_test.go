@@ -91,6 +91,24 @@ func TestOpenAITesterBuild_AppliesThinkingEffortAndWebSearchOptions(t *testing.T
 	}
 }
 
+func TestOpenAITesterBuild_MapsMaxThinkingEffortToXHigh(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "gpt-test", Content: "hello", ThinkingEffort: "max"}
+
+	_, _, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	if got, _ := payload["reasoning_effort"].(string); got != "xhigh" {
+		t.Fatalf("reasoning_effort = %q, want xhigh; body=%s", got, body)
+	}
+}
+
 func TestOpenAITesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	temperature := 0.7
@@ -533,6 +551,35 @@ func TestGeminiTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 	}
 }
 
+func TestGeminiTesterBuild_MapsXHighToGemini3ThinkingLevel(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "gemini-3.1-pro", Content: "hello", ThinkingEffort: "xhigh"}
+
+	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	generationConfig, ok := payload["generationConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("generationConfig missing or invalid; body=%s", body)
+	}
+	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
+	if !ok {
+		t.Fatalf("thinkingConfig missing or invalid; body=%s", body)
+	}
+	if got, _ := thinkingConfig["thinkingLevel"].(string); got != "high" {
+		t.Fatalf("thinkingLevel = %q, want high; body=%s", got, body)
+	}
+	if _, ok := thinkingConfig["thinkingBudget"]; ok {
+		t.Fatalf("Gemini 3 thinkingConfig must not include thinkingBudget; body=%s", body)
+	}
+}
+
 func TestGeminiTesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
 	cfg := &model.Config{URL: "https://api.example.com"}
 	temperature := 0.5
@@ -705,6 +752,28 @@ func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T
 	}
 	if got, _ := tool["name"].(string); got != "web_search" {
 		t.Fatalf("tools[0].name = %q, want web_search; body=%s", got, body)
+	}
+}
+
+func TestAnthropicTesterBuild_MapsXHighThinkingEffortToMax(t *testing.T) {
+	cfg := &model.Config{URL: "https://api.example.com"}
+	req := &TestChannelRequest{Model: "claude-test", Content: "hello", ThinkingEffort: "xhigh"}
+
+	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal body failed: %v; body=%s", err, body)
+	}
+	outputConfig, ok := payload["output_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("output_config missing or invalid; body=%s", body)
+	}
+	if got, _ := outputConfig["effort"].(string); got != "max" {
+		t.Fatalf("output_config.effort = %q, want max; body=%s", got, body)
 	}
 }
 

@@ -201,7 +201,7 @@ func normalizeAnthropicOutputEffort(effort string) string {
 	case "high":
 		return "high"
 	case "max", "xhigh":
-		return "xhigh"
+		return "max"
 	default:
 		return ""
 	}

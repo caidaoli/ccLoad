@@ -828,6 +828,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.chat.thinkingLow': '低',
   'modelTest.chat.thinkingMedium': '中',
   'modelTest.chat.thinkingHigh': '高',
+  'modelTest.chat.thinkingXHighMax': '最高 (xhigh/max)',
   'modelTest.chat.statsFirstByte': '首字',
   'modelTest.chat.statsDuration': '耗时',
   'modelTest.chat.builtinSearch': '模型内置搜索',
