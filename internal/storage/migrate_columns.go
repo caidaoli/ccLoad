@@ -529,3 +529,9 @@ func ensureAPIKeysDisabled(ctx context.Context, db *sql.DB, dialect Dialect) err
 		"TINYINT NOT NULL DEFAULT 0",
 		"INTEGER NOT NULL DEFAULT 0")
 }
+
+func ensureAPIKeysNote(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "api_keys", "note",
+		"VARCHAR(512) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}

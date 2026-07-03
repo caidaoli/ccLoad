@@ -19,7 +19,8 @@ import (
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
 	Name                  string                    `json:"name" binding:"required"`
-	APIKey                string                    `json:"api_key" binding:"required"`
+	APIKey                string                    `json:"api_key"`
+	APIKeys               []ChannelAPIKeyRequest    `json:"api_keys,omitempty"`
 	ChannelType           string                    `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
 	ProtocolTransformMode string                    `json:"protocol_transform_mode,omitempty"`
 	ProtocolTransforms    []string                  `json:"protocol_transforms,omitempty"`
@@ -36,6 +37,46 @@ type ChannelRequest struct {
 	CostMultiplier        float64                   `json:"cost_multiplier"`  // 成本倍率（默认1，0=免费，>=0）
 	CustomRequestRules    *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
 	ProxyURL              string                    `json:"proxy_url,omitempty"` // 渠道级代理（http/https/socks5/socks5h）
+}
+
+// ChannelAPIKeyRequest describes one submitted API key and its admin-only note.
+type ChannelAPIKeyRequest struct {
+	APIKey string `json:"api_key"`
+	Note   string `json:"note,omitempty"`
+}
+
+const maxAPIKeyNoteLength = 512
+
+func (cr *ChannelRequest) normalizeAPIKeys() []ChannelAPIKeyRequest {
+	if len(cr.APIKeys) > 0 {
+		keys := make([]ChannelAPIKeyRequest, 0, len(cr.APIKeys))
+		for _, item := range cr.APIKeys {
+			apiKey := strings.TrimSpace(item.APIKey)
+			if apiKey == "" {
+				continue
+			}
+			keys = append(keys, ChannelAPIKeyRequest{
+				APIKey: apiKey,
+				Note:   strings.TrimSpace(item.Note),
+			})
+		}
+		return keys
+	}
+
+	legacyKeys := util.ParseAPIKeys(cr.APIKey)
+	keys := make([]ChannelAPIKeyRequest, 0, len(legacyKeys))
+	for _, apiKey := range legacyKeys {
+		keys = append(keys, ChannelAPIKeyRequest{APIKey: apiKey})
+	}
+	return keys
+}
+
+func apiKeyStrings(keys []ChannelAPIKeyRequest) []string {
+	values := make([]string, 0, len(keys))
+	for _, key := range keys {
+		values = append(values, key.APIKey)
+	}
+	return values
 }
 
 func validateChannelBaseURL(raw string) (string, error) {
@@ -116,9 +157,23 @@ func (cr *ChannelRequest) Validate() error {
 	if strings.TrimSpace(cr.Name) == "" {
 		return fmt.Errorf("name cannot be empty")
 	}
-	if strings.TrimSpace(cr.APIKey) == "" {
+	apiKeys := cr.normalizeAPIKeys()
+	if len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
 	}
+	for i, key := range apiKeys {
+		if strings.ContainsAny(key.APIKey, "\x00\r\n") {
+			return fmt.Errorf("api_keys[%d].api_key contains illegal characters", i)
+		}
+		if len(key.Note) > maxAPIKeyNoteLength {
+			return fmt.Errorf("api_keys[%d].note is too long (max %d bytes)", i, maxAPIKeyNoteLength)
+		}
+		if strings.Contains(key.Note, "\x00") {
+			return fmt.Errorf("api_keys[%d].note contains illegal characters", i)
+		}
+	}
+	cr.APIKeys = apiKeys
+	cr.APIKey = strings.Join(apiKeyStrings(apiKeys), ",")
 	if len(cr.Models) == 0 {
 		return fmt.Errorf("models cannot be empty")
 	}

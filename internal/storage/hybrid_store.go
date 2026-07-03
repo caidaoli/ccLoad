@@ -377,6 +377,18 @@ func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64
 	return nil
 }
 
+func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
+	if err := h.mysql.UpdateAPIKeyNotes(ctx, channelID, notesByIndex); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("UpdateAPIKeyNotes", func() error {
+		return h.sqlite.UpdateAPIKeyNotes(ctx, channelID, notesByIndex)
+	})
+
+	return nil
+}
+
 func (h *HybridStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
 	if err := h.mysql.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
 		return err
