@@ -871,6 +871,12 @@ func TestClassify400Error(t *testing.T) {
 			reason:       "包含 api key 特征应判定为 Key 级错误",
 		},
 		{
+			name:         "gemini_api_key_not_valid",
+			responseBody: []byte(`{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}`),
+			expected:     ErrorLevelKey,
+			reason:       "Gemini 无效 API Key 应判定为 Key 级错误并触发 Key 冷却",
+		},
+		{
 			name:         "generic_message_mentions_api_key",
 			responseBody: []byte(`{"error": {"message": "Gateway rejected request; check API key configuration in dashboard"}}`),
 			expected:     ErrorLevelChannel,
