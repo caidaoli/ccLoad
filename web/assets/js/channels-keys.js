@@ -10,6 +10,63 @@ function parseKeys(input) {
   return [...new Set(keys)];
 }
 
+function normalizeInlineKeyRow(row) {
+  if (row && typeof row === 'object') {
+    return {
+      api_key: String(row.api_key || '').trim(),
+      note: String(row.note || '').trim()
+    };
+  }
+  return {
+    api_key: String(row || '').trim(),
+    note: ''
+  };
+}
+
+function makeInlineKeyRow(apiKey = '', note = '') {
+  return normalizeInlineKeyRow({ api_key: apiKey, note });
+}
+
+function normalizeInlineKeyTableData() {
+  inlineKeyTableData = inlineKeyTableData.map(normalizeInlineKeyRow);
+}
+
+function getInlineKeyValue(index) {
+  return normalizeInlineKeyRow(inlineKeyTableData[index]).api_key;
+}
+
+function getInlineKeyRows() {
+  normalizeInlineKeyTableData();
+  return inlineKeyTableData;
+}
+
+function getInlineKeyValues() {
+  return getInlineKeyRows().map(row => row.api_key);
+}
+
+function getValidInlineKeyRows() {
+  return getInlineKeyRows().filter(row => row.api_key);
+}
+
+function updateInlineKeyHiddenInput() {
+  const hiddenInput = document.getElementById('channelApiKey');
+  if (hiddenInput) {
+    hiddenInput.value = getInlineKeyValues().filter(Boolean).join(',');
+  }
+}
+
+function setInlineKeyTableDataFromAPI(apiKeys) {
+  inlineKeyTableData = (apiKeys || []).map(item => {
+    if (item && typeof item === 'object') {
+      return makeInlineKeyRow(item.api_key || '', item.note || '');
+    }
+    return makeInlineKeyRow(item || '', '');
+  });
+  if (inlineKeyTableData.length === 0) {
+    inlineKeyTableData = [makeInlineKeyRow()];
+  }
+}
+
 function calculateVisibleRange(totalItems) {
   const { ROW_HEIGHT, BUFFER_SIZE, CONTAINER_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
   const { scrollTop } = virtualScrollState;
@@ -37,7 +94,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
 
   if (visibleStart > 0) {
     const topSpacer = document.createElement('tr');
-    topSpacer.innerHTML = `<td colspan="4" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
+    topSpacer.innerHTML = `<td colspan="5" style="height: ${visibleStart * ROW_HEIGHT}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(topSpacer);
   }
 
@@ -50,7 +107,7 @@ function renderVirtualRows(tbody, visibleStart, visibleEnd, filteredIndices) {
   if (visibleEnd < filteredIndices.length) {
     const bottomSpacer = document.createElement('tr');
     const bottomHeight = (filteredIndices.length - visibleEnd) * ROW_HEIGHT;
-    bottomSpacer.innerHTML = `<td colspan="4" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
+    bottomSpacer.innerHTML = `<td colspan="5" style="height: ${bottomHeight}px; padding: 0; border: none;"></td>`;
     tbody.appendChild(bottomSpacer);
   }
 }
@@ -110,20 +167,24 @@ function buildActionsHtml(index) {
  * @returns {HTMLElement} 表格行元素
  */
 function createKeyRow(index) {
-  const key = inlineKeyTableData[index];
+  const keyRow = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  inlineKeyTableData[index] = keyRow;
   const isSelected = selectedKeyIndices.has(index);
 
   // 准备模板数据
   const rowData = {
     index: index,
     displayIndex: index + 1,
-    key: key || '',
+    key: keyRow.api_key || '',
+    note: keyRow.note || '',
     inputType: inlineKeyVisible ? 'text' : 'password',
     cooldownHtml: buildCooldownHtml(index),
     actionsHtml: buildActionsHtml(index),
     mobileLabelKey: window.t('channels.modal.apiKey'),
+    mobileLabelNote: window.t('channels.modal.keyNote'),
     mobileLabelStatus: window.t('common.status'),
-    mobileLabelActions: window.t('common.actions')
+    mobileLabelActions: window.t('common.actions'),
+    notePlaceholder: window.t('channels.keyNotePlaceholder')
   };
 
   // 使用模板引擎渲染
@@ -280,10 +341,7 @@ function initKeyTableEventDelegation() {
       markChannelFormDirty();
 
       // Update hidden input
-      const hiddenInput = document.getElementById('channelApiKey');
-      if (hiddenInput) {
-        hiddenInput.value = inlineKeyTableData.join(',');
-      }
+      updateInlineKeyHiddenInput();
     }
   });
 
@@ -315,12 +373,18 @@ function initKeyTableEventDelegation() {
     if (input) {
       const index = parseInt(input.dataset.index);
       updateInlineKey(index, input.value);
+      return;
+    }
+    const noteInput = e.target.closest('.inline-key-note-input');
+    if (noteInput) {
+      const index = parseInt(noteInput.dataset.index);
+      updateInlineKeyNote(index, noteInput.value);
     }
   });
 
   // 处理输入框焦点样式
   tbody.addEventListener('focusin', (e) => {
-    const input = e.target.closest('.inline-key-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input');
     if (input) {
       input.style.borderColor = 'var(--primary-500)';
       input.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)';
@@ -330,7 +394,7 @@ function initKeyTableEventDelegation() {
   });
 
   tbody.addEventListener('focusout', (e) => {
-    const input = e.target.closest('.inline-key-input');
+    const input = e.target.closest('.inline-key-input, .inline-key-note-input');
     if (input) {
       input.style.borderColor = 'var(--neutral-300)';
       input.style.boxShadow = 'none';
@@ -374,11 +438,11 @@ function renderInlineKeyTable() {
   const keyCount = document.getElementById('inlineKeyCount');
   const virtualScrollHint = document.getElementById('virtualScrollHint');
 
+  normalizeInlineKeyTableData();
   tbody.innerHTML = '';
   keyCount.textContent = inlineKeyTableData.length;
 
-  const hiddenInput = document.getElementById('channelApiKey');
-  hiddenInput.value = inlineKeyTableData.join(',');
+  updateInlineKeyHiddenInput();
 
   // 初始化事件委托
   initKeyTableEventDelegation();
@@ -490,15 +554,23 @@ function toggleInlineKeyVisibility() {
 
 function updateInlineKey(index, value) {
   const nextValue = value.trim();
-  if (inlineKeyTableData[index] === nextValue) return;
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  if (row.api_key === nextValue) return;
 
-  inlineKeyTableData[index] = nextValue;
+  row.api_key = nextValue;
+  inlineKeyTableData[index] = row;
   markChannelFormDirty();
+  updateInlineKeyHiddenInput();
+}
 
-  const hiddenInput = document.getElementById('channelApiKey');
-  if (hiddenInput) {
-    hiddenInput.value = inlineKeyTableData.join(',');
-  }
+function updateInlineKeyNote(index, value) {
+  const nextValue = value.trim();
+  const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
+  if (row.note === nextValue) return;
+
+  row.note = nextValue;
+  inlineKeyTableData[index] = row;
+  markChannelFormDirty();
 }
 
 async function testSingleKey(keyIndex, testButton) {
@@ -517,7 +589,7 @@ async function testSingleKey(keyIndex, testButton) {
   }
 
   const firstModel = models[0];
-  const apiKey = inlineKeyTableData[keyIndex];
+  const apiKey = getInlineKeyValue(keyIndex);
 
   if (!apiKey || !apiKey.trim()) {
     alert(window.t('channels.emptyKeyCannotTest'));
@@ -576,7 +648,7 @@ async function refreshKeyCooldownStatus() {
     const apiKeys = (await fetchDataWithAuth(`/admin/channels/${editingChannelId}/keys`)) || [];
 
     if (inlineKeyTableData.length === 0) {
-      inlineKeyTableData = [''];
+      inlineKeyTableData = [makeInlineKeyRow()];
     }
 
     const now = Date.now();
@@ -593,7 +665,8 @@ async function refreshKeyCooldownStatus() {
       metaByKey.set(key, { remainingMs, disabled });
     });
 
-    currentChannelKeyCooldowns = inlineKeyTableData.map((key, index) => {
+    currentChannelKeyCooldowns = getInlineKeyRows().map((row, index) => {
+      const key = row.api_key;
       const meta = metaByKey.get(key);
       return {
         key_index: index,
@@ -624,7 +697,7 @@ async function refreshKeyCooldownStatus() {
  * @param {number} index - Key在数据数组中的索引
  */
 function copyKeyToClipboard(index) {
-  const keyText = inlineKeyTableData[index];
+  const keyText = getInlineKeyValue(index);
   if (!keyText) return;
 
   window.copyToClipboard(keyText).then(() => {
@@ -814,12 +887,12 @@ function confirmInlineKeyImport() {
     return;
   }
 
-  const existingKeys = new Set(inlineKeyTableData);
+  const existingKeys = new Set(getInlineKeyValues().filter(Boolean));
   let addedCount = 0;
 
   newKeys.forEach(key => {
     if (!existingKeys.has(key)) {
-      inlineKeyTableData.push(key);
+      inlineKeyTableData.push(makeInlineKeyRow(key));
       existingKeys.add(key);
       addedCount++;
     }
@@ -926,7 +999,7 @@ function updateExportPreview() {
 function getSelectedKeys() {
   return Array.from(selectedKeyIndices)
     .sort((a, b) => a - b)
-    .map(index => inlineKeyTableData[index])
+    .map(index => getInlineKeyValue(index))
     .filter(key => key); // 过滤掉空值
 }
 

@@ -481,6 +481,7 @@
                     </div>
                   </th>
                   <th data-i18n="channels.tableApiKey">API Key</th>
+                  <th style="width: 220px;" data-i18n="channels.tableApiKeyNote">备注</th>
                   <th style="width: 200px;">
                     <select id="keyStatusFilter" class="modal-inline-select" data-change-action="filter-keys-by-status"
                       style="width: 100%; padding: 4px 8px; border: 1px solid var(--surface-border-strong); border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; background: var(--field-bg); color: var(--neutral-900);">
@@ -1046,6 +1047,11 @@
         <input type="{{inputType}}" value="{{key}}" class="inline-key-input modal-inline-input" data-index="{{index}}"
           style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-family: 'Monaco', 'Menlo', 'Courier New', monospace; font-size: 13px; transition: all 0.2s;">
       </td>
+      <td class="inline-key-col-note" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelNote}}">
+        <input type="text" value="{{note}}" class="inline-key-note-input modal-inline-input" data-index="{{index}}"
+          placeholder="{{notePlaceholder}}"
+          style="width: 100%; padding: 4px 7px; border: 1px solid var(--neutral-300); border-radius: 6px; font-size: 13px; transition: all 0.2s;">
+      </td>
       <td class="inline-key-col-status" style="padding: 4px 8px;" data-mobile-label="{{mobileLabelStatus}}">{{{cooldownHtml}}}</td>
       <td class="inline-key-col-actions" style="padding: 4px 8px; text-align: center;" data-mobile-label="{{mobileLabelActions}}">{{{actionsHtml}}}</td>
     </tr>
@@ -1053,7 +1059,7 @@
 
   <template id="tpl-key-empty">
     <tr>
-      <td colspan="4" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
+      <td colspan="5" style="padding: 30px; text-align: center; color: var(--neutral-500); font-size: 14px;">
         {{message}}
       </td>
     </tr>

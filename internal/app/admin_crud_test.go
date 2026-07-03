@@ -1041,6 +1041,85 @@ func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	assertKey(2, "sk-new", false)
 }
 
+func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createPayload := ChannelRequest{
+		Name: "key-notes",
+		URL:  "https://api.example.com",
+		APIKeys: []ChannelAPIKeyRequest{
+			{APIKey: "sk-primary", Note: "primary"},
+			{APIKey: "sk-backup", Note: "backup"},
+		},
+		Priority: 10,
+		Models:   []model.ModelEntry{{Model: "model-1"}},
+		Enabled:  true,
+	}
+
+	createCtx, createW := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", createPayload))
+	server.handleCreateChannel(createCtx)
+	if createW.Code != http.StatusCreated {
+		t.Fatalf("create channel status=%d body=%s", createW.Code, createW.Body.String())
+	}
+	createResp := mustParseAPIResponse[*model.Config](t, createW.Body.Bytes())
+	if createResp.Data == nil {
+		t.Fatalf("create response missing channel: %s", createW.Body.String())
+	}
+	channelID := createResp.Data.ID
+
+	readCtx, readW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+strconv.FormatInt(channelID, 10)+"/keys", nil))
+	server.handleGetChannelKeys(readCtx, channelID)
+	if readW.Code != http.StatusOK {
+		t.Fatalf("get keys status=%d body=%s", readW.Code, readW.Body.String())
+	}
+	readResp := mustParseAPIResponse[[]*model.APIKey](t, readW.Body.Bytes())
+	if len(readResp.Data) != 2 || readResp.Data[0].Note != "primary" || readResp.Data[1].Note != "backup" {
+		t.Fatalf("created key notes = %#v, want primary/backup", readResp.Data)
+	}
+
+	cooldownUntil := time.Now().Add(15 * time.Minute).Truncate(time.Second)
+	if err := store.SetKeyCooldown(ctx, channelID, 1, cooldownUntil); err != nil {
+		t.Fatalf("set key cooldown: %v", err)
+	}
+
+	updatePayload := ChannelRequest{
+		Name: "key-notes",
+		URL:  "https://api.example.com",
+		APIKeys: []ChannelAPIKeyRequest{
+			{APIKey: "sk-primary", Note: "primary-renamed"},
+			{APIKey: "sk-backup", Note: "backup-renamed"},
+		},
+		Priority: 10,
+		Models:   []model.ModelEntry{{Model: "model-1"}},
+		Enabled:  true,
+	}
+	updateCtx, updateW := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(channelID, 10), updatePayload))
+	updateCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channelID, 10)}}
+	server.handleUpdateChannel(updateCtx, channelID)
+	if updateW.Code != http.StatusOK {
+		t.Fatalf("update channel status=%d body=%s", updateW.Code, updateW.Body.String())
+	}
+
+	keys, err := store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		t.Fatalf("get keys after update: %v", err)
+	}
+	if len(keys) != 2 {
+		t.Fatalf("len(keys)=%d, want 2", len(keys))
+	}
+	if keys[0].APIKey != "sk-primary" || keys[0].Note != "primary-renamed" {
+		t.Fatalf("keys[0]=%+v, want sk-primary with updated note", keys[0])
+	}
+	if keys[1].APIKey != "sk-backup" || keys[1].Note != "backup-renamed" {
+		t.Fatalf("keys[1]=%+v, want sk-backup with updated note", keys[1])
+	}
+	if keys[1].CooldownUntil != cooldownUntil.Unix() {
+		t.Fatalf("key cooldown after note-only update=%d, want %d", keys[1].CooldownUntil, cooldownUntil.Unix())
+	}
+}
+
 func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

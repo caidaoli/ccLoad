@@ -78,6 +78,44 @@ func TestAPIKey_UpdateStrategy(t *testing.T) {
 	}
 }
 
+func TestAPIKey_NotesPersistAndUpdate(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "notes.db")
+
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "notes-test-channel")
+
+	keys := []*model.APIKey{
+		{ChannelID: channelID, KeyIndex: 0, APIKey: "sk-key-0", Note: "primary", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: channelID, KeyIndex: 1, APIKey: "sk-key-1", Note: "backup", KeyStrategy: model.KeyStrategySequential},
+	}
+	if err := store.CreateAPIKeysBatch(ctx, keys); err != nil {
+		t.Fatalf("create api keys batch: %v", err)
+	}
+
+	got, err := store.GetAPIKey(ctx, channelID, 1)
+	if err != nil {
+		t.Fatalf("get api key: %v", err)
+	}
+	if got.Note != "backup" {
+		t.Fatalf("note after create = %q, want %q", got.Note, "backup")
+	}
+
+	if err := store.UpdateAPIKeyNotes(ctx, channelID, map[int]string{0: "primary-updated", 1: ""}); err != nil {
+		t.Fatalf("update api key notes: %v", err)
+	}
+
+	allKeys, err := store.GetAPIKeys(ctx, channelID)
+	if err != nil {
+		t.Fatalf("get api keys: %v", err)
+	}
+	if allKeys[0].Note != "primary-updated" || allKeys[1].Note != "" {
+		t.Fatalf("notes after update = [%q, %q], want [%q, %q]",
+			allKeys[0].Note, allKeys[1].Note, "primary-updated", "")
+	}
+}
+
 func TestAPIKey_Delete(t *testing.T) {
 	t.Parallel()
 
