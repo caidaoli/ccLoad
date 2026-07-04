@@ -823,6 +823,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.chat.selectChannel': '请先选择渠道',
   'modelTest.chat.selectModel': '请先选择模型',
   'modelTest.chat.emptyInput': '请输入消息',
+  'modelTest.chat.uploadImage': '上传图片',
   'modelTest.chat.thinking': '思考',
   'modelTest.chat.thinkingLevel': '思考等级',
   'modelTest.chat.thinkingDefault': '默认',

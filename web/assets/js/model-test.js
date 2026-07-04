@@ -145,69 +145,70 @@ const MODEL_MODE_HEAD = `
 
 const i18nText = window.i18nText;
 
-const ALLOWED_CHAT_MARKDOWN_TAGS = new Set([
-  'A', 'BLOCKQUOTE', 'BR', 'CODE', 'DEL', 'EM', 'HR', 'LI', 'OL', 'P',
-  'PRE', 'STRONG', 'TABLE', 'TBODY', 'TD', 'TH', 'THEAD', 'TR', 'UL'
-]);
-const DROP_CHAT_MARKDOWN_CONTENT_TAGS = new Set(['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT', 'EMBED', 'LINK', 'META']);
+const CHAT_MARKDOWN_ALLOWED_TAGS = [
+  'a', 'blockquote', 'br', 'code', 'del', 'em', 'hr', 'li', 'ol', 'p',
+  'pre', 'strong', 'table', 'tbody', 'td', 'th', 'thead', 'tr', 'ul'
+];
+const CHAT_MARKDOWN_ALLOWED_ATTR = ['align', 'class', 'href', 'title'];
 
 function sanitizeChatMarkdownHTML(html) {
+  if (typeof window.DOMPurify === 'undefined' || typeof window.DOMPurify.sanitize !== 'function') {
+    return null;
+  }
+
+  const clean = window.DOMPurify.sanitize(String(html || ''), {
+    ALLOWED_TAGS: CHAT_MARKDOWN_ALLOWED_TAGS,
+    ALLOWED_ATTR: CHAT_MARKDOWN_ALLOWED_ATTR,
+    ALLOW_ARIA_ATTR: false,
+    ALLOW_DATA_ATTR: false
+  });
+
+  return normalizeChatMarkdownHTML(clean);
+}
+
+function normalizeChatMarkdownHTML(html) {
   const template = document.createElement('template');
   template.innerHTML = String(html || '');
-  sanitizeChatMarkdownNode(template.content);
+
+  template.content.querySelectorAll('a').forEach((anchor) => {
+    if (!isSafeChatMarkdownHref(anchor.getAttribute('href'))) {
+      anchor.removeAttribute('href');
+      return;
+    }
+    anchor.setAttribute('target', '_blank');
+    anchor.setAttribute('rel', 'noopener noreferrer');
+  });
+
+  template.content.querySelectorAll('[href]').forEach((element) => {
+    if (element.tagName.toUpperCase() !== 'A') {
+      element.removeAttribute('href');
+    }
+  });
+
+  template.content.querySelectorAll('[title]').forEach((element) => {
+    if (element.tagName.toUpperCase() !== 'A') {
+      element.removeAttribute('title');
+    }
+  });
+
+  template.content.querySelectorAll('[class]').forEach((element) => {
+    const className = element.getAttribute('class') || '';
+    const isLanguageClass = /^language-[a-z0-9_-]+$/i.test(className);
+    if (element.tagName.toUpperCase() !== 'CODE' || !isLanguageClass) {
+      element.removeAttribute('class');
+    }
+  });
+
+  template.content.querySelectorAll('[align]').forEach((element) => {
+    const tagName = element.tagName.toUpperCase();
+    const isTableCell = tagName === 'TD' || tagName === 'TH';
+    const isAllowedAlign = /^(left|center|right)$/i.test(element.getAttribute('align') || '');
+    if (!isTableCell || !isAllowedAlign) {
+      element.removeAttribute('align');
+    }
+  });
+
   return template.innerHTML;
-}
-
-function sanitizeChatMarkdownNode(root) {
-  Array.from(root.childNodes || []).forEach((node) => {
-    if (node.nodeType !== 1) return;
-
-    const tagName = node.tagName.toUpperCase();
-    if (DROP_CHAT_MARKDOWN_CONTENT_TAGS.has(tagName)) {
-      node.remove();
-      return;
-    }
-
-    sanitizeChatMarkdownNode(node);
-    if (!ALLOWED_CHAT_MARKDOWN_TAGS.has(tagName)) {
-      unwrapChatMarkdownElement(node);
-      return;
-    }
-
-    sanitizeChatMarkdownAttributes(node, tagName);
-  });
-}
-
-function unwrapChatMarkdownElement(element) {
-  const parent = element.parentNode;
-  if (!parent) {
-    element.remove();
-    return;
-  }
-  while (element.firstChild) {
-    parent.insertBefore(element.firstChild, element);
-  }
-  element.remove();
-}
-
-function sanitizeChatMarkdownAttributes(element, tagName) {
-  Array.from(element.attributes || []).forEach((attr) => {
-    const name = attr.name.toLowerCase();
-    const value = attr.value;
-    const allowed =
-      (tagName === 'A' && ((name === 'href' && isSafeChatMarkdownHref(value)) || name === 'title')) ||
-      ((tagName === 'TD' || tagName === 'TH') && name === 'align' && /^(left|center|right)$/i.test(value)) ||
-      (tagName === 'CODE' && name === 'class' && /^language-[a-z0-9_-]+$/i.test(value));
-
-    if (!allowed) {
-      element.removeAttribute(attr.name);
-    }
-  });
-
-  if (tagName === 'A' && element.hasAttribute('href')) {
-    element.setAttribute('target', '_blank');
-    element.setAttribute('rel', 'noopener noreferrer');
-  }
 }
 
 function isSafeChatMarkdownHref(href) {
@@ -222,19 +223,274 @@ function isSafeChatMarkdownHref(href) {
   }
 }
 
+const CHAT_CODE_LANGUAGE_META = {
+  bash: { icon: 'SH', name: 'Bash' },
+  c: { icon: 'C', name: 'C' },
+  cpp: { icon: 'C++', name: 'Cpp' },
+  cxx: { icon: 'C++', name: 'Cpp' },
+  'c++': { icon: 'C++', name: 'Cpp' },
+  css: { icon: 'CSS', name: 'CSS' },
+  go: { icon: 'Go', name: 'Go' },
+  html: { icon: 'HTML', name: 'HTML' },
+  http: { icon: 'HTTP', name: 'HTTP' },
+  java: { icon: 'Java', name: 'Java' },
+  js: { icon: 'JS', name: 'JavaScript' },
+  javascript: { icon: 'JS', name: 'JavaScript' },
+  json: { icon: '{}', name: 'JSON' },
+  markdown: { icon: 'MD', name: 'Markdown' },
+  md: { icon: 'MD', name: 'Markdown' },
+  php: { icon: 'PHP', name: 'PHP' },
+  py: { icon: 'Py', name: 'Python' },
+  python: { icon: 'Py', name: 'Python' },
+  rust: { icon: 'Rs', name: 'Rust' },
+  rs: { icon: 'Rs', name: 'Rust' },
+  shell: { icon: 'SH', name: 'Shell' },
+  sh: { icon: 'SH', name: 'Shell' },
+  sql: { icon: 'SQL', name: 'SQL' },
+  ts: { icon: 'TS', name: 'TypeScript' },
+  typescript: { icon: 'TS', name: 'TypeScript' },
+  xml: { icon: 'XML', name: 'XML' },
+  yaml: { icon: 'YAML', name: 'YAML' },
+  yml: { icon: 'YAML', name: 'YAML' }
+};
+
+const CHAT_CODE_COPY_ICON_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
+
+function enhanceChatCodeBlocks(target) {
+  if (!target || typeof target.querySelectorAll !== 'function') return;
+
+  let hasCodeBlock = false;
+  target.querySelectorAll('pre > code').forEach((codeEl) => {
+    const preEl = codeEl.parentElement;
+    if (!preEl || preEl.closest('.chat-code-block')) return;
+
+    hasCodeBlock = true;
+    const blockEl = document.createElement('div');
+    blockEl.className = 'chat-code-block';
+
+    const headerEl = document.createElement('div');
+    headerEl.className = 'chat-code-header';
+
+    const languageMeta = getChatCodeLanguageMeta(codeEl);
+    const languageEl = document.createElement('span');
+    languageEl.className = 'chat-code-language';
+    languageEl.setAttribute('aria-label', languageMeta.name);
+    const languageIconEl = document.createElement('span');
+    languageIconEl.className = 'chat-code-language-icon';
+    languageIconEl.setAttribute('aria-hidden', 'true');
+    languageIconEl.textContent = languageMeta.icon;
+    const languageNameEl = document.createElement('span');
+    languageNameEl.className = 'chat-code-language-name';
+    languageNameEl.textContent = languageMeta.name;
+    languageEl.appendChild(languageIconEl);
+    languageEl.appendChild(languageNameEl);
+    headerEl.appendChild(languageEl);
+
+    const actionsEl = document.createElement('div');
+    actionsEl.className = 'chat-code-actions';
+    actionsEl.appendChild(createChatCodeCopyButton(codeEl));
+    headerEl.appendChild(actionsEl);
+
+    const bodyEl = document.createElement('div');
+    bodyEl.className = 'chat-code-body';
+
+    const lineNumbersEl = buildChatCodeLineNumbers(codeEl);
+    preEl.classList.add('chat-code-pre');
+
+    preEl.parentNode.insertBefore(blockEl, preEl);
+    bodyEl.appendChild(lineNumbersEl);
+    bodyEl.appendChild(preEl);
+    blockEl.appendChild(headerEl);
+    blockEl.appendChild(bodyEl);
+  });
+
+  const bubbleEl = target.closest?.('.chat-message');
+  if (bubbleEl && hasCodeBlock) {
+    bubbleEl.classList.add('chat-message--has-code');
+  }
+}
+
+function getChatCodeLanguageMeta(codeEl) {
+  const rawLanguage = getChatCodeLanguage(codeEl);
+  if (!rawLanguage) return { icon: '{}', name: 'Code' };
+
+  const normalized = rawLanguage.trim().toLowerCase();
+  if (normalized === 'http' && isChatHeaderOnlyCode(codeEl?.textContent || '')) {
+    return { icon: 'HDR', name: 'Headers' };
+  }
+  if (CHAT_CODE_LANGUAGE_META[normalized]) {
+    return CHAT_CODE_LANGUAGE_META[normalized];
+  }
+
+  const name = rawLanguage
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+  return {
+    icon: rawLanguage.slice(0, 4),
+    name
+  };
+}
+
+function isChatHeaderOnlyCode(text) {
+  const lines = String(text || '').split('\n').map((line) => line.trim()).filter(Boolean);
+  if (lines.length === 0) return false;
+  return lines.every((line) => /^[A-Za-z0-9-]+:\s*\S/.test(line));
+}
+
+function getChatCodeLanguage(codeEl) {
+  if (!codeEl || !codeEl.classList) return '';
+
+  for (const className of codeEl.classList) {
+    const match = className.match(/^language-(.+)$/i);
+    if (match && match[1]) {
+      return match[1];
+    }
+  }
+
+  return '';
+}
+
+function createChatCodeCopyButton(codeEl) {
+  const btn = document.createElement('button');
+  const label = i18nText('common.copy', '复制');
+  btn.type = 'button';
+  btn.className = 'chat-code-copy-btn';
+  btn.setAttribute('aria-label', label);
+  btn.title = label;
+  btn.innerHTML = CHAT_CODE_COPY_ICON_HTML;
+  btn._chatCodeText = getChatCodePlainText(codeEl);
+  return btn;
+}
+
+function getChatCodePlainText(codeEl) {
+  return String(codeEl?.textContent || '').replace(/\n$/, '');
+}
+
+function shouldHighlightChatCodeWithHljs(codeEl) {
+  const language = getChatCodeLanguage(codeEl).trim().toLowerCase();
+  if (!language) return true;
+  if (!window.hljs || typeof window.hljs.getLanguage !== 'function') return true;
+  return Boolean(window.hljs.getLanguage(language));
+}
+
+function enhanceChatCodeSyntax(codeEl) {
+  const language = getChatCodeLanguage(codeEl).trim().toLowerCase();
+  const text = codeEl?.textContent || '';
+  if (language === 'http' && isChatHeaderOnlyCode(text)) {
+    renderChatHeaderCode(codeEl);
+    return;
+  }
+  if (language === 'bash' || language === 'sh' || language === 'shell') {
+    enhanceChatShellCode(codeEl);
+  }
+}
+
+function renderChatHeaderCode(codeEl) {
+  const source = getChatCodePlainText(codeEl);
+  codeEl.textContent = '';
+  source.split('\n').forEach((line, index) => {
+    if (index > 0) codeEl.appendChild(document.createTextNode('\n'));
+    const match = line.match(/^(\s*)([A-Za-z0-9-]+)(\s*:\s*)(.*)$/);
+    if (!match) {
+      codeEl.appendChild(document.createTextNode(line));
+      return;
+    }
+    const [, indent, key, separator, value] = match;
+    codeEl.appendChild(document.createTextNode(indent));
+    codeEl.appendChild(createChatCodeToken('chat-header-key', key));
+    codeEl.appendChild(document.createTextNode(separator));
+    codeEl.appendChild(createChatCodeToken('chat-header-value', value));
+  });
+}
+
+function enhanceChatShellCode(codeEl) {
+  const walker = document.createTreeWalker(codeEl, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (node.parentElement?.closest?.('.hljs-string')) {
+        return NodeFilter.FILTER_REJECT;
+      }
+      return /(\bcurl\b|https?:\/\/|--?[A-Za-z][\w-]*)/.test(node.nodeValue || '')
+        ? NodeFilter.FILTER_ACCEPT
+        : NodeFilter.FILTER_REJECT;
+    }
+  });
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  nodes.forEach((node) => {
+    node.parentNode.replaceChild(buildChatShellTokenFragment(node.nodeValue || ''), node);
+  });
+}
+
+function buildChatShellTokenFragment(text) {
+  const fragment = document.createDocumentFragment();
+  const pattern = /(https?:\/\/[^\s\\'"]+|\bcurl\b|--?[A-Za-z][\w-]*)/g;
+  let offset = 0;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    if (match.index > offset) {
+      fragment.appendChild(document.createTextNode(text.slice(offset, match.index)));
+    }
+    const token = match[0];
+    const className = token === 'curl'
+      ? 'chat-shell-command'
+      : token.startsWith('http')
+        ? 'chat-shell-url'
+        : 'chat-shell-flag';
+    fragment.appendChild(createChatCodeToken(className, token));
+    offset = match.index + token.length;
+  }
+  if (offset < text.length) {
+    fragment.appendChild(document.createTextNode(text.slice(offset)));
+  }
+  return fragment;
+}
+
+function createChatCodeToken(className, text) {
+  const tokenEl = document.createElement('span');
+  tokenEl.className = className;
+  tokenEl.textContent = text;
+  return tokenEl;
+}
+
+function buildChatCodeLineNumbers(codeEl) {
+  const gutterEl = document.createElement('div');
+  gutterEl.className = 'chat-code-line-numbers';
+  gutterEl.setAttribute('aria-hidden', 'true');
+
+  const source = String(codeEl?.textContent || '').replace(/\n$/, '');
+  const lineCount = Math.max(1, source.split('\n').length);
+  for (let lineNumber = 1; lineNumber <= lineCount; lineNumber++) {
+    const lineEl = document.createElement('span');
+    lineEl.textContent = String(lineNumber);
+    gutterEl.appendChild(lineEl);
+  }
+
+  return gutterEl;
+}
+
 function renderChatMarkdown(target, markdown, options = {}) {
   if (!target) return;
 
+  target.closest?.('.chat-message')?.classList.remove('chat-message--has-code');
   const text = String(markdown || '');
   if (typeof window.marked !== 'undefined' && typeof window.marked.parse === 'function') {
-    target.innerHTML = sanitizeChatMarkdownHTML(window.marked.parse(text));
+    const sanitizedHTML = sanitizeChatMarkdownHTML(window.marked.parse(text));
+    if (sanitizedHTML === null) {
+      target.textContent = text;
+    } else {
+      target.innerHTML = sanitizedHTML;
+    }
 
     // 对代码块应用语法高亮
     if (typeof window.hljs !== 'undefined') {
       target.querySelectorAll('pre code').forEach((block) => {
-        window.hljs.highlightElement(block);
+        if (shouldHighlightChatCodeWithHljs(block)) {
+          window.hljs.highlightElement(block);
+        }
+        enhanceChatCodeSyntax(block);
       });
     }
+    enhanceChatCodeBlocks(target);
   } else {
     target.textContent = text;
   }
@@ -3439,11 +3695,11 @@ function handleChatPaste(event) {
 function renderChatUserContent(target, content) {
   if (!target) return;
   if (typeof content === 'string') {
-    target.textContent = content;
+    renderChatMarkdown(target, content);
     return;
   }
   if (!Array.isArray(content)) {
-    target.textContent = String(content || '');
+    renderChatMarkdown(target, String(content || ''));
     return;
   }
   target.textContent = '';
@@ -3451,7 +3707,7 @@ function renderChatUserContent(target, content) {
     if (!block || typeof block !== 'object') return;
     if (block.type === 'text') {
       const textEl = document.createElement('div');
-      textEl.textContent = String(block.text || '');
+      renderChatMarkdown(textEl, String(block.text || ''));
       target.appendChild(textEl);
       return;
     }
@@ -3465,6 +3721,9 @@ function renderChatUserContent(target, content) {
       target.appendChild(img);
     }
   });
+  if (target.querySelector('.chat-code-block')) {
+    target.closest?.('.chat-message')?.classList.add('chat-message--has-code');
+  }
 }
 
 function cloneChatMessageContent(content) {
@@ -3742,6 +4001,7 @@ function appendChatBubble(role, content, messageIndex = null) {
 
   const contentEl = document.createElement('div');
   contentEl.className = 'chat-message-content';
+  bubble.appendChild(contentEl);
 
   if (content) {
     if (role === 'assistant') {
@@ -3750,8 +4010,6 @@ function appendChatBubble(role, content, messageIndex = null) {
       renderChatUserContent(contentEl, content);
     }
   }
-
-  bubble.appendChild(contentEl);
 
   const footerEl = document.createElement('div');
   footerEl.className = 'chat-message-footer';
@@ -3788,6 +4046,34 @@ function createChatActionButton(action, label, iconHTML, extraClass = '') {
   btn.title = label;
   btn.innerHTML = iconHTML;
   return btn;
+}
+
+function copyChatText(text) {
+  if (window.copyToClipboard) {
+    return window.copyToClipboard(text);
+  }
+  const clipboard = typeof navigator !== 'undefined' && navigator.clipboard;
+  if (clipboard && typeof clipboard.writeText === 'function') {
+    return clipboard.writeText(text);
+  }
+  return Promise.reject(new Error('copy failed'));
+}
+
+function markChatCopyButtonCopied(btn, copiedClass) {
+  if (!btn) return;
+  const copiedLabel = i18nText('channels.batchRefreshCopied', '已复制');
+  const originalTitle = btn.title;
+  const originalLabel = btn.getAttribute('aria-label');
+  btn.classList.add(copiedClass);
+  btn.title = copiedLabel;
+  btn.setAttribute('aria-label', copiedLabel);
+  setTimeout(() => {
+    btn.classList.remove(copiedClass);
+    btn.title = originalTitle;
+    if (originalLabel) {
+      btn.setAttribute('aria-label', originalLabel);
+    }
+  }, 1500);
 }
 
 /**
@@ -3962,6 +4248,8 @@ function exportChatAsMarkdown() {
 function buildChatExportHTML() {
   const messagesEl = document.getElementById('chatMessages');
   if (!messagesEl || !messagesEl.innerHTML.trim()) return '';
+  const exportMessagesEl = messagesEl.cloneNode(true);
+  exportMessagesEl.querySelectorAll('.chat-code-actions').forEach((element) => element.remove());
   const esc = (typeof window.escapeHtml === 'function')
     ? window.escapeHtml
     : (s) => String(s || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -3975,13 +4263,15 @@ function buildChatExportHTML() {
 
   const css = `:root{color-scheme:light dark}body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;max-width:880px;margin:0 auto;padding:24px 16px;line-height:1.6;color:#1f2937;background:#f9fafb}header{border-bottom:1px solid #e5e7eb;padding-bottom:12px;margin-bottom:20px}header h1{margin:0 0 8px;font-size:20px}header .meta{font-size:13px;color:#6b7280}header .meta span{margin-right:14px}.chat-message{display:flex;margin:12px 0}.chat-message--user{justify-content:flex-end}.chat-message--assistant{justify-content:flex-start}.chat-message-content{max-width:78%;padding:10px 14px;border-radius:12px;word-break:break-word}.chat-message--user .chat-message-content{background:#3b82f6;color:#fff;border-bottom-right-radius:4px;white-space:pre-wrap}.chat-message--assistant .chat-message-content{background:#fff;color:#1f2937;border:1px solid #e5e7eb;border-bottom-left-radius:4px}.chat-message-footer{display:none}.chat-message--assistant .chat-message-content pre{background:#f3f4f6;border:1px solid #e5e7eb;padding:10px;border-radius:6px;overflow-x:auto;font-size:13px}.chat-message--assistant .chat-message-content code{background:#f3f4f6;padding:0 4px;border-radius:4px;font-family:ui-monospace,"SFMono-Regular","Menlo",monospace;font-size:13px}.chat-message--assistant .chat-message-content pre code{background:transparent;padding:0}.chat-message--assistant .chat-message-content p{margin:6px 0}.chat-message--assistant .chat-message-content table{border-collapse:collapse;margin:8px 0}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border:1px solid #e5e7eb;padding:6px 10px}.chat-image-preview-thumb{max-width:240px;max-height:240px;border-radius:8px;margin:4px 0;display:block}.chat-thinking{background:#fef3c7;border:1px solid #fcd34d;border-radius:8px;padding:8px 12px;margin:8px 0;font-size:13px}.chat-thinking-summary{font-weight:600;cursor:pointer}.chat-thinking-content{white-space:pre-wrap;margin-top:6px;color:#78350f}.chat-cursor{display:none}@media (prefers-color-scheme:dark){body{color:#e5e7eb;background:#0f172a}header{border-bottom-color:#1f2937}header .meta{color:#9ca3af}.chat-message--assistant .chat-message-content{background:#1e293b;color:#e5e7eb;border-color:#334155}.chat-message--assistant .chat-message-content pre,.chat-message--assistant .chat-message-content code{background:#0f172a;border-color:#334155}.chat-message--assistant .chat-message-content th,.chat-message--assistant .chat-message-content td{border-color:#334155}.chat-thinking{background:rgba(251,191,36,.1);border-color:#b45309;color:#fcd34d}.chat-thinking-content{color:#fde68a}}@media print{body{background:#fff}}`;
 
+  const codeBlockCss = `.chat-message--assistant.chat-message--has-code .chat-message-content{max-width:min(92%,980px);width:100%}.chat-code-block{max-width:100%;margin:10px 0;overflow:hidden;border:1px solid #d8dee8;border-radius:8px;background:#f8fafc;box-shadow:0 1px 2px rgba(15,23,42,.04)}.chat-code-header{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:34px;padding:0 14px;border-bottom:1px solid #d8dee8;background:#eef2f6;color:#526071;font-size:12px;font-weight:600;line-height:1}.chat-code-language{display:inline-flex;align-items:center;gap:6px;flex:1 1 auto;min-width:0;overflow:hidden}.chat-code-language-icon{display:inline-flex;align-items:center;justify-content:center;min-width:26px;height:20px;padding:0 5px;border:1px solid #cbd5e1;border-radius:5px;background:#fff;color:#334155;font-family:ui-monospace,"Cascadia Code","Source Code Pro",monospace;font-size:10px;font-weight:700;line-height:1}.chat-code-language-name{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.chat-code-body{display:flex;min-width:0;background:#f8fafc}.chat-code-line-numbers{flex:0 0 auto;padding:14px 10px 14px 12px;border-right:1px solid #e2e7ef;background:#f1f4f8;color:#8a95a3;font-family:ui-monospace,"Cascadia Code","Source Code Pro",monospace;font-size:12.5px;line-height:1.7;text-align:right;user-select:none}.chat-code-line-numbers span{display:block;min-width:2ch}.chat-message--assistant .chat-message-content .chat-code-pre{flex:1 1 auto;min-width:0;margin:0;padding:14px 16px;overflow-x:auto;border:0;border-radius:0;background:transparent;line-height:1.7;tab-size:2}.chat-message--assistant .chat-message-content .chat-code-pre code,.chat-message--assistant .chat-message-content .chat-code-pre code.hljs{display:block;min-width:max-content;padding:0;overflow:visible;background:transparent;color:#243044;font-size:12.5px;line-height:inherit;white-space:pre;word-break:normal;overflow-wrap:normal}@media (prefers-color-scheme:dark){.chat-code-block{border-color:#334155;background:#0f172a;box-shadow:none}.chat-code-header{border-bottom-color:#334155;background:#1e293b;color:#cbd5e1}.chat-code-language-icon{border-color:#475569;background:#0f172a;color:#e2e8f0}.chat-code-body{background:#0f172a}.chat-code-line-numbers{border-right-color:#263548;background:#111c2d;color:#64748b}.chat-message--assistant .chat-message-content .chat-code-pre code,.chat-message--assistant .chat-message-content .chat-code-pre code.hljs{background:transparent;color:#dbeafe}}@media (max-width:640px){.chat-message--assistant.chat-message--has-code .chat-message-content{max-width:100%}.chat-code-header{min-height:32px;padding:0 12px}.chat-code-line-numbers{padding:12px 8px 12px 10px}.chat-message--assistant .chat-message-content .chat-code-pre{padding:12px}}`;
+
   return `<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${title} - ${modelName}</title>
-<style>${css}</style>
+<style>${css}${codeBlockCss}</style>
 </head>
 <body>
 <header>
@@ -3993,7 +4283,7 @@ function buildChatExportHTML() {
   </div>
 </header>
 <main>
-${messagesEl.innerHTML}
+${exportMessagesEl.innerHTML}
 </main>
 </body>
 </html>`;
@@ -4219,6 +4509,19 @@ document.addEventListener('keydown', (e) => {
 
 // Tab switch + copy/merge button delegation for upstream detail modal
 document.addEventListener('click', (e) => {
+  // 单个代码块复制按钮
+  const chatCodeCopyBtn = e.target.closest('.chat-code-copy-btn');
+  if (chatCodeCopyBtn) {
+    e.preventDefault();
+    e.stopPropagation();
+    const text = chatCodeCopyBtn._chatCodeText || chatCodeCopyBtn.closest('.chat-code-block')?.querySelector('pre code')?.textContent || '';
+    if (!text) return;
+    copyChatText(text)
+      .then(() => markChatCopyButtonCopied(chatCodeCopyBtn, 'chat-code-copy-btn--copied'))
+      .catch(() => { /* 静默失败 */ });
+    return;
+  }
+
   // 对话气泡复制按钮
   const chatCopyBtn = e.target.closest('.chat-message-copy-btn');
   if (chatCopyBtn) {
@@ -4226,10 +4529,9 @@ document.addEventListener('click', (e) => {
     const bubble = chatCopyBtn.closest('.chat-message');
     const text = bubble?._rawText || '';
     if (!text) return;
-    navigator.clipboard.writeText(text).then(() => {
-      chatCopyBtn.classList.add('chat-message-copy-btn--copied');
-      setTimeout(() => chatCopyBtn.classList.remove('chat-message-copy-btn--copied'), 1500);
-    }).catch(() => { /* 静默失败 */ });
+    copyChatText(text)
+      .then(() => markChatCopyButtonCopied(chatCopyBtn, 'chat-message-copy-btn--copied'))
+      .catch(() => { /* 静默失败 */ });
     return;
   }
 

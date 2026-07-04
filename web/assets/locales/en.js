@@ -824,6 +824,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.chat.selectChannel': 'Select a channel first',
   'modelTest.chat.selectModel': 'Select a model first',
   'modelTest.chat.emptyInput': 'Please enter a message',
+  'modelTest.chat.uploadImage': 'Upload image',
   'modelTest.chat.thinking': 'Thinking',
   'modelTest.chat.thinkingLevel': 'Thinking level',
   'modelTest.chat.thinkingDefault': 'Default',
