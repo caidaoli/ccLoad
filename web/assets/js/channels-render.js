@@ -300,7 +300,6 @@ async function saveInlineChannelPriority(input) {
 
     input.classList.remove('is-dirty');
     updateLocalChannelPriority(channelId, nextPriority);
-    if (typeof clearChannelsCache === 'function') clearChannelsCache();
     if (typeof filterChannels === 'function') filterChannels();
     if (window.showSuccess) window.showSuccess(window.t('channels.priorityUpdateSuccess'));
   } catch (error) {

@@ -206,7 +206,6 @@ async function saveSortOrder() {
 
     window.showSuccess(window.t('channels.sortSaveSuccess'));
     closeSortModal();
-    if (typeof clearChannelsCache === 'function') clearChannelsCache();
     const currentType = (filters && filters.channelType) ? filters.channelType : 'all';
     if (typeof loadChannels === 'function') await loadChannels(currentType);
   } catch (error) {

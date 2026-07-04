@@ -10,7 +10,6 @@ let selectedModelIndices = new Set(); // 选中的模型索引集合
 let currentModelFilter = ''; // 模型名称筛选关键字
 let defaultTestContent = 'When was Claude 3.5 Sonnet released?'; // Default test content (loaded from settings)
 let channelStatsRange = 'today'; // 渠道统计时间范围（从设置加载）
-let channelsCache = {}; // 按类型缓存渠道数据: {type: channels[]}（已弃用，保留 clearChannelsCache 兼容调用方）
 let selectedChannelIds = new Set(); // 选中的渠道ID（字符串，避免数字/字符串混用）
 let channelsCurrentPage = 1;
 let channelsPageSize = parseInt(localStorage.getItem('channels.pageSize'), 10) || 20;
@@ -64,11 +63,6 @@ let virtualScrollState = {
   rafId: null,
   filteredIndices: [] // 存储筛选后的索引列表（支持状态筛选）
 };
-
-// 清除渠道缓存（在增删改操作后调用）
-function clearChannelsCache() {
-  channelsCache = {};
-}
 
 function humanizeMS(ms) {
   let s = Math.ceil(ms / 1000);

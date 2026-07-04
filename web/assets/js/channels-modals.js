@@ -262,8 +262,6 @@ async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedCha
     return;
   }
 
-  clearChannelsCache();
-
   const hasFilters = typeof filters !== 'undefined' && filters;
   const currentType = hasFilters ? filters.channelType : 'all';
   let nextType = currentType || 'all';
@@ -800,7 +798,6 @@ async function confirmDelete() {
       channelsCurrentPage = 1;
     }
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    clearChannelsCache();
     await reloadChannelsList();
     if (window.showSuccess) {
       if (type === 'batch') {
@@ -916,7 +913,6 @@ async function toggleChannel(id, enabled) {
       body: JSON.stringify({ enabled })
     });
     if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
-    clearChannelsCache();
     if (window.showSuccess) window.showSuccess(enabled ? window.t('channels.channelEnabled') : window.t('channels.channelDisabled'));
   } catch (e) {
     rollbackLocalChange();
@@ -1107,7 +1103,6 @@ async function batchSetSelectedChannelsEnabled(enabled) {
     const data = resp.data || {};
     selectedChannelIds.clear();
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    clearChannelsCache();
     await reloadChannelsList();
 
     if (window.showSuccess) {
@@ -1331,7 +1326,6 @@ async function batchRefreshSelectedChannels(mode) {
 
   selectedChannelIds.clear();
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-  clearChannelsCache();
   await reloadChannelsList();
   updateBatchChannelSelectionUI();
 }
