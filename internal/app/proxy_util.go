@@ -318,21 +318,15 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 	}
 }
 
-// injectAPIKeyHeaders 按路径类型注入API Key头（Gemini vs Claude）
+// injectAPIKeyHeaders 按运行时上游协议注入 API Key 头。
 // 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
-func injectAPIKeyHeaders(req *http.Request, apiKey string, requestPath string) {
-	// 根据API类型设置不同的认证头（使用统一的渠道类型检测）
-	channelType := util.DetectChannelTypeFromPath(requestPath)
-
-	switch channelType {
+func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol string) {
+	switch strings.TrimSpace(strings.ToLower(upstreamProtocol)) {
 	case util.ChannelTypeGemini:
 		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
-	case util.ChannelTypeOpenAI:
-		// OpenAI API: 仅使用 Authorization Bearer
-		req.Header.Set("Authorization", "Bearer "+apiKey)
 	default:
-		// Claude/Anthropic/Codex API: 同时设置两个头
+		// OpenAI/Claude/Anthropic/Codex API: 同时设置两个头
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}

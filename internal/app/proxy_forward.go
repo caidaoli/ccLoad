@@ -111,7 +111,7 @@ func (s *Server) buildProxyRequest(
 	copyRequestHeaders(req, hdr)
 
 	// 4. 注入认证头
-	injectAPIKeyHeaders(req, apiKey, requestPath)
+	injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 
 	// 5. anyrouter渠道：确保anthropic-beta包含context-1m
 	if cfg.GetChannelType() == util.ChannelTypeAnthropic &&

@@ -1365,8 +1365,8 @@ func TestProxy_UpstreamMode_PassesThroughClientProtocolNatively(t *testing.T) {
 	if gotAuth != "Bearer sk-openai-upstream" {
 		t.Fatalf("expected openai auth header, got %q", gotAuth)
 	}
-	if gotAPIKey != "" {
-		t.Fatalf("expected no anthropic x-api-key header, got %q", gotAPIKey)
+	if gotAPIKey != "sk-openai-upstream" {
+		t.Fatalf("expected openai x-api-key header, got %q", gotAPIKey)
 	}
 	if !bytes.Contains(gotBody, []byte(`"messages"`)) {
 		t.Fatalf("expected native openai request body, got %s", gotBody)
