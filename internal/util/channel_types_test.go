@@ -2,48 +2,6 @@ package util
 
 import "testing"
 
-func TestDetectChannelTypeFromPath(t *testing.T) {
-	testCases := []struct {
-		name     string
-		path     string
-		expected string
-	}{
-		// Anthropic/Claude paths
-		{"Claude Messages", "/v1/messages", ChannelTypeAnthropic},
-		{"Claude Count Tokens", "/v1/messages/count_tokens", ChannelTypeAnthropic},
-
-		// Codex paths
-		{"Codex Responses", "/v1/responses", ChannelTypeCodex},
-
-		// OpenAI paths
-		{"OpenAI Chat", "/v1/chat/completions", ChannelTypeOpenAI},
-		{"OpenAI Completions", "/v1/completions", ChannelTypeOpenAI},
-		{"OpenAI Embeddings", "/v1/embeddings", ChannelTypeOpenAI},
-
-		// OpenAI Images paths
-		{"OpenAI Images Generations", "/v1/images/generations", ChannelTypeOpenAI},
-		{"OpenAI Images Edits", "/v1/images/edits", ChannelTypeOpenAI},
-		{"OpenAI Images Variations", "/v1/images/variations", ChannelTypeOpenAI},
-
-		// Gemini paths
-		{"Gemini Stream", "/v1beta/models/gemini-pro:streamGenerateContent", ChannelTypeGemini},
-		{"Gemini Generate", "/v1beta/models/gemini-2.5-flash:generateContent", ChannelTypeGemini},
-
-		// Unknown paths
-		{"Unknown Path", "/unknown/path", ""},
-		{"Empty Path", "", ""},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := DetectChannelTypeFromPath(tc.path)
-			if result != tc.expected {
-				t.Errorf("DetectChannelTypeFromPath(%q) = %q, want %q", tc.path, result, tc.expected)
-			}
-		})
-	}
-}
-
 func TestChannelTypeConstants(t *testing.T) {
 	// 验证常量值正确
 	tests := []struct {
@@ -159,43 +117,6 @@ func TestNormalizeChannelType(t *testing.T) {
 			result := NormalizeChannelType(tt.input)
 			if result != tt.expected {
 				t.Errorf("NormalizeChannelType(%q) = %q, 期望 %q", tt.input, result, tt.expected)
-			}
-		})
-	}
-}
-
-func TestMatchPath(t *testing.T) {
-	testCases := []struct {
-		name      string
-		path      string
-		patterns  []string
-		matchType string
-		expected  bool
-	}{
-		// Prefix matching
-		{"Prefix exact match", "/v1/messages", []string{"/v1/messages"}, MatchTypePrefix, true},
-		{"Prefix with suffix", "/v1/messages/count", []string{"/v1/messages"}, MatchTypePrefix, true},
-		{"Prefix no match", "/v2/messages", []string{"/v1/messages"}, MatchTypePrefix, false},
-		{"Prefix multi-pattern match", "/v1/completions", []string{"/v1/chat", "/v1/completions"}, MatchTypePrefix, true},
-		{"Prefix multi-pattern no match", "/v1/embeddings", []string{"/v1/chat", "/v1/completions"}, MatchTypePrefix, false},
-
-		// Contains matching
-		{"Contains match", "/v1beta/models/gemini", []string{"/v1beta/"}, MatchTypeContains, true},
-		{"Contains no match", "/v1/models/gemini", []string{"/v1beta/"}, MatchTypeContains, false},
-		{"Contains anywhere", "prefix/v1beta/suffix", []string{"/v1beta/"}, MatchTypeContains, true},
-
-		// Edge cases
-		{"Empty pattern", "/v1/messages", []string{}, MatchTypePrefix, false},
-		{"Empty path", "", []string{"/v1/"}, MatchTypePrefix, false},
-		{"Invalid match type", "/v1/messages", []string{"/v1/messages"}, "invalid", false},
-	}
-
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			result := matchPath(tc.path, tc.patterns, tc.matchType)
-			if result != tc.expected {
-				t.Errorf("matchPath(%q, %v, %q) = %v, want %v",
-					tc.path, tc.patterns, tc.matchType, result, tc.expected)
 			}
 		})
 	}

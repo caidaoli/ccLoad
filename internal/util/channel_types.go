@@ -83,31 +83,3 @@ const (
 	MatchTypePrefix   = "prefix"   // 前缀匹配（strings.HasPrefix）
 	MatchTypeContains = "contains" // 包含匹配（strings.Contains）
 )
-
-// DetectChannelTypeFromPath 根据请求路径自动检测渠道类型
-// 使用 ChannelTypes 配置进行统一检测，遵循DRY原则
-func DetectChannelTypeFromPath(path string) string {
-	for _, ct := range ChannelTypes {
-		if matchPath(path, ct.PathPatterns, ct.MatchType) {
-			return ct.Value
-		}
-	}
-	return "" // 未匹配到任何类型
-}
-
-// matchPath 辅助函数：根据匹配类型检查路径是否匹配模式列表
-func matchPath(path string, patterns []string, matchType string) bool {
-	for _, pattern := range patterns {
-		switch matchType {
-		case MatchTypePrefix:
-			if strings.HasPrefix(path, pattern) {
-				return true
-			}
-		case MatchTypeContains:
-			if strings.Contains(path, pattern) {
-				return true
-			}
-		}
-	}
-	return false
-}

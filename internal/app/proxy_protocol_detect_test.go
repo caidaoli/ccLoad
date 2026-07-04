@@ -11,6 +11,49 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestClientRequestMetadataDetectsClientProtocolFromPath(t *testing.T) {
+	testCases := []struct {
+		name string
+		path string
+		want protocol.Protocol
+	}{
+		{"Claude Messages", "/v1/messages", protocol.Anthropic},
+		{"Claude Count Tokens", "/v1/messages/count_tokens", protocol.Anthropic},
+		{"Codex Responses", "/v1/responses", protocol.Codex},
+		{"OpenAI Chat", "/v1/chat/completions", protocol.OpenAI},
+		{"OpenAI Completions", "/v1/completions", protocol.OpenAI},
+		{"OpenAI Embeddings", "/v1/embeddings", protocol.OpenAI},
+		{"OpenAI Images Generations", "/v1/images/generations", protocol.OpenAI},
+		{"OpenAI Images Edits", "/v1/images/edits", protocol.OpenAI},
+		{"OpenAI Images Variations", "/v1/images/variations", protocol.OpenAI},
+		{"Gemini Stream", "/v1beta/models/gemini-pro:streamGenerateContent", protocol.Gemini},
+		{"Gemini Generate", "/v1beta/models/gemini-2.5-flash:generateContent", protocol.Gemini},
+		{"Gemini Models", "/v1beta/models", protocol.Gemini},
+		{"Unknown Path", "/unknown/path", ""},
+		{"Empty Path", "", ""},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			target := tc.path
+			if target == "" {
+				target = "/"
+			}
+			req := httptest.NewRequest(http.MethodPost, target, nil)
+			req.URL.Path = tc.path
+			c, _ := newTestContext(t, req)
+
+			got, gotPath := clientRequestMetadata(c)
+			if got != tc.want {
+				t.Fatalf("clientProtocol = %q, want %q", got, tc.want)
+			}
+			if gotPath != tc.path {
+				t.Fatalf("requestPath = %q, want %q", gotPath, tc.path)
+			}
+		})
+	}
+}
+
 func TestClientRequestMetadataFallbackDoesNotUseBodyShapeAsProtocol(t *testing.T) {
 	body := []byte(`{
 		"model":"mimo-v2.5",

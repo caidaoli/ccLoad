@@ -31,7 +31,7 @@ func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, requestPath str
 	}
 
 	plan, err := protocol.BuildTransformPlan(
-		protocol.Protocol(util.DetectChannelTypeFromPath(requestPath)),
+		detectClientProtocolFromPath(requestPath),
 		protocol.Protocol(cfg.GetChannelType()),
 		requestPath,
 		requestPath,
@@ -225,6 +225,54 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 	}
 	if got := req.Header.Get("anthropic-beta"); got != "messages-2023-12-15" {
 		t.Fatalf("anthropic-beta = %q, want preserved runtime Anthropic upstream header", got)
+	}
+}
+
+func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:          1,
+		Name:        "anthropic-channel-openai-upstream",
+		URL:         "https://api.example.com",
+		ChannelType: "anthropic",
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.OpenAI,
+		upstreamProtocol: protocol.OpenAI,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.OpenAI,
+			UpstreamProtocol: protocol.OpenAI,
+			UpstreamPath:     "/custom/responses",
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test-key",
+		http.MethodPost,
+		[]byte(`{"model":"gpt-4o","messages":[{"role":"user","content":"hi"}]}`),
+		http.Header{"Content-Type": []string{"application/json"}},
+		"",
+		"/custom/responses",
+		cfg.URL,
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	if got := req.Header.Get("Authorization"); got != "Bearer sk-test-key" {
+		t.Fatalf("Authorization = %q, want OpenAI bearer auth", got)
+	}
+	if got := req.Header.Get("x-api-key"); got != "sk-test-key" {
+		t.Fatalf("x-api-key = %q, want OpenAI upstream API key header", got)
+	}
+	if got := req.Header.Get("x-goog-api-key"); got != "" {
+		t.Fatalf("x-goog-api-key = %q, want absent for runtime OpenAI upstream", got)
 	}
 }
 
