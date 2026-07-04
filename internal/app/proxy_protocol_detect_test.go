@@ -28,7 +28,7 @@ func TestClientRequestMetadataDetectsClientProtocolFromPath(t *testing.T) {
 		{"OpenAI Images Variations", "/v1/images/variations", protocol.OpenAI},
 		{"Gemini Stream", "/v1beta/models/gemini-pro:streamGenerateContent", protocol.Gemini},
 		{"Gemini Generate", "/v1beta/models/gemini-2.5-flash:generateContent", protocol.Gemini},
-		{"Gemini Models", "/v1beta/models", protocol.Gemini},
+		{"Gemini Models Special Route", "/v1beta/models", ""},
 		{"Unknown Path", "/unknown/path", ""},
 		{"Empty Path", "", ""},
 	}

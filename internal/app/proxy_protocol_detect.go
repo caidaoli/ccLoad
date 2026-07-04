@@ -3,7 +3,6 @@ package app
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"ccLoad/internal/protocol"
 
@@ -53,9 +52,6 @@ func detectClientProtocolFromPath(path string) protocol.Protocol {
 	case protocol.RequestFamilyGenerateContent:
 		return protocol.Gemini
 	default:
-		if strings.Contains(path, "/v1beta/") {
-			return protocol.Gemini
-		}
 		return ""
 	}
 }

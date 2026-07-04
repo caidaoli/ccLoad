@@ -134,7 +134,6 @@ async function runChannelTest() {
     document.getElementById('testProgress').classList.remove('show');
     document.getElementById('runTestBtn').disabled = false;
 
-    clearChannelsCache();
     await loadChannels(filters.channelType);
   }
 }
@@ -249,8 +248,7 @@ async function runBatchTest() {
 
   document.getElementById('runTestBtn').disabled = false;
   document.getElementById('batchTestBtn').disabled = false;
-  
-  clearChannelsCache();
+
   await loadChannels(filters.channelType);
 }
 

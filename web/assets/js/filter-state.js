@@ -1,4 +1,4 @@
-(function(window) {
+(function(root) {
   function getQueryKeys(field) {
     if (Array.isArray(field.queryKeys) && field.queryKeys.length > 0) {
       return field.queryKeys;
@@ -22,40 +22,17 @@
     return getQueryKeys(field)[0] || '';
   }
 
-  function load(storageKey, storage = window.localStorage, options = {}) {
+  function load(storageKey, storage = root.localStorage) {
     try {
       const saved = storage.getItem(storageKey);
       if (saved) {
         return JSON.parse(saved);
       }
     } catch (_) {}
-
-    const legacyKeyMap = options && typeof options === 'object' ? options.legacyKeyMap : null;
-    if (!legacyKeyMap || typeof legacyKeyMap !== 'object') {
-      return null;
-    }
-
-    const legacyFilters = {};
-    let hasLegacyValue = false;
-
-    Object.entries(legacyKeyMap).forEach(([key, legacyStorageKey]) => {
-      try {
-        const value = storage.getItem(legacyStorageKey);
-        if (value !== null) {
-          legacyFilters[key] = value;
-          hasLegacyValue = true;
-        }
-      } catch (_) {}
-    });
-
-    if (hasLegacyValue) {
-      return legacyFilters;
-    }
-
     return null;
   }
 
-  function save(storageKey, filters, storage = window.localStorage) {
+  function save(storageKey, filters, storage = root.localStorage) {
     try {
       storage.setItem(storageKey, JSON.stringify(filters));
     } catch (_) {}
@@ -139,7 +116,7 @@
   }
 
   function buildURL(options = {}) {
-    const pathname = options.pathname || (window.location && window.location.pathname) || '';
+    const pathname = options.pathname || (root.location && root.location.pathname) || '';
     const params = options.preserveExistingParams
       ? mergeParams(options.search, options.values, options.fields)
       : buildParams(options.values, options.fields);
@@ -149,7 +126,7 @@
 
   function writeHistory(options = {}) {
     const historyMethod = options.historyMethod === 'replaceState' ? 'replaceState' : 'pushState';
-    const historyObject = options.history || window.history;
+    const historyObject = options.history || root.history;
     const url = buildURL(options);
 
     if (historyObject && typeof historyObject[historyMethod] === 'function') {
@@ -172,7 +149,7 @@
     });
   }
 
-  window.FilterState = {
+  const api = {
     load,
     save,
     restore,
@@ -182,4 +159,12 @@
     buildURL,
     writeHistory
   };
-})(window);
+
+  if (typeof window !== 'undefined') {
+    window.FilterState = api;
+  }
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = api;
+  }
+})(typeof window !== 'undefined' ? window : globalThis);

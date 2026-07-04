@@ -34,14 +34,6 @@
     }
 
     const TREND_FILTER_KEY = 'trend.filters';
-    const TREND_FILTER_LEGACY_KEYS = {
-      range: 'trend.range',
-      trendType: 'trend.trendType',
-      model: 'trend.model',
-      authToken: 'trend.authToken',
-      channelType: 'trend.channelType',
-      channelName: 'trend.channelName'
-    };
     const TREND_FILTER_FIELDS = [
       {
         key: 'range',
@@ -126,9 +118,7 @@
     }
 
     function loadSavedTrendFilters(storage = window.localStorage) {
-      return window.FilterState.load(TREND_FILTER_KEY, storage, {
-        legacyKeyMap: TREND_FILTER_LEGACY_KEYS
-      });
+      return window.FilterState.load(TREND_FILTER_KEY, storage);
     }
 
     function normalizeTrendCustomTimeRange(range) {
