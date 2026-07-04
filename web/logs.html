@@ -25,8 +25,11 @@
   <script defer src="/web/assets/js/highlight.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/sse-merge.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
+  <script src="/web/assets/js/purify.min.js?v=__VERSION__"></script>
 </head>
 <body>
   <div class="app-container">
@@ -230,7 +233,7 @@
         </div>
         <div id="debugTabResponse" class="upstream-tab-panel">
           <pre id="debugRespRaw" class="upstream-pre upstream-pre--full"></pre>
-          <pre id="debugRespMerged" class="upstream-pre upstream-pre--full" hidden></pre>
+          <div id="debugRespMerged" class="upstream-merged-markdown upstream-pre--full" hidden><div class="chat-message chat-message--assistant"><div class="chat-message-content"></div></div></div>
         </div>
       </div>
     </div>
