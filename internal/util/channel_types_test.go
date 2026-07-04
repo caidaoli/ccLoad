@@ -21,30 +21,11 @@ func TestChannelTypeConstants(t *testing.T) {
 	}
 }
 
-func TestMatchTypeConstants(t *testing.T) {
-	// 验证匹配类型常量值正确
-	tests := []struct {
-		constant string
-		expected string
-	}{
-		{MatchTypePrefix, "prefix"},
-		{MatchTypeContains, "contains"},
-	}
-
-	for _, tt := range tests {
-		if tt.constant != tt.expected {
-			t.Errorf("MatchType constant mismatch: got %q, want %q", tt.constant, tt.expected)
-		}
-	}
-}
-
 func TestChannelTypesConfiguration(t *testing.T) {
-	// 验证 ChannelTypes 配置使用了正确的常量
 	if len(ChannelTypes) != 4 {
 		t.Errorf("Expected 4 channel types, got %d", len(ChannelTypes))
 	}
 
-	// 验证每个配置的 Value 和 MatchType 使用了常量
 	expectedValues := map[string]bool{
 		ChannelTypeAnthropic: true,
 		ChannelTypeCodex:     true,
@@ -56,16 +37,17 @@ func TestChannelTypesConfiguration(t *testing.T) {
 		if !expectedValues[ct.Value] {
 			t.Errorf("Unexpected channel type value: %q", ct.Value)
 		}
-
-		// 验证 MatchType 是已知的常量
-		if ct.MatchType != MatchTypePrefix && ct.MatchType != MatchTypeContains {
-			t.Errorf("Channel %q has invalid MatchType: %q", ct.Value, ct.MatchType)
+		if ct.DisplayName == "" {
+			t.Errorf("Channel %q has empty DisplayName", ct.Value)
 		}
-
-		// 验证 PathPatterns 不为空
-		if len(ct.PathPatterns) == 0 {
-			t.Errorf("Channel %q has no PathPatterns", ct.Value)
+		if ct.Description == "" {
+			t.Errorf("Channel %q has empty Description", ct.Value)
 		}
+		delete(expectedValues, ct.Value)
+	}
+
+	for value := range expectedValues {
+		t.Errorf("Missing channel type value: %q", value)
 	}
 }
 
