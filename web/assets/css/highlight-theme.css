@@ -290,3 +290,43 @@ html[data-theme="dark"] .hljs-deletion {
     background-color: #67060c;
   }
 }
+
+/* Upstream/debug code viewer: calmer diagnostic palette than generic code blocks. */
+pre.upstream-pre .hljs {
+  background: transparent;
+  color: var(--code-fg);
+}
+
+pre.upstream-pre .hljs-attr,
+pre.upstream-pre .hljs-attribute,
+pre.upstream-pre .hljs-meta,
+pre.upstream-pre .hljs-variable {
+  color: var(--code-key);
+}
+
+pre.upstream-pre .hljs-string,
+pre.upstream-pre .hljs-meta .hljs-string,
+pre.upstream-pre .hljs-regexp {
+  color: var(--code-string);
+}
+
+pre.upstream-pre .hljs-number {
+  color: var(--code-number);
+}
+
+pre.upstream-pre .hljs-literal {
+  color: var(--code-literal);
+}
+
+pre.upstream-pre .hljs-keyword {
+  color: var(--code-literal);
+}
+
+pre.upstream-pre .hljs-punctuation,
+pre.upstream-pre .hljs-operator {
+  color: var(--code-muted);
+}
+
+pre.upstream-pre .hljs-comment {
+  color: var(--code-gutter);
+}

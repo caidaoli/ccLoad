@@ -2269,6 +2269,7 @@ const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
 let activeDebugLogRefreshTimer = null;
 let activeDebugLogRefreshInFlight = false;
 let debugResponseMergedVisible = false;
+let debugLogWrapEnabled = true;
 
 async function showDebugLogModal(logId) {
   return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
@@ -2305,6 +2306,7 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
   document.getElementById('debugTabRequest').classList.add('active');
   document.getElementById('debugTabResponse').classList.remove('active');
   setDebugResponseMergedVisible(false);
+  applyDebugLogWrapMode();
   updateDebugResponseActionButtons();
 
   try {
@@ -2444,6 +2446,28 @@ function closeDebugLogModal() {
   document.getElementById('debugLogModal').classList.remove('show');
 }
 
+function updateDebugWrapButton() {
+  const wrapBtn = document.getElementById('debugWrapBtn');
+  if (!wrapBtn) return;
+  wrapBtn.classList.toggle('active', debugLogWrapEnabled);
+  wrapBtn.setAttribute('aria-pressed', debugLogWrapEnabled ? 'true' : 'false');
+  wrapBtn.dataset.i18n = debugLogWrapEnabled ? 'logs.debugWrap' : 'logs.debugNoWrap';
+  wrapBtn.textContent = (typeof t === 'function' ? t(wrapBtn.dataset.i18n) : '') ||
+    (debugLogWrapEnabled ? '换行' : '不换行');
+}
+
+function applyDebugLogWrapMode() {
+  document.querySelectorAll('#debugLogModal .upstream-pre').forEach(pre => {
+    pre.classList.toggle('upstream-pre--nowrap', !debugLogWrapEnabled);
+  });
+  updateDebugWrapButton();
+}
+
+function setDebugLogWrapEnabled(enabled) {
+  debugLogWrapEnabled = !!enabled;
+  applyDebugLogWrapMode();
+}
+
 function updateDebugResponseActionButtons() {
   const responseActive = !!document.getElementById('debugTabResponse')?.classList.contains('active');
   const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
@@ -2496,6 +2520,12 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
     const mergeBtn = e.target.closest('#debugLogModal [data-action="merge-debug-response"]');
     if (mergeBtn) {
       setDebugResponseMergedVisible(!debugResponseMergedVisible);
+      return;
+    }
+
+    const wrapBtn = e.target.closest('#debugLogModal [data-action="toggle-debug-wrap"]');
+    if (wrapBtn) {
+      setDebugLogWrapEnabled(!debugLogWrapEnabled);
       return;
     }
 

@@ -3800,19 +3800,21 @@ body {
 }
 
 .upstream-copy-btn {
+  min-height: 24px;
   padding: 2px 10px;
   font-size: 12px;
-  color: var(--neutral-500);
-  background: transparent;
-  border: 1px solid var(--neutral-300);
+  color: var(--neutral-600);
+  background: var(--surface-bg-strong);
+  border: 1px solid var(--surface-border-strong);
   border-radius: 4px;
   cursor: pointer;
-  transition: color 0.15s, border-color 0.15s;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 
 .upstream-copy-btn:hover {
-  color: var(--primary-600);
-  border-color: var(--primary-600);
+  color: #285c7a;
+  border-color: #7aa4b7;
+  background: rgba(122, 164, 183, 0.12);
 }
 
 .upstream-copy-btn.copied {
@@ -3823,6 +3825,21 @@ body {
 .upstream-copy-btn--tabs {
   margin-left: auto;
   margin-bottom: 4px;
+}
+
+.upstream-wrap-btn {
+  margin-left: auto;
+  margin-bottom: 4px;
+}
+
+.upstream-wrap-btn + .upstream-copy-btn--tabs {
+  margin-left: 6px;
+}
+
+.upstream-wrap-btn.active {
+  color: #224f68;
+  border-color: #6f99ad;
+  background: rgba(111, 153, 173, 0.16);
 }
 
 .upstream-merge-btn {
@@ -3837,79 +3854,187 @@ body {
 }
 
 .upstream-pre {
+  --code-bg: #f8fafc;
+  --code-fg: #243040;
+  --code-gutter: #7b8794;
+  --code-gutter-border: #d7dde5;
+  --code-hover-bg: rgba(55, 65, 81, 0.045);
+  --code-fold-fg: #6b7786;
+  --code-fold-hover: #285c7a;
+  --code-fold-active: #34495e;
+  --code-summary-bg: #eef3f6;
+  --code-summary-fg: #61707f;
+  --code-method: #285c7a;
+  --code-url: #216f73;
+  --code-key: #1d5fa7;
+  --code-header-key: #334155;
+  --code-header-value: #657386;
+  --code-string: #1d7a55;
+  --code-number: #9a5f13;
+  --code-literal: #7c4d9f;
+  --code-success: #28745a;
+  --code-warning: #936316;
+  --code-error: #a2464f;
+  --code-muted: #657386;
   margin: 0;
   padding: 8px 0;
   font-size: 13px;
   font-family: 'Monaco', 'Menlo', 'Consolas', 'Ubuntu Mono', monospace;
   line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-all;
-  background: var(--surface-bg-muted);
-  color: var(--color-text);
-  border: 1px solid var(--surface-border);
+  white-space: normal;
+  word-break: normal;
+  background: var(--code-bg);
+  color: var(--code-fg);
+  border: 1px solid var(--code-gutter-border);
   border-radius: 6px;
   max-height: 200px;
-  overflow-y: auto;
+  overflow: auto;
   counter-reset: line-number;
+  tab-size: 2;
+}
+
+html[data-theme="dark"] .upstream-pre {
+  --code-bg: #111821;
+  --code-fg: #d7dee8;
+  --code-gutter: #7d8a99;
+  --code-gutter-border: #2a3644;
+  --code-hover-bg: rgba(148, 163, 184, 0.08);
+  --code-fold-fg: #8391a3;
+  --code-fold-hover: #9ec6d8;
+  --code-fold-active: #c1ced9;
+  --code-summary-bg: #1b2633;
+  --code-summary-fg: #9aa8b7;
+  --code-method: #8db7c9;
+  --code-url: #89bdae;
+  --code-key: #8bbdf7;
+  --code-header-key: #c3ccd6;
+  --code-header-value: #94a3b8;
+  --code-string: #8fcea9;
+  --code-number: #e4b86f;
+  --code-literal: #c2a6f3;
+  --code-success: #8fbea8;
+  --code-warning: #d7b16d;
+  --code-error: #d99aa1;
+  --code-muted: #a5b0bd;
+}
+
+@media (prefers-color-scheme: dark) {
+  html[data-theme="system"] .upstream-pre {
+    --code-bg: #111821;
+    --code-fg: #d7dee8;
+    --code-gutter: #7d8a99;
+    --code-gutter-border: #2a3644;
+    --code-hover-bg: rgba(148, 163, 184, 0.08);
+    --code-fold-fg: #8391a3;
+    --code-fold-hover: #9ec6d8;
+    --code-fold-active: #c1ced9;
+    --code-summary-bg: #1b2633;
+    --code-summary-fg: #9aa8b7;
+    --code-method: #8db7c9;
+    --code-url: #89bdae;
+    --code-key: #8bbdf7;
+    --code-header-key: #c3ccd6;
+    --code-header-value: #94a3b8;
+    --code-string: #8fcea9;
+    --code-number: #e4b86f;
+    --code-literal: #c2a6f3;
+    --code-success: #8fbea8;
+    --code-warning: #d7b16d;
+    --code-error: #d99aa1;
+    --code-muted: #a5b0bd;
+  }
 }
 
 .upstream-pre .code-line {
-  display: block;
+  display: grid;
+  grid-template-columns: 4.6ch 18px minmax(0, 1fr);
   counter-increment: line-number;
-  padding: 0 12px 0 calc(3.5ch + 30px);
+  padding: 0 12px 0 0;
   min-height: 1.6em;
-  position: relative;
+  align-items: start;
 }
 
 .upstream-pre .code-line:hover {
-  background: rgba(0, 0, 0, 0.03);
+  background: var(--code-hover-bg);
 }
 
 .upstream-pre .code-line--foldable {
-  padding-left: calc(3.5ch + 30px + 18px);
+  padding-left: 0;
 }
 
 .upstream-pre .code-fold-toggle {
-  position: absolute;
-  left: calc(3.5ch + 12px);
-  top: 0;
+  grid-column: 2;
+  justify-self: center;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
   height: 1.6em;
   padding: 0;
   margin: 0;
   border: none;
   background: transparent;
-  color: var(--neutral-500);
-  font-size: 13px;
+  color: var(--code-fold-fg);
   line-height: 1.6em;
-  text-align: center;
   cursor: pointer;
   user-select: none;
   -webkit-user-select: none;
-  transition: color 0.15s, transform 0.15s;
+  transition: color 0.15s;
+}
+
+.upstream-pre .code-fold-toggle::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg) translate(-1px, -1px);
+  transition: transform 0.15s;
+}
+
+.upstream-pre .code-line-content {
+  grid-column: 3;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px solid var(--code-gutter-border);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+}
+
+.upstream-pre--nowrap .code-line-content {
+  white-space: pre;
+  overflow-wrap: normal;
 }
 
 .upstream-pre .code-fold-toggle:hover {
-  color: var(--primary-600);
+  color: var(--code-fold-hover);
 }
 
 .upstream-pre .code-line--collapsed .code-fold-toggle {
-  color: var(--primary-600);
+  color: var(--code-fold-active);
+}
+
+.upstream-pre .code-line--collapsed .code-fold-toggle::before {
+  transform: rotate(-45deg) translate(-1px, 1px);
 }
 
 .upstream-pre .code-fold-summary {
   display: none;
-  margin-left: 6px;
+  margin-left: 8px;
   padding: 0 6px;
-  background: var(--neutral-100);
+  background: var(--code-summary-bg);
   border-radius: 3px;
-  color: var(--neutral-500);
+  color: var(--code-summary-fg);
   font-style: italic;
   font-size: 12px;
 }
 
 .upstream-pre .code-line--collapsed .code-fold-summary {
-  display: inline;
+  display: inline-flex;
+  align-items: center;
+  vertical-align: baseline;
+  min-height: 1.6em;
 }
 
 .upstream-pre .code-line--hidden {
@@ -3918,90 +4043,66 @@ body {
 
 .upstream-pre .code-line::before {
   content: counter(line-number);
-  position: absolute;
-  left: 0;
-  width: calc(3.5ch + 8px);
+  grid-column: 1;
   text-align: right;
-  padding-right: 10px;
-  color: var(--neutral-400);
-  border-right: 1px solid var(--neutral-200);
+  padding-right: 4px;
+  font-size: 12px;
+  color: var(--code-gutter);
   user-select: none;
   -webkit-user-select: none;
 }
 
 .upstream-token--method,
 .upstream-token--protocol {
-  color: var(--primary-600);
+  color: var(--code-method);
   font-weight: 600;
 }
 
 .upstream-token--url {
-  color: var(--info-600);
+  color: var(--code-url);
 }
 
 .upstream-token--header-key {
-  color: var(--neutral-700);
+  color: var(--code-header-key);
   font-weight: 600;
 }
 
 .upstream-token--header-value {
-  color: var(--neutral-500);
+  color: var(--code-header-value);
 }
 
 .upstream-token--status-success {
-  color: var(--success-600);
+  color: var(--code-success);
   font-weight: 600;
 }
 
 .upstream-token--status-client-error {
-  color: var(--warning-600);
+  color: var(--code-warning);
   font-weight: 600;
 }
 
 .upstream-token--status-server-error {
-  color: var(--error-600);
+  color: var(--code-error);
   font-weight: 600;
 }
 
 .upstream-token--status-neutral,
 .upstream-token--status-unknown {
-  color: var(--neutral-600);
+  color: var(--code-muted);
   font-weight: 600;
-}
-
-.upstream-token--json-key {
-  color: var(--primary-700);
-}
-
-.upstream-token--json-string {
-  color: var(--success-600);
-}
-
-.upstream-token--json-number {
-  color: var(--warning-600);
-}
-
-.upstream-token--json-boolean {
-  color: var(--info-600);
-  font-weight: 600;
-}
-
-.upstream-token--json-null {
-  color: var(--neutral-500);
-  font-style: italic;
 }
 
 .upstream-token--sse-field {
-  color: var(--primary-600);
+  color: var(--code-method);
   font-weight: 600;
 }
 
 .upstream-token--sse-event-name {
-  color: var(--info-600);
+  color: var(--code-url);
 }
 
 .upstream-token--sse-comment {
-  color: var(--neutral-400);
+  color: var(--code-gutter);
   font-style: italic;
 }
 
