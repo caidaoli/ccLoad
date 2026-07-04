@@ -1876,6 +1876,18 @@
     return `<span class="upstream-token upstream-token--${modifier}">${escapeCodeHtml(text)}</span>`;
   }
 
+  function highlightSyntax(text, language) {
+    const highlighter = globalThis.hljs;
+    if (!highlighter || typeof highlighter.highlight !== 'function') {
+      throw new Error('highlight.js is required for syntax highlighting');
+    }
+
+    return highlighter.highlight(String(text || ''), {
+      language,
+      ignoreIllegals: true
+    }).value;
+  }
+
   function classifyStatusModifier(statusCode) {
     const code = Number.parseInt(statusCode, 10);
     if (!Number.isFinite(code)) return 'status-unknown';
@@ -1885,34 +1897,9 @@
     return 'status-neutral';
   }
 
-  function renderJsonLine(line) {
-    const tokenRe = /"(?:\\.|[^"\\])*"(?=\s*:)|"(?:\\.|[^"\\])*"|true|false|null|-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/g;
-    let out = '';
-    let lastIndex = 0;
-
-    for (const match of line.matchAll(tokenRe)) {
-      const index = match.index || 0;
-      const token = match[0];
-      out += escapeCodeHtml(line.slice(lastIndex, index));
-
-      let modifier = 'json-string';
-      if (token === 'true' || token === 'false') {
-        modifier = 'json-boolean';
-      } else if (token === 'null') {
-        modifier = 'json-null';
-      } else if (token[0] !== '"') {
-        modifier = 'json-number';
-      } else {
-        const nextChar = line.slice(index + token.length).match(/^\s*:/);
-        modifier = nextChar ? 'json-key' : 'json-string';
-      }
-
-      out += wrapHighlightedToken(token, modifier);
-      lastIndex = index + token.length;
-    }
-
-    out += escapeCodeHtml(line.slice(lastIndex));
-    return out;
+  function renderHighlightedLines(text, language) {
+    const value = String(text || '');
+    return highlightSyntax(value, language).split('\n');
   }
 
   function renderHeaderLine(line) {
@@ -1989,7 +1976,7 @@
       if (field === 'data' && value.trim()) {
         const trimmed = value.trim();
         const jsonLike = (trimmed[0] === '{' || trimmed[0] === '[');
-        if (jsonLike) return renderedField + renderJsonLine(value);
+        if (jsonLike) return renderedField + highlightSyntax(value, 'json');
       }
       return renderedField + escapeCodeHtml(value);
     }
@@ -2048,8 +2035,9 @@
   }
 
   function renderCodeLines(lines, foldRegions) {
+    const contentHtml = (line, suffix = '') => `<span class="code-line-content">${line || ''}${suffix}</span>`;
     if (!foldRegions || foldRegions.size === 0) {
-      return lines.map(line => `<span class="code-line">${line || ''}</span>`).join('');
+      return lines.map(line => `<span class="code-line">${contentHtml(line)}</span>`).join('');
     }
     // 为每个区间生成 id；保留每行的 ancestor region ids 列表（开区间 s < i < e）。
     const startToId = new Map();
@@ -2076,11 +2064,11 @@
       if (startMeta) {
         const { id, count } = startMeta;
         const summary = `<span class="code-fold-summary" data-fold-summary-for="${id}">…${count} lines</span>`;
-        const toggle = `<button type="button" class="code-fold-toggle" data-fold-toggle="${id}" aria-expanded="true" aria-label="toggle code fold">▼</button>`;
-        out.push(`<span class="code-line code-line--foldable" data-fold-id="${id}"${regionAttr}>${toggle}${content}${summary}</span>`);
+        const toggle = `<button type="button" class="code-fold-toggle" data-fold-toggle="${id}" aria-expanded="true" aria-label="toggle code fold"></button>`;
+        out.push(`<span class="code-line code-line--foldable" data-fold-id="${id}"${regionAttr}>${toggle}${contentHtml(content, summary)}</span>`);
         continue;
       }
-      out.push(`<span class="code-line"${regionAttr}>${content}</span>`);
+      out.push(`<span class="code-line"${regionAttr}>${contentHtml(content)}</span>`);
     }
     return out.join('');
   }
@@ -2107,12 +2095,15 @@
       rawForFold.push('');
       const bodyLines = lines.slice(separatorIndex + 1);
       const bodyText = bodyLines.join('\n');
-      const renderBodyLine = looksLikeJSONBlock(bodyText) ? renderJsonLine
-        : looksLikeSSE(bodyText) ? renderSSELine
-        : escapeCodeHtml;
-      bodyLines.forEach(line => {
-        renderedLines.push(renderBodyLine(line));
-        rawForFold.push(line);
+      const bodyRenderedLines = looksLikeJSONBlock(bodyText)
+        ? renderHighlightedLines(bodyText, 'json')
+        : looksLikeSSE(bodyText)
+          ? bodyLines.map(renderSSELine)
+          : bodyLines.map(escapeCodeHtml);
+      bodyRenderedLines.forEach((line, index) => {
+        const rawLine = bodyLines[index] || '';
+        renderedLines.push(line);
+        rawForFold.push(rawLine);
       });
     }
 
@@ -2129,7 +2120,7 @@
         return renderUpstreamRequestOrResponse(value, mode);
       case 'json': {
         const rawLines = value.split('\n');
-        return renderCodeLines(rawLines.map(renderJsonLine), computeFoldRegions(rawLines));
+        return renderCodeLines(renderHighlightedLines(value, 'json'), computeFoldRegions(rawLines));
       }
       case 'url':
         return renderCodeLines(value.split('\n').map(renderRequestLine));
@@ -2163,7 +2154,6 @@
       if (!startLine) return;
       const collapsed = startLine.classList.toggle('code-line--collapsed');
       foldBtn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
-      foldBtn.textContent = collapsed ? '▶' : '▼';
       const pre = startLine.closest('pre');
       const root = pre || document;
       root.querySelectorAll(`[data-fold-region~="${id}"]`).forEach(el => {
@@ -2307,4 +2297,11 @@
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
   window.bindTimeRangeSelector = bindTimeRangeSelector;
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      renderUpstreamCodeBlock,
+      setHighlightedCodeContent
+    };
+  }
 })();

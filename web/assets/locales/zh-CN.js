@@ -751,6 +751,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.debugLogTitle': 'Debug 日志',
   'logs.debugRequest': '请求',
   'logs.debugResponse': '响应',
+  'logs.debugWrap': '换行',
+  'logs.debugNoWrap': '不换行',
   'logs.debugMerge': '合并',
   'logs.debugRaw': '原始',
   'logs.debugRefreshing': '正在更新…',
