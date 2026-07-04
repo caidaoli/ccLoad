@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 )
 
@@ -201,12 +200,26 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 
 		var resp struct {
-			Success bool                     `json:"success"`
-			Data    []util.ChannelTypeConfig `json:"data"`
+			Success bool             `json:"success"`
+			Data    []map[string]any `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 		if !resp.Success || len(resp.Data) == 0 {
 			t.Fatalf("unexpected channel types resp: %+v", resp)
+		}
+		for _, channelType := range resp.Data {
+			for _, field := range []string{"value", "display_name", "description"} {
+				value, ok := channelType[field].(string)
+				if !ok || value == "" {
+					t.Fatalf("channel type missing %s: %#v", field, channelType)
+				}
+			}
+			if _, ok := channelType["path_patterns"]; ok {
+				t.Fatalf("channel type leaked legacy path_patterns: %#v", channelType)
+			}
+			if _, ok := channelType["match_type"]; ok {
+				t.Fatalf("channel type leaked legacy match_type: %#v", channelType)
+			}
 		}
 	})
 
