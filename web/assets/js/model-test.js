@@ -469,6 +469,11 @@ function buildChatCodeLineNumbers(codeEl) {
 }
 
 function renderChatMarkdown(target, markdown, options = {}) {
+  if (window.MarkdownRenderer && typeof window.MarkdownRenderer.render === 'function') {
+    window.MarkdownRenderer.render(target, markdown, options);
+    return;
+  }
+
   if (!target) return;
 
   target.closest?.('.chat-message')?.classList.remove('chat-message--has-code');
@@ -4394,18 +4399,9 @@ function composeRawResponse(data) {
 
 function composeMergedResponse(data) {
   const raw = String(data.responseBody || '').replace(/\r\n/g, '\n').trim();
-  if (!raw) return '';
+  if (!raw) return { reasoning: '', content: '' };
 
-  const state = {
-    reasoning: [],
-    text: [],
-    functionCalls: [],
-    hasReasoningDelta: false,
-    hasTextDelta: false,
-    hasFunctionCallDelta: false,
-    lastFunctionCallIndex: null,
-    functionCallDeltaIndexes: new Set()
-  };
+  const state = window.SSEMerge.createState();
   const ssePayloads = window.SSEMerge.parsePayloads(raw);
   if (ssePayloads.length > 0) {
     ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
@@ -4413,31 +4409,13 @@ function composeMergedResponse(data) {
     try {
       window.SSEMerge.collectPayload(JSON.parse(raw), state);
     } catch {
-      return tryFormatJSON(raw);
+      return { reasoning: '', content: tryFormatJSON(raw) };
     }
   }
 
-  const sections = [];
-  [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
-    const text = bucket.join('').trim();
-    if (text) sections.push(text);
-  });
-
-  return sections.join('\n\n') || tryFormatJSON(raw);
-}
-
-function getMergedRenderMode(text) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) return 'text';
-  const isJson = (trimmed.startsWith('{') && trimmed.endsWith('}'))
-    || (trimmed.startsWith('[') && trimmed.endsWith(']'));
-  if (!isJson) return 'text';
-  try {
-    JSON.parse(trimmed);
-    return 'json';
-  } catch {
-    return 'text';
-  }
+  const parts = window.SSEMerge.formatParts(state);
+  if (parts.reasoning || parts.content) return parts;
+  return { reasoning: '', content: tryFormatJSON(raw) };
 }
 
 function updateUpstreamResponseActionButtons() {
@@ -4481,7 +4459,7 @@ function showUpstreamDetailModal(data) {
   window.setHighlightedCodeContent('upstreamReqRaw', composeRawRequest(data), 'request');
   window.setHighlightedCodeContent('upstreamRespRaw', composeRawResponse(data), 'response');
   const mergedResponse = composeMergedResponse(data);
-  window.setHighlightedCodeContent('upstreamRespMerged', mergedResponse, getMergedRenderMode(mergedResponse));
+  window.MarkdownRenderer.renderResponse('upstreamRespMerged', mergedResponse);
 
   // Reset to Request tab
   const modal = document.getElementById('upstreamDetailModal');
@@ -4509,19 +4487,6 @@ document.addEventListener('keydown', (e) => {
 
 // Tab switch + copy/merge button delegation for upstream detail modal
 document.addEventListener('click', (e) => {
-  // 单个代码块复制按钮
-  const chatCodeCopyBtn = e.target.closest('.chat-code-copy-btn');
-  if (chatCodeCopyBtn) {
-    e.preventDefault();
-    e.stopPropagation();
-    const text = chatCodeCopyBtn._chatCodeText || chatCodeCopyBtn.closest('.chat-code-block')?.querySelector('pre code')?.textContent || '';
-    if (!text) return;
-    copyChatText(text)
-      .then(() => markChatCopyButtonCopied(chatCodeCopyBtn, 'chat-code-copy-btn--copied'))
-      .catch(() => { /* 静默失败 */ });
-    return;
-  }
-
   // 对话气泡复制按钮
   const chatCopyBtn = e.target.closest('.chat-message-copy-btn');
   if (chatCopyBtn) {

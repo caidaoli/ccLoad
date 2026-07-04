@@ -2214,23 +2214,14 @@ function composeDebugRawResponse(data) {
 
 function composeDebugMergedResponse(data) {
   let raw = String(data?.resp_body || '').replace(/\r\n/g, '\n');
-  if (!raw) return '';
+  if (!raw) return { reasoning: '', content: '' };
   const headerBreak = raw.indexOf('\n\n');
   const firstLine = raw.split('\n', 1)[0] || '';
   if (headerBreak !== -1 && /^HTTP\s+\d{3}\b/i.test(firstLine)) {
     raw = raw.slice(headerBreak + 2).trimStart();
   }
 
-  const state = {
-    reasoning: [],
-    text: [],
-    functionCalls: [],
-    hasReasoningDelta: false,
-    hasTextDelta: false,
-    hasFunctionCallDelta: false,
-    lastFunctionCallIndex: null,
-    functionCallDeltaIndexes: new Set()
-  };
+  const state = window.SSEMerge.createState();
   const ssePayloads = window.SSEMerge.parsePayloads(raw);
   if (ssePayloads.length > 0) {
     ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
@@ -2238,31 +2229,13 @@ function composeDebugMergedResponse(data) {
     try {
       window.SSEMerge.collectPayload(JSON.parse(raw), state);
     } catch {
-      return formatJsonSafe(raw);
+      return { reasoning: '', content: formatJsonSafe(raw) };
     }
   }
 
-  const sections = [];
-  [state.reasoning, state.text, state.functionCalls].forEach(bucket => {
-    const text = bucket.join('').trim();
-    if (text) sections.push(text);
-  });
-
-  return sections.join('\n\n') || formatJsonSafe(raw);
-}
-
-function getDebugMergedRenderMode(text) {
-  const trimmed = String(text || '').trim();
-  if (!trimmed) return 'text';
-  const isJson = (trimmed.startsWith('{') && trimmed.endsWith('}'))
-    || (trimmed.startsWith('[') && trimmed.endsWith(']'));
-  if (!isJson) return 'text';
-  try {
-    JSON.parse(trimmed);
-    return 'json';
-  } catch {
-    return 'text';
-  }
+  const parts = window.SSEMerge.formatParts(state);
+  if (parts.reasoning || parts.content) return parts;
+  return { reasoning: '', content: formatJsonSafe(raw) };
 }
 
 const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
@@ -2328,7 +2301,7 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
     const mergedResponse = composeDebugMergedResponse(data);
-    window.setHighlightedCodeContent('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
+    window.MarkdownRenderer.renderResponse('debugRespMerged', mergedResponse);
 
     // 如果是实时活跃请求，启动轮询
     const activeRequestId = Number(opts.activeRequestId);
@@ -2412,7 +2385,7 @@ function updateDebugLogContentPreserveScroll(data) {
   updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
   updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
   const mergedResponse = composeDebugMergedResponse(data);
-  updateDebugPanePreserveScroll('debugRespMerged', mergedResponse, getDebugMergedRenderMode(mergedResponse));
+  updateDebugPanePreserveScroll('debugRespMerged', mergedResponse, 'markdown');
 }
 
 function updateDebugPanePreserveScroll(targetId, text, mode) {
@@ -2420,18 +2393,33 @@ function updateDebugPanePreserveScroll(targetId, text, mode) {
   if (!pre) return;
   // 内容未变化则跳过，避免破坏选区与滚动
   const prevText = pre._rawText || '';
-  if (prevText === (text || '')) return;
+  const nextText = mode === 'markdown' ? mergedResponseRawText(text) : (text || '');
+  if (prevText === nextText) return;
 
   const stickToBottom = isScrolledToBottom(pre);
   const prevScrollTop = pre.scrollTop;
 
-  window.setHighlightedCodeContent(targetId, text || '', mode);
+  if (mode === 'markdown') {
+    window.MarkdownRenderer.renderResponse(targetId, text || { reasoning: '', content: '' });
+  } else {
+    window.setHighlightedCodeContent(targetId, text || '', mode);
+  }
 
   if (stickToBottom) {
     pre.scrollTop = pre.scrollHeight;
   } else {
     pre.scrollTop = prevScrollTop;
   }
+}
+
+function mergedResponseRawText(response) {
+  if (response && typeof response === 'object' && !Array.isArray(response)) {
+    return [response.reasoning || response.thinking || '', response.content ?? response.text ?? '']
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+      .join('\n\n');
+  }
+  return String(response || '');
 }
 
 function isScrolledToBottom(el) {

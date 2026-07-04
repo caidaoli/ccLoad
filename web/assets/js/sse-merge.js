@@ -3,7 +3,9 @@
  * Extracts and assembles text content from SSE/non-SSE LLM responses
  * across Anthropic, OpenAI, Gemini, and Codex protocols.
  *
- * Exposed as window.SSEMerge = { appendText, parsePayloads, collectPayload }
+ * Exposed as window.SSEMerge = {
+ *   appendText, parsePayloads, createState, collectPayload, formatState, formatParts
+ * }
  */
 (function () {
   'use strict';
@@ -61,6 +63,47 @@
     flush();
 
     return payloads;
+  }
+
+  function createMergeState() {
+    return {
+      reasoning: [],
+      text: [],
+      functionCalls: [],
+      hasReasoningDelta: false,
+      hasTextDelta: false,
+      hasFunctionCallDelta: false,
+      lastFunctionCallIndex: null,
+      functionCallDeltaIndexes: new Set()
+    };
+  }
+
+  function mergedBucketText(bucket) {
+    return (bucket || []).join('').trim();
+  }
+
+  function formatMergedResponseState(state, options = {}) {
+    if (!state || typeof state !== 'object') return '';
+    const buckets = options.includeReasoning === true
+      ? [state.reasoning, state.text, state.functionCalls]
+      : [state.text, state.functionCalls];
+
+    const sections = [];
+    buckets.forEach(bucket => {
+      const text = mergedBucketText(bucket);
+      if (text) sections.push(text);
+    });
+    return sections.join('\n\n');
+  }
+
+  function formatMergedResponseParts(state) {
+    if (!state || typeof state !== 'object') {
+      return { reasoning: '', content: '' };
+    }
+    return {
+      reasoning: mergedBucketText(state.reasoning),
+      content: formatMergedResponseState(state)
+    };
   }
 
   function collectMergedResponsePayload(payload, state) {
@@ -238,6 +281,9 @@
   window.SSEMerge = {
     appendText: appendMergedText,
     parsePayloads: parseSSEDataPayloads,
-    collectPayload: collectMergedResponsePayload
+    createState: createMergeState,
+    collectPayload: collectMergedResponsePayload,
+    formatState: formatMergedResponseState,
+    formatParts: formatMergedResponseParts
   };
 })();
