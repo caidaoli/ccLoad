@@ -36,6 +36,50 @@
     if (text) bucket.push(text);
   }
 
+  function codeFence(language, value) {
+    const text = String(value ?? '');
+    let fence = '```';
+    (text.match(/`{3,}/g) || []).forEach(match => {
+      if (match.length >= fence.length) fence = '`'.repeat(match.length + 1);
+    });
+    return `${fence}${language || ''}\n${text}\n${fence}`;
+  }
+
+  function parseToolArguments(value) {
+    if (value == null) return null;
+    if (typeof value === 'object') return value;
+    if (typeof value !== 'string') return value;
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function isShellToolCall(name) {
+    return /(^|[._-])exec_command$/i.test(String(name || ''));
+  }
+
+  function formatToolValue(value) {
+    const parsed = parseToolArguments(value);
+    if (typeof parsed === 'string') return codeFence('', parsed);
+    try {
+      return codeFence('json', JSON.stringify(parsed, null, 2));
+    } catch {
+      return codeFence('', String(value ?? ''));
+    }
+  }
+
+  function formatToolCall(name, value) {
+    const toolName = String(name || 'tool_call');
+    const parsed = parseToolArguments(value);
+    if (parsed && typeof parsed === 'object' && typeof parsed.cmd === 'string') {
+      const displayName = isShellToolCall(toolName) ? toolName : 'exec_command';
+      return `### ${displayName}\n\n${codeFence('bash', parsed.cmd)}`;
+    }
+    return `### ${toolName}\n\n${formatToolValue(parsed)}`;
+  }
+
   function parseSSEDataPayloads(body) {
     const payloads = [];
     let dataLines = [];
@@ -85,8 +129,9 @@
   function formatMergedResponseState(state, options = {}) {
     if (!state || typeof state !== 'object') return '';
     const buckets = options.includeReasoning === true
-      ? [state.reasoning, state.text, state.functionCalls]
-      : [state.text, state.functionCalls];
+      ? [state.reasoning, state.text]
+      : [state.text];
+    if (options.includeFunctionCalls === true) buckets.push(state.functionCalls);
 
     const sections = [];
     buckets.forEach(bucket => {
@@ -96,13 +141,21 @@
     return sections.join('\n\n');
   }
 
+  function formatMergedToolCalls(state) {
+    if (!state || typeof state !== 'object') return '';
+    const text = mergedBucketText(state.functionCalls);
+    if (!text || /^###\s/m.test(text)) return text;
+    return formatToolCall('tool_call', text);
+  }
+
   function formatMergedResponseParts(state) {
     if (!state || typeof state !== 'object') {
-      return { reasoning: '', content: '' };
+      return { reasoning: '', content: '', tools: '' };
     }
     return {
       reasoning: mergedBucketText(state.reasoning),
-      content: formatMergedResponseState(state)
+      content: formatMergedResponseState(state),
+      tools: formatMergedToolCalls(state)
     };
   }
 
@@ -175,6 +228,20 @@
       }
     };
 
+    const appendToolCall = (index, name, value) => {
+      if (
+        index != null
+        && state.lastFunctionCallIndex != null
+        && state.lastFunctionCallIndex !== index
+      ) {
+        state.functionCalls.push('\n\n');
+      } else if (state.functionCalls.length > 0) {
+        state.functionCalls.push('\n\n');
+      }
+      if (index != null) state.lastFunctionCallIndex = index;
+      appendMergedText(state.functionCalls, formatToolCall(name, value));
+    };
+
     const collectOutputItem = (item, fallbackIndex = null) => {
       if (!item || typeof item !== 'object') return;
       const outputIndex = item.output_index ?? fallbackIndex;
@@ -185,14 +252,12 @@
       }
       if (item.type === 'function_call') {
         if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
-        if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
-        appendMergedText(state.functionCalls, item.arguments);
+        appendToolCall(outputIndex, item.name || 'function_call', item.arguments);
         return;
       }
       if (item.type === 'custom_tool_call') {
         if (hasFunctionCallDeltaFor(outputIndex) || (outputIndex == null && state.hasFunctionCallDelta)) return;
-        if (state.functionCalls.length > 0) state.functionCalls.push('\n\n');
-        appendMergedText(state.functionCalls, item.input);
+        appendToolCall(outputIndex, item.name || 'custom_tool_call', item.input);
         return;
       }
       if (item.type === 'reasoning') {
@@ -255,12 +320,17 @@
       case 'response.function_call_arguments.delta':
         appendFunctionCallText(payload.output_index, payload.delta, true);
         break;
+      case 'response.function_call_arguments.done':
+        if (!hasFunctionCallDeltaFor(payload.output_index)) {
+          appendToolCall(payload.output_index, payload.name || 'function_call', payload.arguments);
+        }
+        break;
       case 'response.custom_tool_call_input.delta':
         appendFunctionCallText(payload.output_index, payload.delta, true);
         break;
       case 'response.custom_tool_call_input.done':
         if (!hasFunctionCallDeltaFor(payload.output_index)) {
-          appendFunctionCallText(payload.output_index, payload.input);
+          appendToolCall(payload.output_index, payload.name || 'custom_tool_call', payload.input);
         }
         break;
       case 'response.output_item.done':

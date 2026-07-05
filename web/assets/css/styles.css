@@ -7307,7 +7307,8 @@ body.trend-page .chart-info {
   border-bottom-left-radius: 4px;
 }
 
-.chat-thinking {
+.chat-thinking,
+.chat-tool-calls {
   margin-bottom: 10px;
   padding: 8px 10px;
   border: 1px solid var(--color-border);
@@ -7316,14 +7317,21 @@ body.trend-page .chart-info {
   color: var(--color-text-secondary);
 }
 
-.chat-thinking-summary {
+.chat-tool-calls {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.chat-thinking-summary,
+.chat-tool-calls-summary {
   cursor: pointer;
   font-size: 12px;
   font-weight: 600;
   user-select: none;
 }
 
-.chat-thinking-content {
+.chat-thinking-content,
+.chat-tool-calls-content {
   margin-top: 8px;
   padding-top: 8px;
   border-top: 1px solid var(--color-border);
@@ -7478,7 +7486,8 @@ body.trend-page .chart-info {
   min-width: 2ch;
 }
 
-.chat-message .chat-message-content .chat-code-pre {
+.chat-message .chat-message-content .chat-code-pre,
+.chat-message .chat-tool-calls-content .chat-code-pre {
   flex: 1 1 auto;
   min-width: 0;
   margin: 0;

@@ -156,3 +156,53 @@ test('MarkdownRenderer renders reasoning separately from merged response content
   assert.match(content.innerHTML, /<strong>最终回答<\/strong>/);
   assert.equal(target._rawText, '检查上游返回\n\n**最终回答**');
 });
+
+test('MarkdownRenderer renders tool diagnostics in a collapsed block', () => {
+  const { renderer, element } = loadRenderer();
+  const target = element();
+  target.className = 'upstream-merged-markdown';
+  const bubble = element();
+  bubble.className = 'chat-message chat-message--assistant';
+  const content = element();
+  content.className = 'chat-message-content';
+  bubble.appendChild(content);
+  target.appendChild(bubble);
+
+  renderer.renderResponse(target, {
+    content: '**最终回答**',
+    tools: '### exec_command\n\n```bash\necho hidden\n```'
+  });
+
+  const toolCalls = bubble.querySelector('.chat-tool-calls');
+  assert.ok(toolCalls);
+  assert.equal(Boolean(toolCalls.open), false);
+  assert.match(content.innerHTML, /<strong>最终回答<\/strong>/);
+  assert.doesNotMatch(content.innerHTML, /echo hidden/);
+
+  const toolContent = toolCalls.querySelector('.chat-tool-calls-content');
+  assert.equal(toolContent._rawText, '### exec_command\n\n```bash\necho hidden\n```');
+  assert.match(toolContent.innerHTML, /echo hidden/);
+  assert.equal(target._rawText, '**最终回答**\n\n### exec_command\n\n```bash\necho hidden\n```');
+});
+
+test('MarkdownRenderer hides empty response content when only tool diagnostics exist', () => {
+  const { renderer, element } = loadRenderer();
+  const target = element();
+  target.className = 'upstream-merged-markdown';
+  const bubble = element();
+  bubble.className = 'chat-message chat-message--assistant';
+  const content = element();
+  content.className = 'chat-message-content';
+  bubble.appendChild(content);
+  target.appendChild(bubble);
+
+  renderer.renderResponse(target, {
+    content: '',
+    tools: '### exec_command\n\n```bash\necho hidden\n```'
+  });
+
+  assert.equal(content.hidden, true);
+  assert.equal(content.innerHTML, '');
+  assert.equal(content.textContent, '');
+  assert.ok(bubble.querySelector('.chat-tool-calls'));
+});
