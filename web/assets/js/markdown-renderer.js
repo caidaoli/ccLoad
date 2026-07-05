@@ -168,14 +168,15 @@
     if (response && typeof response === 'object' && !Array.isArray(response)) {
       return {
         reasoning: String(response.reasoning || response.thinking || ''),
-        content: String(response.content ?? response.text ?? '')
+        content: String(response.content ?? response.text ?? ''),
+        tools: String(response.tools ?? response.toolCalls ?? response.functionCalls ?? '')
       };
     }
-    return { reasoning: '', content: String(response || '') };
+    return { reasoning: '', content: String(response || ''), tools: '' };
   }
 
   function mergedRawText(parts) {
-    return [parts.reasoning, parts.content].filter(Boolean).join('\n\n');
+    return [parts.reasoning, parts.content, parts.tools].filter(Boolean).join('\n\n');
   }
 
   function renderThinking(bubble, thinking, streaming = false) {
@@ -209,11 +210,41 @@
     thinkingEl.open = !!streaming;
   }
 
+  function renderToolCalls(bubble, tools) {
+    if (!bubble) return;
+    const text = String(tools || '').trim();
+    let toolEl = bubble.querySelector?.('.chat-tool-calls');
+    if (!text) {
+      toolEl?.remove?.();
+      return;
+    }
+
+    if (!toolEl) {
+      toolEl = document.createElement('details');
+      toolEl.className = 'chat-tool-calls';
+
+      const summary = document.createElement('summary');
+      summary.className = 'chat-tool-calls-summary';
+      summary.textContent = label('logs.debugToolCalls', '工具调用');
+
+      const contentEl = document.createElement('div');
+      contentEl.className = 'chat-tool-calls-content';
+
+      toolEl.appendChild(summary);
+      toolEl.appendChild(contentEl);
+      bubble.appendChild(toolEl);
+    }
+
+    const contentEl = toolEl.querySelector?.('.chat-tool-calls-content');
+    if (contentEl) render(contentEl, text);
+  }
+
   function renderResponse(target, response, options = {}) {
     const el = typeof target === 'string' ? document.getElementById(target) : target;
     if (!el) return;
 
     const parts = normalizeResponseParts(response);
+    const hasContent = String(parts.content || '').trim() !== '';
     const rawText = mergedRawText(parts);
     el._rawText = rawText;
 
@@ -225,7 +256,18 @@
       : getRenderTarget(el);
 
     renderThinking(bubble, parts.reasoning, options.streaming === true);
-    render(contentTarget, parts.content, options);
+    if (contentTarget) {
+      contentTarget.hidden = !hasContent;
+      if (hasContent) {
+        render(contentTarget, parts.content, options);
+      } else {
+        contentTarget.replaceChildren?.();
+        contentTarget.textContent = '';
+        contentTarget.innerHTML = '';
+        contentTarget._rawText = '';
+      }
+    }
+    renderToolCalls(bubble, parts.tools);
     el._rawText = rawText;
     if (bubble) bubble._rawText = rawText;
   }

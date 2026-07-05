@@ -55,7 +55,48 @@ test('formatParts separates reasoning from visible content for chat-style render
 
   assert.deepEqual(api.formatParts(state), {
     reasoning: '检查上游返回',
-    content: '最终回答'
+    content: '最终回答',
+    tools: ''
+  });
+});
+
+test('formatParts separates exec_command arguments as bash tool diagnostics', () => {
+  const api = loadSSEMerge();
+  const state = api.createState();
+  const raw = [
+    'event: response.output_text.delta',
+    'data: {"type":"response.output_text.delta","delta":"最终回答"}',
+    '',
+    'event: response.output_item.done',
+    'data: {"type":"response.output_item.done","output_index":2,"item":{"type":"function_call","name":"exec_command","arguments":"{\\"cmd\\":\\"echo hidden\\"}"}}',
+    '',
+    'data: [DONE]',
+    ''
+  ].join('\n');
+
+  api.parsePayloads(raw).forEach(payload => api.collectPayload(payload, state));
+
+  assert.deepEqual(api.formatParts(state), {
+    reasoning: '',
+    content: '最终回答',
+    tools: '### exec_command\n\n```bash\necho hidden\n```'
+  });
+});
+
+test('formatParts renders delta-only cmd arguments as bash tool diagnostics', () => {
+  const api = loadSSEMerge();
+  const state = api.createState();
+
+  [
+    { type: 'response.output_text.delta', delta: '最终回答' },
+    { type: 'response.function_call_arguments.delta', output_index: 2, delta: '{"cmd":"' },
+    { type: 'response.function_call_arguments.delta', output_index: 2, delta: 'echo hidden"}' }
+  ].forEach(payload => api.collectPayload(payload, state));
+
+  assert.deepEqual(api.formatParts(state), {
+    reasoning: '',
+    content: '最终回答',
+    tools: '### exec_command\n\n```bash\necho hidden\n```'
   });
 });
 

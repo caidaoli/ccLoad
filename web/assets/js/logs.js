@@ -2414,7 +2414,11 @@ function updateDebugPanePreserveScroll(targetId, text, mode) {
 
 function mergedResponseRawText(response) {
   if (response && typeof response === 'object' && !Array.isArray(response)) {
-    return [response.reasoning || response.thinking || '', response.content ?? response.text ?? '']
+    return [
+      response.reasoning || response.thinking || '',
+      response.content ?? response.text ?? '',
+      response.tools ?? response.toolCalls ?? response.functionCalls ?? ''
+    ]
       .map(value => String(value || '').trim())
       .filter(Boolean)
       .join('\n\n');
