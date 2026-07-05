@@ -152,8 +152,8 @@ function initChannelsPageActions() {
         'close-test-modal': () => closeTestModal(),
         'run-channel-test': () => runChannelTest(),
         'run-batch-test': () => runBatchTest(),
-        'show-upstream-detail': () => showUpstreamDetailModal(),
-        'close-upstream-detail': () => closeUpstreamDetailModal(),
+        'show-upstream-detail': () => window.UpstreamDetailModal?.show(window._lastTestUpstreamData),
+        'close-upstream-detail': () => window.UpstreamDetailModal?.close(),
         'close-sort-modal': () => closeSortModal(),
         'save-sort-order': () => saveSortOrder(),
         'toggle-response': (actionTarget) => {

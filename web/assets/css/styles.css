@@ -3621,6 +3621,19 @@ body {
   max-width: 600px;
 }
 
+#testModal .test-modal-content {
+  width: min(760px, calc(100vw - 32px));
+  max-width: min(760px, calc(100vw - 32px));
+}
+
+.channel-test-actions {
+  align-items: center;
+}
+
+.channel-test-upstream-btn {
+  margin-right: auto;
+}
+
 .model-select {
   width: 100%;
   padding: 8px 12px;
@@ -4186,26 +4199,6 @@ html[data-theme="dark"] .logs-table .channel-link:hover,
 html[data-theme="system"][data-resolved-theme="dark"] .logs-table .channel-link:hover {
   color: var(--primary-200);
 }
-
-.upstream-detail-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 8px;
-  padding: 4px 10px;
-  font-size: 0.75rem;
-  color: var(--primary-600);
-  background: none;
-  border: 1px solid var(--primary-200);
-  border-radius: 4px;
-  cursor: pointer;
-  transition: background 0.15s;
-}
-
-.upstream-detail-btn:hover {
-  background: var(--primary-50);
-}
-
 
 /* ===== 日志和统计页面样式 ===== */
 .status-error {

@@ -85,10 +85,6 @@ const SORT_DIRECTION_NONE = 0;
 const ALL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
-let upstreamMergedVisible = false;
-let currentUpstreamDetailData = null;
-let upstreamMergedSourceBody = null;
-let upstreamMergedLoading = false;
 
 function getFetchModelsBtn() {
   return document.getElementById('fetchModelsBtn');
@@ -1788,6 +1784,7 @@ function applyTestResultToRow(row, data) {
 
     if (data.upstream_request_url) {
       row._upstreamData = {
+        method: 'POST',
         url: data.upstream_request_url,
         requestHeaders: data.upstream_request_headers,
         requestBody: data.upstream_request_body,
@@ -1831,6 +1828,7 @@ function applyTestResultToRow(row, data) {
 
   if (data.upstream_request_url) {
     row._upstreamData = {
+      method: 'POST',
       url: data.upstream_request_url,
       requestHeaders: data.upstream_request_headers,
       requestBody: data.upstream_request_body,
@@ -2958,7 +2956,7 @@ function bindEvents() {
     if (responseCell) {
       const row = responseCell.closest('tr');
       if (row && row._upstreamData) {
-        showUpstreamDetailModal(row._upstreamData);
+        window.UpstreamDetailModal?.show(row._upstreamData);
         return;
       }
     }
@@ -4351,157 +4349,8 @@ function autoResizeChatInput() {
   el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
 }
 
-function tryFormatJSON(str) {
-  if (!str) return '';
-  try {
-    return JSON.stringify(JSON.parse(str), null, 2);
-  } catch {
-    return str;
-  }
-}
-
-function formatHeaderLines(headers) {
-  if (!headers || typeof headers !== 'object') return '';
-  headers = window.maskSensitiveHeaders(headers);
-  const lines = [];
-  for (const [key, value] of Object.entries(headers)) {
-    if (Array.isArray(value)) {
-      value.forEach(v => lines.push(`${key}: ${v}`));
-    } else {
-      lines.push(`${key}: ${value}`);
-    }
-  }
-  return lines.join('\n');
-}
-
-function composeRawRequest(data) {
-  let parts = [];
-  if (data.url) parts.push(data.url);
-  const headers = formatHeaderLines(data.requestHeaders);
-  if (headers) parts.push(headers);
-  const body = tryFormatJSON(data.requestBody);
-  if (body) {
-    parts.push('');
-    parts.push(body);
-  }
-  return parts.join('\n');
-}
-
-function composeRawResponse(data) {
-  let parts = [];
-  if (data.statusCode != null) parts.push('HTTP ' + data.statusCode);
-  const headers = formatHeaderLines(data.responseHeaders);
-  if (headers) parts.push(headers);
-  const body = tryFormatJSON(data.responseBody);
-  if (body) {
-    parts.push('');
-    parts.push(body);
-  }
-  return parts.join('\n');
-}
-
-function updateUpstreamResponseActionButtons() {
-  const responseActive = !!document.getElementById('upstreamTabResponse')?.classList.contains('active');
-  const copyBtn = document.querySelector('#upstreamDetailModal .upstream-copy-btn--tabs');
-  if (copyBtn) {
-    copyBtn.dataset.copyTarget = responseActive
-      ? (upstreamMergedVisible ? 'upstreamRespMerged' : 'upstreamRespRaw')
-      : 'upstreamReqRaw';
-  }
-
-  const mergeBtn = document.getElementById('upstreamMergeBtn');
-  if (mergeBtn) {
-    mergeBtn.hidden = !responseActive;
-  }
-}
-
-function setUpstreamMergedVisible(visible) {
-  upstreamMergedVisible = !!visible;
-
-  const raw = document.getElementById('upstreamRespRaw');
-  const merged = document.getElementById('upstreamRespMerged');
-  if (raw) raw.hidden = upstreamMergedVisible;
-  if (merged) merged.hidden = !upstreamMergedVisible;
-
-  const mergeBtn = document.getElementById('upstreamMergeBtn');
-  if (mergeBtn) {
-    const key = upstreamMergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
-    mergeBtn.classList.toggle('active', upstreamMergedVisible);
-    mergeBtn.setAttribute('aria-pressed', upstreamMergedVisible ? 'true' : 'false');
-    mergeBtn.dataset.i18n = key;
-    mergeBtn.textContent = (typeof i18nText === 'function' ? i18nText(key) : '') || (upstreamMergedVisible ? '原始' : '合并');
-  }
-
-  updateUpstreamResponseActionButtons();
-
-  if (upstreamMergedVisible) {
-    void refreshUpstreamMergedResponse(currentUpstreamDetailData);
-  }
-}
-
-function showUpstreamDetailModal(data) {
-  if (!data) return;
-  currentUpstreamDetailData = data;
-  upstreamMergedSourceBody = null;
-  upstreamMergedLoading = false;
-
-  window.setHighlightedCodeContent('upstreamReqRaw', composeRawRequest(data), 'request');
-  window.setHighlightedCodeContent('upstreamRespRaw', composeRawResponse(data), 'response');
-  window.MarkdownRenderer.renderResponse('upstreamRespMerged', { reasoning: '', content: '' });
-
-  // Reset to Request tab
-  const modal = document.getElementById('upstreamDetailModal');
-  modal.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
-  document.getElementById('upstreamTabRequest').classList.add('active');
-  document.getElementById('upstreamTabResponse').classList.remove('active');
-  setUpstreamMergedVisible(false);
-  updateUpstreamResponseActionButtons();
-
-  modal.classList.add('show');
-}
-
-function closeUpstreamDetailModal() {
-  currentUpstreamDetailData = null;
-  upstreamMergedSourceBody = null;
-  upstreamMergedLoading = false;
-  document.getElementById('upstreamDetailModal').classList.remove('show');
-}
-
-async function refreshUpstreamMergedResponse(data) {
-  if (!data || upstreamMergedLoading) return;
-  const sourceBody = String(data.responseBody || '');
-  if (upstreamMergedSourceBody === sourceBody) return;
-  upstreamMergedLoading = true;
-  window.MarkdownRenderer.renderResponse('upstreamRespMerged', {
-    reasoning: '',
-    content: (typeof i18nText === 'function' ? i18nText('common.loading', '加载中...') : '加载中...') || '加载中...',
-  });
-  try {
-    const merged = await window.MergedResponseClient.mergeUpstreamResponse(sourceBody);
-    upstreamMergedSourceBody = sourceBody;
-    window.MarkdownRenderer.renderResponse('upstreamRespMerged', merged || { reasoning: '', content: '' });
-  } catch (e) {
-    window.MarkdownRenderer.renderResponse('upstreamRespMerged', {
-      reasoning: '',
-      content: e?.message || '合并响应失败',
-    });
-  } finally {
-    upstreamMergedLoading = false;
-  }
-}
-
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape') {
-    const modal = document.getElementById('upstreamDetailModal');
-    if (modal && modal.classList.contains('show')) {
-      closeUpstreamDetailModal();
-    }
-  }
-});
-
-// Tab switch + copy/merge button delegation for upstream detail modal
+// Chat copy buttons live inside rendered message bubbles, outside initDelegatedActions.
 document.addEventListener('click', (e) => {
-  // 对话气泡复制按钮
   const chatCopyBtn = e.target.closest('.chat-message-copy-btn');
   if (chatCopyBtn) {
     e.preventDefault();
@@ -4514,35 +4363,6 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  const tab = e.target.closest('#upstreamDetailModal .upstream-tab');
-  if (tab) {
-    const target = tab.dataset.tab;
-    document.querySelectorAll('#upstreamDetailModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
-    document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
-    document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
-    updateUpstreamResponseActionButtons();
-    return;
-  }
-
-  const mergeBtn = e.target.closest('#upstreamDetailModal [data-action="merge-upstream-response"]');
-  if (mergeBtn) {
-    setUpstreamMergedVisible(!upstreamMergedVisible);
-    return;
-  }
-
-  const copyBtn = e.target.closest('#upstreamDetailModal .upstream-copy-btn');
-  if (copyBtn) {
-    const targetId = copyBtn.dataset.copyTarget;
-    const pre = document.getElementById(targetId);
-    if (!pre) return;
-    const text = pre._rawText || pre.textContent || '';
-    navigator.clipboard.writeText(text).then(() => {
-      const orig = copyBtn.textContent;
-      copyBtn.textContent = '\u2713';
-      copyBtn.classList.add('copied');
-      setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('copied'); }, 1500);
-    });
-  }
 });
 
 async function bootstrap() {
