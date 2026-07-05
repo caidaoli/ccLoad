@@ -95,7 +95,10 @@ func (s *Server) buildProxyRequest(
 	// 1.6 自定义请求体规则（仅对 JSON body 生效）
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
 
-	// 1.7 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
+	// 1.7 Codex Responses 入站历史归一：tool_search_*.arguments 必须是对象。
+	body = normalizeCodexToolSearchArguments(runtimeUpstreamProtocol(reqCtx, cfg), requestPath, body)
+
+	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
 	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
 	if codexSessionID != "" {
 		body = injectCodexPromptCacheKey(body, codexSessionID)
@@ -1492,7 +1495,13 @@ func (s *Server) forwardAttempt(
 	}
 
 	forceReturnClient := false
-	if retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, plan, res); ok {
+	retryStrategies := make([]string, 0, 2)
+	for {
+		retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, plan, res)
+		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
+			break
+		}
+		retryStrategies = append(retryStrategies, retryStrategy)
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
 		res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
@@ -1501,9 +1510,14 @@ func (s *Server) forwardAttempt(
 			reqCtx.debugData = res.DebugData
 		}
 		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
-			res.RetryStrategy = retryStrategy
+			res.RetryStrategy = strings.Join(retryStrategies, ",")
+			break
 		}
 		forceReturnClient = true
+		plan = retryPlan
+		if err != nil || res == nil {
+			break
+		}
 	}
 
 	// 处理网络错误或异常响应（如空响应）
@@ -1610,8 +1624,11 @@ func codexRetryBodyFor400(
 		}
 	}
 	if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
-		if retryBody, ok := codexBodyWithoutEncryptedContentAndToolSearch(plan.TranslatedBody); ok {
-			return retryBody, "strip_codex_encrypted_tool_search", true
+		if retryBody, ok := codexBodyWithoutToolSearchInputItems(plan.TranslatedBody); ok {
+			return retryBody, "strip_codex_tool_search", true
+		}
+		if retryBody, ok := codexBodyWithoutEncryptedContent(plan.TranslatedBody); ok {
+			return retryBody, "strip_codex_encrypted_content", true
 		}
 	}
 	if shouldRetryCodexUnsupportedThinking(upstreamProtocol, res) {
@@ -1620,6 +1637,15 @@ func codexRetryBodyFor400(
 		}
 	}
 	return nil, "", false
+}
+
+func hasRetryStrategy(strategies []string, strategy string) bool {
+	for _, existing := range strategies {
+		if existing == strategy {
+			return true
+		}
+	}
+	return false
 }
 
 func shouldRetryCodexUnsupportedThinking(upstreamProtocol protocol.Protocol, res *fwResult) bool {
@@ -1775,31 +1801,127 @@ func filterCodexThinkingIncludes(root map[string]any) bool {
 	return true
 }
 
-func codexBodyWithoutEncryptedContentAndToolSearch(body []byte) ([]byte, bool) {
+func normalizeCodexToolSearchArguments(upstreamProtocol, requestPath string, body []byte) []byte {
+	if protocol.Protocol(upstreamProtocol) != protocol.Codex ||
+		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyResponses {
+		return body
+	}
+	if normalized, ok := normalizeCodexToolSearchInputItems(body); ok {
+		return normalized
+	}
+	return body
+}
+
+func normalizeCodexToolSearchInputItems(body []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := sonic.Unmarshal(body, &root); err != nil {
+		return nil, false
+	}
+	input, ok := root["input"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	changed := false
+	filtered := make([]any, 0, len(input))
+	for _, item := range input {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		typ, _ := obj["type"].(string)
+		if !strings.HasPrefix(typ, "tool_search_") {
+			filtered = append(filtered, item)
+			continue
+		}
+		rawArgs, hasArgs := obj["arguments"]
+		if !hasArgs {
+			filtered = append(filtered, item)
+			continue
+		}
+		if _, ok := rawArgs.(map[string]any); ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		argsString, ok := rawArgs.(string)
+		if !ok {
+			changed = true
+			continue
+		}
+
+		var decoded any
+		if err := sonic.Unmarshal([]byte(argsString), &decoded); err != nil {
+			changed = true
+			continue
+		}
+		argsObject, ok := decoded.(map[string]any)
+		if !ok {
+			changed = true
+			continue
+		}
+		obj["arguments"] = argsObject
+		changed = true
+		filtered = append(filtered, item)
+	}
+	if !changed {
+		return nil, false
+	}
+
+	root["input"] = filtered
+	normalized, err := sonic.Marshal(root)
+	if err != nil {
+		return nil, false
+	}
+	return normalized, true
+}
+
+func codexBodyWithoutToolSearchInputItems(body []byte) ([]byte, bool) {
+	var root map[string]any
+	if err := sonic.Unmarshal(body, &root); err != nil {
+		return nil, false
+	}
+
+	input, ok := root["input"].([]any)
+	if !ok {
+		return nil, false
+	}
+
+	filtered := make([]any, 0, len(input))
+	removed := false
+	for _, item := range input {
+		obj, ok := item.(map[string]any)
+		if !ok {
+			filtered = append(filtered, item)
+			continue
+		}
+		typ, _ := obj["type"].(string)
+		// compaction 是 Codex 客户端 fork 线程时的空占位项，new-api 校验不识别
+		if strings.HasPrefix(typ, "tool_search_") || typ == "compaction" {
+			removed = true
+			continue
+		}
+		filtered = append(filtered, item)
+	}
+	if !removed {
+		return nil, false
+	}
+
+	root["input"] = filtered
+	retryBody, err := sonic.Marshal(root)
+	if err != nil {
+		return nil, false
+	}
+	return retryBody, true
+}
+
+func codexBodyWithoutEncryptedContent(body []byte) ([]byte, bool) {
 	var root map[string]any
 	if err := sonic.Unmarshal(body, &root); err != nil {
 		return nil, false
 	}
 
 	removed := removeEncryptedContentFields(root)
-	if input, ok := root["input"].([]any); ok {
-		filtered := make([]any, 0, len(input))
-		for _, item := range input {
-			obj, ok := item.(map[string]any)
-			if !ok {
-				filtered = append(filtered, item)
-				continue
-			}
-			typ, _ := obj["type"].(string)
-			// compaction 是 Codex 客户端 fork 线程时的空占位项，new-api 校验不识别
-			if strings.HasPrefix(typ, "tool_search_") || typ == "compaction" {
-				removed = true
-				continue
-			}
-			filtered = append(filtered, item)
-		}
-		root["input"] = filtered
-	}
 	if !removed {
 		return nil, false
 	}

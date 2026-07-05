@@ -299,8 +299,8 @@ func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t
 
 func TestCodexRetryBodyFor400_AnyrouterStripsCompactionItem(t *testing.T) {
 	// 线上案例：Codex Desktop 0.140 alpha 在 fork 线程时插入空占位项
-	// {"type":"compaction"}，anyrouter(new-api) 校验不识别该类型直接 400，
-	// 且 body 无 encrypted_content / tool_search_* 可剥离。
+	// {"type":"compaction"}，anyrouter(new-api) 校验不识别该类型直接 400。
+	// 第一阶段只清理 anyrouter 不接受的 input 项，不碰加密内容。
 	body := []byte(`{
 		"model":"gpt-5.5",
 		"reasoning":{"effort":"xhigh"},
@@ -322,8 +322,8 @@ func TestCodexRetryBodyFor400_AnyrouterStripsCompactionItem(t *testing.T) {
 	if !ok {
 		t.Fatal("codexRetryBodyFor400 returned ok=false")
 	}
-	if strategy != "strip_codex_encrypted_tool_search" {
-		t.Fatalf("strategy=%q, want strip_codex_encrypted_tool_search", strategy)
+	if strategy != "strip_codex_tool_search" {
+		t.Fatalf("strategy=%q, want strip_codex_tool_search", strategy)
 	}
 	text := string(got)
 	if strings.Contains(text, `"compaction"`) {
