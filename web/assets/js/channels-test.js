@@ -75,6 +75,7 @@ function resetTestModal() {
   document.getElementById('testProgress').classList.remove('show');
   document.getElementById('batchTestProgress').classList.add('hidden');
   document.getElementById('testResult').classList.remove('show', 'success', 'error');
+  document.getElementById('testUpstreamDetailBtn')?.classList.add('hidden');
   document.getElementById('runTestBtn').disabled = false;
   document.getElementById('batchTestBtn').disabled = false;
   document.getElementById('testContentInput').value = defaultTestContent;
@@ -302,6 +303,7 @@ function displayTestResult(result) {
   const testResultDiv = document.getElementById('testResult');
   const contentDiv = document.getElementById('testResultContent');
   const detailsDiv = document.getElementById('testResultDetails');
+  const upstreamDetailBtn = document.getElementById('testUpstreamDetailBtn');
 
   testResultDiv.classList.remove('success', 'error');
   testResultDiv.classList.add('show');
@@ -348,10 +350,6 @@ function displayTestResult(result) {
       details += renderResponseSection(window.t('channels.test.rawResponse'), result.raw_response);
     }
 
-    if (result.upstream_request_url) {
-      details += `<button type="button" class="upstream-detail-btn" data-action="show-upstream-detail">${window.t('channels.test.viewUpstreamDetail')}</button>`;
-    }
-
     detailsDiv.innerHTML = details;
   } else {
     testResultDiv.classList.add('error');
@@ -376,15 +374,12 @@ function displayTestResult(result) {
       details += renderResponseSection(window.t('channels.test.responseHeaders'), JSON.stringify(result.response_headers, null, 2), 'block');
     }
 
-    if (result.upstream_request_url) {
-      details += `<button type="button" class="upstream-detail-btn" data-action="show-upstream-detail">${window.t('channels.test.viewUpstreamDetail')}</button>`;
-    }
-
     detailsDiv.innerHTML = details;
   }
 
   // 缓存上游详情数据供 Modal 使用
   window._lastTestUpstreamData = result.upstream_request_url ? {
+    method: 'POST',
     url: result.upstream_request_url,
     requestHeaders: result.upstream_request_headers,
     requestBody: result.upstream_request_body,
@@ -392,46 +387,5 @@ function displayTestResult(result) {
     responseHeaders: result.response_headers,
     responseBody: result.upstream_response_body || result.raw_response
   } : null;
+  upstreamDetailBtn?.classList.toggle('hidden', !window._lastTestUpstreamData);
 }
-
-function showUpstreamDetailModal() {
-  const data = window._lastTestUpstreamData;
-  if (!data) return;
-
-  window.setHighlightedCodeContent('upstreamReqUrl', data.url || '', 'url');
-  window.setHighlightedCodeContent('upstreamReqHeaders', data.requestHeaders ? JSON.stringify(window.maskSensitiveHeaders(data.requestHeaders), null, 2) : '', 'json');
-  window.setHighlightedCodeContent('upstreamReqBody', tryFormatJSON(data.requestBody), 'json');
-  window.setHighlightedCodeContent('upstreamRespStatus', data.statusCode != null ? String(data.statusCode) : '', 'status');
-  window.setHighlightedCodeContent('upstreamRespHeaders', data.responseHeaders ? JSON.stringify(window.maskSensitiveHeaders(data.responseHeaders), null, 2) : '', 'json');
-  window.setHighlightedCodeContent('upstreamRespBody', tryFormatJSON(data.responseBody), 'json');
-
-  // 重置到 Request tab
-  document.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t.dataset.tab === 'request'));
-  document.getElementById('upstreamTabRequest').classList.add('active');
-  document.getElementById('upstreamTabResponse').classList.remove('active');
-
-  document.getElementById('upstreamDetailModal').classList.add('show');
-}
-
-function closeUpstreamDetailModal() {
-  document.getElementById('upstreamDetailModal').classList.remove('show');
-}
-
-function tryFormatJSON(str) {
-  if (!str) return '';
-  try {
-    return JSON.stringify(JSON.parse(str), null, 2);
-  } catch {
-    return str;
-  }
-}
-
-// Tab 切换委托
-document.addEventListener('click', (e) => {
-  const tab = e.target.closest('.upstream-tab');
-  if (!tab) return;
-  const target = tab.dataset.tab;
-  document.querySelectorAll('.upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
-  document.getElementById('upstreamTabRequest').classList.toggle('active', target === 'request');
-  document.getElementById('upstreamTabResponse').classList.toggle('active', target === 'response');
-});

@@ -20,6 +20,7 @@
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/merged-response-client.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
@@ -376,24 +377,21 @@
     <div class="modal-content upstream-detail-modal-content">
       <div class="modal-header">
         <h2 class="modal-title" data-i18n="channels.test.upstreamDetail">上游请求/响应详情</h2>
-        <button type="button" class="close-btn" onclick="closeUpstreamDetailModal()">&times;</button>
+        <button type="button" class="close-btn" data-action="close-upstream-detail">&times;</button>
       </div>
       <div class="upstream-detail-tabs">
         <button type="button" class="upstream-tab active" data-tab="request" data-i18n="channels.test.tabRequest">Request</button>
         <button type="button" class="upstream-tab" data-tab="response" data-i18n="channels.test.tabResponse">Response</button>
+        <button type="button" id="upstreamWrapBtn" class="upstream-copy-btn upstream-wrap-btn active" data-action="toggle-upstream-wrap" data-i18n="logs.debugWrap" aria-pressed="true">换行</button>
         <button type="button" class="upstream-copy-btn upstream-copy-btn--tabs" data-copy-target="upstreamReqRaw" data-i18n="common.copy">复制</button>
         <button type="button" id="upstreamMergeBtn" class="upstream-copy-btn upstream-merge-btn" data-action="merge-upstream-response" data-i18n="logs.debugMerge" aria-pressed="false" hidden>合并</button>
       </div>
       <div id="upstreamTabRequest" class="upstream-tab-panel active">
-        <div class="upstream-field upstream-field--full">
-          <pre id="upstreamReqRaw" class="upstream-pre upstream-pre--full"></pre>
-        </div>
+        <pre id="upstreamReqRaw" class="upstream-pre upstream-pre--full"></pre>
       </div>
       <div id="upstreamTabResponse" class="upstream-tab-panel">
-        <div class="upstream-field upstream-field--full">
-          <pre id="upstreamRespRaw" class="upstream-pre upstream-pre--full"></pre>
-          <div id="upstreamRespMerged" class="upstream-merged-markdown upstream-pre--full" hidden><div class="chat-message chat-message--assistant"><div class="chat-message-content"></div></div></div>
-        </div>
+        <pre id="upstreamRespRaw" class="upstream-pre upstream-pre--full"></pre>
+        <div id="upstreamRespMerged" class="upstream-merged-markdown upstream-pre--full" hidden><div class="chat-message chat-message--assistant"><div class="chat-message-content"></div></div></div>
       </div>
     </div>
   </div>
