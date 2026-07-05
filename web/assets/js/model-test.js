@@ -4414,7 +4414,7 @@ function composeMergedResponse(data) {
   }
 
   const parts = window.SSEMerge.formatParts(state);
-  if (parts.reasoning || parts.content) return parts;
+  if (window.SSEMerge.hasParts(parts)) return window.SSEMerge.formatDisplayParts(parts);
   return { reasoning: '', content: tryFormatJSON(raw) };
 }
 
