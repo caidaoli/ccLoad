@@ -4,7 +4,8 @@
  * across Anthropic, OpenAI, Gemini, and Codex protocols.
  *
  * Exposed as window.SSEMerge = {
- *   appendText, parsePayloads, createState, collectPayload, formatState, formatParts
+ *   appendText, parsePayloads, createState, collectPayload, formatState, formatParts,
+ *   formatDisplayParts, hasParts
  * }
  */
 (function () {
@@ -157,6 +158,36 @@
       content: formatMergedResponseState(state),
       tools: formatMergedToolCalls(state)
     };
+  }
+
+  function formatJSONContentForMarkdown(text) {
+    const raw = String(text || '').trim();
+    if (!raw || !/^[\[{]/.test(raw)) return text;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed !== 'object') return text;
+      return codeFence('json', JSON.stringify(parsed, null, 2));
+    } catch {
+      return text;
+    }
+  }
+
+  function formatMergedResponseDisplayParts(parts) {
+    if (!parts || typeof parts !== 'object') return { reasoning: '', content: '', tools: '' };
+    return {
+      reasoning: String(parts.reasoning || parts.thinking || ''),
+      content: formatJSONContentForMarkdown(parts.content ?? parts.text ?? ''),
+      tools: String(parts.tools ?? parts.toolCalls ?? parts.functionCalls ?? '')
+    };
+  }
+
+  function hasMergedResponseParts(parts) {
+    if (!parts || typeof parts !== 'object') return false;
+    return Boolean(
+      String(parts.reasoning || '').trim()
+      || String(parts.content || parts.text || '').trim()
+      || String(parts.tools || parts.toolCalls || parts.functionCalls || '').trim()
+    );
   }
 
   function collectMergedResponsePayload(payload, state) {
@@ -354,6 +385,8 @@
     createState: createMergeState,
     collectPayload: collectMergedResponsePayload,
     formatState: formatMergedResponseState,
-    formatParts: formatMergedResponseParts
+    formatParts: formatMergedResponseParts,
+    formatDisplayParts: formatMergedResponseDisplayParts,
+    hasParts: hasMergedResponseParts
   };
 })();

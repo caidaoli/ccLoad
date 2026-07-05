@@ -100,6 +100,30 @@ test('formatParts renders delta-only cmd arguments as bash tool diagnostics', ()
   });
 });
 
+test('hasParts treats tool-only merged responses as useful content', () => {
+  const api = loadSSEMerge();
+
+  assert.equal(api.hasParts({ reasoning: '', content: '', tools: '### exec_command' }), true);
+  assert.equal(api.hasParts({ reasoning: '', content: '', tools: '' }), false);
+});
+
+test('formatDisplayParts renders JSON object content as highlighted markdown fence', () => {
+  const api = loadSSEMerge();
+
+  assert.deepEqual(
+    api.formatDisplayParts({
+      reasoning: '',
+      content: '{"type":"discovery","facts":["a","b"]}',
+      tools: ''
+    }),
+    {
+      reasoning: '',
+      content: '```json\n{\n  "type": "discovery",\n  "facts": [\n    "a",\n    "b"\n  ]\n}\n```',
+      tools: ''
+    }
+  );
+});
+
 test('formatState keeps Codex output_text and drops reasoning items', () => {
   const api = loadSSEMerge();
 
