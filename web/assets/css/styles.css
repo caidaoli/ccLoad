@@ -537,7 +537,7 @@ body {
 }
 
 .brand-icon-wrap.is-active .brand-icon {
-  animation: none;
+  animation: brand-pulse 1.2s ease-in-out infinite;
 }
 
 .brand-badge {
