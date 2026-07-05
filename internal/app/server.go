@@ -806,6 +806,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		// 统计分析
 		admin.GET("/logs", s.HandleErrors)
 		admin.GET("/logs/bootstrap", s.HandleLogsBootstrap)
+		admin.POST("/debug-logs/merged-response", s.HandleMergeDebugResponse)
 		admin.GET("/debug-logs/:log_id", s.HandleGetDebugLog)
 		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
 		admin.GET("/active-requests/:request_id/debug-log", s.HandleGetActiveRequestDebugLog)

@@ -86,6 +86,9 @@ const ALL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 let sortState = { key: '', direction: SORT_DIRECTION_NONE };
 let nameFilterKeyword = '';
 let upstreamMergedVisible = false;
+let currentUpstreamDetailData = null;
+let upstreamMergedSourceBody = null;
+let upstreamMergedLoading = false;
 
 function getFetchModelsBtn() {
   return document.getElementById('fetchModelsBtn');
@@ -4397,27 +4400,6 @@ function composeRawResponse(data) {
   return parts.join('\n');
 }
 
-function composeMergedResponse(data) {
-  const raw = String(data.responseBody || '').replace(/\r\n/g, '\n').trim();
-  if (!raw) return { reasoning: '', content: '' };
-
-  const state = window.SSEMerge.createState();
-  const ssePayloads = window.SSEMerge.parsePayloads(raw);
-  if (ssePayloads.length > 0) {
-    ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
-  } else {
-    try {
-      window.SSEMerge.collectPayload(JSON.parse(raw), state);
-    } catch {
-      return { reasoning: '', content: tryFormatJSON(raw) };
-    }
-  }
-
-  const parts = window.SSEMerge.formatParts(state);
-  if (window.SSEMerge.hasParts(parts)) return window.SSEMerge.formatDisplayParts(parts);
-  return { reasoning: '', content: tryFormatJSON(raw) };
-}
-
 function updateUpstreamResponseActionButtons() {
   const responseActive = !!document.getElementById('upstreamTabResponse')?.classList.contains('active');
   const copyBtn = document.querySelector('#upstreamDetailModal .upstream-copy-btn--tabs');
@@ -4451,15 +4433,21 @@ function setUpstreamMergedVisible(visible) {
   }
 
   updateUpstreamResponseActionButtons();
+
+  if (upstreamMergedVisible) {
+    void refreshUpstreamMergedResponse(currentUpstreamDetailData);
+  }
 }
 
 function showUpstreamDetailModal(data) {
   if (!data) return;
+  currentUpstreamDetailData = data;
+  upstreamMergedSourceBody = null;
+  upstreamMergedLoading = false;
 
   window.setHighlightedCodeContent('upstreamReqRaw', composeRawRequest(data), 'request');
   window.setHighlightedCodeContent('upstreamRespRaw', composeRawResponse(data), 'response');
-  const mergedResponse = composeMergedResponse(data);
-  window.MarkdownRenderer.renderResponse('upstreamRespMerged', mergedResponse);
+  window.MarkdownRenderer.renderResponse('upstreamRespMerged', { reasoning: '', content: '' });
 
   // Reset to Request tab
   const modal = document.getElementById('upstreamDetailModal');
@@ -4473,7 +4461,33 @@ function showUpstreamDetailModal(data) {
 }
 
 function closeUpstreamDetailModal() {
+  currentUpstreamDetailData = null;
+  upstreamMergedSourceBody = null;
+  upstreamMergedLoading = false;
   document.getElementById('upstreamDetailModal').classList.remove('show');
+}
+
+async function refreshUpstreamMergedResponse(data) {
+  if (!data || upstreamMergedLoading) return;
+  const sourceBody = String(data.responseBody || '');
+  if (upstreamMergedSourceBody === sourceBody) return;
+  upstreamMergedLoading = true;
+  window.MarkdownRenderer.renderResponse('upstreamRespMerged', {
+    reasoning: '',
+    content: (typeof i18nText === 'function' ? i18nText('common.loading', '加载中...') : '加载中...') || '加载中...',
+  });
+  try {
+    const merged = await window.MergedResponseClient.mergeUpstreamResponse(sourceBody);
+    upstreamMergedSourceBody = sourceBody;
+    window.MarkdownRenderer.renderResponse('upstreamRespMerged', merged || { reasoning: '', content: '' });
+  } catch (e) {
+    window.MarkdownRenderer.renderResponse('upstreamRespMerged', {
+      reasoning: '',
+      content: e?.message || '合并响应失败',
+    });
+  } finally {
+    upstreamMergedLoading = false;
+  }
 }
 
 document.addEventListener('keydown', (e) => {

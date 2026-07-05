@@ -2212,37 +2212,14 @@ function composeDebugRawResponse(data) {
   return parts.join('\n');
 }
 
-function composeDebugMergedResponse(data) {
-  let raw = String(data?.resp_body || '').replace(/\r\n/g, '\n');
-  if (!raw) return { reasoning: '', content: '' };
-  const headerBreak = raw.indexOf('\n\n');
-  const firstLine = raw.split('\n', 1)[0] || '';
-  if (headerBreak !== -1 && /^HTTP\s+\d{3}\b/i.test(firstLine)) {
-    raw = raw.slice(headerBreak + 2).trimStart();
-  }
-
-  const state = window.SSEMerge.createState();
-  const ssePayloads = window.SSEMerge.parsePayloads(raw);
-  if (ssePayloads.length > 0) {
-    ssePayloads.forEach(payload => window.SSEMerge.collectPayload(payload, state));
-  } else {
-    try {
-      window.SSEMerge.collectPayload(JSON.parse(raw), state);
-    } catch {
-      return { reasoning: '', content: formatJsonSafe(raw) };
-    }
-  }
-
-  const parts = window.SSEMerge.formatParts(state);
-  if (window.SSEMerge.hasParts(parts)) return window.SSEMerge.formatDisplayParts(parts);
-  return { reasoning: '', content: formatJsonSafe(raw) };
-}
-
 const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
 let activeDebugLogRefreshTimer = null;
 let activeDebugLogRefreshInFlight = false;
 let debugResponseMergedVisible = false;
 let debugLogWrapEnabled = true;
+let currentDebugLogData = null;
+let debugMergedSourceBody = null;
+let debugMergedLoading = false;
 
 async function showDebugLogModal(logId) {
   return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
@@ -2270,6 +2247,9 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
   error.textContent = '';
   content.style.display = 'none';
   setDebugLogStatus(null);
+  currentDebugLogData = null;
+  debugMergedSourceBody = null;
+  debugMergedLoading = false;
   modal.classList.add('show');
 
   // Reset tabs
@@ -2295,13 +2275,13 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
     }
 
     const data = payload.data || {};
+    currentDebugLogData = data;
     loading.style.display = 'none';
     content.style.display = 'flex';
 
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
-    const mergedResponse = composeDebugMergedResponse(data);
-    window.MarkdownRenderer.renderResponse('debugRespMerged', mergedResponse);
+    resetDebugMergedResponse();
 
     // 如果是实时活跃请求，启动轮询
     const activeRequestId = Number(opts.activeRequestId);
@@ -2373,6 +2353,7 @@ async function refreshActiveDebugLogOnce(activeRequestId) {
       return;
     }
     const data = payload.data || {};
+    currentDebugLogData = data;
     updateDebugLogContentPreserveScroll(data);
   } catch (_) {
     // 网络抖动：忽略，下个 tick 继续
@@ -2384,8 +2365,11 @@ async function refreshActiveDebugLogOnce(activeRequestId) {
 function updateDebugLogContentPreserveScroll(data) {
   updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
   updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
-  const mergedResponse = composeDebugMergedResponse(data);
-  updateDebugPanePreserveScroll('debugRespMerged', mergedResponse, 'markdown');
+  if (debugResponseMergedVisible) {
+    void refreshDebugMergedResponse(data);
+  } else if (String(data?.resp_body || '') !== String(debugMergedSourceBody || '')) {
+    resetDebugMergedResponse();
+  }
 }
 
 function updateDebugPanePreserveScroll(targetId, text, mode) {
@@ -2435,6 +2419,9 @@ function isScrolledToBottom(el) {
 function closeDebugLogModal() {
   stopActiveDebugLogPolling();
   setDebugLogStatus(null);
+  currentDebugLogData = null;
+  debugMergedSourceBody = null;
+  debugMergedLoading = false;
   document.getElementById('debugLogModal').classList.remove('show');
 }
 
@@ -2493,6 +2480,39 @@ function setDebugResponseMergedVisible(visible) {
   }
 
   updateDebugResponseActionButtons();
+
+  if (debugResponseMergedVisible) {
+    void refreshDebugMergedResponse(currentDebugLogData);
+  }
+}
+
+function resetDebugMergedResponse() {
+  debugMergedSourceBody = null;
+  debugMergedLoading = false;
+  window.MarkdownRenderer.renderResponse('debugRespMerged', { reasoning: '', content: '' });
+}
+
+async function refreshDebugMergedResponse(data) {
+  if (!data || debugMergedLoading) return;
+  const sourceBody = String(data.resp_body || '');
+  if (debugMergedSourceBody === sourceBody) return;
+  debugMergedLoading = true;
+  window.MarkdownRenderer.renderResponse('debugRespMerged', {
+    reasoning: '',
+    content: (typeof t === 'function' ? t('common.loading') : '加载中...') || '加载中...',
+  });
+  try {
+    const merged = await window.MergedResponseClient.mergeUpstreamResponse(sourceBody);
+    debugMergedSourceBody = sourceBody;
+    updateDebugPanePreserveScroll('debugRespMerged', merged, 'markdown');
+  } catch (e) {
+    window.MarkdownRenderer.renderResponse('debugRespMerged', {
+      reasoning: '',
+      content: e?.message || '合并响应失败',
+    });
+  } finally {
+    debugMergedLoading = false;
+  }
 }
 
 // Tab switch + copy button delegation for debug log modal.

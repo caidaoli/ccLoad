@@ -441,7 +441,6 @@ func (p *sseUsageParser) parseBuffer() error {
 			// [INFO] OpenAI 流结束标志: data: [DONE]
 			if dataLine == "[DONE]" {
 				p.streamComplete = true
-				p.hasStreamOutput = true
 				continue // [DONE]不是JSON，跳过追加
 			}
 			p.dataLines = append(p.dataLines, dataLine)
