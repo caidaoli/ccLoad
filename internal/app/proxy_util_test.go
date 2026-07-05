@@ -199,8 +199,8 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 func TestAppendRetryStrategyToMessageUsesCompactDisplay(t *testing.T) {
 	t.Parallel()
 
-	got := appendRetryStrategyToMessage("ok", "strip_codex_encrypted_tool_search")
-	want := "ok [strip_codex_encrypted_tool_search]"
+	got := appendRetryStrategyToMessage("ok", "strip_codex_tool_search,strip_codex_encrypted_content")
+	want := "ok [strip_codex_tool_search,strip_codex_encrypted_content]"
 	if got != want {
 		t.Fatalf("appendRetryStrategyToMessage()=%q, want %q", got, want)
 	}
