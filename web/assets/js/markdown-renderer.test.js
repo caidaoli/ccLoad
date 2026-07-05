@@ -9,6 +9,7 @@ function loadRenderer() {
       remove: (...items) => items.forEach(item => values.delete(item)),
       contains: (item) => values.has(item),
       toString: () => Array.from(values).join(' '),
+      [Symbol.iterator]: () => values[Symbol.iterator](),
       _set(value) {
         values.clear();
         String(value || '').split(/\s+/).filter(Boolean).forEach(item => values.add(item));
@@ -22,7 +23,47 @@ function loadRenderer() {
     if (selector.startsWith('.')) return node.classList?.contains(selector.slice(1));
     if (selector === 'pre code') return node.tagName === 'CODE' && node.parentNode?.tagName === 'PRE';
     if (selector === 'pre > code') return node.tagName === 'CODE' && node.parentNode?.tagName === 'PRE';
+    if (selector === 'span') return node.tagName === 'SPAN';
     return node.tagName === selector.toUpperCase();
+  };
+
+  const textNode = (value = '') => ({
+    tagName: '',
+    children: [],
+    parentNode: null,
+    parentElement: null,
+    nodeValue: String(value || ''),
+    get textContent() { return this.nodeValue; },
+    set textContent(next) {
+      this.nodeValue = String(next || '');
+    }
+  });
+
+  const decodeHTML = (value) => String(value || '')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+
+  const stripTags = (value) => String(value || '').replace(/<[^>]+>/g, '');
+
+  const appendInlineHTML = (parent, html) => {
+    const pattern = /<span class="([^"]*)">([\s\S]*?)<\/span>/g;
+    let offset = 0;
+    let match;
+    let found = false;
+    while ((match = pattern.exec(html)) !== null) {
+      found = true;
+      if (match.index > offset) parent.appendChild(textNode(decodeHTML(stripTags(html.slice(offset, match.index)))));
+      const span = element('span');
+      span.className = match[1];
+      span.textContent = decodeHTML(stripTags(match[2]));
+      parent.appendChild(span);
+      offset = match.index + match[0].length;
+    }
+    if (offset < html.length) parent.appendChild(textNode(decodeHTML(stripTags(html.slice(offset)))));
+    return found;
   };
 
   const element = (tag = 'div') => {
@@ -30,6 +71,7 @@ function loadRenderer() {
       tagName: tag.toUpperCase(),
       children: [],
       parentNode: null,
+      parentElement: null,
       attributes: {},
       _html: '',
       _text: '',
@@ -40,10 +82,38 @@ function loadRenderer() {
       get className() {
         return this.classList.toString();
       },
-      set innerHTML(value) { this._html = String(value || ''); },
+      set innerHTML(value) {
+        this._html = String(value || '');
+        this.children = [];
+        const codeMatch = this._html.match(/<pre><code class="([^"]*)">([\s\S]*?)<\/code><\/pre>/);
+        if (codeMatch) {
+          const pre = element('pre');
+          const code = element('code');
+          code.className = codeMatch[1];
+          code.textContent = codeMatch[2]
+            .replace(/&lt;/g, '<')
+            .replace(/&gt;/g, '>')
+            .replace(/&amp;/g, '&');
+          pre.appendChild(code);
+          this.appendChild(pre);
+          return;
+        }
+        if (appendInlineHTML(this, this._html)) return;
+        this._text = decodeHTML(stripTags(this._html));
+      },
       get innerHTML() { return this._html; },
-      set textContent(value) { this._text = String(value || ''); },
-      get textContent() { return this._text; },
+      set textContent(value) {
+        this.children.forEach(child => {
+          child.parentNode = null;
+          child.parentElement = null;
+        });
+        this.children = [];
+        this._text = String(value || '');
+      },
+      get textContent() {
+        if (this.children.length > 0) return this.children.map(child => child.textContent || '').join('');
+        return this._text;
+      },
       setAttribute(name, value) {
         this.attributes[name] = String(value);
         if (name === 'class') this.className = value;
@@ -56,18 +126,23 @@ function loadRenderer() {
       },
       appendChild(child) {
         child.parentNode = this;
+        child.parentElement = this;
         this.children.push(child);
         return child;
       },
       insertBefore(child, ref) {
         child.parentNode = this;
+        child.parentElement = this;
         const index = this.children.indexOf(ref);
         if (index === -1) this.children.push(child);
         else this.children.splice(index, 0, child);
         return child;
       },
       replaceChildren(...children) {
-        this.children.forEach(child => { child.parentNode = null; });
+        this.children.forEach(child => {
+          child.parentNode = null;
+          child.parentElement = null;
+        });
         this.children = [];
         children.forEach(child => this.appendChild(child));
       },
@@ -77,7 +152,7 @@ function loadRenderer() {
       querySelectorAll(selector) {
         const found = [];
         const visit = (node) => {
-          node.children.forEach(child => {
+          (node.children || []).forEach(child => {
             if (matchesSelector(child, selector)) found.push(child);
             visit(child);
           });
@@ -114,7 +189,9 @@ function loadRenderer() {
     hljs: { highlightElement: () => {}, getLanguage: () => false }
   };
   global.document = {
-    createElement: (tag) => tag === 'template' ? templateElement() : element(),
+    createElement: (tag) => tag === 'template' ? templateElement() : element(tag),
+    createTextNode: textNode,
+    createDocumentFragment: () => element('fragment'),
     addEventListener: () => {}
   };
   global.navigator = {};
@@ -205,4 +282,69 @@ test('MarkdownRenderer hides empty response content when only tool diagnostics e
   assert.equal(content.innerHTML, '');
   assert.equal(content.textContent, '');
   assert.ok(bubble.querySelector('.chat-tool-calls'));
+});
+
+test('MarkdownRenderer adds nested syntax tokens inside apply_patch diff blocks', () => {
+  const { renderer, element } = loadRenderer();
+  const target = element();
+  global.window.marked.parse = (text) => {
+    const code = String(text).match(/```diff\n([\s\S]*?)\n```/)?.[1] || '';
+    return `<pre><code class="language-diff">${code}</code></pre>`;
+  };
+
+  renderer.render(target, [
+    '```diff',
+    '*** Begin Patch',
+    '*** Add File: demo.go',
+    '+package main',
+    '+const name = "ccLoad"',
+    '*** End Patch',
+    '```'
+  ].join('\n'));
+
+  const code = target.querySelector('code');
+  assert.equal(code.className, 'language-diff');
+  assert.match(code.textContent, /package main/);
+  const classes = code.querySelectorAll('span').map(span => span.className).join(' ');
+  assert.match(classes, /chat-patch-meta/);
+  assert.match(classes, /chat-patch-keyword/);
+  assert.match(classes, /chat-patch-string/);
+});
+
+test('MarkdownRenderer highlights apply_patch code with the patch file language', () => {
+  const { renderer, element } = loadRenderer();
+  const target = element();
+  global.window.marked.parse = (text) => {
+    const code = String(text).match(/```diff\n([\s\S]*?)\n```/)?.[1] || '';
+    return `<pre><code class="language-diff">${code}</code></pre>`;
+  };
+  global.window.hljs = {
+    highlightElement: () => {},
+    getLanguage: (language) => language === 'diff' || language === 'go',
+    highlight: (source, options) => {
+      assert.equal(options.language, 'go');
+      return {
+        value: String(source)
+          .replace(/\bpackage\b/g, '<span class="hljs-keyword">package</span>')
+          .replace(/"ccLoad"/g, '<span class="hljs-string">"ccLoad"</span>')
+      };
+    }
+  };
+
+  renderer.render(target, [
+    '```diff',
+    '*** Begin Patch',
+    '*** Add File: demo.go',
+    '+package main',
+    '+const name = "ccLoad"',
+    '*** End Patch',
+    '```'
+  ].join('\n'));
+
+  const code = target.querySelector('code');
+  assert.match(code.textContent, /package main/);
+  const classes = code.querySelectorAll('span').map(span => span.className).join(' ');
+  assert.match(classes, /chat-patch-add-marker/);
+  assert.match(classes, /hljs-keyword/);
+  assert.match(classes, /hljs-string/);
 });

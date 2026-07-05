@@ -43,6 +43,36 @@
     yml: { icon: 'YAML', name: 'YAML' }
   };
 
+  const PATCH_LANGUAGE_BY_EXTENSION = {
+    '.bash': 'bash',
+    '.c': 'c',
+    '.cc': 'cpp',
+    '.cjs': 'javascript',
+    '.cpp': 'cpp',
+    '.css': 'css',
+    '.go': 'go',
+    '.h': 'c',
+    '.hpp': 'cpp',
+    '.html': 'html',
+    '.java': 'java',
+    '.js': 'javascript',
+    '.json': 'json',
+    '.jsx': 'javascript',
+    '.md': 'markdown',
+    '.mjs': 'javascript',
+    '.php': 'php',
+    '.py': 'python',
+    '.rs': 'rust',
+    '.sh': 'bash',
+    '.sql': 'sql',
+    '.ts': 'typescript',
+    '.tsx': 'typescript',
+    '.xml': 'xml',
+    '.yaml': 'yaml',
+    '.yml': 'yaml',
+    '.zsh': 'bash'
+  };
+
   const CODE_COPY_ICON_HTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>';
 
   function label(key, fallback) {
@@ -421,7 +451,101 @@
       renderHeaderCode(codeEl);
       return;
     }
+    if (language === 'diff' && isApplyPatchCode(text)) {
+      renderPatchDiffCode(codeEl);
+      return;
+    }
     if (language === 'bash' || language === 'sh' || language === 'shell') enhanceShellCode(codeEl);
+  }
+
+  function isApplyPatchCode(text) {
+    const source = String(text || '').trimStart();
+    return source.startsWith('*** Begin Patch') || source.startsWith('*** Add File:') || source.startsWith('*** Update File:');
+  }
+
+  function renderPatchDiffCode(codeEl) {
+    const source = getCodePlainText(codeEl);
+    codeEl.textContent = '';
+    let patchLanguage = '';
+    source.split('\n').forEach((line, index) => {
+      if (index > 0) codeEl.appendChild(document.createTextNode('\n'));
+      patchLanguage = patchFileLanguageFromLine(line) || patchLanguage;
+      appendPatchDiffLine(codeEl, line, patchLanguage);
+    });
+  }
+
+  function patchFileLanguageFromLine(line) {
+    const match = String(line || '').match(/^\*\*\* (?:Add File|Update File|Delete File|Move to):\s+(.+?)\s*$/);
+    if (!match) return '';
+    return codeLanguageFromFilePath(match[1]);
+  }
+
+  function codeLanguageFromFilePath(filePath) {
+    const value = String(filePath || '').trim().replace(/^["']|["']$/g, '').toLowerCase();
+    const match = value.match(/(\.[a-z0-9]+)$/);
+    return match ? PATCH_LANGUAGE_BY_EXTENSION[match[1]] || '' : '';
+  }
+
+  function appendPatchDiffLine(codeEl, line, language) {
+    if (/^(\*\*\*|@@)/.test(line)) {
+      codeEl.appendChild(createCodeToken('chat-patch-meta', line));
+      return;
+    }
+
+    const marker = line.startsWith('+') ? '+' : line.startsWith('-') ? '-' : '';
+    if (marker) {
+      codeEl.appendChild(createCodeToken(marker === '+' ? 'chat-patch-add-marker' : 'chat-patch-delete-marker', marker));
+      appendPatchCodeTokens(codeEl, line.slice(1), language);
+      return;
+    }
+
+    appendPatchCodeTokens(codeEl, line, language);
+  }
+
+  function appendPatchCodeTokens(parent, text, language = '') {
+    const source = String(text || '');
+    if (appendHighlightedPatchCode(parent, source, language)) return;
+
+    const pattern = /(`[^`]*`|"[^"\\]*(?:\\.[^"\\]*)*"|'[^'\\]*(?:\\.[^'\\]*)*'|\/\/.*|\b(?:break|case|const|continue|default|defer|else|fallthrough|for|func|go|goto|if|import|interface|map|package|range|return|select|struct|switch|type|var|string|int|int64|bool|error|any)\b|\b[A-Z][A-Za-z0-9_]*\b|\b\d+(?:\.\d+)?\b)/g;
+    let offset = 0;
+    let match;
+    while ((match = pattern.exec(source)) !== null) {
+      if (match.index > offset) parent.appendChild(document.createTextNode(source.slice(offset, match.index)));
+      const token = match[0];
+      parent.appendChild(createCodeToken(patchTokenClass(token), token));
+      offset = match.index + token.length;
+      if (token.startsWith('//')) break;
+    }
+    if (offset < source.length) parent.appendChild(document.createTextNode(source.slice(offset)));
+  }
+
+  function appendHighlightedPatchCode(parent, source, language) {
+    const highlighter = window.hljs;
+    if (!language || !highlighter || typeof highlighter.highlight !== 'function') return false;
+    if (typeof highlighter.getLanguage === 'function' && !highlighter.getLanguage(language)) return false;
+
+    try {
+      const highlighted = highlighter.highlight(source, {
+        language,
+        ignoreIllegals: true
+      });
+      if (!highlighted || typeof highlighted.value !== 'string') return false;
+      const codeSpan = document.createElement('span');
+      codeSpan.className = 'chat-patch-code';
+      codeSpan.innerHTML = highlighted.value;
+      parent.appendChild(codeSpan);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function patchTokenClass(token) {
+    if (token.startsWith('//')) return 'chat-patch-comment';
+    if (token.startsWith('"') || token.startsWith("'") || token.startsWith('`')) return 'chat-patch-string';
+    if (/^\d/.test(token)) return 'chat-patch-number';
+    if (/^[A-Z]/.test(token)) return 'chat-patch-type';
+    return 'chat-patch-keyword';
   }
 
   function renderHeaderCode(codeEl) {

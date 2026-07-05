@@ -1,17 +1,23 @@
 package app
 
 import (
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"unicode/utf8"
 
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
+
+const maxMergedDebugResponseBodyBytes = 16 * 1024 * 1024
 
 // maskSensitiveHeaderJSON 对 JSON string 格式的 headers 做脱敏
 func maskSensitiveHeaderJSON(jsonStr string) string {
@@ -114,4 +120,60 @@ func (s *Server) HandleGetDebugLog(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, debugLogResponse(entry))
+}
+
+type mergeDebugResponseRequest struct {
+	RespBody string `json:"resp_body"`
+}
+
+// HandleMergeDebugResponse merges an already-loaded upstream response body.
+// The caller sends the current modal content, so this endpoint does not depend on
+// debug log retention or on a second database lookup.
+func (s *Server) HandleMergeDebugResponse(c *gin.Context) {
+	body, err := readMaybeCompressedJSONBody(c.Request, maxMergedDebugResponseBodyBytes)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	var req mergeDebugResponseRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request")
+		return
+	}
+	RespondJSON(c, http.StatusOK, mergeResponseBody(req.RespBody))
+}
+
+func readMaybeCompressedJSONBody(req *http.Request, limit int64) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, errors.New("empty request body")
+	}
+	defer func() { _ = req.Body.Close() }()
+
+	var reader io.Reader = req.Body
+	switch strings.ToLower(strings.TrimSpace(req.Header.Get("Content-Encoding"))) {
+	case "", "identity":
+	case "gzip":
+		gz, err := gzip.NewReader(req.Body)
+		if err != nil {
+			return nil, errors.New("invalid gzip request body")
+		}
+		defer func() { _ = gz.Close() }()
+		reader = gz
+	default:
+		return nil, errors.New("unsupported content encoding")
+	}
+
+	limited := io.LimitReader(reader, limit+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, errors.New("read request body failed")
+	}
+	if int64(len(body)) > limit {
+		return nil, errors.New("request body too large")
+	}
+	if len(body) == 0 {
+		return nil, errors.New("empty request body")
+	}
+	return body, nil
 }

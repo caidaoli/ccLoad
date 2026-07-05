@@ -593,6 +593,11 @@ type chatFrontendStreamState struct {
 	thinkTagOpen bool
 }
 
+type chatTextDeltaPart struct {
+	kind string
+	text string
+}
+
 func chatFrontendChunksFromSSEEventWithState(rawEvent []byte, state *chatFrontendStreamState) [][]byte {
 	lines := strings.Split(string(rawEvent), "\n")
 	chunks := make([][]byte, 0, 1)
@@ -670,27 +675,39 @@ func chatFrontendChunkHasVisibleContent(chunk []byte) bool {
 }
 
 func chatChunksFromTextDelta(delta string, state *chatFrontendStreamState) [][]byte {
+	chunks := make([][]byte, 0, 1)
+	for _, part := range splitChatTextDeltaParts(delta, state) {
+		if part.kind == "thinking" {
+			chunks = appendNonEmptyThinkingChunk(chunks, part.text)
+		} else {
+			chunks = appendNonEmptyDeltaChunk(chunks, part.text)
+		}
+	}
+	return chunks
+}
+
+func splitChatTextDeltaParts(delta string, state *chatFrontendStreamState) []chatTextDeltaPart {
 	if state == nil {
 		if thinking, text := splitThinkTaggedText(delta); thinking != "" {
-			chunks := [][]byte{chatThinkingEventChunk(thinking)}
+			parts := []chatTextDeltaPart{{kind: "thinking", text: thinking}}
 			if text != "" {
-				chunks = append(chunks, chatDeltaEventChunk(text))
+				parts = append(parts, chatTextDeltaPart{kind: "text", text: text})
 			}
-			return chunks
+			return parts
 		}
-		return [][]byte{chatDeltaEventChunk(delta)}
+		return []chatTextDeltaPart{{kind: "text", text: delta}}
 	}
 
-	chunks := make([][]byte, 0, 1)
+	parts := make([]chatTextDeltaPart, 0, 1)
 	remaining := delta
 	for remaining != "" {
 		if state.thinkTagOpen {
 			closeIdx, closeLen := findThinkCloseTag(remaining)
 			if closeIdx < 0 {
-				chunks = appendNonEmptyThinkingChunk(chunks, remaining)
-				return chunks
+				parts = appendNonEmptyChatTextPart(parts, "thinking", remaining)
+				return parts
 			}
-			chunks = appendNonEmptyThinkingChunk(chunks, remaining[:closeIdx])
+			parts = appendNonEmptyChatTextPart(parts, "thinking", remaining[:closeIdx])
 			remaining = remaining[closeIdx+closeLen:]
 			state.thinkTagOpen = false
 			continue
@@ -698,14 +715,21 @@ func chatChunksFromTextDelta(delta string, state *chatFrontendStreamState) [][]b
 
 		openIdx, openLen := findThinkOpenTag(remaining)
 		if openIdx < 0 {
-			chunks = appendNonEmptyDeltaChunk(chunks, remaining)
-			return chunks
+			parts = appendNonEmptyChatTextPart(parts, "text", remaining)
+			return parts
 		}
-		chunks = appendNonEmptyDeltaChunk(chunks, remaining[:openIdx])
+		parts = appendNonEmptyChatTextPart(parts, "text", remaining[:openIdx])
 		remaining = remaining[openIdx+openLen:]
 		state.thinkTagOpen = true
 	}
-	return chunks
+	return parts
+}
+
+func appendNonEmptyChatTextPart(parts []chatTextDeltaPart, kind, text string) []chatTextDeltaPart {
+	if text == "" {
+		return parts
+	}
+	return append(parts, chatTextDeltaPart{kind: kind, text: text})
 }
 
 func appendNonEmptyThinkingChunk(chunks [][]byte, text string) [][]byte {
