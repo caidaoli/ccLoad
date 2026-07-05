@@ -95,8 +95,9 @@ func (s *Server) buildProxyRequest(
 	// 1.6 自定义请求体规则（仅对 JSON body 生效）
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
 
-	// 1.7 Codex Responses 入站历史归一：tool_search_*.arguments 必须是对象。
-	body = normalizeCodexToolSearchArguments(runtimeUpstreamProtocol(reqCtx, cfg), requestPath, body)
+	// 1.7 Codex Responses 入站历史归一：tool_search_*.arguments 必须是对象；
+	// anyrouter/new-api 不接受 tool_search_* 历史项，发出前直接清理。
+	body = prepareCodexResponsesBodyForUpstream(cfg, protocol.Protocol(runtimeUpstreamProtocol(reqCtx, cfg)), requestPath, body)
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
 	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
@@ -1464,6 +1465,7 @@ func (s *Server) forwardAttempt(
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
 	upstreamProtocol := protocol.Protocol(cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol)))
+	bodyToSend = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, bodyToSend)
 	plan, err := protocol.BuildTransformPlan(
 		reqCtx.clientProtocol,
 		upstreamProtocol,
@@ -1624,9 +1626,6 @@ func codexRetryBodyFor400(
 		}
 	}
 	if shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol, cfg, res) {
-		if retryBody, ok := codexBodyWithoutToolSearchInputItems(plan.TranslatedBody); ok {
-			return retryBody, "strip_codex_tool_search", true
-		}
 		if retryBody, ok := codexBodyWithoutEncryptedContent(plan.TranslatedBody); ok {
 			return retryBody, "strip_codex_encrypted_content", true
 		}
@@ -1801,13 +1800,18 @@ func filterCodexThinkingIncludes(root map[string]any) bool {
 	return true
 }
 
-func normalizeCodexToolSearchArguments(upstreamProtocol, requestPath string, body []byte) []byte {
-	if protocol.Protocol(upstreamProtocol) != protocol.Codex ||
+func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string, body []byte) []byte {
+	if upstreamProtocol != protocol.Codex ||
 		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyResponses {
 		return body
 	}
 	if normalized, ok := normalizeCodexToolSearchInputItems(body); ok {
-		return normalized
+		body = normalized
+	}
+	if isAnyrouterChannel(cfg) {
+		if stripped, ok := codexBodyWithoutToolSearchOnlyInputItems(body); ok {
+			return stripped
+		}
 	}
 	return body
 }
@@ -1876,7 +1880,13 @@ func normalizeCodexToolSearchInputItems(body []byte) ([]byte, bool) {
 	return normalized, true
 }
 
-func codexBodyWithoutToolSearchInputItems(body []byte) ([]byte, bool) {
+func codexBodyWithoutToolSearchOnlyInputItems(body []byte) ([]byte, bool) {
+	return codexBodyWithoutInputItems(body, func(typ string) bool {
+		return strings.HasPrefix(typ, "tool_search_")
+	})
+}
+
+func codexBodyWithoutInputItems(body []byte, shouldDrop func(string) bool) ([]byte, bool) {
 	var root map[string]any
 	if err := sonic.Unmarshal(body, &root); err != nil {
 		return nil, false
@@ -1896,8 +1906,7 @@ func codexBodyWithoutToolSearchInputItems(body []byte) ([]byte, bool) {
 			continue
 		}
 		typ, _ := obj["type"].(string)
-		// compaction 是 Codex 客户端 fork 线程时的空占位项，new-api 校验不识别
-		if strings.HasPrefix(typ, "tool_search_") || typ == "compaction" {
+		if shouldDrop(typ) {
 			removed = true
 			continue
 		}

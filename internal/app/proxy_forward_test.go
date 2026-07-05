@@ -12,6 +12,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	"ccLoad/internal/util"
 )
 
 func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, channelType string) (*fwResult, string) {
@@ -297,40 +298,45 @@ func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t
 	}
 }
 
-func TestCodexRetryBodyFor400_AnyrouterStripsCompactionItem(t *testing.T) {
-	// 线上案例：Codex Desktop 0.140 alpha 在 fork 线程时插入空占位项
-	// {"type":"compaction"}，anyrouter(new-api) 校验不识别该类型直接 400。
-	// 第一阶段只清理 anyrouter 不接受的 input 项，不碰加密内容。
+func TestPrepareCodexResponsesBodyForUpstream_StripsAnyrouterUnsupportedInputBeforeForward(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-5.5",
-		"reasoning":{"effort":"xhigh"},
-		"include":["reasoning.encrypted_content"],
 		"input":[
 			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]},
+			{"type":"tool_search_call","arguments":{"query":"drop"}},
+			{"type":"tool_search_output","result":"drop"},
 			{"type":"compaction"},
 			{"type":"reasoning","summary":[]}
 		]
 	}`)
-	res := &fwResult{
-		Status: http.StatusBadRequest,
-		Body:   []byte(`{"error":{"message":"invalid codex request (request id: x)","type":"new_api_error","param":"","code":"invalid_responses_request"}}`),
-	}
-	plan := protocol.TransformPlan{TranslatedBody: body}
-	cfg := &model.Config{Name: "anyrouter-codex"}
+	cfg := &model.Config{Name: "regular-codex", URL: "https://anyrouter.top", ChannelType: util.ChannelTypeCodex}
 
-	got, strategy, ok := codexRetryBodyFor400(protocol.Codex, cfg, plan, res)
-	if !ok {
-		t.Fatal("codexRetryBodyFor400 returned ok=false")
-	}
-	if strategy != "strip_codex_tool_search" {
-		t.Fatalf("strategy=%q, want strip_codex_tool_search", strategy)
-	}
+	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	text := string(got)
-	if strings.Contains(text, `"compaction"`) {
-		t.Fatalf("retry body should remove compaction item, got %s", text)
+	if strings.Contains(text, `"tool_search_call"`) ||
+		strings.Contains(text, `"tool_search_output"`) {
+		t.Fatalf("anyrouter codex body should drop tool search input items before forward, got %s", text)
 	}
-	if !strings.Contains(text, `"type":"message"`) || !strings.Contains(text, `"type":"reasoning"`) {
-		t.Fatalf("retry body should preserve message and reasoning items, got %s", text)
+	if !strings.Contains(text, `"type":"message"`) ||
+		!strings.Contains(text, `"type":"reasoning"`) ||
+		!strings.Contains(text, `"compaction"`) {
+		t.Fatalf("anyrouter codex body should preserve non-tool-search input items, got %s", text)
+	}
+}
+
+func TestPrepareCodexResponsesBodyForUpstream_KeepsRegularCodexToolSearch(t *testing.T) {
+	body := []byte(`{
+		"model":"gpt-5.5",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]},
+			{"type":"tool_search_call","arguments":{"query":"keep"}}
+		]
+	}`)
+	cfg := &model.Config{Name: "regular-codex", URL: "https://api.openai.com", ChannelType: util.ChannelTypeCodex}
+
+	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
+	if !strings.Contains(string(got), `"tool_search_call"`) {
+		t.Fatalf("regular codex body should keep tool_search input items, got %s", got)
 	}
 }
 

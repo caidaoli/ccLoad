@@ -2168,7 +2168,7 @@ func TestProxy_CodexNormalizesToolSearchArgumentsBeforeForward(t *testing.T) {
 	}
 }
 
-func TestProxy_AnyrouterCodexInvalidResponsesRequestRetriesToolSearchThenEncryptedContent(t *testing.T) {
+func TestProxy_AnyrouterCodexStripsToolSearchBeforeForwardThenRetriesEncryptedContent(t *testing.T) {
 	t.Parallel()
 
 	const invalidResponsesRequestBody = `{"error":{"message":"invalid codex request (request id: req_test)","type":"new_api_error","param":"","code":"invalid_responses_request"}}`
@@ -2185,7 +2185,7 @@ func TestProxy_AnyrouterCodexInvalidResponsesRequestRetriesToolSearchThenEncrypt
 			body, _ := io.ReadAll(r.Body)
 			bodies = append(bodies, body)
 			switch attempts.Add(1) {
-			case 1, 2:
+			case 1:
 				return &http.Response{
 					StatusCode: http.StatusBadRequest,
 					Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -2217,30 +2217,25 @@ func TestProxy_AnyrouterCodexInvalidResponsesRequestRetriesToolSearchThenEncrypt
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected retry success, got %d: %s", w.Code, w.Body.String())
 	}
-	if attempts.Load() != 3 {
-		t.Fatalf("attempts=%d, want 3", attempts.Load())
+	if attempts.Load() != 2 {
+		t.Fatalf("attempts=%d, want 2", attempts.Load())
 	}
-	if len(bodies) != 3 {
-		t.Fatalf("captured bodies=%d, want 3", len(bodies))
+	if len(bodies) != 2 {
+		t.Fatalf("captured bodies=%d, want 2", len(bodies))
 	}
 	if !bytes.Contains(bodies[0], []byte(`"encrypted_content"`)) ||
-		!bytes.Contains(bodies[0], []byte(`"type":"tool_search_call"`)) ||
-		!bytes.Contains(bodies[0], []byte(`"type":"tool_search_output"`)) {
-		t.Fatalf("first request should include encrypted content and tool search history, got %s", bodies[0])
+		bytes.Contains(bodies[0], []byte(`"type":"tool_search_call"`)) ||
+		bytes.Contains(bodies[0], []byte(`"type":"tool_search_output"`)) {
+		t.Fatalf("first request should strip tool search history before forwarding, got %s", bodies[0])
 	}
-	if !bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) ||
+	if bytes.Contains(bodies[1], []byte(`"encrypted_content"`)) ||
 		bytes.Contains(bodies[1], []byte(`"type":"tool_search_call"`)) ||
 		bytes.Contains(bodies[1], []byte(`"type":"tool_search_output"`)) {
-		t.Fatalf("second request should remove only tool search history, got %s", bodies[1])
+		t.Fatalf("second request should remove encrypted content after sanitized anyrouter request fails, got %s", bodies[1])
 	}
-	if bytes.Contains(bodies[2], []byte(`"encrypted_content"`)) ||
-		bytes.Contains(bodies[2], []byte(`"type":"tool_search_call"`)) ||
-		bytes.Contains(bodies[2], []byte(`"type":"tool_search_output"`)) {
-		t.Fatalf("third request should remove encrypted content after tool search retry fails, got %s", bodies[2])
-	}
-	if !bytes.Contains(bodies[2], []byte(`"type":"reasoning"`)) ||
-		!bytes.Contains(bodies[2], []byte(`"type":"message"`)) {
-		t.Fatalf("third request should keep sanitized reasoning summary and messages, got %s", bodies[2])
+	if !bytes.Contains(bodies[1], []byte(`"type":"reasoning"`)) ||
+		!bytes.Contains(bodies[1], []byte(`"type":"message"`)) {
+		t.Fatalf("second request should keep sanitized reasoning summary and messages, got %s", bodies[1])
 	}
 }
 
