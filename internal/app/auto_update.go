@@ -7,7 +7,7 @@ import (
 	"ccLoad/internal/version"
 )
 
-const defaultAutoUpdateIntervalHours = 0
+const defaultAutoUpdateIntervalHours = 12
 
 func normalizeAutoUpdateIntervalHours(hours int) int {
 	if hours < 0 {

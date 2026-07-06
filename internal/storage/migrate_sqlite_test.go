@@ -575,8 +575,8 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "channel_check_interval_hours" && val != "5" {
 			t.Errorf("setting %q default = %q, want 5", key, val)
 		}
-		if key == "auto_update_interval_hours" && val != "0" {
-			t.Errorf("setting %q default = %q, want 0", key, val)
+		if key == "auto_update_interval_hours" && val != "12" {
+			t.Errorf("setting %q default = %q, want 12", key, val)
 		}
 	}
 	var valueType string
