@@ -26,6 +26,7 @@ type mergedResponseBuilder struct {
 	toolDeltaName      string
 	toolDeltaKey       string
 	toolNamesByIndex   map[string]string
+	openAIToolKeys     map[string]string
 	streamState        chatFrontendStreamState
 	lastContentItemKey string
 }
@@ -145,14 +146,15 @@ func (b *mergedResponseBuilder) collectOpenAIMessage(obj map[string]any) {
 		if !ok {
 			continue
 		}
+		choiceIndex := indexKeyFromAny(choice["index"])
 		if delta, ok := choice["delta"].(map[string]any); ok {
-			b.collectToolCalls(delta["tool_calls"], true)
+			b.collectToolCalls(delta["tool_calls"], true, choiceIndex)
 		}
 		if message, ok := choice["message"].(map[string]any); ok {
 			b.appendReasoningString(message["reasoning_content"])
 			b.appendReasoningString(message["reasoning"])
 			b.appendContentValue(message["content"])
-			b.collectToolCalls(message["tool_calls"], false)
+			b.collectToolCalls(message["tool_calls"], false, choiceIndex)
 		}
 	}
 }
@@ -256,7 +258,7 @@ func (b *mergedResponseBuilder) collectAnthropicPayload(obj map[string]any) {
 	}
 }
 
-func (b *mergedResponseBuilder) collectToolCalls(value any, streaming bool) {
+func (b *mergedResponseBuilder) collectToolCalls(value any, streaming bool, choiceIndex string) {
 	calls, ok := value.([]any)
 	if !ok {
 		return
@@ -268,6 +270,9 @@ func (b *mergedResponseBuilder) collectToolCalls(value any, streaming bool) {
 		}
 		if fn, ok := call["function"].(map[string]any); ok {
 			key := toolKeyFromOpenAIToolCall(call)
+			if streaming {
+				key = b.openAIStreamingToolKey(choiceIndex, call)
+			}
 			if streaming && key != "" {
 				b.appendToolDelta(key, stringFromAny(fn["name"]), fn["arguments"])
 			} else {
@@ -525,26 +530,29 @@ func toolKeyFromPayload(obj map[string]any) string {
 	if obj == nil {
 		return ""
 	}
-	if key := toolKeyFromIndex(indexKeyFromAny(obj["output_index"])); key != "" {
-		return key
-	}
 	if id := stringFromAny(obj["item_id"]); id != "" {
 		return "id:" + id
+	}
+	if callID := stringFromAny(obj["call_id"]); callID != "" {
+		return "call:" + callID
+	}
+	if key := toolKeyFromIndex(indexKeyFromAny(obj["output_index"])); key != "" {
+		return key
 	}
 	return ""
 }
 
 func toolKeyFromCodexItem(item map[string]any, event map[string]any) string {
-	if event != nil {
-		if key := toolKeyFromIndex(indexKeyFromAny(event["output_index"])); key != "" {
-			return key
-		}
-	}
 	if id := stringFromAny(item["id"]); id != "" {
 		return "id:" + id
 	}
 	if callID := stringFromAny(item["call_id"]); callID != "" {
 		return "call:" + callID
+	}
+	if event != nil {
+		if key := toolKeyFromIndex(indexKeyFromAny(event["output_index"])); key != "" {
+			return key
+		}
 	}
 	return toolKeyFromIndex(indexKeyFromAny(item["output_index"]))
 }
@@ -554,6 +562,28 @@ func toolKeyFromOpenAIToolCall(call map[string]any) string {
 		return "id:" + id
 	}
 	return toolKeyFromIndex(indexKeyFromAny(call["index"]))
+}
+
+func (b *mergedResponseBuilder) openAIStreamingToolKey(choiceIndex string, call map[string]any) string {
+	index := indexKeyFromAny(call["index"])
+	if index == "" {
+		return toolKeyFromOpenAIToolCall(call)
+	}
+	slot := choiceIndex + ":" + index
+	if id := stringFromAny(call["id"]); id != "" {
+		key := "id:" + id
+		if b.openAIToolKeys == nil {
+			b.openAIToolKeys = make(map[string]string)
+		}
+		b.openAIToolKeys[slot] = key
+		return key
+	}
+	if b.openAIToolKeys != nil {
+		if key := b.openAIToolKeys[slot]; key != "" {
+			return key
+		}
+	}
+	return toolKeyFromIndex(slot)
 }
 
 func formatJSONForMergedContent(text string) string {
