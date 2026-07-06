@@ -1,45 +1,171 @@
-name: Build and Push Docker Image
+name: Build Docker Runtime Image
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
     inputs:
       tag:
         description: '手动指定镜像标签'
         required: false
-        default: 'manual'
+        default: 'latest'
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  # ============================================
-  # 阶段1: 并行构建各平台镜像
-  # ============================================
   build:
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - linux/amd64
-          - linux/arm64
     runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
 
     steps:
-      - name: Prepare
-        run: |
-          platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          echo "IMAGE_NAME_LC=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Prepare
+        run: |
+          echo "IMAGE_NAME_LC=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+
+      - name: Prepare runtime image context
+        run: |
+          context_dir="${{ runner.temp }}/ccload-runtime-image"
+          mkdir -p "$context_dir"
+
+          cat > "$context_dir/Dockerfile" <<'EOF'
+          FROM alpine:3.21
+
+          RUN apk add --no-cache ca-certificates curl tzdata && \
+              addgroup -g 1001 -S ccload && \
+              adduser -u 1001 -S ccload -G ccload && \
+              mkdir -p /app/data && \
+              chown -R ccload:ccload /app
+
+          WORKDIR /app
+
+          COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+          RUN chmod +x /usr/local/bin/entrypoint.sh
+
+          USER ccload
+
+          EXPOSE 8080
+
+          ENV PORT=8080 \
+              SQLITE_PATH=/app/data/ccload.db \
+              GIN_MODE=release \
+              TZ=Asia/Shanghai
+
+          HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+              CMD curl -fsS http://localhost:8080/health >/dev/null || exit 1
+
+          ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+          EOF
+
+          cat > "$context_dir/entrypoint.sh" <<'EOF'
+          #!/bin/sh
+          set -eu
+
+          : "${CCLOAD_HOME:=/app}"
+          : "${CCLOAD_BIN:=$CCLOAD_HOME/ccload}"
+          : "${CCLOAD_REPO:=caidaoli/ccLoad}"
+          : "${CCLOAD_RELEASE_BASE_URL:=https://github.com/${CCLOAD_REPO}/releases/latest/download}"
+
+          log() {
+            printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$*" >&2
+          }
+
+          release_arch() {
+            case "$(uname -m)" in
+              x86_64|amd64)
+                printf 'amd64'
+                ;;
+              aarch64|arm64)
+                printf 'arm64'
+                ;;
+              *)
+                log "unsupported architecture: $(uname -m)"
+                return 1
+                ;;
+            esac
+          }
+
+          cleanup_install() {
+            if [ -n "${install_tmp_dir:-}" ] && [ -d "$install_tmp_dir" ]; then
+              rm -rf "$install_tmp_dir"
+            fi
+          }
+
+          download() {
+            url=$1
+            output=$2
+
+            curl -fsSL \
+              --connect-timeout 15 \
+              --max-time 300 \
+              --retry 3 \
+              --retry-delay 2 \
+              -o "$output" \
+              "$url"
+          }
+
+          install_latest_release() {
+            arch=$(release_arch) || return 1
+            asset="ccload-linux-$arch"
+            release_url="$CCLOAD_RELEASE_BASE_URL/$asset"
+            checksums_url="$CCLOAD_RELEASE_BASE_URL/checksums.txt"
+
+            install_tmp_dir=$(mktemp -d) || return 1
+            binary_tmp="$install_tmp_dir/$asset"
+            checksums_tmp="$install_tmp_dir/checksums.txt"
+
+            log "downloading latest release asset: $asset"
+            if ! download "$release_url" "$binary_tmp"; then
+              cleanup_install
+              return 1
+            fi
+            if ! download "$checksums_url" "$checksums_tmp"; then
+              cleanup_install
+              return 1
+            fi
+
+            checksum_line=$(
+              grep -E "^[0-9a-fA-F]{64}[[:space:]]+\*?$asset$" "$checksums_tmp" | head -n 1 || true
+            )
+            if [ -z "$checksum_line" ]; then
+              log "checksum entry not found for $asset"
+              cleanup_install
+              return 1
+            fi
+            if ! printf '%s\n' "$checksum_line" | (cd "$install_tmp_dir" && sha256sum -c -); then
+              cleanup_install
+              return 1
+            fi
+
+            chmod 0755 "$binary_tmp"
+            mkdir -p "$(dirname "$CCLOAD_BIN")"
+            mv -f "$binary_tmp" "$CCLOAD_BIN"
+            cleanup_install
+          }
+
+          main() {
+            mkdir -p "$CCLOAD_HOME/data"
+
+            if ! install_latest_release; then
+              if [ -x "$CCLOAD_BIN" ]; then
+                log "latest release download failed; using existing binary"
+              else
+                log "failed to prepare ccLoad binary"
+                exit 1
+              fi
+            fi
+
+            exec "$CCLOAD_BIN" "$@"
+          }
+
+          main "$@"
+          EOF
+
+          chmod +x "$context_dir/entrypoint.sh"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -59,87 +185,20 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
+          tags: |
+            type=raw,value=latest
+            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event.inputs.tag != '' && github.event.inputs.tag != 'latest' }}
 
-      - name: Build and push by digest
-        id: build
+      - name: Build and push
         uses: docker/build-push-action@v6
         with:
-          context: .
-          platforms: ${{ matrix.platform }}
+          context: ${{ runner.temp }}/ccload-runtime-image
+          platforms: linux/amd64,linux/arm64
+          push: true
           labels: ${{ steps.meta.outputs.labels }}
-          outputs: type=image,name=${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }},push-by-digest=true,name-canonical=true,push=true
-          cache-from: type=gha,scope=build-${{ env.PLATFORM_PAIR }}
-          cache-to: type=gha,scope=build-${{ env.PLATFORM_PAIR }},mode=max
-          build-args: |
-            VERSION=${{ github.ref_name }}
-            COMMIT=${{ github.sha }}
-
-      - name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-
-      - name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ env.PLATFORM_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-  # ============================================
-  # 阶段2: 合并多架构 manifest
-  # ============================================
-  merge:
-    runs-on: ubuntu-latest
-    needs: build
-    permissions:
-      contents: read
-      packages: write
-      attestations: write
-      id-token: write
-
-    steps:
-      - name: Prepare
-        run: |
-          echo "IMAGE_NAME_LC=$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-
-      - name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*
-          merge-multiple: true
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ env.REGISTRY }}
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
-            type=raw,value=${{ github.event.inputs.tag }},enable=${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag != '' }}
-
-      - name: Create manifest list
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create \
-            $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}@sha256:%s ' *)
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha,scope=docker-runtime
+          cache-to: type=gha,scope=docker-runtime,mode=max
 
       - name: Inspect image
         run: |
