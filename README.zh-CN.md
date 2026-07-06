@@ -70,6 +70,7 @@ ccLoad 直接处理这些问题：
 | 💬 **对话式模型测试** | 按渠道/按模型/对话三种模式 | 支持图片上传、思考等级、内置搜索与对话导出 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
+| 🔄 **自动更新** | 默认每 12 小时检查新版本 | 可在设置页调整检测间隔 |
 | 🧩 **自定义请求规则** | 渠道级请求头/JSON 请求体改写（remove/override/append） | 认证头保护 + CRLF 防护 + 容量上限 |
 | 🎛️ **日志列自定义** | 表格列显隐可配置，设置持久化到浏览器 | 按需查看，减少信息噪音 |
 
@@ -393,7 +394,7 @@ EXPOSE 7860
 
 由于使用预构建镜像，更新非常简单：
 
-**自动更新**:
+**镜像更新**:
 - 当官方发布新版本镜像（`ghcr.io/caidaoli/ccload:latest`）时
 - 在 Space 设置中点击 "Factory rebuild" 即可自动拉取最新镜像
 - 或等待 Hugging Face 自动重启（通常 48 小时后）
@@ -408,7 +409,7 @@ git push
 **版本锁定**（可选）:
 如果需要锁定特定版本，修改 Dockerfile：
 ```dockerfile
-FROM ghcr.io/caidaoli/ccload:2.19.0  # 指定版本号
+FROM ghcr.io/caidaoli/ccload:v2.44.1  # 指定版本号
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
 ENV SQLITE_PATH=/tmp/ccload.db
@@ -898,8 +899,13 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 | `health_score_update_interval` | `30` | 成功率缓存更新间隔（秒） |
 | `health_min_confident_sample` | `20` | 置信样本量阈值（样本量达到此值时惩罚全额生效） |
 | `channel_check_interval_hours` | `0` | 渠道定时检测间隔（小时，0=禁用） |
+| `auto_update_interval_hours` | `12` | 自动更新检测间隔（小时，0=禁用，启用时最低 1 小时） |
 
 分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
+
+#### 自动更新
+
+ccLoad 支持程序内自动更新，默认每 12 小时检查一次 GitHub Releases。发现新版本后会下载并校验对应平台的二进制文件，等待服务空闲后重启生效。可以在 Web 管理后台的设置页修改 `auto_update_interval_hours`；设置为 `0` 可关闭自动更新检测。
 
 #### 健康度排序说明
 
@@ -975,9 +981,9 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `2.19.0` - 具体版本号
-  - `2.19` - 主要.次要版本
-  - `2` - 主要版本
+  - `v2.44.1` - 具体发布版本，和 GitHub Release Tag 保持一致
+
+官方 GHCR 镜像基于 Alpine。容器启动时会从 GitHub Releases 下载最新 Linux 二进制；程序启动后的更新检测由 ccLoad 自身的自动更新机制处理。默认检测间隔为 12 小时，可在 Web 管理后台通过 `auto_update_interval_hours` 修改。
 
 ### 镜像标签说明
 
@@ -986,7 +992,7 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
-docker pull ghcr.io/caidaoli/ccload:2.19.0
+docker pull ghcr.io/caidaoli/ccload:v2.44.1
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

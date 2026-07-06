@@ -46,6 +46,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.dns.desc': 'Pin broken upstream hostnames to fixed IPs while preserving TLS SNI, certificates and Host headers',
   'www.home.features.quota.title': 'Quota-aware Cooldown',
   'www.home.features.quota.desc': 'Understand provider fixed-window quota responses and cool down the channel until the real reset time',
+  'www.home.features.autoupdate.title': 'Auto Updates',
+  'www.home.features.autoupdate.desc': 'Check for new releases every 12 hours by default, with the interval configurable from admin settings',
 
   // Home - Admin preview
   'www.home.admin.title': 'Not a black-box proxy',
