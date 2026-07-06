@@ -2,7 +2,7 @@
 package version
 
 import (
-	"encoding/json"
+	"context"
 	"log"
 	"net/http"
 	"strings"
@@ -11,26 +11,16 @@ import (
 )
 
 const (
-	// GitHub API 地址
-	githubReleaseAPI = "https://api.github.com/repos/caidaoli/ccLoad/releases/latest"
 	// 检测间隔
 	checkInterval = 4 * time.Hour
 	// 请求超时
 	requestTimeout = 10 * time.Second
 )
 
-// GitHubAsset is one downloadable file attached to a GitHub release.
-type GitHubAsset struct {
-	Name               string `json:"name"`
-	BrowserDownloadURL string `json:"browser_download_url"`
-	Size               int64  `json:"size"`
-}
-
-// GitHubRelease GitHub release API 响应结构
+// GitHubRelease describes the release resolved from GitHub's latest redirect.
 type GitHubRelease struct {
-	TagName string        `json:"tag_name"`
-	HTMLURL string        `json:"html_url"`
-	Assets  []GitHubAsset `json:"assets"`
+	TagName string
+	HTMLURL string
 }
 
 // Checker 版本检测器
@@ -64,29 +54,9 @@ func StartChecker() {
 
 // check 执行版本检测
 func (c *Checker) check() {
-	req, err := http.NewRequest(http.MethodGet, githubReleaseAPI, nil)
-	if err != nil {
-		log.Printf("[VersionChecker] 创建请求失败: %v", err)
-		return
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", OutboundUserAgent())
-
-	resp, err := c.client.Do(req)
+	release, err := fetchLatestRelease(context.Background(), c.client, githubLatestReleaseURL)
 	if err != nil {
 		log.Printf("[VersionChecker] 请求GitHub失败: %v", err)
-		return
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		log.Printf("[VersionChecker] GitHub返回非200状态: %d", resp.StatusCode)
-		return
-	}
-
-	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		log.Printf("[VersionChecker] 解析响应失败: %v", err)
 		return
 	}
 
