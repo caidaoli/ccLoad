@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync/atomic"
 	"testing"
@@ -39,6 +40,21 @@ func httpResp(status int, body string) *http.Response {
 	}
 }
 
+func latestReleaseResp(t *testing.T, req *http.Request, status int, finalURL string) *http.Response {
+	t.Helper()
+
+	resp := httpResp(status, "<html></html>")
+	resp.Request = req.Clone(req.Context())
+	if finalURL != "" {
+		u, err := url.Parse(finalURL)
+		if err != nil {
+			t.Fatalf("parse finalURL: %v", err)
+		}
+		resp.Request.URL = u
+	}
+	return resp
+}
+
 func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })
@@ -61,7 +77,7 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 		c := &Checker{
 			client: &http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					return httpResp(http.StatusTooManyRequests, "{}"), nil
+					return latestReleaseResp(t, req, http.StatusTooManyRequests, "https://github.com/caidaoli/ccLoad/releases/tag/v1.2.3"), nil
 				}),
 			},
 		}
@@ -71,17 +87,17 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 		}
 	})
 
-	t.Run("bad json", func(t *testing.T) {
+	t.Run("missing release tag URL", func(t *testing.T) {
 		c := &Checker{
 			client: &http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					return httpResp(http.StatusOK, "{"), nil
+					return latestReleaseResp(t, req, http.StatusOK, "https://github.com/caidaoli/ccLoad/releases/latest"), nil
 				}),
 			},
 		}
 		c.check()
 		if c.latestVersion != "" || c.releaseURL != "" || c.hasUpdate {
-			t.Fatalf("expected no state update on bad json, got latest=%q url=%q hasUpdate=%v", c.latestVersion, c.releaseURL, c.hasUpdate)
+			t.Fatalf("expected no state update on missing tag URL, got latest=%q url=%q hasUpdate=%v", c.latestVersion, c.releaseURL, c.hasUpdate)
 		}
 	})
 
@@ -93,12 +109,12 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 					if req.Header.Get("Accept") == "" || req.Header.Get("User-Agent") == "" {
 						t.Fatalf("expected headers set, got Accept=%q UA=%q", req.Header.Get("Accept"), req.Header.Get("User-Agent"))
 					}
-					return httpResp(http.StatusOK, `{"tag_name":"v1.2.3","html_url":"https://example.com/release"}`), nil
+					return latestReleaseResp(t, req, http.StatusOK, "https://github.com/caidaoli/ccLoad/releases/tag/v1.2.3"), nil
 				}),
 			},
 		}
 		c.check()
-		if c.latestVersion != "v1.2.3" || c.releaseURL != "https://example.com/release" {
+		if c.latestVersion != "v1.2.3" || c.releaseURL != "https://github.com/caidaoli/ccLoad/releases/tag/v1.2.3" {
 			t.Fatalf("unexpected state: latest=%q url=%q", c.latestVersion, c.releaseURL)
 		}
 		if c.hasUpdate {
@@ -114,12 +130,12 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 		c := &Checker{
 			client: &http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					return httpResp(http.StatusOK, `{"tag_name":"v2.0.0","html_url":"https://example.com/release2"}`), nil
+					return latestReleaseResp(t, req, http.StatusOK, "https://github.com/caidaoli/ccLoad/releases/tag/v2.0.0"), nil
 				}),
 			},
 		}
 		c.check()
-		if !c.hasUpdate || c.latestVersion != "v2.0.0" || c.releaseURL != "https://example.com/release2" {
+		if !c.hasUpdate || c.latestVersion != "v2.0.0" || c.releaseURL != "https://github.com/caidaoli/ccLoad/releases/tag/v2.0.0" {
 			t.Fatalf("unexpected state: hasUpdate=%v latest=%q url=%q", c.hasUpdate, c.latestVersion, c.releaseURL)
 		}
 	})
@@ -129,7 +145,7 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 		c := &Checker{
 			client: &http.Client{
 				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
-					return httpResp(http.StatusOK, `{"tag_name":"v1.9.9","html_url":"https://example.com/release-old"}`), nil
+					return latestReleaseResp(t, req, http.StatusOK, "https://github.com/caidaoli/ccLoad/releases/tag/v1.9.9"), nil
 				}),
 			},
 		}
@@ -155,7 +171,7 @@ func TestStartChecker_RunsCheckOnce(t *testing.T) {
 	checker.client = &http.Client{
 		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			atomic.AddInt32(&calls, 1)
-			resp := httpResp(http.StatusOK, `{"tag_name":"v2.0.0","html_url":"https://example.com/release"}`)
+			resp := latestReleaseResp(t, req, http.StatusOK, "https://github.com/caidaoli/ccLoad/releases/tag/v2.0.0")
 			resp.Body = &signalReadCloser{
 				rc: resp.Body,
 				onClose: func() {

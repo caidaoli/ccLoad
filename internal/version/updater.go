@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -81,7 +80,7 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 		opts.RestartPollInterval = defaultRestartPollInterval
 	}
 	if opts.LatestReleaseURL == "" {
-		opts.LatestReleaseURL = githubReleaseAPI
+		opts.LatestReleaseURL = githubLatestReleaseURL
 	}
 	if opts.GOOS == "" {
 		opts.GOOS = runtime.GOOS
@@ -177,19 +176,19 @@ func (u *AutoUpdater) updateOnce(ctx context.Context) error {
 	if !ok {
 		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
 	}
-	asset, ok := findReleaseAsset(release, assetName)
-	if !ok {
-		return fmt.Errorf("release %s missing asset %s", release.TagName, assetName)
+	assetURL, err := releaseDownloadURL(release, assetName)
+	if err != nil {
+		return err
 	}
-	checksumAsset, ok := findReleaseAsset(release, "checksums.txt")
-	if !ok {
-		return fmt.Errorf("release %s missing checksums.txt", release.TagName)
+	checksumURL, err := releaseDownloadURL(release, "checksums.txt")
+	if err != nil {
+		return err
 	}
 
 	u.setUpdating(true)
 	defer u.setUpdating(false)
 
-	if err := u.downloadVerifyAndReplace(ctx, release.TagName, assetName, asset.BrowserDownloadURL, checksumAsset.BrowserDownloadURL); err != nil {
+	if err := u.downloadVerifyAndReplace(ctx, release.TagName, assetName, assetURL, checksumURL); err != nil {
 		return err
 	}
 	u.markPending(release.TagName)
@@ -198,34 +197,7 @@ func (u *AutoUpdater) updateOnce(ctx context.Context) error {
 }
 
 func (u *AutoUpdater) fetchLatestRelease(ctx context.Context) (GitHubRelease, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, u.latestReleaseURL, nil)
-	if err != nil {
-		return GitHubRelease{}, fmt.Errorf("create release request: %w", err)
-	}
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("User-Agent", OutboundUserAgent())
-
-	resp, err := u.client.Do(req)
-	if err != nil {
-		return GitHubRelease{}, fmt.Errorf("fetch latest release: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-
-	if resp.StatusCode != http.StatusOK {
-		return GitHubRelease{}, fmt.Errorf("fetch latest release: status %d", resp.StatusCode)
-	}
-
-	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
-		return GitHubRelease{}, fmt.Errorf("decode latest release: %w", err)
-	}
-	if strings.TrimSpace(release.TagName) == "" {
-		return GitHubRelease{}, fmt.Errorf("latest release missing tag_name")
-	}
-	return release, nil
+	return fetchLatestRelease(ctx, u.client, u.latestReleaseURL)
 }
 
 func (u *AutoUpdater) downloadVerifyAndReplace(ctx context.Context, tag, assetName, assetURL, checksumURL string) error {
@@ -423,15 +395,6 @@ func releaseAssetName(goos, goarch string) (string, bool) {
 	default:
 		return "", false
 	}
-}
-
-func findReleaseAsset(release GitHubRelease, name string) (GitHubAsset, bool) {
-	for _, asset := range release.Assets {
-		if asset.Name == name {
-			return asset, true
-		}
-	}
-	return GitHubAsset{}, false
 }
 
 func parseChecksums(data []byte) (map[string]string, error) {

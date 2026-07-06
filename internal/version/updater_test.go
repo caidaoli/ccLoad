@@ -34,29 +34,65 @@ func TestCompareSemanticVersions(t *testing.T) {
 	}
 }
 
-func TestReleaseAssetSelection(t *testing.T) {
+func TestReleaseAssetNameAndDownloadURL(t *testing.T) {
 	t.Parallel()
-
-	release := GitHubRelease{
-		Assets: []GitHubAsset{
-			{Name: "checksums.txt", BrowserDownloadURL: "https://example.test/checksums.txt"},
-			{Name: "ccload-linux-amd64", BrowserDownloadURL: "https://example.test/linux-amd64"},
-			{Name: "ccload-darwin-arm64", BrowserDownloadURL: "https://example.test/darwin-arm64"},
-		},
-	}
 
 	name, ok := releaseAssetName("linux", "amd64")
 	if !ok || name != "ccload-linux-amd64" {
 		t.Fatalf("releaseAssetName(linux, amd64) = %q, %v", name, ok)
 	}
 
-	asset, ok := findReleaseAsset(release, name)
-	if !ok || asset.BrowserDownloadURL != "https://example.test/linux-amd64" {
-		t.Fatalf("findReleaseAsset(%q) = %#v, %v", name, asset, ok)
+	release := GitHubRelease{
+		TagName: "v2.44.0",
+		HTMLURL: "https://github.com/caidaoli/ccLoad/releases/tag/v2.44.0",
+	}
+	assetURL, err := releaseDownloadURL(release, name)
+	if err != nil {
+		t.Fatalf("releaseDownloadURL(asset): %v", err)
+	}
+	if assetURL != "https://github.com/caidaoli/ccLoad/releases/download/v2.44.0/ccload-linux-amd64" {
+		t.Fatalf("asset download URL = %q", assetURL)
+	}
+	checksumURL, err := releaseDownloadURL(release, "checksums.txt")
+	if err != nil {
+		t.Fatalf("releaseDownloadURL(checksums): %v", err)
+	}
+	if checksumURL != "https://github.com/caidaoli/ccLoad/releases/download/v2.44.0/checksums.txt" {
+		t.Fatalf("checksum download URL = %q", checksumURL)
 	}
 
 	if _, ok := releaseAssetName("windows", "arm64"); ok {
 		t.Fatalf("windows/arm64 must be unsupported")
+	}
+}
+
+func TestFetchLatestReleaseReadsUnfollowedRedirectLocation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/latest" {
+			http.NotFound(w, r)
+			return
+		}
+		http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/v2.44.0", http.StatusFound)
+	}))
+	defer server.Close()
+
+	client := server.Client()
+	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+
+	release, err := fetchLatestRelease(context.Background(), client, server.URL+"/latest")
+	if err != nil {
+		t.Fatalf("fetchLatestRelease: %v", err)
+	}
+	if release.TagName != "v2.44.0" {
+		t.Fatalf("TagName = %q", release.TagName)
+	}
+	wantURL := server.URL + "/caidaoli/ccLoad/releases/tag/v2.44.0"
+	if release.HTMLURL != wantURL {
+		t.Fatalf("HTMLURL = %q, want %q", release.HTMLURL, wantURL)
 	}
 }
 
@@ -103,17 +139,13 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/latest":
-			_, _ = fmt.Fprintf(w, `{
-				"tag_name": %q,
-				"html_url": "https://example.test/releases/%s",
-				"assets": [
-					{"name":"ccload-linux-amd64","browser_download_url":"%s/%s/ccload-linux-amd64"},
-					{"name":"checksums.txt","browser_download_url":"%s/%s/checksums.txt"}
-				]
-			}`, latest, latest, httptestURL(r), latest, httptestURL(r), latest)
-		case "/v1.0.1/ccload-linux-amd64", "/v1.0.2/ccload-linux-amd64":
-			_, _ = w.Write(binaries[filepath.Base(filepath.Dir(r.URL.Path))])
-		case "/v1.0.1/checksums.txt", "/v1.0.2/checksums.txt":
+			http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/"+latest, http.StatusFound)
+		case "/caidaoli/ccLoad/releases/tag/v1.0.1", "/caidaoli/ccLoad/releases/tag/v1.0.2":
+			_, _ = fmt.Fprintf(w, "<html><title>%s</title></html>", latest)
+		case "/caidaoli/ccLoad/releases/download/v1.0.1/ccload-linux-amd64", "/caidaoli/ccLoad/releases/download/v1.0.2/ccload-linux-amd64":
+			tag := filepath.Base(filepath.Dir(r.URL.Path))
+			_, _ = w.Write(binaries[tag])
+		case "/caidaoli/ccLoad/releases/download/v1.0.1/checksums.txt", "/caidaoli/ccLoad/releases/download/v1.0.2/checksums.txt":
 			tag := filepath.Base(filepath.Dir(r.URL.Path))
 			sum := sha256.Sum256(binaries[tag])
 			_, _ = fmt.Fprintf(w, "%s  ccload-linux-amd64\n", hex.EncodeToString(sum[:]))
@@ -134,6 +166,7 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 		RestartPollInterval: time.Millisecond,
 		LatestReleaseURL:    server.URL + "/latest",
 		ExecutablePath:      exePath,
+		Client:              server.Client(),
 		GOOS:                "linux",
 		GOARCH:              "amd64",
 		ActiveRequests:      func() int { return 1 },
@@ -168,10 +201,6 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 	if string(got) != "binary v1.0.2" {
 		t.Fatalf("executable content = %q, want newest binary", got)
 	}
-}
-
-func httptestURL(r *http.Request) string {
-	return "http://" + r.Host
 }
 
 func contextWithCleanup(t *testing.T) (context.Context, context.CancelFunc) {
