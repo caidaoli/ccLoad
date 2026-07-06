@@ -125,6 +125,8 @@ func main() {
 		}
 	}
 
+	srv.StartAutoUpdateLoop()
+
 	// 创建Gin引擎
 	r := gin.New()
 

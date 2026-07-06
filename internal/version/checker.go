@@ -19,10 +19,18 @@ const (
 	requestTimeout = 10 * time.Second
 )
 
+// GitHubAsset is one downloadable file attached to a GitHub release.
+type GitHubAsset struct {
+	Name               string `json:"name"`
+	BrowserDownloadURL string `json:"browser_download_url"`
+	Size               int64  `json:"size"`
+}
+
 // GitHubRelease GitHub release API 响应结构
 type GitHubRelease struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
+	TagName string        `json:"tag_name"`
+	HTMLURL string        `json:"html_url"`
+	Assets  []GitHubAsset `json:"assets"`
 }
 
 // Checker 版本检测器
@@ -90,9 +98,7 @@ func (c *Checker) check() {
 	c.lastCheck = time.Now()
 
 	// 比较版本
-	current := normalizeVersion(Version)
-	latest := normalizeVersion(release.TagName)
-	c.hasUpdate = current != "" && latest != "" && current != latest
+	c.hasUpdate = compareSemanticVersions(release.TagName, Version) > 0
 
 	if c.hasUpdate {
 		log.Printf("[VersionChecker] 发现新版本: %s -> %s", Version, release.TagName)

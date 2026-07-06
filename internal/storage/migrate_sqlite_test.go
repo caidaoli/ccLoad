@@ -554,6 +554,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"model_fuzzy_match",
 		"channel_test_content",
 		"channel_check_interval_hours",
+		"auto_update_interval_hours",
 		"channel_stats_range",
 		"enable_health_score",
 		"success_rate_penalty_weight",
@@ -574,6 +575,18 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "channel_check_interval_hours" && val != "5" {
 			t.Errorf("setting %q default = %q, want 5", key, val)
 		}
+		if key == "auto_update_interval_hours" && val != "0" {
+			t.Errorf("setting %q default = %q, want 0", key, val)
+		}
+	}
+	var valueType string
+	if err := db.QueryRowContext(ctx,
+		"SELECT value_type FROM system_settings WHERE key='auto_update_interval_hours'",
+	).Scan(&valueType); err != nil {
+		t.Fatalf("query auto_update_interval_hours value_type: %v", err)
+	}
+	if valueType != "int" {
+		t.Fatalf("auto_update_interval_hours value_type = %q, want int", valueType)
 	}
 
 	// 验证 idempotent：再次 init 不应报错

@@ -149,6 +149,12 @@ func (m *activeRequestManager) Remove(id int64) {
 	m.mu.Unlock()
 }
 
+func (m *activeRequestManager) Count() int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return len(m.requests)
+}
+
 // AddBytes 原子地增加指定请求的字节数（线程安全）
 func (m *activeRequestManager) AddBytes(id int64, n int64) {
 	if n <= 0 {

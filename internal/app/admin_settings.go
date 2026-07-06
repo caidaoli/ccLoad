@@ -206,6 +206,10 @@ func validateSettingValue(key, valueType, value string) error {
 			if intVal != LogRetentionDaysDisabled && (intVal < LogRetentionDaysMin || intVal > LogRetentionDaysMax) {
 				return fmt.Errorf("log_retention_days must be %d (永久) or %d-%d", LogRetentionDaysDisabled, LogRetentionDaysMin, LogRetentionDaysMax)
 			}
+		case "auto_update_interval_hours":
+			if intVal != 0 && intVal < 1 {
+				return fmt.Errorf("auto_update_interval_hours must be 0 or >= 1")
+			}
 		default:
 			if intVal < -1 {
 				return fmt.Errorf("value must be >= -1")
@@ -220,7 +224,7 @@ func validateSettingValue(key, valueType, value string) error {
 		switch key {
 		case "channel_check_interval_hours":
 			if floatVal < 0 {
-				return fmt.Errorf("channel_check_interval_hours must be >= 0")
+				return fmt.Errorf("%s must be >= 0", key)
 			}
 		}
 
