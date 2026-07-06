@@ -123,6 +123,21 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 			t.Fatalf("unexpected state: hasUpdate=%v latest=%q url=%q", c.hasUpdate, c.latestVersion, c.releaseURL)
 		}
 	})
+
+	t.Run("success current version newer", func(t *testing.T) {
+		Version = "v2.0.0"
+		c := &Checker{
+			client: &http.Client{
+				Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+					return httpResp(http.StatusOK, `{"tag_name":"v1.9.9","html_url":"https://example.com/release-old"}`), nil
+				}),
+			},
+		}
+		c.check()
+		if c.hasUpdate {
+			t.Fatalf("expected hasUpdate=false when current version is newer")
+		}
+	})
 }
 
 func TestStartChecker_RunsCheckOnce(t *testing.T) {

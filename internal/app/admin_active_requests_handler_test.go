@@ -45,6 +45,31 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 }
 
+func TestActiveRequestManagerCount(t *testing.T) {
+	t.Parallel()
+
+	manager := newActiveRequestManager()
+	if got := manager.Count(); got != 0 {
+		t.Fatalf("Count on empty manager = %d, want 0", got)
+	}
+
+	first := manager.Register(time.Now(), "model-a", "127.0.0.1", true)
+	second := manager.Register(time.Now(), "model-b", "127.0.0.1", false)
+	if got := manager.Count(); got != 2 {
+		t.Fatalf("Count after register = %d, want 2", got)
+	}
+
+	manager.Remove(first)
+	if got := manager.Count(); got != 1 {
+		t.Fatalf("Count after one remove = %d, want 1", got)
+	}
+
+	manager.Remove(second)
+	if got := manager.Count(); got != 0 {
+		t.Fatalf("Count after all removed = %d, want 0", got)
+	}
+}
+
 func TestHandleActiveRequests_PreservesZeroCostMultiplier(t *testing.T) {
 	t.Parallel()
 
