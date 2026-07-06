@@ -226,6 +226,77 @@ func TestMergeResponseBody_DeduplicatesCodexToolCallLifecycle(t *testing.T) {
 	}
 }
 
+func TestMergeResponseBody_DeduplicatesCodexToolCallWhenOutputIndexChanges(t *testing.T) {
+	t.Parallel()
+
+	arguments := `{"projectPath":"/Users/caidaoli/Share/Source/go/ccLoad","query":"models endpoint","maxFiles":12}`
+	escapedArguments := strings.ReplaceAll(arguments, `"`, `\"`)
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":8,"item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"codegraph_explore"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":8,"item_id":"fc_1","delta":"` + escapedArguments + `"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.done","output_index":11,"item_id":"fc_1","arguments":"` + escapedArguments + `"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":11,"item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"` + escapedArguments + `","call_id":"call_1","name":"codegraph_explore"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if strings.Count(parts.Tools, "### codegraph_explore") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+	if strings.Count(parts.Tools, `"projectPath": "/Users/caidaoli/Share/Source/go/ccLoad"`) != 1 {
+		t.Fatalf("tool arguments should render once, got:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_DeduplicatesDocs5ToolCalls(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join(testRepoRoot(t), "docs", "5.txt"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("docs/5.txt replay sample is not present")
+		}
+		t.Fatalf("read docs sample: %v", err)
+	}
+
+	parts := mergeResponseBody(string(raw))
+	if strings.Count(parts.Tools, "### codegraph_explore") != 1 {
+		t.Fatalf("codegraph_explore should render once, got tools:\n%s", parts.Tools)
+	}
+	if strings.Count(parts.Tools, `"projectPath": "/Users/caidaoli/Share/Source/go/ccLoad"`) != 1 {
+		t.Fatalf("codegraph_explore arguments should render once, got tools:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_MergesOpenAIStreamingToolCallIDWithIndexDeltas(t *testing.T) {
+	t.Parallel()
+
+	raw := strings.Join([]string{
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"q\":"}}]}}]}`,
+		``,
+		`data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]}}]}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	if strings.Count(parts.Tools, "### lookup") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+	if !strings.Contains(parts.Tools, `"q": "go"`) {
+		t.Fatalf("tool arguments should be merged as one JSON object, got:\n%s", parts.Tools)
+	}
+	if strings.Contains(parts.Tools, "### tool_call") {
+		t.Fatalf("tool call should not be split into an anonymous second block, got:\n%s", parts.Tools)
+	}
+}
+
 func TestMergeResponseBody_DeduplicatesDocs6ToolCalls(t *testing.T) {
 	t.Parallel()
 
