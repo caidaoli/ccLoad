@@ -20,13 +20,20 @@ type mergedResponseParts struct {
 type mergedResponseBuilder struct {
 	reasoning          strings.Builder
 	content            strings.Builder
-	tools              strings.Builder
+	toolCalls          []mergedToolCall
+	toolCallIndexes    map[string]int
 	toolDelta          strings.Builder
 	toolDeltaName      string
-	toolDeltaIndex     string
+	toolDeltaKey       string
 	toolNamesByIndex   map[string]string
 	streamState        chatFrontendStreamState
 	lastContentItemKey string
+}
+
+type mergedToolCall struct {
+	key   string
+	name  string
+	value string
 }
 
 const codexMessageItemSeparator = "\n\n---\n\n"
@@ -139,13 +146,13 @@ func (b *mergedResponseBuilder) collectOpenAIMessage(obj map[string]any) {
 			continue
 		}
 		if delta, ok := choice["delta"].(map[string]any); ok {
-			b.collectToolCalls(delta["tool_calls"])
+			b.collectToolCalls(delta["tool_calls"], true)
 		}
 		if message, ok := choice["message"].(map[string]any); ok {
 			b.appendReasoningString(message["reasoning_content"])
 			b.appendReasoningString(message["reasoning"])
 			b.appendContentValue(message["content"])
-			b.collectToolCalls(message["tool_calls"])
+			b.collectToolCalls(message["tool_calls"], false)
 		}
 	}
 }
@@ -188,11 +195,16 @@ func (b *mergedResponseBuilder) collectCodexPayload(obj map[string]any) {
 	switch typ {
 	case "response.function_call_arguments.delta", "response.custom_tool_call_input.delta":
 		index := indexKeyFromAny(obj["output_index"])
-		b.appendToolDelta(index, b.toolNameForIndex(index, "tool_call"), obj["delta"])
+		b.appendToolDelta(toolKeyFromPayload(obj), b.toolNameForIndex(index, "tool_call"), obj["delta"])
 	case "response.function_call_arguments.done":
-		b.appendToolCall(obj["name"], obj["arguments"])
+		index := indexKeyFromAny(obj["output_index"])
+		b.appendToolCall(toolKeyFromPayload(obj), b.toolNameForIndex(index, "tool_call"), obj["arguments"])
 	case "response.output_item.added":
 		b.rememberCodexToolName(obj)
+	case "response.output_item.done":
+		if item, ok := obj["item"].(map[string]any); ok && b.collectCodexOutputItem(item, obj) {
+			return
+		}
 	}
 
 	output, ok := obj["output"].([]any)
@@ -204,8 +216,7 @@ func (b *mergedResponseBuilder) collectCodexPayload(obj map[string]any) {
 		if !ok {
 			continue
 		}
-		if itemType, _ := item["type"].(string); itemType == "function_call" {
-			b.appendToolCall(item["name"], item["arguments"])
+		if b.collectCodexOutputItem(item, nil) {
 			continue
 		}
 		itemKey := stringFromAny(item["id"])
@@ -229,7 +240,8 @@ func (b *mergedResponseBuilder) collectCodexPayload(obj map[string]any) {
 
 func (b *mergedResponseBuilder) collectAnthropicPayload(obj map[string]any) {
 	if delta, ok := obj["delta"].(map[string]any); ok {
-		b.appendToolDelta(indexKeyFromAny(obj["index"]), "tool_call", delta["partial_json"])
+		key := toolKeyFromIndex(indexKeyFromAny(obj["index"]))
+		b.appendToolDelta(key, "tool_call", delta["partial_json"])
 	}
 	content, ok := obj["content"].([]any)
 	if !ok {
@@ -244,7 +256,7 @@ func (b *mergedResponseBuilder) collectAnthropicPayload(obj map[string]any) {
 	}
 }
 
-func (b *mergedResponseBuilder) collectToolCalls(value any) {
+func (b *mergedResponseBuilder) collectToolCalls(value any, streaming bool) {
 	calls, ok := value.([]any)
 	if !ok {
 		return
@@ -255,7 +267,12 @@ func (b *mergedResponseBuilder) collectToolCalls(value any) {
 			continue
 		}
 		if fn, ok := call["function"].(map[string]any); ok {
-			b.appendToolCall(fn["name"], fn["arguments"])
+			key := toolKeyFromOpenAIToolCall(call)
+			if streaming && key != "" {
+				b.appendToolDelta(key, stringFromAny(fn["name"]), fn["arguments"])
+			} else {
+				b.appendToolCall(key, fn["name"], fn["arguments"])
+			}
 		}
 	}
 }
@@ -324,16 +341,19 @@ func (b *mergedResponseBuilder) appendReasoningString(value any) {
 	}
 }
 
-func (b *mergedResponseBuilder) appendToolCall(name any, value any) {
+func (b *mergedResponseBuilder) appendToolCall(key string, name any, value any) {
 	text := stringFromAny(value)
 	if text == "" {
 		return
 	}
-	b.flushToolDelta()
-	if b.tools.Len() > 0 {
-		b.tools.WriteString("\n\n")
+	if b.toolDelta.Len() > 0 {
+		if key != "" && b.toolDeltaKey == key {
+			b.clearToolDelta()
+		} else {
+			b.flushToolDelta()
+		}
 	}
-	b.tools.WriteString(formatToolCallMarkdown(stringFromAny(name), text))
+	b.storeToolCall(key, stringFromAny(name), text)
 }
 
 func (b *mergedResponseBuilder) appendReasoning(text string) {
@@ -349,8 +369,21 @@ func (b *mergedResponseBuilder) parts() mergedResponseParts {
 	return mergedResponseParts{
 		Reasoning: strings.TrimSpace(b.reasoning.String()),
 		Content:   formatJSONForMergedContent(strings.TrimSpace(b.content.String())),
-		Tools:     formatMergedToolDiagnostics(strings.TrimSpace(b.tools.String())),
+		Tools:     formatMergedToolDiagnostics(strings.TrimSpace(b.toolCallsMarkdown())),
 	}
+}
+
+func (b *mergedResponseBuilder) collectCodexOutputItem(item map[string]any, event map[string]any) bool {
+	itemType := stringFromAny(item["type"])
+	if itemType != "function_call" && itemType != "custom_tool_call" {
+		return false
+	}
+	value := item["arguments"]
+	if itemType == "custom_tool_call" {
+		value = item["input"]
+	}
+	b.appendToolCall(toolKeyFromCodexItem(item, event), item["name"], value)
+	return true
 }
 
 func (b *mergedResponseBuilder) rememberCodexToolName(obj map[string]any) {
@@ -385,22 +418,19 @@ func (b *mergedResponseBuilder) toolNameForIndex(index string, fallback string) 
 	return fallback
 }
 
-func (b *mergedResponseBuilder) appendToolDelta(index string, name string, value any) {
+func (b *mergedResponseBuilder) appendToolDelta(key string, name string, value any) {
 	text := stringFromAny(value)
 	if text == "" {
 		return
 	}
-	if b.toolDelta.Len() > 0 && b.toolDeltaIndex != "" && index != "" && b.toolDeltaIndex != index {
+	if b.toolDelta.Len() > 0 && b.toolDeltaKey != "" && key != "" && b.toolDeltaKey != key {
 		b.flushToolDelta()
 	}
 	if b.toolDeltaName == "" {
 		b.toolDeltaName = name
 	}
-	if index != "" {
-		b.toolDeltaIndex = index
-		if resolved := b.toolNameForIndex(index, name); resolved != "" {
-			b.toolDeltaName = resolved
-		}
+	if key != "" {
+		b.toolDeltaKey = key
 	}
 	b.toolDelta.WriteString(text)
 }
@@ -408,18 +438,49 @@ func (b *mergedResponseBuilder) appendToolDelta(index string, name string, value
 func (b *mergedResponseBuilder) flushToolDelta() {
 	text := strings.TrimSpace(b.toolDelta.String())
 	if text == "" {
-		b.toolDelta.Reset()
-		b.toolDeltaName = ""
-		b.toolDeltaIndex = ""
+		b.clearToolDelta()
 		return
 	}
-	if b.tools.Len() > 0 {
-		b.tools.WriteString("\n\n")
-	}
-	b.tools.WriteString(formatToolCallMarkdown(b.toolDeltaName, text))
+	b.storeToolCall(b.toolDeltaKey, b.toolDeltaName, text)
+	b.clearToolDelta()
+}
+
+func (b *mergedResponseBuilder) clearToolDelta() {
 	b.toolDelta.Reset()
 	b.toolDeltaName = ""
-	b.toolDeltaIndex = ""
+	b.toolDeltaKey = ""
+}
+
+func (b *mergedResponseBuilder) storeToolCall(key string, name string, value string) {
+	if key != "" {
+		if b.toolCallIndexes == nil {
+			b.toolCallIndexes = make(map[string]int)
+		}
+		if idx, ok := b.toolCallIndexes[key]; ok {
+			if name != "" {
+				b.toolCalls[idx].name = name
+			}
+			b.toolCalls[idx].value = value
+			return
+		}
+		b.toolCallIndexes[key] = len(b.toolCalls)
+	}
+	b.toolCalls = append(b.toolCalls, mergedToolCall{
+		key:   key,
+		name:  name,
+		value: value,
+	})
+}
+
+func (b *mergedResponseBuilder) toolCallsMarkdown() string {
+	if len(b.toolCalls) == 0 {
+		return ""
+	}
+	sections := make([]string, 0, len(b.toolCalls))
+	for _, call := range b.toolCalls {
+		sections = append(sections, formatToolCallMarkdown(call.name, call.value))
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func hasMergedParts(parts mergedResponseParts) bool {
@@ -451,6 +512,48 @@ func indexKeyFromAny(value any) string {
 	default:
 		return ""
 	}
+}
+
+func toolKeyFromIndex(index string) string {
+	if index == "" {
+		return ""
+	}
+	return "index:" + index
+}
+
+func toolKeyFromPayload(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	if key := toolKeyFromIndex(indexKeyFromAny(obj["output_index"])); key != "" {
+		return key
+	}
+	if id := stringFromAny(obj["item_id"]); id != "" {
+		return "id:" + id
+	}
+	return ""
+}
+
+func toolKeyFromCodexItem(item map[string]any, event map[string]any) string {
+	if event != nil {
+		if key := toolKeyFromIndex(indexKeyFromAny(event["output_index"])); key != "" {
+			return key
+		}
+	}
+	if id := stringFromAny(item["id"]); id != "" {
+		return "id:" + id
+	}
+	if callID := stringFromAny(item["call_id"]); callID != "" {
+		return "call:" + callID
+	}
+	return toolKeyFromIndex(indexKeyFromAny(item["output_index"]))
+}
+
+func toolKeyFromOpenAIToolCall(call map[string]any) string {
+	if id := stringFromAny(call["id"]); id != "" {
+		return "id:" + id
+	}
+	return toolKeyFromIndex(indexKeyFromAny(call["index"]))
 }
 
 func formatJSONForMergedContent(text string) string {

@@ -199,6 +199,57 @@ func TestMergeResponseBody_FormatsApplyPatchToolInputAsDiff(t *testing.T) {
 	}
 }
 
+func TestMergeResponseBody_DeduplicatesCodexToolCallLifecycle(t *testing.T) {
+	t.Parallel()
+
+	arguments := `{"cmd":"git status --short"}`
+	raw := strings.Join([]string{
+		`data: {"type":"response.output_item.added","output_index":2,"item":{"id":"fc_1","type":"function_call","status":"in_progress","arguments":"","call_id":"call_1","name":"exec_command"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","output_index":2,"item_id":"fc_1","delta":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `"}`,
+		``,
+		`data: {"type":"response.function_call_arguments.done","output_index":2,"item_id":"fc_1","arguments":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `"}`,
+		``,
+		`data: {"type":"response.output_item.done","output_index":2,"item":{"id":"fc_1","type":"function_call","status":"completed","arguments":"` + strings.ReplaceAll(arguments, `"`, `\"`) + `","call_id":"call_1","name":"exec_command"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	parts := mergeResponseBody(raw)
+	wantBlock := "```bash\ngit status --short\n```"
+	if strings.Count(parts.Tools, wantBlock) != 1 {
+		t.Fatalf("tool call should render once, got:\n%s", parts.Tools)
+	}
+	if strings.Count(parts.Tools, "### exec_command") != 1 {
+		t.Fatalf("tool heading should render once, got:\n%s", parts.Tools)
+	}
+}
+
+func TestMergeResponseBody_DeduplicatesDocs6ToolCalls(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile(filepath.Join(testRepoRoot(t), "docs", "6.txt"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("docs/6.txt replay sample is not present")
+		}
+		t.Fatalf("read docs sample: %v", err)
+	}
+
+	parts := mergeResponseBody(string(raw))
+	for _, cmd := range []string{
+		"test -d .codegraph && printf yes || printf no",
+		"git status --short",
+		"git diff --name-only --diff-filter=U",
+	} {
+		block := "```bash\n" + cmd + "\n```"
+		if strings.Count(parts.Tools, block) != 1 {
+			t.Fatalf("command %q should render once, got tools:\n%s", cmd, parts.Tools)
+		}
+	}
+}
+
 func testRepoRoot(t *testing.T) string {
 	t.Helper()
 
