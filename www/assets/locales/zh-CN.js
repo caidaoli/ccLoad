@@ -46,6 +46,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.home.features.dns.desc': '上游 DNS 故障时可将域名钉到固定 IP，同时保留 TLS SNI、证书校验和 Host 头',
   'www.home.features.quota.title': '配额感知冷却',
   'www.home.features.quota.desc': '识别供应商固定窗口配额响应，按真实 reset 时间冷却渠道，而不是盲猜退避时间',
+  'www.home.features.autoupdate.title': '自动更新',
+  'www.home.features.autoupdate.desc': '默认每 12 小时检查新版本，可在管理后台设置页调整自动更新间隔',
 
   // 首页 - 管理后台预览
   'www.home.admin.title': '不是黑盒代理',

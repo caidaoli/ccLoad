@@ -122,6 +122,10 @@ docker-compose logs -f ccload</code></pre>
         <div class="www-callout">
           <strong>MySQL is not required by default.</strong> Start with SQLite for single-instance deployments. Set `CCLOAD_MYSQL` only when you need external persistence, multiple instances or data retention after Hugging Face restarts.
         </div>
+
+        <div class="www-callout www-mt-4">
+          <strong>The official GHCR image is an Alpine runtime image.</strong> On container startup it downloads the latest Linux release binary, then ccLoad's own auto updater checks for newer releases every 12 hours by default. Adjust <code>auto_update_interval_hours</code> in the admin settings page when you need a longer interval, or set it to <code>0</code> to disable checks.
+        </div>
       </div>
     </section>
 
