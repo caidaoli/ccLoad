@@ -1227,12 +1227,16 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 	if val, ok := usage["cache_read_input_tokens"].(float64); ok {
 		u.CacheReadInputTokens = int(val)
 	}
+	hasAggregateCacheCreation := false
 	if val, ok := usage["cache_creation_input_tokens"].(float64); ok {
+		hasAggregateCacheCreation = true
 		u.CacheCreationInputTokens = int(val)
 	}
 
 	// Anthropic缓存细分字段 (新增2025-12)
+	hasDetailedCacheCreation := false
 	if cacheCreation, ok := usage["cache_creation"].(map[string]any); ok {
+		hasDetailedCacheCreation = true
 		if val, ok := cacheCreation["ephemeral_5m_input_tokens"].(float64); ok {
 			u.Cache5mInputTokens = int(val)
 		}
@@ -1241,6 +1245,9 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		}
 		// 更新兼容字段
 		u.CacheCreationInputTokens = u.Cache5mInputTokens + u.Cache1hInputTokens
+	}
+	if hasAggregateCacheCreation && !hasDetailedCacheCreation && u.CacheCreationInputTokens > 0 {
+		u.Cache5mInputTokens = u.CacheCreationInputTokens
 	}
 
 	// OpenAI Responses API缓存字段: input_tokens_details.cached_tokens

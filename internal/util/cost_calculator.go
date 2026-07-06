@@ -177,6 +177,10 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT-5系列 ==========
+	"gpt-5.6":       {InputPrice: 5.00, OutputPrice: 30.00},
+	"gpt-5.6-sol":   {InputPrice: 5.00, OutputPrice: 30.00},
+	"gpt-5.6-terra": {InputPrice: 2.50, OutputPrice: 15.00},
+	"gpt-5.6-luna":  {InputPrice: 1.00, OutputPrice: 6.00},
 	"gpt-5.5": {
 		InputPrice: 5.00, OutputPrice: 30.00,
 		InputPriceHigh: 10.00, OutputPriceHigh: 45.00, // >272K context; 2× gpt-5.4
@@ -723,9 +727,9 @@ const (
 	// 参考：https://docs.claude.com/en/docs/about-claude/pricing
 	cacheReadMultiplierOpus = 0.1
 
-	// cacheWrite5mMultiplier 5分钟缓存写入价格倍数（相对于基础input价格）
-	// 5m Cache Write = Input Price × 1.25 (25%溢价)
-	// 仅适用于Claude模型（OpenAI不支持cache_creation）
+	// cacheWrite5mMultiplier 缓存写入价格倍数（相对于基础input价格）
+	// Cache Write = Input Price × 1.25 (25%溢价)
+	// 适用于 Anthropic 5m cache write 和 OpenAI cache_creation_input_tokens。
 	// 参考：https://platform.claude.com/docs/en/build-with-claude/prompt-caching
 	cacheWrite5mMultiplier = 1.25
 
@@ -966,9 +970,13 @@ func isOpenAIModel(model string) bool {
 }
 
 // serviceTierModels 列出支持 priority/flex service_tier 的 OpenAI 模型。
-// 来源：OpenAI 官方 Pricing 页 Priority 表（2026-03-06）。
+// 来源：OpenAI 官方 Pricing 页 Priority 表；GPT-5.6 预览公告明确支持 API priority processing。
 // 注意：gpt-5.4-pro 虽在表中出现但价格列为空，不算支持。
 var serviceTierModels = map[string]bool{
+	"gpt-5.6":           true,
+	"gpt-5.6-sol":       true,
+	"gpt-5.6-terra":     true,
+	"gpt-5.6-luna":      true,
 	"gpt-5.5":           true,
 	"gpt-5.4":           true,
 	"gpt-5.4-mini":      true,
@@ -1156,6 +1164,7 @@ var fuzzyPrefixes = []string{
 	"gemini-1.5-pro", "gemini-1.5-flash",
 
 	// OpenAI GPT系列（更长的前缀优先，避免gpt-4o-legacy被gpt-4o截断）
+	"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.6",
 	"gpt-5-pro", "gpt-5-nano", "gpt-5-mini", "gpt-5.4-pro", "gpt-5.4-mini", "gpt-5.4-nano", "gpt-5.4", "gpt-5",
 	"gpt-4.1-nano", "gpt-4.1-mini", "gpt-4.1",
 	"gpt-4o-legacy", "gpt-4o-mini", "gpt-4o", // legacy必须在gpt-4o之前

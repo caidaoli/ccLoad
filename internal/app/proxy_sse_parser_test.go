@@ -936,6 +936,32 @@ func TestJSONUsageParser_CacheCreationDetailed_Mixed(t *testing.T) {
 	}
 }
 
+func TestJSONUsageParser_OpenAIResponsesCacheCreationUsesWritePricing(t *testing.T) {
+	jsonData := `{
+		"usage": {
+			"input_tokens": 100,
+			"output_tokens": 20,
+			"cache_creation_input_tokens": 80
+		}
+	}`
+
+	parser := newJSONUsageParser("openai")
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	_, _, _, cacheCreation := parser.GetUsage()
+	if cacheCreation != 80 {
+		t.Errorf("CacheCreationInputTokens = %d, 期望 80", cacheCreation)
+	}
+	if parser.Cache5mInputTokens != 80 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 80", parser.Cache5mInputTokens)
+	}
+	if parser.Cache1hInputTokens != 0 {
+		t.Errorf("Cache1hInputTokens = %d, 期望 0", parser.Cache1hInputTokens)
+	}
+}
+
 // TestSSEUsageParser_CacheCreationDetailed_1hOnly 验证流式SSE响应解析1h缓存
 func TestSSEUsageParser_CacheCreationDetailed_1hOnly(t *testing.T) {
 	sseData := `event: message_start
