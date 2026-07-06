@@ -193,6 +193,12 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		// GPT-5 系列（Standard层级 - 官方定价）
 		// inputTokens已归一化: 原始10309-缓存6016=4293
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
+		{"gpt-5.6", 1000, 1000, 0, 0.035},                   // GPT-5.6裸模型名按Sol价格兜底
+		{"gpt-5.6-sol", 1000, 1000, 0, 0.035},               // $5.00/1M input, $30/1M output
+		{"gpt-5.6-terra", 1000, 1000, 0, 0.0175},            // $2.50/1M input, $15/1M output
+		{"gpt-5.6-luna", 1000, 1000, 0, 0.007},              // $1.00/1M input, $6/1M output
+		{"gpt-5.6-sol-2026-06-26", 1000, 1000, 0, 0.035},    // 模糊匹配到gpt-5.6-sol
+		{"gpt-5.6-sol", 1000, 1000, 1000, 0.0355},           // 缓存读取90%折扣：1000×($5×0.1)/1M
 		{"gpt-5.5", 1000, 1000, 0, 0.035},                   // $5.00/1M input, $30/1M output (<=272K); 2× gpt-5.4
 		{"gpt-5.5", 300000, 1000, 0, 3.045},                 // $10.00/1M input, $45/1M output (>272K); 2× gpt-5.4
 		{"gpt-5.4", 1000, 1000, 0, 0.0175},                  // $2.50/1M input, $15/1M output (<=272K)
@@ -240,6 +246,14 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_GPT56CacheWrite(t *testing.T) {
+	cost := CalculateCostDetailed("gpt-5.6-luna", 0, 0, 0, 1000, 0)
+	expected := 1000 * 1.00 * cacheWrite5mMultiplier / 1_000_000
+	if !floatEquals(cost, expected, 0.000001) {
+		t.Errorf("gpt-5.6-luna 缓存写入成本 = %.6f, 期望 %.6f", cost, expected)
+	}
+}
+
 func TestOpenAIServiceTierMultiplier(t *testing.T) {
 	// gpt-5 standard: input $1.25/1M, output $10/1M → 1000 tokens each = $0.01125
 	baseCost := CalculateCostDetailed("gpt-5", 1000, 1000, 0, 0, 0)
@@ -250,6 +264,10 @@ func TestOpenAIServiceTierMultiplier(t *testing.T) {
 		tier       string
 		multiplier float64
 	}{
+		{"gpt-5.6", "priority", 2.0},
+		{"gpt-5.6-sol", "priority", 2.0},
+		{"gpt-5.6-terra", "flex", 0.5},
+		{"gpt-5.6-luna-2026-06-26", "priority", 2.0},
 		{"gpt-5.5", "priority", 2.0},
 		{"gpt-5.5", "fast", 2.5},
 		{"gpt-5.5", "flex", 0.5},
