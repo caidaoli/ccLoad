@@ -289,9 +289,10 @@ var basePricing = map[string]ModelPricing{
 	"gemini-1.5-flash":      {InputPrice: 0.20, OutputPrice: 0.60},
 
 	// ========== 智谱 GLM 模型 ==========
-	// 来源：用户提供的价格表截图（2026-03）
+	// 来源：https://docs.z.ai/guides/overview/pricing
 	"glm-5":               {InputPrice: 1.00, OutputPrice: 3.20, CacheReadPrice: 0.20, HasCacheReadPrice: true},
-	"glm-5.1":             {InputPrice: 1.00, OutputPrice: 3.20, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	"glm-5.2":             {InputPrice: 1.40, OutputPrice: 4.40, CacheReadPrice: 0.26, HasCacheReadPrice: true},
+	"glm-5.1":             {InputPrice: 1.40, OutputPrice: 4.40, CacheReadPrice: 0.26, HasCacheReadPrice: true},
 	"glm-5-turbo":         {InputPrice: 1.20, OutputPrice: 4.00, CacheReadPrice: 0.24, HasCacheReadPrice: true},
 	"glm-5-code":          {InputPrice: 1.20, OutputPrice: 5.00, CacheReadPrice: 0.30, HasCacheReadPrice: true},
 	"glm-4.7":             {InputPrice: 0.60, OutputPrice: 2.20, CacheReadPrice: 0.11, HasCacheReadPrice: true},
