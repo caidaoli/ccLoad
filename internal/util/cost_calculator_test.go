@@ -452,7 +452,7 @@ func TestCalculateImageGenerationToolFallbackCost_GPTImage2(t *testing.T) {
 	}
 }
 
-func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
+func TestCalculateCost_GLMModelsFromOfficialPricing(t *testing.T) {
 	testCases := []struct {
 		model          string
 		inputPrice     float64
@@ -460,7 +460,8 @@ func TestCalculateCost_GLMModelsFromUserTable(t *testing.T) {
 		cacheReadPrice float64
 	}{
 		{"glm-5", 1.00, 3.20, 0.20},
-		{"glm-5.1", 1.00, 3.20, 0.20},
+		{"glm-5.2", 1.40, 4.40, 0.26},
+		{"glm-5.1", 1.40, 4.40, 0.26},
 		{"glm-5-turbo", 1.20, 4.00, 0.24},
 		{"glm-5-code", 1.20, 5.00, 0.30},
 		{"glm-4.7", 0.60, 2.20, 0.11},
