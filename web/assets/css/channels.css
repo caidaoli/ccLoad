@@ -242,6 +242,10 @@
       scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
     }
 
+    #channelModal .inline-table-container:has(.inline-key-table) {
+      --channel-editor-table-visible-rows: 11;
+    }
+
     #channelModal .inline-table-container::-webkit-scrollbar {
       width: 6px;
       height: 6px;
