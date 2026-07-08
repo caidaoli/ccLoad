@@ -1128,6 +1128,22 @@
     return output / tokenDuration;
   }
 
+  function timingColor(seconds, greenThreshold, warningThreshold) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value <= 0) return 'var(--neutral-600)';
+    if (value <= greenThreshold) return 'var(--success-600)';
+    if (value <= warningThreshold) return 'var(--warning-600)';
+    return 'var(--error-600)';
+  }
+
+  function getFirstByteTimingColor(seconds) {
+    return timingColor(seconds, 5, 10);
+  }
+
+  function getDurationTimingColor(seconds) {
+    return timingColor(seconds, 30, 60);
+  }
+
   /**
    * 格式化成本（美元）
    * @param {number} cost - 成本值
@@ -1299,6 +1315,8 @@
   window.getCostDisplayInfo = getCostDisplayInfo;
   window.buildCostStackHtml = buildCostStackHtml;
   window.buildCornerMultiplierBadge = buildCornerMultiplierBadge;
+  window.getFirstByteTimingColor = getFirstByteTimingColor;
+  window.getDurationTimingColor = getDurationTimingColor;
   window.formatNumber = formatNumber;
   window.getRpmColor = getRpmColor;
   window.escapeHtml = escapeHtml;

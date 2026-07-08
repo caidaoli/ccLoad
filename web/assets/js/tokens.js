@@ -331,8 +331,8 @@
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
       const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
-      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
-      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
+      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
+      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
       const costCellClass = token.total_cost_usd > 0 ? '' : 'mobile-empty-cell';
       const streamCellClass = token.stream_count ? '' : 'mobile-empty-cell';
       const nonStreamCellClass = token.non_stream_count ? '' : 'mobile-empty-cell';
@@ -544,24 +544,16 @@
     /**
      * 构建响应时间HTML
      */
-    function buildResponseTimeHtml(time, count) {
+    function buildResponseTimeHtml(time, count, colorFn) {
       if (!count || count === 0) {
         return '<span class="token-value-muted">-</span>';
       }
 
-      const responseClass = getResponseClass(time);
-      return `<span class="metric-value ${responseClass}">${time.toFixed(2)}s</span>`;
-    }
-
-    /**
-     * 获取响应时间颜色等级
-     */
-    function getResponseClass(time) {
       const num = Number(time);
-      if (!Number.isFinite(num) || num <= 0) return '';
-      if (num < 3) return 'response-fast';
-      if (num < 6) return 'response-medium';
-      return 'response-slow';
+      if (!Number.isFinite(num) || num <= 0) {
+        return '<span class="token-value-muted">-</span>';
+      }
+      return `<span class="metric-value" style="color: ${colorFn(num)};">${num.toFixed(2)}s</span>`;
     }
 
     /**
@@ -588,8 +580,8 @@
       const tokensHtml = buildTokensHtml(token);
       const costHtml = buildCostHtml(token.total_cost_usd, token.effective_cost_usd);
       const concurrencyHtml = buildConcurrencyHtml(token.max_concurrency);
-      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count);
-      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count);
+      const streamAvgHtml = buildResponseTimeHtml(token.stream_avg_ttfb, token.stream_count, window.getFirstByteTimingColor);
+      const nonStreamAvgHtml = buildResponseTimeHtml(token.non_stream_avg_rt, token.non_stream_count, window.getDurationTimingColor);
       const costCellClass = token.total_cost_usd > 0 ? '' : ' mobile-empty-cell';
       const streamCellClass = token.stream_count ? '' : ' mobile-empty-cell';
       const nonStreamCellClass = token.non_stream_count ? '' : ' mobile-empty-cell';

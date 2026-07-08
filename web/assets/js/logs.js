@@ -363,6 +363,29 @@ function getStreamFlagHtml(isStreaming) {
     : '<span class="stream-flag placeholder">流</span>';
 }
 
+function buildTimingSeparatorHtml() {
+  return '<span class="log-timing-separator" style="color: var(--neutral-400);">/</span>';
+}
+
+function buildFirstByteTimingHtml(seconds, text) {
+  return `<span class="log-timing-first-byte" style="color: ${window.getFirstByteTimingColor(seconds)};">${text}</span>`;
+}
+
+function buildDurationTimingHtml(seconds, text) {
+  return `<span class="log-timing-duration" style="color: ${window.getDurationTimingColor(seconds)};">${text}</span>`;
+}
+
+function buildActiveRequestTimingHtml(req, elapsedRaw, elapsedText) {
+  if (!Number.isFinite(elapsedRaw)) return '-';
+
+  const durationDisplay = buildDurationTimingHtml(elapsedRaw, `${elapsedText}s...`);
+  if (req.is_streaming && req.client_first_byte_time > 0) {
+    const firstByte = Number(req.client_first_byte_time);
+    return `<span class="log-timing-pair">${buildFirstByteTimingHtml(firstByte, `${firstByte.toFixed(2)}s`)}${buildTimingSeparatorHtml()}${durationDisplay}</span>`;
+  }
+  return durationDisplay;
+}
+
 function normalizeThinkingEffortDisplay(value) {
   const effort = String(value || '').trim().toLowerCase();
   // thinking.type=disabled 表示思考关闭，等同未设置思考等级，不作为 badge 展示
@@ -789,11 +812,7 @@ function renderActiveRequests(activeRequests) {
     const elapsed = elapsedRaw !== null ? elapsedRaw.toFixed(1) : '-';
     const streamFlag = getStreamFlagHtml(req.is_streaming);
 
-    // 耗时显示：流式请求有首字时间则显示 "首字/总耗时" 格式
-    let durationDisplay = startMs ? `${elapsed}s...` : '-';
-    if (req.is_streaming && req.client_first_byte_time > 0 && startMs) {
-      durationDisplay = `${req.client_first_byte_time.toFixed(2)}s/${elapsed}s...`;
-    }
+    const durationDisplay = startMs ? buildActiveRequestTimingHtml(req, elapsedRaw, elapsed) : '-';
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
     const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens);
@@ -941,7 +960,7 @@ function renderLogs(data) {
     // 4. 响应时间显示(流式/非流式)
     const hasDuration = entry.duration !== undefined && entry.duration !== null;
     const durationDisplay = hasDuration ?
-      `<span style="color: var(--neutral-700);">${entry.duration.toFixed(2)}</span>` :
+      buildDurationTimingHtml(entry.duration, entry.duration.toFixed(2)) :
       '<span style="color: var(--neutral-500);">-</span>';
 
     const streamFlag = getStreamFlagHtml(entry.is_streaming);
@@ -950,11 +969,11 @@ function renderLogs(data) {
     if (entry.is_streaming) {
       const hasFirstByte = entry.first_byte_time !== undefined && entry.first_byte_time !== null;
       const firstByteDisplay = hasFirstByte ?
-        `<span class="log-timing-first-byte" style="color: var(--success-600);">${entry.first_byte_time.toFixed(2)}</span>` :
+        buildFirstByteTimingHtml(entry.first_byte_time, entry.first_byte_time.toFixed(2)) :
         '<span class="log-timing-first-byte" style="color: var(--neutral-500);">-</span>';
-      responseTimingDisplay = `<span class="log-timing-pair">${firstByteDisplay}<span class="log-timing-separator" style="color: var(--neutral-400);">/</span><span class="log-timing-duration">${durationDisplay}</span></span>${streamFlag}`;
+      responseTimingDisplay = `<span class="log-timing-pair">${firstByteDisplay}${buildTimingSeparatorHtml()}${durationDisplay}</span>${streamFlag}`;
     } else {
-      responseTimingDisplay = `<span class="log-timing-pair"><span class="log-timing-duration">${durationDisplay}</span></span>${streamFlag}`;
+      responseTimingDisplay = `<span class="log-timing-pair">${durationDisplay}</span>${streamFlag}`;
     }
 
     const logSpeed = calculateLogSpeed(entry);

@@ -4508,6 +4508,10 @@ a.model-tag.model-link:hover {
   color: var(--stats-accent, currentColor);
 }
 
+.stats-timing-separator {
+  color: var(--neutral-400);
+}
+
 .channel-id {
   color: var(--neutral-500);
   font-size: var(--text-xs);

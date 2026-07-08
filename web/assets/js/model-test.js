@@ -527,6 +527,41 @@ function formatDurationMs(durationMs) {
     : '-';
 }
 
+function formatColoredDurationMs(durationMs, colorFn) {
+  const text = formatDurationMs(durationMs);
+  if (text === '-') return text;
+  const seconds = durationMs / 1000;
+  return `<span style="color: ${colorFn(seconds)};">${text}</span>`;
+}
+
+function formatFirstByteDurationMs(durationMs) {
+  return formatColoredDurationMs(durationMs, window.getFirstByteTimingColor);
+}
+
+function formatTotalDurationMs(durationMs) {
+  return formatColoredDurationMs(durationMs, window.getDurationTimingColor);
+}
+
+function formatChatStatNumber(value) {
+  const num = Number(value);
+  if (!Number.isFinite(num)) return '';
+  return typeof window.formatNumber === 'function' ? window.formatNumber(num) : String(num);
+}
+
+function chatStatLabel(key, fallback) {
+  const label = i18nText(key, fallback);
+  return typeof window.escapeHtml === 'function' ? window.escapeHtml(label) : String(label);
+}
+
+function chatStatValue(value, className = 'stats-value-dynamic', style = '--stats-accent:var(--neutral-700);') {
+  const styleAttr = style ? ` style="${style}"` : '';
+  return `<span class="${className}"${styleAttr}>${value}</span>`;
+}
+
+function chatStatPart(labelKey, fallback, valueHtml) {
+  return `${chatStatLabel(labelKey, fallback)} ${valueHtml}`;
+}
+
 const MODEL_TEST_PRIORITY_MIN = -99999;
 const MODEL_TEST_PRIORITY_MAX = 99999;
 let modelTestPrioritySaveTimers = new Map();
@@ -1739,8 +1774,8 @@ function resetRowStatus(row) {
 }
 
 function applyTestResultToRow(row, data) {
-  row.querySelector('.first-byte-duration').textContent = formatDurationMs(data.first_byte_duration_ms);
-  row.querySelector('.duration').textContent = formatDurationMs(data.duration_ms);
+  row.querySelector('.first-byte-duration').innerHTML = formatFirstByteDurationMs(data.first_byte_duration_ms);
+  row.querySelector('.duration').innerHTML = formatTotalDurationMs(data.duration_ms);
 
   if (data.success) {
     row.style.background = 'rgba(16, 185, 129, 0.1)';
@@ -4093,28 +4128,28 @@ function renderChatBubbleStats(bubble, summary) {
 
   const parts = [];
   if (summary.first_byte_ms != null && summary.first_byte_ms > 0) {
-    parts.push(i18nText('modelTest.chat.statsFirstByte', '首字') + ' ' + formatDurationMs(summary.first_byte_ms));
+    parts.push(chatStatPart('modelTest.chat.statsFirstByte', '首字', formatFirstByteDurationMs(summary.first_byte_ms)));
   }
   if (summary.duration_ms != null && summary.duration_ms > 0) {
-    parts.push(i18nText('modelTest.chat.statsDuration', '耗时') + ' ' + formatDurationMs(summary.duration_ms));
+    parts.push(chatStatPart('modelTest.chat.statsDuration', '耗时', formatTotalDurationMs(summary.duration_ms)));
   }
   if (summary.input_tokens != null && summary.input_tokens > 0) {
-    parts.push(i18nText('common.input', '输入') + ' ' + summary.input_tokens);
+    parts.push(chatStatPart('common.input', '输入', chatStatValue(formatChatStatNumber(summary.input_tokens))));
   }
   if (summary.output_tokens != null && summary.output_tokens > 0) {
-    parts.push(i18nText('common.output', '输出') + ' ' + summary.output_tokens);
+    parts.push(chatStatPart('common.output', '输出', chatStatValue(formatChatStatNumber(summary.output_tokens))));
   }
   if (summary.cache_read != null && summary.cache_read > 0) {
-    parts.push(i18nText('modelTest.cacheRead', '缓读') + ' ' + summary.cache_read);
+    parts.push(chatStatPart('modelTest.cacheRead', '缓读', chatStatValue(formatChatStatNumber(summary.cache_read), 'stats-value-success', '')));
   }
   if (summary.cache_create != null && summary.cache_create > 0) {
-    parts.push(i18nText('modelTest.cacheCreate', '缓建') + ' ' + summary.cache_create);
+    parts.push(chatStatPart('modelTest.cacheCreate', '缓建', chatStatValue(formatChatStatNumber(summary.cache_create), 'stats-value-primary', '')));
   }
   if (summary.speed != null && summary.speed > 0) {
-    parts.push(summary.speed.toFixed(1) + ' tok/s');
+    parts.push(chatStatValue(`${summary.speed.toFixed(1)} tok/s`));
   }
   if (summary.cost_usd != null && summary.cost_usd > 0) {
-    parts.push('$' + summary.cost_usd.toFixed(4));
+    parts.push(chatStatValue('$' + summary.cost_usd.toFixed(4), 'stats-value-warning', ''));
   }
 
   if (!statsEl) {
@@ -4129,7 +4164,7 @@ function renderChatBubbleStats(bubble, summary) {
     return;
   }
   statsEl.hidden = false;
-  statsEl.textContent = parts.join(' · ');
+  statsEl.innerHTML = parts.join(' · ');
 }
 
 function renderChatThinking(bubble, thinking, streaming = false) {

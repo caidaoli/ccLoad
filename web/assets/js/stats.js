@@ -307,6 +307,26 @@
       );
     }
 
+    function buildStatsTimingValue(seconds, color) {
+      return `<span class="stats-value-dynamic" style="--stats-accent:${color};">${seconds.toFixed(2)}</span>`;
+    }
+
+    function buildStatsTimingText(firstByteSeconds, durationSeconds) {
+      const firstByte = Number(firstByteSeconds) || 0;
+      const duration = Number(durationSeconds) || 0;
+      const parts = [];
+
+      if (firstByte > 0) {
+        parts.push(buildStatsTimingValue(firstByte, window.getFirstByteTimingColor(firstByte)));
+      }
+      if (duration > 0) {
+        if (parts.length > 0) parts.push('<span class="stats-timing-separator">/</span>');
+        parts.push(buildStatsTimingValue(duration, window.getDurationTimingColor(duration)));
+      }
+
+      return parts.join('');
+    }
+
     function buildCacheUtilRate(inputTokens, cacheReadTokens, cacheCreationTokens) {
       const i = Number(inputTokens) || 0;
       const r = Number(cacheReadTokens) || 0;
@@ -393,21 +413,7 @@
         // 格式化平均首字响应时间/平均耗时
         const avgFirstByteTime = entry.avg_first_byte_time_seconds || 0;
         const avgDuration = entry.avg_duration_seconds || 0;
-        let avgTimeText = '';
-
-        if (avgFirstByteTime > 0 && avgDuration > 0) {
-          // 流式请求：显示首字/耗时
-          const durationColor = getDurationColor(avgDuration);
-          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgFirstByteTime.toFixed(2)}/${avgDuration.toFixed(2)}</span>`;
-        } else if (avgDuration > 0) {
-          // 非流式请求：只显示耗时
-          const durationColor = getDurationColor(avgDuration);
-          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgDuration.toFixed(2)}</span>`;
-        } else if (avgFirstByteTime > 0) {
-          // 仅有首字时间（理论上不应出现）
-          const durationColor = getDurationColor(avgFirstByteTime);
-          avgTimeText = `<span class="stats-value-dynamic" style="--stats-accent:${durationColor};">${avgFirstByteTime.toFixed(2)}</span>`;
-        }
+        const avgTimeText = buildStatsTimingText(avgFirstByteTime, avgDuration);
 
         const avgSpeed = calculateAverageSpeed(entry);
         const avgSpeedText = avgSpeed === null
@@ -535,17 +541,7 @@
       // 合计行首字/耗时(秒)
       const totalAvgFirstByte = firstByteSuccessSum > 0 ? firstByteTimeWeighted / firstByteSuccessSum : 0;
       const totalAvgDuration = durationSuccessSum > 0 ? durationWeighted / durationSuccessSum : 0;
-      let totalTimingText = '';
-      if (totalAvgFirstByte > 0 && totalAvgDuration > 0) {
-        const c = getDurationColor(totalAvgDuration);
-        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgFirstByte.toFixed(2)}/${totalAvgDuration.toFixed(2)}</span>`;
-      } else if (totalAvgDuration > 0) {
-        const c = getDurationColor(totalAvgDuration);
-        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgDuration.toFixed(2)}</span>`;
-      } else if (totalAvgFirstByte > 0) {
-        const c = getDurationColor(totalAvgFirstByte);
-        totalTimingText = `<span class="stats-value-dynamic" style="--stats-accent:${c};">${totalAvgFirstByte.toFixed(2)}</span>`;
-      }
+      const totalTimingText = buildStatsTimingText(totalAvgFirstByte, totalAvgDuration);
 
       // 合计行 Tok/s
       let totalSpeedText = '';
@@ -909,17 +905,6 @@
       }).join('');
 
       return `<span class="stats-rpm-inline">${html}</span>`;
-    }
-
-    // 根据耗时返回颜色
-    function getDurationColor(seconds) {
-      if (seconds <= 5) {
-        return 'var(--success-600)'; // 绿色：快速
-      } else if (seconds <= 30) {
-        return 'var(--warning-600)'; // 橙色：中等
-      } else {
-        return 'var(--error-600)'; // 红色：慢速
-      }
     }
 
     // 构建健康状态指示器 HTML（固定48个方块 + 当前成功率）

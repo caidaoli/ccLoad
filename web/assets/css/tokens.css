@@ -490,19 +490,6 @@
     .tokens-col-non-stream .metric-value {
       font-size: 18px;
     }
-    /* 响应时间颜色 */
-    .response-fast {
-      color: var(--success-700);
-      font-weight: 600;
-    }
-    .response-medium {
-      color: var(--warning-700);
-      font-weight: 600;
-    }
-    .response-slow {
-      color: var(--error-700);
-      font-weight: 600;
-    }
     .token-usage-metrics {
       display: grid;
       grid-template-columns: repeat(2, minmax(0, max-content));
