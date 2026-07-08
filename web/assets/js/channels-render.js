@@ -511,17 +511,12 @@ function buildChannelTimingHtml(stats) {
   const avgDuration = stats.avgDurationSeconds || 0;
   const successCount = Number.isFinite(Number(stats.success)) ? Number(stats.success) : 0;
   const failureCount = Number.isFinite(Number(stats.error)) ? Number(stats.error) : 0;
-  const durationColorBase = avgDuration > 0 ? avgDuration : avgFirstByte;
-  const durationColor = (() => {
-    if (durationColorBase <= 0) return 'var(--neutral-600)';
-    if (durationColorBase <= 5) return 'var(--success-600)';
-    if (durationColorBase <= 30) return 'var(--warning-600)';
-    return 'var(--error-600)';
-  })();
+  const firstByteColor = window.getFirstByteTimingColor(avgFirstByte);
+  const durationColor = window.getDurationTimingColor(avgDuration);
 
   const rows = [];
   if (avgFirstByte > 0) {
-    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.firstByte')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgFirstByte.toFixed(2)}${window.t('common.seconds')}</span></div>`);
+    rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('channels.stats.firstByte')}</span><span class="ch-timing-value" style="color: ${firstByteColor};">${avgFirstByte.toFixed(2)}${window.t('common.seconds')}</span></div>`);
   }
   if (avgDuration > 0) {
     rows.push(`<div class="ch-timing-row"><span class="ch-timing-label">${window.t('stats.tooltipDuration')}</span><span class="ch-timing-value" style="color: ${durationColor};">${avgDuration.toFixed(2)}${window.t('common.seconds')}</span></div>`);
