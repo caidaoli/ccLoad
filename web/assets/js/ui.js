@@ -371,6 +371,12 @@
   let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon
   const _activeDataListeners = [];  // 订阅者回调列表
   let _lastActiveData = null;       // 最近一次推送的数据（新订阅者立即获得，规避时序竞争）
+  const ACTIVE_TITLE_FLASH_MS = 900;
+  let _activeTitleBase = '';
+  let _activeTitleTimer = null;
+  let _activeTitleVisible = false;
+  let _activeTitleCount = 0;
+  let _faviconPulseOn = false;
 
   function brandBadgeLabel(count) {
     return count > 999 ? '999+' : String(count);
@@ -402,10 +408,12 @@
     img.src = '/web/favicon.svg';
   }
 
-  // 在 favicon 右上角画橙色数字角标
-  function drawFaviconBadge(count) {
+  // 在 favicon 右上角画呼吸色点 + 数字角标
+  function drawFaviconBadge(count, pulseOn = false) {
     if (!_faviconBase) return;
-    const S = 64, r = 12, cx = 50, cy = 14, ring = 2; // 小角标：不遮挡 CC 字母
+    const S = 64, cx = 50, cy = 14; // 小角标：不遮挡 CC 字母
+    const r = pulseOn ? 13 : 11;
+    const halo = pulseOn ? 18 : 15;
     const canvas = document.createElement('canvas');
     canvas.width = S; canvas.height = S;
     const ctx = canvas.getContext('2d');
@@ -414,11 +422,15 @@
     ctx.drawImage(_faviconBase, 0, 0, S, S);
 
     const text = faviconBadgeLabel(count);
-    // 外描边：先画大白圆再画橙圆，保留完整橙区给文字（避免居中描边吃掉内部空间）
-    ctx.beginPath(); ctx.arc(cx, cy, r + ring, 0, Math.PI * 2);
+    ctx.beginPath(); ctx.arc(cx, cy, halo, 0, Math.PI * 2);
+    ctx.fillStyle = pulseOn ? 'rgba(249, 115, 22, 0.28)' : 'rgba(249, 115, 22, 0.12)';
+    ctx.fill();
+
+    // 外描边：先画白圆再画橙圆，保留完整橙区给文字（避免居中描边吃掉内部空间）
+    ctx.beginPath(); ctx.arc(cx, cy, r + 2, 0, Math.PI * 2);
     ctx.fillStyle = '#ffffff'; ctx.fill();
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = '#f97316'; ctx.fill();
+    ctx.fillStyle = pulseOn ? '#fb923c' : '#f97316'; ctx.fill();
 
     // 字号按位数两档自适应（1~9 单字符 / 9+ 双字符）
     const fs = text.length >= 2 ? 14 : 18;
@@ -439,7 +451,71 @@
     if (_origFaviconHref !== null) getFaviconLink().href = _origFaviconHref;
   }
 
+  function redrawActiveFavicon() {
+    if (_activeTitleCount > 0) {
+      ensureFaviconBase(() => drawFaviconBadge(_activeTitleCount, _faviconPulseOn));
+    }
+  }
+
+  function activeTitleLabel(count) {
+    const label = brandBadgeLabel(count);
+    const fallback = `请求中[${label}]-`;
+    if (typeof t === 'function') {
+      const translated = t('nav.activeRequestsTitle', { count: label });
+      return translated && translated !== 'nav.activeRequestsTitle' ? translated : fallback;
+    }
+    return fallback;
+  }
+
+  function activeTitleText() {
+    return `${activeTitleLabel(_activeTitleCount)}${_activeTitleBase}`;
+  }
+
+  function showActiveTitle() {
+    document.title = activeTitleText();
+    _activeTitleVisible = true;
+  }
+
+  function restoreActiveTitle() {
+    if (_activeTitleTimer !== null) {
+      clearInterval(_activeTitleTimer);
+      _activeTitleTimer = null;
+    }
+    _activeTitleVisible = false;
+    if (_activeTitleBase) document.title = _activeTitleBase;
+  }
+
+  function updateActiveTitle(count) {
+    if (_activeTitleTimer === null) {
+      _activeTitleBase = document.title || _activeTitleBase || '';
+    }
+    _activeTitleCount = count;
+
+    if (count <= 0) {
+      restoreActiveTitle();
+      return;
+    }
+
+    if (_activeTitleTimer === null) {
+      showActiveTitle();
+      _activeTitleTimer = setInterval(() => {
+        _faviconPulseOn = !_faviconPulseOn;
+        redrawActiveFavicon();
+        if (_activeTitleVisible) {
+          document.title = _activeTitleBase;
+          _activeTitleVisible = false;
+          return;
+        }
+        showActiveTitle();
+      }, ACTIVE_TITLE_FLASH_MS);
+      return;
+    }
+
+    if (_activeTitleVisible) showActiveTitle();
+  }
+
   function updateActiveIndicator(count) {
+    _activeTitleCount = count;
     // 页面内 logo：脉冲 + 角标
     if (_activeWrap) {
       _activeWrap.classList.toggle('is-active', count > 0);
@@ -448,9 +524,15 @@
     // 标签页 favicon 角标（仅在数量变化时重绘，省 toDataURL 开销）
     if (count !== _lastBadgeCount) {
       _lastBadgeCount = count;
-      if (count > 0) ensureFaviconBase(() => drawFaviconBadge(count));
-      else restoreFavicon();
+      if (count > 0) {
+        _faviconPulseOn = false;
+        redrawActiveFavicon();
+      } else {
+        _faviconPulseOn = false;
+        restoreFavicon();
+      }
     }
+    updateActiveTitle(count);
   }
 
   async function pollActiveRequests() {

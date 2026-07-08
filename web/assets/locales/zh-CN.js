@@ -43,6 +43,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'common.cost': '成本',
   'common.total': '总计',
   'common.requests': '请求',
+  'nav.activeRequestsTitle': '请求中[{count}]-',
   'common.tokens': 'Token',
   'common.input': '输入',
   'common.output': '输出',
