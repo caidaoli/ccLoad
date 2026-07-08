@@ -579,6 +579,7 @@ var basePricing = map[string]ModelPricing{
 	"minimax-m2.1":   {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
 	"minimax-m2.5":   {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
 	"minimax-m2.7":   {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
+	"minimax-m3":     {InputPrice: 0.60, OutputPrice: 2.40, CacheReadPrice: 0.12, HasCacheReadPrice: true},
 
 	// ========== 美团 LongCat 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meituan
@@ -1240,7 +1241,7 @@ var fuzzyPrefixes = []string{
 	"grok-code-fast-1", "grok-vision-beta",
 
 	// MiniMax模型
-	"minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2-her", "minimax-m2", "minimax-m1", "minimax-01",
+	"minimax-m3", "minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2-her", "minimax-m2", "minimax-m1", "minimax-01",
 
 	// 美团 LongCat模型（长前缀优先）
 	"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",

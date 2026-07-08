@@ -948,6 +948,7 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 		{"minimax-m1", 0.40, 2.20},
 		{"minimax-m2", 0.255, 1.00},
 		{"minimax-m2.1", 0.29, 0.95},
+		{"minimax-m3", 0.60, 2.40},
 	}
 
 	for _, tc := range testCases {
