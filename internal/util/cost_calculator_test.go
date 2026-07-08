@@ -964,6 +964,46 @@ func TestCalculateCost_MiniMaxModels(t *testing.T) {
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("minimax-m2 模糊匹配: 成本 = %.6f, 期望 %.6f", cost, expected)
 	}
+
+	m3Tests := []struct {
+		name            string
+		model           string
+		inputTokens     int
+		outputTokens    int
+		cacheReadTokens int
+		expected        float64
+	}{
+		{
+			name:            "MiniMax-M3 <=512k uses standard tier",
+			model:           "minimax-m3",
+			inputTokens:     512_000,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expected:        512_000*0.30/1_000_000 + 1.20 + 0.06,
+		},
+		{
+			name:            "MiniMax-M3 >512k uses long-context tier",
+			model:           "minimax-m3",
+			inputTokens:     512_001,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expected:        512_001*0.60/1_000_000 + 2.40 + 0.12,
+		},
+		{
+			name:            "MiniMax-M3 fuzzy match preserves tiered pricing",
+			model:           "minimax-m3-20260601",
+			inputTokens:     512_001,
+			outputTokens:    1_000_000,
+			cacheReadTokens: 1_000_000,
+			expected:        512_001*0.60/1_000_000 + 2.40 + 0.12,
+		},
+	}
+	for _, tc := range m3Tests {
+		cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheReadTokens, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.name, cost, tc.expected)
+		}
+	}
 }
 
 func TestCalculateCost_CacheSavings(t *testing.T) {

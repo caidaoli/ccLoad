@@ -579,6 +579,10 @@ var basePricing = map[string]ModelPricing{
 	"minimax-m2.1":   {InputPrice: 0.29, OutputPrice: 0.95, CacheReadPrice: 0.03, HasCacheReadPrice: true},
 	"minimax-m2.5":   {InputPrice: 0.15, OutputPrice: 0.90, CacheReadPrice: 0.027, HasCacheReadPrice: true},
 	"minimax-m2.7":   {InputPrice: 0.279, OutputPrice: 1.20, CacheReadPrice: 0.059, HasCacheReadPrice: true},
+	"minimax-m3": {
+		InputPrice: 0.30, OutputPrice: 1.20, CacheReadPrice: 0.06, HasCacheReadPrice: true,
+		InputPriceHigh: 0.60, OutputPriceHigh: 2.40, CacheReadPriceHigh: 0.12,
+	},
 
 	// ========== 美团 LongCat 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=meituan
@@ -752,6 +756,10 @@ const (
 	// gpt54TierThreshold GPT-5.4 系列分档阈值（tokens）
 	// 参考：<=272K 与 >272K context length
 	gpt54TierThreshold = 272_000
+
+	// minimaxM3TierThreshold MiniMax-M3 分档阈值（tokens）
+	// 参考：<=512K 与 >512K input tokens
+	minimaxM3TierThreshold = 512_000
 )
 
 func getTierThresholdForModel(model string) int {
@@ -760,6 +768,8 @@ func getTierThresholdForModel(model string) int {
 	case strings.HasPrefix(lowerModel, "gpt-5.5"),
 		strings.HasPrefix(lowerModel, "gpt-5.4"):
 		return gpt54TierThreshold
+	case strings.HasPrefix(lowerModel, "minimax-m3"):
+		return minimaxM3TierThreshold
 	case strings.HasPrefix(lowerModel, "qwen3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen-3.5-plus"),
 		strings.HasPrefix(lowerModel, "qwen3.6-plus"),
@@ -821,7 +831,7 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	// 注意:价格是per 1M tokens,需要除以1,000,000
 	cost := 0.0
 
-	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo 系列）
+	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo / MiniMax-M3 系列）
 	// 默认仅按非缓存输入判断；仅 MiMo 这类「input + cache_read 总量分档」的模型
 	// （CacheReadCountsTowardTier=true）才把缓存读计入分档。Gemini 长上下文只看
 	// 非缓存 prompt size，缓存读不得推高分档（否则 256K 缓存读会误触高档 input 价）。
@@ -1240,7 +1250,7 @@ var fuzzyPrefixes = []string{
 	"grok-code-fast-1", "grok-vision-beta",
 
 	// MiniMax模型
-	"minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2-her", "minimax-m2", "minimax-m1", "minimax-01",
+	"minimax-m3", "minimax-m2.7", "minimax-m2.5", "minimax-m2.1", "minimax-m2-her", "minimax-m2", "minimax-m1", "minimax-01",
 
 	// 美团 LongCat模型（长前缀优先）
 	"longcat-flash-chat-2602-exp", "longcat-flash-chat:free", "longcat-flash-chat",
