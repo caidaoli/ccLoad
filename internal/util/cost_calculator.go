@@ -332,6 +332,12 @@ var basePricing = map[string]ModelPricing{
 	"mimo-v2.5-flash": {InputPrice: 0.10, OutputPrice: 0.30, CacheReadPrice: 0.01, HasCacheReadPrice: true},
 	"mimo-v2-flash":   {InputPrice: 0.10, OutputPrice: 0.30, CacheReadPrice: 0.01, HasCacheReadPrice: true},
 
+	// ========== Cerebras 模型 ==========
+	// 来源：https://inference-docs.cerebras.ai/resources/pricing
+	"zai-glm-4.7":           {InputPrice: 2.25, OutputPrice: 2.75},
+	"gemma-4-31b":           {InputPrice: 0.99, OutputPrice: 1.49},
+	"cerebras-gpt-oss-120b": {InputPrice: 0.35, OutputPrice: 0.75},
+
 	// ========== Moonshot AI / Kimi 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=moonshotai
 	"kimi-dev-72b":                 {InputPrice: 0.29, OutputPrice: 1.15},

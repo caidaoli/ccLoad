@@ -139,6 +139,24 @@ func TestCalculateCost_ModelAlias(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_CerebrasModelIDs(t *testing.T) {
+	testCases := []struct {
+		model    string
+		expected float64
+	}{
+		{"zai-glm-4.7", 0.005},
+		{"gemma-4-31b", 0.00248},
+		{"cerebras-gpt-oss-120b", 0.00110},
+	}
+
+	for _, tc := range testCases {
+		cost := CalculateCostDetailed(tc.model, 1000, 1000, 0, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+		}
+	}
+}
+
 func TestCalculateCost_UnknownModel(t *testing.T) {
 	// 未知模型应返回0
 	cost := CalculateCostDetailed("unknown-model-xyz", 1000, 1000, 0, 0, 0)
