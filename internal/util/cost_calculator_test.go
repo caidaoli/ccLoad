@@ -854,8 +854,32 @@ func TestCalculateCost_DeepSeekModels(t *testing.T) {
 }
 
 func TestCalculateCost_XAIModels(t *testing.T) {
-	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=xai
-	testCases := []struct {
+	// 来源: https://docs.x.ai/developers/pricing
+	officialCases := []struct {
+		model  string
+		input  float64 // $/M tokens
+		output float64 // $/M tokens
+	}{
+		{"grok-build-0.1", 1.00, 2.00},
+		{"grok-code-fast-1", 1.00, 2.00},
+		{"grok-4.5", 2.00, 6.00},
+		{"grok-4.3", 1.25, 2.50},
+		{"grok-4.20", 1.25, 2.50},
+		{"grok-4.20-beta", 1.25, 2.50},
+		{"grok-4.20-0309-reasoning", 1.25, 2.50},
+		{"grok-4.20-0309-non-reasoning", 1.25, 2.50},
+		{"grok-4.20-multi-agent-0309", 1.25, 2.50},
+	}
+
+	for _, tc := range officialCases {
+		cost := CalculateCostDetailed(tc.model, 1_000, 1_000, 0, 0, 0)
+		expected := (tc.input*1_000 + tc.output*1_000) / 1_000_000
+		if !floatEquals(cost, expected, 0.000001) {
+			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, expected)
+		}
+	}
+
+	legacyCases := []struct {
 		model  string
 		input  float64 // $/M tokens
 		output float64 // $/M tokens
@@ -870,16 +894,21 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 		{"grok-2-1212", 2.00, 10.00},
 		{"grok-2-vision-1212", 2.00, 10.00},
 		{"grok-2-mini", 0.20, 0.50},
-		{"grok-code-fast-1", 0.20, 1.50},
 		{"grok-vision-beta", 5.00, 15.00},
 	}
-
-	for _, tc := range testCases {
+	for _, tc := range legacyCases {
 		cost := CalculateCostDetailed(tc.model, 1_000_000, 1_000_000, 0, 0, 0)
 		expected := tc.input + tc.output
 		if !floatEquals(cost, expected, 0.000001) {
 			t.Errorf("%s: 成本 = %.6f, 期望 %.6f", tc.model, cost, expected)
 		}
+	}
+
+	// Grok 4.5 基础价格（<=200k prompt）：input $2/M, cached $0.50/M, output $6/M。
+	baseGrok45 := CalculateCostDetailed("grok-4.5", 1_000, 1_000, 1_000, 0, 0)
+	expectedBaseGrok45 := (1_000*2.00 + 1_000*6.00 + 1_000*0.50) / 1_000_000
+	if !floatEquals(baseGrok45, expectedBaseGrok45, 0.000001) {
+		t.Errorf("grok-4.5 基础价格成本 = %.6f, 期望 %.6f", baseGrok45, expectedBaseGrok45)
 	}
 
 	// 别名测试
@@ -888,12 +917,29 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 	if !floatEquals(costBeta, expected3, 0.000001) {
 		t.Errorf("grok-beta 别名: 成本 = %.6f, 期望 %.6f", costBeta, expected3)
 	}
+	aliasTests := []struct {
+		model    string
+		expected float64
+	}{
+		{"grok-latest", (1_000*1.25 + 1_000*2.50) / 1_000_000},
+		{"grok-build-latest", (1_000*2.00 + 1_000*6.00) / 1_000_000},
+		{"grok-code-fast", (1_000*1.00 + 1_000*2.00) / 1_000_000},
+		{"grok-code-fast-1-0825", (1_000*1.00 + 1_000*2.00) / 1_000_000},
+	}
+	for _, tc := range aliasTests {
+		cost := CalculateCostDetailed(tc.model, 1_000, 1_000, 0, 0, 0)
+		if !floatEquals(cost, tc.expected, 0.000001) {
+			t.Errorf("%s 别名: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
+		}
+	}
 
 	// 模糊匹配测试
 	fuzzyTests := []struct {
 		model    string
 		expected float64
 	}{
+		{"grok-4.5-preview", 4.00 + 12.00},     // 匹配 grok-4.5，1M input 走长上下文价
+		{"grok-4.20-beta-custom", 2.50 + 5.00}, // 匹配 grok-4.20-beta，1M input 走长上下文价
 		{"grok-4-20260101", 3.00 + 15.00},      // 匹配 grok-4
 		{"grok-3-mini-custom", 0.30 + 0.50},    // 匹配 grok-3-mini
 		{"grok-2-1212-extended", 2.00 + 10.00}, // 匹配 grok-2-1212
@@ -903,6 +949,19 @@ func TestCalculateCost_XAIModels(t *testing.T) {
 		if !floatEquals(cost, tc.expected, 0.000001) {
 			t.Errorf("%s 模糊匹配: 成本 = %.6f, 期望 %.6f", tc.model, cost, tc.expected)
 		}
+	}
+
+	// Grok 4.5: >200k prompt 使用长上下文价格；cached prompt 也参与阈值判断。
+	longContextCacheOnly := CalculateCostDetailed("grok-4.5-latest", 0, 1_000, 250_000, 0, 0)
+	expectedLongContextCacheOnly := 250_000*1.00/1_000_000 + 1_000*12.00/1_000_000
+	if !floatEquals(longContextCacheOnly, expectedLongContextCacheOnly, 0.000001) {
+		t.Errorf("grok-4.5 长上下文缓存成本 = %.6f, 期望 %.6f", longContextCacheOnly, expectedLongContextCacheOnly)
+	}
+
+	buildLongContext := CalculateCostDetailed("grok-build-0.1", 250_000, 1_000, 0, 0, 0)
+	expectedBuildLongContext := 250_000*2.00/1_000_000 + 1_000*4.00/1_000_000
+	if !floatEquals(buildLongContext, expectedBuildLongContext, 0.000001) {
+		t.Errorf("grok-build-0.1 长上下文成本 = %.6f, 期望 %.6f", buildLongContext, expectedBuildLongContext)
 	}
 }
 
@@ -915,6 +974,7 @@ func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
 	}{
 		{"grok-2-image-1212", 0.07},
 		{"grok-imagine-image", 0.02},
+		{"grok-imagine-image-quality", 0.05},
 		{"grok-imagine-image-pro", 0.07},
 	}
 
@@ -944,14 +1004,20 @@ func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
 	if cost != 0 {
 		t.Errorf("grok-imagine-video 无duration时应返回0, 实际: %.6f", cost)
 	}
+	cost = CalculateCostDetailed("grok-imagine-video-1.5", 0, 0, 0, 0, 0)
+	if cost != 0 {
+		t.Errorf("grok-imagine-video-1.5 无duration时应返回0, 实际: %.6f", cost)
+	}
 
 	// 视频模型没有 duration 解析链路，不能假装已支持计费。
-	pricing, ok := getPricing("grok-imagine-video")
-	if !ok {
-		pricing, ok = fuzzyMatchModel("grok-imagine-video")
-	}
-	if ok {
-		t.Fatalf("grok-imagine-video should not be priced without duration billing support: %+v", pricing)
+	for _, model := range []string{"grok-imagine-video", "grok-imagine-video-1.5"} {
+		pricing, ok := getPricing(model)
+		if !ok {
+			pricing, ok = fuzzyMatchModel(model)
+		}
+		if ok {
+			t.Fatalf("%s should not be priced without duration billing support: %+v", model, pricing)
+		}
 	}
 }
 
