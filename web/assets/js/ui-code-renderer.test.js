@@ -98,3 +98,225 @@ test('renderUpstreamCodeBlock keeps request headers readable and highlights JSON
   assert.match(html, /hljs-attr/);
   assert.match(html, /hljs-literal/);
 });
+
+function createElement(tag = 'div') {
+  const attributes = new Map();
+  const classNames = new Set();
+  const el = {
+    tagName: String(tag).toUpperCase(),
+    style: {},
+    dataset: {},
+    children: [],
+    textContent: '',
+    innerHTML: '',
+    title: '',
+    classList: {
+      add: (...names) => names.forEach(name => classNames.add(name)),
+      remove: (...names) => names.forEach(name => classNames.delete(name)),
+      toggle: (name, force) => {
+        const enabled = force === undefined ? !classNames.has(name) : Boolean(force);
+        if (enabled) classNames.add(name);
+        else classNames.delete(name);
+        return enabled;
+      },
+      contains: (name) => classNames.has(name)
+    },
+    setAttribute: (name, value) => {
+      attributes.set(name, String(value));
+      if (name === 'title') el.title = String(value);
+    },
+    getAttribute: (name) => attributes.get(name) || null,
+    removeAttribute: (name) => attributes.delete(name),
+    appendChild: (child) => {
+      el.children.push(child);
+      return child;
+    },
+    replaceChildren: (...children) => {
+      el.children = children;
+    },
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    querySelector: () => null,
+    querySelectorAll: () => [],
+    closest: () => null,
+    select: () => {}
+  };
+  if (String(tag).toLowerCase() === 'canvas') {
+    const commands = [];
+    const ctx = {
+      clearRect: (...args) => commands.push(['clearRect', args]),
+      drawImage: (...args) => commands.push(['drawImage', args.length]),
+      beginPath: () => commands.push(['beginPath']),
+      arc: (...args) => commands.push(['arc', args]),
+      fill: () => commands.push(['fill', ctx.fillStyle]),
+      fillText: (...args) => commands.push(['fillText', args]),
+      fillStyle: '',
+      font: '',
+      textAlign: '',
+      textBaseline: ''
+    };
+    el.getContext = () => ctx;
+    el.toDataURL = () => `data:image/png;base64,${Buffer.from(JSON.stringify(commands)).toString('base64')}`;
+  }
+  return el;
+}
+
+function installTopbarTestGlobals(activePayloads, options = {}) {
+  const intervals = [];
+  let intervalID = 0;
+  let iconLink = null;
+  const doc = {
+    title: '请求日志 - Claude Code & Codex Proxy',
+    documentElement: {
+      dataset: {},
+      style: {}
+    },
+    createElement,
+    createElementNS: createElement,
+    createTextNode: (text) => ({ nodeType: 3, textContent: String(text) }),
+    body: createElement('body'),
+    head: createElement('head'),
+    addEventListener: () => {},
+    querySelector: (selector) => selector === 'link[rel~="icon"]' ? iconLink : null,
+    querySelectorAll: () => [],
+    getElementById: () => null,
+    execCommand: () => false
+  };
+  doc.head.appendChild = (child) => {
+    if (child && child.rel === 'icon') iconLink = child;
+    doc.head.children.push(child);
+    return child;
+  };
+
+  const globals = {
+    console,
+    setTimeout,
+    clearTimeout,
+    setInterval: (fn, ms) => {
+      const item = { id: ++intervalID, fn, ms, cleared: false };
+      intervals.push(item);
+      return item.id;
+    },
+    clearInterval: (id) => {
+      const item = intervals.find(entry => entry.id === id);
+      if (item) item.cleared = true;
+    },
+    CustomEvent: function CustomEvent(type, init) {
+      this.type = type;
+      this.detail = init && init.detail;
+    },
+    Image: function Image() {
+      Object.defineProperty(this, 'src', {
+        set(value) {
+          this._src = value;
+          if (typeof this.onload === 'function') setImmediate(() => this.onload());
+        },
+        get() {
+          return this._src;
+        }
+      });
+    },
+    localStorage: {
+      getItem: (key) => key === 'ccload_token' ? 'test-token' : null,
+      setItem: () => {},
+      removeItem: () => {}
+    },
+    getComputedStyle: () => ({ getPropertyValue: () => '' }),
+    matchMedia: () => ({ matches: false, addEventListener: () => {} }),
+    requestAnimationFrame: (fn) => setTimeout(fn, 0),
+    document: doc,
+    fetch: async (url) => {
+      if (url === '/public/version') {
+        return { json: async () => ({ success: true, data: { version: 'dev' } }) };
+      }
+      if (url === '/admin/active-requests') {
+        const payload = activePayloads.length
+          ? activePayloads.shift()
+          : { success: true, count: 0, data: [] };
+        return {
+          status: 200,
+          text: async () => JSON.stringify(payload)
+        };
+      }
+      return {
+        status: 200,
+        text: async () => JSON.stringify({ success: true, data: null })
+      };
+    }
+  };
+  globals.t = (key, params) => {
+    if (!options.missingActiveTitleKey && key === 'nav.activeRequestsTitle') return `请求中[${params.count}]-`;
+    return key;
+  };
+  Object.assign(global, globals);
+  Object.defineProperty(global, 'location', { value: { href: '' }, configurable: true });
+  Object.defineProperty(global, 'navigator', { value: {}, configurable: true });
+  global.window = global;
+  global.globalThis = global;
+  global.window.dispatchEvent = () => {};
+  global.hljs = require('./highlight.min.js');
+
+  return { doc, intervals };
+}
+
+async function loadTopbarWithActiveRequests(activePayloads, options = {}) {
+  const ctx = installTopbarTestGlobals(activePayloads, options);
+  delete require.cache[require.resolve('./ui.js')];
+  require('./ui.js');
+  global.initTopbar('logs');
+  await new Promise(resolve => setImmediate(resolve));
+  await new Promise(resolve => setImmediate(resolve));
+  return ctx;
+}
+
+test('initTopbar flashes browser title while active requests exist', async () => {
+  const ctx = await loadTopbarWithActiveRequests([
+    { success: true, count: 2, data: [] }
+  ], { missingActiveTitleKey: true });
+
+  const activeTitle = '请求中[2]-请求日志 - Claude Code & Codex Proxy';
+  assert.equal(ctx.doc.title, activeTitle);
+
+  const titleTimer = ctx.intervals.find(item => item.ms !== 2000 && !item.cleared);
+  assert.ok(titleTimer);
+  titleTimer.fn();
+  assert.equal(ctx.doc.title, '请求日志 - Claude Code & Codex Proxy');
+  titleTimer.fn();
+  assert.equal(ctx.doc.title, activeTitle);
+});
+
+test('initTopbar redraws favicon badge as a breathing color dot while active requests exist', async () => {
+  const ctx = await loadTopbarWithActiveRequests([
+    { success: true, count: 2, data: [] }
+  ]);
+
+  const link = ctx.doc.querySelector('link[rel~="icon"]');
+  assert.ok(link);
+  const firstHref = link.href;
+  assert.match(firstHref, /^data:image\/png;base64,/);
+
+  const titleTimer = ctx.intervals.find(item => item.ms !== 2000 && !item.cleared);
+  assert.ok(titleTimer);
+  titleTimer.fn();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.match(link.href, /^data:image\/png;base64,/);
+  assert.notEqual(link.href, firstHref);
+});
+
+test('initTopbar restores browser title when active requests finish', async () => {
+  const ctx = await loadTopbarWithActiveRequests([
+    { success: true, count: 1, data: [] },
+    { success: true, count: 0, data: [] }
+  ]);
+
+  const pollTimer = ctx.intervals.find(item => item.ms === 2000 && !item.cleared);
+  assert.ok(pollTimer);
+
+  pollTimer.fn();
+  await new Promise(resolve => setImmediate(resolve));
+
+  assert.equal(ctx.doc.title, '请求日志 - Claude Code & Codex Proxy');
+  const titleTimer = ctx.intervals.find(item => item.ms !== 2000);
+  assert.equal(titleTimer.cleared, true);
+});

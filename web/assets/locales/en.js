@@ -43,6 +43,7 @@ window.I18N_LOCALES['en'] = {
   'common.cost': 'Cost',
   'common.total': 'Total',
   'common.requests': 'Requests',
+  'nav.activeRequestsTitle': 'Active[{count}]-',
   'common.tokens': 'Tokens',
   'common.input': 'Input',
   'common.output': 'Output',
