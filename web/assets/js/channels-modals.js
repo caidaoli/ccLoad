@@ -409,6 +409,7 @@ async function showAddModal() {
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
+  scheduleChannelEditorTableSizingSync();
 }
 
 async function editChannel(id) {
@@ -495,6 +496,7 @@ async function editChannel(id) {
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
+  scheduleChannelEditorTableSizingSync();
 }
 
 async function fetchEditableChannelKeys(id) {
@@ -1408,6 +1410,7 @@ async function copyChannel(id, name) {
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
+  scheduleChannelEditorTableSizingSync();
 }
 
 function generateCopyName(originalName) {
@@ -1742,6 +1745,7 @@ function renderRedirectTable() {
       // 降级：模板不存在时使用简单HTML
       tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">${window.t('channels.noModelConfig')}</td></tr>`;
     }
+    syncChannelEditorTableSizing();
     return;
   }
 
@@ -1750,6 +1754,7 @@ function renderRedirectTable() {
 
   if (visibleIndices.length === 0) {
     tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--neutral-500);">${window.t('channels.noMatchingModels')}</td></tr>`;
+    syncChannelEditorTableSizing();
     return;
   }
 
@@ -1762,6 +1767,7 @@ function renderRedirectTable() {
 
   tbody.innerHTML = '';
   tbody.appendChild(fragment);
+  syncChannelEditorTableSizing();
 
   // 更新全选复选框和批量删除按钮状态
   updateSelectAllModelsCheckbox();
