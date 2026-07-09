@@ -223,6 +223,7 @@
       --channel-editor-section-header-height: 36px;
       --channel-editor-table-row-height: 36px;
       --channel-editor-table-header-height: 38px;
+      --channel-editor-model-max-visible-rows: 10;
       display: flex;
       flex-direction: column;
       gap: 4px;
@@ -278,6 +279,16 @@
       flex: 0 0 auto;
     }
 
+    #channelModal .channel-editor-group--keys {
+      flex: 1 1 auto;
+    }
+
+    #channelModal .channel-editor-group--keys .inline-table-container {
+      flex: 1 1 auto;
+      min-height: var(--channel-editor-table-visible-height);
+      max-height: none;
+    }
+
     #channelModal .channel-editor-group--urls > div {
       display: flex;
       flex-direction: column;
@@ -287,14 +298,14 @@
     #channelModal .channel-editor-group--models {
       display: flex;
       flex-direction: column;
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
     }
 
     #channelModal .channel-editor-group--models .inline-table-container {
-      flex: 1 1 auto;
+      flex: 0 1 auto;
       min-height: var(--channel-editor-table-visible-height);
-      max-height: none;
+      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
       overflow-y: auto;
     }
 
