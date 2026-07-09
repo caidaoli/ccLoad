@@ -122,17 +122,42 @@ function createElement(tag = 'div') {
       contains: (name) => classNames.has(name)
     },
     setAttribute: (name, value) => {
-      attributes.set(name, String(value));
-      if (name === 'title') el.title = String(value);
+      const normalized = String(value);
+      attributes.set(name, normalized);
+      el[name] = normalized;
+      if (name === 'title') el.title = normalized;
     },
     getAttribute: (name) => attributes.get(name) || null,
-    removeAttribute: (name) => attributes.delete(name),
+    removeAttribute: (name) => {
+      attributes.delete(name);
+      delete el[name];
+    },
     appendChild: (child) => {
+      if (child && child.parentNode && child.parentNode !== el && typeof child.parentNode.removeChild === 'function') {
+        child.parentNode.removeChild(child);
+      }
+      const existingIndex = el.children.indexOf(child);
+      if (existingIndex >= 0) el.children.splice(existingIndex, 1);
+      if (child && typeof child === 'object') child.parentNode = el;
       el.children.push(child);
       return child;
     },
     replaceChildren: (...children) => {
-      el.children = children;
+      el.children = [];
+      children.forEach((child) => el.appendChild(child));
+    },
+    removeChild: (child) => {
+      const index = el.children.indexOf(child);
+      if (index >= 0) {
+        el.children.splice(index, 1);
+        if (child && typeof child === 'object') child.parentNode = null;
+      }
+      return child;
+    },
+    remove: () => {
+      if (el.parentNode && typeof el.parentNode.removeChild === 'function') {
+        el.parentNode.removeChild(el);
+      }
     },
     addEventListener: () => {},
     removeEventListener: () => {},
@@ -164,7 +189,16 @@ function createElement(tag = 'div') {
 function installTopbarTestGlobals(activePayloads, options = {}) {
   const intervals = [];
   let intervalID = 0;
-  let iconLink = null;
+  const iconLinks = [];
+  const isIconSelector = (selector) => selector === 'link[rel~="icon"]';
+  const syncIconLinks = (head) => {
+    iconLinks.length = 0;
+    head.children.forEach((child) => {
+      if (child && typeof child.rel === 'string' && child.rel.split(/\s+/).includes('icon')) {
+        iconLinks.push(child);
+      }
+    });
+  };
   const doc = {
     title: '请求日志 - Claude Code & Codex Proxy',
     documentElement: {
@@ -177,16 +211,38 @@ function installTopbarTestGlobals(activePayloads, options = {}) {
     body: createElement('body'),
     head: createElement('head'),
     addEventListener: () => {},
-    querySelector: (selector) => selector === 'link[rel~="icon"]' ? iconLink : null,
-    querySelectorAll: () => [],
+    querySelector: (selector) => isIconSelector(selector) ? (iconLinks[0] || null) : null,
+    querySelectorAll: (selector) => isIconSelector(selector) ? iconLinks.slice() : [],
     getElementById: () => null,
     execCommand: () => false
   };
+  const originalAppendChild = doc.head.appendChild;
   doc.head.appendChild = (child) => {
-    if (child && child.rel === 'icon') iconLink = child;
-    doc.head.children.push(child);
-    return child;
+    const result = originalAppendChild(child);
+    syncIconLinks(doc.head);
+    return result;
   };
+  const originalRemoveChild = doc.head.removeChild;
+  doc.head.removeChild = (child) => {
+    const result = originalRemoveChild(child);
+    syncIconLinks(doc.head);
+    return result;
+  };
+
+  const svgIcon = createElement('link');
+  svgIcon.rel = 'icon';
+  svgIcon.href = '/web/favicon.svg';
+  svgIcon.type = 'image/svg+xml';
+  svgIcon.setAttribute('href', svgIcon.href);
+  svgIcon.setAttribute('type', svgIcon.type);
+  const icoIcon = createElement('link');
+  icoIcon.rel = 'icon';
+  icoIcon.href = '/web/favicon.ico';
+  icoIcon.type = 'image/x-icon';
+  icoIcon.setAttribute('href', icoIcon.href);
+  icoIcon.setAttribute('type', icoIcon.type);
+  doc.head.appendChild(svgIcon);
+  doc.head.appendChild(icoIcon);
 
   const globals = {
     console,
@@ -290,10 +346,15 @@ test('initTopbar redraws favicon badge as a breathing color dot while active req
     { success: true, count: 2, data: [] }
   ]);
 
-  const link = ctx.doc.querySelector('link[rel~="icon"]');
+  const links = ctx.doc.querySelectorAll('link[rel~="icon"]');
+  assert.equal(links.length, 3);
+  assert.equal(links[0].href, '/web/favicon.svg');
+  assert.equal(links[1].href, '/web/favicon.ico');
+  const link = links[2];
   assert.ok(link);
   const firstHref = link.href;
   assert.match(firstHref, /^data:image\/png;base64,/);
+  assert.equal(link.type, 'image/png');
 
   const titleTimer = ctx.intervals.find(item => item.ms !== 2000 && !item.cleared);
   assert.ok(titleTimer);
@@ -319,4 +380,8 @@ test('initTopbar restores browser title when active requests finish', async () =
   assert.equal(ctx.doc.title, '请求日志 - Claude Code & Codex Proxy');
   const titleTimer = ctx.intervals.find(item => item.ms !== 2000);
   assert.equal(titleTimer.cleared, true);
+  const links = ctx.doc.querySelectorAll('link[rel~="icon"]');
+  assert.equal(links.length, 3);
+  assert.equal(links[2].href, '/web/favicon.ico');
+  assert.equal(links[2].type, 'image/x-icon');
 });
