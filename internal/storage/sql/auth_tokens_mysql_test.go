@@ -96,7 +96,7 @@ func (r *foundRowsRows) Columns() []string {
 	return []string{
 		"id", "token", "description", "created_at", "expires_at", "last_used_at", "is_active",
 		"success_count", "failure_count", "stream_avg_ttfb", "non_stream_avg_rt", "stream_count", "non_stream_count",
-		"prompt_tokens_total", "completion_tokens_total", "cache_read_tokens_total", "cache_creation_tokens_total", "total_cost_usd",
+		"prompt_tokens_total", "completion_tokens_total", "cache_read_tokens_total", "cache_creation_tokens_total", "total_cost_usd", "effective_cost_usd",
 		"cost_used_microusd", "cost_limit_microusd", "allowed_models", "allowed_channel_ids", "max_concurrency",
 	}
 }
@@ -134,6 +134,7 @@ func authTokenDriverValues(token *model.AuthToken) []driver.Value {
 		token.CacheReadTokensTotal,
 		token.CacheCreationTokensTotal,
 		token.TotalCostUSD,
+		token.EffectiveCostUSD,
 		token.CostUsedMicroUSD,
 		token.CostLimitMicroUSD,
 		`["gpt-4o"]`,

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"strconv"
 	"testing"
@@ -303,7 +304,11 @@ func TestHandleListAuthTokens_RangeMonth(t *testing.T) {
 
 func TestHandleListAuthTokens_RangeAll_SkipsStats(t *testing.T) {
 	server := newInMemoryServer(t)
-	createTestToken(t, server, "all-token")
+	token := createTestToken(t, server, "all-token")
+
+	if err := server.store.UpdateTokenStats(context.Background(), token.Token, true, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25); err != nil {
+		t.Fatalf("UpdateTokenStats failed: %v", err)
+	}
 
 	// range=all 应跳过统计聚合
 	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=all", nil)
@@ -324,6 +329,16 @@ func TestHandleListAuthTokens_RangeAll_SkipsStats(t *testing.T) {
 	}
 	if resp.Data.IsToday {
 		t.Error("Expected IsToday=false for range=all")
+	}
+	if len(resp.Data.Tokens) != 1 {
+		t.Fatalf("Expected 1 token, got %d", len(resp.Data.Tokens))
+	}
+	got := resp.Data.Tokens[0]
+	if math.Abs(got.TotalCostUSD-1.0) > 0.000001 {
+		t.Fatalf("TotalCostUSD=%f, want 1.0", got.TotalCostUSD)
+	}
+	if math.Abs(got.EffectiveCostUSD-0.25) > 0.000001 {
+		t.Fatalf("EffectiveCostUSD=%f, want 0.25", got.EffectiveCostUSD)
 	}
 }
 

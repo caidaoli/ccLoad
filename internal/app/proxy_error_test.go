@@ -108,6 +108,7 @@ func (s *failingTokenStatsStore) UpdateTokenStats(
 	int64,
 	int64,
 	float64,
+	float64,
 ) error {
 	return s.err
 }

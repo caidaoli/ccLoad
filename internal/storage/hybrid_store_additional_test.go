@@ -235,7 +235,7 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 	if err := h.UpdateTokenLastUsed(ctx, tokenHash, time.Now()); err != nil {
 		t.Fatalf("UpdateTokenLastUsed failed: %v", err)
 	}
-	if err := h.UpdateTokenStats(ctx, tokenHash, true, 0.2, false, 0, 10, 20, 0, 0, 0.01); err != nil {
+	if err := h.UpdateTokenStats(ctx, tokenHash, true, 0.2, false, 0, 10, 20, 0, 0, 0.01, 0.01); err != nil {
 		t.Fatalf("UpdateTokenStats failed: %v", err)
 	}
 	// 仅覆盖转发逻辑：stats 由 SQLite 查询，RPM 计算也在 SQLite 层执行
