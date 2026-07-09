@@ -203,6 +203,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		}
 	}
 
+	// effective_cost_usd 的历史回填依赖 logs.cost_multiplier，必须等 logs 增量迁移完成后再执行。
+	if err := ensureAuthTokensEffectiveCost(ctx, db, dialect); err != nil {
+		return fmt.Errorf("migrate auth_tokens effective_cost: %w", err)
+	}
+
 	// 初始化默认配置
 	if err := initDefaultSettings(ctx, db, dialect); err != nil {
 		return err

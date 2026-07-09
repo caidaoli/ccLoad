@@ -242,6 +242,117 @@ func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *te
 	}
 }
 
+func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create schema_migrations: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE auth_tokens (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			token TEXT NOT NULL UNIQUE,
+			description TEXT NOT NULL,
+			created_at INTEGER NOT NULL,
+			expires_at INTEGER NOT NULL DEFAULT 0,
+			last_used_at INTEGER NOT NULL DEFAULT 0,
+			is_active INTEGER NOT NULL DEFAULT 1,
+			success_count INTEGER NOT NULL DEFAULT 0,
+			failure_count INTEGER NOT NULL DEFAULT 0,
+			stream_avg_ttfb REAL NOT NULL DEFAULT 0.0,
+			non_stream_avg_rt REAL NOT NULL DEFAULT 0.0,
+			stream_count INTEGER NOT NULL DEFAULT 0,
+			non_stream_count INTEGER NOT NULL DEFAULT 0,
+			prompt_tokens_total INTEGER NOT NULL DEFAULT 0,
+			completion_tokens_total INTEGER NOT NULL DEFAULT 0,
+			cache_read_tokens_total INTEGER NOT NULL DEFAULT 0,
+			cache_creation_tokens_total INTEGER NOT NULL DEFAULT 0,
+			total_cost_usd REAL NOT NULL DEFAULT 3.0,
+			cost_used_microusd INTEGER NOT NULL DEFAULT 0,
+			cost_limit_microusd INTEGER NOT NULL DEFAULT 0,
+			allowed_models TEXT NOT NULL DEFAULT '',
+			allowed_channel_ids TEXT NOT NULL DEFAULT '',
+			max_concurrency INTEGER NOT NULL DEFAULT 0
+		)
+	`); err != nil {
+		t.Fatalf("create legacy auth_tokens: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE logs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			time INTEGER NOT NULL,
+			minute_bucket INTEGER NOT NULL DEFAULT 0,
+			model TEXT NOT NULL DEFAULT '',
+			actual_model TEXT NOT NULL DEFAULT '',
+			log_source TEXT NOT NULL DEFAULT 'proxy',
+			channel_id INTEGER NOT NULL DEFAULT 0,
+			status_code INTEGER NOT NULL,
+			message TEXT NOT NULL,
+			duration REAL NOT NULL DEFAULT 0.0,
+			is_streaming INTEGER NOT NULL DEFAULT 0,
+			first_byte_time REAL NOT NULL DEFAULT 0.0,
+			api_key_used TEXT NOT NULL DEFAULT '',
+			api_key_hash TEXT NOT NULL DEFAULT '',
+			auth_token_id INTEGER NOT NULL DEFAULT 0,
+			client_ip TEXT NOT NULL DEFAULT '',
+			base_url TEXT NOT NULL DEFAULT '',
+			service_tier TEXT NOT NULL DEFAULT '',
+			thinking_effort TEXT NOT NULL DEFAULT '',
+			input_tokens INTEGER NOT NULL DEFAULT 0,
+			output_tokens INTEGER NOT NULL DEFAULT 0,
+			reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_read_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_creation_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_5m_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_1h_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cost REAL NOT NULL DEFAULT 0.0
+		)
+	`); err != nil {
+		t.Fatalf("create legacy logs: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO auth_tokens (id, token, description, created_at)
+		VALUES (1, 'legacy-token', 'legacy token', 1)
+	`); err != nil {
+		t.Fatalf("insert auth token: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO logs (time, status_code, message, auth_token_id, cost)
+		VALUES (60000, 200, 'ok', 1, 1.5),
+		       (120000, 500, 'fail', 1, 9.0)
+	`); err != nil {
+		t.Fatalf("insert legacy logs: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy auth token effective cost: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "logs")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns logs: %v", err)
+	}
+	if !cols["cost_multiplier"] {
+		t.Fatal("cost_multiplier column not found in logs")
+	}
+
+	var effectiveCost float64
+	if err := db.QueryRowContext(ctx, `
+		SELECT effective_cost_usd FROM auth_tokens WHERE id = 1
+	`).Scan(&effectiveCost); err != nil {
+		t.Fatalf("query effective_cost_usd: %v", err)
+	}
+	if effectiveCost != 1.5 {
+		t.Fatalf("effective_cost_usd=%f, want 1.5", effectiveCost)
+	}
+}
+
 func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

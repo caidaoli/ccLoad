@@ -253,17 +253,20 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 	updateCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
+	// 计算倍率后成本，用于内存限额与 auth_tokens.effective_cost_usd。
+	multiplier := upd.costMultiplier
+	if multiplier < 0 {
+		multiplier = 1
+	}
+	// multiplier == 0 时成本为 0（免费渠道）
+	effectiveCostUSD := upd.costUSD * multiplier
+
 	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
 	if upd.isSuccess && upd.costUSD > 0 && s.authService != nil {
-		multiplier := upd.costMultiplier
-		if multiplier < 0 {
-			multiplier = 1
-		}
-		// multiplier == 0 时成本为 0（免费渠道）
-		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(upd.costUSD*multiplier))
+		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD))
 	}
 
-	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD); err != nil {
+	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD); err != nil {
 		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
 		if strings.Contains(err.Error(), "token not found") {
 			return

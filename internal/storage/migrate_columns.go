@@ -535,3 +535,53 @@ func ensureAPIKeysNote(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		"VARCHAR(512) NOT NULL DEFAULT ''",
 		"TEXT NOT NULL DEFAULT ''")
 }
+
+// ensureAuthTokensEffectiveCost 确保auth_tokens表有effective_cost_usd字段（2026-07新增）
+func ensureAuthTokensEffectiveCost(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "auth_tokens", "effective_cost_usd",
+		"DOUBLE NOT NULL DEFAULT 0.0",
+		"REAL NOT NULL DEFAULT 0.0"); err != nil {
+		return err
+	}
+
+	// 从 logs 回填历史数据（一次性）
+	const marker = "auth_tokens_effective_cost_backfill"
+	if hasMigration(ctx, db, marker) {
+		return nil
+	}
+
+	// 用 logs 表的 SUM(cost * cost_multiplier) 回填，按 token 聚合
+	// 防御性检查：logs 表可能尚未创建（迁移顺序依赖）
+	hasLogs := false
+	if dialect == DialectMySQL {
+		var count int
+		if err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='logs'",
+		).Scan(&count); err == nil && count > 0 {
+			hasLogs = true
+		}
+	} else {
+		var name string
+		if err := db.QueryRowContext(ctx,
+			"SELECT name FROM sqlite_master WHERE type='table' AND name='logs'",
+		).Scan(&name); err == nil {
+			hasLogs = true
+		}
+	}
+
+	if hasLogs {
+		_, err := db.ExecContext(ctx, `
+			UPDATE auth_tokens SET effective_cost_usd = COALESCE((
+				SELECT SUM(COALESCE(l.cost, 0.0) * COALESCE(l.cost_multiplier, 1))
+				FROM logs l
+				WHERE l.auth_token_id = auth_tokens.id
+				  AND l.status_code >= 200 AND l.status_code < 300
+			), 0.0)
+		`)
+		if err != nil {
+			return fmt.Errorf("backfill effective_cost_usd: %w", err)
+		}
+	}
+
+	return recordMigration(ctx, db, marker, dialect)
+}

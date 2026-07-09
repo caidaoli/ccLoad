@@ -209,14 +209,10 @@
 
     async function loadTokens() {
       try {
-        // 根据currentTimeRange决定是否添加range参数
-        let url = `${API_BASE}/auth-tokens`;
-        if (currentTimeRange !== 'all') {
-          const query = typeof window.buildDateRangeQuery === 'function'
-            ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
-            : `range=${encodeURIComponent(currentTimeRange)}`;
-          url += `?${query}`;
-        }
+        const query = typeof window.buildDateRangeQuery === 'function'
+          ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
+          : `range=${encodeURIComponent(currentTimeRange)}`;
+        const url = `${API_BASE}/auth-tokens?${query}`;
 
         const data = await fetchDataWithAuth(url);
         allTokens = (data && data.tokens) || [];
