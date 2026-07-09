@@ -67,11 +67,21 @@ function setInlineKeyTableDataFromAPI(apiKeys) {
   }
 }
 
-function calculateVisibleRange(totalItems) {
-  const { ROW_HEIGHT, BUFFER_SIZE, CONTAINER_HEIGHT } = VIRTUAL_SCROLL_CONFIG;
-  const { scrollTop } = virtualScrollState;
+function getKeyTableContainer() {
+  return document.querySelector('#inlineKeyTableBody')?.closest('.inline-table-container') || null;
+}
 
-  const visibleRowCount = Math.ceil(CONTAINER_HEIGHT / ROW_HEIGHT);
+function getKeyTableViewportHeight(container = getKeyTableContainer()) {
+  if (!container) return VIRTUAL_SCROLL_CONFIG.CONTAINER_HEIGHT;
+  return container.clientHeight > 0 ? container.clientHeight : VIRTUAL_SCROLL_CONFIG.CONTAINER_HEIGHT;
+}
+
+function calculateVisibleRange(totalItems, container = getKeyTableContainer()) {
+  const { ROW_HEIGHT, BUFFER_SIZE } = VIRTUAL_SCROLL_CONFIG;
+  const { scrollTop } = virtualScrollState;
+  const viewportHeight = getKeyTableViewportHeight(container);
+
+  const visibleRowCount = Math.ceil(viewportHeight / ROW_HEIGHT);
   const startIndex = Math.floor(scrollTop / ROW_HEIGHT);
 
   const visibleStart = Math.max(0, startIndex - BUFFER_SIZE);
@@ -207,6 +217,21 @@ function createKeyRow(index) {
   return row;
 }
 
+function refreshVirtualKeyRows(container = getKeyTableContainer()) {
+  const tbody = document.getElementById('inlineKeyTableBody');
+  if (!tbody || !container || !virtualScrollState.enabled || !virtualScrollState.filteredIndices.length) return;
+
+  virtualScrollState.scrollTop = container.scrollTop;
+  const { visibleStart, visibleEnd } = calculateVisibleRange(virtualScrollState.filteredIndices.length, container);
+
+  if (visibleStart !== virtualScrollState.visibleStart ||
+    visibleEnd !== virtualScrollState.visibleEnd) {
+    virtualScrollState.visibleStart = visibleStart;
+    virtualScrollState.visibleEnd = visibleEnd;
+    renderVirtualRows(tbody, visibleStart, visibleEnd, virtualScrollState.filteredIndices);
+  }
+}
+
 function handleVirtualScroll(event) {
   const container = event.target;
   virtualScrollState.scrollTop = container.scrollTop;
@@ -216,35 +241,40 @@ function handleVirtualScroll(event) {
   }
 
   virtualScrollState.rafId = requestAnimationFrame(() => {
-    const { visibleStart, visibleEnd } = calculateVisibleRange(virtualScrollState.filteredIndices.length);
-
-    if (visibleStart !== virtualScrollState.visibleStart ||
-      visibleEnd !== virtualScrollState.visibleEnd) {
-      virtualScrollState.visibleStart = visibleStart;
-      virtualScrollState.visibleEnd = visibleEnd;
-
-      const tbody = document.getElementById('inlineKeyTableBody');
-      renderVirtualRows(tbody, visibleStart, visibleEnd, virtualScrollState.filteredIndices);
-    }
+    refreshVirtualKeyRows(container);
   });
 }
 
 function initVirtualScroll() {
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
+  const tableContainer = getKeyTableContainer();
   if (tableContainer) {
     tableContainer.removeEventListener('scroll', handleVirtualScroll);
     tableContainer.addEventListener('scroll', handleVirtualScroll, { passive: true });
+
+    if (virtualScrollState.resizeObserver) {
+      virtualScrollState.resizeObserver.disconnect();
+      virtualScrollState.resizeObserver = null;
+    }
+    if (typeof ResizeObserver === 'function') {
+      virtualScrollState.resizeObserver = new ResizeObserver(() => refreshVirtualKeyRows(tableContainer));
+      virtualScrollState.resizeObserver.observe(tableContainer);
+    }
+    requestAnimationFrame(() => refreshVirtualKeyRows(tableContainer));
   }
 }
 
 function cleanupVirtualScroll() {
-  const tableContainer = document.querySelector('#inlineKeyTableBody').closest('.inline-table-container');
+  const tableContainer = getKeyTableContainer();
   if (tableContainer) {
     tableContainer.removeEventListener('scroll', handleVirtualScroll);
   }
   if (virtualScrollState.rafId) {
     cancelAnimationFrame(virtualScrollState.rafId);
     virtualScrollState.rafId = null;
+  }
+  if (virtualScrollState.resizeObserver) {
+    virtualScrollState.resizeObserver.disconnect();
+    virtualScrollState.resizeObserver = null;
   }
 }
 

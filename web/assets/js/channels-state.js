@@ -52,7 +52,7 @@ const VIRTUAL_SCROLL_CONFIG = {
   ROW_HEIGHT: 40,           // 每行高度（像素）
   BUFFER_SIZE: 5,           // 上下缓冲区行数（减少滚动时的闪烁）
   ENABLE_THRESHOLD: 50,     // 启用虚拟滚动的阈值（Key数量）
-  CONTAINER_HEIGHT: 250     // 容器固定高度（像素）
+  CONTAINER_HEIGHT: 250     // 容器高度兜底值（像素）
 };
 
 let virtualScrollState = {
@@ -61,6 +61,7 @@ let virtualScrollState = {
   visibleStart: 0,
   visibleEnd: 0,
   rafId: null,
+  resizeObserver: null,
   filteredIndices: [] // 存储筛选后的索引列表（支持状态筛选）
 };
 
