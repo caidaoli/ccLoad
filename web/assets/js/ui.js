@@ -367,7 +367,7 @@
   let _activeWrap = null;        // .brand-icon-wrap 元素
   let _activeBadge = null;       // .brand-badge 元素
   let _faviconBase = null;       // 预加载的 favicon 底图 Image
-  let _dynamicFaviconLink = null; // 运行时专用 favicon 节点（始终保持为最后一个 icon）
+  let _dynamicFaviconLinks = []; // 运行时专用 favicon 节点（每次重建，强制浏览器重选）
   let _origFaviconHref = null;   // 原始 favicon href（用于归零恢复）
   let _origFaviconType = null;   // 原始 favicon type（用于归零恢复）
   let _lastBadgeCount = -1;      // 去重：仅数量变化时重绘 favicon
@@ -400,21 +400,44 @@
 
   function rememberOriginalFavicon() {
     if (_origFaviconHref !== null) return;
-    const links = listFaviconLinks().filter((link) => link !== _dynamicFaviconLink);
+    const links = listFaviconLinks().filter((link) => link.getAttribute('data-dynamic-favicon') !== '1');
     const link = links.length > 0 ? links[links.length - 1] : null;
     _origFaviconHref = (link && (link.getAttribute('href') || link.href)) || '/web/favicon.svg';
     _origFaviconType = link ? (link.getAttribute('type') || link.type || '') : '';
   }
 
-  function getDynamicFaviconLink() {
-    rememberOriginalFavicon();
-    if (!_dynamicFaviconLink) {
-      _dynamicFaviconLink = document.createElement('link');
-      _dynamicFaviconLink.rel = 'icon';
-      _dynamicFaviconLink.setAttribute('data-dynamic-favicon', '1');
+  function removeDynamicFaviconLinks(links) {
+    for (const link of links) {
+      if (!link) continue;
+      if (typeof link.remove === 'function') {
+        link.remove();
+        continue;
+      }
+      if (link.parentNode && typeof link.parentNode.removeChild === 'function') {
+        link.parentNode.removeChild(link);
+      }
     }
-    document.head.appendChild(_dynamicFaviconLink);
-    return _dynamicFaviconLink;
+  }
+
+  function createDynamicFaviconLink(rel, href, type) {
+    const link = document.createElement('link');
+    link.rel = rel;
+    link.setAttribute('data-dynamic-favicon', '1');
+    if (type) link.setAttribute('type', type);
+    else link.removeAttribute('type');
+    link.href = href;
+    document.head.appendChild(link);
+    return link;
+  }
+
+  function replaceDynamicFavicon(href, type) {
+    rememberOriginalFavicon();
+    const previousLinks = _dynamicFaviconLinks;
+    _dynamicFaviconLinks = [
+      createDynamicFaviconLink('shortcut icon', href, type),
+      createDynamicFaviconLink('icon', href, type)
+    ];
+    removeDynamicFaviconLinks(previousLinks);
   }
 
   // 预加载 favicon 底图（首次异步，之后同步回调）
@@ -459,17 +482,12 @@
     ctx.fillText(text, cx, cy + 1);
 
     try {
-      const link = getDynamicFaviconLink();
-      link.setAttribute('type', 'image/png');
-      link.href = canvas.toDataURL('image/png');
+      replaceDynamicFavicon(canvas.toDataURL('image/png'), 'image/png');
     } catch (_) { /* 编码失败：保持原 favicon */ }
   }
 
   function restoreFavicon() {
-    const link = getDynamicFaviconLink();
-    if (_origFaviconType) link.setAttribute('type', _origFaviconType);
-    else link.removeAttribute('type');
-    link.href = _origFaviconHref || '/web/favicon.svg';
+    replaceDynamicFavicon(_origFaviconHref || '/web/favicon.svg', _origFaviconType);
   }
 
   function redrawActiveFavicon() {

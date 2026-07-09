@@ -347,22 +347,28 @@ test('initTopbar redraws favicon badge as a breathing color dot while active req
   ]);
 
   const links = ctx.doc.querySelectorAll('link[rel~="icon"]');
-  assert.equal(links.length, 3);
+  assert.equal(links.length, 4);
   assert.equal(links[0].href, '/web/favicon.svg');
   assert.equal(links[1].href, '/web/favicon.ico');
-  const link = links[2];
-  assert.ok(link);
-  const firstHref = link.href;
+  const dynamicLinks = links.filter((link) => link.getAttribute('data-dynamic-favicon') === '1');
+  assert.equal(dynamicLinks.length, 2);
+  assert.equal(dynamicLinks[0].rel, 'shortcut icon');
+  assert.equal(dynamicLinks[1].rel, 'icon');
+  const firstHref = dynamicLinks[1].href;
   assert.match(firstHref, /^data:image\/png;base64,/);
-  assert.equal(link.type, 'image/png');
+  assert.equal(dynamicLinks[0].type, 'image/png');
+  assert.equal(dynamicLinks[1].type, 'image/png');
 
   const titleTimer = ctx.intervals.find(item => item.ms !== 2000 && !item.cleared);
   assert.ok(titleTimer);
   titleTimer.fn();
   await new Promise(resolve => setImmediate(resolve));
 
-  assert.match(link.href, /^data:image\/png;base64,/);
-  assert.notEqual(link.href, firstHref);
+  const nextDynamicLinks = ctx.doc.querySelectorAll('link[rel~="icon"]')
+    .filter((link) => link.getAttribute('data-dynamic-favicon') === '1');
+  assert.equal(nextDynamicLinks.length, 2);
+  assert.match(nextDynamicLinks[1].href, /^data:image\/png;base64,/);
+  assert.notEqual(nextDynamicLinks[1].href, firstHref);
 });
 
 test('initTopbar restores browser title when active requests finish', async () => {
@@ -381,7 +387,11 @@ test('initTopbar restores browser title when active requests finish', async () =
   const titleTimer = ctx.intervals.find(item => item.ms !== 2000);
   assert.equal(titleTimer.cleared, true);
   const links = ctx.doc.querySelectorAll('link[rel~="icon"]');
-  assert.equal(links.length, 3);
-  assert.equal(links[2].href, '/web/favicon.ico');
-  assert.equal(links[2].type, 'image/x-icon');
+  assert.equal(links.length, 4);
+  const dynamicLinks = links.filter((link) => link.getAttribute('data-dynamic-favicon') === '1');
+  assert.equal(dynamicLinks.length, 2);
+  assert.equal(dynamicLinks[0].href, '/web/favicon.ico');
+  assert.equal(dynamicLinks[1].href, '/web/favicon.ico');
+  assert.equal(dynamicLinks[0].type, 'image/x-icon');
+  assert.equal(dynamicLinks[1].type, 'image/x-icon');
 });
