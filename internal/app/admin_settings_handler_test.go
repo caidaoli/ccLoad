@@ -11,6 +11,70 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+
+	oldRestartFunc := RestartFunc
+	t.Cleanup(func() { RestartFunc = oldRestartFunc })
+	restartCh := make(chan struct{}, 3)
+	RestartFunc = func() { restartCh <- struct{}{} }
+
+	const key = "model_catalog_sync_interval_hours"
+	tests := []struct {
+		name     string
+		value    string
+		wantCode int
+	}{
+		{name: "disabled", value: "0", wantCode: http.StatusOK},
+		{name: "fractional interval", value: "0.5", wantCode: http.StatusOK},
+		{name: "default interval", value: "6", wantCode: http.StatusOK},
+		{name: "negative interval", value: "-0.1", wantCode: http.StatusBadRequest},
+		{name: "not a number", value: "NaN", wantCode: http.StatusBadRequest},
+		{name: "positive infinity", value: "+Inf", wantCode: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting before update failed: %v", err)
+			}
+
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+key, map[string]string{"value": tt.value}))
+			c.Params = gin.Params{{Key: "key", Value: key}}
+			server.AdminUpdateSetting(c)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status=%d, want %d, body=%s", w.Code, tt.wantCode, w.Body.String())
+			}
+
+			after, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting after update failed: %v", err)
+			}
+			if tt.wantCode == http.StatusOK {
+				if after.Value != tt.value {
+					t.Fatalf("persisted value=%q, want %q", after.Value, tt.value)
+				}
+				select {
+				case <-restartCh:
+				case <-time.After(time.Second):
+					t.Fatal("expected restart triggered")
+				}
+				return
+			}
+			if after.Value != before.Value {
+				t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+			}
+		})
+	}
+}
+
 func TestAdminSettingsHandlers(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
