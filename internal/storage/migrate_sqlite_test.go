@@ -66,6 +66,27 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLite_SeedsModelCatalogSyncIntervalSetting(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate failed: %v", err)
+	}
+
+	var value, valueType, defaultValue string
+	if err := db.QueryRowContext(ctx, `
+		SELECT value, value_type, default_value
+		FROM system_settings
+		WHERE "key" = ?
+	`, "model_catalog_sync_interval_hours").Scan(&value, &valueType, &defaultValue); err != nil {
+		t.Fatalf("get model_catalog_sync_interval_hours: %v", err)
+	}
+	if value != "6" || valueType != "float" || defaultValue != "6" {
+		t.Fatalf("setting = value:%q type:%q default:%q, want value:6 type:float default:6", value, valueType, defaultValue)
+	}
+}
+
 func TestMigrate_SQLite_Idempotent(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
