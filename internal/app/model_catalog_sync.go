@@ -99,6 +99,8 @@ func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	ctx, cancel := context.WithTimeout(ctx, modelCatalogRequestTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.endpoint, nil)
 	if err != nil {
 		return ModelCatalogSyncResult{}, fmt.Errorf("create model catalog request: %w", err)
