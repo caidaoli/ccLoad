@@ -1396,3 +1396,42 @@ func TestCalculateFastModeCost_ZeroTokens(t *testing.T) {
 		t.Errorf("零token应返回0, 实际 %.6f", cost)
 	}
 }
+
+func TestInstalledModelCatalogCalculatesRemoteTierPrices(t *testing.T) {
+	RestoreEmbeddedModelCatalog()
+	t.Cleanup(RestoreEmbeddedModelCatalog)
+
+	snapshot := &ModelCatalogSnapshot{
+		Version: ModelCatalogSchemaVersion,
+		Models: []ModelCatalogEntry{
+			{
+				ID: "gpt-next", Provider: "openai",
+				Pricing: ModelPricing{InputPrice: 2, OutputPrice: 8, CacheReadPrice: 0.2, HasCacheReadPrice: true},
+			},
+			{
+				ID: "gpt-5", Provider: "openai",
+				Pricing: ModelPricing{InputPrice: 4, OutputPrice: 8, CacheReadPrice: 0.4, HasCacheReadPrice: true},
+			},
+			{
+				ID: "gpt-tiered", Provider: "openai",
+				Pricing: ModelPricing{TokenPricingTiers: []TokenPricingTier{
+					{MaxInputTokens: 272000, InputPrice: 1, OutputPrice: 2, CacheReadPrice: 0.1, HasCacheReadPrice: true},
+					{MaxInputTokens: 0, InputPrice: 3, OutputPrice: 6, CacheReadPrice: 0.3, HasCacheReadPrice: true},
+				}},
+			},
+		},
+	}
+	if err := InstallModelCatalog(snapshot, "models.dev"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := CalculateCostDetailed("gpt-next", 1_000_000, 1_000_000, 1_000_000, 0, 0); got != 10.2 {
+		t.Fatalf("new model cost = %v, want 10.2", got)
+	}
+	if got := CalculateCostDetailed("gpt-5", 1_000_000, 1_000_000, 1_000_000, 0, 0); got != 12.4 {
+		t.Fatalf("overridden model cost = %v, want 12.4", got)
+	}
+	if got := CalculateCostDetailed("gpt-tiered", 300_000, 1_000_000, 1_000_000, 0, 0); got != 7.2 {
+		t.Fatalf("high tier cache-read cost = %v, want 7.2", got)
+	}
+}
