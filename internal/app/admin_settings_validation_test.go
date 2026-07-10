@@ -2,6 +2,30 @@ package app
 
 import "testing"
 
+func TestModelCatalogSyncIntervalSettingValidation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		value   string
+		wantErr bool
+	}{
+		{name: "disabled", value: "0"},
+		{name: "fractional interval", value: "0.5"},
+		{name: "default interval", value: "6"},
+		{name: "negative interval", value: "-0.1", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateSettingValue("model_catalog_sync_interval_hours", "float", tt.value)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateSettingValue(%q) err=%v, wantErr=%v", tt.value, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateSettingValue(t *testing.T) {
 	t.Parallel()
 

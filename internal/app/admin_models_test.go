@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"testing"
@@ -9,9 +10,95 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestAdminModels_HandleCommonModelCatalog(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	fetchedAt := time.Date(2026, time.January, 8, 9, 10, 11, 0, time.UTC)
+	models := make([]util.ModelCatalogEntry, 7)
+	for i := range models {
+		models[i] = util.ModelCatalogEntry{
+			ID:               fmt.Sprintf("gpt-catalog-%d", i+1),
+			Provider:         "openai",
+			ReleaseDate:      fmt.Sprintf("2026-01-%02d", i+1),
+			OutputModalities: []string{"text"},
+		}
+	}
+	if err := util.InstallModelCatalog(&util.ModelCatalogSnapshot{
+		Version:   util.ModelCatalogSchemaVersion,
+		Source:    "models.dev",
+		FetchedAt: fetchedAt,
+		Models:    models,
+	}, "models.dev"); err != nil {
+		t.Fatalf("InstallModelCatalog failed: %v", err)
+	}
+
+	t.Run("remote directory", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=openai", nil))
+
+		server.HandleCommonModelCatalog(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		var response APIResponse[struct {
+			Models    []string `json:"models"`
+			Source    string   `json:"source"`
+			FetchedAt string   `json:"fetched_at"`
+		}]
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.Success || response.Data.Source != "models.dev" || len(response.Data.Models) != 6 {
+			t.Fatalf("response = %#v", response)
+		}
+		if response.Data.FetchedAt != fetchedAt.Format(time.RFC3339) {
+			t.Fatalf("fetched_at=%q, want %q", response.Data.FetchedAt, fetchedAt.Format(time.RFC3339))
+		}
+	})
+
+	t.Run("embedded fallback", func(t *testing.T) {
+		util.RestoreEmbeddedModelCatalog()
+
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=openai", nil))
+		server.HandleCommonModelCatalog(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		var response APIResponse[struct {
+			Models    []string `json:"models"`
+			Source    string   `json:"source"`
+			FetchedAt string   `json:"fetched_at"`
+		}]
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatal(err)
+		}
+		if !response.Success || response.Data.Source != "embedded" || len(response.Data.Models) > 6 {
+			t.Fatalf("response = %#v", response)
+		}
+		if response.Data.FetchedAt != "" {
+			t.Fatalf("fetched_at=%q, want empty", response.Data.FetchedAt)
+		}
+	})
+
+	t.Run("invalid channel type", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=unsupported", nil))
+		server.HandleCommonModelCatalog(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+}
 
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string

@@ -109,6 +109,7 @@ func main() {
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)
+	srv.StartModelCatalogSync()
 
 	// 注入重启函数（避免循环依赖）
 	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。

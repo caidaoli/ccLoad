@@ -222,7 +222,7 @@ func validateSettingValue(key, valueType, value string) error {
 			return fmt.Errorf("not a valid number")
 		}
 		switch key {
-		case "channel_check_interval_hours":
+		case "channel_check_interval_hours", "model_catalog_sync_interval_hours":
 			if floatVal < 0 {
 				return fmt.Errorf("%s must be >= 0", key)
 			}
