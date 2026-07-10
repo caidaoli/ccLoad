@@ -82,7 +82,7 @@ func TestAdminModels_HandleCommonModelCatalog(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if !response.Success || response.Data.Source != "embedded" || len(response.Data.Models) > 6 {
+		if !response.Success || response.Data.Source != "embedded" || response.Data.Models == nil || len(response.Data.Models) > 6 {
 			t.Fatalf("response = %#v", response)
 		}
 		if response.Data.FetchedAt != "" {
