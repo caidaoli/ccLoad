@@ -732,6 +732,8 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *mo
 		remoteETag = catalog.ETag
 		remoteFetched = catalog.FetchedAt
 		for _, entry := range catalog.Models {
+			// 远端精确模型 ID 是当前目录的权威值，不能再被同名本地别名重定向。
+			delete(aliases, entry.ID)
 			pricing[entry.ID] = overlayRemotePricing(pricing[entry.ID], entry.Pricing)
 			metadata[entry.ID] = cloneModelCatalogEntry(entry)
 		}

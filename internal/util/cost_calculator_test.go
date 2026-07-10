@@ -1435,3 +1435,30 @@ func TestInstalledModelCatalogCalculatesRemoteTierPrices(t *testing.T) {
 		t.Fatalf("high tier cache-read cost = %v, want 7.2", got)
 	}
 }
+
+func TestInstalledModelCatalogPrioritizesRemoteExactAlias(t *testing.T) {
+	RestoreEmbeddedModelCatalog()
+	t.Cleanup(RestoreEmbeddedModelCatalog)
+
+	snapshot := &ModelCatalogSnapshot{
+		Version: ModelCatalogSchemaVersion,
+		Models: []ModelCatalogEntry{{
+			ID: "gpt-5.1", Provider: "openai",
+			Pricing: ModelPricing{TokenPricingTiers: []TokenPricingTier{
+				{MaxInputTokens: 272_000, InputPrice: 7, OutputPrice: 11, CacheReadPrice: 1.3, HasCacheReadPrice: true},
+				{MaxInputTokens: 0, InputPrice: 17, OutputPrice: 19, CacheReadPrice: 2.3, HasCacheReadPrice: true},
+			}},
+		}},
+	}
+	if err := InstallModelCatalog(snapshot, "models.dev"); err != nil {
+		t.Fatal(err)
+	}
+
+	const want = 26.4
+	for _, model := range []string{"gpt-5.1", "gpt-5.1-2026-07-10"} {
+		got := CalculateCostDetailed(model, 300_000, 1_000_000, 1_000_000, 0, 0)
+		if !floatEquals(got, want, 0.000000001) {
+			t.Errorf("model=%q cost = %v, want %v", model, got, want)
+		}
+	}
+}
