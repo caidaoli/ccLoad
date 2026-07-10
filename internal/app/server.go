@@ -76,12 +76,14 @@ type Server struct {
 	maxConcurrency int           // 最大并发数（默认1000）
 
 	// 优雅关闭机制
-	baseCtx        context.Context    // server生命周期context，Shutdown时取消
-	baseCancel     context.CancelFunc // 取消baseCtx
-	shutdownCh     chan struct{}      // 关闭信号channel
-	shutdownDone   chan struct{}      // Shutdown完成信号（幂等）
-	isShuttingDown atomic.Bool        // shutdown标志，防止向已关闭channel写入
-	wg             sync.WaitGroup     // 等待所有后台goroutine结束
+	baseCtx                 context.Context    // server生命周期context，Shutdown时取消
+	baseCancel              context.CancelFunc // 取消baseCtx
+	shutdownCh              chan struct{}      // 关闭信号channel
+	shutdownDone            chan struct{}      // Shutdown完成信号（幂等）
+	isShuttingDown          atomic.Bool        // shutdown标志，防止向已关闭channel写入
+	modelCatalogSyncMu      sync.Mutex         // 串行化模型目录启动和关闭，保护 WaitGroup
+	modelCatalogSyncStarted atomic.Bool
+	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
 	// [OPT] P3: 渠道类型缓存（TTL 30s）
 	channelTypesCache     map[int64]string
@@ -265,6 +267,11 @@ func NewServer(store storage.Store) *Server {
 // StartModelCatalogSync 加载本地快照，并在启用时同步官方模型目录。
 func (s *Server) StartModelCatalogSync() {
 	if s == nil || s.configService == nil {
+		return
+	}
+	s.modelCatalogSyncMu.Lock()
+	defer s.modelCatalogSyncMu.Unlock()
+	if s.isShuttingDown.Load() || !s.modelCatalogSyncStarted.CompareAndSwap(false, true) {
 		return
 	}
 
@@ -996,7 +1003,9 @@ func (s *Server) HandleChannelKeys(c *gin.Context) {
 // 参数ctx用于控制最大等待时间，超时后强制退出
 // 返回值：nil表示成功，context.DeadlineExceeded表示超时
 func (s *Server) Shutdown(ctx context.Context) error {
+	s.modelCatalogSyncMu.Lock()
 	if s.isShuttingDown.Swap(true) {
+		s.modelCatalogSyncMu.Unlock()
 		select {
 		case <-s.shutdownDone:
 			return nil
@@ -1004,6 +1013,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 			return ctx.Err()
 		}
 	}
+	s.modelCatalogSyncMu.Unlock()
 	defer close(s.shutdownDone)
 
 	log.Print("🛑 正在关闭Server，等待后台任务完成...")

@@ -94,13 +94,65 @@ func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	}
 }
 
+func TestModelCatalogSyncNotModifiedDoesNotReadBodyOrRewriteCache(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+
+	const etag = `"not-modified"`
+	var requests atomic.Int32
+	unreadBody := &unreadableModelCatalogBody{}
+	cachePath := filepath.Join(t.TempDir(), "model-catalog.json")
+	syncer := NewModelCatalogSyncer(
+		&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			switch requests.Add(1) {
+			case 1:
+				return modelCatalogHTTPResponse(req, http.StatusOK, etag, io.NopCloser(strings.NewReader(modelsDevCatalogJSON()))), nil
+			case 2:
+				if got := req.Header.Get("If-None-Match"); got != etag {
+					return modelCatalogHTTPResponse(req, http.StatusBadRequest, "", io.NopCloser(strings.NewReader("missing etag"))), nil
+				}
+				return modelCatalogHTTPResponse(req, http.StatusNotModified, "", unreadBody), nil
+			default:
+				return modelCatalogHTTPResponse(req, http.StatusInternalServerError, "", io.NopCloser(strings.NewReader("unexpected request"))), nil
+			}
+		})},
+		"https://models.dev/api.json",
+		cachePath,
+	)
+
+	if _, err := syncer.Sync(context.Background()); err != nil {
+		t.Fatalf("initial Sync failed: %v", err)
+	}
+	cacheBefore, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache before 304: %v", err)
+	}
+	result, err := syncer.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("304 Sync failed: %v", err)
+	}
+	if result.Status != ModelCatalogSyncNotModified {
+		t.Fatalf("304 status = %q, want %q", result.Status, ModelCatalogSyncNotModified)
+	}
+	if got := unreadBody.reads.Load(); got != 0 {
+		t.Fatalf("304 body reads = %d, want 0", got)
+	}
+	cacheAfter, err := os.ReadFile(cachePath)
+	if err != nil {
+		t.Fatalf("read cache after 304: %v", err)
+	}
+	if string(cacheAfter) != string(cacheBefore) {
+		t.Fatal("304 response rewrote the cache")
+	}
+}
+
 func TestModelCatalogSyncRejectsOversizedResponse(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
 
 	catalogServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("ETag", `"too-large"`)
-		_, _ = io.WriteString(w, modelsDevCatalogJSON()+strings.Repeat(" ", modelCatalogMaxBodyBytes))
+		_, _ = io.WriteString(w, modelsDevCatalogJSON()+strings.Repeat(" ", 16<<20))
 	}))
 	defer catalogServer.Close()
 
@@ -164,6 +216,35 @@ func TestModelCatalogSyncRespectsHTTPClientTimeout(t *testing.T) {
 	_, err := syncer.Sync(context.Background())
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Sync error = %v, want client timeout", err)
+	}
+}
+
+func TestModelCatalogSyncSetsRequestDeadlineEvenWithoutClientTimeout(t *testing.T) {
+	type deadlineObservation struct {
+		hasDeadline bool
+		remaining   time.Duration
+	}
+	observed := make(chan deadlineObservation, 1)
+	syncer := NewModelCatalogSyncer(
+		&http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			deadline, ok := req.Context().Deadline()
+			observed <- deadlineObservation{hasDeadline: ok, remaining: time.Until(deadline)}
+			return modelCatalogHTTPResponse(req, http.StatusNotModified, "", io.NopCloser(strings.NewReader("must not be read"))), nil
+		})},
+		"https://models.dev/api.json",
+		filepath.Join(t.TempDir(), "model-catalog.json"),
+	)
+
+	result, err := syncer.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("Sync failed: %v", err)
+	}
+	if result.Status != ModelCatalogSyncNotModified {
+		t.Fatalf("status = %q, want %q", result.Status, ModelCatalogSyncNotModified)
+	}
+	observation := <-observed
+	if !observation.hasDeadline || observation.remaining <= 0 || observation.remaining > 15*time.Second {
+		t.Fatalf("request deadline = has:%t remaining:%s, want (0, 15s]", observation.hasDeadline, observation.remaining)
 	}
 }
 
@@ -442,6 +523,80 @@ func TestModelCatalogSyncServerRunsImmediatelyAndStopsWithServer(t *testing.T) {
 	}
 }
 
+func TestModelCatalogSyncServerStartIsIdempotent(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", filepath.Join(t.TempDir(), "model-catalog.json"))
+
+	requests, firstRequest, extraRequest, release := installBlockingModelCatalogTransport(t)
+	defer releaseModelCatalogTransport(release)
+
+	srv := newModelCatalogSyncTestServer(t, 1)
+	srv.StartModelCatalogSync()
+	waitForModelCatalogRequest(t, firstRequest)
+	srv.StartModelCatalogSync()
+	assertNoExtraModelCatalogRequest(t, extraRequest)
+
+	close(release)
+	waitForModelCatalogETag(t, `"blocking"`)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("sequential Start requests = %d, want 1", got)
+	}
+}
+
+func TestModelCatalogSyncServerConcurrentStartIsIdempotent(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", filepath.Join(t.TempDir(), "model-catalog.json"))
+
+	requests, firstRequest, extraRequest, release := installBlockingModelCatalogTransport(t)
+	defer releaseModelCatalogTransport(release)
+
+	srv := newModelCatalogSyncTestServer(t, 1)
+	start := make(chan struct{})
+	var starters sync.WaitGroup
+	starters.Add(2)
+	for range 2 {
+		go func() {
+			defer starters.Done()
+			<-start
+			srv.StartModelCatalogSync()
+		}()
+	}
+	close(start)
+	starters.Wait()
+	waitForModelCatalogRequest(t, firstRequest)
+	assertNoExtraModelCatalogRequest(t, extraRequest)
+
+	close(release)
+	waitForModelCatalogETag(t, `"blocking"`)
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("concurrent Start requests = %d, want 1", got)
+	}
+}
+
+func TestModelCatalogSyncServerDoesNotStartAfterShutdown(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+
+	const etag = `"after-shutdown"`
+	cachePath := filepath.Join(t.TempDir(), "model-catalog.json")
+	writeNormalizedCatalogCache(t, cachePath, normalizedCatalogSnapshot(t, etag))
+	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", cachePath)
+
+	srv := newModelCatalogSyncTestServer(t, 0)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		t.Fatalf("Shutdown failed: %v", err)
+	}
+
+	srv.StartModelCatalogSync()
+	if got := util.CurrentModelCatalogETag(); got != "" {
+		t.Fatalf("StartModelCatalogSync after Shutdown loaded cache etag %q", got)
+	}
+}
+
 func modelsDevCatalogJSON() string {
 	return `{
   "openai": {
@@ -489,6 +644,120 @@ func unsupportedCatalogCache(t *testing.T) []byte {
 	return data
 }
 
+type unreadableModelCatalogBody struct {
+	reads atomic.Int32
+}
+
+func (b *unreadableModelCatalogBody) Read([]byte) (int, error) {
+	b.reads.Add(1)
+	return 0, errors.New("304 body must not be read")
+}
+
+func (*unreadableModelCatalogBody) Close() error {
+	return nil
+}
+
+func modelCatalogHTTPResponse(req *http.Request, status int, etag string, body io.ReadCloser) *http.Response {
+	header := make(http.Header)
+	if etag != "" {
+		header.Set("ETag", etag)
+	}
+	return &http.Response{
+		StatusCode: status,
+		Header:     header,
+		Body:       body,
+		Request:    req,
+	}
+}
+
+func installBlockingModelCatalogTransport(t *testing.T) (*atomic.Int32, <-chan struct{}, <-chan struct{}, chan struct{}) {
+	t.Helper()
+
+	originalTransport := http.DefaultTransport
+	requests := &atomic.Int32{}
+	firstRequest := make(chan struct{})
+	extraRequest := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var firstRequestOnce sync.Once
+	http.DefaultTransport = roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		requestNumber := requests.Add(1)
+		if requestNumber == 1 {
+			firstRequestOnce.Do(func() { close(firstRequest) })
+		} else {
+			select {
+			case extraRequest <- struct{}{}:
+			default:
+			}
+		}
+		<-release
+		return modelCatalogHTTPResponse(req, http.StatusOK, `"blocking"`, io.NopCloser(strings.NewReader(modelsDevCatalogJSON()))), nil
+	})
+	t.Cleanup(func() {
+		http.DefaultTransport = originalTransport
+	})
+	return requests, firstRequest, extraRequest, release
+}
+
+func releaseModelCatalogTransport(release chan struct{}) {
+	select {
+	case <-release:
+	default:
+		close(release)
+	}
+}
+
+func waitForModelCatalogRequest(t *testing.T, request <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-request:
+	case <-time.After(time.Second):
+		t.Fatal("model catalog request did not start")
+	}
+}
+
+func assertNoExtraModelCatalogRequest(t *testing.T, request <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-request:
+		t.Fatal("StartModelCatalogSync started a second request")
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func waitForModelCatalogETag(t *testing.T, want string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for util.CurrentModelCatalogETag() != want && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := util.CurrentModelCatalogETag(); got != want {
+		t.Fatalf("installed etag = %q, want %q", got, want)
+	}
+}
+
+type modelCatalogSyncSettingStore struct {
+	storage.Store
+	intervalHours string
+}
+
+func (s modelCatalogSyncSettingStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error) {
+	settings, err := s.Store.ListAllSettings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return append(settings, &model.SystemSetting{
+		Key:   "model_catalog_sync_interval_hours",
+		Value: s.intervalHours,
+	}), nil
+}
+
+func (s modelCatalogSyncSettingStore) Close() error {
+	if closer, ok := s.Store.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 func newModelCatalogSyncTestServer(t *testing.T, intervalHours float64) *Server {
 	t.Helper()
 
@@ -496,7 +765,10 @@ func newModelCatalogSyncTestServer(t *testing.T, intervalHours float64) *Server 
 	if err != nil {
 		t.Fatalf("CreateSQLiteStore failed: %v", err)
 	}
-	srv := NewServer(store)
+	srv := NewServer(modelCatalogSyncSettingStore{
+		Store:         store,
+		intervalHours: strconv.FormatFloat(intervalHours, 'f', -1, 64),
+	})
 	t.Cleanup(func() {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -505,11 +777,5 @@ func newModelCatalogSyncTestServer(t *testing.T, intervalHours float64) *Server 
 		}
 	})
 
-	srv.configService.mu.Lock()
-	srv.configService.cache["model_catalog_sync_interval_hours"] = &model.SystemSetting{
-		Key:   "model_catalog_sync_interval_hours",
-		Value: strconv.FormatFloat(intervalHours, 'f', -1, 64),
-	}
-	srv.configService.mu.Unlock()
 	return srv
 }
