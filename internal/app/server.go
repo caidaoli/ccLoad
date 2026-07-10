@@ -262,6 +262,36 @@ func NewServer(store storage.Store) *Server {
 
 }
 
+// StartModelCatalogSync 加载本地快照，并在启用时同步官方模型目录。
+func (s *Server) StartModelCatalogSync() {
+	if s == nil || s.configService == nil {
+		return
+	}
+
+	intervalHours := normalizeModelCatalogSyncIntervalHours(
+		s.configService.GetFloat("model_catalog_sync_interval_hours", defaultModelCatalogSyncHours),
+	)
+	syncer := NewModelCatalogSyncer(
+		&http.Client{Timeout: modelCatalogRequestTimeout},
+		modelsDevCatalogURL,
+		modelCatalogCachePath(),
+	)
+	if err := syncer.LoadCache(); err != nil {
+		log.Printf("[WARN] 模型目录缓存加载失败: %v", err)
+	}
+	if intervalHours == 0 {
+		return
+	}
+
+	interval := time.Duration(intervalHours * float64(time.Hour))
+	if interval <= 0 {
+		log.Printf("[WARN] 无效的模型目录同步间隔: %v 小时", intervalHours)
+		return
+	}
+	s.wg.Add(1)
+	go s.runModelCatalogSyncLoop(syncer, interval)
+}
+
 type channelTypeTimeoutConfig struct {
 	FirstByteTimeout time.Duration
 	NonStreamTimeout time.Duration
