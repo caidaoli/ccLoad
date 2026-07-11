@@ -3,6 +3,7 @@ package util_test
 import (
 	"bytes"
 	"encoding/json"
+	"math"
 	"reflect"
 	"testing"
 	"time"
@@ -44,6 +45,9 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	if entry.Pricing.InputPrice != 2.5 || entry.Pricing.OutputPrice != 15 || entry.Pricing.CacheReadPrice != 0.25 || !entry.Pricing.HasCacheReadPrice {
 		t.Fatalf("pricing = %#v", entry.Pricing)
 	}
+	if !entry.Pricing.CacheReadCountsTowardTier {
+		t.Fatalf("OpenAI context tier did not count cache reads: %#v", entry.Pricing)
+	}
 	if len(entry.Pricing.TokenPricingTiers) != 2 {
 		t.Fatalf("tiers = %#v", entry.Pricing.TokenPricingTiers)
 	}
@@ -53,6 +57,39 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 	}
 	if high.MaxInputTokens != 0 || high.InputPrice != 5 || high.OutputPrice != 22.5 || high.CacheReadPrice != 0.5 || !high.HasCacheReadPrice {
 		t.Fatalf("high tier = %#v", high)
+	}
+
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+	if err := util.InstallModelCatalog(snapshot, "models.dev"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := util.CalculateCostDetailed("gpt-next", 100_000, 1_000, 200_000, 0, 0), 0.6225; math.Abs(got-want) > 0.000001 {
+		t.Fatalf("installed OpenAI tiered cost = %v, want %v", got, want)
+	}
+}
+
+func TestParseModelsDevCatalogNonOpenAIContextTierDoesNotCountCacheRead(t *testing.T) {
+	raw := validModelsDevFixture(t, "anthropic", "claude-next", map[string]any{
+		"cost": map[string]any{
+			"input": 3.0, "output": 15.0, "cache_read": 0.3,
+			"tiers": []any{map[string]any{
+				"input": 6.0, "output": 22.5, "cache_read": 0.6,
+				"tier": map[string]any{"type": "context", "size": 200000},
+			}},
+		},
+	})
+
+	snapshot, err := util.ParseModelsDevCatalog(bytes.NewReader(raw), "", time.Time{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := snapshot.Model("claude-next")
+	if !ok {
+		t.Fatalf("entry not found: %#v", snapshot)
+	}
+	if entry.Pricing.CacheReadCountsTowardTier {
+		t.Fatalf("non-OpenAI context tier counted cache reads: %#v", entry.Pricing)
 	}
 }
 

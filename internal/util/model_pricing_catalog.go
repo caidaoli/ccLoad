@@ -17,7 +17,7 @@ type ModelPricing struct {
 	HasCacheReadPrice  bool    // 是否使用显式缓存读取价格；false 时按模型系列倍率回退计算
 
 	// 缓存读取 token 是否参与高/低档选择。
-	// MiMo / Grok 等系列按「input + cache_read」总量分档（缓存读也走高档价），需置 true；
+	// OpenAI context tiers、MiMo / Grok 等系列按「input + cache_read」总量分档，需置 true；
 	// Gemini 长上下文分档只看非缓存 prompt size，缓存读不得推高分档，保持 false。
 	CacheReadCountsTowardTier bool
 
@@ -42,6 +42,18 @@ type TokenPricingTier struct {
 }
 
 var (
+	gpt56SolTiers = []TokenPricingTier{
+		{MaxInputTokens: 272_000, InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true},
+		{InputPrice: 10.00, OutputPrice: 45.00, CacheReadPrice: 1.00, HasCacheReadPrice: true},
+	}
+	gpt56TerraTiers = []TokenPricingTier{
+		{MaxInputTokens: 272_000, InputPrice: 2.50, OutputPrice: 15.00, CacheReadPrice: 0.25, HasCacheReadPrice: true},
+		{InputPrice: 5.00, OutputPrice: 22.50, CacheReadPrice: 0.50, HasCacheReadPrice: true},
+	}
+	gpt56LunaTiers = []TokenPricingTier{
+		{MaxInputTokens: 272_000, InputPrice: 1.00, OutputPrice: 6.00, CacheReadPrice: 0.10, HasCacheReadPrice: true},
+		{InputPrice: 2.00, OutputPrice: 9.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+	}
 	qwen3MaxTiers = []TokenPricingTier{
 		{MaxInputTokens: 32_000, InputPrice: 1.20, OutputPrice: 6.00},
 		{MaxInputTokens: 128_000, InputPrice: 2.40, OutputPrice: 12.00},
@@ -143,10 +155,22 @@ var basePricing = map[string]ModelPricing{
 	"claude-haiku":  {InputPrice: 1.00, OutputPrice: 5.00},
 
 	// ========== OpenAI GPT-5系列 ==========
-	"gpt-5.6":       {InputPrice: 5.00, OutputPrice: 30.00},
-	"gpt-5.6-sol":   {InputPrice: 5.00, OutputPrice: 30.00},
-	"gpt-5.6-terra": {InputPrice: 2.50, OutputPrice: 15.00},
-	"gpt-5.6-luna":  {InputPrice: 1.00, OutputPrice: 6.00},
+	"gpt-5.6": {
+		InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true,
+		TokenPricingTiers: gpt56SolTiers, CacheReadCountsTowardTier: true,
+	},
+	"gpt-5.6-sol": {
+		InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true,
+		TokenPricingTiers: gpt56SolTiers, CacheReadCountsTowardTier: true,
+	},
+	"gpt-5.6-terra": {
+		InputPrice: 2.50, OutputPrice: 15.00, CacheReadPrice: 0.25, HasCacheReadPrice: true,
+		TokenPricingTiers: gpt56TerraTiers, CacheReadCountsTowardTier: true,
+	},
+	"gpt-5.6-luna": {
+		InputPrice: 1.00, OutputPrice: 6.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,
+		TokenPricingTiers: gpt56LunaTiers, CacheReadCountsTowardTier: true,
+	},
 	"gpt-5.5": {
 		InputPrice: 5.00, OutputPrice: 30.00,
 		InputPriceHigh: 10.00, OutputPriceHigh: 45.00, // >272K context; 2× gpt-5.4
@@ -766,6 +790,7 @@ func overlayRemotePricing(embedded, remote ModelPricing) ModelPricing {
 	}
 	if len(remote.TokenPricingTiers) > 0 {
 		overlay.TokenPricingTiers = append([]TokenPricingTier(nil), remote.TokenPricingTiers...)
+		overlay.CacheReadCountsTowardTier = remote.CacheReadCountsTowardTier
 		overlay.InputPriceHigh = 0
 		overlay.OutputPriceHigh = 0
 		overlay.CacheReadPriceHigh = 0
