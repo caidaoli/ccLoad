@@ -264,6 +264,40 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 	}
 }
 
+func TestCalculateCost_GPT56TieredPricing(t *testing.T) {
+	RestoreEmbeddedModelCatalog()
+	t.Cleanup(RestoreEmbeddedModelCatalog)
+
+	testCases := []struct {
+		name         string
+		model        string
+		inputTokens  int
+		outputTokens int
+		cacheRead    int
+		cacheWrite   int
+		expected     float64
+	}{
+		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
+		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.76501},
+		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.695},
+		{name: "terra above boundary", model: "gpt-5.6-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 1.382505},
+		{name: "luna boundary", model: "gpt-5.6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.278},
+		{name: "luna above boundary", model: "gpt-5.6-luna", inputTokens: 272_001, outputTokens: 1_000, expected: 0.553002},
+		{name: "sol cache crosses boundary", model: "gpt-5.6-sol", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 1.245},
+		{name: "terra cache crosses boundary", model: "gpt-5.6-terra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 0.6225},
+		{name: "luna cache crosses boundary and write uses high tier", model: "gpt-5.6-luna", inputTokens: 100_000, cacheRead: 200_000, cacheWrite: 1_000, expected: 0.2425},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			cost := CalculateCostDetailed(tc.model, tc.inputTokens, tc.outputTokens, tc.cacheRead, tc.cacheWrite, 0)
+			if !floatEquals(cost, tc.expected, 0.000001) {
+				t.Fatalf("cost = %.6f, expected %.6f", cost, tc.expected)
+			}
+		})
+	}
+}
+
 func TestCalculateCost_GPT56CacheWrite(t *testing.T) {
 	cost := CalculateCostDetailed("gpt-5.6-luna", 0, 0, 0, 1000, 0)
 	expected := 1000 * 1.00 * cacheWrite5mMultiplier / 1_000_000

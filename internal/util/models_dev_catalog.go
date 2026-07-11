@@ -193,6 +193,7 @@ func normalizeModelsDevModel(provider string, raw modelsDevModel) (ModelCatalogE
 		return ModelCatalogEntry{}, false
 	}
 	pricing.TokenPricingTiers = tiers
+	pricing.CacheReadCountsTowardTier = provider == "openai" && len(tiers) > 0
 
 	return ModelCatalogEntry{
 		ID:               id,
