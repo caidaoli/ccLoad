@@ -285,9 +285,7 @@ func (s *Server) runModelCatalogSyncLoop(syncer *ModelCatalogSyncer, interval ti
 func (s *Server) syncModelCatalog(ctx context.Context, syncer *ModelCatalogSyncer) {
 	result, err := syncer.Sync(ctx)
 	if err != nil {
-		if ctx.Err() == nil {
-			log.Printf("[WARN] model_catalog_sync status=%s stage=%s error=%v duration=%s", result.Status, result.Stage, result.Err, result.Duration)
-		}
+		log.Printf("[WARN] model_catalog_sync status=%s stage=%s error=%v duration=%s", result.Status, result.Stage, result.Err, result.Duration)
 		return
 	}
 	log.Printf("[INFO] model_catalog_sync status=%s models=%d providers=%d skipped_models=%d duration=%s etag=%q persistence_error=%v", result.Status, result.ModelCount, result.ProviderCount, result.SkippedModelCount, result.Duration, result.ETag, result.PersistenceError)
