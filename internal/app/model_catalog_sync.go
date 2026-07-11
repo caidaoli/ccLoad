@@ -86,7 +86,35 @@ func modelCatalogCachePath() string {
 	if path := strings.TrimSpace(os.Getenv("CCLOAD_MODEL_CATALOG_CACHE")); path != "" {
 		return path
 	}
-	return filepath.Join("data", "model-catalog.json")
+
+	const defaultDir = "data"
+	defaultPath := filepath.Join(defaultDir, "model-catalog.json")
+	if isModelCatalogCacheDirWritable(defaultDir) {
+		return defaultPath
+	}
+	if err := os.MkdirAll(defaultDir, 0o755); err == nil && isModelCatalogCacheDirWritable(defaultDir) {
+		return defaultPath
+	}
+
+	tmpPath := filepath.Join(os.TempDir(), "ccload", "model-catalog.json")
+	log.Printf("[WARN] 模型目录缓存默认路径 %s 不可写，降级到临时路径 %s；系统重启后缓存可能丢失", defaultPath, tmpPath)
+	return tmpPath
+}
+
+func isModelCatalogCacheDirWritable(dir string) bool {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return false
+	}
+
+	probe, err := os.CreateTemp(dir, ".model-catalog-write-test-*")
+	if err != nil {
+		return false
+	}
+	probePath := probe.Name()
+	closeErr := probe.Close()
+	removeErr := os.Remove(probePath)
+	return closeErr == nil && removeErr == nil
 }
 
 func normalizeModelCatalogSyncIntervalHours(hours float64) float64 {

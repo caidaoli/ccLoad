@@ -21,6 +21,49 @@ import (
 	"ccLoad/internal/util"
 )
 
+func TestModelCatalogCachePathDefaultAndFallback(t *testing.T) {
+	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", "")
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd failed: %v", err)
+	}
+	t.Chdir(t.TempDir())
+	t.Cleanup(func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+
+	if got, want := modelCatalogCachePath(), filepath.Join("data", "model-catalog.json"); got != want {
+		t.Fatalf("modelCatalogCachePath() = %q, want %q", got, want)
+	}
+
+	if err := os.RemoveAll("data"); err != nil {
+		t.Fatalf("remove data directory: %v", err)
+	}
+	if err := os.WriteFile("data", []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block data directory: %v", err)
+	}
+
+	if got, want := modelCatalogCachePath(), filepath.Join(os.TempDir(), "ccload", "model-catalog.json"); got != want {
+		t.Fatalf("fallback modelCatalogCachePath() = %q, want %q", got, want)
+	}
+}
+
+func TestModelCatalogCachePathExplicitPathNeverFallsBack(t *testing.T) {
+	blockedParent := filepath.Join(t.TempDir(), "blocked")
+	if err := os.WriteFile(blockedParent, []byte("not a directory"), 0o600); err != nil {
+		t.Fatalf("block explicit parent directory: %v", err)
+	}
+	explicitPath := filepath.Join(blockedParent, "model-catalog.json")
+	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", explicitPath)
+
+	if got := modelCatalogCachePath(); got != explicitPath {
+		t.Fatalf("modelCatalogCachePath() = %q, want explicit path %q", got, explicitPath)
+	}
+}
+
 func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
