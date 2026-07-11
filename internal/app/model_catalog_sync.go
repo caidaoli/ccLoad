@@ -36,11 +36,21 @@ const (
 	ModelCatalogSyncNotModified ModelCatalogSyncStatus = "not_modified"
 	// ModelCatalogSyncSkipped 表示已有同步正在进行。
 	ModelCatalogSyncSkipped ModelCatalogSyncStatus = "skipped"
+	// ModelCatalogSyncFailed 表示同步未能完成。
+	ModelCatalogSyncFailed ModelCatalogSyncStatus = "failed"
 )
 
 // ModelCatalogSyncResult 是一次模型目录同步的公开结果。
 type ModelCatalogSyncResult struct {
-	Status ModelCatalogSyncStatus
+	Status            ModelCatalogSyncStatus
+	Stage             string
+	Err               error
+	PersistenceError  error
+	ModelCount        int
+	ProviderCount     int
+	SkippedModelCount int
+	ETag              string
+	Duration          time.Duration
 }
 
 // ModelCatalogSyncer 获取、验证并持久化 models.dev 的模型目录。
@@ -86,13 +96,33 @@ func normalizeModelCatalogSyncIntervalHours(hours float64) float64 {
 	return hours
 }
 
+func newModelCatalogSyncResult(status ModelCatalogSyncStatus, startedAt time.Time) ModelCatalogSyncResult {
+	summary := util.CurrentModelCatalogSummary()
+	return ModelCatalogSyncResult{
+		Status:            status,
+		ModelCount:        summary.ModelCount,
+		ProviderCount:     summary.ProviderCount,
+		SkippedModelCount: summary.SkippedModelCount,
+		ETag:              summary.ETag,
+		Duration:          time.Since(startedAt),
+	}
+}
+
+func modelCatalogSyncFailure(startedAt time.Time, stage string, err error) (ModelCatalogSyncResult, error) {
+	result := newModelCatalogSyncResult(ModelCatalogSyncFailed, startedAt)
+	result.Stage = stage
+	result.Err = err
+	return result, err
+}
+
 // Sync 从远端拉取并安装最新模型目录。
 func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, error) {
+	startedAt := time.Now()
 	if s == nil {
-		return ModelCatalogSyncResult{}, fmt.Errorf("model catalog syncer is nil")
+		return modelCatalogSyncFailure(startedAt, "sync", fmt.Errorf("model catalog syncer is nil"))
 	}
 	if !s.running.CompareAndSwap(false, true) {
-		return ModelCatalogSyncResult{Status: ModelCatalogSyncSkipped}, nil
+		return newModelCatalogSyncResult(ModelCatalogSyncSkipped, startedAt), nil
 	}
 	defer s.running.Store(false)
 
@@ -103,7 +133,7 @@ func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, 
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.endpoint, nil)
 	if err != nil {
-		return ModelCatalogSyncResult{}, fmt.Errorf("create model catalog request: %w", err)
+		return modelCatalogSyncFailure(startedAt, "request", fmt.Errorf("create model catalog request: %w", err))
 	}
 	if etag := util.CurrentModelCatalogETag(); etag != "" {
 		req.Header.Set("If-None-Match", etag)
@@ -111,39 +141,40 @@ func (s *ModelCatalogSyncer) Sync(ctx context.Context) (ModelCatalogSyncResult, 
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return ModelCatalogSyncResult{}, fmt.Errorf("fetch model catalog: %w", err)
+		return modelCatalogSyncFailure(startedAt, "fetch", fmt.Errorf("fetch model catalog: %w", err))
 	}
 	defer func() {
 		_ = resp.Body.Close()
 	}()
 
 	if resp.StatusCode == http.StatusNotModified {
-		return ModelCatalogSyncResult{Status: ModelCatalogSyncNotModified}, nil
+		return newModelCatalogSyncResult(ModelCatalogSyncNotModified, startedAt), nil
 	}
 	if resp.StatusCode != http.StatusOK {
-		return ModelCatalogSyncResult{}, fmt.Errorf("fetch model catalog: unexpected HTTP status %d", resp.StatusCode)
+		return modelCatalogSyncFailure(startedAt, "fetch", fmt.Errorf("fetch model catalog: unexpected HTTP status %d", resp.StatusCode))
 	}
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, modelCatalogMaxBodyBytes+1))
 	if err != nil {
-		return ModelCatalogSyncResult{}, fmt.Errorf("read model catalog response: %w", err)
+		return modelCatalogSyncFailure(startedAt, "read", fmt.Errorf("read model catalog response: %w", err))
 	}
 	if len(body) > modelCatalogMaxBodyBytes {
-		return ModelCatalogSyncResult{}, fmt.Errorf("model catalog response exceeds %d bytes", modelCatalogMaxBodyBytes)
+		return modelCatalogSyncFailure(startedAt, "read", fmt.Errorf("model catalog response exceeds %d bytes", modelCatalogMaxBodyBytes))
 	}
 
 	snapshot, err := util.ParseModelsDevCatalog(bytes.NewReader(body), resp.Header.Get("ETag"), time.Now().UTC())
 	if err != nil {
-		return ModelCatalogSyncResult{}, err
+		return modelCatalogSyncFailure(startedAt, "parse", err)
 	}
 	if err := util.InstallModelCatalog(snapshot, "models.dev"); err != nil {
-		return ModelCatalogSyncResult{}, fmt.Errorf("install model catalog: %w", err)
+		return modelCatalogSyncFailure(startedAt, "install", fmt.Errorf("install model catalog: %w", err))
 	}
+	result := newModelCatalogSyncResult(ModelCatalogSyncUpdated, startedAt)
 	if err := writeModelCatalogCache(s.cachePath, snapshot); err != nil {
-		log.Printf("[WARN] 模型目录缓存写入失败: %v", err)
+		result.PersistenceError = err
 	}
 
-	return ModelCatalogSyncResult{Status: ModelCatalogSyncUpdated}, nil
+	return result, nil
 }
 
 // LoadCache 加载并安装最后一次成功的归一化模型目录快照。
@@ -255,11 +286,9 @@ func (s *Server) syncModelCatalog(ctx context.Context, syncer *ModelCatalogSynce
 	result, err := syncer.Sync(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("[WARN] 模型目录同步失败: %v", err)
+			log.Printf("[WARN] model_catalog_sync status=%s stage=%s error=%v duration=%s", result.Status, result.Stage, result.Err, result.Duration)
 		}
 		return
 	}
-	if result.Status == ModelCatalogSyncUpdated {
-		log.Print("[INFO] 模型目录已更新")
-	}
+	log.Printf("[INFO] model_catalog_sync status=%s models=%d providers=%d skipped_models=%d duration=%s etag=%q persistence_error=%v", result.Status, result.ModelCount, result.ProviderCount, result.SkippedModelCount, result.Duration, result.ETag, result.PersistenceError)
 }

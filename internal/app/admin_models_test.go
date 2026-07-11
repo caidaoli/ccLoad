@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -23,14 +24,32 @@ func TestAdminModels_HandleCommonModelCatalog(t *testing.T) {
 	defer cleanup()
 
 	fetchedAt := time.Date(2026, time.January, 8, 9, 10, 11, 0, time.UTC)
-	models := make([]util.ModelCatalogEntry, 7)
-	for i := range models {
-		models[i] = util.ModelCatalogEntry{
-			ID:               fmt.Sprintf("gpt-catalog-%d", i+1),
-			Provider:         "openai",
-			ReleaseDate:      fmt.Sprintf("2026-01-%02d", i+1),
-			OutputModalities: []string{"text"},
+	pricedText := func(id, lastUpdated, releaseDate string) util.ModelCatalogEntry {
+		return util.ModelCatalogEntry{
+			ID: id, Provider: "openai", LastUpdated: lastUpdated, ReleaseDate: releaseDate,
+			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
 		}
+	}
+	models := []util.ModelCatalogEntry{
+		pricedText("gpt-alpha", "2026-07-12", "2026-07-01"),
+		pricedText("gpt-zeta", "2026-07-12", "2026-07-01"),
+		pricedText("gpt-dated-only-20260710", "2026-07-11", "2026-07-10"),
+		pricedText("gpt-legacy", "2026-07-10", "2026-07-09"),
+		pricedText("gpt-omega", "2026-07-09", "2026-07-01"),
+		pricedText("gpt-omega-2026-07-10", "2026-07-15", "2026-07-10"),
+		pricedText("gpt-iso-only-2026-07-08", "2026-07-08", "2026-07-08"),
+		{
+			ID: "gpt-deprecated", Provider: "openai", Status: "deprecated", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
+			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
+		},
+		{
+			ID: "gpt-image", Provider: "openai", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
+			OutputModalities: []string{"image"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
+		},
+		{
+			ID: "gpt-fixed", Provider: "openai", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
+			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{FixedCostPerRequest: 0.01},
+		},
 	}
 	if err := util.InstallModelCatalog(&util.ModelCatalogSnapshot{
 		Version:   util.ModelCatalogSchemaVersion,
@@ -57,7 +76,15 @@ func TestAdminModels_HandleCommonModelCatalog(t *testing.T) {
 		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 			t.Fatal(err)
 		}
-		if !response.Success || response.Data.Source != "models.dev" || len(response.Data.Models) != 6 {
+		wantModels := []string{
+			"gpt-alpha",
+			"gpt-zeta",
+			"gpt-dated-only-20260710",
+			"gpt-legacy",
+			"gpt-omega",
+			"gpt-iso-only-2026-07-08",
+		}
+		if !response.Success || response.Data.Source != "models.dev" || !reflect.DeepEqual(response.Data.Models, wantModels) {
 			t.Fatalf("response = %#v", response)
 		}
 		if response.Data.FetchedAt != fetchedAt.Format(time.RFC3339) {
