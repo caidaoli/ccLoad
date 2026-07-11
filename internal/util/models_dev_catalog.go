@@ -40,11 +40,12 @@ type ModelCatalogEntry struct {
 
 // ModelCatalogSnapshot 是可持久化的、已归一化的模型目录。
 type ModelCatalogSnapshot struct {
-	Version   int                 `json:"version"`
-	Source    string              `json:"source"`
-	ETag      string              `json:"etag,omitempty"`
-	FetchedAt time.Time           `json:"fetched_at"`
-	Models    []ModelCatalogEntry `json:"models"`
+	Version       int                 `json:"version"`
+	Source        string              `json:"source"`
+	ETag          string              `json:"etag,omitempty"`
+	FetchedAt     time.Time           `json:"fetched_at"`
+	SkippedModels int                 `json:"skipped_models,omitempty"`
+	Models        []ModelCatalogEntry `json:"models"`
 }
 
 type modelsDevProvider struct {
@@ -99,10 +100,14 @@ func ParseModelsDevCatalog(r io.Reader, etag string, fetchedAt time.Time) (*Mode
 	}
 
 	modelsByID := make(map[string]ModelCatalogEntry)
+	skippedModels := 0
 	for _, provider := range modelsDevOfficialProvidersInPriorityOrder() {
 		rawProvider, ok := providers[provider]
-		if !ok || strings.ToLower(strings.TrimSpace(rawProvider.ID)) != provider {
-			continue
+		if !ok {
+			return nil, fmt.Errorf("models.dev catalog is missing allowlisted provider %q", provider)
+		}
+		if strings.ToLower(strings.TrimSpace(rawProvider.ID)) != provider {
+			return nil, fmt.Errorf("models.dev catalog provider %q has mismatched id %q", provider, rawProvider.ID)
 		}
 
 		modelKeys := make([]string, 0, len(rawProvider.Models))
@@ -110,14 +115,20 @@ func ParseModelsDevCatalog(r io.Reader, etag string, fetchedAt time.Time) (*Mode
 			modelKeys = append(modelKeys, key)
 		}
 		sort.Strings(modelKeys)
+		validModels := 0
 		for _, key := range modelKeys {
 			entry, ok := normalizeModelsDevModel(provider, rawProvider.Models[key])
 			if !ok {
+				skippedModels++
 				continue
 			}
+			validModels++
 			if _, exists := modelsByID[entry.ID]; !exists {
 				modelsByID[entry.ID] = entry
 			}
+		}
+		if validModels == 0 {
+			return nil, fmt.Errorf("models.dev catalog provider %q contains no valid token-priced models", provider)
 		}
 	}
 	if len(modelsByID) == 0 {
@@ -133,11 +144,12 @@ func ParseModelsDevCatalog(r io.Reader, etag string, fetchedAt time.Time) (*Mode
 	})
 
 	return &ModelCatalogSnapshot{
-		Version:   ModelCatalogSchemaVersion,
-		Source:    "models.dev",
-		ETag:      etag,
-		FetchedAt: fetchedAt,
-		Models:    models,
+		Version:       ModelCatalogSchemaVersion,
+		Source:        "models.dev",
+		ETag:          etag,
+		FetchedAt:     fetchedAt,
+		SkippedModels: skippedModels,
+		Models:        models,
 	}, nil
 }
 
@@ -291,13 +303,17 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 	if len(snapshot.Models) == 0 {
 		return fmt.Errorf("model catalog contains no models")
 	}
+	if snapshot.SkippedModels < 0 {
+		return fmt.Errorf("model catalog has negative skipped model count")
+	}
 
 	installed := &ModelCatalogSnapshot{
-		Version:   snapshot.Version,
-		Source:    source,
-		ETag:      snapshot.ETag,
-		FetchedAt: snapshot.FetchedAt,
-		Models:    make([]ModelCatalogEntry, 0, len(snapshot.Models)),
+		Version:       snapshot.Version,
+		Source:        source,
+		ETag:          snapshot.ETag,
+		FetchedAt:     snapshot.FetchedAt,
+		SkippedModels: snapshot.SkippedModels,
+		Models:        make([]ModelCatalogEntry, 0, len(snapshot.Models)),
 	}
 	seen := make(map[string]struct{}, len(snapshot.Models))
 	for _, entry := range snapshot.Models {
@@ -362,6 +378,33 @@ func CurrentModelCatalogETag() string {
 	return snapshot.remoteETag
 }
 
+// ModelCatalogSummary 是已安装目录的同步观测元数据。
+type ModelCatalogSummary struct {
+	ModelCount        int
+	ProviderCount     int
+	SkippedModelCount int
+	ETag              string
+}
+
+// CurrentModelCatalogSummary 返回当前不可变目录快照的统计信息。
+func CurrentModelCatalogSummary() ModelCatalogSummary {
+	snapshot := activeModelPricing.Load()
+	if snapshot == nil {
+		return ModelCatalogSummary{}
+	}
+
+	providers := make(map[string]struct{}, len(snapshot.metadata))
+	for _, entry := range snapshot.metadata {
+		providers[entry.Provider] = struct{}{}
+	}
+	return ModelCatalogSummary{
+		ModelCount:        len(snapshot.metadata),
+		ProviderCount:     len(providers),
+		SkippedModelCount: snapshot.remoteSkippedModels,
+		ETag:              snapshot.remoteETag,
+	}
+}
+
 // CommonCatalogModels 返回与渠道协议匹配的常用文本模型及目录元数据。
 func CommonCatalogModels(channelType string, limit int) ([]string, string, time.Time) {
 	snapshot := activeModelPricing.Load()
@@ -375,11 +418,31 @@ func CommonCatalogModels(channelType string, limit int) ([]string, string, time.
 
 	entries := make([]ModelCatalogEntry, 0)
 	for _, entry := range snapshot.metadata {
-		if entry.Provider == provider && hasTextOutput(entry.OutputModalities) {
-			entries = append(entries, entry)
+		if entry.Provider != provider || isDeprecatedCatalogModel(entry.Status) ||
+			!hasTextOutput(entry.OutputModalities) || !hasTokenPricing(entry.Pricing) {
+			continue
 		}
+		entries = append(entries, entry)
 	}
+
+	undatedIDs := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		undatedIDs[entry.ID] = struct{}{}
+	}
+	filtered := entries[:0]
+	for _, entry := range entries {
+		if undatedID, dated := catalogUndatedModelID(entry.ID); dated {
+			if _, exists := undatedIDs[undatedID]; exists {
+				continue
+			}
+		}
+		filtered = append(filtered, entry)
+	}
+	entries = filtered
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].LastUpdated != entries[j].LastUpdated {
+			return entries[i].LastUpdated > entries[j].LastUpdated
+		}
 		if entries[i].ReleaseDate != entries[j].ReleaseDate {
 			return entries[i].ReleaseDate > entries[j].ReleaseDate
 		}
@@ -416,4 +479,34 @@ func hasTextOutput(modalities []string) bool {
 		}
 	}
 	return false
+}
+
+func isDeprecatedCatalogModel(status string) bool {
+	return strings.EqualFold(strings.TrimSpace(status), "deprecated")
+}
+
+func hasTokenPricing(pricing ModelPricing) bool {
+	// 归一化 parser 已保证 input/output token 单价存在（零价仍是有效 token 计费）。
+	// 这里只排除仅有固定按次计费的条目，避免它们进入文本模型快捷列表。
+	return pricing.FixedCostPerRequest == 0
+}
+
+func catalogUndatedModelID(id string) (string, bool) {
+	if len(id) > len("-20060102") {
+		dateStart := len(id) - len("20060102")
+		if id[dateStart-1] == '-' {
+			if _, err := time.Parse("20060102", id[dateStart:]); err == nil {
+				return id[:dateStart-1], true
+			}
+		}
+	}
+	if len(id) > len("-2006-01-02") {
+		dateStart := len(id) - len(time.DateOnly)
+		if id[dateStart-1] == '-' {
+			if _, err := time.Parse(time.DateOnly, id[dateStart:]); err == nil {
+				return id[:dateStart-1], true
+			}
+		}
+	}
+	return "", false
 }

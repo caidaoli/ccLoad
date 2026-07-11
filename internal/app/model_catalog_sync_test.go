@@ -94,6 +94,57 @@ func TestModelCatalogSyncUpdatesCacheAndUsesConditionalETag(t *testing.T) {
 	}
 }
 
+func TestModelCatalogSyncReportsStructuredResultMetadata(t *testing.T) {
+	util.RestoreEmbeddedModelCatalog()
+	t.Cleanup(util.RestoreEmbeddedModelCatalog)
+
+	const etag = `"result-metadata"`
+	var requests atomic.Int32
+	catalogServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			w.Header().Set("ETag", etag)
+			_, _ = io.WriteString(w, modelsDevCatalogJSON())
+		case 2:
+			w.WriteHeader(http.StatusNotModified)
+		case 3:
+			_, _ = io.WriteString(w, `{"openai":`)
+		default:
+			http.Error(w, "unexpected request", http.StatusInternalServerError)
+		}
+	}))
+	defer catalogServer.Close()
+
+	syncer := NewModelCatalogSyncer(catalogServer.Client(), catalogServer.URL, filepath.Join(t.TempDir(), "model-catalog.json"))
+	updated, err := syncer.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("updated Sync failed: %v", err)
+	}
+	if updated.Status != ModelCatalogSyncUpdated || updated.ModelCount != len(util.ModelsDevOfficialProviders) ||
+		updated.ProviderCount != len(util.ModelsDevOfficialProviders) || updated.SkippedModelCount != 1 ||
+		updated.ETag != etag || updated.Duration <= 0 {
+		t.Fatalf("updated result = %#v", updated)
+	}
+
+	notModified, err := syncer.Sync(context.Background())
+	if err != nil {
+		t.Fatalf("not-modified Sync failed: %v", err)
+	}
+	if notModified.Status != ModelCatalogSyncNotModified || notModified.ModelCount != updated.ModelCount ||
+		notModified.ProviderCount != updated.ProviderCount || notModified.SkippedModelCount != updated.SkippedModelCount ||
+		notModified.ETag != etag || notModified.Duration <= 0 {
+		t.Fatalf("not-modified result = %#v", notModified)
+	}
+
+	failed, err := syncer.Sync(context.Background())
+	if err == nil {
+		t.Fatal("invalid catalog Sync returned nil error")
+	}
+	if failed.Status != ModelCatalogSyncFailed || failed.Stage != "parse" || failed.Err == nil || failed.Duration <= 0 {
+		t.Fatalf("failed result = %#v, error = %v", failed, err)
+	}
+}
+
 func TestModelCatalogSyncNotModifiedDoesNotReadBodyOrRewriteCache(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
@@ -368,6 +419,9 @@ func TestModelCatalogSyncKeepsInstalledCatalogWhenCacheWriteFails(t *testing.T) 
 	if result.Status != ModelCatalogSyncUpdated {
 		t.Fatalf("status = %q, want %q", result.Status, ModelCatalogSyncUpdated)
 	}
+	if result.PersistenceError == nil {
+		t.Fatal("cache write failure was omitted from Sync result")
+	}
 	if got := util.CurrentModelCatalogETag(); got != etag {
 		t.Fatalf("installed etag = %q, want %q", got, etag)
 	}
@@ -598,19 +652,35 @@ func TestModelCatalogSyncServerDoesNotStartAfterShutdown(t *testing.T) {
 }
 
 func modelsDevCatalogJSON() string {
-	return `{
-  "openai": {
-    "id": "openai",
-    "models": {
-      "gpt-catalog-test": {
-        "id": "gpt-catalog-test",
-        "release_date": "2026-01-01",
-        "modalities": {"output": ["text"]},
-        "cost": {"input": 1.25, "output": 5.0}
-      }
-    }
-  }
-}`
+	providers := make(map[string]any, len(util.ModelsDevOfficialProviders))
+	for _, provider := range util.ModelsDevOfficialProviders {
+		modelID := provider + "-catalog-test"
+		if provider == "openai" {
+			modelID = "gpt-catalog-test"
+		}
+		providers[provider] = map[string]any{
+			"id": provider,
+			"models": map[string]any{
+				modelID: map[string]any{
+					"id":           provider + "/" + modelID,
+					"release_date": "2026-01-01",
+					"modalities":   map[string]any{"output": []string{"text"}},
+					"cost":         map[string]any{"input": 1.25, "output": 5.0},
+				},
+			},
+		}
+	}
+	providers["openai"].(map[string]any)["models"].(map[string]any)["invalid-catalog-model"] = map[string]any{
+		"id":         "openai/invalid-catalog-model",
+		"modalities": map[string]any{"output": []string{"text"}},
+		"cost":       map[string]any{"input": -1, "output": 5.0},
+	}
+
+	raw, err := json.Marshal(providers)
+	if err != nil {
+		panic(err)
+	}
+	return string(raw)
 }
 
 func normalizedCatalogSnapshot(t *testing.T, etag string) *util.ModelCatalogSnapshot {

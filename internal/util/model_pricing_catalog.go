@@ -699,13 +699,14 @@ type modelPrefixMatch struct {
 }
 
 type modelPricingSnapshot struct {
-	pricing       map[string]ModelPricing
-	aliases       map[string]string
-	prefixBuckets map[byte][]modelPrefixMatch
-	metadata      map[string]ModelCatalogEntry
-	remoteETag    string
-	remoteFetched time.Time
-	remoteSource  string
+	pricing             map[string]ModelPricing
+	aliases             map[string]string
+	prefixBuckets       map[byte][]modelPrefixMatch
+	metadata            map[string]ModelCatalogEntry
+	remoteETag          string
+	remoteFetched       time.Time
+	remoteSkippedModels int
+	remoteSource        string
 }
 
 var activeModelPricing atomic.Pointer[modelPricingSnapshot]
@@ -728,9 +729,11 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *mo
 	metadata := make(map[string]ModelCatalogEntry)
 	remoteETag := ""
 	remoteFetched := time.Time{}
+	remoteSkippedModels := 0
 	if catalog != nil {
 		remoteETag = catalog.ETag
 		remoteFetched = catalog.FetchedAt
+		remoteSkippedModels = catalog.SkippedModels
 		for _, entry := range catalog.Models {
 			// 远端精确模型 ID 是当前目录的权威值，不能再被同名本地别名重定向。
 			delete(aliases, entry.ID)
@@ -740,20 +743,33 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *mo
 	}
 
 	return &modelPricingSnapshot{
-		pricing:       pricing,
-		aliases:       aliases,
-		prefixBuckets: buildPrefixBuckets(pricing, aliases),
-		metadata:      metadata,
-		remoteETag:    remoteETag,
-		remoteFetched: remoteFetched,
-		remoteSource:  source,
+		pricing:             pricing,
+		aliases:             aliases,
+		prefixBuckets:       buildPrefixBuckets(pricing, aliases),
+		metadata:            metadata,
+		remoteETag:          remoteETag,
+		remoteFetched:       remoteFetched,
+		remoteSkippedModels: remoteSkippedModels,
+		remoteSource:        source,
 	}
 }
 
 func overlayRemotePricing(embedded, remote ModelPricing) ModelPricing {
-	overlay := cloneModelPricing(remote)
-	overlay.CacheReadCountsTowardTier = embedded.CacheReadCountsTowardTier
-	overlay.FixedCostPerRequest = embedded.FixedCostPerRequest
+	// models.dev 只表达基础 token 单价、显式 cache-read 单价和 context tiers。
+	// 先复制内置项，避免远端省略字段时清掉本地计费语义。
+	overlay := cloneModelPricing(embedded)
+	overlay.InputPrice = remote.InputPrice
+	overlay.OutputPrice = remote.OutputPrice
+	if remote.HasCacheReadPrice {
+		overlay.CacheReadPrice = remote.CacheReadPrice
+		overlay.HasCacheReadPrice = true
+	}
+	if len(remote.TokenPricingTiers) > 0 {
+		overlay.TokenPricingTiers = append([]TokenPricingTier(nil), remote.TokenPricingTiers...)
+		overlay.InputPriceHigh = 0
+		overlay.OutputPriceHigh = 0
+		overlay.CacheReadPriceHigh = 0
+	}
 	return overlay
 }
 

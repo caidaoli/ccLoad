@@ -57,14 +57,14 @@ func TestParseModelsDevCatalogNormalizesOfficialPrices(t *testing.T) {
 }
 
 func TestParseModelsDevCatalogUsesOfficialProviderPriority(t *testing.T) {
-	raw := marshalModelsDevDocument(t, map[string]any{
-		"anthropic": modelsDevProvider("anthropic", map[string]any{
-			"shared-model": validModelsDevModel("anthropic/shared-model", 3, 15),
-		}),
-		"openai": modelsDevProvider("openai", map[string]any{
-			"shared-model": validModelsDevModel("openai/shared-model", 2, 8),
-		}),
+	providers := validModelsDevProviders()
+	providers["anthropic"] = modelsDevProvider("anthropic", map[string]any{
+		"shared-model": validModelsDevModel("anthropic/shared-model", 3, 15),
 	})
+	providers["openai"] = modelsDevProvider("openai", map[string]any{
+		"shared-model": validModelsDevModel("openai/shared-model", 2, 8),
+	})
+	raw := marshalModelsDevDocument(t, providers)
 
 	snapshot, err := util.ParseModelsDevCatalog(bytes.NewReader(raw), "", time.Time{})
 	if err != nil {
@@ -79,15 +79,15 @@ func TestParseModelsDevCatalogUsesOfficialProviderPriority(t *testing.T) {
 func TestParseModelsDevCatalogRejectsMissingProviderAndSkipsInvalidModels(t *testing.T) {
 	valid := validModelsDevModel("openai/good-model", 2, 8)
 	invalid := validModelsDevModel("openai/bad-model", -1, 8)
-	raw := marshalModelsDevDocument(t, map[string]any{
-		"openai": modelsDevProvider("openai", map[string]any{
-			"good-model": valid,
-			"bad-model":  invalid,
-		}),
-		"unofficial": modelsDevProvider("unofficial", map[string]any{
-			"unofficial-model": validModelsDevModel("unofficial/unofficial-model", 1, 1),
-		}),
+	providers := validModelsDevProviders()
+	providers["openai"] = modelsDevProvider("openai", map[string]any{
+		"good-model": valid,
+		"bad-model":  invalid,
 	})
+	providers["unofficial"] = modelsDevProvider("unofficial", map[string]any{
+		"unofficial-model": validModelsDevModel("unofficial/unofficial-model", 1, 1),
+	})
+	raw := marshalModelsDevDocument(t, providers)
 
 	snapshot, err := util.ParseModelsDevCatalog(bytes.NewReader(raw), "", time.Time{})
 	if err != nil {
@@ -103,14 +103,36 @@ func TestParseModelsDevCatalogRejectsMissingProviderAndSkipsInvalidModels(t *tes
 		t.Fatalf("unofficial provider was installed: %#v", snapshot)
 	}
 
-	missingProvider := marshalModelsDevDocument(t, map[string]any{
-		"openai": map[string]any{
-			"models": map[string]any{"good-model": valid},
-		},
-	})
+	missingProviders := validModelsDevProviders()
+	missingProviders["openai"] = map[string]any{
+		"models": map[string]any{"good-model": valid},
+	}
+	missingProvider := marshalModelsDevDocument(t, missingProviders)
 	if _, err := util.ParseModelsDevCatalog(bytes.NewReader(missingProvider), "", time.Time{}); err == nil {
 		t.Fatal("missing official provider identity was accepted")
 	}
+}
+
+func TestParseModelsDevCatalogRejectsIncompleteAllowlistedProvider(t *testing.T) {
+	t.Run("missing provider while every other provider is valid", func(t *testing.T) {
+		providers := validModelsDevProviders()
+		delete(providers, "anthropic")
+
+		if _, err := util.ParseModelsDevCatalog(bytes.NewReader(marshalModelsDevDocument(t, providers)), "", time.Time{}); err == nil {
+			t.Fatal("catalog accepted a missing allowlisted provider")
+		}
+	})
+
+	t.Run("provider with no valid token-priced models", func(t *testing.T) {
+		providers := validModelsDevProviders()
+		providers["anthropic"] = modelsDevProvider("anthropic", map[string]any{
+			"invalid-model": validModelsDevModel("anthropic/invalid-model", -1, 2),
+		})
+
+		if _, err := util.ParseModelsDevCatalog(bytes.NewReader(marshalModelsDevDocument(t, providers)), "", time.Time{}); err == nil {
+			t.Fatal("catalog accepted an allowlisted provider with no valid models")
+		}
+	})
 }
 
 func TestModelCatalogInstallIsImmutableAndListsCommonModels(t *testing.T) {
@@ -154,20 +176,26 @@ func TestModelCatalogInstallIsImmutableAndListsCommonModels(t *testing.T) {
 
 func validModelsDevFixture(t *testing.T, targetProvider, targetID string, override map[string]any) []byte {
 	t.Helper()
+	providers := validModelsDevProviders()
+	if targetProvider != "" {
+		model := validModelsDevModel(targetProvider+"/"+targetID, 1, 2)
+		for key, value := range override {
+			model[key] = value
+		}
+		providers[targetProvider] = modelsDevProvider(targetProvider, map[string]any{targetID: model})
+	}
+	return marshalModelsDevDocument(t, providers)
+}
+
+func validModelsDevProviders() map[string]any {
 	providers := make(map[string]any, len(util.ModelsDevOfficialProviders))
 	for _, provider := range util.ModelsDevOfficialProviders {
 		id := provider + "-model"
-		model := validModelsDevModel(provider+"/"+id, 1, 2)
-		if provider == targetProvider {
-			id = targetID
-			model = validModelsDevModel(provider+"/"+targetID, 1, 2)
-			for key, value := range override {
-				model[key] = value
-			}
-		}
-		providers[provider] = modelsDevProvider(provider, map[string]any{id: model})
+		providers[provider] = modelsDevProvider(provider, map[string]any{
+			id: validModelsDevModel(provider+"/"+id, 1, 2),
+		})
 	}
-	return marshalModelsDevDocument(t, providers)
+	return providers
 }
 
 func validModelsDevModel(id string, input, output float64) map[string]any {

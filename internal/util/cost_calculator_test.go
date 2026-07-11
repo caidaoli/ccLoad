@@ -1436,6 +1436,38 @@ func TestInstalledModelCatalogCalculatesRemoteTierPrices(t *testing.T) {
 	}
 }
 
+func TestInstalledModelCatalogPreservesEmbeddedSemanticsForPartialRemotePricing(t *testing.T) {
+	RestoreEmbeddedModelCatalog()
+	t.Cleanup(RestoreEmbeddedModelCatalog)
+
+	snapshot := &ModelCatalogSnapshot{
+		Version: ModelCatalogSchemaVersion,
+		Models: []ModelCatalogEntry{
+			{
+				ID: "grok-4.5", Provider: "xai",
+				Pricing: ModelPricing{InputPrice: 1, OutputPrice: 2},
+			},
+			{
+				ID: "qwen3-max", Provider: "alibaba",
+				Pricing: ModelPricing{InputPrice: 1, OutputPrice: 2},
+			},
+		},
+	}
+	if err := InstallModelCatalog(snapshot, "models.dev"); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := CalculateCostDetailed("grok-4.5", 100_000, 100_000, 0, 0, 0); !floatEquals(got, 0.3, 0.000000001) {
+		t.Fatalf("remote base prices cost = %v, want 0.3", got)
+	}
+	if got := CalculateCostDetailed("grok-4.5", 0, 0, 300_000, 0, 0); !floatEquals(got, 0.3, 0.000000001) {
+		t.Fatalf("legacy high-context cache cost = %v, want 0.3", got)
+	}
+	if got := CalculateCostDetailed("qwen3-max", 64_000, 0, 0, 0, 0); !floatEquals(got, 0.1536, 0.000000001) {
+		t.Fatalf("embedded token tier cost = %v, want 0.1536", got)
+	}
+}
+
 func TestInstalledModelCatalogPrioritizesRemoteExactAlias(t *testing.T) {
 	RestoreEmbeddedModelCatalog()
 	t.Cleanup(RestoreEmbeddedModelCatalog)
