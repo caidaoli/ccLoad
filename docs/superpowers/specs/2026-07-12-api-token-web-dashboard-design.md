@@ -76,7 +76,8 @@ GET  /dashboard/metrics
 GET  /dashboard/logs
 GET  /dashboard/logs/bootstrap
 GET  /dashboard/models
-POST /dashboard/model-test
+ANY  /dashboard/v1/*path
+ANY  /dashboard/v1beta/*path
 ```
 
 Administrator pages may continue using existing `/admin` endpoints where appropriate. Shared frontend data loaders use `/dashboard` endpoints so one rendering path supports both roles.
@@ -94,6 +95,8 @@ func ApplyWebIdentityScope(c *gin.Context, filter *model.LogFilter) error
 - Missing or invalid identity: fail closed.
 
 This helper is used by summary, stats, metrics, logs, models, filter options, and bootstrap queries. The summary handler must stop using an unfiltered public query for authenticated dashboards.
+
+Token-mode statistics and trends must not expose channel IDs or names. Their responses aggregate the already token-scoped rows by model/protocol, and their filter controls omit channel and auth-token selectors. Administrator responses retain existing channel dimensions.
 
 ## Logs
 
@@ -115,13 +118,13 @@ Remove channel ID/name, upstream URL, upstream API-key material or hashes, clien
 
 ## Model Testing
 
-API-token users do not use the existing channel test handlers. `/dashboard/model-test` accepts a small proxy-style request containing protocol, model, messages/content, streaming, and supported generation options.
+API-token users do not use the existing channel test handlers. The token-mode UI sends normal protocol payloads to `/dashboard/v1/*` or `/dashboard/v1beta/*`.
 
 The handler:
 
-1. Obtains the bound API token from the authenticated session.
-2. Rejects models outside `AllowedModels` when that list is non-empty.
-3. Sends the request through the existing proxy selection, protocol conversion, accounting, limit, and logging path with that token identity.
+1. Resolves the bound API-token hash and ID from the authenticated session.
+2. Applies the same validity, allowed-model, allowed-channel, cost-limit, concurrency, and last-used checks as direct API authentication.
+3. Calls the existing proxy selection, protocol conversion, accounting, and logging handler with that token identity.
 4. Never accepts a channel ID, upstream URL, or upstream API key.
 
 The token-mode model-test UI contains only model selection, protocol, prompt/messages, options, run, and response. Channel selection, model fetch/add/delete, channel enable, and priority controls are absent. Administrator mode retains the existing channel-oriented test UI.
