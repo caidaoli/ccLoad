@@ -27,6 +27,9 @@ jobs:
         run: |
           echo "IMAGE_NAME_LC=$(echo '${{ env.IMAGE_NAME }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
 
+      - name: Test runtime entrypoint
+        run: sh docker/entrypoint_test.sh
+
       - name: Prepare runtime image context
         run: |
           context_dir="${{ runner.temp }}/ccload-runtime-image"
@@ -61,110 +64,7 @@ jobs:
           ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
           EOF
 
-          cat > "$context_dir/entrypoint.sh" <<'EOF'
-          #!/bin/sh
-          set -eu
-
-          : "${CCLOAD_HOME:=/app}"
-          : "${CCLOAD_BIN:=$CCLOAD_HOME/ccload}"
-          : "${CCLOAD_REPO:=caidaoli/ccLoad}"
-          : "${CCLOAD_RELEASE_BASE_URL:=https://github.com/${CCLOAD_REPO}/releases/latest/download}"
-
-          log() {
-            printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S %z')" "$*" >&2
-          }
-
-          release_arch() {
-            case "$(uname -m)" in
-              x86_64|amd64)
-                printf 'amd64'
-                ;;
-              aarch64|arm64)
-                printf 'arm64'
-                ;;
-              *)
-                log "unsupported architecture: $(uname -m)"
-                return 1
-                ;;
-            esac
-          }
-
-          cleanup_install() {
-            if [ -n "${install_tmp_dir:-}" ] && [ -d "$install_tmp_dir" ]; then
-              rm -rf "$install_tmp_dir"
-            fi
-          }
-
-          download() {
-            url=$1
-            output=$2
-
-            curl -fsSL \
-              --connect-timeout 15 \
-              --max-time 300 \
-              --retry 3 \
-              --retry-delay 2 \
-              -o "$output" \
-              "$url"
-          }
-
-          install_latest_release() {
-            arch=$(release_arch) || return 1
-            asset="ccload-linux-$arch"
-            release_url="$CCLOAD_RELEASE_BASE_URL/$asset"
-            checksums_url="$CCLOAD_RELEASE_BASE_URL/checksums.txt"
-
-            install_tmp_dir=$(mktemp -d) || return 1
-            binary_tmp="$install_tmp_dir/$asset"
-            checksums_tmp="$install_tmp_dir/checksums.txt"
-
-            log "downloading latest release asset: $asset"
-            if ! download "$release_url" "$binary_tmp"; then
-              cleanup_install
-              return 1
-            fi
-            if ! download "$checksums_url" "$checksums_tmp"; then
-              cleanup_install
-              return 1
-            fi
-
-            checksum_line=$(
-              grep -E "^[0-9a-fA-F]{64}[[:space:]]+\*?$asset$" "$checksums_tmp" | head -n 1 || true
-            )
-            if [ -z "$checksum_line" ]; then
-              log "checksum entry not found for $asset"
-              cleanup_install
-              return 1
-            fi
-            if ! printf '%s\n' "$checksum_line" | (cd "$install_tmp_dir" && sha256sum -c -); then
-              cleanup_install
-              return 1
-            fi
-
-            chmod 0755 "$binary_tmp"
-            mkdir -p "$(dirname "$CCLOAD_BIN")"
-            mv -f "$binary_tmp" "$CCLOAD_BIN"
-            cleanup_install
-          }
-
-          main() {
-            mkdir -p "$CCLOAD_HOME/data"
-
-            if ! install_latest_release; then
-              if [ -x "$CCLOAD_BIN" ]; then
-                log "latest release download failed; using existing binary"
-              else
-                log "failed to prepare ccLoad binary"
-                exit 1
-              fi
-            fi
-
-            exec "$CCLOAD_BIN" "$@"
-          }
-
-          main "$@"
-          EOF
-
+          cp docker/entrypoint.sh "$context_dir/entrypoint.sh"
           chmod +x "$context_dir/entrypoint.sh"
 
       - name: Set up QEMU

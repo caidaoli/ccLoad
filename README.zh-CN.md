@@ -906,7 +906,9 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 
 #### 自动更新
 
-ccLoad 支持程序内自动更新，默认每 12 小时检查一次 GitHub Releases。发现新版本后会下载并校验对应平台的二进制文件，等待服务空闲后重启生效。可以在 Web 管理后台的设置页修改 `auto_update_interval_hours`；设置为 `0` 可关闭自动更新检测。
+ccLoad 支持程序内自动更新，默认每 12 小时检查一次发布版本，先尝试 `ghproxy.net`，该来源失败后再直连 GitHub。版本检测、二进制下载、校验文件下载和 SHA256 校验必须在同一来源全部成功；发现新版本后会等待服务空闲再重启生效。可以在 Web 管理后台的设置页修改 `auto_update_interval_hours`；设置为 `0` 可关闭自动更新检测。
+
+如需只使用私有镜像，可将 `CCLOAD_RELEASE_BASE_URL` 设置为完整的 latest-download 地址，例如 `https://mirror.example/caidaoli/ccLoad/releases/latest/download`。显式设置后不会再追加内置回退源。该变量只影响发布文件下载，不会设置 `HTTP_PROXY` 或 `HTTPS_PROXY`，因此不会让业务渠道请求经过下载代理。
 
 #### 健康度排序说明
 
@@ -984,7 +986,7 @@ ccLoad 支持程序内自动更新，默认每 12 小时检查一次 GitHub Rele
   - `latest` - 最新稳定版本
   - `v2.44.1` - 具体发布版本，和 GitHub Release Tag 保持一致
 
-官方 GHCR 镜像基于 Alpine。容器启动时会从 GitHub Releases 下载最新 Linux 二进制；程序启动后的更新检测由 ccLoad 自身的自动更新机制处理。默认检测间隔为 12 小时，可在 Web 管理后台通过 `auto_update_interval_hours` 修改。
+官方 GHCR 镜像基于 Alpine。容器启动时会下载并校验最新 Linux 二进制，默认先尝试 `ghproxy.net`，失败后再直连 GitHub；程序启动后的自动更新也使用相同顺序。将 `CCLOAD_RELEASE_BASE_URL` 设置为完整的 `.../releases/latest/download` 地址可只使用自定义镜像。程序内默认检测间隔为 12 小时，可在 Web 管理后台通过 `auto_update_interval_hours` 修改。
 
 ### 镜像标签说明
 
