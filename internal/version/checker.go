@@ -3,8 +3,11 @@ package version
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -31,6 +34,7 @@ type Checker struct {
 	hasUpdate     bool
 	lastCheck     time.Time
 	client        *http.Client
+	sources       []ReleaseSource
 }
 
 // 全局检测器实例
@@ -54,9 +58,29 @@ func StartChecker() {
 
 // check 执行版本检测
 func (c *Checker) check() {
-	release, err := fetchLatestRelease(context.Background(), c.client, githubLatestReleaseURL)
-	if err != nil {
-		log.Printf("[VersionChecker] 请求GitHub失败: %v", err)
+	sources := c.sources
+	if len(sources) == 0 {
+		var err error
+		sources, err = releaseSources(os.Getenv("CCLOAD_RELEASE_BASE_URL"))
+		if err != nil {
+			log.Printf("[VersionChecker] 发布源配置错误: %v", err)
+			return
+		}
+	}
+
+	var release GitHubRelease
+	var sourceErrors []error
+	for _, source := range sources {
+		var err error
+		release, err = fetchLatestRelease(context.Background(), c.client, source.LatestURL)
+		if err == nil {
+			break
+		}
+		sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
+	}
+	if release.TagName == "" {
+		err := errors.Join(sourceErrors...)
+		log.Printf("[VersionChecker] 请求发布源失败: %v", err)
 		return
 	}
 

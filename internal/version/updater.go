@@ -37,7 +37,7 @@ type UpdateState struct {
 type AutoUpdateOptions struct {
 	Interval            time.Duration
 	RestartPollInterval time.Duration
-	LatestReleaseURL    string
+	ReleaseSources      []ReleaseSource
 	ExecutablePath      string
 	GOOS                string
 	GOARCH              string
@@ -50,7 +50,7 @@ type AutoUpdateOptions struct {
 type AutoUpdater struct {
 	interval            time.Duration
 	restartPollInterval time.Duration
-	latestReleaseURL    string
+	releaseSources      []ReleaseSource
 	executablePath      string
 	goos                string
 	goarch              string
@@ -79,8 +79,12 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 	if opts.RestartPollInterval <= 0 {
 		opts.RestartPollInterval = defaultRestartPollInterval
 	}
-	if opts.LatestReleaseURL == "" {
-		opts.LatestReleaseURL = githubLatestReleaseURL
+	if len(opts.ReleaseSources) == 0 {
+		var err error
+		opts.ReleaseSources, err = releaseSources(os.Getenv("CCLOAD_RELEASE_BASE_URL"))
+		if err != nil {
+			return nil, err
+		}
 	}
 	if opts.GOOS == "" {
 		opts.GOOS = runtime.GOOS
@@ -102,7 +106,7 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 	return &AutoUpdater{
 		interval:            opts.Interval,
 		restartPollInterval: opts.RestartPollInterval,
-		latestReleaseURL:    opts.LatestReleaseURL,
+		releaseSources:      append([]ReleaseSource(nil), opts.ReleaseSources...),
 		executablePath:      opts.ExecutablePath,
 		goos:                opts.GOOS,
 		goarch:              opts.GOARCH,
@@ -157,47 +161,52 @@ func (u *AutoUpdater) runCheck(ctx context.Context) {
 }
 
 func (u *AutoUpdater) updateOnce(ctx context.Context) error {
-	release, err := u.fetchLatestRelease(ctx)
-	if err != nil {
-		return err
-	}
-
-	u.mu.Lock()
-	u.state.LastCheck = time.Now()
-	u.state.LastError = ""
-	u.mu.Unlock()
-
 	baseline := u.baselineVersion()
-	if compareSemanticVersions(release.TagName, baseline) <= 0 {
-		return nil
-	}
-
 	assetName, ok := releaseAssetName(u.goos, u.goarch)
 	if !ok {
 		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
 	}
-	assetURL, err := releaseDownloadURL(release, assetName)
-	if err != nil {
-		return err
-	}
-	checksumURL, err := releaseDownloadURL(release, "checksums.txt")
-	if err != nil {
-		return err
-	}
 
-	u.setUpdating(true)
-	defer u.setUpdating(false)
+	var sourceErrors []error
+	for _, source := range u.releaseSources {
+		release, err := fetchLatestRelease(ctx, u.client, source.LatestURL)
+		if err != nil {
+			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
+			continue
+		}
 
-	if err := u.downloadVerifyAndReplace(ctx, release.TagName, assetName, assetURL, checksumURL); err != nil {
-		return err
+		u.mu.Lock()
+		u.state.LastCheck = time.Now()
+		u.state.LastError = ""
+		u.mu.Unlock()
+
+		if compareSemanticVersions(release.TagName, baseline) <= 0 {
+			return nil
+		}
+
+		assetURL, err := releaseDownloadURL(source, release.TagName, assetName)
+		if err != nil {
+			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
+			continue
+		}
+		checksumURL, err := releaseDownloadURL(source, release.TagName, "checksums.txt")
+		if err != nil {
+			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
+			continue
+		}
+
+		u.setUpdating(true)
+		err = u.downloadVerifyAndReplace(ctx, release.TagName, assetName, assetURL, checksumURL)
+		u.setUpdating(false)
+		if err != nil {
+			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
+			continue
+		}
+		u.markPending(release.TagName)
+		u.ensureRestartWaiter(ctx)
+		return nil
 	}
-	u.markPending(release.TagName)
-	u.ensureRestartWaiter(ctx)
-	return nil
-}
-
-func (u *AutoUpdater) fetchLatestRelease(ctx context.Context) (GitHubRelease, error) {
-	return fetchLatestRelease(ctx, u.client, u.latestReleaseURL)
+	return fmt.Errorf("all release sources failed: %w", errors.Join(sourceErrors...))
 }
 
 func (u *AutoUpdater) downloadVerifyAndReplace(ctx context.Context, tag, assetName, assetURL, checksumURL string) error {

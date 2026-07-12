@@ -870,7 +870,9 @@ Per-protocol timeouts apply to the runtime upstream protocol: if a transformed r
 
 #### Auto Updates
 
-ccLoad supports in-process auto updates. It checks GitHub Releases every 12 hours by default and prepares a verified newer binary when available. The interval can be changed from the Web admin settings page via `auto_update_interval_hours`; set it to `0` to disable automatic update checks.
+ccLoad supports in-process auto updates. It checks releases every 12 hours by default, trying `ghproxy.net` first and GitHub directly if that source fails. A source is accepted only when release detection, binary download, checksum download, and SHA256 verification all succeed. The interval can be changed from the Web admin settings page via `auto_update_interval_hours`; set it to `0` to disable automatic update checks.
+
+To use only a private mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables the built-in fallback sources. This setting affects release downloads only; it does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
 
 #### Health Score Sorting
 
@@ -934,7 +936,7 @@ Project supports multi-arch Docker images:
   - `latest` - Latest stable version
   - `v2.44.1` - Specific release tag, matching the GitHub Release tag
 
-The official GHCR runtime image is Alpine-based. On container startup, it downloads the latest Linux release binary from GitHub Releases; after ccLoad starts, further update checks are handled by ccLoad's own auto-update mechanism. The default check interval is 12 hours and can be changed with `auto_update_interval_hours` in the Web admin settings.
+The official GHCR runtime image is Alpine-based. On container startup, it downloads and verifies the latest Linux release binary, trying `ghproxy.net` first and GitHub directly on failure. After ccLoad starts, its in-process updater uses the same source order. Set `CCLOAD_RELEASE_BASE_URL` to a complete `.../releases/latest/download` URL to use only a custom mirror. The default in-process check interval is 12 hours and can be changed with `auto_update_interval_hours` in the Web admin settings.
 
 ### Image Tag Guide
 

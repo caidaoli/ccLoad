@@ -204,3 +204,38 @@ func TestStartChecker_RunsCheckOnce(t *testing.T) {
 		t.Fatalf("expected lastCheck to be set")
 	}
 }
+
+func TestCheckerFallsBackToNextReleaseSource(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	var requests []string
+	c := &Checker{
+		sources: []ReleaseSource{
+			{Name: "proxy", LatestURL: "https://proxy.test/releases/latest"},
+			{Name: "github", LatestURL: "https://github.test/releases/latest"},
+		},
+		client: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				requests = append(requests, req.URL.Host)
+				if req.URL.Host == "proxy.test" {
+					return nil, errors.New("proxy unavailable")
+				}
+				return latestReleaseResp(t, req, http.StatusOK, "https://github.test/caidaoli/ccLoad/releases/tag/v2.0.0"), nil
+			}),
+		},
+	}
+
+	c.check()
+
+	if len(requests) != 2 || requests[0] != "proxy.test" || requests[1] != "github.test" {
+		t.Fatalf("request order = %v, want [proxy.test github.test]", requests)
+	}
+	if !c.hasUpdate || c.latestVersion != "v2.0.0" {
+		t.Fatalf("state after fallback: hasUpdate=%v latest=%q", c.hasUpdate, c.latestVersion)
+	}
+	if c.releaseURL != "https://github.test/caidaoli/ccLoad/releases/tag/v2.0.0" {
+		t.Fatalf("releaseURL = %q", c.releaseURL)
+	}
+}

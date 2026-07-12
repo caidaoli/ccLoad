@@ -9,9 +9,53 @@ import (
 )
 
 const (
-	githubLatestReleaseURL = "https://github.com/caidaoli/ccLoad/releases/latest"
-	releaseTagPathMarker   = "/releases/tag/"
+	githubLatestReleaseURL      = "https://github.com/caidaoli/ccLoad/releases/latest"
+	githubDownloadBaseURL       = "https://github.com/caidaoli/ccLoad/releases/download"
+	ghproxyLatestReleaseURL     = "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/latest"
+	ghproxyDownloadBaseURL      = "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/download"
+	releaseLatestDownloadSuffix = "/releases/latest/download"
+	releaseTagPathMarker        = "/releases/tag/"
 )
+
+// ReleaseSource describes one complete release endpoint.
+type ReleaseSource struct {
+	Name            string
+	LatestURL       string
+	DownloadBaseURL string
+}
+
+func releaseSources(customBaseURL string) ([]ReleaseSource, error) {
+	customBaseURL = strings.TrimRight(strings.TrimSpace(customBaseURL), "/")
+	if customBaseURL == "" {
+		return []ReleaseSource{
+			{
+				Name:            "ghproxy.net",
+				LatestURL:       ghproxyLatestReleaseURL,
+				DownloadBaseURL: ghproxyDownloadBaseURL,
+			},
+			{
+				Name:            "github.com",
+				LatestURL:       githubLatestReleaseURL,
+				DownloadBaseURL: githubDownloadBaseURL,
+			},
+		}, nil
+	}
+
+	if !strings.HasSuffix(customBaseURL, releaseLatestDownloadSuffix) {
+		return nil, fmt.Errorf("CCLOAD_RELEASE_BASE_URL must end with %s", releaseLatestDownloadSuffix)
+	}
+	parsed, err := url.Parse(customBaseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return nil, fmt.Errorf("invalid CCLOAD_RELEASE_BASE_URL %q", customBaseURL)
+	}
+
+	repositoryBaseURL := strings.TrimSuffix(customBaseURL, releaseLatestDownloadSuffix)
+	return []ReleaseSource{{
+		Name:            "custom",
+		LatestURL:       repositoryBaseURL + "/releases/latest",
+		DownloadBaseURL: repositoryBaseURL + "/releases/download",
+	}}, nil
+}
 
 func fetchLatestRelease(ctx context.Context, client *http.Client, latestURL string) (GitHubRelease, error) {
 	if client == nil {
@@ -93,36 +137,22 @@ func releaseTagFromURL(rawURL string) (string, error) {
 	return tag, nil
 }
 
-func releaseDownloadURL(release GitHubRelease, assetName string) (string, error) {
-	if strings.TrimSpace(release.TagName) == "" {
+func releaseDownloadURL(source ReleaseSource, tag, assetName string) (string, error) {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
 		return "", fmt.Errorf("latest release missing tag_name")
 	}
-	if strings.TrimSpace(assetName) == "" {
-		return "", fmt.Errorf("release %s has empty asset name", release.TagName)
+	assetName = strings.TrimSpace(assetName)
+	if assetName == "" {
+		return "", fmt.Errorf("release %s has empty asset name", tag)
 	}
-
-	u, err := url.Parse(strings.TrimSpace(release.HTMLURL))
-	if err != nil {
-		return "", fmt.Errorf("parse release URL: %w", err)
+	downloadBaseURL := strings.TrimRight(strings.TrimSpace(source.DownloadBaseURL), "/")
+	if downloadBaseURL == "" {
+		return "", fmt.Errorf("release source %q has empty download base URL", source.Name)
 	}
-	path := u.EscapedPath()
-	idx := strings.LastIndex(path, releaseTagPathMarker)
-	if idx < 0 {
-		return "", fmt.Errorf("release URL %q missing %s", release.HTMLURL, releaseTagPathMarker)
+	parsed, err := url.Parse(downloadBaseURL)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf("release source %q has invalid download base URL %q", source.Name, source.DownloadBaseURL)
 	}
-
-	prefix, err := url.PathUnescape(strings.TrimRight(path[:idx], "/"))
-	if err != nil {
-		return "", fmt.Errorf("unescape release URL prefix: %w", err)
-	}
-	base := url.URL{
-		Scheme: u.Scheme,
-		Host:   u.Host,
-		Path:   prefix,
-	}
-	downloadURL, err := url.JoinPath(base.String(), "releases", "download", release.TagName, assetName)
-	if err != nil {
-		return "", fmt.Errorf("build release download URL: %w", err)
-	}
-	return downloadURL, nil
+	return downloadBaseURL + "/" + url.PathEscape(tag) + "/" + url.PathEscape(assetName), nil
 }
