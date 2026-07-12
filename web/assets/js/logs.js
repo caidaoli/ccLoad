@@ -2566,12 +2566,12 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
       const pre = document.getElementById(targetId);
       if (!pre) return;
       const text = pre._rawText || pre.textContent || '';
-      navigator.clipboard.writeText(text).then(() => {
+      window.copyToClipboard(text).then(() => {
         const orig = copyBtn.textContent;
         copyBtn.textContent = '\u2713';
         copyBtn.classList.add('copied');
         setTimeout(() => { copyBtn.textContent = orig; copyBtn.classList.remove('copied'); }, 1500);
-      });
+      }).catch(() => {});
     }
   });
 }
