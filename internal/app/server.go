@@ -851,7 +851,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/stats", s.HandleStats)
 		admin.GET("/stats/filter-options", s.HandleStatsFilterOptions)
 		admin.GET("/models", s.HandleGetModels)
-		admin.GET("/model-catalog/common", s.HandleCommonModelCatalog)
 
 		// API访问令牌管理
 		admin.GET("/auth-tokens", s.HandleListAuthTokens)

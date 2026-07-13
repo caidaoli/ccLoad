@@ -396,55 +396,6 @@ if (typeof module !== 'undefined' && module.exports) {
   const fs = require('node:fs');
   const vm = require('node:vm');
 
-  function loadChannelModals() {
-    const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
-    const previousWindow = global.window;
-    global.window = { ChannelProtocolConfig: {} };
-    const modulePath = require.resolve('./channels-modals.js');
-    delete require.cache[modulePath];
-
-    try {
-      return {
-        mod: require('./channels-modals.js'),
-        restore() {
-          delete require.cache[modulePath];
-          if (hadWindow) global.window = previousWindow;
-          else delete global.window;
-        }
-      };
-    } catch (error) {
-      if (hadWindow) global.window = previousWindow;
-      else delete global.window;
-      throw error;
-    }
-  }
-
-  test('mergeCommonModels 使用同步模型并忽略大小写去重', () => {
-    const runtime = loadChannelModals();
-    try {
-      const merged = runtime.mod.mergeCommonModels(
-        [{ model: 'gpt-5.6', redirect_model: '' }],
-        ['GPT-5.6', 'gpt-5.7'],
-        ['gpt-5.4']
-      );
-      assert.deepEqual(merged.rows.map((row) => row.model), ['gpt-5.6', 'gpt-5.7']);
-      assert.deepEqual(merged.rows.map((row) => row.redirect_model), ['', '']);
-      assert.equal(merged.added, 1);
-    } finally {
-      runtime.restore();
-    }
-  });
-
-  test('mergeCommonModels 在同步模型为空时使用内置回退', () => {
-    const runtime = loadChannelModals();
-    try {
-      const merged = runtime.mod.mergeCommonModels([], [], ['claude-sonnet-5']);
-      assert.deepEqual(merged.rows, [{ model: 'claude-sonnet-5', redirect_model: '' }]);
-    } finally {
-      runtime.restore();
-    }
-  });
-
   function replaceGlobals(values) {
     const previous = new Map();
     for (const [key, value] of Object.entries(values)) {
@@ -648,7 +599,6 @@ if (typeof module !== 'undefined' && module.exports) {
   });
 
   function loadChannelEditor({ channelType = 'codex', rows = [], fetchResult } = {}) {
-    const state = { endpoint: '' };
     const tableBody = {
       dataset: {},
       innerHTML: '',
@@ -682,10 +632,7 @@ if (typeof module !== 'undefined' && module.exports) {
           ? { querySelector: () => null }
           : null
       },
-      fetchDataWithAuth: async (endpoint) => {
-        state.endpoint = endpoint;
-        return typeof fetchResult === 'function' ? fetchResult() : fetchResult;
-      },
+      fetchDataWithAuth: async () => typeof fetchResult === 'function' ? fetchResult() : fetchResult,
       syncChannelEditorTableSizing: () => {},
       markChannelFormDirty: () => {},
       alert: () => {}
@@ -696,7 +643,6 @@ if (typeof module !== 'undefined' && module.exports) {
     try {
       return {
         mod: require('./channels-modals.js'),
-        state,
         restore() {
           delete require.cache[modulePath];
           restoreGlobals();
@@ -712,61 +658,24 @@ if (typeof module !== 'undefined' && module.exports) {
     return global.redirectTableData.map(({ model, redirect_model }) => ({ model, redirect_model }));
   }
 
-  test('addCommonModels 使用同步目录生成提交模型行', async () => {
+  test('addCommonModels 只添加手动维护的 Codex 常用模型', async () => {
     const runtime = loadChannelEditor({
-      rows: [{ model: 'gpt-5.6', redirect_model: 'kept-target' }],
+      rows: [{ model: 'GPT-5.4', redirect_model: 'kept-target' }],
       fetchResult: {
-        models: ['GPT-5.6', 'gpt-5.7'],
-        source: 'remote',
+        models: ['gpt-realtime-2.1'],
+        source: 'models.dev',
         fetched_at: '2026-07-11T00:00:00Z'
       }
     });
     try {
       await runtime.mod.addCommonModels();
-      assert.equal(runtime.state.endpoint, '/admin/model-catalog/common?channel_type=codex');
       assert.deepEqual(submittedModelRows(), [
-        { model: 'gpt-5.6', redirect_model: 'kept-target' },
-        { model: 'gpt-5.7', redirect_model: '' }
-      ]);
-    } finally {
-      runtime.restore();
-    }
-  });
-
-  test('addCommonModels 在空或无效目录响应时使用静态回退', async () => {
-    for (const fetchResult of [
-      { models: [], source: 'embedded' },
-      { models: 'not-an-array', source: 'remote' }
-    ]) {
-      const runtime = loadChannelEditor({ fetchResult });
-      try {
-        await runtime.mod.addCommonModels();
-        assert.deepEqual(submittedModelRows(), [
-          { model: 'gpt-5.4', redirect_model: '' },
-          { model: 'gpt-5.4-mini', redirect_model: '' },
-          { model: 'gpt-5.5', redirect_model: '' },
-          { model: 'gpt-5.6-sol', redirect_model: '' },
-          { model: 'gpt-5.6-luna', redirect_model: '' },
-          { model: 'gpt-5.6-terra', redirect_model: '' }
-        ]);
-      } finally {
-        runtime.restore();
-      }
-    }
-  });
-
-  test('addCommonModels 在目录请求失败时使用静态回退', async () => {
-    const runtime = loadChannelEditor({
-      channelType: 'gemini',
-      fetchResult: () => Promise.reject(new Error('catalog unavailable'))
-    });
-    try {
-      await runtime.mod.addCommonModels();
-      assert.deepEqual(submittedModelRows(), [
-        { model: 'gemini-3.5-flash', redirect_model: '' },
-        { model: 'gemini-2.5-pro', redirect_model: '' },
-        { model: 'gemini-3.1-flash-lite', redirect_model: '' },
-        { model: 'gemini-3.1-pro', redirect_model: '' }
+        { model: 'GPT-5.4', redirect_model: 'kept-target' },
+        { model: 'gpt-5.4-mini', redirect_model: '' },
+        { model: 'gpt-5.5', redirect_model: '' },
+        { model: 'gpt-5.6-sol', redirect_model: '' },
+        { model: 'gpt-5.6-luna', redirect_model: '' },
+        { model: 'gpt-5.6-terra', redirect_model: '' }
       ]);
     } finally {
       runtime.restore();

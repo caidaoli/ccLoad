@@ -334,7 +334,7 @@ func InstallModelCatalog(snapshot *ModelCatalogSnapshot, source string) error {
 		return installed.Models[i].ID < installed.Models[j].ID
 	})
 
-	activeModelPricing.Store(buildModelPricingSnapshot(installed, source))
+	activeModelPricing.Store(buildModelPricingSnapshot(installed))
 	return nil
 }
 
@@ -367,7 +367,7 @@ func validateModelCatalogEntry(entry ModelCatalogEntry) error {
 
 // RestoreEmbeddedModelCatalog 丢弃远端目录并恢复编译期定价表。
 func RestoreEmbeddedModelCatalog() {
-	activeModelPricing.Store(buildModelPricingSnapshot(nil, "embedded"))
+	activeModelPricing.Store(buildModelPricingSnapshot(nil))
 }
 
 // CurrentModelCatalogETag 返回当前已安装远端目录的 ETag。
@@ -404,110 +404,4 @@ func CurrentModelCatalogSummary() ModelCatalogSummary {
 		SkippedModelCount: snapshot.remoteSkippedModels,
 		ETag:              snapshot.remoteETag,
 	}
-}
-
-// CommonCatalogModels 返回与渠道协议匹配的常用文本模型及目录元数据。
-func CommonCatalogModels(channelType string, limit int) ([]string, string, time.Time) {
-	snapshot := activeModelPricing.Load()
-	if snapshot == nil {
-		return []string{}, "embedded", time.Time{}
-	}
-	provider := catalogProviderForChannelType(channelType)
-	if provider == "" || limit <= 0 {
-		return []string{}, snapshot.remoteSource, snapshot.remoteFetched
-	}
-
-	entries := make([]ModelCatalogEntry, 0)
-	for _, entry := range snapshot.metadata {
-		if entry.Provider != provider || isDeprecatedCatalogModel(entry.Status) ||
-			!hasTextOutput(entry.OutputModalities) || !hasTokenPricing(entry.Pricing) {
-			continue
-		}
-		entries = append(entries, entry)
-	}
-
-	undatedIDs := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		undatedIDs[entry.ID] = struct{}{}
-	}
-	filtered := entries[:0]
-	for _, entry := range entries {
-		if undatedID, dated := catalogUndatedModelID(entry.ID); dated {
-			if _, exists := undatedIDs[undatedID]; exists {
-				continue
-			}
-		}
-		filtered = append(filtered, entry)
-	}
-	entries = filtered
-	sort.Slice(entries, func(i, j int) bool {
-		if entries[i].LastUpdated != entries[j].LastUpdated {
-			return entries[i].LastUpdated > entries[j].LastUpdated
-		}
-		if entries[i].ReleaseDate != entries[j].ReleaseDate {
-			return entries[i].ReleaseDate > entries[j].ReleaseDate
-		}
-		return entries[i].ID < entries[j].ID
-	})
-	if len(entries) > limit {
-		entries = entries[:limit]
-	}
-
-	models := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		models = append(models, entry.ID)
-	}
-	return models, snapshot.remoteSource, snapshot.remoteFetched
-}
-
-func catalogProviderForChannelType(channelType string) string {
-	switch NormalizeChannelType(channelType) {
-	case ChannelTypeOpenAI, ChannelTypeCodex:
-		return "openai"
-	case ChannelTypeAnthropic:
-		return "anthropic"
-	case ChannelTypeGemini:
-		return "google"
-	default:
-		return ""
-	}
-}
-
-func hasTextOutput(modalities []string) bool {
-	for _, modality := range modalities {
-		if strings.EqualFold(modality, "text") {
-			return true
-		}
-	}
-	return false
-}
-
-func isDeprecatedCatalogModel(status string) bool {
-	return strings.EqualFold(strings.TrimSpace(status), "deprecated")
-}
-
-func hasTokenPricing(pricing ModelPricing) bool {
-	// 归一化 parser 已保证 input/output token 单价存在（零价仍是有效 token 计费）。
-	// 这里只排除仅有固定按次计费的条目，避免它们进入文本模型快捷列表。
-	return pricing.FixedCostPerRequest == 0
-}
-
-func catalogUndatedModelID(id string) (string, bool) {
-	if len(id) > len("-20060102") {
-		dateStart := len(id) - len("20060102")
-		if id[dateStart-1] == '-' {
-			if _, err := time.Parse("20060102", id[dateStart:]); err == nil {
-				return id[:dateStart-1], true
-			}
-		}
-	}
-	if len(id) > len("-2006-01-02") {
-		dateStart := len(id) - len(time.DateOnly)
-		if id[dateStart-1] == '-' {
-			if _, err := time.Parse(time.DateOnly, id[dateStart:]); err == nil {
-				return id[:dateStart-1], true
-			}
-		}
-	}
-	return "", false
 }

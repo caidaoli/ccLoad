@@ -2098,48 +2098,11 @@ const COMMON_MODELS = {
   ]
 };
 
-function mergeCommonModels(rows, fetchedModels, fallbackModels) {
-  const source = Array.isArray(fetchedModels) && fetchedModels.length > 0
-    ? fetchedModels
-    : (Array.isArray(fallbackModels) ? fallbackModels : []);
-  const nextRows = Array.isArray(rows) ? rows.map((row) => ({ ...row })) : [];
-  const existingModels = new Set(
-    nextRows
-      .map((row) => String(row?.model || '').trim().toLowerCase())
-      .filter(Boolean)
-  );
-  let added = 0;
-
-  for (const rawModel of source) {
-    const model = String(rawModel || '').trim();
-    const modelKey = model.toLowerCase();
-    if (!model || existingModels.has(modelKey)) continue;
-
-    nextRows.push({ model, redirect_model: '' });
-    existingModels.add(modelKey);
-    added++;
-  }
-
-  return { rows: nextRows, added };
-}
-
-async function addCommonModels() {
+function addCommonModels() {
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  const fallbackModels = COMMON_MODELS[channelType];
-  let fetchedModels;
+  const commonModels = COMMON_MODELS[channelType];
 
-  try {
-    const response = await fetchDataWithAuth(
-      `/admin/model-catalog/common?channel_type=${encodeURIComponent(channelType)}`
-    );
-    fetchedModels = response?.models;
-  } catch (error) {
-    fetchedModels = null;
-  }
-
-  const hasFetchedModels = Array.isArray(fetchedModels) && fetchedModels.length > 0;
-  const hasFallbackModels = Array.isArray(fallbackModels) && fallbackModels.length > 0;
-  if (!hasFetchedModels && !hasFallbackModels) {
+  if (!commonModels || commonModels.length === 0) {
     if (window.showWarning) {
       window.showWarning(window.t('channels.noPresetModels', { type: channelType }));
     } else {
@@ -2148,17 +2111,32 @@ async function addCommonModels() {
     return;
   }
 
-  const merged = mergeCommonModels(redirectTableData, fetchedModels, fallbackModels);
-  redirectTableData = merged.rows;
+  // 获取现有模型名称集合
+  const existingModels = new Set(
+    redirectTableData
+      .map(r => (r.model || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
+  // 添加常用模型（不重复）
+  let addedCount = 0;
+  for (const modelName of commonModels) {
+    const modelKey = modelName.toLowerCase();
+    if (!existingModels.has(modelKey)) {
+      redirectTableData.push({ model: modelName, redirect_model: '' });
+      existingModels.add(modelKey);
+      addedCount++;
+    }
+  }
 
   renderRedirectTable();
-  if (merged.added > 0) markChannelFormDirty();
+  if (addedCount > 0) markChannelFormDirty();
 
   if (window.showSuccess) {
-    window.showSuccess(window.t('channels.addedCommonModels', { count: merged.added }));
+    window.showSuccess(window.t('channels.addedCommonModels', { count: addedCount }));
   }
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { mergeCommonModels, addCommonModels };
+  module.exports = { addCommonModels };
 }
