@@ -1265,6 +1265,12 @@ async function syncLogSourceVisibility(preloadedIntervalHours) {
   const { group, select } = getLogSourceFilterElements();
   if (!group || !select) return false;
 
+  if (window.isAPITokenRole()) {
+    group.hidden = true;
+    select.value = 'proxy';
+    return false;
+  }
+
   let scheduledCheckEnabledByConfig = false;
   if (preloadedIntervalHours !== undefined) {
     // 预加载路径：跳过 fetch，直接使用 bootstrap 数据

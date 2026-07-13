@@ -1108,13 +1108,6 @@ window.WebAuth = window.WebAuth || {
       if (options.topbarKey && typeof window.initTopbar === 'function') {
         window.initTopbar(options.topbarKey);
       }
-	  if (window.isAPITokenRole()) {
-	    ['f_channel_type', 'f_id', 'f_name', 'f_auth_token', 'f_log_source'].forEach((id) => {
-	      const control = document.getElementById(id);
-	      const group = control && control.closest('.filter-group');
-	      if (group) group.hidden = true;
-	    });
-	  }
 
       await run();
     };
@@ -1251,6 +1244,14 @@ window.WebAuth = window.WebAuth || {
   async function initAuthTokenFilter(options = {}) {
     const selectId = options.selectId;
     if (!selectId) return [];
+
+    const select = document.getElementById(selectId);
+    const group = select && select.closest('.filter-group');
+    if (window.isAPITokenRole()) {
+      if (group) group.hidden = true;
+      return [];
+    }
+    if (group) group.hidden = false;
 
     if (Array.isArray(options.preloadedTokens)) {
       fillAuthTokenSelect(selectId, options.preloadedTokens, options.loadOptions);
