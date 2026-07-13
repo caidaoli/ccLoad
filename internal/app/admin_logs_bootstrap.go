@@ -28,6 +28,10 @@ type LogsBootstrapResponse struct {
 func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 	ctx, cancel := context.WithTimeout(c.Request.Context(), 10*time.Second)
 	defer cancel()
+	if isAPITokenWebRequest(c) {
+		s.handleTokenLogsBootstrap(ctx, c)
+		return
+	}
 
 	// 解析时间范围（与 HandleGetModels 保持一致）
 	params := ParsePaginationParams(c)
@@ -154,4 +158,27 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, resp)
+}
+
+func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
+	params := ParsePaginationParams(c)
+	if params.Range == "" {
+		params.Range = "this_month"
+	}
+	since, until := params.GetTimeRange()
+	filter := BuildLogFilter(c)
+	filter.LogSource = model.LogSourceProxy
+	models, err := s.store.GetDistinctModels(ctx, since, until, "", &filter)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if models == nil {
+		models = make([]string, 0)
+	}
+	RespondJSON(c, http.StatusOK, LogsBootstrapResponse{
+		AuthTokens: make([]*model.AuthToken, 0),
+		Models:     models,
+		Channels:   make([]model.ChannelNameID, 0),
+	})
 }

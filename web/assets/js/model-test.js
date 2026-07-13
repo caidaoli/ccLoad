@@ -4401,6 +4401,10 @@ document.addEventListener('click', (e) => {
 });
 
 async function bootstrap() {
+  if (window.isAPITokenRole()) {
+    await window.TokenModelTest.init();
+    return;
+  }
   window.ChannelModalHooks = {
     afterSave: async () => {
       await loadChannels({ preserveSelection: true, preserveTableState: true });

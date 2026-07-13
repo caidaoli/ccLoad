@@ -793,7 +793,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 	// 公开访问的API（首页仪表盘数据）
 	// [SECURITY NOTE] /public/* 端点故意不做认证，用于首页展示。
-	// 如需隐藏运营数据，可添加 s.authService.RequireTokenAuth() 中间件。
+	// 认证仪表盘使用 /dashboard/summary；该公开端点保留给未登录首页集成。
 	public := r.Group("/public", ZstdMiddleware())
 	{
 		public.GET("/summary", s.HandlePublicSummary)
@@ -807,7 +807,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 	// 需要身份验证的admin APIs（使用Token认证）
 	admin := r.Group("/admin", ZstdMiddleware())
-	admin.Use(s.authService.RequireTokenAuth())
+	admin.Use(s.authService.RequireAdminAuth())
 	{
 		// 渠道管理
 		admin.GET("/channels", s.HandleChannels)
@@ -866,6 +866,24 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/settings/:key/reset", s.AdminResetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
 	}
+
+	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。
+	dashboard := r.Group("/dashboard", ZstdMiddleware())
+	dashboard.Use(s.authService.RequireWebAuth())
+	{
+		dashboard.GET("/session", s.authService.HandleWebSession)
+		dashboard.GET("/summary", s.HandlePublicSummary)
+		dashboard.GET("/logs", s.HandleErrors)
+		dashboard.GET("/logs/bootstrap", s.HandleLogsBootstrap)
+		dashboard.GET("/metrics", s.HandleMetrics)
+		dashboard.GET("/stats", s.HandleStats)
+		dashboard.GET("/stats/filter-options", s.HandleStatsFilterOptions)
+		dashboard.GET("/models", s.HandleGetModels)
+	}
+	dashboardProxy := r.Group("/dashboard")
+	dashboardProxy.Use(s.authService.RequireWebAuth(), s.authService.RequireWebAPITokenProxyAuth(), captureDashboardProxyMetadata())
+	dashboardProxy.Any("/v1/*path", s.HandleProxyRequest)
+	dashboardProxy.Any("/v1beta/*path", s.HandleProxyRequest)
 
 	// 静态文件服务（带版本号和缓存控制）
 	// - HTML：不缓存，动态替换 __VERSION__ 占位符

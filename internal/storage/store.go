@@ -102,18 +102,19 @@ type Store interface {
 	GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error)
 	FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error
 
+	// === Web Session Management ===
+	CreateWebSession(ctx context.Context, token string, session model.WebSession) error
+	GetWebSession(ctx context.Context, token string) (model.WebSession, bool, error)
+	DeleteWebSession(ctx context.Context, token string) error
+	DeleteWebSessionsByAuthTokenID(ctx context.Context, authTokenID int64) error
+	CleanExpiredWebSessions(ctx context.Context) error
+	LoadWebSessions(ctx context.Context) (map[string]model.WebSession, error)
+
 	// === System Settings ===
 	GetSetting(ctx context.Context, key string) (*model.SystemSetting, error)
 	ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error)
 	UpdateSetting(ctx context.Context, key, value string) error
 	BatchUpdateSettings(ctx context.Context, updates map[string]string) error
-
-	// === Admin Session Management ===
-	CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error
-	GetAdminSession(ctx context.Context, token string) (expiresAt time.Time, exists bool, err error)
-	DeleteAdminSession(ctx context.Context, token string) error
-	CleanExpiredSessions(ctx context.Context) error
-	LoadAllSessions(ctx context.Context) (map[string]time.Time, error)
 
 	// === Batch Operations ===
 	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)

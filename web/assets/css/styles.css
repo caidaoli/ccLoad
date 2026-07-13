@@ -4995,6 +4995,106 @@ body.trend-page .chart-info {
   margin: 0;
 }
 
+.login-mode-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  margin: calc(-1 * var(--space-4)) 0 var(--space-6);
+  padding: var(--space-1);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--neutral-100);
+}
+
+.login-mode-tab {
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-3) var(--space-4);
+  background: transparent;
+  color: var(--neutral-600);
+  font: inherit;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+}
+
+.login-mode-tab.active {
+  background: var(--glass-bg);
+  color: var(--primary-600);
+  box-shadow: var(--shadow-sm);
+}
+
+body.web-role-api-token .logs-col-ip,
+body.web-role-api-token .logs-col-token-desc,
+body.web-role-api-token .logs-col-api-key,
+body.web-role-api-token .logs-col-channel,
+body.web-role-api-token .stats-table [data-column="channel_name"],
+body.web-role-api-token .stats-col-channel {
+  display: none !important;
+}
+
+.token-model-test-card {
+  padding: var(--space-6);
+}
+
+.token-model-test-header,
+.token-model-test-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.token-model-test-header h1 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-xl);
+}
+
+.token-model-test-header p {
+  margin: 0;
+  color: var(--neutral-600);
+}
+
+.token-model-test-identity {
+  color: var(--neutral-600);
+  font-size: var(--text-sm);
+}
+
+.token-model-test-grid {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.7fr) minmax(240px, 1.5fr) auto;
+  align-items: end;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+}
+
+.token-model-test-prompt {
+  display: block;
+  margin-top: var(--space-5);
+}
+
+.token-model-test-prompt textarea {
+  width: 100%;
+  resize: vertical;
+}
+
+.token-model-test-actions {
+  justify-content: flex-end;
+  margin-top: var(--space-4);
+}
+
+.token-model-test-output {
+  min-height: 220px;
+  margin-top: var(--space-4);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (max-width: 720px) {
+  .token-model-test-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
 .error-notification {
   display: flex;
   align-items: center;

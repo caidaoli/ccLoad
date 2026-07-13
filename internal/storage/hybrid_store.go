@@ -759,27 +759,28 @@ func (h *HybridStore) BatchUpdateSettings(ctx context.Context, updates map[strin
 	return nil
 }
 
-// === Admin Session Management ===
-// Admin sessions 只存在于 SQLite（本地会话，无需同步）
-
-func (h *HybridStore) CreateAdminSession(ctx context.Context, token string, expiresAt time.Time) error {
-	return h.sqlite.CreateAdminSession(ctx, token, expiresAt)
+func (h *HybridStore) CreateWebSession(ctx context.Context, token string, session model.WebSession) error {
+	return h.sqlite.CreateWebSession(ctx, token, session)
 }
 
-func (h *HybridStore) GetAdminSession(ctx context.Context, token string) (expiresAt time.Time, exists bool, err error) {
-	return h.sqlite.GetAdminSession(ctx, token)
+func (h *HybridStore) GetWebSession(ctx context.Context, token string) (model.WebSession, bool, error) {
+	return h.sqlite.GetWebSession(ctx, token)
 }
 
-func (h *HybridStore) DeleteAdminSession(ctx context.Context, token string) error {
-	return h.sqlite.DeleteAdminSession(ctx, token)
+func (h *HybridStore) DeleteWebSession(ctx context.Context, token string) error {
+	return h.sqlite.DeleteWebSession(ctx, token)
 }
 
-func (h *HybridStore) CleanExpiredSessions(ctx context.Context) error {
-	return h.sqlite.CleanExpiredSessions(ctx)
+func (h *HybridStore) DeleteWebSessionsByAuthTokenID(ctx context.Context, authTokenID int64) error {
+	return h.sqlite.DeleteWebSessionsByAuthTokenID(ctx, authTokenID)
 }
 
-func (h *HybridStore) LoadAllSessions(ctx context.Context) (map[string]time.Time, error) {
-	return h.sqlite.LoadAllSessions(ctx)
+func (h *HybridStore) CleanExpiredWebSessions(ctx context.Context) error {
+	return h.sqlite.CleanExpiredWebSessions(ctx)
+}
+
+func (h *HybridStore) LoadWebSessions(ctx context.Context) (map[string]model.WebSession, error) {
+	return h.sqlite.LoadWebSessions(ctx)
 }
 
 // === Batch Operations ===

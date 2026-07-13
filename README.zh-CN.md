@@ -1026,7 +1026,7 @@ storage/
 │   ├── metrics_finalize.go    # 终结化处理
 │   ├── auth_tokens.go         # API 访问令牌
 │   ├── auth_token_stats.go    # 令牌统计
-│   ├── admin_sessions.go  # 管理会话
+│   ├── web_sessions.go    # 带角色与 Token 作用域的 Web 会话
 │   ├── system_settings.go # 系统设置
 │   └── helpers.go         # 辅助函数
 └── sqlite/          # SQLite 特定（仅测试文件）
@@ -1043,7 +1043,7 @@ storage/
 - `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
 - `key_rr` - 轮询指针（channel_id → idx）
 - `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
-- `admin_sessions` - 管理会话
+- `web_sessions` - 可绑定 API Token 的角色化 Web 会话
 - `system_settings` - 系统配置（支持热重载）
 
 **架构特性** (✅ 2025-12月 ~ 2026-04月持续优化):
@@ -1080,7 +1080,7 @@ storage/
 - 生产环境**务必**设置强密码 `CCLOAD_PASS`，别用123456
 - 在Web界面 `/web/tokens.html` 配好API令牌，保护你的接口
 - API Key只在内存用，日志里不记录，放心
-- Token存在浏览器localStorage，24小时过期，安全又方便
+- 浏览器 localStorage 只保存随机 Web 会话令牌，24 小时过期，不保存 API Token 明文
 - 建议部署 HTTPS 反向代理（nginx/Caddy），不要让管理界面裸露在公网明文访问
 - Docker 镜像使用非 root 用户运行，降低容器逃逸后的影响面
 
@@ -1089,14 +1089,14 @@ storage/
 Token 认证系统：
 
 **认证方式**：
-- **管理界面**：登录后获取24小时有效期的Token，存储在 `localStorage`
+- **Web界面**：可用管理员密码或 API Token 登录，获取 24 小时有效的 Web 会话令牌
 - **API端点**：支持 `Authorization: Bearer <token>` 头认证
 
 **核心特性**：
-- ✅ **无状态认证**：Token 不依赖服务端 Session，便于水平扩展
-- ✅ **统一认证体系**：API和Web用同一套Token，简单
-- ✅ **简洁架构**：纯Token认证，代码又少又稳（KISS原则）
-- ✅ **跨域支持**：Token存localStorage，跨域访问完全OK
+- ✅ **作用域会话**：API Token 会话只读，服务端强制限制为当前 Token 的数据
+- ✅ **即时失效**：API Token 被禁用、删除或过期后，其 Web 会话立即失效
+- ✅ **凭据隔离**：浏览器存储中不会保存 API Token 明文
+- ✅ **服务端授权**：渠道、令牌、设置和调试数据始终只允许管理员访问
 
 **使用示例**：
 
@@ -1105,7 +1105,7 @@ Token 认证系统：
 # 1. 登录获取Token
 curl -X POST http://localhost:8080/login \
   -H "Content-Type: application/json" \
-  -d '{"password":"your_admin_password"}' | jq
+  -d '{"mode":"admin","password":"your_admin_password"}' | jq
 
 # 响应示例：
 # {

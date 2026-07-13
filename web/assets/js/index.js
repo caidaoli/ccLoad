@@ -18,7 +18,7 @@
       const query = typeof window.buildDateRangeQuery === 'function'
         ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
         : `range=${encodeURIComponent(currentTimeRange)}`;
-      return `/public/summary?${query}`;
+      return `/dashboard/summary?${query}`;
     }
 
     // 加载统计数据
@@ -29,19 +29,7 @@
           el.classList.add('animate-pulse');
         });
 
-        let data;
-        // 首次加载使用预取数据（与 JS 下载并行获取）
-        if (window.__prefetch_summary) {
-          const prefetched = await window.__prefetch_summary;
-          window.__prefetch_summary = null;
-          if (prefetched && prefetched.success) {
-            data = prefetched.data;
-          }
-        }
-        // 预取失败或后续轮询走正常路径
-        if (!data) {
-          data = await fetchData(buildSummaryURL());
-        }
+        const data = await fetchDataWithAuth(buildSummaryURL());
         statsData = data || statsData;
         updateStatsDisplay();
 

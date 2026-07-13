@@ -15,7 +15,7 @@ import (
 
 // ============================================================================
 // 认证中间件测试
-// 覆盖 RequireAPIAuth 和 RequireTokenAuth 的各种认证场景
+// 覆盖 RequireAPIAuth 和 RequireAdminAuth 的各种认证场景
 // ============================================================================
 
 // ============================================================================
@@ -290,10 +290,10 @@ func TestRequireAPIAuth_TokenConcurrencyLimit_AppliesImmediatelyAfterUpdate(t *t
 }
 
 // ============================================================================
-// RequireTokenAuth 测试
+// RequireAdminAuth 测试
 // ============================================================================
 
-func TestRequireTokenAuth_ValidBearer(t *testing.T) {
+func TestRequireAdminAuth_ValidBearer(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
 	injectAdminToken(svc, "admin-token-valid", time.Now().Add(time.Hour))
@@ -301,13 +301,13 @@ func TestRequireTokenAuth_ValidBearer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer admin-token-valid")
 
-	w := runMiddleware(t, svc.RequireTokenAuth(), req)
+	w := runMiddleware(t, svc.RequireAdminAuth(), req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestRequireTokenAuth_InvalidBearer(t *testing.T) {
+func TestRequireAdminAuth_InvalidBearer(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
 	injectAdminToken(svc, "admin-token", time.Now().Add(time.Hour))
@@ -315,26 +315,26 @@ func TestRequireTokenAuth_InvalidBearer(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer wrong-admin-token")
 
-	w := runMiddleware(t, svc.RequireTokenAuth(), req)
+	w := runMiddleware(t, svc.RequireAdminAuth(), req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestRequireTokenAuth_MissingHeader(t *testing.T) {
+func TestRequireAdminAuth_MissingHeader(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
 	injectAdminToken(svc, "admin-token", time.Now().Add(time.Hour))
 
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 
-	w := runMiddleware(t, svc.RequireTokenAuth(), req)
+	w := runMiddleware(t, svc.RequireAdminAuth(), req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
-func TestRequireTokenAuth_ExpiredToken(t *testing.T) {
+func TestRequireAdminAuth_ExpiredToken(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
 	injectAdminToken(svc, "admin-expired", time.Now().Add(-time.Second))
@@ -342,7 +342,7 @@ func TestRequireTokenAuth_ExpiredToken(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer admin-expired")
 
-	w := runMiddleware(t, svc.RequireTokenAuth(), req)
+	w := runMiddleware(t, svc.RequireAdminAuth(), req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
@@ -357,7 +357,7 @@ func TestRequireTokenAuth_ExpiredToken(t *testing.T) {
 	}
 }
 
-func TestRequireTokenAuth_NoBearerPrefix(t *testing.T) {
+func TestRequireAdminAuth_NoBearerPrefix(t *testing.T) {
 	t.Parallel()
 	svc := newTestAuthService(t)
 	injectAdminToken(svc, "admin-token", time.Now().Add(time.Hour))
@@ -365,7 +365,7 @@ func TestRequireTokenAuth_NoBearerPrefix(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "admin-token") // 没有 Bearer 前缀
 
-	w := runMiddleware(t, svc.RequireTokenAuth(), req)
+	w := runMiddleware(t, svc.RequireAdminAuth(), req)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}

@@ -31,7 +31,7 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 			DefineChannelModelsTable,
 			DefineAuthTokensTable,
 			DefineSystemSettingsTable,
-			DefineAdminSessionsTable,
+			DefineWebSessionsTable,
 			DefineLogsTable,
 		},
 		tableNames: []string{
@@ -40,7 +40,7 @@ func setupIntegrationTest(t *testing.T) *TestSuiteIntegration {
 			"channel_models",
 			"auth_tokens",
 			"system_settings",
-			"admin_sessions",
+			"web_sessions",
 			"logs",
 		},
 	}

@@ -126,13 +126,15 @@ func DefineSystemSettingsTable() *TableBuilder {
 		Column("updated_at BIGINT NOT NULL")
 }
 
-// DefineAdminSessionsTable 定义admin_sessions表结构
-func DefineAdminSessionsTable() *TableBuilder {
-	return NewTable("admin_sessions").
-		Column("token VARCHAR(64) PRIMARY KEY"). // SHA256哈希(64字符十六进制,2025-12改为存储哈希而非明文)
+// DefineWebSessionsTable defines role-aware browser sessions.
+func DefineWebSessionsTable() *TableBuilder {
+	return NewTable("web_sessions").
+		Column("token_hash VARCHAR(64) PRIMARY KEY").
+		Column("role VARCHAR(16) NOT NULL").
+		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").
 		Column("expires_at BIGINT NOT NULL").
 		Column("created_at BIGINT NOT NULL").
-		Index("idx_admin_sessions_expires", "expires_at")
+		Index("idx_web_sessions_expires", "expires_at")
 }
 
 // DefineSchemaMigrationsTable 定义schema_migrations表结构（迁移版本控制）

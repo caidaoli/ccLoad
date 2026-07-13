@@ -17,11 +17,13 @@
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/merged-response-client.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -32,6 +34,43 @@
   <div class="app-container">
     <main class="main-content">
       <div class="content-area">
+        <section id="tokenModelTestCard" class="glass-card token-model-test-card mt-2 mb-2" hidden>
+          <header class="token-model-test-header">
+            <div>
+              <h1 data-i18n="modelTest.tokenTitle">API Token 模型测试</h1>
+              <p data-i18n="modelTest.tokenHint">请求通过当前 Token 的真实代理链路执行</p>
+            </div>
+            <span id="tokenModelTestIdentity" class="token-model-test-identity"></span>
+          </header>
+          <div class="token-model-test-grid">
+            <label class="model-test-control">
+              <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
+              <select id="tokenModelTestProtocol" class="filter-select">
+                <option value="openai">OpenAI</option>
+                <option value="anthropic">Anthropic</option>
+                <option value="codex">Codex Responses</option>
+                <option value="gemini">Gemini</option>
+              </select>
+            </label>
+            <label class="model-test-control">
+              <span class="model-test-control__label" data-i18n="common.model">模型</span>
+              <input id="tokenModelTestModel" class="filter-input" list="tokenModelTestModels" autocomplete="off" required>
+              <datalist id="tokenModelTestModels"></datalist>
+            </label>
+            <label class="model-test-toggle token-model-test-stream">
+              <input type="checkbox" id="tokenModelTestStream" class="control-checkbox control-checkbox--sm" checked>
+              <span data-i18n="modelTest.stream">流式</span>
+            </label>
+          </div>
+          <label class="model-test-control token-model-test-prompt">
+            <span class="model-test-control__label" data-i18n="modelTest.content">内容</span>
+            <textarea id="tokenModelTestContent" class="form-input" rows="5" placeholder="Hello"></textarea>
+          </label>
+          <div class="token-model-test-actions">
+            <button id="tokenModelTestRun" type="button" class="btn btn-primary" data-i18n="modelTest.startTest">开始测试</button>
+          </div>
+          <pre id="tokenModelTestOutput" class="upstream-pre token-model-test-output" data-i18n="modelTest.tokenOutputHint">响应将显示在这里</pre>
+        </section>
         <section id="modelTestCard" class="glass-card mt-2 mb-2 overflow-visible">
           <!-- 模式切换 -->
           <div class="model-test-mode-header">

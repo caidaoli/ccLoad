@@ -32,11 +32,11 @@ func TestAuthService_IsValidToken_ExpiryAndDeletion(t *testing.T) {
 	tokenHash := model.HashToken(token)
 
 	s := &AuthService{
-		validTokens: make(map[string]time.Time),
+		validTokens: make(map[string]model.WebSession),
 	}
 
 	s.tokensMux.Lock()
-	s.validTokens[tokenHash] = time.Now().Add(-time.Second)
+	s.validTokens[tokenHash] = model.WebSession{TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(-time.Second)}
 	s.tokensMux.Unlock()
 
 	if s.isValidToken(token) {
@@ -50,7 +50,7 @@ func TestAuthService_IsValidToken_ExpiryAndDeletion(t *testing.T) {
 	}
 
 	s.tokensMux.Lock()
-	s.validTokens[tokenHash] = time.Now().Add(time.Hour)
+	s.validTokens[tokenHash] = model.WebSession{TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(time.Hour)}
 	s.tokensMux.Unlock()
 	if !s.isValidToken(token) {
 		t.Fatal("expected unexpired token valid")
