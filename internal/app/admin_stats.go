@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log"
 	"net/http"
 	"strconv"
 	"sync"
@@ -31,30 +32,54 @@ func (s *Server) HandleErrors(c *gin.Context) {
 	}
 
 	if isAPITokenWebRequest(c) {
-		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, s.tokenLogChannelTypes(c.Request.Context(), logs)), total)
+		channels, err := s.tokenLogChannels(c.Request.Context(), logs)
+		if err != nil {
+			log.Printf("[ERROR] 加载 API Token 日志脱敏元数据失败: %v", err)
+			RespondErrorMsg(c, http.StatusInternalServerError, "读取日志脱敏元数据失败")
+			return
+		}
+		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, channels), total)
 		return
 	}
 	RespondJSONWithCount(c, http.StatusOK, logs, total)
 }
 
-func (s *Server) tokenLogChannelTypes(ctx context.Context, logs []*model.LogEntry) map[int64]string {
+func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (map[int64]tokenLogChannelMetadata, error) {
 	needed := make(map[int64]struct{})
 	for _, entry := range logs {
 		if entry != nil && entry.ChannelID > 0 {
 			needed[entry.ChannelID] = struct{}{}
 		}
 	}
-	types := make(map[int64]string, len(needed))
+	channels := make(map[int64]tokenLogChannelMetadata, len(needed))
+	if len(needed) == 0 {
+		return channels, nil
+	}
 	configs, err := s.store.ListConfigs(ctx)
 	if err != nil {
-		return types
+		return nil, err
+	}
+	apiKeysByChannel, err := s.store.GetAllAPIKeys(ctx)
+	if err != nil {
+		return nil, err
 	}
 	for _, cfg := range configs {
-		if _, ok := needed[cfg.ID]; ok {
-			types[cfg.ID] = cfg.ChannelType
+		if _, ok := needed[cfg.ID]; !ok {
+			continue
 		}
+		metadata := tokenLogChannelMetadata{
+			ChannelType:  cfg.ChannelType,
+			APIKeyHashes: make(map[string]struct{}, len(apiKeysByChannel[cfg.ID])),
+		}
+		for _, apiKey := range apiKeysByChannel[cfg.ID] {
+			if apiKey != nil && apiKey.APIKey != "" {
+				metadata.APIKeys = append(metadata.APIKeys, apiKey.APIKey)
+				metadata.APIKeyHashes[util.HashAPIKey(apiKey.APIKey)] = struct{}{}
+			}
+		}
+		channels[cfg.ID] = metadata
 	}
-	return types
+	return channels, nil
 }
 
 // HandleMetrics 获取聚合指标数据

@@ -12,6 +12,9 @@ import (
 	"ccLoad/internal/util"
 )
 
+// ErrAuthTokenNotFound distinguishes a missing token from a storage failure.
+var ErrAuthTokenNotFound = errors.New("auth token not found")
+
 // AuthToken 表示一个API访问令牌
 // 用于代理API (/v1/*) 的认证授权
 type AuthToken struct {

@@ -497,7 +497,7 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 	))
 
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("auth token not found")
+		return nil, model.ErrAuthTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get auth token: %w", err)
@@ -516,7 +516,7 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 	))
 
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("auth token not found")
+		return nil, model.ErrAuthTokenNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get auth token by value: %w", err)

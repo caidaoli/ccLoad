@@ -3,6 +3,7 @@ package sql_test
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -62,8 +63,8 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 
 	// 获取不存在的 token
 	_, err = store.GetAuthToken(ctx, 99999)
-	if err == nil {
-		t.Error("expected error for non-existent token")
+	if !errors.Is(err, model.ErrAuthTokenNotFound) {
+		t.Fatalf("error=%v, want ErrAuthTokenNotFound", err)
 	}
 }
 

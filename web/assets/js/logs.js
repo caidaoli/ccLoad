@@ -513,7 +513,8 @@ function renderLogSourceBadge(logSource) {
 }
 
 function canInspectDebugLog(entry) {
-  return Number(entry?.channel_id) > 0;
+  const isTokenSession = typeof window.isAPITokenRole === 'function' && window.isAPITokenRole();
+  return !isTokenSession && Number(entry?.channel_id) > 0;
 }
 
 function buildLogMessageContent(entry) {

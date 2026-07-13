@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"reflect"
 	"strings"
@@ -10,18 +11,37 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 )
+
+type tokenLogMetadataErrorStore struct {
+	storage.Store
+	err error
+}
+
+func (s tokenLogMetadataErrorStore) GetAllAPIKeys(context.Context) (map[int64][]*model.APIKey, error) {
+	return nil, s.err
+}
 
 func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
-	secretChannel, err := store.CreateConfig(context.Background(), &model.Config{
+	ctx := context.Background()
+	secretChannel, err := store.CreateConfig(ctx, &model.Config{
 		Name: "secret-channel", URL: "https://secret-upstream.example", Priority: 10,
 		ChannelType: "openai", Enabled: true,
 		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6"}},
 	})
 	if err != nil {
 		t.Fatalf("create secret channel: %v", err)
+	}
+	const googleKey = "AIzaSyD_ActualGoogleChannelSecret1234567890"
+	const relayKey = "relayOpaqueSecretValue1234567890"
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: secretChannel.ID, KeyIndex: 0, APIKey: googleKey},
+		{ChannelID: secretChannel.ID, KeyIndex: 1, APIKey: relayKey},
+	}); err != nil {
+		t.Fatalf("create channel keys: %v", err)
 	}
 
 	now := model.JSONTime{Time: time.Now()}
@@ -34,10 +54,10 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			ChannelID:            secretChannel.ID,
 			ChannelName:          "secret-channel",
 			StatusCode:           http.StatusOK,
-			Message:              "upstream https://secret-upstream.example rejected sk-secret...last on secret-channel",
+			Message:              "upstream https://secret-upstream.example rejected " + googleKey + " and " + relayKey + " on secret-channel",
 			AuthTokenID:          42,
 			AuthTokenDescription: "owner",
-			APIKeyUsed:           "sk-secret...last",
+			APIKeyUsed:           googleKey,
 			APIKeyHash:           "secret-hash",
 			ClientIP:             "10.0.0.1",
 			BaseURL:              "https://secret-upstream.example",
@@ -52,7 +72,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			AuthTokenID: 99,
 		},
 	} {
-		if err := store.AddLog(context.Background(), entry); err != nil {
+		if err := store.AddLog(ctx, entry); err != nil {
 			t.Fatalf("add log: %v", err)
 		}
 	}
@@ -90,15 +110,135 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	if err := json.Unmarshal(entry["message"], &message); err != nil {
 		t.Fatalf("decode safe message: %v", err)
 	}
-	for _, secret := range []string{"secret-upstream.example", "sk-secret", "secret-channel"} {
+	for _, secret := range []string{"secret-upstream.example", googleKey, relayKey, "secret-channel"} {
 		if strings.Contains(message, secret) {
 			t.Fatalf("safe log message exposed %q: %q", secret, message)
 		}
+	}
+	if !strings.Contains(message, "rejected") {
+		t.Fatalf("safe log message removed non-sensitive diagnostics: %q", message)
 	}
 	for _, key := range []string{"api_key_used", "api_key_hash", "auth_token_id", "client_ip", "base_url"} {
 		if _, ok := entry[key]; ok {
 			t.Fatalf("safe log response exposed %q", key)
 		}
+	}
+}
+
+func TestDashboardLogsFailClosedWhenPersistedKeyNoLongerExists(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "rotated-key-channel",
+		URL:          "https://rotated-key.example",
+		Priority:     10,
+		ChannelType:  "openai",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6"}},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	const retiredKey = "retiredOpaqueSecretValue1234567890"
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channel.ID,
+		KeyIndex:  0,
+		APIKey:    retiredKey,
+	}}); err != nil {
+		t.Fatalf("create channel key: %v", err)
+	}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:           model.JSONTime{Time: time.Now()},
+		Model:          "gpt-5.6",
+		ChannelID:      channel.ID,
+		StatusCode:     http.StatusBadGateway,
+		Message:        "upstream echoed " + retiredKey,
+		APIKeyUsed:     retiredKey,
+		AuthTokenID:    42,
+		CostMultiplier: 1,
+	}); err != nil {
+		t.Fatalf("add log: %v", err)
+	}
+	if err := store.DeleteAllAPIKeys(ctx, channel.ID); err != nil {
+		t.Fatalf("delete channel keys: %v", err)
+	}
+	const legacyKey = "legacyOpaqueSecretWithoutPersistedHash9876543210"
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:           model.JSONTime{Time: time.Now()},
+		Model:          "gpt-5.6",
+		ChannelID:      channel.ID,
+		StatusCode:     http.StatusBadGateway,
+		Message:        "legacy upstream echoed " + legacyKey,
+		AuthTokenID:    42,
+		CostMultiplier: 1,
+	}); err != nil {
+		t.Fatalf("add legacy log without key hash: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleErrors(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	response := mustParseAPIResponse[[]struct {
+		Message string `json:"message"`
+	}](t, w.Body.Bytes())
+	if len(response.Data) != 2 {
+		t.Fatalf("logs=%d, want 2", len(response.Data))
+	}
+	for _, entry := range response.Data {
+		if entry.Message != "[redacted]" {
+			t.Fatalf("message=%q, want fail-closed redaction", entry.Message)
+		}
+	}
+}
+
+func TestDashboardLogsMetadataFailureReturnsServerError(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "metadata-error-channel",
+		URL:          "https://metadata-error.example",
+		Priority:     10,
+		ChannelType:  "openai",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6"}},
+	})
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	const secretMessage = "TOKEN_LOG_METADATA_FAILURE_SECRET"
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:           model.JSONTime{Time: time.Now()},
+		Model:          "gpt-5.6",
+		ChannelID:      channel.ID,
+		StatusCode:     http.StatusBadGateway,
+		Message:        secretMessage,
+		AuthTokenID:    42,
+		CostMultiplier: 1,
+	}); err != nil {
+		t.Fatalf("add log: %v", err)
+	}
+	server.store = tokenLogMetadataErrorStore{
+		Store: store,
+		err:   errors.New("database unavailable"),
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/logs?range=today", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleErrors(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), secretMessage) {
+		t.Fatalf("metadata error response exposed log message: %s", w.Body.String())
 	}
 }
 
