@@ -197,9 +197,21 @@ function initChannelsPageActions() {
   }
 }
 
+function applyChannelsAccessMode() {
+  const readOnly = isTokenChannelsReadOnly();
+  document.body.classList.toggle('channels-readonly', readOnly);
+  for (const id of ['addChannelBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+    const el = document.getElementById(id);
+    if (el) el.hidden = readOnly;
+  }
+  if (readOnly) channelStatsRange = 'today';
+  return readOnly;
+}
+
 window.initPageBootstrap({
   topbarKey: 'channels',
   run: async () => {
+    const readOnly = applyChannelsAccessMode();
     initChannelsPageActions();
     setupFilterListeners();
     setupImportExport();
@@ -212,14 +224,13 @@ window.initPageBootstrap({
       updateBatchChannelSelectionUI();
     }
 
-    // 并行化第一批：渠道类型渲染、目标渠道查询、不依赖 initialType 的设置请求同时发起
+    // 并行化第一批：渠道类型渲染、目标渠道查询与管理员设置请求同时发起
     const savedFilters = loadChannelsFilters();
     channelsCurrentPage = Math.max(1, parseInt(savedFilters?.page, 10) || 1);
     const [, targetChannel] = await Promise.all([
       window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios'),
-      getTargetChannel(),
-      loadDefaultTestContent(),
-      loadChannelStatsRange()
+      readOnly ? null : getTargetChannel(),
+      ...(readOnly ? [] : [loadDefaultTestContent(), loadChannelStatsRange()])
     ]);
     const targetChannelType = targetChannel?.channel_type || null;
     const initialType = targetChannelType || (savedFilters?.channelType) || 'all';

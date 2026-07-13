@@ -459,6 +459,100 @@ if (typeof module !== 'undefined' && module.exports) {
     };
   }
 
+  function loadChannelsData({ role }) {
+    const urls = [];
+    const storage = {
+      getItem: (key) => key === 'ccload_web_role' ? role : null
+    };
+    const restoreGlobals = replaceGlobals({
+      window: {
+        WebAuth: {
+          isAPITokenRole: (currentStorage) => currentStorage === storage && role === 'api_token'
+        },
+        t: (key) => key,
+        showError: () => {}
+      },
+      localStorage: storage,
+      filters: {
+        search: '',
+        searchExact: false,
+        status: 'all',
+        model: 'all',
+        modelExact: false
+      },
+      channelsReadURL: (adminPath, dashboardPath) => (
+        global.window.WebAuth.isAPITokenRole(global.localStorage) ? dashboardPath : adminPath
+      ),
+      channels: [],
+      channelsTotalCount: 0,
+      channelsTotalPages: 1,
+      channelsCurrentPage: 1,
+      channelsPageSize: 20,
+      allAvailableChannelNames: [],
+      allAvailableModels: [],
+      channelStatsRange: 'today',
+      channelStatsById: {},
+      fetchAPIWithAuth: async (url) => {
+        urls.push(url);
+        return { success: true, data: [], count: 0 };
+      },
+      fetchDataWithAuth: async (url) => {
+        urls.push(url);
+        if (url.includes('filter-options')) return { channel_names: [], models: [] };
+        return { stats: [], channel_health: {} };
+      },
+      filterChannels: () => {},
+      updateChannelsPagination: () => {},
+      updateModelOptions: () => {},
+      updateChannelNameOptions: () => {}
+    });
+    const modulePath = require.resolve('./channels-data.js');
+    delete require.cache[modulePath];
+
+    try {
+      return {
+        mod: require('./channels-data.js'),
+        urls,
+        restore() {
+          delete require.cache[modulePath];
+          restoreGlobals();
+        }
+      };
+    } catch (error) {
+      restoreGlobals();
+      throw error;
+    }
+  }
+
+  test('api token channels use dashboard read endpoints', async () => {
+    const runtime = loadChannelsData({ role: 'api_token' });
+    try {
+      await runtime.mod.loadChannels('all');
+      await runtime.mod.loadChannelsFilterOptions('all', 'all');
+      await runtime.mod.loadChannelStats('today');
+      assert.match(runtime.urls[0], /^\/dashboard\/channels\?/);
+      assert.match(runtime.urls[1], /^\/dashboard\/channels\/filter-options\?/);
+      assert.match(runtime.urls[2], /^\/dashboard\/stats\?/);
+      assert.ok(runtime.urls.every((url) => !url.includes('auth_token_id=')));
+    } finally {
+      runtime.restore();
+    }
+  });
+
+  test('admin channels keep admin endpoints', async () => {
+    const runtime = loadChannelsData({ role: 'admin' });
+    try {
+      await runtime.mod.loadChannels('all');
+      await runtime.mod.loadChannelsFilterOptions('all', 'all');
+      await runtime.mod.loadChannelStats('today');
+      assert.match(runtime.urls[0], /^\/admin\/channels\?/);
+      assert.match(runtime.urls[1], /^\/admin\/channels\/filter-options\?/);
+      assert.match(runtime.urls[2], /^\/admin\/stats\?/);
+    } finally {
+      runtime.restore();
+    }
+  });
+
   function loadChannelEditor({ channelType = 'codex', rows = [], fetchResult } = {}) {
     const state = { endpoint: '' };
     const tableBody = {
