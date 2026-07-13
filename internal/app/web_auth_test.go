@@ -153,6 +153,38 @@ func TestAPITokenWebSessionCannotUseAdminMiddleware(t *testing.T) {
 	}
 }
 
+func TestAPITokenChannelRoutesAreReadOnly(t *testing.T) {
+	server := newInMemoryServer(t)
+	plainSession := "readonly-channel-session"
+	sessionHash := model.HashToken(plainSession)
+	server.authService.validTokens[sessionHash] = model.WebSession{
+		TokenHash:   sessionHash,
+		Role:        model.WebRoleAPIToken,
+		AuthTokenID: 9,
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+	injectAPIToken(server.authService, "backing-channel-token", 0, 9)
+
+	router := gin.New()
+	server.SetupRoutes(router)
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/dashboard/channels", nil)
+	getRequest.Header.Set("Authorization", "Bearer "+plainSession)
+	getResponse := httptest.NewRecorder()
+	router.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("GET /dashboard/channels status=%d, want 200: %s", getResponse.Code, getResponse.Body.String())
+	}
+
+	postRequest := httptest.NewRequest(http.MethodPost, "/admin/channels", nil)
+	postRequest.Header.Set("Authorization", "Bearer "+plainSession)
+	postResponse := httptest.NewRecorder()
+	router.ServeHTTP(postResponse, postRequest)
+	if postResponse.Code != http.StatusForbidden {
+		t.Fatalf("POST /admin/channels status=%d, want 403: %s", postResponse.Code, postResponse.Body.String())
+	}
+}
+
 func TestAPITokenWebSessionAttachesProxyIdentity(t *testing.T) {
 	svc := newTestAuthService(t)
 	plainSession := "proxy-web-session"

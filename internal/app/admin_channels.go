@@ -331,73 +331,19 @@ func (s *Server) HandleChannelsFilterOptions(c *gin.Context) {
 		return
 	}
 
-	if t := c.Query("type"); t != "" && t != "all" {
-		normalizedQueryType := util.NormalizeChannelType(t)
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			if channelExposesProtocol(cfg, normalizedQueryType) {
-				filtered = append(filtered, cfg)
-			}
-		}
-		cfgs = filtered
+	cooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
+	if err != nil {
+		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
+		cooldowns = make(map[int64]time.Time)
 	}
-
-	if status := strings.TrimSpace(c.Query("status")); status != "" && status != "all" {
-		now := time.Now()
-		allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
-		if err != nil {
-			log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
-			allChannelCooldowns = make(map[int64]time.Time)
-		}
-		filtered := make([]*model.Config, 0, len(cfgs))
-		for _, cfg := range cfgs {
-			switch status {
-			case "enabled":
-				if cfg.Enabled {
-					filtered = append(filtered, cfg)
-				}
-			case "disabled":
-				if !cfg.Enabled {
-					filtered = append(filtered, cfg)
-				}
-			case "cooldown":
-				if until, cooled := allChannelCooldowns[cfg.ID]; cooled && until.After(now) {
-					filtered = append(filtered, cfg)
-				}
-			}
-		}
-		cfgs = filtered
-	}
-
-	nameSet := make(map[string]struct{}, len(cfgs))
-	modelSet := make(map[string]struct{})
-	for _, cfg := range cfgs {
-		if name := strings.TrimSpace(cfg.Name); name != "" {
-			nameSet[name] = struct{}{}
-		}
-		for _, entry := range cfg.ModelEntries {
-			if entry.Model != "" {
-				modelSet[entry.Model] = struct{}{}
-			}
-		}
-	}
-
-	channelNames := make([]string, 0, len(nameSet))
-	for n := range nameSet {
-		channelNames = append(channelNames, n)
-	}
-	sort.Strings(channelNames)
-
-	models := make([]string, 0, len(modelSet))
-	for m := range modelSet {
-		models = append(models, m)
-	}
-	sort.Strings(models)
-
-	RespondJSON(c, http.StatusOK, gin.H{
-		"channel_names": channelNames,
-		"models":        models,
-	})
+	cfgs = filterChannelOptionConfigs(
+		cfgs,
+		strings.TrimSpace(c.Query("type")),
+		strings.TrimSpace(c.Query("status")),
+		cooldowns,
+		time.Now(),
+	)
+	RespondJSON(c, http.StatusOK, buildChannelFilterOptions(cfgs))
 }
 
 // HandleCheckDuplicateChannel 检测渠道是否与已有渠道重复

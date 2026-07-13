@@ -879,6 +879,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		dashboard.GET("/stats", s.HandleStats)
 		dashboard.GET("/stats/filter-options", s.HandleStatsFilterOptions)
 		dashboard.GET("/models", s.HandleGetModels)
+		dashboard.GET("/channels", s.HandleDashboardChannels)
+		dashboard.GET("/channels/filter-options", s.HandleDashboardChannelFilterOptions)
 	}
 	dashboardProxy := r.Group("/dashboard")
 	dashboardProxy.Use(s.authService.RequireWebAuth(), s.authService.RequireWebAPITokenProxyAuth(), captureDashboardProxyMetadata())
