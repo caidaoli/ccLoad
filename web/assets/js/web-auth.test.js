@@ -45,7 +45,7 @@ test('storeWebSession never persists submitted API token', () => {
 test('navigation excludes administrative pages for API token role', () => {
   const navKeys = ['index', 'channels', 'tokens', 'stats', 'trend', 'logs', 'model-test', 'settings'];
   assert.deepEqual(WebAuth.filterNavigation(navKeys, 'api_token'), [
-    'index', 'stats', 'trend', 'logs', 'model-test'
+    'index', 'channels', 'stats', 'trend', 'logs', 'model-test'
   ]);
   assert.deepEqual(WebAuth.filterNavigation(navKeys, 'admin'), navKeys);
 });

@@ -788,6 +788,9 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
+    if (isTokenChannelsReadOnly() && ['edit', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+      return;
+    }
     const channelId = parseInt(btn.dataset.channelId);
     const channelName = btn.dataset.channelName;
     const enabled = btn.dataset.enabled === 'true';

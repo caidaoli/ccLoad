@@ -8269,3 +8269,14 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
 .chat-export-item:hover {
   background: var(--neutral-100);
 }
+
+.channels-readonly .ch-col-checkbox,
+.channels-readonly .ch-col-enabled,
+.channels-readonly .ch-col-actions,
+.channels-readonly .ch-url-line,
+.channels-readonly #batchFloatingMenu,
+.channels-readonly #addChannelBtn,
+.channels-readonly #exportCsvBtn,
+.channels-readonly #importCsvBtn {
+  display: none !important;
+}

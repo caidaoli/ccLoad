@@ -20,7 +20,9 @@ function buildChannelsListParams(type = 'all') {
 async function loadChannels(type = 'all') {
   try {
     const params = buildChannelsListParams(type);
-    const url = '/admin/channels?' + params.toString();
+    const listBase = channelsReadURL('/admin/channels', '/dashboard/channels');
+    params.set('range', channelStatsRange);
+    const url = listBase + '?' + params.toString();
     const resp = await fetchAPIWithAuth(url);
     if (!resp.success) {
       throw new Error(resp.error || window.t('channels.loadChannelsFailed'));
@@ -63,7 +65,9 @@ async function loadChannelsFilterOptions(type = 'all', status = 'all') {
     const params = new URLSearchParams();
     if (type && type !== 'all') params.set('type', type);
     if (status && status !== 'all') params.set('status', status);
-    const url = '/admin/channels/filter-options' + (params.toString() ? '?' + params.toString() : '');
+    const optionsBase = channelsReadURL('/admin/channels/filter-options', '/dashboard/channels/filter-options');
+    params.set('range', channelStatsRange);
+    const url = optionsBase + '?' + params.toString();
     const data = await fetchDataWithAuth(url);
     allAvailableChannelNames = Array.isArray(data && data.channel_names) ? data.channel_names : [];
     allAvailableModels = Array.isArray(data && data.models) ? data.models : [];
@@ -90,7 +94,8 @@ async function loadChannelStatsRange() {
 async function loadChannelStats(range = channelStatsRange) {
   try {
     const params = new URLSearchParams({ range, limit: '500', offset: '0' });
-    const data = await fetchDataWithAuth(`/admin/stats?${params.toString()}`);
+    const statsBase = channelsReadURL('/admin/stats', '/dashboard/stats');
+    const data = await fetchDataWithAuth(`${statsBase}?${params.toString()}`);
     channelStatsById = aggregateChannelStats((data && data.stats) || [], data && data.channel_health);
     filterChannels();
   } catch (err) {
@@ -232,4 +237,8 @@ async function loadDefaultTestContent() {
   } catch (e) {
     console.warn('Failed to load default test content, using built-in default', e);
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { loadChannels, loadChannelsFilterOptions, loadChannelStats };
 }
