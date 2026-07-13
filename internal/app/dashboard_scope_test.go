@@ -102,6 +102,126 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	}
 }
 
+func TestDashboardChannelsForceTokenScopeAndHideSensitiveConfig(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ownerChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name:               "owner-channel",
+		URL:                "https://owner-upstream.example",
+		ProxyURL:           "https://owner-proxy.example",
+		Priority:           10,
+		ChannelType:        "openai",
+		Enabled:            true,
+		ModelEntries:       []model.ModelEntry{{Model: "owner-model"}},
+		CostMultiplier:     1.5,
+		CustomRequestRules: &model.CustomRequestRules{},
+	})
+	if err != nil {
+		t.Fatalf("create owner channel: %v", err)
+	}
+	foreignChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "foreign-channel",
+		URL:          "https://foreign-upstream.example",
+		Priority:     10,
+		ChannelType:  "openai",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "foreign-model"}},
+	})
+	if err != nil {
+		t.Fatalf("create foreign channel: %v", err)
+	}
+
+	now := model.JSONTime{Time: time.Now()}
+	for _, entry := range []*model.LogEntry{
+		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel.ID, StatusCode: http.StatusOK, AuthTokenID: 42},
+		{Time: now, Model: "foreign-model", LogSource: model.LogSourceProxy, ChannelID: foreignChannel.ID, StatusCode: http.StatusOK, AuthTokenID: 99},
+	} {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("add log: %v", err)
+		}
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/channels?range=today&auth_token_id=99", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleDashboardChannels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	response := mustParseAPIResponse[[]map[string]json.RawMessage](t, w.Body.Bytes())
+	if len(response.Data) != 1 {
+		t.Fatalf("channels=%d, want 1", len(response.Data))
+	}
+	entry := response.Data[0]
+	assertJSONNumber(t, entry, "id", float64(ownerChannel.ID))
+	assertJSONString(t, entry, "name", "owner-channel")
+	assertJSONString(t, entry, "channel_type", "openai")
+	for _, key := range []string{"url", "proxy_url", "custom_request_rules", "key_strategy", "key_cooldowns"} {
+		if _, ok := entry[key]; ok {
+			t.Fatalf("dashboard channel exposed %q", key)
+		}
+	}
+}
+
+func TestDashboardChannelFilterOptionsUseBoundToken(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	ownerChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "owner-channel",
+		URL:          "https://owner-upstream.example",
+		Priority:     10,
+		ChannelType:  "openai",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "owner-model"}},
+	})
+	if err != nil {
+		t.Fatalf("create owner channel: %v", err)
+	}
+	foreignChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "foreign-channel",
+		URL:          "https://foreign-upstream.example",
+		Priority:     10,
+		ChannelType:  "openai",
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "foreign-model"}},
+	})
+	if err != nil {
+		t.Fatalf("create foreign channel: %v", err)
+	}
+
+	now := model.JSONTime{Time: time.Now()}
+	for _, entry := range []*model.LogEntry{
+		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel.ID, StatusCode: http.StatusOK, AuthTokenID: 42},
+		{Time: now, Model: "foreign-model", LogSource: model.LogSourceProxy, ChannelID: foreignChannel.ID, StatusCode: http.StatusOK, AuthTokenID: 99},
+	} {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("add log: %v", err)
+		}
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/channels/filter-options?range=today&auth_token_id=99", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleDashboardChannelFilterOptions(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	data := mustParseAPIResponse[struct {
+		ChannelNames []string `json:"channel_names"`
+		Models       []string `json:"models"`
+	}](t, w.Body.Bytes()).Data
+	if !reflect.DeepEqual(data.ChannelNames, []string{"owner-channel"}) {
+		t.Fatalf("channel names=%v", data.ChannelNames)
+	}
+	if !reflect.DeepEqual(data.Models, []string{"owner-model"}) {
+		t.Fatalf("models=%v", data.Models)
+	}
+}
+
 func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
