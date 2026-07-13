@@ -162,10 +162,17 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	if len(metrics) == 0 {
 		t.Fatal("expected owner metric point")
 	}
+	metricChannels := make(map[string]struct{})
 	for _, point := range metrics {
+		for channelName := range point.Channels {
+			metricChannels[channelName] = struct{}{}
+		}
 		if _, leaked := point.Channels["foreign-channel"]; leaked {
 			t.Fatalf("metrics exposed foreign channel: %v", point.Channels)
 		}
+	}
+	if want := map[string]struct{}{"owner-channel": {}, "owner-channel-2": {}}; !reflect.DeepEqual(metricChannels, want) {
+		t.Fatalf("metrics channels=%v, want %v", metricChannels, want)
 	}
 
 	statsCtx, statsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/stats?range=today", nil))
@@ -176,6 +183,20 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	}](t, statsW.Body.Bytes()).Data
 	if got := statsChannelNameMap(statsData.Stats); !reflect.DeepEqual(got, wantChannels) {
 		t.Fatalf("stats channels=%v, want %v", got, wantChannels)
+	}
+
+	filterOptionsCtx, filterOptionsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/stats/filter-options?range=today", nil))
+	filterOptionsCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	server.HandleStatsFilterOptions(filterOptionsCtx)
+	filterOptions := mustParseAPIResponse[struct {
+		ChannelNames []string `json:"channel_names"`
+		Models       []string `json:"models"`
+	}](t, filterOptionsW.Body.Bytes()).Data
+	if got, want := stringSet(filterOptions.ChannelNames), map[string]struct{}{"owner-channel": {}, "owner-channel-2": {}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filter option channels=%v, want %v", got, want)
+	}
+	if got, want := stringSet(filterOptions.Models), map[string]struct{}{"owner-model": {}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("filter option models=%v, want %v", got, want)
 	}
 
 	summaryCtx, summaryW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
@@ -243,6 +264,14 @@ func statsChannelNameMap(stats []model.StatsEntry) map[int64]string {
 		if entry.ChannelID != nil {
 			result[int64(*entry.ChannelID)] = entry.ChannelName
 		}
+	}
+	return result
+}
+
+func stringSet(values []string) map[string]struct{} {
+	result := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		result[value] = struct{}{}
 	}
 	return result
 }
