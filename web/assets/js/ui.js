@@ -1245,13 +1245,9 @@ window.WebAuth = window.WebAuth || {
     const selectId = options.selectId;
     if (!selectId) return [];
 
-    const select = document.getElementById(selectId);
-    const group = select && select.closest('.filter-group');
     if (window.isAPITokenRole()) {
-      if (group) group.hidden = true;
       return [];
     }
-    if (group) group.hidden = false;
 
     if (Array.isArray(options.preloadedTokens)) {
       fillAuthTokenSelect(selectId, options.preloadedTokens, options.loadOptions);
