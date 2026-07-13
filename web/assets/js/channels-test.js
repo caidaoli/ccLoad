@@ -393,6 +393,8 @@ function displayTestResult(result) {
 if (typeof module !== 'undefined' && module.exports) {
   const test = require('node:test');
   const assert = require('node:assert/strict');
+  const fs = require('node:fs');
+  const vm = require('node:vm');
 
   function loadChannelModals() {
     const hadWindow = Object.prototype.hasOwnProperty.call(global, 'window');
@@ -554,6 +556,95 @@ if (typeof module !== 'undefined' && module.exports) {
     } finally {
       runtime.restore();
     }
+  });
+
+  function priorityInput(channelId = '1', value = '2') {
+    const classList = {
+      add: () => {},
+      remove: () => {},
+      toggle: () => {}
+    };
+    const editor = {
+      classList,
+      querySelectorAll: () => [input]
+    };
+    const input = {
+      dataset: { channelId, originalPriority: '1' },
+      value,
+      classList,
+      closest: (selector) => {
+        if (selector === '.ch-priority-input') return input;
+        if (selector === '.ch-priority-editor-wrap') return editor;
+        return null;
+      }
+    };
+    return input;
+  }
+
+  function loadTokenPriorityWorkflow() {
+    const listeners = {};
+    const requests = [];
+    const storage = {
+      getItem: (key) => key === 'ccload_web_role' ? 'api_token' : null
+    };
+    const container = {
+      dataset: {},
+      addEventListener: (type, listener) => {
+        listeners[type] = listener;
+      }
+    };
+    const context = vm.createContext({
+      window: {
+        ChannelProtocolConfig: {},
+        WebAuth: { isAPITokenRole: (currentStorage) => currentStorage === storage },
+        t: (key) => key,
+        showSuccess: () => {},
+        showError: () => {}
+      },
+      localStorage: storage,
+      document: {
+        getElementById: (id) => id === 'channels-container' ? container : null,
+        addEventListener: () => {},
+        querySelectorAll: () => []
+      },
+      fetchDataWithAuth: async (url, options) => {
+        requests.push({ url, options });
+        return {};
+      },
+      setTimeout: (callback) => {
+        callback();
+        return 1;
+      },
+      clearTimeout: () => {},
+      console
+    });
+    const sourceDir = __dirname;
+    vm.runInContext(fs.readFileSync(`${sourceDir}/channels-state.js`, 'utf8'), context);
+    vm.runInContext(fs.readFileSync(`${sourceDir}/channels-render.js`, 'utf8'), context);
+    context.initChannelEventDelegation();
+
+    return {
+      dispatch(type, event) {
+        listeners[type](event);
+      },
+      requests
+    };
+  }
+
+  test('api token priority events never submit channel writes', async () => {
+    const runtime = loadTokenPriorityWorkflow();
+    const inputEvent = priorityInput('1', '2');
+    const enterEvent = priorityInput('2', '3');
+    const focusoutEvent = priorityInput('3', '4');
+    const forgedInput = priorityInput('999', '77');
+
+    runtime.dispatch('input', { target: inputEvent });
+    runtime.dispatch('keydown', { target: enterEvent, key: 'Enter', preventDefault: () => {} });
+    runtime.dispatch('focusout', { target: focusoutEvent });
+    runtime.dispatch('input', { target: forgedInput });
+    await Promise.resolve();
+
+    assert.deepEqual(runtime.requests, []);
   });
 
   function loadChannelEditor({ channelType = 'codex', rows = [], fetchResult } = {}) {
