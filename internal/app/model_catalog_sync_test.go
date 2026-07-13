@@ -492,9 +492,8 @@ func TestModelCatalogSyncLoadsValidCache(t *testing.T) {
 	if got := util.CurrentModelCatalogETag(); got != etag {
 		t.Fatalf("installed etag = %q, want %q", got, etag)
 	}
-	models, source, _ := util.CommonCatalogModels("openai", 1)
-	if len(models) != 1 || models[0] != "gpt-catalog-test" || source != "cache" {
-		t.Fatalf("loaded catalog = models:%v source:%q", models, source)
+	if got := util.CalculateCostDetailed("gpt-catalog-test", 1_000_000, 0, 0, 0, 0); got != 1.25 {
+		t.Fatalf("loaded catalog input cost = %v, want 1.25", got)
 	}
 }
 

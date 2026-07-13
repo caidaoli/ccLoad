@@ -4,7 +4,6 @@ import (
 	"sort"
 	"strings"
 	"sync/atomic"
-	"time"
 )
 
 // ModelPricing AI模型定价（单位：美元/百万tokens）
@@ -728,18 +727,16 @@ type modelPricingSnapshot struct {
 	prefixBuckets       map[byte][]modelPrefixMatch
 	metadata            map[string]ModelCatalogEntry
 	remoteETag          string
-	remoteFetched       time.Time
 	remoteSkippedModels int
-	remoteSource        string
 }
 
 var activeModelPricing atomic.Pointer[modelPricingSnapshot]
 
 func init() {
-	activeModelPricing.Store(buildModelPricingSnapshot(nil, "embedded"))
+	activeModelPricing.Store(buildModelPricingSnapshot(nil))
 }
 
-func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *modelPricingSnapshot {
+func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot) *modelPricingSnapshot {
 	pricing := make(map[string]ModelPricing, len(basePricing))
 	for id, entry := range basePricing {
 		pricing[id] = cloneModelPricing(entry)
@@ -752,11 +749,9 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *mo
 
 	metadata := make(map[string]ModelCatalogEntry)
 	remoteETag := ""
-	remoteFetched := time.Time{}
 	remoteSkippedModels := 0
 	if catalog != nil {
 		remoteETag = catalog.ETag
-		remoteFetched = catalog.FetchedAt
 		remoteSkippedModels = catalog.SkippedModels
 		for _, entry := range catalog.Models {
 			// 远端精确模型 ID 是当前目录的权威值，不能再被同名本地别名重定向。
@@ -772,9 +767,7 @@ func buildModelPricingSnapshot(catalog *ModelCatalogSnapshot, source string) *mo
 		prefixBuckets:       buildPrefixBuckets(pricing, aliases),
 		metadata:            metadata,
 		remoteETag:          remoteETag,
-		remoteFetched:       remoteFetched,
 		remoteSkippedModels: remoteSkippedModels,
-		remoteSource:        source,
 	}
 }
 

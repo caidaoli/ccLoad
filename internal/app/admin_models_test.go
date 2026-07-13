@@ -2,130 +2,16 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
-	"reflect"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
-	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
-
-func TestAdminModels_HandleCommonModelCatalog(t *testing.T) {
-	util.RestoreEmbeddedModelCatalog()
-	t.Cleanup(util.RestoreEmbeddedModelCatalog)
-
-	server, _, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-
-	fetchedAt := time.Date(2026, time.January, 8, 9, 10, 11, 0, time.UTC)
-	pricedText := func(id, lastUpdated, releaseDate string) util.ModelCatalogEntry {
-		return util.ModelCatalogEntry{
-			ID: id, Provider: "openai", LastUpdated: lastUpdated, ReleaseDate: releaseDate,
-			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
-		}
-	}
-	models := []util.ModelCatalogEntry{
-		pricedText("gpt-alpha", "2026-07-12", "2026-07-01"),
-		pricedText("gpt-zeta", "2026-07-12", "2026-07-01"),
-		pricedText("gpt-dated-only-20260710", "2026-07-11", "2026-07-10"),
-		pricedText("gpt-legacy", "2026-07-10", "2026-07-09"),
-		pricedText("gpt-omega", "2026-07-09", "2026-07-01"),
-		pricedText("gpt-omega-2026-07-10", "2026-07-15", "2026-07-10"),
-		pricedText("gpt-iso-only-2026-07-08", "2026-07-08", "2026-07-08"),
-		{
-			ID: "gpt-deprecated", Provider: "openai", Status: "deprecated", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
-			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
-		},
-		{
-			ID: "gpt-image", Provider: "openai", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
-			OutputModalities: []string{"image"}, Pricing: util.ModelPricing{InputPrice: 1, OutputPrice: 2},
-		},
-		{
-			ID: "gpt-fixed", Provider: "openai", LastUpdated: "2026-07-16", ReleaseDate: "2026-07-16",
-			OutputModalities: []string{"text"}, Pricing: util.ModelPricing{FixedCostPerRequest: 0.01},
-		},
-	}
-	if err := util.InstallModelCatalog(&util.ModelCatalogSnapshot{
-		Version:   util.ModelCatalogSchemaVersion,
-		Source:    "models.dev",
-		FetchedAt: fetchedAt,
-		Models:    models,
-	}, "models.dev"); err != nil {
-		t.Fatalf("InstallModelCatalog failed: %v", err)
-	}
-
-	t.Run("remote directory", func(t *testing.T) {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=openai", nil))
-
-		server.HandleCommonModelCatalog(c)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-		var response APIResponse[struct {
-			Models    []string `json:"models"`
-			Source    string   `json:"source"`
-			FetchedAt string   `json:"fetched_at"`
-		}]
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatal(err)
-		}
-		wantModels := []string{
-			"gpt-alpha",
-			"gpt-zeta",
-			"gpt-dated-only-20260710",
-			"gpt-legacy",
-			"gpt-omega",
-			"gpt-iso-only-2026-07-08",
-		}
-		if !response.Success || response.Data.Source != "models.dev" || !reflect.DeepEqual(response.Data.Models, wantModels) {
-			t.Fatalf("response = %#v", response)
-		}
-		if response.Data.FetchedAt != fetchedAt.Format(time.RFC3339) {
-			t.Fatalf("fetched_at=%q, want %q", response.Data.FetchedAt, fetchedAt.Format(time.RFC3339))
-		}
-	})
-
-	t.Run("embedded fallback", func(t *testing.T) {
-		util.RestoreEmbeddedModelCatalog()
-
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=openai", nil))
-		server.HandleCommonModelCatalog(c)
-
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-		var response APIResponse[struct {
-			Models    []string `json:"models"`
-			Source    string   `json:"source"`
-			FetchedAt string   `json:"fetched_at"`
-		}]
-		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-			t.Fatal(err)
-		}
-		if !response.Success || response.Data.Source != "embedded" || response.Data.Models == nil || len(response.Data.Models) > 6 {
-			t.Fatalf("response = %#v", response)
-		}
-		if response.Data.FetchedAt != "" {
-			t.Fatalf("fetched_at=%q, want empty", response.Data.FetchedAt)
-		}
-	})
-
-	t.Run("invalid channel type", func(t *testing.T) {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/model-catalog/common?channel_type=unsupported", nil))
-		server.HandleCommonModelCatalog(c)
-
-		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
-		}
-	})
-}
 
 func TestAdminModels_FetchModelsPreview(t *testing.T) {
 	var gotAuth string

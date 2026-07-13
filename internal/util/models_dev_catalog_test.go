@@ -172,15 +172,13 @@ func TestParseModelsDevCatalogRejectsIncompleteAllowlistedProvider(t *testing.T)
 	})
 }
 
-func TestModelCatalogInstallIsImmutableAndListsCommonModels(t *testing.T) {
+func TestModelCatalogInstallIsImmutable(t *testing.T) {
 	util.RestoreEmbeddedModelCatalog()
 	t.Cleanup(util.RestoreEmbeddedModelCatalog)
 
-	fetchedAt := time.Date(2026, 7, 10, 6, 0, 0, 0, time.UTC)
 	snapshot := &util.ModelCatalogSnapshot{
-		Version:   util.ModelCatalogSchemaVersion,
-		ETag:      `"etag-2"`,
-		FetchedAt: fetchedAt,
+		Version: util.ModelCatalogSchemaVersion,
+		ETag:    `"etag-2"`,
 		Models: []util.ModelCatalogEntry{
 			{
 				ID: "gpt-older", Provider: "openai", ReleaseDate: "2026-07-01", OutputModalities: []string{"text"},
@@ -202,10 +200,6 @@ func TestModelCatalogInstallIsImmutableAndListsCommonModels(t *testing.T) {
 
 	snapshot.Models[1].Pricing.InputPrice = 999
 	snapshot.Models[1].OutputModalities[0] = "image"
-	models, source, gotFetchedAt := util.CommonCatalogModels("codex", 2)
-	if !reflect.DeepEqual(models, []string{"gpt-newer", "gpt-older"}) || source != "models.dev" || !gotFetchedAt.Equal(fetchedAt) {
-		t.Fatalf("models=%#v source=%q fetched_at=%s", models, source, gotFetchedAt)
-	}
 	if got := util.CalculateCostDetailed("gpt-newer", 1_000_000, 0, 0, 0, 0); got != 3 {
 		t.Fatalf("catalog changed after caller mutation: cost = %v", got)
 	}
