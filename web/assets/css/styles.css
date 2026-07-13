@@ -5026,9 +5026,7 @@ body.trend-page .chart-info {
 body.web-role-api-token .logs-col-ip,
 body.web-role-api-token .logs-col-token-desc,
 body.web-role-api-token .logs-col-api-key,
-body.web-role-api-token .logs-col-channel,
-body.web-role-api-token .stats-table [data-column="channel_name"],
-body.web-role-api-token .stats-col-channel {
+body.web-role-api-token .logs-col-channel {
   display: none !important;
 }
 
