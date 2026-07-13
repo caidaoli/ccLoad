@@ -11,8 +11,14 @@ import (
 
 var (
 	tokenLogURLPattern    = regexp.MustCompile(`https?://[^\s"'<>]+`)
-	tokenLogSecretPattern = regexp.MustCompile(`\b(?:sk|key|AIza)[-_][A-Za-z0-9._-]+`)
+	tokenLogSecretPattern = regexp.MustCompile(`\b(?:sk[-_]|key[-_]|AIza)[A-Za-z0-9._-]+`)
 )
+
+type tokenLogChannelMetadata struct {
+	ChannelType  string
+	APIKeys      []string
+	APIKeyHashes map[string]struct{}
+}
 
 type tokenLogEntry struct {
 	ID                       int64          `json:"id"`
@@ -41,7 +47,7 @@ type tokenLogEntry struct {
 	EffectiveCost            float64        `json:"effective_cost"`
 }
 
-func projectTokenLogs(logs []*model.LogEntry, channelTypes map[int64]string) []tokenLogEntry {
+func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannelMetadata) []tokenLogEntry {
 	projected := make([]tokenLogEntry, 0, len(logs))
 	for _, entry := range logs {
 		if entry == nil {
@@ -51,17 +57,26 @@ func projectTokenLogs(logs []*model.LogEntry, channelTypes map[int64]string) []t
 		if multiplier < 0 {
 			multiplier = 1
 		}
+		channel, channelExists := channels[entry.ChannelID]
+		message := "[redacted]"
+		canSanitize := entry.ChannelID <= 0
+		if channelExists && entry.APIKeyHash != "" {
+			_, canSanitize = channel.APIKeyHashes[entry.APIKeyHash]
+		}
+		if canSanitize {
+			message = sanitizeTokenLogMessage(entry, channel.APIKeys)
+		}
 		projected = append(projected, tokenLogEntry{
 			ID:                       entry.ID,
 			Time:                     entry.Time,
 			ChannelID:                entry.ChannelID,
 			ChannelName:              entry.ChannelName,
-			ChannelType:              channelTypes[entry.ChannelID],
+			ChannelType:              channel.ChannelType,
 			LogSource:                entry.LogSource,
 			Model:                    entry.Model,
 			ActualModel:              entry.ActualModel,
 			StatusCode:               entry.StatusCode,
-			Message:                  sanitizeTokenLogMessage(entry),
+			Message:                  message,
 			Duration:                 entry.Duration,
 			IsStreaming:              entry.IsStreaming,
 			FirstByteTime:            entry.FirstByteTime,
@@ -81,15 +96,17 @@ func projectTokenLogs(logs []*model.LogEntry, channelTypes map[int64]string) []t
 	return projected
 }
 
-func sanitizeTokenLogMessage(entry *model.LogEntry) string {
+func sanitizeTokenLogMessage(entry *model.LogEntry, channelAPIKeys []string) string {
 	message := entry.Message
-	for _, sensitive := range []string{
+	sensitiveValues := []string{
 		entry.BaseURL,
 		entry.APIKeyUsed,
 		entry.APIKeyHash,
 		entry.ChannelName,
 		entry.ClientIP,
-	} {
+	}
+	sensitiveValues = append(sensitiveValues, channelAPIKeys...)
+	for _, sensitive := range sensitiveValues {
 		if sensitive != "" {
 			message = strings.ReplaceAll(message, sensitive, "[redacted]")
 		}

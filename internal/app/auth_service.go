@@ -51,7 +51,8 @@ type AuthService struct {
 	store storage.Store
 
 	// 速率限制（防暴力破解）
-	loginRateLimiter *util.LoginRateLimiter
+	loginRateLimiter       *util.LoginRateLimiter
+	apiTokenSessionLimiter *apiTokenSessionLimiter
 
 	// 异步更新 last_used_at（受控 worker，避免 goroutine 泄漏）
 	lastUsedCh chan string    // tokenHash 更新队列
@@ -82,20 +83,21 @@ func NewAuthService(
 	}
 
 	s := &AuthService{
-		passwordHash:        passwordHash,
-		validTokens:         make(map[string]model.WebSession),
-		authTokens:          make(map[string]int64),
-		authTokenIDs:        make(map[string]int64),
-		authTokenHashes:     make(map[int64]string),
-		authTokenModels:     make(map[string][]string),
-		authTokenChannels:   make(map[string][]int64),
-		authTokenCostLimits: make(map[string]tokenCostLimit),
-		authTokenMaxConns:   make(map[string]int),
-		authTokenActiveReqs: make(map[string]int),
-		loginRateLimiter:    loginRateLimiter,
-		store:               store,
-		lastUsedCh:          make(chan string, 256), // 带缓冲，避免阻塞请求
-		done:                make(chan struct{}),
+		passwordHash:           passwordHash,
+		validTokens:            make(map[string]model.WebSession),
+		authTokens:             make(map[string]int64),
+		authTokenIDs:           make(map[string]int64),
+		authTokenHashes:        make(map[int64]string),
+		authTokenModels:        make(map[string][]string),
+		authTokenChannels:      make(map[string][]int64),
+		authTokenCostLimits:    make(map[string]tokenCostLimit),
+		authTokenMaxConns:      make(map[string]int),
+		authTokenActiveReqs:    make(map[string]int),
+		loginRateLimiter:       loginRateLimiter,
+		apiTokenSessionLimiter: newAPITokenSessionLimiter(nil),
+		store:                  store,
+		lastUsedCh:             make(chan string, 256), // 带缓冲，避免阻塞请求
+		done:                   make(chan struct{}),
 	}
 
 	// 启动 last_used_at 更新 worker
@@ -241,6 +243,7 @@ func (s *AuthService) isActiveAuthTokenID(tokenID int64) bool {
 // 公开方法，供 Server 的后台协程调用
 func (s *AuthService) CleanExpiredTokens() {
 	now := time.Now()
+	s.apiTokenSessionLimiter.cleanup()
 
 	// 使用快照模式避免长时间持锁
 	s.tokensMux.RLock()
@@ -514,16 +517,6 @@ func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 func (s *AuthService) HandleLogin(c *gin.Context) {
 	clientIP := c.ClientIP()
 
-	// 检查速率限制
-	if !s.loginRateLimiter.AllowAttempt(clientIP) {
-		lockoutTime := s.loginRateLimiter.GetLockoutTime(clientIP)
-		RespondErrorWithData(c, http.StatusTooManyRequests, "Too many failed login attempts", gin.H{
-			"message":         fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
-			"lockout_seconds": lockoutTime,
-		})
-		return
-	}
-
 	var req struct {
 		Mode     model.WebRole `json:"mode" binding:"required"`
 		Password string        `json:"password"`
@@ -538,17 +531,37 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 	var session model.WebSession
 	switch req.Mode {
 	case model.WebRoleAdmin:
+		adminRateKey := "admin:" + clientIP
+		if !s.loginRateLimiter.AllowAttempt(adminRateKey) {
+			lockoutTime := s.loginRateLimiter.GetLockoutTime(adminRateKey)
+			RespondErrorWithData(c, http.StatusTooManyRequests, "Too many failed login attempts", gin.H{
+				"message":         fmt.Sprintf("Account locked for %d seconds. Please try again later.", lockoutTime),
+				"lockout_seconds": lockoutTime,
+			})
+			return
+		}
 		if err := bcrypt.CompareHashAndPassword(s.passwordHash, []byte(req.Password)); err != nil {
-			attemptCount := s.loginRateLimiter.GetAttemptCount(clientIP)
+			attemptCount := s.loginRateLimiter.GetAttemptCount(adminRateKey)
 			log.Printf("[WARN] 登录失败: IP=%s, 尝试次数=%d/5", clientIP, attemptCount)
 			RespondErrorMsg(c, http.StatusUnauthorized, "Invalid credentials")
 			return
 		}
+		s.loginRateLimiter.RecordSuccess(adminRateKey)
 		session.Role = model.WebRoleAdmin
 	case model.WebRoleAPIToken:
 		_, expiresAt, tokenID, exists := s.resolveAuthToken(strings.TrimSpace(req.Token))
 		if !exists || tokenID <= 0 || (expiresAt > 0 && time.Now().UnixMilli() > expiresAt) {
 			RespondErrorMsg(c, http.StatusUnauthorized, "Invalid credentials")
+			return
+		}
+		allowed, retryAfter := s.apiTokenSessionLimiter.allow(tokenID)
+		if !allowed {
+			retryAfterSeconds := int((retryAfter + time.Second - 1) / time.Second)
+			c.Header("Retry-After", fmt.Sprintf("%d", retryAfterSeconds))
+			RespondErrorWithData(c, http.StatusTooManyRequests, "Too many API Token web sessions", gin.H{
+				"message":             fmt.Sprintf("API Token web session limit exceeded. Please retry in %d seconds.", retryAfterSeconds),
+				"retry_after_seconds": retryAfterSeconds,
+			})
 			return
 		}
 		session.Role = model.WebRoleAPIToken
@@ -557,9 +570,6 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "Invalid request format")
 		return
 	}
-
-	// 凭据正确，重置速率限制
-	s.loginRateLimiter.RecordSuccess(clientIP)
 
 	// 生成Token
 	token, err := s.generateToken()

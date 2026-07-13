@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"net/http"
 
 	"ccLoad/internal/model"
@@ -39,7 +40,15 @@ func (s *AuthService) HandleWebSession(c *gin.Context) {
 	}
 
 	token, err := s.store.GetAuthToken(c.Request.Context(), identity.AuthTokenID)
-	if err != nil || token == nil || !token.IsValid() {
+	if err != nil {
+		if errors.Is(err, model.ErrAuthTokenNotFound) {
+			RespondErrorMsg(c, http.StatusUnauthorized, "API Token 已失效")
+			return
+		}
+		RespondErrorMsg(c, http.StatusInternalServerError, "读取 API Token 会话失败")
+		return
+	}
+	if token == nil || !token.IsValid() {
 		RespondErrorMsg(c, http.StatusUnauthorized, "API Token 已失效")
 		return
 	}

@@ -2,16 +2,27 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
+
+type getAuthTokenErrorStore struct {
+	storage.Store
+	err error
+}
+
+func (s getAuthTokenErrorStore) GetAuthToken(context.Context, int64) (*model.AuthToken, error) {
+	return nil, s.err
+}
 
 func TestAPITokenLoginCreatesScopedWebSession(t *testing.T) {
 	_, store, cleanup := setupAdminTestServer(t)
@@ -95,6 +106,76 @@ func TestAPITokenLoginCreatesScopedWebSession(t *testing.T) {
 	}
 	if sessionData.Token != "" {
 		t.Fatal("session endpoint exposed token material")
+	}
+}
+
+func TestAPITokenLoginDoesNotResetAdminPasswordLockout(t *testing.T) {
+	svc, _, _ := setupAPITokenLoginService(t, "sk-rate-isolation")
+
+	for i := 0; i < 4; i++ {
+		w := runLoginHandler(t, svc, `{"mode":"admin","password":"wrong"}`, "1.2.3.4:1234")
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("admin failure %d status=%d, want 401: %s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	w := runLoginHandler(t, svc, `{"mode":"api_token","token":"sk-rate-isolation"}`, "1.2.3.4:1234")
+	if w.Code != http.StatusOK {
+		t.Fatalf("api token login status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	w = runLoginHandler(t, svc, `{"mode":"admin","password":"wrong"}`, "1.2.3.4:1234")
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("fifth admin failure status=%d, want 401: %s", w.Code, w.Body.String())
+	}
+	w = runLoginHandler(t, svc, `{"mode":"admin","password":"wrong"}`, "1.2.3.4:1234")
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("sixth admin failure status=%d, want 429: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestAPITokenLoginLimitsWebSessionIssuancePerToken(t *testing.T) {
+	svc, store, _ := setupAPITokenLoginService(t, "sk-session-limit")
+	clientAddresses := []string{
+		"10.0.0.1:1001",
+		"10.0.0.2:1002",
+		"10.0.0.3:1003",
+		"10.0.0.4:1004",
+		"10.0.0.5:1005",
+		"10.0.0.6:1006",
+	}
+
+	for i := 0; i < 5; i++ {
+		w := runLoginHandler(t, svc, `{"mode":"api_token","token":"sk-session-limit"}`, clientAddresses[i])
+		if w.Code != http.StatusOK {
+			t.Fatalf("session issue %d status=%d, want 200: %s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	w := runLoginHandler(t, svc, `{"mode":"api_token","token":"sk-session-limit"}`, clientAddresses[5])
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("sixth session issue status=%d, want 429: %s", w.Code, w.Body.String())
+	}
+
+	sessions, err := store.LoadWebSessions(context.Background())
+	if err != nil {
+		t.Fatalf("load web sessions: %v", err)
+	}
+	if len(sessions) != 5 {
+		t.Fatalf("persisted sessions=%d, want 5", len(sessions))
+	}
+}
+
+func TestHandleWebSessionStorageFailureReturnsServerError(t *testing.T) {
+	svc := newTestAuthService(t)
+	svc.store = getAuthTokenErrorStore{err: errors.New("database unavailable")}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/dashboard/session", nil))
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+	svc.HandleWebSession(c)
+
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want 500: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -299,5 +380,37 @@ func runWebAuthMiddleware(t testing.TB, middleware gin.HandlerFunc, token string
 	req := httptest.NewRequest(http.MethodGet, "/test", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	engine.ServeHTTP(w, req)
+	return w
+}
+
+func setupAPITokenLoginService(t *testing.T, plainToken string) (*AuthService, storage.Store, *model.AuthToken) {
+	t.Helper()
+
+	_, store, cleanup := setupAdminTestServer(t)
+	t.Cleanup(cleanup)
+	authToken := &model.AuthToken{
+		Token:       model.HashToken(plainToken),
+		Description: "login test token",
+		CreatedAt:   time.Now(),
+		IsActive:    true,
+	}
+	if err := store.CreateAuthToken(context.Background(), authToken); err != nil {
+		t.Fatalf("create auth token: %v", err)
+	}
+
+	limiter := util.NewLoginRateLimiter()
+	t.Cleanup(limiter.Stop)
+	svc := NewAuthService("admin-pass", limiter, store)
+	t.Cleanup(svc.Close)
+	return svc, store, authToken
+}
+
+func runLoginHandler(t testing.TB, svc *AuthService, body, remoteAddr string) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := newJSONRequestBytes(http.MethodPost, "/login", []byte(body))
+	req.RemoteAddr = remoteAddr
+	c, w := newTestContext(t, req)
+	svc.HandleLogin(c)
 	return w
 }
