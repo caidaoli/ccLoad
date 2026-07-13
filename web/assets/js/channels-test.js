@@ -446,14 +446,17 @@ if (typeof module !== 'undefined' && module.exports) {
   function replaceGlobals(values) {
     const previous = new Map();
     for (const [key, value] of Object.entries(values)) {
-      previous.set(key, Object.prototype.hasOwnProperty.call(global, key)
-        ? { exists: true, value: global[key] }
-        : { exists: false });
-      global[key] = value;
+      previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+      Object.defineProperty(global, key, {
+        configurable: true,
+        enumerable: true,
+        writable: true,
+        value
+      });
     }
     return () => {
-      for (const [key, value] of previous) {
-        if (value.exists) global[key] = value.value;
+      for (const [key, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(global, key, descriptor);
         else delete global[key];
       }
     };

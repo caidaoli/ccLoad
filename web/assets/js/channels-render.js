@@ -235,7 +235,7 @@ function normalizeInlinePriorityValue(value, fallback) {
 }
 
 function buildPriorityEditorRow(channelId, priority, priorityLabel) {
-  const disabledAttr = channelId > 0 ? '' : ' disabled';
+  const disabledAttr = channelId > 0 && !isTokenChannelsReadOnly() ? '' : ' disabled';
   return `<div class="ch-priority-row ch-priority-base">
     <div class="ch-priority-editor-wrap" data-channel-id="${channelId}">
       <div class="ch-priority-editor">
@@ -274,7 +274,7 @@ function updateLocalChannelPriority(channelId, priority) {
 }
 
 async function saveInlineChannelPriority(input) {
-  if (!input) return;
+  if (!input || isTokenChannelsReadOnly()) return;
   const channelId = Number(input.dataset.channelId);
   if (!Number.isFinite(channelId) || channelId <= 0) return;
 
@@ -316,7 +316,7 @@ async function saveInlineChannelPriority(input) {
 }
 
 function queueInlineChannelPrioritySave(input, delay = 1000) {
-  if (!input) return;
+  if (!input || isTokenChannelsReadOnly()) return;
   const channelId = Number(input.dataset.channelId);
   if (!Number.isFinite(channelId) || channelId <= 0) return;
   input.classList.add('is-dirty');
@@ -330,7 +330,7 @@ function queueInlineChannelPrioritySave(input, delay = 1000) {
 }
 
 function flushInlineChannelPrioritySave(input) {
-  if (!input) return;
+  if (!input || isTokenChannelsReadOnly()) return;
   const channelId = Number(input.dataset.channelId);
   const existingTimer = channelPrioritySaveTimers.get(channelId);
   if (existingTimer) {
@@ -742,13 +742,13 @@ function initChannelEventDelegation() {
 
   container.addEventListener('input', (e) => {
     const input = e.target.closest('.ch-priority-input');
-    if (!input) return;
+    if (!input || isTokenChannelsReadOnly()) return;
     queueInlineChannelPrioritySave(input);
   });
 
   container.addEventListener('keydown', (e) => {
     const input = e.target.closest('.ch-priority-input');
-    if (!input) return;
+    if (!input || isTokenChannelsReadOnly()) return;
     if (e.key === 'Enter') {
       e.preventDefault();
       flushInlineChannelPrioritySave(input);
@@ -761,7 +761,7 @@ function initChannelEventDelegation() {
 
   container.addEventListener('focusout', (e) => {
     const input = e.target.closest('.ch-priority-input');
-    if (!input) return;
+    if (!input || isTokenChannelsReadOnly()) return;
     flushInlineChannelPrioritySave(input);
   });
 
