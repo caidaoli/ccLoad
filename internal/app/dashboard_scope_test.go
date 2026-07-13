@@ -305,6 +305,17 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	if got := statsChannelNameMap(statsData.Stats); !reflect.DeepEqual(got, wantChannels) {
 		t.Fatalf("stats channels=%v, want %v", got, wantChannels)
 	}
+	for _, entry := range statsData.Stats {
+		if entry.ChannelID == nil {
+			t.Fatal("token stats entry missing channel id")
+		}
+		if entry.ChannelName == "" {
+			t.Fatalf("token stats channel %d missing name", *entry.ChannelID)
+		}
+		if len(entry.HealthTimeline) != 48 {
+			t.Fatalf("token stats channel %d health points=%d, want 48", *entry.ChannelID, len(entry.HealthTimeline))
+		}
+	}
 	if strings.Contains(statsW.Body.String(), sensitiveLastRequestMessage) {
 		t.Fatalf("token stats exposed sensitive last request message: %s", statsW.Body.String())
 	}
