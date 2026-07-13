@@ -683,7 +683,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	h.Set("Content-Type", "application/json")
 	h.Set("Authorization", "Bearer "+apiKey)
 	h.Set("X-Api-Key", apiKey)
-	h.Set("User-Agent", "codex-tui/0.137.0 (Mac OS 26.5.1; arm64) iTerm.app/3.7.0beta3 (codex-tui; 0.137.0)")
+	h.Set("User-Agent", "codex-tui/0.144.1 (Mac OS 26.5.2; arm64) iTerm.app/3.7.0beta6 (codex-tui; 0.144.1)")
 	h.Set("Originator", "codex-tui")
 	h.Set("Session-Id", sessionID)
 	h.Set("Thread-Id", sessionID)

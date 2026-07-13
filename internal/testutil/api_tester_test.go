@@ -222,8 +222,8 @@ func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
 	if got := headers.Get("Openai-Beta"); got != "" {
 		t.Fatalf("Openai-Beta header should be omitted, got %q", got)
 	}
-	if got := headers.Get("User-Agent"); !strings.HasPrefix(got, "codex-tui/0.137.0 ") {
-		t.Fatalf("User-Agent = %q, want codex-tui/0.137.0 prefix", got)
+	if got := headers.Get("User-Agent"); !strings.HasPrefix(got, "codex-tui/0.144.1 ") {
+		t.Fatalf("User-Agent = %q, want codex-tui/0.144.1 prefix", got)
 	}
 	if got := headers.Get("Accept"); got != "text/event-stream" {
 		t.Fatalf("Accept = %q, want text/event-stream", got)
