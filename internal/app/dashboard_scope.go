@@ -17,6 +17,10 @@ var (
 type tokenLogEntry struct {
 	ID                       int64          `json:"id"`
 	Time                     model.JSONTime `json:"time"`
+	ChannelID                int64          `json:"channel_id"`
+	ChannelName              string         `json:"channel_name"`
+	ChannelType              string         `json:"channel_type"`
+	LogSource                string         `json:"log_source"`
 	Model                    string         `json:"model"`
 	ActualModel              string         `json:"actual_model,omitempty"`
 	StatusCode               int            `json:"status_code"`
@@ -37,7 +41,7 @@ type tokenLogEntry struct {
 	EffectiveCost            float64        `json:"effective_cost"`
 }
 
-func projectTokenLogs(logs []*model.LogEntry) []tokenLogEntry {
+func projectTokenLogs(logs []*model.LogEntry, channelTypes map[int64]string) []tokenLogEntry {
 	projected := make([]tokenLogEntry, 0, len(logs))
 	for _, entry := range logs {
 		if entry == nil {
@@ -50,6 +54,10 @@ func projectTokenLogs(logs []*model.LogEntry) []tokenLogEntry {
 		projected = append(projected, tokenLogEntry{
 			ID:                       entry.ID,
 			Time:                     entry.Time,
+			ChannelID:                entry.ChannelID,
+			ChannelName:              entry.ChannelName,
+			ChannelType:              channelTypes[entry.ChannelID],
+			LogSource:                entry.LogSource,
 			Model:                    entry.Model,
 			ActualModel:              entry.ActualModel,
 			StatusCode:               entry.StatusCode,
@@ -94,102 +102,6 @@ func sanitizeTokenLogMessage(entry *model.LogEntry) string {
 		message = string(runes[:maxSummaryRunes]) + "…"
 	}
 	return message
-}
-
-type tokenStatsAccumulator struct {
-	entry          model.StatsEntry
-	firstByteSum   float64
-	firstByteCount int
-	durationSum    float64
-	durationCount  int
-}
-
-func aggregateTokenStats(stats []model.StatsEntry) []model.StatsEntry {
-	byModel := make(map[string]*tokenStatsAccumulator)
-	order := make([]string, 0, len(stats))
-	for _, source := range stats {
-		key := source.Model
-		acc, ok := byModel[key]
-		if !ok {
-			acc = &tokenStatsAccumulator{entry: model.StatsEntry{
-				Model: source.Model,
-			}}
-			byModel[key] = acc
-			order = append(order, key)
-		}
-
-		acc.entry.Success += source.Success
-		acc.entry.Error += source.Error
-		acc.entry.Total += source.Total
-		addInt64Ptr(&acc.entry.TotalInputTokens, source.TotalInputTokens)
-		addInt64Ptr(&acc.entry.TotalOutputTokens, source.TotalOutputTokens)
-		addInt64Ptr(&acc.entry.TotalCacheReadInputTokens, source.TotalCacheReadInputTokens)
-		addInt64Ptr(&acc.entry.TotalCacheCreationInputTokens, source.TotalCacheCreationInputTokens)
-		addFloat64Ptr(&acc.entry.TotalCost, source.TotalCost)
-		addFloat64Ptr(&acc.entry.EffectiveCost, source.EffectiveCost)
-		addFloat64Ptr(&acc.entry.PeakRPM, source.PeakRPM)
-		addFloat64Ptr(&acc.entry.AvgRPM, source.AvgRPM)
-		addFloat64Ptr(&acc.entry.RecentRPM, source.RecentRPM)
-
-		if source.AvgFirstByteTimeSeconds != nil && source.Success > 0 {
-			acc.firstByteSum += *source.AvgFirstByteTimeSeconds * float64(source.Success)
-			acc.firstByteCount += source.Success
-		}
-		if source.AvgDurationSeconds != nil && source.Success > 0 {
-			acc.durationSum += *source.AvgDurationSeconds * float64(source.Success)
-			acc.durationCount += source.Success
-		}
-		if newerTimestamp(source.LastSuccessAt, acc.entry.LastSuccessAt) {
-			acc.entry.LastSuccessAt = source.LastSuccessAt
-			acc.entry.LastSuccessID = source.LastSuccessID
-		}
-		if newerTimestamp(source.LastRequestAt, acc.entry.LastRequestAt) {
-			acc.entry.LastRequestAt = source.LastRequestAt
-			acc.entry.LastRequestID = source.LastRequestID
-			acc.entry.LastRequestStatus = source.LastRequestStatus
-		}
-	}
-
-	result := make([]model.StatsEntry, 0, len(order))
-	for _, key := range order {
-		acc := byModel[key]
-		if acc.firstByteCount > 0 {
-			value := acc.firstByteSum / float64(acc.firstByteCount)
-			acc.entry.AvgFirstByteTimeSeconds = &value
-		}
-		if acc.durationCount > 0 {
-			value := acc.durationSum / float64(acc.durationCount)
-			acc.entry.AvgDurationSeconds = &value
-		}
-		result = append(result, acc.entry)
-	}
-	return result
-}
-
-func addInt64Ptr(dst **int64, src *int64) {
-	if src == nil {
-		return
-	}
-	if *dst == nil {
-		value := int64(0)
-		*dst = &value
-	}
-	**dst += *src
-}
-
-func addFloat64Ptr(dst **float64, src *float64) {
-	if src == nil {
-		return
-	}
-	if *dst == nil {
-		value := float64(0)
-		*dst = &value
-	}
-	**dst += *src
-}
-
-func newerTimestamp(candidate, current *int64) bool {
-	return candidate != nil && (current == nil || *candidate > *current)
 }
 
 // ApplyWebIdentityScope forces API-token sessions to their bound log scope.
