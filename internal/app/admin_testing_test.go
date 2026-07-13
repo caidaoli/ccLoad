@@ -382,6 +382,57 @@ func TestTestChannelAPI_StreamFirstValidContentTimeoutIgnoresHeartbeats(t *testi
 	}
 }
 
+func TestTestChannelAPI_StreamFirstValidContentTimeoutEOFReturns598(t *testing.T) {
+	srv := newInMemoryServer(t)
+	srv.firstByteTimeout = 10 * time.Millisecond
+	srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       &heartbeatThenContextEOFBody{ctx: req.Context()},
+			Request:    req,
+		}, nil
+	})}
+
+	result := srv.testChannelAPI(context.Background(), &model.Config{
+		ID:           9532,
+		Name:         "stream-first-content-timeout-eof-test",
+		URL:          "http://test-upstream.invalid",
+		Priority:     1,
+		ChannelType:  "openai",
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:      true,
+	}, "sk-test", &testutil.TestChannelRequest{
+		Model:       "gpt-4o-mini",
+		ChannelType: "openai",
+		Content:     "hello",
+		Stream:      true,
+	})
+
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
+	}
+}
+
+type heartbeatThenContextEOFBody struct {
+	ctx       context.Context
+	heartbeat bool
+}
+
+func (b *heartbeatThenContextEOFBody) Read(p []byte) (int, error) {
+	if !b.heartbeat {
+		b.heartbeat = true
+		return copy(p, ": keep-alive\n\n"), nil
+	}
+	<-b.ctx.Done()
+	return 0, io.EOF
+}
+
+func (b *heartbeatThenContextEOFBody) Close() error {
+	return nil
+}
+
 func TestHandleChannelTest_InvalidRequestDoesNotLeakDecoderError(t *testing.T) {
 	srv := newInMemoryServer(t)
 

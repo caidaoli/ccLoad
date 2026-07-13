@@ -1237,6 +1237,14 @@ func (s *Server) parseTestNativeSSEResponse(
 		result["raw_response"] = collector.rawResponse()
 		return result
 	}
+	if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, ctx.Err()); ok {
+		result["success"] = false
+		result["status_code"] = timeoutStatus
+		result["duration_ms"] = time.Since(start).Milliseconds()
+		result["error"] = timeoutMsg
+		result["raw_response"] = collector.rawResponse()
+		return result
+	}
 	// 容错：部分上游错误地返回 text/event-stream 但实际是完整 JSON。
 	// 若未发现任何 SSE data 行，按非流式响应解析。
 	if collector.dataLineCount == 0 {
