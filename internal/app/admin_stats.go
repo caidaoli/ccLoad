@@ -97,6 +97,9 @@ func (s *Server) HandleStats(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	if isAPITokenWebRequest(c) {
+		stats = projectTokenStats(stats)
+	}
 
 	// 计算时间跨度（秒），用于前端计算RPM和QPS
 	durationSeconds := endTime.Sub(startTime).Seconds()
@@ -120,6 +123,15 @@ func (s *Server) HandleStats(c *gin.Context) {
 		"rpm_stats":        rpmStats,
 		"is_today":         isToday,
 	})
+}
+
+func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
+	projected := make([]model.StatsEntry, len(stats))
+	copy(projected, stats)
+	for i := range projected {
+		projected[i].LastRequestMessage = ""
+	}
+	return projected
 }
 
 // HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)

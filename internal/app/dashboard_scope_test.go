@@ -253,8 +253,9 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	}
 
 	now := model.JSONTime{Time: time.Now()}
+	const sensitiveLastRequestMessage = "SENSITIVE_STATS_SENTINEL https://upstream.example/v1?key=sk-stats-secret"
 	for _, entry := range []*model.LogEntry{
-		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel.ID, StatusCode: 200, AuthTokenID: 42},
+		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel.ID, StatusCode: 200, Message: sensitiveLastRequestMessage, AuthTokenID: 42},
 		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel2.ID, StatusCode: 200, AuthTokenID: 42},
 		{Time: now, Model: "foreign-model", LogSource: model.LogSourceProxy, ChannelID: foreignChannel.ID, StatusCode: 200, AuthTokenID: 99},
 	} {
@@ -303,6 +304,33 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	}](t, statsW.Body.Bytes()).Data
 	if got := statsChannelNameMap(statsData.Stats); !reflect.DeepEqual(got, wantChannels) {
 		t.Fatalf("stats channels=%v, want %v", got, wantChannels)
+	}
+	if strings.Contains(statsW.Body.String(), sensitiveLastRequestMessage) {
+		t.Fatalf("token stats exposed sensitive last request message: %s", statsW.Body.String())
+	}
+	for _, entry := range statsData.Stats {
+		if entry.LastRequestMessage != "" {
+			t.Fatalf("token stats last request message=%q, want empty", entry.LastRequestMessage)
+		}
+	}
+
+	adminStatsCtx, adminStatsW := newTestContext(t, newRequest(http.MethodGet, "/admin/stats?range=today&auth_token_id=42", nil))
+	server.HandleStats(adminStatsCtx)
+	adminStats := mustParseAPIResponse[struct {
+		Stats []model.StatsEntry `json:"stats"`
+	}](t, adminStatsW.Body.Bytes()).Data.Stats
+	adminOwnerStatsFound := false
+	for _, entry := range adminStats {
+		if entry.ChannelID != nil && int64(*entry.ChannelID) == ownerChannel.ID {
+			adminOwnerStatsFound = true
+			if entry.LastRequestMessage != sensitiveLastRequestMessage {
+				t.Fatalf("admin stats last request message=%q, want %q", entry.LastRequestMessage, sensitiveLastRequestMessage)
+			}
+			break
+		}
+	}
+	if !adminOwnerStatsFound {
+		t.Fatalf("admin stats missing owner channel %d", ownerChannel.ID)
 	}
 
 	filterOptionsCtx, filterOptionsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/stats/filter-options?range=today", nil))
