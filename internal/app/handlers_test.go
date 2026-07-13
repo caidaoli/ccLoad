@@ -2,6 +2,7 @@ package app
 
 import (
 	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"testing"
 	"time"
@@ -402,5 +403,16 @@ func TestBuildLogFilter(t *testing.T) {
 			lf := BuildLogFilter(c)
 			tc.check(t, lf)
 		})
+	}
+}
+
+func TestBuildLogFilterForcesAPITokenWebScope(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/logs?auth_token_id=999", nil)
+	c, _ := newTestContext(t, req)
+	c.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
+
+	filter := BuildLogFilter(c)
+	if filter.AuthTokenID == nil || *filter.AuthTokenID != 42 {
+		t.Fatalf("AuthTokenID=%v, want forced token ID 42", filter.AuthTokenID)
 	}
 }

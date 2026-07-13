@@ -30,6 +30,10 @@ func (s *Server) HandleErrors(c *gin.Context) {
 		return
 	}
 
+	if isAPITokenWebRequest(c) {
+		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs), total)
+		return
+	}
 	RespondJSONWithCount(c, http.StatusOK, logs, total)
 }
 
@@ -52,6 +56,11 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
+	}
+	if isAPITokenWebRequest(c) {
+		for i := range pts {
+			pts[i].Channels = nil
+		}
 	}
 
 	RespondJSON(c, http.StatusOK, pts)
@@ -88,8 +97,14 @@ func (s *Server) HandleStats(c *gin.Context) {
 		return
 	}
 
-	// 计算健康时间线（固定48个时间点，当日显示最近4小时）
-	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+	// Token 用户只看模型聚合，不暴露渠道维度。
+	var channelHealth map[int][]model.HealthPoint
+	if isAPITokenWebRequest(c) {
+		stats = aggregateTokenStats(stats)
+	} else {
+		// 计算健康时间线（固定48个时间点，当日显示最近4小时）
+		channelHealth = s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
+	}
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
@@ -105,7 +120,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 // 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
 //
 // [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
-// 如需隐藏运营数据，可在 server.go:SetupRoutes 中添加 RequireTokenAuth 中间件。
+// 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
 func (s *Server) HandlePublicSummary(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
@@ -113,6 +128,12 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	// 判断是否为本日（本日才计算最近一分钟）
 	isToday := params.Range == "today" || params.Range == ""
 	ctx := c.Request.Context()
+	var logFilter *model.LogFilter
+	if _, ok := WebIdentityFromContext(c); ok {
+		filter := BuildLogFilter(c)
+		filter.LogSource = model.LogSourceProxy
+		logFilter = &filter
+	}
 
 	// [OPT] P1: 并行执行三个独立查询
 	var (
@@ -130,13 +151,13 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	// 查询1: 基础统计（使用 Lite 版本跳过 fillStatsRPM）
 	go func() {
 		defer wg.Done()
-		stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, nil)
+		stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, logFilter)
 	}()
 
 	// 查询2: RPM统计
 	go func() {
 		defer wg.Done()
-		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, nil, isToday)
+		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, logFilter, isToday)
 	}()
 
 	// 查询3: 渠道类型映射（带缓存）
@@ -349,7 +370,8 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	since, until := params.GetTimeRange()
 
 	channelType := c.Query("channel_type")
-	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
+	logFilter := BuildLogFilter(c)
+	logFilter.LogSource = model.LogSourceProxy
 
 	var (
 		models                 []string
@@ -359,11 +381,13 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	)
 
 	wg.Go(func() {
-		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, logFilter)
+		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, &logFilter)
 	})
-	wg.Go(func() {
-		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, logFilter)
-	})
+	if !isAPITokenWebRequest(c) {
+		wg.Go(func() {
+			channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, &logFilter)
+		})
+	}
 	wg.Wait()
 
 	if modelsErr != nil {
@@ -373,6 +397,12 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	if channelsErr != nil {
 		RespondError(c, http.StatusInternalServerError, channelsErr)
 		return
+	}
+	if models == nil {
+		models = make([]string, 0)
+	}
+	if channels == nil {
+		channels = make([]model.ChannelNameID, 0)
 	}
 
 	RespondJSON(c, http.StatusOK, ModelsChannelsResponse{Models: models, Channels: channels})
@@ -586,10 +616,14 @@ func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
 		channelType = ""
 	}
 
-	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
+	var channels []model.ChannelNameID
+	if !isAPITokenWebRequest(c) {
+		var err error
+		channels, err = s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
 	}
 
 	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, channelType, &lf)

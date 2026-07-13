@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"ccLoad/internal/protocol"
 
@@ -19,6 +20,19 @@ func captureClientRequestMetadata() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Set(clientProtocolContextKey, detectClientProtocolFromPath(c.Request.URL.Path))
 		c.Set(clientPathContextKey, c.Request.URL.Path)
+		c.Next()
+	}
+}
+
+func captureDashboardProxyMetadata() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		path := strings.TrimPrefix(c.Request.URL.Path, "/dashboard")
+		if path == "" {
+			path = "/"
+		}
+		c.Request.URL.Path = path
+		c.Set(clientProtocolContextKey, detectClientProtocolFromPath(path))
+		c.Set(clientPathContextKey, path)
 		c.Next()
 	}
 }

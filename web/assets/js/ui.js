@@ -1,3 +1,16 @@
+// 保持公共 UI 在独立加载或旧缓存混用时可用；完整实现由 web-auth.js 覆盖。
+window.WebAuth = window.WebAuth || {
+  ROLE_KEY: 'ccload_web_role',
+  clearWebSession(storage) {
+    storage.removeItem('ccload_token');
+    storage.removeItem('ccload_token_expiry');
+    storage.removeItem('ccload_web_role');
+  },
+  getWebRole() { return 'admin'; },
+  isAPITokenRole() { return false; },
+  filterNavigation(keys) { return [...keys]; }
+};
+
 // ============================================================
 // Token认证工具（统一API调用，替代Cookie Session）
 // ============================================================
@@ -30,8 +43,7 @@
 
     // 检查Token过期（静默跳转，不显示错误提示）
     if (!token || (expiry && Date.now() > parseInt(expiry))) {
-      localStorage.removeItem('ccload_token');
-      localStorage.removeItem('ccload_token_expiry');
+      window.WebAuth.clearWebSession(localStorage);
       window.location.href = getLoginUrl();
       throw new Error('Token expired');
     }
@@ -46,8 +58,7 @@
 
     // 处理401未授权（静默跳转，不显示错误提示）
     if (response.status === 401) {
-      localStorage.removeItem('ccload_token');
-      localStorage.removeItem('ccload_token_expiry');
+      window.WebAuth.clearWebSession(localStorage);
       window.location.href = getLoginUrl();
       throw new Error('Unauthorized');
     }
@@ -57,6 +68,8 @@
 
   // 导出到全局作用域
   window.fetchWithAuth = fetchWithAuth;
+  window.getWebRole = () => window.WebAuth.getWebRole(localStorage);
+  window.isAPITokenRole = () => window.WebAuth.isAPITokenRole(localStorage);
 })();
 
 // ============================================================
@@ -661,8 +674,10 @@
         h('div', { class: 'brand-text' }, 'Claude Code & Codex Proxy')
       ])
     ]);
+    const role = window.getWebRole();
+    const visibleNavKeys = new Set(window.WebAuth.filterNavigation(NAVS.map((item) => item.key), role));
     const nav = h('nav', { class: 'topnav' }, [
-      ...NAVS.map(n => h('a', {
+      ...NAVS.filter((item) => visibleNavKeys.has(item.key)).map(n => h('a', {
         class: `topnav-link ${n.key === active ? 'active' : ''}`,
         href: n.href,
         'data-nav-key': n.key
@@ -764,8 +779,7 @@
 
     // 先清理本地Token，避免后续请求触发token检查
     const token = localStorage.getItem('ccload_token');
-    localStorage.removeItem('ccload_token');
-    localStorage.removeItem('ccload_token_expiry');
+    window.WebAuth.clearWebSession(localStorage);
 
     // 如果有token，尝试调用后端登出接口（使用普通fetch，不触发token检查）
     if (token) {
@@ -806,6 +820,7 @@
 
   window.initTopbar = function initTopbar(activeKey) {
     document.body.classList.add('top-layout');
+    document.body.classList.toggle('web-role-api-token', window.isAPITokenRole());
     const app = document.querySelector('.app-container') || document.body;
     // 隐藏侧边栏与移动按钮
     const sidebar = document.getElementById('sidebar');
@@ -824,7 +839,7 @@
     initVersionDisplay();
 
     // 启动活动请求指示器轮询
-    if (isLoggedIn()) startActiveRequestsPolling();
+    if (isLoggedIn() && !window.isAPITokenRole()) startActiveRequestsPolling();
   }
 
   // 供其他模块订阅活动请求数据（全站唯一轮询源，避免重复请求）
@@ -1079,6 +1094,13 @@
     const run = typeof options.run === 'function' ? options.run : () => {};
 
     const execute = async () => {
+	  const session = await window.fetchDataWithAuth('/dashboard/session');
+	  if (session && session.role) localStorage.setItem(window.WebAuth.ROLE_KEY, session.role);
+	  const restrictedPages = new Set(['channels', 'tokens', 'settings']);
+	  if (window.isAPITokenRole() && restrictedPages.has(options.topbarKey)) {
+	    window.location.replace('/web/index.html');
+	    return;
+	  }
       if (options.translate !== false && window.i18n && typeof window.i18n.translatePage === 'function') {
         window.i18n.translatePage();
       }
@@ -1086,6 +1108,13 @@
       if (options.topbarKey && typeof window.initTopbar === 'function') {
         window.initTopbar(options.topbarKey);
       }
+	  if (window.isAPITokenRole()) {
+	    ['f_channel_type', 'f_id', 'f_name', 'f_auth_token', 'f_log_source'].forEach((id) => {
+	      const control = document.getElementById(id);
+	      const group = control && control.closest('.filter-group');
+	      if (group) group.hidden = true;
+	    });
+	  }
 
       await run();
     };
@@ -1469,6 +1498,7 @@
   const AUTO_REFRESH_CACHE_TTL_MS = 60 * 1000;
 
   async function fetchAutoRefreshIntervalSec() {
+    if (window.isAPITokenRole()) return 0;
     try {
       const cached = window.sessionStorage?.getItem(AUTO_REFRESH_CACHE_KEY);
       if (cached) {
@@ -2344,6 +2374,7 @@
 
   async function loadAuthTokensIntoSelect(selectId, opts) {
     const o = opts || {};
+	if (window.isAPITokenRole()) return [];
     try {
       const data = await fetchDataWithAuth('/admin/auth-tokens');
       const tokens = (data && data.tokens) || [];

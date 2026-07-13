@@ -143,6 +143,35 @@ func doProxyRequest(t testing.TB, engine *gin.Engine, method, path string, body 
 	return w
 }
 
+func createDashboardSession(t testing.TB, env *proxyTestEnv, plainToken string, authToken *model.AuthToken) string {
+	t.Helper()
+	authToken.Token = model.HashToken(plainToken)
+	authToken.CreatedAt = time.Now()
+	authToken.IsActive = true
+	if err := env.store.CreateAuthToken(context.Background(), authToken); err != nil {
+		t.Fatalf("CreateAuthToken failed: %v", err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatalf("ReloadAuthTokens failed: %v", err)
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/login", map[string]any{
+		"mode":  model.WebRoleAPIToken,
+		"token": plainToken,
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("dashboard login status=%d body=%s", w.Code, w.Body.String())
+	}
+	var data struct {
+		Token string `json:"token"`
+	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
+	if data.Token == "" || data.Token == plainToken {
+		t.Fatalf("dashboard login returned invalid web session token %q", data.Token)
+	}
+	return data.Token
+}
+
 // ============================================================================
 // P0: 代理转发核心链路测试
 // ============================================================================
@@ -178,6 +207,193 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 	if resp["id"] != "chatcmpl-1" {
 		t.Fatalf("expected id=chatcmpl-1, got %v", resp["id"])
+	}
+}
+
+func TestDashboardProxy_UsesBoundTokenAndStreams(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		if r.URL.Path != "/v1/chat/completions" {
+			t.Errorf("upstream path=%q, want /v1/chat/completions", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"dashboard\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "dashboard-stream", models: "gpt-dashboard", apiKey: "sk-dashboard-upstream"},
+	}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs len=%d err=%v", len(configs), err)
+	}
+	authToken := &model.AuthToken{
+		Description:       "dashboard stream owner",
+		AllowedModels:     []string{"gpt-dashboard"},
+		AllowedChannelIDs: []int64{configs[0].ID},
+	}
+	webSession := createDashboardSession(t, env, "sk-dashboard-stream-owner", authToken)
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+		"model":    "gpt-dashboard",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, map[string]string{"Authorization": "Bearer " + webSession})
+	if w.Code != http.StatusOK {
+		t.Fatalf("dashboard proxy status=%d body=%s", w.Code, w.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+	}
+	if body := w.Body.String(); !strings.Contains(body, "dashboard") || !strings.Contains(body, "[DONE]") {
+		t.Fatalf("unexpected dashboard SSE body: %s", body)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-dashboard")
+	if entry.AuthTokenID != authToken.ID {
+		t.Fatalf("AuthTokenID=%d, want %d", entry.AuthTokenID, authToken.ID)
+	}
+	if entry.ChannelID != configs[0].ID {
+		t.Fatalf("ChannelID=%d, want %d", entry.ChannelID, configs[0].ID)
+	}
+}
+
+func TestDashboardProxy_EnforcesModelAndChannelRestrictions(t *testing.T) {
+	t.Run("model", func(t *testing.T) {
+		var hits atomic.Int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			hits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"must-not-run"}`))
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{
+			{name: "model-restricted", models: "allowed-model,blocked-model"},
+		}, map[int]string{0: upstream.URL})
+		webSession := createDashboardSession(t, env, "sk-dashboard-model-owner", &model.AuthToken{
+			Description:   "model restricted",
+			AllowedModels: []string{"allowed-model"},
+		})
+
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+			"model":    "blocked-model",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, map[string]string{"Authorization": "Bearer " + webSession})
+		if w.Code != http.StatusForbidden {
+			t.Fatalf("status=%d, want 403: %s", w.Code, w.Body.String())
+		}
+		if hits.Load() != 0 {
+			t.Fatalf("disallowed model reached upstream %d times", hits.Load())
+		}
+	})
+
+	t.Run("channel", func(t *testing.T) {
+		var blockedHits atomic.Int64
+		blocked := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			blockedHits.Add(1)
+			w.WriteHeader(http.StatusInternalServerError)
+		}))
+		defer blocked.Close()
+		var allowedHits atomic.Int64
+		allowed := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			allowedHits.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"allowed-channel","choices":[{"message":{"content":"ok"}}]}`))
+		}))
+		defer allowed.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{
+			{name: "blocked-channel", models: "gpt-dashboard", priority: 100},
+			{name: "allowed-channel", models: "gpt-dashboard", priority: 90},
+		}, map[int]string{0: blocked.URL, 1: allowed.URL})
+		configs, err := env.store.ListConfigs(context.Background())
+		if err != nil {
+			t.Fatalf("ListConfigs failed: %v", err)
+		}
+		var allowedChannelID int64
+		for _, cfg := range configs {
+			if cfg.Name == "allowed-channel" {
+				allowedChannelID = cfg.ID
+			}
+		}
+		if allowedChannelID == 0 {
+			t.Fatal("allowed channel not found")
+		}
+		webSession := createDashboardSession(t, env, "sk-dashboard-channel-owner", &model.AuthToken{
+			Description:       "channel restricted",
+			AllowedModels:     []string{"gpt-dashboard"},
+			AllowedChannelIDs: []int64{allowedChannelID},
+		})
+
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+			"model":    "gpt-dashboard",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, map[string]string{"Authorization": "Bearer " + webSession})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+		}
+		if blockedHits.Load() != 0 || allowedHits.Load() != 1 {
+			t.Fatalf("upstream hits blocked=%d allowed=%d, want 0/1", blockedHits.Load(), allowedHits.Load())
+		}
+	})
+}
+
+func TestDashboardProxy_RejectsRevokedToken(t *testing.T) {
+	var hits atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		hits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "revoked-dashboard", models: "gpt-dashboard"},
+	}, map[int]string{0: upstream.URL})
+	authToken := &model.AuthToken{Description: "revoked dashboard owner"}
+	webSession := createDashboardSession(t, env, "sk-dashboard-revoked-owner", authToken)
+	authToken.IsActive = false
+	if err := env.store.UpdateAuthToken(context.Background(), authToken); err != nil {
+		t.Fatalf("UpdateAuthToken failed: %v", err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatalf("ReloadAuthTokens failed: %v", err)
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+		"model":    "gpt-dashboard",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, map[string]string{"Authorization": "Bearer " + webSession})
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d, want 401: %s", w.Code, w.Body.String())
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("revoked dashboard session reached upstream %d times", hits.Load())
+	}
+}
+
+func TestProxy_NoAvailableUpstreamLogKeepsAuthTokenID(t *testing.T) {
+	srv := newInMemoryServer(t)
+	injectAPIToken(srv.authService, "test-api-key", 0, 77)
+
+	gin.SetMode(gin.TestMode)
+	engine := gin.New()
+	srv.SetupRoutes(engine)
+	env := &proxyTestEnv{server: srv, store: srv.store, engine: engine}
+
+	w := doProxyRequest(t, engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		"model":    "no-upstream-model",
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "no-upstream-model")
+	if entry.AuthTokenID != 77 {
+		t.Fatalf("AuthTokenID=%d, want 77", entry.AuthTokenID)
 	}
 }
 
@@ -264,7 +480,7 @@ func waitForProxyLog(t testing.TB, env *proxyTestEnv, modelName string) *model.L
 			t.Fatalf("ListLogs failed: %v", err)
 		}
 		for _, entry := range logs {
-			if entry.Model == modelName && entry.ChannelID != 0 {
+			if entry.Model == modelName {
 				return entry
 			}
 		}

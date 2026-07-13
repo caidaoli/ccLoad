@@ -266,21 +266,30 @@ func TestHybridStore_WrapperCoverage(t *testing.T) {
 		t.Fatalf("BatchUpdateSettings failed: %v", err)
 	}
 
-	// === Admin sessions wrappers (SQLite only) ===
-	if err := h.CreateAdminSession(ctx, "adm", time.Now().Add(time.Hour)); err != nil {
-		t.Fatalf("CreateAdminSession failed: %v", err)
+	// === Web sessions wrappers (SQLite only) ===
+	if err := h.CreateWebSession(ctx, "web", model.WebSession{Role: model.WebRoleAPIToken, AuthTokenID: 42, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateWebSession failed: %v", err)
 	}
-	if _, exists, err := h.GetAdminSession(ctx, "adm"); err != nil || !exists {
-		t.Fatalf("GetAdminSession exists=%v err=%v, want true,nil", exists, err)
+	if _, exists, err := h.GetWebSession(ctx, "web"); err != nil || !exists {
+		t.Fatalf("GetWebSession exists=%v err=%v, want true,nil", exists, err)
 	}
-	if err := h.DeleteAdminSession(ctx, "adm"); err != nil {
-		t.Fatalf("DeleteAdminSession failed: %v", err)
+	if err := h.DeleteWebSessionsByAuthTokenID(ctx, 42); err != nil {
+		t.Fatalf("DeleteWebSessionsByAuthTokenID failed: %v", err)
 	}
-	if err := h.CleanExpiredSessions(ctx); err != nil {
-		t.Fatalf("CleanExpiredSessions failed: %v", err)
+	if _, exists, err := h.GetWebSession(ctx, "web"); err != nil || exists {
+		t.Fatalf("revoked GetWebSession exists=%v err=%v, want false,nil", exists, err)
 	}
-	if _, err := h.LoadAllSessions(ctx); err != nil {
-		t.Fatalf("LoadAllSessions failed: %v", err)
+	if err := h.CreateWebSession(ctx, "delete-web", model.WebSession{Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("CreateWebSession for delete failed: %v", err)
+	}
+	if err := h.DeleteWebSession(ctx, "delete-web"); err != nil {
+		t.Fatalf("DeleteWebSession failed: %v", err)
+	}
+	if err := h.CleanExpiredWebSessions(ctx); err != nil {
+		t.Fatalf("CleanExpiredWebSessions failed: %v", err)
+	}
+	if _, err := h.LoadWebSessions(ctx); err != nil {
+		t.Fatalf("LoadWebSessions failed: %v", err)
 	}
 
 	if err := h.Ping(ctx); err != nil {

@@ -384,7 +384,8 @@ func newTestAuthService(t testing.TB) *AuthService {
 		authTokenCostLimits: make(map[string]tokenCostLimit),
 		authTokenMaxConns:   make(map[string]int),
 		authTokenActiveReqs: make(map[string]int),
-		validTokens:         make(map[string]time.Time),
+		authTokenHashes:     make(map[int64]string),
+		validTokens:         make(map[string]model.WebSession),
 		lastUsedCh:          make(chan string, 256),
 		done:                make(chan struct{}),
 	}
@@ -398,6 +399,7 @@ func injectAPIToken(svc *AuthService, token string, expiresAt int64, tokenID int
 	svc.authTokensMux.Lock()
 	svc.authTokens[tokenHash] = expiresAt
 	svc.authTokenIDs[tokenHash] = tokenID
+	svc.authTokenHashes[tokenID] = tokenHash
 	svc.authTokensMux.Unlock()
 }
 
@@ -405,7 +407,7 @@ func injectAPIToken(svc *AuthService, token string, expiresAt int64, tokenID int
 func injectAdminToken(svc *AuthService, token string, expiry time.Time) {
 	tokenHash := model.HashToken(token)
 	svc.tokensMux.Lock()
-	svc.validTokens[tokenHash] = expiry
+	svc.validTokens[tokenHash] = model.WebSession{TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: expiry}
 	svc.tokensMux.Unlock()
 }
 

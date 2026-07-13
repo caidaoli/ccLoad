@@ -240,6 +240,8 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if v, ok := c.Get("token_hash"); ok {
 		tokenHashStr, _ = v.(string)
 	}
+	tokenID, _ := c.Get("token_id")
+	tokenIDInt64, _ := tokenID.(int64)
 
 	if !s.enforceTokenLimits(c, tokenHashStr, originalModel) {
 		return
@@ -273,6 +275,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			Time:           model.JSONTime{Time: time.Now()},
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,
+			AuthTokenID:    tokenIDInt64,
 			StatusCode:     503,
 			Message:        "no available upstream (all cooled or none)",
 			IsStreaming:    isStreaming,
@@ -295,10 +298,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 		}
 	}
-
-	// 从context提取tokenID（用于统计和日志，2025-12新增tokenID）
-	tokenID, _ := c.Get("token_id")
-	tokenIDInt64, _ := tokenID.(int64)
 
 	reqCtx := &proxyRequestContext{
 		originalModel:  originalModel,

@@ -14,6 +14,7 @@
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/login.js?v=__VERSION__"></script>
 </head>
@@ -43,8 +44,13 @@
       <!-- 登录表单 -->
       <div class="login-form-container">
         <div class="login-header">
-          <h2 data-i18n="login.adminLogin">管理员登录</h2>
-          <p data-i18n="login.passwordHint">请输入您的管理密码以访问系统</p>
+          <h2 id="login-title" data-i18n="login.adminLogin">管理员登录</h2>
+          <p id="login-hint" data-i18n="login.passwordHint">请输入您的管理密码以访问系统</p>
+        </div>
+
+        <div class="login-mode-tabs" role="tablist" aria-label="登录方式">
+          <button type="button" class="login-mode-tab active" data-login-mode="admin" role="tab" aria-selected="true" data-i18n="login.adminTab">管理员密码</button>
+          <button type="button" class="login-mode-tab" data-login-mode="api_token" role="tab" aria-selected="false" data-i18n="login.apiTokenTab">API Token</button>
         </div>
 
         <div id="error-message" class="error-notification hidden">
@@ -55,7 +61,7 @@
         </div>
 
         <form id="login-form" class="login-form">
-          <div class="form-group">
+          <div id="admin-credential-group" class="form-group">
             <label for="password" class="form-label">
               <svg class="label-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
@@ -64,6 +70,19 @@
             </label>
             <div class="input-container">
               <input type="password" id="password" name="password" class="form-input" required autofocus data-i18n-placeholder="login.passwordPlaceholder" placeholder="请输入管理密码" />
+              <div class="input-decoration"></div>
+            </div>
+          </div>
+
+          <div id="api-token-credential-group" class="form-group hidden">
+            <label for="api-token" class="form-label">
+              <svg class="label-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z"/>
+              </svg>
+              <span data-i18n="login.apiTokenLabel">API Token</span>
+            </label>
+            <div class="input-container">
+              <input type="password" id="api-token" name="api-token" class="form-input" autocomplete="off" data-i18n-placeholder="login.apiTokenPlaceholder" placeholder="请输入 API Token" />
               <div class="input-decoration"></div>
             </div>
           </div>

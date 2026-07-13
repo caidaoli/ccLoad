@@ -4,6 +4,12 @@
     const errorText = document.getElementById('error-text');
     const loginButton = document.getElementById('login-button');
     const passwordInput = document.getElementById('password');
+    const apiTokenInput = document.getElementById('api-token');
+    const adminGroup = document.getElementById('admin-credential-group');
+    const apiTokenGroup = document.getElementById('api-token-credential-group');
+    const loginTitle = document.getElementById('login-title');
+    const loginHint = document.getElementById('login-hint');
+    let loginMode = 'admin';
 
     function showError(message) {
       if (window.showError) try { window.showError(message); } catch (_) {}
@@ -21,32 +27,32 @@
     }
 
     function setLoading(loading) {
-      if (loading) {
-        loginButton.classList.add('loading');
-        loginButton.disabled = true;
-        passwordInput.disabled = true;
-      } else {
-        loginButton.classList.remove('loading');
-        loginButton.disabled = false;
-        passwordInput.disabled = false;
-      }
+      loginButton.classList.toggle('loading', loading);
+      loginButton.disabled = loading;
+      passwordInput.disabled = loading;
+      apiTokenInput.disabled = loading;
     }
 
-    function getSafeRedirectPath(redirect) {
-      if (!redirect || typeof redirect !== 'string') return '/web/index.html';
-
-      const candidate = redirect.trim();
-      if (!candidate.startsWith('/') || candidate.startsWith('//')) {
-        return '/web/index.html';
-      }
-
-      try {
-        const url = new URL(candidate, window.location.origin);
-        if (url.origin !== window.location.origin) return '/web/index.html';
-        return `${url.pathname}${url.search}${url.hash}`;
-      } catch (_) {
-        return '/web/index.html';
-      }
+    function setLoginMode(mode) {
+      loginMode = mode === 'api_token' ? 'api_token' : 'admin';
+      const tokenMode = loginMode === 'api_token';
+      adminGroup.classList.toggle('hidden', tokenMode);
+      apiTokenGroup.classList.toggle('hidden', !tokenMode);
+      passwordInput.required = !tokenMode;
+      apiTokenInput.required = tokenMode;
+      document.querySelectorAll('[data-login-mode]').forEach((tab) => {
+        const active = tab.dataset.loginMode === loginMode;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active ? 'true' : 'false');
+      });
+      const titleKey = tokenMode ? 'login.apiTokenLogin' : 'login.adminLogin';
+      const hintKey = tokenMode ? 'login.apiTokenHint' : 'login.passwordHint';
+      loginTitle.dataset.i18n = titleKey;
+      loginHint.dataset.i18n = hintKey;
+      loginTitle.textContent = window.t(titleKey);
+      loginHint.textContent = window.t(hintKey);
+      hideError();
+      (tokenMode ? apiTokenInput : passwordInput).focus();
     }
 
     // 表单提交处理
@@ -55,7 +61,9 @@
       hideError();
       setLoading(true);
 
-      const password = passwordInput.value;
+      const credentialInput = loginMode === 'api_token' ? apiTokenInput : passwordInput;
+      const credential = loginMode === 'api_token' ? credentialInput.value.trim() : credentialInput.value;
+      const payload = window.WebAuth.buildLoginPayload(loginMode, credential);
 
       try {
         const resp = await fetchAPI('/login', {
@@ -63,34 +71,32 @@
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({ password }),
+          body: JSON.stringify(payload),
         });
 
         if (resp.success) {
           const data = resp.data || {};
 
-          // 存储Token到localStorage
-          localStorage.setItem('ccload_token', data.token);
-          localStorage.setItem('ccload_token_expiry', Date.now() + data.expiresIn * 1000);
+          window.WebAuth.storeWebSession(localStorage, data);
 
           // 登录成功，添加成功动画
           loginButton.style.background = 'linear-gradient(135deg, var(--success-500), var(--success-600))';
 
           setTimeout(() => {
             const urlParams = new URLSearchParams(window.location.search);
-            const redirect = getSafeRedirectPath(urlParams.get('redirect'));
+            const redirect = window.WebAuth.getSafeRedirectPath(urlParams.get('redirect'), window.location.origin);
             window.location.href = redirect;
           }, 500);
         } else {
-          showError(resp.error || '密码错误，请重试');
+          showError(resp.error || '凭据无效，请重试');
 
           // 添加输入框摇晃动画
-          passwordInput.style.animation = 'none';
-          passwordInput.offsetHeight;
-          passwordInput.style.animation = 'shake 0.5s ease-in-out';
+          credentialInput.style.animation = 'none';
+          credentialInput.offsetHeight;
+          credentialInput.style.animation = 'shake 0.5s ease-in-out';
 
           setTimeout(() => {
-            passwordInput.style.animation = '';
+            credentialInput.style.animation = '';
           }, 500);
         }
       } catch (error) {
@@ -103,6 +109,10 @@
 
     // 输入框焦点处理
     passwordInput.addEventListener('focus', hideError);
+    apiTokenInput.addEventListener('focus', hideError);
+    document.querySelectorAll('[data-login-mode]').forEach((tab) => {
+      tab.addEventListener('click', () => setLoginMode(tab.dataset.loginMode));
+    });
     
     // 键盘快捷键
     document.addEventListener('keydown', (e) => {
@@ -121,6 +131,7 @@
     // 页面加载完成后的初始化
     document.addEventListener('DOMContentLoaded', function() {
       if (window.i18n) window.i18n.translatePage();
+      setLoginMode('admin');
       // 聚焦到密码输入框
       setTimeout(() => {
         passwordInput.focus();

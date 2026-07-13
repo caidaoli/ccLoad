@@ -974,7 +974,7 @@ storage/
 │   ├── metrics_finalize.go    # Finalization processing
 │   ├── auth_tokens.go         # API access tokens
 │   ├── auth_token_stats.go    # Token statistics
-│   ├── admin_sessions.go  # Admin sessions
+│   ├── web_sessions.go    # Role-aware Web sessions
 │   ├── system_settings.go # System settings
 │   └── helpers.go         # Helper functions
 └── sqlite/          # SQLite specific (test files only)
@@ -991,7 +991,7 @@ storage/
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
 - `key_rr` - Round-robin pointers (channel_id → idx)
 - `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
-- `admin_sessions` - Admin sessions
+- `web_sessions` - Role-aware Web sessions bound to an optional API token
 - `system_settings` - System config (hot reload support)
 
 **Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
@@ -1026,7 +1026,7 @@ storage/
 - Production must set strong password `CCLOAD_PASS`
 - Configure API access tokens via Web admin `/web/tokens.html` to protect API endpoint access
 - API keys used only in memory, not logged
-- Tokens stored in client localStorage, 24-hour expiry
+- Only random Web-session tokens are stored in client localStorage, with a 24-hour expiry
 - Recommend using HTTPS reverse proxy
 - Docker images run as non-root user for enhanced security
 
@@ -1035,21 +1035,21 @@ storage/
 ccLoad uses token-based authentication for simple and efficient secure access control.
 
 **Auth Methods**:
-- **Admin Interface**: Login gets 24-hour token, stored in `localStorage`
+- **Web Interface**: Login with an admin password or API token and receive a 24-hour Web-session token
 - **API Endpoints**: Support `Authorization: Bearer <token>` header auth
 
 **Core Features**:
-- ✅ **Stateless Auth**: Tokens don't depend on server sessions, naturally supports horizontal scaling
-- ✅ **Unified Auth System**: API and admin interface use same token mechanism
-- ✅ **Simple Architecture**: Pure token auth, simple reliable code (KISS principle)
-- ✅ **CORS Support**: Token stored in localStorage, fully supports cross-origin access
+- ✅ **Scoped Web Sessions**: API-token sessions are read-only and server-bound to their own usage data
+- ✅ **Immediate Revocation**: Disabling, deleting, or expiring an API token invalidates its Web session
+- ✅ **Credential Isolation**: Plaintext API tokens are never stored in browser storage
+- ✅ **Server-side Authorization**: Channel management, token management, settings, and debug data remain admin-only
 
 **Usage Example**:
 ```bash
 # 1. Login to get token
 curl -X POST http://localhost:8080/login \
   -H "Content-Type: application/json" \
-  -d '{"password":"your_admin_password"}' | jq
+  -d '{"mode":"admin","password":"your_admin_password"}' | jq
 
 # Response example:
 # {

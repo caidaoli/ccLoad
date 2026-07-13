@@ -116,7 +116,7 @@
 
         const params = buildStatsRequestParams();
         // 后端返回格式: {"success":true,"data":{"stats":[...],"duration_seconds":...,"rpm_stats":{...},"is_today":...}}
-        statsData = (await fetchDataWithAuth('/admin/stats?' + params.toString())) || { stats: [] };
+        statsData = (await fetchDataWithAuth('/dashboard/stats?' + params.toString())) || { stats: [] };
         durationSeconds = statsData.duration_seconds || 1; // 防止除零
         rpmStats = statsData.rpm_stats || null;
         isToday = statsData.is_today !== false;
@@ -663,7 +663,7 @@
         if (currentChannelType && currentChannelType !== 'all') {
           params.set('channel_type', currentChannelType);
         }
-        const data = await fetchDataWithAuth('/admin/stats/filter-options?' + params.toString());
+        const data = await fetchDataWithAuth('/dashboard/stats/filter-options?' + params.toString());
         if (data) {
           statsChannelNameOptions = data.channel_names || [];
           statsModelOptions = data.models || [];

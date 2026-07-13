@@ -43,7 +43,7 @@ func TestAdminHandlers_DoNotUseGinJSONDirectly(t *testing.T) {
 		}
 	}
 
-	// RequireTokenAuth 属于 Admin API 认证链路；RequireAPIAuth 属于代理API（不强制APIResponse格式）。
+	// RequireAdminAuth 属于 Admin API 认证链路；RequireAPIAuth 属于代理API（不强制APIResponse格式）。
 	files = append(files, "auth_service.go")
 	sort.Strings(files)
 

@@ -360,5 +360,7 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		lf.LogSource = model.LogSourceProxy
 	}
 
+	ApplyWebIdentityScope(c, &lf)
+
 	return lf
 }

@@ -174,7 +174,7 @@
         };
         const params = window.FilterQuery.buildRequestParams(filters, TREND_MODELS_REQUEST_FIELDS);
         appendTrendTimeRangeParams(params, filters);
-        const url = `/admin/models?${params.toString()}`;
+        const url = `/dashboard/models?${params.toString()}`;
 
         const resp = await fetchDataWithAuth(url) || {};
         const rawModels = Array.isArray(resp.models) ? resp.models : [];
@@ -245,7 +245,7 @@
         const metricsParams = buildTrendRequestParams({
           bucket_min: bucketMin
         });
-        const metrics = await fetchAPIWithAuthRaw('/admin/metrics?' + metricsParams.toString());
+        const metrics = await fetchAPIWithAuthRaw('/dashboard/metrics?' + metricsParams.toString());
 
         if (!metrics.payload.success) {
           throw new Error(metrics.payload.error || t('trend.fetchDataFailed'));
