@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -11,7 +12,7 @@ import (
 	"ccLoad/internal/model"
 )
 
-func TestDashboardLogsForceTokenScopeAndRemoveSensitiveFields(t *testing.T) {
+func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	secretChannel, err := store.CreateConfig(context.Background(), &model.Config{
@@ -72,18 +73,21 @@ func TestDashboardLogsForceTokenScopeAndRemoveSensitiveFields(t *testing.T) {
 	if !response.Success || response.Count != 1 || len(response.Data) != 1 {
 		t.Fatalf("unexpected scoped response: success=%v count=%d len=%d", response.Success, response.Count, len(response.Data))
 	}
-	if _, ok := response.Data[0]["model"]; !ok {
-		t.Fatal("safe log response missing model")
-	}
+	entry := response.Data[0]
+	assertJSONNumber(t, entry, "channel_id", float64(secretChannel.ID))
+	assertJSONString(t, entry, "channel_name", "secret-channel")
+	assertJSONString(t, entry, "channel_type", "openai")
+	assertJSONString(t, entry, "log_source", model.LogSourceProxy)
+	assertJSONString(t, entry, "model", "gpt-5.6")
 	var effectiveCost float64
-	if err := json.Unmarshal(response.Data[0]["effective_cost"], &effectiveCost); err != nil {
+	if err := json.Unmarshal(entry["effective_cost"], &effectiveCost); err != nil {
 		t.Fatalf("decode effective cost: %v", err)
 	}
 	if effectiveCost != 0 {
 		t.Fatalf("effective_cost=%v, want 0 for a free channel", effectiveCost)
 	}
 	var message string
-	if err := json.Unmarshal(response.Data[0]["message"], &message); err != nil {
+	if err := json.Unmarshal(entry["message"], &message); err != nil {
 		t.Fatalf("decode safe message: %v", err)
 	}
 	for _, secret := range []string{"secret-upstream.example", "sk-secret", "secret-channel"} {
@@ -91,17 +95,14 @@ func TestDashboardLogsForceTokenScopeAndRemoveSensitiveFields(t *testing.T) {
 			t.Fatalf("safe log message exposed %q: %q", secret, message)
 		}
 	}
-	for _, key := range []string{
-		"channel_id", "channel_name", "api_key_used", "api_key_hash",
-		"auth_token_id", "auth_token_description", "client_ip", "base_url",
-	} {
-		if _, ok := response.Data[0][key]; ok {
+	for _, key := range []string{"api_key_used", "api_key_hash", "auth_token_id", "client_ip", "base_url"} {
+		if _, ok := entry[key]; ok {
 			t.Fatalf("safe log response exposed %q", key)
 		}
 	}
 }
 
-func TestDashboardModelsAndMetricsHideForeignTokensAndChannels(t *testing.T) {
+func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -149,8 +150,9 @@ func TestDashboardModelsAndMetricsHideForeignTokensAndChannels(t *testing.T) {
 	if len(models.Models) != 1 || models.Models[0] != "owner-model" {
 		t.Fatalf("models=%v, want [owner-model]", models.Models)
 	}
-	if len(models.Channels) != 0 {
-		t.Fatalf("channels=%v, want hidden", models.Channels)
+	wantChannels := map[int64]string{ownerChannel.ID: "owner-channel", ownerChannel2.ID: "owner-channel-2"}
+	if got := channelNameMap(models.Channels); !reflect.DeepEqual(got, wantChannels) {
+		t.Fatalf("models channels=%v, want %v", got, wantChannels)
 	}
 
 	metricsCtx, metricsW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/metrics?range=today&bucket_min=5", nil))
@@ -161,8 +163,8 @@ func TestDashboardModelsAndMetricsHideForeignTokensAndChannels(t *testing.T) {
 		t.Fatal("expected owner metric point")
 	}
 	for _, point := range metrics {
-		if len(point.Channels) != 0 {
-			t.Fatalf("metric point exposed channels: %v", point.Channels)
+		if _, leaked := point.Channels["foreign-channel"]; leaked {
+			t.Fatalf("metrics exposed foreign channel: %v", point.Channels)
 		}
 	}
 
@@ -172,11 +174,8 @@ func TestDashboardModelsAndMetricsHideForeignTokensAndChannels(t *testing.T) {
 	statsData := mustParseAPIResponse[struct {
 		Stats []model.StatsEntry `json:"stats"`
 	}](t, statsW.Body.Bytes()).Data
-	if len(statsData.Stats) != 1 {
-		t.Fatalf("stats entries=%d, want one model aggregate", len(statsData.Stats))
-	}
-	if statsData.Stats[0].ChannelID != nil || statsData.Stats[0].ChannelName != "" || statsData.Stats[0].ChannelType != "" {
-		t.Fatalf("stats exposed channel identity: %+v", statsData.Stats[0])
+	if got := statsChannelNameMap(statsData.Stats); !reflect.DeepEqual(got, wantChannels) {
+		t.Fatalf("stats channels=%v, want %v", got, wantChannels)
 	}
 
 	summaryCtx, summaryW := newTestContext(t, newRequest(http.MethodGet, "/dashboard/summary?range=today", nil))
@@ -200,7 +199,50 @@ func TestDashboardModelsAndMetricsHideForeignTokensAndChannels(t *testing.T) {
 	if len(bootstrap.Models) != 1 || bootstrap.Models[0] != "owner-model" {
 		t.Fatalf("bootstrap models=%v, want [owner-model]", bootstrap.Models)
 	}
-	if len(bootstrap.Channels) != 0 || len(bootstrap.AuthTokens) != 0 {
-		t.Fatalf("bootstrap exposed channels/tokens: channels=%v tokens=%d", bootstrap.Channels, len(bootstrap.AuthTokens))
+	if got := channelNameMap(bootstrap.Channels); !reflect.DeepEqual(got, wantChannels) {
+		t.Fatalf("bootstrap channels=%v, want %v", got, wantChannels)
 	}
+	if len(bootstrap.AuthTokens) != 0 {
+		t.Fatalf("bootstrap auth tokens=%d, want 0", len(bootstrap.AuthTokens))
+	}
+}
+
+func assertJSONNumber(t testing.TB, entry map[string]json.RawMessage, key string, want float64) {
+	t.Helper()
+	var got float64
+	if err := json.Unmarshal(entry[key], &got); err != nil {
+		t.Fatalf("decode %s: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("%s=%v, want %v", key, got, want)
+	}
+}
+
+func assertJSONString(t testing.TB, entry map[string]json.RawMessage, key, want string) {
+	t.Helper()
+	var got string
+	if err := json.Unmarshal(entry[key], &got); err != nil {
+		t.Fatalf("decode %s: %v", key, err)
+	}
+	if got != want {
+		t.Fatalf("%s=%q, want %q", key, got, want)
+	}
+}
+
+func channelNameMap(channels []model.ChannelNameID) map[int64]string {
+	result := make(map[int64]string, len(channels))
+	for _, channel := range channels {
+		result[channel.ID] = channel.Name
+	}
+	return result
+}
+
+func statsChannelNameMap(stats []model.StatsEntry) map[int64]string {
+	result := make(map[int64]string, len(stats))
+	for _, entry := range stats {
+		if entry.ChannelID != nil {
+			result[int64(*entry.ChannelID)] = entry.ChannelName
+		}
+	}
+	return result
 }

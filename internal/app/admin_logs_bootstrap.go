@@ -176,9 +176,17 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	if models == nil {
 		models = make([]string, 0)
 	}
+	channels, err := s.store.GetDistinctChannels(ctx, since, until, "", &filter)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if channels == nil {
+		channels = make([]model.ChannelNameID, 0)
+	}
 	RespondJSON(c, http.StatusOK, LogsBootstrapResponse{
 		AuthTokens: make([]*model.AuthToken, 0),
 		Models:     models,
-		Channels:   make([]model.ChannelNameID, 0),
+		Channels:   channels,
 	})
 }

@@ -31,10 +31,30 @@ func (s *Server) HandleErrors(c *gin.Context) {
 	}
 
 	if isAPITokenWebRequest(c) {
-		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs), total)
+		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, s.tokenLogChannelTypes(c.Request.Context(), logs)), total)
 		return
 	}
 	RespondJSONWithCount(c, http.StatusOK, logs, total)
+}
+
+func (s *Server) tokenLogChannelTypes(ctx context.Context, logs []*model.LogEntry) map[int64]string {
+	needed := make(map[int64]struct{})
+	for _, entry := range logs {
+		if entry != nil && entry.ChannelID > 0 {
+			needed[entry.ChannelID] = struct{}{}
+		}
+	}
+	types := make(map[int64]string, len(needed))
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return types
+	}
+	for _, cfg := range configs {
+		if _, ok := needed[cfg.ID]; ok {
+			types[cfg.ID] = cfg.ChannelType
+		}
+	}
+	return types
 }
 
 // HandleMetrics 获取聚合指标数据
@@ -57,12 +77,6 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if isAPITokenWebRequest(c) {
-		for i := range pts {
-			pts[i].Channels = nil
-		}
-	}
-
 	RespondJSON(c, http.StatusOK, pts)
 }
 
@@ -97,14 +111,7 @@ func (s *Server) HandleStats(c *gin.Context) {
 		return
 	}
 
-	// Token 用户只看模型聚合，不暴露渠道维度。
-	var channelHealth map[int][]model.HealthPoint
-	if isAPITokenWebRequest(c) {
-		stats = aggregateTokenStats(stats)
-	} else {
-		// 计算健康时间线（固定48个时间点，当日显示最近4小时）
-		channelHealth = s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
-	}
+	channelHealth := s.fillHealthTimeline(c.Request.Context(), stats, startTime, endTime, &lf, isToday)
 
 	RespondJSON(c, http.StatusOK, gin.H{
 		"stats":            stats,
@@ -383,11 +390,9 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	wg.Go(func() {
 		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, &logFilter)
 	})
-	if !isAPITokenWebRequest(c) {
-		wg.Go(func() {
-			channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, &logFilter)
-		})
-	}
+	wg.Go(func() {
+		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, &logFilter)
+	})
 	wg.Wait()
 
 	if modelsErr != nil {
@@ -616,14 +621,10 @@ func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
 		channelType = ""
 	}
 
-	var channels []model.ChannelNameID
-	if !isAPITokenWebRequest(c) {
-		var err error
-		channels, err = s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
-		if err != nil {
-			RespondError(c, http.StatusInternalServerError, err)
-			return
-		}
+	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
 	}
 
 	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, channelType, &lf)
