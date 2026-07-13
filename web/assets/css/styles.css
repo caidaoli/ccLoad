@@ -5030,6 +5030,10 @@ body.web-role-api-token .logs-col-channel {
   display: none !important;
 }
 
+body.web-role-api-token .filter-group--auth-token {
+  display: none !important;
+}
+
 .token-model-test-card {
   padding: var(--space-6);
 }

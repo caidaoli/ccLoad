@@ -27,7 +27,7 @@
     const timeRangeControlClass = joinClasses('filter-control--compact', 'filter-control--time-range', config.timeRangeControlClass);
     const channelIdGroupClass = joinClasses(groupClass, config.channelIdGroupClass);
     const channelIdControlClass = joinClasses('filter-control--narrow', config.channelIdControlClass);
-    const authTokenGroupClass = joinClasses(groupClass, config.authTokenGroupClass);
+    const authTokenGroupClass = joinClasses(groupClass, 'filter-group--auth-token', config.authTokenGroupClass);
     const authTokenControlClass = joinClasses('filter-control--wide', config.authTokenControlClass);
     const hideZeroSuccess = `<div class="${joinClasses('filter-group', 'filter-group--checkbox', checkboxGroupClass)}">
               <label class="filter-checkbox-label">
