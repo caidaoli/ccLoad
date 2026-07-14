@@ -131,7 +131,12 @@ func (s *Server) updateTokenStatsForProxy(
 	res *fwResult,
 	actualModel string,
 ) {
-	s.updateTokenStatsAsync(reqCtx.tokenHash, cfg.CostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, actualModel)
+	requestModel := ""
+	if reqCtx != nil {
+		requestModel = reqCtx.originalModel
+	}
+	billingModel := util.ResolveBillingModel(actualModel, requestModel)
+	s.updateTokenStatsAsync(reqCtx.tokenHash, cfg.CostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 
 // handleNetworkError 处理网络错误
