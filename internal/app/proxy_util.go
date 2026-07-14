@@ -776,8 +776,11 @@ func extractThinkingEffortFromPayload(payload map[string]any) string {
 	}
 
 	if thinking, ok := payload["thinking"].(map[string]any); ok {
-		if effort := firstStringMapValue(thinking, "effort", "level", "thinkingLevel", "thinking_level", "type"); effort != "" {
+		if effort := firstStringMapValue(thinking, "effort", "level", "thinkingLevel", "thinking_level"); effort != "" {
 			return normalizeThinkingEffort(effort)
+		}
+		if budget, ok := thinking["budget_tokens"].(float64); ok && budget > 0 {
+			return anthropicBudgetToEffort(int(budget))
 		}
 	}
 

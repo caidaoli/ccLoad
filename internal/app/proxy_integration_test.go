@@ -397,6 +397,47 @@ func TestProxy_NoAvailableUpstreamLogKeepsAuthTokenID(t *testing.T) {
 	}
 }
 
+func TestProxy_LogsAnthropicBudgetAsThinkingEffort(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","model":"mimo-v2.5","content":[{"type":"text","text":"hello"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"output_tokens":5}}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "fufu-thinking", models: "mimo-v2.5", apiKey: "sk-fufu-thinking", channelType: util.ChannelTypeAnthropic},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+		"model":      "mimo-v2.5",
+		"max_tokens": 32000,
+		"thinking": map[string]any{
+			"type":          "enabled",
+			"budget_tokens": 31999,
+			"display":       "summarized",
+		},
+		"messages": []map[string]any{{
+			"role": "user",
+			"content": []map[string]string{{
+				"type": "text",
+				"text": "hi",
+			}},
+		}},
+	}, nil)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "mimo-v2.5")
+	if entry.ThinkingEffort != "high" {
+		t.Fatalf("ThinkingEffort=%q, want high", entry.ThinkingEffort)
+	}
+}
+
 func TestProxy_LogsThinkingEffortFromRequestAndJSONResponseOverride(t *testing.T) {
 	t.Parallel()
 
