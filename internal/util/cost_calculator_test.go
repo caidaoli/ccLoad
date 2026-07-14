@@ -157,6 +157,109 @@ func TestCalculateCost_CerebrasModelIDs(t *testing.T) {
 	}
 }
 
+// Ollama/OpenRouter 上游常用 gpt-oss:120b 写法；渠道「重定向目标」会落到此 ID。
+// 定价表 canonical 为 gpt-oss-120b，冒号变体必须能命中，否则 cost=0 且触发定价缺失告警。
+func TestCalculateCost_GPTOSSColonAlias(t *testing.T) {
+	base := CalculateCostDetailed("gpt-oss-120b", 156, 131, 0, 0, 0)
+	if base <= 0 {
+		t.Fatalf("canonical gpt-oss-120b 应有定价, got %v", base)
+	}
+	for _, model := range []string{"gpt-oss:120b", "GPT-OSS:120b", "gpt-oss:20b"} {
+		cost := CalculateCostDetailed(model, 156, 131, 0, 0, 0)
+		if cost <= 0 {
+			t.Errorf("%s 应继承连字符定价, got %v", model, cost)
+		}
+	}
+	// 120b 冒号变体与 canonical 同价
+	got := CalculateCostDetailed("gpt-oss:120b", 156, 131, 0, 0, 0)
+	if !floatEquals(got, base, 1e-12) {
+		t.Fatalf("gpt-oss:120b cost=%v want same as gpt-oss-120b %v", got, base)
+	}
+	// 精确条目 gpt-oss-120b:exacto 不得被冒号归一化破坏
+	exacto := CalculateCostDetailed("gpt-oss-120b:exacto", 1000, 1000, 0, 0, 0)
+	canonical := CalculateCostDetailed("gpt-oss-120b", 1000, 1000, 0, 0, 0)
+	if floatEquals(exacto, canonical, 1e-12) {
+		t.Fatalf("gpt-oss-120b:exacto 应保留独立定价, got same as canonical %v", exacto)
+	}
+	if exacto <= 0 {
+		t.Fatalf("gpt-oss-120b:exacto 应有定价, got %v", exacto)
+	}
+}
+
+func TestResolveBillingModel_FallsBackToRequestWhenActualUnpriced(t *testing.T) {
+	// 上游 ID 无定价、客户端请求名有定价时，按第一列（请求模型）计费
+	got := ResolveBillingModel("upstream-local-tag-xyz", "gpt-oss-120b")
+	if got != "gpt-oss-120b" {
+		t.Fatalf("ResolveBillingModel = %q, want gpt-oss-120b", got)
+	}
+	// 上游有定价时优先上游（重定向可能换价）
+	got = ResolveBillingModel("gpt-oss-120b", "claude-sonnet-4-5")
+	if got != "gpt-oss-120b" {
+		t.Fatalf("priced actual should win, got %q", got)
+	}
+	// 仅 actual
+	got = ResolveBillingModel("gpt-oss-120b", "")
+	if got != "gpt-oss-120b" {
+		t.Fatalf("got %q", got)
+	}
+	// actual 空则 request
+	got = ResolveBillingModel("", "gpt-oss-120b")
+	if got != "gpt-oss-120b" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+// 渠道「模型配置」常见短名 + Ollama 冒号重定向目标，必须与 canonical 定价一致。
+// 截图场景：第一列请求名 / 第二列 redirect_model 都会被拿去计费。
+func TestCalculateCost_ChannelRedirectModelAliases(t *testing.T) {
+	const in, out = 1000, 1000
+	cases := []struct {
+		name      string
+		variants  []string
+		canonical string
+	}{
+		{
+			name:      "gpt-oss-120b",
+			variants:  []string{"gpt-oss-120b", "gpt-oss:120b"},
+			canonical: "gpt-oss-120b",
+		},
+		{
+			name:      "qwen3-vl-235b",
+			variants:  []string{"qwen3-vl-235b", "qwen3-vl:235b"},
+			canonical: "qwen3-vl-235b-a22b-instruct",
+		},
+		{
+			name:      "qwen3-coder-480b",
+			variants:  []string{"qwen3-coder-480b", "qwen3-coder:480b"},
+			canonical: "qwen3-coder-480b-a35b-instruct",
+		},
+		{
+			name:      "qwen3-vl-235b-instruct",
+			variants:  []string{"qwen3-vl-235b-instruct", "qwen3-vl:235b-instruct"},
+			canonical: "qwen3-vl-235b-a22b-instruct",
+		},
+		{
+			name:      "qwen3-coder-next",
+			variants:  []string{"qwen3-coder-next", "qwen3-coder:next"},
+			canonical: "qwen3-coder-next",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			want := CalculateCostDetailed(tc.canonical, in, out, 0, 0, 0)
+			if want <= 0 {
+				t.Fatalf("canonical %s 应有定价, got %v", tc.canonical, want)
+			}
+			for _, model := range tc.variants {
+				got := CalculateCostDetailed(model, in, out, 0, 0, 0)
+				if !floatEquals(got, want, 1e-12) {
+					t.Errorf("%s cost=%v want %v (canonical %s)", model, got, want, tc.canonical)
+				}
+			}
+		})
+	}
+}
+
 func TestCalculateCost_UnknownModel(t *testing.T) {
 	// 未知模型应返回0
 	cost := CalculateCostDetailed("unknown-model-xyz", 1000, 1000, 0, 0, 0)

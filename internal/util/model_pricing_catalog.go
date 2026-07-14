@@ -713,6 +713,22 @@ var modelAliases = map[string]string{
 	// Meta Llama 别名（Cerebras等平台命名变体）
 	"llama3.1-8b":   "llama-3.1-8b-instruct",
 	"llama-3.3-70b": "llama-3.3-70b-instruct",
+
+	// OpenAI OSS / Ollama 风格 size tag（渠道重定向目标常用冒号）
+	"gpt-oss:120b": "gpt-oss-120b",
+	"gpt-oss:20b":  "gpt-oss-20b",
+
+	// 渠道短名 / Ollama 冒号重定向 → 官方完整 ID（与 basePricing canonical 对齐）
+	// 常见：客户端用 qwen3-vl-235b，上游用 qwen3-vl:235b
+	"qwen3-vl-235b":          "qwen3-vl-235b-a22b-instruct",
+	"qwen3-vl:235b":          "qwen3-vl-235b-a22b-instruct",
+	"qwen3-vl-235b-instruct": "qwen3-vl-235b-a22b-instruct",
+	"qwen3-vl:235b-instruct": "qwen3-vl-235b-a22b-instruct",
+	"qwen3-vl-235b-thinking": "qwen3-vl-235b-a22b-thinking",
+	"qwen3-vl:235b-thinking": "qwen3-vl-235b-a22b-thinking",
+	"qwen3-coder-480b":       "qwen3-coder-480b-a35b-instruct",
+	"qwen3-coder:480b":       "qwen3-coder-480b-a35b-instruct",
+	"qwen3-coder:next":       "qwen3-coder-next",
 }
 
 // modelPrefixMatch 将可匹配的前缀解析为实际定价条目。
@@ -825,11 +841,27 @@ func buildPrefixBuckets(pricing map[string]ModelPricing, aliases map[string]stri
 }
 
 // getPricing 获取模型定价（先查别名再查基础表）。
+// 支持 Ollama/vLLM 风格 size tag：gpt-oss:120b → gpt-oss-120b（精确冒号条目如 gpt-oss-120b:exacto 优先保留）。
 func getPricing(model string) (ModelPricing, bool) {
 	snapshot := activeModelPricing.Load()
 	if snapshot == nil {
 		return ModelPricing{}, false
 	}
+	model = strings.ToLower(strings.TrimSpace(model))
+	if model == "" {
+		return ModelPricing{}, false
+	}
+	if pricing, ok := lookupPricingInSnapshot(snapshot, model); ok {
+		return pricing, true
+	}
+	// 冒号 size tag → 连字符（仅在精确/别名未命中时）
+	if alt := colonSizeTagToHyphen(model); alt != "" {
+		return lookupPricingInSnapshot(snapshot, alt)
+	}
+	return ModelPricing{}, false
+}
+
+func lookupPricingInSnapshot(snapshot *modelPricingSnapshot, model string) (ModelPricing, bool) {
 	if base, ok := snapshot.aliases[model]; ok {
 		model = base
 	}
@@ -837,19 +869,39 @@ func getPricing(model string) (ModelPricing, bool) {
 	return pricing, ok
 }
 
+// colonSizeTagToHyphen 将最后一个 ':' 换成 '-'（gpt-oss:120b → gpt-oss-120b）。
+// 已是精确表项的冒号 ID 不会走到这里（getPricing 先精确匹配）。
+func colonSizeTagToHyphen(model string) string {
+	i := strings.LastIndexByte(model, ':')
+	if i <= 0 || i == len(model)-1 {
+		return ""
+	}
+	return model[:i] + "-" + model[i+1:]
+}
+
 // fuzzyMatchModel 模糊匹配模型名称。
 // 例如：claude-3-opus-20240229-extended → claude-3-opus
 //
 //	gpt-4o-2024-12-01 → gpt-4o
 func fuzzyMatchModel(model string) (ModelPricing, bool) {
+	model = strings.ToLower(strings.TrimSpace(model))
 	if model == "" {
 		return ModelPricing{}, false
 	}
+	if pricing, ok := fuzzyMatchModelRaw(model); ok {
+		return pricing, true
+	}
+	if alt := colonSizeTagToHyphen(model); alt != "" {
+		return fuzzyMatchModelRaw(alt)
+	}
+	return ModelPricing{}, false
+}
+
+func fuzzyMatchModelRaw(lowerModel string) (ModelPricing, bool) {
 	snapshot := activeModelPricing.Load()
-	if snapshot == nil {
+	if snapshot == nil || lowerModel == "" {
 		return ModelPricing{}, false
 	}
-	lowerModel := strings.ToLower(model)
 	bucket, ok := snapshot.prefixBuckets[lowerModel[0]]
 	if !ok {
 		return ModelPricing{}, false
@@ -862,4 +914,31 @@ func fuzzyMatchModel(model string) (ModelPricing, bool) {
 		}
 	}
 	return ModelPricing{}, false
+}
+
+// HasModelPricing 判断模型是否能解析到定价（精确/别名/冒号归一/前缀模糊）。
+func HasModelPricing(model string) bool {
+	if _, ok := getPricing(model); ok {
+		return true
+	}
+	_, ok := fuzzyMatchModel(model)
+	return ok
+}
+
+// ResolveBillingModel 选择用于计费的模型 ID。
+// 优先 actual（上游/重定向后，价格可能不同）；若 actual 无定价而 request 有，则回退 request。
+// 这样渠道「模型名 → 重定向目标」配置下，可用第一列（有定价的客户端名）覆盖无定价的上游 ID。
+func ResolveBillingModel(actual, request string) string {
+	actual = strings.TrimSpace(actual)
+	request = strings.TrimSpace(request)
+	if actual == "" {
+		return request
+	}
+	if HasModelPricing(actual) {
+		return actual
+	}
+	if request != "" && request != actual && HasModelPricing(request) {
+		return request
+	}
+	return actual
 }

@@ -910,10 +910,8 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 
 		// 使用实际转发的模型计算成本（重定向时价格可能不同）；
 		// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
-		costModel := p.ActualModel
-		if costModel == "" {
-			costModel = p.RequestModel
-		}
+		// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
+		costModel := util.ResolveBillingModel(p.ActualModel, p.RequestModel)
 		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res) + res.ToolCostUSD
 	} else {
 		entry.Message = "unknown"
