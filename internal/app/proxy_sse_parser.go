@@ -534,7 +534,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 
 // GetUsage 获取累积的usage统计
 // 重要: 返回的inputTokens已归一化为"可计费输入token"
-// - OpenAI/Codex: prompt_tokens包含cached_tokens，已自动扣除避免双计
+// - OpenAI/Codex: input/prompt_tokens 包含 cached_tokens 与 cache_write_tokens，已自动扣除避免双计
 // - Gemini: promptTokenCount包含cachedContentTokenCount，已自动扣除
 // - Claude: input_tokens本身就是非缓存部分，无需处理
 func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
@@ -544,14 +544,22 @@ func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cache
 func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	billableInput := u.InputTokens
 
-	// OpenAI/Codex/Gemini语义归一化: prompt_tokens包含cached_tokens，需扣除
+	// OpenAI/Codex/Gemini语义归一化: prompt_tokens/input_tokens 包含缓存分项，需扣除避免双计
+	// - cached_tokens / cache_read → CacheReadInputTokens
+	// - cache_write_tokens / cache_creation → CacheCreationInputTokens（仅 openai/codex 计入 input）
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
-	if (channelType == "openai" || channelType == "codex" || channelType == "gemini") && u.CacheReadInputTokens > 0 {
-		if u.CacheReadInputTokens <= u.InputTokens {
-			billableInput = u.InputTokens - u.CacheReadInputTokens
-		} else {
-			log.Printf("[WARN] %s usage 中 cacheReadTokens(%d) > inputTokens(%d)，将 inputTokens 视为非缓存 token",
-				channelType, u.CacheReadInputTokens, u.InputTokens)
+	if channelType == "openai" || channelType == "codex" || channelType == "gemini" {
+		includedCache := u.CacheReadInputTokens
+		if channelType == "openai" || channelType == "codex" {
+			includedCache += u.CacheCreationInputTokens
+		}
+		if includedCache > 0 {
+			if includedCache <= u.InputTokens {
+				billableInput = u.InputTokens - includedCache
+			} else {
+				log.Printf("[WARN] %s usage 中 cacheRead(%d)+cacheCreation(%d) > inputTokens(%d)，将 inputTokens 视为非缓存 token",
+					channelType, u.CacheReadInputTokens, u.CacheCreationInputTokens, u.InputTokens)
+			}
 		}
 	}
 
@@ -1250,10 +1258,22 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		u.Cache5mInputTokens = u.CacheCreationInputTokens
 	}
 
-	// OpenAI Responses API缓存字段: input_tokens_details.cached_tokens
+	// OpenAI Responses / Codex 缓存字段:
+	// input_tokens_details.cached_tokens      → 缓存读
+	// input_tokens_details.cache_write_tokens → 缓存建（写入）
 	if details, ok := usage["input_tokens_details"].(map[string]any); ok {
 		if val, ok := details["cached_tokens"].(float64); ok {
 			u.CacheReadInputTokens = int(val)
+		}
+		// 仅在尚未拿到 Anthropic 风格 cache_creation 字段时采用 cache_write_tokens
+		if !hasAggregateCacheCreation && !hasDetailedCacheCreation {
+			if val, ok := details["cache_write_tokens"].(float64); ok {
+				u.CacheCreationInputTokens = int(val)
+				if u.CacheCreationInputTokens > 0 {
+					// OpenAI cache write 无 5m/1h 细分，按 5m 写价（1.25x）计费
+					u.Cache5mInputTokens = u.CacheCreationInputTokens
+				}
+			}
 		}
 	}
 

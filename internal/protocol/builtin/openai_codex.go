@@ -709,6 +709,10 @@ func codexUsageFromMap(value any) *codexUsage {
 	}
 	if details, ok := usageMap["input_tokens_details"].(map[string]any); ok {
 		usage.cachedTokens = int64Value(details["cached_tokens"])
+		// OpenAI Responses / Codex 原生缓存建字段；仅在无顶层 cache_creation_input_tokens 时采用
+		if usage.cacheCreationInputTokens == 0 {
+			usage.cacheCreationInputTokens = int64Value(details["cache_write_tokens"])
+		}
 	} else {
 		usage.cachedTokens = int64Value(usageMap["cache_read_input_tokens"])
 	}

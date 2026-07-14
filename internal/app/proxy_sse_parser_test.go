@@ -372,6 +372,38 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
 }
 
+func TestSSEUsageParser_CodexCacheWriteTokens(t *testing.T) {
+	// OpenAI Responses / Codex: input_tokens_details.cache_write_tokens 是缓存建立字段
+	// input_tokens 包含 cached_tokens 与 cache_write_tokens，需全部扣除避免双计
+	// billable = 121114 - 119936 - 640 = 538
+	sseData := `event: response.completed
+data: {"type":"response.completed","response":{"usage":{"input_tokens":121114,"input_tokens_details":{"cached_tokens":119936,"cache_write_tokens":640},"output_tokens":15247,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":136361}}}
+
+`
+
+	parser := newSSEUsageParser("codex")
+	feedAndAssertUsage(t, parser, sseData, 538, 15247, 119936, 640)
+	if parser.Cache5mInputTokens != 640 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 640（OpenAI cache write 按 5m 写价计费）", parser.Cache5mInputTokens)
+	}
+}
+
+func TestJSONUsageParser_CodexCacheWriteTokens(t *testing.T) {
+	jsonData := `{"id":"resp_1","object":"response","status":"completed","usage":{"input_tokens":121114,"input_tokens_details":{"cached_tokens":119936,"cache_write_tokens":640},"output_tokens":15247,"output_tokens_details":{"reasoning_tokens":0},"total_tokens":136361}}`
+
+	parser := newJSONUsageParser("codex")
+	if err := parser.Feed([]byte(jsonData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 538 || output != 15247 || cacheRead != 119936 || cacheCreation != 640 {
+		t.Fatalf("GetUsage() = (%d,%d,%d,%d), want (538,15247,119936,640)", input, output, cacheRead, cacheCreation)
+	}
+	if parser.Cache5mInputTokens != 640 {
+		t.Errorf("Cache5mInputTokens = %d, 期望 640", parser.Cache5mInputTokens)
+	}
+}
+
 func TestSSEUsageParser_CodexReasoningTokens(t *testing.T) {
 	sseData := `event: response.completed
 data: {"type":"response.completed","response":{"usage":{"input_tokens":10309,"input_tokens_details":{"cached_tokens":6016},"output_tokens":1234,"output_tokens_details":{"reasoning_tokens":987},"total_tokens":11543}}}
