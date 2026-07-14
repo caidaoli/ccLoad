@@ -32,15 +32,12 @@
 
 ## 测试与验证
 
-复用 `internal/app/proxy_util_test.go`，增加公开数据边界上的回归用例：
-
-- `thinking.type=enabled` 且 `budget_tokens=31999` 提取为 `high`。
-- `thinking.type=adaptive` 且没有显式等级或预算时不产生等级。
+复用 `internal/app/proxy_integration_test.go`，从代理请求到持久化日志的公开边界增加回归用例：`thinking.type=enabled` 且 `budget_tokens=31999` 时，日志中的 `thinking_effort` 必须为 `high`。测试不直接调用私有提取函数。
 
 先运行定向用例确认修改前失败，再实施最小修复并运行：
 
 ```bash
-go test -tags sonic ./internal/app -run 'TestExtractThinkingEffort'
+go test -tags sonic ./internal/app -run '^TestProxy_LogsAnthropicBudgetAsThinkingEffort$'
 go test -tags sonic ./internal/...
 golangci-lint run ./...
 ```
