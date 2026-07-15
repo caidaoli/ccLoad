@@ -270,23 +270,51 @@ func streamAndParseResponse(
 			return nil
 		}
 	}
+	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
+		feed := makeFeed(parser)
+		if channelType == util.ChannelTypeCodex {
+			// Responses has an explicit terminal event. Some compatible upstreams emit it
+			// but keep the HTTP body open. Track only bounded framing state while preserving
+			// chunk-by-chunk forwarding, then stop after the terminal event is written/flushed.
+			detector := newResponsesCompletedDetector()
+			return streamCopySSE(ctx, stream, w, func(data []byte) error {
+				boundary, completed := detector.TerminalBoundary(data)
+				feedData := data
+				if completed {
+					// The usage parser currently tokenizes LF-delimited lines. Set completion
+					// before beforeWrite runs so valid bare-CR framing commits deferred output.
+					parser.streamComplete = true
+					feedData = data[:boundary]
+				}
+				hookErr := feed(feedData)
+				if errors.Is(hookErr, errAbortStreamBeforeWrite) {
+					return hookErr
+				}
+				if completed {
+					return &stopStreamAfterWriteError{writeBytes: boundary}
+				}
+				return hookErr
+			})
+		}
+		return streamCopySSE(ctx, stream, w, feed)
+	}
 
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
 		parser := newSSEUsageParser(channelType)
-		streamErr := streamCopySSE(ctx, body, w, makeFeed(parser))
+		streamErr := copySSE(body, parser)
 		return parser, streamErr
 	}
 
 	// 非标准SSE场景：上游以text/plain发送SSE事件
 	if strings.Contains(contentType, "text/plain") && isStreaming {
 		reader := bufio.NewReader(body)
-		probe, _ := reader.Peek(SSEProbeSize)
+		_, isSSE := peekUntilSSEOrLimit(reader, SSEProbeSize)
 		streamBody := readerWithCloser{Reader: reader, Closer: body}
 
-		if looksLikeSSE(probe) {
+		if isSSE {
 			parser := newSSEUsageParser(channelType)
-			sseErr := streamCopySSE(ctx, streamBody, w, makeFeed(parser))
+			sseErr := copySSE(streamBody, parser)
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
@@ -751,7 +779,7 @@ func (s *Server) handleSuccessResponse(
 			if parser.GetLastError() != nil {
 				return errAbortStreamBeforeWrite
 			}
-			if parser.HasStreamOutput() {
+			if parser.HasStreamOutput() || parser.IsStreamComplete() {
 				return deferredWriter.Commit()
 			}
 			return nil
@@ -1008,6 +1036,23 @@ func isHTTP2StreamCloseError(err error) bool {
 		strings.Contains(errStr, "stream error:")
 }
 
+// peekUntilSSEOrLimit incrementally peeks so a short, still-open text/plain SSE stream
+// can be classified as soon as event/data prefixes are available instead of waiting for EOF.
+func peekUntilSSEOrLimit(reader *bufio.Reader, limit int) ([]byte, bool) {
+	var probe []byte
+	for n := 1; n <= limit; n++ {
+		current, err := reader.Peek(n)
+		probe = current
+		if looksLikeSSE(current) {
+			return current, true
+		}
+		if err != nil {
+			return current, false
+		}
+	}
+	return probe, false
+}
+
 // looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构
 func looksLikeSSE(data []byte) bool {
 	// 同时包含 event: 与 data: 行。必须是行前缀，避免普通JSON字符串里的
@@ -1016,14 +1061,18 @@ func looksLikeSSE(data []byte) bool {
 	hasData := false
 	for len(data) > 0 {
 		line := data
-		if idx := bytes.IndexByte(data, '\n'); idx >= 0 {
+		if idx := bytes.IndexAny(data, "\r\n"); idx >= 0 {
 			line = data[:idx]
-			data = data[idx+1:]
+			consume := idx + 1
+			if data[idx] == '\r' && consume < len(data) && data[consume] == '\n' {
+				consume++
+			}
+			data = data[consume:]
 		} else {
 			data = nil
 		}
 
-		line = bytes.TrimLeft(line, " \t\r")
+		line = bytes.TrimLeft(line, " 	")
 		if bytes.HasPrefix(line, []byte("event:")) {
 			hasEvent = true
 		}

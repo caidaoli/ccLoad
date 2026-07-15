@@ -9,7 +9,125 @@ import (
 	"net/http"
 )
 
-var errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
+var (
+	errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
+	errStopStreamAfterWrite   = errors.New("stop stream after current client write")
+)
+
+type stopStreamAfterWriteError struct {
+	writeBytes int
+}
+
+func (e *stopStreamAfterWriteError) Error() string {
+	return errStopStreamAfterWrite.Error()
+}
+
+func (e *stopStreamAfterWriteError) Unwrap() error {
+	return errStopStreamAfterWrite
+}
+
+// maxTrackedSSELineBytes bounds the framing state; response.completed event lines are tiny.
+const maxTrackedSSELineBytes = 256
+
+// responsesCompletedDetector recognizes a complete Responses terminal SSE event while
+// retaining only bounded line state. Payload bytes continue through the normal chunk copier.
+type responsesCompletedDetector struct {
+	line              []byte
+	lineTooLong       bool
+	eventType         string
+	skipLF            bool
+	preferCRLF        bool
+	pendingTerminalCR bool
+}
+
+func newResponsesCompletedDetector() *responsesCompletedDetector {
+	return &responsesCompletedDetector{line: make([]byte, 0, maxTrackedSSELineBytes)}
+}
+
+func (d *responsesCompletedDetector) Feed(data []byte) bool {
+	_, completed := d.TerminalBoundary(data)
+	return completed
+}
+
+// TerminalBoundary returns the byte offset immediately after the terminal event delimiter.
+func (d *responsesCompletedDetector) TerminalBoundary(data []byte) (int, bool) {
+	if d.pendingTerminalCR {
+		d.pendingTerminalCR = false
+		if len(data) > 0 && data[0] == '\n' {
+			return 1, true
+		}
+		return 0, true
+	}
+
+	for i, b := range data {
+		if d.skipLF {
+			d.skipLF = false
+			if b == '\n' {
+				d.preferCRLF = true
+				continue
+			}
+			d.preferCRLF = false
+		}
+
+		switch b {
+		case '\r':
+			if d.finishLine() {
+				end := i + 1
+				if end < len(data) {
+					if data[end] == '\n' {
+						return end + 1, true
+					}
+					return end, true
+				}
+				if d.preferCRLF {
+					d.pendingTerminalCR = true
+					return 0, false
+				}
+				return end, true
+			}
+			d.skipLF = true
+		case '\n':
+			d.preferCRLF = false
+			if d.finishLine() {
+				return i + 1, true
+			}
+		default:
+			if len(d.line) < maxTrackedSSELineBytes {
+				d.line = append(d.line, b)
+			} else {
+				d.lineTooLong = true
+			}
+		}
+	}
+	return 0, false
+}
+
+func (d *responsesCompletedDetector) finishLine() bool {
+	defer func() {
+		d.line = d.line[:0]
+		d.lineTooLong = false
+	}()
+
+	if !d.lineTooLong && len(d.line) == 0 {
+		completed := d.eventType == "response.completed"
+		d.eventType = ""
+		return completed
+	}
+	if d.lineTooLong {
+		if bytes.HasPrefix(d.line, []byte("event:")) {
+			d.eventType = ""
+		}
+		return false
+	}
+	if after, ok := bytes.CutPrefix(d.line, []byte("event:")); ok {
+		// SSE removes at most one leading ASCII space after the colon.
+		if len(after) > 0 && after[0] == ' ' {
+			after = after[1:]
+		}
+		d.eventType = string(after)
+	}
+	return false
+}
 
 // ============================================================================
 // 流式传输数据结构
@@ -70,6 +188,8 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 
 		n, err := src.Read(buf)
 		if n > 0 {
+			stopAfterWrite := false
+			writeBytes := n
 			// [FIX] 2026-01: 先 Feed 数据到 parser，再写入客户端
 			// 原因：即使写入失败（客户端断开），也需要检测流结束标志（如 response.completed）
 			// 这样当上游完整返回但客户端取消时，可以正确识别为"流完整"而非 499
@@ -78,14 +198,24 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 					if errors.Is(hookErr, errAbortStreamBeforeWrite) {
 						return hookErr
 					}
+					if errors.Is(hookErr, errStopStreamAfterWrite) {
+						stopAfterWrite = true
+						var stopErr *stopStreamAfterWriteError
+						if errors.As(hookErr, &stopErr) && stopErr.writeBytes >= 0 && stopErr.writeBytes <= n {
+							writeBytes = stopErr.writeBytes
+						}
+					}
 					_ = hookErr // 钩子错误不中断流传输（容错设计）
 				}
 			}
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+			if _, writeErr := dst.Write(buf[:writeBytes]); writeErr != nil {
 				return writeErr
 			}
 			if flusher, ok := dst.(http.Flusher); ok {
 				flusher.Flush()
+			}
+			if stopAfterWrite {
+				return nil
 			}
 		}
 		if err != nil {
