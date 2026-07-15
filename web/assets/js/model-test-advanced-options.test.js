@@ -125,3 +125,22 @@ test('buildChatRequestPayload treats empty or zero context as unlimited', () => 
     messages
   );
 });
+
+test('buildChatRequestPayload strips UI-only thinking field from messages', () => {
+  const messages = [
+    { role: 'user', content: 'why?' },
+    {
+      role: 'assistant',
+      content: 'because',
+      thinking: 'internal chain of thought that must not leave the browser'
+    }
+  ];
+
+  assert.deepEqual(
+    buildChatRequestPayload({ model: 'gpt-test' }, messages, {}).messages,
+    [
+      { role: 'user', content: 'why?' },
+      { role: 'assistant', content: 'because' }
+    ]
+  );
+});

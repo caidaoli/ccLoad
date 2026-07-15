@@ -58,7 +58,9 @@
   function cloneMessage(message) {
     if (!message || typeof message !== 'object') return message;
     try {
-      return JSON.parse(JSON.stringify(message));
+      // 仅转发 API 字段；thinking 等 UI 元数据留在本地持久化，不进上游请求体。
+      const cloned = JSON.parse(JSON.stringify(message));
+      return { role: cloned.role, content: cloned.content };
     } catch (_) {
       return { role: message.role, content: message.content };
     }

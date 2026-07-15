@@ -3806,6 +3806,8 @@ function renderChatMessages() {
   chatMessages.forEach((msg, index) => {
     const bubble = appendChatBubble(msg.role, msg.content, index);
     if (msg.role === 'assistant') {
+      // thinking 仅 UI 持久化字段，恢复时必须重绘，否则刷新/重开页面会丢思考块
+      renderChatThinking(bubble, msg.thinking, false);
       renderChatBubbleStats(bubble, chatMessageSummaries[index]);
     }
   });
@@ -3913,9 +3915,11 @@ async function sendChatMessage() {
       thinking_effort: chatThinkingEffort,
       builtin_search: chatBuiltinSearch
     };
+    // API 消息只带 role/content；thinking 是本地 UI 字段，不能进上游请求
+    const apiMessages = chatMessages.map((msg) => ({ role: msg.role, content: msg.content }));
     const requestPayload = advancedAPI && typeof advancedAPI.buildChatRequestPayload === 'function'
-      ? advancedAPI.buildChatRequestPayload(basePayload, chatMessages, chatAdvancedOptions)
-      : { ...basePayload, messages: chatMessages };
+      ? advancedAPI.buildChatRequestPayload(basePayload, apiMessages, chatAdvancedOptions)
+      : { ...basePayload, messages: apiMessages };
     const resp = await fetch(`/admin/channels/${chatChannel.id}/chat`, {
       method: 'POST',
       headers: {
@@ -3981,7 +3985,10 @@ async function sendChatMessage() {
       renderChatMarkdown(contentEl, accText || '');
       if (assistantBubble) assistantBubble._rawText = accText || '';
       if (accText) {
-        const assistantMessageIndex = pushChatMessage({ role: 'assistant', content: accText }, assistantSummary);
+        const assistantMessage = { role: 'assistant', content: accText };
+        const thinkingText = String(accThinking || '').trim();
+        if (thinkingText) assistantMessage.thinking = thinkingText;
+        const assistantMessageIndex = pushChatMessage(assistantMessage, assistantSummary);
         if (assistantBubble) assistantBubble.dataset.chatIndex = String(assistantMessageIndex);
         saveChatMessagesToStorage();
       } else {
@@ -4255,6 +4262,15 @@ function buildChatMarkdownText() {
       : i18nText('modelTest.chat.roleAssistant', '助手');
     lines.push(`## ${roleLabel}`);
     lines.push('');
+    if (msg.role === 'assistant') {
+      const thinkingText = String(msg.thinking || '').trim();
+      if (thinkingText) {
+        lines.push(`### ${i18nText('modelTest.chat.thinking', '思考')}`);
+        lines.push('');
+        lines.push(thinkingText);
+        lines.push('');
+      }
+    }
     if (typeof msg.content === 'string') {
       lines.push(msg.content);
     } else if (Array.isArray(msg.content)) {
