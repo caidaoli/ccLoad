@@ -45,12 +45,24 @@ func (s *Server) sortChannelsByHealth(
 
 	cfg := s.healthCache.Config()
 
+	// Preload stats and compute candidate median TTFB for relative penalty.
+	statsByID := make(map[int64]modelpkg.ChannelHealthStats, len(channels))
+	ttfbSamples := make([]float64, 0, len(channels))
+	for _, ch := range channels {
+		st := s.healthCache.GetHealthStats(ch.ID)
+		statsByID[ch.ID] = st
+		if st.FirstByteSampleCount > 0 && st.AvgFirstByteSeconds > 0 {
+			ttfbSamples = append(ttfbSamples, st.AvgFirstByteSeconds)
+		}
+	}
+	medianTTFB := medianFloat64(ttfbSamples)
+
 	scored := make([]channelWithScore, len(channels))
 	for i, ch := range channels {
-		stats := s.healthCache.GetHealthStats(ch.ID)
+		stats := statsByID[ch.ID]
 		scored[i] = channelWithScore{
 			config:      ch,
-			effPriority: s.calculateEffectivePriority(ch, stats, cfg),
+			effPriority: s.calculateEffectivePriority(ch, stats, cfg, medianTTFB),
 		}
 	}
 
@@ -80,12 +92,13 @@ func (s *Server) sortChannelsByHealth(
 }
 
 // calculateEffectivePriority 计算渠道的有效优先级
-// 有效优先级 = 基础优先级 - 成功率惩罚 × 置信度（越大越优先）
-// 置信度 = min(1.0, 样本量 / 置信阈值)，样本量越小惩罚越轻
+// P_eff = Priority - Penalty_fail - Penalty_ttfb
+// 越大越优先。medianTTFB 为当前候选集有效首字中位数（秒），<=0 表示不启用相对首字惩罚。
 func (s *Server) calculateEffectivePriority(
 	ch *modelpkg.Config,
 	stats modelpkg.ChannelHealthStats,
 	cfg modelpkg.HealthScoreConfig,
+	medianTTFB float64,
 ) float64 {
 	basePriority := float64(ch.Priority)
 
@@ -97,16 +110,56 @@ func (s *Server) calculateEffectivePriority(
 	}
 	failureRate := 1.0 - successRate
 
-	// 置信度：样本量越小，惩罚打折越多
-	confidence := 1.0
+	// 失败惩罚置信度：样本量越小，惩罚打折越多
+	failConfidence := 1.0
 	if cfg.MinConfidentSample > 0 {
-		confidence = min(1.0, float64(stats.SampleCount)/float64(cfg.MinConfidentSample))
+		failConfidence = min(1.0, float64(stats.SampleCount)/float64(cfg.MinConfidentSample))
+	}
+	penaltyFail := failureRate * float64(cfg.SuccessRatePenaltyWeight) * failConfidence
+
+	penaltyTTFB := 0.0
+	if cfg.EnableTTFBScore && medianTTFB > 0 && stats.FirstByteSampleCount > 0 && stats.AvgFirstByteSeconds > 0 && cfg.TTFBPenaltyWeight > 0 {
+		sRatio := stats.AvgFirstByteSeconds / medianTTFB
+		slow := sRatio - 1.0
+		if slow < 0 {
+			slow = 0
+		}
+		maxSlow := cfg.TTFBMaxSlowRatio
+		if maxSlow < 0 {
+			maxSlow = 0
+		}
+		if slow > maxSlow {
+			slow = maxSlow
+		}
+		ttfbConfidence := 1.0
+		if cfg.TTFBMinConfidentSample > 0 {
+			ttfbConfidence = min(1.0, float64(stats.FirstByteSampleCount)/float64(cfg.TTFBMinConfidentSample))
+		}
+		penaltyTTFB = slow * cfg.TTFBPenaltyWeight * ttfbConfidence
 	}
 
-	// 惩罚 = 失败率 × 权重 × 置信度
-	penalty := failureRate * float64(cfg.SuccessRatePenaltyWeight) * confidence
+	return basePriority - penaltyFail - penaltyTTFB
+}
 
-	return basePriority - penalty
+// medianFloat64 returns the median of values. Empty input returns 0.
+// Requires at least 2 values for relative scoring callers; this helper itself
+// still returns a median for a single value.
+func medianFloat64(values []float64) float64 {
+	n := len(values)
+	if n == 0 {
+		return 0
+	}
+	// Need >=2 peers for relative median comparison in caller.
+	if n < 2 {
+		return 0
+	}
+	cp := append([]float64(nil), values...)
+	sort.Float64s(cp)
+	mid := n / 2
+	if n%2 == 1 {
+		return cp[mid]
+	}
+	return (cp[mid-1] + cp[mid]) / 2
 }
 
 // balanceSamePriorityChannels 按优先级分组，组内使用平滑加权轮询

@@ -353,6 +353,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
 		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
 		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
+		{"enable_ttfb_score", "false", "bool", "启用渠道首字相对延迟惩罚(需同时开启enable_health_score)", "false"},
+		{"ttfb_penalty_weight", "20", "float", "首字惩罚权重(相对中位慢1倍时全置信惩罚值)", "20"},
+		{"ttfb_max_slow_ratio", "2", "float", "首字相对慢速比(s-1)上限", "2"},
+		{"ttfb_min_confident_sample", "10", "int", "首字置信样本量阈值", "10"},
 		// 冷却兜底配置
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 		// Debug日志配置
