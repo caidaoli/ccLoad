@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -46,6 +47,46 @@ type testHTTPResponseWriter struct {
 	ready          chan struct{}
 	readyOnce      sync.Once
 	mu             sync.Mutex
+}
+
+type dataThenBlockReadCloser struct {
+	closeOnce sync.Once
+	data      []byte
+	offset    int
+	maxChunk  int
+	closed    chan struct{}
+}
+
+func newDataThenBlockReadCloser(data []byte, maxChunk int) *dataThenBlockReadCloser {
+	return &dataThenBlockReadCloser{
+		data:     data,
+		maxChunk: maxChunk,
+		closed:   make(chan struct{}),
+	}
+}
+
+func (r *dataThenBlockReadCloser) Read(p []byte) (int, error) {
+	if r.offset < len(r.data) {
+		n := len(r.data) - r.offset
+		if r.maxChunk > 0 && n > r.maxChunk {
+			n = r.maxChunk
+		}
+		if n > len(p) {
+			n = len(p)
+		}
+		copy(p, r.data[r.offset:r.offset+n])
+		r.offset += n
+		return n, nil
+	}
+	<-r.closed
+	return 0, errors.New("read closed")
+}
+
+func (r *dataThenBlockReadCloser) Close() error {
+	r.closeOnce.Do(func() {
+		close(r.closed)
+	})
+	return nil
 }
 
 var (

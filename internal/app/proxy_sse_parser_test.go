@@ -602,6 +602,44 @@ func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	}
 }
 
+func TestSSEUsageParser_ResponseCompletedRequiresCompleteMatchingEvent(t *testing.T) {
+	tests := []struct {
+		name string
+		data string
+		want bool
+	}{
+		{
+			name: "event line only",
+			data: "event: response.completed\n",
+		},
+		{
+			name: "missing data",
+			data: "event: response.completed\n\n",
+		},
+		{
+			name: "mismatched payload type",
+			data: "event: response.completed\ndata: {\"type\":\"response.failed\"}\n\n",
+		},
+		{
+			name: "complete matching event",
+			data: "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			parser := newSSEUsageParser("codex")
+			if err := parser.Feed([]byte(tt.data)); err != nil {
+				t.Fatalf("Feed failed: %v", err)
+			}
+			if got := parser.IsStreamComplete(); got != tt.want {
+				t.Fatalf("IsStreamComplete()=%v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSSEUsageParser_OpenAIChatCompletionsSSE(t *testing.T) {
 	// 测试OpenAI Chat Completions API的SSE流式响应
 	// OpenAI Chat使用prompt_tokens + completion_tokens格式

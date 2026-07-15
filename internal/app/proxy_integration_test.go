@@ -2601,9 +2601,9 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 }
 
 func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
-	t.Parallel()
-
 	var gotPath string
+	upstreamBody := newDataThenBlockReadCloser([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n"), 7)
+	defer func() { _ = upstreamBody.Close() }()
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "codex-ch", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-codex"},
 	}, map[int]string{0: "https://codex-upstream.example.com"})
@@ -2611,11 +2611,10 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	env.server.client = &http.Client{
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
-			body := bytes.NewBufferString("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n")
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-				Body:       io.NopCloser(body),
+				Body:       upstreamBody,
 			}, nil
 		}),
 	}
@@ -2632,11 +2631,23 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
-		"model":    "gpt-5-codex",
-		"stream":   true,
-		"messages": []map[string]string{{"role": "user", "content": "hi"}},
-	}, nil)
+	done := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		done <- doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+			"model":    "gpt-5-codex",
+			"stream":   true,
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+	}()
+
+	var w *httptest.ResponseRecorder
+	select {
+	case w = <-done:
+	case <-time.After(2 * time.Second):
+		_ = upstreamBody.Close()
+		<-done
+		t.Fatal("translated Responses stream waited for upstream EOF after response.completed")
+	}
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -2647,6 +2658,72 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	body := w.Body.String()
 	if !strings.Contains(body, `"chat.completion.chunk"`) || !strings.Contains(body, `"content":"Hello"`) || !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("expected openai stream chunk, got %s", body)
+	}
+	select {
+	case <-upstreamBody.closed:
+	default:
+		t.Fatal("translated stream returned without closing the upstream body")
+	}
+}
+
+func TestProxy_Success_Streaming_CodexCompletedWithoutEOF(t *testing.T) {
+	sse := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n")
+	trailing := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\n\n")
+
+	for _, contentType := range []string{"text/event-stream", "text/plain; charset=utf-8"} {
+		t.Run(contentType, func(t *testing.T) {
+			upstreamData := append(append([]byte(nil), sse...), trailing...)
+			upstreamBody := newDataThenBlockReadCloser(upstreamData, len(upstreamData))
+			defer func() { _ = upstreamBody.Close() }()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "codex-no-eof", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-codex"},
+			}, map[int]string{0: "https://codex-upstream.example.com"})
+			env.server.client = &http.Client{
+				Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					return &http.Response{
+						StatusCode: http.StatusOK,
+						Header:     http.Header{"Content-Type": []string{contentType}},
+						Body:       upstreamBody,
+					}, nil
+				}),
+			}
+
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				done <- doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+					"model":  "gpt-5-codex",
+					"stream": true,
+					"input":  "hi",
+				}, nil)
+			}()
+
+			var w *httptest.ResponseRecorder
+			select {
+			case w = <-done:
+			case <-time.After(2 * time.Second):
+				_ = upstreamBody.Close()
+				<-done
+				t.Fatal("Responses stream waited for upstream EOF after response.completed")
+			}
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if w.Body.String() != string(sse) {
+				t.Fatalf("forwarded SSE mismatch:\n got: %q\nwant: %q", w.Body.String(), string(sse))
+			}
+			entry := waitForProxyLog(t, env, "gpt-5-codex")
+			if entry.InputTokens != 7 || entry.OutputTokens != 4 {
+				t.Fatalf("logged usage=(%d,%d), want (7,4)", entry.InputTokens, entry.OutputTokens)
+			}
+			select {
+			case <-upstreamBody.closed:
+			default:
+				t.Fatal("stream returned without closing the upstream body")
+			}
+		})
 	}
 }
 
