@@ -270,23 +270,46 @@ func streamAndParseResponse(
 			return nil
 		}
 	}
+	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
+		feed := makeFeed(parser)
+		if channelType != util.ChannelTypeCodex {
+			return streamCopySSE(ctx, stream, w, feed)
+		}
+		return streamCopySSE(ctx, stream, w, func(data []byte) error {
+			offset := 0
+			for offset < len(data) {
+				end := len(data)
+				if lineEnd := bytes.IndexByte(data[offset:], '\n'); lineEnd >= 0 {
+					end = offset + lineEnd + 1
+				}
+				if err := feed(data[offset:end]); err != nil {
+					return err
+				}
+				offset = end
+				if parser.IsStreamComplete() {
+					return &stopStreamAfterWriteError{writeBytes: offset}
+				}
+			}
+			return nil
+		})
+	}
 
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
 		parser := newSSEUsageParser(channelType)
-		streamErr := streamCopySSE(ctx, body, w, makeFeed(parser))
+		streamErr := copySSE(body, parser)
 		return parser, streamErr
 	}
 
 	// 非标准SSE场景：上游以text/plain发送SSE事件
 	if strings.Contains(contentType, "text/plain") && isStreaming {
 		reader := bufio.NewReader(body)
-		probe, _ := reader.Peek(SSEProbeSize)
+		isSSE := peekUntilSSEOrLimit(reader, SSEProbeSize)
 		streamBody := readerWithCloser{Reader: reader, Closer: body}
 
-		if looksLikeSSE(probe) {
+		if isSSE {
 			parser := newSSEUsageParser(channelType)
-			sseErr := streamCopySSE(ctx, streamBody, w, makeFeed(parser))
+			sseErr := copySSE(streamBody, parser)
 			return parser, sseErr
 		}
 		parser := newJSONUsageParser(channelType)
@@ -917,7 +940,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	parser := newSSEUsageParser(channelType)
 	var translatedComplete bool
 	var state any
-	streamErr := streamTransformSSEEvents(
+	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
 		resp.Body,
 		deferredWriter,
@@ -954,6 +977,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				translatedComplete = true
 			}
 			return chunks, nil
+		},
+		func() bool {
+			return reqCtx.transformPlan.UpstreamProtocol == protocol.Codex && parser.IsStreamComplete() && translatedComplete
 		},
 	)
 
@@ -1006,6 +1032,20 @@ func isHTTP2StreamCloseError(err error) bool {
 	errStr := strings.ToLower(err.Error())
 	return strings.Contains(errStr, "http2: response body closed") ||
 		strings.Contains(errStr, "stream error:")
+}
+
+// peekUntilSSEOrLimit 增量探测 text/plain SSE，避免短流在上游不 EOF 时等待满 2KB。
+func peekUntilSSEOrLimit(reader *bufio.Reader, limit int) bool {
+	for n := 1; n <= limit; n++ {
+		current, err := reader.Peek(n)
+		if looksLikeSSE(current) {
+			return true
+		}
+		if err != nil {
+			return false
+		}
+	}
+	return false
 }
 
 // looksLikeSSE 粗略判断文本内容是否包含 SSE 事件结构

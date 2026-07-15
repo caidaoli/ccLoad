@@ -430,19 +430,8 @@ func (p *sseUsageParser) parseBuffer() error {
 
 		if after, ok := strings.CutPrefix(line, "event:"); ok {
 			p.eventType = strings.TrimSpace(after)
-			// [INFO] 流结束标志检测（按事件类型）
-			// - Anthropic: event: message_stop
-			// - OpenAI Responses API: event: response.completed
-			if p.eventType == "message_stop" || p.eventType == "response.completed" {
-				p.streamComplete = true
-			}
 		} else if after0, ok0 := strings.CutPrefix(line, "data:"); ok0 {
 			dataLine := strings.TrimSpace(after0)
-			// [INFO] OpenAI 流结束标志: data: [DONE]
-			if dataLine == "[DONE]" {
-				p.streamComplete = true
-				continue // [DONE]不是JSON，跳过追加
-			}
 			p.dataLines = append(p.dataLines, dataLine)
 		} else if line == "" && len(p.dataLines) > 0 {
 			// 事件结束，解析数据
@@ -472,6 +461,11 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	// 问题：anyrouter等聚合服务使用非标准事件类型（如"."），导致usage丢失
 	// 方案：改为黑名单模式 - 只过滤已知无用事件，其他都尝试解析
 
+	if data == "[DONE]" {
+		p.streamComplete = true
+		return nil
+	}
+
 	// 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
 	// 兼容不带 event: error 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
 	if eventType == "error" || isErrorPayload(data) {
@@ -500,6 +494,10 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	var event map[string]any
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		return fmt.Errorf("json unmarshal failed: %w", err)
+	}
+	payloadType, _ := event["type"].(string)
+	if eventType == "message_stop" || (eventType == "response.completed" && payloadType == "response.completed") {
+		p.streamComplete = true
 	}
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）

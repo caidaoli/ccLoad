@@ -9,7 +9,22 @@ import (
 	"net/http"
 )
 
-var errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
+var (
+	errAbortStreamBeforeWrite = errors.New("abort stream before first client write")
+	errStopStreamAfterWrite   = errors.New("stop stream after current client write")
+)
+
+type stopStreamAfterWriteError struct {
+	writeBytes int
+}
+
+func (e *stopStreamAfterWriteError) Error() string {
+	return errStopStreamAfterWrite.Error()
+}
+
+func (e *stopStreamAfterWriteError) Unwrap() error {
+	return errStopStreamAfterWrite
+}
 
 // ============================================================================
 // 流式传输数据结构
@@ -70,6 +85,8 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 
 		n, err := src.Read(buf)
 		if n > 0 {
+			stopAfterWrite := false
+			writeBytes := n
 			// [FIX] 2026-01: 先 Feed 数据到 parser，再写入客户端
 			// 原因：即使写入失败（客户端断开），也需要检测流结束标志（如 response.completed）
 			// 这样当上游完整返回但客户端取消时，可以正确识别为"流完整"而非 499
@@ -78,14 +95,24 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 					if errors.Is(hookErr, errAbortStreamBeforeWrite) {
 						return hookErr
 					}
+					if errors.Is(hookErr, errStopStreamAfterWrite) {
+						stopAfterWrite = true
+						var stopErr *stopStreamAfterWriteError
+						if errors.As(hookErr, &stopErr) && stopErr.writeBytes >= 0 && stopErr.writeBytes <= n {
+							writeBytes = stopErr.writeBytes
+						}
+					}
 					_ = hookErr // 钩子错误不中断流传输（容错设计）
 				}
 			}
-			if _, writeErr := dst.Write(buf[:n]); writeErr != nil {
+			if _, writeErr := dst.Write(buf[:writeBytes]); writeErr != nil {
 				return writeErr
 			}
 			if flusher, ok := dst.(http.Flusher); ok {
 				flusher.Flush()
+			}
+			if stopAfterWrite {
+				return nil
 			}
 		}
 		if err != nil {
@@ -209,6 +236,17 @@ func streamTransformSSEEvents(
 	onRawEvent func([]byte) error,
 	transform func([]byte) ([][]byte, error),
 ) error {
+	return streamTransformSSEEventsUntil(ctx, src, dst, onRawEvent, transform, nil)
+}
+
+func streamTransformSSEEventsUntil(
+	ctx context.Context,
+	src io.Reader,
+	dst http.ResponseWriter,
+	onRawEvent func([]byte) error,
+	transform func([]byte) ([][]byte, error),
+	stopAfterEvent func() bool,
+) error {
 	stopCloseOnCancel := closeReaderOnContextCancel(ctx, src)
 	defer stopCloseOnCancel()
 
@@ -252,6 +290,9 @@ func streamTransformSSEEvents(
 								flusher.Flush()
 							}
 						}
+					}
+					if stopAfterEvent != nil && stopAfterEvent() {
+						return nil
 					}
 				}
 				eventBuf.Reset()
