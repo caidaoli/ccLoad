@@ -97,7 +97,7 @@
           <div class="www-step">
             <div>
               <h3>Create access tokens</h3>
-              <p>After logging in to the admin console, create API tokens on the token page. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
+              <p>After logging in as an administrator, create API tokens on the token page. API-token users can also sign in to the Web console for a read-only dashboard scoped to their permitted channels and usage data. Proxy endpoints return 401 when no token exists; that is the secure default.</p>
             </div>
           </div>
         </div>
@@ -124,7 +124,7 @@ docker-compose logs -f ccload</code></pre>
         </div>
 
         <div class="www-callout www-mt-4">
-          <strong>The official GHCR image is an Alpine runtime image.</strong> On container startup it downloads the latest Linux release binary, then ccLoad's own auto updater checks for newer releases every 12 hours by default. Adjust <code>auto_update_interval_hours</code> in the admin settings page when you need a longer interval, or set it to <code>0</code> to disable checks.
+          <strong>The official GHCR image is an Alpine runtime image.</strong> On container startup it downloads and verifies the latest Linux release binary, trying <code>ghproxy.net</code> first and GitHub directly on failure. ccLoad's in-process updater uses the same source order every 12 hours by default. Adjust <code>auto_update_interval_hours</code> in admin settings, or set <code>CCLOAD_RELEASE_BASE_URL</code> to a complete <code>.../releases/latest/download</code> URL to force a private mirror.
         </div>
       </div>
     </section>

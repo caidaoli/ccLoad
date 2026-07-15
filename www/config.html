@@ -73,6 +73,12 @@
                 <td>Do not set it to a different value from <code>CCLOAD_API_TOKENS</code>.</td>
               </tr>
               <tr>
+                <td><code>CCLOAD_RELEASE_BASE_URL</code></td>
+                <td>None</td>
+                <td>Complete <code>.../releases/latest/download</code> base URL used for release detection and downloads.</td>
+                <td>Leave unset to try <code>ghproxy.net</code> first and GitHub directly on failure. Set it only to force a private mirror.</td>
+              </tr>
+              <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
                 <td>None</td>
                 <td>MySQL DSN. When set, ccLoad uses MySQL; otherwise it uses SQLite.</td>
@@ -242,9 +248,14 @@
             <p>Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
           </article>
           <article class="www-doc-card">
+            <span class="www-doc-icon">📚</span>
+            <h3>Model catalog sync</h3>
+            <p><code>model_catalog_sync_interval_hours</code> refreshes models and pricing from models.dev every 6 hours by default. Set it to <code>0</code> to disable network sync; startup falls back from the last-good cache to the embedded catalog.</p>
+          </article>
+          <article class="www-doc-card">
             <span class="www-doc-icon">⬆️</span>
             <h3>Auto updates</h3>
-            <p>ccLoad checks GitHub Releases every 12 hours by default. Change <code>auto_update_interval_hours</code> in admin settings, or set it to <code>0</code> to disable checks.</p>
+            <p>ccLoad checks releases every 12 hours by default, trying <code>ghproxy.net</code> first and GitHub directly on failure. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror.</p>
           </article>
         </div>
       </div>
