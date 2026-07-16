@@ -1214,6 +1214,7 @@ func (u *usageAccumulator) applyOpenAIChatUsage(usage map[string]any) {
 	if val := usageFirstInt(usage, "reasoning_tokens", "thinking_tokens"); val > 0 {
 		u.ReasoningTokens = val
 	}
+	u.applyBillingUsageOpenAIReasoning(usage)
 }
 
 // applyAnthropicOrResponsesUsage 处理Anthropic或OpenAI Responses API格式
@@ -1284,6 +1285,40 @@ func (u *usageAccumulator) applyAnthropicOrResponsesUsage(usage map[string]any) 
 		"reasoning_tokens", "thinking_tokens",
 		"total_thought_tokens", "totalThoughtTokens",
 	); val > 0 {
+		u.ReasoningTokens = val
+	}
+	// NewAPI 等网关在 Claude 风格 usage 外包一层 billing_usage.openai_usage，
+	// 真实 reasoning_tokens 只在 completion_tokens_details 里。
+	u.applyBillingUsageOpenAIReasoning(usage)
+}
+
+// applyBillingUsageOpenAIReasoning 从 NewAPI 风格 billing_usage.openai_usage 补齐推理 token。
+// 仅在尚未从标准字段拿到 reasoning 时回填，避免覆盖原生路径。
+func (u *usageAccumulator) applyBillingUsageOpenAIReasoning(usage map[string]any) {
+	if u.ReasoningTokens > 0 || usage == nil {
+		return
+	}
+	billing, ok := usage["billing_usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	oai, ok := billing["openai_usage"].(map[string]any)
+	if !ok {
+		return
+	}
+	if details, ok := oai["completion_tokens_details"].(map[string]any); ok {
+		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
+			u.ReasoningTokens = val
+			return
+		}
+	}
+	if details, ok := oai["output_tokens_details"].(map[string]any); ok {
+		if val := usageFirstInt(details, "reasoning_tokens", "thinking_tokens"); val > 0 {
+			u.ReasoningTokens = val
+			return
+		}
+	}
+	if val := usageFirstInt(oai, "reasoning_tokens", "thinking_tokens"); val > 0 {
 		u.ReasoningTokens = val
 	}
 }

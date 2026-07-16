@@ -862,6 +862,44 @@ data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"outpu
 	}
 }
 
+// NewAPI 等中间层在 message_delta.usage 里塞了一套 Claude 风格字段
+// （input_tokens/output_tokens 常为 0），真正的 OpenAI 用量在
+// usage.billing_usage.openai_usage.completion_tokens_details.reasoning_tokens。
+func TestSSEUsageParser_AnthropicBillingUsageOpenAIReasoningTokens(t *testing.T) {
+	sseData := `event: message_start
+data: {"type":"message_start","message":{"type":"message","model":"grok-4.5","usage":{"input_tokens":400,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0},"role":"assistant","id":"6ff8d925-9e59-90e9-b929-adbf825b714a","content":[]}}
+
+event: message_delta
+data: {"type":"message_delta","usage":{"input_tokens":1984,"cache_creation_input_tokens":0,"cache_read_input_tokens":1536,"output_tokens":312,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0,"billing_usage":{"source":"oai_chat","semantic":"openai","openai_usage":{"prompt_tokens":1984,"completion_tokens":312,"total_tokens":2296,"prompt_tokens_details":{"cached_tokens":1536,"text_tokens":0,"audio_tokens":0,"image_tokens":0},"completion_tokens_details":{"text_tokens":0,"audio_tokens":0,"image_tokens":0,"reasoning_tokens":289},"input_tokens":0,"output_tokens":0,"input_tokens_details":null,"claude_cache_creation_5_m_tokens":0,"claude_cache_creation_1_h_tokens":0}}},"delta":{"stop_reason":"end_turn"}}
+
+event: message_stop
+data: {"type":"message_stop"}
+
+`
+
+	parser := newSSEUsageParser("anthropic")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+
+	input, output, cacheRead, cacheCreation := parser.GetUsage()
+	if input != 1984 {
+		t.Fatalf("input_tokens=%d, want 1984", input)
+	}
+	if output != 312 {
+		t.Fatalf("output_tokens=%d, want 312", output)
+	}
+	if cacheRead != 1536 {
+		t.Fatalf("cache_read_input_tokens=%d, want 1536", cacheRead)
+	}
+	if cacheCreation != 0 {
+		t.Fatalf("cache_creation_input_tokens=%d, want 0", cacheCreation)
+	}
+	if got := parser.GetReasoningTokens(); got != 289 {
+		t.Fatalf("reasoning_tokens=%d, want 289 (from billing_usage.openai_usage.completion_tokens_details)", got)
+	}
+}
+
 func TestSSEUsageParser_GeminiCandidatesZeroFallback(t *testing.T) {
 	// 测试当candidatesTokenCount为0时，从totalTokenCount推算输出token
 	// 某些Gemini模型的流式响应中candidatesTokenCount始终为0
