@@ -25,7 +25,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   // Home - Features
   'www.home.features.title': 'Core Features',
   'www.home.features.routing.title': 'Smart Routing',
-  'www.home.features.routing.desc': 'Intelligent request distribution based on priority and health, smooth weighted round-robin ensures traffic balance',
+  'www.home.features.routing.desc': 'Dynamic routing by priority, success rate and optional relative first-byte latency, with smooth weighted round-robin traffic balancing',
   'www.home.features.failover.title': 'Auto Failover',
   'www.home.features.failover.desc': 'Failover in seconds when channel fails, exponential backoff cooldown prevents cascading failures',
   'www.home.features.monitoring.title': 'Real-time Monitoring',

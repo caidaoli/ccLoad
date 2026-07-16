@@ -20,7 +20,7 @@ function getSettingGroupInfo(key) {
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
     { id: 'model', nameKey: 'settings.group.model', order: 15, match: () => k.startsWith('model_') },
     { id: 'timeout', nameKey: 'settings.group.timeout', order: 20, match: () => k.includes('timeout') },
-    { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
+    { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k.includes('ttfb') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
     { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
@@ -189,6 +189,8 @@ function renderInput(setting) {
     case 'int':
     case 'duration':
       return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">`;
+    case 'float':
+      return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">`;
     default:
       return `<input type="text" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--text">`;
   }

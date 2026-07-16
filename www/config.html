@@ -230,7 +230,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">📈</span>
             <h3>Health-based sorting</h3>
-            <p>When enabled, ccLoad adjusts effective priority by historical success rate and uses a confidence factor to avoid over-penalizing small samples.</p>
+            <p>When enabled, ccLoad subtracts a confidence-weighted failure penalty from priority. Optional TTFB scoring also penalizes channels slower than the current candidate median without applying full weight to small samples.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">💳</span>
@@ -257,6 +257,10 @@
             <h3>Auto updates</h3>
             <p>ccLoad checks releases every 12 hours by default, trying <code>ghproxy.net</code> first and GitHub directly on failure. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror.</p>
           </article>
+        </div>
+
+        <div class="www-callout www-mt-8">
+          <strong>Dynamic channel sorting is opt-in.</strong> Enable <code>enable_health_score</code> for success-rate scoring, then enable <code>enable_ttfb_score</code> to add relative first-byte scoring. Tune the two penalties independently with <code>success_rate_penalty_weight</code>, <code>health_min_confident_sample</code>, <code>ttfb_penalty_weight</code>, <code>ttfb_max_slow_ratio</code> and <code>ttfb_min_confident_sample</code>.
         </div>
       </div>
     </section>

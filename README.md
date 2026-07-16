@@ -862,7 +862,11 @@ These settings have been migrated to database, managed via Web interface `/web/s
 | `health_score_window_minutes` | `30` | Success rate stats time window (minutes) |
 | `health_score_update_interval` | `30` | Success rate cache update interval (seconds) |
 | `health_min_confident_sample` | `20` | Confidence sample threshold (full penalty at this sample size) |
-| `channel_check_interval_hours` | `0` | Scheduled channel check interval (hours, 0=disabled) |
+| `enable_ttfb_score` | `false` | Enable relative first-byte latency penalty; requires `enable_health_score` |
+| `ttfb_penalty_weight` | `20` | TTFB penalty when average first-byte latency is 2× the candidate median at full confidence |
+| `ttfb_max_slow_ratio` | `2` | Upper bound for relative TTFB slowness (`avg_ttfb / median_ttfb - 1`) |
+| `ttfb_min_confident_sample` | `10` | TTFB confidence sample threshold |
+| `channel_check_interval_hours` | `5` | Scheduled channel check interval (hours, supports decimals, 0=disabled) |
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
 | `auto_update_interval_hours` | `12` | Auto-update check interval (hours, 0=disabled, minimum enabled value is 1) |
 
@@ -874,18 +878,24 @@ ccLoad supports in-process auto updates. It checks releases every 12 hours by de
 
 To use only a private mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables the built-in fallback sources. This setting affects release downloads only; it does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
 
-#### Health Score Sorting
+#### Dynamic Channel Sorting
 
-When `enable_health_score` is enabled, the system dynamically adjusts priority based on channel success rate:
+When `enable_health_score` is enabled, ccLoad calculates an effective priority from recent channel health. The success-rate penalty is always active; the relative first-byte latency penalty is added only when `enable_ttfb_score=true`:
 
 ```
-confidence = min(1.0, sample_count / health_min_confident_sample)
-effective_priority = base_priority - (failure_rate × success_rate_penalty_weight × confidence)
+failure_confidence = min(1.0, sample_count / health_min_confident_sample)
+failure_penalty = failure_rate × success_rate_penalty_weight × failure_confidence
+
+relative_slowness = clamp(avg_ttfb / candidate_median_ttfb - 1, 0, ttfb_max_slow_ratio)
+ttfb_confidence = min(1.0, ttfb_sample_count / ttfb_min_confident_sample)
+ttfb_penalty = relative_slowness × ttfb_penalty_weight × ttfb_confidence
+
+effective_priority = base_priority - failure_penalty - ttfb_penalty
 ```
 
-**Confidence Factor**: Solves over-penalization of new or low-traffic channels due to small sample sizes. Smaller samples = lower confidence = more penalty discount.
+**Confidence factors** prevent new or low-traffic channels from receiving a full penalty from a few samples. TTFB scoring compares successful first-byte samples against the median of the current candidate channels. Channels at or faster than the median receive no TTFB penalty, and scoring is skipped when fewer than two candidates have valid TTFB data.
 
-**Example** (`success_rate_penalty_weight = 100`, `health_min_confident_sample = 20`):
+**Success-rate-only example** (`enable_ttfb_score=false`, `success_rate_penalty_weight = 100`, `health_min_confident_sample = 20`):
 
 | Channel | Base Priority | Success Rate | Samples | Confidence | Penalty | Effective Priority |
 |---------|---------------|--------------|---------|------------|---------|-------------------|

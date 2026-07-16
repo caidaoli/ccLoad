@@ -25,7 +25,7 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   // 首页 - 核心特性
   'www.home.features.title': '核心特性',
   'www.home.features.routing.title': '智能路由',
-  'www.home.features.routing.desc': '基于优先级和健康度的智能请求分发，平滑加权轮询确保流量均衡',
+  'www.home.features.routing.desc': '按优先级、成功率和可选的首字相对延迟动态排序，同优先级内使用平滑加权轮询均衡流量',
   'www.home.features.failover.title': '自动故障切换',
   'www.home.features.failover.desc': '渠道故障时秒级切换，指数退避冷却机制避免雪崩',
   'www.home.features.monitoring.title': '实时监控',

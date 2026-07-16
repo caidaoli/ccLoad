@@ -898,7 +898,11 @@ export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
 | `health_score_window_minutes` | `30` | 成功率统计时间窗口（分钟） |
 | `health_score_update_interval` | `30` | 成功率缓存更新间隔（秒） |
 | `health_min_confident_sample` | `20` | 置信样本量阈值（样本量达到此值时惩罚全额生效） |
-| `channel_check_interval_hours` | `0` | 渠道定时检测间隔（小时，0=禁用） |
+| `enable_ttfb_score` | `false` | 启用渠道首字相对延迟惩罚，需同时开启 `enable_health_score` |
+| `ttfb_penalty_weight` | `20` | 首字惩罚权重（平均首字为候选中位数 2 倍且满置信度时的惩罚值） |
+| `ttfb_max_slow_ratio` | `2` | 首字相对慢速比上限（`平均首字 / 候选中位首字 - 1`） |
+| `ttfb_min_confident_sample` | `10` | 首字置信样本量阈值 |
+| `channel_check_interval_hours` | `5` | 渠道定时检测间隔（小时，支持小数，0=禁用） |
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
 | `auto_update_interval_hours` | `12` | 自动更新检测间隔（小时，0=禁用，启用时最低 1 小时） |
 
@@ -910,20 +914,24 @@ ccLoad 支持程序内自动更新，默认每 12 小时检查一次发布版本
 
 如需只使用私有镜像，可将 `CCLOAD_RELEASE_BASE_URL` 设置为完整的 latest-download 地址，例如 `https://mirror.example/caidaoli/ccLoad/releases/latest/download`。显式设置后不会再追加内置回退源。该变量只影响发布文件下载，不会设置 `HTTP_PROXY` 或 `HTTPS_PROXY`，因此不会让业务渠道请求经过下载代理。
 
-#### 健康度排序说明
+#### 渠道动态排序说明
 
-启用健康度排序后，低成功率渠道会自动降低有效优先级：
-
-启用 `enable_health_score` 后，系统会根据渠道的历史成功率动态调整优先级，成功率低的渠道优先级自动降低：
+启用 `enable_health_score` 后，ccLoad 会根据近期渠道健康数据计算有效优先级。成功率惩罚始终参与计算；只有同时设置 `enable_ttfb_score=true` 时，才叠加首字相对延迟惩罚：
 
 ```
-置信度 = min(1.0, 样本量 / health_min_confident_sample)
-有效优先级 = 基础优先级 - (失败率 × success_rate_penalty_weight × 置信度)
+失败置信度 = min(1.0, 样本量 / health_min_confident_sample)
+失败惩罚 = 失败率 × success_rate_penalty_weight × 失败置信度
+
+相对慢速比 = clamp(平均首字 / 当前候选渠道首字中位数 - 1, 0, ttfb_max_slow_ratio)
+首字置信度 = min(1.0, 首字样本量 / ttfb_min_confident_sample)
+首字惩罚 = 相对慢速比 × ttfb_penalty_weight × 首字置信度
+
+有效优先级 = 基础优先级 - 失败惩罚 - 首字惩罚
 ```
 
-**置信度因子**：解决新渠道或低流量渠道因样本量小导致的过度惩罚问题。样本量越小，置信度越低，惩罚打折越多。
+**置信度因子**用于避免新渠道或低流量渠道因少量样本被全额惩罚。首字排序只统计成功请求，并与当前候选渠道的首字中位数比较；达到或快于中位数的渠道不受首字惩罚，少于两个候选渠道有有效首字数据时不启用该项惩罚。
 
-**示例**（`success_rate_penalty_weight = 100`，`health_min_confident_sample = 20`）：
+**仅成功率惩罚示例**（`enable_ttfb_score=false`，`success_rate_penalty_weight = 100`，`health_min_confident_sample = 20`）：
 
 | 渠道 | 基础优先级 | 成功率 | 样本量 | 置信度 | 惩罚值 | 有效优先级 |
 |------|-----------|--------|--------|--------|--------|-----------|
