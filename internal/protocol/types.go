@@ -34,6 +34,9 @@ const (
 	RequestFamilyCompletions     RequestFamily = "completions"
 	RequestFamilyEmbeddings      RequestFamily = "embeddings"
 	RequestFamilyImages          RequestFamily = "images"
+	// RequestFamilyAlphaSearch is the Codex /v1/alpha/search surface.
+	// It is native passthrough only — not a protocol-transform family.
+	RequestFamilyAlphaSearch RequestFamily = "alpha_search"
 )
 
 // TransformPlan captures the chosen transform metadata for one proxy attempt.
@@ -132,6 +135,8 @@ func DetectRequestFamily(path string) RequestFamily {
 		return RequestFamilyResponses
 	case matchesCanonicalEndpoint(path, "/v1/messages"):
 		return RequestFamilyMessages
+	case matchesCanonicalEndpoint(path, "/v1/alpha/search"):
+		return RequestFamilyAlphaSearch
 	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"):
 		return RequestFamilyGenerateContent
 	case matchesCanonicalEndpoint(path, "/v1/completions"):

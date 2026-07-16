@@ -56,7 +56,7 @@ func detectClientProtocolFromPath(path string) protocol.Protocol {
 	switch protocol.DetectRequestFamily(path) {
 	case protocol.RequestFamilyMessages:
 		return protocol.Anthropic
-	case protocol.RequestFamilyResponses:
+	case protocol.RequestFamilyResponses, protocol.RequestFamilyAlphaSearch:
 		return protocol.Codex
 	case protocol.RequestFamilyChatCompletions,
 		protocol.RequestFamilyCompletions,
@@ -75,6 +75,30 @@ func validateClientBodyMatchesProtocol(clientProtocol protocol.Protocol, body []
 		return nil
 	}
 	return fmt.Errorf("request body looks like OpenAI chat completions but path uses %s protocol", clientProtocol)
+}
+
+func sanitizeCodexAlphaSearchBody(body []byte) []byte {
+	var payload map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &payload); err != nil || payload == nil {
+		return body
+	}
+
+	removed := false
+	for _, field := range []string{"prompt_cache_key", "prompt_cache_retention"} {
+		if _, exists := payload[field]; exists {
+			delete(payload, field)
+			removed = true
+		}
+	}
+	if !removed {
+		return body
+	}
+
+	sanitized, err := sonic.Marshal(payload)
+	if err != nil {
+		return body
+	}
+	return sanitized
 }
 
 func looksLikeOpenAIChatCompletionsBody(body []byte) bool {

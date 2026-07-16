@@ -114,6 +114,22 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			expectStream: false,
 			expectError:  false,
 		},
+		{
+			name:         "Codex alpha/search-无模型保持为空",
+			body:         `{"query":"codegraph"}`,
+			path:         "/v1/alpha/search",
+			expectModel:  "",
+			expectStream: false,
+			expectError:  false,
+		},
+		{
+			name:         "Codex alpha/search-有模型保留",
+			body:         `{"model":"gpt-5","query":"codegraph"}`,
+			path:         "/v1/alpha/search",
+			expectModel:  "gpt-5",
+			expectStream: false,
+			expectError:  false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -127,7 +143,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 			c, _ := newTestContext(t, req)
 
-			model, _, isStreaming, err := parseIncomingRequest(c)
+			incoming, err := parseIncomingRequest(c)
 
 			if tt.expectError && err == nil {
 				t.Errorf("期望错误但未发生")
@@ -135,11 +151,11 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 			if !tt.expectError && err != nil {
 				t.Errorf("不期望错误但发生: %v", err)
 			}
-			if model != tt.expectModel {
-				t.Errorf("模型名错误: 期望%s, 实际%s", tt.expectModel, model)
+			if incoming.originalModel != tt.expectModel {
+				t.Errorf("模型名错误: 期望%s, 实际%s", tt.expectModel, incoming.originalModel)
 			}
-			if isStreaming != tt.expectStream {
-				t.Errorf("流式标志错误: 期望%v, 实际%v", tt.expectStream, isStreaming)
+			if incoming.isStreaming != tt.expectStream {
+				t.Errorf("流式标志错误: 期望%v, 实际%v", tt.expectStream, incoming.isStreaming)
 			}
 		})
 	}
@@ -161,7 +177,7 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	_, _, _, err := parseIncomingRequest(c)
+	_, err := parseIncomingRequest(c)
 
 	if err != errBodyTooLarge {
 		t.Errorf("期望errBodyTooLarge错误, 实际: %v", err)
@@ -423,14 +439,14 @@ func TestParseIncomingRequest_MultipartModel(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	model, _, isStreaming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c)
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
-	if model != "dall-e-2" {
-		t.Fatalf("模型名应为 dall-e-2, 实际: %s", model)
+	if incoming.originalModel != "dall-e-2" {
+		t.Fatalf("模型名应为 dall-e-2, 实际: %s", incoming.originalModel)
 	}
-	if isStreaming {
+	if incoming.isStreaming {
 		t.Fatal("images 请求不应为流式")
 	}
 }
@@ -443,14 +459,14 @@ func TestParseIncomingRequest_ImagesJSON(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	model, _, isStreaming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c)
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
-	if model != "gpt-image-1" {
-		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", model)
+	if incoming.originalModel != "gpt-image-1" {
+		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", incoming.originalModel)
 	}
-	if isStreaming {
+	if incoming.isStreaming {
 		t.Fatal("images 请求不应为流式")
 	}
 }
@@ -472,11 +488,11 @@ func TestParseIncomingRequest_ImagesLargerBodyAllowed(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	model, _, _, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c)
 	if err != nil {
 		t.Fatalf("images 路径 15MB 请求体不应报错, 实际: %v", err)
 	}
-	if model != "gpt-image-1" {
-		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", model)
+	if incoming.originalModel != "gpt-image-1" {
+		t.Fatalf("模型名应为 gpt-image-1, 实际: %s", incoming.originalModel)
 	}
 }

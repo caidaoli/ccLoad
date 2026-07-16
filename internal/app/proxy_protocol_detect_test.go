@@ -20,6 +20,7 @@ func TestClientRequestMetadataDetectsClientProtocolFromPath(t *testing.T) {
 		{"Claude Messages", "/v1/messages", protocol.Anthropic},
 		{"Claude Count Tokens", "/v1/messages/count_tokens", protocol.Anthropic},
 		{"Codex Responses", "/v1/responses", protocol.Codex},
+		{"Codex Alpha Search", "/v1/alpha/search", protocol.Codex},
 		{"OpenAI Chat", "/v1/chat/completions", protocol.OpenAI},
 		{"OpenAI Completions", "/v1/completions", protocol.OpenAI},
 		{"OpenAI Embeddings", "/v1/embeddings", protocol.OpenAI},

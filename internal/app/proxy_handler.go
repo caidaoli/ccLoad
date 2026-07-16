@@ -65,8 +65,21 @@ func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool
 // 请求解析
 // ============================================================================
 
-// parseIncomingRequest 返回 (originalModel, body, isStreaming, error)
-func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
+type incomingRequest struct {
+	originalModel string
+	body          []byte
+	isStreaming   bool
+	hasModel      bool
+}
+
+func (r incomingRequest) authorizationModel() string {
+	if !r.hasModel {
+		return ""
+	}
+	return r.originalModel
+}
+
+func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
@@ -84,11 +97,11 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	limited := io.LimitReader(c.Request.Body, maxBody+1)
 	all, err := io.ReadAll(limited)
 	if err != nil {
-		return "", nil, false, fmt.Errorf("failed to read body: %w", err)
+		return incomingRequest{}, fmt.Errorf("failed to read body: %w", err)
 	}
 	_ = c.Request.Body.Close()
 	if int64(len(all)) > maxBody {
-		return "", nil, false, errBodyTooLarge
+		return incomingRequest{}, errBodyTooLarge
 	}
 
 	var reqModel struct {
@@ -116,17 +129,26 @@ func parseIncomingRequest(c *gin.Context) (string, []byte, bool, error) {
 	if originalModel == "" {
 		originalModel = extractModelFromPath(requestPath)
 	}
+	hasModel := originalModel != ""
+	requestFamily := protocol.DetectRequestFamily(requestPath)
 
-	// 对于GET请求，如果无法提取模型名称，使用通配符
+	// GET 请求保留既有通配选路语义；Codex alpha/search 的业务模型保持为空。
 	if originalModel == "" {
-		if requestMethod == http.MethodGet {
+		switch {
+		case requestFamily == protocol.RequestFamilyAlphaSearch:
+		case requestMethod == http.MethodGet:
 			originalModel = "*"
-		} else {
-			return "", nil, false, fmt.Errorf("invalid JSON or missing model")
+		default:
+			return incomingRequest{}, fmt.Errorf("invalid JSON or missing model")
 		}
 	}
 
-	return originalModel, all, isStreaming, nil
+	return incomingRequest{
+		originalModel: originalModel,
+		body:          all,
+		isStreaming:   isStreaming,
+		hasModel:      hasModel,
+	}, nil
 }
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
@@ -158,6 +180,7 @@ func extractModelFromMultipart(body []byte, boundary string) string {
 // 从proxy.go提取，遵循SRP原则
 func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, channelType string) ([]*model.Config, error) {
 	requestMethod := c.Request.Method
+	requestFamily := protocol.DetectRequestFamily(c.Request.URL.Path)
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
 	if requestMethod == http.MethodGet && channelType == util.ChannelTypeGemini {
@@ -167,6 +190,9 @@ func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, orig
 
 	if channelType == "" {
 		return nil, errUnknownChannelType
+	}
+	if requestFamily == protocol.RequestFamilyAlphaSearch {
+		return s.selectAlphaSearchCandidates(ctx, originalModel)
 	}
 
 	return s.selectCandidatesByModelAndType(ctx, originalModel, channelType)
@@ -214,7 +240,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	requestMethod := c.Request.Method
 
-	originalModel, all, isStreaming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
@@ -223,11 +249,17 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	originalModel := incoming.originalModel
+	all := incoming.body
+	isStreaming := incoming.isStreaming
 
 	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
 	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
+	}
+	if protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyAlphaSearch {
+		all = sanitizeCodexAlphaSearchBody(all)
 	}
 
 	// 清理 Anthropic 请求中注入的 billing header 元数据
@@ -243,7 +275,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
 
-	if !s.enforceTokenLimits(c, tokenHashStr, originalModel) {
+	if !s.enforceTokenLimits(c, tokenHashStr, incoming.authorizationModel()) {
 		return
 	}
 

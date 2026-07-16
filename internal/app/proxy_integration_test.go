@@ -28,11 +28,13 @@ import (
 
 // testChannel 测试用渠道定义
 type testChannel struct {
-	name        string
-	channelType string
-	models      string // 逗号分隔的模型列表
-	apiKey      string
-	priority    int
+	name                  string
+	channelType           string
+	protocolTransformMode string
+	protocolTransforms    []string
+	models                string // 逗号分隔的模型列表
+	apiKey                string
+	priority              int
 }
 
 // proxyTestEnv 集成测试环境
@@ -79,12 +81,14 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 		}
 
 		cfg := &model.Config{
-			Name:         ch.name,
-			URL:          upURL,
-			ChannelType:  chType,
-			Priority:     priority,
-			Enabled:      true,
-			ModelEntries: modelEntries,
+			Name:                  ch.name,
+			URL:                   upURL,
+			ChannelType:           chType,
+			ProtocolTransformMode: ch.protocolTransformMode,
+			ProtocolTransforms:    ch.protocolTransforms,
+			Priority:              priority,
+			Enabled:               true,
+			ModelEntries:          modelEntries,
 		}
 		created, err := store.CreateConfig(ctx, cfg)
 		if err != nil {
@@ -208,6 +212,198 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	if resp["id"] != "chatcmpl-1" {
 		t.Fatalf("expected id=chatcmpl-1, got %v", resp["id"])
 	}
+}
+
+func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		if r.Method != http.MethodPost {
+			t.Errorf("upstream method=%q, want POST", r.Method)
+		}
+		if r.URL.Path != "/v1/alpha/search" {
+			t.Errorf("upstream path=%q, want /v1/alpha/search", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("scope"); got != "repo" {
+			t.Errorf("upstream scope=%q, want repo", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+		} else if body["query"] != "codegraph" {
+			t.Errorf("upstream query=%v, want codegraph", body["query"])
+		}
+		if _, exists := body["prompt_cache_key"]; exists {
+			t.Errorf("upstream body contains prompt_cache_key: %v", body)
+		}
+		if _, exists := body["prompt_cache_retention"]; exists {
+			t.Errorf("upstream body contains prompt_cache_retention: %v", body)
+		}
+		if got := r.Header.Get("Session_id"); got != "" {
+			t.Errorf("upstream Session_id=%q, want empty", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[]}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "native-codex", channelType: util.ChannelTypeCodex, models: "gpt-5"},
+	}, map[int]string{0: upstream.URL})
+
+	plainToken := "sk-alpha-restricted"
+	authToken := &model.AuthToken{
+		Token:         model.HashToken(plainToken),
+		Description:   "alpha search restricted token",
+		CreatedAt:     time.Now(),
+		IsActive:      true,
+		AllowedModels: []string{"gpt-5"},
+	}
+	if err := env.store.CreateAuthToken(context.Background(), authToken); err != nil {
+		t.Fatalf("CreateAuthToken failed: %v", err)
+	}
+	if err := env.server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatalf("ReloadAuthTokens failed: %v", err)
+	}
+
+	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search?scope=repo", map[string]any{
+		"query":                  "codegraph",
+		"prompt_cache_key":       "responses-cache-key",
+		"prompt_cache_retention": "24h",
+	}, map[string]string{"Authorization": "Bearer " + plainToken})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+	}
+	entry := waitForProxyLog(t, env, "")
+	if entry.AuthTokenID != authToken.ID {
+		t.Fatalf("AuthTokenID=%d, want %d", entry.AuthTokenID, authToken.ID)
+	}
+
+	blocked := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+		"model": "blocked-model",
+		"query": "codegraph",
+	}, map[string]string{"Authorization": "Bearer " + plainToken})
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("explicit blocked model status=%d, want 403: %s", blocked.Code, blocked.Body.String())
+	}
+	if upstreamHits.Load() != 1 {
+		t.Fatalf("blocked model reached upstream, hits=%d", upstreamHits.Load())
+	}
+}
+
+func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
+	t.Run("local transform is not a native search upstream", func(t *testing.T) {
+		var upstreamHits atomic.Int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstreamHits.Add(1)
+			w.WriteHeader(http.StatusOK)
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{{
+			name:                  "local-codex-transform",
+			channelType:           util.ChannelTypeOpenAI,
+			protocolTransformMode: model.ProtocolTransformModeLocal,
+			protocolTransforms:    []string{util.ChannelTypeCodex},
+			models:                "gpt-5",
+		}}, map[int]string{0: upstream.URL})
+
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want 503: %s", w.Code, w.Body.String())
+		}
+		if upstreamHits.Load() != 0 {
+			t.Fatalf("local transform upstream hits=%d, want 0", upstreamHits.Load())
+		}
+	})
+
+	t.Run("responses exact URL cannot shadow native search", func(t *testing.T) {
+		var wrongHits atomic.Int64
+		wrong := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			wrongHits.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+		}))
+		defer wrong.Close()
+
+		var nativeHits atomic.Int64
+		native := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			nativeHits.Add(1)
+			if r.URL.Path != "/v1/alpha/search" {
+				t.Errorf("native upstream path=%q, want /v1/alpha/search", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		defer native.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{
+			{
+				name:                  "responses-exact",
+				channelType:           util.ChannelTypeCodex,
+				protocolTransformMode: model.ProtocolTransformModeLocal,
+				models:                "gpt-5",
+				priority:              100,
+			},
+			{
+				name:        "native-search",
+				channelType: util.ChannelTypeCodex,
+				models:      "gpt-5",
+				priority:    90,
+			},
+		}, map[int]string{
+			0: wrong.URL + "/v1/responses#",
+			1: native.URL,
+		})
+
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+		}
+		if wrongHits.Load() != 0 || nativeHits.Load() != 1 {
+			t.Fatalf("upstream hits wrong=%d native=%d, want 0/1", wrongHits.Load(), nativeHits.Load())
+		}
+	})
+
+	t.Run("matching exact URL remains eligible", func(t *testing.T) {
+		var upstreamHits atomic.Int64
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstreamHits.Add(1)
+			if r.URL.Path != "/v1/alpha/search" {
+				t.Errorf("upstream path=%q, want /v1/alpha/search", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnv(t, []testChannel{{
+			name:                  "alpha-search-exact",
+			channelType:           util.ChannelTypeCodex,
+			protocolTransformMode: model.ProtocolTransformModeLocal,
+			models:                "gpt-5",
+		}}, map[int]string{0: upstream.URL + "/v1/alpha/search#"})
+
+		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+		}
+		if upstreamHits.Load() != 1 {
+			t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
+		}
+	})
 }
 
 func TestDashboardProxy_UsesBoundTokenAndStreams(t *testing.T) {

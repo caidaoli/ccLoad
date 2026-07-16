@@ -1532,6 +1532,65 @@ func TestBuildTransformPlan_RejectsUnsupportedTransform(t *testing.T) {
 	}
 }
 
+func TestDetectRequestFamily_AlphaSearch(t *testing.T) {
+	t.Parallel()
+
+	if got := protocol.DetectRequestFamily("/v1/alpha/search"); got != protocol.RequestFamilyAlphaSearch {
+		t.Fatalf("DetectRequestFamily(/v1/alpha/search) = %q, want %q", got, protocol.RequestFamilyAlphaSearch)
+	}
+	if got := protocol.DetectRequestFamily("/prefix/v1/alpha/search"); got != protocol.RequestFamilyAlphaSearch {
+		t.Fatalf("DetectRequestFamily with prefix = %q, want %q", got, protocol.RequestFamilyAlphaSearch)
+	}
+	if got := protocol.DetectRequestFamily("/v1/alpha/search/extra"); got != protocol.RequestFamilyAlphaSearch {
+		t.Fatalf("DetectRequestFamily with subpath = %q, want %q", got, protocol.RequestFamilyAlphaSearch)
+	}
+	// 子串误匹配：alpha 前缀下的无关路径不得命中
+	if got := protocol.DetectRequestFamily("/v1/alpha/searching"); got != protocol.RequestFamilyUnknown {
+		t.Fatalf("DetectRequestFamily(/v1/alpha/searching) = %q, want unknown", got)
+	}
+}
+
+func TestBuildTransformPlan_CodexAlphaSearchPassthroughOnly(t *testing.T) {
+	t.Parallel()
+
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Codex,
+		protocol.Codex,
+		"/v1/alpha/search",
+		"/v1/alpha/search",
+		[]byte(`{"query":"codegraph"}`),
+		[]byte(`{"query":"codegraph"}`),
+		"",
+		"",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("same-protocol alpha/search plan failed: %v", err)
+	}
+	if plan.NeedsTransform {
+		t.Fatalf("expected alpha/search same-protocol passthrough, got %+v", plan)
+	}
+	if plan.RequestFamily != protocol.RequestFamilyAlphaSearch {
+		t.Fatalf("RequestFamily = %q, want %q", plan.RequestFamily, protocol.RequestFamilyAlphaSearch)
+	}
+
+	// alpha/search 不是协议互转 family：跨协议应拒绝（只能原生 Codex 透传）
+	_, err = protocol.BuildTransformPlan(
+		protocol.Codex,
+		protocol.OpenAI,
+		"/v1/alpha/search",
+		"/v1/chat/completions",
+		[]byte(`{"query":"codegraph"}`),
+		[]byte(`{"query":"codegraph"}`),
+		"",
+		"",
+		false,
+	)
+	if err == nil {
+		t.Fatal("expected unsupported protocol transform for alpha/search cross-protocol")
+	}
+}
+
 func TestBuildTransformPlan_SameProtocolNoOp(t *testing.T) {
 	t.Parallel()
 

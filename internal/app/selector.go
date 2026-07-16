@@ -2,9 +2,11 @@ package app
 
 import (
 	"context"
+	"net/url"
 	"strings"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
@@ -72,6 +74,55 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	}
 
 	return s.filterCooldownChannels(ctx, channels)
+}
+
+// alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints.
+// Normal base URLs remain eligible because the request path is appended later.
+func alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
+	urls := cfg.GetURLs()
+	compatible := make([]string, 0, len(urls))
+	for _, rawURL := range urls {
+		if !modelpkg.HasExactUpstreamURLMarker(rawURL) {
+			compatible = append(compatible, rawURL)
+			continue
+		}
+
+		parsed, err := url.Parse(modelpkg.StripExactUpstreamURLMarker(rawURL))
+		if err == nil && protocol.DetectRequestFamily(parsed.Path) == protocol.RequestFamilyAlphaSearch {
+			compatible = append(compatible, rawURL)
+		}
+	}
+	return compatible
+}
+
+func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName string) ([]*modelpkg.Config, error) {
+	routeModel := modelName
+	if routeModel == "" {
+		routeModel = "*"
+	}
+	channels, err := s.getEnabledChannelsByModelAndProtocol(ctx, routeModel, string(protocol.Codex))
+	if err != nil {
+		return nil, err
+	}
+
+	compatible := make([]*modelpkg.Config, 0, len(channels))
+	for _, cfg := range channels {
+		if cfg == nil || cfg.ResolveUpstreamProtocol(string(protocol.Codex)) != string(protocol.Codex) {
+			continue
+		}
+
+		urls := alphaSearchUpstreamURLs(cfg)
+		if len(urls) == 0 {
+			continue
+		}
+		if len(urls) != len(cfg.GetURLs()) {
+			cfg = cfg.Clone()
+			cfg.URL = strings.Join(urls, "\n")
+		}
+		compatible = append(compatible, cfg)
+	}
+
+	return s.filterCooldownChannels(ctx, compatible)
 }
 
 // selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
