@@ -558,6 +558,21 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+**Codex Alpha Search（仅原生透传）**：
+
+`POST /v1/alpha/search` 接收 Codex 原生搜索请求，`model` 字段可省略。该端点只会转发到“实际上游协议为 Codex”的渠道，不参与本地跨协议转换。
+
+```bash
+curl -X POST http://localhost:8080/v1/alpha/search \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -d '{
+    "query": "golang channels"
+  }'
+```
+
+普通渠道 URL 会自动追加 `/v1/alpha/search`。如果渠道使用以 `#` 结尾的精确 URL，则配置值必须已指向该端点，例如 `https://upstream.example.com/v1/alpha/search#`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
+
 ### 本地 Token 计数
 
 发送请求前可用本地 Token 估算接口预估消耗，不调用上游 API：
@@ -768,6 +783,7 @@ ccLoad 使用的核心技术栈：
   - 保留采样/上限/停止词/seed 参数；Gemini `thinkingConfig.thinkingLevel` 会映射为目标协议的 reasoning/thinking 配置
   - 两种模式：`upstream`（默认，由上游原生处理）/ `local`（本地翻译）
   - 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
+  - Codex `/v1/alpha/search` 仅支持原生透传，不进入本地协议转换
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理

@@ -99,8 +99,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Usage
   'www.usage.title': 'API Usage',
-  'www.usage.meta.description': 'Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints. Includes client examples, token setup and admin console guidance.',
-  'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints. Clients only need a new base URL and token.',
+  'www.usage.meta.description': 'Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including native Codex Alpha Search passthrough.',
+  'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including native Codex Alpha Search passthrough. Clients only need a new base URL and token.',
 
   // Feedback
   'www.feedback.title': 'Support',

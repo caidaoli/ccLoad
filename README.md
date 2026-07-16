@@ -528,6 +528,21 @@ curl -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
+**Codex Alpha Search (Native Passthrough Only)**:
+
+`POST /v1/alpha/search` accepts the native Codex search payload. The `model` field is optional. This endpoint is forwarded only to channels whose resolved upstream protocol is Codex; it is not handled by local cross-protocol transforms.
+
+```bash
+curl -X POST http://localhost:8080/v1/alpha/search \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-api-token" \
+  -d '{
+    "query": "golang channels"
+  }'
+```
+
+For a regular channel base URL, ccLoad appends `/v1/alpha/search`. If the channel uses the trailing `#` exact-URL marker, the configured URL must already point to this endpoint, for example `https://upstream.example.com/v1/alpha/search#`. Responses-only fields `prompt_cache_key` and `prompt_cache_retention` are removed before forwarding.
+
 ### Local Token Counting
 
 Quickly estimate request token consumption (no upstream API call needed):
@@ -734,6 +749,7 @@ Check out the awesome admin dashboard 👇
   - Preserves sampling/limit/stop/seed parameters; Gemini `thinkingConfig.thinkingLevel` maps to the target protocol's reasoning/thinking config
   - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
   - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
+  - Codex `/v1/alpha/search` is native passthrough only and never enters local protocol translation
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic

@@ -99,8 +99,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
 
   // 使用页
   'www.usage.title': 'API 使用',
-  'www.usage.meta.description': 'ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例，包含客户端调用、令牌配置和管理后台说明。',
-  'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，客户端只需要换 base URL 和访问令牌',
+  'www.usage.meta.description': 'ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例，包含原生 Codex Alpha Search 透传。',
+  'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，并支持原生 Codex Alpha Search 透传；客户端只需要换 base URL 和访问令牌',
 
   // 反馈页
   'www.feedback.title': '反馈支持',
