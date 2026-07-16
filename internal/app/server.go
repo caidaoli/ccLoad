@@ -409,12 +409,31 @@ func loadHealthScoreConfig(cs *ConfigService) model.HealthScoreConfig {
 		log.Printf("[WARN] 无效的 health_min_confident_sample=%d（必须 >= 1），已使用默认值 %d", minConfidentSample, defaultHealthCfg.MinConfidentSample)
 		minConfidentSample = defaultHealthCfg.MinConfidentSample
 	}
+	ttfbPenaltyWeight := cs.GetFloat("ttfb_penalty_weight", defaultHealthCfg.TTFBPenaltyWeight)
+	if ttfbPenaltyWeight < 0 {
+		log.Printf("[WARN] 无效的 ttfb_penalty_weight=%v（必须 >= 0），已使用默认值 %v", ttfbPenaltyWeight, defaultHealthCfg.TTFBPenaltyWeight)
+		ttfbPenaltyWeight = defaultHealthCfg.TTFBPenaltyWeight
+	}
+	ttfbMaxSlowRatio := cs.GetFloat("ttfb_max_slow_ratio", defaultHealthCfg.TTFBMaxSlowRatio)
+	if ttfbMaxSlowRatio < 0 {
+		log.Printf("[WARN] 无效的 ttfb_max_slow_ratio=%v（必须 >= 0），已使用默认值 %v", ttfbMaxSlowRatio, defaultHealthCfg.TTFBMaxSlowRatio)
+		ttfbMaxSlowRatio = defaultHealthCfg.TTFBMaxSlowRatio
+	}
+	ttfbMinConfidentSample := cs.GetInt("ttfb_min_confident_sample", defaultHealthCfg.TTFBMinConfidentSample)
+	if ttfbMinConfidentSample < 1 {
+		log.Printf("[WARN] 无效的 ttfb_min_confident_sample=%d（必须 >= 1），已使用默认值 %d", ttfbMinConfidentSample, defaultHealthCfg.TTFBMinConfidentSample)
+		ttfbMinConfidentSample = defaultHealthCfg.TTFBMinConfidentSample
+	}
 	return model.HealthScoreConfig{
 		Enabled:                  cs.GetBool("enable_health_score", defaultHealthCfg.Enabled),
 		SuccessRatePenaltyWeight: successRatePenaltyWeight,
 		WindowMinutes:            windowMinutes,
 		UpdateIntervalSeconds:    updateInterval,
 		MinConfidentSample:       minConfidentSample,
+		EnableTTFBScore:          cs.GetBool("enable_ttfb_score", defaultHealthCfg.EnableTTFBScore),
+		TTFBPenaltyWeight:        ttfbPenaltyWeight,
+		TTFBMaxSlowRatio:         ttfbMaxSlowRatio,
+		TTFBMinConfidentSample:   ttfbMinConfidentSample,
 	}
 }
 

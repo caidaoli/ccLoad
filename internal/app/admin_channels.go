@@ -229,9 +229,19 @@ func (s *Server) sortChannelsByEffectivePriority(cfgs []*model.Config, healthEna
 	successRateMap = make(map[int64]float64, len(cfgs))
 	if healthEnabled {
 		hcfg := s.healthCache.Config()
+		samples := make([]float64, 0, len(cfgs))
+		statsByID := make(map[int64]model.ChannelHealthStats, len(cfgs))
 		for _, cfg := range cfgs {
 			stats := s.healthCache.GetHealthStats(cfg.ID)
-			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg)
+			statsByID[cfg.ID] = stats
+			if stats.FirstByteSampleCount > 0 && stats.AvgFirstByteSeconds > 0 {
+				samples = append(samples, stats.AvgFirstByteSeconds)
+			}
+		}
+		medianTTFB := medianFloat64(samples)
+		for _, cfg := range cfgs {
+			stats := statsByID[cfg.ID]
+			priorityMap[cfg.ID] = s.calculateEffectivePriority(cfg, stats, hcfg, medianTTFB)
 			if stats.SampleCount > 0 {
 				successRateMap[cfg.ID] = stats.SuccessRate
 			}

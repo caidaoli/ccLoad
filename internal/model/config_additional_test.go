@@ -118,6 +118,12 @@ func TestDefaultHealthScoreConfig(t *testing.T) {
 	if cfg.SuccessRatePenaltyWeight <= 0 || cfg.WindowMinutes <= 0 || cfg.UpdateIntervalSeconds <= 0 || cfg.MinConfidentSample <= 0 {
 		t.Fatalf("unexpected default config: %+v", cfg)
 	}
+	if cfg.EnableTTFBScore {
+		t.Fatal("default ttfb score should be disabled")
+	}
+	if cfg.TTFBPenaltyWeight <= 0 || cfg.TTFBMaxSlowRatio <= 0 || cfg.TTFBMinConfidentSample <= 0 {
+		t.Fatalf("unexpected ttfb defaults: %+v", cfg)
+	}
 }
 
 func TestGetURLs_SingleURL(t *testing.T) {
