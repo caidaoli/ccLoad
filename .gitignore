@@ -62,6 +62,7 @@ docs
 # 步骤2：通过 "!" 取消对根目录下该文件的忽略
 !/claude.md
 .omx/
-.superpowers
+/.superpowers/
+/superpowers/
 .omc
 .qoder
