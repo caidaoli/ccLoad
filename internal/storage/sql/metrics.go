@@ -883,7 +883,9 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 		SELECT
 			channel_id,
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
-			SUM(CASE WHEN ` + eligible + ` THEN 1 ELSE 0 END) AS total
+			SUM(CASE WHEN ` + eligible + ` THEN 1 ELSE 0 END) AS total,
+			AVG(CASE WHEN status_code >= 200 AND status_code < 300 AND first_byte_time > 0 THEN first_byte_time ELSE NULL END) AS avg_first_byte,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 AND first_byte_time > 0 THEN 1 ELSE 0 END) AS first_byte_samples
 		FROM logs
 		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`
@@ -897,15 +899,21 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 	result := make(map[int64]model.ChannelHealthStats)
 	for rows.Next() {
 		var channelID int64
-		var success, total int64
-		if err := rows.Scan(&channelID, &success, &total); err != nil {
+		var success, total, firstByteSamples int64
+		var avgFirstByte sql.NullFloat64
+		if err := rows.Scan(&channelID, &success, &total, &avgFirstByte, &firstByteSamples); err != nil {
 			return nil, err
 		}
 		if total > 0 {
-			result[channelID] = model.ChannelHealthStats{
-				SuccessRate: float64(success) / float64(total),
-				SampleCount: total,
+			stats := model.ChannelHealthStats{
+				SuccessRate:          float64(success) / float64(total),
+				SampleCount:          total,
+				FirstByteSampleCount: firstByteSamples,
 			}
+			if avgFirstByte.Valid && firstByteSamples > 0 {
+				stats.AvgFirstByteSeconds = avgFirstByte.Float64
+			}
+			result[channelID] = stats
 		}
 	}
 
