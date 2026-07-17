@@ -12,8 +12,8 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260615-13"></script>
-  <script defer src="assets/locales/en.js?v=20260615-13"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260717-1"></script>
+  <script defer src="assets/locales/en.js?v=20260717-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260615-13"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -40,7 +40,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Choose the deployment path first</h2>
-          <p>ccLoad has one hard startup requirement: set `CCLOAD_PASS` in production. Storage defaults to SQLite; add MySQL only when you need multi-instance deployment or persistent Hugging Face storage.</p>
+          <p>ccLoad has one hard startup requirement: set `CCLOAD_PASS` in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
@@ -120,7 +120,7 @@ docker-compose logs -f ccload</code></pre>
         </div>
 
         <div class="www-callout">
-          <strong>MySQL is not required by default.</strong> Start with SQLite for single-instance deployments. Set `CCLOAD_MYSQL` only when you need external persistence, multiple instances or data retention after Hugging Face restarts.
+          <strong>An external database is not required by default.</strong> Start with SQLite for single-instance deployments. Set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code> when you need external persistence or data retention after Hugging Face restarts.
         </div>
 
         <div class="www-callout www-mt-4">
@@ -133,7 +133,7 @@ docker-compose logs -f ccload</code></pre>
       <div class="www-container">
         <div class="www-section-header">
           <h2>Hugging Face Spaces</h2>
-          <p>Spaces work well for quick public deployments. The operational risk is that `/tmp` is cleared on restart, so long-term usage should use external MySQL and optionally enable the SQLite replica for faster reads.</p>
+          <p>Spaces work well for quick public deployments. The operational risk is that `/tmp` is cleared on restart, so long-term usage should use external MySQL or PostgreSQL and optionally enable the SQLite replica for faster reads.</p>
         </div>
 
         <div class="www-doc-grid">
@@ -151,7 +151,7 @@ docker-compose logs -f ccload</code></pre>
             <h3>Persistence guidance</h3>
             <ul class="www-check-list">
               <li>Temporary testing: set only `CCLOAD_PASS` and use the default SQLite storage.</li>
-              <li>Long-term usage: set `CCLOAD_MYSQL`.</li>
+              <li>Long-term usage: set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code>.</li>
               <li>High-read workloads: also set `CCLOAD_ENABLE_SQLITE_REPLICA=1`.</li>
               <li>Control the log restore window with `CCLOAD_SQLITE_LOG_DAYS`.</li>
             </ul>

@@ -65,7 +65,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.deployment.title': 'Deployment Options',
   'www.home.deployment.docker.title': 'Docker',
   'www.home.deployment.docker.difficulty': 'Difficulty: ⭐⭐',
-  'www.home.deployment.docker.desc': 'Recommended for production, stable and reliable, supports SQLite and MySQL',
+  'www.home.deployment.docker.desc': 'Recommended for production, stable and reliable, supports SQLite, MySQL, and PostgreSQL',
   'www.home.deployment.docker.learnMore': 'Learn More',
   'www.home.deployment.hf.title': 'Hugging Face',
   'www.home.deployment.hf.difficulty': 'Difficulty: ⭐',

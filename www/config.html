@@ -12,8 +12,8 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260615-13"></script>
-  <script defer src="assets/locales/en.js?v=20260615-13"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260717-1"></script>
+  <script defer src="assets/locales/en.js?v=20260717-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260615-13"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -81,19 +81,25 @@
               <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
                 <td>None</td>
-                <td>MySQL DSN. When set, ccLoad uses MySQL; otherwise it uses SQLite.</td>
-                <td>Set it for multiple instances, long-running Hugging Face deployments or external backup.</td>
+                <td>MySQL DSN. Mutually exclusive with <code>CCLOAD_POSTGRES</code>.</td>
+                <td>Set exactly one primary DSN; when neither is set, ccLoad uses SQLite.</td>
+              </tr>
+              <tr>
+                <td><code>CCLOAD_POSTGRES</code></td>
+                <td>None</td>
+                <td>PostgreSQL DSN in URL or libpq keyword format. Mutually exclusive with <code>CCLOAD_MYSQL</code>.</td>
+                <td>Example: <code>postgres://user:pass@host:5432/ccload?sslmode=require</code>.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ENABLE_SQLITE_REPLICA</code></td>
                 <td><code>0</code></td>
-                <td>Hybrid storage switch: write MySQL, read from a SQLite replica.</td>
-                <td>Recommended with MySQL on Hugging Face Spaces.</td>
+                <td>Hybrid storage switch: persist through MySQL/PostgreSQL and read from a local SQLite replica.</td>
+                <td>Requires one primary DSN. Useful on Hugging Face Spaces or with a high-latency primary.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_SQLITE_LOG_DAYS</code></td>
                 <td><code>7</code></td>
-                <td>Number of log days restored from MySQL on hybrid startup.</td>
+                <td>Number of log days restored from the primary database on hybrid startup.</td>
                 <td><code>-1</code> restores all logs; <code>0</code> restores no logs.</td>
               </tr>
               <tr>
@@ -130,7 +136,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Storage Modes</h2>
-          <p>Choose storage by deployment shape. Do not add MySQL just to look production-grade; SQLite is simpler and has less operational surface for single-instance deployments.</p>
+          <p>Choose storage by deployment shape. Do not add an external database just to look production-grade; SQLite is simpler and has less operational surface for single-instance deployments.</p>
         </div>
 
         <div class="www-data-table-wrapper">
@@ -146,7 +152,7 @@
             <tbody>
               <tr>
                 <td>SQLite only</td>
-                <td>Do not set <code>CCLOAD_MYSQL</code></td>
+                <td>Do not set a primary DSN</td>
                 <td>Local development, personal deployments and single-instance services.</td>
                 <td>Simplest path; not suitable for shared multi-instance state.</td>
               </tr>
@@ -157,10 +163,16 @@
                 <td>Strong persistence; read/write latency depends on the database.</td>
               </tr>
               <tr>
+                <td>PostgreSQL only</td>
+                <td>Set <code>CCLOAD_POSTGRES</code></td>
+                <td>PostgreSQL-based production, external backups and migration across machines.</td>
+                <td>Strong persistence; read/write latency depends on the database.</td>
+              </tr>
+              <tr>
                 <td>Hybrid</td>
-                <td><code>CCLOAD_MYSQL</code> + <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code></td>
-                <td>Hugging Face Spaces or high-latency MySQL when persistence is still required.</td>
-                <td>Writes go to MySQL and reads use local cache; higher complexity.</td>
+                <td>Primary DSN + <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code></td>
+                <td>Hugging Face Spaces or a high-latency primary when persistence is still required.</td>
+                <td>Durable data uses the primary and reads use local cache; higher complexity.</td>
               </tr>
             </tbody>
           </table>
@@ -293,8 +305,11 @@
                 <pre><code>CCLOAD_PASS=your_strong_admin_password
 CCLOAD_API_TOKENS=client_token|production
 
-# Optional: MySQL / hybrid mode
+# Optional: choose exactly one primary database
 CCLOAD_MYSQL=user:pass@tcp(host:3306)/ccload?charset=utf8mb4
+# CCLOAD_POSTGRES=postgres://user:pass@host:5432/ccload?sslmode=require
+
+# Optional: add a local SQLite read replica
 CCLOAD_ENABLE_SQLITE_REPLICA=1
 CCLOAD_SQLITE_LOG_DAYS=7
 

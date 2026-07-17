@@ -103,10 +103,12 @@ graph TB
             J4[Unified SQL Layer]
             J1[(SQLite)]
             J2[(MySQL)]
+            J5[(PostgreSQL)]
             J --> J3
             J3 --> J4
             J4 --> J1
             J4 --> J2
+            J4 --> J5
         end
 
         subgraph "Monitoring Layer"
@@ -319,28 +321,28 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
 
 **Important**: Hugging Face Spaces Storage Policy
 
-Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **we strongly recommend using an external MySQL database** for complete data persistence:
+Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **we strongly recommend using an external MySQL or PostgreSQL database** for complete data persistence:
 
 **Option 1: Hybrid Storage Mode (Recommended, Best Performance)**
-- ✅ **Ultra-fast queries**: All reads/writes go through local SQLite, latency <1ms (free MySQL has 800ms+ latency)
-- ✅ **Restart-safe**: Async sync to MySQL, auto-restore on startup
+- ✅ **Ultra-fast queries**: Reads go through local SQLite, avoiding remote database latency
+- ✅ **Restart-safe**: Durable data is stored in MySQL/PostgreSQL and restored on startup
 - ✅ **Stats caching**: Smart TTL cache reduces repetitive aggregate queries
-- Configuration: Add `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
+- Configuration: Add one primary DSN (`CCLOAD_MYSQL` or `CCLOAD_POSTGRES`) plus `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
 
 **Dockerfile Example (Hybrid Mode)**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
-# Configure in Secrets: CCLOAD_MYSQL + CCLOAD_ENABLE_SQLITE_REPLICA=1
+# Configure in Secrets: CCLOAD_MYSQL or CCLOAD_POSTGRES, plus CCLOAD_ENABLE_SQLITE_REPLICA=1
 EXPOSE 7860
 ```
 
-**Option 2: Pure MySQL Mode**
+**Option 2: Pure External Database Mode**
 - ✅ **Complete Persistence**: Channel configs, logs, and stats all preserved
 - ✅ **Restart-Safe**: Data stored externally, unaffected by Space restarts
-- ⚠️ **Slower Queries**: Free MySQL has higher latency, stats pages respond slowly
-- Configuration: Add `CCLOAD_MYSQL` environment variable in Secrets
+- ⚠️ **Database Latency**: Stats page latency depends on the remote database and region
+- Configuration: Add exactly one of `CCLOAD_MYSQL` or `CCLOAD_POSTGRES` in Secrets
 
 **Recommended Free MySQL Services**:
 - [TiDB Cloud Serverless](https://tidbcloud.com/) - Free 5GB storage, MySQL compatible, no connection limits, recommended first choice
@@ -354,12 +356,19 @@ EXPOSE 7860
 5. **(Optional) Enable Hybrid Mode**: Add `CCLOAD_ENABLE_SQLITE_REPLICA=1` for best performance
 6. Restart Space, all data will auto-persist to MySQL
 
-**Dockerfile Example (Pure MySQL)**:
+**PostgreSQL Configuration Example**:
+```bash
+CCLOAD_POSTGRES=postgres://user:password@host:5432/ccload?sslmode=require
+```
+
+URL and libpq keyword DSNs are supported. Do not set `CCLOAD_MYSQL` and `CCLOAD_POSTGRES` at the same time.
+
+**Dockerfile Example (Pure External Database)**:
 ```dockerfile
 FROM ghcr.io/caidaoli/ccload:latest
 ENV TZ=Asia/Shanghai
 ENV PORT=7860
-# No SQLITE_PATH needed, uses CCLOAD_MYSQL environment variable
+# Configure CCLOAD_MYSQL or CCLOAD_POSTGRES in Secrets; SQLITE_PATH is not required
 EXPOSE 7860
 ```
 
@@ -396,6 +405,8 @@ EXPOSE 7860
 
 ### Basic Configuration
 
+Choose SQLite, MySQL, or PostgreSQL based on the deployment shape. MySQL and PostgreSQL are mutually exclusive.
+
 **SQLite Mode (Default)**:
 ```bash
 # Set environment variables
@@ -428,6 +439,19 @@ echo "CCLOAD_MYSQL=user:password@tcp(localhost:3306)/ccload?charset=utf8mb4" >> 
 echo "PORT=8080" >> .env
 
 # 3. Start service (auto-creates tables)
+./ccload
+```
+
+**PostgreSQL Mode**:
+```bash
+# 1. Create the database and user in PostgreSQL
+
+# 2. Set environment variables
+export CCLOAD_PASS=your_admin_password
+export CCLOAD_POSTGRES="postgres://user:password@localhost:5432/ccload?sslmode=disable"
+export PORT=8080
+
+# 3. Start service (auto-creates and migrates tables)
 ./ccload
 ```
 
@@ -477,6 +501,15 @@ docker run -d --name ccload \
   -p 8080:8080 \
   -e CCLOAD_PASS=your_admin_password \
   -e CCLOAD_MYSQL="user:pass@tcp(mysql_host:3306)/ccload?charset=utf8mb4" \
+  ghcr.io/caidaoli/ccload:latest
+```
+
+**Docker + PostgreSQL** (requires an existing PostgreSQL service):
+```bash
+docker run -d --name ccload \
+  -p 8080:8080 \
+  -e CCLOAD_PASS=your_admin_password \
+  -e CCLOAD_POSTGRES="postgres://user:pass@postgres_host:5432/ccload?sslmode=require" \
   ghcr.io/caidaoli/ccload:latest
 ```
 
@@ -714,6 +747,7 @@ Check out the awesome admin dashboard 👇
 | **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
 | **modernc/sqlite** | v1.51.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
 | **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
+| **PostgreSQL (pgx)** | v5.10.0 | RDBMS | Optional, supports URL and libpq DSNs |
 | **Sonic** | v1.15.1 | JSON Library | 2-3x faster than stdlib |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
@@ -763,8 +797,8 @@ Check out the awesome admin dashboard 👇
   - Independent cooldown: Failed URLs cool down independently without affecting other URLs
   - BaseURL tracking: Active requests, logs, and UI carry upstream URL throughout
 - **Storage Layer Refactor** (2025-12 optimization, eliminated 467 lines of duplicate code):
-  - `storage/schema/`: Unified schema definition (supports SQLite/MySQL differences)
-  - `storage/sql/`: Common SQL implementation layer (SQLite/MySQL shared)
+  - `storage/schema/`: Unified schema definition (supports SQLite/MySQL/PostgreSQL differences)
+  - `storage/sql/`: Common SQL implementation layer shared by SQLite, MySQL, and PostgreSQL
   - `storage/factory.go`: Factory pattern auto-selects database
   - Composite index optimization, stats query performance improved
 - **OpenAI service_tier Pricing** (2026-03 new):
@@ -993,7 +1027,7 @@ storage/
 ├── factory.go       # NewStore() auto-selects database
 ├── schema/          # Unified schema definition layer (2025-12 new)
 │   ├── tables.go    # Table definitions (DefineXxxTable functions)
-│   └── builder.go   # Schema builder (supports SQLite/MySQL differences)
+│   └── builder.go   # Schema builder (supports SQLite/MySQL/PostgreSQL differences)
 ├── sql/             # Common SQL implementation layer (2025-12 refactor, eliminated 467 lines)
 │   ├── store_impl.go      # SQLStore core implementation
 │   ├── config.go          # Channel config CRUD
@@ -1029,7 +1063,7 @@ storage/
 - `system_settings` - System config (hot reload support)
 
 **Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
-- ✅ **Unified SQL Layer** (refactor): SQLite/MySQL share `storage/sql/` implementation, eliminated 467 lines of duplicate code
+- ✅ **Unified SQL Layer** (refactor): SQLite, MySQL, and PostgreSQL share `storage/sql/` implementation
 - ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
 - ✅ Factory pattern unified interface (OCP, easy to extend new storage)
 - ✅ Cooldown data inline (deprecated separate cooldowns table, reduces JOIN overhead)

@@ -104,7 +104,7 @@ cp -r www /path/to/webroot/
 
 ### ✅ 配置手册（config.html）
 - 启动环境变量表
-- SQLite / MySQL / Hybrid 存储模式对比
+- SQLite / MySQL / PostgreSQL / Hybrid 存储模式对比
 - 渠道配置说明
 - 管理后台热配置说明
 - 安全上线检查
