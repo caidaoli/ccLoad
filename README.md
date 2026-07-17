@@ -6,7 +6,7 @@
 
 **English | [简体中文](README.zh-CN.md)**
 
-[![Go](https://img.shields.io/badge/Go-1.25+-00ADD8.svg)](https://golang.org)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8.svg)](https://golang.org)
 [![Gin](https://img.shields.io/badge/Gin-v1.12+-blue.svg)](https://github.com/gin-gonic/gin)
 [![Docker](https://img.shields.io/badge/Docker-Supported-2496ED.svg)](https://hub.docker.com)
 [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-yellow)](https://huggingface.co/spaces)
@@ -727,13 +727,13 @@ Check out the awesome admin dashboard 👇
 
 | Component | Version | Purpose | Performance Advantage |
 |-----------|---------|---------|----------------------|
-| **Go** | 1.25.0+ | Runtime | Native concurrency, built-in min function |
+| **Go** | 1.26.0+ | Runtime | Native concurrency, modern toolchain |
 | **Gin** | v1.12.0 | Web Framework | High-performance HTTP routing |
-| **modernc/sqlite** | v1.51.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
+| **modernc/sqlite** | v1.54.0 | Embedded Database | Pure Go, zero CGO dependency, single file (default) |
 | **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
 | **PostgreSQL (pgx)** | v5.10.0 | RDBMS | Optional, supports URL and libpq DSNs |
-| **Sonic** | v1.15.1 | JSON Library | 2-3x faster than stdlib |
-| **gjson / sjson** | v1.18.0 / v1.2.5 | Protocol JSON transforms | Targeted reads and writes without generic map conversion |
+| **Sonic** | v1.15.2 | JSON Library | 2-3x faster than stdlib |
+| **gjson / sjson** | v1.19.0 / v1.2.5 | Protocol JSON transforms | Targeted reads and writes without generic map conversion |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
 ### Architecture Features
