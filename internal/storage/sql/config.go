@@ -30,7 +30,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 			GROUP BY c.id
 			ORDER BY c.priority DESC, c.id ASC
 	`
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.QueryContext(ctx, query)
 	if err != nil {
 		return nil, err
 	}
@@ -65,7 +65,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 			WHERE c.id = ?
 			GROUP BY c.id
 	`
-	row := s.db.QueryRowContext(ctx, query, id)
+	row := s.QueryRowContext(ctx, query, id)
 
 	// 使用统一的扫描器
 	scanner := NewConfigScanner()
@@ -123,7 +123,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		args = []any{modelName}
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -160,7 +160,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 		ORDER BY c.priority DESC, c.id ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, channelType)
+	rows, err := s.QueryContext(ctx, query, channelType)
 	if err != nil {
 		return nil, err
 	}
@@ -223,7 +223,7 @@ func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, mod
 		ORDER BY c.priority DESC, c.id ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -266,25 +266,41 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 
 	id := c.ID
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if id == 0 {
-			// 插入渠道记录（数据库生成自增 id）
-			res, err := tx.ExecContext(ctx, `
-				INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
-				boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix)
-			if err != nil {
+		if id != 0 {
+			if err := s.lockPostgresExplicitIDTable(ctx, tx, "channels"); err != nil {
 				return err
 			}
-
-			id, err = res.LastInsertId()
-			if err != nil {
-				return fmt.Errorf("get last insert id: %w", err)
+		}
+		if id == 0 {
+			// 插入渠道记录（数据库生成自增 id）
+			if s.IsPostgres() {
+				err := s.queryRowTx(ctx, tx, `
+					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					RETURNING id
+				`, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix).Scan(&id)
+				if err != nil {
+					return err
+				}
+			} else {
+				res, err := s.execTx(ctx, tx, `
+					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix)
+				if err != nil {
+					return err
+				}
+				id, err = res.LastInsertId()
+				if err != nil {
+					return fmt.Errorf("get last insert id: %w", err)
+				}
 			}
 		} else {
 			// 显式主键：用于混合存储同步/恢复，保证两端主键一致
-			if s.IsSQLite() {
-				_, err := tx.ExecContext(ctx, `
+			if s.supportsONConflict() {
+				_, err := s.execTx(ctx, tx, `
 					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				`, id, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
@@ -293,7 +309,7 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 					return err
 				}
 			} else {
-				_, err := tx.ExecContext(ctx, `
+				_, err := s.execTx(ctx, tx, `
 					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
@@ -326,6 +342,11 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 		}
 		if err := s.saveProtocolTransformsTx(ctx, tx, id, c.GetProtocolTransforms()); err != nil {
 			return fmt.Errorf("save protocol transforms: %w", err)
+		}
+		if id != 0 {
+			if err := s.syncPostgresIDSequence(ctx, tx, "channels"); err != nil {
+				return err
+			}
 		}
 
 		return nil
@@ -369,7 +390,7 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 更新渠道记录
-		_, err := tx.ExecContext(ctx, `
+		_, err := s.execTx(ctx, tx, `
 			UPDATE channels
 			SET name=?, url=?, priority=?, rpm_limit=?, max_concurrency=?, channel_type=?, protocol_transform_mode=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, cost_multiplier=?, custom_request_rules=?, proxy_url=?, updated_at=?
 			WHERE id=?
@@ -407,7 +428,7 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 // config before writing. A switch click must not pay that cost.
 func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
 	updatedAtUnix := timeToUnix(time.Now())
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.ExecContext(ctx, `
 		UPDATE channels
 		SET enabled = ?, updated_at = ?
 		WHERE id = ?
@@ -446,29 +467,29 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	// 显式删除关联数据，不依赖驱动或 DSN 是否正确启用外键级联。
 	var deletedRowsForVacuum int64
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel api keys: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel models: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, id); err != nil {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel protocol transforms: %w", err)
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel url states: %w", err)
 		}
-		if result, err := tx.ExecContext(ctx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
+		if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
 			return fmt.Errorf("delete channel debug logs: %w", err)
 		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
 			deletedRowsForVacuum += affected
 		}
-		if result, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
+		if result, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel logs: %w", err)
 		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
 			deletedRowsForVacuum += affected
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel: %w", err)
 		}
 		return nil
@@ -517,7 +538,7 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	caseBuilder.WriteString(")")
 
 	// 执行批量更新
-	result, err := s.db.ExecContext(ctx, caseBuilder.String(), args...)
+	result, err := s.ExecContext(ctx, caseBuilder.String(), args...)
 	if err != nil {
 		return 0, fmt.Errorf("batch update priority: %w", err)
 	}
@@ -556,7 +577,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 		strings.Join(placeholders, ","),
 	)
 
-	rows, err := s.db.QueryContext(ctx, query, channelIDs...)
+	rows, err := s.QueryContext(ctx, query, channelIDs...)
 	if err != nil {
 		return fmt.Errorf("query model entries: %w", err)
 	}
@@ -595,7 +616,7 @@ func (s *SQLStore) loadProtocolTransformsForConfigs(ctx context.Context, configs
 		`SELECT channel_id, protocol FROM channel_protocol_transforms WHERE channel_id IN (%s) ORDER BY channel_id, protocol ASC`,
 		strings.Join(placeholders, ","),
 	)
-	rows, err := s.db.QueryContext(ctx, query, channelIDs...)
+	rows, err := s.QueryContext(ctx, query, channelIDs...)
 	if err != nil {
 		return fmt.Errorf("query protocol transforms: %w", err)
 	}
@@ -674,7 +695,7 @@ func (s *SQLStore) saveModelEntriesTx(ctx context.Context, tx *sql.Tx, channelID
 }
 
 func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, channelID int64, transforms []string) error {
-	if _, err := tx.ExecContext(ctx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, channelID); err != nil {
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, channelID); err != nil {
 		return fmt.Errorf("delete old protocol transforms: %w", err)
 	}
 	if len(transforms) == 0 {
@@ -691,7 +712,7 @@ func (s *SQLStore) saveProtocolTransformsTx(ctx context.Context, tx *sql.Tx, cha
 		b.WriteString("(?, ?)")
 		args = append(args, channelID, protocol)
 	}
-	if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+	if _, err := s.execTx(ctx, tx, b.String(), args...); err != nil {
 		return fmt.Errorf("save protocol transforms: %w", err)
 	}
 	return nil
@@ -705,8 +726,8 @@ type dbExecutor interface {
 // saveModelEntriesImpl 保存渠道模型数据的统一实现
 // 注意：调用方必须保证 entries 中没有重复的模型名，否则会因 PRIMARY KEY 冲突而失败（Fail-Fast）
 func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, channelID int64, entries []model.ModelEntry) error {
-	// 先删除旧的记录
-	if _, err := exec.ExecContext(ctx, `DELETE FROM channel_models WHERE channel_id = ?`, channelID); err != nil {
+	// 先删除旧的记录（Postgres 需 rebind 占位符）
+	if _, err := exec.ExecContext(ctx, s.q(`DELETE FROM channel_models WHERE channel_id = ?`), channelID); err != nil {
 		return fmt.Errorf("delete old model entries: %w", err)
 	}
 
@@ -733,7 +754,7 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, ch
 			b.WriteString("(?, ?, ?, ?)")
 			args = append(args, channelID, entry.Model, entry.RedirectModel, baseCreatedAt+int64(offset+i))
 		}
-		if _, err := exec.ExecContext(ctx, b.String(), args...); err != nil {
+		if _, err := exec.ExecContext(ctx, s.q(b.String()), args...); err != nil {
 			return fmt.Errorf("save model entries (offset %d): %w", offset, err)
 		}
 	}

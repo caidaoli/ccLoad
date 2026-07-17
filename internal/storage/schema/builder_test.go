@@ -42,6 +42,20 @@ func TestTableBuilder_NameAndDDL(t *testing.T) {
 	if !strings.Contains(idx[0].SQL, "IF NOT EXISTS") {
 		t.Fatalf("expected SQLite index to include IF NOT EXISTS, got %q", idx[0].SQL)
 	}
+
+	pgDDL := tb.BuildPostgres()
+	for _, mustContain := range []string{
+		"BIGSERIAL PRIMARY KEY",
+		"SMALLINT NOT NULL DEFAULT 1",
+	} {
+		if !strings.Contains(pgDDL, mustContain) {
+			t.Fatalf("BuildPostgres missing %q, got:\n%s", mustContain, pgDDL)
+		}
+	}
+	pgIdx := tb.GetIndexesPostgres()
+	if len(pgIdx) != 1 || !strings.Contains(pgIdx[0].SQL, "IF NOT EXISTS") {
+		t.Fatalf("GetIndexesPostgres unexpected: %+v", pgIdx)
+	}
 }
 
 func TestDefineSchemaMigrationsTable(t *testing.T) {

@@ -15,26 +15,34 @@ import (
 	sqlstore "ccLoad/internal/storage/sql"
 
 	_ "github.com/go-sql-driver/mysql" // MySQL driver
+	_ "github.com/jackc/pgx/v5/stdlib" // PostgreSQL driver (name: pgx)
 	_ "modernc.org/sqlite"             // SQLite driver
 )
 
 // NewStore 根据环境变量创建存储实例（工厂模式）
 //
-// 三种模式：
-//   - 纯 SQLite 模式：CCLOAD_MYSQL 不设置（默认，单机开发，无备份）
-//   - 纯 MySQL 模式：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA 不设置或为 0（标准生产环境）
-//   - 混合模式（MySQL 主 + SQLite 缓存）：CCLOAD_MYSQL 设置 + CCLOAD_ENABLE_SQLITE_REPLICA=1（HuggingFace Spaces）
+// 模式：
+//   - 纯 SQLite：未设置主库 DSN（默认）
+//   - 纯 MySQL：仅 CCLOAD_MYSQL
+//   - 纯 PostgreSQL：仅 CCLOAD_POSTGRES
+//   - 混合（主库 + SQLite 缓存）：主库 DSN + CCLOAD_ENABLE_SQLITE_REPLICA=1
 //
 // 环境变量：
-//   - CCLOAD_MYSQL：MySQL DSN（主存储）
+//   - CCLOAD_MYSQL：MySQL DSN（与 CCLOAD_POSTGRES 互斥）
+//   - CCLOAD_POSTGRES：PostgreSQL DSN（URL 或 libpq 关键字串，与 CCLOAD_MYSQL 互斥）
 //   - CCLOAD_ENABLE_SQLITE_REPLICA：混合模式开关（1=启用）
 //   - SQLITE_PATH：SQLite 数据库路径（默认: data/ccload.db）
-//   - CCLOAD_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，999=全量）
+//   - CCLOAD_SQLITE_LOG_DAYS：日志恢复天数（默认 7 天，0=不恢复日志，-1=全量）
 func NewStore() (Store, error) {
-	mysqlDSN := os.Getenv("CCLOAD_MYSQL")
+	mysqlDSN := strings.TrimSpace(os.Getenv("CCLOAD_MYSQL"))
+	pgDSN := strings.TrimSpace(os.Getenv("CCLOAD_POSTGRES"))
 
-	// 场景 1：纯 SQLite 模式（默认，单机开发，无备份）
-	if mysqlDSN == "" {
+	if mysqlDSN != "" && pgDSN != "" {
+		log.Fatal("[FATAL] CCLOAD_MYSQL 与 CCLOAD_POSTGRES 互斥，请只设置其中一个主库 DSN")
+	}
+
+	// 场景 1：纯 SQLite 模式（默认）
+	if mysqlDSN == "" && pgDSN == "" {
 		dbPath := os.Getenv("SQLITE_PATH")
 		if dbPath == "" {
 			dbPath = resolveSQLitePath()
@@ -48,58 +56,56 @@ func NewStore() (Store, error) {
 		return store, nil
 	}
 
-	// 检查是否启用混合模式
 	enableHybrid := os.Getenv("CCLOAD_ENABLE_SQLITE_REPLICA") == "1"
 
-	// 场景 2：纯 MySQL 模式（标准生产环境）
-	if !enableHybrid {
-		mysql, err := createMySQLStore(mysqlDSN)
-		if err != nil {
-			return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
-		}
-		log.Print("使用 MySQL 存储（纯模式）")
-		return mysql, nil
+	// 主库连接
+	var primary *sqlstore.SQLStore
+	var primaryName string
+	var err error
+	if mysqlDSN != "" {
+		primary, err = createMySQLStore(mysqlDSN)
+		primaryName = "MySQL"
+	} else {
+		primary, err = createPostgresStore(pgDSN)
+		primaryName = "PostgreSQL"
 	}
-
-	// 场景 3：混合模式（MySQL 主 + SQLite 缓存）
-	log.Print("[INFO] 启动混合存储模式（MySQL 主 + SQLite 缓存）")
-
-	// 步骤 1：创建 MySQL 连接（主存储）
-	mysql, err := createMySQLStore(mysqlDSN)
 	if err != nil {
-		return nil, fmt.Errorf("MySQL 初始化失败: %w", err)
+		return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
 	}
-	log.Print("[INFO] MySQL 主存储已连接")
 
-	// 步骤 2：创建 SQLite 数据库（本地缓存）
+	if !enableHybrid {
+		log.Printf("使用 %s 存储（纯模式）", primaryName)
+		return primary, nil
+	}
+
+	// 混合模式（主库 + SQLite 本地缓存）
+	log.Printf("[INFO] 启动混合存储模式（%s 主 + SQLite 缓存）", primaryName)
+
 	sqlitePath := os.Getenv("SQLITE_PATH")
 	if sqlitePath == "" {
 		sqlitePath = resolveSQLitePath()
 	}
 	sqlite, err := createSQLiteStore(sqlitePath)
 	if err != nil {
-		_ = mysql.Close()
+		_ = primary.Close()
 		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 	}
 	log.Printf("[INFO] SQLite 本地缓存已创建: %s", sqlitePath)
 
-	// 步骤 3：启动时数据恢复（从 MySQL 恢复到 SQLite）
 	logDays := getLogSyncDays()
-	syncMgr := NewSyncManager(mysql, sqlite)
+	syncMgr := NewSyncManager(primary, sqlite)
 
-	// 恢复超时：10 分钟（全量恢复可能需要较长时间）
 	restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 
 	if err := syncMgr.RestoreOnStartup(restoreCtx, logDays); err != nil {
 		_ = sqlite.Close()
-		_ = mysql.Close()
+		_ = primary.Close()
 		return nil, fmt.Errorf("数据恢复失败: %w", err)
 	}
 
-	// 步骤 4：创建 HybridStore（启动异步同步 worker）
-	hybrid := NewHybridStore(sqlite, mysql)
-	log.Printf("[INFO] 混合存储已启用（logs 恢复天数: %d）", logDays)
+	hybrid := NewHybridStore(sqlite, primary)
+	log.Printf("[INFO] 混合存储已启用（主库=%s, logs 恢复天数: %d）", primaryName, logDays)
 	return hybrid, nil
 }
 
@@ -140,6 +146,49 @@ func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
 	}
 
 	return store, nil
+}
+
+// createPostgresStore 创建 PostgreSQL 存储实例
+func createPostgresStore(dsn string) (*sqlstore.SQLStore, error) {
+	if dsn == "" {
+		return nil, fmt.Errorf("PostgreSQL DSN不能为空")
+	}
+
+	db, err := sql.Open("pgx", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("打开PostgreSQL连接失败: %w", err)
+	}
+
+	db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile * 2)
+	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile * 2)
+	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
+
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), config.StartupDBPingTimeout)
+	defer pingCancel()
+	if err := db.PingContext(pingCtx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("PostgreSQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
+	}
+
+	store := sqlstore.NewSQLStore(db, "postgres")
+
+	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
+	defer migrateCancel()
+	if err := migratePostgres(migrateCtx, db); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("PostgreSQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
+	}
+
+	return store, nil
+}
+
+// CreatePostgresStoreForTest 直接创建 PostgreSQL 存储实例（测试辅助）
+func CreatePostgresStoreForTest(dsn string) (Store, error) {
+	s, err := createPostgresStore(dsn)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // CreateSQLiteStore 直接创建 SQLite 存储实例（测试辅助函数）

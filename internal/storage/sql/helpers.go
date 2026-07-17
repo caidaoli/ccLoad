@@ -30,7 +30,7 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 
 	// 查询所有渠道（全表扫描，渠道数<1000时比IN子查询更快）
 	// 优势：固定SQL（查询计划缓存）、无动态参数绑定、代码简单
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.QueryContext(ctx, `
 		SELECT
 			id,
 			name,
@@ -104,7 +104,7 @@ func (s *SQLStore) fetchAuthTokenDescriptionsBatch(ctx context.Context, tokenIDs
 	query := "SELECT id, description FROM auth_tokens WHERE id IN (" +
 		strings.Join(placeholders, ",") + ")"
 
-	rows, err := s.db.QueryContext(ctx, query, ids...)
+	rows, err := s.QueryContext(ctx, query, ids...)
 	if err != nil {
 		return nil, fmt.Errorf("query auth token descriptions: %w", err)
 	}
@@ -142,7 +142,7 @@ func (s *SQLStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string
 		return nil, nil
 	}
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query channel ids by name: %w", err)
 	}
@@ -179,7 +179,7 @@ func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string
 		       WHERE cpt.channel_id = c.id AND cpt.protocol = ?
 		   )
 	`
-	rows, err := s.db.QueryContext(ctx, query, channelType, channelType)
+	rows, err := s.QueryContext(ctx, query, channelType, channelType)
 	if err != nil {
 		return nil, fmt.Errorf("query channel ids by type: %w", err)
 	}

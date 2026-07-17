@@ -23,7 +23,7 @@ func (s *SQLStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.AP
 		WHERE channel_id = ?
 		ORDER BY key_index ASC
 	`
-	rows, err := s.db.QueryContext(ctx, query, channelID)
+	rows, err := s.QueryContext(ctx, query, channelID)
 	if err != nil {
 		return nil, fmt.Errorf("query api keys: %w", err)
 	}
@@ -76,7 +76,7 @@ func (s *SQLStore) GetAPIKey(ctx context.Context, channelID int64, keyIndex int)
 		FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`
-	row := s.db.QueryRowContext(ctx, query, channelID, keyIndex)
+	row := s.QueryRowContext(ctx, query, channelID, keyIndex)
 
 	key := &model.APIKey{}
 	var createdAt, updatedAt int64
@@ -118,7 +118,7 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 	nowUnix := timeToUnix(time.Now())
 
 	// 使用事务确保原子性
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -153,7 +153,7 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 				key.CooldownUntil, key.CooldownDurationMs, boolToInt(key.Disabled), nowUnix, nowUnix)
 		}
 
-		if _, err := tx.ExecContext(ctx, sb.String(), args...); err != nil {
+		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
 			return fmt.Errorf("batch insert api keys: %w", err)
 		}
 	}
@@ -173,7 +173,7 @@ func (s *SQLStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, s
 
 	updatedAtUnix := timeToUnix(time.Now())
 
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		UPDATE api_keys
 		SET key_strategy = ?, updated_at = ?
 		WHERE channel_id = ?
@@ -192,13 +192,13 @@ func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notes
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin update api key notes transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	stmt, err := tx.PrepareContext(ctx, `
+	stmt, err := s.prepareTx(ctx, tx, `
 		UPDATE api_keys
 		SET note = ?, updated_at = ?
 		WHERE channel_id = ? AND key_index = ?
@@ -223,7 +223,7 @@ func (s *SQLStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notes
 
 // DeleteAPIKey 删除指定的 API Key
 func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		DELETE FROM api_keys
 		WHERE channel_id = ? AND key_index = ?
 	`, channelID, keyIndex)
@@ -238,7 +238,7 @@ func (s *SQLStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex i
 // CompactKeyIndices 将指定渠道中 key_index > removedIndex 的记录整体前移，保持索引连续
 // 设计原因：KeySelector 使用 key_index 作为逻辑下标；存在间隙会导致轮询和索引匹配异常
 func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		UPDATE api_keys
 		SET key_index = key_index - 1
 		WHERE channel_id = ? AND key_index > ?
@@ -252,7 +252,7 @@ func (s *SQLStore) CompactKeyIndices(ctx context.Context, channelID int64, remov
 
 // DeleteAllAPIKeys 删除渠道的所有 API Key（用于渠道删除时级联清理）
 func (s *SQLStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		DELETE FROM api_keys
 		WHERE channel_id = ?
 	`, channelID)
@@ -297,16 +297,28 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 	}
 
 	importedIDs := make([]int64, 0, len(channels))
+	hasExplicitID := false
+	for _, cwk := range channels {
+		if cwk != nil && cwk.Config != nil && cwk.Config.ID != 0 {
+			hasExplicitID = true
+			break
+		}
+	}
 
 	// 使用事务确保原子性
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if hasExplicitID {
+			if err := s.lockPostgresExplicitIDTable(ctx, tx, "channels"); err != nil {
+				return err
+			}
+		}
 		nowUnix := timeToUnix(time.Now())
 
 		// 预编译渠道插入语句（复用，减少解析开销）
 		// 注意：models 和 model_redirects 已移至 channel_models 表
 		var channelUpsertWithIDSQL string
 		var channelUpsertByNameSQL string
-		if s.IsSQLite() {
+		if s.supportsONConflict() {
 			channelUpsertWithIDSQL = `
 					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, created_at, updated_at)
 					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -368,20 +380,20 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 						updated_at = VALUES(updated_at)`
 		}
 
-		channelStmtWithID, err := tx.PrepareContext(ctx, channelUpsertWithIDSQL)
+		channelStmtWithID, err := s.prepareTx(ctx, tx, channelUpsertWithIDSQL)
 		if err != nil {
 			return fmt.Errorf("prepare channel statement with id: %w", err)
 		}
 		defer func() { _ = channelStmtWithID.Close() }()
 
-		channelStmtByName, err := tx.PrepareContext(ctx, channelUpsertByNameSQL)
+		channelStmtByName, err := s.prepareTx(ctx, tx, channelUpsertByNameSQL)
 		if err != nil {
 			return fmt.Errorf("prepare channel statement by name: %w", err)
 		}
 		defer func() { _ = channelStmtByName.Close() }()
 
 		// 预编译API Key插入语句
-		keyStmt, err := tx.PrepareContext(ctx, `
+		keyStmt, err := s.prepareTx(ctx, tx, `
 			INSERT INTO api_keys (channel_id, key_index, api_key, note, key_strategy,
 			                      cooldown_until, cooldown_duration_ms, disabled, created_at, updated_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -416,6 +428,9 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
+				if err := s.syncPostgresIDSequence(ctx, tx, "channels"); err != nil {
+					return err
+				}
 			} else {
 				_, err := channelStmtByName.ExecContext(ctx,
 					config.Name, config.URL, config.Priority,
@@ -425,7 +440,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				}
 
 				// 获取渠道ID
-				err = tx.QueryRowContext(ctx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
+				err = s.queryRowTx(ctx, tx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID)
 				if err != nil {
 					return fmt.Errorf("get channel id for %s: %w", config.Name, err)
 				}
@@ -436,7 +451,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 
 			// 删除旧的API Keys（模型索引统一交给 saveModelEntriesImpl 处理）
 			if isUpdate {
-				if _, err := tx.ExecContext(ctx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
+				if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, channelID); err != nil {
 					return fmt.Errorf("delete old api keys for channel %d: %w", channelID, err)
 				}
 			}
@@ -497,7 +512,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 		FROM api_keys
 		ORDER BY channel_id ASC, key_index ASC
 	`
-	rows, err := s.db.QueryContext(ctx, query)
+	rows, err := s.QueryContext(ctx, query)
 	if err != nil {
 		return nil, fmt.Errorf("query all api keys: %w", err)
 	}
@@ -543,7 +558,7 @@ func (s *SQLStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.APIKey
 // SetAPIKeyDisabled 设置指定 API Key 的禁用状态
 func (s *SQLStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error {
 	updatedAtUnix := timeToUnix(time.Now())
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		UPDATE api_keys SET disabled = ?, updated_at = ?
 		WHERE channel_id = ? AND key_index = ?
 	`, boolToInt(disabled), updatedAtUnix, channelID, keyIndex)

@@ -810,9 +810,10 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
 | `CCLOAD_API_TOKENS` | None | Pre-seed API access tokens on startup. Format: `token1,token2` or `token1\|production,token2\|development`; existing tokens are not overwritten |
 | `API_TOKENS` | None | Compatibility alias for `CCLOAD_API_TOKENS`; startup fails if both variables are set with different values |
-| `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**If set uses MySQL, otherwise SQLite** |
-| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, see below) |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from MySQL on startup in hybrid mode (-1=all, 0=no logs) |
+| `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**Mutually exclusive with `CCLOAD_POSTGRES`** |
+| `CCLOAD_POSTGRES` | None | PostgreSQL DSN (optional, URL or libpq keywords, e.g. `postgres://user:pass@host:5432/db?sslmode=disable`)<br/>**Mutually exclusive with `CCLOAD_MYSQL`** |
+| `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, needs MySQL or Postgres primary DSN) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from primary DB on startup in hybrid mode (-1=all, 0=no logs) |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
@@ -832,28 +833,33 @@ Check out the awesome admin dashboard 👇
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 
-#### Hybrid Storage Mode (MySQL Primary + SQLite Cache)
+#### Hybrid Storage Mode (Primary DB + SQLite Cache)
 
-HuggingFace Spaces and similar environments lose local data on restart, but free MySQL has high query latency (800ms+). Hybrid mode offers the best of both worlds:
+HuggingFace Spaces and similar environments lose local data on restart, but remote MySQL/Postgres can have high query latency. Hybrid mode offers the best of both worlds:
 
-- **MySQL Primary Storage**: Write operations go to MySQL first, ensuring data persistence
+- **Primary Storage (MySQL or PostgreSQL)**: Write operations go to the primary first, ensuring data persistence
 - **SQLite Local Cache**: Read operations go through local SQLite, latency <1ms
-- **Startup Recovery**: Restore data from MySQL to SQLite, supports restoring logs by days
-- **Log Special Handling**: Write to SQLite first (fast), then async sync to MySQL (backup)
+- **Startup Recovery**: Restore data from primary to SQLite, supports restoring logs by days
+- **Log Special Handling**: Write to SQLite first (fast), then async sync to primary (backup)
 
 ```bash
-# Enable hybrid mode
+# Enable hybrid mode (MySQL primary)
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
 export CCLOAD_SQLITE_LOG_DAYS=7  # Restore last 7 days of logs (optional)
+
+# Or PostgreSQL primary
+export CCLOAD_POSTGRES="postgres://user:pass@host:5432/db?sslmode=disable"
+export CCLOAD_ENABLE_SQLITE_REPLICA=1
 ```
 
-**Three Storage Modes**:
+**Storage Modes**:
 | Mode | Configuration | Use Case |
 |------|---------------|----------|
-| Pure SQLite | Don't set `CCLOAD_MYSQL` | Local dev, single instance |
+| Pure SQLite | Don't set primary DSN | Local dev, single instance |
 | Pure MySQL | Set `CCLOAD_MYSQL` | Standard production |
-| Hybrid Mode | Set `CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces |
+| Pure PostgreSQL | Set `CCLOAD_POSTGRES` | Standard production (PG) |
+| Hybrid Mode | Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces / high-latency primary |
 
 ### Web Admin Configuration (Hot Reload Supported)
 
@@ -1007,10 +1013,12 @@ storage/
 ```
 
 **Database Selection Logic**:
-- `CCLOAD_MYSQL` environment variable set → Uses MySQL
-- Not set → Uses SQLite (default)
+- `CCLOAD_MYSQL` set → MySQL primary (fatal if also set with `CCLOAD_POSTGRES`)
+- `CCLOAD_POSTGRES` set → PostgreSQL primary
+- Neither set → SQLite (default)
+- Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → Hybrid (primary write + SQLite read cache)
 
-**Core Table Structure** (SQLite and MySQL shared):
+**Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
 - `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM/concurrency limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `logs` - Request logs (with base_url upstream URL tracking)

@@ -12,10 +12,21 @@ import (
 // CreateWebSession persists a hashed role-aware browser session.
 func (s *SQLStore) CreateWebSession(ctx context.Context, token string, session model.WebSession) error {
 	tokenHash := model.HashToken(token)
-	_, err := s.db.ExecContext(ctx, `
+	query := `
 		REPLACE INTO web_sessions (token_hash, role, auth_token_id, expires_at, created_at)
-		VALUES (?, ?, ?, ?, ?)
-	`, tokenHash, session.Role, session.AuthTokenID, timeToUnix(session.ExpiresAt), timeToUnix(time.Now()))
+		VALUES (?, ?, ?, ?, ?)`
+	if s.supportsONConflict() {
+		query = `
+			INSERT INTO web_sessions (token_hash, role, auth_token_id, expires_at, created_at)
+			VALUES (?, ?, ?, ?, ?)
+			ON CONFLICT(token_hash) DO UPDATE SET
+				role = excluded.role,
+				auth_token_id = excluded.auth_token_id,
+				expires_at = excluded.expires_at,
+				created_at = excluded.created_at`
+	}
+	_, err := s.ExecContext(ctx, query,
+		tokenHash, session.Role, session.AuthTokenID, timeToUnix(session.ExpiresAt), timeToUnix(time.Now()))
 	return err
 }
 
@@ -24,7 +35,7 @@ func (s *SQLStore) GetWebSession(ctx context.Context, token string) (model.WebSe
 	tokenHash := model.HashToken(token)
 	var session model.WebSession
 	var expiresUnix int64
-	err := s.db.QueryRowContext(ctx, `
+	err := s.QueryRowContext(ctx, `
 		SELECT token_hash, role, auth_token_id, expires_at
 		FROM web_sessions
 		WHERE token_hash = ?
@@ -41,25 +52,25 @@ func (s *SQLStore) GetWebSession(ctx context.Context, token string) (model.WebSe
 
 // DeleteWebSession deletes a browser session by its plaintext bearer value.
 func (s *SQLStore) DeleteWebSession(ctx context.Context, token string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE token_hash = ?`, model.HashToken(token))
+	_, err := s.ExecContext(ctx, `DELETE FROM web_sessions WHERE token_hash = ?`, model.HashToken(token))
 	return err
 }
 
 // DeleteWebSessionsByAuthTokenID irreversibly revokes browser sessions for an API token.
 func (s *SQLStore) DeleteWebSessionsByAuthTokenID(ctx context.Context, authTokenID int64) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE auth_token_id = ?`, authTokenID)
+	_, err := s.ExecContext(ctx, `DELETE FROM web_sessions WHERE auth_token_id = ?`, authTokenID)
 	return err
 }
 
 // CleanExpiredWebSessions deletes expired browser sessions.
 func (s *SQLStore) CleanExpiredWebSessions(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM web_sessions WHERE expires_at < ?`, timeToUnix(time.Now()))
+	_, err := s.ExecContext(ctx, `DELETE FROM web_sessions WHERE expires_at < ?`, timeToUnix(time.Now()))
 	return err
 }
 
 // LoadWebSessions loads all unexpired browser sessions keyed by token hash.
 func (s *SQLStore) LoadWebSessions(ctx context.Context) (map[string]model.WebSession, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.QueryContext(ctx, `
 		SELECT token_hash, role, auth_token_id, expires_at
 		FROM web_sessions
 		WHERE expires_at > ?

@@ -187,8 +187,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		return err
 	}
 
-	if s.IsSQLite() {
-		_, err := s.db.ExecContext(ctx, `
+	if s.supportsONConflict() {
+		query := `
 			INSERT INTO auth_tokens (
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
@@ -219,8 +219,8 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				cost_limit_microusd = excluded.cost_limit_microusd,
 				allowed_models = excluded.allowed_models,
 				allowed_channel_ids = excluded.allowed_channel_ids,
-				max_concurrency = excluded.max_concurrency
-		`,
+				max_concurrency = excluded.max_concurrency`
+		args := []any{
 			token.ID,
 			token.Token,
 			token.Description,
@@ -245,14 +245,22 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			allowedModelsJSON,
 			allowedChannelIDsJSON,
 			token.MaxConcurrency,
-		)
+		}
+		if s.IsPostgres() {
+			err = s.withPostgresExplicitIDTx(ctx, "auth_tokens", func(tx *sql.Tx) error {
+				_, execErr := s.execTx(ctx, tx, query, args...)
+				return execErr
+			})
+		} else {
+			_, err = s.ExecContext(ctx, query, args...)
+		}
 		if err != nil {
 			return fmt.Errorf("upsert auth token all fields: %w", err)
 		}
 		return nil
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.ExecContext(ctx, `
 		INSERT INTO auth_tokens (
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
@@ -385,17 +393,40 @@ func (s *SQLStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) 
 	if token.ID != 0 {
 		query := `INSERT INTO auth_tokens (id, ` + authTokenInsertCommonCols + `)
 			VALUES (?, ` + authTokenInsertCommonValues + `)`
-		if !s.IsSQLite() {
+		if s.IsMySQL() {
 			query += " ON DUPLICATE KEY UPDATE id = id"
 		}
 		args := append([]any{token.ID}, commonArgs...)
-		if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		if s.IsPostgres() {
+			err := s.withPostgresExplicitIDTx(ctx, "auth_tokens", func(tx *sql.Tx) error {
+				_, execErr := s.execTx(ctx, tx, query, args...)
+				return execErr
+			})
+			if err != nil {
+				return fmt.Errorf("create auth token: %w", err)
+			}
+			return nil
+		}
+		if _, err := s.ExecContext(ctx, query, args...); err != nil {
 			return fmt.Errorf("create auth token: %w", err)
 		}
 		return nil
 	}
 
-	result, err := s.db.ExecContext(ctx,
+	if s.IsPostgres() {
+		var id int64
+		err := s.QueryRowContext(ctx,
+			`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`) RETURNING id`,
+			commonArgs...).Scan(&id)
+		if err != nil {
+			return fmt.Errorf("create auth token: %w", err)
+		}
+		token.ID = id
+		return nil
+	}
+
+	result, err := s.ExecContext(ctx,
 		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
 			VALUES (`+authTokenInsertCommonValues+`)`,
 		commonArgs...)
@@ -418,15 +449,39 @@ func (s *SQLStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) 
 		return false, err
 	}
 
-	if !s.IsSQLite() {
+	if s.IsMySQL() {
 		return s.ensureAuthTokenMySQL(ctx, token, commonArgs)
 	}
 
-	query := `INSERT INTO auth_tokens (` + authTokenInsertCommonCols + `)
-		VALUES (` + authTokenInsertCommonValues + `)`
-	query += " ON CONFLICT(token) DO NOTHING"
+	// SQLite / Postgres：ON CONFLICT DO NOTHING
+	// Postgres 无可靠 LastInsertId，用 RETURNING；冲突时无行 → 再查回填
+	if s.IsPostgres() {
+		var id int64
+		err := s.QueryRowContext(ctx,
+			`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
+			VALUES (`+authTokenInsertCommonValues+`)
+			ON CONFLICT(token) DO NOTHING
+			RETURNING id`,
+			commonArgs...).Scan(&id)
+		if err == nil {
+			token.ID = id
+			return true, nil
+		}
+		if err != sql.ErrNoRows {
+			return false, fmt.Errorf("ensure auth token: %w", err)
+		}
+		existing, getErr := s.GetAuthTokenByValue(ctx, token.Token)
+		if getErr != nil {
+			return false, fmt.Errorf("get ensured auth token: %w", getErr)
+		}
+		*token = *existing
+		return false, nil
+	}
 
-	result, err := s.db.ExecContext(ctx, query, commonArgs...)
+	query := `INSERT INTO auth_tokens (` + authTokenInsertCommonCols + `)
+		VALUES (` + authTokenInsertCommonValues + `) ON CONFLICT(token) DO NOTHING`
+
+	result, err := s.ExecContext(ctx, query, commonArgs...)
 	if err != nil {
 		return false, fmt.Errorf("ensure auth token: %w", err)
 	}
@@ -453,7 +508,7 @@ func (s *SQLStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) 
 }
 
 func (s *SQLStore) ensureAuthTokenMySQL(ctx context.Context, token *model.AuthToken, commonArgs []any) (bool, error) {
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.ExecContext(ctx,
 		`INSERT INTO auth_tokens (`+authTokenInsertCommonCols+`)
 			VALUES (`+authTokenInsertCommonValues+`)`,
 		commonArgs...)
@@ -490,7 +545,7 @@ func isMySQLDuplicateEntryError(err error) bool {
 
 // GetAuthToken 根据ID获取令牌
 func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken, error) {
-	token, err := scanAuthToken(s.db.QueryRowContext(
+	token, err := scanAuthToken(s.QueryRowContext(
 		ctx,
 		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE id = ?", authTokenSelectColumns),
 		id,
@@ -509,7 +564,7 @@ func (s *SQLStore) GetAuthToken(ctx context.Context, id int64) (*model.AuthToken
 // GetAuthTokenByValue 根据令牌哈希值获取令牌信息
 // 用于认证时快速查找令牌
 func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*model.AuthToken, error) {
-	token, err := scanAuthToken(s.db.QueryRowContext(
+	token, err := scanAuthToken(s.QueryRowContext(
 		ctx,
 		fmt.Sprintf("SELECT %s FROM auth_tokens WHERE token = ?", authTokenSelectColumns),
 		tokenHash,
@@ -527,7 +582,7 @@ func (s *SQLStore) GetAuthTokenByValue(ctx context.Context, tokenHash string) (*
 
 // ListAuthTokens 列出所有令牌
 func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+	rows, err := s.QueryContext(ctx, fmt.Sprintf(
 		"SELECT %s FROM auth_tokens ORDER BY created_at DESC",
 		authTokenSelectColumns,
 	))
@@ -554,7 +609,7 @@ func (s *SQLStore) ListAuthTokens(ctx context.Context) ([]*model.AuthToken, erro
 func (s *SQLStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthToken, error) {
 	now := time.Now().UnixMilli()
 
-	rows, err := s.db.QueryContext(ctx, fmt.Sprintf(
+	rows, err := s.QueryContext(ctx, fmt.Sprintf(
 		"SELECT %s FROM auth_tokens WHERE is_active = 1 AND (expires_at = 0 OR expires_at > ?) ORDER BY created_at DESC",
 		authTokenSelectColumns,
 	), now)
@@ -604,7 +659,7 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		return err
 	}
 
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.ExecContext(ctx, `
 		UPDATE auth_tokens
 		SET description = ?,
 		    expires_at = ?,
@@ -635,7 +690,7 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 
 // DeleteAuthToken 删除令牌
 func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.ExecContext(ctx, `
 		DELETE FROM auth_tokens WHERE id = ?
 	`, id)
 
@@ -658,7 +713,7 @@ func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
 // UpdateTokenLastUsed 更新令牌最后使用时间
 // 异步调用，性能优化
 func (s *SQLStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.ExecContext(ctx, `
 		UPDATE auth_tokens
 		SET last_used_at = ?
 		WHERE token = ?
@@ -705,7 +760,7 @@ func (s *SQLStore) UpdateTokenStats(
 	nowMs := time.Now().UnixMilli()
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
 
-	result, err := s.db.ExecContext(ctx, updateTokenStatsQuery,
+	result, err := s.ExecContext(ctx, updateTokenStatsQuery,
 		successFlag,
 		failureFlag,
 		successFlag, promptTokens,

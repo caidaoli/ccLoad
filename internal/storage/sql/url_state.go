@@ -17,7 +17,7 @@ func urlHash(url string) string {
 
 // LoadDisabledURLs 加载所有渠道的手动禁用URL列表（启动时回填URLSelector）
 func (s *SQLStore) LoadDisabledURLs(ctx context.Context) (map[int64][]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT channel_id, url FROM channel_url_states WHERE disabled = 1`)
+	rows, err := s.QueryContext(ctx, `SELECT channel_id, url FROM channel_url_states WHERE disabled = 1`)
 	if err != nil {
 		return nil, fmt.Errorf("query channel_url_states: %w", err)
 	}
@@ -48,7 +48,7 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 	hash := urlHash(url)
 
 	var query string
-	if s.IsSQLite() {
+	if s.supportsONConflict() {
 		query = `
 			INSERT INTO channel_url_states (channel_id, url_hash, url, disabled, updated_at)
 			VALUES (?, ?, ?, ?, ?)
@@ -68,7 +68,7 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 		`
 	}
 
-	if _, err := s.db.ExecContext(ctx, query, channelID, hash, url, disabledInt, now); err != nil {
+	if _, err := s.ExecContext(ctx, query, channelID, hash, url, disabledInt, now); err != nil {
 		return fmt.Errorf("upsert channel_url_states: %w", err)
 	}
 	return nil
@@ -78,7 +78,7 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 func (s *SQLStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
 	// 空 keepURLs 列表：删除该渠道的全部URL状态记录（渠道无URL场景）
 	if len(keepURLs) == 0 {
-		_, err := s.db.ExecContext(ctx,
+		_, err := s.ExecContext(ctx,
 			`DELETE FROM channel_url_states WHERE channel_id = ?`,
 			channelID)
 		if err != nil {
@@ -101,7 +101,7 @@ func (s *SQLStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64
 		`DELETE FROM channel_url_states WHERE channel_id = ? AND url NOT IN (%s)`,
 		strings.Join(placeholders, ", "))
 
-	_, err := s.db.ExecContext(ctx, query, args...)
+	_, err := s.ExecContext(ctx, query, args...)
 	if err != nil {
 		return fmt.Errorf("cleanup orphaned url states for channel %d: %w", channelID, err)
 	}

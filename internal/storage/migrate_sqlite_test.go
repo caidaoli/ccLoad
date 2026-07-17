@@ -629,7 +629,7 @@ func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
 		}
 	}
 
-	applied, err := isMigrationApplied(ctx, db, channelModelsOrderRepairVersion)
+	applied, err := isMigrationApplied(ctx, db, channelModelsOrderRepairVersion, DialectSQLite)
 	if err != nil {
 		t.Fatalf("isMigrationApplied repair version: %v", err)
 	}
@@ -652,7 +652,7 @@ func TestMigrateChannelModelsSchema_SQLite(t *testing.T) {
 	}
 
 	// 验证迁移记录存在
-	applied, err := isMigrationApplied(ctx, db, "v1_channel_models_redirect")
+	applied, err := isMigrationApplied(ctx, db, "v1_channel_models_redirect", DialectSQLite)
 	if err != nil {
 		t.Fatalf("isMigrationApplied: %v", err)
 	}
@@ -1155,7 +1155,7 @@ func TestRecordMigration_Idempotent(t *testing.T) {
 	}
 
 	// 验证迁移已记录
-	applied, err := isMigrationApplied(ctx, db, "test_migration")
+	applied, err := isMigrationApplied(ctx, db, "test_migration", DialectSQLite)
 	if err != nil {
 		t.Fatalf("isMigrationApplied: %v", err)
 	}
@@ -1172,7 +1172,7 @@ func TestIsMigrationApplied_NotApplied(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 
-	applied, err := isMigrationApplied(ctx, db, "never_applied_migration")
+	applied, err := isMigrationApplied(ctx, db, "never_applied_migration", DialectSQLite)
 	if err != nil {
 		t.Fatalf("isMigrationApplied: %v", err)
 	}

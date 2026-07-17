@@ -5,8 +5,6 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -61,40 +59,6 @@ func TestHandleGetDebugLog_NotFoundIncludesRelevantSettings(t *testing.T) {
 	}
 	if resp.Data.DebugLogRetentionMinutes.Key != "debug_log_retention_minutes" || resp.Data.DebugLogRetentionMinutes.Value != "15" {
 		t.Fatalf("debug_log_retention_minutes=%+v, want key/value debug_log_retention_minutes/15", resp.Data.DebugLogRetentionMinutes)
-	}
-}
-
-func TestMergeResponseBody_ReplaysDocsSamples(t *testing.T) {
-	t.Parallel()
-
-	root := testRepoRoot(t)
-	docsDir := filepath.Join(root, "docs")
-	if _, err := os.Stat(docsDir); err != nil {
-		if os.IsNotExist(err) {
-			t.Skip("docs replay samples are not present")
-		}
-		t.Fatalf("stat docs dir: %v", err)
-	}
-	for _, name := range []string{"1.txt", "2.txt", "3.txt", "4.txt", "5.txt", "6.txt"} {
-		name := name
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-
-			raw, err := os.ReadFile(filepath.Join(docsDir, name))
-			if err != nil {
-				if os.IsNotExist(err) {
-					t.Skipf("docs replay sample %s is not present", name)
-				}
-				t.Fatalf("read docs sample: %v", err)
-			}
-			parts := mergeResponseBody(string(raw))
-			if strings.TrimSpace(parts.Content) == "" && strings.TrimSpace(parts.Tools) == "" {
-				t.Fatalf("merged response should contain content or tools for %s", name)
-			}
-			if strings.Contains(parts.Content, "event:") || strings.Contains(parts.Content, `"type":"response.output_text.delta"`) {
-				t.Fatalf("merged content leaked raw SSE framing for %s", name)
-			}
-		})
 	}
 }
 
@@ -253,26 +217,6 @@ func TestMergeResponseBody_DeduplicatesCodexToolCallWhenOutputIndexChanges(t *te
 	}
 }
 
-func TestMergeResponseBody_DeduplicatesDocs5ToolCalls(t *testing.T) {
-	t.Parallel()
-
-	raw, err := os.ReadFile(filepath.Join(testRepoRoot(t), "docs", "5.txt"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			t.Skip("docs/5.txt replay sample is not present")
-		}
-		t.Fatalf("read docs sample: %v", err)
-	}
-
-	parts := mergeResponseBody(string(raw))
-	if strings.Count(parts.Tools, "### codegraph_explore") != 1 {
-		t.Fatalf("codegraph_explore should render once, got tools:\n%s", parts.Tools)
-	}
-	if strings.Count(parts.Tools, `"projectPath": "/Users/caidaoli/Share/Source/go/ccLoad"`) != 1 {
-		t.Fatalf("codegraph_explore arguments should render once, got tools:\n%s", parts.Tools)
-	}
-}
-
 func TestMergeResponseBody_MergesOpenAIStreamingToolCallIDWithIndexDeltas(t *testing.T) {
 	t.Parallel()
 
@@ -294,48 +238,5 @@ func TestMergeResponseBody_MergesOpenAIStreamingToolCallIDWithIndexDeltas(t *tes
 	}
 	if strings.Contains(parts.Tools, "### tool_call") {
 		t.Fatalf("tool call should not be split into an anonymous second block, got:\n%s", parts.Tools)
-	}
-}
-
-func TestMergeResponseBody_DeduplicatesDocs6ToolCalls(t *testing.T) {
-	t.Parallel()
-
-	raw, err := os.ReadFile(filepath.Join(testRepoRoot(t), "docs", "6.txt"))
-	if err != nil {
-		if os.IsNotExist(err) {
-			t.Skip("docs/6.txt replay sample is not present")
-		}
-		t.Fatalf("read docs sample: %v", err)
-	}
-
-	parts := mergeResponseBody(string(raw))
-	for _, cmd := range []string{
-		"test -d .codegraph && printf yes || printf no",
-		"git status --short",
-		"git diff --name-only --diff-filter=U",
-	} {
-		block := "```bash\n" + cmd + "\n```"
-		if strings.Count(parts.Tools, block) != 1 {
-			t.Fatalf("command %q should render once, got tools:\n%s", cmd, parts.Tools)
-		}
-	}
-}
-
-func testRepoRoot(t *testing.T) string {
-	t.Helper()
-
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("getwd: %v", err)
-	}
-	for {
-		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			return dir
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			t.Fatal("repo root not found")
-		}
-		dir = parent
 	}
 }

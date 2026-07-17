@@ -36,7 +36,7 @@ func (s *SQLStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endT
 		GROUP BY auth_token_id
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceMs, untilMs)
+	rows, err := s.QueryContext(ctx, query, sinceMs, untilMs)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 		) t
 		GROUP BY auth_token_id
 	`
-	peakRows, err := s.db.QueryContext(ctx, peakQuery, sinceBucket, untilBucket)
+	peakRows, err := s.QueryContext(ctx, peakQuery, sinceBucket, untilBucket)
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (s *SQLStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*m
 			WHERE minute_bucket >= ? AND minute_bucket <= ? AND auth_token_id > 0 AND status_code != 499
 			GROUP BY auth_token_id
 		`
-		recentRows, err := s.db.QueryContext(ctx, recentQuery, recentStartBucket, recentEndBucket)
+		recentRows, err := s.QueryContext(ctx, recentQuery, recentStartBucket, recentEndBucket)
 		if err != nil {
 			return err
 		}

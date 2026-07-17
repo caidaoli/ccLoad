@@ -78,8 +78,10 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 
 ## 存储
 
-- 模式:纯 SQLite(默认)/ 纯 MySQL / 混合(`CCLOAD_MYSQL` + `CCLOAD_ENABLE_SQLITE_REPLICA=1`)
-- 混合数据流:写 MySQL 主→同步 SQLite,读 SQLite,日志先 SQLite 后异步 MySQL;`CCLOAD_SQLITE_LOG_DAYS` 默认 7
+- 模式:纯 SQLite(默认)/ 纯 MySQL(`CCLOAD_MYSQL`)/ 纯 PostgreSQL(`CCLOAD_POSTGRES`)/ 混合(主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1`)
+- 互斥:`CCLOAD_MYSQL` 与 `CCLOAD_POSTGRES` 同时设置 → `log.Fatal`
+- PG DSN:URL(`postgres://user:pass@host:5432/db?sslmode=disable`)或 libpq 关键字串;驱动 `pgx/stdlib`
+- 混合数据流:写主库(MySQL/PG)→同步 SQLite,读 SQLite,日志先 SQLite 后异步主库;`CCLOAD_SQLITE_LOG_DAYS` 默认 7
 - URL 禁用状态(`channel_url_states` 表)双写,重启 `URLSelector.LoadDisabled` 回填
 
 ## 前端(Playwright MCP)

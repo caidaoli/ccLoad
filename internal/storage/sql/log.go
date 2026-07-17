@@ -159,19 +159,19 @@ func (s *SQLStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
 	if e.DebugData != nil {
-		tx, err := s.db.BeginTx(ctx, nil)
+		tx, err := s.BeginTx(ctx, nil)
 		if err != nil {
 			return err
 		}
 		defer func() { _ = tx.Rollback() }()
-		if err := insertLogsWithDebug(ctx, tx, []*model.LogEntry{e}); err != nil {
+		if err := insertLogsWithDebug(ctx, s, tx, []*model.LogEntry{e}); err != nil {
 			return err
 		}
 		return tx.Commit()
 	}
 
 	// 复用 logRowArgs 统一构造参数（脱敏、时间标准化等逻辑集中维护）
-	_, err := s.db.ExecContext(ctx, logsInsertColumns+logRowPlaceholders, logRowArgs(e)...)
+	_, err := s.ExecContext(ctx, logsInsertColumns+logRowPlaceholders, logRowArgs(e)...)
 	return err
 }
 
@@ -194,7 +194,7 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 		return nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
@@ -211,13 +211,13 @@ func (s *SQLStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) err
 	}
 
 	if len(plain) > 0 {
-		if err := batchInsertPlainLogs(ctx, tx, plain); err != nil {
+		if err := batchInsertPlainLogs(ctx, s, tx, plain); err != nil {
 			return err
 		}
 	}
 
 	if len(withDebug) > 0 {
-		if err := insertLogsWithDebug(ctx, tx, withDebug); err != nil {
+		if err := insertLogsWithDebug(ctx, s, tx, withDebug); err != nil {
 			return err
 		}
 	}
@@ -237,7 +237,7 @@ func (s *SQLStore) filterDeletedChannelLogs(logs []*model.LogEntry) []*model.Log
 }
 
 // batchInsertPlainLogs 多值 INSERT 写入无 debug 数据的日志，按 batchSize 分块。
-func batchInsertPlainLogs(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) error {
+func batchInsertPlainLogs(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*model.LogEntry) error {
 	// 单批最多 100 行（2500 占位符），兼容 SQLite 32766/MySQL 65535 上限。
 	const batchSize = 100
 	for offset := 0; offset < len(logs); offset += batchSize {
@@ -255,16 +255,38 @@ func batchInsertPlainLogs(ctx context.Context, tx *sql.Tx, logs []*model.LogEntr
 			b.WriteString(logRowPlaceholders)
 			args = append(args, logRowArgs(e)...)
 		}
-		if _, err := tx.ExecContext(ctx, b.String(), args...); err != nil {
+		if _, err := s.execTx(ctx, tx, b.String(), args...); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// insertLogsWithDebug 逐条插入需要 LastInsertId 关联 debug_logs 的日志。
-func insertLogsWithDebug(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry) error {
-	stmt, err := tx.PrepareContext(ctx, logsInsertColumns+logRowPlaceholders)
+// insertLogsWithDebug 逐条插入需要关联 debug_logs 的日志。
+// Postgres 无 LastInsertId，走 RETURNING id。
+func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*model.LogEntry) error {
+	insertSQL := logsInsertColumns + logRowPlaceholders
+	if s.IsPostgres() {
+		insertSQL += " RETURNING id"
+		for _, e := range logs {
+			var logID int64
+			if err := s.queryRowTx(ctx, tx, insertSQL, logRowArgs(e)...).Scan(&logID); err != nil {
+				return err
+			}
+			if _, err := s.execTx(ctx, tx, `
+				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
+				e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
+				e.DebugData.RespHeaders, e.DebugData.RespBody,
+			); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+
+	stmt, err := s.prepareTx(ctx, tx, insertSQL)
 	if err != nil {
 		return err
 	}
@@ -276,7 +298,7 @@ func insertLogsWithDebug(ctx context.Context, tx *sql.Tx, logs []*model.LogEntry
 			return err
 		}
 		logID, _ := result.LastInsertId()
-		if _, err := tx.ExecContext(ctx, `
+		if _, err := s.execTx(ctx, tx, `
 			INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
@@ -308,7 +330,7 @@ func logRowArgs(e *model.LogEntry) []any {
 		timeMs, minuteBucket, e.Model, e.ActualModel,
 		model.NormalizeStoredLogSource(e.LogSource),
 		e.ChannelID, e.StatusCode, e.Message, e.Duration,
-		e.IsStreaming, e.FirstByteTime, maskedKey, apiKeyHash,
+		boolToInt(e.IsStreaming), e.FirstByteTime, maskedKey, apiKeyHash,
 		e.AuthTokenID, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,
@@ -345,7 +367,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -396,7 +418,7 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 
 	query, args := qb.Build()
 	var count int
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := s.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 
@@ -427,7 +449,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 	query, args := qb.BuildWithSuffix(suffix)
 	args = append(args, limit, offset)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -479,7 +501,7 @@ func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, f
 
 	query, args := qb.Build()
 	var count int
-	err := s.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	err := s.QueryRowContext(ctx, query, args...).Scan(&count)
 	return count, err
 }
 
@@ -509,7 +531,7 @@ func (s *SQLStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Ti
 		ORDER BY channel_id ASC, base_url ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceMs)
+	rows, err := s.QueryContext(ctx, query, sinceMs)
 	if err != nil {
 		return nil, err
 	}
@@ -582,7 +604,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 		query, args := qb.BuildWithSuffix("ORDER BY time DESC LIMIT ? OFFSET ?")
 		args = append(args, limit, offset)
 
-		rows, err := s.db.QueryContext(ctx, query, args...)
+		rows, err := s.QueryContext(ctx, query, args...)
 		if err != nil {
 			logsErr = err
 			return
@@ -609,7 +631,7 @@ func (s *SQLStore) ListLogsRangeWithCount(ctx context.Context, since, until time
 		applySharedConditions(qb)
 
 		query, args := qb.Build()
-		countErr = s.db.QueryRowContext(ctx, query, args...).Scan(&total)
+		countErr = s.QueryRowContext(ctx, query, args...).Scan(&total)
 	}()
 
 	wg.Wait()

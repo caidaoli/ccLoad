@@ -86,7 +86,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 		ORDER BY bucket_ts ASC
 	`
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -205,7 +205,7 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 
 	query += " ORDER BY logs.model"
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +266,7 @@ func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Ti
 
 	query += " ORDER BY c.name"
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

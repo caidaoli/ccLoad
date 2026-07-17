@@ -90,6 +90,70 @@ func mysqlToSQLite(mysqlCol string) string {
 	return col
 }
 
+// BuildPostgres 生成 PostgreSQL DDL（从 MySQL 基准列定义转换）
+func (b *TableBuilder) BuildPostgres() string {
+	pgColumns := make([]string, 0, len(b.columns))
+	for _, col := range b.columns {
+		converted := mysqlToPostgres(col)
+		if converted == "" {
+			continue // 行内 UNIQUE KEY 等已提升为独立约束时跳过空结果
+		}
+		pgColumns = append(pgColumns, converted)
+	}
+
+	return fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n);",
+		b.name,
+		strings.Join(pgColumns, ",\n\t"))
+}
+
+// mysqlToPostgres 类型转换（MySQL → PostgreSQL）
+func mysqlToPostgres(mysqlCol string) string {
+	col := strings.TrimSpace(mysqlCol)
+
+	// 行内 UNIQUE KEY 定义 → 表级 UNIQUE 约束
+	if strings.HasPrefix(strings.ToUpper(col), "UNIQUE KEY") {
+		// UNIQUE KEY uk_channel_key (channel_id, key_index) → UNIQUE (channel_id, key_index)
+		if i := strings.Index(col, "("); i >= 0 {
+			return "UNIQUE " + col[i:]
+		}
+		return ""
+	}
+
+	// 主键自增
+	col = strings.ReplaceAll(col, "INT PRIMARY KEY AUTO_INCREMENT", "BIGSERIAL PRIMARY KEY")
+
+	// 反引号 → 双引号
+	col = strings.ReplaceAll(col, "`", `"`)
+
+	// 类型映射（长前缀先替换，避免部分匹配）
+	col = strings.ReplaceAll(col, "LONGBLOB", "BYTEA")
+	col = strings.ReplaceAll(col, "MEDIUMBLOB", "BYTEA")
+	col = strings.ReplaceAll(col, "TINYBLOB", "BYTEA")
+	col = strings.ReplaceAll(col, "BLOB", "BYTEA")
+	col = strings.ReplaceAll(col, "LONGTEXT", "TEXT")
+	col = strings.ReplaceAll(col, "MEDIUMTEXT", "TEXT")
+	col = strings.ReplaceAll(col, "TINYINT", "SMALLINT")
+	// DOUBLE → DOUBLE PRECISION（避免重复替换已有 DOUBLE PRECISION）
+	if !strings.Contains(col, "DOUBLE PRECISION") {
+		col = strings.ReplaceAll(col, "DOUBLE", "DOUBLE PRECISION")
+	}
+	// BIGINT/INT/VARCHAR/TEXT/CHAR 保留
+
+	return col
+}
+
+// GetIndexesPostgres 获取 PostgreSQL 索引（IF NOT EXISTS）
+func (b *TableBuilder) GetIndexesPostgres() []IndexDef {
+	indexes := make([]IndexDef, len(b.indexes))
+	for i, idx := range b.indexes {
+		indexes[i] = IndexDef{
+			Name: idx.Name,
+			SQL:  strings.Replace(idx.SQL, "CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1),
+		}
+	}
+	return indexes
+}
+
 // replaceWord 替换单词（避免部分匹配）
 func replaceWord(s, oldWord, newWord string) string {
 	words := strings.Fields(s)

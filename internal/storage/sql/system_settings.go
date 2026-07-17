@@ -11,10 +11,11 @@ import (
 
 // GetSetting 获取单个配置项
 func (s *SQLStore) GetSetting(ctx context.Context, key string) (*model.SystemSetting, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT `+"`key`"+`, `+"`value`"+`, value_type, description, default_value, updated_at
+	k, v := s.quoteIdent("key"), s.quoteIdent("value")
+	row := s.QueryRowContext(ctx, `
+		SELECT `+k+`, `+v+`, value_type, description, default_value, updated_at
 		FROM system_settings
-		WHERE `+"`key`"+` = ?
+		WHERE `+k+` = ?
 	`, key)
 
 	var setting model.SystemSetting
@@ -30,10 +31,11 @@ func (s *SQLStore) GetSetting(ctx context.Context, key string) (*model.SystemSet
 
 // ListAllSettings 获取所有配置项
 func (s *SQLStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetting, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT `+"`key`"+`, `+"`value`"+`, value_type, description, default_value, updated_at
+	k, v := s.quoteIdent("key"), s.quoteIdent("value")
+	rows, err := s.QueryContext(ctx, `
+		SELECT `+k+`, `+v+`, value_type, description, default_value, updated_at
 		FROM system_settings
-		ORDER BY `+"`key`"+` ASC
+		ORDER BY `+k+` ASC
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("query all settings: %w", err)
@@ -55,11 +57,12 @@ func (s *SQLStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetting,
 // UpdateSetting 更新配置项(仅更新value和updated_at)
 func (s *SQLStore) UpdateSetting(ctx context.Context, key, value string) error {
 	now := timeToUnix(time.Now())
+	k, v := s.quoteIdent("key"), s.quoteIdent("value")
 
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.ExecContext(ctx, `
 		UPDATE system_settings
-		SET `+"`value`"+` = ?, updated_at = ?
-		WHERE `+"`key`"+` = ?
+		SET `+v+` = ?, updated_at = ?
+		WHERE `+k+` = ?
 	`, value, now, key)
 	if err != nil {
 		return fmt.Errorf("update setting: %w", err)
@@ -80,11 +83,12 @@ func (s *SQLStore) UpdateSetting(ctx context.Context, key, value string) error {
 func (s *SQLStore) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
 	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		now := timeToUnix(time.Now())
+		k, v := s.quoteIdent("key"), s.quoteIdent("value")
 
-		stmt, err := tx.PrepareContext(ctx, `
+		stmt, err := s.prepareTx(ctx, tx, `
 			UPDATE system_settings
-			SET `+"`value`"+` = ?, updated_at = ?
-			WHERE `+"`key`"+` = ?
+			SET `+v+` = ?, updated_at = ?
+			WHERE `+k+` = ?
 		`)
 		if err != nil {
 			return fmt.Errorf("prepare statement: %w", err)

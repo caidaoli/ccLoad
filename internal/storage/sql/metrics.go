@@ -64,7 +64,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 	suffix := "GROUP BY channel_id, model ORDER BY channel_id ASC, model ASC"
 	query, args := qb.BuildWithSuffix(suffix)
 
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -232,7 +232,7 @@ func (s *SQLStore) fillStatsLastSuccesses(ctx context.Context, stats []model.Sta
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
 	query, args := buildLatestChannelSuccessQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite())
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -280,7 +280,7 @@ func (s *SQLStore) fillStatsLastSuccessesByEntry(ctx context.Context, stats []mo
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
 	query, args := buildLatestEntrySuccessQuery(entryIndexes, lastStateFilter, s.IsSQLite())
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -334,7 +334,7 @@ func (s *SQLStore) fillStatsLastRequests(ctx context.Context, stats []model.Stat
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
 	query, args := buildLatestChannelRequestQuery(entryIndexesByChannel, lastStateFilter, s.IsSQLite())
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -389,7 +389,7 @@ func (s *SQLStore) fillStatsLastRequestsByEntry(ctx context.Context, stats []mod
 	lastStateFilter := cloneLogFilterWithoutStatusCode(filter)
 
 	query, args := buildLatestEntryRequestQuery(entryIndexes, lastStateFilter, s.IsSQLite())
-	rows, err := s.db.QueryContext(ctx, query, args...)
+	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
 		return err
 	}
@@ -654,7 +654,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 
 	var peakRPM float64
 	var totalCount int64
-	if err := s.db.QueryRowContext(ctx, combinedQuery, combinedArgs...).Scan(&peakRPM, &totalCount); err != nil {
+	if err := s.QueryRowContext(ctx, combinedQuery, combinedArgs...).Scan(&peakRPM, &totalCount); err != nil {
 		return nil, fmt.Errorf("query peak RPM and total: %w", err)
 	}
 	stats.PeakRPM = peakRPM
@@ -692,7 +692,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 
 			recentQuery, recentArgs := recentQB.Build()
 			var recentCount int64
-			if err := s.db.QueryRowContext(ctx, recentQuery, recentArgs...).Scan(&recentCount); err != nil {
+			if err := s.QueryRowContext(ctx, recentQuery, recentArgs...).Scan(&recentCount); err != nil {
 				return nil, fmt.Errorf("query recent count: %w", err)
 			}
 
@@ -751,7 +751,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		peakQB.ApplyFilter(filter)
 		peakQuery, peakArgs := peakQB.BuildWithSuffix("GROUP BY channel_id, model, minute_bucket) t GROUP BY channel_id, model")
 
-		peakRows, err := s.db.QueryContext(ctx, peakQuery, peakArgs...)
+		peakRows, err := s.QueryContext(ctx, peakQuery, peakArgs...)
 		if err != nil {
 			return fmt.Errorf("query peak RPM: %w", err)
 		}
@@ -796,7 +796,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		if !isEmpty {
 			recentQB.ApplyFilter(filter)
 			recentQuery, recentArgs := recentQB.BuildWithSuffix("GROUP BY channel_id, model")
-			recentRows, err := s.db.QueryContext(ctx, recentQuery, recentArgs...)
+			recentRows, err := s.QueryContext(ctx, recentQuery, recentArgs...)
 			if err != nil {
 				return fmt.Errorf("query recent RPM: %w", err)
 			}
@@ -890,7 +890,7 @@ func (s *SQLStore) GetChannelSuccessRates(ctx context.Context, since time.Time) 
 		WHERE minute_bucket >= ? AND minute_bucket <= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, sinceBucket, untilBucket, model.LogSourceProxy)
+	rows, err := s.QueryContext(ctx, query, sinceBucket, untilBucket, model.LogSourceProxy)
 	if err != nil {
 		return nil, err
 	}
@@ -931,7 +931,7 @@ func (s *SQLStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Tim
 		WHERE time >= ? AND channel_id > 0 AND log_source = ?
 		GROUP BY channel_id`
 
-	rows, err := s.db.QueryContext(ctx, query, todayStartMs, model.LogSourceProxy)
+	rows, err := s.QueryContext(ctx, query, todayStartMs, model.LogSourceProxy)
 	if err != nil {
 		return nil, err
 	}

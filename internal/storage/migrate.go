@@ -23,6 +23,8 @@ const (
 	DialectSQLite Dialect = iota
 	// DialectMySQL MySQL数据库方言
 	DialectMySQL
+	// DialectPostgres PostgreSQL数据库方言
+	DialectPostgres
 )
 
 // migrateSQLite 执行SQLite数据库迁移
@@ -38,6 +40,11 @@ func migrateSQLite(ctx context.Context, db *sql.DB) error {
 // migrateMySQL 执行MySQL数据库迁移
 func migrateMySQL(ctx context.Context, db *sql.DB) error {
 	return migrate(ctx, db, DialectMySQL)
+}
+
+// migratePostgres 执行 PostgreSQL 数据库迁移
+func migratePostgres(ctx context.Context, db *sql.DB) error {
+	return migrate(ctx, db, DialectPostgres)
 }
 
 // migrate 统一迁移逻辑
@@ -173,7 +180,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
 			}
-			if err := backfillAuthTokensCostLimitMaxConcurrency(ctx, db); err != nil {
+			if err := backfillAuthTokensCostLimitMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("backfill auth_tokens max_concurrency: %w", err)
 			}
 			if err := validateAuthTokensMaxConcurrency(ctx, db); err != nil {
@@ -239,11 +246,8 @@ func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) er
 }
 
 func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) error {
-	query := "DELETE FROM system_settings WHERE key = ?"
-	if dialect == DialectMySQL {
-		query = "DELETE FROM system_settings WHERE `key` = ?"
-	}
-	if _, err := db.ExecContext(ctx, query, key); err != nil {
+	query := fmt.Sprintf("DELETE FROM system_settings WHERE %s = ?", quoteIdent(dialect, "key"))
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), key); err != nil {
 		return fmt.Errorf("delete system setting %s: %w", key, err)
 	}
 	return nil
@@ -251,21 +255,21 @@ func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key s
 
 // hasSystemSetting 检查系统设置是否存在（用于配置迁移和旧版标记兼容）
 func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) bool {
-	query := "SELECT 1 FROM system_settings WHERE key = ? LIMIT 1"
-	if dialect == DialectMySQL {
-		query = "SELECT 1 FROM system_settings WHERE `key` = ? LIMIT 1"
-	}
+	query := fmt.Sprintf("SELECT 1 FROM system_settings WHERE %s = ? LIMIT 1", quoteIdent(dialect, "key"))
 	var exists int
-	err := db.QueryRowContext(ctx, query, key).Scan(&exists)
+	err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, query), key).Scan(&exists)
 	return err == nil
 }
 
 // loadAllExistingIndexes 一次性查询整个数据库下所有表的现有索引集合
 func loadAllExistingIndexes(ctx context.Context, db *sql.DB, dialect Dialect) (map[string]map[string]bool, error) {
 	var query string
-	if dialect == DialectMySQL {
+	switch dialect {
+	case DialectMySQL:
 		query = "SELECT DISTINCT TABLE_NAME, INDEX_NAME FROM information_schema.STATISTICS WHERE TABLE_SCHEMA = DATABASE()"
-	} else {
+	case DialectPostgres:
+		query = "SELECT tablename, indexname FROM pg_indexes WHERE schemaname = current_schema()"
+	default:
 		query = "SELECT tbl_name, name FROM sqlite_master WHERE type='index' AND tbl_name IS NOT NULL"
 	}
 	rows, err := db.QueryContext(ctx, query)
@@ -292,17 +296,25 @@ func loadAllExistingIndexes(ctx context.Context, db *sql.DB, dialect Dialect) (m
 }
 
 func buildDDL(tb *schema.TableBuilder, dialect Dialect) string {
-	if dialect == DialectMySQL {
+	switch dialect {
+	case DialectMySQL:
 		return tb.BuildMySQL()
+	case DialectPostgres:
+		return tb.BuildPostgres()
+	default:
+		return tb.BuildSQLite()
 	}
-	return tb.BuildSQLite()
 }
 
 func buildIndexes(tb *schema.TableBuilder, dialect Dialect) []schema.IndexDef {
-	if dialect == DialectMySQL {
+	switch dialect {
+	case DialectMySQL:
 		return tb.GetIndexesMySQL()
+	case DialectPostgres:
+		return tb.GetIndexesPostgres()
+	default:
+		return tb.GetIndexesSQLite()
 	}
-	return tb.GetIndexesSQLite()
 }
 
 func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect Dialect) error {
@@ -317,6 +329,12 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 		if strings.Contains(errMsg, "1061") ||
 			strings.Contains(errMsg, "Duplicate key name") ||
 			strings.Contains(errMsg, "already exist") {
+			return nil
+		}
+	}
+	if dialect == DialectPostgres {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "already exists") {
 			return nil
 		}
 	}
@@ -367,27 +385,27 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}
 
 	var query string
-	if dialect == DialectMySQL {
+	switch dialect {
+	case DialectMySQL:
 		query = "INSERT IGNORE INTO system_settings (`key`, value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, UNIX_TIMESTAMP())"
-	} else {
+	case DialectPostgres:
+		query = `INSERT INTO system_settings ("key", value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, EXTRACT(EPOCH FROM NOW())::BIGINT) ON CONFLICT ("key") DO NOTHING`
+	default:
 		query = "INSERT OR IGNORE INTO system_settings (key, value, value_type, description, default_value, updated_at) VALUES (?, ?, ?, ?, ?, unixepoch())"
 	}
 
 	for _, s := range settings {
-		if _, err := db.ExecContext(ctx, query, s.key, s.value, s.valueType, s.desc, s.defaultVal); err != nil {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), s.key, s.value, s.valueType, s.desc, s.defaultVal); err != nil {
 			return fmt.Errorf("insert default setting %s: %w", s.key, err)
 		}
 	}
 
 	// 刷新部分配置项的元信息（description/default/value_type），避免"代码语义已变但DB描述仍旧"。
 	{
-		keyCol := "key"
-		if dialect == DialectMySQL {
-			keyCol = "`key`"
-		}
+		keyCol := quoteIdent(dialect, "key")
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
-		if _, err := db.ExecContext(ctx, metaSQL,
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
 			"上游首个有效流内容超时(秒,0=禁用，仅流式)",
 			"0",
 			"duration",
@@ -395,7 +413,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata upstream_first_byte_timeout: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, metaSQL,
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
 			"Debug日志保留时长(分钟,1-1440)",
 			"2",
 			"int",
@@ -403,7 +421,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata debug_log_retention_minutes: %w", err)
 		}
-		if _, err := db.ExecContext(ctx, metaSQL,
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
 			"自动更新检测间隔(小时整数,0=关闭,启用时最低1小时)",
 			"12",
 			"int",
@@ -415,13 +433,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 迁移 success_rate_penalty_weight 类型：float → int（2026-01 类型修正）
 	{
-		keyCol := "key"
-		if dialect == DialectMySQL {
-			keyCol = "`key`"
-		}
+		keyCol := quoteIdent(dialect, "key")
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'int' WHERE %s = 'success_rate_penalty_weight' AND value_type = 'float'", keyCol)
-		if _, err := db.ExecContext(ctx, typeSQL); err != nil {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
 			return fmt.Errorf("migrate success_rate_penalty_weight type: %w", err)
 		}
 	}
@@ -430,13 +445,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 迁移 channel_check_interval_hours 类型：int → float（支持分钟级小数间隔）
 	{
-		keyCol := "key"
-		if dialect == DialectMySQL {
-			keyCol = "`key`"
-		}
+		keyCol := quoteIdent(dialect, "key")
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
-		if _, err := db.ExecContext(ctx, typeSQL); err != nil {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
 			return fmt.Errorf("migrate channel_check_interval_hours type: %w", err)
 		}
 	}
@@ -464,14 +476,11 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		const oldKey = "cooldown_fallback_threshold"
 		const newKey = "cooldown_fallback_enabled"
 
-		keyCol := "key"
-		if dialect == DialectMySQL {
-			keyCol = "`key`"
-		}
+		keyCol := quoteIdent(dialect, "key")
 
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
-		if _, err := db.ExecContext(ctx, valueMigrateSQL, oldKey); err != nil {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, valueMigrateSQL), oldKey); err != nil {
 			return fmt.Errorf("migrate setting value %s: %w", oldKey, err)
 		}
 
@@ -482,7 +491,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		} else {
 			//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 			renameSQL := fmt.Sprintf("UPDATE system_settings SET %s = ?, description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol, keyCol)
-			if _, err := db.ExecContext(ctx, renameSQL, newKey, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", oldKey); err != nil {
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, renameSQL), newKey, "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true", "bool", oldKey); err != nil {
 				return fmt.Errorf("rename setting %s to %s: %w", oldKey, newKey, err)
 			}
 		}
@@ -492,10 +501,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 }
 
 // isMigrationApplied 检查迁移是否已执行
-func isMigrationApplied(ctx context.Context, db *sql.DB, version string) (bool, error) {
+func isMigrationApplied(ctx context.Context, db *sql.DB, version string, dialect Dialect) (bool, error) {
 	var count int
 	err := db.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM schema_migrations WHERE version = ?", version,
+		rebindIfPostgres(dialect, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?"), version,
 	).Scan(&count)
 	if err != nil {
 		// 表不存在时视为未执行
@@ -505,26 +514,21 @@ func isMigrationApplied(ctx context.Context, db *sql.DB, version string) (bool, 
 }
 
 // hasMigration 检查迁移是否已执行（简化版，忽略错误）
-func hasMigration(ctx context.Context, db *sql.DB, version string) bool {
-	applied, _ := isMigrationApplied(ctx, db, version)
+func hasMigration(ctx context.Context, db *sql.DB, version string, dialect Dialect) bool {
+	applied, _ := isMigrationApplied(ctx, db, version, dialect)
 	return applied
 }
 
 // recordMigration 记录迁移已执行
 func recordMigration(ctx context.Context, db *sql.DB, version string, dialect Dialect) error {
-	var insertSQL string
-	if dialect == DialectMySQL {
-		insertSQL = `INSERT IGNORE INTO schema_migrations (version, applied_at) VALUES (?, UNIX_TIMESTAMP())`
-	} else {
-		insertSQL = `INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, unixepoch())`
-	}
-	_, err := db.ExecContext(ctx, insertSQL, version)
+	insertSQL := insertIgnoreSchemaMigrationSQL(dialect)
+	_, err := db.ExecContext(ctx, rebindIfPostgres(dialect, insertSQL), version)
 	return err
 }
 
-func migrationAppliedAt(ctx context.Context, db *sql.DB, version string) (int64, bool, error) {
+func migrationAppliedAt(ctx context.Context, db *sql.DB, version string, dialect Dialect) (int64, bool, error) {
 	var appliedAt int64
-	err := db.QueryRowContext(ctx, `SELECT applied_at FROM schema_migrations WHERE version = ?`, version).Scan(&appliedAt)
+	err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, `SELECT applied_at FROM schema_migrations WHERE version = ?`), version).Scan(&appliedAt)
 	if err == nil {
 		return appliedAt, true, nil
 	}
@@ -535,13 +539,8 @@ func migrationAppliedAt(ctx context.Context, db *sql.DB, version string) (int64,
 }
 
 func recordMigrationTx(ctx context.Context, tx *sql.Tx, version string, dialect Dialect) error {
-	var insertSQL string
-	if dialect == DialectMySQL {
-		insertSQL = `INSERT IGNORE INTO schema_migrations (version, applied_at) VALUES (?, UNIX_TIMESTAMP())`
-	} else {
-		insertSQL = `INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (?, unixepoch())`
-	}
-	_, err := tx.ExecContext(ctx, insertSQL, version)
+	insertSQL := insertIgnoreSchemaMigrationSQL(dialect)
+	_, err := tx.ExecContext(ctx, rebindIfPostgres(dialect, insertSQL), version)
 	return err
 }
 

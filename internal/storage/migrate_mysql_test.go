@@ -93,7 +93,10 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 	if err != nil {
 		t.Fatalf("启动 MySQL 容器失败: %v\n%s", err, out)
 	}
-	containerID := strings.TrimSpace(string(out))
+	containerID := lastNonEmptyLine(string(out))
+	if len(containerID) < 12 {
+		t.Fatalf("无法解析容器 ID，docker 输出:\n%s", out)
+	}
 	t.Logf("启动 MySQL 容器: %s", containerID[:12])
 
 	hostPort := dockerMappedHostPort(t, containerID, "3306/tcp")
@@ -127,34 +130,6 @@ func startDockerMySQL(t *testing.T) *mysqlTestEnv {
 
 	t.Fatalf("MySQL 容器启动超时（30秒）")
 	return nil
-}
-
-func dockerMappedHostPort(t *testing.T, containerID, privatePort string) string {
-	t.Helper()
-
-	out, err := exec.Command("docker", "port", containerID, privatePort).CombinedOutput()
-	if err != nil {
-		t.Fatalf("获取容器端口映射失败: %v\n%s", err, out)
-	}
-
-	line := strings.TrimSpace(string(out))
-	if line == "" {
-		t.Fatalf("容器端口映射为空: container=%s port=%s", containerID[:12], privatePort)
-	}
-
-	// docker port 有时返回多行；我们只需要第一条映射
-	line = strings.Split(line, "\n")[0]
-	if strings.Contains(line, "->") {
-		parts := strings.Split(line, "->")
-		line = strings.TrimSpace(parts[len(parts)-1])
-	}
-
-	idx := strings.LastIndex(line, ":")
-	if idx == -1 || idx == len(line)-1 {
-		t.Fatalf("无法解析容器端口映射: %q", line)
-	}
-
-	return line[idx+1:]
 }
 
 // cleanupMySQLTables 清理所有表（用于测试前重置）
