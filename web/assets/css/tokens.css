@@ -569,6 +569,13 @@
       display: flex;
       flex-direction: column;
       min-height: min(680px, calc(100vh - 32px));
+      max-height: calc(100vh - 32px);
+      margin: 16px auto;
+      overflow: hidden;
+    }
+    .token-edit-modal .modal-header,
+    .token-edit-modal .modal-footer {
+      flex-shrink: 0;
     }
     .token-edit-body {
       padding-top: 12px;
@@ -577,6 +584,7 @@
       flex: 1 1 auto;
       flex-direction: column;
       gap: 12px;
+      min-height: 0;
       overflow: hidden;
     }
     .token-edit-layout {
@@ -584,6 +592,7 @@
       grid-template-columns: 320px minmax(0, 1fr);
       align-items: stretch;
       gap: 12px;
+      min-height: 0;
     }
     .token-edit-sidebar {
       display: flex;
@@ -591,6 +600,8 @@
       gap: 12px;
       min-width: 0;
       min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
     }
     .token-edit-main {
       display: grid;
@@ -736,7 +747,9 @@
     .token-edit-channels-table {
       flex: 1 1 auto;
       min-height: 0;
+      max-height: none;
       overflow-y: auto;
+      overscroll-behavior: contain;
       border: 1px solid var(--neutral-200);
       border-radius: 6px;
     }
@@ -775,7 +788,9 @@
     .token-edit-models-table {
       flex: 1 1 auto;
       min-height: 0;
+      max-height: none;
       overflow-y: auto;
+      overscroll-behavior: contain;
       border: 1px solid var(--neutral-200);
       border-radius: 6px;
     }
