@@ -66,7 +66,7 @@ ccLoad 直接处理这些问题：
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **协议转换** | Anthropic/OpenAI/Gemini/Codex互转 | 保留采样与思考参数，一个渠道服务多种客户端协议 |
+| 🔄 **协议转换** | 四协议全部 12 个有向转换组合 | 覆盖请求、流式与非流式响应，归一工具调用、思考/签名、用量和 SSE |
 | 💬 **对话式模型测试** | 按渠道/按模型/对话三种模式 | 支持图片上传、思考等级、内置搜索与对话导出 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
@@ -76,73 +76,48 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-ccLoad 的请求链路很直接：
-
-从你的应用发请求到API返回结果，中间经过这几层：
-- **认证层** - 验证访问权限
-- **路由分发** - 判断请求协议与路径，按 Claude Code、Codex、Gemini、OpenAI 分流处理
-- **协议转换** - 客户端用OpenAI格式？上游是Anthropic？自动翻译，无感切换
-- **智能调度** - 从多个渠道中选择当前最合适的上游
-- **故障切换** - 选中的渠道失败后自动切换备用渠道
-
-核心亮点：**存储层用工厂模式**，SQLite、MySQL 和 PostgreSQL 共享一套 SQL 实现。数据层边界清晰，切换数据库只需要调整环境变量。
+请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。`upstream` 模式原样透传，`local` 模式在 Registry 边界完成请求与响应转换；日志、指标、成本控制和三种数据库实现不侵入协议核心。
 
 ```mermaid
 graph TB
     subgraph "客户端"
-        A[用户应用] --> B[ccLoad代理]
+        A[Claude Code / Codex / Gemini / OpenAI 客户端]
     end
-    
-    subgraph "ccLoad服务"
-        B --> C[认证层]
-        C --> D[路由分发]
-        D --> E[渠道选择器]
-        E --> F[负载均衡器]
 
-        subgraph "核心组件"
-            F --> G[渠道A<br/>优先级:10]
-            F --> H[渠道B<br/>优先级:5]
-            F --> I[渠道C<br/>优先级:5]
-            G --> G1[URL选择器<br/>加权随机]
-            H --> H1[URL选择器<br/>加权随机]
-            I --> I1[URL选择器<br/>加权随机]
-        end
-        
-        subgraph "存储层"
-            J[(存储工厂)]
-            J3[Schema定义层]
-            J4[统一SQL层]
-            J1[(SQLite)]
-            J2[(MySQL)]
-            J5[(PostgreSQL)]
-            J --> J3
-            J3 --> J4
-            J4 --> J1
-            J4 --> J2
-            J4 --> J5
-        end
-        
-        subgraph "监控层"
-            K[日志系统]
-            L[统计分析]
-            M[趋势图表]
-        end
+    subgraph "ccLoad服务"
+        B[HTTP代理]
+        C[认证 + 路由分发]
+        D[渠道选择器<br/>优先级 + 平滑加权轮询]
+        E[协议 Registry<br/>原生透传 / 本地转换]
+        F[URL选择器<br/>探索 + 1/EWMA加权]
+        G[(存储工厂<br/>SQLite / MySQL / PostgreSQL)]
+        H[日志 + 指标 + 成本控制]
+
+        A --> B --> C --> D --> E --> F
+        D <--> G
+        H <--> G
+        B --> H
     end
-    
+
     subgraph "上游服务"
-        G1 --> N[Claude API]
-        H1 --> O[Claude API]
-        I1 --> P[Claude API]
+        U1[Anthropic]
+        U2[OpenAI兼容服务]
+        U3[Gemini]
+        U4[Codex Responses]
     end
-    
-    E <--> J
-    F <--> J
-    K <--> J
-    L <--> J
-    M <--> J
-    
+
+    F --> U1
+    F --> U2
+    F --> U3
+    F --> U4
+    U1 -. JSON / SSE .-> E
+    U2 -. JSON / SSE .-> E
+    U3 -. JSON / SSE .-> E
+    U4 -. JSON / SSE .-> E
+    E -. 客户端协议 .-> B
+
     style B fill:#4F46E5,stroke:#000,color:#fff
-    style F fill:#059669,stroke:#000,color:#fff
+    style D fill:#059669,stroke:#000,color:#fff
     style E fill:#0EA5E9,stroke:#000,color:#fff
 ```
 
@@ -779,6 +754,7 @@ ccLoad 使用的核心技术栈：
 | **MySQL** | v1.10.0 | 关系型数据库 | 可选，适合高并发生产环境 |
 | **PostgreSQL (pgx)** | v5.10.0 | 关系型数据库 | 可选，支持 URL 和 libpq DSN |
 | **Sonic** | v1.15.1 | JSON库 | 比标准库快2-3倍 |
+| **gjson / sjson** | v1.18.0 / v1.2.5 | 协议 JSON 转换 | 定向读写字段，避免通用 map 转换 |
 | **godotenv** | v1.5.1 | 环境配置 | 简化配置管理 |
 
 ### 架构特点
@@ -808,11 +784,14 @@ ccLoad 使用的核心技术栈：
   - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
   - `channel_check_scheduler.go`：渠道定时检测调度器
   - `detection_log.go`：检测日志构建（定时检测结果→LogEntry）
-- **协议转换系统**（2026-04新增）：
+- **协议转换系统**（2026-07 核心刷新）：
   - `protocol/types.go`：四大协议定义（Anthropic/OpenAI/Gemini/Codex）
-  - `protocol/registry.go`：请求/响应转换器注册表
-  - `protocol/builtin/`：18个内置转换实现（支持流式与非流式）
-  - 保留采样/上限/停止词/seed 参数；Gemini `thinkingConfig.thinkingLevel` 会映射为目标协议的 reasoning/thinking 配置
+  - `protocol/registry.go`：请求、流式响应和非流式响应的契约边界；同协议请求不进入转换
+  - `protocol/builtin/register.go`：注册全部 12 个跨协议有向组合
+  - `protocol/builtin/cliproxy_adapter.go`：ccLoad 自有的输入验证、JSON/SSE 规范化与流帧封装
+  - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 转换核心快照；来源和同步规则见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
+  - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
+  - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
   - 两种模式：`upstream`（默认，由上游原生处理）/ `local`（本地翻译）
   - 渠道配置：`ProtocolTransformMode` + `ProtocolTransforms`
   - Codex `/v1/alpha/search` 仅支持原生透传，不进入本地协议转换
@@ -1211,6 +1190,7 @@ GitHub Actions 负责自动构建和发布：
 Go 命令必须带 `sonic`。提交改动前，按影响范围跑对应验证：
 
 ```bash
+bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests  # 快照审计 + 协议定向测试
 go test -tags sonic ./internal/...
 make race-fast      # 高价值 race 子集
 make race           # 全量 race
@@ -1218,7 +1198,7 @@ make verify-web     # 前端 node:test 验证
 golangci-lint run ./...
 ```
 
-`make race-fast` 用于本地快速迭代常见并发敏感包；大改动或并发相关改动再跑 `make race`。机器并行度不合适时再覆盖 `RACE_P` 或 `RACE_PARALLEL`。
+协议转换有改动时，先跑快照审计，再跑全量内部测试。`make race-fast` 用于本地快速迭代常见并发敏感包；大改动或并发相关改动再跑 `make race`。机器并行度不合适时再覆盖 `RACE_P` 或 `RACE_PARALLEL`。
 
 ### 故障排除
 
@@ -1256,4 +1236,4 @@ env | grep CCLOAD
 
 ## 📄 许可证
 
-MIT License
+MIT License。`internal/protocol/cliproxy` 下的同步转换核心保留其上游 [MIT 许可证](internal/protocol/cliproxy/LICENSE)与[来源记录](internal/protocol/cliproxy/UPSTREAM.md)。

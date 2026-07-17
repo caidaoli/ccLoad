@@ -66,7 +66,7 @@ ccLoad handles those cases with:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Protocol Transform** - Anthropic/OpenAI/Gemini/Codex cross-protocol conversion, preserving sampling and thinking parameters so one channel serves multiple client protocols
+- 🔄 **Protocol Transform** - All 12 directed Anthropic/OpenAI/Gemini/Codex conversion paths for requests plus streaming and non-streaming responses, including tool, reasoning/signature, usage, and SSE normalization
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -79,59 +79,43 @@ ccLoad handles those cases with:
 ```mermaid
 graph TB
     subgraph "Client"
-        A[User App] --> B[ccLoad Proxy]
+        A[Claude Code / Codex / Gemini / OpenAI Client]
     end
 
     subgraph "ccLoad Service"
-        B --> C[Auth Layer]
-        C --> D[Route Dispatcher]
-        D --> E[Channel Selector]
-        E --> F[Load Balancer]
+        B[HTTP Proxy]
+        C[Authentication + Route Dispatch]
+        D[Channel Selector<br/>Priority + Smooth Weighted RR]
+        E[Protocol Registry<br/>Native Bypass / Local Transform]
+        F[URL Selector<br/>Explore + 1/EWMA Weighting]
+        G[(Storage Factory<br/>SQLite / MySQL / PostgreSQL)]
+        H[Logs + Metrics + Cost Control]
 
-        subgraph "Core Components"
-            F --> G[Channel A<br/>Priority:10]
-            F --> H[Channel B<br/>Priority:5]
-            F --> I[Channel C<br/>Priority:5]
-            G --> G1[URL Selector<br/>Weighted Random]
-            H --> H1[URL Selector<br/>Weighted Random]
-            I --> I1[URL Selector<br/>Weighted Random]
-        end
-
-        subgraph "Storage Layer"
-            J[(Storage Factory)]
-            J3[Schema Definition]
-            J4[Unified SQL Layer]
-            J1[(SQLite)]
-            J2[(MySQL)]
-            J5[(PostgreSQL)]
-            J --> J3
-            J3 --> J4
-            J4 --> J1
-            J4 --> J2
-            J4 --> J5
-        end
-
-        subgraph "Monitoring Layer"
-            K[Log System]
-            L[Stats Analysis]
-            M[Trend Charts]
-        end
+        A --> B --> C --> D --> E --> F
+        D <--> G
+        H <--> G
+        B --> H
     end
 
     subgraph "Upstream Services"
-        G1 --> N[Claude API]
-        H1 --> O[Claude API]
-        I1 --> P[Claude API]
+        U1[Anthropic]
+        U2[OpenAI-compatible]
+        U3[Gemini]
+        U4[Codex Responses]
     end
 
-    E <--> J
-    F <--> J
-    K <--> J
-    L <--> J
-    M <--> J
+    F --> U1
+    F --> U2
+    F --> U3
+    F --> U4
+    U1 -. JSON / SSE .-> E
+    U2 -. JSON / SSE .-> E
+    U3 -. JSON / SSE .-> E
+    U4 -. JSON / SSE .-> E
+    E -. Client Protocol .-> B
 
     style B fill:#4F46E5,stroke:#000,color:#fff
-    style F fill:#059669,stroke:#000,color:#fff
+    style D fill:#059669,stroke:#000,color:#fff
     style E fill:#0EA5E9,stroke:#000,color:#fff
 ```
 
@@ -749,6 +733,7 @@ Check out the awesome admin dashboard 👇
 | **MySQL** | v1.10.0 | RDBMS | Optional, for high-concurrency production |
 | **PostgreSQL (pgx)** | v5.10.0 | RDBMS | Optional, supports URL and libpq DSNs |
 | **Sonic** | v1.15.1 | JSON Library | 2-3x faster than stdlib |
+| **gjson / sjson** | v1.18.0 / v1.2.5 | Protocol JSON transforms | Targeted reads and writes without generic map conversion |
 | **godotenv** | v1.5.1 | Env Config | Simplified config management |
 
 ### Architecture Features
@@ -776,11 +761,14 @@ Check out the awesome admin dashboard 👇
   - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
   - `channel_check_scheduler.go`: Scheduled channel check scheduler
   - `detection_log.go`: Detection result to LogEntry builder
-- **Protocol Transform System** (2026-04 new):
+- **Protocol Transform System** (2026-07 core refresh):
   - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
-  - `protocol/registry.go`: Request/response transformer registry
-  - `protocol/builtin/`: 18 built-in transform implementations (streaming and non-streaming)
-  - Preserves sampling/limit/stop/seed parameters; Gemini `thinkingConfig.thinkingLevel` maps to the target protocol's reasoning/thinking config
+  - `protocol/registry.go`: Contract boundary for request, streaming response, and non-stream response transforms; same-protocol traffic bypasses conversion
+  - `protocol/builtin/register.go`: Registers all 12 directed cross-protocol pairs
+  - `protocol/builtin/cliproxy_adapter.go`: ccLoad-owned request validation, JSON/SSE normalization, and stream framing
+  - `protocol/cliproxy/`: In-tree snapshot of the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) conversion core; provenance and synchronization rules live in [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
+  - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
+  - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
   - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
   - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
   - Codex `/v1/alpha/search` is native passthrough only and never enters local protocol translation
@@ -1153,6 +1141,7 @@ Issues and Pull Requests welcome!
 Use `sonic` for Go commands. Before sending a change, run the checks that match the touched area:
 
 ```bash
+bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests  # snapshot audit + focused protocol tests
 go test -tags sonic ./internal/...
 make race-fast      # high-value race subset
 make race           # full race suite
@@ -1160,7 +1149,7 @@ make verify-web     # frontend node:test checks
 golangci-lint run ./...
 ```
 
-`make race-fast` keeps the common race-sensitive packages fast enough for local iteration; use `make race` before larger or concurrency-sensitive changes. Override `RACE_P` or `RACE_PARALLEL` only when the machine needs a different parallelism cap.
+When protocol translation changes, run the snapshot audit before the full internal test suite. `make race-fast` keeps the common race-sensitive packages fast enough for local iteration; use `make race` before larger or concurrency-sensitive changes. Override `RACE_P` or `RACE_PARALLEL` only when the machine needs a different parallelism cap.
 
 ### Troubleshooting
 
@@ -1190,4 +1179,4 @@ env | grep CCLOAD
 
 ## 📄 License
 
-MIT License
+MIT License. The synchronized translator snapshot under `internal/protocol/cliproxy` retains its upstream [MIT notice](internal/protocol/cliproxy/LICENSE) and [provenance record](internal/protocol/cliproxy/UPSTREAM.md).

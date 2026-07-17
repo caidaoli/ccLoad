@@ -55,6 +55,10 @@ documented adaptations:
 
 ## Updating from CLIProxyAPI
 
+Run this procedure through the repository skill: use `$sync-cliproxy-core` in
+Codex or `/sync-cliproxy-core` in Claude Code. Both entry points resolve to the
+canonical skill under `.agents/skills/sync-cliproxy-core`.
+
 1. Fetch the ccLoad CLIProxyAPI fork and choose one immutable commit or tag.
 2. Diff both production sources and the corresponding 28 test files against
    the commit above. Source and tests must always come from the same commit.
