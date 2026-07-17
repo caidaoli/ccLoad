@@ -57,10 +57,39 @@ type AuthToken struct {
 	AllowedModels []string `json:"allowed_models,omitempty"` // 允许的模型列表，空表示无限制
 
 	// 渠道限制（2026-04新增）
-	AllowedChannelIDs []int64 `json:"allowed_channel_ids,omitempty"` // 允许的渠道ID列表，空表示无限制
+	// AllowedChannelIDs 为限制列表：空表示无限制。
+	// ChannelRestrictionMode 决定列表语义：allow=白名单，deny=黑名单。
+	AllowedChannelIDs      []int64 `json:"allowed_channel_ids,omitempty"`
+	ChannelRestrictionMode string  `json:"channel_restriction_mode,omitempty"` // allow|deny，空视为 allow
 
 	// 并发限制（2026-04新增）
 	MaxConcurrency int `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+}
+
+// 渠道限制模式常量
+const (
+	ChannelRestrictionModeAllow = "allow"
+	ChannelRestrictionModeDeny  = "deny"
+)
+
+// NormalizeChannelRestrictionMode 归一化渠道限制模式，未知值回退为 allow。
+func NormalizeChannelRestrictionMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case ChannelRestrictionModeDeny:
+		return ChannelRestrictionModeDeny
+	default:
+		return ChannelRestrictionModeAllow
+	}
+}
+
+// IsValidChannelRestrictionMode 校验渠道限制模式是否合法。
+func IsValidChannelRestrictionMode(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", ChannelRestrictionModeAllow, ChannelRestrictionModeDeny:
+		return true
+	default:
+		return false
+	}
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -136,17 +165,22 @@ func (t *AuthToken) IsModelAllowed(model string) bool {
 }
 
 // IsChannelAllowed 检查渠道是否被令牌允许访问
-// 如果 AllowedChannelIDs 为空，表示无限制，允许所有渠道
+// AllowedChannelIDs 为空表示无限制；allow=白名单，deny=黑名单。
 func (t *AuthToken) IsChannelAllowed(channelID int64) bool {
 	if len(t.AllowedChannelIDs) == 0 {
 		return true
 	}
+	inList := false
 	for _, id := range t.AllowedChannelIDs {
 		if id == channelID {
-			return true
+			inList = true
+			break
 		}
 	}
-	return false
+	if NormalizeChannelRestrictionMode(t.ChannelRestrictionMode) == ChannelRestrictionModeDeny {
+		return !inList
+	}
+	return inList
 }
 
 // CostUsedUSD 返回已消耗费用（美元）
@@ -210,6 +244,7 @@ type authTokenJSON struct {
 	RecentRPM                float64   `json:"recent_rpm,omitempty"`
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
 	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
+	ChannelRestrictionMode   string    `json:"channel_restriction_mode,omitempty"`
 	MaxConcurrency           int       `json:"max_concurrency"`
 }
 
@@ -242,6 +277,7 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		RecentRPM:                t.RecentRPM,
 		AllowedModels:            t.AllowedModels,
 		AllowedChannelIDs:        t.AllowedChannelIDs,
+		ChannelRestrictionMode:   NormalizeChannelRestrictionMode(t.ChannelRestrictionMode),
 		MaxConcurrency:           t.MaxConcurrency,
 	})
 }

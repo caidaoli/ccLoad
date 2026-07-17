@@ -36,18 +36,25 @@ func TestAuthToken_IsChannelAllowed(t *testing.T) {
 	tests := []struct {
 		name         string
 		allowed      []int64
+		mode         string
 		channelID    int64
 		expectedBool bool
 	}{
 		{name: "nil_allowed_channels_allows_any", allowed: nil, channelID: 42, expectedBool: true},
 		{name: "empty_allowed_channels_allows_any", allowed: []int64{}, channelID: 42, expectedBool: true},
-		{name: "listed_channel_is_allowed", allowed: []int64{2, 42}, channelID: 42, expectedBool: true},
-		{name: "missing_channel_is_rejected", allowed: []int64{2, 7}, channelID: 42, expectedBool: false},
+		{name: "allow_listed_channel_is_allowed", allowed: []int64{2, 42}, mode: ChannelRestrictionModeAllow, channelID: 42, expectedBool: true},
+		{name: "allow_missing_channel_is_rejected", allowed: []int64{2, 7}, mode: ChannelRestrictionModeAllow, channelID: 42, expectedBool: false},
+		{name: "deny_listed_channel_is_rejected", allowed: []int64{2, 42}, mode: ChannelRestrictionModeDeny, channelID: 42, expectedBool: false},
+		{name: "deny_missing_channel_is_allowed", allowed: []int64{2, 7}, mode: ChannelRestrictionModeDeny, channelID: 42, expectedBool: true},
+		{name: "empty_mode_defaults_to_allow", allowed: []int64{2}, mode: "", channelID: 2, expectedBool: true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			token := &AuthToken{AllowedChannelIDs: tt.allowed}
+			token := &AuthToken{
+				AllowedChannelIDs:      tt.allowed,
+				ChannelRestrictionMode: tt.mode,
+			}
 			if got := token.IsChannelAllowed(tt.channelID); got != tt.expectedBool {
 				t.Fatalf("IsChannelAllowed(%d) = %v, want %v", tt.channelID, got, tt.expectedBool)
 			}
@@ -84,14 +91,15 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	t.Parallel()
 
 	token := AuthToken{
-		ID:                123,
-		Token:             "hash",
-		IsActive:          true,
-		CostUsedMicroUSD:  250_000, // $0.25
-		CostLimitMicroUSD: 2_000_000,
-		AllowedModels:     []string{"gpt-4"},
-		AllowedChannelIDs: []int64{11, 22},
-		MaxConcurrency:    3,
+		ID:                     123,
+		Token:                  "hash",
+		IsActive:               true,
+		CostUsedMicroUSD:       250_000, // $0.25
+		CostLimitMicroUSD:      2_000_000,
+		AllowedModels:          []string{"gpt-4"},
+		AllowedChannelIDs:      []int64{11, 22},
+		ChannelRestrictionMode: ChannelRestrictionModeDeny,
+		MaxConcurrency:         3,
 	}
 
 	b, err := json.Marshal(token)
@@ -100,10 +108,11 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 
 	var got struct {
-		CostUsedUSD      float64 `json:"cost_used_usd"`
-		CostLimitUSD     float64 `json:"cost_limit_usd"`
-		AllowedChannelID []int64 `json:"allowed_channel_ids"`
-		MaxConcurrency   int     `json:"max_concurrency"`
+		CostUsedUSD            float64 `json:"cost_used_usd"`
+		CostLimitUSD           float64 `json:"cost_limit_usd"`
+		AllowedChannelID       []int64 `json:"allowed_channel_ids"`
+		ChannelRestrictionMode string  `json:"channel_restriction_mode"`
+		MaxConcurrency         int     `json:"max_concurrency"`
 	}
 	if err := json.Unmarshal(b, &got); err != nil {
 		t.Fatalf("Unmarshal failed: %v", err)
@@ -117,6 +126,9 @@ func TestAuthToken_MarshalJSON_ExposesCostFields(t *testing.T) {
 	}
 	if len(got.AllowedChannelID) != 2 || got.AllowedChannelID[0] != 11 || got.AllowedChannelID[1] != 22 {
 		t.Fatalf("allowed_channel_ids = %#v, want [11 22]", got.AllowedChannelID)
+	}
+	if got.ChannelRestrictionMode != ChannelRestrictionModeDeny {
+		t.Fatalf("channel_restriction_mode = %#v, want %q", got.ChannelRestrictionMode, ChannelRestrictionModeDeny)
 	}
 	if got.MaxConcurrency != 3 {
 		t.Fatalf("max_concurrency = %#v, want 3", got.MaxConcurrency)

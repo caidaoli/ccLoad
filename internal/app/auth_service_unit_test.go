@@ -85,19 +85,26 @@ func TestAuthService_IsChannelAllowed(t *testing.T) {
 	t.Parallel()
 
 	s := &AuthService{
-		authTokenChannels: map[string][]int64{
-			"t1": {2, 42},
+		authTokenChannels: map[string]tokenChannelRestriction{
+			"allow1": {Mode: model.ChannelRestrictionModeAllow, IDs: []int64{2, 42}},
+			"deny1":  {Mode: model.ChannelRestrictionModeDeny, IDs: []int64{2, 42}},
 		},
 	}
 
 	if !s.IsChannelAllowed("no_restriction", 99) {
 		t.Fatal("expected allow when no channel restriction")
 	}
-	if !s.IsChannelAllowed("t1", 42) {
-		t.Fatal("expected listed channel to be allowed")
+	if !s.IsChannelAllowed("allow1", 42) {
+		t.Fatal("expected listed channel to be allowed in allow mode")
 	}
-	if s.IsChannelAllowed("t1", 7) {
-		t.Fatal("expected non-listed channel to be rejected")
+	if s.IsChannelAllowed("allow1", 7) {
+		t.Fatal("expected non-listed channel to be rejected in allow mode")
+	}
+	if s.IsChannelAllowed("deny1", 42) {
+		t.Fatal("expected listed channel to be rejected in deny mode")
+	}
+	if !s.IsChannelAllowed("deny1", 7) {
+		t.Fatal("expected non-listed channel to be allowed in deny mode")
 	}
 }
 

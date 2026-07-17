@@ -227,7 +227,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 		tokenHash := model.HashToken("channel-restricted-openai-token")
 		server.authService.authTokensMux.Lock()
-		server.authService.authTokenChannels[tokenHash] = []int64{allowed.ID}
+		server.authService.authTokenChannels[tokenHash] = tokenChannelRestriction{Mode: model.ChannelRestrictionModeAllow, IDs: []int64{allowed.ID}}
 		server.authService.authTokensMux.Unlock()
 
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/v1/models", nil))

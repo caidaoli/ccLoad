@@ -21,7 +21,7 @@ const authTokenSelectColumns = `
 	id, token, description, created_at, expires_at, last_used_at, is_active,
 	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
+	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 `
 
 func marshalJSONList[T any](field string, values []T) (string, error) {
@@ -84,6 +84,7 @@ func scanAuthToken(scanner interface {
 	var isActive int
 	var allowedModelsJSON string
 	var allowedChannelIDsJSON string
+	var channelRestrictionMode string
 	var costUsedMicroUSD int64
 	var costLimitMicroUSD int64
 
@@ -111,6 +112,7 @@ func scanAuthToken(scanner interface {
 		&costLimitMicroUSD,
 		&allowedModelsJSON,
 		&allowedChannelIDsJSON,
+		&channelRestrictionMode,
 		&token.MaxConcurrency,
 	); err != nil {
 		return nil, err
@@ -146,6 +148,7 @@ func scanAuthToken(scanner interface {
 			return nil, fmt.Errorf("invalid allowed_channel_ids json: %w", err)
 		}
 	}
+	token.ChannelRestrictionMode = model.NormalizeChannelRestrictionMode(channelRestrictionMode)
 	if err := token.ValidateUsageLimits(); err != nil {
 		return nil, err
 	}
@@ -186,6 +189,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 	if err != nil {
 		return err
 	}
+	channelRestrictionMode := model.NormalizeChannelRestrictionMode(token.ChannelRestrictionMode)
 
 	if s.supportsONConflict() {
 		query := `
@@ -193,9 +197,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
+				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				token = excluded.token,
 				description = excluded.description,
@@ -219,6 +223,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				cost_limit_microusd = excluded.cost_limit_microusd,
 				allowed_models = excluded.allowed_models,
 				allowed_channel_ids = excluded.allowed_channel_ids,
+				channel_restriction_mode = excluded.channel_restriction_mode,
 				max_concurrency = excluded.max_concurrency`
 		args := []any{
 			token.ID,
@@ -244,6 +249,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.CostLimitMicroUSD,
 			allowedModelsJSON,
 			allowedChannelIDsJSON,
+			channelRestrictionMode,
 			token.MaxConcurrency,
 		}
 		if s.IsPostgres() {
@@ -265,9 +271,9 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, max_concurrency
+			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			token = VALUES(token),
 			description = VALUES(description),
@@ -291,6 +297,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			cost_limit_microusd = VALUES(cost_limit_microusd),
 			allowed_models = VALUES(allowed_models),
 			allowed_channel_ids = VALUES(allowed_channel_ids),
+			channel_restriction_mode = VALUES(channel_restriction_mode),
 			max_concurrency = VALUES(max_concurrency)
 	`,
 		token.ID,
@@ -316,6 +323,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		token.CostLimitMicroUSD,
 		allowedModelsJSON,
 		allowedChannelIDsJSON,
+		channelRestrictionMode,
 		token.MaxConcurrency,
 	)
 	if err != nil {
@@ -334,9 +342,9 @@ const (
 	authTokenInsertCommonCols = `token, description, created_at, expires_at, last_used_at, is_active,
 		success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 		prompt_tokens_total, completion_tokens_total, total_cost_usd, effective_cost_usd, allowed_models, allowed_channel_ids,
-		cost_used_microusd, cost_limit_microusd, max_concurrency`
+		channel_restriction_mode, cost_used_microusd, cost_limit_microusd, max_concurrency`
 
-	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, ?, ?, 0, ?, ?`
+	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, ?, ?, ?, 0, ?, ?`
 )
 
 // authTokenInsertCommonArgs builds auth_tokens INSERT arguments.
@@ -379,6 +387,7 @@ func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
 		token.Token, token.Description, token.CreatedAt.UnixMilli(),
 		expiresAt, lastUsedAt, boolToInt(token.IsActive),
 		allowedModelsJSON, allowedChannelIDsJSON,
+		model.NormalizeChannelRestrictionMode(token.ChannelRestrictionMode),
 		token.CostLimitMicroUSD, token.MaxConcurrency,
 	}, nil
 }
@@ -658,6 +667,7 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 	if err != nil {
 		return err
 	}
+	channelRestrictionMode := model.NormalizeChannelRestrictionMode(token.ChannelRestrictionMode)
 
 	result, err := s.ExecContext(ctx, `
 		UPDATE auth_tokens
@@ -668,9 +678,10 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    cost_limit_microusd = ?,
 		    allowed_models = ?,
 		    allowed_channel_ids = ?,
+		    channel_restriction_mode = ?,
 		    max_concurrency = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, token.MaxConcurrency, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)

@@ -17,6 +17,7 @@
     let selectedModelsForAdd = new Set();    // 模型选择对话框中已选的模型
     let currentVisibleModels = [];            // 当前可见的模型列表（用于全选功能）
     let editAllowedChannelIDs = [];           // 编辑模态框中当前的渠道限制列表
+    let editChannelRestrictionMode = 'allow'; // allow|deny
     let selectedAllowedChannelIDs = new Set(); // 已选中的渠道ID（批量删除用）
     let selectedChannelsForAdd = new Set();   // 渠道选择对话框中已选的渠道ID
     let currentVisibleChannels = [];          // 当前可见的渠道列表（用于全选功能）
@@ -146,6 +147,10 @@
               actionTarget.value === 'custom' ? 'block' : 'none';
           },
           'toggle-select-all-allowed-channels': (actionTarget) => toggleSelectAllAllowedChannels(actionTarget.checked),
+          'change-channel-restriction-mode': (actionTarget) => {
+            editChannelRestrictionMode = normalizeChannelRestrictionMode(actionTarget.value);
+            updateChannelRestrictionModeUI();
+          },
           'toggle-select-all-channels': (actionTarget) => toggleSelectAllChannels(actionTarget.checked),
           'filter-available-channel-type': () => filterAvailableChannels(document.getElementById('channelSearchInput')?.value || ''),
           'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
@@ -743,7 +748,11 @@
 
       // 初始化渠道限制状态（2026-04新增）
       editAllowedChannelIDs = (token.allowed_channel_ids || []).slice();
+      editChannelRestrictionMode = normalizeChannelRestrictionMode(token.channel_restriction_mode);
       selectedAllowedChannelIDs.clear();
+      const modeSelect = document.getElementById('editChannelRestrictionMode');
+      if (modeSelect) modeSelect.value = editChannelRestrictionMode;
+      updateChannelRestrictionModeUI();
       renderAllowedChannelsTable();
       if (allChannels.length === 0) {
         loadChannelsData().then(() => renderAllowedChannelsTable());
@@ -761,7 +770,11 @@
       editAllowedModels = [];
       selectedAllowedModelIndices.clear();
       editAllowedChannelIDs = [];
+      editChannelRestrictionMode = 'allow';
       selectedAllowedChannelIDs.clear();
+      const modeSelect = document.getElementById('editChannelRestrictionMode');
+      if (modeSelect) modeSelect.value = 'allow';
+      updateChannelRestrictionModeUI();
       popModal();
     }
 
@@ -807,6 +820,7 @@
             is_active: isActive,
             expires_at: expiresAt,
             allowed_channel_ids: editAllowedChannelIDs,
+            channel_restriction_mode: normalizeChannelRestrictionMode(editChannelRestrictionMode),
             allowed_models: editAllowedModels,  // 2026-01新增：模型限制
             cost_limit_usd: costLimitUSD,        // 2026-01新增：费用上限
             max_concurrency: maxConcurrency      // 2026-04新增：并发上限
@@ -868,15 +882,36 @@
       return Array.from(modelSet).sort();
     }
 
+    function normalizeChannelRestrictionMode(mode) {
+      return String(mode || '').toLowerCase() === 'deny' ? 'deny' : 'allow';
+    }
+
+    function updateChannelRestrictionModeUI() {
+      const suffix = document.getElementById('editChannelCountSuffix');
+      if (!suffix) return;
+      const key = editChannelRestrictionMode === 'deny'
+        ? 'tokens.channelCountSuffixDeny'
+        : 'tokens.channelCountSuffixAllow';
+      suffix.setAttribute('data-i18n', key);
+      suffix.textContent = t(key);
+    }
+
     function getAvailableModelsForCurrentChannelRestriction() {
       if (editAllowedChannelIDs.length === 0) {
         return availableModelsCache;
       }
 
-      const allowedChannelIDs = new Set(editAllowedChannelIDs);
+      const restrictedChannelIDs = new Set(editAllowedChannelIDs);
+      const deny = editChannelRestrictionMode === 'deny';
       const modelSet = new Set();
       allChannels.forEach(ch => {
-        if (!allowedChannelIDs.has(normalizeChannelID(ch.id))) return;
+        const id = normalizeChannelID(ch.id);
+        const inList = restrictedChannelIDs.has(id);
+        if (deny) {
+          if (inList) return;
+        } else if (!inList) {
+          return;
+        }
         (ch.models || []).forEach(m => {
           if (m.model) modelSet.add(m.model);
         });

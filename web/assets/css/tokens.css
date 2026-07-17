@@ -744,6 +744,13 @@
     .token-edit-channels-actions .btn {
       white-space: nowrap;
     }
+    .token-edit-channels-mode {
+      width: auto;
+      min-width: 96px;
+      padding: 5px 8px;
+      font-size: 12px;
+      height: auto;
+    }
     .token-edit-channels-table {
       flex: 1 1 auto;
       min-height: 0;

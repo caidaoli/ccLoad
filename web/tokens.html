@@ -238,9 +238,13 @@
             <div class="token-edit-section-header token-edit-channels-header">
               <h3 class="token-edit-section-title token-edit-channels-title">
                 <span data-i18n="tokens.channelRestriction">渠道限制</span>
-                <span class="token-edit-channels-meta"><span data-i18n="tokens.channelCountPrefix">共</span> <span id="editAllowedChannelsCount">0</span> <span data-i18n="tokens.channelCountSuffix">个渠道（空表示允许所有）</span></span>
+                <span class="token-edit-channels-meta"><span data-i18n="tokens.channelCountPrefix">共</span> <span id="editAllowedChannelsCount">0</span> <span id="editChannelCountSuffix" data-i18n="tokens.channelCountSuffixAllow">个渠道（空表示允许所有）</span></span>
               </h3>
               <div class="token-edit-channels-actions">
+                <select id="editChannelRestrictionMode" class="form-input token-edit-channels-mode" data-change-action="change-channel-restriction-mode" title="渠道限制模式">
+                  <option value="allow" data-i18n="tokens.channelModeAllow">白名单</option>
+                  <option value="deny" data-i18n="tokens.channelModeDeny">黑名单</option>
+                </select>
                 <button type="button" class="btn btn-secondary btn-sm token-edit-channels-btn" data-action="show-channel-select-modal" data-i18n-title="tokens.selectChannelTitle" title="从渠道列表中选择" data-i18n="tokens.selectChannel">
                   + 选择渠道
                 </button>

@@ -421,7 +421,7 @@ func newTestAuthService(t testing.TB) *AuthService {
 		authTokens:          make(map[string]int64),
 		authTokenIDs:        make(map[string]int64),
 		authTokenModels:     make(map[string][]string),
-		authTokenChannels:   make(map[string][]int64),
+		authTokenChannels:   make(map[string]tokenChannelRestriction),
 		authTokenCostLimits: make(map[string]tokenCostLimit),
 		authTokenMaxConns:   make(map[string]int),
 		authTokenActiveReqs: make(map[string]int),
