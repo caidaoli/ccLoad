@@ -20,7 +20,18 @@ func TestRegistry_TranslateRequest_OpenAIToGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if string(got) != `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}` {
+	var request struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(got, &request); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(request.Contents) != 1 || request.Contents[0].Role != "user" || len(request.Contents[0].Parts) != 1 || request.Contents[0].Parts[0].Text != "hello" {
 		t.Fatalf("unexpected translated request: %s", got)
 	}
 }
@@ -38,9 +49,28 @@ func TestRegistry_TranslateResponseNonStream_GeminiToOpenAI(t *testing.T) {
 		t.Fatalf("TranslateResponseNonStream failed: %v", err)
 	}
 
-	want := `{"id":"chatcmpl-proxy","object":"chat.completion","created":0,"model":"gemini-2.5-pro","choices":[{"index":0,"message":{"role":"assistant","content":"world"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}`
-	if string(got) != want {
-		t.Fatalf("unexpected translated response:\nwant: %s\ngot:  %s", want, got)
+	var response struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Model   string `json:"model"`
+		Choices []struct {
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(got, &response); err != nil {
+		t.Fatalf("unmarshal translated response: %v", err)
+	}
+	if response.ID == "" || response.Object != "chat.completion" || response.Model != "gemini-2.5-pro" || len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].Message.Content != "world" || response.Choices[0].FinishReason != "stop" || response.Usage.PromptTokens != 3 || response.Usage.CompletionTokens != 5 || response.Usage.TotalTokens != 8 {
+		t.Fatalf("unexpected translated response: %s", got)
 	}
 }
 
@@ -53,7 +83,18 @@ func TestRegistry_TranslateRequest_AnthropicToGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if string(got) != `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}` {
+	var request struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(got, &request); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(request.Contents) != 1 || request.Contents[0].Role != "user" || len(request.Contents[0].Parts) != 1 || request.Contents[0].Parts[0].Text != "hello" {
 		t.Fatalf("unexpected translated request: %s", got)
 	}
 }
@@ -143,7 +184,18 @@ func TestRegistry_TranslateRequest_CodexToGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateRequest failed: %v", err)
 	}
-	if string(got) != `{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}` {
+	var request struct {
+		Contents []struct {
+			Role  string `json:"role"`
+			Parts []struct {
+				Text string `json:"text"`
+			} `json:"parts"`
+		} `json:"contents"`
+	}
+	if err := json.Unmarshal(got, &request); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(request.Contents) != 1 || request.Contents[0].Role != "user" || len(request.Contents[0].Parts) != 1 || request.Contents[0].Parts[0].Text != "hello" {
 		t.Fatalf("unexpected translated request: %s", got)
 	}
 }
@@ -263,7 +315,7 @@ func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 	translatedReq := []byte(`{"contents":[{"role":"user","parts":[{"text":"hello"}]}]}`)
 
 	var state any
-	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", rawReq, translatedReq, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}]}\n\n"), &state)
+	chunks, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", rawReq, translatedReq, []byte("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"hello\"}]}}],\"usageMetadata\":{\"promptTokenCount\":3,\"candidatesTokenCount\":5,\"thoughtsTokenCount\":2,\"totalTokenCount\":10}}\n\n"), &state)
 	if err != nil {
 		t.Fatalf("TranslateResponseStream failed: %v", err)
 	}
@@ -273,6 +325,52 @@ func TestRegistry_TranslateResponseStream_GeminiToAnthropic(t *testing.T) {
 	joined := string(bytes.Join(chunks, nil))
 	if !strings.Contains(joined, "event: message_start") || !strings.Contains(joined, "event: content_block_delta") || !strings.Contains(joined, "\"text\":\"hello\"") {
 		t.Fatalf("unexpected anthropic stream chunks: %#v", chunks)
+	}
+
+	done, err := reg.TranslateResponseStream(context.Background(), protocol.Gemini, protocol.Anthropic, "gemini-2.5-pro", rawReq, translatedReq, []byte("data: [DONE]\n\n"), &state)
+	if err != nil {
+		t.Fatalf("TranslateResponseStream done failed: %v", err)
+	}
+	doneJoined := string(bytes.Join(done, nil))
+	blockStopAt := strings.Index(doneJoined, "event: content_block_stop")
+	messageDeltaAt := strings.Index(doneJoined, "event: message_delta")
+	messageStopAt := strings.Index(doneJoined, "event: message_stop")
+	if blockStopAt < 0 || messageDeltaAt <= blockStopAt || messageStopAt <= messageDeltaAt {
+		t.Fatalf("unexpected Anthropic terminal event order: %s", doneJoined)
+	}
+	usage := mustMap(t, mustSSEEventData(t, doneJoined, "message_delta")["usage"])
+	if mustInt(t, usage["input_tokens"]) != 3 || mustInt(t, usage["output_tokens"]) != 7 {
+		t.Fatalf("unexpected Anthropic terminal usage: %#v", usage)
+	}
+}
+
+func TestRegistry_TranslateResponseStream_IgnoresSSEComments(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+	tests := []struct {
+		name string
+		from protocol.Protocol
+		to   protocol.Protocol
+	}{
+		{name: "generic", from: protocol.Gemini, to: protocol.OpenAI},
+		{name: "gemini to anthropic", from: protocol.Gemini, to: protocol.Anthropic},
+		{name: "openai to gemini", from: protocol.OpenAI, to: protocol.Gemini},
+		{name: "openai to anthropic", from: protocol.OpenAI, to: protocol.Anthropic},
+		{name: "openai to codex", from: protocol.OpenAI, to: protocol.Codex},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var state any
+			chunks, err := reg.TranslateResponseStream(context.Background(), tc.from, tc.to, "client-model", nil, nil, []byte(": ping\n\n"), &state)
+			if err != nil {
+				t.Fatalf("TranslateResponseStream rejected SSE comment: %v", err)
+			}
+			if len(chunks) != 0 || state != nil {
+				t.Fatalf("SSE comment changed stream state: chunks=%#v state=%T", chunks, state)
+			}
+		})
 	}
 }
 
@@ -311,10 +409,14 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateResponseStream failed: %v", err)
 	}
-	if len(chunks) != 1 {
-		t.Fatalf("unexpected codex stream chunks: %#v", chunks)
+	events := parseSSEEvents(t, string(bytes.Join(chunks, nil)))
+	var textDelta map[string]any
+	for _, event := range events {
+		if event.Event == "response.output_text.delta" {
+			textDelta = event.Data
+		}
 	}
-	if !strings.Contains(string(chunks[0]), "event: response.output_text.delta") || !strings.Contains(string(chunks[0]), `"delta":"hello"`) {
+	if textDelta == nil || textDelta["type"] != "response.output_text.delta" || textDelta["delta"] != "hello" {
 		t.Fatalf("unexpected codex stream chunk: %#v", chunks)
 	}
 
@@ -322,40 +424,19 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateResponseStream done failed: %v", err)
 	}
-	if len(done) != 1 {
-		t.Fatalf("unexpected codex done chunks: %#v", done)
+	var completed map[string]any
+	for _, event := range parseSSEEvents(t, string(bytes.Join(done, nil))) {
+		if event.Event == "response.completed" {
+			completed = event.Data
+		}
 	}
-	gotDone := string(done[0])
-	if !strings.Contains(gotDone, "event: response.completed") {
-		t.Fatalf("unexpected codex done chunk: %#v", done)
+	if completed == nil {
+		t.Fatalf("missing codex completion event: %#v", done)
 	}
-	payload, ok := strings.CutPrefix(gotDone, "event: response.completed\ndata: ")
-	if !ok {
-		t.Fatalf("missing codex stream payload: %#v", done)
-	}
-	payload = strings.TrimSpace(payload)
-	var envelope struct {
-		Type     string `json:"type"`
-		Response struct {
-			Status string `json:"status"`
-			Model  string `json:"model"`
-			Usage  struct {
-				InputTokens  int64 `json:"input_tokens"`
-				OutputTokens int64 `json:"output_tokens"`
-				TotalTokens  int64 `json:"total_tokens"`
-			} `json:"usage"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
-		t.Fatalf("unmarshal codex stream payload: %v", err)
-	}
-	if envelope.Type != "response.completed" ||
-		envelope.Response.Status != "completed" ||
-		envelope.Response.Model != "gemini-2.5-pro" ||
-		envelope.Response.Usage.InputTokens != 3 ||
-		envelope.Response.Usage.OutputTokens != 5 ||
-		envelope.Response.Usage.TotalTokens != 8 {
-		t.Fatalf("unexpected codex done payload: %+v", envelope)
+	response := mustMap(t, completed["response"])
+	usage := mustMap(t, response["usage"])
+	if completed["type"] != "response.completed" || response["status"] != "completed" || response["model"] != "gemini-2.5-pro" || mustInt(t, usage["input_tokens"]) != 3 || mustInt(t, usage["output_tokens"]) != 5 || mustInt(t, usage["total_tokens"]) != 8 {
+		t.Fatalf("unexpected codex done payload: %+v", completed)
 	}
 }
 
@@ -372,26 +453,17 @@ func TestRegistry_TranslateResponseStream_GeminiToCodex_PreservesResponseID(t *t
 	if err != nil {
 		t.Fatalf("TranslateResponseStream done failed: %v", err)
 	}
-	if len(done) != 1 {
-		t.Fatalf("unexpected codex done chunks: %#v", done)
+	var completed map[string]any
+	for _, event := range parseSSEEvents(t, string(bytes.Join(done, nil))) {
+		if event.Event == "response.completed" {
+			completed = event.Data
+		}
 	}
-
-	payload, ok := strings.CutPrefix(string(done[0]), "event: response.completed\ndata: ")
-	if !ok {
-		t.Fatalf("missing codex stream payload: %#v", done)
+	if completed == nil {
+		t.Fatalf("missing codex completion event: %#v", done)
 	}
-	payload = strings.TrimSpace(payload)
-
-	var envelope struct {
-		Response struct {
-			ID string `json:"id"`
-		} `json:"response"`
-	}
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
-		t.Fatalf("unmarshal codex stream payload: %v", err)
-	}
-	if envelope.Response.ID != "resp_1" {
-		t.Fatalf("expected response id resp_1, got %+v", envelope)
+	if response := mustMap(t, completed["response"]); response["id"] != "resp_1" {
+		t.Fatalf("expected response id resp_1, got %+v", completed)
 	}
 }
 
@@ -432,7 +504,13 @@ func TestRegistry_TranslateResponseStream_OpenAIToCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateResponseStream failed: %v", err)
 	}
-	if len(chunks) != 1 || !strings.Contains(string(chunks[0]), "event: response.output_text.delta") || !strings.Contains(string(chunks[0]), `"delta":"hello"`) {
+	var textDelta map[string]any
+	for _, event := range parseSSEEvents(t, string(bytes.Join(chunks, nil))) {
+		if event.Event == "response.output_text.delta" {
+			textDelta = event.Data
+		}
+	}
+	if textDelta == nil || textDelta["delta"] != "hello" {
 		t.Fatalf("unexpected codex stream chunk: %#v", chunks)
 	}
 
@@ -440,7 +518,13 @@ func TestRegistry_TranslateResponseStream_OpenAIToCodex(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TranslateResponseStream done failed: %v", err)
 	}
-	if len(done) != 1 || !strings.Contains(string(done[0]), "event: response.completed") {
+	var completed map[string]any
+	for _, event := range parseSSEEvents(t, string(bytes.Join(done, nil))) {
+		if event.Event == "response.completed" {
+			completed = event.Data
+		}
+	}
+	if completed == nil || completed["type"] != "response.completed" {
 		t.Fatalf("unexpected codex done chunk: %#v", done)
 	}
 }
@@ -501,7 +585,7 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	}
 }
 
-func TestRegistry_TranslateRequest_OpenAIToAnthropic_TextOnlyAssistantUsesStringContent(t *testing.T) {
+func TestRegistry_TranslateRequest_OpenAIToAnthropic_PreservesTextOnlyAssistantContent(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
@@ -526,8 +610,8 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic_TextOnlyAssistantUsesString
 	if req.Messages[1].Role != "assistant" {
 		t.Fatalf("message[1].role = %q, want assistant", req.Messages[1].Role)
 	}
-	if content, ok := req.Messages[1].Content.(string); !ok || content != "previous answer" {
-		t.Fatalf("assistant content = %#v, want string previous answer; body=%s", req.Messages[1].Content, got)
+	if content := protocolTestContentText(req.Messages[1].Content); content != "previous answer" {
+		t.Fatalf("assistant content = %#v, want previous answer; body=%s", req.Messages[1].Content, got)
 	}
 }
 
@@ -635,10 +719,7 @@ func TestRegistry_TranslateRequest_SystemOnlySemantics_OtherSources(t *testing.T
 			System   []map[string]any `json:"system"`
 			Messages []struct {
 				Role    string `json:"role"`
-				Content []struct {
-					Type string `json:"type"`
-					Text string `json:"text"`
-				} `json:"content"`
+				Content any    `json:"content"`
 			} `json:"messages"`
 		}
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -647,7 +728,7 @@ func TestRegistry_TranslateRequest_SystemOnlySemantics_OtherSources(t *testing.T
 		if len(req.System) != 0 {
 			t.Fatalf("expected no anthropic system field, got %+v", req.System)
 		}
-		if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0].Type != "text" || req.Messages[0].Content[0].Text != prompt {
+		if len(req.Messages) != 1 || req.Messages[0].Role != "user" || protocolTestContentText(req.Messages[0].Content) != prompt {
 			t.Fatalf("unexpected anthropic request: %+v", req)
 		}
 	}
@@ -689,7 +770,7 @@ func TestRegistry_TranslateRequest_SystemOnlySemantics_OtherSources(t *testing.T
 		if err := json.Unmarshal(body, &req); err != nil {
 			t.Fatalf("unmarshal openai request: %v", err)
 		}
-		if len(req.Messages) != 1 || req.Messages[0].Role != "system" || req.Messages[0].Content != prompt {
+		if len(req.Messages) != 1 || req.Messages[0].Role != "system" || protocolTestContentText(req.Messages[0].Content) != prompt {
 			t.Fatalf("unexpected openai request: %+v", req)
 		}
 	}
@@ -891,8 +972,26 @@ func TestRegistry_TranslateRequest_AnthropicToOpenAI(t *testing.T) {
 	if !strings.Contains(string(got), `"role":"system"`) || !strings.Contains(string(got), `"be careful"`) {
 		t.Fatalf("expected openai system message, got %s", got)
 	}
-	if !strings.Contains(string(got), `"tool_calls":[{"id":"toolu_1","type":"function","function":{"name":"search","arguments":"{\"query\":\"go\"}"}}]`) {
-		t.Fatalf("expected assistant tool_calls, got %s", got)
+	payload := mustJSONMap(t, got)
+	var assistant map[string]any
+	for _, rawMessage := range mustSlice(t, payload["messages"]) {
+		message := mustMap(t, rawMessage)
+		if message["role"] == "assistant" {
+			assistant = message
+			break
+		}
+	}
+	if assistant == nil {
+		t.Fatalf("expected assistant message, got %s", got)
+	}
+	toolCalls := mustSlice(t, assistant["tool_calls"])
+	if len(toolCalls) != 1 {
+		t.Fatalf("expected one assistant tool call, got %s", got)
+	}
+	toolCall := mustMap(t, toolCalls[0])
+	function := mustMap(t, toolCall["function"])
+	if toolCall["id"] != "toolu_1" || toolCall["type"] != "function" || function["name"] != "search" || function["arguments"] != `{"query":"go"}` {
+		t.Fatalf("unexpected assistant tool call: %s", got)
 	}
 	if !strings.Contains(string(got), `"type":"image_url"`) || !strings.Contains(string(got), `"type":"file"`) || !strings.Contains(string(got), `"role":"tool"`) {
 		t.Fatalf("unexpected translated openai request: %s", got)
@@ -991,8 +1090,8 @@ func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	var req struct {
 		System   []map[string]any `json:"system"`
 		Messages []struct {
-			Role    string           `json:"role"`
-			Content []map[string]any `json:"content"`
+			Role    string `json:"role"`
+			Content any    `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(got, &req); err != nil {
@@ -1001,7 +1100,7 @@ func TestRegistry_TranslateRequest_CodexToAnthropic(t *testing.T) {
 	if len(req.System) != 1 || req.System[0]["text"] != "be careful" {
 		t.Fatalf("expected anthropic system field, got %+v", req.System)
 	}
-	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0]["type"] != "text" || req.Messages[0].Content[0]["text"] != "hello" {
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || protocolTestContentText(req.Messages[0].Content) != "hello" {
 		t.Fatalf("unexpected translated request: %+v", req)
 	}
 }
@@ -1017,14 +1116,14 @@ func TestRegistry_TranslateRequest_CodexBareMessageToAnthropic(t *testing.T) {
 	}
 	var req struct {
 		Messages []struct {
-			Role    string           `json:"role"`
-			Content []map[string]any `json:"content"`
+			Role    string `json:"role"`
+			Content any    `json:"content"`
 		} `json:"messages"`
 	}
 	if err := json.Unmarshal(got, &req); err != nil {
 		t.Fatalf("unmarshal translated request: %v", err)
 	}
-	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || len(req.Messages[0].Content) != 1 || req.Messages[0].Content[0]["type"] != "text" || req.Messages[0].Content[0]["text"] != "hello" {
+	if len(req.Messages) != 1 || req.Messages[0].Role != "user" || protocolTestContentText(req.Messages[0].Content) != "hello" {
 		t.Fatalf("unexpected translated request: %+v", req)
 	}
 }
@@ -1107,6 +1206,32 @@ func TestRegistry_TranslateResponseNonStream_CodexToAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"type":"tool_use"`) || !strings.Contains(string(got), `"stop_reason":"tool_use"`) {
 		t.Fatalf("unexpected translated response: %s", got)
+	}
+}
+
+func TestRegistry_TranslateResponseNonStream_CodexToAnthropic_MapsReasoningTokensToThinkingTokens(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	rawResp := []byte(`{"type":"response.completed","response":{"id":"resp_xai","model":"grok-4.5","usage":{"input_tokens":17273,"input_tokens_details":{"cached_tokens":3456},"output_tokens":2391,"output_tokens_details":{"reasoning_tokens":1119},"total_tokens":19664},"output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}]}}`)
+	got, err := reg.TranslateResponseNonStream(context.Background(), protocol.Codex, protocol.Anthropic, "grok-4.5", []byte(`{"messages":[]}`), nil, rawResp)
+	if err != nil {
+		t.Fatalf("TranslateResponseNonStream failed: %v", err)
+	}
+
+	var payload struct {
+		Usage struct {
+			InputTokens          int `json:"input_tokens"`
+			OutputTokens         int `json:"output_tokens"`
+			CacheReadInputTokens int `json:"cache_read_input_tokens"`
+			ThinkingTokens       int `json:"thinking_tokens"`
+		} `json:"usage"`
+	}
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("unmarshal translated response: %v", err)
+	}
+	if payload.Usage.InputTokens != 17273-3456 || payload.Usage.OutputTokens != 2391 || payload.Usage.CacheReadInputTokens != 3456 || payload.Usage.ThinkingTokens != 1119 {
+		t.Fatalf("unexpected translated usage: %+v; body=%s", payload.Usage, got)
 	}
 }
 

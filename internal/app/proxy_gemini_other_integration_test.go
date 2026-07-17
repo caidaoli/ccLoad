@@ -11,6 +11,36 @@ import (
 	"ccLoad/internal/model"
 )
 
+func assertGeminiFunctionCallStream(t *testing.T, body, name, query string) {
+	t.Helper()
+	for _, block := range strings.Split(body, "\n\n") {
+		_, data := parseSSEEventChunk([]byte(block))
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			continue
+		}
+		candidates, _ := payload["candidates"].([]any)
+		if len(candidates) == 0 {
+			continue
+		}
+		candidate, _ := candidates[0].(map[string]any)
+		content, _ := candidate["content"].(map[string]any)
+		parts, _ := content["parts"].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			functionCall, _ := part["functionCall"].(map[string]any)
+			if functionCall == nil {
+				continue
+			}
+			args, _ := functionCall["args"].(map[string]any)
+			if functionCall["name"] == name && args["query"] == query {
+				return
+			}
+		}
+	}
+	t.Fatalf("expected Gemini functionCall name=%q query=%q, got %s", name, query, body)
+}
+
 func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 	t.Parallel()
 
@@ -70,9 +100,7 @@ func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 		t.Fatalf("expected anthropic request body, got %s", gotBody)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `"functionCall":{"name":"lookup","args":{"query":"go"}}`) {
-		t.Fatalf("expected translated Gemini functionCall, got %s", body)
-	}
+	assertGeminiFunctionCallStream(t, body, "lookup", "go")
 	if !strings.Contains(body, `"finishReason":"STOP"`) || !strings.Contains(body, `"promptTokenCount":3`) || !strings.Contains(body, `"candidatesTokenCount":5`) {
 		t.Fatalf("expected Gemini usage metadata, got %s", body)
 	}
@@ -133,9 +161,7 @@ func TestProxy_Success_Streaming_GeminiToCodexTransform(t *testing.T) {
 		t.Fatalf("expected codex request body, got %s", gotBody)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `"functionCall":{"name":"lookup","args":{"query":"go"}}`) {
-		t.Fatalf("expected translated Gemini functionCall, got %s", body)
-	}
+	assertGeminiFunctionCallStream(t, body, "lookup", "go")
 	if !strings.Contains(body, `"finishReason":"STOP"`) || !strings.Contains(body, `"promptTokenCount":3`) || !strings.Contains(body, `"candidatesTokenCount":5`) {
 		t.Fatalf("expected Gemini completion payload, got %s", body)
 	}

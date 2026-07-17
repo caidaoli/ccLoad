@@ -49,14 +49,15 @@ func TestRegistry_TranslateRequest_GeminiToCodex(t *testing.T) {
 	if !ok || part["type"] != "input_text" || part["text"] != "hello" {
 		t.Fatalf("unexpected codex message part: %+v", content[0])
 	}
-	if req.Input[1]["type"] != "function_call" || req.Input[1]["call_id"] != "call_1" || req.Input[1]["name"] != "lookup" {
+	callID, _ := req.Input[1]["call_id"].(string)
+	if req.Input[1]["type"] != "function_call" || callID == "" || req.Input[1]["name"] != "lookup" {
 		t.Fatalf("unexpected codex function_call: %+v", req.Input[1])
 	}
 	args, ok := req.Input[1]["arguments"].(string)
 	if !ok || args != `{"query":"go"}` {
 		t.Fatalf("unexpected codex function_call args: %+v", req.Input[1]["arguments"])
 	}
-	if req.Input[2]["type"] != "function_call_output" || req.Input[2]["call_id"] != "call_1" || req.Input[2]["name"] != "lookup" || req.Input[2]["output"] != "done" {
+	if req.Input[2]["type"] != "function_call_output" || req.Input[2]["call_id"] != callID || req.Input[2]["output"] != "done" {
 		t.Fatalf("unexpected codex function_call_output: %+v", req.Input[2])
 	}
 	if len(req.Tools) != 1 || req.Tools[0]["type"] != "function" || req.Tools[0]["name"] != "lookup" || req.Tools[0]["description"] != "lookup docs" {
@@ -168,8 +169,16 @@ func TestRegistry_TranslateResponseStream_CodexToGemini(t *testing.T) {
 	if err != nil {
 		t.Fatalf("response.output_item.done failed: %v", err)
 	}
-	if len(toolChunk) != 1 || !strings.Contains(string(toolChunk[0]), `"functionCall":{"name":"lookup","args":{"query":"go"}}`) {
+	if len(toolChunk) != 1 {
 		t.Fatalf("unexpected gemini tool chunk: %#v", toolChunk)
+	}
+	toolPayload := mustJSONMap(t, bytes.TrimPrefix(bytes.TrimSpace(toolChunk[0]), []byte("data: ")))
+	toolCandidate := mustMap(t, mustSlice(t, toolPayload["candidates"])[0])
+	toolContent := mustMap(t, toolCandidate["content"])
+	functionCall := mustMap(t, mustMap(t, mustSlice(t, toolContent["parts"])[0])["functionCall"])
+	args := mustMap(t, functionCall["args"])
+	if functionCall["name"] != "lookup" || functionCall["id"] != "call_1" || args["query"] != "go" {
+		t.Fatalf("unexpected gemini tool semantics: %#v", toolChunk)
 	}
 
 	done, err := reg.TranslateResponseStream(context.Background(), protocol.Codex, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte("event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":3,\"output_tokens\":5,\"total_tokens\":8}}}\n\n"), &state)

@@ -24,8 +24,14 @@ func TestRegistry_TranslateResponseNonStream_GeminiStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("TranslateResponseNonStream failed: %v", err)
 		}
-		if !strings.Contains(string(got), `"content":"hello"`) || !strings.Contains(string(got), `"tool_calls":[{"id":"call_1","type":"function","function":{"name":"lookup","arguments":"{\"query\":\"go\"}"}}]`) || !strings.Contains(string(got), `"finish_reason":"tool_calls"`) {
-			t.Fatalf("unexpected OpenAI response: %s", got)
+		payload := mustJSONMap(t, got)
+		choice := mustMap(t, mustSlice(t, payload["choices"])[0])
+		message := mustMap(t, choice["message"])
+		toolCall := mustMap(t, mustSlice(t, message["tool_calls"])[0])
+		function := mustMap(t, toolCall["function"])
+		arguments := mustJSONMap(t, []byte(mustString(t, function["arguments"])))
+		if message["content"] != "hello" || mustString(t, toolCall["id"]) == "" || toolCall["type"] != "function" || function["name"] != "lookup" || arguments["query"] != "go" || choice["finish_reason"] != "tool_calls" {
+			t.Fatalf("unexpected OpenAI response semantics: %s", got)
 		}
 	})
 
@@ -34,8 +40,16 @@ func TestRegistry_TranslateResponseNonStream_GeminiStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("TranslateResponseNonStream failed: %v", err)
 		}
-		if !strings.Contains(string(got), `"type":"text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"tool_use"`) || !strings.Contains(string(got), `"id":"call_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"input":{"query":"go"}`) || !strings.Contains(string(got), `"stop_reason":"tool_use"`) {
-			t.Fatalf("unexpected Anthropic response: %s", got)
+		payload := mustJSONMap(t, got)
+		content := mustSlice(t, payload["content"])
+		if len(content) != 2 {
+			t.Fatalf("unexpected Anthropic content: %s", got)
+		}
+		textBlock := mustMap(t, content[0])
+		toolBlock := mustMap(t, content[1])
+		input := mustMap(t, toolBlock["input"])
+		if textBlock["type"] != "text" || textBlock["text"] != "hello" || toolBlock["type"] != "tool_use" || mustString(t, toolBlock["id"]) == "" || toolBlock["name"] != "lookup" || input["query"] != "go" || payload["stop_reason"] != "tool_use" {
+			t.Fatalf("unexpected Anthropic response semantics: %s", got)
 		}
 	})
 
@@ -44,8 +58,25 @@ func TestRegistry_TranslateResponseNonStream_GeminiStructuredOutbound(t *testing
 		if err != nil {
 			t.Fatalf("TranslateResponseNonStream failed: %v", err)
 		}
-		if !strings.Contains(string(got), `"type":"message"`) || !strings.Contains(string(got), `"role":"assistant"`) || !strings.Contains(string(got), `"type":"output_text"`) || !strings.Contains(string(got), `"text":"hello"`) || !strings.Contains(string(got), `"type":"function_call"`) || !strings.Contains(string(got), `"call_id":"call_1"`) || !strings.Contains(string(got), `"name":"lookup"`) || !strings.Contains(string(got), `"arguments":"{\"query\":\"go\"}"`) {
-			t.Fatalf("unexpected Codex response: %s", got)
+		payload := mustJSONMap(t, got)
+		var messageItem, functionItem map[string]any
+		for _, rawItem := range mustSlice(t, payload["output"]) {
+			item := mustMap(t, rawItem)
+			switch item["type"] {
+			case "message":
+				messageItem = item
+			case "function_call":
+				functionItem = item
+			}
+		}
+		if messageItem == nil || functionItem == nil {
+			t.Fatalf("missing Codex output items: %s", got)
+		}
+		content := mustMap(t, mustSlice(t, messageItem["content"])[0])
+		arguments := mustJSONMap(t, []byte(mustString(t, functionItem["arguments"])))
+		callID := mustString(t, functionItem["call_id"])
+		if messageItem["role"] != "assistant" || content["type"] != "output_text" || content["text"] != "hello" || callID == "" || functionItem["id"] != "fc_"+callID || functionItem["name"] != "lookup" || arguments["query"] != "go" {
+			t.Fatalf("unexpected Codex response semantics: %s", got)
 		}
 	})
 }
@@ -62,8 +93,14 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 		if err != nil {
 			t.Fatalf("TranslateResponseStream failed: %v", err)
 		}
-		joined := string(chunks[0])
-		if len(chunks) != 1 || !strings.Contains(joined, `"tool_calls"`) || !strings.Contains(joined, `"id":"call_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) || !strings.Contains(joined, `"finish_reason":"tool_calls"`) {
+		joined := string(bytes.Join(chunks, nil))
+		payload := mustSSEEventData(t, joined, "")
+		choice := mustMap(t, mustSlice(t, payload["choices"])[0])
+		delta := mustMap(t, choice["delta"])
+		toolCall := mustMap(t, mustSlice(t, delta["tool_calls"])[0])
+		function := mustMap(t, toolCall["function"])
+		arguments := mustJSONMap(t, []byte(mustString(t, function["arguments"])))
+		if mustString(t, toolCall["id"]) == "" || mustInt(t, toolCall["index"]) != 0 || function["name"] != "lookup" || arguments["query"] != "go" || choice["finish_reason"] != "tool_calls" {
 			t.Fatalf("unexpected OpenAI stream chunk: %#v", chunks)
 		}
 	})
@@ -75,7 +112,12 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 			t.Fatalf("TranslateResponseStream failed: %v", err)
 		}
 		joined := string(bytes.Join(chunks, nil))
-		if !strings.Contains(joined, `event: message_start`) || !strings.Contains(joined, `"type":"tool_use"`) || !strings.Contains(joined, `"id":"call_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"partial_json":"{\"query\":\"go\"}"`) || !strings.Contains(joined, `"stop_reason":"tool_use"`) || !strings.Contains(joined, `event: message_stop`) {
+		toolStart := mustSSEEventData(t, joined, "content_block_start")
+		toolBlock := mustMap(t, toolStart["content_block"])
+		toolDelta := mustMap(t, mustSSEEventData(t, joined, "content_block_delta")["delta"])
+		messageDelta := mustMap(t, mustSSEEventData(t, joined, "message_delta")["delta"])
+		arguments := mustJSONMap(t, []byte(mustString(t, toolDelta["partial_json"])))
+		if mustString(t, toolBlock["id"]) == "" || toolBlock["type"] != "tool_use" || toolBlock["name"] != "lookup" || arguments["query"] != "go" || messageDelta["stop_reason"] != "tool_use" || !strings.Contains(joined, `event: message_stop`) {
 			t.Fatalf("unexpected Anthropic stream chunks: %s", joined)
 		}
 	})
@@ -86,8 +128,11 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound(t *testing.T)
 		if err != nil {
 			t.Fatalf("TranslateResponseStream failed: %v", err)
 		}
-		joined := string(chunks[0])
-		if len(chunks) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"call_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
+		joined := string(bytes.Join(chunks, nil))
+		item := mustMap(t, mustSSEEventData(t, joined, "response.output_item.done")["item"])
+		arguments := mustJSONMap(t, []byte(mustString(t, item["arguments"])))
+		callID := mustString(t, item["call_id"])
+		if item["type"] != "function_call" || callID == "" || item["id"] != "fc_"+callID || item["name"] != "lookup" || arguments["query"] != "go" {
 			t.Fatalf("unexpected Codex stream chunk: %#v", chunks)
 		}
 	})
@@ -337,13 +382,18 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound_MultipleToolC
 		if err != nil {
 			t.Fatalf("second chunk failed: %v", err)
 		}
-		firstJoined := string(bytes.Join(first, nil))
-		secondJoined := string(bytes.Join(second, nil))
-		if !strings.Contains(firstJoined, `"index":0`) || !strings.Contains(firstJoined, `"id":"call_1"`) {
-			t.Fatalf("expected first tool call index/id, got %s", firstJoined)
+		extractToolCall := func(raw [][]byte) map[string]any {
+			payload := mustSSEEventData(t, string(bytes.Join(raw, nil)), "")
+			choice := mustMap(t, mustSlice(t, payload["choices"])[0])
+			delta := mustMap(t, choice["delta"])
+			return mustMap(t, mustSlice(t, delta["tool_calls"])[0])
 		}
-		if !strings.Contains(secondJoined, `"index":1`) || !strings.Contains(secondJoined, `"id":"call_2"`) {
-			t.Fatalf("expected second tool call index/id, got %s", secondJoined)
+		firstCall := extractToolCall(first)
+		secondCall := extractToolCall(second)
+		firstID := mustString(t, firstCall["id"])
+		secondID := mustString(t, secondCall["id"])
+		if mustInt(t, firstCall["index"]) != 0 || mustInt(t, secondCall["index"]) != 1 || firstID == "" || secondID == "" || firstID == secondID {
+			t.Fatalf("unexpected OpenAI tool call identities: first=%s second=%s", string(bytes.Join(first, nil)), string(bytes.Join(second, nil)))
 		}
 	})
 
@@ -357,13 +407,14 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound_MultipleToolC
 		if err != nil {
 			t.Fatalf("second chunk failed: %v", err)
 		}
-		firstJoined := string(bytes.Join(first, nil))
-		secondJoined := string(bytes.Join(second, nil))
-		if !strings.Contains(firstJoined, `"id":"call_1"`) {
-			t.Fatalf("expected first tool id call_1, got %s", firstJoined)
-		}
-		if !strings.Contains(secondJoined, `"id":"call_2"`) {
-			t.Fatalf("expected second tool id call_2, got %s", secondJoined)
+		firstStart := mustSSEEventData(t, string(bytes.Join(first, nil)), "content_block_start")
+		secondStart := mustSSEEventData(t, string(bytes.Join(second, nil)), "content_block_start")
+		firstBlock := mustMap(t, firstStart["content_block"])
+		secondBlock := mustMap(t, secondStart["content_block"])
+		firstID := mustString(t, firstBlock["id"])
+		secondID := mustString(t, secondBlock["id"])
+		if mustInt(t, firstStart["index"]) != 0 || mustInt(t, secondStart["index"]) != 1 || firstID == "" || secondID == "" || firstID == secondID || firstBlock["name"] != "lookup" || secondBlock["name"] != "search" {
+			t.Fatalf("unexpected Anthropic tool identities: first=%s second=%s", string(bytes.Join(first, nil)), string(bytes.Join(second, nil)))
 		}
 	})
 
@@ -377,13 +428,14 @@ func TestRegistry_TranslateResponseStream_GeminiStructuredOutbound_MultipleToolC
 		if err != nil {
 			t.Fatalf("second chunk failed: %v", err)
 		}
-		firstJoined := string(bytes.Join(first, nil))
-		secondJoined := string(bytes.Join(second, nil))
-		if !strings.Contains(firstJoined, `"call_id":"call_1"`) {
-			t.Fatalf("expected first call_id call_1, got %s", firstJoined)
-		}
-		if !strings.Contains(secondJoined, `"call_id":"call_2"`) {
-			t.Fatalf("expected second call_id call_2, got %s", secondJoined)
+		firstDone := mustSSEEventData(t, string(bytes.Join(first, nil)), "response.output_item.done")
+		secondDone := mustSSEEventData(t, string(bytes.Join(second, nil)), "response.output_item.done")
+		firstItem := mustMap(t, firstDone["item"])
+		secondItem := mustMap(t, secondDone["item"])
+		firstID := mustString(t, firstItem["call_id"])
+		secondID := mustString(t, secondItem["call_id"])
+		if mustInt(t, firstDone["output_index"]) != 0 || mustInt(t, secondDone["output_index"]) != 1 || firstID == "" || secondID == "" || firstID == secondID || firstItem["id"] != "fc_"+firstID || secondItem["id"] != "fc_"+secondID {
+			t.Fatalf("unexpected Codex tool identities: first=%s second=%s", string(bytes.Join(first, nil)), string(bytes.Join(second, nil)))
 		}
 	})
 }
@@ -431,23 +483,26 @@ func TestRegistry_TranslateResponseStream_AnthropicStructuredOutbound(t *testing
 	t.Run("codex", func(t *testing.T) {
 		var state any
 		start := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":3,\"output_tokens\":0}}}\n\n")
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, start, &state); err != nil || out != nil {
+		out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, start, &state)
+		if err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.created`) {
 			t.Fatalf("message_start = %#v, %v", out, err)
 		}
 		toolStart := []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"lookup\"}}\n\n")
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, toolStart, &state); err != nil || out != nil {
+		out, err = reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, toolStart, &state)
+		if err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.output_item.added`) || !strings.Contains(string(bytes.Join(out, nil)), `"call_id":"toolu_1"`) {
 			t.Fatalf("content_block_start = %#v, %v", out, err)
 		}
 		toolDelta := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"query\\\":\\\"go\\\"}\"}}\n\n")
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, toolDelta, &state); err != nil || out != nil {
+		out, err = reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, toolDelta, &state)
+		if err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.function_call_arguments.delta`) || !strings.Contains(string(bytes.Join(out, nil)), `"delta":"{\"query\":\"go\"}"`) {
 			t.Fatalf("content_block_delta = %#v, %v", out, err)
 		}
 		toolChunk, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n"), &state)
 		if err != nil {
 			t.Fatalf("content_block_stop failed: %v", err)
 		}
-		joined := string(toolChunk[0])
-		if len(toolChunk) != 1 || !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"toolu_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
+		joined := string(bytes.Join(toolChunk, nil))
+		if !strings.Contains(joined, `event: response.output_item.done`) || !strings.Contains(joined, `"type":"function_call"`) || !strings.Contains(joined, `"call_id":"toolu_1"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"arguments":"{\"query\":\"go\"}"`) {
 			t.Fatalf("unexpected Codex tool chunk: %#v", toolChunk)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":5}}\n\n"), &state); err != nil || out != nil {
@@ -508,7 +563,7 @@ func TestRegistry_TranslateResponseStream_AnthropicReasoningAndUsageDetails(t *t
 
 	t.Run("openai", func(t *testing.T) {
 		var state any
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.OpenAI, "gpt-4o", nil, nil, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11}}}\n\n"), &state); err != nil || out != nil {
+		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.OpenAI, "gpt-4o", nil, nil, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11}}}\n\n"), &state); err != nil || !strings.Contains(string(bytes.Join(out, nil)), `"role":"assistant"`) {
 			t.Fatalf("message_start = %#v, %v", out, err)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.OpenAI, "gpt-4o", nil, nil, []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n"), &state); err != nil || out != nil {
@@ -543,13 +598,13 @@ func TestRegistry_TranslateResponseStream_AnthropicReasoningAndUsageDetails(t *t
 
 	t.Run("codex", func(t *testing.T) {
 		var state any
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11}}}\n\n"), &state); err != nil || out != nil {
+		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-3-5-sonnet\",\"usage\":{\"input_tokens\":3,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11}}}\n\n"), &state); err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.created`) {
 			t.Fatalf("message_start = %#v, %v", out, err)
 		}
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n"), &state); err != nil || out != nil {
+		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"thinking\"}}\n\n"), &state); err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.output_item.added`) {
 			t.Fatalf("content_block_start = %#v, %v", out, err)
 		}
-		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step by step\"}}\n\n"), &state); err != nil || out != nil {
+		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"step by step\"}}\n\n"), &state); err != nil || !strings.Contains(string(bytes.Join(out, nil)), `event: response.reasoning_summary_text.delta`) {
 			t.Fatalf("thinking_delta = %#v, %v", out, err)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"signature_delta\",\"signature\":\"sig_1\"}}\n\n"), &state); err != nil || out != nil {
@@ -559,7 +614,8 @@ func TestRegistry_TranslateResponseStream_AnthropicReasoningAndUsageDetails(t *t
 		if err != nil {
 			t.Fatalf("content_block_stop failed: %v", err)
 		}
-		if len(reasoning) != 1 || !strings.Contains(string(reasoning[0]), `event: response.output_item.done`) || !strings.Contains(string(reasoning[0]), `"type":"reasoning"`) || !strings.Contains(string(reasoning[0]), `"text":"step by step"`) || !strings.Contains(string(reasoning[0]), `"encrypted_content":"sig_1"`) {
+		reasoningJoined := string(bytes.Join(reasoning, nil))
+		if !strings.Contains(reasoningJoined, `event: response.output_item.done`) || !strings.Contains(reasoningJoined, `"type":"reasoning"`) || !strings.Contains(reasoningJoined, `"text":"step by step"`) || !strings.Contains(reasoningJoined, `"encrypted_content":"sig_1"`) {
 			t.Fatalf("unexpected Codex reasoning chunk: %#v", reasoning)
 		}
 		if out, err := reg.TranslateResponseStream(context.Background(), protocol.Anthropic, protocol.Codex, "gpt-5-codex", nil, nil, []byte("event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":5,\"cache_read_input_tokens\":7,\"cache_creation_input_tokens\":11,\"reasoning_tokens\":13}}\n\n"), &state); err != nil || out != nil {

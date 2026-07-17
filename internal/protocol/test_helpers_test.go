@@ -50,6 +50,17 @@ func parseSSEEvents(t *testing.T, stream string) []sseEvent {
 	return events
 }
 
+func mustSSEEventData(t *testing.T, stream, eventName string) map[string]any {
+	t.Helper()
+	for _, event := range parseSSEEvents(t, stream) {
+		if event.Event == eventName {
+			return event.Data
+		}
+	}
+	t.Fatalf("missing SSE event %q in:\n%s", eventName, stream)
+	return nil
+}
+
 func translateResponseStreamChunks(t *testing.T, reg *protocol.Registry, source, target protocol.Protocol, model string, chunks ...string) string {
 	t.Helper()
 
@@ -148,5 +159,26 @@ func mustInt(t *testing.T, value any) int {
 	default:
 		t.Fatalf("expected numeric value, got %T (%#v)", value, value)
 		return 0
+	}
+}
+
+func protocolTestContentText(content any) string {
+	switch value := content.(type) {
+	case string:
+		return value
+	case []any:
+		var text strings.Builder
+		for _, rawPart := range value {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if partText, ok := part["text"].(string); ok {
+				text.WriteString(partText)
+			}
+		}
+		return text.String()
+	default:
+		return ""
 	}
 }

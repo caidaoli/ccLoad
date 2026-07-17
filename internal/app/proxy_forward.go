@@ -1566,6 +1566,16 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
+		var translationErr *protocol.RequestTranslationError
+		if errors.As(err, &translationErr) {
+			return &proxyResult{
+				status:     http.StatusBadRequest,
+				body:       []byte(err.Error()),
+				channelID:  &cfg.ID,
+				succeeded:  false,
+				nextAction: cooldown.ActionReturnClient,
+			}, cooldown.ActionReturnClient, nil
+		}
 		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
 			return nil, cooldown.ActionRetryChannel, err
 		}

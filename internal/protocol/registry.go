@@ -10,6 +10,23 @@ type pair struct {
 	to   Protocol
 }
 
+// RequestTranslationError reports that a client request cannot be represented
+// in the selected upstream protocol. Callers should return it to the client
+// instead of treating it as an upstream transport failure.
+type RequestTranslationError struct {
+	From Protocol
+	To   Protocol
+	Err  error
+}
+
+func (e *RequestTranslationError) Error() string {
+	return fmt.Sprintf("translate request %s -> %s: %v", e.From, e.To, e.Err)
+}
+
+func (e *RequestTranslationError) Unwrap() error {
+	return e.Err
+}
+
 // Registry stores the request/response transformers registered for protocol pairs.
 type Registry struct {
 	requests   map[pair]RequestTransform
@@ -59,7 +76,11 @@ func (r *Registry) TranslateRequest(from, to Protocol, model string, rawJSON []b
 	if !ok {
 		return nil, fmt.Errorf("no request transform registered: %s -> %s", from, to)
 	}
-	return fn(model, rawJSON, stream)
+	translated, err := fn(model, rawJSON, stream)
+	if err != nil {
+		return nil, &RequestTranslationError{From: from, To: to, Err: err}
+	}
+	return translated, nil
 }
 
 // TranslateResponseNonStream converts one upstream non-stream response into the client protocol.

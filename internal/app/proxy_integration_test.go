@@ -2087,31 +2087,28 @@ func TestProxy_Success_NonStreaming_CodexToAnthropicTransform(t *testing.T) {
 	t.Parallel()
 
 	runCodexNonStreamingLocalTransform(t, codexNonStreamingLocalTransformCase{
-		channelName:  "anthropic-ch",
-		channelType:  "anthropic",
-		modelName:    "claude-3-5-sonnet",
-		apiKey:       "sk-ant",
-		upstreamURL:  "https://anthropic-upstream.example.com",
-		upstreamBody: `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello from anthropic"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4}}`,
-		wantPath:     "/v1/messages",
-		wantFragments: [][]byte{
-			[]byte(`"messages"`),
-			[]byte(`"text":"hi"`),
-		},
-		wantText: "hello from anthropic",
+		channelName:     "anthropic-ch",
+		channelType:     "anthropic",
+		modelName:       "claude-3-5-sonnet",
+		apiKey:          "sk-ant",
+		upstreamURL:     "https://anthropic-upstream.example.com",
+		upstreamBody:    `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"hello from anthropic"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":4}}`,
+		wantPath:        "/v1/messages",
+		wantRequestText: "hi",
+		wantText:        "hello from anthropic",
 	})
 }
 
 type codexNonStreamingLocalTransformCase struct {
-	channelName   string
-	channelType   string
-	modelName     string
-	apiKey        string
-	upstreamURL   string
-	upstreamBody  string
-	wantPath      string
-	wantFragments [][]byte
-	wantText      string
+	channelName     string
+	channelType     string
+	modelName       string
+	apiKey          string
+	upstreamURL     string
+	upstreamBody    string
+	wantPath        string
+	wantRequestText string
+	wantText        string
 }
 
 func runCodexNonStreamingLocalTransform(t *testing.T, tc codexNonStreamingLocalTransformCase) {
@@ -2165,12 +2162,41 @@ func runCodexNonStreamingLocalTransform(t *testing.T, tc codexNonStreamingLocalT
 	if gotPath != tc.wantPath {
 		t.Fatalf("expected upstream path %s, got %s", tc.wantPath, gotPath)
 	}
-	for _, fragment := range tc.wantFragments {
-		if !bytes.Contains(gotBody, fragment) {
-			t.Fatalf("expected request body to contain %s, got %s", fragment, gotBody)
+	assertChatRequestUserText(t, gotBody, tc.wantRequestText)
+	assertCodexResponseText(t, w.Body.Bytes(), tc.wantText)
+}
+
+func assertChatRequestUserText(t *testing.T, body []byte, want string) {
+	t.Helper()
+
+	var request struct {
+		Messages []struct {
+			Role    string `json:"role"`
+			Content any    `json:"content"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &request); err != nil {
+		t.Fatalf("unmarshal chat request: %v; body=%s", err, body)
+	}
+	for _, message := range request.Messages {
+		if message.Role != "user" {
+			continue
+		}
+		switch content := message.Content.(type) {
+		case string:
+			if content == want {
+				return
+			}
+		case []any:
+			for _, rawBlock := range content {
+				block, _ := rawBlock.(map[string]any)
+				if text, _ := block["text"].(string); text == want {
+					return
+				}
+			}
 		}
 	}
-	assertCodexResponseText(t, w.Body.Bytes(), tc.wantText)
+	t.Fatalf("expected user text %q in chat request, got %s", want, body)
 }
 
 func assertCodexResponseText(t *testing.T, body []byte, want string) {
@@ -2242,9 +2268,7 @@ func TestProxy_Success_NonStreaming_CodexBareMessageToAnthropicTransform(t *test
 	if gotPath != "/v1/messages" {
 		t.Fatalf("expected anthropic messages path, got %s", gotPath)
 	}
-	if !bytes.Contains(gotBody, []byte(`"messages"`)) || !bytes.Contains(gotBody, []byte(`"text":"hi"`)) {
-		t.Fatalf("expected anthropic request body, got %s", gotBody)
-	}
+	assertChatRequestUserText(t, gotBody, "hi")
 }
 
 func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
@@ -2300,9 +2324,7 @@ func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
 	if gotPath != "/v1/messages" {
 		t.Fatalf("expected anthropic messages path, got %s", gotPath)
 	}
-	if !bytes.Contains(gotBody, []byte(`"messages"`)) || !bytes.Contains(gotBody, []byte(`"text":"hi"`)) {
-		t.Fatalf("expected anthropic request body, got %s", gotBody)
-	}
+	assertChatRequestUserText(t, gotBody, "hi")
 	body := w.Body.String()
 	if !strings.Contains(body, "event: response.output_text.delta") || !strings.Contains(body, `"delta":"Hello"`) {
 		t.Fatalf("expected codex stream delta event, got %s", body)
@@ -2927,18 +2949,15 @@ func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
 	t.Parallel()
 
 	runCodexNonStreamingLocalTransform(t, codexNonStreamingLocalTransformCase{
-		channelName:  "openai-ch",
-		channelType:  "openai",
-		modelName:    "gpt-4o",
-		apiKey:       "sk-oai",
-		upstreamURL:  "https://openai-upstream.example.com",
-		upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello from openai"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}`,
-		wantPath:     "/v1/chat/completions",
-		wantFragments: [][]byte{
-			[]byte(`"role":"user"`),
-			[]byte(`"content":"hi"`),
-		},
-		wantText: "hello from openai",
+		channelName:     "openai-ch",
+		channelType:     "openai",
+		modelName:       "gpt-4o",
+		apiKey:          "sk-oai",
+		upstreamURL:     "https://openai-upstream.example.com",
+		upstreamBody:    `{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello from openai"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}`,
+		wantPath:        "/v1/chat/completions",
+		wantRequestText: "hi",
+		wantText:        "hello from openai",
 	})
 }
 

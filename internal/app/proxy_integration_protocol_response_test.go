@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -175,9 +176,7 @@ func TestProxy_StructuredAnthropicResponseToOpenAITransform(t *testing.T) {
 	if gotPath != "/v1/messages" {
 		t.Fatalf("expected anthropic messages path, got %s", gotPath)
 	}
-	if !bytes.Contains(gotBody, []byte(`"messages"`)) || !bytes.Contains(gotBody, []byte(`"text":"hi"`)) {
-		t.Fatalf("expected anthropic request body, got %s", gotBody)
-	}
+	assertChatRequestUserText(t, gotBody, "hi")
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"tool_calls"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"name":"lookup"`)) {
 		t.Fatalf("expected OpenAI tool_calls response, got %s", w.Body.String())
 	}
@@ -234,9 +233,7 @@ func TestProxy_StructuredAnthropicResponseToCodexTransform(t *testing.T) {
 	if gotPath != "/v1/messages" {
 		t.Fatalf("expected anthropic messages path, got %s", gotPath)
 	}
-	if !bytes.Contains(gotBody, []byte(`"messages"`)) || !bytes.Contains(gotBody, []byte(`"text":"hi"`)) {
-		t.Fatalf("expected anthropic request body, got %s", gotBody)
-	}
+	assertChatRequestUserText(t, gotBody, "hi")
 	if !bytes.Contains(w.Body.Bytes(), []byte(`"type":"function_call"`)) || !bytes.Contains(w.Body.Bytes(), []byte(`"name":"lookup"`)) {
 		t.Fatalf("expected Codex function_call response, got %s", w.Body.String())
 	}
@@ -300,19 +297,47 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 		t.Fatalf("expected Gemini request body, got %s", gotBody)
 	}
 	body := w.Body.String()
-	if strings.Count(body, `event: content_block_start`) < 2 {
-		t.Fatalf("expected at least two anthropic tool content blocks, got %s", body)
+	var toolBlocks []map[string]any
+	var partialJSON []string
+	var stopReason string
+	messageStopped := false
+	for _, block := range strings.Split(body, "\n\n") {
+		eventType, data := parseSSEEventChunk([]byte(block))
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			continue
+		}
+		switch eventType {
+		case "content_block_start":
+			contentBlock, _ := payload["content_block"].(map[string]any)
+			if contentBlock != nil && contentBlock["type"] == "tool_use" {
+				toolBlocks = append(toolBlocks, contentBlock)
+			}
+		case "content_block_delta":
+			delta, _ := payload["delta"].(map[string]any)
+			if delta != nil && delta["type"] == "input_json_delta" {
+				partial, _ := delta["partial_json"].(string)
+				partialJSON = append(partialJSON, partial)
+			}
+		case "message_delta":
+			delta, _ := payload["delta"].(map[string]any)
+			stopReason, _ = delta["stop_reason"].(string)
+		case "message_stop":
+			messageStopped = true
+		}
 	}
-	if !strings.Contains(body, `"id":"call_1"`) || !strings.Contains(body, `"name":"lookup"`) {
-		t.Fatalf("expected first anthropic tool_use block, got %s", body)
+	if len(toolBlocks) != 2 {
+		t.Fatalf("expected two anthropic tool_use blocks, got %s", body)
 	}
-	if !strings.Contains(body, `"id":"call_2"`) || !strings.Contains(body, `"name":"search"`) {
-		t.Fatalf("expected second anthropic tool_use block, got %s", body)
+	firstID, _ := toolBlocks[0]["id"].(string)
+	secondID, _ := toolBlocks[1]["id"].(string)
+	if firstID == "" || secondID == "" || firstID == secondID || toolBlocks[0]["name"] != "lookup" || toolBlocks[1]["name"] != "search" {
+		t.Fatalf("unexpected anthropic tool identities, got %s", body)
 	}
-	if !strings.Contains(body, `"partial_json":"{\"query\":\"one\"}"`) || !strings.Contains(body, `"partial_json":"{\"query\":\"two\"}"`) {
-		t.Fatalf("expected both anthropic input_json_delta payloads, got %s", body)
+	if len(partialJSON) != 2 || partialJSON[0] != `{"query":"one"}` || partialJSON[1] != `{"query":"two"}` {
+		t.Fatalf("unexpected anthropic tool arguments, got %s", body)
 	}
-	if !strings.Contains(body, `"stop_reason":"tool_use"`) || !strings.Contains(body, "event: message_stop") {
+	if stopReason != "tool_use" || !messageStopped {
 		t.Fatalf("expected anthropic terminal events, got %s", body)
 	}
 }
@@ -376,16 +401,52 @@ func TestProxy_StreamingGeminiResponseToCodexTransform_MultipleToolCallsAcrossCh
 		t.Fatalf("expected Gemini request body, got %s", gotBody)
 	}
 	body := w.Body.String()
-	if strings.Count(body, `event: response.output_item.done`) < 2 {
-		t.Fatalf("expected at least two Codex output item events, got %s", body)
+	type functionCall struct {
+		outputIndex int
+		item        map[string]any
 	}
-	if !strings.Contains(body, `"call_id":"call_1"`) || !strings.Contains(body, `"name":"lookup"`) {
-		t.Fatalf("expected first Codex function_call item, got %s", body)
+	var calls []functionCall
+	var completed map[string]any
+	for _, block := range strings.Split(body, "\n\n") {
+		eventType, data := parseSSEEventChunk([]byte(block))
+		payload, ok := decodeSSEPayload(data)
+		if !ok {
+			continue
+		}
+		switch eventType {
+		case "response.output_item.done":
+			item, _ := payload["item"].(map[string]any)
+			outputIndex, _ := payload["output_index"].(float64)
+			if item != nil && item["type"] == "function_call" {
+				calls = append(calls, functionCall{outputIndex: int(outputIndex), item: item})
+			}
+		case "response.completed":
+			completed = payload
+		}
 	}
-	if !strings.Contains(body, `"call_id":"call_2"`) || !strings.Contains(body, `"name":"search"`) {
-		t.Fatalf("expected second Codex function_call item, got %s", body)
+	if len(calls) != 2 {
+		t.Fatalf("expected two completed Codex function calls, got %s", body)
 	}
-	if !strings.Contains(body, "event: response.completed") || !strings.Contains(body, `"input_tokens":3`) || !strings.Contains(body, `"output_tokens":5`) {
+	firstID, _ := calls[0].item["id"].(string)
+	firstCallID, _ := calls[0].item["call_id"].(string)
+	secondID, _ := calls[1].item["id"].(string)
+	secondCallID, _ := calls[1].item["call_id"].(string)
+	if calls[0].outputIndex != 0 || calls[1].outputIndex != 1 ||
+		firstID == "" || firstCallID == "" || secondID == "" || secondCallID == "" ||
+		firstID == secondID || firstCallID == secondCallID ||
+		calls[0].item["name"] != "lookup" || calls[1].item["name"] != "search" {
+		t.Fatalf("unexpected Codex function call identities, got %s", body)
+	}
+	for index, wantQuery := range []string{"one", "two"} {
+		arguments, _ := calls[index].item["arguments"].(string)
+		var got map[string]any
+		if err := json.Unmarshal([]byte(arguments), &got); err != nil || got["query"] != wantQuery {
+			t.Fatalf("unexpected Codex function call arguments at index %d: %q", index, arguments)
+		}
+	}
+	response, _ := completed["response"].(map[string]any)
+	usage, _ := response["usage"].(map[string]any)
+	if completed == nil || usage["input_tokens"] != float64(3) || usage["output_tokens"] != float64(5) {
 		t.Fatalf("expected Codex completion event with usage, got %s", body)
 	}
 }
