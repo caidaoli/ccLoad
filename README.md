@@ -60,7 +60,7 @@ ccLoad handles those cases with:
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
 - 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
-- 🔐 **Token Restrictions** - API token cost limits + model restrictions for fine-grained access control
+- 🔐 **Token Restrictions** - Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
@@ -754,7 +754,7 @@ Check out the awesome admin dashboard 👇
   - `admin_cooldown.go`: Cooldown management API
   - `admin_csv.go`: CSV import/export
   - `admin_types.go`: Admin API type definitions
-  - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model restrictions)
+  - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model/channel restrictions, concurrency limits)
   - `admin_settings.go`: System settings management
   - `admin_models.go`: Model list management
   - `admin_testing.go`: Channel testing (with protocol transform testing)
@@ -969,9 +969,11 @@ Base priority order: A > B > C > D
 - After provisioning, remove `CCLOAD_API_TOKENS` from deployment config if automatic recovery is no longer needed
 - Restrict access to container inspect output, orchestration dashboards, and deployment configuration
 
-**Advanced Token Features** (2026-01 New):
+**Advanced Token Features**:
 - **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded
 - **Model Restrictions**: Restrict which models a token can access for fine-grained access control
+- **Channel Restrictions**: Combine `allowed_channel_ids` with `channel_restriction_mode` — `allow` treats the list as an allowlist, `deny` as a denylist; an empty list is unrestricted in either mode
+- **Concurrency Limit**: `max_concurrency` caps a token's simultaneous in-flight requests (`0` = unlimited)
 - **First Byte Time**: Records streaming request TTFB (milliseconds) for upstream latency diagnosis
 
 #### Behavior Summary
@@ -1046,7 +1048,7 @@ storage/
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
 - `key_rr` - Round-robin pointers (channel_id → idx)
-- `auth_tokens` - Auth tokens (with cost limits, model restrictions, first byte time tracking)
+- `auth_tokens` - Auth tokens (with cost limits, model/channel restrictions, concurrency limits, first byte time tracking)
 - `web_sessions` - Role-aware Web sessions bound to an optional API token
 - `system_settings` - System config (hot reload support)
 

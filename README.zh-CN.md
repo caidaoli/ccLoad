@@ -60,7 +60,7 @@ ccLoad 直接处理这些问题：
 | 💰 **成本限额** | 渠道每日成本上限 | 达到限额自动跳过 |
 | 🚦 **渠道RPM限制** | 每渠道滚动60秒请求上限 | 0=不限，超限自动跳过 |
 | 🚧 **渠道并发限制** | 每渠道同时在飞请求上限 | 0=不限，超限自动跳过 |
-| 🔐 **令牌限额** | API令牌费用上限+模型限制 | 精细化访问控制 |
+| 🔐 **令牌限额** | 费用上限+模型/渠道限制+并发上限 | 精细化访问控制 |
 | ⏱️ **首字节监控** | 流式请求TTFB记录 | 便于诊断上游延迟 |
 | 🌐 **多URL负载均衡** | 单渠道多URL+加权随机 | 延迟低的URL自动多分流 |
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
@@ -777,7 +777,7 @@ ccLoad 使用的核心技术栈：
   - `admin_cooldown.go`：冷却管理API
   - `admin_csv.go`：CSV导入导出
   - `admin_types.go`：管理API类型定义
-  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型限制）
+  - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型/渠道限制、并发限制）
   - `admin_settings.go`：系统设置管理
   - `admin_models.go`：模型列表管理
   - `admin_testing.go`：渠道测试功能（支持协议转换测试）
@@ -1004,9 +1004,11 @@ ccLoad 支持程序内自动更新，默认每 12 小时检查一次发布版本
 - 预置完成后如不再需要自动恢复，可从部署配置中移除 `CCLOAD_API_TOKENS`
 - 限制容器 inspect、编排平台控制台和部署配置的访问权限
 
-**令牌高级功能**（2026-01新增）：
+**令牌高级功能**：
 - **费用限额**：为每个令牌设置费用上限（美元），超限后拒绝请求返回 429
 - **模型限制**：限制令牌可访问的模型列表，增强访问控制
+- **渠道限制**：`allowed_channel_ids` 配合 `channel_restriction_mode`——`allow` 为白名单，`deny` 为黑名单；两种模式下空列表均表示不限制
+- **并发限制**：`max_concurrency` 限制单令牌同时在飞的请求数（`0`=不限制）
 - **首字节时间**：记录流式请求的 TTFB（毫秒），便于诊断上游延迟
 
 #### 行为摘要
@@ -1085,7 +1087,7 @@ storage/
 - `logs` - 请求日志（含base_url上游URL追踪）
 - `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
 - `key_rr` - 轮询指针（channel_id → idx）
-- `auth_tokens` - 认证令牌（支持费用限额、模型限制、首字节时间记录）
+- `auth_tokens` - 认证令牌（支持费用限额、模型/渠道限制、并发限制、首字节时间记录）
 - `web_sessions` - 可绑定 API Token 的角色化 Web 会话
 - `system_settings` - 系统配置（支持热重载）
 
