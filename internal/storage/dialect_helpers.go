@@ -4,15 +4,15 @@ import (
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
-// dialectUsesMySQLStyleKeyQuote MySQL 用反引号；Postgres 用双引号；SQLite 裸标识符
-func quoteIdent(dialect Dialect, name string) string {
+// quoteKeyIdent 返回 system_settings.key 在各数据库方言中的标识符。
+func quoteKeyIdent(dialect Dialect) string {
 	switch dialect {
 	case DialectMySQL:
-		return "`" + name + "`"
+		return "`key`"
 	case DialectPostgres:
-		return `"` + name + `"`
+		return `"key"`
 	default:
-		return name
+		return "key"
 	}
 }
 

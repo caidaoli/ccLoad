@@ -47,7 +47,7 @@ func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gpt-4o:generateContent", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1beta/models/gpt-4o:generateContent", map[string]any{
 		"contents": []map[string]any{{
 			"role":  "user",
 			"parts": []map[string]any{{"text": "hi"}},
@@ -101,7 +101,7 @@ func TestProxy_Success_Streaming_GeminiToOpenAITransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gpt-4o:streamGenerateContent", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1beta/models/gpt-4o:streamGenerateContent", map[string]any{
 		"contents": []map[string]any{{
 			"role":  "user",
 			"parts": []map[string]any{{"text": "hi"}},

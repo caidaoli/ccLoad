@@ -51,7 +51,7 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 		Where("time <= ?", endMs).
 		Where("channel_id > 0")
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -639,7 +639,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		Where("status_code != 499")
 
 	// 应用渠道类型或名称过滤
-	_, isEmpty, err := s.applyChannelFilter(ctx, combinedQB, filter)
+	isEmpty, err := s.applyChannelFilter(ctx, combinedQB, filter)
 	if err != nil {
 		return nil, fmt.Errorf("apply channel filter: %w", err)
 	}
@@ -682,7 +682,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 			Where("status_code != 499")
 
 		// 应用渠道过滤
-		_, isEmpty, err = s.applyChannelFilter(ctx, recentQB, filter)
+		isEmpty, err = s.applyChannelFilter(ctx, recentQB, filter)
 		if err != nil {
 			return nil, fmt.Errorf("apply channel filter for recent: %w", err)
 		}
@@ -741,7 +741,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 		Where("channel_id > 0").
 		Where("status_code != 499")
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
+	isEmpty, err := s.applyChannelFilter(ctx, peakQB, filter)
 	if err != nil {
 		return fmt.Errorf("apply channel filter for peak: %w", err)
 	}
@@ -787,7 +787,7 @@ func (s *SQLStore) fillStatsRPM(ctx context.Context, stats []model.StatsEntry, s
 			Where("channel_id > 0").
 			Where("status_code != 499")
 
-		_, isEmpty, err := s.applyChannelFilter(ctx, recentQB, filter)
+		isEmpty, err := s.applyChannelFilter(ctx, recentQB, filter)
 		if err != nil {
 			return fmt.Errorf("apply channel filter for recent: %w", err)
 		}

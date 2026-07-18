@@ -110,7 +110,7 @@ func TestAPITokenLoginCreatesScopedWebSession(t *testing.T) {
 }
 
 func TestAPITokenLoginDoesNotResetAdminPasswordLockout(t *testing.T) {
-	svc, _, _ := setupAPITokenLoginService(t, "sk-rate-isolation")
+	svc, _ := setupAPITokenLoginService(t, "sk-rate-isolation")
 
 	for i := 0; i < 4; i++ {
 		w := runLoginHandler(t, svc, `{"mode":"admin","password":"wrong"}`, "1.2.3.4:1234")
@@ -135,7 +135,7 @@ func TestAPITokenLoginDoesNotResetAdminPasswordLockout(t *testing.T) {
 }
 
 func TestAPITokenLoginLimitsWebSessionIssuancePerToken(t *testing.T) {
-	svc, store, _ := setupAPITokenLoginService(t, "sk-session-limit")
+	svc, store := setupAPITokenLoginService(t, "sk-session-limit")
 	clientAddresses := []string{
 		"10.0.0.1:1001",
 		"10.0.0.2:1002",
@@ -383,7 +383,7 @@ func runWebAuthMiddleware(t testing.TB, middleware gin.HandlerFunc, token string
 	return w
 }
 
-func setupAPITokenLoginService(t *testing.T, plainToken string) (*AuthService, storage.Store, *model.AuthToken) {
+func setupAPITokenLoginService(t *testing.T, plainToken string) (*AuthService, storage.Store) {
 	t.Helper()
 
 	_, store, cleanup := setupAdminTestServer(t)
@@ -402,7 +402,7 @@ func setupAPITokenLoginService(t *testing.T, plainToken string) (*AuthService, s
 	t.Cleanup(limiter.Stop)
 	svc := NewAuthService("admin-pass", limiter, store)
 	t.Cleanup(svc.Close)
-	return svc, store, authToken
+	return svc, store
 }
 
 func runLoginHandler(t testing.TB, svc *AuthService, body, remoteAddr string) *httptest.ResponseRecorder {

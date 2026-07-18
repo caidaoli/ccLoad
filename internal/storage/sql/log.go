@@ -354,7 +354,7 @@ func (s *SQLStore) ListLogs(ctx context.Context, since time.Time, limit, offset 
 		Where("time >= ?", sinceMs)
 
 	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
-	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return nil, err
 	} else if isEmpty {
 		return []*model.LogEntry{}, nil
@@ -407,7 +407,7 @@ func (s *SQLStore) CountLogs(ctx context.Context, since time.Time, filter *model
 		Where("time >= ?", sinceMs)
 
 	// 应用渠道过滤（与ListLogs保持一致）
-	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return 0, err
 	} else if isEmpty {
 		return 0, nil
@@ -437,7 +437,7 @@ func (s *SQLStore) ListLogsRange(ctx context.Context, since, until time.Time, li
 		Where("time <= ?", untilMs)
 
 	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
-	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return nil, err
 	} else if isEmpty {
 		return []*model.LogEntry{}, nil
@@ -491,7 +491,7 @@ func (s *SQLStore) CountLogsRange(ctx context.Context, since, until time.Time, f
 		Where("time <= ?", untilMs)
 
 	// 应用渠道过滤（支持ChannelType、ChannelName、ChannelNameLike）
-	if _, isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
+	if isEmpty, err := s.applyChannelFilter(ctx, qb, filter); err != nil {
 		return 0, err
 	} else if isEmpty {
 		return 0, nil

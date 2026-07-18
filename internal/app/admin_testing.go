@@ -465,7 +465,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 	requestedModel := testReq.Model
 	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, testResult))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 

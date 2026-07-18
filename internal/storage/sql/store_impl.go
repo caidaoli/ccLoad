@@ -73,7 +73,7 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 		Where("status_code != 499").
 		Where("channel_id > 0")
 
-	_, isEmpty, err := s.applyChannelFilter(ctx, qb, params.Filter)
+	isEmpty, err := s.applyChannelFilter(ctx, qb, params.Filter)
 	if err != nil {
 		return nil, fmt.Errorf("resolve health timeline channel filter: %w", err)
 	}

@@ -122,7 +122,7 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 }
 
 // doProxyRequest 发送代理请求并返回响应
-func doProxyRequest(t testing.TB, engine *gin.Engine, method, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
+func doProxyRequest(t testing.TB, engine *gin.Engine, path string, body any, headers map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 
 	var bodyReader io.Reader
@@ -134,7 +134,7 @@ func doProxyRequest(t testing.TB, engine *gin.Engine, method, path string, body 
 		bodyReader = bytes.NewReader(b)
 	}
 
-	req := httptest.NewRequest(method, path, bodyReader)
+	req := httptest.NewRequest(http.MethodPost, path, bodyReader)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer test-api-key") // 默认 token
 
@@ -159,7 +159,7 @@ func createDashboardSession(t testing.TB, env *proxyTestEnv, plainToken string, 
 		t.Fatalf("ReloadAuthTokens failed: %v", err)
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/login", map[string]any{
+	w := doProxyRequest(t, env.engine, "/login", map[string]any{
 		"mode":  model.WebRoleAPIToken,
 		"token": plainToken,
 	}, nil)
@@ -195,7 +195,7 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 		{name: "ch1", models: "gpt-4", apiKey: "sk-1"},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -266,7 +266,7 @@ func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 		t.Fatalf("ReloadAuthTokens failed: %v", err)
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search?scope=repo", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/alpha/search?scope=repo", map[string]any{
 		"query":                  "codegraph",
 		"prompt_cache_key":       "responses-cache-key",
 		"prompt_cache_retention": "24h",
@@ -283,7 +283,7 @@ func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 		t.Fatalf("AuthTokenID=%d, want %d", entry.AuthTokenID, authToken.ID)
 	}
 
-	blocked := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+	blocked := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
 		"model": "blocked-model",
 		"query": "codegraph",
 	}, map[string]string{"Authorization": "Bearer " + plainToken})
@@ -312,7 +312,7 @@ func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
 			models:                "gpt-5",
 		}}, map[int]string{0: upstream.URL})
 
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+		w := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
 			"query": "codegraph",
 		}, nil)
 
@@ -362,7 +362,7 @@ func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
 			1: native.URL,
 		})
 
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+		w := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
 			"query": "codegraph",
 		}, nil)
 
@@ -393,7 +393,7 @@ func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
 			models:                "gpt-5",
 		}}, map[int]string{0: upstream.URL + "/v1/alpha/search#"})
 
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/alpha/search", map[string]any{
+		w := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
 			"query": "codegraph",
 		}, nil)
 
@@ -432,7 +432,7 @@ func TestDashboardProxy_UsesBoundTokenAndStreams(t *testing.T) {
 	}
 	webSession := createDashboardSession(t, env, "sk-dashboard-stream-owner", authToken)
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/dashboard/v1/chat/completions", map[string]any{
 		"model":    "gpt-dashboard",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -474,7 +474,7 @@ func TestDashboardProxy_EnforcesModelAndChannelRestrictions(t *testing.T) {
 			AllowedModels: []string{"allowed-model"},
 		})
 
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+		w := doProxyRequest(t, env.engine, "/dashboard/v1/chat/completions", map[string]any{
 			"model":    "blocked-model",
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
 		}, map[string]string{"Authorization": "Bearer " + webSession})
@@ -524,7 +524,7 @@ func TestDashboardProxy_EnforcesModelAndChannelRestrictions(t *testing.T) {
 			AllowedChannelIDs: []int64{allowedChannelID},
 		})
 
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+		w := doProxyRequest(t, env.engine, "/dashboard/v1/chat/completions", map[string]any{
 			"model":    "gpt-dashboard",
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
 		}, map[string]string{"Authorization": "Bearer " + webSession})
@@ -558,7 +558,7 @@ func TestDashboardProxy_RejectsRevokedToken(t *testing.T) {
 		t.Fatalf("ReloadAuthTokens failed: %v", err)
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/dashboard/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/dashboard/v1/chat/completions", map[string]any{
 		"model":    "gpt-dashboard",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, map[string]string{"Authorization": "Bearer " + webSession})
@@ -579,7 +579,7 @@ func TestProxy_NoAvailableUpstreamLogKeepsAuthTokenID(t *testing.T) {
 	srv.SetupRoutes(engine)
 	env := &proxyTestEnv{server: srv, store: srv.store, engine: engine}
 
-	w := doProxyRequest(t, engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
 		"model":    "no-upstream-model",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -607,7 +607,7 @@ func TestProxy_LogsAnthropicBudgetAsThinkingEffort(t *testing.T) {
 		{name: "fufu-thinking", models: "mimo-v2.5", apiKey: "sk-fufu-thinking", channelType: util.ChannelTypeAnthropic},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model":      "mimo-v2.5",
 		"max_tokens": 32000,
 		"thinking": map[string]any{
@@ -648,7 +648,7 @@ func TestProxy_LogsThinkingEffortFromRequestAndJSONResponseOverride(t *testing.T
 		{name: "json-thinking", models: "gpt-4", apiKey: "sk-json-thinking"},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":            "gpt-4",
 		"reasoning_effort": "low",
 		"messages":         []map[string]string{{"role": "user", "content": "hi"}},
@@ -688,7 +688,7 @@ func TestProxy_LogsThinkingEffortFromRequestAndSSEOverride(t *testing.T) {
 		{name: "sse-thinking", models: "gpt-5-codex", apiKey: "sk-sse-thinking", channelType: util.ChannelTypeCodex},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model":     "gpt-5-codex",
 		"stream":    true,
 		"reasoning": map[string]any{"effort": "high"},
@@ -774,12 +774,12 @@ func TestProxy_SkipsChannelAfterRPMLimitExceeded(t *testing.T) {
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}
 
-	first := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	first := doProxyRequest(t, env.engine, "/v1/chat/completions", requestBody, nil)
 	if first.Code != http.StatusOK {
 		t.Fatalf("first request status=%d body=%s", first.Code, first.Body.String())
 	}
 
-	second := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", requestBody, nil)
+	second := doProxyRequest(t, env.engine, "/v1/chat/completions", requestBody, nil)
 	if second.Code != http.StatusOK {
 		t.Fatalf("second request status=%d body=%s", second.Code, second.Body.String())
 	}
@@ -847,7 +847,7 @@ func TestProxy_SkipsChannelAfterConcurrencyLimitExceeded(t *testing.T) {
 	}
 	defer release()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -897,7 +897,7 @@ func TestProxy_AllCooledFallback_UsesCooledKey(t *testing.T) {
 	}
 	env.server.invalidateChannelRelatedCache(configs[0].ID)
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -949,7 +949,7 @@ func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gemini-2.5-pro",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -1015,7 +1015,7 @@ func TestProxy_Success_NonStreaming_AnthropicToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{{
 			"role":    "user",
@@ -1085,7 +1085,7 @@ func TestProxy_Success_NonStreaming_CodexToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gemini-2.5-pro",
 		"input": []map[string]any{{
 			"type":    "message",
@@ -1149,7 +1149,7 @@ func TestProxy_Success_Streaming(t *testing.T) {
 		{name: "ch1", models: "gpt-4", apiKey: "sk-1"},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -1206,7 +1206,7 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gemini-2.5-pro",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -1270,7 +1270,7 @@ func TestProxy_Success_Streaming_AnthropicToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model":  "gemini-2.5-pro",
 		"stream": true,
 		"messages": []map[string]any{{
@@ -1334,7 +1334,7 @@ func TestProxy_Success_Streaming_CodexToGeminiTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model":  "gemini-2.5-pro",
 		"stream": true,
 		"input": []map[string]any{{
@@ -1398,7 +1398,7 @@ func TestProxy_Success_NonStreaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "claude-3-5-sonnet",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -1480,7 +1480,7 @@ func TestProxy_NonStreamingOpenAIToAnthropic_TranslatesUnexpectedSSE(t *testing.
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "mimo-v2.5",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -1554,7 +1554,7 @@ func TestProxy_NonStreamingOpenAIClientNormalizesAnthropicJSONFromUpstreamMode(t
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "mimo-v2.5",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -1607,7 +1607,7 @@ func TestProxy_NonStreamingAnthropicClientNormalizesOpenAIJSONFromUpstreamMode(t
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gpt-4o",
 		"messages": []map[string]any{{
 			"role":    "user",
@@ -1664,7 +1664,7 @@ func TestProxy_OpenAIShapedBodyOnAnthropicPathIsRejected(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages?beta=true", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages?beta=true", map[string]any{
 		"model": "mimo-v2.5",
 		"messages": []map[string]string{
 			{"role": "user", "content": "hello"},
@@ -1720,7 +1720,7 @@ func TestProxy_OpenAIShapedBodyOnGeminiPathIsRejected(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gemini-2.5-pro:generateContent", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1beta/models/gemini-2.5-pro:generateContent", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]string{
 			{"role": "user", "content": "hello"},
@@ -1804,7 +1804,7 @@ func TestProxy_UpstreamMode_PassesThroughClientProtocolNatively(t *testing.T) {
 		t.Fatalf("expected candidate runtime upstream protocol openai, got %q", candidates[0].ResolveUpstreamProtocol("openai"))
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4o",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -1877,7 +1877,7 @@ func TestProxy_Success_Streaming_OpenAIToAnthropicTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "claude-3-5-sonnet",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -1943,7 +1943,7 @@ func TestProxy_StreamingOpenAIClientNormalizesAnthropicSSEFromUpstreamMode(t *te
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "mimo-v2.5",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -1999,7 +1999,7 @@ func TestProxy_StreamingAnthropicClientNormalizesOpenAISSEFromUpstreamMode(t *te
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model":  "gpt-4o",
 		"stream": true,
 		"messages": []map[string]any{{
@@ -2061,7 +2061,7 @@ func TestProxy_StreamingGeminiClientNormalizesOpenAISSEFromUpstreamMode(t *testi
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1beta/models/gpt-4o:streamGenerateContent", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1beta/models/gpt-4o:streamGenerateContent", map[string]any{
 		"contents": []map[string]any{{
 			"role":  "user",
 			"parts": []map[string]any{{"text": "hi"}},
@@ -2147,7 +2147,7 @@ func runCodexNonStreamingLocalTransform(t *testing.T, tc codexNonStreamingLocalT
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": tc.modelName,
 		"input": []map[string]any{{
 			"type":    "message",
@@ -2254,7 +2254,7 @@ func TestProxy_Success_NonStreaming_CodexBareMessageToAnthropicTransform(t *test
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "claude-3-5-sonnet",
 		"input": []map[string]any{{
 			"role":    "user",
@@ -2308,7 +2308,7 @@ func TestProxy_Success_Streaming_CodexToAnthropicTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model":  "claude-3-5-sonnet",
 		"stream": true,
 		"input": []map[string]any{{
@@ -2370,7 +2370,7 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-5-codex",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -2433,7 +2433,7 @@ func TestProxy_CodexInvalidEncryptedContentRetriesWithoutEncryptedInputItems(t *
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
 			{"type": "compaction", "encrypted_content": "drop-compaction"},
@@ -2499,7 +2499,7 @@ func TestProxy_Codex400RetriesWithoutThinkingAndLogsStrategy(t *testing.T) {
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5-codex",
 		"input": []map[string]any{
 			{"type": "reasoning", "summary": []any{}, "content": []map[string]any{{"type": "reasoning_text", "text": "drop thinking"}}},
@@ -2571,7 +2571,7 @@ func TestProxy_CodexNormalizesToolSearchArgumentsBeforeForward(t *testing.T) {
 		{name: "codex-normalize", channelType: "codex", models: "gpt-5.5", apiKey: "sk-codex"},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
 			{"type": "tool_search_call", "call_id": "search_valid", "status": "completed", "arguments": `{"query":"codegraph_explore","limit":5}`},
@@ -2678,7 +2678,7 @@ func TestProxy_AnyrouterCodexStripsToolSearchBeforeForwardThenRetriesEncryptedCo
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
 			{"type": "reasoning", "summary": []any{}, "encrypted_content": "drop-reasoning"},
@@ -2747,7 +2747,7 @@ func TestProxy_CodexInvalidEncryptedContentWrappedRequestErrorRetries(t *testing
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
 			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
@@ -2799,7 +2799,7 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gpt-5.5",
 		"input": []map[string]any{
 			{"type": "reasoning", "summary": []any{}, "content": nil, "encrypted_content": "drop-reasoning"},
@@ -2851,7 +2851,7 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 
 	done := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		done <- doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		done <- doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 			"model":    "gpt-5-codex",
 			"stream":   true,
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -2910,7 +2910,7 @@ func TestProxy_Success_Streaming_CodexCompletedWithoutEOF(t *testing.T) {
 
 			done := make(chan *httptest.ResponseRecorder, 1)
 			go func() {
-				done <- doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+				done <- doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 					"model":  "gpt-5-codex",
 					"stream": true,
 					"input":  "hi",
@@ -2993,7 +2993,7 @@ func TestProxy_Success_Streaming_CodexToOpenAITransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model":  "gpt-4o",
 		"stream": true,
 		"input": []map[string]any{{
@@ -3053,7 +3053,7 @@ func TestProxy_GeminiTransform_UsesResolvedActualModelInUpstreamPath(t *testing.
 		}),
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "alias-model",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -3108,7 +3108,7 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform_TextPlainSSE(t *testing
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gemini-2.5-pro",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -3156,7 +3156,7 @@ func TestProxy_StructuredOpenAIImageTransformHitsUpstream(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{{
 			"role": "user",
@@ -3208,7 +3208,7 @@ func TestProxy_StructuredAnthropicBlocksTransformHitsUpstream(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{
 			{"role": "assistant", "content": []map[string]any{{"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"query": "go"}}}},
@@ -3260,7 +3260,7 @@ func TestProxy_StructuredCodexFunctionFamilyTransformHitsUpstream(t *testing.T) 
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gemini-2.5-pro",
 		"input": []map[string]any{
 			{"type": "message", "role": "user", "content": []map[string]any{
@@ -3307,7 +3307,7 @@ func TestProxy_UnsupportedStructuredTransformRequestReturns400(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{{
 			"role": "user",
@@ -3353,7 +3353,7 @@ func TestProxy_UnsupportedStructuredAnthropicTransformRequestReturns400(t *testi
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{{
 			"role": "user",
@@ -3399,7 +3399,7 @@ func TestProxy_UnsupportedStructuredCodexTransformRequestReturns400(t *testing.T
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gemini-2.5-pro",
 		"input": []map[string]any{{
 			"type":    "message",
@@ -3440,7 +3440,7 @@ func TestProxy_ChannelRetry_On503(t *testing.T) {
 		{name: "ch2-ok", models: "gpt-4", apiKey: "sk-2", priority: 50},
 	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -3478,7 +3478,7 @@ func TestProxy_NonStreamingEmpty200RetriesNextChannel(t *testing.T) {
 		1: upstreamOK.URL,
 	})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -3530,7 +3530,7 @@ func TestProxy_StreamingEmpty200RetriesNextChannel(t *testing.T) {
 		1: upstreamOK.URL,
 	})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -3589,7 +3589,7 @@ func TestProxy_StreamingPingOnly200RetriesNextChannel(t *testing.T) {
 		1: upstreamOK.URL,
 	})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -3677,7 +3677,7 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	// 强制渠道1首跳命中失败URL，避免随机首跳影响稳定性
 	env.server.urlSelector.CooldownURL(channelID, upstreamShouldSkip.URL)
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -3751,7 +3751,7 @@ func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
 	// 强制 URL2 进入冷却，确保首跳先打到 timeout URL
 	env.server.urlSelector.CooldownURL(channelID, upstreamOK.URL)
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -3825,7 +3825,7 @@ func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
 
 	const rounds = 120
 	for range rounds {
-		w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 			"model":    "gpt-4",
 			"messages": []map[string]string{{"role": "user", "content": "hi"}},
 		}, nil)
@@ -3873,7 +3873,7 @@ func TestProxy_MultiURLProbeCanceledByShutdown_DoesNotPolluteCooldown(t *testing
 		return nil, ctx.Err()
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -3975,7 +3975,7 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	engine := gin.New()
 	srv.SetupRoutes(engine)
 
-	w := doProxyRequest(t, engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4014,7 +4014,7 @@ func TestProxy_AllChannelsExhausted(t *testing.T) {
 		{name: "ch2", models: "gpt-4", apiKey: "sk-2", priority: 50},
 	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4045,7 +4045,7 @@ func TestProxy_SingleChannel5xx_SkipsSummaryLog(t *testing.T) {
 		{name: "only-ch", models: "gpt-4", apiKey: "sk-1", priority: 100},
 	}, map[int]string{0: upstream.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4162,7 +4162,7 @@ func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	env.server.authService.authTokenModels[tokenHash] = []string{"gpt-3.5-turbo"}
 	env.server.authService.authTokensMux.Unlock()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4217,7 +4217,7 @@ func TestProxy_ChannelRestriction_UsesOnlyAllowedChannel(t *testing.T) {
 	env.server.authService.authTokenChannels[tokenHash] = []int64{allowedID}
 	env.server.authService.authTokensMux.Unlock()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4252,7 +4252,7 @@ func TestProxy_ChannelRestriction_Returns403WhenNoAllowedCandidate(t *testing.T)
 	env.server.authService.authTokenChannels[tokenHash] = []int64{999999}
 	env.server.authService.authTokensMux.Unlock()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4292,7 +4292,7 @@ func TestProxy_ChannelRestriction_PreservesNoCandidateResponse(t *testing.T) {
 	env.server.authService.authTokenChannels[tokenHash] = []int64{configs[0].ID}
 	env.server.authService.authTokensMux.Unlock()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4326,7 +4326,7 @@ func TestProxy_CostLimitExceeded_Returns429(t *testing.T) {
 	}
 	env.server.authService.authTokensMux.Unlock()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4353,7 +4353,7 @@ func TestProxy_NoChannels_Returns503(t *testing.T) {
 	engine := gin.New()
 	srv.SetupRoutes(engine)
 
-	w := doProxyRequest(t, engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -4418,7 +4418,7 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 		t.Fatalf("expected no channel cooldown before request, but found one for channel_id=%d", channelID)
 	}
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -4481,7 +4481,7 @@ func TestProxy_SSEFreeTierBudgetExceededCoolsKeyThirtyMinutes(t *testing.T) {
 	channelID := configs[0].ID
 
 	before := time.Now()
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
@@ -4558,7 +4558,7 @@ func TestProxy_SSEErrorEventBeforeClientOutput_RetriesNextChannel(t *testing.T) 
 		{name: "ch2-ok", models: "gpt-4", apiKey: "sk-2", priority: 50},
 	}, map[int]string{0: upstream1.URL, 1: upstream2.URL})
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gpt-4",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},

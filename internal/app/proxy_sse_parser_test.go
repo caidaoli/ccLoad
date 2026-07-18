@@ -476,7 +476,7 @@ func TestJSONUsageParser_ExtractsImageGenerationToolCost(t *testing.T) {
 	parser.GetUsage()
 
 	expected := (10*5.00 + 20*8.00 + 30*30.00) / 1_000_000
-	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected) {
 		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
 	}
 }
@@ -494,7 +494,7 @@ data: {"type":"response.completed","response":{"tools":[{"type":"image_generatio
 	parser.GetUsage()
 
 	expected := (54*8.00 + 1372*30.00) / 1_000_000
-	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected) {
 		t.Fatalf("image generation tool cost = %.6f, 期望 %.6f", got, expected)
 	}
 }
@@ -522,7 +522,7 @@ func TestSSEUsageParser_ChargesCompletedImageGenerationWithoutUsage(t *testing.T
 	}
 
 	const expected = 0.165
-	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected) {
 		t.Fatalf("image generation fallback cost = %.6f, 期望 %.6f", got, expected)
 	}
 }
@@ -545,7 +545,7 @@ func TestSSEUsageParser_PreservesImageFallbackWhenLaterUsageArrives(t *testing.T
 	}
 
 	const expected = 0.165
-	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected) {
 		t.Fatalf("later usage覆盖了图片兜底成本: got=%.6f, 期望 %.6f", got, expected)
 	}
 }
@@ -563,7 +563,7 @@ data: {"type":"response.completed","response":{"tools":[{"type":"image_generatio
 	parser.GetUsage()
 
 	expected := (54*8.00 + 1372*30.00) / 1_000_000
-	if got := parser.GetToolCostUSD(); !floatEquals(got, expected, 0.000001) {
+	if got := parser.GetToolCostUSD(); !floatEquals(got, expected) {
 		t.Fatalf("tool_usage成本未优先: got=%.6f, 期望 %.6f", got, expected)
 	}
 }

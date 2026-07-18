@@ -48,7 +48,7 @@ func TestProxy_StructuredGeminiResponseToAnthropicTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gemini-2.5-pro",
 		"messages": []map[string]any{{
 			"role":    "user",
@@ -106,7 +106,7 @@ func TestProxy_StructuredGeminiResponseToCodexTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "gemini-2.5-pro",
 		"input": []map[string]any{{
 			"type":    "message",
@@ -165,7 +165,7 @@ func TestProxy_StructuredAnthropicResponseToOpenAITransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/chat/completions", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "claude-3-5-sonnet",
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
 	}, nil)
@@ -218,7 +218,7 @@ func TestProxy_StructuredAnthropicResponseToCodexTransform(t *testing.T) {
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model": "claude-3-5-sonnet",
 		"input": []map[string]any{{
 			"type":    "message",
@@ -278,7 +278,7 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/messages", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model":  "gemini-2.5-pro",
 		"stream": true,
 		"messages": []map[string]any{{
@@ -381,7 +381,7 @@ func TestProxy_StreamingGeminiResponseToCodexTransform_MultipleToolCallsAcrossCh
 	}
 	env.server.InvalidateChannelListCache()
 
-	w := doProxyRequest(t, env.engine, http.MethodPost, "/v1/responses", map[string]any{
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
 		"model":  "gemini-2.5-pro",
 		"stream": true,
 		"input": []map[string]any{{

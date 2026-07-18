@@ -9,7 +9,7 @@ import (
 func TestDetectionLogFromResult_AllowsNilConfig(t *testing.T) {
 	t.Parallel()
 
-	entry := detectionLogFromResult(nil, model.LogSourceManualTest, "request-model", "actual-model", "sk-test", "127.0.0.1", 42, "", map[string]any{
+	entry := detectionLogFromResult(nil, model.LogSourceManualTest, "request-model", "actual-model", "sk-test", "127.0.0.1", "", map[string]any{
 		"status_code":            200,
 		"duration_ms":            int64(1500),
 		"first_byte_duration_ms": int64(250),
@@ -38,7 +38,7 @@ func TestDetectionLogFromResult_NormalizesOpenAIChatMixedUsage(t *testing.T) {
 		ID:          212,
 		ChannelType: "openai",
 	}
-	entry := detectionLogFromResult(cfg, model.LogSourceManualTest, "mimo-v2.5", "", "sk-test", "", 0, "", map[string]any{
+	entry := detectionLogFromResult(cfg, model.LogSourceManualTest, "mimo-v2.5", "", "sk-test", "", "", map[string]any{
 		"status_code": 200,
 		"api_response": map[string]any{
 			"usage": map[string]any{
@@ -68,7 +68,7 @@ func TestDetectionLogFromResult_NormalizesOpenAIChatMixedUsage(t *testing.T) {
 func TestDetectionLogFromResult_UsesRequestThinkingEffort(t *testing.T) {
 	t.Parallel()
 
-	entry := detectionLogFromResult(nil, model.LogSourceManualTest, "gpt-5.5", "", "sk-test", "", 0, "High", map[string]any{
+	entry := detectionLogFromResult(nil, model.LogSourceManualTest, "gpt-5.5", "", "sk-test", "", "High", map[string]any{
 		"status_code": 200,
 		"message":     "API测试成功",
 	})
@@ -81,7 +81,7 @@ func TestDetectionLogFromResult_UsesRequestThinkingEffort(t *testing.T) {
 func TestDetectionLogFromResult_UpstreamThinkingEffortOverridesRequest(t *testing.T) {
 	t.Parallel()
 
-	entry := detectionLogFromResult(nil, model.LogSourceManualChat, "gpt-5.5", "", "sk-test", "", 0, "low", map[string]any{
+	entry := detectionLogFromResult(nil, model.LogSourceManualChat, "gpt-5.5", "", "sk-test", "", "low", map[string]any{
 		"status_code": 200,
 		"api_response": map[string]any{
 			"response": map[string]any{

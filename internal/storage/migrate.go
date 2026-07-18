@@ -246,7 +246,7 @@ func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) er
 }
 
 func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) error {
-	query := fmt.Sprintf("DELETE FROM system_settings WHERE %s = ?", quoteIdent(dialect, "key"))
+	query := fmt.Sprintf("DELETE FROM system_settings WHERE %s = ?", quoteKeyIdent(dialect))
 	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), key); err != nil {
 		return fmt.Errorf("delete system setting %s: %w", key, err)
 	}
@@ -255,7 +255,7 @@ func deleteSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key s
 
 // hasSystemSetting 检查系统设置是否存在（用于配置迁移和旧版标记兼容）
 func hasSystemSetting(ctx context.Context, db *sql.DB, dialect Dialect, key string) bool {
-	query := fmt.Sprintf("SELECT 1 FROM system_settings WHERE %s = ? LIMIT 1", quoteIdent(dialect, "key"))
+	query := fmt.Sprintf("SELECT 1 FROM system_settings WHERE %s = ? LIMIT 1", quoteKeyIdent(dialect))
 	var exists int
 	err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, query), key).Scan(&exists)
 	return err == nil
@@ -402,7 +402,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 刷新部分配置项的元信息（description/default/value_type），避免"代码语义已变但DB描述仍旧"。
 	{
-		keyCol := quoteIdent(dialect, "key")
+		keyCol := quoteKeyIdent(dialect)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
@@ -433,7 +433,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 迁移 success_rate_penalty_weight 类型：float → int（2026-01 类型修正）
 	{
-		keyCol := quoteIdent(dialect, "key")
+		keyCol := quoteKeyIdent(dialect)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'int' WHERE %s = 'success_rate_penalty_weight' AND value_type = 'float'", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
@@ -445,7 +445,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 
 	// 迁移 channel_check_interval_hours 类型：int → float（支持分钟级小数间隔）
 	{
-		keyCol := quoteIdent(dialect, "key")
+		keyCol := quoteKeyIdent(dialect)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
@@ -476,7 +476,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		const oldKey = "cooldown_fallback_threshold"
 		const newKey = "cooldown_fallback_enabled"
 
-		keyCol := quoteIdent(dialect, "key")
+		keyCol := quoteKeyIdent(dialect)
 
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueMigrateSQL := fmt.Sprintf(`UPDATE system_settings SET value = CASE WHEN value = '0' THEN 'false' ELSE 'true' END WHERE %s = ? AND value_type = 'int'`, keyCol)
@@ -500,23 +500,17 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	return nil
 }
 
-// isMigrationApplied 检查迁移是否已执行
-func isMigrationApplied(ctx context.Context, db *sql.DB, version string, dialect Dialect) (bool, error) {
+// hasMigration 检查迁移是否已执行；查询失败时按未执行处理。
+func hasMigration(ctx context.Context, db *sql.DB, version string, dialect Dialect) bool {
 	var count int
 	err := db.QueryRowContext(ctx,
 		rebindIfPostgres(dialect, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?"), version,
 	).Scan(&count)
 	if err != nil {
 		// 表不存在时视为未执行
-		return false, nil
+		return false
 	}
-	return count > 0, nil
-}
-
-// hasMigration 检查迁移是否已执行（简化版，忽略错误）
-func hasMigration(ctx context.Context, db *sql.DB, version string, dialect Dialect) bool {
-	applied, _ := isMigrationApplied(ctx, db, version, dialect)
-	return applied
+	return count > 0
 }
 
 // recordMigration 记录迁移已执行

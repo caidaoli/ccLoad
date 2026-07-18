@@ -102,7 +102,7 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 		})
 
 		expected := (100*2.50+10*15.00)/1_000_000 + 0.041592
-		if !floatEquals(entry.Cost, expected, 0.000001) {
+		if !floatEquals(entry.Cost, expected) {
 			t.Fatalf("entry cost = %.6f, 期望 %.6f", entry.Cost, expected)
 		}
 	})
@@ -255,14 +255,14 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	gpt54LongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000}
 	got := computeRequestCost("gpt-5.4", "priority", gpt54LongContext)
 	want := util.CalculateCostDetailed("gpt-5.4", 300_000, 1_000, 0, 0, 0) * 2
-	if !floatEquals(got, want, 0.000001) {
+	if !floatEquals(got, want) {
 		t.Fatalf("gpt-5.4 priority cost=%.6f, want %.6f", got, want)
 	}
 
 	qwenLongContext := &fwResult{InputTokens: 300_000, OutputTokens: 1_000_000}
 	got = computeRequestCost("qwen3.5-plus", "priority", qwenLongContext)
 	want = util.CalculateCostDetailed("qwen3.5-plus", 300_000, 1_000_000, 0, 0, 0)
-	if !floatEquals(got, want, 0.000001) {
+	if !floatEquals(got, want) {
 		t.Fatalf("qwen priority cost=%.6f, want service_tier ignored cost %.6f", got, want)
 	}
 }

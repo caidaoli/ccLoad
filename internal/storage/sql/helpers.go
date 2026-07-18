@@ -200,15 +200,15 @@ func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string
 }
 
 // applyChannelFilter 应用渠道类型或名称过滤（优先级：ChannelType > ChannelName/Like）
-// 返回值：是否应用了过滤、是否为空结果、错误
+// 返回值：是否为空结果、错误
 // 注意：ChannelID 精确匹配不在此处处理，由 QueryBuilder.ApplyFilter 负责
-func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (bool, bool, error) {
+func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (bool, error) {
 	channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
 	if err != nil {
-		return false, false, err
+		return false, err
 	}
 	if isEmpty {
-		return true, true, nil
+		return true, nil
 	}
 	if len(channelIDs) > 0 {
 		vals := make([]any, 0, len(channelIDs))
@@ -216,9 +216,8 @@ func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, fil
 			vals = append(vals, id)
 		}
 		qb.WhereIn("channel_id", vals)
-		return true, false, nil
 	}
-	return false, false, nil
+	return false, nil
 }
 
 // intersectIDs 计算两个ID切片的交集

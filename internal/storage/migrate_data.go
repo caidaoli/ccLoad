@@ -64,9 +64,7 @@ func backfillLogsMinuteBucketMySQL(ctx context.Context, db *sql.DB, batchSize in
 // 3. 放宽channels表废弃字段约束(NOT NULL → NULL)，保留兼容性以支持版本回滚
 func migrateChannelModelsSchema(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	// 检查迁移是否已执行（幂等性保证）
-	if applied, err := isMigrationApplied(ctx, db, channelModelsRedirectMigrationVersion, dialect); err != nil {
-		return fmt.Errorf("check migration status: %w", err)
-	} else if applied {
+	if hasMigration(ctx, db, channelModelsRedirectMigrationVersion, dialect) {
 		return nil // 已执行，跳过
 	}
 

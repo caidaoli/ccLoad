@@ -22,14 +22,13 @@ func selectScheduledCheckModel(cfg *model.Config) (string, string) {
 	return "", "scheduled_check_model 不在渠道模型列表中"
 }
 
-func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP string, authTokenID int64, requestThinkingEffort string, result map[string]any) *model.LogEntry {
+func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP, requestThinkingEffort string, result map[string]any) *model.LogEntry {
 	entry := &model.LogEntry{
 		Time:           model.JSONTime{Time: time.Now()},
 		LogSource:      logSource,
 		Model:          requestModel,
 		ClientIP:       clientIP,
 		APIKeyUsed:     apiKeyUsed,
-		AuthTokenID:    authTokenID,
 		BaseURL:        getResultString(result, "base_url"),
 		StatusCode:     getResultIntOrDefault(result, "status_code", 0),
 		Duration:       float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,

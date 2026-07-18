@@ -18,9 +18,10 @@ import (
 	"github.com/bytedance/sonic"
 )
 
-func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, requestPath string, body []byte) protocol.TransformPlan {
+func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, body []byte) protocol.TransformPlan {
 	t.Helper()
 
+	const requestPath = "/v1/messages"
 	modelName := extractModelFromPath(requestPath)
 	if modelName == "" {
 		var reqModel struct {
@@ -421,7 +422,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg,
 			"sk-test", // 正确的key
 			http.MethodPost,
-			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"model":"claude-3"}`)),
+			mustBuildTestTransformPlan(t, cfg, []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
 			cfg.URL,
@@ -454,7 +455,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			cfg,
 			"sk-wrong", // 错误的key
 			http.MethodPost,
-			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"model":"claude-3"}`)),
+			mustBuildTestTransformPlan(t, cfg, []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
 			cfg.URL,
@@ -687,7 +688,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			cfg,
 			"sk-test",
 			http.MethodPost,
-			mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
+			mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 			http.Header{},
 			"",
 			cfg.URL,
@@ -768,7 +769,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg,
 				"sk-test",
 				http.MethodPost,
-				mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{}`)),
+				mustBuildTestTransformPlan(t, cfg, []byte(`{}`)),
 				http.Header{},
 				"",
 				cfg.URL,
@@ -807,7 +808,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{}`)), http.Header{}, "", cfg.URL, recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, mustBuildTestTransformPlan(t, cfg, []byte(`{}`)), http.Header{}, "", cfg.URL, recorder, nil)
 		}
 
 		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
@@ -840,7 +841,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cfg,
 				"sk-test",
 				http.MethodPost,
-				mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)), // 流式请求
+				mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)), // 流式请求
 				http.Header{},
 				"",
 				cfg.URL,
@@ -892,7 +893,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		cfg,
 		"sk-test",
 		http.MethodPost,
-		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
+		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
 		cfg.URL,
@@ -957,7 +958,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		cfg,
 		"sk-test",
 		http.MethodPost,
-		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
+		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
 		cfg.URL,
@@ -1024,7 +1025,7 @@ func TestFirstByteTimeout_StreamingHeartbeatBeforeContent(t *testing.T) {
 		cfg,
 		"sk-test",
 		http.MethodPost,
-		mustBuildTestTransformPlan(t, cfg, "/v1/messages", []byte(`{"stream":true}`)),
+		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
 		cfg.URL,

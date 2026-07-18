@@ -1062,8 +1062,8 @@ func TestHandleError_ChineseRelativeQuotaCooldown(t *testing.T) {
 		t.Fatal("expected key cooldown")
 	}
 
-	beforeExpected := nextBeijingTime(before, 1, 3, 13)
-	afterExpected := nextBeijingTime(after, 1, 3, 13)
+	beforeExpected := nextBeijingTime(before, 3, 13)
+	afterExpected := nextBeijingTime(after, 3, 13)
 	if !sameTimeSecond(cooldownUntil, beforeExpected) &&
 		!sameTimeSecond(cooldownUntil, afterExpected) {
 		t.Fatalf("cooldownUntil=%s, want %s or %s",
@@ -1120,8 +1120,8 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsChannelUntilRetryClock(t *testin
 	}
 
 	channelCooldownUntil := time.Unix(channelCfg.CooldownUntil, 0)
-	beforeExpected := nextBeijingTime(before, 1, 12, 0)
-	afterExpected := nextBeijingTime(after, 1, 12, 0)
+	beforeExpected := nextBeijingTime(before, 12, 0)
+	afterExpected := nextBeijingTime(after, 12, 0)
 	if channelCfg.CooldownUntil == 0 ||
 		(!sameTimeSecond(channelCooldownUntil, beforeExpected) &&
 			!sameTimeSecond(channelCooldownUntil, afterExpected)) {
@@ -1234,11 +1234,11 @@ func nextLocalMidnight(now time.Time) time.Time {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.Local)
 }
 
-func nextBeijingTime(now time.Time, days int, hour int, minute int) time.Time {
+func nextBeijingTime(now time.Time, hour int, minute int) time.Time {
 	loc := time.FixedZone("Asia/Shanghai", 8*60*60)
 	local := now.In(loc)
 	y, m, d := local.Date()
-	return time.Date(y, m, d+days, hour, minute, 0, 0, loc)
+	return time.Date(y, m, d+1, hour, minute, 0, 0, loc)
 }
 
 func sameTimeSecond(a, b time.Time) bool {

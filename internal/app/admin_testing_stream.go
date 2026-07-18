@@ -125,7 +125,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, keySelection.apiKey, c.ClientIP(), 0, testReq.ThinkingEffort, lastResult))
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -398,7 +398,7 @@ func (s *Server) streamChatNonStreamResponse(
 	result = attachTestDebugData(requestPlan, resp, result)
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), 0, requestThinking, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), requestThinking, result))
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -521,7 +521,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	if sr.debugData != nil {
 		result["debug_data"] = sr.debugData
 	}
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), 0, sr.requestThinking, result))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), sr.requestThinking, result))
 }
 
 // streamChatNative 原生协议时把上游 SSE 实时透传给前端（提取 delta 文本）。
