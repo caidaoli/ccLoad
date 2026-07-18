@@ -1270,14 +1270,13 @@ function getChannelType(channel) {
   return normalizeProtocol(channel?.channel_type) || 'anthropic';
 }
 
-function channelMatchesModelType(channel, modelType = selectedModelType) {
-  const normalizedModelType = normalizeProtocol(modelType);
-  if (!normalizedModelType) return true;
-  return getChannelType(channel) === normalizedModelType;
-}
-
 function getAvailableChannelTypes() {
-  return Array.from(new Set(channelsList.map(ch => getChannelType(ch)))).sort((a, b) => a.localeCompare(b));
+  // 类型下拉与后端 fetchChannelIDsByType 一致：原生 channel_type + protocol_transforms
+  const types = new Set();
+  channelsList.forEach((ch) => {
+    getExposedProtocols(ch).forEach((protocol) => types.add(protocol));
+  });
+  return Array.from(types).sort((a, b) => a.localeCompare(b));
 }
 
 function ensureSelectedModelType() {
@@ -1331,8 +1330,9 @@ function getAllModelsForProtocol(protocol) {
   const normalizedProtocol = normalizeProtocol(protocol);
   const modelSet = new Set();
   channelsList.forEach(ch => {
-    const include = channelMatchesModelType(ch) && channelExposesProtocol(ch, normalizedProtocol);
-    if (!include) return;
+    // 暴露该协议即可（原生类型或 protocol_transforms），不要再用原生类型二次收窄，
+    // 否则转换渠道上的模型永远进不了「按模型测试」列表。
+    if (!channelExposesProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
       if (modelName) modelSet.add(modelName);
@@ -2893,15 +2893,19 @@ function bindEvents() {
     selectedProtocol = normalizeProtocol(target.value) || selectedProtocol;
     if (testMode === TEST_MODE_MODEL) {
       selectedModelModeProtocol = selectedProtocol;
+      // 协议与类型保持同步，并立刻刷新模型候选/渠道行。
+      selectedModelType = selectedProtocol;
+      saveSelectedModelTypeToStorage(selectedModelType);
+      if (modelTypeSelect) modelTypeSelect.value = selectedModelType;
     }
     saveSelectedProtocolToStorage(selectedProtocol);
     clearProgress();
+    renderProtocolTransformOptions();
 
     if (testMode === TEST_MODE_MODEL) {
-      return;
+      populateModelSelector();
+      renderModelModeRows();
     }
-
-    renderProtocolTransformOptions();
   });
 
   if (!modelSelectCombobox && modelSelect) {
