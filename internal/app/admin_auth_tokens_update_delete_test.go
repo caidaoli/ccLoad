@@ -72,6 +72,16 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid channel restriction mode", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/1", []byte(`{"channel_restriction_mode":"denyy"}`)))
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
 	t.Run("not found", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/999", []byte(`{"allowed_models":[]}`)))
 		c.Params = gin.Params{{Key: "id", Value: "999"}}
@@ -89,6 +99,34 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		server.HandleUpdateAuthToken(c)
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
+	t.Run("deny mode persists and reloads", func(t *testing.T) {
+		body := map[string]any{
+			"allowed_channel_ids":      []int64{11, 22},
+			"channel_restriction_mode": model.ChannelRestrictionModeDeny,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", body))
+		c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(token.ID, 10)}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		updated, err := store.GetAuthToken(ctx, token.ID)
+		if err != nil {
+			t.Fatalf("GetAuthToken failed: %v", err)
+		}
+		if updated.ChannelRestrictionMode != model.ChannelRestrictionModeDeny {
+			t.Fatalf("ChannelRestrictionMode=%q, want deny", updated.ChannelRestrictionMode)
+		}
+		if server.authService.IsChannelAllowed(token.Token, 11) {
+			t.Fatal("deny-listed channel should be rejected after ReloadAuthTokens")
+		}
+		if !server.authService.IsChannelAllowed(token.Token, 33) {
+			t.Fatal("channel outside deny list should be allowed after ReloadAuthTokens")
 		}
 	})
 

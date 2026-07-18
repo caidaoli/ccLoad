@@ -4172,7 +4172,7 @@ func TestProxy_ModelNotAllowed_Returns403(t *testing.T) {
 	}
 }
 
-func TestProxy_ChannelRestriction_UsesOnlyAllowedChannel(t *testing.T) {
+func TestProxy_ChannelRestriction_DenySkipsListedChannel(t *testing.T) {
 	t.Parallel()
 
 	var disallowedHits atomic.Int32
@@ -4202,19 +4202,22 @@ func TestProxy_ChannelRestriction_UsesOnlyAllowedChannel(t *testing.T) {
 		t.Fatalf("ListConfigs failed: %v", err)
 	}
 	var allowedID int64
+	var disallowedID int64
 	for _, cfg := range configs {
-		if cfg.Name == "allowed-low-priority" {
+		switch cfg.Name {
+		case "allowed-low-priority":
 			allowedID = cfg.ID
-			break
+		case "disallowed-high-priority":
+			disallowedID = cfg.ID
 		}
 	}
-	if allowedID == 0 {
-		t.Fatal("allowed channel id not found")
+	if allowedID == 0 || disallowedID == 0 {
+		t.Fatalf("channel ids not found: allowed=%d disallowed=%d", allowedID, disallowedID)
 	}
 
 	tokenHash := model.HashToken("test-api-key")
 	env.server.authService.authTokensMux.Lock()
-	env.server.authService.authTokenChannels[tokenHash] = []int64{allowedID}
+	env.server.authService.authTokenChannels[tokenHash] = mustChannelRestriction(t, model.ChannelRestrictionModeDeny, disallowedID)
 	env.server.authService.authTokensMux.Unlock()
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -4249,7 +4252,7 @@ func TestProxy_ChannelRestriction_Returns403WhenNoAllowedCandidate(t *testing.T)
 
 	tokenHash := model.HashToken("test-api-key")
 	env.server.authService.authTokensMux.Lock()
-	env.server.authService.authTokenChannels[tokenHash] = []int64{999999}
+	env.server.authService.authTokenChannels[tokenHash] = mustChannelRestriction(t, model.ChannelRestrictionModeAllow, 999999)
 	env.server.authService.authTokensMux.Unlock()
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -4289,7 +4292,7 @@ func TestProxy_ChannelRestriction_PreservesNoCandidateResponse(t *testing.T) {
 
 	tokenHash := model.HashToken("test-api-key")
 	env.server.authService.authTokensMux.Lock()
-	env.server.authService.authTokenChannels[tokenHash] = []int64{configs[0].ID}
+	env.server.authService.authTokenChannels[tokenHash] = mustChannelRestriction(t, model.ChannelRestrictionModeAllow, configs[0].ID)
 	env.server.authService.authTokensMux.Unlock()
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{

@@ -37,15 +37,15 @@ type AuthService struct {
 
 	// API 认证（代理 API 使用的数据库令牌）
 	// [FIX] 2025-12: 存储过期时间而非bool，支持懒惰过期校验
-	authTokens          map[string]int64          // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
-	authTokenIDs        map[string]int64          // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
-	authTokenHashes     map[int64]string          // Token ID → Token哈希（Web会话绑定代理身份）
-	authTokenModels     map[string][]string       // Token哈希 → 允许的模型列表（2026-01新增）
-	authTokenChannels   map[string][]int64        // Token哈希 → 允许的渠道ID列表（2026-04新增）
-	authTokenCostLimits map[string]tokenCostLimit // Token哈希 → 费用限额状态（仅限额>0的令牌）
-	authTokenMaxConns   map[string]int            // Token哈希 → 最大并发请求数（0=无限制）
-	authTokenActiveReqs map[string]int            // Token哈希 → 当前进行中请求数
-	authTokensMux       sync.RWMutex              // 并发保护（支持热更新）
+	authTokens          map[string]int64                    // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
+	authTokenIDs        map[string]int64                    // Token哈希 → Token ID 映射（用于日志记录，2025-12新增）
+	authTokenHashes     map[int64]string                    // Token ID → Token哈希（Web会话绑定代理身份）
+	authTokenModels     map[string][]string                 // Token哈希 → 允许的模型列表（2026-01新增）
+	authTokenChannels   map[string]model.ChannelRestriction // Token哈希 → 已校验的渠道限制策略
+	authTokenCostLimits map[string]tokenCostLimit           // Token哈希 → 费用限额状态（仅限额>0的令牌）
+	authTokenMaxConns   map[string]int                      // Token哈希 → 最大并发请求数（0=无限制）
+	authTokenActiveReqs map[string]int                      // Token哈希 → 当前进行中请求数
+	authTokensMux       sync.RWMutex                        // 并发保护（支持热更新）
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -89,7 +89,7 @@ func NewAuthService(
 		authTokenIDs:           make(map[string]int64),
 		authTokenHashes:        make(map[int64]string),
 		authTokenModels:        make(map[string][]string),
-		authTokenChannels:      make(map[string][]int64),
+		authTokenChannels:      make(map[string]model.ChannelRestriction),
 		authTokenCostLimits:    make(map[string]tokenCostLimit),
 		authTokenMaxConns:      make(map[string]int),
 		authTokenActiveReqs:    make(map[string]int),
@@ -662,7 +662,7 @@ func (s *AuthService) ReloadAuthTokens() error {
 	newTokenIDs := make(map[string]int64, len(tokens))
 	newTokenHashes := make(map[int64]string, len(tokens))
 	newTokenModels := make(map[string][]string, len(tokens))
-	newTokenChannels := make(map[string][]int64, len(tokens))
+	newTokenChannels := make(map[string]model.ChannelRestriction, len(tokens))
 	newTokenCostLimits := make(map[string]tokenCostLimit, len(tokens))
 	newTokenMaxConns := make(map[string]int, len(tokens))
 	for _, t := range tokens {
@@ -681,8 +681,12 @@ func (s *AuthService) ReloadAuthTokens() error {
 		if len(t.AllowedModels) > 0 {
 			newTokenModels[t.Token] = t.AllowedModels
 		}
-		if len(t.AllowedChannelIDs) > 0 {
-			newTokenChannels[t.Token] = t.AllowedChannelIDs
+		channelRestriction, err := t.ChannelRestriction()
+		if err != nil {
+			return fmt.Errorf("invalid auth token %d: %w", t.ID, err)
+		}
+		if channelRestriction.Restricted() {
+			newTokenChannels[t.Token] = channelRestriction
 		}
 		// 费用限额：只为“有限额”的令牌维护状态（避免无谓内存占用）
 		limitMicro := t.CostLimitMicroUSD
@@ -807,26 +811,17 @@ func (s *AuthService) IsModelAllowed(tokenHash, model string) bool {
 	return ok
 }
 
-func (s *AuthService) getAllowedChannelSet(tokenHash string) (map[int64]struct{}, bool) {
+func (s *AuthService) getChannelRestriction(tokenHash string) (model.ChannelRestriction, bool) {
 	s.authTokensMux.RLock()
-	allowedChannels, hasRestriction := s.authTokenChannels[tokenHash]
+	restriction, hasRestriction := s.authTokenChannels[tokenHash]
 	s.authTokensMux.RUnlock()
-
-	if !hasRestriction || len(allowedChannels) == 0 {
-		return nil, false
-	}
-
-	allowedSet := make(map[int64]struct{}, len(allowedChannels))
-	for _, channelID := range allowedChannels {
-		allowedSet[channelID] = struct{}{}
-	}
-	return allowedSet, true
+	return restriction, hasRestriction
 }
 
 // FilterAllowedChannels 按 token 的渠道限制过滤候选渠道。
 // 返回值 restricted 表示该 token 是否启用了渠道限制。
 func (s *AuthService) FilterAllowedChannels(tokenHash string, channels []*model.Config) ([]*model.Config, bool) {
-	allowedSet, hasRestriction := s.getAllowedChannelSet(tokenHash)
+	restriction, hasRestriction := s.getChannelRestriction(tokenHash)
 	if !hasRestriction || len(channels) == 0 {
 		return channels, hasRestriction
 	}
@@ -836,7 +831,7 @@ func (s *AuthService) FilterAllowedChannels(tokenHash string, channels []*model.
 		if cfg == nil {
 			continue
 		}
-		if _, ok := allowedSet[cfg.ID]; ok {
+		if restriction.Allows(cfg.ID) {
 			filtered = append(filtered, cfg)
 		}
 	}
@@ -846,12 +841,11 @@ func (s *AuthService) FilterAllowedChannels(tokenHash string, channels []*model.
 // IsChannelAllowed 检查令牌是否允许访问指定渠道
 // 如果令牌没有渠道限制，返回 true
 func (s *AuthService) IsChannelAllowed(tokenHash string, channelID int64) bool {
-	allowedSet, hasRestriction := s.getAllowedChannelSet(tokenHash)
+	restriction, hasRestriction := s.getChannelRestriction(tokenHash)
 	if !hasRestriction {
 		return true
 	}
-	_, ok := allowedSet[channelID]
-	return ok
+	return restriction.Allows(channelID)
 }
 
 func (s *AuthService) acquireTokenConcurrencySlot(tokenHash string) (release func(), active, limit int, ok bool) {

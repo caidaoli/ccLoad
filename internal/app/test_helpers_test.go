@@ -421,7 +421,7 @@ func newTestAuthService(t testing.TB) *AuthService {
 		authTokens:          make(map[string]int64),
 		authTokenIDs:        make(map[string]int64),
 		authTokenModels:     make(map[string][]string),
-		authTokenChannels:   make(map[string][]int64),
+		authTokenChannels:   make(map[string]model.ChannelRestriction),
 		authTokenCostLimits: make(map[string]tokenCostLimit),
 		authTokenMaxConns:   make(map[string]int),
 		authTokenActiveReqs: make(map[string]int),
@@ -432,6 +432,15 @@ func newTestAuthService(t testing.TB) *AuthService {
 	}
 	t.Cleanup(s.Close) // 幂等关闭（closeOnce 保护）
 	return s
+}
+
+func mustChannelRestriction(t testing.TB, mode string, channelIDs ...int64) model.ChannelRestriction {
+	t.Helper()
+	restriction, err := model.NewChannelRestriction(mode, channelIDs)
+	if err != nil {
+		t.Fatalf("NewChannelRestriction failed: %v", err)
+	}
+	return restriction
 }
 
 // injectAPIToken 注入测试 API token 到 AuthService 的内存映射

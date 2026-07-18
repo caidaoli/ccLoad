@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,57 @@ func TestAuthToken_CreateAndGet(t *testing.T) {
 	}
 }
 
+func TestAuthToken_InvalidChannelRestrictionModeWriteReturnsError(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "invalid_channel_restriction_mode_write.db")
+	ctx := context.Background()
+
+	invalid := &model.AuthToken{
+		Token:                  "invalid-mode-create",
+		Description:            "invalid mode",
+		IsActive:               true,
+		ChannelRestrictionMode: "denyy",
+	}
+	if err := store.CreateAuthToken(ctx, invalid); err == nil {
+		t.Fatal("expected CreateAuthToken to reject invalid channel_restriction_mode")
+	}
+
+	valid := &model.AuthToken{
+		Token:       "invalid-mode-update",
+		Description: "valid mode",
+		IsActive:    true,
+	}
+	if err := store.CreateAuthToken(ctx, valid); err != nil {
+		t.Fatalf("create valid auth token: %v", err)
+	}
+	valid.ChannelRestrictionMode = "denyy"
+	if err := store.UpdateAuthToken(ctx, valid); err == nil {
+		t.Fatal("expected UpdateAuthToken to reject invalid channel_restriction_mode")
+	}
+}
+
+func TestAuthToken_InvalidChannelRestrictionModeReturnsError(t *testing.T) {
+	t.Parallel()
+
+	token := &model.AuthToken{
+		Token:                  "bad-channel-restriction-mode-token",
+		Description:            "Bad Channel Restriction Mode Token",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{1},
+		ChannelRestrictionMode: model.ChannelRestrictionModeDeny,
+		CreatedAt:              time.Now(),
+	}
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_channel_restriction_mode.db",
+		"channel_restriction_mode",
+		"denyy",
+		"channel_restriction_mode",
+		token,
+	)
+}
+
 func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
 	t.Parallel()
 
@@ -78,7 +130,14 @@ func TestAuthToken_InvalidAllowedChannelIDsJSON_ReturnsError(t *testing.T) {
 		AllowedChannelIDs: []int64{1},
 		CreatedAt:         time.Now(),
 	}
-	assertInvalidAuthTokenJSONReturnsError(t, "invalid_allowed_channel_ids.db", "allowed_channel_ids", token)
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_allowed_channel_ids.db",
+		"allowed_channel_ids",
+		`{not-json`,
+		"invalid json",
+		token,
+	)
 }
 
 func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
@@ -91,10 +150,21 @@ func TestAuthToken_InvalidAllowedModelsJSON_ReturnsError(t *testing.T) {
 		AllowedModels: []string{"gpt-4"},
 		CreatedAt:     time.Now(),
 	}
-	assertInvalidAuthTokenJSONReturnsError(t, "invalid_allowed_models.db", "allowed_models", token)
+	assertInvalidAuthTokenColumnReturnsError(
+		t,
+		"invalid_allowed_models.db",
+		"allowed_models",
+		`{not-json`,
+		"invalid json",
+		token,
+	)
 }
 
-func assertInvalidAuthTokenJSONReturnsError(t *testing.T, dbName, column string, token *model.AuthToken) {
+func assertInvalidAuthTokenColumnReturnsError(
+	t *testing.T,
+	dbName, column, invalidValue, wantError string,
+	token *model.AuthToken,
+) {
 	t.Helper()
 
 	tmp := t.TempDir()
@@ -119,7 +189,7 @@ func assertInvalidAuthTokenJSONReturnsError(t *testing.T, dbName, column string,
 	if err != nil {
 		t.Fatalf("open sqlite db: %v", err)
 	}
-	_, err = db.ExecContext(ctx, "UPDATE auth_tokens SET "+column+" = ? WHERE id = ?", `{not-json`, token.ID)
+	_, err = db.ExecContext(ctx, "UPDATE auth_tokens SET "+column+" = ? WHERE id = ?", invalidValue, token.ID)
 	_ = db.Close()
 	if err != nil {
 		t.Fatalf("tamper %s: %v", column, err)
@@ -128,7 +198,10 @@ func assertInvalidAuthTokenJSONReturnsError(t *testing.T, dbName, column string,
 	store2, err := storage.CreateSQLiteStore(dbPath)
 	if err == nil {
 		_ = store2.Close()
-		t.Fatalf("expected reopen sqlite store to fail due to invalid %s json", column)
+		t.Fatalf("expected reopen sqlite store to fail due to invalid %s", column)
+	}
+	if !strings.Contains(err.Error(), wantError) {
+		t.Fatalf("reopen error=%q, want substring %q", err, wantError)
 	}
 }
 

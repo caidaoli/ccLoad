@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -57,10 +58,84 @@ type AuthToken struct {
 	AllowedModels []string `json:"allowed_models,omitempty"` // 允许的模型列表，空表示无限制
 
 	// 渠道限制（2026-04新增）
-	AllowedChannelIDs []int64 `json:"allowed_channel_ids,omitempty"` // 允许的渠道ID列表，空表示无限制
+	// AllowedChannelIDs 为限制列表：空表示无限制。
+	// ChannelRestrictionMode 决定列表语义：allow=白名单，deny=黑名单。
+	AllowedChannelIDs      []int64 `json:"allowed_channel_ids,omitempty"`
+	ChannelRestrictionMode string  `json:"channel_restriction_mode,omitempty"` // allow|deny，空视为 allow
 
 	// 并发限制（2026-04新增）
 	MaxConcurrency int `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+}
+
+// 渠道限制模式常量
+const (
+	ChannelRestrictionModeAllow = "allow"
+	ChannelRestrictionModeDeny  = "deny"
+)
+
+// NormalizeChannelRestrictionMode 规范化渠道限制模式。
+// 空值用于兼容未显式配置的令牌，默认 allow；其他值必须是规范的 allow 或 deny。
+func NormalizeChannelRestrictionMode(mode string) (string, error) {
+	switch mode {
+	case "", ChannelRestrictionModeAllow:
+		return ChannelRestrictionModeAllow, nil
+	case ChannelRestrictionModeDeny:
+		return ChannelRestrictionModeDeny, nil
+	default:
+		return "", fmt.Errorf(
+			"channel_restriction_mode must be %q or %q, got %q",
+			ChannelRestrictionModeAllow,
+			ChannelRestrictionModeDeny,
+			mode,
+		)
+	}
+}
+
+// ChannelRestriction 是经过校验的渠道访问策略。
+// ids 不导出，构造后只能通过 Allows 查询，避免调用方各自实现 allow/deny 极性。
+type ChannelRestriction struct {
+	deny bool
+	ids  map[int64]struct{}
+}
+
+// NewChannelRestriction 构造经过校验的渠道访问策略。
+func NewChannelRestriction(mode string, channelIDs []int64) (ChannelRestriction, error) {
+	normalizedMode, err := NormalizeChannelRestrictionMode(mode)
+	if err != nil {
+		return ChannelRestriction{}, err
+	}
+
+	ids := make(map[int64]struct{}, len(channelIDs))
+	for _, channelID := range channelIDs {
+		ids[channelID] = struct{}{}
+	}
+
+	return ChannelRestriction{
+		deny: normalizedMode == ChannelRestrictionModeDeny,
+		ids:  ids,
+	}, nil
+}
+
+// Restricted 报告该策略是否配置了渠道列表。空列表始终表示无限制。
+func (r ChannelRestriction) Restricted() bool {
+	return len(r.ids) > 0
+}
+
+// Allows 判断渠道是否符合该策略。
+func (r ChannelRestriction) Allows(channelID int64) bool {
+	if !r.Restricted() {
+		return true
+	}
+	_, listed := r.ids[channelID]
+	if r.deny {
+		return !listed
+	}
+	return listed
+}
+
+// ChannelRestriction 返回令牌的经过校验的渠道访问策略。
+func (t *AuthToken) ChannelRestriction() (ChannelRestriction, error) {
+	return NewChannelRestriction(t.ChannelRestrictionMode, t.AllowedChannelIDs)
 }
 
 // AuthTokenRangeStats 某个时间范围内的token统计（从logs表聚合，2025-12新增）
@@ -135,20 +210,6 @@ func (t *AuthToken) IsModelAllowed(model string) bool {
 	return false
 }
 
-// IsChannelAllowed 检查渠道是否被令牌允许访问
-// 如果 AllowedChannelIDs 为空，表示无限制，允许所有渠道
-func (t *AuthToken) IsChannelAllowed(channelID int64) bool {
-	if len(t.AllowedChannelIDs) == 0 {
-		return true
-	}
-	for _, id := range t.AllowedChannelIDs {
-		if id == channelID {
-			return true
-		}
-	}
-	return false
-}
-
 // CostUsedUSD 返回已消耗费用（美元）
 func (t *AuthToken) CostUsedUSD() float64 {
 	return util.MicroUSDToUSD(t.CostUsedMicroUSD)
@@ -210,11 +271,17 @@ type authTokenJSON struct {
 	RecentRPM                float64   `json:"recent_rpm,omitempty"`
 	AllowedModels            []string  `json:"allowed_models,omitempty"`
 	AllowedChannelIDs        []int64   `json:"allowed_channel_ids,omitempty"`
+	ChannelRestrictionMode   string    `json:"channel_restriction_mode,omitempty"`
 	MaxConcurrency           int       `json:"max_concurrency"`
 }
 
 // MarshalJSON 自定义JSON序列化，将MicroUSD转换为USD浮点数
 func (t AuthToken) MarshalJSON() ([]byte, error) {
+	channelRestrictionMode, err := NormalizeChannelRestrictionMode(t.ChannelRestrictionMode)
+	if err != nil {
+		return nil, err
+	}
+
 	return json.Marshal(authTokenJSON{
 		ID:                       t.ID,
 		Token:                    t.Token,
@@ -242,6 +309,7 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		RecentRPM:                t.RecentRPM,
 		AllowedModels:            t.AllowedModels,
 		AllowedChannelIDs:        t.AllowedChannelIDs,
+		ChannelRestrictionMode:   channelRestrictionMode,
 		MaxConcurrency:           t.MaxConcurrency,
 	})
 }

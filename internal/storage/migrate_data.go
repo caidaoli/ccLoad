@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log"
 	"time"
+
+	"ccLoad/internal/model"
 )
 
 // backfillLogsMinuteBucketSQLite 分批回填 logs.minute_bucket（SQLite）
@@ -519,6 +521,34 @@ func validateJSONColumn(ctx context.Context, db *sql.DB, table, col string, pars
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate %s.%s: %w", table, col, err)
+	}
+	return nil
+}
+
+func validateAuthTokensChannelRestrictionMode(ctx context.Context, db *sql.DB) error {
+	rows, err := db.QueryContext(ctx, `SELECT id, channel_restriction_mode FROM auth_tokens`)
+	if err != nil {
+		return fmt.Errorf("query auth_tokens.channel_restriction_mode: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	for rows.Next() {
+		var id int64
+		var mode string
+		if err := rows.Scan(&id, &mode); err != nil {
+			return fmt.Errorf("scan auth_tokens.channel_restriction_mode: %w", err)
+		}
+		if _, err := model.NormalizeChannelRestrictionMode(mode); err != nil {
+			return fmt.Errorf(
+				"auth_tokens.channel_restriction_mode invalid: id=%d value=%q: %w (fix: set channel_restriction_mode to 'allow' or 'deny')",
+				id,
+				mode,
+				err,
+			)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("iterate auth_tokens.channel_restriction_mode: %w", err)
 	}
 	return nil
 }

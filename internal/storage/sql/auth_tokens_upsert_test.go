@@ -30,12 +30,13 @@ func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {
 			"gpt-4o",
 			"claude-3-5-sonnet-latest",
 		},
-		AllowedChannelIDs: []int64{7, 9},
-		CostUsedMicroUSD:  10,
-		CostLimitMicroUSD: 100,
-		MaxConcurrency:    1,
-		SuccessCount:      1,
-		FailureCount:      2,
+		AllowedChannelIDs:      []int64{7, 9},
+		ChannelRestrictionMode: model.ChannelRestrictionModeDeny,
+		CostUsedMicroUSD:       10,
+		CostLimitMicroUSD:      100,
+		MaxConcurrency:         1,
+		SuccessCount:           1,
+		FailureCount:           2,
 	}
 
 	if err := ss.UpsertAuthTokenAllFields(ctx, token); err != nil {
@@ -57,5 +58,25 @@ func TestUpsertAuthTokenAllFields_SQLite(t *testing.T) {
 	}
 	if len(got.AllowedChannelIDs) != 2 || got.AllowedChannelIDs[0] != 7 || got.AllowedChannelIDs[1] != 9 {
 		t.Fatalf("unexpected allowed_channel_ids: %+v", got.AllowedChannelIDs)
+	}
+	if got.ChannelRestrictionMode != model.ChannelRestrictionModeDeny {
+		t.Fatalf("unexpected channel_restriction_mode: %q", got.ChannelRestrictionMode)
+	}
+}
+
+func TestUpsertAuthTokenAllFields_RejectsInvalidChannelRestrictionMode(t *testing.T) {
+	store := newTestStore(t, "auth_tokens_upsert_invalid_mode.db")
+	ss := store.(*sqlstore.SQLStore)
+
+	err := ss.UpsertAuthTokenAllFields(context.Background(), &model.AuthToken{
+		ID:                     123,
+		Token:                  model.HashToken("invalid-mode"),
+		Description:            "invalid mode",
+		CreatedAt:              time.Now(),
+		IsActive:               true,
+		ChannelRestrictionMode: "denyy",
+	})
+	if err == nil {
+		t.Fatal("expected UpsertAuthTokenAllFields to reject invalid channel_restriction_mode")
 	}
 }

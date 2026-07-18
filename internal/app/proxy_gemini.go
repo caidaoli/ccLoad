@@ -24,26 +24,23 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, 
 		return models
 	}
 
-	if allowedChannelSet, hasRestriction := s.authService.getAllowedChannelSet(tokenHashStr); hasRestriction {
+	if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
 		channels, err := s.getEnabledChannelsByExposedProtocol(c.Request.Context(), protocol)
 		if err != nil {
 			return nil
 		}
 		modelSet := make(map[string]struct{})
 		for _, cfg := range channels {
-			if cfg == nil {
+			if cfg == nil || !restriction.Allows(cfg.ID) {
 				continue
 			}
-			if _, ok := allowedChannelSet[cfg.ID]; !ok {
-				continue
-			}
-			for _, model := range cfg.GetModels() {
-				modelSet[model] = struct{}{}
+			for _, modelName := range cfg.GetModels() {
+				modelSet[modelName] = struct{}{}
 			}
 		}
 		models = make([]string, 0, len(modelSet))
-		for model := range modelSet {
-			models = append(models, model)
+		for modelName := range modelSet {
+			models = append(models, modelName)
 		}
 	}
 
