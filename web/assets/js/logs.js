@@ -1313,7 +1313,7 @@ async function loadLogsModels(channelType, range) {
   }
 }
 
-// 从日志/活跃请求数据中提取渠道名与模型，去重合并进筛选下拉。
+// 从日志/活跃请求数据中提取渠道名与请求模型，去重合并进筛选下拉。
 // 根因：/admin/models 的 distinct 查询滞后于刚落库或进行中的请求，
 // 导致列表里能看到的渠道/模型在下拉里缺失，必须刷新页面才更新。
 // 此处做到“所见即可筛选”，无需刷新。
@@ -1333,13 +1333,11 @@ function mergeLogsFilterOptions(entries) {
       channels.push({ id: Number(entry?.channel_id) || 0, name });
       changed = true;
     }
-    for (const raw of [entry?.model, entry?.actual_model]) {
-      const m = String(raw || '').trim();
-      if (m && !knownModels.has(m)) {
-        knownModels.add(m);
-        models.push(m);
-        changed = true;
-      }
+    const model = String(entry?.model || '').trim();
+    if (model && !knownModels.has(model)) {
+      knownModels.add(model);
+      models.push(model);
+      changed = true;
     }
   }
 
