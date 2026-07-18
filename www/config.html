@@ -247,7 +247,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">💳</span>
             <h3>Token limits</h3>
-            <p>Auth tokens can restrict allowed models, allowed channels, cost limits and statistics scope. Costs use integer micro-dollars to avoid floating-point drift.</p>
+            <p>Auth tokens can restrict models, cap concurrency and cost, and scope statistics. Channel access combines <code>allowed_channel_ids</code> with <code>channel_restriction_mode</code>: <code>allow</code> treats the list as an allowlist, while <code>deny</code> treats it as a denylist. An empty list is unrestricted in either mode. Costs use integer micro-dollars to avoid floating-point drift.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🧩</span>

@@ -59,7 +59,7 @@
           <div class="www-step">
             <div>
               <h3>Create access tokens</h3>
-              <p>Create client tokens on the token page, and restrict models, channels or cost when needed. Proxy endpoints return 401 when no token exists.</p>
+              <p>Create client tokens on the token page. Restrict models, choose a channel allowlist or denylist, and cap cost or concurrency when needed. An empty channel list is unrestricted in either mode. Proxy endpoints return 401 when no token exists.</p>
             </div>
           </div>
         </div>
@@ -344,7 +344,7 @@
             </div>
             <ul class="www-check-list">
               <li>Channels: create, edit, delete and test upstream channels; import or export CSV.</li>
-              <li>Tokens: assign client tokens with model, channel and cost restrictions.</li>
+              <li>Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li>Logs: filter requests by status code, channel, model and token to locate failures.</li>
               <li>Stats: inspect requests, tokens, cost, first-byte latency and health.</li>
               <li>Trends: observe RPM, cost and latency by time range.</li>
