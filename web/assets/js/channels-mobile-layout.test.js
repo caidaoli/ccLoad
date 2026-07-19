@@ -44,6 +44,11 @@ test('mobile last-request summary and detail panel stay inside the channel card 
   );
   assert.match(
     mobileCss,
+    /\.channel-table \.ch-col-last-success \.ch-last-request\s*{[^}]*flex-wrap:\s*wrap;[^}]*justify-content:\s*flex-end;/s,
+    'the failure summary items must wrap instead of overflowing on very narrow viewports',
+  );
+  assert.match(
+    mobileCss,
     /\.channel-table \.ch-last-request__panel\s*{[^}]*left:\s*auto;[^}]*right:\s*0;[^}]*max-width:\s*calc\(100vw - 48px\);/s,
     'the expanded detail panel must open toward the viewport interior',
   );
