@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `d0b7c3c0241dbcddbadbd748a3d62f22df728f28` (`fork/v8.27.2`)
-- Synchronized at: `2026-07-18`
+- Last synchronized commit: `4edfb63e62537362a44ac4ae0bc695d4e344d446` (`fork/v8.34.0`)
+- Synchronized at: `2026-07-19`
 
 This directory contains the four-protocol conversion core only. Authentication,
 configuration, routing, caches, plugins, dynamic registries, network refreshers,
@@ -12,7 +12,7 @@ adaptation lives in `internal/protocol/builtin`, not in this directory.
 
 ## Synchronized tests
 
-The snapshot includes 28 upstream `_test.go` files from the same commit as the
+The snapshot includes 29 upstream `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -22,7 +22,7 @@ production sources:
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 1
+- `common`: 2
 - `gemini/claude`: 2
 - `gemini/openai/chat-completions`: 3
 - `gemini/openai/responses`: 2
@@ -30,9 +30,10 @@ production sources:
 - `openai/gemini`: 2
 - `openai/openai/responses`: 2
 
-Tests for excluded packages are not copied. The upstream private-helper
-performance comparison is also excluded: it benchmarks an implementation
-detail rather than a wire contract.
+Tests for excluded packages are not copied. Performance-only benchmarks are
+also excluded: the translator-wide benchmark requires the excluded dynamic
+Registry, Antigravity, and Interactions paths, while the Claude-to-Codex
+benchmark measures allocation details rather than a wire contract.
 
 ## Local contract fixes
 
@@ -60,7 +61,7 @@ Codex or `/sync-cliproxy-core` in Claude Code. Both entry points resolve to the
 canonical skill under `.agents/skills/sync-cliproxy-core`.
 
 1. Fetch the ccLoad CLIProxyAPI fork and choose one immutable commit or tag.
-2. Diff both production sources and the corresponding 28 test files against
+2. Diff both production sources and the corresponding 29 test files against
    the commit above. Source and tests must always come from the same commit.
 3. Copy the changed pure conversion files and matching tests only; do not add a
    Go module import, `replace`, authentication, configuration, routing, caches,
