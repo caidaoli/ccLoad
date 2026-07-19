@@ -1,11 +1,13 @@
 ---
 name: sync-cliproxy-core
-description: Synchronize or audit ccLoad's in-tree CLIProxyAPI/cliproxy protocol conversion snapshot from an immutable upstream commit. Use when asked to 同步、更新或升级 CLIProxyAPI、cliproxy、translator core、internal/protocol/cliproxy，刷新上游 commit，或审查一次协议核心同步。
+description: Synchronize or audit ccLoad's in-tree CLIProxyAPI/cliproxy protocol conversion snapshot from an immutable upstream commit. Invoking without a target automatically resolves and synchronizes the latest stable upstream version. Use when asked to 同步、更新或升级 CLIProxyAPI、cliproxy、translator core、internal/protocol/cliproxy，刷新上游 commit，或审查一次协议核心同步。
 ---
 
 # 同步 CLIProxy 转换核心
 
 只同步 CLIProxyAPI 的纯协议转换代码和对应测试。保持 ccLoad Registry 线协议契约，不引入上游运行时系统。
+
+默认调用 `$sync-cliproxy-core` 时，自动同步上游最新稳定版本并完成验证，不等待目标确认。用户明确指定 commit/tag 时使用指定目标；用户明确要求仅审计时保持只读。
 
 ## 权威边界
 
@@ -26,8 +28,10 @@ description: Synchronize or audit ccLoad's in-tree CLIProxyAPI/cliproxy protocol
 ### 2. 固定目标
 
 - 用户指定 commit/tag 时，解析成完整不可变 commit SHA。
-- 用户只说“同步最新”时，检查上游稳定 tag/commit，先报告推荐目标及变化范围；得到确认后再改代码。
-- 用户未说明目标且“最新”也不明确时，必须询问。禁止直接同步浮动分支 HEAD。
+- 用户未指定目标或只说“同步最新”时，自动查询 `UPSTREAM.md` 记录仓库的远端 tags。以当前记录 tag 的非版本前缀和 `vMAJOR.MINOR.PATCH` 形状确定稳定 tag 系列，按语义版本选择最高版本；忽略预发布 tag，禁止按字典序或提交时间猜版本。
+- 将选中的 tag 解引用为完整 commit SHA（等价于 `<tag>^{commit}`）。记录并同步该 commit，而不是 annotated tag object；报告目标和变化范围后直接继续，不等待确认。
+- 若无法从当前记录确定 tag 系列、找不到稳定 tag，或 tag 无法解析为 commit，停止并说明原因。禁止退回到浮动分支 HEAD。
+- 若目标 SHA 与当前同步 SHA 相同，不改写 `UPSTREAM.md` 的同步日期；运行确定性审计和验证后报告已是最新版本。
 - 使用现有上游 checkout，或在临时目录克隆 `UPSTREAM.md` 记录的仓库。所有生产源码与测试必须来自同一个 checkout 和同一个 commit。
 
 ### 3. 比较范围
