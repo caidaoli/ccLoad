@@ -23,6 +23,7 @@
   <script defer src="/web/assets/js/merged-response-client.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-verification.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
@@ -189,6 +190,10 @@
                   <label class="model-test-toggle">
                     <input type="checkbox" id="streamEnabled" class="control-checkbox control-checkbox--sm">
                     <span data-i18n="modelTest.stream">流式</span>
+                  </label>
+                  <label class="model-test-toggle" data-i18n-title="modelTest.verifyModelTitle">
+                    <input type="checkbox" id="modelVerificationEnabled" class="control-checkbox control-checkbox--sm">
+                    <span data-i18n="modelTest.verifyModel">模型核验</span>
                   </label>
                   <label class="model-test-toggle">
                     <span data-i18n="modelTest.concurrency">并发</span>

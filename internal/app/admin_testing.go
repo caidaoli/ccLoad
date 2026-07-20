@@ -649,6 +649,9 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	for idx, entry := range orderedURLs {
 		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, clientProtocol, entry.url)
 		attemptResult["base_url"] = entry.url
+		if testReq.VerifyModel {
+			s.attachModelVerification(reqCtx, upstreamProto, originalModel, actualModel, entry.url, apiKey, attemptResult)
+		}
 		success, _ := attemptResult["success"].(bool)
 		if success {
 			if selector != nil {

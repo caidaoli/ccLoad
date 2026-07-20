@@ -718,6 +718,7 @@ Check out the awesome admin dashboard 👇
   - Upload or paste images in chat mode to verify multimodal requests directly
   - Toggle reasoning level, built-in search, and streaming to inspect transformed upstream behavior
   - Export conversations as Markdown or HTML for review, incident notes, or regression records
+  - Optional model verification compares response-reported model names, the same-credential model catalog, and explicit web bridge signals; it can surface inconsistencies but cannot prove an intermediary's underlying model
 - ⚡ **Performance Metrics** - Latency, success rates, and bottleneck detection
 - 💰 **Token Usage Stats** - Know exactly where your budget goes:
   - Custom time range selector for flexible analysis

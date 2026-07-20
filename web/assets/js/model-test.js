@@ -9,6 +9,7 @@ const STORAGE_KEY_SELECTED_MODEL_TYPE = 'ccload_model_test_model_type';
 const STORAGE_KEY_SELECTED_MODEL_NAME = 'ccload_model_test_model_name';
 const STORAGE_KEY_SELECTED_PROTOCOL = 'ccload_model_test_protocol';
 const STORAGE_KEY_STREAM_ENABLED = 'ccload_model_test_stream_enabled';
+const STORAGE_KEY_MODEL_VERIFICATION_ENABLED = 'ccload_model_test_verify_model';
 const STORAGE_KEY_CHAT_MODEL = 'ccload_model_test_chat_model';
 const STORAGE_KEY_CHAT_CHANNEL_ID = 'ccload_model_test_chat_channel_id';
 const STORAGE_KEY_CHAT_STREAM_ENABLED = 'ccload_model_test_chat_stream_enabled';
@@ -836,7 +837,7 @@ function captureModelTestTableState() {
       if (!cell) return;
 
       cells[selector] = {
-        textContent: cell.textContent || '',
+        textContent: getModelTestResultCellText(cell, selector),
         innerHTML: cell.innerHTML || '',
         title: cell.title || '',
         sortValue: selector === '.cost' ? cell.dataset?.sortValue : undefined
@@ -849,10 +850,20 @@ function captureModelTestTableState() {
       background: row.style?.background || '',
       color: row.style?.color || '',
       cells,
-      upstreamData: row._upstreamData ? { ...row._upstreamData } : null
+      upstreamData: row._upstreamData ? { ...row._upstreamData } : null,
+      modelVerification: row._modelVerification ? { ...row._modelVerification } : null
     });
   });
   return tableState;
+}
+
+function getModelTestResultCellText(cell, selector) {
+  if (selector !== '.response') return cell.textContent || '';
+  return Array.from(cell.childNodes)
+    .filter((node) => !node.classList?.contains('model-verification'))
+    .map((node) => node.textContent || '')
+    .join('')
+    .trimEnd();
 }
 
 function collectModelTestRowsByKey() {
@@ -907,6 +918,8 @@ function restoreModelTestTableState(rowsByKey, tableState) {
     });
 
     const responseCell = row.querySelector('.response');
+    row._modelVerification = savedState.modelVerification ? { ...savedState.modelVerification } : null;
+    renderModelVerificationForRow(row);
     if (savedState.upstreamData) {
       row._upstreamData = { ...savedState.upstreamData };
       responseCell?.classList?.add('has-upstream-detail');
@@ -1768,9 +1781,28 @@ function resetRowStatus(row) {
   const costCell = row.querySelector('.cost');
   costCell.textContent = '-';
   if (costCell.dataset) delete costCell.dataset.sortValue;
-  row.querySelector('.response').textContent = i18nText('modelTest.waiting', '等待中...');
-  row.querySelector('.response').title = '';
+  const responseCell = row.querySelector('.response');
+  responseCell.textContent = i18nText('modelTest.waiting', '等待中...');
+  responseCell.title = '';
+  responseCell.classList.remove('has-upstream-detail');
+  row._upstreamData = null;
+  row._modelVerification = null;
   row.style.background = '';
+}
+
+function renderModelVerificationForRow(row) {
+  const responseCell = row?.querySelector('.response');
+  if (!responseCell) return;
+  window.ModelVerificationUI?.renderModelVerification(
+    responseCell,
+    row._modelVerification,
+    (key, fallback, params) => i18nText(key, fallback, params)
+  );
+}
+
+function setModelVerificationForRow(row, verification) {
+  row._modelVerification = verification && typeof verification === 'object' ? verification : null;
+  renderModelVerificationForRow(row);
 }
 
 function applyTestResultToRow(row, data) {
@@ -1816,6 +1848,7 @@ function applyTestResultToRow(row, data) {
     const responseCell = row.querySelector('.response');
     responseCell.textContent = successText;
     responseCell.title = successText;
+    setModelVerificationForRow(row, data.model_verification);
 
     if (data.upstream_request_url) {
       row._upstreamData = {
@@ -1856,6 +1889,7 @@ function applyTestResultToRow(row, data) {
   const responseCell = row.querySelector('.response');
   responseCell.textContent = errMsg;
   responseCell.title = errMsg;
+  setModelVerificationForRow(row, data.model_verification);
   row.querySelector('.speed').textContent = '-';
   const costCell = row.querySelector('.cost');
   costCell.textContent = '-';
@@ -1936,6 +1970,7 @@ async function fetchModelTestWithRPMWait(target, payload) {
 
 async function runBatchTests(targets) {
   const streamEnabled = document.getElementById('streamEnabled').checked;
+  const verifyModel = document.getElementById('modelVerificationEnabled')?.checked === true;
   const content = document.getElementById('modelTestContent').value.trim() || 'hi';
   const concurrency = parseInt(document.getElementById('concurrency').value, 10) || 5;
 
@@ -1947,7 +1982,13 @@ async function runBatchTests(targets) {
     row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
 
     try {
-      const data = await fetchModelTestWithRPMWait(target, { model, stream: streamEnabled, content, protocol_transform: selectedProtocol });
+      const data = await fetchModelTestWithRPMWait(target, {
+        model,
+        stream: streamEnabled,
+        content,
+        protocol_transform: selectedProtocol,
+        verify_model: verifyModel
+      });
       applyTestResultToRow(row, data);
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
@@ -2878,6 +2919,13 @@ function bindEvents() {
     });
   }
 
+  const modelVerificationEnabled = document.getElementById('modelVerificationEnabled');
+  if (modelVerificationEnabled) {
+    modelVerificationEnabled.addEventListener('change', () => {
+      saveModelVerificationEnabledToStorage(modelVerificationEnabled.checked);
+    });
+  }
+
   const chatStreamEnabled = document.getElementById('chatStreamEnabled');
   if (chatStreamEnabled) {
     chatStreamEnabled.addEventListener('change', () => {
@@ -3193,6 +3241,19 @@ function loadStreamEnabledFromStorage() {
     if (value === '1') return true;
   } catch (_) { /* ignore */ }
   return true; // 默认开启流式
+}
+
+function saveModelVerificationEnabledToStorage(enabled) {
+  try {
+    localStorage.setItem(STORAGE_KEY_MODEL_VERIFICATION_ENABLED, enabled ? '1' : '0');
+  } catch (_) { /* ignore */ }
+}
+
+function loadModelVerificationEnabledFromStorage() {
+  try {
+    return localStorage.getItem(STORAGE_KEY_MODEL_VERIFICATION_ENABLED) === '1';
+  } catch (_) { /* ignore */ }
+  return false;
 }
 
 function saveChatModelToStorage(model) {
@@ -4442,6 +4503,17 @@ async function bootstrap() {
   if (streamEnabled) {
     streamEnabled.checked = loadStreamEnabledFromStorage();
   }
+
+  const modelVerificationEnabled = document.getElementById('modelVerificationEnabled');
+  if (modelVerificationEnabled) {
+    modelVerificationEnabled.checked = loadModelVerificationEnabledFromStorage();
+  }
+
+  window.i18n?.onLocaleChange(() => {
+    document.querySelectorAll('#model-test-tbody tr').forEach((row) => {
+      if (row._modelVerification) renderModelVerificationForRow(row);
+    });
+  });
 
   // 从 localStorage 恢复对话模式状态
   const chatStreamEnabled = document.getElementById('chatStreamEnabled');

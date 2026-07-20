@@ -27,6 +27,7 @@ type TestChannelRequest struct {
 	Temperature       *float64          `json:"temperature,omitempty"`        // 可选，采样温度
 	TopP              *float64          `json:"top_p,omitempty"`              // 可选，核采样阈值
 	Stream            bool              `json:"stream,omitempty"`             // 可选，流式响应
+	VerifyModel       bool              `json:"verify_model,omitempty"`       // 可选，核验响应模型元数据与模型目录
 	Content           string            `json:"content,omitempty"`            // 可选，测试内容，默认"test"；Messages 非空时忽略
 	Messages          []ChatMessage     `json:"messages,omitempty"`           // 可选，多轮对话消息；非空时覆盖 Content
 	SystemPrompt      string            `json:"system_prompt,omitempty"`      // 可选，按协议注入的系统提示词
