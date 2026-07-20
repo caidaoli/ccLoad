@@ -579,13 +579,13 @@
                       <span>#</span>
                     </div>
                   </th>
-                  <th style="width: 42%;">
+                  <th style="width: 38%;">
                     <input type="text" id="modelFilterInput" class="table-filter-input"
                       data-i18n-placeholder="channels.searchModelPlaceholder" placeholder="搜索模型名称..."
                       data-input-action="filter-models-by-keyword">
                   </th>
-                  <th style="width: 42%;" data-i18n="channels.redirectTarget">重定向目标（可选）</th>
-                  <th style="width: 60px;"></th>
+                  <th style="width: 38%;" data-i18n="channels.redirectTarget">重定向目标（可选）</th>
+                  <th class="redirect-col-status" data-i18n="common.status">状态</th>
                 </tr>
               </thead>
               <tbody id="redirectTableBody">
@@ -1252,19 +1252,20 @@
         </div>
       </td>
       <td class="redirect-col-target" data-mobile-label="{{mobileLabelTarget}}">
-        <input type="text" class="redirect-to-input modal-inline-input" data-index="{{index}}" value="{{to}}"
-          placeholder="{{toPlaceholder}}">
+        <div class="redirect-target-field">
+          <input type="text" class="redirect-to-input modal-inline-input" data-index="{{index}}" value="{{to}}"
+            placeholder="{{toPlaceholder}}">
+          <button type="button" class="redirect-delete-btn" data-index="{{index}}"
+            data-i18n-title="channels.deleteThisModel" title="删除此模型">
+            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path
+                d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"
+                stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+            </svg>
+          </button>
+        </div>
       </td>
-      <td class="redirect-col-actions" data-mobile-label="{{mobileLabelActions}}">
-        <button type="button" class="redirect-delete-btn" data-index="{{index}}"
-          data-i18n-title="channels.deleteThisModel" title="删除此模型">
-          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path
-              d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"
-              stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-          </svg>
-        </button>
-      </td>
+      <td class="redirect-col-status" data-mobile-label="{{mobileLabelStatus}}"></td>
     </tr>
   </template>
 

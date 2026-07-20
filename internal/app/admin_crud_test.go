@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"slices"
 	"sort"
@@ -603,6 +604,165 @@ func TestHandleGetChannel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestHandleGetChannelIncludesActiveModelCooldowns(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "model-cooldown-detail",
+		URL:      "https://api.example.com",
+		Priority: 100,
+		ModelEntries: []model.ModelEntry{
+			{Model: "external-model", RedirectModel: "upstream-model"},
+		},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	until := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	if err := store.SetModelCooldown(ctx, created.ID, "upstream-model", until); err != nil {
+		t.Fatalf("设置模型冷却失败: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+strconv.FormatInt(created.ID, 10), nil))
+	server.handleGetChannel(c, created.ID)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ModelCooldowns []struct {
+				Model               string     `json:"model"`
+				CooldownUntil       *time.Time `json:"cooldown_until"`
+				CooldownRemainingMS int64      `json:"cooldown_remaining_ms"`
+			} `json:"model_cooldowns"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("success=false body=%s", w.Body.String())
+	}
+	if len(resp.Data.ModelCooldowns) != 1 {
+		t.Fatalf("model_cooldowns=%v, want one active cooldown", resp.Data.ModelCooldowns)
+	}
+	got := resp.Data.ModelCooldowns[0]
+	if got.Model != "upstream-model" {
+		t.Fatalf("model=%q, want upstream-model", got.Model)
+	}
+	if got.CooldownUntil == nil || !got.CooldownUntil.Equal(until) {
+		t.Fatalf("cooldown_until=%v, want %v", got.CooldownUntil, until)
+	}
+	if got.CooldownRemainingMS <= 0 {
+		t.Fatalf("cooldown_remaining_ms=%d, want > 0", got.CooldownRemainingMS)
+	}
+}
+
+func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "model-stats-channel",
+		URL:          "https://api.example.com",
+		ModelEntries: []model.ModelEntry{{Model: "external-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	other, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "other-model-stats-channel",
+		URL:          "https://other.example.com",
+		ModelEntries: []model.ModelEntry{{Model: "external-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+
+	now := time.Now().Truncate(time.Second)
+	entries := []*model.LogEntry{
+		{
+			Time:          model.JSONTime{Time: now.Add(-3 * time.Minute)},
+			ChannelID:     created.ID,
+			Model:         "external-model",
+			StatusCode:    http.StatusOK,
+			Duration:      2,
+			IsStreaming:   true,
+			FirstByteTime: 1,
+		},
+		{
+			Time:          model.JSONTime{Time: now.Add(-2 * time.Minute)},
+			ChannelID:     created.ID,
+			Model:         "external-model",
+			StatusCode:    http.StatusOK,
+			Duration:      4,
+			IsStreaming:   true,
+			FirstByteTime: 3,
+		},
+		{
+			Time:       model.JSONTime{Time: now.Add(-time.Minute)},
+			ChannelID:  created.ID,
+			Model:      "external-model",
+			StatusCode: http.StatusServiceUnavailable,
+		},
+		{
+			Time:          model.JSONTime{Time: now.Add(-time.Minute)},
+			ChannelID:     other.ID,
+			Model:         "external-model",
+			StatusCode:    http.StatusOK,
+			Duration:      100,
+			IsStreaming:   true,
+			FirstByteTime: 100,
+		},
+		{
+			Time:          model.JSONTime{Time: now.AddDate(0, 0, -1)},
+			ChannelID:     created.ID,
+			Model:         "external-model",
+			StatusCode:    http.StatusOK,
+			Duration:      50,
+			IsStreaming:   true,
+			FirstByteTime: 50,
+		},
+	}
+	for _, entry := range entries {
+		if err := store.AddLog(ctx, entry); err != nil {
+			t.Fatalf("写入测试日志失败: %v", err)
+		}
+	}
+
+	path := "/admin/channels/" + strconv.FormatInt(created.ID, 10) + "/model-stats"
+	c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.HandleChannelModelStats(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[[]ChannelModelStats](t, w.Body.Bytes())
+	if len(resp.Data) != 1 {
+		t.Fatalf("stats=%v, want one model", resp.Data)
+	}
+	got := resp.Data[0]
+	if got.Model != "external-model" || got.Success != 2 || got.Error != 1 || got.Total != 3 {
+		t.Fatalf("stats=%+v, want model=external-model success=2 error=1 total=3", got)
+	}
+	if got.AvgFirstByteTimeSeconds == nil || math.Abs(*got.AvgFirstByteTimeSeconds-2) > 1e-9 {
+		t.Fatalf("avg_first_byte_time_seconds=%v, want 2", got.AvgFirstByteTimeSeconds)
+	}
+	if got.AvgDurationSeconds == nil || math.Abs(*got.AvgDurationSeconds-3) > 1e-9 {
+		t.Fatalf("avg_duration_seconds=%v, want 3", got.AvgDurationSeconds)
 	}
 }
 

@@ -485,15 +485,33 @@ type KeyCooldownInfo struct {
 	CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
 }
 
+// ModelCooldownInfo 模型级冷却信息。Model 是实际上游模型名，不是外部别名。
+type ModelCooldownInfo struct {
+	Model               string     `json:"model"`
+	CooldownUntil       *time.Time `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS int64      `json:"cooldown_remaining_ms,omitempty"`
+}
+
+// ChannelModelStats 是渠道编辑器需要的轻量模型统计，避免复用完整统计接口时额外计算 RPM 和健康时间线。
+type ChannelModelStats struct {
+	Model                   string   `json:"model"`
+	Success                 int      `json:"success"`
+	Error                   int      `json:"error"`
+	Total                   int      `json:"total"`
+	AvgFirstByteTimeSeconds *float64 `json:"avg_first_byte_time_seconds,omitempty"`
+	AvgDurationSeconds      *float64 `json:"avg_duration_seconds,omitempty"`
+}
+
 // ChannelWithCooldown 带冷却状态的渠道响应结构
 type ChannelWithCooldown struct {
 	*model.Config
-	KeyStrategy         string            `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
-	CooldownUntil       *time.Time        `json:"cooldown_until,omitempty"`
-	CooldownRemainingMS int64             `json:"cooldown_remaining_ms,omitempty"`
-	KeyCooldowns        []KeyCooldownInfo `json:"key_cooldowns,omitempty"`
-	EffectivePriority   *float64          `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
-	SuccessRate         *float64          `json:"success_rate,omitempty"`       // 成功率(0-1)
+	KeyStrategy         string              `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
+	CooldownUntil       *time.Time          `json:"cooldown_until,omitempty"`
+	CooldownRemainingMS int64               `json:"cooldown_remaining_ms,omitempty"`
+	KeyCooldowns        []KeyCooldownInfo   `json:"key_cooldowns,omitempty"`
+	ModelCooldowns      []ModelCooldownInfo `json:"model_cooldowns,omitempty"`
+	EffectivePriority   *float64            `json:"effective_priority,omitempty"` // 健康度模式下的有效优先级
+	SuccessRate         *float64            `json:"success_rate,omitempty"`       // 成功率(0-1)
 }
 
 // ChannelImportSummary 导入结果统计
