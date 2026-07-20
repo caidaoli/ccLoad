@@ -17,6 +17,19 @@
 
 ccLoad removes the operational mess of running multiple AI API upstreams. It keeps Claude Code, Codex, Gemini, and OpenAI-compatible clients on one stable gateway, then handles upstream selection, failover, cooldown, protocol conversion, request visibility, and cost limits in the service instead of in every client script.
 
+## 🤖 Built with Codex and GPT-5.6
+
+During OpenAI Build Week, Codex powered by GPT-5.6 was the primary engineering agent used to:
+
+- Trace request routing, failover, cooldown, protocol conversion, and dashboard flows across the Go backend and embedded web UI.
+- Implement and review model-scoped cooldown handling for upstream `5xx`, key-level `429`, and model-unavailable `404` failures without unnecessarily cooling an entire channel.
+- Refine the model-status and call-statistics UI, update the English and Chinese documentation, and verify the result with focused Go tests, builds, and browser walkthroughs.
+- Prepare the reproducible demo and Devpost submission while keeping architecture, security, and final-review decisions under human control.
+
+GPT-5.6 is also integrated into the product itself: ccLoad exposes GPT-5.6 through OpenAI-compatible and Codex Responses endpoints, includes Sol, Terra, and Luna model presets, calculates their standard, priority, flex, cached-token, and long-context costs, and applies routing and model-scoped cooldown decisions to them like any other configured upstream model.
+
+The repository's `AGENTS.md` and `CLAUDE.md` provide persistent engineering constraints so Codex works against the same KISS-first review and testing rules in every session.
+
 ## 🎯 What ccLoad Solves
 
 Common failure modes when you run several AI API channels:
