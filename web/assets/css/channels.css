@@ -2408,6 +2408,10 @@
       color: var(--neutral-700);
     }
 
+    .redirect-model-performance-sep {
+      color: var(--neutral-400);
+    }
+
     .redirect-model-performance-value {
       font-weight: 500;
     }
