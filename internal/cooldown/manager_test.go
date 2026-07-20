@@ -97,7 +97,7 @@ func TestHandleError_KeyLevelError(t *testing.T) {
 	}{
 		{"401未授权", 401, []byte(`{"error":{"type":"authentication_error"}}`)},
 		{"403禁止访问", 403, []byte(`{"error":{"type":"permission_error"}}`)},
-		{"429限流", 429, []byte(`{"error":{"type":"rate_limit_error"}}`)},
+		{"429 Key配额耗尽", 429, []byte(`{"code":"API_KEY_QUOTA_EXHAUSTED","message":"API key quota exhausted"}`)},
 	}
 
 	for _, tc := range testCases {
@@ -177,6 +177,136 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 				t.Errorf("Channel should be cooled down for status %d", tc.statusCode)
 			}
 		})
+	}
+}
+
+func TestHandleError_HTTP404ModelAvailabilityScope(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	createChannel := func(t *testing.T, name string) *model.Config {
+		t.Helper()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:     name,
+			URL:      "https://api.example.com",
+			Priority: 10,
+			Enabled:  true,
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-5.6-sol"},
+				{Model: "gpt-5.6"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("create config: %v", err)
+		}
+		return cfg
+	}
+
+	t.Run("unsupported selected model cools only that model", func(t *testing.T) {
+		cfg := createChannel(t, "test-http-404-unsupported-model")
+
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:  cfg.ID,
+			Model:      "gpt-5.6-sol",
+			KeyIndex:   0,
+			StatusCode: 404,
+			ErrorBody:  []byte(`{"error":"当前 API 不支持所选模型 gpt-5.6-sol","type":"error"}`),
+		})
+
+		if action != ActionRetryModel {
+			t.Fatalf("action=%v, want ActionRetryModel", action)
+		}
+		until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.6-sol")
+		if !exists || !until.After(time.Now()) {
+			t.Fatalf("gpt-5.6-sol should be cooled, until=%v exists=%v", until, exists)
+		}
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+		if channelCfg.IsCoolingDown(time.Now()) {
+			t.Fatal("unsupported model must not cool the whole channel while another model is available")
+		}
+	})
+
+	t.Run("missing endpoint still cools channel", func(t *testing.T) {
+		cfg := createChannel(t, "test-http-404-missing-endpoint")
+
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:  cfg.ID,
+			Model:      "gpt-5.6-sol",
+			KeyIndex:   0,
+			StatusCode: 404,
+			ErrorBody:  []byte(`{"error":{"message":"Endpoint /v1/responses not found"}}`),
+		})
+
+		if action != ActionRetryChannel {
+			t.Fatalf("action=%v, want ActionRetryChannel", action)
+		}
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+		if !channelCfg.IsCoolingDown(time.Now()) {
+			t.Fatal("missing endpoint should cool the channel")
+		}
+	})
+}
+
+func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-http-429-model-cooldown",
+		URL:      "https://api.example.com",
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-generic-429",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("create API key: %v", err)
+	}
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		Model:      "model-a",
+		KeyIndex:   0,
+		StatusCode: 429,
+		ErrorBody:  []byte(`{"error":{"type":"rate_limit_error","message":"rate limit exceeded"}}`),
+	})
+
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+	if !exists || !until.After(time.Now()) {
+		t.Fatalf("model-a should be cooled, until=%v exists=%v", until, exists)
+	}
+	if keyUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyUntil.After(time.Now()) {
+		t.Fatalf("generic 429 must not cool key, until=%v", keyUntil)
+	}
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("generic 429 must not cool the whole channel while another model is available")
 	}
 }
 
