@@ -323,6 +323,13 @@ func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 	if _, exists := cooldowns[primaryID]["external-model-a"]; exists {
 		t.Fatal("external alias must not be used as model cooldown key")
 	}
+	channelCooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get channel cooldowns: %v", err)
+	}
+	if until := channelCooldowns[primaryID]; !until.After(time.Now()) {
+		t.Fatalf("all configured models resolve to %s, channel cooldown=%s, want active", finalModel, until.Format(time.RFC3339))
+	}
 
 	request("external-model-b")
 	if got := primaryHits.Load(); got != 1 {
@@ -4568,7 +4575,7 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 }
 
-func TestProxy_SSEFreeTierBudgetExceededCoolsKeyThirtyMinutes(t *testing.T) {
+func TestProxy_SSEFreeTierBudgetExceededCoolsOnlyKeyThenPromotesChannel(t *testing.T) {
 	t.Parallel()
 
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4635,8 +4642,12 @@ func TestProxy_SSEFreeTierBudgetExceededCoolsKeyThirtyMinutes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAllChannelCooldowns: %v", err)
 	}
-	if until, exists := channelCooldowns[channelID]; exists && until.After(time.Now()) {
-		t.Fatalf("channel should not be cooled for SSE free tier quota error")
+	channelUntil, exists := channelCooldowns[channelID]
+	if !exists || !channelUntil.After(time.Now()) {
+		t.Fatalf("single-key channel should be cooled after its only key is cooled")
+	}
+	if channelUntil.Sub(cooldownUntil).Abs() > time.Second {
+		t.Fatalf("channel cooldown=%s, want key recovery time %s", channelUntil, cooldownUntil)
 	}
 }
 

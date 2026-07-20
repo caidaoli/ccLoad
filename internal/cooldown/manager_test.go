@@ -2,6 +2,7 @@ package cooldown
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -176,6 +177,147 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 				t.Errorf("Channel should be cooled down for status %d", tc.statusCode)
 			}
 		})
+	}
+}
+
+func TestHandleError_HTTP5xxCoolsOnlyCurrentModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-http-5xx-model-cooldown",
+		URL:      "https://api.example.com",
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	for _, statusCode := range []int{500, 502, 503, 504, 520, 521, 524} {
+		t.Run(fmt.Sprintf("status_%d", statusCode), func(t *testing.T) {
+			if err := store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
+				t.Fatalf("reset channel cooldown: %v", err)
+			}
+			if err := store.ResetModelCooldown(ctx, cfg.ID, "model-a"); err != nil {
+				t.Fatalf("reset model cooldown: %v", err)
+			}
+
+			action := manager.HandleError(ctx, ErrorInput{
+				ChannelID:  cfg.ID,
+				Model:      "model-a",
+				KeyIndex:   0,
+				StatusCode: statusCode,
+				ErrorBody:  []byte(`{"error":"upstream failure"}`),
+			})
+
+			if action != ActionRetryModel {
+				t.Fatalf("action=%v, want ActionRetryModel", action)
+			}
+			until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a")
+			if !exists || !until.After(time.Now()) {
+				t.Fatalf("model-a should be cooled, until=%v exists=%v", until, exists)
+			}
+			channelCfg, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatalf("get config: %v", err)
+			}
+			if channelCfg.IsCoolingDown(time.Now()) {
+				t.Fatalf("status %d must not cool the whole channel while model-b is available", statusCode)
+			}
+		})
+	}
+}
+
+func TestHandleError_LastModelCooldownPromotesChannel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-all-models-cooled",
+		URL:      "https://api.example.com",
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+	if err := store.SetModelCooldown(ctx, cfg.ID, "model-a", time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("set model-a cooldown: %v", err)
+	}
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		Model:      "model-b",
+		KeyIndex:   0,
+		StatusCode: 500,
+		ErrorBody:  []byte(`{"error":"internal server error"}`),
+	})
+
+	if action != ActionRetryChannel {
+		t.Fatalf("action=%v, want ActionRetryChannel", action)
+	}
+	if until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-b"); !exists || !until.After(time.Now()) {
+		t.Fatalf("model-b should be cooled before channel promotion, until=%v exists=%v", until, exists)
+	}
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if !channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("channel should be cooled after all configured models are cooled")
+	}
+}
+
+func TestHandleError_LastKeyCooldownPromotesChannel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-all-keys-cooled")
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-0"},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-1"},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-disabled", Disabled: true},
+	}); err != nil {
+		t.Fatalf("create keys: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("set key-0 cooldown: %v", err)
+	}
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		KeyIndex:   1,
+		StatusCode: 401,
+		ErrorBody:  []byte(`{"error":{"type":"authentication_error"}}`),
+	})
+
+	if action != ActionRetryChannel {
+		t.Fatalf("action=%v, want ActionRetryChannel", action)
+	}
+	if until, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 1); !exists || !until.After(time.Now()) {
+		t.Fatalf("key-1 should be cooled, until=%v exists=%v", until, exists)
+	}
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if !channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("channel should be cooled after all enabled keys are cooled")
 	}
 }
 
@@ -663,6 +805,9 @@ func TestHandleError_Structured429QuotaCooldown(t *testing.T) {
 	})
 
 	t.Run("API_KEY_QUOTA_EXHAUSTED cools key for thirty minutes", func(t *testing.T) {
+		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
+			t.Fatalf("reset key 0 cooldown: %v", err)
+		}
 		before := time.Now()
 		action := manager.HandleError(ctx, ErrorInput{
 			ChannelID:      cfg.ID,
@@ -992,7 +1137,7 @@ func TestHandleError_FreeTierBudgetExceededSSEErrorCoolsKeyThirtyMinutes(t *test
 	}
 }
 
-func TestHandleError_Structured429QuotaSingleKeyStaysKeyCooldown(t *testing.T) {
+func TestHandleError_Structured429QuotaSingleKeyPromotesChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
@@ -1015,8 +1160,8 @@ func TestHandleError_Structured429QuotaSingleKeyStaysKeyCooldown(t *testing.T) {
 		Headers:        nil,
 	})
 
-	if action != ActionRetryKey {
-		t.Fatalf("expected ActionRetryKey, got %v", action)
+	if action != ActionRetryChannel {
+		t.Fatalf("expected ActionRetryChannel, got %v", action)
 	}
 
 	cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
@@ -1028,8 +1173,12 @@ func TestHandleError_Structured429QuotaSingleKeyStaysKeyCooldown(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get config: %v", err)
 	}
-	if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
-		t.Fatalf("channel should not be cooled for structured key quota error")
+	if !channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("single-key channel should be cooled after its only key is cooled")
+	}
+	channelUntil := time.Unix(channelCfg.CooldownUntil, 0)
+	if channelUntil.Sub(cooldownUntil).Abs() > time.Second {
+		t.Fatalf("channel cooldown=%s, want key recovery time %s", channelUntil, cooldownUntil)
 	}
 }
 

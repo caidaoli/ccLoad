@@ -159,9 +159,11 @@ func TestHandleError_1308Error(t *testing.T) {
 	})
 
 	t.Run("1308错误-无效时间格式回退到指数退避", func(t *testing.T) {
-		// 重置Key冷却状态
-		if err := store.ResetKeyCooldown(ctx, cfg.ID, 0); err != nil {
-			t.Fatalf("Failed to reset key cooldown: %v", err)
+		// 每个子测试必须独立，避免前一个用例的 Key 冷却触发“全 Key 冷却”升级。
+		for keyIndex := range 2 {
+			if err := store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
+				t.Fatalf("Failed to reset key cooldown: %v", err)
+			}
 		}
 
 		// 模拟1308错误但时间格式错误

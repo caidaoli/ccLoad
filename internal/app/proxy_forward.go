@@ -2073,8 +2073,8 @@ func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCou
 //   - immediate != nil 表示调用方需立即 `return immediate, nil`（成功 / ActionReturnClient / ctx 取消）
 //   - immediate == nil 时 urlLastFailure 给 Key 重试循环用于决定 continue/break
 //
-// 多URL场景下：失败URL会被 selector 冷却；明确 5xx（除 598 首字节超时）会立即跳出 URL 循环切换渠道，
-// 并在该URL处于 deferChannelCooldown 时补做一次渠道级冷却。
+// 多URL场景下：只有真正的 URL/渠道级故障才会冷却 URL 并继续下一个 URL。
+// 模型级错误与 URL 无关，直接切换渠道。
 func (s *Server) attemptKeyAcrossURLs(
 	ctx context.Context,
 	cfg *model.Config,
@@ -2132,22 +2132,15 @@ func (s *Server) attemptKeyAcrossURLs(
 		// 渠道级错误 (ActionRetryChannel) 或网络错误：
 		// 在多URL场景下，默认先尝试下一个URL
 		if urlsCount > 1 {
+			// 5xx 先按模型冷却；若恰好耗尽所有模型，动作会升级为渠道级。
+			// 无论是否升级，这种故障都与 URL 无关，不应改打同渠道的其他 URL。
+			if isModelScopedHTTPFailure(result) {
+				break
+			}
 			if selector != nil {
 				selector.CooldownURL(cfg.ID, urlEntry.url)
 			}
 
-			// 新策略：上游明确返回 5xx（598 首字节超时除外）时，直接切换下一个渠道。
-			// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
-			if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
-				if shouldDeferChannelCooldown && result != nil {
-					input := cooldownInputForModel(
-						httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header),
-						actualModel,
-					)
-					s.applyCooldownDecision(ctx, cfg, input)
-				}
-				break
-			}
 			continue // 下一个URL
 		}
 		// 单URL：保持原有行为
@@ -2258,15 +2251,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	return nil, ErrAllKeysExhausted
 }
 
-func shouldSwitchChannelImmediatelyOnHTTP5xx(result *proxyResult) bool {
-	// 仅针对“上游已返回HTTP响应”的5xx生效，避免把网络错误误判为同一策略。
+func isModelScopedHTTPFailure(result *proxyResult) bool {
 	if result == nil || result.header == nil {
 		return false
 	}
-	if result.status < 500 || result.status > 599 {
-		return false
-	}
-	return result.status != util.StatusFirstByteTimeout
+	return util.IsModelScopedHTTPStatus(result.status)
 }
 
 func shouldCheckSoftErrorForChannelType(channelType string) bool {

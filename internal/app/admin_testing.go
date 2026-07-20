@@ -552,14 +552,14 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
-	action := s.cooldownManager.HandleError(
+	action := s.applyCooldownDecision(
 		ctx,
+		cfg,
 		cooldownInputForModel(
 			httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers),
 			actualModel,
 		),
 	)
-	s.invalidateChannelRelatedCache(cfg.ID)
 
 	switch action {
 	case cooldown.ActionRetryKey:
@@ -1333,6 +1333,9 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	if util.IsModelScopedHTTPStatus(statusCode) {
+		return false, false
+	}
 
 	classification := util.ClassifyHTTPResponseWithMeta(statusCode, headers, errorBody)
 	switch classification.Level {

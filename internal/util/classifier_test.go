@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -1023,6 +1024,33 @@ func TestGetStatusCodeMeta(t *testing.T) {
 			meta := GetStatusCodeMeta(tt.status)
 			if meta.Level != tt.wantLevel {
 				t.Errorf("Level: got %v, want %v", meta.Level, tt.wantLevel)
+			}
+		})
+	}
+}
+
+func TestIsModelScopedHTTPStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		status int
+		want   bool
+	}{
+		{500, true},
+		{520, true},
+		{524, true},
+		{595, true},
+		{StatusQuotaExceeded, false},
+		{StatusSSEError, false},
+		{StatusFirstByteTimeout, false},
+		{StatusStreamIncomplete, false},
+		{499, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(strconv.Itoa(tt.status), func(t *testing.T) {
+			if got := IsModelScopedHTTPStatus(tt.status); got != tt.want {
+				t.Fatalf("IsModelScopedHTTPStatus(%d)=%v, want %v", tt.status, got, tt.want)
 			}
 		})
 	}

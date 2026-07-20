@@ -47,9 +47,9 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 
 ## 故障切换(`util/classifier.go`)
 
-- Key 级(401/403/429)→ 重试同渠道其他 Key
-- 模型级(`model_cooldown`)→ 写入 `(channel_id, 实际上游模型)` 冷却并返回 `ActionRetryModel`;直接切渠道,不再尝试同渠道其他 Key/URL,不影响该渠道其他模型
-- 渠道级(5xx/520/524,404/405 无客户端语义)→ 切渠道
+- Key 级(401/403/429)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
+- 模型级(`model_cooldown`,上游 HTTP 5xx/520/524)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
+- 渠道级(网络/链路故障,404/405 无客户端语义,598/599)→ 切渠道
 - 客户端错误(406/413,404+`model_not_found`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
 - Key/渠道级默认指数退避:2 → 4 → 8 → 30 min;模型级优先使用上游 reset 截止时间,缺失时固定 5 min

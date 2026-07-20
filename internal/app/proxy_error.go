@@ -37,8 +37,7 @@ func (s *Server) applyCooldownDecision(
 	cooldownCtx, cancel := cooldownWriteContext(ctx)
 	defer cancel()
 
-	// 设置渠道类型，用于特定渠道的错误处理策略
-	in.ChannelType = cfg.ChannelType
+	in = s.completeCooldownInput(cfg, in)
 
 	action := s.cooldownManager.HandleError(cooldownCtx, in)
 
@@ -54,9 +53,41 @@ func (s *Server) decideCooldownAction(
 	cfg *model.Config,
 	in cooldown.ErrorInput,
 ) cooldown.Action {
-	// 设置渠道类型，用于特定渠道的错误处理策略
-	in.ChannelType = cfg.ChannelType
+	in = s.completeCooldownInput(cfg, in)
 	return s.cooldownManager.DecideAction(ctx, in)
+}
+
+func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
+	in.ChannelType = cfg.ChannelType
+	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
+		in.ChannelModels = s.channelModelCooldownKeys(cfg)
+	}
+	return in
+}
+
+func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
+	if cfg == nil || len(cfg.ModelEntries) == 0 {
+		return nil
+	}
+
+	protocols := cfg.SupportedProtocols()
+	seen := make(map[string]struct{}, len(cfg.ModelEntries))
+	models := make([]string, 0, len(cfg.ModelEntries))
+	for _, clientProtocol := range protocols {
+		upstreamProtocol := cfg.ResolveUpstreamProtocol(clientProtocol)
+		for _, entry := range cfg.ModelEntries {
+			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, entry.Model, upstreamProtocol))
+			if modelName == "" {
+				continue
+			}
+			if _, exists := seen[modelName]; exists {
+				continue
+			}
+			seen[modelName] = struct{}{}
+			models = append(models, modelName)
+		}
+	}
+	return models
 }
 
 func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.ErrorInput {

@@ -32,14 +32,14 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 			expectedAction: cooldown.ActionRetryChannel,
 		},
 		{
-			name:           "401 unauthorized - 单Key升级为渠道级",
+			name:           "401 unauthorized - Key级",
 			statusCode:     401,
-			expectedAction: cooldown.ActionRetryChannel, // 单Key时升级为渠道级
+			expectedAction: cooldown.ActionRetryKey,
 		},
 		{
 			name:           "500 server error",
 			statusCode:     500,
-			expectedAction: cooldown.ActionRetryChannel,
+			expectedAction: cooldown.ActionRetryModel,
 		},
 		{
 			name:           "404 not found - 渠道级",
@@ -81,7 +81,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 				}
 				_, action = srv.handleNetworkError(ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx, false)
 			} else {
-				action = srv.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, 0, res))
+				action = srv.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, 0, res), "test-model"))
 			}
 
 			if action != tt.expectedAction {

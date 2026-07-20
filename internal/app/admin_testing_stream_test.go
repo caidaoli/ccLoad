@@ -808,7 +808,7 @@ func TestHandleChannelChatPersistsLogOnHTTPError(t *testing.T) {
 	}
 }
 
-func TestHandleChannelChatFallsBackAfterRetryableHTTPError(t *testing.T) {
+func TestHandleChannelChatDoesNotFallbackAfterModelScopedHTTPError(t *testing.T) {
 	failCalls := 0
 	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		failCalls++
@@ -865,15 +865,15 @@ func TestHandleChannelChatFallsBackAfterRetryableHTTPError(t *testing.T) {
 
 	srv.HandleChannelChat(c)
 
-	if failCalls != 1 || okCalls != 1 {
-		t.Fatalf("expected one failed call and one fallback call, failCalls=%d okCalls=%d", failCalls, okCalls)
+	if failCalls != 1 || okCalls != 0 {
+		t.Fatalf("expected only the model-scoped failure call, failCalls=%d okCalls=%d", failCalls, okCalls)
 	}
 	body := w.Body.String()
-	if !strings.Contains(body, `"delta":"fallback answer"`) {
-		t.Fatalf("expected fallback answer, got:\n%s", body)
+	if strings.Contains(body, `"delta":"fallback answer"`) {
+		t.Fatalf("model-scoped failure must not retry another URL, got:\n%s", body)
 	}
-	if strings.Contains(body, `"error"`) {
-		t.Fatalf("retryable HTTP error must not be emitted before fallback succeeds, got:\n%s", body)
+	if !strings.Contains(body, `"error"`) {
+		t.Fatalf("expected SSE error event, got:\n%s", body)
 	}
 }
 
