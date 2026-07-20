@@ -65,6 +65,8 @@ const (
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
 	RetryAfterThresholdSeconds = 60
+	// DefaultModelCooldownDuration 是上游未给出模型恢复时间时的固定冷却时长。
+	DefaultModelCooldownDuration = 5 * time.Minute
 	// RateLimitScope 常量
 	RateLimitScopeGlobal  = "global"
 	RateLimitScopeIP      = "ip"
@@ -221,6 +223,12 @@ func GetStatusCodeMeta(status int) StatusCodeMeta {
 		return StatusCodeMeta{ErrorLevelKey}
 	}
 	return StatusCodeMeta{ErrorLevelClient}
+}
+
+// IsModelScopedHTTPStatus 判断上游 HTTP 响应是否应先按模型级故障处理。
+// 596-599 是 ccLoad 内部状态码，必须保留各自明确语义。
+func IsModelScopedHTTPStatus(status int) bool {
+	return status >= 500 && status < StatusQuotaExceeded
 }
 
 // ClientStatusFor 将 status 映射为对外暴露的状态码。
@@ -489,7 +497,7 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
 			return until, "model_cooldown", ErrorLevelKey, true
 		}
-		return now.Add(5 * time.Minute), "model_cooldown", ErrorLevelKey, true
+		return now.Add(DefaultModelCooldownDuration), "model_cooldown", ErrorLevelKey, true
 	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
 		if until, ok := parseRetryInCooldownUntil(message, now); ok {
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true

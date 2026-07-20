@@ -103,7 +103,7 @@ func TestHandleChannelTest(t *testing.T) {
 	}
 }
 
-func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
+func TestTestChannelAPI_MultiURL5xxDoesNotFallbackOrCooldownURL(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
@@ -136,7 +136,7 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 		Enabled:      true,
 	}
 
-	// 强制第一跳命中失败URL，验证是否会回退到第二个URL。
+	// 强制第一跳命中失败URL，模型级 5xx 不应改打同渠道的第二个 URL。
 	srv.urlSelector.CooldownURL(cfg.ID, okUpstream.URL)
 
 	req := &testutil.TestChannelRequest{
@@ -147,17 +147,14 @@ func TestTestChannelAPI_MultiURLFallbackAndSelectorFeedback(t *testing.T) {
 
 	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
 	success, _ := result["success"].(bool)
-	if !success {
-		t.Fatalf("expected fallback success, got result=%+v", result)
+	if success {
+		t.Fatalf("expected first 5xx result to be returned, got result=%+v", result)
 	}
-	if failCalls < 1 || okCalls < 1 {
-		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
+	if failCalls < 1 || okCalls != 0 {
+		t.Fatalf("expected only failing URL attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
 	}
-	if !srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
-		t.Fatalf("expected failed URL to be cooled down, url=%s", failUpstream.URL)
-	}
-	if lat, ok := srv.urlSelector.latencies[urlKey{channelID: cfg.ID, url: okUpstream.URL}]; !ok || lat == nil || lat.value <= 0 {
-		t.Fatalf("expected success URL latency recorded, got=%v", lat)
+	if srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
+		t.Fatalf("model-scoped 5xx must not cool URL, url=%s", failUpstream.URL)
 	}
 }
 
@@ -272,7 +269,7 @@ func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing
 	}
 }
 
-func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
+func TestTestChannelAPI_MultiURLPlainText502DoesNotFallback(t *testing.T) {
 	failCalls := 0
 	okCalls := 0
 
@@ -304,7 +301,7 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 		Enabled:      true,
 	}
 
-	// 强制第一跳命中 502 的坏 URL，验证 text/plain 错误体也会继续回退。
+	// 强制第一跳命中 502 的坏 URL，text/plain 错误体也必须保持模型级语义。
 	srv.urlSelector.CooldownURL(cfg.ID, okUpstream.URL)
 
 	req := &testutil.TestChannelRequest{
@@ -315,17 +312,14 @@ func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 
 	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
 	success, _ := result["success"].(bool)
-	if !success {
-		t.Fatalf("expected fallback success on plain 502, got result=%+v", result)
+	if success {
+		t.Fatalf("expected plain 502 failure, got result=%+v", result)
 	}
-	if failCalls < 1 || okCalls < 1 {
-		t.Fatalf("expected both URLs attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
+	if failCalls < 1 || okCalls != 0 {
+		t.Fatalf("expected only failing URL attempted, failCalls=%d okCalls=%d", failCalls, okCalls)
 	}
-	if !srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
-		t.Fatalf("expected failed URL to be cooled down, url=%s", failUpstream.URL)
-	}
-	if got, ok := result["response_text"].(string); !ok || got != "ok" {
-		t.Fatalf("expected second URL success response_text=ok, got=%+v", result)
+	if srv.urlSelector.IsCooledDown(cfg.ID, failUpstream.URL) {
+		t.Fatalf("model-scoped 502 must not cool URL, url=%s", failUpstream.URL)
 	}
 }
 

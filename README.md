@@ -31,7 +31,7 @@ ccLoad handles those cases with:
 
 - **Smart routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin.
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
-- **Model-aware cooldown**: A `model_cooldown` response only removes that actual upstream model from the affected channel; other models on the same channel remain available. Key/channel failures still use exponential backoff.
+- **Model-aware cooldown**: Structured `model_cooldown` responses and upstream HTTP 5xx failures cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
 - **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
@@ -777,8 +777,8 @@ Check out the awesome admin dashboard 👇
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
   - Uses separate Key/Model/Channel actions; `ActionRetryModel` does not retry another Key or URL in the same channel
-  - Persists structured `model_cooldown` responses by `(channel_id, actual upstream model)` until the upstream reset time; other models on that channel stay eligible
-  - Built-in single-key channel auto-upgrade logic
+  - Persists structured `model_cooldown` responses and upstream HTTP 5xx failures by `(channel_id, actual upstream model)`; other models on that channel stay eligible
+  - Automatically promotes to channel cooldown only when all configured models or all enabled keys are cooling
 - **Multi-URL Selector** (URLSelector):
   - `url_selector.go`: Smart URL selection within a single channel
   - Explore-first: Unvisited URLs get priority to collect latency data
