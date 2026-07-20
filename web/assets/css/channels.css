@@ -3530,6 +3530,7 @@
       .channel-table .ch-col-last-success {
         order: 13;
         grid-column: 1 / -1;
+        flex-wrap: wrap;
       }
 
       .channel-table .ch-col-duration {
@@ -3609,10 +3610,12 @@
       .channel-table .ch-col-last-success .ch-last-request-slot {
         display: flex;
         justify-content: flex-end;
+        flex: 1 0 100%;
+        width: 100%;
         min-width: 0;
-        max-width: min(65%, 420px);
+        max-width: 100%;
         margin-top: 0;
-        margin-left: auto;
+        margin-left: 0;
       }
 
       .channel-table .ch-last-request-slot--desktop {
@@ -3626,6 +3629,15 @@
       .channel-table .ch-col-last-success .ch-last-request {
         max-width: 100%;
         min-width: 0;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+
+      .channel-table .ch-last-request__panel {
+        left: auto;
+        right: 0;
+        max-width: calc(100vw - 48px);
+        box-sizing: border-box;
       }
 
       .channel-table .ch-col-priority .ch-priority-stack {
