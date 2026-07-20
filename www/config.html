@@ -12,8 +12,8 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260717-1"></script>
-  <script defer src="assets/locales/en.js?v=20260717-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260720-1"></script>
+  <script defer src="assets/locales/en.js?v=20260720-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260615-13"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -216,7 +216,7 @@
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
         </div>
         <div class="www-callout www-mt-4">
-          <strong>Provider fixed-window quota is treated as a real channel cooldown.</strong> When an upstream response includes a concrete reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
+          <strong>An explicit channel-wide fixed-window quota is treated as a real channel cooldown.</strong> When the upstream provides a concrete channel reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
         </div>
       </div>
     </section>
@@ -232,7 +232,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
             <h3>Retries and cooldown</h3>
-            <p>Key-level errors retry another key inside the channel; 5xx, 598 and 599 channel-level errors trigger channel failover. Cooldown uses exponential backoff and defaults to a 30-minute cap.</p>
+            <p>Key errors cool only the current key and upstream HTTP 5xx errors cool only the actual model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
