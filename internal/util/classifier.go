@@ -96,6 +96,7 @@ type StatusCodeMeta struct {
 // HTTPResponseClassification 包含 HTTP 响应分类的结果。
 type HTTPResponseClassification struct {
 	Level                   ErrorLevel
+	Model                   string
 	KeyCooldownUntil        time.Time
 	HasKeyCooldownUntil     bool
 	KeyCooldownReason       string
@@ -118,6 +119,7 @@ type sseErrorResponse struct {
 type structuredQuotaErrorResponse struct {
 	Code            any             `json:"code"`
 	Message         string          `json:"message"`
+	Model           string          `json:"model"`
 	ResetSeconds    int64           `json:"reset_seconds"`
 	ResetsInSeconds int64           `json:"resets_in_seconds"` // 部分上游使用复数形式
 	ResetsAt        int64           `json:"resets_at"`         // unix 时间戳
@@ -130,6 +132,7 @@ type structuredQuotaErrorObject struct {
 	Type            any    `json:"type"`
 	Code            any    `json:"code"`
 	Message         string `json:"message"`
+	Model           string `json:"model"`
 	ResetSeconds    int64  `json:"reset_seconds"`
 	ResetsInSeconds int64  `json:"resets_in_seconds"` // 部分上游使用复数形式
 	ResetsAt        int64  `json:"resets_at"`         // unix 时间戳
@@ -140,6 +143,7 @@ type structuredQuotaErrorObject struct {
 type structuredQuotaError struct {
 	code         string
 	message      string
+	model        string
 	resetSeconds int64
 	resetsAt     int64 // unix 时间戳（秒）
 	resetTime    string
@@ -280,6 +284,11 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(responseBody, now); ok {
 		classification := HTTPResponseClassification{Level: level}
+		if reason == "model_cooldown" {
+			if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
+				classification.Model = strings.TrimSpace(quotaErr.model)
+			}
+		}
 		switch level {
 		case ErrorLevelChannel:
 			classification.ChannelCooldownUntil = cooldownUntil
@@ -480,7 +489,7 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
 			return until, "model_cooldown", ErrorLevelKey, true
 		}
-		return time.Time{}, "", ErrorLevelNone, false
+		return now.Add(5 * time.Minute), "model_cooldown", ErrorLevelKey, true
 	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
 		if until, ok := parseRetryInCooldownUntil(message, now); ok {
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
@@ -529,6 +538,7 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 	parsed := structuredQuotaError{
 		code:         normalizeStructuredScalar(errResp.Code),
 		message:      errResp.Message,
+		model:        strings.TrimSpace(errResp.Model),
 		resetSeconds: coalesceInt64(errResp.ResetSeconds, errResp.ResetsInSeconds),
 		resetsAt:     errResp.ResetsAt,
 		resetTime:    errResp.ResetTime,
@@ -552,6 +562,9 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 				}
 				if parsed.message == "" {
 					parsed.message = errorObj.Message
+				}
+				if parsed.model == "" {
+					parsed.model = strings.TrimSpace(errorObj.Model)
 				}
 				if parsed.resetSeconds == 0 {
 					parsed.resetSeconds = coalesceInt64(errorObj.ResetSeconds, errorObj.ResetsInSeconds)

@@ -173,6 +173,65 @@ func TestCooldown_KeyCooldown(t *testing.T) {
 	}
 }
 
+func TestCooldown_ModelCooldown(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "model_cooldown.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "test-model-cooldown")
+	until := time.Now().Add(10 * time.Minute)
+
+	if err := store.SetModelCooldown(ctx, channelID, "upstream-model-a", until); err != nil {
+		t.Fatalf("set model cooldown: %v", err)
+	}
+	cooldowns, err := store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get model cooldowns: %v", err)
+	}
+	got, exists := cooldowns[channelID]["upstream-model-a"]
+	if !exists {
+		t.Fatal("expected model cooldown")
+	}
+	if got.Sub(until).Abs() > time.Second {
+		t.Fatalf("model cooldown until=%v, want %v", got, until)
+	}
+
+	if err := store.ResetModelCooldown(ctx, channelID, "upstream-model-a"); err != nil {
+		t.Fatalf("reset model cooldown: %v", err)
+	}
+	cooldowns, err = store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get model cooldowns after reset: %v", err)
+	}
+	if _, exists := cooldowns[channelID]["upstream-model-a"]; exists {
+		t.Fatal("expected model cooldown to be cleared")
+	}
+
+	if err := store.SetModelCooldown(ctx, channelID, "  ", until); err == nil {
+		t.Fatal("expected empty model to be rejected")
+	}
+
+	if err := store.SetModelCooldown(ctx, channelID, "upstream-model-b", until); err != nil {
+		t.Fatalf("set model cooldown before channel delete: %v", err)
+	}
+	if err := store.DeleteConfig(ctx, channelID); err != nil {
+		t.Fatalf("delete channel: %v", err)
+	}
+	cooldowns, err = store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get model cooldowns after channel delete: %v", err)
+	}
+	if _, exists := cooldowns[channelID]; exists {
+		t.Fatal("expected channel deletion to remove model cooldowns")
+	}
+}
+
 func TestCooldown_BumpChannelCooldown_NotFound(t *testing.T) {
 	t.Parallel()
 

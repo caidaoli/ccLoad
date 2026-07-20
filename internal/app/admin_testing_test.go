@@ -212,6 +212,66 @@ func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testi
 	}
 }
 
+func TestExecuteChannelTestWithCooldown_ModelCooldownUsesSentModelKey(t *testing.T) {
+	const sentModel = "model-c"
+
+	var upstreamModel string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		} else {
+			upstreamModel, _ = body["model"].(string)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"model-c","reset_seconds":300}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	cfg, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:        "model-cooldown-sent-key-test",
+		URL:         upstream.URL,
+		Priority:    1,
+		ChannelType: "openai",
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a", RedirectModel: "model-b"},
+			{Model: "model-b", RedirectModel: sentModel},
+			{Model: sentModel, RedirectModel: "model-d"},
+		},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	req := &testutil.TestChannelRequest{
+		Model:       "model-a",
+		ChannelType: "openai",
+		Content:     "hello",
+	}
+	result := srv.executeChannelTestWithCooldown(ctx, cfg, 0, "sk-test", req, true)
+	if action, _ := result["cooldown_action"].(string); action != "model_cooldown_applied" {
+		t.Fatalf("cooldown_action=%q, want model_cooldown_applied; result=%+v", action, result)
+	}
+	if upstreamModel != sentModel {
+		t.Fatalf("upstream model=%q, want %q", upstreamModel, sentModel)
+	}
+
+	cooldowns, err := srv.store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get model cooldowns: %v", err)
+	}
+	if until := cooldowns[cfg.ID][sentModel]; !until.After(time.Now()) {
+		t.Fatalf("sent model cooldown=%s, want active cooldown", until.Format(time.RFC3339))
+	}
+	if _, exists := cooldowns[cfg.ID]["model-d"]; exists {
+		t.Fatal("model cooldown must not be re-resolved after the request")
+	}
+}
+
 func TestTestChannelAPI_MultiURLFallbackOnPlainText502(t *testing.T) {
 	failCalls := 0
 	okCalls := 0

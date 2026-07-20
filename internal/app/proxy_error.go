@@ -21,6 +21,7 @@ const cooldownWriteTimeout = 3 * time.Second
 
 var cooldownClearChannelFailCount atomic.Uint64
 var cooldownClearKeyFailCount atomic.Uint64
+var cooldownClearModelFailCount atomic.Uint64
 
 func cooldownWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	// 断开请求取消链，但保留 ctx.Value（例如 trace ID）。
@@ -41,7 +42,7 @@ func (s *Server) applyCooldownDecision(
 
 	action := s.cooldownManager.HandleError(cooldownCtx, in)
 
-	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryChannel {
+	if action == cooldown.ActionRetryKey || action == cooldown.ActionRetryModel || action == cooldown.ActionRetryChannel {
 		s.invalidateChannelRelatedCache(cfg.ID)
 	}
 
@@ -91,6 +92,11 @@ func networkErrorInput(channelID int64, keyIndex int, statusCode int) cooldown.E
 		IsNetworkError: true,
 		Headers:        nil,
 	}
+}
+
+func cooldownInputForModel(in cooldown.ErrorInput, model string) cooldown.ErrorInput {
+	in.Model = strings.TrimSpace(model)
+	return in
 }
 
 func (s *Server) logProxyResult(
@@ -403,6 +409,15 @@ func (s *Server) handleProxySuccess(
 			log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
 		}
 	}
+	if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
+		if err := s.cooldownManager.ClearModelCooldown(cooldownCtx, cfg.ID, actualModel); err != nil {
+			count := cooldownClearModelFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearModelCooldown 失败 (累计: %d): channel_id=%d model=%s err=%v",
+					count, cfg.ID, actualModel, err)
+			}
+		}
+	}
 
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
 	s.invalidateChannelRelatedCache(cfg.ID)
@@ -441,7 +456,7 @@ func (s *Server) handleStreamingErrorNoRetry(
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
 	// 触发冷却（保护后续请求）
-	_ = s.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, keyIndex, res))
+	_ = s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
@@ -497,7 +512,7 @@ func (s *Server) handleProxyErrorResponse(
 		return failure, cooldown.ActionReturnClient
 	}
 
-	input := httpErrorInput(cfg.ID, keyIndex, res)
+	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
 		if action == cooldown.ActionRetryChannel {

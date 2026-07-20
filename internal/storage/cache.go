@@ -31,10 +31,12 @@ type ChannelCache struct {
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
 	cooldownCache      struct {
-		channels          map[int64]time.Time         // channelID → cooldown until
-		keys              map[int64]map[int]time.Time // channelID→keyIndex→cooldown until
+		channels          map[int64]time.Time            // channelID → cooldown until
+		keys              map[int64]map[int]time.Time    // channelID→keyIndex→cooldown until
+		models            map[int64]map[string]time.Time // channelID→actualModel→cooldown until
 		channelLastUpdate time.Time
 		keyLastUpdate     time.Time
+		modelLastUpdate   time.Time
 		ttl               time.Duration
 	}
 }
@@ -55,12 +57,15 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 		cooldownCache: struct {
 			channels          map[int64]time.Time
 			keys              map[int64]map[int]time.Time
+			models            map[int64]map[string]time.Time
 			channelLastUpdate time.Time
 			keyLastUpdate     time.Time
+			modelLastUpdate   time.Time
 			ttl               time.Duration
 		}{
 			channels: make(map[int64]time.Time),
 			keys:     make(map[int64]map[int]time.Time),
+			models:   make(map[int64]map[string]time.Time),
 			ttl:      30 * time.Second, // 冷却状态缓存30秒
 		},
 	}
@@ -389,6 +394,39 @@ func (c *ChannelCache) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[in
 	return result, nil
 }
 
+// GetAllModelCooldowns 缓存优先的模型冷却查询。
+func (c *ChannelCache) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
+	c.mutex.RLock()
+	if time.Since(c.cooldownCache.modelLastUpdate) <= c.cooldownCache.ttl {
+		result := cloneModelCooldowns(c.cooldownCache.models)
+		c.mutex.RUnlock()
+		return result, nil
+	}
+	c.mutex.RUnlock()
+
+	cooldowns, err := c.store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mutex.Lock()
+	c.cooldownCache.models = cooldowns
+	c.cooldownCache.modelLastUpdate = time.Now()
+	c.mutex.Unlock()
+
+	return cloneModelCooldowns(cooldowns), nil
+}
+
+func cloneModelCooldowns(src map[int64]map[string]time.Time) map[int64]map[string]time.Time {
+	result := make(map[int64]map[string]time.Time, len(src))
+	for channelID, models := range src {
+		modelMap := make(map[string]time.Time, len(models))
+		maps.Copy(modelMap, models)
+		result[channelID] = modelMap
+	}
+	return result
+}
+
 // InvalidateAPIKeysCache 手动失效API Keys缓存
 func (c *ChannelCache) InvalidateAPIKeysCache(channelID int64) {
 	c.mutex.Lock()
@@ -409,4 +447,5 @@ func (c *ChannelCache) InvalidateCooldownCache() {
 	defer c.mutex.Unlock()
 	c.cooldownCache.channelLastUpdate = time.Time{}
 	c.cooldownCache.keyLastUpdate = time.Time{}
+	c.cooldownCache.modelLastUpdate = time.Time{}
 }

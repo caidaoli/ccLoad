@@ -13,7 +13,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> Smart routing | Automatic failover | Exponential cooldown | Multi-URL scheduling | Protocol transforms | Live monitoring | Cost control
+> Smart routing | Automatic failover | Model-aware cooldown | Multi-URL scheduling | Protocol transforms | Live monitoring | Cost control
 
 ccLoad removes the operational mess of running multiple AI API upstreams. It keeps Claude Code, Codex, Gemini, and OpenAI-compatible clients on one stable gateway, then handles upstream selection, failover, cooldown, protocol conversion, request visibility, and cost limits in the service instead of in every client script.
 
@@ -30,8 +30,8 @@ Common failure modes when you run several AI API channels:
 ccLoad handles those cases with:
 
 - **Smart routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin.
-- **Automatic failover**: Failed keys, channels, and URLs are skipped according to the classified error type.
-- **Exponential cooldown**: Unhealthy upstreams back off automatically instead of being hammered by retries.
+- **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
+- **Model-aware cooldown**: A `model_cooldown` response only removes that actual upstream model from the affected channel; other models on the same channel remain available. Key/channel failures still use exponential backoff.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
 - **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
@@ -45,9 +45,9 @@ ccLoad handles those cases with:
 
 - 🚀 **High-Performance Architecture** - Gin framework, 1000+ concurrent connections, high-performance caching
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
-- 🎯 **Smart Error Classification** - Distinguishes Key/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
+- 🎯 **Smart Error Classification** - Distinguishes Key/Model/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
-- 🛡️ **Failover** - Automatic failure detection with exponential backoff cooldown (1s → 2s → 4s → ... → 30min)
+- 🛡️ **Failover** - Key/channel failures use exponential backoff; structured model cooldowns honor the upstream reset deadline and switch channels without cooling the whole channel
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
@@ -776,7 +776,8 @@ Check out the awesome admin dashboard 👇
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
-  - Recognizes structured quota/model cooldown responses and cools down until the upstream reset time
+  - Uses separate Key/Model/Channel actions; `ActionRetryModel` does not retry another Key or URL in the same channel
+  - Persists structured `model_cooldown` responses by `(channel_id, actual upstream model)` until the upstream reset time; other models on that channel stay eligible
   - Built-in single-key channel auto-upgrade logic
 - **Multi-URL Selector** (URLSelector):
   - `url_selector.go`: Smart URL selection within a single channel
@@ -806,7 +807,7 @@ Check out the awesome admin dashboard 👇
 **Multi-level Cache System**:
 - Channel config cache (60s TTL)
 - Round-robin pointer cache (in-memory)
-- Cooldown state inline (channels/api_keys tables store directly)
+- Channel/Key cooldown state inline (`channels` / `api_keys`); model cooldown state in `channel_model_cooldowns`
 - Error classification cache (1000 capacity)
 
 **Async Processing Architecture**:
@@ -1043,8 +1044,9 @@ storage/
 - Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → Hybrid (primary write + SQLite read cache)
 
 **Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
-- `channels` - Channel config (cooldown data inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM/concurrency limit config)
+- `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM/concurrency limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
+- `channel_model_cooldowns` - Model-level runtime cooldown keyed by channel and actual upstream model
 - `logs` - Request logs (with base_url upstream URL tracking)
 - `debug_logs` - Debug logs (upstream request/response raw data, independent cleanup policy)
 - `key_rr` - Round-robin pointers (channel_id → idx)
@@ -1056,7 +1058,7 @@ storage/
 - ✅ **Unified SQL Layer** (refactor): SQLite, MySQL, and PostgreSQL share `storage/sql/` implementation
 - ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
 - ✅ Factory pattern unified interface (OCP, easy to extend new storage)
-- ✅ Cooldown data inline (deprecated separate cooldowns table, reduces JOIN overhead)
+- ✅ Channel/Key cooldown data inline; model-scoped cooldown stored separately so one unavailable model does not disable the whole channel
 - ✅ Performance index optimization (channel selection latency ↓30-50%, key lookup latency ↓40-60%)
 - ✅ Composite index optimization (stats query performance improved)
 - ✅ Foreign key constraints (cascade delete, ensures data consistency)

@@ -277,6 +277,40 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 	if got := k3[created.ID][0]; got.Unix() != keyUntil2.Unix() {
 		t.Fatalf("expected refreshed key cooldown=%v, got %v", keyUntil2, got)
 	}
+
+	// 模型冷却：与渠道/Key 冷却共用失效入口，但缓存时间戳必须独立。
+	modelUntil1 := now.Add(5 * time.Minute)
+	modelUntil2 := now.Add(6 * time.Minute)
+	if err := store.SetModelCooldown(ctx, created.ID, "model-a", modelUntil1); err != nil {
+		t.Fatalf("SetModelCooldown #1 failed: %v", err)
+	}
+	md1, err := cache.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns #1 failed: %v", err)
+	}
+	if got := md1[created.ID]["model-a"]; got.Unix() != modelUntil1.Unix() {
+		t.Fatalf("model cooldown #1=%v, want %v", got, modelUntil1)
+	}
+
+	if err := store.SetModelCooldown(ctx, created.ID, "model-a", modelUntil2); err != nil {
+		t.Fatalf("SetModelCooldown #2 failed: %v", err)
+	}
+	md2, err := cache.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns #2 failed: %v", err)
+	}
+	if got := md2[created.ID]["model-a"]; got.Unix() != modelUntil1.Unix() {
+		t.Fatalf("expected cached model cooldown=%v, got %v", modelUntil1, got)
+	}
+
+	cache.InvalidateCooldownCache()
+	md3, err := cache.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns after invalidate failed: %v", err)
+	}
+	if got := md3[created.ID]["model-a"]; got.Unix() != modelUntil2.Unix() {
+		t.Fatalf("expected refreshed model cooldown=%v, got %v", modelUntil2, got)
+	}
 }
 
 // TestChannelCache_DeepCopyPreservesCostMultiplier 锁定 deepCopyConfig 必须保留成本倍率与自定义规则，

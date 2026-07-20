@@ -126,7 +126,7 @@ func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 
 	tables := []string{
 		"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
-		"auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channel_url_states",
+		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states",
 		"channels", "schema_migrations", "key_rr",
 	}
 	for _, table := range tables {

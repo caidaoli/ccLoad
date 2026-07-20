@@ -51,6 +51,10 @@ func (s *selectorMethodPreferenceStore) GetAllKeyCooldowns(context.Context) (map
 	return map[int64]map[int]time.Time{}, nil
 }
 
+func (s *selectorMethodPreferenceStore) GetAllModelCooldowns(context.Context) (map[int64]map[string]time.Time, error) {
+	return map[int64]map[string]time.Time{}, nil
+}
+
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
 func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	store, cleanup := setupTestStore(t)
@@ -404,6 +408,58 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 
 	if len(candidates) > 0 && candidates[0].Name != "active-channel" {
 		t.Errorf("期望返回active-channel，实际返回%s", candidates[0].Name)
+	}
+}
+
+func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	primary, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "model-cooldown-primary",
+		URL:      "https://primary.example.com",
+		Priority: 100,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "model-a", RedirectModel: "upstream-model-a"},
+			{Model: "model-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create primary channel: %v", err)
+	}
+	secondary, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "model-cooldown-secondary",
+		URL:          "https://secondary.example.com",
+		Priority:     50,
+		Enabled:      true,
+		ModelEntries: []model.ModelEntry{{Model: "model-a"}},
+	})
+	if err != nil {
+		t.Fatalf("create secondary channel: %v", err)
+	}
+
+	if err := store.SetModelCooldown(ctx, primary.ID, "upstream-model-a", time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("set model cooldown: %v", err)
+	}
+
+	modelACandidates, err := server.selectCandidatesByModelAndType(ctx, "model-a", "")
+	if err != nil {
+		t.Fatalf("select model-a candidates: %v", err)
+	}
+	if len(modelACandidates) != 1 || modelACandidates[0].ID != secondary.ID {
+		t.Fatalf("model-a should exclude cooled primary channel, got %+v", modelACandidates)
+	}
+
+	modelBCandidates, err := server.selectCandidatesByModelAndType(ctx, "model-b", "")
+	if err != nil {
+		t.Fatalf("select model-b candidates: %v", err)
+	}
+	if len(modelBCandidates) != 1 || modelBCandidates[0].ID != primary.ID {
+		t.Fatalf("model-b should keep the same channel available, got %+v", modelBCandidates)
 	}
 }
 

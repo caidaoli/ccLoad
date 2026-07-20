@@ -32,6 +32,7 @@ type testChannel struct {
 	channelType           string
 	protocolTransformMode string
 	protocolTransforms    []string
+	customRequestRules    *model.CustomRequestRules
 	models                string // 逗号分隔的模型列表
 	apiKey                string
 	priority              int
@@ -86,6 +87,7 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 			ChannelType:           chType,
 			ProtocolTransformMode: ch.protocolTransformMode,
 			ProtocolTransforms:    ch.protocolTransforms,
+			CustomRequestRules:    ch.customRequestRules,
 			Priority:              priority,
 			Enabled:               true,
 			ModelEntries:          modelEntries,
@@ -211,6 +213,120 @@ func TestProxy_Success_NonStreaming(t *testing.T) {
 	}
 	if resp["id"] != "chatcmpl-1" {
 		t.Fatalf("expected id=chatcmpl-1, got %v", resp["id"])
+	}
+}
+
+func TestProxy_ModelCooldownSSEErrorReturns429(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: error\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"type":"error","error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"gpt-5.5"}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "sse-model-cooldown", models: "gpt-5.5"},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-5.5",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+		"stream":   true,
+	}, nil)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429; body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
+	const finalModel = "shared-upstream-model"
+
+	var primaryHits atomic.Int64
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		primaryHits.Add(1)
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode primary request: %v", err)
+		} else if body["model"] != finalModel {
+			t.Errorf("primary model=%v, want %s", body["model"], finalModel)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"shared-upstream-model","reset_seconds":300}}`))
+	}))
+	defer primary.Close()
+
+	secondary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp-ok","object":"response","status":"completed","model":"fallback-model","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer secondary.Close()
+
+	rules := &model.CustomRequestRules{Body: []model.CustomBodyRule{{
+		Action: model.RuleActionOverride,
+		Path:   "model",
+		Value:  json.RawMessage(`"shared-upstream-model"`),
+	}}}
+	env := setupProxyTestEnv(t, []testChannel{
+		{
+			name:               "custom-rule-primary",
+			channelType:        util.ChannelTypeCodex,
+			customRequestRules: rules,
+			models:             "external-model-a,external-model-b",
+			priority:           100,
+		},
+		{
+			name:        "fallback-secondary",
+			channelType: util.ChannelTypeCodex,
+			models:      "external-model-a,external-model-b",
+			priority:    50,
+		},
+	}, map[int]string{0: primary.URL, 1: secondary.URL})
+
+	request := func(modelName string) {
+		t.Helper()
+		w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model":  modelName,
+			"input":  "hello",
+			"stream": false,
+		}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("model=%s status=%d, want 200; body=%s", modelName, w.Code, w.Body.String())
+		}
+	}
+
+	request("external-model-a")
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("list configs: %v", err)
+	}
+	var primaryID int64
+	for _, cfg := range configs {
+		if cfg.Name == "custom-rule-primary" {
+			primaryID = cfg.ID
+			break
+		}
+	}
+	if primaryID == 0 {
+		t.Fatal("primary channel not found")
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get model cooldowns: %v", err)
+	}
+	if until := cooldowns[primaryID][finalModel]; !until.After(time.Now()) {
+		t.Fatalf("final model cooldown=%s, want active cooldown", until.Format(time.RFC3339))
+	}
+	if _, exists := cooldowns[primaryID]["external-model-a"]; exists {
+		t.Fatal("external alias must not be used as model cooldown key")
+	}
+
+	request("external-model-b")
+	if got := primaryHits.Load(); got != 1 {
+		t.Fatalf("primary hits=%d, want 1 after shared final model cooldown", got)
 	}
 }
 

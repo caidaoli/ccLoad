@@ -149,6 +149,32 @@ func applyBodyRules(contentType string, body []byte, rules []model.CustomBodyRul
 	return marshaled
 }
 
+// resolveModelAfterBodyRules 返回顶层 body.model 规则生效后的模型身份。
+// 非字符串 model 没有可持久化的模型键，返回空字符串让错误响应中的 model 兜底。
+func resolveModelAfterBodyRules(modelName string, rules []model.CustomBodyRule) string {
+	resolved := strings.TrimSpace(modelName)
+	for _, rule := range rules {
+		segs := splitJSONPath(rule.Path)
+		if len(segs) != 1 || segs[0] != "model" {
+			continue
+		}
+		switch rule.Action {
+		case model.RuleActionRemove:
+			resolved = ""
+		case model.RuleActionOverride:
+			var value string
+			if err := sonic.Unmarshal(rule.Value, &value); err != nil {
+				if sonic.Valid(rule.Value) {
+					resolved = ""
+				}
+				continue
+			}
+			resolved = strings.TrimSpace(value)
+		}
+	}
+	return resolved
+}
+
 // isJSONContentType 判断 Content-Type 是否为 JSON 家族。
 func isJSONContentType(ct string) bool {
 	ct = strings.ToLower(strings.TrimSpace(ct))
