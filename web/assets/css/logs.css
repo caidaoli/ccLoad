@@ -1058,6 +1058,34 @@
       white-space: nowrap;
     }
 
+    @media (max-width: 768px) {
+      .logs-table .logs-col-model>.model-display {
+        display: flex;
+        flex: 1 1 auto;
+        min-width: 0;
+        flex-direction: column;
+        align-items: flex-end;
+        gap: 2px;
+      }
+
+      .logs-table .logs-col-model>.model-display .model-tag {
+        max-width: 100%;
+        padding-right: 8px;
+      }
+
+      .logs-table .logs-col-model>.model-display .model-text {
+        max-width: 100%;
+      }
+
+      .logs-table .logs-col-model>.model-display .model-badges {
+        position: static;
+        order: -1;
+        max-width: 100%;
+        justify-content: flex-end;
+        transform: none;
+      }
+    }
+
     /* 进行中状态样式 */
     .status-pending {
       display: inline-block;
