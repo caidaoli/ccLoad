@@ -1725,35 +1725,66 @@ function appendRedirectModelStatus(statusCell, modifier, lines) {
 function appendRedirectModelPerformance(statusCell, stats) {
   const status = document.createElement('div');
   status.className = 'redirect-model-status redirect-model-status--performance';
-  const metrics = [
-    {
-      label: window.t('channels.modelFirstByte'),
-      value: stats.avg_first_byte_time_seconds,
-      color: window.getFirstByteTimingColor(stats.avg_first_byte_time_seconds)
-    },
-    {
-      label: window.t('channels.modelDuration'),
-      value: stats.avg_duration_seconds,
-      color: window.getDurationTimingColor(stats.avg_duration_seconds)
+
+  // 第一行：首字/耗时 2s/14.4s
+  status.appendChild(buildRedirectModelPerformanceLine(
+    window.t('channels.modelTiming'),
+    [
+      {
+        text: formatModelStatsSeconds(stats.avg_first_byte_time_seconds),
+        color: window.getFirstByteTimingColor(stats.avg_first_byte_time_seconds)
+      },
+      {
+        text: formatModelStatsSeconds(stats.avg_duration_seconds),
+        color: window.getDurationTimingColor(stats.avg_duration_seconds)
+      }
+    ]
+  ));
+
+  // 第二行：调用/失败 成功次数/失败次数
+  status.appendChild(buildRedirectModelPerformanceLine(
+    window.t('channels.modelCallFail'),
+    [
+      { text: formatModelStatsCount(stats.success), color: 'var(--success-600)' },
+      { text: formatModelStatsCount(stats.error), color: 'var(--error-600)' }
+    ]
+  ));
+
+  statusCell.appendChild(status);
+}
+
+function buildRedirectModelPerformanceLine(labelText, values) {
+  const line = document.createElement('span');
+  line.className = 'redirect-model-performance-line';
+
+  const label = document.createElement('span');
+  label.className = 'redirect-model-performance-label';
+  label.textContent = labelText;
+  line.appendChild(label);
+
+  values.forEach((item, index) => {
+    if (index > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'redirect-model-performance-sep';
+      sep.textContent = '/';
+      line.appendChild(sep);
     }
-  ];
-  for (const metric of metrics) {
-    const line = document.createElement('span');
-    line.className = 'redirect-model-performance-line';
-
-    const label = document.createElement('span');
-    label.className = 'redirect-model-performance-label';
-    label.textContent = metric.label;
-
     const value = document.createElement('span');
     value.className = 'redirect-model-performance-value';
-    value.textContent = formatModelStatsSeconds(metric.value);
-    value.style.color = metric.color;
+    value.textContent = item.text;
+    if (item.color) {
+      value.style.color = item.color;
+    }
+    line.appendChild(value);
+  });
 
-    line.append(label, value);
-    status.appendChild(line);
-  }
-  statusCell.appendChild(status);
+  return line;
+}
+
+function formatModelStatsCount(value) {
+  const count = Number(value);
+  if (!Number.isFinite(count) || count < 0) return '—';
+  return String(Math.trunc(count));
 }
 
 function renderRedirectModelStats(statusCell, redirect) {
