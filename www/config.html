@@ -232,7 +232,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
             <h3>Retries and cooldown</h3>
-            <p>Key errors cool only the current key and upstream HTTP 5xx errors cool only the actual model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
+            <p>Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, upstream HTTP 5xx, key-level 429 rate limits, and model-unavailable 404 — cool only the actual upstream model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
