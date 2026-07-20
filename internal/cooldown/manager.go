@@ -4,6 +4,7 @@ package cooldown
 import (
 	"context"
 	"log"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -17,6 +18,7 @@ type Action int
 // Action 常量定义冷却后的建议行动。
 const (
 	ActionRetryKey     Action = iota // ActionRetryKey 表示重试当前渠道的其他Key
+	ActionRetryModel                 // ActionRetryModel 表示当前模型在该渠道不可用，切换渠道
 	ActionRetryChannel               // ActionRetryChannel 表示切换到下一个渠道
 	ActionReturnClient               // ActionReturnClient 表示直接返回给客户端
 )
@@ -29,6 +31,7 @@ const NoKeyIndex = -1
 type ErrorInput struct {
 	ChannelID      int64
 	ChannelType    string // 渠道类型，用于特定渠道的错误处理策略
+	Model          string // 实际发送给上游的模型名
 	KeyIndex       int
 	StatusCode     int
 	ErrorBody      []byte
@@ -55,6 +58,9 @@ type cooldownDecision struct {
 	keyCooldownUntil        time.Time
 	hasKeyCooldownUntil     bool
 	keyCooldownReason       string
+	model                   string
+	modelScoped             bool
+	modelCooldownUntil      time.Time
 	channelCooldownUntil    time.Time
 	hasChannelCooldownUntil bool
 	channelCooldownReason   string
@@ -95,12 +101,23 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 		decision.channelCooldownUntil = classification.ChannelCooldownUntil
 		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
 		decision.channelCooldownReason = classification.ChannelCooldownReason
+
+		if decision.hasKeyCooldownUntil && decision.keyCooldownReason == "model_cooldown" {
+			decision.model = strings.TrimSpace(in.Model)
+			if decision.model == "" {
+				decision.model = strings.TrimSpace(classification.Model)
+			}
+			decision.modelScoped = true
+			decision.modelCooldownUntil = decision.keyCooldownUntil
+			// 模型级故障需要切换渠道，但不得冷却 Key 或整个渠道。
+			errLevel = util.ErrorLevelChannel
+		}
 	}
 
 	// 2. [TARGET] 动态调整:单Key渠道的Key级错误应该直接冷却渠道
 	// 设计原则:如果没有其他Key可以重试,Key级错误等同于渠道级错误
 	// [WARN] 例外：多数带固定Key冷却截止时间的错误保持Key级（例如1308、每日限额、Key配额耗尽）。
-	// 上游明确要求 retry-in/model cooldown 时，单Key渠道没有可替换Key，应按同一截止时间冷却渠道。
+	// 上游明确要求 retry-in 时，单Key渠道没有可替换Key，应按同一截止时间冷却渠道。
 	if errLevel == util.ErrorLevelKey &&
 		(!decision.hasKeyCooldownUntil || promotesFixedKeyCooldownToChannel(decision.keyCooldownReason)) {
 		var config *model.Config
@@ -125,6 +142,10 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 	}
 
 	// 3. 仅给出动作决策（不产生副作用）
+	if decision.modelScoped {
+		decision.action = ActionRetryModel
+		return decision
+	}
 	switch errLevel {
 	case util.ErrorLevelClient:
 		decision.action = ActionReturnClient
@@ -141,7 +162,7 @@ func (m *Manager) classifyDecision(ctx context.Context, in ErrorInput) cooldownD
 
 func promotesFixedKeyCooldownToChannel(reason string) bool {
 	switch reason {
-	case "model_cooldown", "RESOURCE_EXHAUSTED_RETRY_IN", "RATE_LIMIT_RETRY_AFTER", "USAGE_LIMIT_REACHED":
+	case "RESOURCE_EXHAUSTED_RETRY_IN", "RATE_LIMIT_RETRY_AFTER", "USAGE_LIMIT_REACHED":
 		return true
 	default:
 		return false
@@ -203,6 +224,22 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		}
 		return ActionRetryKey
 
+	case ActionRetryModel:
+		if decision.model == "" {
+			log.Printf("[WARN] 收到 model_cooldown 但缺少模型名，跳过持久化 (channel=%d)", channelID)
+			return ActionRetryModel
+		}
+		if err := m.store.SetModelCooldown(ctx, channelID, decision.model, decision.modelCooldownUntil); err != nil {
+			log.Printf("[WARN] 设置模型冷却失败 (channel=%d, model=%s, until=%v): %v",
+				channelID, decision.model, decision.modelCooldownUntil, err)
+		} else {
+			duration := time.Until(decision.modelCooldownUntil)
+			log.Printf("[COOLDOWN] 模型冷却: 渠道=%d 模型=%s 禁用至 %s (%.1f分钟)",
+				channelID, decision.model,
+				decision.modelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+		}
+		return ActionRetryModel
+
 	case ActionRetryChannel:
 		// 渠道级错误:冷却整个渠道,切换到其他渠道
 		if decision.hasChannelCooldownUntil {
@@ -244,4 +281,9 @@ func (m *Manager) ClearChannelCooldown(ctx context.Context, channelID int64) err
 // 简化成功后的冷却清除逻辑
 func (m *Manager) ClearKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
 	return m.store.ResetKeyCooldown(ctx, channelID, keyIndex)
+}
+
+// ClearModelCooldown 清除指定渠道的实际上游模型冷却。
+func (m *Manager) ClearModelCooldown(ctx context.Context, channelID int64, model string) error {
+	return m.store.ResetModelCooldown(ctx, channelID, model)
 }

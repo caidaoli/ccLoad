@@ -21,19 +21,19 @@ import (
 // 3. 确保不会选中已冷却的渠道，避免雪崩效应
 //
 // 行为说明：
-// - 冷却语义：渠道级冷却、或“所有Key均在冷却”的渠道会被过滤
+// - 冷却语义：渠道级冷却、当前模型冷却，或“所有Key均在冷却”的渠道会被过滤
 // - 健康度排序：仅对“已通过冷却过滤”的渠道进行排序/负载均衡
-func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
-	return s.filterCooldownChannelsInternal(ctx, channels, true)
+func (s *Server) filterCooldownChannels(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, true)
 }
 
 // filterCooldownChannelsStrict 与 filterCooldownChannels 类似，但不会触发“全冷却兜底”选择。
 // 用于需要在“候选为空”时继续做下一步回退（例如模型模糊匹配）的场景。
-func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config) ([]*modelpkg.Config, error) {
-	return s.filterCooldownChannelsInternal(ctx, channels, false)
+func (s *Server) filterCooldownChannelsStrict(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string) ([]*modelpkg.Config, error) {
+	return s.filterCooldownChannelsInternal(ctx, channels, requestModel, requestProtocol, false)
 }
 
-func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
+func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []*modelpkg.Config, requestModel, requestProtocol string, allowAllCooledFallback bool) ([]*modelpkg.Config, error) {
 	if len(channels) == 0 {
 		return channels, nil
 	}
@@ -62,8 +62,17 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		keyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
+	modelCooldowns := make(map[int64]map[string]time.Time)
+	if requestModel != "" && requestModel != "*" {
+		modelCooldowns, err = s.getAllModelCooldowns(ctx)
+		if err != nil {
+			log.Printf("[ERROR] 获取模型冷却状态失败，跳过模型冷却过滤（降级模式）: %v", err)
+			modelCooldowns = make(map[int64]map[string]time.Time)
+		}
+	}
+
 	// 先执行冷却过滤，保证冷却语义不被绕开（正确性优先）
-	filtered := s.filterCooledChannels(channels, channelCooldowns, keyCooldowns, now)
+	filtered := s.filterCooledChannels(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
 	if len(filtered) == 0 {
 		if !allowAllCooledFallback {
 			return nil, nil
@@ -79,7 +88,7 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 			return nil, nil
 		}
 
-		best, readyIn := s.pickBestChannelWhenAllCooled(channels, channelCooldowns, keyCooldowns, now)
+		best, readyIn := s.pickBestChannelWhenAllCooled(channels, requestModel, requestProtocol, channelCooldowns, keyCooldowns, modelCooldowns, now)
 		if best != nil {
 			log.Printf("[INFO] 所有渠道冷却中，兜底使用渠道 %d（%.1fs 后就绪）", best.ID, readyIn.Seconds())
 			return []*modelpkg.Config{cooldownFallbackCandidate(best)}, nil
@@ -110,8 +119,11 @@ func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {
 // 选择规则：最早恢复 > 有效优先级高 > 基础优先级高
 func (s *Server) pickBestChannelWhenAllCooled(
 	channels []*modelpkg.Config,
+	requestModel string,
+	requestProtocol string,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,
+	modelCooldowns map[int64]map[string]time.Time,
 	now time.Time,
 ) (*modelpkg.Config, time.Duration) {
 	if len(channels) == 0 {
@@ -128,6 +140,9 @@ func (s *Server) pickBestChannelWhenAllCooled(
 	getReadyAt := func(ch *modelpkg.Config) time.Time {
 		readyAt := now
 		if until, ok := channelCooldowns[ch.ID]; ok && until.After(readyAt) {
+			readyAt = until
+		}
+		if until, ok := s.modelCooldownUntil(ch, requestModel, requestProtocol, modelCooldowns); ok && until.After(readyAt) {
 			readyAt = until
 		}
 		// Key全冷却时，取最早解禁时间
@@ -207,8 +222,11 @@ func (s *Server) pickBestChannelWhenAllCooled(
 // 渠道级冷却或所有Key都在冷却时，该渠道被过滤
 func (s *Server) filterCooledChannels(
 	channels []*modelpkg.Config,
+	requestModel string,
+	requestProtocol string,
 	channelCooldowns map[int64]time.Time,
 	keyCooldowns map[int64]map[int]time.Time,
+	modelCooldowns map[int64]map[string]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
 	filtered := make([]*modelpkg.Config, 0, len(channels))
@@ -220,7 +238,12 @@ func (s *Server) filterCooledChannels(
 			}
 		}
 
-		// 2. 检查是否所有Key都在冷却
+		// 2. 检查当前请求在该渠道映射到的实际模型是否冷却
+		if cooldownUntil, exists := s.modelCooldownUntil(cfg, requestModel, requestProtocol, modelCooldowns); exists && cooldownUntil.After(now) {
+			continue
+		}
+
+		// 3. 检查是否所有Key都在冷却
 		keyMap, hasCooldownKeys := keyCooldowns[cfg.ID]
 		if hasCooldownKeys && cfg.KeyCount > 0 {
 			if len(keyMap) >= cfg.KeyCount {
@@ -240,6 +263,25 @@ func (s *Server) filterCooledChannels(
 		filtered = append(filtered, cfg)
 	}
 	return filtered
+}
+
+func (s *Server) modelCooldownUntil(
+	cfg *modelpkg.Config,
+	requestModel string,
+	requestProtocol string,
+	modelCooldowns map[int64]map[string]time.Time,
+) (time.Time, bool) {
+	if cfg == nil || requestModel == "" || requestModel == "*" {
+		return time.Time{}, false
+	}
+	models := modelCooldowns[cfg.ID]
+	if len(models) == 0 {
+		return time.Time{}, false
+	}
+	upstreamProtocol := cfg.ResolveUpstreamProtocol(requestProtocol)
+	actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, upstreamProtocol)
+	until, ok := models[actualModel]
+	return until, ok
 }
 
 // filterCostLimitExceededChannels 过滤超过每日成本限额的渠道

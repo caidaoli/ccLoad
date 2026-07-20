@@ -60,6 +60,19 @@ func DefineChannelModelsTable() *TableBuilder {
 		Index("idx_channel_models_model", "model")
 }
 
+// DefineChannelModelCooldownsTable 定义渠道模型运行时冷却状态。
+// 独立于 channel_models：冷却键是实际上游模型，可能是 redirect_model，不一定是对外暴露的模型名。
+func DefineChannelModelCooldownsTable() *TableBuilder {
+	return NewTable("channel_model_cooldowns").
+		Column("channel_id INT NOT NULL").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("cooldown_until BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Column("PRIMARY KEY (channel_id, model)").
+		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
+		Index("idx_channel_model_cooldowns_until", "cooldown_until")
+}
+
 // DefineChannelProtocolTransformsTable 定义渠道协议转换表结构
 func DefineChannelProtocolTransformsTable() *TableBuilder {
 	return NewTable("channel_protocol_transforms").

@@ -560,19 +560,18 @@ func buildCodexResponsesPath() string {
 // 1. 精确匹配的重定向（redirect_model 配置）
 // 2. 模糊匹配（启用 model_fuzzy_match 时）
 // 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
-func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
-	actualModel = reqCtx.originalModel
-
+func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) string {
+	actualModel := originalModel
 	// 1. 检查模型重定向（精确匹配优先）
-	if redirectModel, ok := cfg.GetRedirectModel(reqCtx.originalModel); ok && redirectModel != "" {
+	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
 		actualModel = redirectModel
 	}
 
 	// 2. 模糊匹配回退（仅当未触发重定向时）
-	if actualModel == reqCtx.originalModel && s.modelFuzzyMatch {
+	if actualModel == originalModel && s.modelFuzzyMatch {
 		// 先检查精确匹配，避免不必要的模糊匹配
-		if !cfg.SupportsModel(reqCtx.originalModel) {
-			if matched, ok := cfg.FuzzyMatchModel(reqCtx.originalModel); ok {
+		if !cfg.SupportsModel(originalModel) {
+			if matched, ok := cfg.FuzzyMatchModel(originalModel); ok {
 				actualModel = matched
 			}
 		}
@@ -581,11 +580,28 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	// 3. [FIX] 2026-01: 模糊匹配结果的重定向（链式解析）
 	// 场景：请求 gemini-3-flash → 模糊匹配 gemini-3-flash-preview → 重定向 gemini-3-flash-preview-0719
 	// 仅当模型已变更且变更后的模型有重定向配置时触发
-	if actualModel != reqCtx.originalModel {
+	if actualModel != originalModel {
 		if redirectModel, ok := cfg.GetRedirectModel(actualModel); ok && redirectModel != "" {
 			actualModel = redirectModel
 		}
 	}
+	return actualModel
+}
+
+// resolveFinalUpstreamModel 返回真正发送给上游的模型身份。
+// 协议转换使用 resolved model 构造上游 body，随后 custom_request_rules 可能再次覆盖 body.model。
+// Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
+func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
+	actualModel := s.resolveActualModel(cfg, originalModel)
+	if protocol.Protocol(util.NormalizeChannelType(upstreamProtocol)) == protocol.Gemini {
+		return actualModel
+	}
+	return resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
+}
+
+func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
+	upstreamProtocol := cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol))
+	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, upstreamProtocol)
 
 	bodyToSend = reqCtx.body
 

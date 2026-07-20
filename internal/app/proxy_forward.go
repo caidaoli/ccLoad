@@ -1164,7 +1164,7 @@ func isSSERateLimitError(body []byte) bool {
 
 func isRateLimitErrorType(value string) bool {
 	switch strings.ToLower(value) {
-	case "rate_limit_error", "rate_limit_exceeded", "too_many_requests":
+	case "rate_limit_error", "rate_limit_exceeded", "too_many_requests", "model_cooldown":
 		return true
 	default:
 		return false
@@ -2121,6 +2121,10 @@ func (s *Server) attemptKeyAcrossURLs(
 		if nextAction == cooldown.ActionRetryKey {
 			break
 		}
+		// 模型级错误与 URL 无关，不要在同渠道继续浪费请求。
+		if nextAction == cooldown.ActionRetryModel {
+			break
+		}
 		// 客户端错误：直接返回
 		if nextAction == cooldown.ActionReturnClient {
 			return urlLastFailure, nil, nil
@@ -2136,7 +2140,10 @@ func (s *Server) attemptKeyAcrossURLs(
 			// 该分支命中时，当前URL若使用了 deferChannelCooldown，需要补做一次渠道级冷却写入。
 			if shouldSwitchChannelImmediatelyOnHTTP5xx(result) {
 				if shouldDeferChannelCooldown && result != nil {
-					input := httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header)
+					input := cooldownInputForModel(
+						httpErrorInputFromParts(cfg.ID, keyIndex, result.status, result.body, result.header),
+						actualModel,
+					)
 					s.applyCooldownDecision(ctx, cfg, input)
 				}
 				break

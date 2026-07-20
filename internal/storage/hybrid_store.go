@@ -511,6 +511,34 @@ func (h *HybridStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIn
 	return nil
 }
 
+func (h *HybridStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
+	return h.sqlite.GetAllModelCooldowns(ctx)
+}
+
+func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error {
+	if err := h.mysql.SetModelCooldown(ctx, channelID, model, until); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("SetModelCooldown", func() error {
+		return h.sqlite.SetModelCooldown(ctx, channelID, model, until)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) ResetModelCooldown(ctx context.Context, channelID int64, model string) error {
+	if err := h.mysql.ResetModelCooldown(ctx, channelID, model); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ResetModelCooldown", func() error {
+		return h.sqlite.ResetModelCooldown(ctx, channelID, model)
+	})
+
+	return nil
+}
+
 // === Log Management ===
 // 日志特殊处理：写 SQLite（快）+ 异步同步到 MySQL（备份）
 

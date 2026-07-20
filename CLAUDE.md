@@ -48,10 +48,11 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 ## 故障切换(`util/classifier.go`)
 
 - Key 级(401/403/429)→ 重试同渠道其他 Key
+- 模型级(`model_cooldown`)→ 写入 `(channel_id, 实际上游模型)` 冷却并返回 `ActionRetryModel`;直接切渠道,不再尝试同渠道其他 Key/URL,不影响该渠道其他模型
 - 渠道级(5xx/520/524,404/405 无客户端语义)→ 切渠道
 - 客户端错误(406/413,404+`model_not_found`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
-- 指数退避:2 → 4 → 8 → 30 min
+- Key/渠道级默认指数退避:2 → 4 → 8 → 30 min;模型级优先使用上游 reset 截止时间,缺失时固定 5 min
 
 ## 自定义状态码(改相关代码前先读语义)
 
@@ -63,7 +64,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 
 ## 关键机制(要点,细节读对应文件)
 
-- **选择**:渠道平滑加权轮询(按有效 Key 数)+ 冷却感知,成本限额检查优先于冷却;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;渠道 URL 末尾 `#`(`ExactUpstreamURLMarker`)= 精确转发,不自动追加路径
+- **选择**:渠道平滑加权轮询(按有效 Key 数)+ 渠道/Key/模型冷却感知,成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;渠道 URL 末尾 `#`(`ExactUpstreamURLMarker`)= 精确转发,不自动追加路径
 - **协议转换**:四协议 12 个有向转换对,覆盖请求、流式响应、非流式响应;`upstream`(原生)/`local`(本地翻译)两模式;渠道配 `ProtocolTransformMode`+`ProtocolTransforms`
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **上游超时**(`server.go:loadChannelTypeTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`non_stream_timeout`(120s),按渠道类型 `{type}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
@@ -93,6 +94,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 - 互斥:`CCLOAD_MYSQL` 与 `CCLOAD_POSTGRES` 同时设置 → `log.Fatal`
 - PG DSN:URL(`postgres://user:pass@host:5432/db?sslmode=disable`)或 libpq 关键字串;驱动 `pgx/stdlib`
 - 混合数据流:写主库(MySQL/PG)→同步 SQLite,读 SQLite,日志先 SQLite 后异步主库;`CCLOAD_SQLITE_LOG_DAYS` 默认 7
+- 模型冷却状态:`channel_model_cooldowns(channel_id, model, cooldown_until)`;写主库后同步 SQLite,启动自动建表/恢复,渠道删除时级联清理
 - URL 禁用状态(`channel_url_states` 表)双写,重启 `URLSelector.LoadDisabled` 回填
 
 ## 前端(Playwright MCP)

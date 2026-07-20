@@ -13,7 +13,7 @@
 [![GitHub Actions](https://img.shields.io/badge/CI%2FCD-GitHub%20Actions-2088FF.svg)](https://github.com/features/actions)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> 智能路由 | 自动故障切换 | 指数冷却 | 多 URL 调度 | 协议转换 | 实时监控 | 成本控制
+> 智能路由 | 自动故障切换 | 模型感知冷却 | 多 URL 调度 | 协议转换 | 实时监控 | 成本控制
 
 ccLoad 用一个 Go 服务接住多上游 AI API 的复杂度：Claude Code、Codex、Gemini、OpenAI 兼容客户端统一接入同一个网关，渠道选择、故障切换、冷却、协议转换、请求可观测性和费用限制都在服务端处理，不再散落到每个客户端脚本里。
 
@@ -30,8 +30,8 @@ ccLoad 用一个 Go 服务接住多上游 AI API 的复杂度：Claude Code、Co
 ccLoad 直接处理这些问题：
 
 - 🎯 **智能路由**：高优先级渠道优先使用，同级渠道按平滑加权轮询分流。
-- 🔀 **自动故障切换**：按错误类型跳过故障 Key、渠道或 URL。
-- ⏰ **指数冷却**：异常上游自动退避，避免重试持续打到坏渠道。
+- 🔀 **自动故障切换**：按错误作用域跳过故障 Key、模型、渠道或 URL。
+- ⏰ **模型感知冷却**：`model_cooldown` 只会让当前渠道的实际上游模型退出候选，同渠道其他模型仍可用；Key/渠道故障继续使用指数退避。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
 - 🔄 **协议转换**：Anthropic、OpenAI、Gemini、Codex 请求和响应可在网关层转换。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
@@ -49,9 +49,9 @@ ccLoad 直接处理这些问题：
 |------|------|------|
 | 🚀 **性能怪兽** | Gin框架 + Sonic JSON | 1000+并发，高性能缓存 |
 | 🧮 **本地算Token** | 不调API就能估算消耗 | 响应<5ms，准确度93%+ |
-| 🎯 **错误分类器** | Key级/渠道级/客户端错误 | 200伪装错误也能揪出来 |
+| 🎯 **错误分类器** | Key级/模型级/渠道级/客户端错误 | 200伪装错误也能揪出来 |
 | 🔀 **智能调度** | 优先级+平滑加权轮询+健康度排序 | 异常渠道自动降权 |
-| 🛡️ **故障秒切** | 指数退避冷却机制 | 2min→4min→8min→30min |
+| 🛡️ **故障秒切** | Key/渠道指数退避 + 模型精确冷却 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
@@ -799,7 +799,8 @@ ccLoad 使用的核心技术栈：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
   - 区分网络错误和HTTP错误的分类策略
-  - 识别结构化配额/模型冷却响应，按上游返回的重置时间精确冷却
+  - Key/模型/渠道使用独立动作；`ActionRetryModel` 不再尝试同渠道其他 Key 或 URL
+  - 结构化 `model_cooldown` 按 `(channel_id, 实际上游模型)` 持久化到上游重置时间，同渠道其他模型仍可选
   - 内置单Key渠道自动升级逻辑
 - **多URL选择器**（URLSelector）：
   - `url_selector.go`：单渠道多URL智能调度
@@ -829,7 +830,7 @@ ccLoad 使用的核心技术栈：
 **多级缓存系统**:
 - 渠道配置缓存（60秒TTL）- 减少数据库查询
 - 轮询指针缓存（内存）- 毫秒级选择
-- 冷却状态内联（直接存表）- 无需JOIN，速度飞起
+- 渠道/Key 冷却内联在 `channels` / `api_keys`，模型冷却独立存入 `channel_model_cooldowns`
 - 错误分类缓存（1000容量）- 重复错误秒判
 
 **异步处理架构**:
@@ -1082,8 +1083,9 @@ storage/
 - 主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → 混合模式
 
 **核心表结构**（SQLite / MySQL / PostgreSQL 共用）:
-- `channels` - 渠道配置（冷却数据内联，UNIQUE 约束 name，含协议转换配置、定时检测配置、RPM/并发限制配置）
+- `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含协议转换配置、定时检测配置、RPM/并发限制配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
+- `channel_model_cooldowns` - 模型级运行时冷却，主键为渠道和实际上游模型
 - `logs` - 请求日志（含base_url上游URL追踪）
 - `debug_logs` - 调试日志（上游请求/响应原始数据，独立清理策略）
 - `key_rr` - 轮询指针（channel_id → idx）
@@ -1095,7 +1097,7 @@ storage/
 - ✅ **统一SQL层**（重构）：SQLite、MySQL 和 PostgreSQL 共享 `storage/sql/` 实现
 - ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
 - ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）
-- ✅ 冷却数据内联（废弃独立 cooldowns 表，减少 JOIN 开销）
+- ✅ 渠道/Key 冷却数据内联；模型冷却独立存储，避免单模型不可用时冷却整个渠道
 - ✅ 性能索引优化（渠道选择延迟↓30-50%，Key 查找延迟↓40-60%）
 - ✅ 复合索引优化（统计查询性能提升）
 - ✅ 外键约束（级联删除，保证数据一致性）

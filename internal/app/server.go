@@ -691,6 +691,33 @@ func (s *Server) getAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time
 	)
 }
 
+func (s *Server) getAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) (map[int64]map[string]time.Time, error) {
+			return cache.GetAllModelCooldowns(ctx)
+		},
+		func() (map[int64]map[string]time.Time, error) {
+			return s.store.GetAllModelCooldowns(ctx)
+		},
+	)
+}
+
+// hasActiveModelCooldown 通过缓存快速判断指定渠道模型是否有活跃冷却。
+// 用于成功路径的快速跳过：绝大多数模型从未被冷却，无需每次成功都执行 DELETE。
+func (s *Server) hasActiveModelCooldown(ctx context.Context, channelID int64, model string) bool {
+	cooldowns, err := s.getAllModelCooldowns(ctx)
+	if err != nil {
+		return true // 查询失败时保守处理：执行清除
+	}
+	models := cooldowns[channelID]
+	if len(models) == 0 {
+		return false
+	}
+	until, ok := models[model]
+	return ok && until.After(time.Now())
+}
+
 // InvalidateChannelListCache 使渠道列表缓存失效
 // 在渠道CRUD操作后调用，确保缓存一致性
 func (s *Server) InvalidateChannelListCache() {

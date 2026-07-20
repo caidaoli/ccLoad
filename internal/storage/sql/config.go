@@ -473,6 +473,9 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel models: %w", err)
 		}
+		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ?`, id); err != nil {
+			return fmt.Errorf("delete channel model cooldowns: %w", err)
+		}
 		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_protocol_transforms WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel protocol transforms: %w", err)
 		}

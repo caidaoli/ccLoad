@@ -129,6 +129,9 @@ func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T
 	if got.KeyCooldownReason != "model_cooldown" {
 		t.Fatalf("KeyCooldownReason=%q, want model_cooldown", got.KeyCooldownReason)
 	}
+	if got.Model != "gpt-5.5" {
+		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
+	}
 
 	minUntil := before.Add(13792*time.Second - 2*time.Second)
 	maxUntil := after.Add(13792*time.Second + 2*time.Second)
@@ -137,6 +140,25 @@ func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T
 			got.KeyCooldownUntil.Format(time.RFC3339),
 			minUntil.Format(time.RFC3339),
 			maxUntil.Format(time.RFC3339))
+	}
+}
+
+func TestClassifyHTTPResponseWithMeta_ModelCooldownWithoutResetUsesBoundedFallback(t *testing.T) {
+	body := []byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"gpt-5.5"}}`)
+
+	before := time.Now()
+	got := ClassifyHTTPResponseWithMeta(429, nil, body)
+	after := time.Now()
+
+	if got.KeyCooldownReason != "model_cooldown" || !got.HasKeyCooldownUntil {
+		t.Fatalf("classification=%+v, want model_cooldown with fixed deadline", got)
+	}
+	if got.Model != "gpt-5.5" {
+		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
+	}
+	if got.KeyCooldownUntil.Before(before.Add(5*time.Minute-2*time.Second)) ||
+		got.KeyCooldownUntil.After(after.Add(5*time.Minute+2*time.Second)) {
+		t.Fatalf("KeyCooldownUntil=%s, want about 5 minutes", got.KeyCooldownUntil.Format(time.RFC3339))
 	}
 }
 

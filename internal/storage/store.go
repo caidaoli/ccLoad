@@ -59,6 +59,10 @@ type Store interface {
 	BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error)
 	ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error
 	SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error
+	// Model-level cooldown
+	GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error)
+	SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error
+	ResetModelCooldown(ctx context.Context, channelID int64, model string) error
 
 	// === Log Management ===
 	AddLog(ctx context.Context, e *model.LogEntry) error

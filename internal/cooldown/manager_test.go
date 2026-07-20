@@ -697,7 +697,7 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 
 	body := []byte(`{"error":{"code":"model_cooldown","message":"All credentials for model gpt-5.5 are cooling down via provider codex","model":"gpt-5.5","provider":"codex","reset_seconds":13792,"reset_time":"3h49m51s"}}`)
 
-	t.Run("多Key渠道冷却当前Key到reset_seconds", func(t *testing.T) {
+	t.Run("多Key渠道冷却当前模型到reset_seconds", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-model-cooldown-multi-key")
 		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 			{
@@ -725,18 +725,21 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		})
 		after := time.Now()
 
-		if action != ActionRetryKey {
-			t.Fatalf("expected ActionRetryKey, got %v", action)
+		if action != ActionRetryModel {
+			t.Fatalf("expected ActionRetryModel, got %v", action)
 		}
 
-		cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0)
+		cooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5")
 		if !exists {
-			t.Fatal("expected key cooldown")
+			t.Fatal("expected model cooldown")
 		}
 
 		if !cooldownWithinResetSeconds(cooldownUntil, before, after, 13792) {
-			t.Fatalf("key cooldownUntil=%s, want reset_seconds based cooldown",
+			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
 				cooldownUntil.Format(time.RFC3339))
+		}
+		if keyCooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && keyCooldownUntil.After(time.Now()) {
+			t.Fatalf("model_cooldown must not cool the key, got until %s", keyCooldownUntil.Format(time.RFC3339))
 		}
 
 		channelCfg, err := store.GetConfig(ctx, cfg.ID)
@@ -748,7 +751,7 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		}
 	})
 
-	t.Run("单Key渠道冷却渠道到reset_seconds", func(t *testing.T) {
+	t.Run("单Key渠道只切换渠道不冷却Key或整个渠道", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-model-cooldown-single-key")
 		_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
 			ChannelID:   cfg.ID,
@@ -760,6 +763,7 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		before := time.Now()
 		action := manager.HandleError(ctx, ErrorInput{
 			ChannelID:      cfg.ID,
+			Model:          "gpt-5.5",
 			KeyIndex:       0,
 			StatusCode:     429,
 			ErrorBody:      body,
@@ -768,19 +772,28 @@ func TestHandleError_ModelCooldownResetSeconds(t *testing.T) {
 		})
 		after := time.Now()
 
-		if action != ActionRetryChannel {
-			t.Fatalf("expected ActionRetryChannel, got %v", action)
+		if action != ActionRetryModel {
+			t.Fatalf("expected ActionRetryModel, got %v", action)
+		}
+		if cooldownUntil, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists && cooldownUntil.After(time.Now()) {
+			t.Fatalf("model_cooldown must not cool the key, got until %s", cooldownUntil.Format(time.RFC3339))
+		}
+		modelCooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.5")
+		if !exists {
+			t.Fatal("expected model cooldown")
+		}
+		if !cooldownWithinResetSeconds(modelCooldownUntil, before, after, 13792) {
+			t.Fatalf("model cooldownUntil=%s, want reset_seconds based cooldown",
+				modelCooldownUntil.Format(time.RFC3339))
 		}
 
 		channelCfg, err := store.GetConfig(ctx, cfg.ID)
 		if err != nil {
 			t.Fatalf("get config: %v", err)
 		}
-
-		channelCooldownUntil := time.Unix(channelCfg.CooldownUntil, 0)
-		if channelCfg.CooldownUntil == 0 || !cooldownWithinResetSeconds(channelCooldownUntil, before, after, 13792) {
-			t.Fatalf("channel cooldownUntil=%s, want reset_seconds based cooldown",
-				channelCooldownUntil.Format(time.RFC3339))
+		if channelCfg.CooldownUntil > 0 && time.Unix(channelCfg.CooldownUntil, 0).After(time.Now()) {
+			t.Fatalf("model_cooldown must not cool the whole channel, got until %s",
+				time.Unix(channelCfg.CooldownUntil, 0).Format(time.RFC3339))
 		}
 	})
 }
@@ -1266,6 +1279,19 @@ func getKeyCooldownUntil(ctx context.Context, store storage.Store, channelID int
 		return time.Time{}, false
 	}
 	until, ok := channelCooldowns[keyIndex]
+	return until, ok
+}
+
+func getModelCooldownUntil(ctx context.Context, store storage.Store, channelID int64, model string) (time.Time, bool) {
+	cooldowns, err := store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		return time.Time{}, false
+	}
+	channelCooldowns, ok := cooldowns[channelID]
+	if !ok {
+		return time.Time{}, false
+	}
+	until, ok := channelCooldowns[model]
 	return until, ok
 }
 

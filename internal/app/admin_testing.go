@@ -516,6 +516,8 @@ func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyI
 }
 
 func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
+	clientProtocol := resolveClientProtocol(cfg, testReq)
+	actualModel := s.resolveFinalUpstreamModel(cfg, testReq.Model, resolveTestUpstreamProtocol(cfg, clientProtocol))
 	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
 	if success, ok := result["success"].(bool); ok && success {
 		if updatePersistedCooldown {
@@ -524,6 +526,11 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 			}
 			if err := s.store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
 				log.Printf("[WARN] 清除渠道冷却状态失败: %v", err)
+			}
+			if actualModel != "" {
+				if err := s.store.ResetModelCooldown(ctx, cfg.ID, actualModel); err != nil {
+					log.Printf("[WARN] 清除模型 %s 冷却状态失败: %v", actualModel, err)
+				}
 			}
 			s.invalidateChannelRelatedCache(cfg.ID)
 		}
@@ -547,13 +554,18 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
 	action := s.cooldownManager.HandleError(
 		ctx,
-		httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers),
+		cooldownInputForModel(
+			httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers),
+			actualModel,
+		),
 	)
 	s.invalidateChannelRelatedCache(cfg.ID)
 
 	switch action {
 	case cooldown.ActionRetryKey:
 		result["cooldown_action"] = "key_cooldown_applied"
+	case cooldown.ActionRetryModel:
+		result["cooldown_action"] = "model_cooldown_applied"
 	case cooldown.ActionRetryChannel:
 		result["cooldown_action"] = "channel_cooldown_applied"
 	case cooldown.ActionReturnClient:
@@ -600,24 +612,18 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
 	}
 
-	// [INFO] 修复：应用模型重定向逻辑（与正常代理流程保持一致）
+	// 应用完整模型改写逻辑（与正常代理流程保持一致）
 	originalModel := testReq.Model
-	actualModel := originalModel
+	clientProtocol := resolveClientProtocol(cfg, testReq)
+	upstreamProto := resolveTestUpstreamProtocol(cfg, clientProtocol)
+	actualModel := s.resolveFinalUpstreamModel(cfg, originalModel, upstreamProto)
 
-	// 检查模型重定向
-	if redirectModel, ok := cfg.GetRedirectModel(originalModel); ok && redirectModel != "" {
-		actualModel = redirectModel
-		log.Printf("[RELOAD] [测试-模型重定向] 渠道ID=%d, 原始模型=%s, 重定向模型=%s", cfg.ID, originalModel, actualModel)
-	}
-
-	// 如果模型发生重定向，更新测试请求中的模型名称
+	// 如果模型发生改写，更新测试请求中的模型名称
 	if actualModel != originalModel {
 		testReq.Model = actualModel
 		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
 	}
 
-	clientProtocol := resolveClientProtocol(cfg, testReq)
-	upstreamProto := resolveTestUpstreamProtocol(cfg, clientProtocol)
 	if !supportsRuntimeTestProtocol(clientProtocol, upstreamProto) {
 		return map[string]any{
 			"success": false,
