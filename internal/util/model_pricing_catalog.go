@@ -6,6 +6,10 @@ import (
 	"sync/atomic"
 )
 
+// BillingModelSearchCall 是 Codex /v1/alpha/search 的按次计费标识。
+// 一次成功调用 = 1 search_call = $0.01。
+const BillingModelSearchCall = "search_call"
+
 // ModelPricing AI模型定价（单位：美元/百万tokens）
 type ModelPricing struct {
 	InputPrice         float64 // 基础输入token价格（$/1M tokens, ≤200k context for Gemini）
@@ -570,6 +574,9 @@ var basePricing = map[string]ModelPricing{
 	"grok-imagine-image":         {FixedCostPerRequest: 0.02},
 	"grok-imagine-image-quality": {FixedCostPerRequest: 0.05},
 	"grok-imagine-image-pro":     {FixedCostPerRequest: 0.07},
+
+	// Codex Alpha Search：按次计费（1 search_call = $0.01）
+	BillingModelSearchCall: {FixedCostPerRequest: 0.01},
 
 	// ========== MiniMax 模型 ==========
 	// 来源: https://api.pricepertoken.com/api/provider-pricing-history/?provider=minimax

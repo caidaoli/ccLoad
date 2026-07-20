@@ -808,6 +808,7 @@ func stringMapValue(values map[string]any, key string) string {
 type logEntryParams struct {
 	RequestModel   string // 客户端请求的原始模型名称
 	ActualModel    string // 实际转发到上游的模型名称（可能经过重定向）
+	RequestPath    string // 客户端请求路径（用于识别按次计费的特殊端点）
 	ChannelID      int64
 	StatusCode     int
 	Duration       float64
@@ -824,15 +825,30 @@ type logEntryParams struct {
 	ThinkingEffort string
 }
 
+// resolveProxyBillingModel 选择代理请求的计费模型。
+// /v1/alpha/search 无 model/token，固定按 search_call 计费。
+func resolveProxyBillingModel(requestPath, actualModel, requestModel string) string {
+	if protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyAlphaSearch {
+		return util.BillingModelSearchCall
+	}
+	return util.ResolveBillingModel(actualModel, requestModel)
+}
+
 // buildLogEntry 构建日志条目（消除重复代码，遵循DRY原则）
 func buildLogEntry(p logEntryParams) *model.LogEntry {
 	logTime := p.StartTime
 	if logTime.IsZero() {
 		logTime = time.Now() // 兜底：未传入开始时间时使用当前时间
 	}
+	billingModel := resolveProxyBillingModel(p.RequestPath, p.ActualModel, p.RequestModel)
+	modelName := p.RequestModel
+	if modelName == "" {
+		// alpha/search 等无 model 请求：用计费标识落库，避免日志/统计模型列空白
+		modelName = billingModel
+	}
 	entry := &model.LogEntry{
 		Time:        model.JSONTime{Time: logTime},
-		Model:       p.RequestModel,
+		Model:       modelName,
 		LogSource:   model.LogSourceProxy,
 		ChannelID:   p.ChannelID,
 		StatusCode:  p.StatusCode,
@@ -911,8 +927,8 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		// 使用实际转发的模型计算成本（重定向时价格可能不同）；
 		// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
 		// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
-		costModel := util.ResolveBillingModel(p.ActualModel, p.RequestModel)
-		entry.Cost = computeRequestCost(costModel, res.ServiceTier, res) + res.ToolCostUSD
+		// alpha/search 固定按 search_call 计费。
+		entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
 	} else {
 		entry.Message = "unknown"
 	}

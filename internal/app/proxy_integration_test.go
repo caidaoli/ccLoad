@@ -278,9 +278,13 @@ func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 	if upstreamHits.Load() != 1 {
 		t.Fatalf("upstream hits=%d, want 1", upstreamHits.Load())
 	}
-	entry := waitForProxyLog(t, env, "")
+	// alpha/search 无 request model：日志 model 记 search_call，按次 $0.01
+	entry := waitForProxyLog(t, env, util.BillingModelSearchCall)
 	if entry.AuthTokenID != authToken.ID {
 		t.Fatalf("AuthTokenID=%d, want %d", entry.AuthTokenID, authToken.ID)
+	}
+	if entry.Cost != 0.01 {
+		t.Fatalf("Cost=%v, want 0.01", entry.Cost)
 	}
 
 	blocked := doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{

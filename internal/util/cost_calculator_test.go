@@ -1113,6 +1113,9 @@ func TestCalculateCost_FixedCostPerRequest(t *testing.T) {
 		{"grok-imagine-image", 0.02},
 		{"grok-imagine-image-quality", 0.05},
 		{"grok-imagine-image-pro", 0.07},
+		// Codex /v1/alpha/search：1 search_call = $0.01
+		{BillingModelSearchCall, 0.01},
+		{"search_call", 0.01},
 	}
 
 	for _, tc := range testCases {

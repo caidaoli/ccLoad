@@ -106,6 +106,7 @@ func (s *Server) logProxyResult(
 	s.AddLogAsync(buildLogEntry(logEntryParams{
 		RequestModel:   reqCtx.originalModel,
 		ActualModel:    actualModel,
+		RequestPath:    reqCtx.requestPath,
 		ChannelID:      cfg.ID,
 		StatusCode:     statusCode,
 		Duration:       duration,
@@ -132,10 +133,12 @@ func (s *Server) updateTokenStatsForProxy(
 	actualModel string,
 ) {
 	requestModel := ""
+	requestPath := ""
 	if reqCtx != nil {
 		requestModel = reqCtx.originalModel
+		requestPath = reqCtx.requestPath
 	}
-	billingModel := util.ResolveBillingModel(actualModel, requestModel)
+	billingModel := resolveProxyBillingModel(requestPath, actualModel, requestModel)
 	s.updateTokenStatsAsync(reqCtx.tokenHash, cfg.CostMultiplier, isSuccess, duration, reqCtx.isStreaming, res, billingModel)
 }
 

@@ -267,6 +267,41 @@ func TestComputeRequestCost_ServiceTierAppliesOnlyAsOpenAIPriceMultiplier(t *tes
 	}
 }
 
+func TestResolveProxyBillingModel_AlphaSearchUsesSearchCall(t *testing.T) {
+	t.Parallel()
+
+	got := resolveProxyBillingModel("/v1/alpha/search", "", "")
+	if got != util.BillingModelSearchCall {
+		t.Fatalf("billing model=%q, want %q", got, util.BillingModelSearchCall)
+	}
+
+	// 普通 chat 路径仍按模型计费
+	got = resolveProxyBillingModel("/v1/responses", "gpt-5.4", "gpt-5.4")
+	if got != "gpt-5.4" {
+		t.Fatalf("billing model=%q, want gpt-5.4", got)
+	}
+}
+
+func TestBuildLogEntry_AlphaSearchFixedCost(t *testing.T) {
+	t.Parallel()
+
+	entry := buildLogEntry(logEntryParams{
+		RequestModel: "",
+		RequestPath:  "/v1/alpha/search",
+		ChannelID:    1,
+		StatusCode:   http.StatusOK,
+		Duration:     1.2,
+		Result:       &fwResult{Status: 200},
+	})
+
+	if entry.Model != util.BillingModelSearchCall {
+		t.Fatalf("model=%q, want %q", entry.Model, util.BillingModelSearchCall)
+	}
+	if !floatEquals(entry.Cost, 0.01) {
+		t.Fatalf("cost=%.6f, want 0.01", entry.Cost)
+	}
+}
+
 func TestReplaceModelInPathOnlyRewritesGeminiModelsSegment(t *testing.T) {
 	t.Parallel()
 
