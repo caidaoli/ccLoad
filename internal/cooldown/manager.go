@@ -111,6 +111,15 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			decision.modelCooldownUntil = decision.keyCooldownUntil
 			// 模型级故障需要切换渠道，但不得冷却 Key 或整个渠道。
 			errLevel = util.ErrorLevelChannel
+		} else if classification.ModelScoped {
+			decision.model = strings.TrimSpace(in.Model)
+			if decision.model == "" {
+				decision.model = strings.TrimSpace(classification.Model)
+			}
+			if decision.model != "" {
+				decision.modelScoped = true
+				decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
+			}
 		} else if errLevel == util.ErrorLevelChannel &&
 			!decision.hasChannelCooldownUntil &&
 			util.IsModelScopedHTTPStatus(statusCode) {

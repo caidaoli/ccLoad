@@ -99,6 +99,7 @@ type StatusCodeMeta struct {
 type HTTPResponseClassification struct {
 	Level                   ErrorLevel
 	Model                   string
+	ModelScoped             bool
 	KeyCooldownUntil        time.Time
 	HasKeyCooldownUntil     bool
 	KeyCooldownReason       string
@@ -319,10 +320,14 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	// 429错误：需要结合 headers 判断限流范围
 	if statusCode == 429 {
+		level := ErrorLevelKey
 		if headers != nil {
-			return HTTPResponseClassification{Level: classifyRateLimitError(headers, responseBody)}
+			level = classifyRateLimitError(headers, responseBody)
 		}
-		return HTTPResponseClassification{Level: ErrorLevelKey}
+		return HTTPResponseClassification{
+			Level:       level,
+			ModelScoped: level == ErrorLevelKey,
+		}
 	}
 
 	// 400错误：根据响应体智能分类
@@ -332,7 +337,10 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	// 404错误：根据响应体智能分类
 	if statusCode == 404 {
-		return HTTPResponseClassification{Level: classify404Error(responseBody)}
+		return HTTPResponseClassification{
+			Level:       classify404Error(responseBody),
+			ModelScoped: isModelUnavailable404(responseBody),
+		}
 	}
 
 	// 仅分析401和403错误,其他状态码使用标准分类器
@@ -783,6 +791,33 @@ func classify404Error(responseBody []byte) ErrorLevel {
 	// 其他 404 一律视为渠道问题（HTML/JSON/其他）
 	// 例如：BaseURL 配错、上游服务异常、路由不存在等
 	return ErrorLevelChannel
+}
+
+// isModelUnavailable404 只识别模型作用域的 404。
+// 普通 endpoint/BaseURL 404 必须继续按渠道故障处理，不能因为请求里带了模型名就误伤模型。
+func isModelUnavailable404(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+	bodyLower := strings.ToLower(string(responseBody))
+	if strings.Contains(bodyLower, "model_not_found") {
+		return true
+	}
+	if strings.Contains(bodyLower, "模型") {
+		return strings.Contains(bodyLower, "不支持") ||
+			strings.Contains(bodyLower, "不存在") ||
+			strings.Contains(bodyLower, "未找到") ||
+			strings.Contains(bodyLower, "找不到") ||
+			strings.Contains(bodyLower, "不可用")
+	}
+	if !strings.Contains(bodyLower, "model") {
+		return false
+	}
+	return strings.Contains(bodyLower, "unsupported") ||
+		strings.Contains(bodyLower, "not supported") ||
+		strings.Contains(bodyLower, "not found") ||
+		strings.Contains(bodyLower, "does not exist") ||
+		strings.Contains(bodyLower, "not available")
 }
 
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间
