@@ -31,7 +31,7 @@ ccLoad handles those cases with:
 
 - **Smart routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin.
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
-- **Model-aware cooldown**: Structured `model_cooldown` responses and upstream HTTP 5xx failures cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
+- **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
 - **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
@@ -47,7 +47,7 @@ ccLoad handles those cases with:
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
 - 🎯 **Smart Error Classification** - Distinguishes Key/Model/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
-- 🛡️ **Failover** - Key/channel failures use exponential backoff; structured model cooldowns honor the upstream reset deadline and switch channels without cooling the whole channel
+- 🛡️ **Failover** - Key/channel failures use exponential backoff; model cooldowns (structured responses, 5xx, 429, model-unavailable 404) honor the upstream reset deadline and switch channels without cooling the whole channel
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
@@ -777,7 +777,7 @@ Check out the awesome admin dashboard 👇
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
   - Uses separate Key/Model/Channel actions; `ActionRetryModel` does not retry another Key or URL in the same channel
-  - Persists structured `model_cooldown` responses and upstream HTTP 5xx failures by `(channel_id, actual upstream model)`; other models on that channel stay eligible
+  - Persists structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors by `(channel_id, actual upstream model)`; other models on that channel stay eligible
   - Automatically promotes to channel cooldown only when all configured models or all enabled keys are cooling
 - **Multi-URL Selector** (URLSelector):
   - `url_selector.go`: Smart URL selection within a single channel
