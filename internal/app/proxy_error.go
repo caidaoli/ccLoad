@@ -227,7 +227,8 @@ func (s *Server) handleNetworkError(
 		return failure, cooldown.ActionReturnClient
 	}
 
-	input := networkErrorInput(cfg.ID, keyIndex, statusCode)
+	input := cooldownInputForModel(networkErrorInput(cfg.ID, keyIndex, statusCode), actualModel)
+	input.ModelScoped = util.IsModelScopedNetworkError(err)
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
 		if action == cooldown.ActionRetryChannel {
