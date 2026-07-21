@@ -18,6 +18,7 @@
 
   // ─── 状态 ───────────────────────────────────────────────────────────────
   let fingerprints  = [];   // GET /admin/fingerprints 返回列表
+  let testHistory   = [];   // GET /admin/fingerprints/test-results 返回列表
   let activeJobId   = null;
   let pollTimer     = null;
   let initialized   = false;
@@ -67,6 +68,40 @@
     return channels.map(ch => ({ value: String(ch.id), label: channelLabel(ch) }));
   }
 
+  /** 收集所有渠道中的去重模型名。 */
+  function getAllModelOptions() {
+    const channels = window.channelsList || [];
+    const seen = new Set();
+    const options = [];
+    channels.forEach(ch => {
+      const models = ch.models || [];
+      models.forEach(m => {
+        const name = (typeof m === 'string') ? m : (m.model || m.name || '');
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          options.push({ value: name, label: name });
+        }
+      });
+    });
+    return options;
+  }
+
+  /** 过滤出包含指定模型的渠道。 */
+  function getChannelOptionsForModel(modelName) {
+    if (!modelName) return getChannelOptions();
+    const channels = window.channelsList || [];
+    return channels
+      .filter(ch => {
+        const models = ch.models || [];
+        return models.some(m => {
+          const name = (typeof m === 'string') ? m : (m.model || m.name || '');
+          return name === modelName;
+        });
+      })
+      .map(ch => ({ value: String(ch.id), label: channelLabel(ch) }));
+  }
+
+  /** 获取指定渠道支持的模型列表。 */
   function getModelOptions(channelId) {
     const channels = window.channelsList || [];
     const ch = channels.find(c => String(c.id) === String(channelId));
@@ -78,24 +113,9 @@
   }
 
   // ─── combobox 创建 ─────────────────────────────────────────────────────
-  function createChannelCombo(containerId, hiddenId, onChannelChange) {
-    if (typeof window.createSearchableCombobox !== 'function') return null;
-    return window.createSearchableCombobox({
-      container: containerId,
-      inputId: hiddenId + '_input',
-      dropdownId: hiddenId + '_dropdown',
-      placeholder: t('modelTest.fingerprint.selectChannel', '搜索渠道...'),
-      minWidth: 120,
-      getOptions: getChannelOptions,
-      onSelect: (value) => {
-        const hidden = el(hiddenId);
-        if (hidden) hidden.value = value;
-        if (onChannelChange) onChannelChange(value);
-      }
-    });
-  }
 
-  function createModelCombo(containerId, hiddenId, channelId) {
+  /** 创建模型 combobox（全量模型）。 */
+  function createAllModelCombo(containerId, hiddenId, onModelChange) {
     if (typeof window.createSearchableCombobox !== 'function') return null;
     return window.createSearchableCombobox({
       container: containerId,
@@ -103,7 +123,25 @@
       dropdownId: hiddenId + '_dropdown',
       placeholder: t('modelTest.fingerprint.selectModel', '搜索模型...'),
       minWidth: 120,
-      getOptions: () => getModelOptions(channelId),
+      getOptions: getAllModelOptions,
+      onSelect: (value) => {
+        const hidden = el(hiddenId);
+        if (hidden) hidden.value = value;
+        if (onModelChange) onModelChange(value);
+      }
+    });
+  }
+
+  /** 创建渠道 combobox（可按模型过滤）。 */
+  function createFilteredChannelCombo(containerId, hiddenId, modelName) {
+    if (typeof window.createSearchableCombobox !== 'function') return null;
+    return window.createSearchableCombobox({
+      container: containerId,
+      inputId: hiddenId + '_input',
+      dropdownId: hiddenId + '_dropdown',
+      placeholder: t('modelTest.fingerprint.selectChannel', '搜索渠道...'),
+      minWidth: 120,
+      getOptions: () => getChannelOptionsForModel(modelName),
       onSelect: (value) => {
         const hidden = el(hiddenId);
         if (hidden) hidden.value = value;
@@ -111,20 +149,101 @@
     });
   }
 
-  // ─── 渠道→模型联动 ─────────────────────────────────────────────────────
-  function onCalChannelChange(channelId) {
-    // 重建模型 combobox
-    if (calModelCombo) calModelCombo.destroy();
-    const hidden = el('fpCalibrateModel');
-    if (hidden) hidden.value = '';
-    calModelCombo = createModelCombo('fpCalibrateModelContainer', 'fpCalibrateModel', channelId);
+  /** 标定：渠道 combobox（选渠道后联动模型）。 */
+  function createCalChannelCombo() {
+    if (typeof window.createSearchableCombobox !== 'function') return null;
+    return window.createSearchableCombobox({
+      container: 'fpCalibrateChannelContainer',
+      inputId: 'fpCalibrateChannel_input',
+      dropdownId: 'fpCalibrateChannel_dropdown',
+      placeholder: t('modelTest.fingerprint.selectChannel', '搜索渠道...'),
+      minWidth: 120,
+      getOptions: () => getChannelOptionsForModel(el('fpCalibrateModel')?.value || ''),
+      onSelect: (value) => {
+        const hidden = el('fpCalibrateChannel');
+        if (hidden) hidden.value = value;
+      }
+    });
   }
 
-  function onTstChannelChange(channelId) {
-    if (tstModelCombo) tstModelCombo.destroy();
-    const hidden = el('fpTestModel');
+  /** 标定：模型 combobox（选模型后联动重建渠道 combobox）。 */
+  function createCalModelCombo() {
+    if (typeof window.createSearchableCombobox !== 'function') return null;
+    return window.createSearchableCombobox({
+      container: 'fpCalibrateModelContainer',
+      inputId: 'fpCalibrateModel_input',
+      dropdownId: 'fpCalibrateModel_dropdown',
+      placeholder: t('modelTest.fingerprint.selectModel', '搜索模型...'),
+      minWidth: 120,
+      getOptions: getAllModelOptions,
+      onSelect: (value) => {
+        const hidden = el('fpCalibrateModel');
+        if (hidden) hidden.value = value;
+        onCalModelChange(value);
+      }
+    });
+  }
+
+  // ─── 标定：模型→渠道联动 ──────────────────────────────────────────────
+  function onCalModelChange(modelName) {
+    if (calChannelCombo) calChannelCombo.destroy();
+    const hidden = el('fpCalibrateChannel');
     if (hidden) hidden.value = '';
-    tstModelCombo = createModelCombo('fpTestModelContainer', 'fpTestModel', channelId);
+    calChannelCombo = createFilteredChannelCombo('fpCalibrateChannelContainer', 'fpCalibrateChannel', modelName);
+  }
+
+  // ─── 对比：模型→渠道联动 + 基准自动选择 ────────────────────────────────
+  function onTstModelChange(modelName) {
+    // 重建渠道 combobox（按模型过滤）
+    if (tstChannelCombo) tstChannelCombo.destroy();
+    const hidden = el('fpTestChannel');
+    if (hidden) hidden.value = '';
+    tstChannelCombo = createFilteredChannelCombo('fpTestChannelContainer', 'fpTestChannel', modelName);
+
+    // 基准自动选择
+    autoSelectBaseline(modelName);
+  }
+
+  function autoSelectBaseline(modelName) {
+    const select = el('fpTestBaselineSelect');
+    if (!select) return;
+
+    // 重建 select 选项
+    select.innerHTML = '<option value="">' + t('modelTest.fingerprint.baselineAny', '任意（全量对比）') + '</option>';
+
+    if (!modelName) {
+      // 无模型选择时，显示全部基准
+      fingerprints.forEach(fp => {
+        const opt = document.createElement('option');
+        opt.value = fp.id;
+        opt.textContent = fp.name + ' (' + (fp.model || '') + ')';
+        select.appendChild(opt);
+      });
+      return;
+    }
+
+    const matched = fingerprints.filter(fp => fp.model === modelName);
+    if (matched.length === 0) {
+      // 无匹配，显示全部基准
+      fingerprints.forEach(fp => {
+        const opt = document.createElement('option');
+        opt.value = fp.id;
+        opt.textContent = fp.name + ' (' + (fp.model || '') + ')';
+        select.appendChild(opt);
+      });
+    } else {
+      // 只显示匹配模型的基准
+      matched.forEach(fp => {
+        const opt = document.createElement('option');
+        opt.value = fp.id;
+        opt.textContent = fp.name + ' (' + (fp.model || '') + ')';
+        select.appendChild(opt);
+      });
+      // 恰好一个匹配 → 自动选中
+      if (matched.length === 1) {
+        select.value = String(matched[0].id);
+      }
+    }
   }
 
   // ─── 基准列表渲染 ──────────────────────────────────────────────────────
@@ -169,6 +288,10 @@
     tbody.querySelectorAll('.fp-delete-btn').forEach(btn => {
       btn.addEventListener('click', () => deleteFingerprint(btn.dataset.id));
     });
+
+    // 如果对比模型已选，重新执行基准自动选择
+    const tstModel = el('fpTestModel')?.value || '';
+    if (tstModel) autoSelectBaseline(tstModel);
   }
 
   // ─── 加载基准列表 ────────────────────────────────────────────────────────
@@ -188,6 +311,137 @@
     try {
       await apiData('/admin/fingerprints/' + id, { method: 'DELETE' });
       await loadFingerprints();
+    } catch (e) {
+      alert(t('modelTest.fingerprint.deleteFailed', '删除失败: ') + (e.message || e));
+    }
+  }
+
+  // ─── 对比历史 ────────────────────────────────────────────────────────────
+  async function loadTestHistory() {
+    try {
+      const list = await apiData('/admin/fingerprints/test-results');
+      testHistory = Array.isArray(list) ? list : [];
+    } catch (e) {
+      testHistory = [];
+    }
+    renderHistoryTable();
+  }
+
+  function renderHistoryTable() {
+    const tbody = el('fpHistoryTbody');
+    if (!tbody) return;
+
+    tbody.innerHTML = '';
+
+    if (!testHistory.length) {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td colspan="6" style="text-align:center;color:var(--text-muted)">'
+        + t('modelTest.fingerprint.noHistory', '暂无对比历史') + '</td>';
+      tbody.appendChild(tr);
+      return;
+    }
+
+    testHistory.forEach(rec => {
+      const tr = document.createElement('tr');
+      tr.className = 'fp-history-row';
+      const createdAt = rec.created_at ? new Date(rec.created_at * 1000).toLocaleString() : '-';
+      const scoreNum = typeof rec.best_score === 'number' ? rec.best_score : null;
+      const score = scoreNum != null ? (scoreNum * 100).toFixed(1) + '%' : '-';
+      const hint = scoreHint(scoreNum);
+      tr.innerHTML =
+        '<td>' + escHtml(rec.model || '-') + '</td>' +
+        '<td>' + escHtml(rec.channel_name || (rec.channel_id ? '#' + rec.channel_id : '-')) + '</td>' +
+        '<td>' + (rec.sample_count || '-') + '</td>' +
+        '<td class="fp-score">' + score + (hint ? ' <span class="fp-score-hint">(' + escHtml(hint) + ')</span>' : '') + '</td>' +
+        '<td>' + createdAt + '</td>' +
+        '<td>' +
+          '<button class="btn btn-secondary btn-sm fp-history-detail-btn" data-id="' + rec.id + '">' + t('common.detail', '详情') + '</button> ' +
+          '<button class="btn btn-secondary btn-sm fp-history-delete-btn" data-id="' + rec.id + '">' + t('common.delete', '删除') + '</button>' +
+        '</td>';
+      tbody.appendChild(tr);
+
+      // 详情展开行（隐藏）
+      const detailTr = document.createElement('tr');
+      detailTr.className = 'fp-history-detail hidden';
+      detailTr.id = 'fpHistoryDetail_' + rec.id;
+      detailTr.innerHTML = '<td colspan="6"><div class="fp-history-detail-content"></div></td>';
+      tbody.appendChild(detailTr);
+    });
+
+    tbody.querySelectorAll('.fp-history-detail-btn').forEach(btn => {
+      btn.addEventListener('click', () => toggleHistoryDetail(btn.dataset.id));
+    });
+
+    tbody.querySelectorAll('.fp-history-delete-btn').forEach(btn => {
+      btn.addEventListener('click', () => deleteTestResult(btn.dataset.id));
+    });
+  }
+
+  function toggleHistoryDetail(id) {
+    const detailTr = el('fpHistoryDetail_' + id);
+    if (!detailTr) return;
+
+    if (!detailTr.classList.contains('hidden')) {
+      detailTr.classList.add('hidden');
+      return;
+    }
+
+    // 展开：渲染 matches
+    const rec = testHistory.find(r => String(r.id) === String(id));
+    if (!rec) return;
+
+    let matches = rec.matches;
+    if (!matches && rec.matches_json) {
+      try { matches = JSON.parse(rec.matches_json); } catch (_) { matches = []; }
+    }
+
+    const content = detailTr.querySelector('.fp-history-detail-content');
+    if (!content) return;
+
+    if (!Array.isArray(matches) || !matches.length) {
+      content.innerHTML = '<span style="color:var(--text-muted)">' + t('modelTest.fingerprint.noResult', '无结果') + '</span>';
+    } else {
+      const table = document.createElement('table');
+      table.className = 'modern-table fp-result-table';
+      table.innerHTML =
+        '<thead><tr>' +
+        '<th>' + t('modelTest.fingerprint.col.baseline', '基准') + '</th>' +
+        '<th>' + t('modelTest.fingerprint.col.score', '综合评分') + '</th>' +
+        '<th>' + t('modelTest.fingerprint.col.cosine', '余弦相似') + '</th>' +
+        '<th>' + t('modelTest.fingerprint.col.js', 'JS散度') + '</th>' +
+        '<th>' + t('modelTest.fingerprint.col.modeMatch', '众数匹配') + '</th>' +
+        '</tr></thead>';
+
+      const mtbody = document.createElement('tbody');
+      matches.forEach(m => {
+        const mtr = document.createElement('tr');
+        const s = typeof m.score === 'number' ? (m.score * 100).toFixed(1) + '%' : '-';
+        const cosine = typeof m.cosine_similarity === 'number' ? m.cosine_similarity.toFixed(4) : '-';
+        const js = typeof m.js_divergence === 'number' ? m.js_divergence.toFixed(4) : '-';
+        const modeMatch = m.mode_match ? '✓' : '✗';
+        const baselineName = (m.baseline && m.baseline.name) ? escHtml(m.baseline.name) : '-';
+        const mhint = scoreHint(typeof m.score === 'number' ? m.score : null);
+        mtr.innerHTML =
+          '<td>' + baselineName + '</td>' +
+          '<td class="fp-score">' + s + (mhint ? ' <span class="fp-score-hint">(' + escHtml(mhint) + ')</span>' : '') + '</td>' +
+          '<td>' + cosine + '</td>' +
+          '<td>' + js + '</td>' +
+          '<td>' + modeMatch + '</td>';
+        mtbody.appendChild(mtr);
+      });
+      table.appendChild(mtbody);
+      content.innerHTML = '';
+      content.appendChild(table);
+    }
+
+    detailTr.classList.remove('hidden');
+  }
+
+  async function deleteTestResult(id) {
+    if (!confirm(t('modelTest.fingerprint.confirmDeleteHistory', '确认删除此对比记录？'))) return;
+    try {
+      await apiData('/admin/fingerprints/test-results/' + id, { method: 'DELETE' });
+      await loadTestHistory();
     } catch (e) {
       alert(t('modelTest.fingerprint.deleteFailed', '删除失败: ') + (e.message || e));
     }
@@ -427,6 +681,7 @@
       if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
       startPoll(jobId, (result) => {
         renderTestResult(result);
+        loadTestHistory();
       });
     } catch (e) {
       setRunning(false);
@@ -442,39 +697,39 @@
     }
     _initComboboxes();
     loadFingerprints();
+    loadTestHistory();
   }
 
   async function _initComboboxes() {
     await ensureChannels();
 
-    // 标定：渠道 combobox
-    if (!calChannelCombo) {
-      calChannelCombo = createChannelCombo('fpCalibrateChannelContainer', 'fpCalibrateChannel', onCalChannelChange);
-    } else {
-      calChannelCombo.refresh();
-    }
-
-    // 标定：模型 combobox（依赖渠道选择后重建）
+    // 标定：模型 combobox（全量模型）
     if (!calModelCombo) {
-      const channelId = el('fpCalibrateChannel')?.value || '';
-      calModelCombo = createModelCombo('fpCalibrateModelContainer', 'fpCalibrateModel', channelId);
+      calModelCombo = createCalModelCombo();
     } else {
       calModelCombo.refresh();
     }
 
-    // 对比：渠道 combobox
-    if (!tstChannelCombo) {
-      tstChannelCombo = createChannelCombo('fpTestChannelContainer', 'fpTestChannel', onTstChannelChange);
+    // 标定：渠道 combobox（按选中模型过滤）
+    if (!calChannelCombo) {
+      calChannelCombo = createCalChannelCombo();
     } else {
-      tstChannelCombo.refresh();
+      calChannelCombo.refresh();
     }
 
-    // 对比：模型 combobox
+    // 对比：模型 combobox（全量模型）
     if (!tstModelCombo) {
-      const channelId = el('fpTestChannel')?.value || '';
-      tstModelCombo = createModelCombo('fpTestModelContainer', 'fpTestModel', channelId);
+      tstModelCombo = createAllModelCombo('fpTestModelContainer', 'fpTestModel', onTstModelChange);
     } else {
       tstModelCombo.refresh();
+    }
+
+    // 对比：渠道 combobox（按选中模型过滤）
+    if (!tstChannelCombo) {
+      const modelName = el('fpTestModel')?.value || '';
+      tstChannelCombo = createFilteredChannelCombo('fpTestChannelContainer', 'fpTestChannel', modelName);
+    } else {
+      tstChannelCombo.refresh();
     }
   }
 

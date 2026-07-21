@@ -859,6 +859,36 @@ func (h *HybridStore) ClearFingerprintChannelID(ctx context.Context, channelID i
 	return nil
 }
 
+// === Fingerprint Test Results ===
+
+func (h *HybridStore) CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error {
+	if err := h.mysql.CreateFingerprintTestResult(ctx, rec); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("CreateFingerprintTestResult", func() error {
+		return h.sqlite.CreateFingerprintTestResult(ctx, rec)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) ListFingerprintTestResults(ctx context.Context, limit int) ([]*model.FingerprintTestRecord, error) {
+	return h.sqlite.ListFingerprintTestResults(ctx, limit)
+}
+
+func (h *HybridStore) DeleteFingerprintTestResult(ctx context.Context, id int64) error {
+	if err := h.mysql.DeleteFingerprintTestResult(ctx, id); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("DeleteFingerprintTestResult", func() error {
+		return h.sqlite.DeleteFingerprintTestResult(ctx, id)
+	})
+
+	return nil
+}
+
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {

@@ -188,3 +188,69 @@ func marshalJSON(field string, v any) (string, error) {
 	}
 	return string(data), nil
 }
+
+// ==================== 对比历史 ====================
+
+// CreateFingerprintTestResult 插入一条对比结果。
+func (s *SQLStore) CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error {
+	now := timeToUnix(time.Now())
+	var channelID sql.NullInt64
+	if rec.ChannelID != nil {
+		channelID = sql.NullInt64{Int64: *rec.ChannelID, Valid: true}
+	}
+	_, err := s.ExecContext(ctx, `
+		INSERT INTO fingerprint_test_results
+			(channel_id, channel_name, model, sample_count, best_score, matches_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, channelID, rec.ChannelName, rec.Model, rec.SampleCount, rec.BestScore, rec.MatchesJSON, now)
+	if err != nil {
+		return fmt.Errorf("insert fingerprint_test_results: %w", err)
+	}
+	return nil
+}
+
+// ListFingerprintTestResults 查询最近 limit 条对比结果。
+func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([]*model.FingerprintTestRecord, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.QueryContext(ctx, `
+		SELECT id, channel_id, channel_name, model, sample_count, best_score, matches_json, created_at
+		FROM fingerprint_test_results
+		ORDER BY created_at DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query fingerprint_test_results: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	var results []*model.FingerprintTestRecord
+	for rows.Next() {
+		var rec model.FingerprintTestRecord
+		var channelID sql.NullInt64
+		var createdAt int64
+		if err := rows.Scan(&rec.ID, &channelID, &rec.ChannelName, &rec.Model,
+			&rec.SampleCount, &rec.BestScore, &rec.MatchesJSON, &createdAt); err != nil {
+			return nil, fmt.Errorf("scan fingerprint_test_results row: %w", err)
+		}
+		if channelID.Valid {
+			v := channelID.Int64
+			rec.ChannelID = &v
+		}
+		rec.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
+		results = append(results, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate fingerprint_test_results: %w", err)
+	}
+	return results, nil
+}
+
+// DeleteFingerprintTestResult 删除一条对比结果。
+func (s *SQLStore) DeleteFingerprintTestResult(ctx context.Context, id int64) error {
+	if _, err := s.ExecContext(ctx, `DELETE FROM fingerprint_test_results WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete fingerprint_test_results id=%d: %w", id, err)
+	}
+	return nil
+}

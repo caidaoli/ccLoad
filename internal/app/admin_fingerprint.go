@@ -206,3 +206,30 @@ func (s *Server) validateFingerprintBaseline(c *gin.Context, req testFingerprint
 func isFPJobLimitError(err error) bool {
 	return errors.Is(err, ErrFingerprintJobsBusy)
 }
+
+// HandleListFingerprintTestResults GET /admin/fingerprints/test-results
+func (s *Server) HandleListFingerprintTestResults(c *gin.Context) {
+	results, err := s.store.ListFingerprintTestResults(c.Request.Context(), 50)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if results == nil {
+		results = []*model.FingerprintTestRecord{}
+	}
+	RespondJSON(c, http.StatusOK, results)
+}
+
+// HandleDeleteFingerprintTestResult DELETE /admin/fingerprints/test-results/:id
+func (s *Server) HandleDeleteFingerprintTestResult(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid test result id")
+		return
+	}
+	if err := s.store.DeleteFingerprintTestResult(c.Request.Context(), id); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	RespondJSON(c, http.StatusOK, gin.H{"deleted": true})
+}
