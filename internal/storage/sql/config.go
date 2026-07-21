@@ -482,6 +482,9 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel url states: %w", err)
 		}
+		if _, err := s.execTx(ctx, tx, `UPDATE model_fingerprints SET channel_id = NULL WHERE channel_id = ?`, id); err != nil {
+			return fmt.Errorf("clear fingerprint channel_id: %w", err)
+		}
 		if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
 			return fmt.Errorf("delete channel debug logs: %w", err)
 		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {

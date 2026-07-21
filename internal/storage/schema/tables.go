@@ -202,6 +202,29 @@ func DefineLogsTable() *TableBuilder {
 		Index("idx_logs_source_minute", "log_source, minute_bucket")
 }
 
+// DefineModelFingerprintsTable 定义model_fingerprints表结构（模型指纹基线）
+// channel_id 不设置 FK CASCADE：渠道删除后基线数据保留，仅由应用层 ClearFingerprintChannelID 置空。
+func DefineModelFingerprintsTable() *TableBuilder {
+	return NewTable("model_fingerprints").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("name VARCHAR(191) NOT NULL").
+		Column("channel_id INT").
+		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("model VARCHAR(191) NOT NULL").
+		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("channel_type VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("sample_count INT NOT NULL DEFAULT 0").
+		Column("distribution LONGTEXT NOT NULL").
+		Column("stats TEXT NOT NULL").
+		Column("raw_data LONGTEXT NOT NULL").
+		Column("prompt_version VARCHAR(32) NOT NULL DEFAULT 'v1'").
+		Column("created_at BIGINT NOT NULL").
+		Column("updated_at BIGINT NOT NULL").
+		Index("idx_model_fingerprints_model", "model").
+		Index("idx_model_fingerprints_channel", "channel_id").
+		Index("idx_model_fingerprints_created", "created_at DESC")
+}
+
 // DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
 // log_id 与 logs.id 1:1 对应，直接作为主键，无需独立自增ID
 func DefineDebugLogsTable() *TableBuilder {
