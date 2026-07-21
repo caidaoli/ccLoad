@@ -39,8 +39,23 @@
   }
 
   // ─── 渠道/模型 select 渲染 ──────────────────────────────────────────────
-  function buildChannelOptions(selectEl) {
-    const channels = (window.channelsList || []);
+  async function ensureChannels() {
+    let channels = window.channelsList;
+    if (Array.isArray(channels) && channels.length) return channels;
+    // 兜底：model-test 未同步 window 或尚未 loadChannels 时自拉一次
+    if (typeof window.fetchDataWithAuth === 'function') {
+      try {
+        channels = (await window.fetchDataWithAuth('/admin/channels')) || [];
+        window.channelsList = channels;
+      } catch (_) {
+        channels = [];
+      }
+    }
+    return Array.isArray(channels) ? channels : [];
+  }
+
+  function buildChannelOptions(selectEl, channels) {
+    channels = channels || window.channelsList || [];
     selectEl.innerHTML = '<option value="">' + t('modelTest.fingerprint.selectChannel', '选择渠道') + '</option>';
     channels.forEach(ch => {
       const opt = document.createElement('option');
@@ -50,8 +65,8 @@
     });
   }
 
-  function buildModelOptions(selectEl, channelId) {
-    const channels = (window.channelsList || []);
+  function buildModelOptions(selectEl, channelId, channels) {
+    channels = channels || window.channelsList || [];
     const ch = channels.find(c => String(c.id) === String(channelId));
     const models = (ch && ch.models) ? ch.models : [];
     selectEl.innerHTML = '<option value="">' + t('modelTest.fingerprint.selectModel', '选择模型') + '</option>';
@@ -395,13 +410,14 @@
     loadFingerprints();
   }
 
-  function _refreshChannelSelects() {
+  async function _refreshChannelSelects() {
+    const channels = await ensureChannels();
     const calChannel = el('fpCalibrateChannel');
     const calModel   = el('fpCalibrateModel');
     const tstChannel = el('fpTestChannel');
     const tstModel   = el('fpTestModel');
-    if (calChannel) { buildChannelOptions(calChannel); buildModelOptions(calModel, calChannel.value); }
-    if (tstChannel) { buildChannelOptions(tstChannel); buildModelOptions(tstModel, tstChannel.value); }
+    if (calChannel) { buildChannelOptions(calChannel, channels); buildModelOptions(calModel, calChannel.value, channels); }
+    if (tstChannel) { buildChannelOptions(tstChannel, channels); buildModelOptions(tstModel, tstChannel.value, channels); }
   }
 
   function _bindEvents() {
