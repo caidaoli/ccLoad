@@ -955,6 +955,45 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.response': '响应内容',
 
   // ============================================================
+  // 指纹对比
+  // ============================================================
+  'modelTest.mode.fingerprint': '指纹对比',
+  'modelTest.fingerprint.notice': '比较目标渠道与信任基准的随机数分布一致性，不是官方真品鉴定。将产生实际上游费用。',
+  'modelTest.fingerprint.calibrate': '标定基准',
+  'modelTest.fingerprint.test': '开始对比',
+  'modelTest.fingerprint.costConfirm': '将向渠道发起约 {n} 次请求，产生实际上游费用。是否继续？',
+  'modelTest.fingerprint.baselines': '已有基准',
+  'modelTest.fingerprint.noBaselines': '暂无基准，请先标定',
+  'modelTest.fingerprint.selectChannel': '选择渠道',
+  'modelTest.fingerprint.selectModel': '选择模型',
+  'modelTest.fingerprint.baseline': '对比基准',
+  'modelTest.fingerprint.baselineAny': '任意（全量对比）',
+  'modelTest.fingerprint.iterations': '迭代次数',
+  'modelTest.fingerprint.concurrency': '并发',
+  'modelTest.fingerprint.namePlaceholder': '基准名称',
+  'modelTest.fingerprint.needName': '请输入基准名称',
+  'modelTest.fingerprint.needChannel': '请选择渠道',
+  'modelTest.fingerprint.needModel': '请选择模型',
+  'modelTest.fingerprint.running': '运行中…',
+  'modelTest.fingerprint.progress': '进度',
+  'modelTest.fingerprint.cancelled': '已取消',
+  'modelTest.fingerprint.failed': '失败: ',
+  'modelTest.fingerprint.startFailed': '启动失败: ',
+  'modelTest.fingerprint.noResult': '无结果',
+  'modelTest.fingerprint.calibrateSuccess': '标定完成',
+  'modelTest.fingerprint.sampleCount': '样本',
+  'modelTest.fingerprint.confirmDelete': '确认删除此基准？',
+  'modelTest.fingerprint.deleteFailed': '删除失败: ',
+  'modelTest.fingerprint.col.name': '名称',
+  'modelTest.fingerprint.col.channel': '渠道',
+  'modelTest.fingerprint.col.createdAt': '创建时间',
+  'modelTest.fingerprint.col.baseline': '基准',
+  'modelTest.fingerprint.col.score': '综合评分',
+  'modelTest.fingerprint.col.cosine': '余弦相似',
+  'modelTest.fingerprint.col.js': 'JS散度',
+  'modelTest.fingerprint.col.modeMatch': '众数匹配',
+
+  // ============================================================
   // 设置
   // ============================================================
   'settings.title': '系统设置 - Claude Code & Codex Proxy',
