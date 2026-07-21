@@ -135,7 +135,7 @@
   async function deleteFingerprint(id) {
     if (!confirm(t('modelTest.fingerprint.confirmDelete', '确认删除此基准？'))) return;
     try {
-      await apiFetch('/admin/fingerprints/' + id, { method: 'DELETE' });
+      await apiData('/admin/fingerprints/' + id, { method: 'DELETE' });
       await loadFingerprints();
     } catch (e) {
       alert(t('modelTest.fingerprint.deleteFailed', '删除失败: ') + (e.message || e));
@@ -211,14 +211,16 @@
     const tbody = document.createElement('tbody');
     result.matches.forEach(m => {
       const tr = document.createElement('tr');
-      const score = typeof m.score === 'number' ? (m.score * 100).toFixed(1) + '%' : '-';
+      const scoreNum = typeof m.score === 'number' ? m.score : null;
+      const score = scoreNum != null ? (scoreNum * 100).toFixed(1) + '%' : '-';
       const cosine = typeof m.cosine_similarity === 'number' ? m.cosine_similarity.toFixed(4) : '-';
       const js = typeof m.js_divergence === 'number' ? m.js_divergence.toFixed(4) : '-';
       const modeMatch = m.mode_match ? '✓' : '✗';
       const baselineName = (m.baseline && m.baseline.name) ? escHtml(m.baseline.name) : '-';
+      const hint = scoreHint(scoreNum);
       tr.innerHTML =
         '<td>' + baselineName + '</td>' +
-        '<td class="fp-score">' + score + '</td>' +
+        '<td class="fp-score">' + score + (hint ? ' <span class="fp-score-hint">(' + escHtml(hint) + ')</span>' : '') + '</td>' +
         '<td>' + cosine + '</td>' +
         '<td>' + js + '</td>' +
         '<td>' + modeMatch + '</td>';
@@ -237,6 +239,14 @@
     }
 
     div.classList.remove('hidden');
+  }
+
+  // UI-only thresholds from design doc (no routing impact).
+  function scoreHint(score) {
+    if (score == null || typeof score !== 'number') return '';
+    if (score >= 0.85) return t('modelTest.fingerprint.hint.high', '高度一致');
+    if (score >= 0.65) return t('modelTest.fingerprint.hint.medium', '中等一致（建议加大采样复核）');
+    return t('modelTest.fingerprint.hint.low', '明显不一致（疑似换模/掺假）');
   }
 
   // ─── Job 轮询 ────────────────────────────────────────────────────────────
@@ -294,7 +304,7 @@
   async function cancelJob() {
     if (!activeJobId) return;
     try {
-      await apiFetch('/admin/fingerprints/jobs/' + activeJobId + '/cancel', { method: 'POST' });
+      await apiData('/admin/fingerprints/jobs/' + activeJobId + '/cancel', { method: 'POST' });
     } catch (_) { /* ignore */ }
   }
 
@@ -320,14 +330,13 @@
     if (resultsDiv) resultsDiv.innerHTML = '';
 
     try {
-      const resp = await apiFetch('/admin/fingerprints/calibrate', {
+      const data = await apiData('/admin/fingerprints/calibrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, channel_id: channelId, model, iterations, concurrency })
       });
-      const data = await resp.json();
-      if (!resp.ok) { throw new Error(data.message || data.error || resp.status); }
-      const jobId = data.job_id;
+      const jobId = data && data.job_id;
+      if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
       startPoll(jobId, (result) => {
         renderCalibrateResult(result);
         loadFingerprints();
@@ -362,14 +371,13 @@
     if (fingerprintId) body.fingerprint_id = parseInt(fingerprintId, 10);
 
     try {
-      const resp = await apiFetch('/admin/fingerprints/test', {
+      const data = await apiData('/admin/fingerprints/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body)
       });
-      const data = await resp.json();
-      if (!resp.ok) { throw new Error(data.message || data.error || resp.status); }
-      const jobId = data.job_id;
+      const jobId = data && data.job_id;
+      if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
       startPoll(jobId, (result) => {
         renderTestResult(result);
       });
