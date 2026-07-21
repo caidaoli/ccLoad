@@ -86,6 +86,104 @@ func doHTTPRequest(client *http.Client, req *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+// BuildModelsRequest builds the protocol-specific model catalog request.
+// Callers that need channel-level transport and rate limiting can execute the
+// returned request themselves instead of using a ModelsFetcher directly.
+func BuildModelsRequest(ctx context.Context, channelType, baseURL, apiKey string) (*http.Request, error) {
+	switch NormalizeChannelType(channelType) {
+	case ChannelTypeOpenAI, ChannelTypeCodex:
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		return req, nil
+	case ChannelTypeGemini:
+		endpoint, err := url.Parse(baseURL + "/v1beta/models")
+		if err != nil {
+			return nil, fmt.Errorf("解析请求 URL 失败: %w", err)
+		}
+		query := endpoint.Query()
+		query.Set("key", apiKey)
+		endpoint.RawQuery = query.Encode()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		return req, nil
+	default:
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+"/v1/models", nil)
+		if err != nil {
+			return nil, fmt.Errorf("创建请求失败: %w", err)
+		}
+		req.Header.Set("x-api-key", apiKey)
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+		req.Header.Set("anthropic-version", "2023-06-01")
+		return req, nil
+	}
+}
+
+// ParseModelsResponse parses the protocol-specific model catalog response.
+func ParseModelsResponse(channelType string, body []byte) ([]string, error) {
+	switch NormalizeChannelType(channelType) {
+	case ChannelTypeOpenAI, ChannelTypeCodex:
+		var result openAIModelsResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("解析响应失败: %w", err)
+		}
+
+		models := make([]string, 0, len(result.Data))
+		for _, m := range result.Data {
+			if m.ID != "" {
+				models = append(models, m.ID)
+			}
+		}
+		return models, nil
+	case ChannelTypeGemini:
+		var result geminiModelsResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("解析响应失败: %w", err)
+		}
+
+		models := make([]string, 0, len(result.Models))
+		for _, m := range result.Models {
+			if len(m.Name) > 7 && m.Name[:7] == "models/" {
+				models = append(models, m.Name[7:])
+			} else {
+				models = append(models, m.Name)
+			}
+		}
+		return models, nil
+	default:
+		var result anthropicModelsResponse
+		if err := json.Unmarshal(body, &result); err != nil {
+			return nil, fmt.Errorf("解析响应失败: %w", err)
+		}
+
+		models := make([]string, 0, len(result.Data))
+		for _, m := range result.Data {
+			if m.ID != "" {
+				models = append(models, m.ID)
+			}
+		}
+		return models, nil
+	}
+}
+
+func fetchModelsWithClient(ctx context.Context, channelType, baseURL, apiKey string, client *http.Client) ([]string, error) {
+	req, err := BuildModelsRequest(ctx, channelType, baseURL, apiKey)
+	if err != nil {
+		return nil, err
+	}
+
+	body, err := doHTTPRequest(client, req)
+	if err != nil {
+		return nil, err
+	}
+	return ParseModelsResponse(channelType, body)
+}
+
 // AnthropicModelsFetcher 实现 Anthropic/Claude Code 渠道的模型列表获取。
 type AnthropicModelsFetcher struct {
 	client *http.Client
@@ -105,39 +203,7 @@ type anthropicModelsResponse struct {
 
 // FetchModels 从 Anthropic API 获取可用模型列表。
 func (f *AnthropicModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
-	// Anthropic Models API: https://docs.claude.com/en/api/models-list
-	endpoint := baseURL + "/v1/models"
-
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	// 同时设置两个认证头，与代理转发保持一致
-	// 官方API使用x-api-key，第三方中转通常使用Authorization Bearer
-	req.Header.Set("x-api-key", apiKey)
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("anthropic-version", "2023-06-01")
-
-	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result anthropicModelsResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	models := make([]string, 0, len(result.Data))
-	for _, m := range result.Data {
-		if m.ID != "" {
-			models = append(models, m.ID)
-		}
-	}
-
-	return models, nil
+	return fetchModelsWithClient(ctx, ChannelTypeAnthropic, baseURL, apiKey, f.client)
 }
 
 // OpenAIModelsFetcher 实现 OpenAI 渠道的模型列表获取。
@@ -153,35 +219,7 @@ type openAIModelsResponse struct {
 
 // FetchModels 从 OpenAI API 获取可用模型列表。
 func (f *OpenAIModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
-	// OpenAI Models API: https://platform.openai.com/docs/api-reference/models/list
-	endpoint := baseURL + "/v1/models"
-
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	req.Header.Set("Authorization", "Bearer "+apiKey)
-
-	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result openAIModelsResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	models := make([]string, 0, len(result.Data))
-	for _, m := range result.Data {
-		if m.ID != "" {
-			models = append(models, m.ID)
-		}
-	}
-
-	return models, nil
+	return fetchModelsWithClient(ctx, ChannelTypeOpenAI, baseURL, apiKey, f.client)
 }
 
 // GeminiModelsFetcher 实现 Google Gemini 渠道的模型列表获取。
@@ -197,42 +235,7 @@ type geminiModelsResponse struct {
 
 // FetchModels 从 Gemini API 获取可用模型列表。
 func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
-	// Gemini Models API: https://ai.google.dev/api/rest/v1beta/models/list
-	endpoint, err := url.Parse(baseURL + "/v1beta/models")
-	if err != nil {
-		return nil, fmt.Errorf("解析请求 URL 失败: %w", err)
-	}
-	query := endpoint.Query()
-	query.Set("key", apiKey)
-	endpoint.RawQuery = query.Encode()
-
-	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.String(), nil)
-	if err != nil {
-		return nil, fmt.Errorf("创建请求失败: %w", err)
-	}
-
-	// 使用公共HTTP请求函数 (ctx已包含在req中)
-	body, err := doHTTPRequest(f.client, req)
-	if err != nil {
-		return nil, err
-	}
-
-	var result geminiModelsResponse
-	if err := json.Unmarshal(body, &result); err != nil {
-		return nil, fmt.Errorf("解析响应失败: %w", err)
-	}
-
-	models := make([]string, 0, len(result.Models))
-	for _, m := range result.Models {
-		// 提取模型名称（去掉"models/"前缀）
-		if len(m.Name) > 7 && m.Name[:7] == "models/" {
-			models = append(models, m.Name[7:])
-		} else {
-			models = append(models, m.Name)
-		}
-	}
-
-	return models, nil
+	return fetchModelsWithClient(ctx, ChannelTypeGemini, baseURL, apiKey, f.client)
 }
 
 // CodexModelsFetcher 实现 Codex 渠道的模型列表获取。
@@ -242,9 +245,7 @@ type CodexModelsFetcher struct {
 
 // FetchModels 从 Codex API 获取可用模型列表（使用 OpenAI 兼容接口）。
 func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
-	// Codex使用与OpenAI相同的标准接口 /v1/models
-	openAIFetcher := &OpenAIModelsFetcher{client: f.client}
-	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
+	return fetchModelsWithClient(ctx, ChannelTypeCodex, baseURL, apiKey, f.client)
 }
 
 // ============================================================

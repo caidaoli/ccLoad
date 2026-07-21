@@ -49,6 +49,7 @@ type Server struct {
 	statsCache                    *StatsCache                // 统计结果缓存层
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
+	modelVerificationCatalogCache modelVerificationCatalogCache
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client          // HTTP客户端（全局默认）
 	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
