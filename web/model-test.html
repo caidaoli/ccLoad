@@ -364,28 +364,28 @@
                   <input id="fpCalibrateName" type="text" class="form-input fp-input"
                     data-i18n-placeholder="modelTest.fingerprint.namePlaceholder" placeholder="基准名称">
                 </label>
-                <label class="fp-form-row">
+                <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <select id="fpCalibrateChannel" class="filter-select fp-select">
-                    <option value="" data-i18n="modelTest.fingerprint.selectChannel">选择渠道</option>
-                  </select>
-                </label>
-                <label class="fp-form-row">
+                  <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpCalibrateChannel">
+                </div>
+                <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="common.model">模型</span>
-                  <select id="fpCalibrateModel" class="filter-select fp-select">
-                    <option value="" data-i18n="modelTest.fingerprint.selectModel">选择模型</option>
-                  </select>
-                </label>
-                <label class="fp-form-row fp-form-row--narrow">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
-                  <input id="fpCalibrateIterations" type="number" class="form-input fp-input fp-input--number"
-                    value="100" min="50" max="500">
-                </label>
-                <label class="fp-form-row fp-form-row--narrow">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
-                  <input id="fpCalibrateConcurrency" type="number" class="form-input fp-input fp-input--number"
-                    value="5" min="1" max="20">
-                </label>
+                  <div id="fpCalibrateModelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpCalibrateModel">
+                </div>
+                <div class="fp-form-row fp-form-row--pair">
+                  <label class="fp-pair-item">
+                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
+                    <input id="fpCalibrateIterations" type="number" class="form-input fp-input fp-input--number"
+                      value="100" min="50" max="500">
+                  </label>
+                  <label class="fp-pair-item">
+                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
+                    <input id="fpCalibrateConcurrency" type="number" class="form-input fp-input fp-input--number"
+                      value="5" min="1" max="20">
+                  </label>
+                </div>
                 <div class="fp-form-actions">
                   <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
                     data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
@@ -399,34 +399,34 @@
             <div class="fp-section">
               <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.test">开始对比</h3>
               <div class="fp-form">
-                <label class="fp-form-row">
+                <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <select id="fpTestChannel" class="filter-select fp-select">
-                    <option value="" data-i18n="modelTest.fingerprint.selectChannel">选择渠道</option>
-                  </select>
-                </label>
-                <label class="fp-form-row">
+                  <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpTestChannel">
+                </div>
+                <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="common.model">模型</span>
-                  <select id="fpTestModel" class="filter-select fp-select">
-                    <option value="" data-i18n="modelTest.fingerprint.selectModel">选择模型</option>
-                  </select>
-                </label>
+                  <div id="fpTestModelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpTestModel">
+                </div>
                 <label class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>
                   <select id="fpTestBaselineSelect" class="filter-select fp-select">
                     <option value="" data-i18n="modelTest.fingerprint.baselineAny">任意（全量对比）</option>
                   </select>
                 </label>
-                <label class="fp-form-row fp-form-row--narrow">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
-                  <input id="fpTestIterations" type="number" class="form-input fp-input fp-input--number"
-                    value="100" min="50" max="500">
-                </label>
-                <label class="fp-form-row fp-form-row--narrow">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
-                  <input id="fpTestConcurrency" type="number" class="form-input fp-input fp-input--number"
-                    value="5" min="1" max="20">
-                </label>
+                <div class="fp-form-row fp-form-row--pair">
+                  <label class="fp-pair-item">
+                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
+                    <input id="fpTestIterations" type="number" class="form-input fp-input fp-input--number"
+                      value="100" min="50" max="500">
+                  </label>
+                  <label class="fp-pair-item">
+                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
+                    <input id="fpTestConcurrency" type="number" class="form-input fp-input fp-input--number"
+                      value="5" min="1" max="20">
+                  </label>
+                </div>
                 <div class="fp-form-actions">
                   <button id="fpTestBtn" type="button" class="btn btn-primary"
                     data-i18n="modelTest.fingerprint.test">开始对比</button>
