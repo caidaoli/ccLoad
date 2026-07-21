@@ -33,10 +33,7 @@
   }
 
   // ─── API 调用 ────────────────────────────────────────────────────────────
-  async function apiFetch(url, options) {
-    return window.fetchAPIWithAuth(url, options);
-  }
-
+  // fetchDataWithAuth → {success,data,error} 解包后的 data；失败抛 Error。
   async function apiData(url, options) {
     return window.fetchDataWithAuth(url, options);
   }
