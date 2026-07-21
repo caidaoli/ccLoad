@@ -7168,6 +7168,7 @@ body.web-role-api-token .filter-group--auth-token {
 /* ─── 指纹对比面板 ──────────────────────────────────────────── */
 .fingerprint-panel {
   padding: 16px 20px;
+  min-width: 0;
 }
 
 .fingerprint-panel.hidden {
@@ -7183,10 +7184,12 @@ body.web-role-api-token .filter-group--auth-token {
   font-size: 13px;
   margin-bottom: 20px;
   line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 
 .fp-section {
   margin-bottom: 24px;
+  min-width: 0;
 }
 
 .fp-section-title {
@@ -7196,42 +7199,65 @@ body.web-role-api-token .filter-group--auth-token {
   color: var(--text-primary);
 }
 
+/*
+ * 自适应网格：minmax(min(100%, Npx), 1fr) 防止轨道最小宽 > 容器导致溢出。
+ * 宽屏并排，变窄时自然折行，不再写死 260px。
+ */
 .fp-form {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-  gap: 10px 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  gap: 10px 12px;
   align-items: end;
+  min-width: 0;
+  width: 100%;
 }
 
 .fp-form-row {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* 迭代/并发：窄列，显式 class（不依赖 :has） */
+.fp-form-row--narrow {
+  max-width: 120px;
 }
 
 .fp-form-label {
   font-size: 12px;
   color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.fp-input {
+.fp-input,
+.fp-select {
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+/* 原生 select 默认按 option 内容撑最小宽 —— 强制可收缩 */
+.fp-select {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .fp-input--number {
-  max-width: 100px;
-}
-
-.fp-select {
-  width: 100%;
+  max-width: none;
 }
 
 .fp-form-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  align-self: end;
   grid-column: 1 / -1;
+  min-width: 0;
   padding-top: 4px;
 }
 
@@ -7239,6 +7265,7 @@ body.web-role-api-token .filter-group--auth-token {
   padding: 8px 0;
   font-size: 13px;
   color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .fp-progress.hidden {
@@ -7247,6 +7274,8 @@ body.web-role-api-token .filter-group--auth-token {
 
 .fp-results {
   margin-top: 8px;
+  min-width: 0;
+  overflow-x: auto;
 }
 
 .fp-results.hidden {
@@ -7257,6 +7286,7 @@ body.web-role-api-token .filter-group--auth-token {
   font-size: 13px;
   padding: 8px 0;
   color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 
 .fp-result-table {
@@ -7266,12 +7296,43 @@ body.web-role-api-token .filter-group--auth-token {
 
 .fp-score {
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.fp-score-hint {
+  font-weight: 400;
+  color: var(--text-muted);
+  white-space: normal;
 }
 
 .fp-result-summary {
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .fingerprint-panel {
+    padding: 12px 12px;
+  }
+
+  .fp-form {
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  }
+
+  .fp-form-row--narrow {
+    max-width: none;
+  }
+}
+
+@media (max-width: 420px) {
+  .fp-form {
+    grid-template-columns: 1fr;
+  }
+
+  .fp-form-row--narrow {
+    max-width: none;
+  }
 }
 
 .chat-toolbar {
