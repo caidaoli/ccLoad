@@ -179,6 +179,43 @@ func TestSSEUsageParser_NormalContentNotMisflaggedAsError(t *testing.T) {
 	}
 }
 
+// [PATCH] OpenAI Responses API 的失败终态：event/type 都是 response.failed，
+// error 嵌在 response.error 下。漏判会把限流当 HTTP 200 成功。
+func TestSSEUsageParser_ResponseFailedEvent(t *testing.T) {
+	parser := newSSEUsageParser("codex")
+	stream := "event: response.failed\n" +
+		`data: {"type":"response.failed","response":{"id":"resp_5ca0fb7943504d6a93576c7fb7e3a760","object":"response","model":"gpt-5.6-sol","status":"failed","output":[],"error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded, please retry later"}}}` +
+		"\n\n"
+	if err := parser.Feed([]byte(stream)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatalf("response.failed must not count as stream output")
+	}
+	lastErr := parser.GetLastError()
+	if lastErr == nil {
+		t.Fatalf("response.failed must be captured as lastError")
+	}
+	if !strings.Contains(string(lastErr), "rate_limit_exceeded") {
+		t.Fatalf("lastError should preserve nested rate_limit payload, got: %s", lastErr)
+	}
+}
+
+// [PATCH] 仅 data 行、无 event 行的 response.failed（与 JSON-only error 对称）。
+func TestSSEUsageParser_ResponseFailedJSONOnly(t *testing.T) {
+	parser := newSSEUsageParser("openai")
+	stream := `data: {"type":"response.failed","response":{"status":"failed","error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded, please retry later"}}}` + "\n\n"
+	if err := parser.Feed([]byte(stream)); err != nil {
+		t.Fatalf("Feed失败: %v", err)
+	}
+	if parser.GetLastError() == nil {
+		t.Fatalf("JSON-only response.failed must be captured as lastError")
+	}
+	if parser.HasStreamOutput() {
+		t.Fatalf("JSON-only response.failed must not count as stream output")
+	}
+}
+
 // ============================================================================
 // 边界测试：分块读取（真实SSE流场景）
 // ============================================================================

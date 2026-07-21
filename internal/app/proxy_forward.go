@@ -1155,11 +1155,21 @@ func isSSERateLimitError(body []byte) bool {
 			Type string `json:"type"`
 			Code string `json:"code"`
 		} `json:"error"`
+		// OpenAI Responses: error 嵌在 response.error
+		Response struct {
+			Error struct {
+				Type string `json:"type"`
+				Code string `json:"code"`
+			} `json:"error"`
+		} `json:"response"`
 	}
 	if err := sonic.Unmarshal(body, &payload); err != nil {
 		return false
 	}
-	return isRateLimitErrorType(payload.Error.Type) || isRateLimitErrorType(payload.Error.Code)
+	return isRateLimitErrorType(payload.Error.Type) ||
+		isRateLimitErrorType(payload.Error.Code) ||
+		isRateLimitErrorType(payload.Response.Error.Type) ||
+		isRateLimitErrorType(payload.Response.Error.Code)
 }
 
 func isRateLimitErrorType(value string) bool {

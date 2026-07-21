@@ -1041,25 +1041,58 @@ func extractSSEDeltaText(obj map[string]any) string {
 
 // extractSSEErrorMessage 从事件对象识别错误。
 // matched=true 表示当前事件携带错误对象，msg 为人类可读消息（可能为空），raw 用于 api_error 字段。
+// 覆盖：
+//   - 顶层 error 对象/字符串（Anthropic/Chat 风格）
+//   - OpenAI Responses：type=response.failed 或 response.status=failed / response.error
 func extractSSEErrorMessage(obj map[string]any) (msg string, raw map[string]any, matched bool) {
-	if errObj, ok := obj["error"].(map[string]any); ok {
-		if m, ok := errObj["message"].(string); ok && m != "" {
-			return m, obj, true
-		}
-		if t, ok := errObj["type"].(string); ok && t != "" {
-			return t, obj, true
-		}
-		return "", obj, true
+	if msg, raw, matched = errorMessageFromObject(obj["error"], obj); matched {
+		return msg, raw, true
 	}
 	if errStr, ok := obj["error"].(string); ok {
 		if trimmed := strings.TrimSpace(errStr); trimmed != "" {
 			return trimmed, obj, true
 		}
 	}
+	if typ, _ := obj["type"].(string); typ == "response.failed" {
+		if resp, ok := obj["response"].(map[string]any); ok {
+			if msg, raw, matched = errorMessageFromObject(resp["error"], obj); matched {
+				return msg, raw, true
+			}
+		}
+		return "response.failed", obj, true
+	}
+	if resp, ok := obj["response"].(map[string]any); ok {
+		if status, _ := resp["status"].(string); strings.EqualFold(strings.TrimSpace(status), "failed") {
+			if msg, raw, matched = errorMessageFromObject(resp["error"], obj); matched {
+				return msg, raw, true
+			}
+			return "response status failed", obj, true
+		}
+		if msg, raw, matched = errorMessageFromObject(resp["error"], obj); matched {
+			return msg, raw, true
+		}
+	}
 	if m, ok := obj["message"].(string); ok && m != "" {
 		return m, obj, true
 	}
 	return "", nil, false
+}
+
+func errorMessageFromObject(v any, raw map[string]any) (msg string, out map[string]any, matched bool) {
+	errObj, ok := v.(map[string]any)
+	if !ok {
+		return "", nil, false
+	}
+	if m, ok := errObj["message"].(string); ok && m != "" {
+		return m, raw, true
+	}
+	if t, ok := errObj["type"].(string); ok && t != "" {
+		return t, raw, true
+	}
+	if code, ok := errObj["code"].(string); ok && code != "" {
+		return code, raw, true
+	}
+	return "", raw, true
 }
 
 type testSSECollector struct {
