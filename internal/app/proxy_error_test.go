@@ -154,6 +154,10 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 		URL:      "http://test.example.com",
 		Priority: 1,
 		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "test-model"},
+			{Model: "other-model"},
+		},
 	}
 
 	// 创建测试用的请求上下文
@@ -192,22 +196,32 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 		}
 	})
 
-	t.Run("first byte timeout switches channel", func(t *testing.T) {
-		err := fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)
-		result, action := srv.handleNetworkError(
-			ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, err, nil, reqCtx, false,
-		)
+	modelScopedErrors := []struct {
+		name string
+		err  error
+	}{
+		{name: "first byte timeout", err: fmt.Errorf("wrap: %w", util.ErrUpstreamFirstByteTimeout)},
+		{name: "connection reset", err: errors.New("read: connection reset by peer")},
+		{name: "http2 body closed", err: errors.New("http2: response body closed")},
+		{name: "http2 stream error", err: errors.New("stream error: stream ID 7; INTERNAL_ERROR")},
+		{name: "empty response", err: fmt.Errorf("probe failed: %w", util.ErrUpstreamEmptyResponse)},
+		{name: "deadline exceeded", err: context.DeadlineExceeded},
+		{name: "connection timeout", err: errors.New("upstream connection timeout")},
+	}
+	for _, tt := range modelScopedErrors {
+		t.Run(tt.name+" cools model", func(t *testing.T) {
+			result, action := srv.handleNetworkError(
+				ctx, cfg, 0, "test-model", "test-key", 0, "", 0.1, tt.err, nil, reqCtx, false,
+			)
 
-		if result == nil {
-			t.Error("期望返回错误结果")
-		}
-		if result != nil && result.status != util.StatusFirstByteTimeout {
-			t.Errorf("期望 status=%d, 实际=%d", util.StatusFirstByteTimeout, result.status)
-		}
-		if action != cooldown.ActionRetryChannel {
-			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
-		}
-	})
+			if result == nil {
+				t.Fatal("期望返回错误结果")
+			}
+			if action != cooldown.ActionRetryModel {
+				t.Fatalf("action=%v, want ActionRetryModel", action)
+			}
+		})
+	}
 }
 
 // Test_HandleProxySuccess_Basic 基础成功处理测试
@@ -264,18 +278,23 @@ func Test_HandleProxyError_499(t *testing.T) {
 		URL:      "http://test.example.com",
 		Priority: 1,
 		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "test-model"},
+			{Model: "other-model"},
+		},
 	}
 
-	t.Run("upstream 499 triggers channel retry", func(t *testing.T) {
+	t.Run("upstream 499 triggers model retry", func(t *testing.T) {
 		res := &fwResult{
 			Status: 499,
 			Body:   []byte(`{"error": "client closed request"}`),
 			Header: make(http.Header),
 		}
-		action := srv.applyCooldownDecision(ctx, cfg, httpErrorInput(cfg.ID, 0, res))
+		input := cooldownInputForModel(httpErrorInput(cfg.ID, 0, res), "test-model")
+		action := srv.applyCooldownDecision(ctx, cfg, input)
 
-		if action != cooldown.ActionRetryChannel {
-			t.Errorf("期望 action=ActionRetryChannel, 实际=%v", action)
+		if action != cooldown.ActionRetryModel {
+			t.Errorf("期望 action=ActionRetryModel, 实际=%v", action)
 		}
 	})
 

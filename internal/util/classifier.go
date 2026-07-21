@@ -42,7 +42,7 @@ var globalFixedWindowRetryClockRegex = regexp.MustCompile(`(今天|明天)\s*(\d
 // HTTP 状态码常量（统一定义，避免魔法数字）
 const (
 	// StatusClientClosedRequest 客户端取消请求（Nginx扩展状态码）
-	// 来源：(1) context.Canceled → 不重试  (2) 上游返回499 → 重试其他渠道
+	// 来源：(1) context.Canceled → 不重试  (2) 上游返回499 → 冷却当前模型并切换渠道
 	StatusClientClosedRequest = 499
 
 	// StatusQuotaExceeded 1308配额超限（自定义状态码）
@@ -53,11 +53,11 @@ const (
 	// HTTP状态码200但流中包含错误，如其他类型的API错误
 	StatusSSEError = 597
 
-	// StatusFirstByteTimeout 上游首字节超时（自定义状态码，触发渠道级冷却）
+	// StatusFirstByteTimeout 上游首字节超时（自定义状态码，触发模型级冷却）
 	StatusFirstByteTimeout = 598
 
 	// StatusStreamIncomplete 流式响应不完整（自定义状态码）
-	// 触发条件：流正常结束但没有usage数据，或流传输中断
+	// 触发条件：流正常结束但没有usage数据，或流传输中断；触发模型级冷却
 	StatusStreamIncomplete = 599
 )
 
@@ -100,6 +100,9 @@ type HTTPResponseClassification struct {
 	Level                   ErrorLevel
 	Model                   string
 	ModelScoped             bool
+	ModelCooldownUntil      time.Time
+	HasModelCooldownUntil   bool
+	ModelCooldownReason     string
 	KeyCooldownUntil        time.Time
 	HasKeyCooldownUntil     bool
 	KeyCooldownReason       string
@@ -166,7 +169,7 @@ func (r *sseErrorResponse) ErrorType() string {
 // 设计原则：表驱动替代分散的 switch/map，提高可维护性
 var statusCodeMetaMap = map[int]StatusCodeMeta{
 	// === 客户端取消 ===
-	// 499: 上游返回的客户端关闭请求，应切换渠道重试
+	// 499: 上游返回的客户端关闭请求；基础级别为 Channel，HTTP 分类层收窄到模型作用域
 	// 注意：context.Canceled 在 ClassifyError 中单独处理
 	499: {ErrorLevelChannel},
 
@@ -232,6 +235,11 @@ func IsModelScopedHTTPStatus(status int) bool {
 	return status >= 500 && status < StatusQuotaExceeded
 }
 
+// IsModelScopedStreamFailure 判断内部流故障是否只应冷却当前实际模型。
+func IsModelScopedStreamFailure(status int) bool {
+	return status == StatusFirstByteTimeout || status == StatusStreamIncomplete
+}
+
 // ClientStatusFor 将 status 映射为对外暴露的状态码。
 //
 // 设计目标：
@@ -272,6 +280,7 @@ func ClassifyHTTPStatus(statusCode int) ErrorLevel {
 //
 // 分类策略：
 //   - 401/403 做语义分析：默认 Key 级，只在明确账户级不可逆错误时升级为 Channel 级
+//   - 400 固定按模型级处理，避免一个模型的请求约束误伤整个渠道
 //   - 429 做限流范围分析：默认 Key 级，只有明确长时间/全局限流特征才升级为 Channel 级
 //   - 1308 错误优先：无论 HTTP 状态码，检测到就按 Key 级处理（用于精确冷却时间）
 //   - 其他状态码：走表驱动分类（statusCodeMetaMap）
@@ -280,6 +289,14 @@ func ClassifyHTTPResponseWithMeta(statusCode int, headers map[string][]string, r
 }
 
 func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string, responseBody []byte, now time.Time) HTTPResponseClassification {
+	// 上游 HTTP 499 与本地 context.Canceled 不同：切换渠道，但只冷却当前实际模型。
+	if statusCode == StatusClientClosedRequest {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
 	// [INFO] 特殊处理：检测1308错误（可能以SSE error事件形式出现，HTTP状态码是200）
 	// 1308错误表示达到使用上限，应该触发Key级冷却
 	if resetTime, has1308 := ParseResetTimeFrom1308Error(responseBody); has1308 {
@@ -298,6 +315,13 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 				classification.Model = strings.TrimSpace(quotaErr.model)
 			}
 		}
+		if statusCode == 429 && level == ErrorLevelChannel {
+			classification.ModelScoped = true
+			classification.ModelCooldownUntil = cooldownUntil
+			classification.HasModelCooldownUntil = true
+			classification.ModelCooldownReason = reason
+			return classification
+		}
 		switch level {
 		case ErrorLevelChannel:
 			classification.ChannelCooldownUntil = cooldownUntil
@@ -313,12 +337,23 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 
 	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
 	// SSE error JSON格式: {"type":"error","error":{"type":"api_error","message":"上游API返回错误: 500"}}
-	// 根据error.type判断：api_error/overloaded_error → 渠道级，其他 → Key级
+	// 服务类错误切换渠道但只冷却当前模型；认证/限流类错误仍冷却 Key。
 	if statusCode == StatusSSEError {
-		return HTTPResponseClassification{Level: classifySSEError(responseBody)}
+		level := classifySSEError(responseBody)
+		return HTTPResponseClassification{
+			Level:       level,
+			ModelScoped: level == ErrorLevelChannel,
+		}
 	}
 
-	// 429错误：需要结合 headers 判断限流范围
+	if IsModelScopedStreamFailure(statusCode) {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
+	// 429 无论限流范围如何，都只冷却当前实际模型。
 	if statusCode == 429 {
 		level := ErrorLevelKey
 		if headers != nil {
@@ -326,13 +361,16 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 		return HTTPResponseClassification{
 			Level:       level,
-			ModelScoped: level == ErrorLevelKey,
+			ModelScoped: true,
 		}
 	}
 
-	// 400错误：根据响应体智能分类
+	// 400 表示当前模型无法接受该请求。切换渠道，但只冷却实际请求的模型。
 	if statusCode == 400 {
-		return HTTPResponseClassification{Level: classify400Error(responseBody)}
+		return HTTPResponseClassification{
+			Level:       ErrorLevelKey,
+			ModelScoped: true,
+		}
 	}
 
 	// 404错误：根据响应体智能分类
@@ -382,12 +420,12 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 	return HTTPResponseClassification{Level: ErrorLevelKey}
 }
 
-// classifyRateLimitError 分析429 Rate Limit错误的具体类型
-// 增强429错误处理,区分Key级和渠道级限流
+// classifyRateLimitError 分析 429 的限流范围。
+// ErrorLevelChannel 仅表示限流信号覆盖 IP/账户/组织；429 的冷却作用域始终由调用方固定为模型级。
 //
 // 判断逻辑:
-//  1. 检查Retry-After头: 如果>60秒,可能是IP/账户级限流 → 渠道级
-//  2. 检查X-RateLimit-Scope: 如果是"global"或"ip" → 渠道级
+//  1. 检查Retry-After头: 如果>60秒,标记为广域限流
+//  2. 检查X-RateLimit-Scope: 如果是"global"或"ip",标记为广域限流
 //  3. 检查响应体中的错误描述
 //  4. 默认: Key级(保守策略)
 //
@@ -408,7 +446,7 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 				return ErrorLevelChannel
 			}
 		}
-		// 如果是HTTP日期格式,通常表示长时间限流,也视为渠道级
+		// 如果是HTTP日期格式,通常表示长时间广域限流
 		if _, err := time.Parse(time.RFC1123, retryAfter); err == nil {
 			return ErrorLevelChannel
 		}
@@ -417,7 +455,7 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	// 2. 检查X-RateLimit-Scope头(某些API使用)
 	if scopeValues, ok := headers["X-Ratelimit-Scope"]; ok && len(scopeValues) > 0 {
 		scope := strings.ToLower(scopeValues[0])
-		// global/ip级别的限流影响整个渠道
+		// global/ip/account 表示广域限流，但冷却仍只作用于当前模型
 		if scope == RateLimitScopeGlobal || scope == RateLimitScopeIP || scope == RateLimitScopeAccount {
 			return ErrorLevelChannel
 		}
@@ -427,7 +465,7 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 	if len(responseBody) > 0 {
 		bodyLower := strings.ToLower(string(responseBody))
 
-		// 渠道级限流特征
+		// 广域限流特征
 		channelPatterns := []string{
 			"ip rate limit",      // IP级别限流
 			"account rate limit", // 账户级别限流
@@ -442,8 +480,7 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 		}
 	}
 
-	// 4. 默认: Key级别限流(保守策略)
-	// 让系统先尝试其他Key,如果所有Key都限流了,会自动升级为渠道级
+	// 4. 默认标记为窄域限流；冷却仍只作用于当前模型
 	return ErrorLevelKey
 }
 
@@ -750,28 +787,6 @@ func parseBeijingTomorrowResetTime(message string, now time.Time) (time.Time, bo
 	return time.Date(y, mon, d+1, hour, minute, 0, 0, loc), true
 }
 
-// classify400Error 根据响应体内容智能分类 400 错误
-// 设计原则：代理场景下 400 通常是上游服务异常，应触发渠道冷却并切换
-func classify400Error(responseBody []byte) ErrorLevel {
-	if len(responseBody) == 0 {
-		return ErrorLevelChannel // 空响应体 = 上游异常
-	}
-	bodyLower := strings.ToLower(string(responseBody))
-
-	// Key 级特征（罕见）
-	if strings.Contains(bodyLower, "invalid_api_key") ||
-		strings.Contains(bodyLower, "invalid api key") ||
-		strings.Contains(bodyLower, "incorrect api key") ||
-		strings.Contains(bodyLower, "malformed api key") ||
-		strings.Contains(bodyLower, "api key not valid") ||
-		strings.Contains(bodyLower, "api key you provided is malformed") {
-		return ErrorLevelKey
-	}
-
-	// 默认：渠道级（上游服务异常，触发冷却并切换渠道）
-	return ErrorLevelChannel
-}
-
 // classify404Error 根据响应体内容智能分类 404 错误
 // 设计原则：404 本身是异常情况，只有明确的客户端错误才不切换
 //   - 模型不存在（客户端级）：明确的 model_not_found 或 does not exist
@@ -922,6 +937,34 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	return classifyErrorByString(err.Error())
 }
 
+// IsModelScopedNetworkError 判断网络错误是否只应冷却当前实际模型。
+// DNS、连接拒绝、路由不可达等基础设施错误仍属于渠道级。
+func IsModelScopedNetworkError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return false
+	}
+	if errors.Is(err, ErrUpstreamFirstByteTimeout) ||
+		errors.Is(err, ErrUpstreamEmptyResponse) ||
+		errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+
+	return isModelScopedNetworkErrorText(strings.ToLower(err.Error()))
+}
+
+func isModelScopedNetworkErrorText(errLower string) bool {
+	return strings.Contains(errLower, "connection reset by peer") ||
+		strings.Contains(errLower, "http2: response body closed") ||
+		strings.Contains(errLower, "stream error:") ||
+		strings.Contains(errLower, "empty response") ||
+		strings.Contains(errLower, "connection timeout")
+}
+
 // classifyErrorByString 通过字符串匹配分类网络错误
 // 从proxy_util.go迁移，作为ClassifyError的私有辅助函数
 func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
@@ -932,17 +975,9 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 499, ErrorLevelClient, false
 	}
 
-	// connection reset by peer - 通常是对端（上游）突然断开连接
-	// 这不是“客户端取消”的语义，内部统一按 502 处理以进入健康度统计，并允许切换渠道重试。
-	if strings.Contains(errLower, "connection reset by peer") {
+	// 模型生成链路故障：状态仍记为 502/504，但冷却作用域由调用方收窄到模型。
+	if isModelScopedNetworkErrorText(errLower) {
 		return 502, ErrorLevelChannel, true
-	}
-
-	// [INFO] 空响应检测：上游返回200但Content-Length=0
-	// 常见于CDN/代理错误、认证失败等异常场景，应触发渠道级重试
-	if strings.Contains(errLower, "empty response") &&
-		strings.Contains(errLower, "content-length: 0") {
-		return 502, ErrorLevelChannel, true // 归类为Bad Gateway(上游异常)
 	}
 
 	// Connection refused - 应该重试其他渠道
@@ -950,19 +985,10 @@ func classifyErrorByString(errStr string) (int, ErrorLevel, bool) {
 		return 502, ErrorLevelChannel, true
 	}
 
-	// HTTP/2 流级错误 - 上游服务器主动关闭流或内部错误
-	// 常见原因：上游负载过高、服务崩溃、网络中间件超时、CDN断开
-	// 应触发渠道级重试（切换到其他渠道）
-	if strings.Contains(errLower, "http2: response body closed") ||
-		strings.Contains(errLower, "stream error:") {
-		return 502, ErrorLevelChannel, true // Bad Gateway - 上游服务异常
-	}
-
 	// 其他常见的网络连接错误也应该重试
 	if strings.Contains(errLower, "no such host") ||
 		strings.Contains(errLower, "host unreachable") ||
 		strings.Contains(errLower, "network unreachable") ||
-		strings.Contains(errLower, "connection timeout") ||
 		strings.Contains(errLower, "no route to host") {
 		return 502, ErrorLevelChannel, true
 	}

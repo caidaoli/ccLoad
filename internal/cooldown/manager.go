@@ -37,6 +37,7 @@ type ErrorInput struct {
 	StatusCode     int
 	ErrorBody      []byte
 	IsNetworkError bool
+	ModelScoped    bool // 网络错误是否只影响当前实际模型
 	Headers        map[string][]string
 }
 
@@ -91,6 +92,13 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		// 网络错误默认按"渠道级"处理：这类问题通常是上游/链路/负载，而不是某个Key的固有属性。
 		// 继续在同一渠道里换Key只是在浪费重试预算、扩大故障面。
 		errLevel = util.ErrorLevelChannel
+		if in.ModelScoped || util.IsModelScopedStreamFailure(statusCode) {
+			decision.model = strings.TrimSpace(in.Model)
+			if decision.model != "" {
+				decision.modelScoped = true
+				decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
+			}
+		}
 	} else {
 		// HTTP错误: 使用智能分类器(结合响应体内容和headers)
 		classification := util.ClassifyHTTPResponseWithMeta(statusCode, in.Headers, errorBody)
@@ -118,7 +126,11 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
-				decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
+				if classification.HasModelCooldownUntil {
+					decision.modelCooldownUntil = classification.ModelCooldownUntil
+				} else {
+					decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
+				}
 			}
 		} else if errLevel == util.ErrorLevelChannel &&
 			!decision.hasChannelCooldownUntil &&

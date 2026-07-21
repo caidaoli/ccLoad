@@ -254,6 +254,16 @@ func TestClassifyHTTPStatus(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPResponse_Upstream499IsModelScoped(t *testing.T) {
+	classification := ClassifyHTTPResponseWithMeta(499, nil, []byte(`{"error":"client closed request"}`))
+	if classification.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", classification.Level)
+	}
+	if !classification.ModelScoped {
+		t.Fatal("upstream HTTP 499 must be model-scoped")
+	}
+}
+
 // 测试context.Canceled与HTTP 499的区分
 func TestClassifyError_ContextCanceled(t *testing.T) {
 	tests := []struct {
@@ -413,6 +423,33 @@ func TestClassifyError_ConnectionResetAndBrokenPipe(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
+		})
+	}
+}
+
+func TestIsModelScopedNetworkError(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "first byte timeout", err: ErrUpstreamFirstByteTimeout, want: true},
+		{name: "empty response", err: ErrUpstreamEmptyResponse, want: true},
+		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
+		{name: "connection reset", err: errors.New("read: connection reset by peer"), want: true},
+		{name: "http2 body closed", err: errors.New("http2: response body closed"), want: true},
+		{name: "http2 stream error", err: errors.New("stream error: stream ID 7; INTERNAL_ERROR"), want: true},
+		{name: "connection timeout", err: errors.New("upstream connection timeout"), want: true},
+		{name: "connection refused", err: errors.New("connect: connection refused"), want: false},
+		{name: "dns failure", err: errors.New("dial: no such host"), want: false},
+		{name: "client canceled", err: context.Canceled, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := IsModelScopedNetworkError(tt.err); got != tt.want {
+				t.Fatalf("IsModelScopedNetworkError(%v)=%v, want %v", tt.err, got, tt.want)
+			}
 		})
 	}
 }
@@ -635,10 +672,13 @@ func TestClassifyRateLimitError(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := ClassifyHTTPResponseWithMeta(429, tt.headers, tt.responseBody).Level
-			if result != tt.expected {
+			classification := ClassifyHTTPResponseWithMeta(429, tt.headers, tt.responseBody)
+			if classification.Level != tt.expected {
 				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
-					tt.name, tt.expected, result, tt.reason)
+					tt.name, tt.expected, classification.Level, tt.reason)
+			}
+			if !classification.ModelScoped {
+				t.Errorf("%s: 429 must be model-scoped, classification=%+v", tt.name, classification)
 			}
 		})
 	}
@@ -831,84 +871,81 @@ func TestClassifySSEError(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// 使用 ClassifyHTTPResponseWithMeta 测试 597 状态码
-			result := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, tt.responseBody).Level
-			if result != tt.expected {
+			classification := ClassifyHTTPResponseWithMeta(StatusSSEError, nil, tt.responseBody)
+			if classification.Level != tt.expected {
 				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s",
-					tt.name, tt.expected, result, tt.reason)
+					tt.name, tt.expected, classification.Level, tt.reason)
+			}
+			wantModelScoped := tt.expected == ErrorLevelChannel
+			if classification.ModelScoped != wantModelScoped {
+				t.Errorf("%s: ModelScoped=%v, want %v", tt.name, classification.ModelScoped, wantModelScoped)
 			}
 		})
 	}
 }
 
-func TestClassify400Error(t *testing.T) {
+func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	tests := []struct {
 		name         string
 		responseBody []byte
-		expected     ErrorLevel
-		reason       string
 	}{
 		{
 			name:         "empty_body",
 			responseBody: []byte{},
-			expected:     ErrorLevelChannel,
-			reason:       "空响应体应判定为上游异常",
 		},
 		{
 			name:         "nil_body",
 			responseBody: nil,
-			expected:     ErrorLevelChannel,
-			reason:       "nil响应体应判定为上游异常",
 		},
 		{
 			name:         "invalid_api_key",
 			responseBody: []byte(`{"error": {"message": "Invalid API Key provided"}}`),
-			expected:     ErrorLevelKey,
-			reason:       "包含 invalid_api_key 特征应判定为 Key 级错误",
 		},
 		{
 			name:         "api_key_error",
 			responseBody: []byte(`{"error": {"message": "The API key you provided is malformed"}}`),
-			expected:     ErrorLevelKey,
-			reason:       "包含 api key 特征应判定为 Key 级错误",
 		},
 		{
 			name:         "gemini_api_key_not_valid",
 			responseBody: []byte(`{"error":{"code":400,"message":"API key not valid. Please pass a valid API key.","status":"INVALID_ARGUMENT"}}`),
-			expected:     ErrorLevelKey,
-			reason:       "Gemini 无效 API Key 应判定为 Key 级错误并触发 Key 冷却",
 		},
 		{
 			name:         "generic_message_mentions_api_key",
 			responseBody: []byte(`{"error": {"message": "Gateway rejected request; check API key configuration in dashboard"}}`),
-			expected:     ErrorLevelChannel,
-			reason:       "泛泛提到 api key 不应误判为 Key 级错误",
 		},
 		{
 			name:         "bad_request_params",
 			responseBody: []byte(`{"error": {"message": "Missing required parameter: 'model'"}}`),
-			expected:     ErrorLevelChannel,
-			reason:       "代理场景下400默认视为上游异常",
 		},
 		{
 			name:         "invalid_json_format",
 			responseBody: []byte(`{"error": {"message": "Invalid JSON format in request body"}}`),
-			expected:     ErrorLevelChannel,
-			reason:       "代理场景下400默认视为上游异常",
 		},
 		{
 			name:         "validation_error",
 			responseBody: []byte(`{"error": {"message": "Validation failed: max_tokens must be positive"}}`),
-			expected:     ErrorLevelChannel,
-			reason:       "代理场景下400默认视为上游异常",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := classify400Error(tt.responseBody)
-			if result != tt.expected {
-				t.Errorf("%s\n  期望: %v\n  实际: %v\n  原因: %s\n  响应体: %s",
-					tt.name, tt.expected, result, tt.reason, string(tt.responseBody))
+			classification := ClassifyHTTPResponseWithMeta(400, nil, tt.responseBody)
+			if !classification.ModelScoped {
+				t.Fatalf("400 must be model-scoped, classification=%+v, body=%s", classification, tt.responseBody)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseStreamFailuresAreModelScoped(t *testing.T) {
+	for _, status := range []int{StatusFirstByteTimeout, StatusStreamIncomplete} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(status, nil, nil)
+			if classification.Level != ErrorLevelChannel {
+				t.Fatalf("status %d level=%v, want ErrorLevelChannel", status, classification.Level)
+			}
+			if !classification.ModelScoped {
+				t.Fatalf("status %d must be model-scoped", status)
 			}
 		})
 	}
