@@ -927,6 +927,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/fingerprints/calibrate", s.HandleCalibrateFingerprint)
 		admin.POST("/fingerprints/test", s.HandleTestFingerprint)
 		admin.GET("/fingerprints/jobs/:id", s.HandleFingerprintJob)
+		admin.GET("/fingerprints/jobs/:id/stream", s.HandleFingerprintJobStream)
 		admin.POST("/fingerprints/jobs/:id/cancel", s.HandleCancelFingerprintJob)
 	}
 
