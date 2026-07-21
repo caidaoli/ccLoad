@@ -43,7 +43,7 @@
 
   // ─── 渠道/模型 select 渲染 ──────────────────────────────────────────────
   function buildChannelOptions(selectEl) {
-    const channels = (typeof channelsList !== 'undefined' ? channelsList : []) || [];
+    const channels = (window.channelsList || []);
     selectEl.innerHTML = '<option value="">' + t('modelTest.fingerprint.selectChannel', '选择渠道') + '</option>';
     channels.forEach(ch => {
       const opt = document.createElement('option');
@@ -54,7 +54,7 @@
   }
 
   function buildModelOptions(selectEl, channelId) {
-    const channels = (typeof channelsList !== 'undefined' ? channelsList : []) || [];
+    const channels = (window.channelsList || []);
     const ch = channels.find(c => String(c.id) === String(channelId));
     const models = (ch && ch.models) ? ch.models : [];
     selectEl.innerHTML = '<option value="">' + t('modelTest.fingerprint.selectModel', '选择模型') + '</option>';
@@ -154,12 +154,14 @@
   }
 
   function setRunning(running) {
-    const calibrateBtn = el('fpCalibrateBtn');
-    const testBtn      = el('fpTestBtn');
-    const cancelBtn    = el('fpCancelBtn');
-    if (calibrateBtn) calibrateBtn.disabled = running;
-    if (testBtn)      testBtn.disabled = running;
-    if (cancelBtn)    cancelBtn.classList.toggle('hidden', !running);
+    const calibrateBtn       = el('fpCalibrateBtn');
+    const calibrateCancelBtn = el('fpCalibrateCancelBtn');
+    const testBtn            = el('fpTestBtn');
+    const cancelBtn          = el('fpCancelBtn');
+    if (calibrateBtn)       calibrateBtn.disabled = running;
+    if (calibrateCancelBtn) calibrateCancelBtn.classList.toggle('hidden', !running);
+    if (testBtn)            testBtn.disabled = running;
+    if (cancelBtn)          cancelBtn.classList.toggle('hidden', !running);
   }
 
   // ─── 结果渲染 ────────────────────────────────────────────────────────────
@@ -251,8 +253,19 @@
         const status = job.status;
         // 更新进度显示
         if (job.progress != null) {
-          const pct = typeof job.progress === 'number' ? job.progress : 0;
-          showProgress(t('modelTest.fingerprint.progress', '进度') + ': ' + pct + '% — ' + status);
+          let progressText;
+          if (job.progress !== null && typeof job.progress === 'object') {
+            const p = job.progress;
+            progressText = t('modelTest.fingerprint.progress', '进度') + ': '
+              + (p.success != null ? p.success + ' ok' : '')
+              + (p.failed != null ? ' / ' + p.failed + ' fail' : '')
+              + (p.done != null && p.total != null ? ' / ' + p.done + '/' + p.total : '')
+              + ' — ' + status;
+          } else {
+            const pct = typeof job.progress === 'number' ? job.progress : 0;
+            progressText = t('modelTest.fingerprint.progress', '进度') + ': ' + pct + '% — ' + status;
+          }
+          showProgress(progressText);
         }
 
         if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
@@ -397,6 +410,7 @@
 
     // 提交按钮
     el('fpCalibrateBtn')?.addEventListener('click', onCalibrateSubmit);
+    el('fpCalibrateCancelBtn')?.addEventListener('click', cancelJob);
     el('fpTestBtn')?.addEventListener('click', onTestSubmit);
     el('fpCancelBtn')?.addEventListener('click', cancelJob);
   }
