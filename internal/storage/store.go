@@ -127,6 +127,11 @@ type Store interface {
 	DeleteModelFingerprint(ctx context.Context, id int64) error
 	ClearFingerprintChannelID(ctx context.Context, channelID int64) error
 
+	// === Fingerprint Test Results ===
+	CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error
+	ListFingerprintTestResults(ctx context.Context, limit int) ([]*model.FingerprintTestRecord, error)
+	DeleteFingerprintTestResult(ctx context.Context, id int64) error
+
 	// === Batch Operations ===
 	ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error)
 

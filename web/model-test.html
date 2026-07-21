@@ -358,21 +358,21 @@
             <!-- 标定表单 -->
             <div class="fp-section">
               <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.calibrate">标定基准</h3>
-              <div class="fp-form">
+              <div class="fp-form fp-form--inline">
                 <label class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.name">名称</span>
                   <input id="fpCalibrateName" type="text" class="form-input fp-input"
                     data-i18n-placeholder="modelTest.fingerprint.namePlaceholder" placeholder="基准名称">
                 </label>
                 <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpCalibrateChannel">
-                </div>
-                <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="common.model">模型</span>
                   <div id="fpCalibrateModelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpCalibrateModel">
+                </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
+                  <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpCalibrateChannel">
                 </div>
                 <div class="fp-form-row fp-form-row--pair">
                   <label class="fp-pair-item">
@@ -385,12 +385,12 @@
                     <input id="fpCalibrateConcurrency" type="number" class="form-input fp-input fp-input--number"
                       value="5" min="1" max="20">
                   </label>
-                </div>
-                <div class="fp-form-actions">
-                  <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
-                    data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
-                  <button id="fpCalibrateCancelBtn" type="button" class="btn btn-secondary hidden"
-                    data-i18n="common.cancel">取消</button>
+                  <div class="fp-form-actions">
+                    <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
+                      data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
+                    <button id="fpCalibrateCancelBtn" type="button" class="btn btn-secondary hidden"
+                      data-i18n="common.cancel">取消</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -398,16 +398,16 @@
             <!-- 对比测试表单 -->
             <div class="fp-section">
               <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.test">开始对比</h3>
-              <div class="fp-form">
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpTestChannel">
-                </div>
+              <div class="fp-form fp-form--inline">
                 <div class="fp-form-row">
                   <span class="fp-form-label" data-i18n="common.model">模型</span>
                   <div id="fpTestModelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpTestModel">
+                </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
+                  <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpTestChannel">
                 </div>
                 <label class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>
@@ -426,12 +426,12 @@
                     <input id="fpTestConcurrency" type="number" class="form-input fp-input fp-input--number"
                       value="5" min="1" max="20">
                   </label>
-                </div>
-                <div class="fp-form-actions">
-                  <button id="fpTestBtn" type="button" class="btn btn-primary"
-                    data-i18n="modelTest.fingerprint.test">开始对比</button>
-                  <button id="fpCancelBtn" type="button" class="btn btn-secondary hidden"
-                    data-i18n="common.cancel">取消</button>
+                  <div class="fp-form-actions">
+                    <button id="fpTestBtn" type="button" class="btn btn-primary"
+                      data-i18n="modelTest.fingerprint.test">开始对比</button>
+                    <button id="fpCancelBtn" type="button" class="btn btn-secondary hidden"
+                      data-i18n="common.cancel">取消</button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -439,6 +439,28 @@
             <!-- 进度 & 结果 -->
             <div id="fpProgress" class="fp-progress hidden"></div>
             <div id="fpResults" class="fp-results hidden"></div>
+
+            <!-- 对比历史 -->
+            <div class="fp-section">
+              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.history">对比历史</h3>
+              <div class="table-container">
+                <table class="modern-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="common.model">模型</th>
+                      <th data-i18n="modelTest.fingerprint.col.channel">渠道</th>
+                      <th data-i18n="modelTest.fingerprint.sampleCount">样本数</th>
+                      <th data-i18n="modelTest.fingerprint.col.score">最高评分</th>
+                      <th data-i18n="modelTest.fingerprint.col.time">时间</th>
+                      <th data-i18n="common.actions">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fpHistoryTbody">
+                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted)" data-i18n="modelTest.fingerprint.noHistory">暂无对比历史</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </section>
         </section>
       </div>

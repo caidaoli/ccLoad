@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -338,6 +339,27 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 			SampleCount:  len(samples),
 			RawData:      samples,
 		}
+
+		// 持久化对比结果到数据库
+		var bestScore float64
+		if len(matches) > 0 {
+			bestScore = matches[0].Score
+		}
+		matchesBytes, _ := json.Marshal(matches)
+		channelName := ""
+		if cfg, err := s.store.GetConfig(context.Background(), req.ChannelID); err == nil && cfg != nil {
+			channelName = cfg.Name
+		}
+		channelID := req.ChannelID
+		rec := &model.FingerprintTestRecord{
+			ChannelID:   &channelID,
+			ChannelName: channelName,
+			Model:       req.Model,
+			SampleCount: len(samples),
+			BestScore:   bestScore,
+			MatchesJSON: string(matchesBytes),
+		}
+		_ = s.store.CreateFingerprintTestResult(context.Background(), rec)
 
 		// 有效样本已够时，中途 cancel 仍返回对比结果。
 		j.finish("succeeded", result, "", time.Now())

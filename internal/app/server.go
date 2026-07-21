@@ -920,6 +920,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 
 		// 模型指纹
 		admin.GET("/fingerprints", s.HandleListFingerprints)
+		admin.GET("/fingerprints/test-results", s.HandleListFingerprintTestResults)
+		admin.DELETE("/fingerprints/test-results/:id", s.HandleDeleteFingerprintTestResult)
 		admin.GET("/fingerprints/:id", s.HandleGetFingerprint)
 		admin.DELETE("/fingerprints/:id", s.HandleDeleteFingerprint)
 		admin.POST("/fingerprints/calibrate", s.HandleCalibrateFingerprint)

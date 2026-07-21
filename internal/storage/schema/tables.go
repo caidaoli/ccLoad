@@ -225,6 +225,21 @@ func DefineModelFingerprintsTable() *TableBuilder {
 		Index("idx_model_fingerprints_created", "created_at DESC")
 }
 
+// DefineFingerprintTestResultsTable 定义指纹对比结果历史表。
+func DefineFingerprintTestResultsTable() *TableBuilder {
+	return NewTable("fingerprint_test_results").
+		Column("id INT PRIMARY KEY AUTO_INCREMENT").
+		Column("channel_id INT").
+		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
+		Column("sample_count INT NOT NULL DEFAULT 0").
+		Column("best_score DOUBLE NOT NULL DEFAULT 0").
+		Column("matches_json LONGTEXT NOT NULL").
+		Column("created_at BIGINT NOT NULL").
+		Index("idx_fp_test_results_model", "model").
+		Index("idx_fp_test_results_created", "created_at DESC")
+}
+
 // DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
 // log_id 与 logs.id 1:1 对应，直接作为主键，无需独立自增ID
 func DefineDebugLogsTable() *TableBuilder {
