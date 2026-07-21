@@ -7225,12 +7225,11 @@ body.web-role-api-token .filter-group--auth-token {
 .fp-form--inline .fp-form-row {
   flex-direction: row;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .fp-form--inline .fp-form-label {
   flex: 0 0 auto;
-  min-width: 56px;
 }
 
 .fp-form--inline .fp-form-row > .fp-combobox-container,
@@ -7238,6 +7237,17 @@ body.web-role-api-token .filter-group--auth-token {
 .fp-form--inline .fp-form-row > .filter-select {
   flex: 1 1 0;
   min-width: 0;
+}
+
+/* inline 模式下 pair 项也左右排列 */
+.fp-form--inline .fp-pair-item {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+
+.fp-form--inline .fp-pair-item .fp-form-label {
+  flex: 0 0 auto;
 }
 
 /* 迭代+并发成对紧邻 */

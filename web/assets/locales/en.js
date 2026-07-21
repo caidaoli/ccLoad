@@ -35,6 +35,7 @@ window.I18N_LOCALES['en'] = {
   'common.logout': 'Logout',
   'common.status': 'Status',
   'common.actions': 'Actions',
+  'common.detail': 'Detail',
   'common.name': 'Name',
   'common.type': 'Type',
   'common.priority': 'Priority',
@@ -996,6 +997,10 @@ window.I18N_LOCALES['en'] = {
   'modelTest.fingerprint.hint.high': 'Highly consistent',
   'modelTest.fingerprint.hint.medium': 'Moderate match (re-sample recommended)',
   'modelTest.fingerprint.hint.low': 'Clear mismatch (possible model swap)',
+  'modelTest.fingerprint.history': 'Comparison History',
+  'modelTest.fingerprint.noHistory': 'No comparison history',
+  'modelTest.fingerprint.confirmDeleteHistory': 'Delete this comparison record?',
+  'modelTest.fingerprint.col.time': 'Time',
 
   // ============================================================
   // Settings

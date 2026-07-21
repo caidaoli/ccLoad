@@ -35,6 +35,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'common.logout': '注销',
   'common.status': '状态',
   'common.actions': '操作',
+  'common.detail': '详情',
   'common.name': '名称',
   'common.type': '类型',
   'common.priority': '优先级',
@@ -995,6 +996,10 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.fingerprint.hint.high': '高度一致',
   'modelTest.fingerprint.hint.medium': '中等一致（建议加大采样复核）',
   'modelTest.fingerprint.hint.low': '明显不一致（疑似换模/掺假）',
+  'modelTest.fingerprint.history': '对比历史',
+  'modelTest.fingerprint.noHistory': '暂无对比历史',
+  'modelTest.fingerprint.confirmDeleteHistory': '确认删除此对比记录？',
+  'modelTest.fingerprint.col.time': '时间',
 
   // ============================================================
   // 设置
