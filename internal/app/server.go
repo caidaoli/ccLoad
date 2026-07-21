@@ -89,6 +89,9 @@ type Server struct {
 	channelTypesCache     map[int64]string
 	channelTypesCacheTime time.Time
 	channelTypesCacheMu   sync.RWMutex
+
+	// 指纹任务管理器（内存）
+	fingerprintJobs *FingerprintJobManager
 }
 
 // NewServer 创建并初始化一个新的 Server 实例
@@ -259,6 +262,9 @@ func NewServer(store storage.Store) *Server {
 	} else {
 		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours * float64(time.Hour)))
 	}
+
+	// 指纹 Job 管理器（内存）
+	s.fingerprintJobs = NewFingerprintJobManager(2)
 
 	return s
 
