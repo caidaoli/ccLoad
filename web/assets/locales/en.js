@@ -956,6 +956,48 @@ window.I18N_LOCALES['en'] = {
   'modelTest.response': 'Response',
 
   // ============================================================
+  // Model Fingerprint
+  // ============================================================
+  'modelTest.mode.fingerprint': 'Fingerprint',
+  'modelTest.fingerprint.notice': 'Compares the target channel\'s random distribution against a trusted baseline. This is NOT official authenticity verification. Real upstream costs will be incurred.',
+  'modelTest.fingerprint.calibrate': 'Calibrate Baseline',
+  'modelTest.fingerprint.test': 'Start Compare',
+  'modelTest.fingerprint.costConfirm': 'This will send ~{n} requests to the channel, incurring real upstream costs. Continue?',
+  'modelTest.fingerprint.baselines': 'Saved Baselines',
+  'modelTest.fingerprint.noBaselines': 'No baselines yet — calibrate one first',
+  'modelTest.fingerprint.selectChannel': 'Select channel',
+  'modelTest.fingerprint.selectModel': 'Select model',
+  'modelTest.fingerprint.baseline': 'Compare against',
+  'modelTest.fingerprint.baselineAny': 'Any (compare all)',
+  'modelTest.fingerprint.iterations': 'Iterations',
+  'modelTest.fingerprint.concurrency': 'Concurrency',
+  'modelTest.fingerprint.namePlaceholder': 'Baseline name',
+  'modelTest.fingerprint.needName': 'Please enter a baseline name',
+  'modelTest.fingerprint.needChannel': 'Please select a channel',
+  'modelTest.fingerprint.needModel': 'Please select a model',
+  'modelTest.fingerprint.running': 'Running…',
+  'modelTest.fingerprint.progress': 'Progress',
+  'modelTest.fingerprint.cancelled': 'Cancelled',
+  'modelTest.fingerprint.failed': 'Failed: ',
+  'modelTest.fingerprint.startFailed': 'Start failed: ',
+  'modelTest.fingerprint.noResult': 'No result',
+  'modelTest.fingerprint.calibrateSuccess': 'Calibration done',
+  'modelTest.fingerprint.sampleCount': 'Samples',
+  'modelTest.fingerprint.confirmDelete': 'Delete this baseline?',
+  'modelTest.fingerprint.deleteFailed': 'Delete failed: ',
+  'modelTest.fingerprint.col.name': 'Name',
+  'modelTest.fingerprint.col.channel': 'Channel',
+  'modelTest.fingerprint.col.createdAt': 'Created At',
+  'modelTest.fingerprint.col.baseline': 'Baseline',
+  'modelTest.fingerprint.col.score': 'Score',
+  'modelTest.fingerprint.col.cosine': 'Cosine Sim',
+  'modelTest.fingerprint.col.js': 'JS Divergence',
+  'modelTest.fingerprint.col.modeMatch': 'Mode Match',
+  'modelTest.fingerprint.hint.high': 'Highly consistent',
+  'modelTest.fingerprint.hint.medium': 'Moderate match (re-sample recommended)',
+  'modelTest.fingerprint.hint.low': 'Clear mismatch (possible model swap)',
+
+  // ============================================================
   // Settings
   // ============================================================
   'settings.title': 'System Settings - Claude Code & Codex Proxy',

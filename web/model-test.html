@@ -24,6 +24,7 @@
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-fingerprint.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -98,6 +99,14 @@
                   <rect x="3" y="14" width="7" height="7"></rect>
                 </svg>
                 <span data-i18n="modelTest.mode.model">按模型测试</span>
+              </button>
+              <button id="modeTabFingerprint" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="fingerprint">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
+                  <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"></path>
+                  <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"></path>
+                </svg>
+                <span data-i18n="modelTest.mode.fingerprint">指纹对比</span>
               </button>
             </div>
           </div>
@@ -318,6 +327,119 @@
               <button id="chatSendBtn" type="button" class="btn btn-primary chat-send-btn" data-action="send-chat-message" data-i18n="modelTest.chat.send">发送</button>
             </div>
           </div>
+
+          <!-- 指纹对比面板 -->
+          <section id="fingerprintPanel" class="fingerprint-panel hidden">
+            <div class="fingerprint-notice" data-i18n="modelTest.fingerprint.notice">
+              比较目标渠道与信任基准的随机数分布一致性，不是官方真品鉴定。将产生实际上游费用。
+            </div>
+
+            <!-- 基准列表 -->
+            <div class="fp-section">
+              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.baselines">已有基准</h3>
+              <div class="table-container">
+                <table class="modern-table">
+                  <thead>
+                    <tr>
+                      <th data-i18n="modelTest.fingerprint.col.name">名称</th>
+                      <th data-i18n="modelTest.fingerprint.col.channel">渠道</th>
+                      <th data-i18n="common.model">模型</th>
+                      <th data-i18n="modelTest.fingerprint.col.createdAt">创建时间</th>
+                      <th data-i18n="common.actions">操作</th>
+                    </tr>
+                  </thead>
+                  <tbody id="fpBaselineTbody">
+                    <tr><td colspan="5" style="text-align:center;color:var(--text-muted)" data-i18n="modelTest.fingerprint.noBaselines">暂无基准，请先标定</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <!-- 标定表单 -->
+            <div class="fp-section">
+              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.calibrate">标定基准</h3>
+              <div class="fp-form">
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.name">名称</span>
+                  <input id="fpCalibrateName" type="text" class="form-input fp-input"
+                    data-i18n-placeholder="modelTest.fingerprint.namePlaceholder" placeholder="基准名称">
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
+                  <select id="fpCalibrateChannel" class="filter-select fp-select">
+                    <option value="" data-i18n="modelTest.fingerprint.selectChannel">选择渠道</option>
+                  </select>
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="common.model">模型</span>
+                  <select id="fpCalibrateModel" class="filter-select fp-select">
+                    <option value="" data-i18n="modelTest.fingerprint.selectModel">选择模型</option>
+                  </select>
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
+                  <input id="fpCalibrateIterations" type="number" class="form-input fp-input fp-input--number"
+                    value="100" min="50" max="500">
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
+                  <input id="fpCalibrateConcurrency" type="number" class="form-input fp-input fp-input--number"
+                    value="5" min="1" max="20">
+                </label>
+                <div class="fp-form-actions">
+                  <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
+                    data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
+                  <button id="fpCalibrateCancelBtn" type="button" class="btn btn-secondary hidden"
+                    data-i18n="common.cancel">取消</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 对比测试表单 -->
+            <div class="fp-section">
+              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.test">开始对比</h3>
+              <div class="fp-form">
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
+                  <select id="fpTestChannel" class="filter-select fp-select">
+                    <option value="" data-i18n="modelTest.fingerprint.selectChannel">选择渠道</option>
+                  </select>
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="common.model">模型</span>
+                  <select id="fpTestModel" class="filter-select fp-select">
+                    <option value="" data-i18n="modelTest.fingerprint.selectModel">选择模型</option>
+                  </select>
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>
+                  <select id="fpTestBaselineSelect" class="filter-select fp-select">
+                    <option value="" data-i18n="modelTest.fingerprint.baselineAny">任意（全量对比）</option>
+                  </select>
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
+                  <input id="fpTestIterations" type="number" class="form-input fp-input fp-input--number"
+                    value="100" min="50" max="500">
+                </label>
+                <label class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
+                  <input id="fpTestConcurrency" type="number" class="form-input fp-input fp-input--number"
+                    value="5" min="1" max="20">
+                </label>
+                <div class="fp-form-actions">
+                  <button id="fpTestBtn" type="button" class="btn btn-primary"
+                    data-i18n="modelTest.fingerprint.test">开始对比</button>
+                  <button id="fpCancelBtn" type="button" class="btn btn-secondary hidden"
+                    data-i18n="common.cancel">取消</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 进度 & 结果 -->
+            <div id="fpProgress" class="fp-progress hidden"></div>
+            <div id="fpResults" class="fp-results hidden"></div>
+          </section>
         </section>
       </div>
     </main>

@@ -89,6 +89,9 @@ type Server struct {
 	channelTypesCache     map[int64]string
 	channelTypesCacheTime time.Time
 	channelTypesCacheMu   sync.RWMutex
+
+	// 指纹任务管理器（内存）
+	fingerprintJobs *FingerprintJobManager
 }
 
 // NewServer 创建并初始化一个新的 Server 实例
@@ -259,6 +262,9 @@ func NewServer(store storage.Store) *Server {
 	} else {
 		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours * float64(time.Hour)))
 	}
+
+	// 指纹 Job 管理器（内存）
+	s.fingerprintJobs = NewFingerprintJobManager(2)
 
 	return s
 
@@ -911,6 +917,15 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)
 		admin.POST("/settings/:key/reset", s.AdminResetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
+
+		// 模型指纹
+		admin.GET("/fingerprints", s.HandleListFingerprints)
+		admin.GET("/fingerprints/:id", s.HandleGetFingerprint)
+		admin.DELETE("/fingerprints/:id", s.HandleDeleteFingerprint)
+		admin.POST("/fingerprints/calibrate", s.HandleCalibrateFingerprint)
+		admin.POST("/fingerprints/test", s.HandleTestFingerprint)
+		admin.GET("/fingerprints/jobs/:id", s.HandleFingerprintJob)
+		admin.POST("/fingerprints/jobs/:id/cancel", s.HandleCancelFingerprintJob)
 	}
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。
