@@ -14,13 +14,12 @@
   // ─── 常量 ───────────────────────────────────────────────────────────────
   const DEFAULT_ITERATIONS  = 100;
   const DEFAULT_CONCURRENCY = 5;
-  const POLL_INTERVAL_MS    = 1000;
 
   // ─── 状态 ───────────────────────────────────────────────────────────────
   let fingerprints  = [];   // GET /admin/fingerprints 返回列表
   let testHistory   = [];   // GET /admin/fingerprints/test-results 返回列表
   let activeJobId   = null;
-  let pollTimer     = null;
+  let streamAbort   = null; // AbortController for SSE
   let initialized   = false;
 
   // combobox 实例
@@ -448,14 +447,39 @@
   }
 
   // ─── 进度 UI ────────────────────────────────────────────────────────────
-  function showProgress(text) {
+  function showProgress(text, opts) {
     const p = el('fpProgress');
-    if (p) { p.textContent = text; p.classList.remove('hidden'); }
+    const fill = el('fpProgressFill');
+    const textEl = el('fpProgressText');
+    if (!p) return;
+
+    const pct = (opts && typeof opts.pct === 'number')
+      ? Math.max(0, Math.min(100, opts.pct))
+      : null;
+    const state = (opts && opts.state) || '';
+
+    p.classList.remove('hidden');
+    if (textEl) textEl.textContent = text || '';
+
+    if (fill) {
+      if (pct != null) fill.style.width = pct + '%';
+      fill.classList.remove('is-done', 'is-failed', 'is-cancelled');
+      if (state === 'succeeded') fill.classList.add('is-done');
+      else if (state === 'failed') fill.classList.add('is-failed');
+      else if (state === 'cancelled') fill.classList.add('is-cancelled');
+    }
   }
 
   function hideProgress() {
     const p = el('fpProgress');
+    const fill = el('fpProgressFill');
+    const textEl = el('fpProgressText');
     if (p) p.classList.add('hidden');
+    if (fill) {
+      fill.style.width = '0%';
+      fill.classList.remove('is-done', 'is-failed', 'is-cancelled');
+    }
+    if (textEl) textEl.textContent = '';
   }
 
   function setRunning(running) {
@@ -467,6 +491,23 @@
     if (calibrateCancelBtn) calibrateCancelBtn.classList.toggle('hidden', !running);
     if (testBtn)            testBtn.disabled = running;
     if (cancelBtn)          cancelBtn.classList.toggle('hidden', !running);
+  }
+
+  function progressFromJob(job) {
+    const p = job && job.progress;
+    if (!p || typeof p !== 'object') {
+      return { pct: 0, text: t('modelTest.fingerprint.running', '运行中…') };
+    }
+    const done = Number(p.done) || 0;
+    const total = Number(p.total) || 0;
+    const success = Number(p.success) || 0;
+    const failed = Number(p.failed) || 0;
+    const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+    const text = t('modelTest.fingerprint.progress', '进度')
+      + ': ' + done + '/' + total
+      + ' (' + success + ' ok / ' + failed + ' fail)'
+      + (job.status ? ' — ' + job.status : '');
+    return { pct, text };
   }
 
   // ─── 结果渲染 ────────────────────────────────────────────────────────────
@@ -551,55 +592,134 @@
     return t('modelTest.fingerprint.hint.low', '明显不一致（疑似换模/掺假）');
   }
 
-  // ─── Job 轮询 ────────────────────────────────────────────────────────────
-  function startPoll(jobId, onComplete) {
-    stopPoll();
+  // ─── Job SSE 流 ─────────────────────────────────────────────────────────
+  // EventSource 不能带 Authorization，与 chat 一样用 fetch + ReadableStream。
+  async function startJobStream(jobId, onComplete) {
+    stopJobStream();
     activeJobId = jobId;
-    showProgress(t('modelTest.fingerprint.running', '运行中…'));
+    showProgress(t('modelTest.fingerprint.running', '运行中…'), { pct: 0 });
 
-    pollTimer = setInterval(async () => {
-      try {
-        const job = await apiData('/admin/fingerprints/jobs/' + jobId);
-        if (!job) return;
+    const controller = new AbortController();
+    streamAbort = controller;
+    const token = localStorage.getItem('ccload_token');
 
-        const status = job.status;
-        if (job.progress != null) {
-          let progressText;
-          if (job.progress !== null && typeof job.progress === 'object') {
-            const p = job.progress;
-            progressText = t('modelTest.fingerprint.progress', '进度') + ': '
-              + (p.success != null ? p.success + ' ok' : '')
-              + (p.failed != null ? ' / ' + p.failed + ' fail' : '')
-              + (p.done != null && p.total != null ? ' / ' + p.done + '/' + p.total : '')
-              + ' — ' + status;
-          } else {
-            const pct = typeof job.progress === 'number' ? job.progress : 0;
-            progressText = t('modelTest.fingerprint.progress', '进度') + ': ' + pct + '% — ' + status;
-          }
-          showProgress(progressText);
-        }
-
-        if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
-          stopPoll();
-          setRunning(false);
-          if (status === 'succeeded') {
-            hideProgress();
-            onComplete(job.result);
-          } else if (status === 'cancelled') {
-            showProgress(t('modelTest.fingerprint.cancelled', '已取消'));
-          } else {
-            showProgress(t('modelTest.fingerprint.failed', '失败: ') + (job.error || ''));
-          }
-        }
-      } catch (e) {
-        // 网络抖动时静默忽略，下次再试
+    try {
+      const resp = await fetch('/admin/fingerprints/jobs/' + encodeURIComponent(jobId) + '/stream', {
+        method: 'GET',
+        headers: token ? { 'Authorization': 'Bearer ' + token } : {},
+        signal: controller.signal,
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error('HTTP ' + resp.status);
       }
-    }, POLL_INTERVAL_MS);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      let terminal = false;
+
+      while (!terminal) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buf.indexOf('\n\n')) !== -1) {
+          const block = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const line of block.split('\n')) {
+            if (!line.startsWith('data:')) continue;
+            const payload = line.slice(5).trim();
+            if (!payload || payload === '[DONE]') continue;
+            let job;
+            try { job = JSON.parse(payload); } catch (_) { continue; }
+            if (!job) continue;
+
+            const { pct, text } = progressFromJob(job);
+            const status = job.status || '';
+
+            if (status === 'succeeded' || status === 'failed' || status === 'cancelled') {
+              terminal = true;
+              setRunning(false);
+              if (status === 'succeeded') {
+                showProgress(text, { pct: 100, state: 'succeeded' });
+                hideProgress();
+                if (typeof onComplete === 'function') onComplete(job.result);
+              } else if (status === 'cancelled') {
+                showProgress(t('modelTest.fingerprint.cancelled', '已取消'), {
+                  pct: pct, state: 'cancelled'
+                });
+              } else {
+                showProgress(
+                  t('modelTest.fingerprint.failed', '失败: ') + (job.error || ''),
+                  { pct: pct, state: 'failed' }
+                );
+              }
+              break;
+            }
+
+            showProgress(text, { pct: pct });
+          }
+        }
+      }
+
+      // 流提前结束且未到终态：回退一次 GET
+      if (!terminal && !controller.signal.aborted) {
+        try {
+          const job = await apiData('/admin/fingerprints/jobs/' + encodeURIComponent(jobId));
+          if (job) {
+            const status = job.status || '';
+            const { pct, text } = progressFromJob(job);
+            if (status === 'succeeded') {
+              setRunning(false);
+              hideProgress();
+              if (typeof onComplete === 'function') onComplete(job.result);
+            } else if (status === 'cancelled') {
+              setRunning(false);
+              showProgress(t('modelTest.fingerprint.cancelled', '已取消'), {
+                pct: pct, state: 'cancelled'
+              });
+            } else if (status === 'failed') {
+              setRunning(false);
+              showProgress(
+                t('modelTest.fingerprint.failed', '失败: ') + (job.error || ''),
+                { pct: pct, state: 'failed' }
+              );
+            } else {
+              setRunning(false);
+              showProgress(text || t('modelTest.fingerprint.failed', '失败: ') + 'stream closed', {
+                pct: pct, state: 'failed'
+              });
+            }
+          }
+        } catch (_) {
+          setRunning(false);
+          showProgress(t('modelTest.fingerprint.failed', '失败: ') + 'stream closed', {
+            pct: 0, state: 'failed'
+          });
+        }
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return;
+      setRunning(false);
+      showProgress(
+        t('modelTest.fingerprint.failed', '失败: ') + (e && e.message ? e.message : e),
+        { pct: 0, state: 'failed' }
+      );
+    } finally {
+      if (streamAbort === controller) streamAbort = null;
+    }
   }
 
-  function stopPoll() {
-    if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  function stopJobStream() {
+    if (streamAbort) {
+      try { streamAbort.abort(); } catch (_) { /* ignore */ }
+      streamAbort = null;
+    }
   }
+
+  // 兼容旧导出名
+  function stopPoll() { stopJobStream(); }
 
   // ─── 取消 Job ────────────────────────────────────────────────────────────
   async function cancelJob() {
@@ -638,13 +758,15 @@
       });
       const jobId = data && data.job_id;
       if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
-      startPoll(jobId, (result) => {
+      startJobStream(jobId, (result) => {
         renderCalibrateResult(result);
         loadFingerprints();
       });
     } catch (e) {
       setRunning(false);
-      showProgress(t('modelTest.fingerprint.startFailed', '启动失败: ') + e.message);
+      showProgress(t('modelTest.fingerprint.startFailed', '启动失败: ') + e.message, {
+        pct: 0, state: 'failed'
+      });
     }
   }
 
@@ -679,13 +801,15 @@
       });
       const jobId = data && data.job_id;
       if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
-      startPoll(jobId, (result) => {
+      startJobStream(jobId, (result) => {
         renderTestResult(result);
         loadTestHistory();
       });
     } catch (e) {
       setRunning(false);
-      showProgress(t('modelTest.fingerprint.startFailed', '启动失败: ') + e.message);
+      showProgress(t('modelTest.fingerprint.startFailed', '启动失败: ') + e.message, {
+        pct: 0, state: 'failed'
+      });
     }
   }
 

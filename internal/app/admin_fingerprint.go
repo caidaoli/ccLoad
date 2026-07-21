@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
@@ -176,6 +178,77 @@ func (s *Server) HandleCancelFingerprintJob(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"cancelled": true})
+}
+
+// HandleFingerprintJobStream GET /admin/fingerprints/jobs/:id/stream
+// SSE 推送 job 进度，直到 job 结束（succeeded/failed/cancelled）或客户端断开。
+func (s *Server) HandleFingerprintJobStream(c *gin.Context) {
+	jobID := c.Param("id")
+	if _, ok := s.fingerprintJobs.Get(jobID); !ok {
+		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("job %s not found", jobID))
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	disableResponseWriteTimeout(c.Writer, "指纹任务流式")
+
+	flusher, ok := c.Writer.(http.Flusher)
+	if !ok {
+		RespondErrorMsg(c, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+
+	ctx := c.Request.Context()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	writeEvent := func(view *FingerprintJobView) bool {
+		data, err := json.Marshal(view)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(c.Writer, "data: %s\n\n", data); err != nil {
+			return false
+		}
+		flusher.Flush()
+		return true
+	}
+
+	// 立即推送一次当前状态
+	if view, ok := s.fingerprintJobs.Get(jobID); ok {
+		if !writeEvent(view) {
+			return
+		}
+		if isFingerprintJobDone(view.Status) {
+			return
+		}
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			view, ok := s.fingerprintJobs.Get(jobID)
+			if !ok {
+				return
+			}
+			if !writeEvent(view) {
+				return
+			}
+			if isFingerprintJobDone(view.Status) {
+				return
+			}
+		}
+	}
+}
+
+// isFingerprintJobDone 判定 job 是否终态。
+func isFingerprintJobDone(status string) bool {
+	return status == "succeeded" || status == "failed" || status == "cancelled"
 }
 
 // validateFingerprintBaseline ensures at least one v1 baseline exists (or the specified id is v1).
