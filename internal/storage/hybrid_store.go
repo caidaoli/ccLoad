@@ -811,6 +811,54 @@ func (h *HybridStore) LoadWebSessions(ctx context.Context) (map[string]model.Web
 	return h.sqlite.LoadWebSessions(ctx)
 }
 
+// === Model Fingerprint Management ===
+
+func (h *HybridStore) ListModelFingerprints(ctx context.Context) ([]*model.ModelFingerprint, error) {
+	return h.sqlite.ListModelFingerprints(ctx)
+}
+
+func (h *HybridStore) GetModelFingerprint(ctx context.Context, id int64) (*model.ModelFingerprint, error) {
+	return h.sqlite.GetModelFingerprint(ctx, id)
+}
+
+func (h *HybridStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
+	result, err := h.mysql.CreateModelFingerprint(ctx, fp)
+	if err != nil {
+		return nil, err
+	}
+
+	h.syncToSQLite("CreateModelFingerprint", func() error {
+		_, err := h.sqlite.CreateModelFingerprint(ctx, result)
+		return err
+	})
+
+	return result, nil
+}
+
+func (h *HybridStore) DeleteModelFingerprint(ctx context.Context, id int64) error {
+	if err := h.mysql.DeleteModelFingerprint(ctx, id); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("DeleteModelFingerprint", func() error {
+		return h.sqlite.DeleteModelFingerprint(ctx, id)
+	})
+
+	return nil
+}
+
+func (h *HybridStore) ClearFingerprintChannelID(ctx context.Context, channelID int64) error {
+	if err := h.mysql.ClearFingerprintChannelID(ctx, channelID); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ClearFingerprintChannelID", func() error {
+		return h.sqlite.ClearFingerprintChannelID(ctx, channelID)
+	})
+
+	return nil
+}
+
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {

@@ -1,6 +1,7 @@
 const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 const TEST_MODE_CHAT = 'chat';
+const TEST_MODE_FINGERPRINT = 'fingerprint';
 
 // localStorage keys
 const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
@@ -1675,6 +1676,7 @@ function renderRowsByMode() {
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
   const isChatMode = testMode === TEST_MODE_CHAT;
+  const isFingerprintMode = testMode === TEST_MODE_FINGERPRINT;
   const fetchModelsBtn = getFetchModelsBtn();
   const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
@@ -1682,21 +1684,26 @@ function updateModeUI() {
   const modeTabChannel = document.getElementById('modeTabChannel');
   const modeTabModel = document.getElementById('modeTabModel');
   const modeTabChat = document.getElementById('modeTabChat');
+  const modeTabFingerprint = document.getElementById('modeTabFingerprint');
   modeTabChannel.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
   modeTabModel.classList.toggle('active', isModelMode);
   if (modeTabChat) modeTabChat.classList.toggle('active', isChatMode);
+  if (modeTabFingerprint) modeTabFingerprint.classList.toggle('active', isFingerprintMode);
 
-  // chat 模式：隐藏测试工具栏与表格，显示对话面板
+  // chat / fingerprint 模式：隐藏测试工具栏与表格
   const tableContainer = document.querySelector('.model-test-table-container');
   const chatPanel = document.getElementById('chatPanel');
+  const fingerprintPanel = document.getElementById('fingerprintPanel');
   const modelTestCard = document.getElementById('modelTestCard');
-  if (toolbar) toolbar.style.display = isChatMode ? 'none' : '';
-  if (tableContainer) tableContainer.style.display = isChatMode ? 'none' : '';
+  const hideToolbar = isChatMode || isFingerprintMode;
+  if (toolbar) toolbar.style.display = hideToolbar ? 'none' : '';
+  if (tableContainer) tableContainer.style.display = hideToolbar ? 'none' : '';
   chatToolbar?.classList.toggle('hidden', !isChatMode);
   if (chatPanel) chatPanel.classList.toggle('hidden', !isChatMode);
+  if (fingerprintPanel) fingerprintPanel.classList.toggle('hidden', !isFingerprintMode);
   modelTestCard?.classList.toggle('model-test-card--chat-mode', isChatMode);
 
-  if (isChatMode) return;
+  if (isChatMode || isFingerprintMode) return;
 
   toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
@@ -3043,7 +3050,7 @@ function bindEvents() {
 }
 
 function setTestMode(mode) {
-  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT) return;
+  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_FINGERPRINT) return;
   if (testMode === mode) return;
 
   const previousMode = testMode;
@@ -3058,6 +3065,12 @@ function setTestMode(mode) {
   if (testMode === TEST_MODE_CHAT) {
     updateModeUI();
     initChatPanel();
+    return;
+  }
+
+  if (testMode === TEST_MODE_FINGERPRINT) {
+    updateModeUI();
+    if (window.ModelFingerprint) window.ModelFingerprint.init();
     return;
   }
 
@@ -3101,7 +3114,7 @@ function saveTestModeToStorage(mode) {
 function loadTestModeFromStorage() {
   try {
     const mode = localStorage.getItem(STORAGE_KEY_TEST_MODE);
-    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT) {
+    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_FINGERPRINT) {
       return mode;
     }
   } catch (_) { /* ignore */ }
@@ -4479,12 +4492,17 @@ async function bootstrap() {
   const modeTabChannel = document.getElementById('modeTabChannel');
   const modeTabModel = document.getElementById('modeTabModel');
   const modeTabChat = document.getElementById('modeTabChat');
+  const modeTabFingerprint = document.getElementById('modeTabFingerprint');
   modeTabChannel?.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
   modeTabModel?.classList.toggle('active', testMode === TEST_MODE_MODEL);
   modeTabChat?.classList.toggle('active', testMode === TEST_MODE_CHAT);
+  if (modeTabFingerprint) modeTabFingerprint.classList.toggle('active', testMode === TEST_MODE_FINGERPRINT);
 
   if (testMode === TEST_MODE_CHAT) {
     initChatPanel();
+  }
+  if (testMode === TEST_MODE_FINGERPRINT && window.ModelFingerprint) {
+    window.ModelFingerprint.init();
   }
 }
 
