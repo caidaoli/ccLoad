@@ -2802,6 +2802,8 @@ async function loadChannels(options = {}) {
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
+    // 指纹模式等跨脚本读取：let 重绑定后必须同步到 window
+    window.channelsList = channelsList;
 
     // 恢复选择或从 localStorage 加载
     if (preserveSelection && preservedChannelId !== null) {
