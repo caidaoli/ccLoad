@@ -238,6 +238,9 @@ func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([
 			v := channelID.Int64
 			rec.ChannelID = &v
 		}
+		if err := json.Unmarshal([]byte(rec.MatchesJSON), &rec.Matches); err != nil {
+			return nil, fmt.Errorf("unmarshal fingerprint_test_results matches_json id=%d: %w", rec.ID, err)
+		}
 		rec.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
 		results = append(results, &rec)
 	}

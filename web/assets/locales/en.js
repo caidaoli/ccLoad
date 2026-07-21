@@ -963,6 +963,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.fingerprint.notice': 'Compares the target channel\'s random distribution against a trusted baseline. This is NOT official authenticity verification. Real upstream costs will be incurred.',
   'modelTest.fingerprint.calibrate': 'Calibrate Baseline',
   'modelTest.fingerprint.test': 'Start Compare',
+  'modelTest.fingerprint.stopTest': 'Stop Compare',
   'modelTest.fingerprint.costConfirm': 'This will send ~{n} requests to the channel, incurring real upstream costs. Continue?',
   'modelTest.fingerprint.baselines': 'Saved Baselines',
   'modelTest.fingerprint.noBaselines': 'No baselines yet — calibrate one first',

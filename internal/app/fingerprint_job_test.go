@@ -147,6 +147,27 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 	if result.Matches[0].Score < 0.3 {
 		t.Fatalf("expected reasonable score against same upstream, got %.4f", result.Matches[0].Score)
 	}
+
+	logs, err := srv.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 100, 0, &model.LogFilter{
+		LogSource: model.LogSourceManualTest,
+	})
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 50 {
+		t.Fatalf("expected one log per fingerprint comparison call, got %d", len(logs))
+	}
+	for _, entry := range logs {
+		if entry.ChannelID != channelID {
+			t.Fatalf("log channel_id=%d, want %d", entry.ChannelID, channelID)
+		}
+		if entry.Model != "fp-model" {
+			t.Fatalf("log model=%q, want fp-model", entry.Model)
+		}
+		if entry.StatusCode != http.StatusOK {
+			t.Fatalf("log status_code=%d, want %d", entry.StatusCode, http.StatusOK)
+		}
+	}
 }
 
 // TestFingerprintJobInsufficientSamples checks that a 500-only upstream fails the job without writing a DB row.

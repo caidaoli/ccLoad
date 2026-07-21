@@ -479,7 +479,20 @@ func (m *FingerprintJobManager) runSampling(
 					Stream:      false,
 					KeyIndex:    keyIndex,
 				}
+				requestedModel := testReq.Model
 				result := s.executeChannelTestWithCooldown(ctx, cfg, keyIndex, apiKey, testReq, false)
+				if j.jobType == FingerprintJobTest {
+					s.persistDetectionLog(context.WithoutCancel(ctx), detectionLogFromResult(
+						cfg,
+						model.LogSourceManualTest,
+						requestedModel,
+						testReq.Model,
+						apiKey,
+						"",
+						testReq.ThinkingEffort,
+						result,
+					))
+				}
 				done.Add(1)
 				text, _ := result["response_text"].(string)
 				if success, _ := result["success"].(bool); success {
