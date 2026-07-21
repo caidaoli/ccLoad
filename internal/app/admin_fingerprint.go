@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -32,7 +33,15 @@ func (s *Server) HandleGetFingerprint(c *gin.Context) {
 		return
 	}
 	fp, err := s.store.GetModelFingerprint(c.Request.Context(), id)
-	if err != nil || fp == nil {
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("fingerprint %d not found", id))
+		} else {
+			RespondError(c, http.StatusInternalServerError, err)
+		}
+		return
+	}
+	if fp == nil {
 		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("fingerprint %d not found", id))
 		return
 	}
@@ -47,7 +56,7 @@ func (s *Server) HandleDeleteFingerprint(c *gin.Context) {
 		return
 	}
 	if err := s.store.DeleteModelFingerprint(c.Request.Context(), id); err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, fmt.Sprintf("fingerprint %d not found", id))
+		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"deleted": true})
@@ -195,5 +204,5 @@ func (s *Server) validateFingerprintBaseline(c *gin.Context, req testFingerprint
 
 // isFPJobLimitError detects "too many running" from FingerprintJobManager.
 func isFPJobLimitError(err error) bool {
-	return err != nil && strings.Contains(err.Error(), "too many running fingerprint jobs")
+	return errors.Is(err, ErrFingerprintJobsBusy)
 }

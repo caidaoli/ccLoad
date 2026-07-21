@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"sync"
@@ -14,6 +15,9 @@ import (
 
 	"github.com/google/uuid"
 )
+
+// ErrFingerprintJobsBusy is returned by reserveSlot when maxRunning is exceeded.
+var ErrFingerprintJobsBusy = errors.New("too many running fingerprint jobs")
 
 // FingerprintJobType 区分标定 vs 测试任务。
 type FingerprintJobType string
@@ -353,7 +357,7 @@ func (m *FingerprintJobManager) reserveSlot() error {
 	for {
 		cur := m.runningCnt.Load()
 		if cur >= int32(m.maxRunning) {
-			return fmt.Errorf("too many running fingerprint jobs (%d/%d)", cur, m.maxRunning)
+			return fmt.Errorf("%w (%d/%d)", ErrFingerprintJobsBusy, cur, m.maxRunning)
 		}
 		if m.runningCnt.CompareAndSwap(cur, cur+1) {
 			return nil
