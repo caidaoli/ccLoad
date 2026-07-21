@@ -240,6 +240,38 @@ func TestProxy_ModelCooldownSSEErrorReturns429(t *testing.T) {
 	}
 }
 
+// OpenAI Responses 的 rate limit 失败终态：HTTP 200 + event:response.failed，
+// error 嵌在 response.error。漏判会把限流当成功 200 返回。
+func TestProxy_ResponseFailedSSERateLimitReturns429(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = fmt.Fprint(w, "event: response.failed\n")
+		_, _ = fmt.Fprint(w, "data: "+`{"type":"response.failed","response":{"id":"resp_5ca0fb7943504d6a93576c7fb7e3a760","object":"response","model":"gpt-5.6-sol","status":"failed","output":[],"error":{"code":"rate_limit_exceeded","message":"Upstream rate limit exceeded, please retry later"}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "sse-response-failed", models: "gpt-5.6-sol"},
+	}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-5.6-sol",
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+		"stream":   true,
+	}, nil)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429; body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "rate_limit_exceeded") &&
+		!strings.Contains(w.Body.String(), "rate limit") &&
+		!strings.Contains(strings.ToLower(w.Body.String()), "rate") {
+		// 至少不能再当成功 200 空响应；body 内容允许被包装，但状态码必须是 429
+		t.Logf("response body: %s", w.Body.String())
+	}
+}
+
 func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 	const finalModel = "shared-upstream-model"
 

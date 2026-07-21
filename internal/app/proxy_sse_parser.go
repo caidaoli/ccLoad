@@ -466,9 +466,11 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil
 	}
 
-	// 特殊处理：error事件（记录日志 + 存储错误体用于后续冷却处理）
-	// 兼容不带 event: error 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
-	if eventType == "error" || isErrorPayload(data) {
+	// 特殊处理：error 事件（记录日志 + 存储错误体用于后续冷却处理）
+	// - Anthropic/聚合站：event: error 或 data 顶层 type=error / error 对象
+	// - OpenAI Responses：event/type=response.failed，error 嵌在 response.error
+	// 兼容不带 event 行的不规范上游（如 sub2api），与 isHeartbeatEvent 的 JSON 回退对称。
+	if eventType == "error" || eventType == "response.failed" || isErrorPayload(data) {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.lastError = []byte(data)
 		return nil // 不解析usage，避免误判
@@ -592,23 +594,52 @@ func isHeartbeatEvent(eventType, data string) bool {
 }
 
 // isErrorPayload 检测 data 是否为 error 事件 JSON，用于兼容不带 event: error 行的不规范上游。
-// 判定：顶层 type=="error"（Anthropic 风格）或顶层 error 字段为非空对象（聚合站风格）。
+// 判定：
+//  1. 顶层 type=="error"（Anthropic 风格）
+//  2. 顶层 type=="response.failed"（OpenAI Responses 失败终态）
+//  3. 顶层 error 字段为非空对象（聚合站风格）
+//  4. response.error 为非空对象，或 response.status=="failed"
 func isErrorPayload(data string) bool {
-	if data == "" || !strings.Contains(data, `"error"`) {
+	if data == "" {
+		return false
+	}
+	// 快速过滤：常见错误帧至少包含 error / failed 关键字之一
+	if !strings.Contains(data, `"error"`) &&
+		!strings.Contains(data, `"response.failed"`) &&
+		!strings.Contains(data, `"failed"`) {
 		return false
 	}
 	var event struct {
-		Type  string          `json:"type"`
-		Error json.RawMessage `json:"error"`
+		Type     string          `json:"type"`
+		Error    json.RawMessage `json:"error"`
+		Response *struct {
+			Status string          `json:"status"`
+			Error  json.RawMessage `json:"error"`
+		} `json:"response"`
 	}
 	if json.Unmarshal([]byte(data), &event) != nil {
 		return false
 	}
-	if event.Type == "error" {
+	switch event.Type {
+	case "error", "response.failed":
 		return true
 	}
-	// error 字段存在且为非空的 JSON 对象（排除 null / 空对象 / 空串）
-	trimmed := strings.TrimSpace(string(event.Error))
+	if isNonEmptyJSONObject(event.Error) {
+		return true
+	}
+	if event.Response != nil {
+		if strings.EqualFold(strings.TrimSpace(event.Response.Status), "failed") {
+			return true
+		}
+		if isNonEmptyJSONObject(event.Response.Error) {
+			return true
+		}
+	}
+	return false
+}
+
+func isNonEmptyJSONObject(raw json.RawMessage) bool {
+	trimmed := strings.TrimSpace(string(raw))
 	if trimmed == "" || trimmed == "null" || trimmed == "{}" {
 		return false
 	}

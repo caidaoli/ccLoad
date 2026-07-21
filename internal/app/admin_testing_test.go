@@ -1945,3 +1945,30 @@ func TestShouldFallbackToNextURL_StructuredSoftErrors(t *testing.T) {
 		}
 	})
 }
+
+func TestExtractSSEErrorMessage_ResponseFailedNestedError(t *testing.T) {
+	obj := map[string]any{
+		"type": "response.failed",
+		"response": map[string]any{
+			"id":     "resp_5ca0fb7943504d6a93576c7fb7e3a760",
+			"object": "response",
+			"model":  "gpt-5.6-sol",
+			"status": "failed",
+			"output": []any{},
+			"error": map[string]any{
+				"code":    "rate_limit_exceeded",
+				"message": "Upstream rate limit exceeded, please retry later",
+			},
+		},
+	}
+	msg, raw, matched := extractSSEErrorMessage(obj)
+	if !matched {
+		t.Fatal("response.failed nested error must match")
+	}
+	if msg != "Upstream rate limit exceeded, please retry later" {
+		t.Fatalf("msg=%q, want nested error message", msg)
+	}
+	if raw == nil {
+		t.Fatal("raw payload must be returned")
+	}
+}
