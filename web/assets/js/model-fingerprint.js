@@ -148,7 +148,7 @@
 
     fingerprints.forEach(fp => {
       const tr = document.createElement('tr');
-      const createdAt = fp.created_at ? new Date(fp.created_at).toLocaleString() : '-';
+      const createdAt = fp.created_at ? new Date(fp.created_at * 1000).toLocaleString() : '-';
       tr.innerHTML =
         '<td>' + escHtml(fp.name || '-') + '</td>' +
         '<td>' + escHtml(fp.channel_name || ('#' + fp.channel_id)) + '</td>' +
