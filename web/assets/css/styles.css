@@ -7200,14 +7200,14 @@ body.web-role-api-token .filter-group--auth-token {
 }
 
 /*
- * 自适应网格：minmax(min(100%, Npx), 1fr) 防止轨道最小宽 > 容器导致溢出。
- * 宽屏并排，变窄时自然折行，不再写死 260px。
+ * 指纹表单：flex 一行排列，窄屏自然折行。
+ * 渠道/模型/名称弹性伸缩，迭代+并发成对紧邻。
  */
 .fp-form {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr));
+  display: flex;
+  flex-wrap: wrap;
   gap: 10px 12px;
-  align-items: end;
+  align-items: flex-end;
   min-width: 0;
   width: 100%;
 }
@@ -7216,13 +7216,31 @@ body.web-role-api-token .filter-group--auth-token {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  flex: 1 1 160px;
   min-width: 0;
   max-width: 100%;
 }
 
-/* 迭代/并发：窄列，显式 class（不依赖 :has） */
-.fp-form-row--narrow {
-  max-width: 120px;
+/* 迭代+并发成对紧邻 */
+.fp-form-row--pair {
+  display: flex;
+  flex-direction: row;
+  gap: 8px;
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: 100%;
+  align-items: flex-end;
+}
+
+.fp-pair-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fp-pair-item .fp-input--number {
+  width: 80px;
 }
 
 .fp-form-label {
@@ -7241,7 +7259,18 @@ body.web-role-api-token .filter-group--auth-token {
   box-sizing: border-box;
 }
 
-/* 原生 select 默认按 option 内容撑最小宽 —— 强制可收缩 */
+/* combobox 容器撑满 fp-form-row */
+.fp-combobox-container {
+  position: relative;
+  min-width: 0;
+  width: 100%;
+}
+
+.fp-combobox-container .filter-combobox-wrapper {
+  min-width: 0 !important;
+}
+
+/* 原生 select 可收缩 */
 .fp-select {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -7256,7 +7285,7 @@ body.web-role-api-token .filter-group--auth-token {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
-  grid-column: 1 / -1;
+  flex-basis: 100%;
   min-width: 0;
   padding-top: 4px;
 }
@@ -7316,22 +7345,18 @@ body.web-role-api-token .filter-group--auth-token {
     padding: 12px 12px;
   }
 
-  .fp-form {
-    grid-template-columns: repeat(auto-fit, minmax(min(100%, 140px), 1fr));
+  .fp-form-row {
+    flex: 1 1 calc(50% - 12px);
   }
 
-  .fp-form-row--narrow {
-    max-width: none;
+  .fp-form-row--pair {
+    flex-basis: 100%;
   }
 }
 
 @media (max-width: 420px) {
-  .fp-form {
-    grid-template-columns: 1fr;
-  }
-
-  .fp-form-row--narrow {
-    max-width: none;
+  .fp-form-row {
+    flex: 1 1 100%;
   }
 }
 
