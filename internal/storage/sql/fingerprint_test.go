@@ -2,6 +2,7 @@ package sql_test
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -158,5 +159,48 @@ func TestModelFingerprintNullChannelID(t *testing.T) {
 	// ClearFingerprintChannelID for a channel that has no rows — should be a no-op
 	if err := store.ClearFingerprintChannelID(ctx, 99); err != nil {
 		t.Errorf("ClearFingerprintChannelID no-op: %v", err)
+	}
+}
+
+func TestFingerprintTestResultListReturnsMatches(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "fp-results.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	matchesJSON := `[{"score":0.963,"baseline":{"name":"trusted"}}]`
+	if err := store.CreateFingerprintTestResult(context.Background(), &model.FingerprintTestRecord{
+		Model:       "gpt-test",
+		SampleCount: 100,
+		BestScore:   0.963,
+		MatchesJSON: matchesJSON,
+	}); err != nil {
+		t.Fatalf("CreateFingerprintTestResult: %v", err)
+	}
+
+	results, err := store.ListFingerprintTestResults(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListFingerprintTestResults: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("results len=%d, want 1", len(results))
+	}
+	if len(results[0].Matches) != 1 {
+		t.Fatalf("matches len=%d, want 1", len(results[0].Matches))
+	}
+
+	payload, err := json.Marshal(results[0])
+	if err != nil {
+		t.Fatalf("marshal result: %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("unmarshal result JSON: %v", err)
+	}
+	if matches, ok := response["matches"].([]any); !ok || len(matches) != 1 {
+		t.Fatalf("JSON matches=%v, want one item", response["matches"])
 	}
 }

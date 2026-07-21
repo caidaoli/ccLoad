@@ -19,6 +19,8 @@
   let fingerprints  = [];   // GET /admin/fingerprints 返回列表
   let testHistory   = [];   // GET /admin/fingerprints/test-results 返回列表
   let activeJobId   = null;
+  let activeJobType = null;
+  let cancelRequested = false;
   let streamAbort   = null; // AbortController for SSE
   let initialized   = false;
 
@@ -482,15 +484,30 @@
     if (textEl) textEl.textContent = '';
   }
 
-  function setRunning(running) {
+  function setRunning(running, jobType) {
+    activeJobType = running ? jobType : null;
+    if (!running) {
+      activeJobId = null;
+      cancelRequested = false;
+    }
+
     const calibrateBtn       = el('fpCalibrateBtn');
     const calibrateCancelBtn = el('fpCalibrateCancelBtn');
     const testBtn            = el('fpTestBtn');
-    const cancelBtn          = el('fpCancelBtn');
     if (calibrateBtn)       calibrateBtn.disabled = running;
-    if (calibrateCancelBtn) calibrateCancelBtn.classList.toggle('hidden', !running);
-    if (testBtn)            testBtn.disabled = running;
-    if (cancelBtn)          cancelBtn.classList.toggle('hidden', !running);
+    if (calibrateCancelBtn) {
+      calibrateCancelBtn.disabled = false;
+      calibrateCancelBtn.classList.toggle('hidden', !running || jobType !== 'calibrate');
+    }
+    if (testBtn) {
+      const testing = running && jobType === 'test';
+      const textKey = testing ? 'modelTest.fingerprint.stopTest' : 'modelTest.fingerprint.test';
+      testBtn.disabled = running && !testing;
+      testBtn.setAttribute('data-i18n', textKey);
+      testBtn.textContent = t(textKey, testing ? '停止对比' : '开始对比');
+      testBtn.classList.toggle('btn-primary', !testing);
+      testBtn.classList.toggle('btn-danger', testing);
+    }
   }
 
   function progressFromJob(job) {
@@ -597,6 +614,7 @@
   async function startJobStream(jobId, onComplete) {
     stopJobStream();
     activeJobId = jobId;
+    if (cancelRequested) requestJobCancellation(jobId);
     showProgress(t('modelTest.fingerprint.running', '运行中…'), { pct: 0 });
 
     const controller = new AbortController();
@@ -722,11 +740,23 @@
   function stopPoll() { stopJobStream(); }
 
   // ─── 取消 Job ────────────────────────────────────────────────────────────
-  async function cancelJob() {
-    if (!activeJobId) return;
+  async function requestJobCancellation(jobId) {
     try {
-      await apiData('/admin/fingerprints/jobs/' + activeJobId + '/cancel', { method: 'POST' });
+      await apiData('/admin/fingerprints/jobs/' + jobId + '/cancel', { method: 'POST' });
     } catch (_) { /* ignore */ }
+  }
+
+  function cancelJob() {
+    if (!activeJobType || cancelRequested) return;
+    cancelRequested = true;
+    if (activeJobType === 'test') {
+      const testBtn = el('fpTestBtn');
+      if (testBtn) testBtn.disabled = true;
+    } else {
+      const cancelBtn = el('fpCalibrateCancelBtn');
+      if (cancelBtn) cancelBtn.disabled = true;
+    }
+    if (activeJobId) requestJobCancellation(activeJobId);
   }
 
   // ─── 标定表单提交 ────────────────────────────────────────────────────────
@@ -745,7 +775,7 @@
       .replace('{n}', iterations);
     if (!confirm(confirmMsg)) return;
 
-    setRunning(true);
+    setRunning(true, 'calibrate');
     hideProgress();
     const resultsDiv = el('fpResults');
     if (resultsDiv) resultsDiv.innerHTML = '';
@@ -785,7 +815,7 @@
       .replace('{n}', iterations);
     if (!confirm(confirmMsg)) return;
 
-    setRunning(true);
+    setRunning(true, 'test');
     hideProgress();
     const resultsDiv = el('fpResults');
     if (resultsDiv) resultsDiv.innerHTML = '';
@@ -860,8 +890,13 @@
   function _bindEvents() {
     el('fpCalibrateBtn')?.addEventListener('click', onCalibrateSubmit);
     el('fpCalibrateCancelBtn')?.addEventListener('click', cancelJob);
-    el('fpTestBtn')?.addEventListener('click', onTestSubmit);
-    el('fpCancelBtn')?.addEventListener('click', cancelJob);
+    el('fpTestBtn')?.addEventListener('click', () => {
+      if (activeJobType === 'test') {
+        cancelJob();
+        return;
+      }
+      if (!activeJobType) onTestSubmit();
+    });
   }
 
   // ─── 工具 ───────────────────────────────────────────────────────────────
