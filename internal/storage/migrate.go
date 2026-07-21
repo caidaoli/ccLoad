@@ -63,6 +63,7 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineWebSessionsTable,
 		schema.DefineLogsTable,
 		schema.DefineDebugLogsTable,
+		schema.DefineModelFingerprintsTable,
 	}
 
 	// 一次性预查全库索引，避免每张表单独 SELECT 网络往返
