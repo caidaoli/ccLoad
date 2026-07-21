@@ -4,7 +4,6 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -160,6 +159,4 @@ func TestModelFingerprintNullChannelID(t *testing.T) {
 	if err := store.ClearFingerprintChannelID(ctx, 99); err != nil {
 		t.Errorf("ClearFingerprintChannelID no-op: %v", err)
 	}
-
-	_ = time.Now() // Suppress unused import if any
 }

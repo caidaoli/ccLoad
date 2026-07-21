@@ -237,11 +237,8 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 			return
 		}
 
-		status := "succeeded"
-		if cancelled {
-			status = "succeeded" // 有效样本足够，取消不阻止成功
-		}
-		j.finish(status, created, "", time.Now())
+		// 有效样本已够时，中途 cancel 仍按 succeeded 落库。
+		j.finish("succeeded", created, "", time.Now())
 	}()
 
 	return j.id, nil
@@ -342,11 +339,8 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 			RawData:      samples,
 		}
 
-		status := "succeeded"
-		if cancelled {
-			status = "succeeded"
-		}
-		j.finish(status, result, "", time.Now())
+		// 有效样本已够时，中途 cancel 仍返回对比结果。
+		j.finish("succeeded", result, "", time.Now())
 	}()
 
 	return j.id, nil

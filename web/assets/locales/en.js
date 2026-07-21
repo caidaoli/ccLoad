@@ -993,6 +993,9 @@ window.I18N_LOCALES['en'] = {
   'modelTest.fingerprint.col.cosine': 'Cosine Sim',
   'modelTest.fingerprint.col.js': 'JS Divergence',
   'modelTest.fingerprint.col.modeMatch': 'Mode Match',
+  'modelTest.fingerprint.hint.high': 'Highly consistent',
+  'modelTest.fingerprint.hint.medium': 'Moderate match (re-sample recommended)',
+  'modelTest.fingerprint.hint.low': 'Clear mismatch (possible model swap)',
 
   // ============================================================
   // Settings

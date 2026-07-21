@@ -992,6 +992,9 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.fingerprint.col.cosine': '余弦相似',
   'modelTest.fingerprint.col.js': 'JS散度',
   'modelTest.fingerprint.col.modeMatch': '众数匹配',
+  'modelTest.fingerprint.hint.high': '高度一致',
+  'modelTest.fingerprint.hint.medium': '中等一致（建议加大采样复核）',
+  'modelTest.fingerprint.hint.low': '明显不一致（疑似换模/掺假）',
 
   // ============================================================
   // 设置
