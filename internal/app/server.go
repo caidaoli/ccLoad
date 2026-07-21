@@ -917,6 +917,15 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)
 		admin.POST("/settings/:key/reset", s.AdminResetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
+
+		// 模型指纹
+		admin.GET("/fingerprints", s.HandleListFingerprints)
+		admin.GET("/fingerprints/:id", s.HandleGetFingerprint)
+		admin.DELETE("/fingerprints/:id", s.HandleDeleteFingerprint)
+		admin.POST("/fingerprints/calibrate", s.HandleCalibrateFingerprint)
+		admin.POST("/fingerprints/test", s.HandleTestFingerprint)
+		admin.GET("/fingerprints/jobs/:id", s.HandleFingerprintJob)
+		admin.POST("/fingerprints/jobs/:id/cancel", s.HandleCancelFingerprintJob)
 	}
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。
