@@ -32,6 +32,7 @@ let isTestingModels = false;
 let chatMessages = [];
 let chatMessageSummaries = [];
 let chatChannel = null;
+let chatChannelSelection = null;
 let chatModel = '';
 let isChatSending = false;
 let chatChannelCombobox = null;
@@ -3227,27 +3228,6 @@ function loadChatModelFromStorage() {
   return '';
 }
 
-function saveChatChannelIdToStorage(channelId) {
-  try {
-    if (channelId !== null && Number.isFinite(Number(channelId))) {
-      localStorage.setItem(STORAGE_KEY_CHAT_CHANNEL_ID, String(channelId));
-    } else {
-      localStorage.removeItem(STORAGE_KEY_CHAT_CHANNEL_ID);
-    }
-  } catch (_) { /* ignore */ }
-}
-
-function loadChatChannelIdFromStorage() {
-  try {
-    const value = localStorage.getItem(STORAGE_KEY_CHAT_CHANNEL_ID);
-    if (value) {
-      const channelId = parseInt(value, 10);
-      if (Number.isFinite(channelId)) return channelId;
-    }
-  } catch (_) { /* ignore */ }
-  return null;
-}
-
 function saveChatStreamEnabledToStorage(enabled) {
   try {
     localStorage.setItem(STORAGE_KEY_CHAT_STREAM_ENABLED, enabled ? '1' : '0');
@@ -3398,9 +3378,7 @@ function saveChatMessagesToStorage() {
   try {
     const data = JSON.stringify({
       messages: chatMessages,
-      summaries: chatMessageSummaries.slice(0, chatMessages.length),
-      model: chatModel,
-      channelId: chatChannel?.id || null,
+      summaries: chatMessageSummaries.slice(0, chatMessages.length)
     });
     localStorage.setItem(STORAGE_KEY_CHAT_MESSAGES, data);
   } catch (_) { /* quota exceeded or serialization error */ }
@@ -3527,7 +3505,7 @@ function initChatPanel() {
       onSelect: (value) => {
         const channelId = parseInt(value, 10);
         chatChannel = channelsList.find(c => c.id === channelId) || null;
-        saveChatChannelIdToStorage(chatChannel ? chatChannel.id : null);
+        chatChannelSelection.select(chatChannel);
       }
     });
   } else {
@@ -3587,11 +3565,6 @@ function initChatPanel() {
   if (savedChat && savedChat.messages.length > 0) {
     chatMessages = savedChat.messages;
     chatMessageSummaries = normalizeChatMessageSummaries(savedChat.summaries, chatMessages.length);
-    if (savedChat.model) {
-      chatModel = savedChat.model;
-      const chatModelInput = document.getElementById('chatModelSelect');
-      if (chatModelInput) chatModelInput.value = chatModel;
-    }
     renderChatMessages();
   }
 }
@@ -3614,16 +3587,13 @@ function getChannelsForChatModel() {
   return channelsList.filter(ch => isModelSupported(ch, chatModel));
 }
 
-/** 模型变更后刷新渠道下拉，自动选第一个支持该模型的渠道 */
+/** 模型变更后刷新渠道下拉；自动兜底不能覆盖用户持久化的渠道偏好。 */
 function refreshChatChannelsByModel() {
   if (!chatChannelCombobox) return;
   chatChannelCombobox.refresh();
 
   const list = getChannelsForChatModel();
-  if (!chatChannel || !list.find(c => c.id === chatChannel.id)) {
-    chatChannel = list[0] || null;
-    saveChatChannelIdToStorage(chatChannel ? chatChannel.id : null);
-  }
+  chatChannel = chatChannelSelection.resolve(list);
   if (chatChannel) {
     chatChannelCombobox.setValue(String(chatChannel.id), formatModelTestChannelOptionLabel(chatChannel));
   } else {
@@ -4465,7 +4435,10 @@ async function bootstrap() {
   }
 
   chatModel = loadChatModelFromStorage();
-  const storedChatChannelId = loadChatChannelIdFromStorage();
+  chatChannelSelection = window.ModelTestChatChannelState.createSelection(
+    localStorage,
+    STORAGE_KEY_CHAT_CHANNEL_ID
+  );
   chatThinkingEffort = loadChatThinkingEffortFromStorage();
   chatAdvancedOptions = loadChatAdvancedOptionsFromStorage();
   updateChatAdvancedOptionsButton();
@@ -4482,10 +4455,8 @@ async function bootstrap() {
     loadDefaultTestContent()
   ]);
 
-  // 恢复对话渠道选择（必须在 loadChannels 之后）
-  if (storedChatChannelId !== null) {
-    chatChannel = channelsList.find(c => c.id === storedChatChannelId) || null;
-  }
+  // 渠道偏好只能在渠道列表加载完成后解析；自动兜底不写回偏好。
+  chatChannel = chatChannelSelection.resolve(getChannelsForChatModel());
   updateHeadByMode();
   updateModeUI();
   renderRowsByMode();
