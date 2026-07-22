@@ -140,7 +140,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -162,10 +162,10 @@ func TestMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreateMySQLStore 失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// 验证关键表存在
-		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions"}
+		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "model_fingerprints", "fingerprint_test_results"}
 		for _, table := range tables {
 			var count int
 			err := env.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
@@ -176,6 +176,18 @@ func TestMySQL(t *testing.T) {
 		}
 	})
 
+	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyFingerprintStorageContract(t, store)
+	})
+
 	t.Run("Idempotent", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 
@@ -184,14 +196,14 @@ func TestMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第一次迁移失败: %v", err)
 		}
-		store1.Close()
+		_ = store1.Close()
 
 		// 第二次迁移（应该幂等）
 		store2, err := CreateMySQLStoreForTest(env.dsn)
 		if err != nil {
 			t.Fatalf("第二次迁移失败（应幂等）: %v", err)
 		}
-		store2.Close()
+		_ = store2.Close()
 
 		t.Log("幂等性验证通过：二次迁移成功")
 	})
@@ -203,7 +215,7 @@ func TestMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// 验证 logs 表的新列存在
 		expectedColumns := []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source"}
@@ -255,14 +267,14 @@ func TestMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第一次迁移失败: %v", err)
 		}
-		store1.Close()
+		_ = store1.Close()
 
 		// 第二次调用不应报错
 		store2, err := CreateMySQLStoreForTest(env.dsn)
 		if err != nil {
 			t.Fatalf("已存在列不应报错: %v", err)
 		}
-		store2.Close()
+		_ = store2.Close()
 
 		t.Log("已存在列验证通过：不报错")
 	})
@@ -332,7 +344,7 @@ func TestMySQL(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移旧 schema 失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		var (
 			dataType   string
@@ -351,14 +363,14 @@ func TestMySQL(t *testing.T) {
 		if !strings.EqualFold(dataType, "varchar") {
 			t.Fatalf("api_keys.api_key 类型错误: got=%s want=varchar", dataType)
 		}
-		if !charLen.Valid || charLen.Int64 != 100 {
-			t.Fatalf("api_keys.api_key 长度错误: got=%v want=100", charLen)
+		if !charLen.Valid || charLen.Int64 != 255 {
+			t.Fatalf("api_keys.api_key 长度错误: got=%v want=255", charLen)
 		}
 		if !strings.EqualFold(isNullable, "NO") {
 			t.Fatalf("api_keys.api_key 可空性错误: got=%s want=NO", isNullable)
 		}
 
-		longKey := "sk-" + strings.Repeat("x", 77) // 长度 80，验证旧64约束已解除
+		longKey := "sk-" + strings.Repeat("x", 197) // 长度 200，验证迁移后的 VARCHAR(255) 契约
 		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{
@@ -392,11 +404,11 @@ func TestMySQL(t *testing.T) {
 			t.Fatalf("导入 key 长度不匹配: got=%d want=%d", keyLen, len(longKey))
 		}
 
-		store.Close()
+		_ = store.Close()
 		store2, err := CreateMySQLStoreForTest(env.dsn)
 		if err != nil {
 			t.Fatalf("二次迁移失败（应幂等）: %v", err)
 		}
-		defer store2.Close()
+		defer func() { _ = store2.Close() }()
 	})
 }

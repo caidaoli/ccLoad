@@ -58,7 +58,16 @@ func (s *SQLStore) GetModelFingerprint(ctx context.Context, id int64) (*model.Mo
 
 // CreateModelFingerprint 插入新指纹基线，返回含 ID 的完整记录。
 func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
-	now := timeToUnix(time.Now())
+	createdAt := time.Now()
+	if !fp.CreatedAt.IsZero() {
+		createdAt = fp.CreatedAt.Time
+	}
+	updatedAt := createdAt
+	if !fp.UpdatedAt.IsZero() {
+		updatedAt = fp.UpdatedAt.Time
+	}
+	createdAtUnix := timeToUnix(createdAt)
+	updatedAtUnix := timeToUnix(updatedAt)
 
 	distJSON, err := marshalJSON("distribution", fp.Distribution)
 	if err != nil {
@@ -83,6 +92,28 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 		channelID = sql.NullInt64{Int64: *fp.ChannelID, Valid: true}
 	}
 
+	if fp.ID != 0 {
+		err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+			if err := s.lockPostgresExplicitIDTable(ctx, tx, "model_fingerprints"); err != nil {
+				return err
+			}
+			if _, err := s.execTx(ctx, tx, `
+				INSERT INTO model_fingerprints
+					(id, name, channel_id, channel_name, model, actual_model, channel_type,
+					 sample_count, distribution, stats, raw_data, prompt_version, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, fp.ID, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ChannelType,
+				fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, createdAtUnix, updatedAtUnix); err != nil {
+				return err
+			}
+			return s.syncPostgresIDSequence(ctx, tx, "model_fingerprints")
+		})
+		if err != nil {
+			return nil, fmt.Errorf("insert model_fingerprints with id=%d: %w", fp.ID, err)
+		}
+		return s.GetModelFingerprint(ctx, fp.ID)
+	}
+
 	if s.IsPostgres() {
 		var newID int64
 		err := s.QueryRowContext(ctx, `
@@ -92,7 +123,7 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			RETURNING id
 		`, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ChannelType,
-			fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, now, now).Scan(&newID)
+			fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, createdAtUnix, updatedAtUnix).Scan(&newID)
 		if err != nil {
 			return nil, fmt.Errorf("insert model_fingerprints: %w", err)
 		}
@@ -105,7 +136,7 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 			 sample_count, distribution, stats, raw_data, prompt_version, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ChannelType,
-		fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, now, now)
+		fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, createdAtUnix, updatedAtUnix)
 	if err != nil {
 		return nil, fmt.Errorf("insert model_fingerprints: %w", err)
 	}
@@ -193,19 +224,70 @@ func marshalJSON(field string, v any) (string, error) {
 
 // CreateFingerprintTestResult 插入一条对比结果。
 func (s *SQLStore) CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error {
-	now := timeToUnix(time.Now())
+	distribution := rec.Distribution
+	if distribution == nil {
+		distribution = []float64{}
+	}
+	distributionJSON, err := marshalJSON("distribution", distribution)
+	if err != nil {
+		return err
+	}
+	createdAt := time.Now()
+	if !rec.CreatedAt.IsZero() {
+		createdAt = rec.CreatedAt.Time
+	}
+	createdAtUnix := timeToUnix(createdAt)
 	var channelID sql.NullInt64
 	if rec.ChannelID != nil {
 		channelID = sql.NullInt64{Int64: *rec.ChannelID, Valid: true}
 	}
-	_, err := s.ExecContext(ctx, `
+	if rec.ID != 0 {
+		err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+			if err := s.lockPostgresExplicitIDTable(ctx, tx, "fingerprint_test_results"); err != nil {
+				return err
+			}
+			if _, err := s.execTx(ctx, tx, `
+				INSERT INTO fingerprint_test_results
+					(id, channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, rec.ID, channelID, rec.ChannelName, rec.Model, rec.SampleCount, rec.BestScore, distributionJSON, rec.MatchesJSON, createdAtUnix); err != nil {
+				return err
+			}
+			return s.syncPostgresIDSequence(ctx, tx, "fingerprint_test_results")
+		})
+		if err != nil {
+			return fmt.Errorf("insert fingerprint_test_results with id=%d: %w", rec.ID, err)
+		}
+		rec.CreatedAt = model.JSONTime{Time: createdAt}
+		return nil
+	}
+
+	if s.IsPostgres() {
+		if err := s.QueryRowContext(ctx, `
+			INSERT INTO fingerprint_test_results
+				(channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			RETURNING id
+		`, channelID, rec.ChannelName, rec.Model, rec.SampleCount, rec.BestScore, distributionJSON, rec.MatchesJSON, createdAtUnix).Scan(&rec.ID); err != nil {
+			return fmt.Errorf("insert fingerprint_test_results: %w", err)
+		}
+		rec.CreatedAt = model.JSONTime{Time: createdAt}
+		return nil
+	}
+
+	result, err := s.ExecContext(ctx, `
 		INSERT INTO fingerprint_test_results
-			(channel_id, channel_name, model, sample_count, best_score, matches_json, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
-	`, channelID, rec.ChannelName, rec.Model, rec.SampleCount, rec.BestScore, rec.MatchesJSON, now)
+			(channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, channelID, rec.ChannelName, rec.Model, rec.SampleCount, rec.BestScore, distributionJSON, rec.MatchesJSON, createdAtUnix)
 	if err != nil {
 		return fmt.Errorf("insert fingerprint_test_results: %w", err)
 	}
+	rec.ID, err = result.LastInsertId()
+	if err != nil {
+		return fmt.Errorf("get last insert id for fingerprint_test_results: %w", err)
+	}
+	rec.CreatedAt = model.JSONTime{Time: createdAt}
 	return nil
 }
 
@@ -215,7 +297,7 @@ func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([
 		limit = 50
 	}
 	rows, err := s.QueryContext(ctx, `
-		SELECT id, channel_id, channel_name, model, sample_count, best_score, matches_json, created_at
+		SELECT id, channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at
 		FROM fingerprint_test_results
 		ORDER BY created_at DESC
 		LIMIT ?
@@ -230,8 +312,9 @@ func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([
 		var rec model.FingerprintTestRecord
 		var channelID sql.NullInt64
 		var createdAt int64
+		var distributionJSON string
 		if err := rows.Scan(&rec.ID, &channelID, &rec.ChannelName, &rec.Model,
-			&rec.SampleCount, &rec.BestScore, &rec.MatchesJSON, &createdAt); err != nil {
+			&rec.SampleCount, &rec.BestScore, &distributionJSON, &rec.MatchesJSON, &createdAt); err != nil {
 			return nil, fmt.Errorf("scan fingerprint_test_results row: %w", err)
 		}
 		if channelID.Valid {
@@ -240,6 +323,9 @@ func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([
 		}
 		if err := json.Unmarshal([]byte(rec.MatchesJSON), &rec.Matches); err != nil {
 			return nil, fmt.Errorf("unmarshal fingerprint_test_results matches_json id=%d: %w", rec.ID, err)
+		}
+		if err := json.Unmarshal([]byte(distributionJSON), &rec.Distribution); err != nil {
+			return nil, fmt.Errorf("unmarshal fingerprint_test_results distribution id=%d: %w", rec.ID, err)
 		}
 		rec.CreatedAt = model.JSONTime{Time: unixToTime(createdAt)}
 		results = append(results, &rec)

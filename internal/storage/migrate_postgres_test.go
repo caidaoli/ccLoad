@@ -125,7 +125,7 @@ func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	tables := []string{
-		"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
+		"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
 		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states",
 		"channels", "schema_migrations", "key_rr",
 	}
@@ -147,9 +147,9 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("CreatePostgresStore 失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
-		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "schema_migrations"}
+		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "schema_migrations", "model_fingerprints", "fingerprint_test_results"}
 		for _, table := range tables {
 			var count int
 			if err := env.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err != nil {
@@ -159,6 +159,18 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyFingerprintStorageContract(t, store)
+	})
+
 	t.Run("Idempotent", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
@@ -166,13 +178,13 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("第一次迁移失败: %v", err)
 		}
-		store1.Close()
+		_ = store1.Close()
 
 		store2, err := CreatePostgresStoreForTest(env.dsn)
 		if err != nil {
 			t.Fatalf("第二次迁移失败（应幂等）: %v", err)
 		}
-		store2.Close()
+		_ = store2.Close()
 		t.Log("幂等性验证通过：二次迁移成功")
 	})
 
@@ -183,7 +195,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		checkCol := func(table, col string) {
 			t.Helper()
@@ -217,7 +229,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		// system_settings: 引号 + rebind
 		settings, err := store.ListAllSettings(ctx)
@@ -346,7 +358,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		ch, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "pg-url-state",
@@ -381,7 +393,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		const token = "pg-web-session"
 		if err := store.CreateWebSession(ctx, token, model.WebSession{
@@ -417,7 +429,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		mixedAutomatic := &model.Config{
 			Name:        "pg-import-automatic-id",
@@ -478,7 +490,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("迁移失败: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		explicit := &model.AuthToken{
 			ID:          1,
@@ -529,7 +541,7 @@ func TestPostgres(t *testing.T) {
 		if err != nil {
 			t.Fatalf("legacy schema migration: %v", err)
 		}
-		defer store.Close()
+		defer func() { _ = store.Close() }()
 
 		for _, column := range []string{"models", "model_redirects"} {
 			var nullable string

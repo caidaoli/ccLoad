@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"errors"
 	"io"
 	"sync"
@@ -22,13 +23,15 @@ func (e *channelConcurrencyExceededError) Unwrap() error {
 }
 
 type channelConcurrencyLimiter struct {
-	mu     sync.Mutex
-	active map[int64]int
+	mu      sync.Mutex
+	active  map[int64]int
+	changed map[int64]chan struct{}
 }
 
 func newChannelConcurrencyLimiter() *channelConcurrencyLimiter {
 	return &channelConcurrencyLimiter{
-		active: make(map[int64]int),
+		active:  make(map[int64]int),
+		changed: make(map[int64]chan struct{}),
 	}
 }
 
@@ -47,19 +50,55 @@ func (l *channelConcurrencyLimiter) acquire(channelID int64, limit int) (release
 	l.active[channelID] = next
 	l.mu.Unlock()
 
+	return l.releaseFunc(channelID), next, limit, true
+}
+
+func (l *channelConcurrencyLimiter) acquireContext(ctx context.Context, channelID int64, limit int) (func(), error) {
+	if l == nil || channelID <= 0 || limit <= 0 {
+		return func() {}, nil
+	}
+
+	for {
+		l.mu.Lock()
+		current := l.active[channelID]
+		if current < limit {
+			l.active[channelID] = current + 1
+			l.mu.Unlock()
+			return l.releaseFunc(channelID), nil
+		}
+		changed := l.changed[channelID]
+		if changed == nil {
+			changed = make(chan struct{})
+			l.changed[channelID] = changed
+		}
+		l.mu.Unlock()
+
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (l *channelConcurrencyLimiter) releaseFunc(channelID int64) func() {
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			l.mu.Lock()
-			defer l.mu.Unlock()
 			current := l.active[channelID]
 			if current <= 1 {
 				delete(l.active, channelID)
-				return
+			} else {
+				l.active[channelID] = current - 1
 			}
-			l.active[channelID] = current - 1
+			if changed := l.changed[channelID]; changed != nil {
+				close(changed)
+				delete(l.changed, channelID)
+			}
+			l.mu.Unlock()
 		})
-	}, next, limit, true
+	}
 }
 
 func (s *Server) acquireChannelConcurrencySlot(cfg *model.Config) (release func(), err error) {
@@ -75,6 +114,16 @@ func (s *Server) acquireChannelConcurrencySlot(cfg *model.Config) (release func(
 		return release, nil
 	}
 	return nil, &channelConcurrencyExceededError{active: active, limit: limit}
+}
+
+func (s *Server) waitForChannelConcurrencySlot(ctx context.Context, cfg *model.Config) (func(), error) {
+	if cfg == nil || cfg.MaxConcurrency <= 0 {
+		return func() {}, nil
+	}
+	if s == nil || s.channelConcurrencyLimiter == nil {
+		return func() {}, nil
+	}
+	return s.channelConcurrencyLimiter.acquireContext(ctx, cfg.ID, cfg.MaxConcurrency)
 }
 
 type releaseOnCloseReadCloser struct {

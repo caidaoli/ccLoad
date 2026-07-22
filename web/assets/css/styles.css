@@ -7175,16 +7175,40 @@ body.web-role-api-token .filter-group--auth-token {
   display: none !important;
 }
 
-.fingerprint-notice {
-  background: var(--warning-bg, #fef9c3);
-  color: var(--warning-text, #854d0e);
-  border: 1px solid var(--warning-border, #fde047);
-  border-radius: 6px;
-  padding: 10px 14px;
-  font-size: 13px;
+.fp-explanation {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(260px, 1fr);
+  gap: var(--space-3);
   margin-bottom: 20px;
-  line-height: 1.5;
-  overflow-wrap: anywhere;
+}
+
+.fp-explanation-card {
+  padding: 14px 16px;
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: var(--glass-bg);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.fp-explanation-card--disclaimer {
+  border-color: var(--warning-border, #fde047);
+  background: color-mix(in srgb, var(--warning-bg, #fef9c3) 45%, var(--glass-bg));
+}
+
+.fp-explanation-card h3 {
+  margin: 0 0 8px;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.fp-explanation-card p {
+  margin: 0 0 8px;
+}
+
+.fp-explanation-card p:last-child {
+  margin-bottom: 0;
 }
 
 .fp-section {
@@ -7374,17 +7398,80 @@ body.web-role-api-token .filter-group--auth-token {
   display: none;
 }
 
-.fp-history-detail.hidden {
-  display: none;
+.fp-history-modal-content {
+  width: 80vw;
+  max-width: 80vw;
 }
 
-.fp-history-detail-content {
-  padding: 8px 0;
+.fp-history-modal-meta {
+  margin-bottom: var(--space-4);
+  color: var(--text-secondary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.fp-distribution-section {
+  padding: var(--space-4);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--glass-bg) 80%, transparent);
+}
+
+.fp-distribution-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.fp-distribution-header h3 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+}
+
+.fp-chart-type-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.fp-chart-type-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-500);
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+}
+
+.fp-distribution-chart {
+  width: 100%;
+  height: 320px;
+}
+
+.fp-distribution-chart--empty {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  padding: var(--space-6);
+  color: var(--text-muted);
+  text-align: center;
+}
+
+.fp-history-matches {
+  margin-top: var(--space-4);
   overflow-x: auto;
 }
 
-.fp-history-detail-content .fp-result-table {
-  margin: 0;
+/* 操作按钮不能把基准/历史数据行撑得高于模型测试表格。 */
+.fp-baseline-row td,
+.fp-history-row td {
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+.fp-baseline-row .btn-sm,
+.fp-history-row .btn-sm {
+  padding-top: var(--space-1);
+  padding-bottom: var(--space-1);
 }
 
 .fp-result-info {
@@ -7404,12 +7491,6 @@ body.web-role-api-token .filter-group--auth-token {
   white-space: nowrap;
 }
 
-.fp-score-hint {
-  font-weight: 400;
-  color: var(--text-muted);
-  white-space: normal;
-}
-
 .fp-result-summary {
   font-size: 12px;
   color: var(--text-muted);
@@ -7417,6 +7498,16 @@ body.web-role-api-token .filter-group--auth-token {
 }
 
 @media (max-width: 640px) {
+  .fp-history-modal-content {
+    width: 94vw;
+    max-width: 94vw;
+  }
+
+  .fp-distribution-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
   .fingerprint-panel {
     padding: 12px 12px;
   }
@@ -7433,6 +7524,12 @@ body.web-role-api-token .filter-group--auth-token {
   .fp-form-row--pair {
     flex-basis: 100%;
     flex-wrap: wrap;
+  }
+}
+
+@media (max-width: 900px) {
+  .fp-explanation {
+    grid-template-columns: 1fr;
   }
 }
 

@@ -234,6 +234,7 @@ func DefineFingerprintTestResultsTable() *TableBuilder {
 		Column("model VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("sample_count INT NOT NULL DEFAULT 0").
 		Column("best_score DOUBLE NOT NULL DEFAULT 0").
+		Column("distribution LONGTEXT NOT NULL").
 		Column("matches_json LONGTEXT NOT NULL").
 		Column("created_at BIGINT NOT NULL").
 		Index("idx_fp_test_results_model", "model").

@@ -685,16 +685,46 @@ func (s *Server) testChannelAPIWithURL(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, selectedURL string,
 ) map[string]any {
-	req, requestPlan, cancel, err := s.buildTestUpstreamRequest(reqCtx, cfg, apiKey, testReq, clientProtocol, selectedURL)
+	start := time.Now()
+	var (
+		req             *http.Request
+		requestPlan     *channelTestRequestPlan
+		cancel          context.CancelFunc
+		capacityRelease func()
+		err             error
+	)
+	if testReq.WaitForCapacity {
+		var cfgForBuild *model.Config
+		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, selectedURL)
+		if err == nil {
+			capacityRelease, err = s.waitForUpstreamRequest(reqCtx, cfg)
+		}
+		if err == nil {
+			req, cancel, err = s.newTestUpstreamRequest(reqCtx, cfgForBuild, testReq, requestPlan)
+		}
+		if err != nil && capacityRelease != nil {
+			capacityRelease()
+		}
+	} else {
+		req, requestPlan, cancel, err = s.buildTestUpstreamRequest(reqCtx, cfg, apiKey, testReq, clientProtocol, selectedURL)
+	}
 	if err != nil {
-		return map[string]any{"success": false, "error": err.Error()}
+		return map[string]any{
+			"success":     false,
+			"error":       err.Error(),
+			"duration_ms": time.Since(start).Milliseconds(),
+		}
 	}
 	defer cancel()
 	ctx := req.Context()
 
 	// 发送请求
-	start := time.Now()
-	resp, err := s.doUpstreamRequest(cfg, req)
+	var resp *http.Response
+	if capacityRelease != nil {
+		resp, err = s.doReservedUpstreamRequest(cfg, req, capacityRelease, nil)
+	} else {
+		resp, err = s.doUpstreamRequest(cfg, req)
+	}
 	if err != nil {
 		if errors.Is(err, ErrChannelRPMExceeded) {
 			result := channelRPMExceededTestResult(start, channelRPMRetryAfter(err))
@@ -862,15 +892,12 @@ func (s *Server) parseTestNonStreamResponse(
 	return result
 }
 
-// buildTestUpstreamRequest 构造测试用上游 HTTP 请求（含 plan 构造、anyrouter 注入、body/header 规则）。
-// 返回的 cancel 必须由调用者 defer。
-func (s *Server) buildTestUpstreamRequest(
-	reqCtx context.Context,
+func (s *Server) buildTestUpstreamRequestPlan(
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, selectedURL string,
-) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
+) (*model.Config, *channelTestRequestPlan, error) {
 	cfgForBuild := &model.Config{
 		ID:                    cfg.ID,
 		Name:                  cfg.Name,
@@ -884,7 +911,7 @@ func (s *Server) buildTestUpstreamRequest(
 
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
+		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
 
 	// anyrouter Anthropic thinking 兜底归一（与代理链路保持一致）
@@ -896,7 +923,15 @@ func (s *Server) buildTestUpstreamRequest(
 
 	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
 	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
+	return cfgForBuild, requestPlan, nil
+}
 
+func (s *Server) newTestUpstreamRequest(
+	reqCtx context.Context,
+	cfgForBuild *model.Config,
+	testReq *testutil.TestChannelRequest,
+	requestPlan *channelTestRequestPlan,
+) (*http.Request, context.CancelFunc, error) {
 	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(cfgForBuild, protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
@@ -904,7 +939,7 @@ func (s *Server) buildTestUpstreamRequest(
 	req, err := http.NewRequestWithContext(ctx, "POST", requestPlan.fullURL, bytes.NewReader(requestPlan.requestBody))
 	if err != nil {
 		timeout.cancelAll()
-		return nil, nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
+		return nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
 	}
 
 	for k, vs := range requestPlan.headers {
@@ -918,7 +953,27 @@ func (s *Server) buildTestUpstreamRequest(
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 
-	return req, requestPlan, timeout.cancelAll, nil
+	return req, timeout.cancelAll, nil
+}
+
+// buildTestUpstreamRequest 构造测试用上游 HTTP 请求（含 plan 构造、anyrouter 注入、body/header 规则）。
+// 返回的 cancel 必须由调用者 defer。
+func (s *Server) buildTestUpstreamRequest(
+	reqCtx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+	clientProtocol, selectedURL string,
+) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
+	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, selectedURL)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	req, cancel, err := s.newTestUpstreamRequest(reqCtx, cfgForBuild, testReq, requestPlan)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return req, requestPlan, cancel, nil
 }
 
 func attachTestDebugData(requestPlan *channelTestRequestPlan, resp *http.Response, result map[string]any) map[string]any {

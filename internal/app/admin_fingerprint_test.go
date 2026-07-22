@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -72,6 +73,67 @@ func pollFPJobViaHandler(t *testing.T, srv *Server, jobID string) *FingerprintJo
 	}
 	t.Fatalf("job %s still running after 30s", jobID)
 	return nil
+}
+
+func TestFingerprintAPI_HistoryUsesCurrentDistributionScore(t *testing.T) {
+	srv := newInMemoryServer(t)
+	inflatedOldScore := 0.5*1.0 + 0.5*(0.8379*math.Exp(-0.2482))
+	betterDistributionOldScore := 0.5*0.4 + 0.5*(0.75*math.Exp(-0.02))
+	matchesJSON, err := json.Marshal([]FingerprintMatch{
+		{
+			Score:            inflatedOldScore,
+			CosineSimilarity: 0.8379,
+			JSDivergence:     0.2482,
+			ModeScore:        1,
+			ModeMatch:        true,
+			Baseline:         model.ModelFingerprint{Name: "same-mode"},
+		},
+		{
+			Score:            betterDistributionOldScore,
+			CosineSimilarity: 0.75,
+			JSDivergence:     0.02,
+			ModeScore:        0.4,
+			Baseline:         model.ModelFingerprint{Name: "better-distribution"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal matches: %v", err)
+	}
+	record := &model.FingerprintTestRecord{
+		Model:       "gemini-3.1-flash-lite",
+		SampleCount: 100,
+		BestScore:   inflatedOldScore,
+		MatchesJSON: string(matchesJSON),
+	}
+	if err := srv.store.CreateFingerprintTestResult(context.Background(), record); err != nil {
+		t.Fatalf("create history: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/fingerprints/test-results", nil))
+	srv.HandleListFingerprintTestResults(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list history: want 200 got %d — %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse[[]*model.FingerprintTestRecord]
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if len(resp.Data) != 1 || len(resp.Data[0].Matches) != 2 {
+		t.Fatalf("unexpected history response: %+v", resp.Data)
+	}
+	want := util.FingerprintDistributionScore(0.75, 0.02)
+	if math.Abs(resp.Data[0].BestScore-want) > 1e-12 {
+		t.Fatalf("best score=%f, want current score=%f", resp.Data[0].BestScore, want)
+	}
+	match, ok := resp.Data[0].Matches[0].(map[string]any)
+	if !ok {
+		t.Fatalf("unexpected match type %T", resp.Data[0].Matches[0])
+	}
+	if score, ok := match["score"].(float64); !ok || math.Abs(score-want) > 1e-12 {
+		t.Fatalf("match score=%v, want current score=%f", match["score"], want)
+	}
+	baseline, ok := match["baseline"].(map[string]any)
+	if !ok || baseline["name"] != "better-distribution" {
+		t.Fatalf("history was not reordered by current score: %v", match["baseline"])
+	}
 }
 
 // ────────────────────────────────────────────────────────────────────────────
