@@ -45,9 +45,10 @@ type FetchModelsDebug struct {
 
 // BatchRefreshModelsRequest 批量刷新模型请求
 type BatchRefreshModelsRequest struct {
-	ChannelIDs  []int64 `json:"channel_ids"`
-	Mode        string  `json:"mode"`                   // merge(增量,默认) / replace(覆盖)
-	ChannelType string  `json:"channel_type,omitempty"` // 可选：覆盖渠道类型
+	ChannelIDs      []int64 `json:"channel_ids"`
+	Mode            string  `json:"mode"`                       // merge(增量,默认) / replace(覆盖)
+	ChannelType     string  `json:"channel_type,omitempty"`     // 可选：覆盖渠道类型
+	LowercaseModels bool    `json:"lowercase_models,omitempty"` // 客户端模型别名转小写，保留原始上游模型名
 }
 
 // BatchRefreshModelsItem 批量刷新单渠道结果
@@ -219,32 +220,42 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		fetched := normalizeModelEntriesForSave(resp.Models)
+		fetched := normalizeModelEntriesForSave(resp.Models, req.LowercaseModels)
+		if len(fetched) == 0 {
+			item.Status = "failed"
+			item.Error = "获取到的模型列表为空，拒绝刷新"
+			failed++
+			results = append(results, item)
+			continue
+		}
 		item.Fetched = len(fetched)
+
+		modelEntriesChanged := false
+		if req.LowercaseModels && mode == "merge" {
+			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, true)
+			modelEntriesChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
+			cfg.ModelEntries = normalizedExisting
+		}
 
 		switch mode {
 		case "replace":
 			removed, hasChange := replaceModelEntries(cfg, fetched)
 			item.Removed = removed
 			item.Total = len(cfg.ModelEntries)
-
-			if !hasChange {
-				item.Status = "unchanged"
-				unchanged++
-				results = append(results, item)
-				continue
-			}
+			modelEntriesChanged = hasChange
 		default: // merge
 			added, hasChange := mergeModelEntries(cfg, fetched)
 			item.Added = added
 			item.Total = len(cfg.ModelEntries)
+			modelEntriesChanged = modelEntriesChanged || hasChange
+		}
 
-			if !hasChange {
-				item.Status = "unchanged"
-				unchanged++
-				results = append(results, item)
-				continue
-			}
+		scheduledCheckChanged := reconcileScheduledCheckModel(cfg)
+		if !modelEntriesChanged && !scheduledCheckChanged {
+			item.Status = "unchanged"
+			unchanged++
+			results = append(results, item)
+			continue
 		}
 
 		if _, err := s.store.UpdateConfig(ctx, channelID, cfg); err != nil {
@@ -435,7 +446,7 @@ func determineSource(channelType string) string {
 	}
 }
 
-func normalizeModelEntriesForSave(entries []model.ModelEntry) []model.ModelEntry {
+func normalizeModelEntriesForSave(entries []model.ModelEntry, lowercaseModels bool) []model.ModelEntry {
 	if len(entries) == 0 {
 		return nil
 	}
@@ -450,7 +461,20 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry) []model.ModelEntry
 		if clean.Model == "" {
 			continue
 		}
-		if clean.RedirectModel == clean.Model {
+
+		originalModel := clean.Model
+		if lowercaseModels {
+			upstreamModel := clean.RedirectModel
+			if upstreamModel == "" {
+				upstreamModel = originalModel
+			}
+			clean.Model = strings.ToLower(originalModel)
+			if upstreamModel == clean.Model {
+				clean.RedirectModel = ""
+			} else {
+				clean.RedirectModel = upstreamModel
+			}
+		} else if clean.RedirectModel == clean.Model {
 			clean.RedirectModel = ""
 		}
 		key := strings.ToLower(clean.Model)
@@ -461,6 +485,36 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry) []model.ModelEntry
 		normalized = append(normalized, clean)
 	}
 	return normalized
+}
+
+func modelEntriesEqual(left, right []model.ModelEntry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// reconcileScheduledCheckModel 在刷新改变模型大小写或移除模型后，保证定时检测别名仍然有效。
+func reconcileScheduledCheckModel(cfg *model.Config) bool {
+	if cfg == nil || cfg.ScheduledCheckModel == "" {
+		return false
+	}
+
+	original := cfg.ScheduledCheckModel
+	for _, entry := range cfg.ModelEntries {
+		if strings.EqualFold(entry.Model, original) {
+			cfg.ScheduledCheckModel = entry.Model
+			return cfg.ScheduledCheckModel != original
+		}
+	}
+
+	cfg.ScheduledCheckModel = ""
+	return true
 }
 
 func mergeModelEntries(cfg *model.Config, fetched []model.ModelEntry) (added int, changed bool) {
@@ -499,17 +553,8 @@ func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry) (removed
 		}
 	}
 
-	if len(oldEntries) == len(fetched) {
-		same := true
-		for i := range oldEntries {
-			if oldEntries[i].Model != fetched[i].Model || oldEntries[i].RedirectModel != fetched[i].RedirectModel {
-				same = false
-				break
-			}
-		}
-		if same {
-			return 0, false
-		}
+	if modelEntriesEqual(oldEntries, fetched) {
+		return 0, false
 	}
 
 	cfg.ModelEntries = fetched

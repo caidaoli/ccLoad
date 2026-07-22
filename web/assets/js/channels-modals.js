@@ -1232,6 +1232,8 @@ async function batchRefreshSelectedChannels(mode) {
     return;
   }
 
+  const lowercaseModels = document.getElementById('batchRefreshLowercaseModels')?.checked === true;
+
   if (typeof clearAllBatchRefreshResults === 'function') {
     clearAllBatchRefreshResults();
   }
@@ -1293,7 +1295,7 @@ async function batchRefreshSelectedChannels(mode) {
       const resp = await fetchAPIWithAuth('/admin/channels/models/refresh-batch', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ channel_ids: [channelID], mode })
+        body: JSON.stringify({ channel_ids: [channelID], mode, lowercase_models: lowercaseModels })
       });
 
       if (!resp.success) throw new Error(resp.error || window.t('common.failed'));

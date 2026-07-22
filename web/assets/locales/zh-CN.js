@@ -181,6 +181,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchDisableChannels': '批量禁用',
   'channels.batchRefreshMerge': '模型增量刷新',
   'channels.batchRefreshReplace': '模型覆盖刷新',
+  'channels.batchRefreshLowercaseModels': '模型名转小写',
   'channels.selectChannel': '选择渠道',
   'common.clearSearch': '清空搜索',
   'common.selectAll': '全选/取消全选',
