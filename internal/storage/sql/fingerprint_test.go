@@ -5,10 +5,94 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
+
+func newFingerprintForStorageTest(id int64) *model.ModelFingerprint {
+	return &model.ModelFingerprint{
+		ID:            id,
+		Name:          "replicated-baseline",
+		Model:         "gpt-test",
+		SampleCount:   3,
+		Distribution:  []float64{0.5, 0.25, 0.25},
+		Stats:         model.FingerprintStats{Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1},
+		RawData:       []int{1, 2, 3},
+		PromptVersion: "v1",
+		CreatedAt:     model.JSONTime{Time: time.Unix(1_700_000_000, 0)},
+		UpdatedAt:     model.JSONTime{Time: time.Unix(1_700_000_100, 0)},
+	}
+}
+
+func TestModelFingerprintCreatePreservesExplicitIDAndTimestamps(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "fp-explicit-id.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	want := newFingerprintForStorageTest(42)
+	created, err := store.CreateModelFingerprint(context.Background(), want)
+	if err != nil {
+		t.Fatalf("CreateModelFingerprint: %v", err)
+	}
+	if created.ID != want.ID {
+		t.Fatalf("id=%d, want %d", created.ID, want.ID)
+	}
+	if !created.CreatedAt.Equal(want.CreatedAt.Time) || !created.UpdatedAt.Equal(want.UpdatedAt.Time) {
+		t.Fatalf("timestamps=(%v,%v), want (%v,%v)", created.CreatedAt.Time, created.UpdatedAt.Time, want.CreatedAt.Time, want.UpdatedAt.Time)
+	}
+}
+
+func TestFingerprintTestResultCreateSetsAndPreservesID(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "fp-result-id.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	generated := &model.FingerprintTestRecord{Model: "generated", MatchesJSON: `[]`}
+	if err := store.CreateFingerprintTestResult(context.Background(), generated); err != nil {
+		t.Fatalf("CreateFingerprintTestResult generated: %v", err)
+	}
+	if generated.ID == 0 {
+		t.Fatal("generated id was not written back to record")
+	}
+
+	explicit := &model.FingerprintTestRecord{
+		ID:          42,
+		Model:       "replicated",
+		MatchesJSON: `[]`,
+		CreatedAt:   model.JSONTime{Time: time.Unix(1_700_000_200, 0)},
+	}
+	if err := store.CreateFingerprintTestResult(context.Background(), explicit); err != nil {
+		t.Fatalf("CreateFingerprintTestResult explicit: %v", err)
+	}
+
+	results, err := store.ListFingerprintTestResults(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("ListFingerprintTestResults: %v", err)
+	}
+	var found *model.FingerprintTestRecord
+	for _, result := range results {
+		if result.ID == explicit.ID {
+			found = result
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("explicit id %d not found in %#v", explicit.ID, results)
+	}
+	if !found.CreatedAt.Equal(explicit.CreatedAt.Time) {
+		t.Fatalf("created_at=%v, want %v", found.CreatedAt.Time, explicit.CreatedAt.Time)
+	}
+}
 
 func TestModelFingerprintCRUDAndClearChannel(t *testing.T) {
 	t.Parallel()
@@ -172,11 +256,13 @@ func TestFingerprintTestResultListReturnsMatches(t *testing.T) {
 	t.Cleanup(func() { _ = store.Close() })
 
 	matchesJSON := `[{"score":0.963,"baseline":{"name":"trusted"}}]`
+	distribution := []float64{0, 0.25, 0.5, 0.25}
 	if err := store.CreateFingerprintTestResult(context.Background(), &model.FingerprintTestRecord{
-		Model:       "gpt-test",
-		SampleCount: 100,
-		BestScore:   0.963,
-		MatchesJSON: matchesJSON,
+		Model:        "gpt-test",
+		SampleCount:  100,
+		BestScore:    0.963,
+		MatchesJSON:  matchesJSON,
+		Distribution: distribution,
 	}); err != nil {
 		t.Fatalf("CreateFingerprintTestResult: %v", err)
 	}
@@ -191,6 +277,14 @@ func TestFingerprintTestResultListReturnsMatches(t *testing.T) {
 	if len(results[0].Matches) != 1 {
 		t.Fatalf("matches len=%d, want 1", len(results[0].Matches))
 	}
+	if len(results[0].Distribution) != len(distribution) {
+		t.Fatalf("distribution len=%d, want %d", len(results[0].Distribution), len(distribution))
+	}
+	for i := range distribution {
+		if results[0].Distribution[i] != distribution[i] {
+			t.Fatalf("distribution[%d]=%v, want %v", i, results[0].Distribution[i], distribution[i])
+		}
+	}
 
 	payload, err := json.Marshal(results[0])
 	if err != nil {
@@ -202,5 +296,8 @@ func TestFingerprintTestResultListReturnsMatches(t *testing.T) {
 	}
 	if matches, ok := response["matches"].([]any); !ok || len(matches) != 1 {
 		t.Fatalf("JSON matches=%v, want one item", response["matches"])
+	}
+	if got, ok := response["distribution"].([]any); !ok || len(got) != len(distribution) {
+		t.Fatalf("JSON distribution=%v, want %v", response["distribution"], distribution)
 	}
 }

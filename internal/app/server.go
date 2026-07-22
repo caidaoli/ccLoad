@@ -264,7 +264,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	// 指纹 Job 管理器（内存）
-	s.fingerprintJobs = NewFingerprintJobManager(2)
+	s.fingerprintJobs = NewFingerprintJobManager(s.baseCtx, 2)
 
 	return s
 
@@ -1124,6 +1124,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.statsCache.Close()
 	}
 
+	var fingerprintShutdownErr error
+	if s.fingerprintJobs != nil {
+		fingerprintShutdownErr = s.fingerprintJobs.Close(ctx)
+	}
+
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})
 	go func() {
@@ -1133,12 +1138,17 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 等待完成或超时
 	var err error
+	if fingerprintShutdownErr != nil {
+		err = fingerprintShutdownErr
+	}
 	select {
 	case <-done:
 		log.Print("[INFO] Server优雅关闭完成")
 	case <-ctx.Done():
 		log.Print("[WARN]  Server关闭超时，部分后台任务可能未完成")
-		err = ctx.Err()
+		if err == nil {
+			err = ctx.Err()
+		}
 	}
 
 	// 关闭渠道级代理 Transport 的空闲连接

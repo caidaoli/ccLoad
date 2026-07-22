@@ -92,6 +92,59 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	}
 }
 
+func TestSyncManager_RestoreOnStartup_RestoresFingerprintData(t *testing.T) {
+	mysql := createTestStoreForSync(t, "mysql_fingerprints")
+	sqlite := createTestStoreForSync(t, "sqlite_fingerprints")
+	defer func() {
+		_ = mysql.Close()
+		_ = sqlite.Close()
+	}()
+
+	ctx := context.Background()
+	fingerprint, err := mysql.CreateModelFingerprint(ctx, &model.ModelFingerprint{
+		Name:          "trusted",
+		Model:         "gpt-test",
+		SampleCount:   3,
+		Distribution:  []float64{0.5, 0.25, 0.25},
+		Stats:         model.FingerprintStats{Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1},
+		RawData:       []int{1, 2, 3},
+		PromptVersion: "v1",
+	})
+	if err != nil {
+		t.Fatalf("CreateModelFingerprint: %v", err)
+	}
+	record := &model.FingerprintTestRecord{
+		Model:       "gpt-test",
+		SampleCount: 3,
+		BestScore:   0.9,
+		MatchesJSON: `[{"score":0.9}]`,
+	}
+	if err := mysql.CreateFingerprintTestResult(ctx, record); err != nil {
+		t.Fatalf("CreateFingerprintTestResult: %v", err)
+	}
+
+	restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := NewSyncManager(mysql, sqlite).RestoreOnStartup(restoreCtx, 0); err != nil {
+		t.Fatalf("RestoreOnStartup: %v", err)
+	}
+
+	restoredFingerprint, err := sqlite.GetModelFingerprint(ctx, fingerprint.ID)
+	if err != nil {
+		t.Fatalf("GetModelFingerprint after restore: %v", err)
+	}
+	if restoredFingerprint.Name != fingerprint.Name {
+		t.Fatalf("fingerprint name=%q, want %q", restoredFingerprint.Name, fingerprint.Name)
+	}
+	restoredRecords, err := sqlite.ListFingerprintTestResults(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListFingerprintTestResults after restore: %v", err)
+	}
+	if len(restoredRecords) != 1 || restoredRecords[0].ID != record.ID {
+		t.Fatalf("restored records=%#v, want id=%d", restoredRecords, record.ID)
+	}
+}
+
 func TestSyncManager_RestoreOnStartup_RestoresProtocolTransforms(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_protocol_transforms")
 	sqlite := createTestStoreForSync(t, "sqlite_protocol_transforms")

@@ -20,6 +20,9 @@ import (
 // ErrFingerprintJobsBusy is returned by reserveSlot when maxRunning is exceeded.
 var ErrFingerprintJobsBusy = errors.New("too many running fingerprint jobs")
 
+// ErrFingerprintJobsClosed is returned after the manager begins shutdown.
+var ErrFingerprintJobsClosed = errors.New("fingerprint jobs are shutting down")
+
 // FingerprintJobType 区分标定 vs 测试任务。
 type FingerprintJobType string
 
@@ -137,19 +140,26 @@ type testFingerprintReq struct {
 // FingerprintJobManager 管理内存 job（最多 2 个同时运行，完成后保留 1h）。
 type FingerprintJobManager struct {
 	maxRunning int
+	parentCtx  context.Context
 
-	mu         sync.Mutex
-	jobs       map[string]*fpJob
-	runningCnt atomic.Int32
+	mu      sync.Mutex
+	jobs    map[string]*fpJob
+	running int
+	closing bool
+	wg      sync.WaitGroup
 }
 
 // NewFingerprintJobManager 构造，maxRunning ≤ 0 归 2。
-func NewFingerprintJobManager(maxRunning int) *FingerprintJobManager {
+func NewFingerprintJobManager(parentCtx context.Context, maxRunning int) *FingerprintJobManager {
+	if parentCtx == nil {
+		parentCtx = context.Background()
+	}
 	if maxRunning <= 0 {
 		maxRunning = 2
 	}
 	return &FingerprintJobManager{
 		maxRunning: maxRunning,
+		parentCtx:  parentCtx,
 		jobs:       make(map[string]*fpJob),
 	}
 }
@@ -191,25 +201,27 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		return "", fmt.Errorf("invalid params: %s", errMsg)
 	}
 
-	if err := m.reserveSlot(); err != nil {
+	ctx, j, err := m.startJob(FingerprintJobCalibrate, iters)
+	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	j := m.addJob(FingerprintJobCalibrate, cancel, iters)
-
 	go func() {
-		defer m.runningCnt.Add(-1)
-		defer cancel()
+		defer m.finishJob()
+		defer j.cancel()
 
-		samples, cancelled := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		if cancelled {
+			j.finish("cancelled", nil, "cancelled", time.Now())
+			return
+		}
+		if sampleErr != nil {
+			j.finish("failed", nil, sampleErr.Error(), time.Now())
+			return
+		}
 
 		if len(samples) < util.FingerprintMinValidSamples {
-			if cancelled {
-				j.finish("cancelled", nil, "cancelled before enough valid samples", time.Now())
-			} else {
-				j.finish("failed", nil, fmt.Sprintf("insufficient valid samples: %d/%d required", len(samples), util.FingerprintMinValidSamples), time.Now())
-			}
+			j.finish("failed", nil, fmt.Sprintf("insufficient valid samples: %d/%d required", len(samples), util.FingerprintMinValidSamples), time.Now())
 			return
 		}
 
@@ -232,13 +244,20 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 			fp.ChannelType = cfg.ChannelType
 		}
 
-		created, err := s.store.CreateModelFingerprint(context.Background(), fp)
+		if ctx.Err() != nil {
+			j.finish("cancelled", nil, "cancelled", time.Now())
+			return
+		}
+		created, err := s.store.CreateModelFingerprint(ctx, fp)
 		if err != nil {
+			if ctx.Err() != nil {
+				j.finish("cancelled", nil, "cancelled", time.Now())
+				return
+			}
 			j.finish("failed", nil, fmt.Sprintf("store fingerprint: %v", err), time.Now())
 			return
 		}
 
-		// 有效样本已够时，中途 cancel 仍按 succeeded 落库。
 		j.finish("succeeded", created, "", time.Now())
 	}()
 
@@ -252,25 +271,27 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		return "", fmt.Errorf("invalid params: %s", errMsg)
 	}
 
-	if err := m.reserveSlot(); err != nil {
+	ctx, j, err := m.startJob(FingerprintJobTest, iters)
+	if err != nil {
 		return "", err
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	j := m.addJob(FingerprintJobTest, cancel, iters)
-
 	go func() {
-		defer m.runningCnt.Add(-1)
-		defer cancel()
+		defer m.finishJob()
+		defer j.cancel()
 
-		samples, cancelled := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		if cancelled {
+			j.finish("cancelled", nil, "cancelled", time.Now())
+			return
+		}
+		if sampleErr != nil {
+			j.finish("failed", nil, sampleErr.Error(), time.Now())
+			return
+		}
 
 		if len(samples) < util.FingerprintMinValidSamples {
-			if cancelled {
-				j.finish("cancelled", nil, "cancelled before enough valid samples", time.Now())
-			} else {
-				j.finish("failed", nil, fmt.Sprintf("insufficient valid samples: %d/%d required", len(samples), util.FingerprintMinValidSamples), time.Now())
-			}
+			j.finish("failed", nil, fmt.Sprintf("insufficient valid samples: %d/%d required", len(samples), util.FingerprintMinValidSamples), time.Now())
 			return
 		}
 
@@ -281,15 +302,23 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		// 加载 baseline(s)
 		var baselines []*model.ModelFingerprint
 		if req.FingerprintID != nil {
-			fp, err := s.store.GetModelFingerprint(context.Background(), *req.FingerprintID)
+			fp, err := s.store.GetModelFingerprint(ctx, *req.FingerprintID)
 			if err != nil || fp == nil {
+				if ctx.Err() != nil {
+					j.finish("cancelled", nil, "cancelled", time.Now())
+					return
+				}
 				j.finish("failed", nil, fmt.Sprintf("baseline not found: id=%d", *req.FingerprintID), time.Now())
 				return
 			}
 			baselines = []*model.ModelFingerprint{fp}
 		} else {
-			all, err := s.store.ListModelFingerprints(context.Background())
+			all, err := s.store.ListModelFingerprints(ctx)
 			if err != nil {
+				if ctx.Err() != nil {
+					j.finish("cancelled", nil, "cancelled", time.Now())
+					return
+				}
 				j.finish("failed", nil, fmt.Sprintf("list fingerprints: %v", err), time.Now())
 				return
 			}
@@ -345,44 +374,56 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		if len(matches) > 0 {
 			bestScore = matches[0].Score
 		}
-		matchesBytes, _ := json.Marshal(matches)
+		matchesBytes, err := json.Marshal(matches)
+		if err != nil {
+			j.finish("failed", nil, fmt.Sprintf("marshal fingerprint matches: %v", err), time.Now())
+			return
+		}
 		channelName := ""
-		if cfg, err := s.store.GetConfig(context.Background(), req.ChannelID); err == nil && cfg != nil {
+		if cfg, err := s.store.GetConfig(ctx, req.ChannelID); err == nil && cfg != nil {
 			channelName = cfg.Name
 		}
 		channelID := req.ChannelID
 		rec := &model.FingerprintTestRecord{
-			ChannelID:   &channelID,
-			ChannelName: channelName,
-			Model:       req.Model,
-			SampleCount: len(samples),
-			BestScore:   bestScore,
-			MatchesJSON: string(matchesBytes),
+			ChannelID:    &channelID,
+			ChannelName:  channelName,
+			Model:        req.Model,
+			SampleCount:  len(samples),
+			BestScore:    bestScore,
+			Distribution: dist,
+			MatchesJSON:  string(matchesBytes),
 		}
-		_ = s.store.CreateFingerprintTestResult(context.Background(), rec)
+		if ctx.Err() != nil {
+			j.finish("cancelled", nil, "cancelled", time.Now())
+			return
+		}
+		if err := s.store.CreateFingerprintTestResult(ctx, rec); err != nil {
+			if ctx.Err() != nil {
+				j.finish("cancelled", nil, "cancelled", time.Now())
+				return
+			}
+			j.finish("failed", nil, fmt.Sprintf("store fingerprint test result: %v", err), time.Now())
+			return
+		}
 
-		// 有效样本已够时，中途 cancel 仍返回对比结果。
 		j.finish("succeeded", result, "", time.Now())
 	}()
 
 	return j.id, nil
 }
 
-// reserveSlot 检查并原子增加 running count；超出返回 error。
-func (m *FingerprintJobManager) reserveSlot() error {
-	for {
-		cur := m.runningCnt.Load()
-		if cur >= int32(m.maxRunning) {
-			return fmt.Errorf("%w (%d/%d)", ErrFingerprintJobsBusy, cur, m.maxRunning)
-		}
-		if m.runningCnt.CompareAndSwap(cur, cur+1) {
-			return nil
-		}
+// startJob reserves a slot and registers a job atomically with manager shutdown.
+func (m *FingerprintJobManager) startJob(jobType FingerprintJobType, iters int) (context.Context, *fpJob, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closing {
+		return nil, nil, ErrFingerprintJobsClosed
 	}
-}
+	if m.running >= m.maxRunning {
+		return nil, nil, fmt.Errorf("%w (%d/%d)", ErrFingerprintJobsBusy, m.running, m.maxRunning)
+	}
 
-// addJob 生成 job id、注册到 map，顺便惰性清理过期 job。
-func (m *FingerprintJobManager) addJob(jobType FingerprintJobType, cancel context.CancelFunc, iters int) *fpJob {
+	ctx, cancel := context.WithCancel(m.parentCtx)
 	id := "fpj_" + uuid.New().String()
 	now := time.Now()
 	j := &fpJob{
@@ -394,11 +435,48 @@ func (m *FingerprintJobManager) addJob(jobType FingerprintJobType, cancel contex
 		updatedAt: now,
 		progress:  FingerprintProgress{Total: iters},
 	}
-	m.mu.Lock()
 	m.evictExpired()
 	m.jobs[id] = j
+	m.running++
+	m.wg.Add(1)
+	return ctx, j, nil
+}
+
+func (m *FingerprintJobManager) finishJob() {
+	m.mu.Lock()
+	m.running--
 	m.mu.Unlock()
-	return j
+	m.wg.Done()
+}
+
+// Close prevents new jobs, cancels running jobs, and waits for all workers.
+func (m *FingerprintJobManager) Close(ctx context.Context) error {
+	m.mu.Lock()
+	m.closing = true
+	cancels := make([]context.CancelFunc, 0, m.running)
+	for _, job := range m.jobs {
+		job.mu.Lock()
+		if job.status == "running" {
+			cancels = append(cancels, job.cancel)
+		}
+		job.mu.Unlock()
+	}
+	m.mu.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	done := make(chan struct{})
+	go func() {
+		m.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // evictExpired 删除完成超 1h 的 job（mu 已持有）。
@@ -424,17 +502,21 @@ func (m *FingerprintJobManager) runSampling(
 	modelName string,
 	keyIndex int,
 	iterations, concurrency int,
-) (samples []int, cancelled bool) {
+) (samples []int, cancelled bool, err error) {
 	cfg, err := s.store.GetConfig(ctx, channelID)
 	if err != nil || cfg == nil {
-		j.finish("failed", nil, fmt.Sprintf("channel %d not found: %v", channelID, err), time.Now())
-		return nil, false
+		if ctx.Err() != nil {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("channel %d not found: %v", channelID, err)
 	}
 
 	keys, err := s.store.GetAPIKeys(ctx, channelID)
 	if err != nil || len(keys) == 0 {
-		j.finish("failed", nil, fmt.Sprintf("channel %d has no API keys", channelID), time.Now())
-		return nil, false
+		if ctx.Err() != nil {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("channel %d has no API keys", channelID)
 	}
 	// 选取 keyIndex 的 key，越界则用第一个
 	if keyIndex < 0 || keyIndex >= len(keys) {
@@ -472,27 +554,26 @@ func (m *FingerprintJobManager) runSampling(
 					return
 				}
 				testReq := &testutil.TestChannelRequest{
-					Model:       modelName,
-					Content:     util.FingerprintPrompt,
-					MaxTokens:   10,
-					Temperature: &temp,
-					Stream:      false,
-					KeyIndex:    keyIndex,
+					Model:           modelName,
+					Content:         util.FingerprintPrompt,
+					MaxTokens:       10,
+					Temperature:     &temp,
+					Stream:          false,
+					KeyIndex:        keyIndex,
+					WaitForCapacity: true,
 				}
 				requestedModel := testReq.Model
 				result := s.executeChannelTestWithCooldown(ctx, cfg, keyIndex, apiKey, testReq, false)
-				if j.jobType == FingerprintJobTest {
-					s.persistDetectionLog(context.WithoutCancel(ctx), detectionLogFromResult(
-						cfg,
-						model.LogSourceManualTest,
-						requestedModel,
-						testReq.Model,
-						apiKey,
-						"",
-						testReq.ThinkingEffort,
-						result,
-					))
-				}
+				s.persistDetectionLog(context.WithoutCancel(ctx), detectionLogFromResult(
+					cfg,
+					model.LogSourceManualTest,
+					requestedModel,
+					testReq.Model,
+					apiKey,
+					"",
+					testReq.ThinkingEffort,
+					result,
+				))
 				done.Add(1)
 				text, _ := result["response_text"].(string)
 				if success, _ := result["success"].(bool); success {
@@ -519,7 +600,7 @@ func (m *FingerprintJobManager) runSampling(
 
 	wg.Wait()
 	cancelled = ctx.Err() != nil
-	return nums, cancelled
+	return nums, cancelled, nil
 }
 
 // statsToModel 将 util.FingerprintSampleStats 映射到 model.FingerprintStats。

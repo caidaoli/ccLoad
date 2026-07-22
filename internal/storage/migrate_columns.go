@@ -18,6 +18,7 @@ var sqliteMigratableTables = map[string]bool{
 	"api_keys":                    true,
 	"channels":                    true,
 	"debug_logs":                  true,
+	"fingerprint_test_results":    true,
 	"schema_migrations":           true,
 }
 
@@ -129,6 +130,41 @@ func ensureColumn(ctx context.Context, db *sql.DB, dialect Dialect, table, col, 
 		return ensurePostgresColumns(ctx, db, table, []mysqlColumnDef{{name: col, definition: mysqlDef}})
 	default:
 		return ensureSQLiteColumns(ctx, db, table, []sqliteColumnDef{{name: col, definition: sqliteDef}})
+	}
+}
+
+func ensureFingerprintTestResultsDistribution(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	switch dialect {
+	case DialectMySQL:
+		if err := ensureMySQLColumns(ctx, db, "fingerprint_test_results", []mysqlColumnDef{{
+			name: "distribution", definition: "LONGTEXT",
+		}}); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, "UPDATE fingerprint_test_results SET distribution = '[]' WHERE distribution IS NULL OR distribution = ''"); err != nil {
+			return fmt.Errorf("backfill distribution: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE fingerprint_test_results MODIFY COLUMN distribution LONGTEXT NOT NULL"); err != nil {
+			return fmt.Errorf("require distribution: %w", err)
+		}
+		return nil
+	case DialectPostgres:
+		if err := ensurePostgresColumns(ctx, db, "fingerprint_test_results", []mysqlColumnDef{{
+			name: "distribution", definition: "TEXT",
+		}}); err != nil {
+			return err
+		}
+		if _, err := db.ExecContext(ctx, "UPDATE fingerprint_test_results SET distribution = '[]' WHERE distribution IS NULL OR distribution = ''"); err != nil {
+			return fmt.Errorf("backfill distribution: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, "ALTER TABLE fingerprint_test_results ALTER COLUMN distribution SET NOT NULL"); err != nil {
+			return fmt.Errorf("require distribution: %w", err)
+		}
+		return nil
+	default:
+		return ensureSQLiteColumns(ctx, db, "fingerprint_test_results", []sqliteColumnDef{{
+			name: "distribution", definition: "TEXT NOT NULL DEFAULT '[]'",
+		}})
 	}
 }
 

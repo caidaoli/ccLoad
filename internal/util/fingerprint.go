@@ -111,7 +111,10 @@ func CalculateFingerprintStats(numbers []int) FingerprintSampleStats {
 	}
 }
 
-// FingerprintSimilarity holds cosine/JS/mode composite similarity scores.
+// FingerprintSimilarity holds distribution similarity and mode diagnostics.
+// OverallScore is a relative distribution ranking signal, not a calibrated
+// probability or authenticity verdict. ModeScore is diagnostic only because a
+// single most-frequent bucket is too unstable to carry scoring weight.
 type FingerprintSimilarity struct {
 	CosineSimilarity float64 `json:"cosine_similarity"`
 	JSDivergence     float64 `json:"js_divergence"`
@@ -144,7 +147,7 @@ func CalculateFingerprintSimilarity(dist1, dist2 []float64, stats1, stats2 Finge
 	if norm1 > 0 && norm2 > 0 {
 		cosine = dot / (math.Sqrt(norm1) * math.Sqrt(norm2))
 	}
-	distribScore := cosine * math.Exp(-js)
+	distribScore := FingerprintDistributionScore(cosine, js)
 	modeScore := 0.0
 	if stats1.Mode == stats2.Mode {
 		modeScore = 1.0
@@ -156,8 +159,13 @@ func CalculateFingerprintSimilarity(dist1, dist2 []float64, stats1, stats2 Finge
 		CosineSimilarity: cosine,
 		JSDivergence:     js,
 		ModeScore:        modeScore,
-		OverallScore:     0.5*modeScore + 0.5*distribScore,
+		OverallScore:     distribScore,
 	}
+}
+
+// FingerprintDistributionScore combines whole-distribution similarity metrics.
+func FingerprintDistributionScore(cosineSimilarity, jsDivergence float64) float64 {
+	return cosineSimilarity * math.Exp(-jsDivergence)
 }
 
 // ClampFingerprintParams normalizes user input; non-empty err string means caller should 400.

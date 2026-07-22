@@ -38,6 +38,7 @@ type TestChannelRequest struct {
 	KeyIndex          int               `json:"key_index,omitempty"`          // 可选，指定测试的Key索引，默认0（第一个）
 	APIKey            string            `json:"api_key,omitempty"`            // 可选，测试当前编辑器中的未保存Key
 	BaseURL           string            `json:"base_url,omitempty"`           // 可选，仅 /test-url 使用，强制指定测试URL（必须属于该渠道）
+	WaitForCapacity   bool              `json:"-"`                            // 后台批任务等待渠道配额；交互式测试仍快速失败
 }
 
 // Validate 实现RequestValidator接口

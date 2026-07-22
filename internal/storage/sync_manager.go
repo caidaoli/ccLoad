@@ -52,6 +52,8 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 		"channel_protocol_transforms",
 		"api_keys",
 		"auth_tokens",
+		"model_fingerprints",
+		"fingerprint_test_results",
 	}
 
 	log.Printf("[INFO] 开始恢复配置表（共 %d 个表）...", len(configTables))

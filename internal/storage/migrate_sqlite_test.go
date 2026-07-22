@@ -100,6 +100,47 @@ func TestMigrate_SQLite_Idempotent(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLiteAddsFingerprintTestDistribution(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE fingerprint_test_results (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			channel_id INTEGER,
+			channel_name TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL DEFAULT '',
+			sample_count INTEGER NOT NULL DEFAULT 0,
+			best_score REAL NOT NULL DEFAULT 0,
+			matches_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create legacy fingerprint_test_results: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO fingerprint_test_results
+			(channel_name, model, sample_count, best_score, matches_json, created_at)
+		VALUES ('legacy', 'gpt-test', 10, 0.9, '[]', 1)
+	`); err != nil {
+		t.Fatalf("insert legacy fingerprint_test_results: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy fingerprint_test_results: %v", err)
+	}
+
+	var distribution string
+	if err := db.QueryRowContext(ctx, `
+		SELECT distribution FROM fingerprint_test_results WHERE model = 'gpt-test'
+	`).Scan(&distribution); err != nil {
+		t.Fatalf("read migrated distribution: %v", err)
+	}
+	if distribution != "[]" {
+		t.Fatalf("distribution=%q, want []", distribution)
+	}
+}
+
 func TestMigrate_SQLite_FailsOnInvalidAllowedModelsJSON(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

@@ -34,13 +34,14 @@ type ModelFingerprint struct {
 
 // FingerprintTestRecord 持久化的指纹对比结果记录。
 type FingerprintTestRecord struct {
-	ID          int64    `json:"id"`
-	ChannelID   *int64   `json:"channel_id"`
-	ChannelName string   `json:"channel_name"`
-	Model       string   `json:"model"`
-	SampleCount int      `json:"sample_count"`
-	BestScore   float64  `json:"best_score"`
-	MatchesJSON string   `json:"-"`
-	Matches     []any    `json:"matches,omitempty"`
-	CreatedAt   JSONTime `json:"created_at"`
+	ID           int64     `json:"id"`
+	ChannelID    *int64    `json:"channel_id"`
+	ChannelName  string    `json:"channel_name"`
+	Model        string    `json:"model"`
+	SampleCount  int       `json:"sample_count"`
+	BestScore    float64   `json:"best_score"`
+	Distribution []float64 `json:"distribution"`
+	MatchesJSON  string    `json:"-"`
+	Matches      []any     `json:"matches,omitempty"`
+	CreatedAt    JSONTime  `json:"created_at"`
 }

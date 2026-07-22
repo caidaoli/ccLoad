@@ -499,3 +499,80 @@ func TestHybridStore_SQLiteCacheFailureDoesNotBlockWrite(t *testing.T) {
 
 	_ = hybrid.Close()
 }
+
+func TestHybridStore_FingerprintIDsStayAlignedWithPrimary(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, mysql)
+	t.Cleanup(func() { _ = hybrid.Close() })
+
+	ctx := context.Background()
+	newFingerprint := func(name string) *model.ModelFingerprint {
+		return &model.ModelFingerprint{
+			Name:          name,
+			Model:         "gpt-test",
+			SampleCount:   3,
+			Distribution:  []float64{0.5, 0.25, 0.25},
+			Stats:         model.FingerprintStats{Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1},
+			RawData:       []int{1, 2, 3},
+			PromptVersion: "v1",
+		}
+	}
+	for _, name := range []string{"primary-only-1", "primary-only-2"} {
+		if _, err := mysql.CreateModelFingerprint(ctx, newFingerprint(name)); err != nil {
+			t.Fatalf("seed primary fingerprint: %v", err)
+		}
+	}
+	if _, err := sqlite.CreateModelFingerprint(ctx, newFingerprint("replica-only")); err != nil {
+		t.Fatalf("seed replica fingerprint: %v", err)
+	}
+
+	created, err := hybrid.CreateModelFingerprint(ctx, newFingerprint("aligned"))
+	if err != nil {
+		t.Fatalf("CreateModelFingerprint: %v", err)
+	}
+	fromPrimary, err := mysql.GetModelFingerprint(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("primary fingerprint id=%d: %v", created.ID, err)
+	}
+	fromReplica, err := sqlite.GetModelFingerprint(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("replica fingerprint id=%d: %v", created.ID, err)
+	}
+	if fromPrimary.Name != "aligned" || fromReplica.Name != "aligned" {
+		t.Fatalf("primary=%q replica=%q", fromPrimary.Name, fromReplica.Name)
+	}
+
+	for i := 0; i < 2; i++ {
+		if err := mysql.CreateFingerprintTestResult(ctx, &model.FingerprintTestRecord{Model: fmt.Sprintf("primary-%d", i), MatchesJSON: `[]`}); err != nil {
+			t.Fatalf("seed primary test result: %v", err)
+		}
+	}
+	if err := sqlite.CreateFingerprintTestResult(ctx, &model.FingerprintTestRecord{Model: "replica-only", MatchesJSON: `[]`}); err != nil {
+		t.Fatalf("seed replica test result: %v", err)
+	}
+	record := &model.FingerprintTestRecord{Model: "aligned", MatchesJSON: `[]`}
+	if err := hybrid.CreateFingerprintTestResult(ctx, record); err != nil {
+		t.Fatalf("CreateFingerprintTestResult: %v", err)
+	}
+	primaryResults, err := mysql.ListFingerprintTestResults(ctx, 10)
+	if err != nil {
+		t.Fatalf("primary ListFingerprintTestResults: %v", err)
+	}
+	replicaResults, err := sqlite.ListFingerprintTestResults(ctx, 10)
+	if err != nil {
+		t.Fatalf("replica ListFingerprintTestResults: %v", err)
+	}
+	if !hasFingerprintTestResult(primaryResults, record.ID, "aligned") || !hasFingerprintTestResult(replicaResults, record.ID, "aligned") {
+		t.Fatalf("test result id=%d not aligned; primary=%#v replica=%#v", record.ID, primaryResults, replicaResults)
+	}
+}
+
+func hasFingerprintTestResult(results []*model.FingerprintTestRecord, id int64, modelName string) bool {
+	for _, result := range results {
+		if result.ID == id && result.Model == modelName {
+			return true
+		}
+	}
+	return false
+}

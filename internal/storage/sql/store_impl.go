@@ -296,6 +296,10 @@ func (s *SQLStore) lockPostgresExplicitIDTable(ctx context.Context, tx *sql.Tx, 
 		query = "LOCK TABLE channels IN SHARE ROW EXCLUSIVE MODE"
 	case "auth_tokens":
 		query = "LOCK TABLE auth_tokens IN SHARE ROW EXCLUSIVE MODE"
+	case "model_fingerprints":
+		query = "LOCK TABLE model_fingerprints IN SHARE ROW EXCLUSIVE MODE"
+	case "fingerprint_test_results":
+		query = "LOCK TABLE fingerprint_test_results IN SHARE ROW EXCLUSIVE MODE"
 	default:
 		return fmt.Errorf("unsupported explicit-id table: %s", table)
 	}
@@ -331,6 +335,22 @@ func (s *SQLStore) syncPostgresIDSequence(ctx context.Context, tx *sql.Tx, table
 				true
 			)
 			FROM auth_tokens`
+	case "model_fingerprints":
+		query = `
+			SELECT setval(
+				pg_get_serial_sequence('model_fingerprints', 'id'),
+				GREATEST(COALESCE(MAX(id), 1), nextval(pg_get_serial_sequence('model_fingerprints', 'id'))),
+				true
+			)
+			FROM model_fingerprints`
+	case "fingerprint_test_results":
+		query = `
+			SELECT setval(
+				pg_get_serial_sequence('fingerprint_test_results', 'id'),
+				GREATEST(COALESCE(MAX(id), 1), nextval(pg_get_serial_sequence('fingerprint_test_results', 'id'))),
+				true
+			)
+			FROM fingerprint_test_results`
 	default:
 		return fmt.Errorf("unsupported explicit-id table: %s", table)
 	}

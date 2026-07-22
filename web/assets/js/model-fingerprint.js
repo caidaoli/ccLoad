@@ -23,6 +23,10 @@
   let cancelRequested = false;
   let streamAbort   = null; // AbortController for SSE
   let initialized   = false;
+  let historyChart  = null;
+  let historyChartResizeObserver = null;
+  let historyChartType = 'line';
+  let historyChartInput = null;
 
   // combobox 实例
   let calChannelCombo = null;
@@ -268,6 +272,7 @@
 
     fingerprints.forEach(fp => {
       const tr = document.createElement('tr');
+      tr.className = 'fp-baseline-row';
       const createdAt = fp.created_at ? new Date(fp.created_at * 1000).toLocaleString() : '-';
       tr.innerHTML =
         '<td>' + escHtml(fp.name || '-') + '</td>' +
@@ -348,29 +353,21 @@
       const createdAt = rec.created_at ? new Date(rec.created_at * 1000).toLocaleString() : '-';
       const scoreNum = typeof rec.best_score === 'number' ? rec.best_score : null;
       const score = scoreNum != null ? (scoreNum * 100).toFixed(1) + '%' : '-';
-      const hint = scoreHint(scoreNum);
       tr.innerHTML =
         '<td>' + escHtml(rec.model || '-') + '</td>' +
         '<td>' + escHtml(rec.channel_name || (rec.channel_id ? '#' + rec.channel_id : '-')) + '</td>' +
         '<td>' + (rec.sample_count || '-') + '</td>' +
-        '<td class="fp-score">' + score + (hint ? ' <span class="fp-score-hint">(' + escHtml(hint) + ')</span>' : '') + '</td>' +
+        '<td class="fp-score">' + score + '</td>' +
         '<td>' + createdAt + '</td>' +
         '<td>' +
           '<button class="btn btn-secondary btn-sm fp-history-detail-btn" data-id="' + rec.id + '">' + t('common.detail', '详情') + '</button> ' +
           '<button class="btn btn-secondary btn-sm fp-history-delete-btn" data-id="' + rec.id + '">' + t('common.delete', '删除') + '</button>' +
         '</td>';
       tbody.appendChild(tr);
-
-      // 详情展开行（隐藏）
-      const detailTr = document.createElement('tr');
-      detailTr.className = 'fp-history-detail hidden';
-      detailTr.id = 'fpHistoryDetail_' + rec.id;
-      detailTr.innerHTML = '<td colspan="6"><div class="fp-history-detail-content"></div></td>';
-      tbody.appendChild(detailTr);
     });
 
     tbody.querySelectorAll('.fp-history-detail-btn').forEach(btn => {
-      btn.addEventListener('click', () => toggleHistoryDetail(btn.dataset.id));
+      btn.addEventListener('click', () => openHistoryDetail(btn.dataset.id));
     });
 
     tbody.querySelectorAll('.fp-history-delete-btn').forEach(btn => {
@@ -378,69 +375,263 @@
     });
   }
 
-  function toggleHistoryDetail(id) {
-    const detailTr = el('fpHistoryDetail_' + id);
-    if (!detailTr) return;
-
-    if (!detailTr.classList.contains('hidden')) {
-      detailTr.classList.add('hidden');
-      return;
-    }
-
-    // 展开：渲染 matches
-    const rec = testHistory.find(r => String(r.id) === String(id));
-    if (!rec) return;
-
+  function historyMatches(rec) {
     let matches = rec.matches;
     if (!matches && rec.matches_json) {
       try { matches = JSON.parse(rec.matches_json); } catch (_) { matches = []; }
     }
+    return Array.isArray(matches) ? matches : [];
+  }
 
-    const content = detailTr.querySelector('.fp-history-detail-content');
-    if (!content) return;
+  function openHistoryDetail(id) {
+    const rec = testHistory.find(r => String(r.id) === String(id));
+    if (!rec) return;
 
-    if (!Array.isArray(matches) || !matches.length) {
+    const modal = el('fpHistoryDetailModal');
+    const meta = el('fpHistoryDetailMeta');
+    const matchesContainer = el('fpHistoryMatches');
+    const chartContainer = el('fpHistoryDistributionChart');
+    if (!modal || !meta || !matchesContainer || !chartContainer) return;
+
+    const matches = historyMatches(rec);
+    const bestMatch = matches[0];
+    const baseline = bestMatch && bestMatch.baseline;
+    const createdAt = rec.created_at ? new Date(rec.created_at * 1000).toLocaleString() : '-';
+    const channel = rec.channel_name || (rec.channel_id ? '#' + rec.channel_id : '-');
+    meta.textContent = [
+      rec.model || '-',
+      channel,
+      t('modelTest.fingerprint.sampleCount', '样本') + ': ' + (rec.sample_count || 0),
+      createdAt
+    ].join(' · ');
+
+    modal.classList.add('show');
+    modal.setAttribute('aria-hidden', 'false');
+    updateHistoryChartTypeButtons();
+    renderDistributionChart(chartContainer, rec.distribution, baseline && baseline.distribution, {
+      test: rec.model || t('modelTest.fingerprint.testDistribution', '测试分布'),
+      baseline: (baseline && baseline.name) || t('modelTest.fingerprint.baselineDistribution', '基准分布')
+    });
+    renderHistoryMatches(matchesContainer, matches);
+
+    el('fpHistoryDetailCloseBtn')?.focus();
+  }
+
+  function closeHistoryDetail() {
+    const modal = el('fpHistoryDetailModal');
+    if (!modal) return;
+    modal.classList.remove('show');
+    modal.setAttribute('aria-hidden', 'true');
+  }
+
+  function renderHistoryMatches(content, matches) {
+    content.innerHTML = '';
+
+    if (!matches.length) {
       content.innerHTML = '<span style="color:var(--text-muted)">' + t('modelTest.fingerprint.noResult', '无结果') + '</span>';
-    } else {
-      const table = document.createElement('table');
-      table.className = 'modern-table fp-result-table';
-      table.innerHTML =
-        '<thead><tr>' +
-        '<th>' + t('modelTest.fingerprint.col.baseline', '基准') + '</th>' +
-        '<th>' + t('modelTest.fingerprint.col.score', '综合评分') + '</th>' +
-        '<th>' + t('modelTest.fingerprint.col.cosine', '余弦相似') + '</th>' +
-        '<th>' + t('modelTest.fingerprint.col.js', 'JS散度') + '</th>' +
-        '<th>' + t('modelTest.fingerprint.col.modeMatch', '众数匹配') + '</th>' +
-        '</tr></thead>';
-
-      const mtbody = document.createElement('tbody');
-      matches.forEach(m => {
-        const mtr = document.createElement('tr');
-        const s = typeof m.score === 'number' ? (m.score * 100).toFixed(1) + '%' : '-';
-        const cosine = typeof m.cosine_similarity === 'number' ? m.cosine_similarity.toFixed(4) : '-';
-        const js = typeof m.js_divergence === 'number' ? m.js_divergence.toFixed(4) : '-';
-        const modeMatch = m.mode_match ? '✓' : '✗';
-        const baselineName = (m.baseline && m.baseline.name) ? escHtml(m.baseline.name) : '-';
-        const mhint = scoreHint(typeof m.score === 'number' ? m.score : null);
-        mtr.innerHTML =
-          '<td>' + baselineName + '</td>' +
-          '<td class="fp-score">' + s + (mhint ? ' <span class="fp-score-hint">(' + escHtml(mhint) + ')</span>' : '') + '</td>' +
-          '<td>' + cosine + '</td>' +
-          '<td>' + js + '</td>' +
-          '<td>' + modeMatch + '</td>';
-        mtbody.appendChild(mtr);
-      });
-      table.appendChild(mtbody);
-      content.innerHTML = '';
-      content.appendChild(table);
+      return;
     }
 
-    detailTr.classList.remove('hidden');
+    const table = document.createElement('table');
+    table.className = 'modern-table fp-result-table';
+    table.innerHTML =
+      '<thead><tr>' +
+      '<th>' + t('modelTest.fingerprint.col.baseline', '基准') + '</th>' +
+      '<th>' + t('modelTest.fingerprint.col.score', '综合评分') + '</th>' +
+      '<th>' + t('modelTest.fingerprint.col.cosine', '余弦相似') + '</th>' +
+      '<th>' + t('modelTest.fingerprint.col.js', 'JS散度') + '</th>' +
+      '<th>' + t('modelTest.fingerprint.col.modeMatch', '众数匹配') + '</th>' +
+      '</tr></thead>';
+
+    const mtbody = document.createElement('tbody');
+    matches.forEach(m => {
+      const mtr = document.createElement('tr');
+      const s = typeof m.score === 'number' ? (m.score * 100).toFixed(1) + '%' : '-';
+      const cosine = typeof m.cosine_similarity === 'number' ? m.cosine_similarity.toFixed(4) : '-';
+      const js = typeof m.js_divergence === 'number' ? m.js_divergence.toFixed(4) : '-';
+      const modeMatch = m.mode_match ? '✓' : '✗';
+      const baselineName = (m.baseline && m.baseline.name) ? escHtml(m.baseline.name) : '-';
+      mtr.innerHTML =
+        '<td>' + baselineName + '</td>' +
+        '<td class="fp-score">' + s + '</td>' +
+        '<td>' + cosine + '</td>' +
+        '<td>' + js + '</td>' +
+        '<td>' + modeMatch + '</td>';
+      mtbody.appendChild(mtr);
+    });
+    table.appendChild(mtbody);
+    content.appendChild(table);
+  }
+
+  function bucketDistribution(distribution, bucketSize) {
+    const buckets = [];
+    for (let i = 0; i < distribution.length; i += bucketSize) {
+      let sum = 0;
+      for (let j = i; j < Math.min(i + bucketSize, distribution.length); j++) {
+        const value = Number(distribution[j]);
+        if (Number.isFinite(value) && value >= 0) sum += value;
+      }
+      buckets.push(sum);
+    }
+    return buckets;
+  }
+
+  function renderDistributionChart(container, testDistribution, baselineDistribution, labels) {
+    historyChartInput = { container, testDistribution, baselineDistribution, labels };
+    const validTest = Array.isArray(testDistribution) && testDistribution.length > 0;
+    const validBaseline = Array.isArray(baselineDistribution) && baselineDistribution.length > 0;
+    if (!validTest || !validBaseline || typeof window.echarts === 'undefined') {
+      disposeHistoryChart();
+      container.className = 'fp-distribution-chart fp-distribution-chart--empty';
+      container.textContent = (!validTest || !validBaseline)
+        ? t('modelTest.fingerprint.distributionUnavailable', '该历史记录未保存测试分布，无法绘制对比图')
+        : t('modelTest.fingerprint.chartUnavailable', '图表组件加载失败');
+      return;
+    }
+
+    container.className = 'fp-distribution-chart';
+    if (!historyChart) {
+      container.textContent = '';
+      historyChart = window.echarts.init(container, null, { renderer: 'canvas' });
+      attachHistoryChartResizeObserver(container);
+    }
+
+    const bucketSize = 5;
+    const testValues = bucketDistribution(testDistribution, bucketSize);
+    const baselineValues = bucketDistribution(baselineDistribution, bucketSize);
+    const categoryCount = Math.max(testValues.length, baselineValues.length);
+    const categories = Array.from({ length: categoryCount }, (_, index) => {
+      const start = index * bucketSize + 1;
+      return start + '–' + Math.min(start + bucketSize - 1, 355);
+    });
+    const chartTheme = (typeof window.getChartTheme === 'function')
+      ? window.getChartTheme()
+      : {
+        mutedText: '#6b7280', axisLine: '#e5e7eb', splitLine: 'rgba(148, 163, 184, 0.25)',
+        tooltipBg: '#ffffff', tooltipBorder: '#d1d5db', tooltipText: '#111827'
+      };
+    const series = [
+      fingerprintChartSeries(labels.test, testValues, '#0ea5e9', historyChartType),
+      fingerprintChartSeries(labels.baseline, baselineValues, '#a855f7', historyChartType)
+    ];
+    historyChart.setOption({
+      animationDuration: 500,
+      animationEasing: 'cubicOut',
+      color: ['#0ea5e9', '#a855f7'],
+      tooltip: {
+        trigger: 'axis',
+        backgroundColor: chartTheme.tooltipBg,
+        borderColor: chartTheme.tooltipBorder,
+        borderWidth: 1,
+        textStyle: { color: chartTheme.tooltipText, fontSize: 12 },
+        axisPointer: { type: 'cross', lineStyle: { color: chartTheme.mutedText, type: 'dashed' } },
+        formatter: params => {
+          if (!params || !params.length) return '';
+          let html = '<div style="font-weight:600;margin-bottom:6px">' + escHtml(params[0].axisValue) + '</div>';
+          params.forEach(param => {
+            const value = typeof param.value === 'number' ? (param.value * 100).toFixed(2) + '%' : '-';
+            html += '<div style="margin:4px 0">' + param.marker + escHtml(param.seriesName) + ': ' + value + '</div>';
+          });
+          return html;
+        }
+      },
+      legend: {
+        data: series.map(item => item.name),
+        top: 4,
+        textStyle: { color: chartTheme.mutedText, fontSize: 11 },
+        itemWidth: 20,
+        itemHeight: 8,
+        itemGap: 16
+      },
+      grid: { left: 56, right: 20, top: 48, bottom: 42 },
+      xAxis: {
+        type: 'category',
+        boundaryGap: historyChartType === 'bar',
+        data: categories,
+        axisLine: { lineStyle: { color: chartTheme.axisLine } },
+        axisTick: { show: false },
+        axisLabel: { color: chartTheme.mutedText, interval: 13 }
+      },
+      yAxis: {
+        type: 'value',
+        min: 0,
+        axisLine: { show: false },
+        axisTick: { show: false },
+        axisLabel: { color: chartTheme.mutedText, formatter: value => (value * 100).toFixed(1) + '%' },
+        splitLine: { lineStyle: { color: chartTheme.splitLine } }
+      },
+      series: series
+    }, true);
+    requestAnimationFrame(() => historyChart?.resize());
+  }
+
+  function fingerprintChartSeries(name, data, color, chartType) {
+    const series = {
+      name: name,
+      type: chartType,
+      data: data,
+      emphasis: { focus: 'series' },
+      itemStyle: { color: color }
+    };
+    if (chartType === 'bar') {
+      series.barMaxWidth = 12;
+      series.itemStyle = { color: color, opacity: 0.72, borderRadius: [2, 2, 0, 0] };
+    } else {
+      series.smooth = 0.2;
+      series.showSymbol = false;
+      series.emphasis.showSymbol = true;
+      series.lineStyle = { width: 2.5, color: color, cap: 'round', join: 'round' };
+    }
+    return series;
+  }
+
+  function setHistoryChartType(chartType) {
+    if (chartType !== 'line' && chartType !== 'bar') return;
+    historyChartType = chartType;
+    updateHistoryChartTypeButtons();
+    if (historyChartInput) {
+      renderDistributionChart(
+        historyChartInput.container,
+        historyChartInput.testDistribution,
+        historyChartInput.baselineDistribution,
+        historyChartInput.labels
+      );
+    }
+  }
+
+  function updateHistoryChartTypeButtons() {
+    document.querySelectorAll('.fp-chart-type-btn').forEach(button => {
+      const active = button.dataset.fpChartType === historyChartType;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    });
+  }
+
+  function attachHistoryChartResizeObserver(container) {
+    if (historyChartResizeObserver || typeof ResizeObserver === 'undefined') return;
+    let frame = 0;
+    historyChartResizeObserver = new ResizeObserver(() => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => historyChart?.resize());
+    });
+    historyChartResizeObserver.observe(container);
+  }
+
+  function disposeHistoryChart() {
+    if (historyChart) {
+      historyChart.dispose();
+      historyChart = null;
+    }
+    if (historyChartResizeObserver) {
+      historyChartResizeObserver.disconnect();
+      historyChartResizeObserver = null;
+    }
   }
 
   async function deleteTestResult(id) {
     if (!confirm(t('modelTest.fingerprint.confirmDeleteHistory', '确认删除此对比记录？'))) return;
     try {
+      closeHistoryDetail();
       await apiData('/admin/fingerprints/test-results/' + id, { method: 'DELETE' });
       await loadTestHistory();
     } catch (e) {
@@ -579,10 +770,9 @@
       const js = typeof m.js_divergence === 'number' ? m.js_divergence.toFixed(4) : '-';
       const modeMatch = m.mode_match ? '✓' : '✗';
       const baselineName = (m.baseline && m.baseline.name) ? escHtml(m.baseline.name) : '-';
-      const hint = scoreHint(scoreNum);
       tr.innerHTML =
         '<td>' + baselineName + '</td>' +
-        '<td class="fp-score">' + score + (hint ? ' <span class="fp-score-hint">(' + escHtml(hint) + ')</span>' : '') + '</td>' +
+        '<td class="fp-score">' + score + '</td>' +
         '<td>' + cosine + '</td>' +
         '<td>' + js + '</td>' +
         '<td>' + modeMatch + '</td>';
@@ -600,13 +790,6 @@
     }
 
     div.classList.remove('hidden');
-  }
-
-  function scoreHint(score) {
-    if (score == null || typeof score !== 'number') return '';
-    if (score >= 0.85) return t('modelTest.fingerprint.hint.high', '高度一致');
-    if (score >= 0.65) return t('modelTest.fingerprint.hint.medium', '中等一致（建议加大采样复核）');
-    return t('modelTest.fingerprint.hint.low', '明显不一致（疑似换模/掺假）');
   }
 
   // ─── Job SSE 流 ─────────────────────────────────────────────────────────
@@ -896,6 +1079,18 @@
         return;
       }
       if (!activeJobType) onTestSubmit();
+    });
+    el('fpHistoryDetailCloseBtn')?.addEventListener('click', closeHistoryDetail);
+    el('fpHistoryDetailModal')?.addEventListener('click', event => {
+      if (event.target === event.currentTarget) closeHistoryDetail();
+    });
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape' && el('fpHistoryDetailModal')?.classList.contains('show')) {
+        closeHistoryDetail();
+      }
+    });
+    document.querySelectorAll('.fp-chart-type-btn').forEach(button => {
+      button.addEventListener('click', () => setHistoryChartType(button.dataset.fpChartType));
     });
   }
 

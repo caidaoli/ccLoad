@@ -16,6 +16,7 @@
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
@@ -330,8 +331,18 @@
 
           <!-- 指纹对比面板 -->
           <section id="fingerprintPanel" class="fingerprint-panel hidden">
-            <div class="fingerprint-notice" data-i18n="modelTest.fingerprint.notice">
-              比较目标渠道与信任基准的随机数分布一致性，不是官方真品鉴定。将产生实际上游费用。
+            <div class="fp-explanation">
+              <section class="fp-explanation-card">
+                <h3 data-i18n="modelTest.fingerprint.principleTitle">原理</h3>
+                <p data-i18n="modelTest.fingerprint.principleP1">大语言模型并非真正的随机数生成器。当被要求“随机选数字”时，不同模型由于其训练数据、架构、RLHF对齐方式、tokenization策略等差异，会产生不同的偏差。</p>
+                <p data-i18n="modelTest.fingerprint.principleP2">这些差异在大量采样后就形成了统计学上可区分的指纹。</p>
+                <p data-i18n="modelTest.fingerprint.principleP3">这一指纹不能轻易被系统提示词覆盖，所以可以用来检测第三方API是真的假的。</p>
+              </section>
+              <section class="fp-explanation-card fp-explanation-card--disclaimer">
+                <h3 data-i18n="modelTest.fingerprint.disclaimerTitle">免责声明</h3>
+                <p data-i18n="modelTest.fingerprint.disclaimerP1">测试结果仅供参考。</p>
+                <p data-i18n="modelTest.fingerprint.disclaimerP2">由于大模型本身存在随机性及网络波动，本工具的测试结果不能作为任何商业纠纷、退款索赔的绝对法律/事实依据。</p>
+              </section>
             </div>
 
             <!-- 基准列表 -->
@@ -468,6 +479,28 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <!-- 指纹历史分布对比弹窗 -->
+  <div id="fpHistoryDetailModal" class="modal" aria-hidden="true">
+    <div class="modal-content modal-content--xl fp-history-modal-content" role="dialog" aria-modal="true" aria-labelledby="fpHistoryDetailTitle">
+      <div class="modal-header">
+        <h2 id="fpHistoryDetailTitle" class="modal-title" data-i18n="modelTest.fingerprint.historyDetail">对比详情</h2>
+        <button id="fpHistoryDetailCloseBtn" type="button" class="close-btn" aria-label="Close">&times;</button>
+      </div>
+      <div id="fpHistoryDetailMeta" class="fp-history-modal-meta"></div>
+      <section class="fp-distribution-section">
+        <div class="fp-distribution-header">
+          <h3 data-i18n="modelTest.fingerprint.distributionCompare">分布对比</h3>
+          <div class="fp-chart-type-toggle" role="group" aria-label="Chart type">
+            <button type="button" class="btn btn-secondary btn-sm fp-chart-type-btn active" data-fp-chart-type="line" aria-pressed="true" data-i18n="modelTest.fingerprint.lineChart">折线图</button>
+            <button type="button" class="btn btn-secondary btn-sm fp-chart-type-btn" data-fp-chart-type="bar" aria-pressed="false" data-i18n="modelTest.fingerprint.barChart">直方图</button>
+          </div>
+        </div>
+        <div id="fpHistoryDistributionChart" class="fp-distribution-chart"></div>
+      </section>
+      <div id="fpHistoryMatches" class="fp-history-matches"></div>
+    </div>
   </div>
 
   <!-- 对话高级选项弹窗 -->

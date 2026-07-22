@@ -59,20 +59,52 @@ func TestFingerprintSimilarity_Identical(t *testing.T) {
 	}
 }
 
-func TestFingerprintSimilarity_ModeWeight(t *testing.T) {
-	a := make([]int, 0, 40)
-	b := make([]int, 0, 40)
-	for i := 0; i < 40; i++ {
-		a = append(a, 1)
-		b = append(b, 100)
-	}
+func TestFingerprintSimilarity_ModeMatchIsDiagnosticOnly(t *testing.T) {
+	a := append(repeatFingerprintNumber(10, 20), repeatFingerprintNumber(20, 19)...)
+	b := append(repeatFingerprintNumber(10, 20), repeatFingerprintNumber(300, 19)...)
 	da, db := FingerprintDistribution(a), FingerprintDistribution(b)
 	sa, sb := CalculateFingerprintStats(a), CalculateFingerprintStats(b)
 	sim := CalculateFingerprintSimilarity(da, db, sa, sb)
-	if sim.ModeScore >= 1 {
-		t.Fatalf("expected mode score < 1, got %+v", sim)
+	if sim.ModeScore != 1 {
+		t.Fatalf("expected matching mode diagnostic, got %+v", sim)
 	}
-	if sim.OverallScore >= 0.9 {
-		t.Fatalf("expected lower overall, got %+v", sim)
+	want := sim.CosineSimilarity * math.Exp(-sim.JSDivergence)
+	if math.Abs(sim.OverallScore-want) > 1e-12 {
+		t.Fatalf("mode match inflated overall score: got %f, want distribution score %f", sim.OverallScore, want)
 	}
+	if sim.OverallScore >= 0.5 {
+		t.Fatalf("mostly different distributions scored too highly: %+v", sim)
+	}
+}
+
+func TestFingerprintSimilarity_RanksCloserBiasFirst(t *testing.T) {
+	baseline := append(repeatFingerprintNumber(37, 60), repeatFingerprintNumber(120, 20)...)
+	closer := append(repeatFingerprintNumber(37, 55), repeatFingerprintNumber(120, 25)...)
+	different := append(repeatFingerprintNumber(220, 60), repeatFingerprintNumber(300, 20)...)
+
+	baseDist := FingerprintDistribution(baseline)
+	baseStats := CalculateFingerprintStats(baseline)
+	closerScore := CalculateFingerprintSimilarity(
+		FingerprintDistribution(closer),
+		baseDist,
+		CalculateFingerprintStats(closer),
+		baseStats,
+	).OverallScore
+	differentScore := CalculateFingerprintSimilarity(
+		FingerprintDistribution(different),
+		baseDist,
+		CalculateFingerprintStats(different),
+		baseStats,
+	).OverallScore
+	if closerScore <= differentScore {
+		t.Fatalf("closer score=%f, different score=%f", closerScore, differentScore)
+	}
+}
+
+func repeatFingerprintNumber(number, count int) []int {
+	values := make([]int, count)
+	for i := range values {
+		values[i] = number
+	}
+	return values
 }

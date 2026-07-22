@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -287,10 +288,42 @@ func (s *Server) HandleListFingerprintTestResults(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	if err := rescoreFingerprintTestResults(results); err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
 	if results == nil {
 		results = []*model.FingerprintTestRecord{}
 	}
 	RespondJSON(c, http.StatusOK, results)
+}
+
+func rescoreFingerprintTestResults(results []*model.FingerprintTestRecord) error {
+	for _, result := range results {
+		var matches []FingerprintMatch
+		if err := json.Unmarshal([]byte(result.MatchesJSON), &matches); err != nil {
+			return fmt.Errorf("decode fingerprint test result %d: %w", result.ID, err)
+		}
+		for i := range matches {
+			matches[i].Score = util.FingerprintDistributionScore(
+				matches[i].CosineSimilarity,
+				matches[i].JSDivergence,
+			)
+		}
+		sort.SliceStable(matches, func(i, j int) bool {
+			return matches[i].Score > matches[j].Score
+		})
+
+		result.BestScore = 0
+		result.Matches = make([]any, len(matches))
+		for i := range matches {
+			result.Matches[i] = matches[i]
+		}
+		if len(matches) > 0 {
+			result.BestScore = matches[0].Score
+		}
+	}
+	return nil
 }
 
 // HandleDeleteFingerprintTestResult DELETE /admin/fingerprints/test-results/:id
