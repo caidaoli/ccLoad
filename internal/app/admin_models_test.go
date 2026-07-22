@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -503,6 +504,177 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" {
 			t.Fatalf("unexpected models after replace: %#v", got.ModelEntries)
+		}
+	})
+
+	t.Run("replace mode lowercases aliases and preserves upstream model names", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"CamelCase-Model"},{"id":"already-lower"}]}`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:                  "lowercase-channel",
+			URL:                   upstream.URL,
+			Priority:              1,
+			ChannelType:           "openai",
+			ModelEntries:          []model.ModelEntry{{Model: "CamelCase-Model"}},
+			ScheduledCheckEnabled: true,
+			ScheduledCheckModel:   "CamelCase-Model",
+			Enabled:               true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids":      []int64{cfg.ID},
+			"mode":             "replace",
+			"lowercase_models": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{
+			{Model: "camelcase-model", RedirectModel: "CamelCase-Model"},
+			{Model: "already-lower"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
+		}
+		if got.ScheduledCheckModel != "camelcase-model" {
+			t.Fatalf("ScheduledCheckModel=%q, want %q", got.ScheduledCheckModel, "camelcase-model")
+		}
+	})
+
+	t.Run("merge mode lowercases existing aliases", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"ExistingModel"},{"id":"NewModel"}]}`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:                  "lowercase-merge-channel",
+			URL:                   upstream.URL,
+			Priority:              1,
+			ChannelType:           "openai",
+			ModelEntries:          []model.ModelEntry{{Model: "ExistingModel"}},
+			ScheduledCheckEnabled: true,
+			ScheduledCheckModel:   "ExistingModel",
+			Enabled:               true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids":      []int64{cfg.ID},
+			"mode":             "merge",
+			"lowercase_models": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{
+			{Model: "existingmodel", RedirectModel: "ExistingModel"},
+			{Model: "newmodel", RedirectModel: "NewModel"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
+		}
+		if got.ScheduledCheckModel != "existingmodel" {
+			t.Fatalf("ScheduledCheckModel=%q, want %q", got.ScheduledCheckModel, "existingmodel")
+		}
+	})
+
+	t.Run("empty upstream model list leaves channel unchanged", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[]}`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:         "empty-list-channel",
+			URL:          upstream.URL,
+			Priority:     1,
+			ChannelType:  "openai",
+			ModelEntries: []model.ModelEntry{{Model: "keep-me"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids": []int64{cfg.ID},
+			"mode":        "replace",
+		}))
+		server.HandleBatchRefreshModels(c)
+
+		var resp struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Failed  int                      `json:"failed"`
+				Results []BatchRefreshModelsItem `json:"results"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success || resp.Data.Failed != 1 || len(resp.Data.Results) != 1 || resp.Data.Results[0].Status != "failed" {
+			t.Fatalf("unexpected response: %+v body=%s", resp, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		if !reflect.DeepEqual(got.ModelEntries, []model.ModelEntry{{Model: "keep-me"}}) {
+			t.Fatalf("models changed after empty refresh: %#v", got.ModelEntries)
 		}
 	})
 

@@ -2960,6 +2960,26 @@
       border-color: var(--neutral-200);
     }
 
+    .channel-batch-option {
+      min-height: 34px;
+      padding: 0 4px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--neutral-700);
+      font-size: var(--text-sm);
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+    }
+
+    .channel-batch-option input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--primary-500);
+    }
+
     .channel-batch-close {
       margin-left: 2px;
       width: 28px;
@@ -4245,6 +4265,14 @@
         white-space: nowrap;
         text-align: center;
         line-height: 1.2;
+      }
+
+      .channel-batch-option {
+        grid-column: 1 / -1;
+        min-height: 32px;
+        justify-content: center;
+        padding: 0 6px;
+        font-size: 0.75rem;
       }
 
       .channel-batch-close {
