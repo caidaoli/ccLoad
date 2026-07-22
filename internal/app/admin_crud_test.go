@@ -960,7 +960,7 @@ func TestHandleUpdateChannel_UpdatesProtocolTransforms(t *testing.T) {
 	}
 }
 
-func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing.T) {
+func TestHandleUpdateChannel_ClearAllCooldownsShouldTakeEffectImmediately(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -991,6 +991,12 @@ func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing
 	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(2*time.Minute)); err != nil {
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
+	if err := store.SetKeyCooldown(ctx, created.ID, 0, time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置 Key 冷却失败: %v", err)
+	}
+	if err := store.SetModelCooldown(ctx, created.ID, "model-1", time.Now().Add(2*time.Minute)); err != nil {
+		t.Fatalf("设置模型冷却失败: %v", err)
+	}
 
 	// 先查询一次，预热冷却缓存（复现“更新后仍显示旧冷却”问题）
 	c1, w1 := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
@@ -1001,6 +1007,21 @@ func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing
 	before := mustParseAPIResponse[[]ChannelWithCooldown](t, w1.Body.Bytes())
 	if len(before.Data) != 1 || before.Data[0].CooldownRemainingMS <= 0 {
 		t.Fatalf("预期渠道处于冷却中，实际 cooldown_remaining_ms=%d", before.Data[0].CooldownRemainingMS)
+	}
+	if len(before.Data[0].KeyCooldowns) != 1 || before.Data[0].KeyCooldowns[0].CooldownRemainingMS <= 0 {
+		t.Fatalf("预期 Key 处于冷却中，实际 key_cooldowns=%+v", before.Data[0].KeyCooldowns)
+	}
+
+	// 预热模型冷却缓存，确保保存后返回的是最新状态。
+	channelPath := "/admin/channels/" + strconv.FormatInt(created.ID, 10)
+	cModelBefore, wModelBefore := newTestContext(t, newRequest(http.MethodGet, channelPath, nil))
+	server.handleGetChannel(cModelBefore, created.ID)
+	if wModelBefore.Code != http.StatusOK {
+		t.Fatalf("预热模型冷却缓存失败: %d", wModelBefore.Code)
+	}
+	modelBefore := mustParseAPIResponse[ChannelWithCooldown](t, wModelBefore.Body.Bytes())
+	if len(modelBefore.Data.ModelCooldowns) != 1 {
+		t.Fatalf("预期模型处于冷却中，实际 model_cooldowns=%+v", modelBefore.Data.ModelCooldowns)
 	}
 
 	updatePayload := ChannelRequest{
@@ -1033,6 +1054,29 @@ func TestHandleUpdateChannel_ClearCooldownShouldTakeEffectImmediately(t *testing
 	}
 	if after.Data[0].CooldownUntil != nil || after.Data[0].CooldownRemainingMS > 0 {
 		t.Fatalf("预期冷却已清除，实际 cooldown_until=%v cooldown_remaining_ms=%d", after.Data[0].CooldownUntil, after.Data[0].CooldownRemainingMS)
+	}
+	if len(after.Data[0].KeyCooldowns) != 1 || after.Data[0].KeyCooldowns[0].CooldownUntil != nil || after.Data[0].KeyCooldowns[0].CooldownRemainingMS > 0 {
+		t.Fatalf("预期 Key 冷却已清除，实际 key_cooldowns=%+v", after.Data[0].KeyCooldowns)
+	}
+
+	cKeys, wKeys := newTestContext(t, newRequest(http.MethodGet, channelPath+"/keys", nil))
+	server.handleGetChannelKeys(cKeys, created.ID)
+	if wKeys.Code != http.StatusOK {
+		t.Fatalf("更新后查询 Key 失败: %d", wKeys.Code)
+	}
+	keysAfter := mustParseAPIResponse[[]*model.APIKey](t, wKeys.Body.Bytes())
+	if len(keysAfter.Data) != 1 || keysAfter.Data[0].CooldownUntil != 0 || keysAfter.Data[0].CooldownDurationMs != 0 {
+		t.Fatalf("预期 Key 完整冷却状态已清除，实际 keys=%+v", keysAfter.Data)
+	}
+
+	cModelAfter, wModelAfter := newTestContext(t, newRequest(http.MethodGet, channelPath, nil))
+	server.handleGetChannel(cModelAfter, created.ID)
+	if wModelAfter.Code != http.StatusOK {
+		t.Fatalf("更新后查询模型冷却失败: %d", wModelAfter.Code)
+	}
+	modelAfter := mustParseAPIResponse[ChannelWithCooldown](t, wModelAfter.Body.Bytes())
+	if len(modelAfter.Data.ModelCooldowns) != 0 {
+		t.Fatalf("预期模型冷却已清除，实际 model_cooldowns=%+v", modelAfter.Data.ModelCooldowns)
 	}
 }
 

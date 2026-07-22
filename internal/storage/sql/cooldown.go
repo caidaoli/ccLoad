@@ -81,6 +81,38 @@ func (s *SQLStore) ResetChannelCooldown(ctx context.Context, channelID int64) er
 	return nil
 }
 
+// ResetAllCooldowns 原子清除指定渠道的渠道、Key 和模型冷却状态。
+func (s *SQLStore) ResetAllCooldowns(ctx context.Context, channelID int64) error {
+	now := timeToUnix(time.Now())
+
+	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, err := s.execTx(ctx, tx, `
+			UPDATE channels
+			SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
+			WHERE id = ? AND (cooldown_until > 0 OR cooldown_duration_ms > 0)
+		`, now, channelID); err != nil {
+			return fmt.Errorf("reset channel cooldown: %w", err)
+		}
+
+		if _, err := s.execTx(ctx, tx, `
+			UPDATE api_keys
+			SET cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
+			WHERE channel_id = ? AND (cooldown_until > 0 OR cooldown_duration_ms > 0)
+		`, now, channelID); err != nil {
+			return fmt.Errorf("reset key cooldowns: %w", err)
+		}
+
+		if _, err := s.execTx(ctx, tx, `
+			DELETE FROM channel_model_cooldowns
+			WHERE channel_id = ?
+		`, channelID); err != nil {
+			return fmt.Errorf("reset model cooldowns: %w", err)
+		}
+
+		return nil
+	})
+}
+
 // SetChannelCooldown 设置渠道冷却（手动设置冷却时间）
 func (s *SQLStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
 	now := time.Now()

@@ -845,7 +845,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			log.Printf("[WARN] 批量创建API Keys失败 (channel=%d, count=%d): %v", id, len(apiKeys), err)
 		}
 	} else {
-		// Key内容未变化：策略和备注都是独立元数据，不能重建Key导致冷却/禁用状态丢失。
+		// Key内容未变化：策略和备注都是独立元数据，不能重建 Key 导致禁用状态丢失。
 		if strategyChanged {
 			if err := s.store.UpdateAPIKeysStrategy(c.Request.Context(), id, keyStrategy); err != nil {
 				log.Printf("[WARN] 批量更新API Key策略失败 (channel=%d): %v", id, err)
@@ -858,11 +858,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	// 清除渠道的冷却状态（编辑保存后重置冷却）
+	// 清除渠道、Key 和模型冷却状态（编辑保存后重置冷却）
 	// 设计原则: 清除失败不应影响渠道更新成功，但需要记录用于监控
 	if s.cooldownManager != nil {
-		if err := s.cooldownManager.ClearChannelCooldown(c.Request.Context(), id); err != nil {
-			log.Printf("[WARN] 清除渠道冷却状态失败 (channel=%d): %v", id, err)
+		if err := s.cooldownManager.ClearAllCooldowns(c.Request.Context(), id); err != nil {
+			log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", id, err)
 		}
 	}
 	// 冷却状态可能被更新，必须失效冷却缓存，避免前端立即刷新仍读到旧冷却状态
@@ -871,10 +871,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()
 
-	// Key变更时必须失效API Keys缓存，否则再次编辑会读到旧缓存
-	if keyChanged || strategyChanged || noteChanged {
-		s.InvalidateAPIKeysCache(id)
-	}
+	// 保存会清除 Key 冷却，必须无条件失效 API Keys 缓存，避免选择器继续使用旧冷却时间。
+	s.InvalidateAPIKeysCache(id)
 
 	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
 	if s.urlSelector != nil {

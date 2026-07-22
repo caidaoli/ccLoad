@@ -403,6 +403,11 @@ func (m *Manager) ClearChannelCooldown(ctx context.Context, channelID int64) err
 	return m.store.ResetChannelCooldown(ctx, channelID)
 }
 
+// ClearAllCooldowns 清除指定渠道的渠道、Key 和模型冷却状态。
+func (m *Manager) ClearAllCooldowns(ctx context.Context, channelID int64) error {
+	return m.store.ResetAllCooldowns(ctx, channelID)
+}
+
 // ClearKeyCooldown 清除Key冷却状态
 // 简化成功后的冷却清除逻辑
 func (m *Manager) ClearKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
