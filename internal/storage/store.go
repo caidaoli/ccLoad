@@ -53,6 +53,7 @@ type Store interface {
 	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error)
 	BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error)
 	ResetChannelCooldown(ctx context.Context, channelID int64) error
+	ResetAllCooldowns(ctx context.Context, channelID int64) error
 	SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error
 	// Key-level cooldown
 	GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]time.Time, error)

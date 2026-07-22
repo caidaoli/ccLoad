@@ -457,6 +457,18 @@ func (h *HybridStore) ResetChannelCooldown(ctx context.Context, channelID int64)
 	return nil
 }
 
+func (h *HybridStore) ResetAllCooldowns(ctx context.Context, channelID int64) error {
+	if err := h.mysql.ResetAllCooldowns(ctx, channelID); err != nil {
+		return err
+	}
+
+	h.syncToSQLite("ResetAllCooldowns", func() error {
+		return h.sqlite.ResetAllCooldowns(ctx, channelID)
+	})
+
+	return nil
+}
+
 func (h *HybridStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
 	if err := h.mysql.SetChannelCooldown(ctx, channelID, until); err != nil {
 		return err
