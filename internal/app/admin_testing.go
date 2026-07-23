@@ -998,27 +998,29 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
 	streamReader := readerWithCloser{Reader: upstreamTee, Closer: resp.Body}
 	firstContentCaptured := false
-	firstContentParser := newSSEUsageParser(requestPlan.upstreamProtocol)
+	upstreamParser := newSSEUsageParser(requestPlan.upstreamProtocol)
+	var translatedComplete bool
 	var state any
 
-	streamErr := streamTransformSSEEvents(
+	streamErr := streamTransformSSEEventsUntil(
 		ctx,
 		streamReader,
 		recorder,
 		func(rawEvent []byte) error {
-			if !firstContentCaptured && len(rawEvent) > 0 {
-				if err := firstContentParser.Feed(rawEvent); err != nil {
-					log.Printf("[WARN] SSE 首段内容解析失败: %v", err)
-				}
-				if testStreamParserHasFirstContent(firstContentParser) {
-					firstContentCaptured = true
-					markTestFirstStreamContent(requestPlan, result, start)
-				}
+			if len(rawEvent) == 0 {
+				return nil
+			}
+			if err := upstreamParser.Feed(rawEvent); err != nil {
+				log.Printf("[WARN] SSE 内容解析失败: %v", err)
+			}
+			if !firstContentCaptured && testStreamParserHasFirstContent(upstreamParser) {
+				firstContentCaptured = true
+				markTestFirstStreamContent(requestPlan, result, start)
 			}
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
-			return s.protocolRegistry.TranslateResponseStream(
+			chunks, err := s.protocolRegistry.TranslateResponseStream(
 				ctx,
 				protocol.Protocol(requestPlan.upstreamProtocol),
 				protocol.Protocol(requestPlan.clientProtocol),
@@ -1028,6 +1030,16 @@ func (s *Server) parseTestTranslatedSSEResponse(
 				rawEvent,
 				&state,
 			)
+			if err != nil {
+				return nil, err
+			}
+			if !translatedComplete && translatedStreamChunksComplete(protocol.Protocol(requestPlan.clientProtocol), chunks) {
+				translatedComplete = true
+			}
+			return chunks, nil
+		},
+		func() bool {
+			return upstreamParser.IsStreamComplete() && translatedComplete
 		},
 	)
 	if streamErr != nil {
@@ -1315,9 +1327,12 @@ func (s *Server) parseTestNativeSSEResponse(
 			firstContentCaptured = true
 			markTestFirstStreamContent(requestPlan, result, start)
 		}
+		if usageParser.IsStreamComplete() {
+			break
+		}
 	}
 
-	if err := scanner.Err(); err != nil {
+	if err := scanner.Err(); err != nil && !usageParser.IsStreamComplete() {
 		errorMsg := "读取流式响应失败: " + err.Error()
 		statusCode := resp.StatusCode
 		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
