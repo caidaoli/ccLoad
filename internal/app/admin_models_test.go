@@ -567,10 +567,10 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 
-	t.Run("merge mode lowercases existing aliases", func(t *testing.T) {
+	t.Run("replace mode strips source prefixes with stable collision handling", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"ExistingModel"},{"id":"NewModel"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"cloudcompile/Grok-4.5"},{"id":"z-source/Other-Model"},{"id":"x-ai/grok-4.5"},{"id":"a-source/Other-Model"},{"id":"grok-4.5"}]}`))
 		}))
 		t.Cleanup(upstream.Close)
 
@@ -579,13 +579,13 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
-			Name:                  "lowercase-merge-channel",
+			Name:                  "strip-prefix-channel",
 			URL:                   upstream.URL,
 			Priority:              1,
 			ChannelType:           "openai",
-			ModelEntries:          []model.ModelEntry{{Model: "ExistingModel"}},
+			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5"}},
 			ScheduledCheckEnabled: true,
-			ScheduledCheckModel:   "ExistingModel",
+			ScheduledCheckModel:   "cloudcompile/Grok-4.5",
 			Enabled:               true,
 		})
 		if err != nil {
@@ -598,9 +598,10 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
-			"channel_ids":      []int64{cfg.ID},
-			"mode":             "merge",
-			"lowercase_models": true,
+			"channel_ids":               []int64{cfg.ID},
+			"mode":                      "replace",
+			"lowercase_models":          true,
+			"strip_model_source_prefix": true,
 		}))
 		server.HandleBatchRefreshModels(c)
 		if w.Code != http.StatusOK {
@@ -612,8 +613,65 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
 		wantModels := []model.ModelEntry{
-			{Model: "existingmodel", RedirectModel: "ExistingModel"},
-			{Model: "newmodel", RedirectModel: "NewModel"},
+			{Model: "grok-4.5"},
+			{Model: "other-model", RedirectModel: "a-source/Other-Model"},
+		}
+		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
+			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)
+		}
+		if got.ScheduledCheckModel != "grok-4.5" {
+			t.Fatalf("ScheduledCheckModel=%q, want %q", got.ScheduledCheckModel, "grok-4.5")
+		}
+	})
+
+	t.Run("merge mode normalizes existing aliases and preserves their mappings", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"source/ExistingModel"},{"id":"source/NewModel"}]}`))
+		}))
+		t.Cleanup(upstream.Close)
+
+		server, store, cleanup := setupAdminTestServer(t)
+		defer cleanup()
+
+		ctx := context.Background()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:                  "lowercase-merge-channel",
+			URL:                   upstream.URL,
+			Priority:              1,
+			ChannelType:           "openai",
+			ModelEntries:          []model.ModelEntry{{Model: "legacy/ExistingModel"}},
+			ScheduledCheckEnabled: true,
+			ScheduledCheckModel:   "legacy/ExistingModel",
+			Enabled:               true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig failed: %v", err)
+		}
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "k", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", map[string]any{
+			"channel_ids":               []int64{cfg.ID},
+			"mode":                      "merge",
+			"lowercase_models":          true,
+			"strip_model_source_prefix": true,
+		}))
+		server.HandleBatchRefreshModels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		got, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("GetConfig failed: %v", err)
+		}
+		wantModels := []model.ModelEntry{
+			{Model: "existingmodel", RedirectModel: "legacy/ExistingModel"},
+			{Model: "newmodel", RedirectModel: "source/NewModel"},
 		}
 		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
 			t.Fatalf("models=%#v, want %#v", got.ModelEntries, wantModels)

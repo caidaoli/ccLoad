@@ -45,10 +45,11 @@ type FetchModelsDebug struct {
 
 // BatchRefreshModelsRequest 批量刷新模型请求
 type BatchRefreshModelsRequest struct {
-	ChannelIDs      []int64 `json:"channel_ids"`
-	Mode            string  `json:"mode"`                       // merge(增量,默认) / replace(覆盖)
-	ChannelType     string  `json:"channel_type,omitempty"`     // 可选：覆盖渠道类型
-	LowercaseModels bool    `json:"lowercase_models,omitempty"` // 客户端模型别名转小写，保留原始上游模型名
+	ChannelIDs             []int64 `json:"channel_ids"`
+	Mode                   string  `json:"mode"`                                // merge(增量,默认) / replace(覆盖)
+	ChannelType            string  `json:"channel_type,omitempty"`              // 可选：覆盖渠道类型
+	LowercaseModels        bool    `json:"lowercase_models,omitempty"`          // 客户端模型别名转小写，保留原始上游模型名
+	StripModelSourcePrefix bool    `json:"strip_model_source_prefix,omitempty"` // 客户端模型别名仅保留最后一段，保留原始上游模型名
 }
 
 // BatchRefreshModelsItem 批量刷新单渠道结果
@@ -167,6 +168,10 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 	}
 
 	overrideType := strings.TrimSpace(req.ChannelType)
+	normalization := modelNormalizationOptions{
+		lowercaseModels:        req.LowercaseModels,
+		stripModelSourcePrefix: req.StripModelSourcePrefix,
+	}
 	ctx := c.Request.Context()
 
 	results := make([]BatchRefreshModelsItem, 0, len(channelIDs))
@@ -220,7 +225,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		fetched := normalizeModelEntriesForSave(resp.Models, req.LowercaseModels)
+		fetched := normalizeModelEntriesForSave(resp.Models, normalization)
 		if len(fetched) == 0 {
 			item.Status = "failed"
 			item.Error = "获取到的模型列表为空，拒绝刷新"
@@ -231,8 +236,8 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		item.Fetched = len(fetched)
 
 		modelEntriesChanged := false
-		if req.LowercaseModels && mode == "merge" {
-			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, true)
+		if (req.LowercaseModels || req.StripModelSourcePrefix) && mode == "merge" {
+			normalizedExisting := normalizeModelEntriesForSave(cfg.ModelEntries, normalization)
 			modelEntriesChanged = !modelEntriesEqual(cfg.ModelEntries, normalizedExisting)
 			cfg.ModelEntries = normalizedExisting
 		}
@@ -250,7 +255,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			modelEntriesChanged = modelEntriesChanged || hasChange
 		}
 
-		scheduledCheckChanged := reconcileScheduledCheckModel(cfg)
+		scheduledCheckChanged := reconcileScheduledCheckModel(cfg, normalization)
 		if !modelEntriesChanged && !scheduledCheckChanged {
 			item.Status = "unchanged"
 			unchanged++
@@ -446,12 +451,24 @@ func determineSource(channelType string) string {
 	}
 }
 
-func normalizeModelEntriesForSave(entries []model.ModelEntry, lowercaseModels bool) []model.ModelEntry {
+type modelNormalizationOptions struct {
+	lowercaseModels        bool
+	stripModelSourcePrefix bool
+}
+
+type normalizedModelCandidate struct {
+	upstreamModel   string
+	sourcePrefixed  bool
+	exactAliasMatch bool
+}
+
+func normalizeModelEntriesForSave(entries []model.ModelEntry, options modelNormalizationOptions) []model.ModelEntry {
 	if len(entries) == 0 {
 		return nil
 	}
 
-	seen := make(map[string]struct{}, len(entries))
+	seen := make(map[string]int, len(entries))
+	candidates := make([]normalizedModelCandidate, 0, len(entries))
 	normalized := make([]model.ModelEntry, 0, len(entries))
 	for _, entry := range entries {
 		clean := entry
@@ -462,29 +479,61 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry, lowercaseModels bo
 			continue
 		}
 
-		originalModel := clean.Model
-		if lowercaseModels {
-			upstreamModel := clean.RedirectModel
-			if upstreamModel == "" {
-				upstreamModel = originalModel
-			}
-			clean.Model = strings.ToLower(originalModel)
-			if upstreamModel == clean.Model {
-				clean.RedirectModel = ""
-			} else {
-				clean.RedirectModel = upstreamModel
-			}
-		} else if clean.RedirectModel == clean.Model {
+		upstreamModel := clean.RedirectModel
+		if upstreamModel == "" {
+			upstreamModel = clean.Model
+		}
+		alias, sourcePrefixed := normalizeModelAlias(clean.Model, options)
+		clean.Model = alias
+		if upstreamModel == alias {
 			clean.RedirectModel = ""
+		} else {
+			clean.RedirectModel = upstreamModel
+		}
+
+		candidate := normalizedModelCandidate{
+			upstreamModel:   upstreamModel,
+			sourcePrefixed:  sourcePrefixed,
+			exactAliasMatch: upstreamModel == alias,
 		}
 		key := strings.ToLower(clean.Model)
-		if _, exists := seen[key]; exists {
+		if index, exists := seen[key]; exists {
+			if preferNormalizedModelCandidate(candidate, candidates[index]) {
+				candidates[index] = candidate
+				normalized[index] = clean
+			}
 			continue
 		}
-		seen[key] = struct{}{}
+		seen[key] = len(normalized)
+		candidates = append(candidates, candidate)
 		normalized = append(normalized, clean)
 	}
 	return normalized
+}
+
+func normalizeModelAlias(modelName string, options modelNormalizationOptions) (string, bool) {
+	alias := modelName
+	sourcePrefixed := false
+	if options.stripModelSourcePrefix {
+		if separator := strings.LastIndexByte(alias, '/'); separator >= 0 && separator+1 < len(alias) {
+			alias = alias[separator+1:]
+			sourcePrefixed = true
+		}
+	}
+	if options.lowercaseModels {
+		alias = strings.ToLower(alias)
+	}
+	return alias, sourcePrefixed
+}
+
+func preferNormalizedModelCandidate(candidate, current normalizedModelCandidate) bool {
+	if candidate.exactAliasMatch != current.exactAliasMatch {
+		return candidate.exactAliasMatch
+	}
+	if candidate.sourcePrefixed != current.sourcePrefixed {
+		return !candidate.sourcePrefixed
+	}
+	return candidate.upstreamModel < current.upstreamModel
 }
 
 func modelEntriesEqual(left, right []model.ModelEntry) bool {
@@ -499,15 +548,18 @@ func modelEntriesEqual(left, right []model.ModelEntry) bool {
 	return true
 }
 
-// reconcileScheduledCheckModel 在刷新改变模型大小写或移除模型后，保证定时检测别名仍然有效。
-func reconcileScheduledCheckModel(cfg *model.Config) bool {
+// reconcileScheduledCheckModel 在刷新归一化或移除模型后，保证定时检测别名仍然有效。
+func reconcileScheduledCheckModel(cfg *model.Config, options modelNormalizationOptions) bool {
 	if cfg == nil || cfg.ScheduledCheckModel == "" {
 		return false
 	}
 
 	original := cfg.ScheduledCheckModel
+	normalizedOriginal, _ := normalizeModelAlias(original, options)
 	for _, entry := range cfg.ModelEntries {
-		if strings.EqualFold(entry.Model, original) {
+		if strings.EqualFold(entry.Model, original) ||
+			strings.EqualFold(entry.Model, normalizedOriginal) ||
+			strings.EqualFold(entry.RedirectModel, original) {
 			cfg.ScheduledCheckModel = entry.Model
 			return cfg.ScheduledCheckModel != original
 		}
