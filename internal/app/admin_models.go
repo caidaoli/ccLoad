@@ -87,13 +87,17 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 		return
 	}
 
-	// 3. 获取第一个API Key（用于调用Models API）
+	// 3. 获取第一个已启用的 API Key（用于调用 Models API）
 	keys, err := s.store.GetAPIKeys(c.Request.Context(), channelID)
-	if err != nil || len(keys) == 0 {
+	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "该渠道没有可用的API Key")
 		return
 	}
-	apiKey := keys[0].APIKey
+	apiKey := firstEnabledAPIKey(keys)
+	if apiKey == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "该渠道没有已启用的API Key")
+		return
+	}
 
 	// 4. 根据渠道配置执行模型抓取（支持query参数覆盖渠道类型）
 	channelType := c.Query("channel_type")
@@ -194,7 +198,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		item.ChannelName = cfg.Name
 
 		keys, err := s.store.GetAPIKeys(ctx, channelID)
-		if err != nil || len(keys) == 0 {
+		if err != nil {
 			item.Status = "failed"
 			item.Error = "该渠道没有可用的API Key"
 			failed++
@@ -202,10 +206,10 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		apiKey := strings.TrimSpace(keys[0].APIKey)
+		apiKey := firstEnabledAPIKey(keys)
 		if apiKey == "" {
 			item.Status = "failed"
-			item.Error = "该渠道没有可用的API Key"
+			item.Error = "该渠道没有已启用的API Key"
 			failed++
 			results = append(results, item)
 			continue
@@ -289,6 +293,18 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		"failed":    failed,
 		"results":   results,
 	})
+}
+
+func firstEnabledAPIKey(keys []*model.APIKey) string {
+	for _, key := range keys {
+		if key == nil || key.Disabled {
+			continue
+		}
+		if apiKey := strings.TrimSpace(key.APIKey); apiKey != "" {
+			return apiKey
+		}
+	}
+	return ""
 }
 
 // fetchModelsWithURLFallback 按URL排序顺序抓取模型列表。
