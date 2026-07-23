@@ -182,6 +182,7 @@ window.I18N_LOCALES['en'] = {
   'channels.batchRefreshMerge': 'Models Merge',
   'channels.batchRefreshReplace': 'Models Replace',
   'channels.batchRefreshLowercaseModels': 'Lowercase model names',
+  'channels.batchRefreshStripModelSourcePrefix': 'Remove model source prefixes',
   'channels.selectChannel': 'Select channel',
   'common.clearSearch': 'Clear search',
   'common.selectAll': 'Select all/Deselect all',
