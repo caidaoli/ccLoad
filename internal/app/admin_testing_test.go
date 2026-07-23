@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -98,6 +99,63 @@ func TestHandleChannelTest(t *testing.T) {
 			resp := mustParseAPIResponse[json.RawMessage](t, w.Body.Bytes())
 			if resp.Success != tt.expectSuccess {
 				t.Errorf("期望 success=%v, 实际=%v, error=%q", tt.expectSuccess, resp.Success, resp.Error)
+			}
+		})
+	}
+}
+
+func TestChannelTestCodexStopsAfterResponseCompleted(t *testing.T) {
+	streamBody := []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\"}}\n\n" +
+		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +
+		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\",\"status\":\"completed\",\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n")
+
+	tests := []struct {
+		name           string
+		clientProtocol string
+		transformMode  string
+	}{
+		{name: "native", clientProtocol: util.ChannelTypeCodex},
+		{name: "translated", clientProtocol: util.ChannelTypeOpenAI, transformMode: model.ProtocolTransformModeLocal},
+	}
+
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			srv.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body: &errAfterDataReadCloser{
+						data: streamBody,
+						err:  errors.New("local error: tls: bad record MAC"),
+					},
+					Request: req,
+				}, nil
+			})}
+
+			result := srv.testChannelAPI(context.Background(), &model.Config{
+				ID:                    int64(i + 1),
+				Name:                  tt.name + "-codex-semantic-completion",
+				URL:                   "https://upstream.invalid",
+				ChannelType:           util.ChannelTypeCodex,
+				ProtocolTransformMode: tt.transformMode,
+				ModelEntries:          []model.ModelEntry{{Model: "gpt-5.6-sol"}},
+			}, "sk-test", &testutil.TestChannelRequest{
+				Model:             "gpt-5.6-sol",
+				ProtocolTransform: tt.clientProtocol,
+				Stream:            true,
+				Content:           "hello",
+			})
+
+			if success, _ := result["success"].(bool); !success {
+				t.Fatalf("completed Responses stream must succeed despite trailing TLS error: %+v", result)
+			}
+			if got, _ := result["response_text"].(string); got != "hello" {
+				t.Fatalf("response_text=%q, want hello; result=%+v", got, result)
+			}
+			if _, hasError := result["error"]; hasError {
+				t.Fatalf("completed Responses stream must not expose trailing TLS error: %+v", result)
 			}
 		})
 	}
