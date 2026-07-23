@@ -3,6 +3,7 @@ package cooldown
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"strings"
 	"time"
@@ -39,6 +40,10 @@ type ErrorInput struct {
 	IsNetworkError bool
 	ModelScoped    bool // 网络错误是否只影响当前实际模型
 	Headers        map[string][]string
+
+	// CooldownDetectionRules belongs to the selected channel and is evaluated
+	// before built-in HTTP classification. Nil preserves the existing behavior.
+	CooldownDetectionRules *model.CooldownDetectionRules
 }
 
 // ConfigGetter 获取渠道配置的接口（支持缓存）
@@ -85,6 +90,15 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 
 	decision := cooldownDecision{
 		action: ActionReturnClient,
+	}
+
+	// A channel-local configured rule has priority over the built-in classifier.
+	// Network errors intentionally bypass this branch because they do not have a
+	// trustworthy upstream response body to match.
+	if !in.IsNetworkError {
+		if configured, ok := configuredCooldownDecision(in, time.Now()); ok {
+			return configured
+		}
 	}
 
 	// 1. 区分网络错误和HTTP错误的分类策略
@@ -160,6 +174,50 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 	}
 
 	return decision
+}
+
+func configuredCooldownDecision(in ErrorInput, now time.Time) (cooldownDecision, bool) {
+	evaluation := EvaluateCooldownDetectionRules(in.CooldownDetectionRules, DetectionInput{
+		StatusCode: in.StatusCode,
+		ErrorBody:  in.ErrorBody,
+	}, now)
+	if !evaluation.Actionable {
+		return cooldownDecision{}, false
+	}
+
+	reason := fmt.Sprintf("configured_rule_%d", evaluation.Priority)
+	switch evaluation.Scope {
+	case model.CooldownScopeKey:
+		if in.KeyIndex == NoKeyIndex {
+			return cooldownDecision{}, false
+		}
+		return cooldownDecision{
+			action:              ActionRetryKey,
+			keyCooldownUntil:    evaluation.CooldownUntil,
+			hasKeyCooldownUntil: true,
+			keyCooldownReason:   reason,
+		}, true
+	case model.CooldownScopeModel:
+		modelName := strings.TrimSpace(in.Model)
+		if modelName == "" {
+			return cooldownDecision{}, false
+		}
+		return cooldownDecision{
+			action:             ActionRetryModel,
+			model:              modelName,
+			modelScoped:        true,
+			modelCooldownUntil: evaluation.CooldownUntil,
+		}, true
+	case model.CooldownScopeChannel:
+		return cooldownDecision{
+			action:                  ActionRetryChannel,
+			channelCooldownUntil:    evaluation.CooldownUntil,
+			hasChannelCooldownUntil: true,
+			channelCooldownReason:   reason,
+		}, true
+	default:
+		return cooldownDecision{}, false
+	}
 }
 
 // DecideAction 仅做错误分类和动作决策，不写入任何冷却状态。

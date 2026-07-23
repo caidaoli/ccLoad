@@ -135,6 +135,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsCustomRequestRules(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels custom_request_rules: %w", err)
 			}
+			if err := ensureChannelsCooldownDetectionRules(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels cooldown_detection_rules: %w", err)
+			}
 			if err := ensureChannelsCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels cost_multiplier: %w", err)
 			}

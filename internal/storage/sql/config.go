@@ -22,7 +22,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	query := `
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
-			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -57,7 +57,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	query := `
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.channel_type, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
-			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -95,7 +95,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
 	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
-	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
@@ -109,7 +109,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
 	                   c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
-	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at
 	            FROM channels c
@@ -149,7 +149,7 @@ func (s *SQLStore) GetEnabledChannelsByType(ctx context.Context, channelType str
 	query := `
 			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
 			       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
-			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 			       c.created_at, c.updated_at
 			FROM channels c
@@ -191,7 +191,7 @@ func (s *SQLStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, mod
 	query := `
 		SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
 		       c.channel_type, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
-		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.proxy_url,
+		       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url,
 		       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 		       c.created_at, c.updated_at
 		FROM channels c
@@ -263,6 +263,10 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 	if err != nil {
 		return nil, err
 	}
+	cooldownDetectionRules, err := marshalCooldownDetectionRules(c.CooldownDetectionRules)
+	if err != nil {
+		return nil, err
+	}
 
 	id := c.ID
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
@@ -275,20 +279,20 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			// 插入渠道记录（数据库生成自增 id）
 			if s.IsPostgres() {
 				err := s.queryRowTx(ctx, tx, `
-					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					RETURNING id
 				`, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
-					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix).Scan(&id)
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, nowUnix, nowUnix).Scan(&id)
 				if err != nil {
 					return err
 				}
 			} else {
 				res, err := s.execTx(ctx, tx, `
-					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				`, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
-					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix)
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, nowUnix, nowUnix)
 				if err != nil {
 					return err
 				}
@@ -301,17 +305,17 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			// 显式主键：用于混合存储同步/恢复，保证两端主键一致
 			if s.supportsONConflict() {
 				_, err := s.execTx(ctx, tx, `
-					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 				`, id, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
-					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix)
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, nowUnix, nowUnix)
 				if err != nil {
 					return err
 				}
 			} else {
 				_, err := s.execTx(ctx, tx, `
-					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, proxy_url, created_at, updated_at)
-					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, channel_type, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 					ON DUPLICATE KEY UPDATE
 						name = VALUES(name),
 						url = VALUES(url),
@@ -326,10 +330,11 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 						daily_cost_limit = VALUES(daily_cost_limit),
 						cost_multiplier = VALUES(cost_multiplier),
 						custom_request_rules = VALUES(custom_request_rules),
+						cooldown_detection_rules = VALUES(cooldown_detection_rules),
 						proxy_url = VALUES(proxy_url),
 						updated_at = VALUES(updated_at)
 				`, id, c.Name, c.URL, c.Priority, c.RPMLimit, c.MaxConcurrency, channelType, protocolTransformMode,
-					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, c.ProxyURL, nowUnix, nowUnix)
+					boolToInt(c.Enabled), boolToInt(c.ScheduledCheckEnabled), c.ScheduledCheckModel, c.DailyCostLimit, normalizeCostMultiplier(c.CostMultiplier), customRules, cooldownDetectionRules, c.ProxyURL, nowUnix, nowUnix)
 				if err != nil {
 					return err
 				}
@@ -386,16 +391,20 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	if err != nil {
 		return nil, err
 	}
+	cooldownDetectionRules, err := marshalCooldownDetectionRules(upd.CooldownDetectionRules)
+	if err != nil {
+		return nil, err
+	}
 	updatedAtUnix := timeToUnix(time.Now())
 
 	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
 		// 更新渠道记录
 		_, err := s.execTx(ctx, tx, `
 			UPDATE channels
-			SET name=?, url=?, priority=?, rpm_limit=?, max_concurrency=?, channel_type=?, protocol_transform_mode=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, cost_multiplier=?, custom_request_rules=?, proxy_url=?, updated_at=?
+			SET name=?, url=?, priority=?, rpm_limit=?, max_concurrency=?, channel_type=?, protocol_transform_mode=?, enabled=?, scheduled_check_enabled=?, scheduled_check_model=?, daily_cost_limit=?, cost_multiplier=?, custom_request_rules=?, cooldown_detection_rules=?, proxy_url=?, updated_at=?
 			WHERE id=?
 		`, name, url, upd.Priority, upd.RPMLimit, upd.MaxConcurrency, channelType, protocolTransformMode,
-			boolToInt(upd.Enabled), boolToInt(upd.ScheduledCheckEnabled), upd.ScheduledCheckModel, upd.DailyCostLimit, normalizeCostMultiplier(upd.CostMultiplier), customRules, upd.ProxyURL, updatedAtUnix, id)
+			boolToInt(upd.Enabled), boolToInt(upd.ScheduledCheckEnabled), upd.ScheduledCheckModel, upd.DailyCostLimit, normalizeCostMultiplier(upd.CostMultiplier), customRules, cooldownDetectionRules, upd.ProxyURL, updatedAtUnix, id)
 		if err != nil {
 			return err
 		}

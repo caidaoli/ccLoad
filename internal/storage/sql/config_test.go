@@ -41,6 +41,10 @@ func TestConfig_CreateAndGet(t *testing.T) {
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
 		},
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Rate limit", Priority: 0, StatusCodes: []int{429},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
 	}
 	created, err := store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -78,6 +82,13 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if len(got.ModelEntries) != 2 {
 		t.Errorf("model entries count: got %d, want 2", len(got.ModelEntries))
+	}
+	if got.CooldownDetectionRules == nil || len(got.CooldownDetectionRules.Rules) != 1 {
+		t.Fatalf("cooldown detection rules = %#v, want one persisted rule", got.CooldownDetectionRules)
+	}
+	rule := got.CooldownDetectionRules.Rules[0]
+	if !rule.Enabled || rule.Name != "Rate limit" || rule.Priority != 0 || rule.Scope != model.CooldownScopeKey || rule.Mode != model.CooldownModeFixed || rule.CooldownSeconds != 90 {
+		t.Fatalf("persisted cooldown detection rule = %#v", rule)
 	}
 
 	// 获取不存在的渠道
@@ -232,6 +243,11 @@ func TestConfig_UpdateConfig(t *testing.T) {
 		{Model: "new-model-1"},
 		{Model: "new-model-2"},
 	}
+	created.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+		Enabled: true, Name: "Reset time", Priority: 0, MessagePattern: `reset at (?P<until>\d{4}-\d{2}-\d{2})`,
+		Scope: model.CooldownScopeChannel, Mode: model.CooldownModeResetTime,
+		TimeCapture: "until", TimeFormat: model.CooldownTimeFormatDateTime, TimeLayout: "2006-01-02", Timezone: "UTC",
+	}}}
 
 	if _, err := store.UpdateConfig(ctx, created.ID, created); err != nil {
 		t.Fatalf("update config: %v", err)
@@ -256,6 +272,9 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	}
 	if len(got.ModelEntries) != 2 {
 		t.Errorf("model entries count: got %d, want 2", len(got.ModelEntries))
+	}
+	if got.CooldownDetectionRules == nil || len(got.CooldownDetectionRules.Rules) != 1 || got.CooldownDetectionRules.Rules[0].Mode != model.CooldownModeResetTime || got.CooldownDetectionRules.Rules[0].TimeFormat != model.CooldownTimeFormatDateTime {
+		t.Fatalf("updated cooldown detection rules = %#v", got.CooldownDetectionRules)
 	}
 }
 

@@ -319,10 +319,15 @@ function initChannelEditorActions() {
         'confirm-model-import': () => invokeChannelEditorAction('confirmModelImport'),
         'open-custom-rules-modal': () => invokeChannelEditorAction('openCustomRulesModal'),
         'close-custom-rules-modal': () => invokeChannelEditorAction('closeCustomRulesModal'),
-        'apply-custom-rules': () => invokeChannelEditorAction('applyCustomRulesFromForm'),
+        'switch-advanced-settings-tab': (actionTarget) => invokeChannelEditorAction('switchAdvancedSettingsTab', actionTarget?.dataset?.advancedSettingsTab || ''),
+        'apply-advanced-settings': () => invokeChannelEditorAction('applyAdvancedSettingsFromForm'),
         'add-custom-rule': (actionTarget) => invokeChannelEditorAction('addCustomRule', actionTarget?.dataset?.customRulesTarget || ''),
         'remove-custom-rule': (actionTarget) => invokeChannelEditorAction('removeCustomRule', actionTarget?.dataset?.customRulesTarget || '', Number(actionTarget?.dataset?.customRulesIndex || '-1')),
-        'close-custom-rules-help': () => invokeChannelEditorAction('closeCustomRulesHelp')
+        'close-custom-rules-help': () => invokeChannelEditorAction('closeCustomRulesHelp'),
+        'add-cooldown-detection-rule': () => invokeChannelEditorAction('addCooldownDetectionRule'),
+        'remove-cooldown-detection-rule': (actionTarget) => invokeChannelEditorAction('removeCooldownDetectionRule', Number(actionTarget?.dataset?.cooldownDetectionIndex || '-1')),
+        'move-cooldown-detection-rule': (actionTarget) => invokeChannelEditorAction('moveCooldownDetectionRule', Number(actionTarget?.dataset?.cooldownDetectionIndex || '-1'), Number(actionTarget?.dataset?.cooldownDetectionDirection || '0')),
+        'test-cooldown-detection-rules': () => invokeChannelEditorAction('testCooldownDetectionRules')
       },
       change: {
         'toggle-select-all-urls': (actionTarget) => invokeChannelEditorAction('toggleSelectAllURLs', actionTarget.checked),
@@ -402,6 +407,7 @@ async function showAddModal() {
   renderInlineKeyTable();
 
   invokeChannelEditorAction('resetCustomRulesState', null);
+  invokeChannelEditorAction('resetCooldownDetectionState', null);
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -502,6 +508,7 @@ async function editChannel(id) {
   syncScheduledCheckModelState();
 
   invokeChannelEditorAction('resetCustomRulesState', channel.custom_request_rules || null);
+  invokeChannelEditorAction('resetCooldownDetectionState', channel.cooldown_detection_rules || null);
 
   const proxyUrlInput = document.getElementById('channelProxyURL');
   if (proxyUrlInput) proxyUrlInput.value = channel.proxy_url || '';
@@ -677,6 +684,17 @@ function setChannelSavePending(pending) {
 async function saveChannel(event) {
   event.preventDefault();
 
+  const cooldownRuleErrors = invokeChannelEditorAction('validateCooldownDetectionRulesForSubmit');
+  if (Array.isArray(cooldownRuleErrors) && cooldownRuleErrors.length > 0) {
+    const message = `${window.t('channels.cooldownDetection.saveIncomplete', 'Cannot save channel: complete all cooldown detection rules.')} ${cooldownRuleErrors.join(' · ')}`;
+    if (window.showError) {
+      window.showError(message);
+    } else {
+      alert(message);
+    }
+    return;
+  }
+
   const validURLs = getValidInlineURLs();
   if (validURLs.length === 0) {
     alert(window.t('channels.fillApiUrlFirst'));
@@ -746,6 +764,7 @@ async function saveChannel(event) {
     scheduled_check_enabled: document.getElementById('channelScheduledCheckEnabled').checked,
     scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
     custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
+    cooldown_detection_rules: invokeChannelEditorAction('collectCooldownDetectionRulesForSubmit') || null,
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim()
   };
 

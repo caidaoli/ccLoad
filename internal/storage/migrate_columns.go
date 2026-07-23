@@ -592,6 +592,10 @@ func ensureChannelsCustomRequestRules(ctx context.Context, db *sql.DB, dialect D
 	return ensureColumn(ctx, db, dialect, "channels", "custom_request_rules", "TEXT", "TEXT")
 }
 
+func ensureChannelsCooldownDetectionRules(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "cooldown_detection_rules", "TEXT", "TEXT")
+}
+
 func ensureChannelsProxyURL(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "proxy_url",
 		"VARCHAR(255) NOT NULL DEFAULT ''",

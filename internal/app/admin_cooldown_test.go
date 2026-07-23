@@ -5,11 +5,78 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		ID:           1,
+		Name:         "cooldown-detection-test",
+		URL:          "https://api.example.com",
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig() error = %v", err)
+	}
+	originalUntil := time.Now().Add(5 * time.Minute).Truncate(time.Second)
+	if err := srv.store.SetChannelCooldown(ctx, created.ID, originalUntil); err != nil {
+		t.Fatalf("SetChannelCooldown() error = %v", err)
+	}
+
+	payload := map[string]any{
+		"status_code": 406,
+		"error_body":  `{"error":{"code":"maintenance","message":"planned maintenance"}}`,
+		"cooldown_detection_rules": map[string]any{
+			"rules": []map[string]any{{
+				"enabled":          true,
+				"name":             "Maintenance",
+				"priority":         9,
+				"status_codes":     []int{406},
+				"message_pattern":  "planned maintenance",
+				"scope":            model.CooldownScopeChannel,
+				"mode":             model.CooldownModeFixed,
+				"cooldown_seconds": 120,
+			}},
+		},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/cooldown-detection/test", payload))
+	srv.HandleCooldownDetectionTest(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var data struct {
+		Code              string     `json:"code"`
+		Matched           bool       `json:"matched"`
+		Actionable        bool       `json:"actionable"`
+		Priority          *int       `json:"priority"`
+		CooldownUntil     *time.Time `json:"cooldown_until"`
+		FallbackToBuiltin bool       `json:"fallback_to_builtin"`
+	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
+	if data.Code != "MAINTENANCE" || !data.Matched || !data.Actionable || data.Priority == nil || *data.Priority != 0 {
+		t.Fatalf("unexpected rule test result: %+v", data)
+	}
+	if data.CooldownUntil == nil || !data.CooldownUntil.After(time.Now()) || data.FallbackToBuiltin {
+		t.Fatalf("unexpected cooldown result: %+v", data)
+	}
+
+	updated, err := srv.store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if updated.CooldownUntil != originalUntil.Unix() {
+		t.Fatalf("test endpoint changed channel cooldown: got %d, want %d", updated.CooldownUntil, originalUntil.Unix())
+	}
+}
 
 // TestHandleSetChannelCooldown 测试设置渠道冷却
 func TestHandleSetChannelCooldown(t *testing.T) {
