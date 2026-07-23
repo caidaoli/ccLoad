@@ -4357,9 +4357,104 @@
     /* ============================================================
      * 自定义请求规则（高级）模态框
      * ============================================================ */
-    .custom-rules-modal {
-      max-width: 760px;
-      width: 92%;
+    #customRulesModal .advanced-settings-modal {
+      width: 90vw;
+      max-width: 90vw;
+      height: 90vh;
+      max-height: 90vh;
+      margin: 0;
+      padding: 14px 20px;
+      box-sizing: border-box;
+      border-radius: 12px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      font-size: 14px;
+    }
+
+    #customRulesModal .modal-header,
+    #customRulesModal .advanced-settings-tabs,
+    #customRulesModal .custom-rules-footer {
+      flex: 0 0 auto;
+    }
+
+    #customRulesModal .advanced-settings-panel {
+      min-width: 0;
+      min-height: 0;
+    }
+
+    #customRulesModal .advanced-settings-panel:not(.hidden) {
+      display: flex;
+      flex: 1 1 auto;
+      flex-direction: column;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    #customRulesModal .form-input {
+      padding: 6px 8px;
+      border-width: 1px;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    .advanced-settings-tabs {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid var(--border-color, #e2e8f0);
+      margin-bottom: 16px;
+    }
+
+    .advanced-settings-tab-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: transparent;
+      border: none;
+      border-bottom: 2px solid transparent;
+      padding: 9px 14px;
+      cursor: pointer;
+      color: var(--text-600, #475569);
+      font-size: 0.92rem;
+      transition: color 0.15s, border-color 0.15s;
+    }
+
+    .advanced-settings-tab-button:hover {
+      color: var(--primary-600, #2563eb);
+    }
+
+    .advanced-settings-tab-button.active {
+      color: var(--primary-600, #2563eb);
+      border-bottom-color: var(--primary-600, #2563eb);
+      font-weight: 600;
+    }
+
+    .advanced-settings-tab-count {
+      font-size: 0.8rem;
+      color: var(--text-500, #64748b);
+    }
+
+    .advanced-settings-panel.hidden {
+      display: none;
+    }
+
+    .advanced-settings-proxy-field {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+      flex: 0 0 auto;
+      margin-bottom: 12px;
+    }
+
+    .advanced-settings-proxy-field .form-label {
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .advanced-settings-proxy-field .form-input {
+      min-width: 0;
     }
 
     .custom-rules-tabs {
@@ -4442,6 +4537,9 @@
       display: flex;
       flex-direction: column;
       gap: 8px;
+      flex: 0 1 auto;
+      min-height: 0;
+      overflow: hidden;
     }
 
     .custom-rules-panel.hidden {
@@ -4451,8 +4549,9 @@
     .custom-rules-list {
       display: flex;
       flex-direction: column;
+      flex: 0 1 auto;
       gap: 6px;
-      max-height: 360px;
+      min-height: 0;
       overflow-y: auto;
       padding-right: 4px;
     }
@@ -4539,8 +4638,12 @@
     }
 
     @media (max-width: 640px) {
-      .custom-rules-modal .modal-title {
+      .advanced-settings-modal .modal-title {
         font-size: 1rem;
+      }
+      .advanced-settings-tab-button {
+        font-size: 0.8rem;
+        padding: 6px 10px;
       }
       .custom-rules-tab-button {
         font-size: 0.8rem;
@@ -4548,13 +4651,6 @@
       }
       .custom-rules-tab-count {
         font-size: 0.72rem;
-      }
-      .custom-rules-modal .form-input {
-        font-size: 0.85rem;
-        padding: 6px 10px;
-      }
-      .custom-rules-modal select.form-input {
-        font-size: 0.85rem;
       }
       .custom-rules-help-popup,
       .custom-rules-help-popup pre {
@@ -4580,4 +4676,301 @@
       .custom-rules-row .custom-rules-primary { grid-area: primary; }
       .custom-rules-row .custom-rules-value { grid-area: value; }
       .custom-rules-row .custom-rules-remove-btn { grid-area: remove; justify-self: end; }
+    }
+
+    .cooldown-detection-toolbar {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .cooldown-detection-intro {
+      margin: 0;
+      color: var(--text-600, #475569);
+      font-size: 0.86rem;
+      line-height: 1.55;
+    }
+
+    .cooldown-detection-rule-list {
+      display: flex;
+      flex-direction: column;
+      flex: 0 1 auto;
+      gap: 10px;
+      min-height: 0;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .cooldown-detection-empty {
+      border: 1px dashed var(--border-color, #e2e8f0);
+      border-radius: 8px;
+      color: var(--text-500, #64748b);
+      font-size: 0.86rem;
+      padding: 20px 12px;
+      text-align: center;
+    }
+
+    .cooldown-detection-rule {
+      border: 1px solid var(--border-color, #e2e8f0);
+      border-radius: 8px;
+      background: var(--bg-card, #fff);
+      padding: 12px;
+    }
+
+    .cooldown-detection-rule-header {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .cooldown-detection-enabled {
+      color: var(--text-700, #334155);
+      font-size: 0.84rem;
+      white-space: nowrap;
+    }
+
+    .cooldown-detection-priority {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--text-700, #334155);
+      font-size: 0.84rem;
+    }
+
+    .cooldown-detection-name {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 200px);
+      align-items: center;
+      gap: 6px;
+      flex: 0 1 auto;
+      min-width: 0;
+      color: var(--text-700, #334155);
+      font-size: 0.84rem;
+    }
+
+    .cooldown-detection-name .form-input {
+      width: 200px;
+      max-width: 100%;
+      min-width: 0;
+      min-height: 30px;
+      padding: 3px 6px;
+    }
+
+    .cooldown-detection-priority-input {
+      width: 62px;
+      min-height: 30px;
+      padding: 3px 6px;
+    }
+
+    .cooldown-detection-rule-controls {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .cooldown-detection-icon-button {
+      min-width: 30px;
+      padding: 4px 7px;
+      line-height: 1;
+    }
+
+    .cooldown-detection-grid {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      column-gap: 16px;
+      row-gap: 8px;
+      margin-top: 8px;
+    }
+
+    .cooldown-detection-fixed[hidden],
+    .cooldown-detection-dynamic[hidden],
+    .cooldown-detection-time-format-datetime[hidden] {
+      display: none;
+    }
+
+    .cooldown-detection-field {
+      display: grid;
+      grid-template-columns: 112px minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    html[lang^="zh"] .cooldown-detection-field {
+      grid-template-columns: 64px minmax(0, 1fr);
+    }
+
+    .cooldown-detection-field > span {
+      color: var(--text-600, #475569);
+      font-size: 0.76rem;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .cooldown-detection-field .form-input {
+      min-width: 0;
+    }
+
+    .cooldown-detection-rule .cooldown-detection-field {
+      grid-template-columns: 64px 240px;
+      flex: 0 0 auto;
+    }
+
+    html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-field {
+      grid-template-columns: 112px 240px;
+    }
+
+    .cooldown-detection-rule .cooldown-detection-field .form-input {
+      width: 240px;
+      max-width: 100%;
+    }
+
+    .cooldown-detection-rule .cooldown-detection-message-pattern {
+      flex: 1 1 360px;
+      grid-template-columns: 64px minmax(0, 1fr);
+    }
+
+    html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-message-pattern {
+      grid-template-columns: 112px minmax(0, 1fr);
+    }
+
+    .cooldown-detection-rule .cooldown-detection-message-pattern .form-input {
+      width: 100%;
+    }
+
+    html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-time-format,
+    html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-time-format-datetime,
+    html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-time-format,
+    html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-time-format-datetime {
+      grid-template-columns: max-content 240px;
+    }
+
+    .cooldown-detection-field--body {
+      align-items: start;
+    }
+
+    .cooldown-detection-add-btn {
+      flex: 0 0 auto;
+      margin: 0;
+    }
+
+    #customRulesModal .custom-rules-add-btn,
+    #customRulesModal .cooldown-detection-add-btn,
+    #customRulesModal #cooldownDetectionTestButton,
+    #customRulesModal .custom-rules-footer .btn {
+      height: 34px;
+      min-height: 34px;
+      padding: 0 12px;
+      font-size: 14px;
+      line-height: 1;
+    }
+
+    .cooldown-detection-test-panel {
+      flex: 0 0 auto;
+      margin-top: 18px;
+      padding: 12px;
+      border: 1px solid var(--info-200, #bfdbfe);
+      border-radius: 8px;
+      background: var(--info-50, #eff6ff);
+    }
+
+    .cooldown-detection-test-panel h3 {
+      margin: 0;
+      color: var(--text-800, #1e293b);
+      font-size: 0.92rem;
+    }
+
+    .cooldown-detection-test-panel > p {
+      margin: 5px 0 10px;
+      color: var(--text-600, #475569);
+      font-size: 0.8rem;
+      line-height: 1.45;
+    }
+
+    .cooldown-detection-test-controls {
+      display: grid;
+      grid-template-columns: minmax(0, 280px) max-content;
+      align-items: end;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .cooldown-detection-field--body textarea {
+      min-height: 84px;
+      resize: vertical;
+    }
+
+    .cooldown-detection-test-result {
+      margin: 10px 0 0;
+      padding: 10px;
+      border: 1px solid var(--success-200, #bbf7d0);
+      border-radius: 6px;
+      background: var(--success-50, #f0fdf4);
+      color: var(--success-800, #166534);
+      font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .cooldown-detection-test-result--fallback {
+      border-color: var(--warning-200, #fde68a);
+      background: var(--warning-50, #fffbeb);
+      color: var(--warning-800, #92400e);
+    }
+
+    @media (max-width: 640px) {
+      #customRulesModal .advanced-settings-modal {
+        padding: 16px;
+      }
+
+      .advanced-settings-tabs {
+        overflow-x: auto;
+      }
+
+      .advanced-settings-tab-button {
+        flex: 0 0 auto;
+      }
+
+      .advanced-settings-proxy-field,
+      .cooldown-detection-field,
+      .cooldown-detection-name {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-field,
+      html:not([lang^="zh"]) .cooldown-detection-rule .cooldown-detection-field {
+        grid-template-columns: 1fr;
+      }
+
+      .cooldown-detection-rule-header {
+        align-items: flex-start;
+        flex-wrap: wrap;
+      }
+
+      .cooldown-detection-rule-controls {
+        margin-left: 0;
+      }
+
+      .cooldown-detection-toolbar {
+        align-items: flex-end;
+        flex-direction: column;
+      }
+
+      .cooldown-detection-rule .cooldown-detection-field {
+        flex-basis: 100%;
+      }
+
+      .cooldown-detection-rule .cooldown-detection-field .form-input {
+        width: 100%;
+      }
+
+      .cooldown-detection-test-controls {
+        grid-template-columns: minmax(0, 1fr) max-content;
+      }
     }

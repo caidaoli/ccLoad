@@ -124,13 +124,14 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var scheduledCheckEnabledInt int
 	var scheduledCheckModel string
 	var customRequestRules sql.NullString
+	var cooldownDetectionRules sql.NullString
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URL, &c.Priority,
 		&c.RPMLimit, &c.MaxConcurrency, &c.ChannelType, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &c.ProxyURL, &c.KeyCount,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &cooldownDetectionRules, &c.ProxyURL, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
@@ -139,6 +140,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0
 	c.ScheduledCheckModel = scheduledCheckModel
 	c.CustomRequestRules = parseCustomRequestRules(c.ID, customRequestRules)
+	c.CooldownDetectionRules = parseCooldownDetectionRules(c.ID, cooldownDetectionRules)
 	if c.CostMultiplier < 0 {
 		c.CostMultiplier = 1
 	}
@@ -306,6 +308,37 @@ func marshalCustomRequestRules(rules *model.CustomRequestRules) (sql.NullString,
 	data, err := json.Marshal(rules)
 	if err != nil {
 		return sql.NullString{}, fmt.Errorf("marshal custom_request_rules: %w", err)
+	}
+	return sql.NullString{String: string(data), Valid: true}, nil
+}
+
+func parseCooldownDetectionRules(channelID int64, raw sql.NullString) *model.CooldownDetectionRules {
+	if !raw.Valid {
+		return nil
+	}
+	trimmed := strings.TrimSpace(raw.String)
+	if trimmed == "" || trimmed == "null" {
+		return nil
+	}
+	var rules model.CooldownDetectionRules
+	if err := json.Unmarshal([]byte(trimmed), &rules); err != nil {
+		slog.Warn("cooldown_detection_rules: unmarshal failed, treated as empty",
+			"channel_id", channelID, "error", err.Error())
+		return nil
+	}
+	if rules.IsEmpty() {
+		return nil
+	}
+	return &rules
+}
+
+func marshalCooldownDetectionRules(rules *model.CooldownDetectionRules) (sql.NullString, error) {
+	if rules == nil || rules.IsEmpty() {
+		return sql.NullString{}, nil
+	}
+	data, err := json.Marshal(rules)
+	if err != nil {
+		return sql.NullString{}, fmt.Errorf("marshal cooldown_detection_rules: %w", err)
 	}
 	return sql.NullString{String: string(data), Valid: true}, nil
 }

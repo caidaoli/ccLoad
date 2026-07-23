@@ -193,6 +193,26 @@ func TestEnsureChannelsDailyCostLimit_SQLite(t *testing.T) {
 	}
 }
 
+func TestEnsureChannelsCooldownDetectionRules_SQLite(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if err := ensureChannelsCooldownDetectionRules(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensureChannelsCooldownDetectionRules: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "channels")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns: %v", err)
+	}
+	if !cols["cooldown_detection_rules"] {
+		t.Fatal("cooldown_detection_rules column not found in channels")
+	}
+}
+
 func TestEnsureAuthTokensAllowedModels_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

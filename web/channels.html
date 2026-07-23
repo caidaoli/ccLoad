@@ -37,6 +37,7 @@
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-sort.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-init.js?v=__VERSION__"></script>
@@ -692,65 +693,111 @@
     </div>
   </div>
 
-  <!-- 自定义请求规则模态框 -->
+  <!-- 高级设置模态框 -->
   <div id="customRulesModal" class="modal">
-    <div class="modal-content custom-rules-modal">
+    <div class="modal-content advanced-settings-modal">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.customRules.modalTitle">自定义请求规则</h2>
+        <h2 class="modal-title" data-i18n="channels.advancedSettings.title">高级设置</h2>
         <button type="button" class="close-btn" data-action="close-custom-rules-modal">&times;</button>
       </div>
-      <div style="display: flex; align-items: center; gap: 8px; margin: 0 0 12px 0;">
-        <label class="form-label" for="channelProxyURL" style="margin: 0; white-space: nowrap;"
-          data-i18n="channels.proxyURL">代理</label>
-        <input type="text" id="channelProxyURL" class="form-input" value="" style="flex: 1;"
-          data-i18n-placeholder="channels.proxyURLPlaceholder"
-          placeholder="http:// | socks5://">
-      </div>
-      <div class="custom-rules-tabs" role="tablist">
-        <button type="button" class="custom-rules-tab-button active" data-custom-rules-tab="headers"
-          role="tab" aria-selected="true">
-          <span data-i18n="channels.customRules.tabHeaders">请求头</span>
-          <span class="custom-rules-tab-count" id="customRulesHeadersCount">(0)</span>
-          <span class="custom-rules-help-icon" data-custom-rules-help="headers"
-            title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+      <div class="advanced-settings-tabs" role="tablist">
+        <button type="button" class="advanced-settings-tab-button active" data-action="switch-advanced-settings-tab"
+          data-advanced-settings-tab="custom-rules" role="tab" aria-selected="true" aria-controls="advancedSettingsPanelCustomRules">
+          <span data-i18n="channels.advancedSettings.tabCustomRules">自定义请求规则</span>
         </button>
-        <button type="button" class="custom-rules-tab-button" data-custom-rules-tab="body"
-          role="tab" aria-selected="false">
-          <span data-i18n="channels.customRules.tabBody">请求参数</span>
-          <span class="custom-rules-tab-count" id="customRulesBodyCount">(0)</span>
-          <span class="custom-rules-help-icon" data-custom-rules-help="body"
-            title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+        <button type="button" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
+          data-advanced-settings-tab="cooldown-detection" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelCooldownDetection">
+          <span data-i18n="channels.advancedSettings.tabCooldownDetection">冷却探测规则</span>
+          <span class="advanced-settings-tab-count" id="cooldownDetectionRulesCount">(0)</span>
         </button>
       </div>
-      <div class="custom-rules-help-popup" id="customRulesHelpPopup" hidden>
-        <pre id="customRulesHelpContent"></pre>
-        <button type="button" class="btn btn-secondary btn-sm" data-action="close-custom-rules-help"
-          data-i18n="common.close">关闭</button>
-      </div>
-      <div class="custom-rules-anyrouter-hint" id="customRulesAnyrouterHint" hidden>
-        <div class="custom-rules-anyrouter-hint-title" data-i18n="channels.customRules.anyrouterHintTitle">系统自动注入规则（anyrouter 渠道）</div>
-        <ul class="custom-rules-anyrouter-hint-list">
-          <li data-i18n="channels.customRules.anyrouterHintBeta">请求头追加 anthropic-beta: context-1m-2025-08-07（可被下方自定义规则覆盖或移除）</li>
-          <li data-i18n="channels.customRules.anyrouterHintThinking">/v1/messages 缺失 thinking 时补 thinking.type=adaptive；旧 thinking.type=enabled 会归一为 output_config.effort</li>
-        </ul>
-      </div>
-      <div class="custom-rules-panel" id="customRulesPanelHeaders">
-        <div class="custom-rules-list" id="customRulesListHeaders"></div>
-        <button type="button" class="btn btn-secondary custom-rules-add-btn"
-          data-action="add-custom-rule" data-custom-rules-target="headers"
-          data-i18n="channels.customRules.addRule">+ 添加规则</button>
-      </div>
-      <div class="custom-rules-panel hidden" id="customRulesPanelBody">
-        <div class="custom-rules-list" id="customRulesListBody"></div>
-        <button type="button" class="btn btn-secondary custom-rules-add-btn"
-          data-action="add-custom-rule" data-custom-rules-target="body"
-          data-i18n="channels.customRules.addRule">+ 添加规则</button>
-      </div>
-      <div id="customRulesError" class="custom-rules-error" hidden></div>
+
+      <section id="advancedSettingsPanelCustomRules" class="advanced-settings-panel" role="tabpanel">
+        <label class="advanced-settings-proxy-field" for="channelProxyURL">
+          <span class="form-label" data-i18n="channels.proxyURL">代理</span>
+          <input type="text" id="channelProxyURL" class="form-input" value=""
+            data-i18n-placeholder="channels.proxyURLPlaceholder"
+            placeholder="http:// | socks5://">
+        </label>
+        <div class="custom-rules-tabs" role="tablist">
+          <button type="button" class="custom-rules-tab-button active" data-custom-rules-tab="headers"
+            role="tab" aria-selected="true">
+            <span data-i18n="channels.customRules.tabHeaders">请求头</span>
+            <span class="custom-rules-tab-count" id="customRulesHeadersCount">(0)</span>
+            <span class="custom-rules-help-icon" data-custom-rules-help="headers"
+              title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+          </button>
+          <button type="button" class="custom-rules-tab-button" data-custom-rules-tab="body"
+            role="tab" aria-selected="false">
+            <span data-i18n="channels.customRules.tabBody">请求参数</span>
+            <span class="custom-rules-tab-count" id="customRulesBodyCount">(0)</span>
+            <span class="custom-rules-help-icon" data-custom-rules-help="body"
+              title="" data-i18n-title="channels.customRules.helpIconTitle" aria-label="help">?</span>
+          </button>
+        </div>
+        <div class="custom-rules-help-popup" id="customRulesHelpPopup" hidden>
+          <pre id="customRulesHelpContent"></pre>
+          <button type="button" class="btn btn-secondary btn-sm" data-action="close-custom-rules-help"
+            data-i18n="common.close">关闭</button>
+        </div>
+        <div class="custom-rules-anyrouter-hint" id="customRulesAnyrouterHint" hidden>
+          <div class="custom-rules-anyrouter-hint-title" data-i18n="channels.customRules.anyrouterHintTitle">系统自动注入规则（anyrouter 渠道）</div>
+          <ul class="custom-rules-anyrouter-hint-list">
+            <li data-i18n="channels.customRules.anyrouterHintBeta">请求头追加 anthropic-beta: context-1m-2025-08-07（可被下方自定义规则覆盖或移除）</li>
+            <li data-i18n="channels.customRules.anyrouterHintThinking">/v1/messages 缺失 thinking 时补 thinking.type=adaptive；旧 thinking.type=enabled 会归一为 output_config.effort</li>
+          </ul>
+        </div>
+        <div class="custom-rules-panel" id="customRulesPanelHeaders">
+          <div class="custom-rules-list" id="customRulesListHeaders"></div>
+          <button type="button" class="btn btn-secondary custom-rules-add-btn"
+            data-action="add-custom-rule" data-custom-rules-target="headers"
+            data-i18n="channels.customRules.addRule">+ 添加规则</button>
+        </div>
+        <div class="custom-rules-panel hidden" id="customRulesPanelBody">
+          <div class="custom-rules-list" id="customRulesListBody"></div>
+          <button type="button" class="btn btn-secondary custom-rules-add-btn"
+            data-action="add-custom-rule" data-custom-rules-target="body"
+            data-i18n="channels.customRules.addRule">+ 添加规则</button>
+        </div>
+        <div id="customRulesError" class="custom-rules-error" hidden></div>
+      </section>
+
+      <section id="advancedSettingsPanelCooldownDetection" class="advanced-settings-panel hidden" role="tabpanel">
+        <div class="cooldown-detection-toolbar">
+          <p class="cooldown-detection-intro" data-i18n="channels.cooldownDetection.intro">规则按显示顺序匹配；第一条命中即停止。未命中或动态重置时间无效时，继续使用内置分类。</p>
+          <button type="button" class="btn btn-secondary cooldown-detection-add-btn" data-action="add-cooldown-detection-rule"
+            data-i18n="channels.cooldownDetection.addRule">+ 添加冷却规则</button>
+        </div>
+        <div id="cooldownDetectionRulesList" class="cooldown-detection-rule-list"></div>
+
+        <section class="cooldown-detection-test-panel">
+          <h3 data-i18n="channels.cooldownDetection.testTitle">测试草稿规则</h3>
+          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试一段上游响应；不会写入任何冷却状态。</p>
+          <div class="cooldown-detection-test-controls">
+            <label class="cooldown-detection-field" for="cooldownDetectionTestStatus">
+              <span data-i18n="channels.cooldownDetection.testStatus">状态码</span>
+              <input id="cooldownDetectionTestStatus" type="number" class="form-input" min="100" max="599" step="1" value="200"
+                title="用于测试匹配的上游 HTTP 状态码" data-i18n-title="channels.cooldownDetection.testStatusHelp">
+            </label>
+            <button id="cooldownDetectionTestButton" type="button" class="btn btn-secondary" data-action="test-cooldown-detection-rules"
+              data-i18n="channels.cooldownDetection.testButton">测试匹配</button>
+          </div>
+          <label class="cooldown-detection-field cooldown-detection-field--body" for="cooldownDetectionTestBody">
+            <span data-i18n="channels.cooldownDetection.testBody">上游响应体</span>
+            <textarea id="cooldownDetectionTestBody" class="form-input" rows="4" spellcheck="false"
+              data-i18n-placeholder="channels.cooldownDetection.testBodyPlaceholder"
+              title="用于测试匹配的上游响应体；不会写入冷却状态" data-i18n-title="channels.cooldownDetection.testBodyHelp"
+              placeholder='{"error":{"message":"retry later"}}'></textarea>
+          </label>
+          <pre id="cooldownDetectionTestResult" class="cooldown-detection-test-result" hidden></pre>
+        </section>
+        <div id="cooldownDetectionError" class="custom-rules-error" hidden></div>
+      </section>
+
       <div class="modal-footer custom-rules-footer">
         <button type="button" class="btn btn-secondary" data-action="close-custom-rules-modal"
           data-i18n="common.cancel">取消</button>
-        <button type="button" class="btn btn-primary" data-action="apply-custom-rules"
+        <button type="button" class="btn btn-primary" data-action="apply-advanced-settings"
           data-i18n="common.confirm">确定</button>
       </div>
     </div>

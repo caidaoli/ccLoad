@@ -411,3 +411,62 @@ func TestChannelRequestValidation_URLDeduplication(t *testing.T) {
 		t.Fatalf("URL dedupe/normalize failed, got %q", req.URL)
 	}
 }
+
+func TestChannelRequestValidation_CooldownDetectionRules(t *testing.T) {
+	t.Run("sorts rules and copies them into config", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{
+			{
+				Enabled: true, Name: "Key rate limit", Priority: 7, StatusCodes: []int{503, 429}, MessagePattern: "rate_limit",
+				Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+			},
+			{
+				Enabled: true, Name: "Reset time", Priority: 2, MessagePattern: `reset at (?P<until>\d{4}-\d{2}-\d{2})`,
+				Scope: model.CooldownScopeChannel, Mode: model.CooldownModeResetTime,
+				TimeCapture: "until", TimeLayout: "2006-01-02", Timezone: "UTC",
+			},
+		}}
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v", err)
+		}
+		if req.CooldownDetectionRules.Rules[0].Priority != 0 || req.CooldownDetectionRules.Rules[1].Priority != 1 {
+			t.Fatalf("priorities were not normalized: %#v", req.CooldownDetectionRules.Rules)
+		}
+		if req.CooldownDetectionRules.Rules[0].Scope != model.CooldownScopeChannel || req.CooldownDetectionRules.Rules[0].StatusCodes != nil {
+			t.Fatalf("rules were not sorted by submitted priority: %#v", req.CooldownDetectionRules.Rules)
+		}
+
+		cfg := req.ToConfig()
+		req.CooldownDetectionRules.Rules[0].Scope = model.CooldownScopeKey
+		req.CooldownDetectionRules.Rules[0].Name = "mutated"
+		if cfg.CooldownDetectionRules.Rules[0].Scope != model.CooldownScopeChannel || cfg.CooldownDetectionRules.Rules[0].Name != "Reset time" {
+			t.Fatalf("ToConfig() shared mutable cooldown detection rules")
+		}
+	})
+
+	t.Run("rejects reset time rule without referenced capture", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Missing capture", Priority: 0, MessagePattern: `reset at \d+`,
+			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeResetTime,
+			TimeCapture: "until", TimeLayout: "2006-01-02", Timezone: "UTC",
+		}}}
+
+		if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "time_capture") {
+			t.Fatalf("Validate() error = %v, want missing time_capture error", err)
+		}
+	})
+
+	t.Run("rejects rule without a name", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.CooldownDetectionRules = &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Priority: 0, StatusCodes: []int{200},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+		}}}
+
+		if err := req.Validate(); err == nil || !strings.Contains(err.Error(), ".name: required") {
+			t.Fatalf("Validate() error = %v, want required name error", err)
+		}
+	})
+}

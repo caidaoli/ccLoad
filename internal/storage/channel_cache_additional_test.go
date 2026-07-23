@@ -335,6 +335,10 @@ func TestChannelCache_DeepCopyPreservesCostMultiplier(t *testing.T) {
 		CustomRequestRules: &model.CustomRequestRules{
 			Headers: []model.CustomHeaderRule{{Action: model.RuleActionOverride, Name: "X-Test", Value: "v"}},
 		},
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Rate limit", Priority: 0, StatusCodes: []int{429},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -352,6 +356,12 @@ func TestChannelCache_DeepCopyPreservesCostMultiplier(t *testing.T) {
 	if byID.CustomRequestRules == nil || len(byID.CustomRequestRules.Headers) != 1 {
 		t.Fatalf("GetConfig CustomRequestRules not preserved: %+v", byID.CustomRequestRules)
 	}
+	if byID.CooldownDetectionRules == nil || len(byID.CooldownDetectionRules.Rules) != 1 {
+		t.Fatalf("GetConfig CooldownDetectionRules not preserved: %+v", byID.CooldownDetectionRules)
+	}
+	if got := byID.CooldownDetectionRules.Rules[0].Name; got != "Rate limit" {
+		t.Fatalf("GetConfig cooldown detection rule name = %q, want Rate limit", got)
+	}
 
 	byModel, err := cache.GetEnabledChannelsByModel(ctx, "m1")
 	if err != nil || len(byModel) != 1 {
@@ -362,5 +372,16 @@ func TestChannelCache_DeepCopyPreservesCostMultiplier(t *testing.T) {
 	}
 	if byModel[0].CustomRequestRules == nil {
 		t.Fatalf("GetEnabledChannelsByModel CustomRequestRules is nil")
+	}
+	if byModel[0].CooldownDetectionRules == nil {
+		t.Fatalf("GetEnabledChannelsByModel CooldownDetectionRules is nil")
+	}
+	byModel[0].CooldownDetectionRules.Rules[0].StatusCodes[0] = 503
+	byModelAgain, err := cache.GetEnabledChannelsByModel(ctx, "m1")
+	if err != nil || len(byModelAgain) != 1 {
+		t.Fatalf("GetEnabledChannelsByModel second read failed: err=%v len=%d", err, len(byModelAgain))
+	}
+	if got := byModelAgain[0].CooldownDetectionRules.Rules[0].StatusCodes[0]; got != 429 {
+		t.Fatalf("cache leaked mutable cooldown detection rules: got status %d, want 429", got)
 	}
 }

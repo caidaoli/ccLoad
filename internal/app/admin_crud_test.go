@@ -439,6 +439,41 @@ func TestHandleCreateChannel(t *testing.T) {
 	}
 }
 
+func TestHandleCreateChannel_RejectsIncompleteCooldownRulesWithoutPersisting(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	before, err := store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs() before create = %v", err)
+	}
+
+	payload := ChannelRequest{
+		Name:   "incomplete-cooldown-rule",
+		APIKey: "sk-test",
+		URL:    "https://api.example.com",
+		Models: []model.ModelEntry{{Model: "test-model"}},
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Priority: 0, StatusCodes: []int{200},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+		}}},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
+	server.handleCreateChannel(c)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), ".name: required") {
+		t.Fatalf("status=%d body=%s, want required cooldown rule name error", w.Code, w.Body.String())
+	}
+	after, err := store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("ListConfigs() after create = %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("incomplete cooldown rule persisted a channel: before=%d after=%d", len(before), len(after))
+	}
+}
+
 func TestHandleCreateChannel_PersistsProtocolTransforms(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

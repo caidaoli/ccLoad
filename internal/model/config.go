@@ -102,6 +102,87 @@ func (r *CustomRequestRules) IsEmpty() bool {
 	return len(r.Headers) == 0 && len(r.Body) == 0
 }
 
+// Clone returns an independent copy suitable for config-cache boundaries.
+func (r *CustomRequestRules) Clone() *CustomRequestRules {
+	if r == nil {
+		return nil
+	}
+	out := &CustomRequestRules{
+		Headers: append([]CustomHeaderRule(nil), r.Headers...),
+		Body:    make([]CustomBodyRule, len(r.Body)),
+	}
+	for i, rule := range r.Body {
+		out.Body[i] = rule
+		out.Body[i].Value = append(json.RawMessage(nil), rule.Value...)
+	}
+	return out
+}
+
+const (
+	// CooldownScopeKey cools the currently selected API key.
+	CooldownScopeKey = "key"
+	// CooldownScopeModel cools the actual upstream model for this channel.
+	CooldownScopeModel = "model"
+	// CooldownScopeChannel cools the entire channel.
+	CooldownScopeChannel = "channel"
+
+	// CooldownModeFixed uses a configured fixed duration.
+	CooldownModeFixed = "fixed"
+	// CooldownModeResetTime parses a named regex capture into an exact reset time.
+	CooldownModeResetTime = "reset_time"
+
+	// CooldownTimeFormatDateTime parses the capture with a Go time layout.
+	CooldownTimeFormatDateTime = "datetime"
+	// CooldownTimeFormatUnix treats the capture as Unix seconds.
+	CooldownTimeFormatUnix = "unix"
+	// CooldownTimeFormatUnixMilliseconds treats the capture as Unix milliseconds.
+	CooldownTimeFormatUnixMilliseconds = "unix_ms"
+	// CooldownTimeFormatDurationSeconds treats the capture as seconds after the response.
+	CooldownTimeFormatDurationSeconds = "duration_seconds"
+)
+
+// CooldownDetectionRule describes one channel-local upstream error policy.
+// Rules are evaluated by ascending Priority; the first match wins.
+type CooldownDetectionRule struct {
+	Enabled        bool   `json:"enabled"`
+	Name           string `json:"name,omitempty"`
+	Priority       int    `json:"priority"`
+	StatusCodes    []int  `json:"status_codes,omitempty"`
+	MessagePattern string `json:"message_pattern,omitempty"`
+
+	Scope string `json:"scope"` // key | model | channel
+	Mode  string `json:"mode"`  // fixed | reset_time
+
+	CooldownSeconds int64  `json:"cooldown_seconds,omitempty"`
+	TimeCapture     string `json:"time_capture,omitempty"`
+	TimeFormat      string `json:"time_format,omitempty"` // datetime | unix | unix_ms | duration_seconds
+	TimeLayout      string `json:"time_layout,omitempty"`
+	Timezone        string `json:"timezone,omitempty"`
+}
+
+// CooldownDetectionRules groups all channel-local error rules.
+type CooldownDetectionRules struct {
+	Rules []CooldownDetectionRule `json:"rules,omitempty"`
+}
+
+// IsEmpty reports whether the channel has no configured cooldown detection rules.
+func (r *CooldownDetectionRules) IsEmpty() bool {
+	return r == nil || len(r.Rules) == 0
+}
+
+// Clone returns an independent copy suitable for config-cache boundaries.
+func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
+	if r == nil {
+		return nil
+	}
+	out := &CooldownDetectionRules{Rules: make([]CooldownDetectionRule, len(r.Rules))}
+	for i, rule := range r.Rules {
+		out.Rules[i] = rule
+		out.Rules[i].StatusCodes = append([]int(nil), rule.StatusCodes...)
+	}
+	return out
+}
+
 // Config 渠道配置
 type Config struct {
 	ID                    int64    `json:"id"`
@@ -133,6 +214,9 @@ type Config struct {
 	// 自定义请求规则（nil 表示无改写）
 	CustomRequestRules *CustomRequestRules `json:"custom_request_rules,omitempty"`
 
+	// 渠道级上游错误冷却探测规则（nil 表示仅使用内置分类器）
+	CooldownDetectionRules *CooldownDetectionRules `json:"cooldown_detection_rules,omitempty"`
+
 	// 渠道级代理（http/https/socks5/socks5h），空串=环境变量代理
 	ProxyURL string `json:"proxy_url,omitempty"`
 
@@ -158,28 +242,29 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	dst := &Config{
-		ID:                    c.ID,
-		Name:                  c.Name,
-		ChannelType:           c.ChannelType,
-		ProtocolTransformMode: c.ProtocolTransformMode,
-		ProtocolTransforms:    append([]string(nil), c.ProtocolTransforms...),
-		URL:                   c.URL,
-		Priority:              c.Priority,
-		RPMLimit:              c.RPMLimit,
-		MaxConcurrency:        c.MaxConcurrency,
-		Enabled:               c.Enabled,
-		ScheduledCheckEnabled: c.ScheduledCheckEnabled,
-		ScheduledCheckModel:   c.ScheduledCheckModel,
-		CooldownUntil:         c.CooldownUntil,
-		CooldownDurationMs:    c.CooldownDurationMs,
-		DailyCostLimit:        c.DailyCostLimit,
-		CostMultiplier:        c.CostMultiplier,
-		CustomRequestRules:    c.CustomRequestRules,
-		ProxyURL:              c.ProxyURL,
-		CreatedAt:             c.CreatedAt,
-		UpdatedAt:             c.UpdatedAt,
-		KeyCount:              c.KeyCount,
-		CooldownFallback:      c.CooldownFallback,
+		ID:                     c.ID,
+		Name:                   c.Name,
+		ChannelType:            c.ChannelType,
+		ProtocolTransformMode:  c.ProtocolTransformMode,
+		ProtocolTransforms:     append([]string(nil), c.ProtocolTransforms...),
+		URL:                    c.URL,
+		Priority:               c.Priority,
+		RPMLimit:               c.RPMLimit,
+		MaxConcurrency:         c.MaxConcurrency,
+		Enabled:                c.Enabled,
+		ScheduledCheckEnabled:  c.ScheduledCheckEnabled,
+		ScheduledCheckModel:    c.ScheduledCheckModel,
+		CooldownUntil:          c.CooldownUntil,
+		CooldownDurationMs:     c.CooldownDurationMs,
+		DailyCostLimit:         c.DailyCostLimit,
+		CostMultiplier:         c.CostMultiplier,
+		CustomRequestRules:     c.CustomRequestRules.Clone(),
+		CooldownDetectionRules: c.CooldownDetectionRules.Clone(),
+		ProxyURL:               c.ProxyURL,
+		CreatedAt:              c.CreatedAt,
+		UpdatedAt:              c.UpdatedAt,
+		KeyCount:               c.KeyCount,
+		CooldownFallback:       c.CooldownFallback,
 	}
 	if c.ModelEntries != nil {
 		dst.ModelEntries = make([]ModelEntry, len(c.ModelEntries))
