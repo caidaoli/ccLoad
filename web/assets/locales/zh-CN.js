@@ -1310,6 +1310,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.noModelsFromApi': '未获取到任何模型',
   'channels.fillApiUrlFirst': '请先填写API URL',
   'channels.addAtLeastOneKey': '请至少添加一个API Key',
+  'channels.addAtLeastOneEnabledKey': '请至少添加或启用一个API Key',
   'channels.noPresetModels': '渠道类型 "{type}" 暂无预设常用模型',
   'channels.addedCommonModels': '已添加 {count} 个常用模型',
   'channels.refreshCooldownFailed': '刷新冷却状态失败',

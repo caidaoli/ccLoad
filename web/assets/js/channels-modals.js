@@ -2170,7 +2170,7 @@ function areModelRowsEqual(left, right) {
 async function fetchModelsFromAPI() {
   const channelUrl = getValidInlineURLs()[0] || '';
   const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  const firstValidKey = (getValidInlineKeyRows()[0] || {}).api_key || '';
+  const firstValidKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
 
   if (!channelUrl) {
     if (window.showError) {
@@ -2183,9 +2183,9 @@ async function fetchModelsFromAPI() {
 
   if (!firstValidKey) {
     if (window.showError) {
-      window.showError(window.t('channels.addAtLeastOneKey'));
+      window.showError(window.t('channels.addAtLeastOneEnabledKey'));
     } else {
-      alert(window.t('channels.addAtLeastOneKey'));
+      alert(window.t('channels.addAtLeastOneEnabledKey'));
     }
     return;
   }
@@ -2308,5 +2308,5 @@ function addCommonModels() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels };
+  module.exports = { addCommonModels, fetchModelsFromAPI };
 }

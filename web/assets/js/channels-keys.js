@@ -48,6 +48,20 @@ function getValidInlineKeyRows() {
   return getInlineKeyRows().filter(row => row.api_key);
 }
 
+function selectFirstEnabledInlineKey(rows, states) {
+  const disabledIndices = new Set(
+    (Array.isArray(states) ? states : [])
+      .filter(state => state && state.disabled)
+      .map(state => Number(state.key_index))
+  );
+
+  for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
+    const apiKey = normalizeInlineKeyRow(row).api_key;
+    if (apiKey && !disabledIndices.has(index)) return apiKey;
+  }
+  return '';
+}
+
 function updateInlineKeyHiddenInput() {
   const hiddenInput = document.getElementById('channelApiKey');
   if (hiddenInput) {
@@ -1200,4 +1214,8 @@ async function toggleKeyDisabled(index) {
     console.error('Toggle key disabled failed', e);
     window.showNotification(window.t('common.operationFailed') + ': ' + e.message, 'error');
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { selectFirstEnabledInlineKey };
 }

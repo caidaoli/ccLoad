@@ -1311,6 +1311,7 @@ window.I18N_LOCALES['en'] = {
   'channels.noModelsFromApi': 'No models retrieved',
   'channels.fillApiUrlFirst': 'Please fill API URL first',
   'channels.addAtLeastOneKey': 'Please add at least one API Key',
+  'channels.addAtLeastOneEnabledKey': 'Please add or enable at least one API Key',
   'channels.noPresetModels': 'Channel type "{type}" has no preset models',
   'channels.addedCommonModels': 'Added {count} common models',
   'channels.refreshCooldownFailed': 'Failed to refresh cooldown status',
