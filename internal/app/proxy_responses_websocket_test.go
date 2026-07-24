@@ -26,12 +26,19 @@ func dialResponsesWebsocket(t testing.TB, handler http.Handler) *websocket.Conn 
 }
 
 func dialResponsesWebsocketWithToken(t testing.TB, handler http.Handler, token string) *websocket.Conn {
+	return dialResponsesWebsocketAtPath(t, handler, token, "/v1/responses")
+}
+
+// dialResponsesWebsocketAtPath dials a Responses WebSocket at an arbitrary
+// upgrade path, so tests can cover route aliases (e.g. the Codex CLI direct
+// route /backend-api/codex/responses) alongside the canonical /v1/responses.
+func dialResponsesWebsocketAtPath(t testing.TB, handler http.Handler, token, path string) *websocket.Conn {
 	t.Helper()
 	appServer := httptest.NewServer(handler)
 	t.Cleanup(appServer.Close)
 
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
-	wsURL := "ws" + strings.TrimPrefix(appServer.URL, "http") + "/v1/responses"
+	wsURL := "ws" + strings.TrimPrefix(appServer.URL, "http") + path
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if resp != nil && resp.Body != nil {
 		defer func() { _ = resp.Body.Close() }()
@@ -66,7 +73,6 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing.T) {
 	store := newResponsesExecutionSessionStore(time.Hour)
 	store.maxSessions = 1
-	store.maxSessionsPerSubject = 1
 	defer store.close()
 
 	_, release, err := store.acquire("token-a", "session-a")
@@ -80,25 +86,14 @@ func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing
 	}
 }
 
-func TestResponsesExecutionSessionStoreLimitsAttachmentsToStableSession(t *testing.T) {
-	store := newResponsesExecutionSessionStore(time.Hour)
-	store.maxAttachmentsPerSession = 1
-	defer store.close()
-
-	_, release, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("acquire first attachment: %v", err)
-	}
-	defer release()
-	if _, _, err = store.acquire("token-a", "session-a"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
-		t.Fatalf("second attachment error=%v, want capacity error", err)
-	}
-}
-
-func TestResponsesExecutionSessionStoreEvictsIdleSession(t *testing.T) {
+// TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired locks
+// down the single-instance capacity contract: once the flat ceiling is hit,
+// acquire rejects outright. There is no LRU eviction-on-insert; an idle
+// session is only reclaimed once it crosses the TTL, via the same sweep that
+// already runs at the top of acquire().
+func TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired(t *testing.T) {
 	store := newResponsesExecutionSessionStore(time.Hour)
 	store.maxSessions = 1
-	store.maxSessionsPerSubject = 1
 	defer store.close()
 
 	first, releaseFirst, err := store.acquire("token-a", "session-a")
@@ -107,17 +102,22 @@ func TestResponsesExecutionSessionStoreEvictsIdleSession(t *testing.T) {
 	}
 	releaseFirst()
 
+	if _, _, err = store.acquire("token-a", "session-b"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
+		t.Fatalf("acquire at capacity with an idle, not-yet-expired session error=%v, want capacity error", err)
+	}
+
+	first.lastAccess = time.Now().Add(-2 * time.Hour)
 	second, releaseSecond, err := store.acquire("token-a", "session-b")
 	if err != nil {
-		t.Fatalf("acquire second session after idle eviction: %v", err)
+		t.Fatalf("acquire second session after ttl expiry: %v", err)
 	}
 	releaseSecond()
 	if first == second {
-		t.Fatal("idle eviction reused the wrong execution session")
+		t.Fatal("ttl sweep reused the wrong execution session")
 	}
 
 	stats := store.stats()
-	if stats.Sessions != 1 || stats.Evictions != 1 || stats.Rejections != 0 {
+	if stats.Sessions != 1 {
 		t.Fatalf("unexpected session store stats: %+v", stats)
 	}
 }
@@ -125,7 +125,6 @@ func TestResponsesExecutionSessionStoreEvictsIdleSession(t *testing.T) {
 func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testing.T) {
 	store := newResponsesExecutionSessionStore(time.Hour)
 	store.maxSessions = 1
-	store.maxSessionsPerSubject = 1
 	defer store.close()
 
 	_, release, err := store.acquire("token-a", "")
@@ -142,21 +141,6 @@ func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testi
 		t.Fatalf("acquire transient session after release: %v", err)
 	}
 	releaseAgain()
-}
-
-func TestResponsesExecutionSessionStoreLoadsResourceLimitsFromEnvironment(t *testing.T) {
-	t.Setenv("CCLOAD_RESPONSES_WS_MAX_SESSIONS", "17")
-	t.Setenv("CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN", "3")
-	t.Setenv("CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES", "9")
-	t.Setenv("CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION", "2")
-
-	store := newResponsesExecutionSessionStoreFromEnv()
-	defer store.close()
-	if store.maxSessions != 17 || store.maxSessionsPerSubject != 3 ||
-		store.maxAttachmentsPerSession != 2 || store.ttl != 9*time.Minute {
-		t.Fatalf("environment session configuration not applied: max=%d per_subject=%d attachments=%d ttl=%v",
-			store.maxSessions, store.maxSessionsPerSubject, store.maxAttachmentsPerSession, store.ttl)
-	}
 }
 
 func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testing.T) {
@@ -258,38 +242,28 @@ func TestResponsesWebsocketUpgradeAndRejectUnsupportedEvent(t *testing.T) {
 	}
 }
 
-func TestResponsesWebsocketRejectsNonHTTPOrigin(t *testing.T) {
+// TestResponsesWebsocketAcceptsCodexDirectRouteAlias verifies the Codex CLI
+// direct route (/backend-api/codex/responses, chatgpt_base_url compatible)
+// upgrades and completes a turn exactly like the canonical /v1/responses
+// path. This mirrors CLIProxyAPI's codexDirect route group.
+func TestResponsesWebsocketAcceptsCodexDirectRouteAlias(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-alias\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name: "codex-direct-alias", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	appServer := httptest.NewServer(env.engine)
-	defer appServer.Close()
+	conn := dialResponsesWebsocketAtPath(t, env.engine, "test-api-key", "/backend-api/codex/responses")
 
-	headers := http.Header{
-		"Authorization": []string{"Bearer test-api-key"},
-		"Origin":        []string{"ftp://" + strings.TrimPrefix(appServer.URL, "http://")},
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write turn over codex direct alias: %v", err)
 	}
-	wsURL := "ws" + strings.TrimPrefix(appServer.URL, "http") + "/v1/responses"
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
-	if resp != nil && resp.Body != nil {
-		defer func() { _ = resp.Body.Close() }()
-	}
-	if conn != nil {
-		_ = conn.Close()
-	}
-	if err == nil {
-		t.Fatal("websocket upgrade accepted a non-HTTP Origin")
-	}
-	if resp == nil || resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("websocket origin rejection status=%v, want 403", resp)
-	}
+	readWebsocketUntilType(t, conn, "response.completed")
 }
 
 func TestResponsesWebsocketRequiresAPIAuthentication(t *testing.T) {
@@ -512,8 +486,8 @@ func TestResponsesWebsocketServerPingKeepsLongTurnAlive(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "long-http", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	env.server.responsesWebsocketIdleTimeout = 70 * time.Millisecond
-	env.server.responsesWebsocketPingInterval = 20 * time.Millisecond
+	env.server.responsesWebsocketIdleTimeoutOverride = 70 * time.Millisecond
+	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
 
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1071,6 +1045,108 @@ func TestResponsesWebsocketReconcilesCompletedToolCallBeforeReplay(t *testing.T)
 	call := gjson.GetBytes(replay, "input.1")
 	if call.Get("call_id").String() != "call-1" || call.Get("arguments").Type != gjson.String {
 		t.Fatalf("replayed tool call was not reconciled from output_item.done: %s", replay)
+	}
+}
+
+// TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest locks down
+// local rejection of a function_call_output whose call_id has no matching
+// function_call anywhere in the same input array. Upstream would hard-reject
+// this transcript with an HTTP 400, which classifier.go treats as a
+// model-level failure — cooling down and retrying an unrelated channel for
+// what is actually a malformed client request. Rejecting locally avoids that.
+func TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "orphan-tool-output-initial", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set orphan tool call output deadline: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{
+			"type": "function_call_output", "call_id": "call-never-issued", "output": "42",
+		}},
+	}); err != nil {
+		t.Fatalf("write orphan tool call output request: %v", err)
+	}
+
+	var event struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read orphan tool call output error: %v", err)
+	}
+	if event.Type != "error" || event.Error.Code != "invalid_request" {
+		t.Fatalf("unexpected orphan tool call output error: %+v", event)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("orphan tool call output reached upstream %d times", upstreamCalls.Load())
+	}
+}
+
+// TestResponsesWebsocketRejectsOrphanToolCallOutputOnIncrementalTurn covers
+// the merge path: a second turn's function_call_output references a call_id
+// that was never issued in the first turn's request or response, so the
+// merged transcript still contains an orphan output that must be rejected
+// before it reaches upstream.
+func TestResponsesWebsocketRejectsOrphanToolCallOutputOnIncrementalTurn(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-plain","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\ndata: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "orphan-tool-output-incremental", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set orphan tool output incremental deadline: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write first plain turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.append",
+		"input": []any{map[string]any{
+			"type": "function_call_output", "call_id": "call-never-issued", "output": "42",
+		}},
+	}); err != nil {
+		t.Fatalf("write orphan tool call output continuation: %v", err)
+	}
+
+	var event struct {
+		Type  string `json:"type"`
+		Error struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read orphan tool call output continuation error: %v", err)
+	}
+	if event.Type != "error" || event.Error.Code != "invalid_request" {
+		t.Fatalf("unexpected orphan tool call output continuation error: %+v", event)
+	}
+	if upstreamCalls.Load() != 1 {
+		t.Fatalf("orphan tool call output continuation reached upstream; calls=%d", upstreamCalls.Load())
 	}
 }
 

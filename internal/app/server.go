@@ -62,12 +62,14 @@ type Server struct {
 	tokenStatsDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries                  int           // 单个渠道内最大Key重试次数
-	firstByteTimeout               time.Duration // 上游首字节超时（流式请求）
-	nonStreamTimeout               time.Duration // 非流式请求超时
-	responsesWebsocketIdleTimeout  time.Duration
-	responsesWebsocketPingInterval time.Duration
-	channelTypeTimeouts            map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
+	maxKeyRetries    int           // 单个渠道内最大Key重试次数
+	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	nonStreamTimeout time.Duration // 非流式请求超时
+	// 仅供测试注入（缩短 idle/ping 间隔以覆盖保活路径）；生产始终为零值，
+	// 实际取值回退到 proxy_responses_websocket.go 的常量，见 responsesWebsocketTimeouts()。
+	responsesWebsocketIdleTimeoutOverride  time.Duration
+	responsesWebsocketPingIntervalOverride time.Duration
+	channelTypeTimeouts                    map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -186,7 +188,7 @@ func NewServer(store storage.Store) *Server {
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
 		activeRequests:             newActiveRequestManager(),
-		responsesExecutionSessions: newResponsesExecutionSessionStoreFromEnv(),
+		responsesExecutionSessions: newResponsesExecutionSessionStore(0),
 		channelRPMLimiter:          newChannelRPMLimiter(time.Now),
 		channelConcurrencyLimiter:  newChannelConcurrencyLimiter(),
 	}
@@ -845,6 +847,16 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	apiV1Beta.Use(captureClientRequestMetadata())
 	{
 		apiV1Beta.Any("/*path", s.HandleProxyRequest)
+	}
+
+	// Codex CLI 直连路由别名（chatgpt_base_url 兼容），对齐 CLIProxyAPI 的
+	// codexDirect 路由组。只注册 WS 升级用到的 GET：非 WS 流量落到这条路径在
+	// DetectRequestFamily 下解析不出协议族，超出「对齐 WS 别名」的范围，不注册 POST。
+	codexDirect := r.Group("/backend-api/codex")
+	codexDirect.Use(s.authService.RequireAPIAuth())
+	codexDirect.Use(captureClientRequestMetadata())
+	{
+		codexDirect.GET("/responses", s.HandleProxyRequest)
 	}
 
 	// 健康检查（公开访问，无需认证，K8s liveness/readiness probe）
