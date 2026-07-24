@@ -1787,3 +1787,55 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 
 	return created
 }
+
+// 上游 WebSocket 连接槽耗尽：切渠道，但冷却必须是几秒级的固定窗口，
+// 而不是渠道指数退避（2 分钟起）或 Key/模型冷却。
+func TestHandleError_WebsocketConnectionLimit(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg := createTestChannel(t, store, "test-ws-conn-limit")
+	key := &model.APIKey{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-ws-0",
+		KeyStrategy: model.KeyStrategySequential,
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{key}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		KeyIndex:   0,
+		StatusCode: 429,
+		Model:      "model-a",
+		ErrorBody:  []byte(`{"type":"error","error":{"code":"websocket_connection_limit_reached"}}`),
+	})
+
+	if action != ActionRetryChannel {
+		t.Fatalf("action=%v, want ActionRetryChannel", action)
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	if channelCfg.CooldownUntil == 0 {
+		t.Fatal("expected a short channel cooldown")
+	}
+	cooldown := time.Unix(channelCfg.CooldownUntil, 0).Sub(before)
+	if cooldown > util.WebsocketConnectionLimitCooldown+2*time.Second {
+		t.Errorf("channel cooldown=%v, want about %v", cooldown, util.WebsocketConnectionLimitCooldown)
+	}
+
+	if _, exists := getKeyCooldownUntil(ctx, store, cfg.ID, 0); exists {
+		t.Error("connection slot exhaustion must not cool down the key")
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "model-a"); exists {
+		t.Error("connection slot exhaustion must not cool down the model")
+	}
+}

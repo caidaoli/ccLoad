@@ -1189,3 +1189,98 @@ func TestClassifyHTTPResponseWithMeta_UsageLimitReached(t *testing.T) {
 		}
 	})
 }
+
+// 上游 WebSocket 连接槽耗尽是瞬时资源竞争：必须切渠道，但不能让健康的 Key
+// 或整个模型背上指数退避冷却。
+func TestClassifyWebsocketConnectionLimitIsShortChannelCooldown(t *testing.T) {
+	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
+
+	tests := []struct {
+		name         string
+		statusCode   int
+		responseBody []byte
+	}{
+		{
+			name:         "error type",
+			statusCode:   429,
+			responseBody: []byte(`{"type":"error","error":{"type":"websocket_connection_limit_reached","message":"too many concurrent connections"}}`),
+		},
+		{
+			name:         "error code",
+			statusCode:   429,
+			responseBody: []byte(`{"error":{"code":"websocket_connection_limit_reached"}}`),
+		},
+		{
+			name:         "top level code",
+			statusCode:   StatusSSEError,
+			responseBody: []byte(`{"code":"websocket_connection_limit_reached"}`),
+		},
+		{
+			name:         "error as string",
+			statusCode:   StatusSSEError,
+			responseBody: []byte(`{"error":"websocket_connection_limit_reached"}`),
+		},
+		{
+			name:         "upstream 503 wrapper",
+			statusCode:   503,
+			responseBody: []byte(`{"status":503,"error":{"type":"WEBSOCKET_CONNECTION_LIMIT_REACHED"}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := classifyHTTPResponseWithMetaAt(tt.statusCode, nil, tt.responseBody, now)
+
+			if got.Level != ErrorLevelChannel {
+				t.Errorf("Level=%v, want ErrorLevelChannel", got.Level)
+			}
+			if !got.HasChannelCooldownUntil {
+				t.Fatal("expected HasChannelCooldownUntil")
+			}
+			if want := now.Add(WebsocketConnectionLimitCooldown); !got.ChannelCooldownUntil.Equal(want) {
+				t.Errorf("ChannelCooldownUntil=%v, want %v", got.ChannelCooldownUntil, want)
+			}
+			if got.ChannelCooldownReason != "websocket_connection_limit" {
+				t.Errorf("ChannelCooldownReason=%q, want websocket_connection_limit", got.ChannelCooldownReason)
+			}
+			if got.ModelScoped {
+				t.Error("connection slot exhaustion must not cool down the model")
+			}
+			if got.HasKeyCooldownUntil {
+				t.Error("connection slot exhaustion must not cool down the key")
+			}
+		})
+	}
+}
+
+// 回归保护：普通限流仍然只冷却当前模型，不被连接槽分支吞掉。
+func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
+	now := time.Date(2026, 7, 25, 6, 30, 0, 0, time.UTC)
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+
+	got := classifyHTTPResponseWithMetaAt(429, nil, body, now)
+
+	if got.HasChannelCooldownUntil {
+		t.Fatal("ordinary rate limit must not take the websocket connection limit path")
+	}
+	if !got.ModelScoped {
+		t.Error("ordinary 429 should stay model scoped")
+	}
+}
+
+func TestIsWebsocketConnectionLimitErrorRejectsUnrelatedBodies(t *testing.T) {
+	bodies := []string{
+		``,
+		`not json`,
+		`{"error":{"type":"rate_limit_error"}}`,
+		`{"error":{"code":1308}}`,
+		`{"code":"websocket_connection_limit"}`,
+		`{"message":"websocket_connection_limit_reached"}`,
+	}
+
+	for _, body := range bodies {
+		if IsWebsocketConnectionLimitError([]byte(body)) {
+			t.Errorf("body %q must not be treated as websocket connection limit", body)
+		}
+	}
+}
