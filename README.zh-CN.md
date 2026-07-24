@@ -884,6 +884,10 @@ ccLoad 使用的核心技术栈：
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，Images API自动放宽至20MB） |
+| `CCLOAD_RESPONSES_WS_MAX_SESSIONS` | `32` | 进程级 Responses WebSocket execution session 上限 |
+| `CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN` | `4` | 单个认证 API Token 的 execution session 上限 |
+| `CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION` | `2` | 单个稳定 session 可同时附着的下游连接上限 |
+| `CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES` | `60` | 空闲 execution session 保留分钟数 |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | 超时错误(597/598)初始冷却时间（秒） |
@@ -893,6 +897,7 @@ ccLoad 使用的核心技术栈：
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
 
 > 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
+> 可通过 `GET /admin/runtime-metrics` 查看 Responses WebSocket 的实时资源占用和上限。
 
 #### 混合存储模式（主库 + SQLite 缓存）
 

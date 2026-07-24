@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 // ============================================================================
@@ -45,6 +46,31 @@ type proxyTestEnv struct {
 	server *Server
 	store  storage.Store
 	engine *gin.Engine
+}
+
+func TestProxy_NonResponsesGenerateFieldIsPreserved(t *testing.T) {
+	requestBody := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requestBody <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "preserve-generate", channelType: "openai", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-test", "generate": true,
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("non-Responses request status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !gjson.GetBytes(<-requestBody, "generate").Bool() {
+		t.Fatal("non-Responses generate field was stripped before reaching upstream")
+	}
 }
 
 // setupProxyTestEnv 创建指向 mockUpstream 的完整测试 Server

@@ -315,7 +315,12 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyResponses {
 		hint := responsesExecutionSessionHint(c.Request.Header, all)
 		var releaseSession func()
-		executionSession, releaseSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
+		var errSession error
+		executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
+		if errSession != nil {
+			c.JSON(http.StatusTooManyRequests, gin.H{"error": errSession.Error()})
+			return
+		}
 		defer releaseSession()
 		if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
 			c.JSON(http.StatusRequestTimeout, gin.H{"error": errAcquire.Error()})
@@ -416,7 +421,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
-			executionSession.transcript.commit(all, lastResult.responsesTurn)
+			executionSession.commit(all, lastResult.responsesTurn)
 		}
 		return
 	}

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -167,15 +168,30 @@ func (dc *debugCapture) buildEntry(resp *http.Response) *model.DebugLogEntry {
 	return entry
 }
 
-func annotateNativeWebsocketDebug(entry *model.DebugLogEntry) {
+func annotateNativeWebsocketDebug(entry *model.DebugLogEntry, snapshot codexWebsocketDebugSnapshot) {
 	if entry == nil {
 		return
 	}
-	entry.RespStatus = http.StatusSwitchingProtocols
+	entry.RespStatus = snapshot.ResponseStatus
+	if entry.RespStatus == 0 {
+		entry.RespStatus = http.StatusSwitchingProtocols
+	}
 	headers := make(map[string]string)
-	_ = sonic.Unmarshal([]byte(entry.RespHeaders), &headers)
+	for name, values := range snapshot.ResponseHeaders {
+		if len(values) > 0 {
+			headers[name] = values[0]
+		}
+	}
 	headers["X-CCLoad-Upstream-Transport"] = "websocket"
-	headers["X-CCLoad-WebSocket-Handshake-Status"] = "101"
+	headers["X-CCLoad-WebSocket-Handshake-Status"] = strconv.Itoa(entry.RespStatus)
+	headers["X-CCLoad-WebSocket-Reconnects"] = strconv.FormatUint(snapshot.Reconnects, 10)
+	if snapshot.LastReconnectReason != "" {
+		headers["X-CCLoad-WebSocket-Last-Reconnect-Reason"] = snapshot.LastReconnectReason
+	}
+	if snapshot.LastCloseReason != "" {
+		headers["X-CCLoad-WebSocket-Last-Close-Reason"] = snapshot.LastCloseReason
+	}
+	headers = maskSensitiveHeaderMap(headers)
 	encoded, _ := sonic.Marshal(headers)
 	entry.RespHeaders = string(encoded)
 }

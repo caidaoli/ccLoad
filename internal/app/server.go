@@ -186,7 +186,7 @@ func NewServer(store storage.Store) *Server {
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
 		activeRequests:             newActiveRequestManager(),
-		responsesExecutionSessions: newResponsesExecutionSessionStore(responsesExecutionSessionTTL),
+		responsesExecutionSessions: newResponsesExecutionSessionStoreFromEnv(),
 		channelRPMLimiter:          newChannelRPMLimiter(time.Now),
 		channelConcurrencyLimiter:  newChannelConcurrencyLimiter(),
 	}
@@ -907,6 +907,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/debug-logs/merged-response", s.HandleMergeDebugResponse)
 		admin.GET("/debug-logs/:log_id", s.HandleGetDebugLog)
 		admin.GET("/active-requests", s.HandleActiveRequests) // 进行中请求（内存状态）
+		admin.GET("/runtime-metrics", s.HandleRuntimeMetrics)
 		admin.GET("/active-requests/:request_id/debug-log", s.HandleGetActiveRequestDebugLog)
 		admin.GET("/metrics", s.HandleMetrics)
 		admin.GET("/stats", s.HandleStats)

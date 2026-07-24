@@ -11,6 +11,10 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+var errResponsesWebsocketPreviousResponseNotFound = errors.New(
+	"previous response is not available on this websocket; resend the full conversation input without previous_response_id",
+)
+
 type responsesWebsocketSession struct {
 	lastRequest        []byte
 	lastResponseOutput []byte
@@ -34,6 +38,9 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if requestType != responsesWebsocketRequestCreate {
 			return nil, errors.New("response.append received before response.create")
 		}
+		if strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
+			return nil, errResponsesWebsocketPreviousResponseNotFound
+		}
 		return normalizeInitialResponsesWebsocketRequest(payload)
 	}
 
@@ -42,8 +49,8 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		return nil, errors.New("websocket request requires array field: input")
 	}
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
-	if previousID != "" && s.lastResponseID != "" && previousID != s.lastResponseID {
-		return nil, fmt.Errorf("previous response %q is not available on this websocket", previousID)
+	if previousID != "" && previousID != s.lastResponseID {
+		return nil, fmt.Errorf("%w: %q", errResponsesWebsocketPreviousResponseNotFound, previousID)
 	}
 	if len(s.pendingToolCallIDs) > 0 && !inputSatisfiesResponsesWebsocketToolCalls(nextInput, s.pendingToolCallIDs) {
 		if previousID != "" || requestType == responsesWebsocketRequestAppend {
@@ -166,14 +173,17 @@ func normalizeInitialResponsesWebsocketRequest(payload []byte) ([]byte, error) {
 	if modelName == "" {
 		return nil, errors.New("missing model in response.create request")
 	}
-	if !gjson.GetBytes(payload, "input").Exists() {
-		return nil, errors.New("missing input in response.create request")
-	}
 	normalized, err := sjson.DeleteBytes(payload, "type")
 	if err != nil {
 		return nil, fmt.Errorf("remove websocket event type: %w", err)
 	}
 	normalized, _ = sjson.DeleteBytes(normalized, "previous_response_id")
+	if !gjson.GetBytes(normalized, "input").Exists() {
+		normalized, err = sjson.SetRawBytes(normalized, "input", []byte("[]"))
+		if err != nil {
+			return nil, fmt.Errorf("set empty websocket input: %w", err)
+		}
+	}
 	normalized, err = sjson.SetBytes(normalized, "stream", true)
 	if err != nil {
 		return nil, fmt.Errorf("force streaming request: %w", err)
