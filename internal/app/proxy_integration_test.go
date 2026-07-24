@@ -30,6 +30,7 @@ import (
 type testChannel struct {
 	name                   string
 	channelType            string
+	websockets             bool
 	protocolTransformMode  string
 	protocolTransforms     []string
 	customRequestRules     *model.CustomRequestRules
@@ -86,6 +87,7 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 			Name:                   ch.name,
 			URL:                    upURL,
 			ChannelType:            chType,
+			Websockets:             ch.websockets,
 			ProtocolTransformMode:  ch.protocolTransformMode,
 			ProtocolTransforms:     ch.protocolTransforms,
 			CustomRequestRules:     ch.customRequestRules,

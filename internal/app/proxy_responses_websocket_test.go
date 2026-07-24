@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,14 +18,19 @@ import (
 	"ccLoad/internal/model"
 
 	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
 func dialResponsesWebsocket(t testing.TB, handler http.Handler) *websocket.Conn {
+	return dialResponsesWebsocketWithToken(t, handler, "test-api-key")
+}
+
+func dialResponsesWebsocketWithToken(t testing.TB, handler http.Handler, token string) *websocket.Conn {
 	t.Helper()
 	appServer := httptest.NewServer(handler)
 	t.Cleanup(appServer.Close)
 
-	headers := http.Header{"Authorization": []string{"Bearer test-api-key"}}
+	headers := http.Header{"Authorization": []string{"Bearer " + token}}
 	wsURL := "ws" + strings.TrimPrefix(appServer.URL, "http") + "/v1/responses"
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if resp != nil && resp.Body != nil {
@@ -244,6 +251,32 @@ func TestResponsesWebsocketClosesWhenServerShutsDown(t *testing.T) {
 	if !errors.As(err, &closeErr) || closeErr.Code != websocket.CloseGoingAway {
 		t.Fatalf("websocket shutdown error=%v, want close code %d", err, websocket.CloseGoingAway)
 	}
+}
+
+func TestResponsesWebsocketServerPingKeepsLongTurnAlive(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(180 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-long\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "long-http", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.responsesWebsocketIdleTimeout = 70 * time.Millisecond
+	env.server.responsesWebsocketPingInterval = 20 * time.Millisecond
+
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set long turn deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "long"}},
+	}); err != nil {
+		t.Fatalf("write long turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
 }
 
 func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
@@ -496,6 +529,94 @@ func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketCompactionReplacesStaleTranscript(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var request map[string]any
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode compacted request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requests <- request
+		w.Header().Set("Content-Type", "text/event-stream")
+		id := turn.Add(1)
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-compact-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"stale answer\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", id)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "compact-http", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set compact downstream deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "old prompt"}},
+	}); err != nil {
+		t.Fatalf("write pre-compaction request: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "compacted prompt"},
+			map[string]any{"type": "compaction", "encrypted_content": "opaque summary"},
+		},
+	}); err != nil {
+		t.Fatalf("write compacted request: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+
+	<-requests
+	compacted := <-requests
+	input, ok := compacted["input"].([]any)
+	if !ok || len(input) != 2 {
+		t.Fatalf("compacted input=%#v, want exactly replacement transcript", compacted["input"])
+	}
+	encoded, _ := json.Marshal(compacted)
+	if bytes.Contains(encoded, []byte("old prompt")) || bytes.Contains(encoded, []byte("stale answer")) {
+		t.Fatalf("compacted request contains stale transcript: %s", encoded)
+	}
+}
+
+func TestResponsesCompactEndpointStaysOnHTTP(t *testing.T) {
+	requestSeen := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			t.Error("/responses/compact must not use WebSocket")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.URL.Path != "/v1/responses/compact" {
+			t.Errorf("compact upstream path=%q", r.URL.Path)
+		}
+		body, _ := io.ReadAll(r.Body)
+		requestSeen <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"cmp-1","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "compact-endpoint", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	response := doProxyRequest(t, env.engine, "/v1/responses/compact", map[string]any{
+		"model": "gpt-test",
+		"input": []any{
+			map[string]any{"role": "user", "content": "long history"},
+			map[string]any{"type": "compaction_trigger"},
+		},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "response.compaction") {
+		t.Fatalf("compact response status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.GetBytes(<-requestSeen, "input.1.type").String(); got != "compaction_trigger" {
+		t.Fatalf("compact trigger=%q", got)
+	}
+}
+
 func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
 	requests := make(chan map[string]any, 2)
 	var turn atomic.Int32
@@ -572,15 +693,903 @@ func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
 	}
 }
 
+func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
+	var handshakes atomic.Int32
+	requests := make(chan map[string]any, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" || !websocket.IsWebSocketUpgrade(r) {
+			t.Errorf("unexpected native upstream request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-upstream" {
+			t.Errorf("native upstream authorization=%q", r.Header.Get("Authorization"))
+		}
+		if !strings.Contains(r.Header.Get("OpenAI-Beta"), "responses_websockets=") {
+			t.Errorf("native upstream beta header=%q", r.Header.Get("OpenAI-Beta"))
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade native upstream: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		for turn := 1; turn <= 2; turn++ {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Errorf("read native upstream request: %v", err)
+				return
+			}
+			requests <- request
+			responseID := fmt.Sprintf("resp-native-%d", turn)
+			text := fmt.Sprintf("native-%d", turn)
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.output_text.delta", "delta": text,
+			}); err != nil {
+				t.Errorf("write native delta: %v", err)
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": responseID,
+					"output": []any{map[string]any{
+						"type": "message", "role": "assistant",
+						"content": []any{map[string]any{"type": "output_text", "text": text}},
+					}},
+					"usage": map[string]any{"input_tokens": 2, "output_tokens": 1, "total_tokens": 3},
+				},
+			}); err != nil {
+				t.Errorf("write native completion: %v", err)
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-codex", channelType: "codex", websockets: true,
+		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set downstream read deadline: %v", err)
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first downstream turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-native-1",
+		"input": []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write second downstream turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	if handshakes.Load() != 1 {
+		t.Fatalf("native upstream handshakes=%d, want 1", handshakes.Load())
+	}
+	first := <-requests
+	second := <-requests
+	if first["type"] != "response.create" || second["type"] != "response.create" {
+		t.Fatalf("native request types first=%#v second=%#v", first["type"], second["type"])
+	}
+	secondInput, ok := second["input"].([]any)
+	if !ok || len(secondInput) != 1 {
+		t.Fatalf("native incremental input=%#v, want only the current turn", second["input"])
+	}
+	if second["previous_response_id"] != "resp-native-1" {
+		t.Fatalf("native previous_response_id=%#v, want resp-native-1", second["previous_response_id"])
+	}
+}
+
+func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T) {
+	var handshakes atomic.Int32
+	requests := make(chan map[string]any, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade resumable websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		for turn := 1; turn <= 2; turn++ {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Errorf("read resumable request %d: %v", turn, err)
+				return
+			}
+			requests <- request
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-resume-%d", turn),
+					"output": []any{map[string]any{
+						"type": "message", "role": "assistant",
+						"content": []any{map[string]any{"type": "output_text", "text": fmt.Sprintf("answer-%d", turn)}},
+					}},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				t.Errorf("write resumable response %d: %v", turn, err)
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "resumable-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	first := dialResponsesWebsocket(t, env.engine)
+	if err := first.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set first resumable deadline: %v", err)
+	}
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "resume-me",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first resumable request: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+	_ = first.Close()
+
+	second := dialResponsesWebsocket(t, env.engine)
+	if err := second.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set second resumable deadline: %v", err)
+	}
+	if err := second.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "resume-me",
+		"previous_response_id": "resp-resume-1",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write second resumable request: %v", err)
+	}
+	readWebsocketUntilType(t, second, "response.completed")
+
+	if handshakes.Load() != 1 {
+		t.Fatalf("resumable upstream handshakes=%d, want 1", handshakes.Load())
+	}
+	<-requests
+	continued := <-requests
+	if continued["previous_response_id"] != "resp-resume-1" {
+		t.Fatalf("reconnected request did not resume incrementally: %#v", continued)
+	}
+}
+
+func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-expire\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "expiring-session", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.responsesExecutionSessions.ttl = 20 * time.Millisecond
+	first := dialResponsesWebsocket(t, env.engine)
+	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set expiring first deadline: %v", err)
+	}
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "expire-me",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write expiring first request: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+	_ = first.Close()
+	time.Sleep(80 * time.Millisecond)
+
+	second := dialResponsesWebsocket(t, env.engine)
+	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set expiring second deadline: %v", err)
+	}
+	if err := second.WriteJSON(map[string]any{
+		"type": "response.append", "prompt_cache_key": "expire-me",
+		"previous_response_id": "resp-expire",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write expired continuation: %v", err)
+	}
+	var event struct {
+		Type  string `json:"type"`
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := second.ReadJSON(&event); err != nil {
+		t.Fatalf("read expired continuation error: %v", err)
+	}
+	if event.Type != "error" || event.Error.Code != "invalid_request" {
+		t.Fatalf("expired continuation event=%+v", event)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expired continuation reached upstream; calls=%d", calls.Load())
+	}
+}
+
+func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-private\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "isolated-session", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	injectAPIToken(env.server.authService, "other-api-key", 0, 2)
+	first := dialResponsesWebsocketWithToken(t, env.engine, "test-api-key")
+	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set isolated first deadline: %v", err)
+	}
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "shared-name",
+		"input": []any{map[string]any{"role": "user", "content": "private"}},
+	}); err != nil {
+		t.Fatalf("write isolated first request: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+
+	second := dialResponsesWebsocketWithToken(t, env.engine, "other-api-key")
+	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set isolated second deadline: %v", err)
+	}
+	if err := second.WriteJSON(map[string]any{
+		"type": "response.append", "prompt_cache_key": "shared-name",
+		"previous_response_id": "resp-private",
+		"input":                []any{map[string]any{"role": "user", "content": "steal"}},
+	}); err != nil {
+		t.Fatalf("write cross-subject continuation: %v", err)
+	}
+	var event map[string]any
+	if err := second.ReadJSON(&event); err != nil {
+		t.Fatalf("read cross-subject rejection: %v", err)
+	}
+	if event["type"] != "error" {
+		t.Fatalf("cross-subject session was shared: %#v", event)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("cross-subject continuation reached upstream; calls=%d", calls.Load())
+	}
+}
+
+func TestHTTPResponsesStreamUsesAndResumesNativeCodexWebsocket(t *testing.T) {
+	var handshakes atomic.Int32
+	requests := make(chan map[string]any, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			t.Errorf("native HTTP downstream used upstream HTTP: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade HTTP-downstream native websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		for turn := 1; turn <= 2; turn++ {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Errorf("read HTTP-downstream native request %d: %v", turn, err)
+				return
+			}
+			requests <- request
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-http-native-%d", turn),
+					"output": []any{map[string]any{
+						"type": "message", "role": "assistant",
+						"content": []any{map[string]any{"type": "output_text", "text": fmt.Sprintf("native-%d", turn)}},
+					}},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				t.Errorf("write HTTP-downstream native response %d: %v", turn, err)
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "http-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	first := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "prompt_cache_key": "http-resume",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}, nil)
+	if first.Code != http.StatusOK || !strings.Contains(first.Body.String(), "response.completed") {
+		t.Fatalf("first HTTP native response status=%d body=%s", first.Code, first.Body.String())
+	}
+	second := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "prompt_cache_key": "http-resume",
+		"previous_response_id": "resp-http-native-1",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}, nil)
+	if second.Code != http.StatusOK || !strings.Contains(second.Body.String(), "response.completed") {
+		t.Fatalf("second HTTP native response status=%d body=%s", second.Code, second.Body.String())
+	}
+	if handshakes.Load() != 1 {
+		t.Fatalf("HTTP downstream native handshakes=%d, want 1", handshakes.Load())
+	}
+	<-requests
+	continued := <-requests
+	if continued["previous_response_id"] != "resp-http-native-1" {
+		t.Fatalf("HTTP downstream did not resume native websocket: %#v", continued)
+	}
+}
+
+func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testing.T) {
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade cross-transport websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		for turn := 1; turn <= 2; turn++ {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Errorf("read cross-transport request %d: %v", turn, err)
+				return
+			}
+			if turn == 2 && request["previous_response_id"] != "resp-cross-1" {
+				t.Errorf("cross-transport continuation=%#v", request)
+			}
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-cross-%d", turn), "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			})
+		}
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "cross-transport", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstreamWS := dialResponsesWebsocket(t, env.engine)
+	if err := downstreamWS.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set cross-transport WS deadline: %v", err)
+	}
+	if err := downstreamWS.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "cross-mode",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write cross-transport WS request: %v", err)
+	}
+	readWebsocketUntilType(t, downstreamWS, "response.completed")
+	_ = downstreamWS.Close()
+
+	downstreamHTTP := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "prompt_cache_key": "cross-mode",
+		"previous_response_id": "resp-cross-1",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}, nil)
+	if downstreamHTTP.Code != http.StatusOK || !strings.Contains(downstreamHTTP.Body.String(), "resp-cross-2") {
+		t.Fatalf("cross-transport HTTP status=%d body=%s", downstreamHTTP.Code, downstreamHTTP.Body.String())
+	}
+	if handshakes.Load() != 1 {
+		t.Fatalf("cross-transport handshakes=%d, want 1", handshakes.Load())
+	}
+}
+
+func TestHTTPResponsesUnknownPreviousIDStaysOnHTTP(t *testing.T) {
+	var websocketCalls atomic.Int32
+	var httpCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			websocketCalls.Add(1)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		httpCalls.Add(1)
+		body, _ := io.ReadAll(r.Body)
+		if got := gjson.GetBytes(body, "previous_response_id").String(); got != "resp-owned-by-upstream" {
+			t.Errorf("HTTP fallback previous_response_id=%q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "unknown-previous", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.client = upstream.Client()
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "prompt_cache_key": "unknown-local-session",
+		"previous_response_id": "resp-owned-by-upstream",
+		"input":                []any{map[string]any{"role": "user", "content": "continue"}},
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "response.completed") {
+		t.Fatalf("unknown previous response status=%d body=%s", response.Code, response.Body.String())
+	}
+	if websocketCalls.Load() != 0 || httpCalls.Load() != 1 {
+		t.Fatalf("unknown previous calls websocket=%d http=%d, want 0/1", websocketCalls.Load(), httpCalls.Load())
+	}
+}
+
+func TestHTTPResponsesWithoutPreviousIDReplacesSessionTranscript(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade replacement websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		for turn := 1; turn <= 2; turn++ {
+			var request map[string]any
+			if err := conn.ReadJSON(&request); err != nil {
+				t.Errorf("read replacement request %d: %v", turn, err)
+				return
+			}
+			requests <- request
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-replace-%d", turn), "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			})
+		}
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "replacement-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	for _, prompt := range []string{"one", "independent two"} {
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": true, "prompt_cache_key": "reused-cache-bucket",
+			"input": []any{map[string]any{"role": "user", "content": prompt}},
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("replacement HTTP response status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+	<-requests
+	second := <-requests
+	if _, exists := second["previous_response_id"]; exists {
+		t.Fatalf("independent HTTP request gained previous_response_id: %#v", second)
+	}
+	input, ok := second["input"].([]any)
+	if !ok || len(input) != 1 {
+		t.Fatalf("independent HTTP request merged transcript: %#v", second["input"])
+	}
+}
+
+func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
+	authorizations := make(chan string, 2)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade pinned websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		authorizations <- r.Header.Get("Authorization")
+		for turn := 1; turn <= 2; turn++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-pin-%d", turn), "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "pinned-native", channelType: "codex", websockets: true,
+		models: "gpt-test", apiKey: "sk-pin-0", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list pinned config: configs=%d err=%v", len(configs), err)
+	}
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: configs[0].ID, KeyIndex: 1, APIKey: "sk-pin-1", KeyStrategy: model.KeyStrategyRoundRobin,
+	}}); err != nil {
+		t.Fatalf("create second pinned key: %v", err)
+	}
+	if err := env.store.UpdateAPIKeysStrategy(context.Background(), configs[0].ID, model.KeyStrategyRoundRobin); err != nil {
+		t.Fatalf("enable pinned key round robin: %v", err)
+	}
+	env.server.InvalidateAPIKeysCache(configs[0].ID)
+
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set pinned downstream deadline: %v", err)
+	}
+	for turn := 1; turn <= 2; turn++ {
+		request := map[string]any{
+			"type": "response.create", "model": "gpt-test",
+			"input": []any{map[string]any{"role": "user", "content": fmt.Sprintf("turn-%d", turn)}},
+		}
+		if turn == 2 {
+			request["previous_response_id"] = "resp-pin-1"
+		}
+		if err := downstream.WriteJSON(request); err != nil {
+			t.Fatalf("write pinned turn %d: %v", turn, err)
+		}
+		readWebsocketUntilType(t, downstream, "response.completed")
+	}
+
+	if handshakes.Load() != 1 {
+		t.Fatalf("pinned websocket handshakes=%d, want 1", handshakes.Load())
+	}
+	if authorization := <-authorizations; authorization != "Bearer sk-pin-1" {
+		t.Fatalf("pinned authorization=%q, want first round-robin key", authorization)
+	}
+}
+
+func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
+	pongReceived := make(chan bool, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade ping websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		pong := make(chan struct{}, 1)
+		conn.SetPongHandler(func(string) error {
+			select {
+			case pong <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read ping first request: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-ping-1", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("complete ping first request: %v", err)
+			return
+		}
+		if err := conn.WriteControl(websocket.PingMessage, []byte("idle"), time.Now().Add(time.Second)); err != nil {
+			t.Errorf("send upstream ping: %v", err)
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(250 * time.Millisecond))
+		go func() {
+			_, _, _ = conn.ReadMessage()
+		}()
+		select {
+		case <-pong:
+			pongReceived <- true
+		case <-time.After(250 * time.Millisecond):
+			pongReceived <- false
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "ping-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set ping downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "ping"}},
+	}); err != nil {
+		t.Fatalf("write ping downstream request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if ok := <-pongReceived; !ok {
+		t.Fatal("native upstream ping was not processed between turns")
+	}
+}
+
+func TestNativeCodexWebsocketAcceptsAllSuccessfulTerminalEvents(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		terminalType   string
+		downstreamType string
+		responseStatus string
+	}{
+		{name: "response done", terminalType: "response.done", downstreamType: "response.completed", responseStatus: "completed"},
+		{name: "response incomplete", terminalType: "response.incomplete", downstreamType: "response.incomplete", responseStatus: "incomplete"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					t.Errorf("upgrade terminal websocket: %v", err)
+					return
+				}
+				defer func() { _ = conn.Close() }()
+				for turn := 1; turn <= 2; turn++ {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						t.Errorf("read terminal request %d: %v", turn, err)
+						return
+					}
+					eventType := "response.completed"
+					status := "completed"
+					if turn == 1 {
+						eventType = testCase.terminalType
+						status = testCase.responseStatus
+					}
+					if err := conn.WriteJSON(map[string]any{
+						"type": eventType,
+						"response": map[string]any{
+							"id": fmt.Sprintf("resp-terminal-%d", turn), "status": status,
+							"output": []any{map[string]any{
+								"type": "message", "role": "assistant",
+								"content": []any{map[string]any{"type": "output_text", "text": status}},
+							}},
+							"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+						},
+					}); err != nil {
+						t.Errorf("write terminal response %d: %v", turn, err)
+						return
+					}
+				}
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "terminal-native", channelType: "codex", websockets: true,
+				models: "gpt-test", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+			downstream := dialResponsesWebsocket(t, env.engine)
+			if err := downstream.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatalf("set terminal read deadline: %v", err)
+			}
+			if err := downstream.WriteJSON(map[string]any{
+				"type": "response.create", "model": "gpt-test",
+				"input": []any{map[string]any{"role": "user", "content": "first"}},
+			}); err != nil {
+				t.Fatalf("write first terminal request: %v", err)
+			}
+			readWebsocketUntilType(t, downstream, testCase.downstreamType)
+
+			if err := downstream.WriteJSON(map[string]any{
+				"type": "response.create", "previous_response_id": "resp-terminal-1",
+				"input": []any{map[string]any{"role": "user", "content": "second"}},
+			}); err != nil {
+				t.Fatalf("write second terminal request: %v", err)
+			}
+			readWebsocketUntilType(t, downstream, "response.completed")
+		})
+	}
+}
+
+func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
+	primaryRequests := make(chan map[string]any, 3)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade primary websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		connection := handshakes.Add(1)
+
+		var first map[string]any
+		if err := conn.ReadJSON(&first); err != nil {
+			t.Errorf("read first primary request: %v", err)
+			return
+		}
+		primaryRequests <- first
+		if connection == 2 {
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp-primary-2",
+					"output": []any{map[string]any{
+						"type": "message", "role": "assistant",
+						"content": []any{map[string]any{"type": "output_text", "text": "second"}},
+					}},
+					"usage": map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+				},
+			}); err != nil {
+				t.Errorf("complete replayed primary turn: %v", err)
+			}
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-primary-1",
+				"output": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": "first"}},
+				}},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("complete first primary turn: %v", err)
+			return
+		}
+
+		var second map[string]any
+		if err := conn.ReadJSON(&second); err != nil {
+			t.Errorf("read second primary request: %v", err)
+			return
+		}
+		primaryRequests <- second
+		// No semantic event: closing the transport must permit a replay on another channel.
+	}))
+	defer primary.Close()
+
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fallback-2\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"second\"}]}],\"usage\":{\"input_tokens\":3,\"output_tokens\":1,\"total_tokens\":4}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "primary-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-http", channelType: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set downstream read deadline: %v", err)
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first downstream turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-primary-1",
+		"input": []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write second downstream turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	<-primaryRequests
+	primarySecond := <-primaryRequests
+	if primarySecond["previous_response_id"] != "resp-primary-1" {
+		t.Fatalf("primary incremental request=%#v", primarySecond)
+	}
+
+	replay := <-primaryRequests
+	if _, exists := replay["previous_response_id"]; exists {
+		t.Fatalf("same-target replay leaked stale previous_response_id: %#v", replay)
+	}
+	input, ok := replay["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("same-target replay input=%#v, want user+assistant+user", replay["input"])
+	}
+	if handshakes.Load() != 2 || fallbackCalls.Load() != 0 {
+		t.Fatalf("handshakes=%d fallback calls=%d, want 2/0", handshakes.Load(), fallbackCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(t *testing.T) {
+	var primaryHandshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failing primary websocket: %v", err)
+			return
+		}
+		primaryHandshakes.Add(1)
+		defer func() { _ = conn.Close() }()
+		_, _, _ = conn.ReadMessage()
+		// Close before any semantic event. The first close exercises same-target
+		// reconnect; the second must release the attempt loop to another channel.
+	}))
+	defer primary.Close()
+
+	var fallbackHandshakes atomic.Int32
+	fallbackRequest := make(chan map[string]any, 1)
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade fallback websocket: %v", err)
+			return
+		}
+		fallbackHandshakes.Add(1)
+		defer func() { _ = conn.Close() }()
+		var request map[string]any
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read fallback websocket replay: %v", err)
+			return
+		}
+		fallbackRequest <- request
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-ws-fallback", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer fallback.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "failing-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set websocket-to-websocket failover deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "fail over"}},
+	}); err != nil {
+		t.Fatalf("write websocket-to-websocket failover request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	request := <-fallbackRequest
+	if primaryHandshakes.Load() != 2 || fallbackHandshakes.Load() != 1 {
+		t.Fatalf("WS failover handshakes primary=%d fallback=%d, want 2/1", primaryHandshakes.Load(), fallbackHandshakes.Load())
+	}
+	if _, exists := request["previous_response_id"]; exists {
+		t.Fatalf("fallback websocket received stale previous_response_id: %#v", request)
+	}
+}
+
 func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 	var primaryCalls atomic.Int32
 	var fallbackCalls atomic.Int32
-	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		primaryCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusServiceUnavailable)
 		_, _ = io.WriteString(w, `{"error":{"message":"temporarily unavailable"}}`)
 	}))
+	defer primary.Close()
 	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fallbackCalls.Add(1)
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -590,7 +1599,7 @@ func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "primary", channelType: "codex", models: "gpt-test", priority: 100},
+		{name: "primary", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
 		{name: "fallback", channelType: "codex", models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -606,6 +1615,137 @@ func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 	readWebsocketUntilType(t, conn, "response.completed")
 	if primaryCalls.Load() != 1 || fallbackCalls.Load() != 1 {
 		t.Fatalf("upstream calls primary=%d fallback=%d, want 1/1", primaryCalls.Load(), fallbackCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
+	var websocketCalls atomic.Int32
+	var httpCalls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			websocketCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUpgradeRequired)
+			_, _ = io.WriteString(w, `{"error":{"message":"websocket disabled"}}`)
+			return
+		}
+		httpCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil || !json.Valid(body) {
+			t.Errorf("same-channel HTTP replay body=%q err=%v", body, err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http-fallback\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "same-channel-fallback", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.client = upstream.Client()
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set same-channel fallback deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "fallback"}},
+	}); err != nil {
+		t.Fatalf("write same-channel fallback request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if websocketCalls.Load() != 1 || httpCalls.Load() != 1 {
+		t.Fatalf("same-channel calls websocket=%d http=%d, want 1/1", websocketCalls.Load(), httpCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketUsesChannelHTTPProxy(t *testing.T) {
+	var proxyCalls atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("proxied upstream upgrade: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("proxied upstream read frame: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-proxy", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer upstream.Close()
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalls.Add(1)
+		if r.Method != http.MethodConnect {
+			t.Errorf("proxy method=%q, want CONNECT", r.Method)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		upstreamConn, err := net.Dial("tcp", r.Host)
+		if err != nil {
+			t.Errorf("proxy dial target %q: %v", r.Host, err)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			_ = upstreamConn.Close()
+			t.Error("proxy response writer cannot hijack")
+			return
+		}
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			_ = upstreamConn.Close()
+			t.Errorf("proxy hijack: %v", err)
+			return
+		}
+		_, _ = io.WriteString(clientConn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		go func() {
+			defer func() { _ = clientConn.Close() }()
+			defer func() { _ = upstreamConn.Close() }()
+			_, _ = io.Copy(upstreamConn, clientConn)
+		}()
+		_, _ = io.Copy(clientConn, upstreamConn)
+	}))
+	defer proxy.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "proxied-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list proxied channel: configs=%d err=%v", len(configs), err)
+	}
+	configs[0].ProxyURL = proxy.URL
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatalf("set channel proxy: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set proxied downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "through proxy"}},
+	}); err != nil {
+		t.Fatalf("write proxied request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	if proxyCalls.Load() != 1 {
+		t.Fatalf("channel proxy calls=%d, want 1", proxyCalls.Load())
 	}
 }
 
@@ -654,16 +1794,37 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 }
 
 func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T) {
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"logged\"}\n\n")
-		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-log\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"logged\"}]}],\"usage\":{\"input_tokens\":100,\"output_tokens\":50,\"total_tokens\":150}}}\n\n")
-		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade logging websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read logging websocket request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "logged"})
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-log",
+				"output": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": "logged"}},
+				}},
+				"usage": map[string]any{"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+			},
+		})
 	}))
+	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
+		name:        "codex-native-ws",
 		channelType: "codex",
+		websockets:  true,
 		models:      "gpt-4o-mini",
 		apiKey:      "sk-upstream-secret",
 		priority:    100,
@@ -701,8 +1862,71 @@ func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T
 	if strings.Contains(debugLog.ReqHeaders, "sk-upstream-secret") {
 		t.Fatalf("debug headers leaked upstream API key: %s", debugLog.ReqHeaders)
 	}
+	if debugLog.ReqMethod != "WEBSOCKET" || !strings.HasPrefix(debugLog.ReqURL, "ws://") {
+		t.Fatalf("debug transport method=%q url=%q, want WebSocket wire request", debugLog.ReqMethod, debugLog.ReqURL)
+	}
+	if debugLog.RespStatus != http.StatusSwitchingProtocols ||
+		!strings.Contains(debugLog.RespHeaders, "X-CCLoad-Upstream-Transport") {
+		t.Fatalf("debug handshake status=%d headers=%s", debugLog.RespStatus, debugLog.RespHeaders)
+	}
+	if gjson.GetBytes(debugLog.ReqBody, "type").String() != "response.create" ||
+		!gjson.GetBytes(debugLog.ReqBody, "stream").Bool() {
+		t.Fatalf("debug request is not the emitted WebSocket frame: %s", debugLog.ReqBody)
+	}
 	if !strings.Contains(string(debugLog.ReqBody), "audit me") || !strings.Contains(string(debugLog.RespBody), "response.completed") {
 		t.Fatalf("debug request/response content missing: request=%q response=%q", debugLog.ReqBody, debugLog.RespBody)
+	}
+}
+
+func TestNativeCodexWebsocketFailedTerminalPersistsUsageAndCost(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade failed-terminal websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read failed-terminal request: %v", err)
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.failed",
+			"response": map[string]any{
+				"id": "resp-failed-cost", "status": "failed", "output": []any{},
+				"error": map[string]any{"code": "server_error", "message": "failed after generation"},
+				"usage": map[string]any{"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+			},
+		})
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "failed-cost-native", channelType: "codex", websockets: true,
+		models: "gpt-4o-mini", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set failed-terminal deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-4o-mini",
+		"input": []any{map[string]any{"role": "user", "content": "bill failure"}},
+	}); err != nil {
+		t.Fatalf("write failed-terminal request: %v", err)
+	}
+	for {
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("read failed-terminal event: %v", err)
+		}
+		if event["type"] == "error" {
+			break
+		}
+	}
+	entry := waitForProxyLog(t, env, "gpt-4o-mini")
+	if entry.InputTokens != 100 || entry.OutputTokens != 50 || entry.Cost <= 0 {
+		t.Fatalf("failed-terminal billing log=%+v", entry)
 	}
 }
 

@@ -309,6 +309,33 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		defer cancel()
 	}
 
+	var executionSession *responsesExecutionSession
+	var nativeRequestBody []byte
+	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
+		protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyResponses {
+		hint := responsesExecutionSessionHint(c.Request.Header, all)
+		var releaseSession func()
+		executionSession, releaseSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
+		defer releaseSession()
+		if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": errAcquire.Error()})
+			return
+		}
+		defer executionSession.releaseTurn()
+		var localContinuation bool
+		var errNormalize error
+		all, nativeRequestBody, localContinuation, errNormalize = executionSession.transcript.normalizeHTTPRequests(all)
+		if errNormalize != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+			return
+		}
+		if !localContinuation {
+			executionSession = nil
+			all = incoming.body
+			nativeRequestBody = nil
+		}
+	}
+
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
 	if err != nil {
 		if errors.Is(err, errUnknownChannelType) {
@@ -347,6 +374,11 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 		}
 	}
+	if executionSession != nil {
+		if pinnedTarget, ok := executionSession.upstream.targetSnapshot(); ok {
+			cands = prioritizePinnedCodexChannel(cands, pinnedTarget.channelID)
+		}
+	}
 
 	reqCtx := &proxyRequestContext{
 		originalModel:  originalModel,
@@ -365,6 +397,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		startTime:      startTime,
 		thinkingEffort: thinkingEffort,
 	}
+	if executionSession != nil {
+		reqCtx.nativeCodexWS = executionSession.upstream
+		reqCtx.nativeCodexBody = nativeRequestBody
+	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
 			s.activeRequests.AddBytes(activeID, n)
@@ -379,6 +415,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
+		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
+			executionSession.transcript.commit(all, lastResult.responsesTurn)
+		}
 		return
 	}
 
@@ -492,7 +531,7 @@ func (s *Server) runProxyAttemptLoop(
 
 		if result != nil {
 			if result.succeeded {
-				return nil, true
+				return result, true
 			}
 
 			lastResult = result

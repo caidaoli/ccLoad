@@ -245,6 +245,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.modelStatsUnavailable': '统计不可用',
   'channels.enableChannel': '启用',
   'channels.enableScheduledCheck': '定时检测',
+  'channels.enableWebsockets': '原生 WebSocket',
+  'channels.enableWebsocketsHelp': '仅 Codex 渠道：复用原生上游 Responses WebSocket。',
   'channels.priority': '优先级',
   'channels.dailyCostLimit': '每日限额',
   'channels.dailyCostLimitPlaceholder': '0=无限制',

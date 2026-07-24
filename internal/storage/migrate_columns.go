@@ -602,6 +602,12 @@ func ensureChannelsProxyURL(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"TEXT NOT NULL DEFAULT ''")
 }
 
+func ensureChannelsWebsockets(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "websockets",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
 // 支持多URL存储（换行分隔）
 func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {

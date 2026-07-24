@@ -409,6 +409,24 @@ data: {"type":"response.completed","sequence_number":28,"response":{"id":"resp_0
 	feedAndAssertUsage(t, newSSEUsageParser("codex"), sseData, 4293, 17, 6016, 0)
 }
 
+func TestSSEUsageParser_CodexResponseFailedRetainsUsage(t *testing.T) {
+	sseData := `event: response.failed
+data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"failed after work"},"usage":{"input_tokens":120,"input_tokens_details":{"cached_tokens":20},"output_tokens":7,"total_tokens":127}}}
+
+`
+	parser := newSSEUsageParser("codex")
+	if err := parser.Feed([]byte(sseData)); err != nil {
+		t.Fatalf("Feed response.failed: %v", err)
+	}
+	input, output, cacheRead, _ := parser.GetUsage()
+	if input != 100 || output != 7 || cacheRead != 20 {
+		t.Fatalf("failed response usage input=%d output=%d cache=%d, want 100/7/20", input, output, cacheRead)
+	}
+	if parser.GetLastError() == nil {
+		t.Fatal("response.failed must still be classified as an upstream error")
+	}
+}
+
 func TestSSEUsageParser_CodexCacheWriteTokens(t *testing.T) {
 	// OpenAI Responses / Codex: input_tokens_details.cache_write_tokens 是缓存建立字段
 	// input_tokens 包含 cached_tokens 与 cache_write_tokens，需全部扣除避免双计

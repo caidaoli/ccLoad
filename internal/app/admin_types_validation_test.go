@@ -157,6 +157,22 @@ func TestChannelRequestValidation_ChannelType(t *testing.T) {
 	)
 }
 
+func TestChannelRequestValidation_WebsocketsRequiresCodex(t *testing.T) {
+	req := newValidChannelRequest()
+	req.ChannelType = "openai"
+	req.Websockets = true
+
+	err := req.Validate()
+	if err == nil || !strings.Contains(err.Error(), "websockets") {
+		t.Fatalf("Validate() error = %v, want websockets/codex validation error", err)
+	}
+
+	req.ChannelType = "codex"
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() rejected codex websockets channel: %v", err)
+	}
+}
+
 // TestChannelRequestValidation_KeyStrategy 测试 key_strategy 白名单校验
 func TestChannelRequestValidation_KeyStrategy(t *testing.T) {
 	tests := []channelRequestFieldCase{

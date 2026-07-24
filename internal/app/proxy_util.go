@@ -123,6 +123,9 @@ type fwResult struct {
 
 	// Debug日志数据（debug开启时填充，传递到日志写入管道）
 	DebugData *model.DebugLogEntry
+
+	ResponsesTurnResult    responsesWebsocketTurnResult
+	HasResponsesTurnResult bool
 }
 
 // ForwardObserver 封装转发过程中的观测回调（遵循SRP，避免函数签名膨胀）
@@ -154,6 +157,8 @@ type proxyRequestContext struct {
 	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
 	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
 	thinkingEffort   string
+	nativeCodexWS    *codexUpstreamWebsocketSession
+	nativeCodexBody  []byte
 }
 
 // proxyResult 代理请求结果
@@ -168,6 +173,8 @@ type proxyResult struct {
 	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
 	nextAction       cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
 	deferredCooldown *cooldown.ErrorInput
+	responsesTurn    responsesWebsocketTurnResult
+	hasResponsesTurn bool
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)
@@ -606,23 +613,29 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, upstreamProtocol)
 
 	bodyToSend = reqCtx.body
-
-	// 如果模型发生变更，修改请求体
-	if actualModel != reqCtx.originalModel {
-		var reqData map[string]json.RawMessage
-		if err := sonic.Unmarshal(reqCtx.body, &reqData); err == nil {
-			modelRaw, err := sonic.Marshal(actualModel)
-			if err != nil {
-				return actualModel, bodyToSend
-			}
-			reqData["model"] = modelRaw
-			if modifiedBody, err := sonic.Marshal(reqData); err == nil {
-				bodyToSend = modifiedBody
-			}
-		}
-	}
+	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)
 
 	return actualModel, bodyToSend
+}
+
+func replaceJSONRequestModel(body []byte, originalModel, actualModel string) []byte {
+	if len(body) == 0 || actualModel == "" || actualModel == originalModel {
+		return body
+	}
+	var reqData map[string]json.RawMessage
+	if err := sonic.Unmarshal(body, &reqData); err != nil {
+		return body
+	}
+	modelRaw, err := sonic.Marshal(actualModel)
+	if err != nil {
+		return body
+	}
+	reqData["model"] = modelRaw
+	modifiedBody, err := sonic.Marshal(reqData)
+	if err != nil {
+		return body
+	}
+	return modifiedBody
 }
 
 // stripAnthropicBillingHeaders 从 Anthropic /v1/messages 请求体的 system 数组中

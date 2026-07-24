@@ -84,6 +84,69 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 	return enforceResponsesWebsocketTranscriptLimit(normalized)
 }
 
+// normalizeRequests 同时生成两份请求：
+//   - replayRequest 始终包含完整 transcript，可安全发送到任意新 transport；
+//   - incrementalRequest 仅包含本轮 input，并用 previous_response_id 续接当前原生 WS。
+//
+// 连接是否仍可复用由上游 session 在选定渠道、Key 和 URL 后决定。这里不猜 transport 状态。
+func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayRequest, incrementalRequest []byte, err error) {
+	replayRequest, err = s.normalizeRequest(payload)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(s.lastRequest) == 0 {
+		return replayRequest, bytes.Clone(replayRequest), nil
+	}
+
+	nextInput := gjson.GetBytes(payload, "input")
+	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
+	requestType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	if previousID == "" && inputContainsCompletedTranscript(nextInput) {
+		return replayRequest, bytes.Clone(replayRequest), nil
+	}
+	if len(s.pendingToolCallIDs) > 0 && !inputSatisfiesResponsesWebsocketToolCalls(nextInput, s.pendingToolCallIDs) &&
+		previousID == "" && requestType == responsesWebsocketRequestCreate {
+		return replayRequest, bytes.Clone(replayRequest), nil
+	}
+
+	incrementalRequest, err = normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
+	if err != nil {
+		return nil, nil, err
+	}
+	if s.lastResponseID != "" {
+		incrementalRequest, err = sjson.SetBytes(incrementalRequest, "previous_response_id", s.lastResponseID)
+		if err != nil {
+			return nil, nil, fmt.Errorf("set websocket previous response id: %w", err)
+		}
+	}
+	return replayRequest, incrementalRequest, nil
+}
+
+// normalizeHTTPRequests keeps ordinary Responses HTTP semantics intact:
+// no previous_response_id starts a replacement response, while a continuation
+// may use native WS only when this process owns the referenced transcript.
+func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
+	replayRequest, incrementalRequest []byte, localContinuation bool, err error,
+) {
+	websocketPayload, err := sjson.SetBytes(payload, "type", responsesWebsocketRequestCreate)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
+	if previousID != "" && len(s.lastRequest) == 0 {
+		return nil, nil, false, nil
+	}
+	if previousID == "" {
+		replayRequest, err = normalizeInitialResponsesWebsocketRequest(websocketPayload)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		return replayRequest, bytes.Clone(replayRequest), true, nil
+	}
+	replayRequest, incrementalRequest, err = s.normalizeRequests(websocketPayload)
+	return replayRequest, incrementalRequest, err == nil, err
+}
+
 func (s *responsesWebsocketSession) commit(request []byte, result responsesWebsocketTurnResult) {
 	if s == nil {
 		return
@@ -192,6 +255,8 @@ func inputContainsCompletedTranscript(input gjson.Result) bool {
 	}
 	for _, item := range input.Array() {
 		switch strings.TrimSpace(item.Get("type").String()) {
+		case "compaction", "compaction_summary":
+			return true
 		case "function_call", "custom_tool_call":
 			return true
 		case "message":

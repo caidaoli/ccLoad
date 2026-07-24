@@ -61,6 +61,9 @@ type sseUsageParser struct {
 	// hasStreamOutput 表示已经看到应转发给客户端的非心跳流事件。
 	// ping 只是上游保活，不能让 200 空流被误判为成功。
 	hasStreamOutput bool
+
+	responsesTurnResult responsesWebsocketTurnResult
+	hasResponsesTurn    bool
 }
 
 type jsonUsageParser struct {
@@ -109,6 +112,7 @@ type usageParser interface {
 	GetLastError() []byte   // [INFO] 返回SSE流中检测到的最后一个error事件（用于1308等错误的延迟处理）
 	IsStreamComplete() bool // [INFO] 返回是否检测到流结束标志（[DONE]/message_stop）
 	HasStreamOutput() bool  // 返回是否已经看到非心跳的可见响应内容
+	GetResponsesTurnResult() (responsesWebsocketTurnResult, bool)
 }
 
 // GetCacheBreakdown 由 sseUsageParser/jsonUsageParser 通过嵌入共享。
@@ -465,6 +469,20 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		p.streamComplete = true
 		return nil
 	}
+	if isHeartbeatEvent(eventType, data) {
+		return nil
+	}
+
+	// 先解析 usage。失败终态也可能包含已经消耗的 token，计费不能因为
+	// response.failed 提前返回而静默归零。
+	var event map[string]any
+	if err := json.Unmarshal([]byte(data), &event); err != nil {
+		return fmt.Errorf("json unmarshal failed: %w", err)
+	}
+	if usage := extractUsage(event); usage != nil {
+		p.applyUsage(usage, p.channelType)
+	}
+	p.applyToolUsageFromPayload(event)
 
 	// 特殊处理：error 事件（记录日志 + 存储错误体用于后续冷却处理）
 	// - Anthropic/聚合站：event: error 或 data 顶层 type=error / error 对象
@@ -474,10 +492,6 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		log.Printf("[WARN]  [SSE错误事件] 上游返回error内容(eventType=%q): %s", eventType, data)
 		p.lastError = []byte(data)
 		return nil // 不解析usage，避免误判
-	}
-
-	if isHeartbeatEvent(eventType, data) {
-		return nil
 	}
 
 	p.hasStreamOutput = true
@@ -492,14 +506,24 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return nil // 跳过已知无用事件
 	}
 
-	// 解析JSON数据
-	var event map[string]any
-	if err := json.Unmarshal([]byte(data), &event); err != nil {
-		return fmt.Errorf("json unmarshal failed: %w", err)
-	}
 	payloadType, _ := event["type"].(string)
-	if eventType == "message_stop" || (eventType == "response.completed" && payloadType == "response.completed") {
+	if eventType == "message_stop" || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
 		p.streamComplete = true
+	}
+	if isSuccessfulResponsesTerminal(payloadType) {
+		if response, ok := event["response"].(map[string]any); ok {
+			output, _ := json.Marshal(response["output"])
+			if len(output) == 0 || string(output) == "null" {
+				output = []byte("[]")
+			}
+			responseID, _ := response["id"].(string)
+			p.responsesTurnResult = responsesWebsocketTurnResult{
+				completedOutput:     output,
+				completedResponseID: strings.TrimSpace(responseID),
+				pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(output),
+			}
+			p.hasResponsesTurn = true
+		}
 	}
 
 	// 提取 service_tier（OpenAI Chat/Responses API 顶层字段）
@@ -517,7 +541,6 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	usage := extractUsage(event)
 
 	if usage == nil {
-		p.applyToolUsageFromPayload(event)
 		return nil
 	}
 
@@ -525,9 +548,6 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
 		p.ServiceTier = "fast"
 	}
-
-	p.applyUsage(usage, p.channelType)
-	p.applyToolUsageFromPayload(event)
 
 	return nil
 }
@@ -578,6 +598,19 @@ func (p *sseUsageParser) IsStreamComplete() bool {
 
 func (p *sseUsageParser) HasStreamOutput() bool {
 	return p.hasStreamOutput
+}
+
+func (p *sseUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult, bool) {
+	return p.responsesTurnResult, p.hasResponsesTurn
+}
+
+func isSuccessfulResponsesTerminal(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete":
+		return true
+	default:
+		return false
+	}
 }
 
 func isHeartbeatEvent(eventType, data string) bool {
@@ -912,6 +945,10 @@ func (p *jsonUsageParser) IsStreamComplete() bool {
 
 func (p *jsonUsageParser) HasStreamOutput() bool {
 	return p.hasBody
+}
+
+func (p *jsonUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult, bool) {
+	return responsesWebsocketTurnResult{}, false
 }
 
 func (u *usageAccumulator) applyToolUsageFromPayload(payload map[string]any) {

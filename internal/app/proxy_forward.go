@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -819,6 +820,7 @@ func (s *Server) handleSuccessResponse(
 			result.SSEErrorEvent = errorEvent
 		}
 		streamComplete = parser.IsStreamComplete()
+		result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	}
 
 	// 生成流诊断消息（仅流请求）
@@ -1020,6 +1022,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ToolCostUSD = parser.GetToolCostUSD()
 	result.ThinkingEffort = parser.GetThinkingEffort()
 	result.SSEErrorEvent = parser.GetLastError()
+	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	streamComplete := parser.IsStreamComplete() || translatedComplete
 
 	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, resp.Header.Get("Content-Type")); diagMsg != "" {
@@ -1323,6 +1326,29 @@ func (s *Server) handleResponse(
 // 参数新增 apiKey 用于直接传递已选中的API Key（从KeySelector获取）
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
+	return s.forwardOnceAsyncWithNativeCodexWebsocket(
+		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil,
+	)
+}
+
+type nativeCodexWebsocketAttempt struct {
+	session         *codexUpstreamWebsocketSession
+	incrementalBody []byte
+}
+
+func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
+	ctx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	method string,
+	plan protocol.TransformPlan,
+	hdr http.Header,
+	rawQuery string,
+	baseURL string,
+	w http.ResponseWriter,
+	observer *ForwardObserver,
+	native *nativeCodexWebsocketAttempt,
+) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(cfg, plan))
 	reqCtx.transformPlan = plan
@@ -1358,15 +1384,68 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	if err != nil {
 		return nil, 0, err
 	}
+	replayBody := bytes.Clone(reqCtx.transformPlan.TranslatedBody)
 
-	// 2.5 Debug捕获：记录发送前的请求信息
-	dc := s.captureDebugRequest(req, reqCtx.transformPlan.TranslatedBody)
+	// 2.5 发送请求。原生 Codex WS 会在持锁后决定发送增量请求还是完整回放请求。
+	var resp *http.Response
+	var sentBody []byte
+	usedNativeWebsocket := false
+	if native != nil && native.session != nil {
+		incrementalBody := bytes.Clone(native.incrementalBody)
+		incrementalReq, errBuild := s.buildProxyRequest(
+			reqCtx, cfg, apiKey, method, incrementalBody, hdr, rawQuery,
+			reqCtx.transformPlan.UpstreamPath, baseURL,
+		)
+		if errBuild != nil {
+			return nil, 0, errBuild
+		}
+		// buildProxyRequest applies body rules and prompt_cache_key; send the
+		// resulting wire body, not the pre-normalized caller input.
+		incrementalBody = bytes.Clone(reqCtx.transformPlan.TranslatedBody)
+		resp, req, sentBody, err = s.doCodexWebsocketRequest(
+			reqCtx.ctx, cfg, native.session,
+			req, replayBody, incrementalReq, incrementalBody,
+		)
+		usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
+		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
+			// A concrete HTTP response here is a rejected WebSocket handshake. The
+			// selected channel may still support the ordinary Responses HTTP endpoint.
+			_ = resp.Body.Close()
+			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
+			req = req.WithContext(reqCtx.ctx)
+			sentBody = replayBody
+			resp, err = s.doUpstreamRequest(cfg, req)
+			usedNativeWebsocket = false
+		}
+	} else {
+		sentBody = replayBody
+		resp, err = s.doUpstreamRequest(cfg, req)
+	}
+	if req != nil {
+		reqCtx.translatedBody = sentBody
+		reqCtx.transformPlan.TranslatedBody = sentBody
+	}
+
+	// 2.6 Debug捕获：记录真正发出的请求，而不是未采用的 replay/incremental 候选。
+	debugReq := req
+	debugBody := sentBody
+	if usedNativeWebsocket && req != nil {
+		debugReq = req.Clone(req.Context())
+		if wsURL, errURL := codexWebsocketURL(req.URL.String()); errURL == nil {
+			if parsedURL, errParse := url.Parse(wsURL); errParse == nil {
+				debugReq.URL = parsedURL
+			}
+		}
+		debugReq.Method = "WEBSOCKET"
+		if wireBody, errWire := buildCodexWebsocketRequestBody(sentBody); errWire == nil {
+			debugBody = wireBody
+		}
+	}
+	dc := s.captureDebugRequest(debugReq, debugBody)
 	if observer != nil && observer.OnDebugCapture != nil {
 		observer.OnDebugCapture(dc)
 	}
 
-	// 3. 发送请求
-	resp, err := s.doUpstreamRequest(cfg, req)
 	if err != nil && (errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded)) {
 		return nil, reqCtx.Duration().Seconds(), err
 	}
@@ -1399,6 +1478,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
 		if errRes != nil {
 			errRes.DebugData = dc.buildEntry(resp)
+			if usedNativeWebsocket {
+				annotateNativeWebsocketDebug(errRes.DebugData)
+			}
 		}
 		return errRes, errDur, errErr
 	}
@@ -1429,6 +1511,9 @@ func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
 	if res != nil {
 		res.DebugData = dc.buildEntry(resp)
+		if usedNativeWebsocket {
+			annotateNativeWebsocketDebug(res.DebugData)
+		}
 	}
 
 	return res, duration, err
@@ -1549,9 +1634,21 @@ func (s *Server) forwardAttempt(
 			nextAction: cooldown.ActionRetryChannel,
 		}, cooldown.ActionRetryChannel, nil
 	}
+	var nativeAttempt *nativeCodexWebsocketAttempt
+	if reqCtx.nativeCodexWS != nil && cfg.Websockets && upstreamProtocol == protocol.Codex &&
+		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
+		incrementalBody := replaceJSONRequestModel(reqCtx.nativeCodexBody, reqCtx.originalModel, actualModel)
+		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
+		nativeAttempt = &nativeCodexWebsocketAttempt{
+			session:         reqCtx.nativeCodexWS,
+			incrementalBody: incrementalBody,
+		}
+	}
 
-	res, duration, err := s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
+		ctx, cfg, selectedKey, reqCtx.requestMethod,
+		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt,
+	)
 
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
 	if res != nil && res.DebugData != nil {
@@ -1568,8 +1665,10 @@ func (s *Server) forwardAttempt(
 		retryStrategies = append(retryStrategies, retryStrategy)
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
-		res, duration, err = s.forwardOnceAsync(ctx, cfg, selectedKey, reqCtx.requestMethod,
-			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer)
+		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
+			ctx, cfg, selectedKey, reqCtx.requestMethod,
+			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt,
+		)
 		if res != nil && res.DebugData != nil {
 			reqCtx.debugData = res.DebugData
 		}
@@ -2073,6 +2172,28 @@ func (s *Server) selectKeyWithFallback(cfg *model.Config, apiKeys []*model.APIKe
 	return keyIndex, selectedKey, nil
 }
 
+func selectPinnedCodexWebsocketKey(
+	cfg *model.Config,
+	apiKeys []*model.APIKey,
+	triedKeys map[int]bool,
+	session *codexUpstreamWebsocketSession,
+) (int, string, bool) {
+	target, ok := session.targetSnapshot()
+	if !ok || target.channelID != cfg.ID {
+		return 0, "", false
+	}
+	now := time.Now()
+	for _, apiKey := range apiKeys {
+		if apiKey == nil || apiKey.Disabled || apiKey.IsCoolingDown(now) || triedKeys[apiKey.KeyIndex] {
+			continue
+		}
+		if codexWebsocketKeyHash(apiKey.APIKey) == target.keyHash {
+			return apiKey.KeyIndex, apiKey.APIKey, true
+		}
+	}
+	return 0, "", false
+}
+
 // recordSuccessTTFBToSelector 在多URL场景的2xx响应里把TTFB回报给URLSelector，
 // 单URL/非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
 func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCount int, urlStr string, result *proxyResult) {
@@ -2111,6 +2232,10 @@ func (s *Server) attemptKeyAcrossURLs(
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	if target, ok := reqCtx.nativeCodexWS.targetSnapshot(); ok &&
+		target.channelID == cfg.ID && target.keyHash == codexWebsocketKeyHash(selectedKey) {
+		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, requestPath, reqCtx.rawQuery)
+	}
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2176,6 +2301,25 @@ func (s *Server) attemptKeyAcrossURLs(
 	return nil, urlLastFailure, nil
 }
 
+func prioritizePinnedCodexWebsocketURL(
+	urls []sortedURL,
+	targetURL string,
+	requestPath string,
+	rawQuery string,
+) []sortedURL {
+	for index, entry := range urls {
+		if buildUpstreamURL(entry.url, requestPath, rawQuery) != targetURL || index == 0 {
+			continue
+		}
+		ordered := make([]sortedURL, 0, len(urls))
+		ordered = append(ordered, entry)
+		ordered = append(ordered, urls[:index]...)
+		ordered = append(ordered, urls[index+1:]...)
+		return ordered
+	}
+	return urls
+}
+
 func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqCtx *proxyRequestContext, w http.ResponseWriter) (*proxyResult, error) {
 	reqCtx.channelStartTime = time.Now()
 
@@ -2234,7 +2378,11 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
-		keyIndex, selectedKey, selectErr := s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
+		keyIndex, selectedKey, pinned := selectPinnedCodexWebsocketKey(cfg, apiKeys, triedKeys, reqCtx.nativeCodexWS)
+		var selectErr error
+		if !pinned {
+			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
+		}
 		if selectErr != nil {
 			return nil, selectErr
 		}

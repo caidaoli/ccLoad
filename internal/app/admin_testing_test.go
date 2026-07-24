@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
 )
 
 // TestHandleChannelTest 测试渠道测试功能
@@ -158,6 +162,126 @@ func TestChannelTestCodexStopsAfterResponseCompleted(t *testing.T) {
 				t.Fatalf("completed Responses stream must not expose trailing TLS error: %+v", result)
 			}
 		})
+	}
+}
+
+func TestChannelTestCodexUsesNativeWebsocketWhenEnabled(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			t.Fatalf("WebSocket 渠道测试错误地走了 HTTP: %s %s", r.Method, r.URL.Path)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("升级 WebSocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		_, requestBody, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("读取 WebSocket 测试请求: %v", err)
+			return
+		}
+		if got := gjson.GetBytes(requestBody, "type").String(); got != responsesWebsocketRequestCreate {
+			t.Errorf("请求 type=%q, want %q", got, responsesWebsocketRequestCreate)
+		}
+		if !gjson.GetBytes(requestBody, "stream").Bool() {
+			t.Error("WebSocket 请求必须强制 stream=true")
+		}
+
+		for _, event := range []map[string]any{
+			{"type": "response.output_text.delta", "delta": "hello"},
+			{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id":     "resp_admin_ws",
+					"status": "completed",
+					"usage": map[string]any{
+						"input_tokens":  3,
+						"output_tokens": 1,
+					},
+				},
+			},
+		} {
+			if err := conn.WriteJSON(event); err != nil {
+				t.Errorf("写入 WebSocket 测试响应: %v", err)
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	result := srv.testChannelAPI(context.Background(), &model.Config{
+		ID:           97,
+		Name:         "codex-native-websocket-test",
+		URL:          upstream.URL,
+		ChannelType:  util.ChannelTypeCodex,
+		Websockets:   true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6-sol"}},
+	}, "sk-test", &testutil.TestChannelRequest{
+		Model:       "gpt-5.6-sol",
+		Stream:      true,
+		Content:     "hello",
+		ChannelType: util.ChannelTypeCodex,
+	})
+
+	if success, _ := result["success"].(bool); !success {
+		t.Fatalf("原生 WebSocket 渠道测试失败: %+v", result)
+	}
+	if got, _ := result["transport"].(string); got != "websocket" {
+		t.Fatalf("transport=%q, want websocket; result=%+v", got, result)
+	}
+	if got, _ := result["response_text"].(string); got != "hello" {
+		t.Fatalf("response_text=%q, want hello; result=%+v", got, result)
+	}
+	if got, _ := result["upstream_request_url"].(string); !strings.HasPrefix(got, "ws://") {
+		t.Fatalf("upstream_request_url=%q, want ws:// URL", got)
+	}
+	if got, _ := result["upstream_request_body"].(string); gjson.Get(got, "type").String() != responsesWebsocketRequestCreate {
+		t.Fatalf("upstream_request_body 未记录实际 WebSocket 帧: %s", got)
+	}
+}
+
+func TestChannelTestCodexDoesNotHideRejectedWebsocketHandshake(t *testing.T) {
+	var httpFallbacks atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUpgradeRequired)
+			_, _ = io.WriteString(w, `{"error":{"message":"websocket disabled"}}`)
+			return
+		}
+		httpFallbacks.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_http","output":[],"usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	result := srv.testChannelAPI(context.Background(), &model.Config{
+		ID:           98,
+		Name:         "codex-rejected-websocket-test",
+		URL:          upstream.URL,
+		ChannelType:  util.ChannelTypeCodex,
+		Websockets:   true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6-sol"}},
+	}, "sk-test", &testutil.TestChannelRequest{
+		Model:       "gpt-5.6-sol",
+		Stream:      true,
+		Content:     "hello",
+		ChannelType: util.ChannelTypeCodex,
+	})
+
+	if success, _ := result["success"].(bool); success {
+		t.Fatalf("被拒绝的 WebSocket 握手不得被 HTTP 成功掩盖: %+v", result)
+	}
+	if got, _ := getResultInt(result["status_code"]); got != http.StatusUpgradeRequired {
+		t.Fatalf("status_code=%d, want %d; result=%+v", got, http.StatusUpgradeRequired, result)
+	}
+	if got := httpFallbacks.Load(); got != 0 {
+		t.Fatalf("渠道测试在 WebSocket 握手失败后偷偷回退 HTTP: calls=%d", got)
 	}
 }
 

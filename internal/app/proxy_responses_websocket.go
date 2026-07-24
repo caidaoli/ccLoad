@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 
 	"github.com/gin-gonic/gin"
@@ -23,6 +24,7 @@ const (
 	responsesWebsocketRequestCreate = "response.create"
 	responsesWebsocketRequestAppend = "response.append"
 	responsesWebsocketIdleTimeout   = 5 * time.Minute
+	responsesWebsocketPingInterval  = 2 * time.Minute
 	responsesWebsocketWriteTimeout  = 30 * time.Second
 )
 
@@ -53,7 +55,8 @@ func checkResponsesWebsocketOrigin(r *http.Request) bool {
 }
 
 // HandleResponsesWebsocket terminates the downstream Responses WebSocket.
-// Upstream execution remains HTTP/SSE in the first implementation phase.
+// Explicit session hints bind conversation state to the authenticated subject,
+// so a downstream reconnect does not destroy transcript or upstream affinity.
 func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	if !websocket.IsWebSocketUpgrade(c.Request) {
 		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "websocket upgrade required"})
@@ -77,13 +80,30 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		_ = conn.Close()
 	})
 	defer stopShutdownClose()
+	idleTimeout := s.responsesWebsocketIdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = responsesWebsocketIdleTimeout
+	}
+	pingInterval := s.responsesWebsocketPingInterval
+	if pingInterval <= 0 {
+		pingInterval = responsesWebsocketPingInterval
+	}
 	conn.SetReadLimit(maxProxyBodyBytes("/v1/responses"))
-	_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	conn.SetPongHandler(func(string) error {
-		return conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+		return conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	})
-	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn)
-	session := newResponsesWebsocketSession()
+	startResponsesWebsocketPingLoop(connectionCtx, cancelConnection, conn, pingInterval)
+	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn, idleTimeout)
+	var executionSession *responsesExecutionSession
+	var releaseExecutionSession func()
+	defer func() {
+		if releaseExecutionSession != nil {
+			releaseExecutionSession()
+		}
+	}()
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashString, _ := tokenHash.(string)
 
 	for {
 		var message responsesWebsocketInboundMessage
@@ -102,21 +122,33 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		eventType := strings.TrimSpace(gjson.GetBytes(message.payload, "type").String())
 		switch eventType {
 		case responsesWebsocketRequestCreate, responsesWebsocketRequestAppend:
-			requestBody, errNormalize := session.normalizeRequest(message.payload)
+			if executionSession == nil {
+				hint := responsesExecutionSessionHint(c.Request.Header, message.payload)
+				executionSession, releaseExecutionSession = s.responsesExecutionSessions.acquire(tokenHashString, hint)
+			}
+			if errAcquire := executionSession.acquireTurn(connectionCtx); errAcquire != nil {
+				return
+			}
+			requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
 			if errNormalize != nil {
+				executionSession.releaseTurn()
 				if errWrite := writeResponsesWebsocketError(conn, "invalid_request", errNormalize.Error()); errWrite != nil {
 					return
 				}
 				continue
 			}
-			turnResult, errTurn := s.executeResponsesWebsocketHTTPTurn(connectionCtx, c, conn, requestBody)
+			turnResult, errTurn := s.executeResponsesWebsocketTurn(
+				connectionCtx, c, conn, requestBody, nativeRequestBody, executionSession.upstream,
+			)
 			if errTurn != nil {
+				executionSession.releaseTurn()
 				if errWrite := writeResponsesWebsocketError(conn, "upstream_error", errTurn.Error()); errWrite != nil {
 					return
 				}
 				continue
 			}
-			session.commit(requestBody, turnResult)
+			executionSession.transcript.commit(requestBody, turnResult)
+			executionSession.releaseTurn()
 		default:
 			if errWrite := writeResponsesWebsocketError(conn, "unsupported_event", "unsupported websocket request type"); errWrite != nil {
 				return
@@ -134,6 +166,7 @@ func readResponsesWebsocketMessages(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	conn *websocket.Conn,
+	idleTimeout time.Duration,
 ) <-chan responsesWebsocketInboundMessage {
 	messages := make(chan responsesWebsocketInboundMessage)
 	go func() {
@@ -143,7 +176,7 @@ func readResponsesWebsocketMessages(
 			if err != nil {
 				return
 			}
-			_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+			_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 			select {
 			case messages <- responsesWebsocketInboundMessage{messageType: messageType, payload: payload}:
 			case <-ctx.Done():
@@ -154,13 +187,46 @@ func readResponsesWebsocketMessages(
 	return messages
 }
 
+func startResponsesWebsocketPingLoop(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn *websocket.Conn,
+	interval time.Duration,
+) {
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := conn.WriteControl(
+					websocket.PingMessage, nil, time.Now().Add(responsesWebsocketWriteTimeout),
+				); err != nil {
+					cancel()
+					_ = conn.Close()
+					return
+				}
+			}
+		}
+	}()
+}
+
 type responsesWebsocketTurnResult struct {
 	completedOutput     []byte
 	completedResponseID string
 	pendingToolCallIDs  []string
 }
 
-func (s *Server) executeResponsesWebsocketHTTPTurn(ctx context.Context, c *gin.Context, conn *websocket.Conn, requestBody []byte) (responsesWebsocketTurnResult, error) {
+func (s *Server) executeResponsesWebsocketTurn(
+	ctx context.Context,
+	c *gin.Context,
+	conn *websocket.Conn,
+	requestBody []byte,
+	nativeRequestBody []byte,
+	nativeCodexWS *codexUpstreamWebsocketSession,
+) (responsesWebsocketTurnResult, error) {
 	modelName := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if modelName == "" {
 		return responsesWebsocketTurnResult{}, errors.New("missing model in normalized websocket request")
@@ -206,6 +272,9 @@ func (s *Server) executeResponsesWebsocketHTTPTurn(ctx context.Context, c *gin.C
 	if len(candidates) == 0 {
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
+	if pinnedTarget, ok := nativeCodexWS.targetSnapshot(); ok {
+		candidates = prioritizePinnedCodexChannel(candidates, pinnedTarget.channelID)
+	}
 
 	startTime := time.Now()
 	tokenID, _ := c.Get("token_id")
@@ -216,21 +285,23 @@ func (s *Server) executeResponsesWebsocketHTTPTurn(ctx context.Context, c *gin.C
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
 	header.Set("Content-Type", "application/json")
 	reqCtx := &proxyRequestContext{
-		originalModel:  modelName,
-		clientProtocol: protocol.Codex,
-		requestMethod:  http.MethodPost,
-		requestPath:    "/v1/responses",
-		rawQuery:       c.Request.URL.RawQuery,
-		body:           requestBody,
-		translatedBody: requestBody,
-		header:         header,
-		isStreaming:    true,
-		tokenHash:      tokenHashString,
-		tokenID:        tokenIDInt64,
-		clientIP:       c.ClientIP(),
-		activeReqID:    activeID,
-		startTime:      startTime,
-		thinkingEffort: extractThinkingEffortFromJSON(requestBody),
+		originalModel:   modelName,
+		clientProtocol:  protocol.Codex,
+		requestMethod:   http.MethodPost,
+		requestPath:     "/v1/responses",
+		rawQuery:        c.Request.URL.RawQuery,
+		body:            requestBody,
+		translatedBody:  requestBody,
+		header:          header,
+		isStreaming:     true,
+		tokenHash:       tokenHashString,
+		tokenID:         tokenIDInt64,
+		clientIP:        c.ClientIP(),
+		activeReqID:     activeID,
+		startTime:       startTime,
+		thinkingEffort:  extractThinkingEffortFromJSON(requestBody),
+		nativeCodexWS:   nativeCodexWS,
+		nativeCodexBody: bytes.Clone(nativeRequestBody),
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
@@ -261,6 +332,20 @@ func (s *Server) executeResponsesWebsocketHTTPTurn(ctx context.Context, c *gin.C
 		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
 	}
 	return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d", status)
+}
+
+func prioritizePinnedCodexChannel(candidates []*model.Config, channelID int64) []*model.Config {
+	for index, candidate := range candidates {
+		if candidate == nil || candidate.ID != channelID || index == 0 {
+			continue
+		}
+		ordered := make([]*model.Config, 0, len(candidates))
+		ordered = append(ordered, candidate)
+		ordered = append(ordered, candidates[:index]...)
+		ordered = append(ordered, candidates[index+1:]...)
+		return ordered
+	}
+	return candidates
 }
 
 func responsesWebsocketUpstreamHeaders(source http.Header) http.Header {
@@ -326,7 +411,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 		}
 		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 		w.collectOutputItem(eventType, payload)
-		if eventType == "response.completed" || eventType == "response.done" {
+		if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 			w.completed = true
 			output := gjson.GetBytes(payload, "response.output")
 			if output.Exists() && output.IsArray() && len(output.Array()) > 0 {

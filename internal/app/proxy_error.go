@@ -467,13 +467,15 @@ func (s *Server) handleProxySuccess(
 	s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, res, actualModel)
 
 	return &proxyResult{
-		status:        res.Status,
-		header:        res.Header,
-		channelID:     &cfg.ID,
-		duration:      duration,
-		firstByteTime: res.FirstByteTime,
-		succeeded:     true,
-		nextAction:    cooldown.ActionReturnClient,
+		status:           res.Status,
+		header:           res.Header,
+		channelID:        &cfg.ID,
+		duration:         duration,
+		firstByteTime:    res.FirstByteTime,
+		succeeded:        true,
+		nextAction:       cooldown.ActionReturnClient,
+		responsesTurn:    res.ResponsesTurnResult,
+		hasResponsesTurn: res.HasResponsesTurnResult,
 	}, cooldown.ActionReturnClient
 }
 
