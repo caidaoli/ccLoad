@@ -879,7 +879,7 @@ func (s *Server) doChannelTestCodexWebsocket(
 		return resp, err
 	}
 
-	resp, _, _, err := session.roundTrip(ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil)
+	resp, _, _, err := session.roundTrip(ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil, s.skipTLSVerify)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()
 		return resp, err

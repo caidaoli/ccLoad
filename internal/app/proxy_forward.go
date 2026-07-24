@@ -21,6 +21,8 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -1152,6 +1154,9 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, channelTy
 // classifySSEErrorStatus 根据响应体内容判定 SSE 错误的内部状态码：
 // 1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
+	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
+		return status
+	}
 	if _, is1308 := util.ParseResetTimeFrom1308Error(body); is1308 {
 		return util.StatusQuotaExceeded
 	}
@@ -1186,10 +1191,57 @@ func isSSERateLimitError(body []byte) bool {
 
 func isRateLimitErrorType(value string) bool {
 	switch strings.ToLower(value) {
-	case "rate_limit_error", "rate_limit_exceeded", "too_many_requests", "model_cooldown":
+	case "rate_limit_error", "rate_limit_exceeded", "too_many_requests", "model_cooldown", "websocket_connection_limit_reached":
 		return true
 	default:
 		return false
+	}
+}
+
+func websocketErrorStatusAndHeaders(body []byte) (int, http.Header) {
+	var payload struct {
+		Status     int            `json:"status"`
+		StatusCode int            `json:"status_code"`
+		Headers    map[string]any `json:"headers"`
+	}
+	if sonic.Unmarshal(body, &payload) != nil {
+		return 0, nil
+	}
+	status := payload.Status
+	if status == 0 {
+		status = payload.StatusCode
+	}
+	if status < 400 || status > 599 {
+		status = 0
+	}
+	headers := make(http.Header)
+	for name, raw := range payload.Headers {
+		name = strings.TrimSpace(name)
+		if !isForwardableWebsocketErrorHeader(name) {
+			continue
+		}
+		switch value := raw.(type) {
+		case string:
+			if value = strings.TrimSpace(value); value != "" {
+				headers.Set(name, value)
+			}
+		case float64, bool:
+			headers.Set(name, fmt.Sprint(value))
+		}
+	}
+	if len(headers) == 0 {
+		headers = nil
+	}
+	return status, headers
+}
+
+func isForwardableWebsocketErrorHeader(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	switch lower {
+	case "retry-after", "request-id", "x-request-id", "openai-request-id":
+		return true
+	default:
+		return strings.HasPrefix(lower, "ratelimit-") || strings.HasPrefix(lower, "x-ratelimit-")
 	}
 }
 
@@ -1406,19 +1458,26 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			reqCtx.ctx, cfg, native.session,
 			req, replayBody, incrementalReq, incrementalBody,
 		)
+		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
+			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)
+			sentBody = responsesBodyForHTTPTransport(plan, replayBody)
+			req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
+			resp, err = s.doUpstreamRequest(cfg, req)
+		}
 		usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
 			_ = resp.Body.Close()
 			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
-			req = req.WithContext(reqCtx.ctx)
-			sentBody = replayBody
+			sentBody = responsesBodyForHTTPTransport(plan, replayBody)
+			req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
 			usedNativeWebsocket = false
 		}
 	} else {
-		sentBody = replayBody
+		sentBody = responsesBodyForHTTPTransport(plan, replayBody)
+		req = cloneRequestWithBody(req, sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
 	}
 	if req != nil {
@@ -1429,8 +1488,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 2.6 Debug捕获：记录真正发出的请求，而不是未采用的 replay/incremental 候选。
 	debugReq := req
 	debugBody := sentBody
+	var websocketDebug codexWebsocketDebugSnapshot
 	if usedNativeWebsocket && req != nil {
+		websocketDebug = native.session.debugSnapshot()
 		debugReq = req.Clone(req.Context())
+		if websocketDebug.RequestHeaders != nil {
+			debugReq.Header = websocketDebug.RequestHeaders.Clone()
+		}
 		if wsURL, errURL := codexWebsocketURL(req.URL.String()); errURL == nil {
 			if parsedURL, errParse := url.Parse(wsURL); errParse == nil {
 				debugReq.URL = parsedURL
@@ -1479,7 +1543,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if errRes != nil {
 			errRes.DebugData = dc.buildEntry(resp)
 			if usedNativeWebsocket {
-				annotateNativeWebsocketDebug(errRes.DebugData)
+				annotateNativeWebsocketDebug(errRes.DebugData, websocketDebug)
 			}
 		}
 		return errRes, errDur, errErr
@@ -1489,6 +1553,23 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	var res *fwResult
 	var duration float64
 	res, duration, err = s.handleResponse(reqCtx, resp, w, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
+	if usedNativeWebsocket {
+		// Reconnects happen while handleResponse drains the upstream frames. Take
+		// the final snapshot here so the persisted debug log describes the actual
+		// transport lifecycle instead of the state immediately after the first dial.
+		websocketDebug = native.session.debugSnapshot()
+	}
+	var reconnectFallbackErr *codexWebsocketHTTPFallbackError
+	if err != nil && usedNativeWebsocket && res != nil && !res.ResponseCommitted &&
+		errors.As(err, &reconnectFallbackErr) {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
+		return s.forwardOnceAsyncWithNativeCodexWebsocket(
+			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil,
+		)
+	}
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发
@@ -1512,11 +1593,38 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if res != nil {
 		res.DebugData = dc.buildEntry(resp)
 		if usedNativeWebsocket {
-			annotateNativeWebsocketDebug(res.DebugData)
+			annotateNativeWebsocketDebug(res.DebugData, websocketDebug)
 		}
 	}
 
 	return res, duration, err
+}
+
+func responsesBodyForHTTPTransport(plan protocol.TransformPlan, body []byte) []byte {
+	if plan.ClientProtocol != protocol.Codex || plan.RequestFamily != protocol.RequestFamilyResponses {
+		return body
+	}
+	if !gjson.GetBytes(body, "generate").Exists() {
+		return body
+	}
+	stripped, err := sjson.DeleteBytes(body, "generate")
+	if err != nil {
+		return body
+	}
+	return stripped
+}
+
+func cloneRequestWithBody(req *http.Request, body []byte) *http.Request {
+	if req == nil {
+		return nil
+	}
+	cloned := req.Clone(req.Context())
+	cloned.Body = io.NopCloser(bytes.NewReader(body))
+	cloned.ContentLength = int64(len(body))
+	cloned.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(body)), nil
+	}
+	return cloned
 }
 
 // ============================================================================
@@ -1526,6 +1634,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 func markSSEErrorForwardResult(res *fwResult) {
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
+	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {
+		res.Status = upstreamStatus
+		res.UpstreamStatus = upstreamStatus
+		res.Header = headers
+	}
 	if res.Status == util.StatusQuotaExceeded {
 		res.StreamDiagMsg = fmt.Sprintf("Quota Exceeded (1308): %s", safeBodyToString(res.SSEErrorEvent))
 		return
@@ -1643,6 +1756,11 @@ func (s *Server) forwardAttempt(
 			session:         reqCtx.nativeCodexWS,
 			incrementalBody: incrementalBody,
 		}
+	} else if reqCtx.nativeCodexWS != nil {
+		// The conversation state belongs to the execution session, not the socket.
+		// Once this turn changes transport, the old upstream connection must not
+		// remain reusable with a response ID that belongs to the previous target.
+		reqCtx.nativeCodexWS.Close()
 	}
 
 	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
@@ -1976,6 +2094,7 @@ func prepareCodexResponsesBodyForUpstream(cfg *model.Config, upstreamProtocol pr
 		protocol.DetectRequestFamily(requestPath) != protocol.RequestFamilyResponses {
 		return body
 	}
+	body = sanitizeCodexInputItemIDs(body)
 	if normalized, ok := normalizeCodexToolSearchInputItems(body); ok {
 		body = normalized
 	}

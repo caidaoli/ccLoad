@@ -14,10 +14,12 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
+	"github.com/tidwall/sjson"
 )
 
 const (
@@ -124,30 +126,54 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		case responsesWebsocketRequestCreate, responsesWebsocketRequestAppend:
 			if executionSession == nil {
 				hint := responsesExecutionSessionHint(c.Request.Header, message.payload)
-				executionSession, releaseExecutionSession = s.responsesExecutionSessions.acquire(tokenHashString, hint)
+				var errSession error
+				executionSession, releaseExecutionSession, errSession = s.responsesExecutionSessions.acquire(tokenHashString, hint)
+				if errSession != nil {
+					if errWrite := writeResponsesWebsocketError(conn, "session_capacity", errSession.Error()); errWrite != nil {
+						return
+					}
+					continue
+				}
 			}
 			if errAcquire := executionSession.acquireTurn(connectionCtx); errAcquire != nil {
 				return
 			}
+			allowLocalPrewarm := len(executionSession.transcript.lastRequest) == 0
 			requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
 			if errNormalize != nil {
 				executionSession.releaseTurn()
+				if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
+					if errWrite := writeResponsesWebsocketPreviousResponseNotFound(conn); errWrite != nil {
+						return
+					}
+					continue
+				}
 				if errWrite := writeResponsesWebsocketError(conn, "invalid_request", errNormalize.Error()); errWrite != nil {
 					return
 				}
 				continue
 			}
 			turnResult, errTurn := s.executeResponsesWebsocketTurn(
-				connectionCtx, c, conn, requestBody, nativeRequestBody, executionSession.upstream,
+				connectionCtx, c, conn, requestBody, nativeRequestBody, executionSession.upstream, allowLocalPrewarm,
 			)
 			if errTurn != nil {
 				executionSession.releaseTurn()
+				var terminalErr *responsesWebsocketTerminalError
+				if errors.As(errTurn, &terminalErr) {
+					if terminalErr.forwarded {
+						continue
+					}
+					if errWrite := writeResponsesWebsocketPayload(conn, terminalErr.payload); errWrite != nil {
+						return
+					}
+					continue
+				}
 				if errWrite := writeResponsesWebsocketError(conn, "upstream_error", errTurn.Error()); errWrite != nil {
 					return
 				}
 				continue
 			}
-			executionSession.transcript.commit(requestBody, turnResult)
+			executionSession.commit(requestBody, turnResult)
 			executionSession.releaseTurn()
 		default:
 			if errWrite := writeResponsesWebsocketError(conn, "unsupported_event", "unsupported websocket request type"); errWrite != nil {
@@ -219,6 +245,18 @@ type responsesWebsocketTurnResult struct {
 	pendingToolCallIDs  []string
 }
 
+type responsesWebsocketTerminalError struct {
+	payload   []byte
+	forwarded bool
+}
+
+func (e *responsesWebsocketTerminalError) Error() string {
+	if e == nil {
+		return "responses websocket terminal error"
+	}
+	return safeBodyToString(e.payload)
+}
+
 func (s *Server) executeResponsesWebsocketTurn(
 	ctx context.Context,
 	c *gin.Context,
@@ -226,6 +264,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	requestBody []byte,
 	nativeRequestBody []byte,
 	nativeCodexWS *codexUpstreamWebsocketSession,
+	allowLocalPrewarm bool,
 ) (responsesWebsocketTurnResult, error) {
 	modelName := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
 	if modelName == "" {
@@ -275,6 +314,10 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if pinnedTarget, ok := nativeCodexWS.targetSnapshot(); ok {
 		candidates = prioritizePinnedCodexChannel(candidates, pinnedTarget.channelID)
 	}
+	if allowLocalPrewarm && responsesWebsocketGenerateDisabled(requestBody) &&
+		!isNativeCodexWebsocketCandidate(candidates[0]) {
+		return writeResponsesWebsocketSyntheticPrewarm(conn, requestBody)
+	}
 
 	startTime := time.Now()
 	tokenID, _ := c.Get("token_id")
@@ -317,8 +360,16 @@ func (s *Server) executeResponsesWebsocketTurn(
 
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn)
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, candidates, reqCtx, bridgeWriter)
+	if bridgeWriter.closedForMessageTooBig {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
+	}
 	if succeeded {
 		if !bridgeWriter.completed {
+			if bridgeWriter.failed {
+				return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{
+					payload: bytes.Clone(bridgeWriter.failedPayload), forwarded: true,
+				}
+			}
 			return responsesWebsocketTurnResult{}, errors.New("upstream stream closed before response.completed")
 		}
 		return responsesWebsocketTurnResult{
@@ -328,10 +379,87 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}, nil
 	}
 	status := determineFinalClientStatus(lastResult)
+	if lastResult != nil && status == http.StatusRequestEntityTooLarge &&
+		isResponsesWebsocketMessageTooBigPayload(lastResult.body) {
+		if errClose := conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseMessageTooBig, "upstream websocket message too big"),
+			time.Now().Add(responsesWebsocketWriteTimeout),
+		); errClose != nil {
+			return responsesWebsocketTurnResult{}, errClose
+		}
+		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
+	}
+	if lastResult != nil && isResponsesWebsocketFailurePayload(lastResult.body) {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: bytes.Clone(lastResult.body)}
+	}
 	if lastResult != nil && len(lastResult.body) > 0 {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
 	}
 	return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d", status)
+}
+
+func responsesWebsocketGenerateDisabled(payload []byte) bool {
+	generate := gjson.GetBytes(payload, "generate")
+	return generate.Exists() && !generate.Bool()
+}
+
+func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
+	return candidate != nil && candidate.Websockets &&
+		protocol.Protocol(candidate.ResolveUpstreamProtocol(string(protocol.Codex))) == protocol.Codex
+}
+
+func writeResponsesWebsocketSyntheticPrewarm(
+	conn *websocket.Conn,
+	request []byte,
+) (responsesWebsocketTurnResult, error) {
+	responseID := "resp_prewarm_" + util.NewUUIDv4()
+	createdAt := time.Now().Unix()
+	modelName := strings.TrimSpace(gjson.GetBytes(request, "model").String())
+	response := map[string]any{
+		"id": responseID, "object": "response", "created_at": createdAt,
+		"status": "in_progress", "background": false, "error": nil,
+		"model": modelName, "output": []any{},
+	}
+	created, err := json.Marshal(map[string]any{
+		"type": "response.created", "sequence_number": 0, "response": response,
+	})
+	if err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	if err = writeResponsesWebsocketPayload(conn, created); err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	response["status"] = "completed"
+	response["usage"] = map[string]any{"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+	completed, err := json.Marshal(map[string]any{
+		"type": "response.completed", "sequence_number": 1, "response": response,
+	})
+	if err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	if err = writeResponsesWebsocketPayload(conn, completed); err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	return responsesWebsocketTurnResult{
+		completedOutput: []byte("[]"), completedResponseID: responseID,
+	}, nil
+}
+
+func isResponsesWebsocketFailurePayload(payload []byte) bool {
+	if !gjson.ValidBytes(payload) {
+		return false
+	}
+	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
+	case "error", "response.failed":
+		return true
+	default:
+		return false
+	}
+}
+
+func isResponsesWebsocketMessageTooBigPayload(payload []byte) bool {
+	return strings.TrimSpace(gjson.GetBytes(payload, "error.code").String()) == "message_too_big"
 }
 
 func prioritizePinnedCodexChannel(candidates []*model.Config, channelID int64) []*model.Config {
@@ -361,15 +489,18 @@ func responsesWebsocketUpstreamHeaders(source http.Header) http.Header {
 }
 
 type responsesWebsocketBridgeWriter struct {
-	conn                 *websocket.Conn
-	header               http.Header
-	status               int
-	pending              bytes.Buffer
-	completed            bool
-	completedOutput      []byte
-	completedResponseID  string
-	outputItemsByIndex   map[int64][]byte
-	outputItemsUnindexed [][]byte
+	conn                   *websocket.Conn
+	header                 http.Header
+	status                 int
+	pending                bytes.Buffer
+	completed              bool
+	completedOutput        []byte
+	completedResponseID    string
+	failed                 bool
+	failedPayload          []byte
+	closedForMessageTooBig bool
+	outputItemsByIndex     map[int64][]byte
+	outputItemsUnindexed   [][]byte
 }
 
 func newResponsesWebsocketBridgeWriter(conn *websocket.Conn) *responsesWebsocketBridgeWriter {
@@ -415,17 +546,39 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			w.completed = true
 			output := gjson.GetBytes(payload, "response.output")
 			if output.Exists() && output.IsArray() && len(output.Array()) > 0 {
-				w.completedOutput = bytes.Clone([]byte(output.Raw))
+				w.completedOutput = w.reconcileCompletedOutput(output)
+				if !bytes.Equal(w.completedOutput, []byte(output.Raw)) {
+					if reconciled, errSet := sjson.SetRawBytes(payload, "response.output", w.completedOutput); errSet == nil {
+						payload = reconciled
+					}
+				}
 			} else {
 				w.completedOutput = w.collectedOutput()
 			}
 			w.completedResponseID = strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+		}
+		if isResponsesWebsocketMessageTooBigPayload(payload) {
+			if err := w.conn.WriteControl(
+				websocket.CloseMessage,
+				websocket.FormatCloseMessage(websocket.CloseMessageTooBig, "upstream websocket message too big"),
+				time.Now().Add(responsesWebsocketWriteTimeout),
+			); err != nil {
+				return 0, err
+			}
+			w.failed = true
+			w.failedPayload = bytes.Clone(payload)
+			w.closedForMessageTooBig = true
+			continue
 		}
 		if err := w.conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 			return 0, err
 		}
 		if err := w.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 			return 0, err
+		}
+		if eventType == "error" || eventType == "response.failed" {
+			w.failed = true
+			w.failedPayload = bytes.Clone(payload)
 		}
 	}
 	return originalLen, nil
@@ -459,16 +612,24 @@ func (w *responsesWebsocketBridgeWriter) collectOutputItem(eventType string, pay
 
 func (w *responsesWebsocketBridgeWriter) collectedOutput() []byte {
 	items := make([]json.RawMessage, 0, len(w.outputItemsByIndex)+len(w.outputItemsUnindexed))
+	appendItem := func(raw []byte) {
+		item := gjson.ParseBytes(raw)
+		if isResponsesWebsocketToolCallType(item.Get("type").String()) &&
+			!isCompleteResponsesWebsocketToolCall(item) {
+			return
+		}
+		items = append(items, bytes.Clone(raw))
+	}
 	indices := make([]int, 0, len(w.outputItemsByIndex))
 	for index := range w.outputItemsByIndex {
 		indices = append(indices, int(index))
 	}
 	sort.Ints(indices)
 	for _, index := range indices {
-		items = append(items, json.RawMessage(w.outputItemsByIndex[int64(index)]))
+		appendItem(w.outputItemsByIndex[int64(index)])
 	}
 	for _, item := range w.outputItemsUnindexed {
-		items = append(items, json.RawMessage(item))
+		appendItem(item)
 	}
 	if len(items) == 0 {
 		return []byte("[]")
@@ -476,6 +637,49 @@ func (w *responsesWebsocketBridgeWriter) collectedOutput() []byte {
 	encoded, err := json.Marshal(items)
 	if err != nil {
 		return []byte("[]")
+	}
+	return encoded
+}
+
+func (w *responsesWebsocketBridgeWriter) reconcileCompletedOutput(output gjson.Result) []byte {
+	collected := make(map[string]json.RawMessage)
+	record := func(raw []byte) {
+		item := gjson.ParseBytes(raw)
+		if !isCompleteResponsesWebsocketToolCall(item) {
+			return
+		}
+		collected[strings.TrimSpace(item.Get("call_id").String())] = bytes.Clone(raw)
+	}
+	for _, raw := range w.outputItemsByIndex {
+		record(raw)
+	}
+	for _, raw := range w.outputItemsUnindexed {
+		record(raw)
+	}
+	if len(collected) == 0 {
+		return bytes.Clone([]byte(output.Raw))
+	}
+
+	items := output.Array()
+	reconciled := make([]json.RawMessage, 0, len(items))
+	changed := false
+	for _, item := range items {
+		raw := json.RawMessage(item.Raw)
+		if isResponsesWebsocketToolCallType(item.Get("type").String()) {
+			callID := strings.TrimSpace(item.Get("call_id").String())
+			if complete, ok := collected[callID]; ok && !bytes.Equal(raw, complete) {
+				raw = complete
+				changed = true
+			}
+		}
+		reconciled = append(reconciled, raw)
+	}
+	if !changed {
+		return bytes.Clone([]byte(output.Raw))
+	}
+	encoded, err := json.Marshal(reconciled)
+	if err != nil {
+		return bytes.Clone([]byte(output.Raw))
 	}
 	return encoded
 }
@@ -489,7 +693,7 @@ func responsesWebsocketPendingToolCallIDs(output []byte) []string {
 	var callIDs []string
 	for _, item := range result.Array() {
 		itemType := strings.TrimSpace(item.Get("type").String())
-		if itemType != "function_call" && itemType != "custom_tool_call" {
+		if !isResponsesWebsocketToolCallType(itemType) || !isCompleteResponsesWebsocketToolCall(item) {
 			continue
 		}
 		callID := strings.TrimSpace(item.Get("call_id").String())
@@ -503,6 +707,31 @@ func responsesWebsocketPendingToolCallIDs(output []byte) []string {
 		callIDs = append(callIDs, callID)
 	}
 	return callIDs
+}
+
+func isResponsesWebsocketToolCallType(itemType string) bool {
+	itemType = strings.TrimSpace(itemType)
+	return itemType == "function_call" || itemType == "custom_tool_call"
+}
+
+func isCompleteResponsesWebsocketToolCall(item gjson.Result) bool {
+	if !item.Exists() || !item.IsObject() {
+		return false
+	}
+	callID := item.Get("call_id")
+	name := item.Get("name")
+	if callID.Type != gjson.String || strings.TrimSpace(callID.String()) == "" ||
+		name.Type != gjson.String || strings.TrimSpace(name.String()) == "" {
+		return false
+	}
+	switch strings.TrimSpace(item.Get("type").String()) {
+	case "function_call":
+		return item.Get("arguments").Type == gjson.String
+	case "custom_tool_call":
+		return item.Get("input").Type == gjson.String
+	default:
+		return false
+	}
 }
 
 func nextSSEEvent(buffer *bytes.Buffer) ([]byte, bool) {
@@ -551,4 +780,29 @@ func writeResponsesWebsocketError(conn *websocket.Conn, code string, message str
 			"message": message,
 		},
 	})
+}
+
+func writeResponsesWebsocketPreviousResponseNotFound(conn *websocket.Conn) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+		return err
+	}
+	return conn.WriteJSON(gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "invalid_request_error",
+			"code":    "previous_response_not_found",
+			"param":   "previous_response_id",
+			"message": errResponsesWebsocketPreviousResponseNotFound.Error(),
+		},
+	})
+}
+
+func writeResponsesWebsocketPayload(conn *websocket.Conn, payload []byte) error {
+	if conn == nil {
+		return errors.New("websocket connection is nil")
+	}
+	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+		return err
+	}
+	return conn.WriteMessage(websocket.TextMessage, payload)
 }

@@ -859,6 +859,10 @@ Check out the awesome admin dashboard 👇
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, Images API auto-expands to 20MB) |
+| `CCLOAD_RESPONSES_WS_MAX_SESSIONS` | `32` | Process-wide Responses WebSocket execution-session limit |
+| `CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN` | `4` | Execution-session limit per authenticated API token |
+| `CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION` | `2` | Concurrent downstream connection limit for one stable session |
+| `CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES` | `60` | Idle execution-session retention time in minutes |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
@@ -868,6 +872,7 @@ Check out the awesome admin dashboard 👇
 | `CCLOAD_HOST_OVERRIDES` | None | DNS override: pin upstream domains to fixed IPs, bypassing DNS resolution. Format: `host1=ip1,host2=ip2`, e.g. `anyrouter.top=47.246.23.200`. TLS SNI/cert/Host header unaffected |
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
+> Responses WebSocket runtime usage and limits are available from `GET /admin/runtime-metrics`.
 
 #### Hybrid Storage Mode (Primary DB + SQLite Cache)
 

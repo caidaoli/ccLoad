@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"ccLoad/internal/config"
@@ -23,12 +24,28 @@ import (
 	"github.com/tidwall/sjson"
 )
 
-const codexResponsesWebsocketBeta = "responses_websockets=2026-02-06"
+const (
+	codexResponsesWebsocketBeta = "responses_websockets=2026-02-06"
+	codexResponsesLiteHeader    = "X-OpenAI-Internal-Codex-Responses-Lite"
+	codexResponsesLiteMetadata  = "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite"
+)
+
+const codexInputItemIDLimit = 64
 
 type codexWebsocketTarget struct {
-	channelID int64
-	keyHash   [sha256.Size]byte
-	url       string
+	channelID     int64
+	keyHash       [sha256.Size]byte
+	transportHash [sha256.Size]byte
+	url           string
+}
+
+type codexWebsocketDebugSnapshot struct {
+	RequestHeaders      http.Header
+	ResponseStatus      int
+	ResponseHeaders     http.Header
+	Reconnects          uint64
+	LastReconnectReason string
+	LastCloseReason     string
 }
 
 // codexUpstreamWebsocketSession belongs to one execution session.
@@ -41,6 +58,13 @@ type codexUpstreamWebsocketSession struct {
 	target     codexWebsocketTarget
 	reads      []codexWebsocketRead
 	readNotify chan struct{}
+
+	handshakeRequestHeaders  http.Header
+	handshakeResponseStatus  int
+	handshakeResponseHeaders http.Header
+	reconnects               uint64
+	lastReconnectReason      string
+	lastCloseReason          string
 }
 
 func newCodexUpstreamWebsocketSession() *codexUpstreamWebsocketSession {
@@ -52,6 +76,24 @@ type codexWebsocketRead struct {
 	messageType int
 	payload     []byte
 	err         error
+}
+
+type codexWebsocketHTTPFallbackError struct {
+	cause error
+}
+
+func (e *codexWebsocketHTTPFallbackError) Error() string {
+	if e == nil || e.cause == nil {
+		return "Codex websocket reconnect requires HTTP fallback"
+	}
+	return "Codex websocket reconnect requires HTTP fallback: " + e.cause.Error()
+}
+
+func (e *codexWebsocketHTTPFallbackError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
 }
 
 func (s *codexUpstreamWebsocketSession) Close() {
@@ -92,11 +134,7 @@ func (s *codexUpstreamWebsocketSession) enqueueRead(event codexWebsocketRead) {
 func (s *codexUpstreamWebsocketSession) nextRead(ctx context.Context, conn *websocket.Conn) (codexWebsocketRead, error) {
 	for {
 		s.mu.Lock()
-		if s.conn != conn {
-			s.mu.Unlock()
-			return codexWebsocketRead{}, net.ErrClosed
-		}
-		if len(s.reads) > 0 {
+		if len(s.reads) > 0 && s.reads[0].conn == conn {
 			event := s.reads[0]
 			s.reads[0] = codexWebsocketRead{}
 			s.reads = s.reads[1:]
@@ -106,6 +144,10 @@ func (s *codexUpstreamWebsocketSession) nextRead(ctx context.Context, conn *webs
 			s.mu.Unlock()
 			return event, nil
 		}
+		if s.conn != conn {
+			s.mu.Unlock()
+			return codexWebsocketRead{}, net.ErrClosed
+		}
 		s.mu.Unlock()
 
 		select {
@@ -113,6 +155,38 @@ func (s *codexUpstreamWebsocketSession) nextRead(ctx context.Context, conn *webs
 			return codexWebsocketRead{}, ctx.Err()
 		case <-s.readNotify:
 		}
+	}
+}
+
+func (s *codexUpstreamWebsocketSession) runtimeStats() (connected bool, reconnects uint64) {
+	if s == nil {
+		return false, 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.conn != nil, s.reconnects
+}
+
+func (s *codexUpstreamWebsocketSession) recordReconnect(reason string) {
+	s.mu.Lock()
+	s.reconnects++
+	s.lastReconnectReason = strings.TrimSpace(reason)
+	s.mu.Unlock()
+}
+
+func (s *codexUpstreamWebsocketSession) debugSnapshot() codexWebsocketDebugSnapshot {
+	if s == nil {
+		return codexWebsocketDebugSnapshot{}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return codexWebsocketDebugSnapshot{
+		RequestHeaders:      s.handshakeRequestHeaders.Clone(),
+		ResponseStatus:      s.handshakeResponseStatus,
+		ResponseHeaders:     s.handshakeResponseHeaders.Clone(),
+		Reconnects:          s.reconnects,
+		LastReconnectReason: s.lastReconnectReason,
+		LastCloseReason:     s.lastCloseReason,
 	}
 }
 
@@ -146,10 +220,25 @@ func (s *codexUpstreamWebsocketSession) startReader(conn *websocket.Conn) {
 				conn: conn, messageType: messageType, payload: payload, err: err,
 			})
 			if err != nil {
+				s.detachReadFailure(conn, err)
 				return
 			}
 		}
 	}()
+}
+
+func (s *codexUpstreamWebsocketSession) detachReadFailure(conn *websocket.Conn, cause error) {
+	s.mu.Lock()
+	if s.conn == conn {
+		_ = conn.Close()
+		s.conn = nil
+		s.target = codexWebsocketTarget{}
+		if cause != nil {
+			s.lastCloseReason = cause.Error()
+		}
+		s.signalReadLocked()
+	}
+	s.mu.Unlock()
 }
 
 func (s *codexUpstreamWebsocketSession) dial(
@@ -162,15 +251,28 @@ func (s *codexUpstreamWebsocketSession) dial(
 	if err != nil {
 		return nil, nil, err
 	}
-	conn, resp, err := dialer.DialContext(ctx, wsURL, codexWebsocketHeaders(req.Header))
+	wireHeaders := codexWebsocketHeaders(req.Header)
+	conn, resp, err := dialer.DialContext(ctx, wsURL, wireHeaders)
 	if err != nil {
 		return nil, resp, err
 	}
+	// Negotiate permessage-deflate for upstream responses, but keep outbound
+	// request frames uncompressed to match Codex CLI and avoid flate-tail
+	// interoperability bugs seen in some gateways.
+	conn.EnableWriteCompression(false)
 	conn.SetReadLimit(maxProxyBodyBytes("/v1/responses"))
 	s.mu.Lock()
 	s.conn = conn
 	s.target = target
 	s.reads = nil
+	s.handshakeRequestHeaders = wireHeaders.Clone()
+	if resp != nil {
+		s.handshakeResponseStatus = resp.StatusCode
+		s.handshakeResponseHeaders = resp.Header.Clone()
+	} else {
+		s.handshakeResponseStatus = http.StatusSwitchingProtocols
+		s.handshakeResponseHeaders = nil
+	}
 	s.mu.Unlock()
 	s.startReader(conn)
 	return conn, resp, nil
@@ -202,12 +304,29 @@ func (s *codexUpstreamWebsocketSession) invalidate(conn *websocket.Conn) {
 	s.mu.Unlock()
 }
 
-func codexWebsocketTargetForRequest(cfg *model.Config, req *http.Request) codexWebsocketTarget {
+func codexWebsocketTargetForRequest(cfg *model.Config, req *http.Request, skipTLSVerify bool) codexWebsocketTarget {
 	return codexWebsocketTarget{
-		channelID: cfg.ID,
-		keyHash:   sha256.Sum256([]byte(req.Header.Get("Authorization"))),
-		url:       req.URL.String(),
+		channelID:     cfg.ID,
+		keyHash:       sha256.Sum256([]byte(req.Header.Get("Authorization"))),
+		transportHash: codexWebsocketTransportHash(cfg, skipTLSVerify),
+		url:           req.URL.String(),
 	}
+}
+
+func codexWebsocketTransportHash(cfg *model.Config, skipTLSVerify bool) [sha256.Size]byte {
+	hash := sha256.New()
+	if cfg != nil {
+		_, _ = io.WriteString(hash, strings.TrimSpace(cfg.ProxyURL))
+		for _, rule := range cfg.HeaderRules() {
+			_, _ = io.WriteString(hash, "\x00"+rule.Action+"\x00"+rule.Name+"\x00"+rule.Value)
+		}
+	}
+	if skipTLSVerify {
+		_, _ = io.WriteString(hash, "\x00skip-tls-verify")
+	}
+	var out [sha256.Size]byte
+	copy(out[:], hash.Sum(nil))
+	return out
 }
 
 func codexWebsocketKeyHash(apiKey string) [sha256.Size]byte {
@@ -237,10 +356,16 @@ func codexWebsocketURL(httpURL string) (string, error) {
 	}
 }
 
+func isCodexWebsocketHandshakeFallbackError(err error) bool {
+	return errors.Is(err, websocket.ErrBadHandshake) || errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, syscall.ECONNRESET)
+}
+
 func buildCodexWebsocketRequestBody(body []byte) ([]byte, error) {
 	if !gjson.ValidBytes(body) {
 		return nil, errors.New("invalid Codex websocket request JSON")
 	}
+	body = sanitizeCodexInputItemIDs(body)
 	prepared, err := sjson.SetBytes(body, "type", responsesWebsocketRequestCreate)
 	if err != nil {
 		return nil, fmt.Errorf("set Codex websocket request type: %w", err)
@@ -250,6 +375,106 @@ func buildCodexWebsocketRequestBody(body []byte) ([]byte, error) {
 		return nil, fmt.Errorf("force Codex websocket streaming: %w", err)
 	}
 	return prepared, nil
+}
+
+func normalizeCodexWebsocketParallelToolCalls(body []byte, headers http.Header) []byte {
+	responsesLite := strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true")
+	if !responsesLite {
+		metadata := gjson.GetBytes(body, codexResponsesLiteMetadata)
+		responsesLite = metadata.Type == gjson.True ||
+			metadata.Type == gjson.String && strings.EqualFold(strings.TrimSpace(metadata.String()), "true")
+	}
+	if !responsesLite || !gjson.GetBytes(body, "parallel_tool_calls").Bool() {
+		return body
+	}
+	updated, err := sjson.SetBytes(body, "parallel_tool_calls", false)
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func sanitizeCodexInputItemIDs(body []byte) []byte {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return body
+	}
+	items := input.Array()
+	occupied := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		if shouldDropCodexEncryptedReasoningItem(item) {
+			continue
+		}
+		itemID := item.Get("id")
+		if itemID.Type == gjson.String && len([]rune(itemID.String())) <= codexInputItemIDLimit {
+			occupied[itemID.String()] = struct{}{}
+		}
+	}
+
+	mapped := make(map[string]string, len(items))
+	rebuilt := make([]string, 0, len(items))
+	changed := false
+	for _, item := range items {
+		if shouldDropCodexEncryptedReasoningItem(item) {
+			changed = true
+			continue
+		}
+		raw := item.Raw
+		itemID := item.Get("id")
+		if itemID.Type == gjson.String && len([]rune(itemID.String())) > codexInputItemIDLimit {
+			original := itemID.String()
+			shortened, ok := mapped[original]
+			if !ok {
+				for attempt := 0; ; attempt++ {
+					shortened = shortenCodexInputItemID(original, attempt)
+					if _, exists := occupied[shortened]; !exists {
+						break
+					}
+				}
+				mapped[original] = shortened
+				occupied[shortened] = struct{}{}
+			}
+			if updated, errSet := sjson.SetBytes([]byte(raw), "id", shortened); errSet == nil {
+				raw = string(updated)
+				changed = true
+			}
+		}
+		rebuilt = append(rebuilt, raw)
+	}
+	if !changed {
+		return body
+	}
+	updated, err := sjson.SetRawBytes(body, "input", []byte("["+strings.Join(rebuilt, ",")+"]"))
+	if err != nil {
+		return body
+	}
+	return updated
+}
+
+func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
+	if item.Get("type").String() != "reasoning" {
+		return false
+	}
+	itemID := item.Get("id")
+	if itemID.Type != gjson.String || len([]rune(itemID.String())) <= codexInputItemIDLimit {
+		return false
+	}
+	encrypted := item.Get("encrypted_content")
+	return encrypted.Type == gjson.String && encrypted.String() != ""
+}
+
+func shortenCodexInputItemID(id string, attempt int) string {
+	runes := []rune(id)
+	if len(runes) <= codexInputItemIDLimit {
+		return id
+	}
+	hashInput := id
+	if attempt > 0 {
+		hashInput += "\x00" + fmt.Sprint(attempt)
+	}
+	sum := sha256.Sum256([]byte(hashInput))
+	suffix := fmt.Sprintf("_%x", sum[:8])
+	return string(runes[:codexInputItemIDLimit-len(suffix)]) + suffix
 }
 
 func codexWebsocketHeaders(source http.Header) http.Header {
@@ -288,10 +513,11 @@ func (s *Server) codexWebsocketDialer(cfg *model.Config) *websocket.Dialer {
 		tlsConfig = tlsConfig.Clone()
 	}
 	return &websocket.Dialer{
-		Proxy:            transport.Proxy,
-		NetDialContext:   transport.DialContext,
-		HandshakeTimeout: config.HTTPTLSHandshakeTimeout,
-		TLSClientConfig:  tlsConfig,
+		Proxy:             transport.Proxy,
+		NetDialContext:    transport.DialContext,
+		HandshakeTimeout:  config.HTTPTLSHandshakeTimeout,
+		TLSClientConfig:   tlsConfig,
+		EnableCompression: true,
 	}
 }
 
@@ -319,6 +545,34 @@ func writeSyntheticSSEFrame(w io.Writer, payload []byte) error {
 	return err
 }
 
+func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
+	ctx context.Context,
+	dialer *websocket.Dialer,
+	target codexWebsocketTarget,
+	replayReq *http.Request,
+	replayBody []byte,
+) (*websocket.Conn, error) {
+	prepared, err := buildCodexWebsocketRequestBody(replayBody)
+	if err != nil {
+		return nil, err
+	}
+	conn, resp, err := s.dial(ctx, dialer, target, replayReq)
+	if err != nil {
+		if resp != nil && resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+		if resp != nil || isCodexWebsocketHandshakeFallbackError(err) {
+			return nil, &codexWebsocketHTTPFallbackError{cause: err}
+		}
+		return nil, err
+	}
+	if err = s.writeRequest(conn, prepared); err != nil {
+		s.invalidate(conn)
+		return nil, err
+	}
+	return conn, nil
+}
+
 func (s *codexUpstreamWebsocketSession) streamResponse(
 	ctx context.Context,
 	conn *websocket.Conn,
@@ -332,7 +586,11 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	body := &codexWebsocketResponseBody{PipeReader: reader, abort: s.Close}
 	go func() {
 		defer s.turnMu.Unlock()
-		stopCancel := context.AfterFunc(ctx, s.Close)
+		stopCancel := context.AfterFunc(ctx, func() {
+			if !body.completed.Load() {
+				s.Close()
+			}
+		})
 		defer stopCancel()
 
 		semanticOutput := false
@@ -345,22 +603,21 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 					readErr = event.err
 				}
 				s.invalidate(conn)
+				if isCodexWebsocketMessageTooBigError(readErr) {
+					_ = writeSyntheticSSEFrame(writer, codexWebsocketMessageTooBigPayload())
+					_ = writer.Close()
+					return
+				}
 				if !semanticOutput && !retried && ctx.Err() == nil {
 					retried = true
-					preparedReplay, errPrepare := buildCodexWebsocketRequestBody(replayBody)
-					if errPrepare == nil {
-						connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq)
-						if errDial != nil && respRetry != nil && respRetry.Body != nil {
-							_ = respRetry.Body.Close()
-						}
-						if errDial == nil {
-							if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
-								conn = connRetry
-								continue
-							}
-							s.invalidate(connRetry)
-						}
+					s.recordReconnect("read: " + readErr.Error())
+					connRetry, errRetry := s.reconnectWithReplay(ctx, dialer, target, replayReq, replayBody)
+					if errRetry == nil {
+						conn = connRetry
+						continue
 					}
+					_ = writer.CloseWithError(errRetry)
+					return
 				}
 				_ = writer.CloseWithError(readErr)
 				return
@@ -372,13 +629,20 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 			}
 			payload := event.payload
 			eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-			if eventType == "response.done" {
-				if normalized, errSet := sjson.SetBytes(payload, "type", "response.completed"); errSet == nil {
-					payload = normalized
-					eventType = "response.completed"
+			if !semanticOutput && !retried && ctx.Err() == nil &&
+				isCodexWebsocketPreviousResponseNotFound(payload) {
+				retried = true
+				s.invalidate(conn)
+				s.recordReconnect("previous_response_not_found")
+				connRetry, errRetry := s.reconnectWithReplay(ctx, dialer, target, replayReq, replayBody)
+				if errRetry == nil {
+					conn = connRetry
+					continue
 				}
+				_ = writer.CloseWithError(errRetry)
+				return
 			}
-			if eventType == "response.completed" || eventType == "response.incomplete" {
+			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 				// The HTTP/SSE consumer may stop reading as soon as it sees the
 				// terminal event. Mark the turn complete before the pipe write so
 				// Response.Body.Close cannot invalidate a reusable socket in that race.
@@ -392,7 +656,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 			semanticOutput = semanticOutput || isCodexWebsocketSemanticEvent(eventType)
 
 			switch eventType {
-			case "response.completed", "response.incomplete":
+			case "response.completed", "response.done", "response.incomplete":
 				_ = writer.Close()
 				return
 			case "response.failed", "error":
@@ -412,6 +676,30 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	}
 }
 
+func isCodexWebsocketMessageTooBigError(err error) bool {
+	var closeErr *websocket.CloseError
+	return errors.As(err, &closeErr) && closeErr.Code == websocket.CloseMessageTooBig
+}
+
+func isCodexWebsocketPreviousResponseNotFound(payload []byte) bool {
+	code := strings.TrimSpace(gjson.GetBytes(payload, "error.code").String())
+	if code == "" {
+		code = strings.TrimSpace(gjson.GetBytes(payload, "response.error.code").String())
+	}
+	if code == "previous_response_not_found" {
+		return true
+	}
+	message := strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "error.message").String()))
+	if message == "" {
+		message = strings.ToLower(strings.TrimSpace(gjson.GetBytes(payload, "response.error.message").String()))
+	}
+	return strings.Contains(message, "previous_response_id") && strings.Contains(message, "not found")
+}
+
+func codexWebsocketMessageTooBigPayload() []byte {
+	return []byte(`{"type":"error","status":413,"error":{"message":"upstream websocket message too big","type":"invalid_request_error","code":"message_too_big"}}`)
+}
+
 // roundTrip chooses the incremental request only when the physical connection still matches
 // channel, credential and URL. A new target always receives the replay request.
 func (s *codexUpstreamWebsocketSession) roundTrip(
@@ -422,9 +710,10 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	replayBody []byte,
 	incrementalReq *http.Request,
 	incrementalBody []byte,
+	skipTLSVerify bool,
 ) (resp *http.Response, usedReq *http.Request, usedBody []byte, err error) {
 	s.turnMu.Lock()
-	target := codexWebsocketTargetForRequest(cfg, replayReq)
+	target := codexWebsocketTargetForRequest(cfg, replayReq, skipTLSVerify)
 
 	conn, reuse := s.connectionReusable(target)
 	s.mu.Lock()
@@ -460,6 +749,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	err = s.writeRequest(conn, preparedBody)
 	if err != nil {
 		s.invalidate(conn)
+		s.recordReconnect("write: " + err.Error())
 		preparedReplay, errPrepare := buildCodexWebsocketRequestBody(replayBody)
 		if errPrepare == nil {
 			connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq)
@@ -474,6 +764,9 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 				}
 				s.turnMu.Unlock()
 				return respRetry, replayReq, replayBody, nil
+			} else if isCodexWebsocketHandshakeFallbackError(errDial) {
+				s.turnMu.Unlock()
+				return nil, replayReq, replayBody, errDial
 			}
 		}
 		s.turnMu.Unlock()
@@ -491,12 +784,18 @@ func (s *Server) doCodexWebsocketRequest(
 	incrementalReq *http.Request,
 	incrementalBody []byte,
 ) (*http.Response, *http.Request, []byte, error) {
+	if replayReq != nil {
+		replayBody = normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header)
+	}
+	if incrementalReq != nil {
+		incrementalBody = normalizeCodexWebsocketParallelToolCalls(incrementalBody, incrementalReq.Header)
+	}
 	release, err := s.reserveUpstreamRequest(cfg)
 	if err != nil {
 		return nil, replayReq, replayBody, err
 	}
 	resp, usedReq, usedBody, err := session.roundTrip(
-		ctx, cfg, s.codexWebsocketDialer(cfg), replayReq, replayBody, incrementalReq, incrementalBody,
+		ctx, cfg, s.codexWebsocketDialer(cfg), replayReq, replayBody, incrementalReq, incrementalBody, s.skipTLSVerify,
 	)
 	if err != nil {
 		release()

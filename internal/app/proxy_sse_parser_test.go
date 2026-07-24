@@ -1,10 +1,61 @@
 package app
 
 import (
+	"net/http"
 	"sort"
 	"strings"
 	"testing"
+
+	"ccLoad/internal/util"
 )
+
+func TestMarkSSEErrorForwardResultPreservesWebsocketStatusAndHeaders(t *testing.T) {
+	res := &fwResult{SSEErrorEvent: []byte(`{
+		"type":"error",
+		"status_code":429,
+		"headers":{"Retry-After":"17","X-Request-Id":"req-ws-error","Set-Cookie":"unsafe=1"},
+		"error":{"type":"rate_limit_error","code":"rate_limit_exceeded","message":"slow down"}
+	}`)}
+
+	markSSEErrorForwardResult(res)
+
+	if res.Status != http.StatusTooManyRequests || res.UpstreamStatus != http.StatusTooManyRequests {
+		t.Fatalf("status=%d upstream=%d, want 429/429", res.Status, res.UpstreamStatus)
+	}
+	if got := res.Header.Get("Retry-After"); got != "17" {
+		t.Fatalf("Retry-After=%q, want 17", got)
+	}
+	if got := res.Header.Get("X-Request-Id"); got != "req-ws-error" {
+		t.Fatalf("X-Request-Id=%q, want req-ws-error", got)
+	}
+	if got := res.Header.Get("Set-Cookie"); got != "" {
+		t.Fatalf("Set-Cookie=%q, want embedded unsafe header to be ignored", got)
+	}
+}
+
+func TestMarkSSEErrorForwardResultRejectsNonErrorWebsocketStatus(t *testing.T) {
+	res := &fwResult{SSEErrorEvent: []byte(`{
+		"type":"error",
+		"status":200,
+		"error":{"type":"server_error","message":"failed despite bogus status"}
+	}`)}
+
+	markSSEErrorForwardResult(res)
+
+	if res.Status != util.StatusSSEError {
+		t.Fatalf("status=%d, want internal SSE error status %d", res.Status, util.StatusSSEError)
+	}
+	if res.UpstreamStatus != 0 {
+		t.Fatalf("upstream status=%d, want invalid non-error status ignored", res.UpstreamStatus)
+	}
+}
+
+func TestClassifySSEErrorStatusTreatsWebsocketConnectionLimitAsRateLimit(t *testing.T) {
+	body := []byte(`{"type":"error","error":{"code":"websocket_connection_limit_reached"}}`)
+	if got := classifySSEErrorStatus(body); got != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429", got)
+	}
+}
 
 func feedAndAssertUsage(t *testing.T, parser usageParser, data string, wantInput, wantOutput, wantCacheRead, wantCacheCreation int) {
 	t.Helper()

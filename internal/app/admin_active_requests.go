@@ -16,6 +16,15 @@ func (s *Server) HandleActiveRequests(c *gin.Context) {
 	RespondJSONWithCount(c, http.StatusOK, requests, len(requests))
 }
 
+// HandleRuntimeMetrics 返回进程内长连接资源。
+func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
+	stats := responsesExecutionSessionStoreStats{}
+	if s.responsesExecutionSessions != nil {
+		stats = s.responsesExecutionSessions.stats()
+	}
+	RespondJSON(c, http.StatusOK, gin.H{"responses_websocket": stats})
+}
+
 // HandleGetActiveRequestDebugLog 返回运行中请求的调试日志快照。
 // GET /admin/active-requests/:request_id/debug-log
 func (s *Server) HandleGetActiveRequestDebugLog(c *gin.Context) {
