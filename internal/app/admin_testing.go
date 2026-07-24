@@ -552,13 +552,14 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
+	input := httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers)
+	if upstreamStatusCode, ok := getResultInt(result["status_code"]); ok {
+		input.UpstreamStatusCode = upstreamStatusCode
+	}
 	action := s.applyCooldownDecision(
 		ctx,
 		cfg,
-		cooldownInputForModel(
-			httpErrorInputFromParts(cfg.ID, keyIndex, statusCode, errorBody, headers),
-			actualModel,
-		),
+		cooldownInputForModel(input, actualModel),
 	)
 
 	switch action {

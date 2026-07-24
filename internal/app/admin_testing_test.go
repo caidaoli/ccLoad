@@ -1617,6 +1617,11 @@ func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
 		Enabled:      true,
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "HTTP 200 soft error", Priority: 0, StatusCodes: []int{http.StatusOK},
+			MessagePattern: "Insufficient balance", Scope: model.CooldownScopeChannel,
+			Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
 	}
 	created, err := srv.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -1662,6 +1667,18 @@ func TestHandleChannelTest_SSESoftErrorTriggersCooldown(t *testing.T) {
 
 	if got, _ := resp.Data["cooldown_action"].(string); got != "channel_cooldown_applied" {
 		t.Fatalf("1113 软错误在单 Key 渠道应升级为渠道冷却，got=%q data=%+v", got, resp.Data)
+	}
+
+	cooldowns, err := srv.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	until, exists := cooldowns[created.ID]
+	if !exists {
+		t.Fatalf("HTTP 200 自定义规则未写入渠道冷却")
+	}
+	if remaining := time.Until(until); remaining < 85*time.Second || remaining > 95*time.Second {
+		t.Fatalf("渠道冷却剩余时间=%v，期望约 90 秒", remaining)
 	}
 }
 

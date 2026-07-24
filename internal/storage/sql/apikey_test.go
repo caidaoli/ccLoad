@@ -280,6 +280,10 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 				Enabled:               true,
 				ScheduledCheckEnabled: true,
 				ChannelType:           "openai",
+				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Imported cooldown", Priority: 0, StatusCodes: []int{429},
+					Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+				}}},
 				ModelEntries: []model.ModelEntry{
 					{Model: "gpt-4"},
 					{Model: "gpt-3.5-turbo"},
@@ -334,6 +338,10 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if !configsByName["imported-channel-1"].ScheduledCheckEnabled {
 		t.Fatalf("expected imported-channel-1 scheduled check enabled")
+	}
+	importedRules := configsByName["imported-channel-1"].CooldownDetectionRules
+	if importedRules == nil || len(importedRules.Rules) != 1 || importedRules.Rules[0].Name != "Imported cooldown" {
+		t.Fatalf("expected imported cooldown detection rules, got %#v", importedRules)
 	}
 	if configsByName["imported-channel-2"].ScheduledCheckEnabled {
 		t.Fatalf("expected imported-channel-2 scheduled check disabled")

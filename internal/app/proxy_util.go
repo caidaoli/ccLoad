@@ -79,10 +79,11 @@ func looksLikeJSON(body []byte) bool {
 
 // fwResult 转发结果
 type fwResult struct {
-	Status        int
-	Header        http.Header
-	Body          []byte  // filled for non-2xx or when needed
-	FirstByteTime float64 // 首字节响应时间（秒）
+	Status         int
+	UpstreamStatus int // 原始上游 HTTP 状态码；Status 可被改写为 596-599 等内部分类码
+	Header         http.Header
+	Body           []byte  // filled for non-2xx or when needed
+	FirstByteTime  float64 // 首字节响应时间（秒）
 
 	// Token统计（2025-11新增，从SSE响应中提取）
 	InputTokens              int
@@ -166,6 +167,7 @@ type proxyResult struct {
 	succeeded        bool
 	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
 	nextAction       cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	deferredCooldown *cooldown.ErrorInput
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)

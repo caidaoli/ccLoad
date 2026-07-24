@@ -109,7 +109,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model"}
+	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -120,9 +120,9 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 验证数据行（应该有16个字段）
-	if len(records[1]) < 16 {
-		t.Errorf("数据行字段不足，期望至少16个字段，实际: %d", len(records[1]))
+	// 验证数据行（应该有17个字段）
+	if len(records[1]) < 17 {
+		t.Errorf("数据行字段不足，期望至少17个字段，实际: %d", len(records[1]))
 	}
 }
 
@@ -353,6 +353,10 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
 		ScheduledCheckModel:   "old-model",
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "preserved-rule", Priority: 0, StatusCodes: []int{429},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
 	})
 	if err != nil {
 		t.Fatalf("创建现有渠道失败: %v", err)
@@ -408,6 +412,9 @@ Import-Preserve-Scheduled,https://new.example.com,20,"old-model,new-model",{},op
 	}
 	if updated.ScheduledCheckModel != "old-model" {
 		t.Fatalf("缺少 scheduled_check_model 列时应保留旧值 old-model，实际为 %q", updated.ScheduledCheckModel)
+	}
+	if updated.CooldownDetectionRules == nil || len(updated.CooldownDetectionRules.Rules) != 1 || updated.CooldownDetectionRules.Rules[0].Name != "preserved-rule" {
+		t.Fatalf("缺少 cooldown_detection_rules 列时应保留旧规则，实际为 %#v", updated.CooldownDetectionRules)
 	}
 	if updated.URL != "https://new.example.com" {
 		t.Fatalf("期望 URL 已更新，实际为 %s", updated.URL)
@@ -865,6 +872,10 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 		},
 		ChannelType: "anthropic",
 		Enabled:     true,
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "Round-trip cooldown", Priority: 0, StatusCodes: []int{429},
+			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
 	}
 
 	created, err := server.store.CreateConfig(ctx, originalConfig)
@@ -960,6 +971,13 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 
 	if len(restoredConfig.ModelEntries) != len(originalConfig.ModelEntries) {
 		t.Errorf("ModelEntries数量不匹配: 期望 %d, 实际 %d", len(originalConfig.ModelEntries), len(restoredConfig.ModelEntries))
+	}
+	if restoredConfig.CooldownDetectionRules == nil || len(restoredConfig.CooldownDetectionRules.Rules) != 1 {
+		t.Fatalf("冷却探测规则未恢复: %#v", restoredConfig.CooldownDetectionRules)
+	}
+	restoredRule := restoredConfig.CooldownDetectionRules.Rules[0]
+	if restoredRule.Name != "Round-trip cooldown" || restoredRule.Scope != model.CooldownScopeKey || restoredRule.CooldownSeconds != 90 {
+		t.Fatalf("恢复的冷却探测规则不匹配: %#v", restoredRule)
 	}
 
 	// 验证API Keys

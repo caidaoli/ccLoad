@@ -28,14 +28,15 @@ import (
 
 // testChannel 测试用渠道定义
 type testChannel struct {
-	name                  string
-	channelType           string
-	protocolTransformMode string
-	protocolTransforms    []string
-	customRequestRules    *model.CustomRequestRules
-	models                string // 逗号分隔的模型列表
-	apiKey                string
-	priority              int
+	name                   string
+	channelType            string
+	protocolTransformMode  string
+	protocolTransforms     []string
+	customRequestRules     *model.CustomRequestRules
+	cooldownDetectionRules *model.CooldownDetectionRules
+	models                 string // 逗号分隔的模型列表
+	apiKey                 string
+	priority               int
 }
 
 // proxyTestEnv 集成测试环境
@@ -82,15 +83,16 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 		}
 
 		cfg := &model.Config{
-			Name:                  ch.name,
-			URL:                   upURL,
-			ChannelType:           chType,
-			ProtocolTransformMode: ch.protocolTransformMode,
-			ProtocolTransforms:    ch.protocolTransforms,
-			CustomRequestRules:    ch.customRequestRules,
-			Priority:              priority,
-			Enabled:               true,
-			ModelEntries:          modelEntries,
+			Name:                   ch.name,
+			URL:                    upURL,
+			ChannelType:            chType,
+			ProtocolTransformMode:  ch.protocolTransformMode,
+			ProtocolTransforms:     ch.protocolTransforms,
+			CustomRequestRules:     ch.customRequestRules,
+			CooldownDetectionRules: ch.cooldownDetectionRules,
+			Priority:               priority,
+			Enabled:                true,
+			ModelEntries:           modelEntries,
 		}
 		created, err := store.CreateConfig(ctx, cfg)
 		if err != nil {
@@ -3806,7 +3808,13 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	defer upstreamCh2.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "ch-multi-url", models: "gpt-4", apiKey: "sk-1", priority: 100},
+		{
+			name: "ch-multi-url", models: "gpt-4", apiKey: "sk-1", priority: 100,
+			cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+				Enabled: true, Name: "Provider unavailable", Priority: 0, StatusCodes: []int{http.StatusServiceUnavailable},
+				Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
+			}}},
+		},
 		{name: "ch-fallback", models: "gpt-4", apiKey: "sk-2", priority: 50},
 	}, map[int]string{
 		0: upstreamFail.URL + "\n" + upstreamShouldSkip.URL,
@@ -3858,6 +3866,17 @@ func TestProxy_MultiURL5xx_SwitchesToNextChannel(t *testing.T) {
 	}
 	if ch2 < 1 {
 		t.Fatalf("expected next channel attempted, got %d", ch2)
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	until, exists := cooldowns[channelID]
+	if !exists {
+		t.Fatalf("expected configured channel cooldown to be persisted for channel_id=%d", channelID)
+	}
+	if remaining := time.Until(until); remaining < 115*time.Second || remaining > 125*time.Second {
+		t.Fatalf("configured channel cooldown remaining=%v, want about 2m", remaining)
 	}
 }
 
@@ -4604,6 +4623,60 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 	if time.Until(until) <= 0 {
 		t.Fatalf("expected channel cooldown until in the future, got %v", until)
+	}
+}
+
+func TestProxy_SSEErrorRuleMatchesOriginalHTTPStatus(t *testing.T) {
+	t.Parallel()
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		flusher, _ := w.(http.Flusher)
+		largeContent := strings.Repeat("Hi", SSEBufferSize)
+		_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", largeContent)
+		if flusher != nil {
+			flusher.Flush()
+		}
+		_, _ = fmt.Fprint(w, "event: error\n")
+		_, _ = fmt.Fprint(w, `data: {"error":{"message":"rate limit exceeded","type":"rate_limit_error"}}`+"\n\n")
+		if flusher != nil {
+			flusher.Flush()
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "ch-sse-original-status", models: "gpt-4", apiKey: "sk-1",
+		cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "HTTP 200 soft error", Priority: 0, StatusCodes: []int{http.StatusOK},
+			MessagePattern: "rate limit exceeded", Scope: model.CooldownScopeChannel,
+			Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
+	}}, map[int]string{0: upstream.URL})
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs() = (%d, %v), want one channel", len(configs), err)
+	}
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-4", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	until, exists := cooldowns[configs[0].ID]
+	if !exists {
+		t.Fatalf("expected configured HTTP 200 rule to cool channel %d", configs[0].ID)
+	}
+	if remaining := time.Until(until); remaining < 85*time.Second || remaining > 95*time.Second {
+		t.Fatalf("configured channel cooldown remaining=%v, want about 90s", remaining)
 	}
 }
 
