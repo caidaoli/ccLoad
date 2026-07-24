@@ -772,22 +772,22 @@
 
         <section class="cooldown-detection-test-panel">
           <h3 data-i18n="channels.cooldownDetection.testTitle">测试草稿规则</h3>
-          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试一段上游响应；不会写入任何冷却状态。</p>
+          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试上游日志或响应体；标准日志中的状态码优先，不会写入任何冷却状态。</p>
           <div class="cooldown-detection-test-controls">
             <label class="cooldown-detection-field" for="cooldownDetectionTestStatus">
               <span data-i18n="channels.cooldownDetection.testStatus">状态码</span>
               <input id="cooldownDetectionTestStatus" type="number" class="form-input" min="100" max="599" step="1" value="200"
-                title="用于测试匹配的上游 HTTP 状态码" data-i18n-title="channels.cooldownDetection.testStatusHelp">
+                title="纯响应体模式使用的上游 HTTP 状态码；标准日志中的状态码会覆盖此值" data-i18n-title="channels.cooldownDetection.testStatusHelp">
             </label>
             <button id="cooldownDetectionTestButton" type="button" class="btn btn-secondary" data-action="test-cooldown-detection-rules"
               data-i18n="channels.cooldownDetection.testButton">测试匹配</button>
           </div>
           <label class="cooldown-detection-field cooldown-detection-field--body" for="cooldownDetectionTestBody">
-            <span data-i18n="channels.cooldownDetection.testBody">上游响应体</span>
+            <span data-i18n="channels.cooldownDetection.testBody">上游日志或响应体</span>
             <textarea id="cooldownDetectionTestBody" class="form-input" rows="4" spellcheck="false"
               data-i18n-placeholder="channels.cooldownDetection.testBodyPlaceholder"
-              title="用于测试匹配的上游响应体；不会写入冷却状态" data-i18n-title="channels.cooldownDetection.testBodyHelp"
-              placeholder='{"error":{"message":"retry later"}}'></textarea>
+              title="支持 upstream status N: JSON 标准日志或纯 JSON 响应体；标准日志状态码优先" data-i18n-title="channels.cooldownDetection.testBodyHelp"
+              placeholder='upstream status 200: {"error":{"message":"retry later"}}'></textarea>
           </label>
           <pre id="cooldownDetectionTestResult" class="cooldown-detection-test-result" hidden></pre>
         </section>

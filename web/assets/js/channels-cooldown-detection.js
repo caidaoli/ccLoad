@@ -518,6 +518,13 @@
     const element = document.getElementById('cooldownDetectionTestResult');
     if (!element) return;
     const fields = [];
+    const effectiveStatus = Number(data.status_code);
+    if (Number.isInteger(effectiveStatus) && effectiveStatus >= 100 && effectiveStatus <= 599) {
+      fields.push(`${t('channels.cooldownDetection.testEffectiveStatus', 'Effective status code')}: ${effectiveStatus}`);
+    }
+    if (data.parsed_log) {
+      fields.push(t('channels.cooldownDetection.testParsedLog', 'Parsed standard upstream log'));
+    }
     if (data.actionable) {
       fields.push(t('channels.cooldownDetection.testMatched', 'Matched configured rule'));
       fields.push(`${t('channels.cooldownDetection.priority', 'Priority')} ${Number(data.priority) + 1}`);
