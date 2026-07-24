@@ -23,6 +23,7 @@ type ChannelRequest struct {
 	APIKey                 string                        `json:"api_key"`
 	APIKeys                []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
 	ChannelType            string                        `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
+	Websockets             bool                          `json:"websockets,omitempty"`
 	ProtocolTransformMode  string                        `json:"protocol_transform_mode,omitempty"`
 	ProtocolTransforms     []string                      `json:"protocol_transforms,omitempty"`
 	KeyStrategy            string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
@@ -221,6 +222,9 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		cr.ChannelType = normalized // 应用标准化结果
 	}
+	if cr.Websockets && util.NormalizeChannelType(cr.ChannelType) != util.ChannelTypeCodex {
+		return fmt.Errorf("websockets is only supported for codex channels")
+	}
 	rawProtocolTransformMode := cr.ProtocolTransformMode
 	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(cr.ProtocolTransformMode)
 	if cr.ProtocolTransformMode == "" {
@@ -305,6 +309,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 	return &model.Config{
 		Name:                   strings.TrimSpace(cr.Name),
 		ChannelType:            strings.TrimSpace(cr.ChannelType), // 传递渠道类型
+		Websockets:             cr.Websockets,
 		ProtocolTransformMode:  cr.ProtocolTransformMode,
 		ProtocolTransforms:     append([]string(nil), cr.ProtocolTransforms...),
 		URL:                    strings.TrimSpace(cr.URL),

@@ -188,6 +188,7 @@ type Config struct {
 	ID                    int64    `json:"id"`
 	Name                  string   `json:"name"`
 	ChannelType           string   `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
+	Websockets            bool     `json:"websockets,omitempty"`
 	ProtocolTransformMode string   `json:"protocol_transform_mode,omitempty"`
 	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
 	URL                   string   `json:"url"`
@@ -245,6 +246,7 @@ func (c *Config) Clone() *Config {
 		ID:                     c.ID,
 		Name:                   c.Name,
 		ChannelType:            c.ChannelType,
+		Websockets:             c.Websockets,
 		ProtocolTransformMode:  c.ProtocolTransformMode,
 		ProtocolTransforms:     append([]string(nil), c.ProtocolTransforms...),
 		URL:                    c.URL,

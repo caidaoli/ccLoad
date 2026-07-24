@@ -245,6 +245,8 @@ window.I18N_LOCALES['en'] = {
   'channels.modelStatsUnavailable': 'Stats unavailable',
   'channels.enableChannel': 'Enable',
   'channels.enableScheduledCheck': 'Scheduled Checks',
+  'channels.enableWebsockets': 'Native WebSocket',
+  'channels.enableWebsocketsHelp': 'Codex channels only: reuse a native upstream Responses WebSocket.',
   'channels.priority': 'Priority',
   'channels.dailyCostLimit': 'Daily Limit',
   'channels.dailyCostLimitPlaceholder': '0=No limit',

@@ -167,6 +167,19 @@ func (dc *debugCapture) buildEntry(resp *http.Response) *model.DebugLogEntry {
 	return entry
 }
 
+func annotateNativeWebsocketDebug(entry *model.DebugLogEntry) {
+	if entry == nil {
+		return
+	}
+	entry.RespStatus = http.StatusSwitchingProtocols
+	headers := make(map[string]string)
+	_ = sonic.Unmarshal([]byte(entry.RespHeaders), &headers)
+	headers["X-CCLoad-Upstream-Transport"] = "websocket"
+	headers["X-CCLoad-WebSocket-Handshake-Status"] = "101"
+	encoded, _ := sonic.Marshal(headers)
+	entry.RespHeaders = string(encoded)
+}
+
 // debugReadCloser 包装 ReadCloser，通过 TeeReader 同时写入缓冲区
 type debugReadCloser struct {
 	io.ReadCloser

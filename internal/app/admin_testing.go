@@ -688,11 +688,12 @@ func (s *Server) testChannelAPIWithURL(
 ) map[string]any {
 	start := time.Now()
 	var (
-		req             *http.Request
-		requestPlan     *channelTestRequestPlan
-		cancel          context.CancelFunc
-		capacityRelease func()
-		err             error
+		req              *http.Request
+		requestPlan      *channelTestRequestPlan
+		cancel           context.CancelFunc
+		capacityRelease  func()
+		websocketSession *codexUpstreamWebsocketSession
+		err              error
 	)
 	if testReq.WaitForCapacity {
 		var cfgForBuild *model.Config
@@ -718,10 +719,56 @@ func (s *Server) testChannelAPIWithURL(
 	}
 	defer cancel()
 	ctx := req.Context()
+	useNativeCodexWebsocket := cfg.Websockets && testReq.Stream &&
+		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
+	if useNativeCodexWebsocket {
+		preparedBody, prepareErr := buildCodexWebsocketRequestBody(requestPlan.requestBody)
+		if prepareErr != nil {
+			if capacityRelease != nil {
+				capacityRelease()
+			}
+			return map[string]any{
+				"success":     false,
+				"error":       prepareErr.Error(),
+				"duration_ms": time.Since(start).Milliseconds(),
+			}
+		}
+		websocketURL, websocketURLErr := codexWebsocketURL(requestPlan.fullURL)
+		if websocketURLErr != nil {
+			if capacityRelease != nil {
+				capacityRelease()
+			}
+			return map[string]any{
+				"success":     false,
+				"error":       websocketURLErr.Error(),
+				"duration_ms": time.Since(start).Milliseconds(),
+			}
+		}
+		debugRequest := req.Clone(ctx)
+		debugRequest.Method = "WEBSOCKET"
+		debugRequest.URL, err = neturl.Parse(websocketURL)
+		if err != nil {
+			if capacityRelease != nil {
+				capacityRelease()
+			}
+			return map[string]any{
+				"success":     false,
+				"error":       "解析 WebSocket URL 失败: " + err.Error(),
+				"duration_ms": time.Since(start).Milliseconds(),
+			}
+		}
+		requestPlan.fullURL = websocketURL
+		requestPlan.requestBody = preparedBody
+		requestPlan.debugCapture = s.captureDebugRequest(debugRequest, preparedBody)
+		websocketSession = newCodexUpstreamWebsocketSession()
+		defer websocketSession.Close()
+	}
 
 	// 发送请求
 	var resp *http.Response
-	if capacityRelease != nil {
+	if useNativeCodexWebsocket {
+		resp, err = s.doChannelTestCodexWebsocket(ctx, cfg, websocketSession, req, requestPlan.requestBody, capacityRelease)
+	} else if capacityRelease != nil {
 		resp, err = s.doReservedUpstreamRequest(cfg, req, capacityRelease, nil)
 	} else {
 		resp, err = s.doUpstreamRequest(cfg, req)
@@ -769,6 +816,12 @@ func (s *Server) testChannelAPIWithURL(
 		"status_code":  resp.StatusCode,
 		"is_streaming": testReq.Stream,
 	}
+	if useNativeCodexWebsocket {
+		result["transport"] = "websocket"
+		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			result["websocket_handshake_status"] = http.StatusSwitchingProtocols
+		}
+	}
 
 	// 始终返回上游请求原始数据，便于调试排查（不依赖 debug_log_enabled）
 	result["upstream_request_url"] = requestPlan.fullURL
@@ -811,6 +864,28 @@ func (s *Server) testChannelAPIWithURL(
 		})
 	}
 	return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result))
+}
+
+func (s *Server) doChannelTestCodexWebsocket(
+	ctx context.Context,
+	cfg *model.Config,
+	session *codexUpstreamWebsocketSession,
+	req *http.Request,
+	body []byte,
+	capacityRelease func(),
+) (*http.Response, error) {
+	if capacityRelease == nil {
+		resp, _, _, err := s.doCodexWebsocketRequest(ctx, cfg, session, req, body, nil, nil)
+		return resp, err
+	}
+
+	resp, _, _, err := session.roundTrip(ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil)
+	if err != nil || resp == nil || resp.Body == nil {
+		capacityRelease()
+		return resp, err
+	}
+	resp.Body = &releaseOnCloseReadCloser{ReadCloser: resp.Body, release: capacityRelease}
+	return resp, nil
 }
 
 // parseTestNonStreamResponse 解析非流式响应（成功/失败两路），写入 result 并返回。

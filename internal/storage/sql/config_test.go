@@ -35,6 +35,7 @@ func TestConfig_CreateAndGet(t *testing.T) {
 		Priority:       10,
 		Enabled:        true,
 		ChannelType:    "openai",
+		Websockets:     true,
 		RPMLimit:       60,
 		MaxConcurrency: 3,
 		ModelEntries: []model.ModelEntry{
@@ -73,6 +74,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if got.ChannelType != "openai" {
 		t.Errorf("channel_type: got %q, want %q", got.ChannelType, "openai")
+	}
+	if !got.Websockets {
+		t.Error("expected websockets=true")
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)

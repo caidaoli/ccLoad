@@ -54,6 +54,7 @@ type Server struct {
 	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
+	responsesExecutionSessions    *responsesExecutionSessionStore
 	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -61,10 +62,12 @@ type Server struct {
 	tokenStatsDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries       int                                 // 单个渠道内最大Key重试次数
-	firstByteTimeout    time.Duration                       // 上游首字节超时（流式请求）
-	nonStreamTimeout    time.Duration                       // 非流式请求超时
-	channelTypeTimeouts map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
+	maxKeyRetries                  int           // 单个渠道内最大Key重试次数
+	firstByteTimeout               time.Duration // 上游首字节超时（流式请求）
+	nonStreamTimeout               time.Duration // 非流式请求超时
+	responsesWebsocketIdleTimeout  time.Duration
+	responsesWebsocketPingInterval time.Duration
+	channelTypeTimeouts            map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 
@@ -182,9 +185,10 @@ func NewServer(store storage.Store) *Server {
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
-		activeRequests:            newActiveRequestManager(),
-		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
-		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
+		activeRequests:             newActiveRequestManager(),
+		responsesExecutionSessions: newResponsesExecutionSessionStore(responsesExecutionSessionTTL),
+		channelRPMLimiter:          newChannelRPMLimiter(time.Now),
+		channelConcurrencyLimiter:  newChannelConcurrencyLimiter(),
 	}
 
 	reg := protocol.NewRegistry()
@@ -483,7 +487,7 @@ func bootstrapCostAndURLStats(store storage.Store, costCache *CostCache, urlSele
 	}
 }
 
-// startBackgroundWorkers 启动 Token 统计 / Token 清理 / 状态清理三个后台协程。
+// startBackgroundWorkers 启动所有常驻后台协程。
 // 全部纳入 s.wg，Shutdown 时通过 shutdownCh 协调退出。
 func (s *Server) startBackgroundWorkers() {
 	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
@@ -497,6 +501,9 @@ func (s *Server) startBackgroundWorkers() {
 	// [FIX] P1: 启动后台状态清理协程（防止内存泄漏）
 	s.wg.Add(1)
 	go s.stateCleanupLoop()
+
+	s.wg.Add(1)
+	go s.responsesExecutionSessionCleanupLoop()
 }
 
 // ================== 缓存辅助函数 ==================
@@ -1106,6 +1113,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 取消server级context，通知所有派生的后台任务退出
 	s.baseCancel()
+	if s.responsesExecutionSessions != nil {
+		s.responsesExecutionSessions.close()
+	}
 
 	// 关闭shutdownCh，通知所有goroutine退出（幂等：由isShuttingDown守护）
 	close(s.shutdownCh)
