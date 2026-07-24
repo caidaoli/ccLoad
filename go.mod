@@ -11,6 +11,7 @@ require (
 )
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/klauspost/compress v1.19.0
 	golang.org/x/term v0.45.0

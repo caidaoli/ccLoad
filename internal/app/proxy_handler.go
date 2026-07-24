@@ -47,17 +47,24 @@ var ErrChannelConcurrencyExceeded = errors.New("channel concurrency limit exceed
 // acquireConcurrencySlot 获取并发槽位，返回release函数和状态
 // ok=false 表示客户端已取消请求
 func (s *Server) acquireConcurrencySlot(c *gin.Context) (release func(), ok bool) {
+	release, err := s.acquireConcurrencySlotForContext(c.Request.Context())
+	if err == nil {
+		return release, true
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		c.JSON(http.StatusGatewayTimeout, gin.H{"error": "request timeout while waiting for slot"})
+		return nil, false
+	}
+	c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
+	return nil, false
+}
+
+func (s *Server) acquireConcurrencySlotForContext(ctx context.Context) (func(), error) {
 	select {
 	case s.concurrencySem <- struct{}{}:
-		return func() { <-s.concurrencySem }, true
-	case <-c.Request.Context().Done():
-		ctxErr := c.Request.Context().Err()
-		if errors.Is(ctxErr, context.DeadlineExceeded) {
-			c.JSON(http.StatusGatewayTimeout, gin.H{"error": "request timeout while waiting for slot"})
-			return nil, false
-		}
-		c.JSON(StatusClientClosedRequest, gin.H{"error": "request cancelled while waiting for slot"})
-		return nil, false
+		return func() { <-s.concurrencySem }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
 	}
 }
 
@@ -84,16 +91,7 @@ func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
 	requestMethod := c.Request.Method
 
 	// 读取请求体（带上限，防止大包打爆内存）
-	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖
-	maxBody := int64(config.DefaultMaxBodyBytes)
-	if strings.HasPrefix(requestPath, "/v1/images/") {
-		maxBody = int64(config.DefaultMaxImageBodyBytes)
-	}
-	if v := os.Getenv("CCLOAD_MAX_BODY_BYTES"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 {
-			maxBody = int64(n)
-		}
-	}
+	maxBody := maxProxyBodyBytes(requestPath)
 	limited := io.LimitReader(c.Request.Body, maxBody+1)
 	all, err := io.ReadAll(limited)
 	if err != nil {
@@ -149,6 +147,20 @@ func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
 		isStreaming:   isStreaming,
 		hasModel:      hasModel,
 	}, nil
+}
+
+func maxProxyBodyBytes(requestPath string) int64 {
+	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖。
+	maxBody := int64(config.DefaultMaxBodyBytes)
+	if strings.HasPrefix(requestPath, "/v1/images/") {
+		maxBody = int64(config.DefaultMaxImageBodyBytes)
+	}
+	if value := os.Getenv("CCLOAD_MAX_BODY_BYTES"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			maxBody = int64(parsed)
+		}
+	}
+	return maxBody
 }
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
@@ -224,6 +236,11 @@ func (s *Server) handleSpecialRoutes(c *gin.Context) bool {
 
 // HandleProxyRequest 通用透明代理处理器
 func (s *Server) HandleProxyRequest(c *gin.Context) {
+	if isResponsesWebsocketUpgradeRequest(c.Request) {
+		s.HandleResponsesWebsocket(c)
+		return
+	}
+
 	startTime := time.Now()
 
 	// 并发控制
@@ -444,7 +461,7 @@ func (s *Server) runProxyAttemptLoop(
 	ctx context.Context,
 	cands []*model.Config,
 	reqCtx *proxyRequestContext,
-	w gin.ResponseWriter,
+	w http.ResponseWriter,
 ) (lastResult *proxyResult, succeeded bool) {
 	for _, cfg := range cands {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
