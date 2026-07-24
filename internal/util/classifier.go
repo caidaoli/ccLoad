@@ -67,6 +67,9 @@ const (
 	RetryAfterThresholdSeconds = 60
 	// DefaultModelCooldownDuration 是上游未给出模型恢复时间时的固定冷却时长。
 	DefaultModelCooldownDuration = 5 * time.Minute
+	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
+	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
+	WebsocketConnectionLimitCooldown = 5 * time.Second
 	// RateLimitScope 常量
 	RateLimitScopeGlobal  = "global"
 	RateLimitScopeIP      = "ip"
@@ -308,6 +311,17 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
+	// 上游 WebSocket 连接槽耗尽：切渠道重试，只给一个极短的渠道冷却。
+	// 优先于 597/429 的常规分类，避免健康 Key 被指数退避冷却。
+	if IsWebsocketConnectionLimitError(responseBody) {
+		return HTTPResponseClassification{
+			Level:                   ErrorLevelChannel,
+			ChannelCooldownUntil:    now.Add(WebsocketConnectionLimitCooldown),
+			HasChannelCooldownUntil: true,
+			ChannelCooldownReason:   "websocket_connection_limit",
+		}
+	}
+
 	if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(responseBody, now); ok {
 		classification := HTTPResponseClassification{Level: level}
 		if reason == "model_cooldown" {
@@ -521,6 +535,56 @@ func classifySSEError(responseBody []byte) ErrorLevel {
 		// 未知错误类型，保守处理为Key级
 		return ErrorLevelKey
 	}
+}
+
+// WebsocketConnectionLimitCode 是上游 WebSocket 并发连接数超限的错误码。
+const WebsocketConnectionLimitCode = "websocket_connection_limit_reached"
+
+// websocketErrorProbe 只解析判定连接数超限所需的字段。
+// error 既可能是对象也可能是字符串，用 RawMessage 兜住两种形态。
+type websocketErrorProbe struct {
+	Code  any             `json:"code"`
+	Error json.RawMessage `json:"error"`
+}
+
+// IsWebsocketConnectionLimitError 判断响应体是否为上游 WebSocket 并发连接槽耗尽。
+//
+// 这不是渠道/Key/模型故障，而是瞬时资源竞争：既有 Key 完全健康，
+// 落到默认分类会被误判成 Key 级错误并触发指数退避冷却。
+func IsWebsocketConnectionLimitError(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+
+	var probe websocketErrorProbe
+	if err := json.Unmarshal(responseBody, &probe); err != nil {
+		return false
+	}
+	if isWebsocketConnectionLimitValue(structuredScalarString(probe.Code)) {
+		return true
+	}
+	if len(probe.Error) == 0 {
+		return false
+	}
+
+	var errText string
+	if err := json.Unmarshal(probe.Error, &errText); err == nil {
+		return isWebsocketConnectionLimitValue(errText)
+	}
+
+	var errObj struct {
+		Type any `json:"type"`
+		Code any `json:"code"`
+	}
+	if err := json.Unmarshal(probe.Error, &errObj); err != nil {
+		return false
+	}
+	return isWebsocketConnectionLimitValue(structuredScalarString(errObj.Type)) ||
+		isWebsocketConnectionLimitValue(structuredScalarString(errObj.Code))
+}
+
+func isWebsocketConnectionLimitValue(value string) bool {
+	return strings.EqualFold(strings.TrimSpace(value), WebsocketConnectionLimitCode)
 }
 
 func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, ErrorLevel, bool) {
