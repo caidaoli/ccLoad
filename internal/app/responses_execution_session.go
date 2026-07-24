@@ -5,9 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"log"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,8 +19,6 @@ const (
 	responsesExecutionSessionTTL             = time.Hour
 	responsesExecutionSessionCleanupInterval = 15 * time.Minute
 	defaultResponsesExecutionSessionLimit    = 32
-	defaultResponsesSessionsPerSubjectLimit  = 4
-	defaultResponsesAttachmentsPerSession    = 2
 )
 
 var errResponsesExecutionSessionCapacity = errors.New("responses execution session capacity exceeded")
@@ -36,7 +32,6 @@ type responsesExecutionSession struct {
 	lastAccess time.Time
 	active     int
 	storeKey   string
-	subjectKey string
 	transient  bool
 
 	transcriptBytes atomic.Int64
@@ -74,28 +69,25 @@ func (s *responsesExecutionSession) commit(request []byte, result responsesWebso
 }
 
 type responsesExecutionSessionStoreStats struct {
-	Sessions                 int    `json:"sessions"`
-	ActiveAttachments        int    `json:"active_attachments"`
-	UpstreamConnections      int    `json:"upstream_connections"`
-	Reconnects               uint64 `json:"reconnects"`
-	TranscriptBytes          int64  `json:"transcript_bytes"`
-	Evictions                uint64 `json:"evictions"`
-	Rejections               uint64 `json:"rejections"`
-	MaxSessions              int    `json:"max_sessions"`
-	MaxSessionsPerSubject    int    `json:"max_sessions_per_subject"`
-	MaxAttachmentsPerSession int    `json:"max_attachments_per_session"`
+	Sessions            int    `json:"sessions"`
+	ActiveAttachments   int    `json:"active_attachments"`
+	UpstreamConnections int    `json:"upstream_connections"`
+	Reconnects          uint64 `json:"reconnects"`
+	TranscriptBytes     int64  `json:"transcript_bytes"`
+	MaxSessions         int    `json:"max_sessions"`
 }
 
+// responsesExecutionSessionStore is a single-process, in-memory session map.
+// Single instance only: no cross-process coordination, no persistence, no
+// restart recovery. A process restart drops every session; downstream clients
+// reconnect and resend the full transcript, which is the documented contract
+// of the WebSocket protocol this store backs.
 type responsesExecutionSessionStore struct {
-	mu                       sync.Mutex
-	sessions                 map[string]*responsesExecutionSession
-	ttl                      time.Duration
-	maxSessions              int
-	maxSessionsPerSubject    int
-	maxAttachmentsPerSession int
-	nextTransientID          uint64
-	evictions                uint64
-	rejections               uint64
+	mu              sync.Mutex
+	sessions        map[string]*responsesExecutionSession
+	ttl             time.Duration
+	maxSessions     int
+	nextTransientID uint64
 }
 
 func newResponsesExecutionSessionStore(ttl time.Duration) *responsesExecutionSessionStore {
@@ -103,38 +95,10 @@ func newResponsesExecutionSessionStore(ttl time.Duration) *responsesExecutionSes
 		ttl = responsesExecutionSessionTTL
 	}
 	return &responsesExecutionSessionStore{
-		sessions:                 make(map[string]*responsesExecutionSession),
-		ttl:                      ttl,
-		maxSessions:              defaultResponsesExecutionSessionLimit,
-		maxSessionsPerSubject:    defaultResponsesSessionsPerSubjectLimit,
-		maxAttachmentsPerSession: defaultResponsesAttachmentsPerSession,
+		sessions:    make(map[string]*responsesExecutionSession),
+		ttl:         ttl,
+		maxSessions: defaultResponsesExecutionSessionLimit,
 	}
-}
-
-func newResponsesExecutionSessionStoreFromEnv() *responsesExecutionSessionStore {
-	ttlMinutes := positiveEnvInt("CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES", int(responsesExecutionSessionTTL/time.Minute))
-	store := newResponsesExecutionSessionStore(time.Duration(ttlMinutes) * time.Minute)
-	store.maxSessions = positiveEnvInt("CCLOAD_RESPONSES_WS_MAX_SESSIONS", defaultResponsesExecutionSessionLimit)
-	store.maxSessionsPerSubject = positiveEnvInt(
-		"CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN", defaultResponsesSessionsPerSubjectLimit,
-	)
-	store.maxAttachmentsPerSession = positiveEnvInt(
-		"CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION", defaultResponsesAttachmentsPerSession,
-	)
-	return store
-}
-
-func positiveEnvInt(name string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(name))
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil || value <= 0 {
-		log.Printf("[WARN] %s=%q 无效，使用默认值 %d", name, raw, fallback)
-		return fallback
-	}
-	return value
 }
 
 func responsesExecutionSessionHint(header http.Header, payload []byte) string {
@@ -151,20 +115,21 @@ func responsesExecutionSessionKey(subject, hint string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func responsesExecutionSubjectKey(subject string) string {
-	sum := sha256.Sum256([]byte(strings.TrimSpace(subject)))
-	return hex.EncodeToString(sum[:])
-}
-
 // acquire returns a private transient session unless the client supplied an
 // explicit stable hint. This prevents unrelated requests sharing a model or IP
 // from ever sharing conversation state.
+//
+// Capacity is one flat ceiling shared by every subject — single instance, no
+// per-subject bookkeeping. Once full, acquire rejects outright; there is no
+// LRU eviction. An idle session already frees itself through the TTL sweep
+// below, so eviction-on-insert would only ever fire under sustained overload,
+// where silently killing another subject's live session is worse than a
+// clear capacity error.
 func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*responsesExecutionSession, func(), error) {
 	now := time.Now()
 	subject = strings.TrimSpace(subject)
 	hint = strings.TrimSpace(hint)
 	stable := subject != "" && hint != ""
-	subjectKey := responsesExecutionSubjectKey(subject)
 	key := ""
 	if stable {
 		key = responsesExecutionSessionKey(subject, hint)
@@ -176,28 +141,18 @@ func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*respons
 	if stable {
 		session = s.sessions[key]
 	}
-	if session != nil && s.maxAttachmentsPerSession > 0 && session.active >= s.maxAttachmentsPerSession {
-		s.rejections++
-		s.mu.Unlock()
-		closeResponsesExecutionSessions(expired)
-		return nil, nil, errResponsesExecutionSessionCapacity
-	}
 	if session == nil {
-		evicted, ok := s.makeCapacityLocked(subjectKey)
-		expired = append(expired, evicted...)
-		if !ok {
-			s.rejections++
+		if s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
 			s.mu.Unlock()
 			closeResponsesExecutionSessions(expired)
 			return nil, nil, errResponsesExecutionSessionCapacity
 		}
 		if !stable {
 			s.nextTransientID++
-			key = "transient:" + responsesExecutionSessionKey(subjectKey, strconv.FormatUint(s.nextTransientID, 10))
+			key = "transient:" + strconv.FormatUint(s.nextTransientID, 10)
 		}
 		session = newResponsesExecutionSession(now)
 		session.storeKey = key
-		session.subjectKey = subjectKey
 		session.transient = !stable
 		s.sessions[key] = session
 	}
@@ -223,65 +178,12 @@ func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*respons
 	}, nil
 }
 
-func (s *responsesExecutionSessionStore) makeCapacityLocked(subjectKey string) ([]*responsesExecutionSession, bool) {
-	var evicted []*responsesExecutionSession
-	for s.maxSessionsPerSubject > 0 && s.countSubjectLocked(subjectKey) >= s.maxSessionsPerSubject {
-		key, session := s.oldestIdleLocked(subjectKey)
-		if session == nil {
-			return evicted, false
-		}
-		delete(s.sessions, key)
-		s.evictions++
-		evicted = append(evicted, session)
-	}
-	for s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
-		key, session := s.oldestIdleLocked("")
-		if session == nil {
-			return evicted, false
-		}
-		delete(s.sessions, key)
-		s.evictions++
-		evicted = append(evicted, session)
-	}
-	return evicted, true
-}
-
-func (s *responsesExecutionSessionStore) countSubjectLocked(subjectKey string) int {
-	count := 0
-	for _, session := range s.sessions {
-		if session.subjectKey == subjectKey {
-			count++
-		}
-	}
-	return count
-}
-
-func (s *responsesExecutionSessionStore) oldestIdleLocked(subjectKey string) (string, *responsesExecutionSession) {
-	oldestKey := ""
-	var oldest *responsesExecutionSession
-	for key, session := range s.sessions {
-		if session.active != 0 || (subjectKey != "" && session.subjectKey != subjectKey) {
-			continue
-		}
-		if oldest == nil || session.lastAccess.Before(oldest.lastAccess) ||
-			(session.lastAccess.Equal(oldest.lastAccess) && key < oldestKey) {
-			oldestKey = key
-			oldest = session
-		}
-	}
-	return oldestKey, oldest
-}
-
 func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stats := responsesExecutionSessionStoreStats{
-		Sessions:                 len(s.sessions),
-		Evictions:                s.evictions,
-		Rejections:               s.rejections,
-		MaxSessions:              s.maxSessions,
-		MaxSessionsPerSubject:    s.maxSessionsPerSubject,
-		MaxAttachmentsPerSession: s.maxAttachmentsPerSession,
+		Sessions:    len(s.sessions),
+		MaxSessions: s.maxSessions,
 	}
 	for _, session := range s.sessions {
 		stats.ActiveAttachments += session.active

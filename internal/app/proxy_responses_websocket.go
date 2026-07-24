@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -30,30 +30,43 @@ const (
 	responsesWebsocketWriteTimeout  = 30 * time.Second
 )
 
+// responsesWebsocketUpgradePaths lists every downstream path that terminates a
+// Responses WebSocket. /backend-api/codex/responses is the Codex CLI direct
+// route alias (chatgpt_base_url compatible), mirrored from CLIProxyAPI
+// (internal/api/server.go's codexDirect route group).
+var responsesWebsocketUpgradePaths = []string{"/v1/responses", "/backend-api/codex/responses"}
+
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
 	WriteBufferSize: 4096,
-	CheckOrigin:     checkResponsesWebsocketOrigin,
+	// The endpoint sits behind Bearer token auth (auth_service.go's
+	// isResponsesWebsocketUpgradeRequest branch runs after token validation),
+	// and a browser cross-origin WebSocket does not carry an Authorization
+	// header automatically, so Origin adds no CSRF protection here. Matches
+	// CLIProxyAPI, which does not check Origin on this endpoint either.
+	CheckOrigin: func(*http.Request) bool { return true },
 }
 
 func isResponsesWebsocketUpgradeRequest(r *http.Request) bool {
-	return r != nil && r.Method == http.MethodGet && r.URL.Path == "/v1/responses" && websocket.IsWebSocketUpgrade(r)
+	return r != nil && r.Method == http.MethodGet &&
+		slices.Contains(responsesWebsocketUpgradePaths, r.URL.Path) &&
+		websocket.IsWebSocketUpgrade(r)
 }
 
-func checkResponsesWebsocketOrigin(r *http.Request) bool {
-	if r == nil {
-		return false
+// responsesWebsocketTimeouts resolves the idle read deadline and ping
+// interval for a connection. The two Server fields exist only so tests can
+// shorten the clock to exercise the keepalive path; production never sets
+// them, so this always falls back to the package constants below.
+func (s *Server) responsesWebsocketTimeouts() (idle, ping time.Duration) {
+	idle = s.responsesWebsocketIdleTimeoutOverride
+	if idle <= 0 {
+		idle = responsesWebsocketIdleTimeout
 	}
-	origin := strings.TrimSpace(r.Header.Get("Origin"))
-	if origin == "" {
-		return true
+	ping = s.responsesWebsocketPingIntervalOverride
+	if ping <= 0 {
+		ping = responsesWebsocketPingInterval
 	}
-	parsed, err := url.Parse(origin)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
-		parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return false
-	}
-	return strings.EqualFold(parsed.Host, r.Host)
+	return idle, ping
 }
 
 // HandleResponsesWebsocket terminates the downstream Responses WebSocket.
@@ -82,14 +95,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		_ = conn.Close()
 	})
 	defer stopShutdownClose()
-	idleTimeout := s.responsesWebsocketIdleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = responsesWebsocketIdleTimeout
-	}
-	pingInterval := s.responsesWebsocketPingInterval
-	if pingInterval <= 0 {
-		pingInterval = responsesWebsocketPingInterval
-	}
+	idleTimeout, pingInterval := s.responsesWebsocketTimeouts()
 	conn.SetReadLimit(maxProxyBodyBytes("/v1/responses"))
 	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	conn.SetPongHandler(func(string) error {
@@ -712,6 +718,13 @@ func responsesWebsocketPendingToolCallIDs(output []byte) []string {
 func isResponsesWebsocketToolCallType(itemType string) bool {
 	itemType = strings.TrimSpace(itemType)
 	return itemType == "function_call" || itemType == "custom_tool_call"
+}
+
+// isResponsesWebsocketToolCallOutputType is the output-side counterpart of
+// isResponsesWebsocketToolCallType.
+func isResponsesWebsocketToolCallOutputType(itemType string) bool {
+	itemType = strings.TrimSpace(itemType)
+	return itemType == "function_call_output" || itemType == "custom_tool_call_output"
 }
 
 func isCompleteResponsesWebsocketToolCall(item gjson.Result) bool {

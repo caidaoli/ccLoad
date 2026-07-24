@@ -77,8 +77,7 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	if ws["reconnects"] != float64(1) {
 		t.Fatalf("websocket reconnect metric missing: %#v", ws)
 	}
-	if ws["max_sessions"] != float64(defaultResponsesExecutionSessionLimit) ||
-		ws["max_sessions_per_subject"] != float64(defaultResponsesSessionsPerSubjectLimit) {
+	if ws["max_sessions"] != float64(defaultResponsesExecutionSessionLimit) {
 		t.Fatalf("websocket limits missing: %#v", ws)
 	}
 }

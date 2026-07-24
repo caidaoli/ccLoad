@@ -60,7 +60,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		return enforceResponsesWebsocketTranscriptLimit(normalized)
+		return finalizeResponsesWebsocketRequest(normalized)
 	}
 
 	if previousID == "" && inputContainsCompletedTranscript(nextInput) {
@@ -68,7 +68,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		return enforceResponsesWebsocketTranscriptLimit(normalized)
+		return finalizeResponsesWebsocketRequest(normalized)
 	}
 
 	merged, err := mergeResponsesWebsocketInput(
@@ -88,7 +88,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("set merged websocket input: %w", err)
 	}
-	return enforceResponsesWebsocketTranscriptLimit(normalized)
+	return finalizeResponsesWebsocketRequest(normalized)
 }
 
 // normalizeRequests 同时生成两份请求：
@@ -188,7 +188,7 @@ func normalizeInitialResponsesWebsocketRequest(payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("force streaming request: %w", err)
 	}
-	return enforceResponsesWebsocketTranscriptLimit(normalized)
+	return finalizeResponsesWebsocketRequest(normalized)
 }
 
 func normalizeReplacementResponsesWebsocketRequest(payload []byte, lastRequest []byte) ([]byte, error) {
@@ -240,7 +240,7 @@ func mergeResponsesWebsocketInput(parts ...gjson.Result) ([]byte, error) {
 				seenItemIDs[itemID] = struct{}{}
 			}
 			itemType := strings.TrimSpace(item.Get("type").String())
-			if itemType == "function_call" || itemType == "custom_tool_call" {
+			if isResponsesWebsocketToolCallType(itemType) {
 				callID := strings.TrimSpace(item.Get("call_id").String())
 				if callID != "" {
 					if _, exists := seenCallIDs[callID]; exists {
@@ -309,8 +309,7 @@ func responsesWebsocketMessageText(message gjson.Result) string {
 func inputSatisfiesResponsesWebsocketToolCalls(input gjson.Result, pending []string) bool {
 	outputs := make(map[string]struct{}, len(pending))
 	for _, item := range input.Array() {
-		itemType := strings.TrimSpace(item.Get("type").String())
-		if itemType != "function_call_output" && itemType != "custom_tool_call_output" {
+		if !isResponsesWebsocketToolCallOutputType(item.Get("type").String()) {
 			continue
 		}
 		if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
@@ -325,10 +324,57 @@ func inputSatisfiesResponsesWebsocketToolCalls(input gjson.Result, pending []str
 	return true
 }
 
+// validateResponsesWebsocketToolCallPairing rejects a transcript containing a
+// function_call_output/custom_tool_call_output whose call_id has no matching
+// function_call/custom_tool_call anywhere in the same input array.
+//
+// Upstream hard-rejects such transcripts. Without this check, that upstream
+// 400 would reach classifier.go, which treats HTTP 400 as a model-level
+// failure and cools down + retries an unrelated channel for what is actually
+// a malformed client request — burning the candidate list for nothing.
+func validateResponsesWebsocketToolCallPairing(payload []byte) error {
+	input := gjson.GetBytes(payload, "input")
+	if !input.IsArray() {
+		return nil
+	}
+	calls := make(map[string]struct{})
+	for _, item := range input.Array() {
+		if !isResponsesWebsocketToolCallType(item.Get("type").String()) {
+			continue
+		}
+		if callID := strings.TrimSpace(item.Get("call_id").String()); callID != "" {
+			calls[callID] = struct{}{}
+		}
+	}
+	for _, item := range input.Array() {
+		if !isResponsesWebsocketToolCallOutputType(item.Get("type").String()) {
+			continue
+		}
+		callID := strings.TrimSpace(item.Get("call_id").String())
+		if callID == "" {
+			continue
+		}
+		if _, ok := calls[callID]; !ok {
+			return fmt.Errorf("websocket transcript has tool call output for unknown call_id %q", callID)
+		}
+	}
+	return nil
+}
+
 func enforceResponsesWebsocketTranscriptLimit(payload []byte) ([]byte, error) {
 	maxBytes := maxProxyBodyBytes("/v1/responses")
 	if int64(len(payload)) > maxBytes {
 		return nil, fmt.Errorf("websocket transcript exceeds %d byte limit; compact and replay the conversation", maxBytes)
 	}
 	return payload, nil
+}
+
+// finalizeResponsesWebsocketRequest is the single funnel every normalizeRequest
+// branch returns through: validate tool call pairing, then enforce the
+// transcript byte limit.
+func finalizeResponsesWebsocketRequest(payload []byte) ([]byte, error) {
+	if err := validateResponsesWebsocketToolCallPairing(payload); err != nil {
+		return nil, err
+	}
+	return enforceResponsesWebsocketTranscriptLimit(payload)
 }
