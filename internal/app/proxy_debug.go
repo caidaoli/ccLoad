@@ -7,26 +7,50 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 
 	"github.com/bytedance/sonic"
 )
 
 type debugBuffer struct {
-	mu  sync.RWMutex
-	buf bytes.Buffer
+	mu    sync.RWMutex
+	buf   bytes.Buffer
+	limit int
 }
 
 func (b *debugBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.buf.Write(p)
+	originalLen := len(p)
+	if b.limit > 0 {
+		remaining := b.limit - b.buf.Len()
+		if remaining <= 0 {
+			return originalLen, nil
+		}
+		if len(p) > remaining {
+			p = p[:remaining]
+		}
+	}
+	_, err := b.buf.Write(p)
+	return originalLen, err
 }
 
 func (b *debugBuffer) Snapshot() []byte {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	return append([]byte(nil), b.buf.Bytes()...)
+}
+
+func newDebugBuffer() *debugBuffer {
+	return &debugBuffer{limit: config.DefaultMaxBodyBytes}
+}
+
+func cloneDebugBody(body []byte) []byte {
+	if len(body) > config.DefaultMaxBodyBytes {
+		body = body[:config.DefaultMaxBodyBytes]
+	}
+	return append([]byte(nil), body...)
 }
 
 // debugCapture 持有请求捕获数据和响应体缓冲区
@@ -55,14 +79,15 @@ func (s *Server) captureDebugRequest(req *http.Request, bodyToSend []byte) *debu
 			headers[k] = vs[0] // 取第一个值
 		}
 	}
+	headers = maskSensitiveHeaderMap(headers)
 	hdrJSON, _ := sonic.Marshal(headers)
 
 	return &debugCapture{
 		reqMethod:  req.Method,
 		reqURL:     req.URL.String(),
 		reqHeaders: string(hdrJSON),
-		reqBody:    append([]byte(nil), bodyToSend...),
-		respBuf:    &debugBuffer{},
+		reqBody:    cloneDebugBody(bodyToSend),
+		respBuf:    newDebugBuffer(),
 	}
 }
 
@@ -78,6 +103,7 @@ func (dc *debugCapture) captureResponseMeta(resp *http.Response) {
 			respHeaders[k] = vs[0]
 		}
 	}
+	respHeaders = maskSensitiveHeaderMap(respHeaders)
 	hdrJSON, _ := sonic.Marshal(respHeaders)
 
 	dc.mu.Lock()
@@ -93,7 +119,7 @@ func (dc *debugCapture) wrapResponseBody(resp *http.Response) {
 	}
 	dc.captureResponseMeta(resp)
 	if dc.respBuf == nil {
-		dc.respBuf = &debugBuffer{}
+		dc.respBuf = newDebugBuffer()
 	}
 	resp.Body = &debugReadCloser{
 		ReadCloser: resp.Body,
@@ -133,6 +159,7 @@ func (dc *debugCapture) buildEntry(resp *http.Response) *model.DebugLogEntry {
 				respHeaders[k] = vs[0]
 			}
 		}
+		respHeaders = maskSensitiveHeaderMap(respHeaders)
 		hdrJSON, _ := sonic.Marshal(respHeaders)
 		entry.RespHeaders = string(hdrJSON)
 	}

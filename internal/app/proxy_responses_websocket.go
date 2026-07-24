@@ -1,0 +1,469 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"net/url"
+	"sort"
+	"strings"
+	"time"
+
+	"ccLoad/internal/protocol"
+
+	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
+	"github.com/tidwall/gjson"
+)
+
+const (
+	responsesWebsocketRequestCreate = "response.create"
+	responsesWebsocketRequestAppend = "response.append"
+	responsesWebsocketIdleTimeout   = 5 * time.Minute
+	responsesWebsocketWriteTimeout  = 30 * time.Second
+)
+
+var responsesWebsocketUpgrader = websocket.Upgrader{
+	ReadBufferSize:  4096,
+	WriteBufferSize: 4096,
+	CheckOrigin:     checkResponsesWebsocketOrigin,
+}
+
+func isResponsesWebsocketUpgradeRequest(r *http.Request) bool {
+	return r != nil && r.Method == http.MethodGet && r.URL.Path == "/v1/responses" && websocket.IsWebSocketUpgrade(r)
+}
+
+func checkResponsesWebsocketOrigin(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+		parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return false
+	}
+	return strings.EqualFold(parsed.Host, r.Host)
+}
+
+// HandleResponsesWebsocket terminates the downstream Responses WebSocket.
+// Upstream execution remains HTTP/SSE in the first implementation phase.
+func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
+	if !websocket.IsWebSocketUpgrade(c.Request) {
+		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "websocket upgrade required"})
+		return
+	}
+
+	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	connectionCtx, cancelConnection := context.WithCancel(context.Background())
+	defer cancelConnection()
+	stopShutdownClose := context.AfterFunc(s.baseCtx, func() {
+		_ = conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseGoingAway, "server shutting down"),
+			time.Now().Add(responsesWebsocketWriteTimeout),
+		)
+		cancelConnection()
+		_ = conn.Close()
+	})
+	defer stopShutdownClose()
+	conn.SetReadLimit(maxProxyBodyBytes("/v1/responses"))
+	_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+	})
+	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn)
+	session := newResponsesWebsocketSession()
+
+	for {
+		var message responsesWebsocketInboundMessage
+		select {
+		case <-connectionCtx.Done():
+			return
+		case message = <-messages:
+		}
+		if message.messageType != websocket.TextMessage {
+			if errWrite := writeResponsesWebsocketError(conn, "unsupported_frame", "only text websocket messages are supported"); errWrite != nil {
+				return
+			}
+			continue
+		}
+
+		eventType := strings.TrimSpace(gjson.GetBytes(message.payload, "type").String())
+		switch eventType {
+		case responsesWebsocketRequestCreate, responsesWebsocketRequestAppend:
+			requestBody, errNormalize := session.normalizeRequest(message.payload)
+			if errNormalize != nil {
+				if errWrite := writeResponsesWebsocketError(conn, "invalid_request", errNormalize.Error()); errWrite != nil {
+					return
+				}
+				continue
+			}
+			turnResult, errTurn := s.executeResponsesWebsocketHTTPTurn(connectionCtx, c, conn, requestBody)
+			if errTurn != nil {
+				if errWrite := writeResponsesWebsocketError(conn, "upstream_error", errTurn.Error()); errWrite != nil {
+					return
+				}
+				continue
+			}
+			session.commit(requestBody, turnResult)
+		default:
+			if errWrite := writeResponsesWebsocketError(conn, "unsupported_event", "unsupported websocket request type"); errWrite != nil {
+				return
+			}
+		}
+	}
+}
+
+type responsesWebsocketInboundMessage struct {
+	messageType int
+	payload     []byte
+}
+
+func readResponsesWebsocketMessages(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	conn *websocket.Conn,
+) <-chan responsesWebsocketInboundMessage {
+	messages := make(chan responsesWebsocketInboundMessage)
+	go func() {
+		defer cancel()
+		for {
+			messageType, payload, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(responsesWebsocketIdleTimeout))
+			select {
+			case messages <- responsesWebsocketInboundMessage{messageType: messageType, payload: payload}:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	return messages
+}
+
+type responsesWebsocketTurnResult struct {
+	completedOutput     []byte
+	completedResponseID string
+	pendingToolCallIDs  []string
+}
+
+func (s *Server) executeResponsesWebsocketHTTPTurn(ctx context.Context, c *gin.Context, conn *websocket.Conn, requestBody []byte) (responsesWebsocketTurnResult, error) {
+	modelName := strings.TrimSpace(gjson.GetBytes(requestBody, "model").String())
+	if modelName == "" {
+		return responsesWebsocketTurnResult{}, errors.New("missing model in normalized websocket request")
+	}
+
+	release, err := s.acquireConcurrencySlotForContext(ctx)
+	if err != nil {
+		return responsesWebsocketTurnResult{}, err
+	}
+	defer release()
+
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashString, _ := tokenHash.(string)
+	releaseTokenSlot, activeTokenRequests, maxTokenRequests, acquired := s.authService.acquireTokenConcurrencySlot(tokenHashString)
+	if !acquired {
+		return responsesWebsocketTurnResult{}, fmt.Errorf(
+			"token concurrency limit exceeded: %d active of %d limit",
+			activeTokenRequests,
+			maxTokenRequests,
+		)
+	}
+	defer releaseTokenSlot()
+
+	if tokenHashString != "" && !s.authService.IsModelAllowed(tokenHashString, modelName) {
+		return responsesWebsocketTurnResult{}, fmt.Errorf("model %q is not allowed for this token", modelName)
+	}
+	if tokenHashString != "" {
+		_, _, exceeded := s.authService.IsCostLimitExceeded(tokenHashString)
+		if exceeded {
+			return responsesWebsocketTurnResult{}, errors.New("token cost limit exceeded")
+		}
+	}
+
+	candidates, err := s.selectCandidatesByModelAndType(ctx, modelName, string(protocol.Codex))
+	if err != nil {
+		return responsesWebsocketTurnResult{}, fmt.Errorf("select upstream candidates: %w", err)
+	}
+	if tokenHashString != "" {
+		if filtered, restricted := s.authService.FilterAllowedChannels(tokenHashString, candidates); restricted {
+			candidates = filtered
+		}
+	}
+	if len(candidates) == 0 {
+		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
+	}
+
+	startTime := time.Now()
+	tokenID, _ := c.Get("token_id")
+	tokenIDInt64, _ := tokenID.(int64)
+	activeID := s.activeRequests.Register(startTime, modelName, c.ClientIP(), true)
+	defer s.activeRequests.Remove(activeID)
+
+	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
+	header.Set("Content-Type", "application/json")
+	reqCtx := &proxyRequestContext{
+		originalModel:  modelName,
+		clientProtocol: protocol.Codex,
+		requestMethod:  http.MethodPost,
+		requestPath:    "/v1/responses",
+		rawQuery:       c.Request.URL.RawQuery,
+		body:           requestBody,
+		translatedBody: requestBody,
+		header:         header,
+		isStreaming:    true,
+		tokenHash:      tokenHashString,
+		tokenID:        tokenIDInt64,
+		clientIP:       c.ClientIP(),
+		activeReqID:    activeID,
+		startTime:      startTime,
+		thinkingEffort: extractThinkingEffortFromJSON(requestBody),
+	}
+	reqCtx.observer = &ForwardObserver{
+		OnBytesRead: func(n int64) {
+			s.activeRequests.AddBytes(activeID, n)
+		},
+		OnFirstByteRead: func() {
+			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
+		},
+		OnDebugCapture: func(dc *debugCapture) {
+			s.activeRequests.SetDebugCapture(activeID, dc)
+		},
+	}
+
+	bridgeWriter := newResponsesWebsocketBridgeWriter(conn)
+	lastResult, succeeded := s.runProxyAttemptLoop(ctx, candidates, reqCtx, bridgeWriter)
+	if succeeded {
+		if !bridgeWriter.completed {
+			return responsesWebsocketTurnResult{}, errors.New("upstream stream closed before response.completed")
+		}
+		return responsesWebsocketTurnResult{
+			completedOutput:     bytes.Clone(bridgeWriter.completedOutput),
+			completedResponseID: bridgeWriter.completedResponseID,
+			pendingToolCallIDs:  responsesWebsocketPendingToolCallIDs(bridgeWriter.completedOutput),
+		}, nil
+	}
+	status := determineFinalClientStatus(lastResult)
+	if lastResult != nil && len(lastResult.body) > 0 {
+		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
+	}
+	return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d", status)
+}
+
+func responsesWebsocketUpstreamHeaders(source http.Header) http.Header {
+	header := source.Clone()
+	for key := range header {
+		if strings.EqualFold(key, "Origin") || strings.HasPrefix(strings.ToLower(key), "sec-websocket-") {
+			header.Del(key)
+		}
+	}
+	header.Del("Connection")
+	header.Del("Upgrade")
+	return header
+}
+
+type responsesWebsocketBridgeWriter struct {
+	conn                 *websocket.Conn
+	header               http.Header
+	status               int
+	pending              bytes.Buffer
+	completed            bool
+	completedOutput      []byte
+	completedResponseID  string
+	outputItemsByIndex   map[int64][]byte
+	outputItemsUnindexed [][]byte
+}
+
+func newResponsesWebsocketBridgeWriter(conn *websocket.Conn) *responsesWebsocketBridgeWriter {
+	return &responsesWebsocketBridgeWriter{
+		conn:               conn,
+		header:             make(http.Header),
+		outputItemsByIndex: make(map[int64][]byte),
+	}
+}
+
+func (w *responsesWebsocketBridgeWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *responsesWebsocketBridgeWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
+}
+
+func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
+	if w == nil || w.conn == nil {
+		return 0, errors.New("websocket connection is nil")
+	}
+	originalLen := len(data)
+	_, _ = w.pending.Write(data)
+	if int64(w.pending.Len()) > maxProxyBodyBytes("/v1/responses") {
+		return 0, errors.New("upstream SSE event exceeds websocket body limit")
+	}
+	for {
+		rawEvent, ok := nextSSEEvent(&w.pending)
+		if !ok {
+			break
+		}
+		payload := sseEventData(rawEvent)
+		if len(payload) == 0 || bytes.Equal(bytes.TrimSpace(payload), []byte("[DONE]")) {
+			continue
+		}
+		if !gjson.ValidBytes(payload) {
+			return 0, errors.New("invalid JSON in upstream SSE event")
+		}
+		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+		w.collectOutputItem(eventType, payload)
+		if eventType == "response.completed" || eventType == "response.done" {
+			w.completed = true
+			output := gjson.GetBytes(payload, "response.output")
+			if output.Exists() && output.IsArray() && len(output.Array()) > 0 {
+				w.completedOutput = bytes.Clone([]byte(output.Raw))
+			} else {
+				w.completedOutput = w.collectedOutput()
+			}
+			w.completedResponseID = strings.TrimSpace(gjson.GetBytes(payload, "response.id").String())
+		}
+		if err := w.conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+			return 0, err
+		}
+		if err := w.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+			return 0, err
+		}
+	}
+	return originalLen, nil
+}
+
+func (w *responsesWebsocketBridgeWriter) Flush() {}
+
+func (w *responsesWebsocketBridgeWriter) SetWriteDeadline(deadline time.Time) error {
+	if w == nil || w.conn == nil {
+		return errors.New("websocket connection is nil")
+	}
+	return w.conn.SetWriteDeadline(deadline)
+}
+
+func (w *responsesWebsocketBridgeWriter) collectOutputItem(eventType string, payload []byte) {
+	if eventType != "response.output_item.done" {
+		return
+	}
+	item := gjson.GetBytes(payload, "item")
+	if !item.Exists() || !item.IsObject() {
+		return
+	}
+	itemBytes := bytes.Clone([]byte(item.Raw))
+	index := gjson.GetBytes(payload, "output_index")
+	if index.Exists() {
+		w.outputItemsByIndex[index.Int()] = itemBytes
+		return
+	}
+	w.outputItemsUnindexed = append(w.outputItemsUnindexed, itemBytes)
+}
+
+func (w *responsesWebsocketBridgeWriter) collectedOutput() []byte {
+	items := make([]json.RawMessage, 0, len(w.outputItemsByIndex)+len(w.outputItemsUnindexed))
+	indices := make([]int, 0, len(w.outputItemsByIndex))
+	for index := range w.outputItemsByIndex {
+		indices = append(indices, int(index))
+	}
+	sort.Ints(indices)
+	for _, index := range indices {
+		items = append(items, json.RawMessage(w.outputItemsByIndex[int64(index)]))
+	}
+	for _, item := range w.outputItemsUnindexed {
+		items = append(items, json.RawMessage(item))
+	}
+	if len(items) == 0 {
+		return []byte("[]")
+	}
+	encoded, err := json.Marshal(items)
+	if err != nil {
+		return []byte("[]")
+	}
+	return encoded
+}
+
+func responsesWebsocketPendingToolCallIDs(output []byte) []string {
+	result := gjson.ParseBytes(output)
+	if !result.IsArray() {
+		return nil
+	}
+	seen := make(map[string]struct{})
+	var callIDs []string
+	for _, item := range result.Array() {
+		itemType := strings.TrimSpace(item.Get("type").String())
+		if itemType != "function_call" && itemType != "custom_tool_call" {
+			continue
+		}
+		callID := strings.TrimSpace(item.Get("call_id").String())
+		if callID == "" {
+			continue
+		}
+		if _, ok := seen[callID]; ok {
+			continue
+		}
+		seen[callID] = struct{}{}
+		callIDs = append(callIDs, callID)
+	}
+	return callIDs
+}
+
+func nextSSEEvent(buffer *bytes.Buffer) ([]byte, bool) {
+	if buffer == nil || buffer.Len() == 0 {
+		return nil, false
+	}
+	data := buffer.Bytes()
+	end := bytes.Index(data, []byte("\n\n"))
+	delimiterLen := 2
+	if crlfEnd := bytes.Index(data, []byte("\r\n\r\n")); crlfEnd >= 0 && (end < 0 || crlfEnd < end) {
+		end = crlfEnd
+		delimiterLen = 4
+	}
+	if end < 0 {
+		return nil, false
+	}
+	raw := append([]byte(nil), data[:end+delimiterLen]...)
+	buffer.Next(end + delimiterLen)
+	return raw, true
+}
+
+func sseEventData(rawEvent []byte) []byte {
+	lines := bytes.Split(rawEvent, []byte("\n"))
+	var dataLines [][]byte
+	for _, line := range lines {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		if !bytes.HasPrefix(line, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimPrefix(line, []byte("data:"))
+		data = bytes.TrimPrefix(data, []byte(" "))
+		dataLines = append(dataLines, data)
+	}
+	return bytes.Join(dataLines, []byte("\n"))
+}
+
+func writeResponsesWebsocketError(conn *websocket.Conn, code string, message string) error {
+	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
+		return err
+	}
+	return conn.WriteJSON(gin.H{
+		"type": "error",
+		"error": gin.H{
+			"type":    "invalid_request_error",
+			"code":    code,
+			"message": message,
+		},
+	})
+}
