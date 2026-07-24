@@ -32,8 +32,8 @@ func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *t
 	}
 
 	payload := map[string]any{
-		"status_code": 406,
-		"error_body":  `{"error":{"code":"maintenance","message":"planned maintenance"}}`,
+		"status_code": 200,
+		"error_body":  `2026-07-24T15:30:00+08:00 [WARN] upstream status 406: {"error":{"code":"maintenance","message":"planned maintenance"}}`,
 		"cooldown_detection_rules": map[string]any{
 			"rules": []map[string]any{{
 				"enabled":          true,
@@ -55,6 +55,8 @@ func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *t
 
 	var data struct {
 		Code              string     `json:"code"`
+		StatusCode        int        `json:"status_code"`
+		ParsedLog         bool       `json:"parsed_log"`
 		Matched           bool       `json:"matched"`
 		Actionable        bool       `json:"actionable"`
 		Priority          *int       `json:"priority"`
@@ -64,6 +66,9 @@ func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *t
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
 	if data.Code != "MAINTENANCE" || !data.Matched || !data.Actionable || data.Priority == nil || *data.Priority != 0 {
 		t.Fatalf("unexpected rule test result: %+v", data)
+	}
+	if data.StatusCode != http.StatusNotAcceptable || !data.ParsedLog {
+		t.Fatalf("normalized test input = (status=%d, parsed_log=%t), want (406, true)", data.StatusCode, data.ParsedLog)
 	}
 	if data.CooldownUntil == nil || !data.CooldownUntil.After(time.Now()) || data.FallbackToBuiltin {
 		t.Fatalf("unexpected cooldown result: %+v", data)
@@ -75,6 +80,72 @@ func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *t
 	}
 	if updated.CooldownUntil != originalUntil.Unix() {
 		t.Fatalf("test endpoint changed channel cooldown: got %d, want %d", updated.CooldownUntil, originalUntil.Unix())
+	}
+}
+
+func TestHandleCooldownDetectionTestKeepsExplicitStatusForRawBody(t *testing.T) {
+	srv := newInMemoryServer(t)
+	payload := map[string]any{
+		"status_code": http.StatusOK,
+		"error_body":  `{"error":{"message":"soft quota error: upstream status 999: is provider text"}}`,
+		"cooldown_detection_rules": map[string]any{
+			"rules": []map[string]any{{
+				"enabled":          true,
+				"name":             "HTTP 200 soft error",
+				"priority":         0,
+				"status_codes":     []int{http.StatusOK},
+				"message_pattern":  "soft quota error",
+				"scope":            model.CooldownScopeChannel,
+				"mode":             model.CooldownModeFixed,
+				"cooldown_seconds": 60,
+			}},
+		},
+	}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/cooldown-detection/test", payload))
+	srv.HandleCooldownDetectionTest(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var data struct {
+		StatusCode int  `json:"status_code"`
+		ParsedLog  bool `json:"parsed_log"`
+		Actionable bool `json:"actionable"`
+	}
+	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
+	if data.StatusCode != http.StatusOK || data.ParsedLog || !data.Actionable {
+		t.Fatalf("unexpected raw body result: %+v", data)
+	}
+}
+
+func TestHandleCooldownDetectionTestRejectsMalformedStandardLog(t *testing.T) {
+	tests := []struct {
+		name string
+		log  string
+	}{
+		{name: "invalid status", log: `upstream status 999: {"error":{"message":"bad"}}`},
+		{name: "empty body", log: "upstream status 200:   "},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := newInMemoryServer(t)
+			payload := map[string]any{
+				"status_code": http.StatusOK,
+				"error_body":  tt.log,
+				"cooldown_detection_rules": map[string]any{
+					"rules": []map[string]any{{
+						"enabled": true, "name": "Status only", "priority": 0,
+						"status_codes": []int{http.StatusOK}, "scope": model.CooldownScopeChannel,
+						"mode": model.CooldownModeFixed, "cooldown_seconds": 60,
+					}},
+				},
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/cooldown-detection/test", payload))
+			srv.HandleCooldownDetectionTest(c)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want %d; body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+			}
+		})
 	}
 }
 
