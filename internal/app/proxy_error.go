@@ -95,7 +95,11 @@ func httpErrorInput(channelID int64, keyIndex int, res *fwResult) cooldown.Error
 	if res == nil {
 		return httpErrorInputFromParts(channelID, keyIndex, 0, nil, nil)
 	}
-	return httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
+	in := httpErrorInputFromParts(channelID, keyIndex, res.Status, res.Body, res.Header)
+	if res.UpstreamStatus != 0 {
+		in.UpstreamStatusCode = res.UpstreamStatus
+	}
+	return in
 }
 
 func httpErrorInputFromParts(
@@ -106,12 +110,13 @@ func httpErrorInputFromParts(
 	headers map[string][]string,
 ) cooldown.ErrorInput {
 	return cooldown.ErrorInput{
-		ChannelID:      channelID,
-		KeyIndex:       keyIndex,
-		StatusCode:     statusCode,
-		ErrorBody:      body,
-		IsNetworkError: false,
-		Headers:        headers,
+		ChannelID:          channelID,
+		KeyIndex:           keyIndex,
+		StatusCode:         statusCode,
+		UpstreamStatusCode: statusCode,
+		ErrorBody:          body,
+		IsNetworkError:     false,
+		Headers:            headers,
 	}
 }
 
@@ -550,6 +555,7 @@ func (s *Server) handleProxyErrorResponse(
 		action := s.decideCooldownAction(ctx, cfg, input)
 		if action == cooldown.ActionRetryChannel {
 			failure.nextAction = action
+			failure.deferredCooldown = &input
 			return failure, action
 		}
 	}

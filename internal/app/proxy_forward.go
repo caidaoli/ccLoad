@@ -240,6 +240,7 @@ func (s *Server) handleErrorResponse(
 
 	return &fwResult{
 		Status:         resp.StatusCode,
+		UpstreamStatus: resp.StatusCode,
 		Header:         hdrClone,
 		Body:           rb,
 		FirstByteTime:  readStats.firstByteSec,
@@ -698,10 +699,11 @@ func (s *Server) handleSuccessResponse(
 		}
 		if err != nil {
 			return &fwResult{
-				Status:        resp.StatusCode,
-				Header:        hdrClone,
-				FirstByteTime: readStats.firstByteSec,
-				BytesReceived: readStats.totalBytes,
+				Status:         resp.StatusCode,
+				UpstreamStatus: resp.StatusCode,
+				Header:         hdrClone,
+				FirstByteTime:  readStats.firstByteSec,
+				BytesReceived:  readStats.totalBytes,
 			}, reqCtx.Duration().Seconds(), err
 		}
 		if transform {
@@ -716,10 +718,11 @@ func (s *Server) handleSuccessResponse(
 		}
 		if err != nil {
 			return &fwResult{
-				Status:        resp.StatusCode,
-				Header:        hdrClone,
-				FirstByteTime: readStats.firstByteSec,
-				BytesReceived: readStats.totalBytes,
+				Status:         resp.StatusCode,
+				UpstreamStatus: resp.StatusCode,
+				Header:         hdrClone,
+				FirstByteTime:  readStats.firstByteSec,
+				BytesReceived:  readStats.totalBytes,
 			}, reqCtx.Duration().Seconds(), err
 		}
 		if transform {
@@ -796,6 +799,7 @@ func (s *Server) handleSuccessResponse(
 	// 构建结果
 	result := &fwResult{
 		Status:            resp.StatusCode,
+		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
 		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes, // 记录已接收字节数，用于499诊断
@@ -854,10 +858,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	rawBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return &fwResult{
-			Status:        resp.StatusCode,
-			Header:        hdrClone,
-			Body:          []byte(err.Error()),
-			FirstByteTime: readStats.firstByteSec,
+			Status:         resp.StatusCode,
+			UpstreamStatus: resp.StatusCode,
+			Header:         hdrClone,
+			Body:           []byte(err.Error()),
+			FirstByteTime:  readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -869,10 +874,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	parser := newJSONUsageParser(channelType)
 	if err := parser.Feed(rawBody); err != nil {
 		return &fwResult{
-			Status:        resp.StatusCode,
-			Header:        hdrClone,
-			Body:          rawBody,
-			FirstByteTime: readStats.firstByteSec,
+			Status:         resp.StatusCode,
+			UpstreamStatus: resp.StatusCode,
+			Header:         hdrClone,
+			Body:           rawBody,
+			FirstByteTime:  readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -887,10 +893,11 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	)
 	if err != nil {
 		return &fwResult{
-			Status:        resp.StatusCode,
-			Header:        hdrClone,
-			Body:          rawBody,
-			FirstByteTime: readStats.firstByteSec,
+			Status:         resp.StatusCode,
+			UpstreamStatus: resp.StatusCode,
+			Header:         hdrClone,
+			Body:           rawBody,
+			FirstByteTime:  readStats.firstByteSec,
 		}, reqCtx.Duration().Seconds(), err
 	}
 
@@ -906,6 +913,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 
 	result := &fwResult{
 		Status:            resp.StatusCode,
+		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
 		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes,
@@ -998,6 +1006,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 
 	result := &fwResult{
 		Status:            resp.StatusCode,
+		UpstreamStatus:    resp.StatusCode,
 		Header:            hdrClone,
 		FirstByteTime:     readStats.firstByteSec,
 		BytesReceived:     readStats.totalBytes,
@@ -1206,6 +1215,9 @@ func (s *Server) probeSoftErrorResponse(
 		resp.StatusCode = classifySSEErrorStatus(validData)
 		prependToBody(resp, validData)
 		res, duration, err = s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
+		if res != nil {
+			res.UpstreamStatus = http.StatusOK
+		}
 		return true, res, duration, err
 	}
 
@@ -2145,6 +2157,11 @@ func (s *Server) attemptKeyAcrossURLs(
 			// 5xx 先按模型冷却；若恰好耗尽所有模型，动作会升级为渠道级。
 			// 无论是否升级，这种故障都与 URL 无关，不应改打同渠道的其他 URL。
 			if isModelScopedHTTPFailure(result) {
+				if result.deferredCooldown != nil {
+					nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
+					result.nextAction = nextAction
+					result.deferredCooldown = nil
+				}
 				break
 			}
 			if selector != nil {

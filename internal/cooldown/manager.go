@@ -30,16 +30,17 @@ const NoKeyIndex = -1
 
 // ErrorInput 包含错误处理所需的输入信息。
 type ErrorInput struct {
-	ChannelID      int64
-	ChannelType    string   // 渠道类型，用于特定渠道的错误处理策略
-	Model          string   // 实际发送给上游的模型名
-	ChannelModels  []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
-	KeyIndex       int
-	StatusCode     int
-	ErrorBody      []byte
-	IsNetworkError bool
-	ModelScoped    bool // 网络错误是否只影响当前实际模型
-	Headers        map[string][]string
+	ChannelID          int64
+	ChannelType        string   // 渠道类型，用于特定渠道的错误处理策略
+	Model              string   // 实际发送给上游的模型名
+	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
+	KeyIndex           int
+	StatusCode         int
+	UpstreamStatusCode int // 原始上游 HTTP 状态码；0 表示与 StatusCode 相同
+	ErrorBody          []byte
+	IsNetworkError     bool
+	ModelScoped        bool // 网络错误是否只影响当前实际模型
+	Headers            map[string][]string
 
 	// CooldownDetectionRules belongs to the selected channel and is evaluated
 	// before built-in HTTP classification. Nil preserves the existing behavior.
@@ -177,8 +178,12 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 }
 
 func configuredCooldownDecision(in ErrorInput, now time.Time) (cooldownDecision, bool) {
+	statusCode := in.UpstreamStatusCode
+	if statusCode == 0 {
+		statusCode = in.StatusCode
+	}
 	evaluation := EvaluateCooldownDetectionRules(in.CooldownDetectionRules, DetectionInput{
-		StatusCode: in.StatusCode,
+		StatusCode: statusCode,
 		ErrorBody:  in.ErrorBody,
 	}, now)
 	if !evaluation.Actionable {
