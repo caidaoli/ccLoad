@@ -161,14 +161,23 @@
       justify-content: flex-start;
       width: 100%;
       min-width: 0;
-      padding-right: 28px;
+      padding-right: 52px;
       vertical-align: middle;
     }
 
-    .log-channel-multiplier-badge {
+    .log-channel-badges {
       position: absolute;
       top: -6px;
       right: 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+
+    .log-channel-badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -178,10 +187,17 @@
       line-height: 1;
       font-weight: 700;
       letter-spacing: 0.01em;
+      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
+    }
+
+    .log-channel-multiplier-badge {
       color: var(--warning-700);
       background: var(--warning-100);
-      box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.04);
-      pointer-events: none;
+    }
+
+    .log-channel-websocket-badge {
+      color: var(--primary-700);
+      background: var(--primary-100);
     }
 
     /* 测试模态框样式 */

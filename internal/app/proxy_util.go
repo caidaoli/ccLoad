@@ -113,6 +113,8 @@ type fwResult struct {
 	// 响应是否已经提交给客户端（头或正文已发送）
 	// false 表示本次尝试仍可在同一请求内切换到其他Key/渠道
 	ResponseCommitted bool
+	// UpstreamWebsocket 只表示本次实际上游请求采用了WebSocket，不表示下游协议或渠道配置。
+	UpstreamWebsocket bool
 
 	// OpenAI service_tier（2026-03新增）
 	// 响应中的 service_tier 字段决定计费倍率：priority=2x, flex=0.5x, default=1x
@@ -878,17 +880,18 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		modelName = billingModel
 	}
 	entry := &model.LogEntry{
-		Time:        model.JSONTime{Time: logTime},
-		Model:       modelName,
-		LogSource:   model.LogSourceProxy,
-		ChannelID:   p.ChannelID,
-		StatusCode:  p.StatusCode,
-		Duration:    p.Duration,
-		IsStreaming: p.IsStreaming,
-		APIKeyUsed:  p.APIKeyUsed,
-		AuthTokenID: p.AuthTokenID,
-		ClientIP:    p.ClientIP,
-		BaseURL:     p.BaseURL,
+		Time:              model.JSONTime{Time: logTime},
+		Model:             modelName,
+		LogSource:         model.LogSourceProxy,
+		ChannelID:         p.ChannelID,
+		StatusCode:        p.StatusCode,
+		Duration:          p.Duration,
+		IsStreaming:       p.IsStreaming,
+		UpstreamWebsocket: p.Result != nil && p.Result.UpstreamWebsocket,
+		APIKeyUsed:        p.APIKeyUsed,
+		AuthTokenID:       p.AuthTokenID,
+		ClientIP:          p.ClientIP,
+		BaseURL:           p.BaseURL,
 	}
 	entry.ThinkingEffort = normalizeThinkingEffort(p.ThinkingEffort)
 

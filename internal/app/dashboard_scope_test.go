@@ -63,6 +63,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			BaseURL:              "https://secret-upstream.example",
 			Cost:                 1.25,
 			CostMultiplier:       0,
+			UpstreamWebsocket:    true,
 		},
 		{
 			Time:        now,
@@ -99,6 +100,13 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	assertJSONString(t, entry, "channel_type", "openai")
 	assertJSONString(t, entry, "log_source", model.LogSourceProxy)
 	assertJSONString(t, entry, "model", "gpt-5.6")
+	var upstreamWebsocket bool
+	if err := json.Unmarshal(entry["upstream_websocket"], &upstreamWebsocket); err != nil {
+		t.Fatalf("decode upstream_websocket: %v", err)
+	}
+	if !upstreamWebsocket {
+		t.Fatal("upstream_websocket=false, want true")
+	}
 	var effectiveCost float64
 	if err := json.Unmarshal(entry["effective_cost"], &effectiveCost); err != nil {
 		t.Fatalf("decode effective cost: %v", err)

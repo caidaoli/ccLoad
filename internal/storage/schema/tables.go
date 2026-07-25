@@ -174,6 +174,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("message TEXT NOT NULL").
 		Column("duration DOUBLE NOT NULL DEFAULT 0.0").
 		Column("is_streaming TINYINT NOT NULL DEFAULT 0").
+		Column("upstream_websocket TINYINT NOT NULL DEFAULT 0").
 		Column("first_byte_time DOUBLE NOT NULL DEFAULT 0.0").
 		Column("api_key_used VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("api_key_hash VARCHAR(64) NOT NULL DEFAULT ''"). // API Key SHA256（用于精确定位 key_index）

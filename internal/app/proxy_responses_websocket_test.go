@@ -2635,6 +2635,10 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	if websocketCalls.Load() != 1 || httpCalls.Load() != 1 {
 		t.Fatalf("same-channel calls websocket=%d http=%d, want 1/1", websocketCalls.Load(), httpCalls.Load())
 	}
+	entry := waitForProxyLog(t, env, "gpt-test")
+	if entry.UpstreamWebsocket {
+		t.Fatal("HTTP fallback log must not be marked as upstream websocket")
+	}
 }
 
 func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
@@ -3065,6 +3069,9 @@ func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T
 	}
 	if !entry.IsStreaming {
 		t.Fatal("websocket proxy log must be marked streaming")
+	}
+	if !entry.UpstreamWebsocket {
+		t.Fatal("native websocket proxy log must be marked as upstream websocket")
 	}
 	debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
 	if err != nil {

@@ -306,15 +306,16 @@ func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 
 	now := time.Now()
 	if err := store.AddLog(ctx, &model.LogEntry{
-		Time:           newJSONTime(now),
-		Model:          "gpt-5.4-mini",
-		ChannelID:      channelID,
-		StatusCode:     200,
-		Message:        "success",
-		Duration:       1.2,
-		APIKeyUsed:     "key...key",
-		Cost:           0.019,
-		CostMultiplier: 0,
+		Time:              newJSONTime(now),
+		Model:             "gpt-5.4-mini",
+		ChannelID:         channelID,
+		StatusCode:        200,
+		Message:           "success",
+		Duration:          1.2,
+		APIKeyUsed:        "key...key",
+		Cost:              0.019,
+		CostMultiplier:    0,
+		UpstreamWebsocket: true,
 	}); err != nil {
 		t.Fatalf("add log: %v", err)
 	}
@@ -334,5 +335,8 @@ func TestLog_ListRangeWithCount_PreservesZeroCostMultiplier(t *testing.T) {
 	}
 	if logs[0].CostMultiplier != 0 {
 		t.Fatalf("cost_multiplier=%v, want 0", logs[0].CostMultiplier)
+	}
+	if !logs[0].UpstreamWebsocket {
+		t.Fatal("upstream_websocket=false, want true")
 	}
 }

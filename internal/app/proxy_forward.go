@@ -1570,6 +1570,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil,
 		)
 	}
+	if res != nil {
+		res.UpstreamWebsocket = usedNativeWebsocket
+	}
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
 	// 场景：响应头已收到(200 OK)，但在读取响应体时超时定时器触发

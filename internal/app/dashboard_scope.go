@@ -33,6 +33,7 @@ type tokenLogEntry struct {
 	Message                  string         `json:"message"`
 	Duration                 float64        `json:"duration"`
 	IsStreaming              bool           `json:"is_streaming"`
+	UpstreamWebsocket        bool           `json:"upstream_websocket,omitempty"`
 	FirstByteTime            float64        `json:"first_byte_time"`
 	ServiceTier              string         `json:"service_tier,omitempty"`
 	ThinkingEffort           string         `json:"thinking_effort,omitempty"`
@@ -79,6 +80,7 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			Message:                  message,
 			Duration:                 entry.Duration,
 			IsStreaming:              entry.IsStreaming,
+			UpstreamWebsocket:        entry.UpstreamWebsocket,
 			FirstByteTime:            entry.FirstByteTime,
 			ServiceTier:              entry.ServiceTier,
 			ThinkingEffort:           entry.ThinkingEffort,
