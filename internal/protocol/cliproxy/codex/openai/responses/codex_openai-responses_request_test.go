@@ -219,6 +219,69 @@ func TestConvertOpenAIResponsesRequestToCodex_OriginalIssue(t *testing.T) {
 	}
 }
 
+func TestConvertOpenAIResponsesRequestToCodexReusesNormalizedPayload(t *testing.T) {
+	inputJSON := []byte(`{"model":"gpt-5.6","stream":true,"store":false,"parallel_tool_calls":true,"include":["reasoning.encrypted_content"],"service_tier":"priority","input":[{"type":"message","role":"user","content":"hello"}]}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.6", inputJSON, true)
+
+	if &output[0] != &inputJSON[0] {
+		t.Fatal("normalized request payload was copied")
+	}
+	if string(output) != string(inputJSON) {
+		t.Fatalf("normalized request changed:\n got: %s\nwant: %s", output, inputJSON)
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing.T) {
+	inputJSON := []byte(`{
+		"model":"gpt-5.6",
+		"stream":"true",
+		"store":true,
+		"parallel_tool_calls":false,
+		"include":["file_search_call.results","reasoning.encrypted_content"],
+		"max_output_tokens":4096,
+		"max_completion_tokens":4096,
+		"temperature":0.2,
+		"top_p":0.9,
+		"service_tier":"standard",
+		"truncation":"auto",
+		"user":"request-owner",
+		"input":[{"type":"message","role":"system","content":"hello"}]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.6", inputJSON, true)
+
+	if stream := gjson.GetBytes(output, "stream"); stream.Type != gjson.True {
+		t.Fatalf("stream = %s, want true", stream.Raw)
+	}
+	if store := gjson.GetBytes(output, "store"); store.Type != gjson.False {
+		t.Fatalf("store = %s, want false", store.Raw)
+	}
+	if parallel := gjson.GetBytes(output, "parallel_tool_calls"); parallel.Type != gjson.True {
+		t.Fatalf("parallel_tool_calls = %s, want true", parallel.Raw)
+	}
+	include := gjson.GetBytes(output, "include").Array()
+	if len(include) != 1 || include[0].Type != gjson.String || include[0].String() != "reasoning.encrypted_content" {
+		t.Fatalf("include = %s, want reasoning.encrypted_content only", gjson.GetBytes(output, "include").Raw)
+	}
+	if role := gjson.GetBytes(output, "input.0.role").String(); role != "developer" {
+		t.Fatalf("input.0.role = %q, want developer", role)
+	}
+	for _, path := range []string{
+		"max_output_tokens",
+		"max_completion_tokens",
+		"temperature",
+		"top_p",
+		"service_tier",
+		"truncation",
+		"user",
+	} {
+		if gjson.GetBytes(output, path).Exists() {
+			t.Fatalf("%s should be removed: %s", path, output)
+		}
+	}
+}
+
 // TestConvertSystemRoleToDeveloper_AssistantRole tests that assistant role is preserved
 func TestConvertSystemRoleToDeveloper_AssistantRole(t *testing.T) {
 	inputJSON := []byte(`{

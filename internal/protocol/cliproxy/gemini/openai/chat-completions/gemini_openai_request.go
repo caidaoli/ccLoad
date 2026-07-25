@@ -3,13 +3,11 @@
 package chat_completions
 
 import (
-	"strings"
-
 	"log"
+	"strings"
 
 	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/gemini/common"
-	"ccLoad/internal/protocol/cliproxy/misc"
 	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/protocol/cliproxy/util"
 
@@ -204,14 +202,10 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						case "file":
 							filename := item.Get("file.filename").String()
 							fileData := item.Get("file.file_data").String()
-							ext := ""
-							if pieces := strings.Split(filename, "."); len(pieces) > 1 {
-								ext = pieces[len(pieces)-1]
-							}
-							if mimeType, ok := misc.MimeTypes[ext]; ok {
-								partItems = append(partItems, geminiInlineDataPart(mimeType, fileData, ""))
+							if mimeType, data, ok := translatorcommon.NormalizeOpenAIFileData(filename, "", fileData); ok {
+								partItems = append(partItems, geminiInlineDataPart(mimeType, data, ""))
 							} else {
-								log.Printf("Unknown file name extension '%s' in user message, skip", ext)
+								log.Print("Invalid file data or unknown file name extension in user message, skip")
 							}
 						case "input_audio":
 							audioData := item.Get("input_audio.data").String()
@@ -361,13 +355,22 @@ func ConvertOpenAIRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 						fnRaw = string(fnRawBytes)
 					}
 					fnRawBytes := []byte(fnRaw)
-					fnRawBytes, _ = sjson.SetBytes(fnRawBytes, "name", util.SanitizeFunctionName(fn.Get("name").String()))
-					fnRaw = string(fnRawBytes)
-					if parameters := gjson.Get(fnRaw, "parametersJsonSchema"); parameters.Exists() {
-						fnRaw, _ = sjson.SetRaw(fnRaw, "parametersJsonSchema", util.CleanJSONSchemaForGemini(parameters.Raw))
+					nameResult := fn.Get("name")
+					originalName := nameResult.String()
+					sanitizedName := util.SanitizeFunctionName(originalName)
+					if nameResult.Type != gjson.String || sanitizedName != originalName {
+						fnRawBytes, _ = sjson.SetBytes(fnRawBytes, "name", sanitizedName)
 					}
-					fnRaw, _ = sjson.Delete(fnRaw, "strict")
-					functionDeclarations = append(functionDeclarations, []byte(fnRaw))
+					if parameters := gjson.GetBytes(fnRawBytes, "parametersJsonSchema"); parameters.Exists() {
+						cleanedParameters := util.CleanJSONSchemaForGemini(parameters.Raw)
+						if cleanedParameters != parameters.Raw {
+							fnRawBytes, _ = sjson.SetRawBytes(fnRawBytes, "parametersJsonSchema", []byte(cleanedParameters))
+						}
+					}
+					if gjson.GetBytes(fnRawBytes, "strict").Exists() {
+						fnRawBytes, _ = sjson.DeleteBytes(fnRawBytes, "strict")
+					}
+					functionDeclarations = append(functionDeclarations, fnRawBytes)
 				}
 			}
 			if gs := t.Get("google_search"); gs.Exists() {

@@ -51,10 +51,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		out, _ = sjson.SetBytes(out, "max_tokens", maxTokens.Int())
 	}
 
-	if parallelToolCalls := root.Get("parallel_tool_calls"); parallelToolCalls.Exists() {
-		out, _ = sjson.SetBytes(out, "parallel_tool_calls", parallelToolCalls.Bool())
-	}
-
 	// Convert instructions to system message
 	if instructions := root.Get("instructions"); instructions.Exists() {
 		systemMessage := []byte(`{"role":"system","content":""}`)
@@ -237,7 +233,11 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 				}
 
 				if name := item.Get("name"); name.Exists() {
-					toolCall, _ = sjson.SetBytes(toolCall, "function.name", name.String())
+					functionName := name.String()
+					if namespace := strings.TrimSpace(item.Get("namespace").String()); namespace != "" {
+						functionName = qualifyResponsesNamespaceToolName(namespace, functionName)
+					}
+					toolCall, _ = sjson.SetBytes(toolCall, "function.name", functionName)
 				}
 
 				if arguments := item.Get("arguments"); arguments.Exists() {
@@ -318,11 +318,15 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	// "additional_tools" input item instead of the top-level "tools" field,
 	// so merge both sources.
 	var chatCompletionsTools []interface{}
+	var webSearch gjson.Result
 	appendChatTools := func(tools gjson.Result) {
 		if !tools.Exists() || !tools.IsArray() {
 			return
 		}
 		tools.ForEach(func(_, tool gjson.Result) bool {
+			if strings.HasPrefix(tool.Get("type").String(), "web_search") {
+				webSearch = tool
+			}
 			for _, chatTool := range convertResponsesToolToOpenAIChatTools(tool) {
 				chatCompletionsTools = append(chatCompletionsTools, gjson.ParseBytes(chatTool).Value())
 			}
@@ -340,16 +344,12 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 	}
 	if len(chatCompletionsTools) > 0 {
 		out, _ = sjson.SetBytes(out, "tools", chatCompletionsTools)
-	}
-	webSearch := gjson.Result{}
-	if tools := root.Get("tools"); tools.IsArray() {
-		tools.ForEach(func(_, tool gjson.Result) bool {
-			if strings.HasPrefix(tool.Get("type").String(), "web_search") {
-				webSearch = tool
-				return false
-			}
-			return true
-		})
+		if parallelToolCalls := root.Get("parallel_tool_calls"); parallelToolCalls.Exists() {
+			out, _ = sjson.SetBytes(out, "parallel_tool_calls", parallelToolCalls.Bool())
+		}
+		if toolChoice := root.Get("tool_choice"); toolChoice.Exists() {
+			out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(toolChoice.Raw))
+		}
 	}
 	if webSearch.Exists() {
 		options := []byte(`{}`)
@@ -374,11 +374,6 @@ func ConvertOpenAIResponsesRequestToOpenAIChatCompletions(modelName string, inpu
 		if effort != "" {
 			out, _ = sjson.SetBytes(out, "reasoning_effort", effort)
 		}
-	}
-
-	// Convert tool_choice if present
-	if toolChoice := root.Get("tool_choice"); toolChoice.Exists() && !strings.HasPrefix(toolChoice.Get("type").String(), "web_search") {
-		out, _ = sjson.SetRawBytes(out, "tool_choice", []byte(toolChoice.Raw))
 	}
 
 	return out
