@@ -36,9 +36,22 @@ func dialResponsesWebsocketAtPath(t testing.TB, handler http.Handler, token, pat
 	t.Helper()
 	appServer := httptest.NewServer(handler)
 	t.Cleanup(appServer.Close)
+	return dialResponsesWebsocketAtURL(t, appServer.URL, token, path, "")
+}
 
+func dialResponsesWebsocketAtURL(
+	t testing.TB,
+	serverURL string,
+	token string,
+	path string,
+	sessionID string,
+) *websocket.Conn {
+	t.Helper()
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
-	wsURL := "ws" + strings.TrimPrefix(appServer.URL, "http") + path
+	if sessionID != "" {
+		headers.Set("Session-Id", sessionID)
+	}
+	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + path
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
 	if resp != nil && resp.Body != nil {
 		defer func() { _ = resp.Body.Close() }()
@@ -228,8 +241,9 @@ func TestResponsesWebsocketUpgradeAndRejectUnsupportedEvent(t *testing.T) {
 	}
 
 	var event struct {
-		Type  string `json:"type"`
-		Error struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
 			Type string `json:"type"`
 			Code string `json:"code"`
 		} `json:"error"`
@@ -237,7 +251,8 @@ func TestResponsesWebsocketUpgradeAndRejectUnsupportedEvent(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read websocket error event: %v", err)
 	}
-	if event.Type != "error" || event.Error.Type != "invalid_request_error" || event.Error.Code != "unsupported_event" {
+	if event.Type != "error" || event.Status != http.StatusBadRequest ||
+		event.Error.Type != "invalid_request_error" || event.Error.Code != "unsupported_event" {
 		t.Fatalf("unexpected websocket error event: %+v", event)
 	}
 }
@@ -313,8 +328,9 @@ func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSession(t *testing
 	}
 
 	var event struct {
-		Type  string `json:"type"`
-		Error struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
 			Code  string `json:"code"`
 			Param string `json:"param"`
 		} `json:"error"`
@@ -322,7 +338,8 @@ func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSession(t *testing
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read unknown previous response error: %v", err)
 	}
-	if event.Type != "error" || event.Error.Code != "previous_response_not_found" ||
+	if event.Type != "error" || event.Status != http.StatusBadRequest ||
+		event.Error.Code != "previous_response_not_found" ||
 		event.Error.Param != "previous_response_id" {
 		t.Fatalf("unexpected unknown previous response error: %+v", event)
 	}
@@ -361,8 +378,9 @@ func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
 	}
 
 	var event struct {
-		Type  string `json:"type"`
-		Error struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
 			Code  string `json:"code"`
 			Param string `json:"param"`
 		} `json:"error"`
@@ -370,7 +388,8 @@ func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read stale previous response error: %v", err)
 	}
-	if event.Type != "error" || event.Error.Code != "previous_response_not_found" ||
+	if event.Type != "error" || event.Status != http.StatusBadRequest ||
+		event.Error.Code != "previous_response_not_found" ||
 		event.Error.Param != "previous_response_id" {
 		t.Fatalf("unexpected stale previous response error: %+v", event)
 	}
@@ -2423,6 +2442,151 @@ func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *testing.T) {
+	var primaryCalls atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := primaryCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-http-first","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+			_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"message":"temporarily unavailable"}}`)
+	}))
+	defer primary.Close()
+
+	var secondaryCalls atomic.Int32
+	secondary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		secondaryCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"message":"secondary temporarily unavailable"}}`)
+	}))
+	defer secondary.Close()
+
+	var fallbackHandshakes atomic.Int32
+	fallbackRequests := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade native fallback websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		fallbackHandshakes.Add(1)
+		var request map[string]any
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read native fallback replay: %v", err)
+			return
+		}
+		fallbackRequests <- request
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-native-replay", "output": []any{},
+				"usage": map[string]any{"input_tokens": 3, "output_tokens": 1, "total_tokens": 4},
+			},
+		})
+	}))
+	defer fallback.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "http-primary", channelType: "codex", models: "gpt-test", priority: 100},
+		{name: "http-secondary", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "native-fallback", channelType: "codex", websockets: true, models: "gpt-test", priority: 1},
+	}, map[int]string{0: primary.URL, 1: secondary.URL, 2: fallback.URL})
+	env.server.client = primary.Client()
+
+	appServer := httptest.NewServer(env.engine)
+	defer appServer.Close()
+
+	first := dialResponsesWebsocketAtURL(
+		t, appServer.URL, "test-api-key", "/v1/responses", "retryable-replay",
+	)
+	if err := first.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set first websocket deadline: %v", err)
+	}
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first turn: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-http-first",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write failing second turn: %v", err)
+	}
+	var retryEvent map[string]any
+	if err := first.ReadJSON(&retryEvent); err != nil {
+		t.Fatalf("read retry event: %v", err)
+	}
+	if retryEvent["type"] != "error" || retryEvent["status"] != float64(http.StatusBadGateway) {
+		t.Fatalf("retry event=%#v, want 502 error", retryEvent)
+	}
+	errorObject, ok := retryEvent["error"].(map[string]any)
+	if !ok || errorObject["type"] != "server_error" || errorObject["code"] != "upstream_unavailable" {
+		t.Fatalf("retry error payload=%#v, want server_error/upstream_unavailable", retryEvent["error"])
+	}
+	_, _, closeErrRaw := first.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(closeErrRaw, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("first websocket close=%v, want code %d", closeErrRaw, websocket.CloseInternalServerErr)
+	}
+	_ = first.Close()
+	if secondaryCalls.Load() != 1 || fallbackHandshakes.Load() != 0 {
+		t.Fatalf(
+			"secondary calls=%d native fallback handshakes=%d before reconnect, want 1/0",
+			secondaryCalls.Load(),
+			fallbackHandshakes.Load(),
+		)
+	}
+
+	reconnected := dialResponsesWebsocketAtURL(
+		t, appServer.URL, "test-api-key", "/v1/responses", "retryable-replay",
+	)
+	defer func() { _ = reconnected.Close() }()
+	if err := reconnected.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set replay websocket deadline: %v", err)
+	}
+	if err := reconnected.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "one"},
+			map[string]any{"type": "message", "role": "assistant", "content": []any{
+				map[string]any{"type": "output_text", "text": "first answer"},
+			}},
+			map[string]any{"type": "message", "role": "user", "content": "two"},
+		},
+	}); err != nil {
+		t.Fatalf("write full replay request: %v", err)
+	}
+	readWebsocketUntilType(t, reconnected, "response.completed")
+
+	request := <-fallbackRequests
+	if fallbackHandshakes.Load() != 1 || primaryCalls.Load() != 2 || secondaryCalls.Load() != 1 {
+		t.Fatalf(
+			"fallback handshakes=%d primary calls=%d secondary calls=%d, want 1/2/1",
+			fallbackHandshakes.Load(),
+			primaryCalls.Load(),
+			secondaryCalls.Load(),
+		)
+	}
+	if _, exists := request["previous_response_id"]; exists {
+		t.Fatalf("native fallback replay leaked previous_response_id: %#v", request)
+	}
+	input, ok := request["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("native fallback replay input=%#v, want full three-item transcript", request["input"])
+	}
+}
+
 func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
@@ -2794,19 +2958,22 @@ func TestNativeCodexWebsocketUsesChannelHTTPProxy(t *testing.T) {
 
 func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	var fallbackCalls atomic.Int32
-	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"partial\"}\n\n")
 	}))
-	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	defer primary.Close()
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fallbackCalls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
+	defer fallback.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "primary", channelType: "codex", models: "gpt-test", priority: 100},
-		{name: "fallback", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "fallback", channelType: "codex", websockets: true, models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	env.server.client = primary.Client()
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set websocket read deadline: %v", err)
@@ -2828,8 +2995,8 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read terminal websocket error: %v", err)
 	}
-	if event["type"] != "error" {
-		t.Fatalf("terminal event=%#v, want error", event)
+	if event["type"] != "error" || event["status"] == float64(http.StatusBadGateway) {
+		t.Fatalf("terminal event=%#v, want non-retryable error", event)
 	}
 	if fallbackCalls.Load() != 0 {
 		t.Fatalf("fallback called %d times after committed output", fallbackCalls.Load())

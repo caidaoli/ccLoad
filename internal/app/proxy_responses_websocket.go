@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
@@ -28,6 +29,7 @@ const (
 	responsesWebsocketIdleTimeout   = 5 * time.Minute
 	responsesWebsocketPingInterval  = 2 * time.Minute
 	responsesWebsocketWriteTimeout  = 30 * time.Second
+	responsesWebsocketRetryMessage  = "upstream channel failed before response output; retry the request"
 )
 
 // responsesWebsocketUpgradePaths lists every downstream path that terminates a
@@ -164,6 +166,14 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			)
 			if errTurn != nil {
 				executionSession.releaseTurn()
+				var retryErr *responsesWebsocketClientRetryError
+				if errors.As(errTurn, &retryErr) {
+					if errWrite := writeResponsesWebsocketClientRetryError(conn); errWrite != nil {
+						return
+					}
+					_ = closeResponsesWebsocketForClientRetry(conn)
+					return
+				}
 				var terminalErr *responsesWebsocketTerminalError
 				if errors.As(errTurn, &terminalErr) {
 					if terminalErr.forwarded {
@@ -261,6 +271,12 @@ func (e *responsesWebsocketTerminalError) Error() string {
 		return "responses websocket terminal error"
 	}
 	return safeBodyToString(e.payload)
+}
+
+type responsesWebsocketClientRetryError struct{}
+
+func (*responsesWebsocketClientRetryError) Error() string {
+	return responsesWebsocketRetryMessage
 }
 
 func (s *Server) executeResponsesWebsocketTurn(
@@ -365,9 +381,25 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn)
-	lastResult, succeeded := s.runProxyAttemptLoop(ctx, candidates, reqCtx, bridgeWriter)
+	clientReplay := false
+	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
+		if isNativeCodexWebsocketCandidate(current) || !isNativeCodexWebsocketCandidate(next) {
+			return false
+		}
+		if !isResponsesWebsocketClientRetryAction(result.nextAction) {
+			return false
+		}
+		clientReplay = true
+		return true
+	}
+	lastResult, succeeded := s.runProxyAttemptLoopWithFailureBoundary(
+		ctx, candidates, reqCtx, bridgeWriter, stopBeforeNativeWebsocket,
+	)
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
+	}
+	if clientReplay && !succeeded {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{}
 	}
 	if succeeded {
 		if !bridgeWriter.completed {
@@ -413,6 +445,15 @@ func responsesWebsocketGenerateDisabled(payload []byte) bool {
 func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 	return candidate != nil && candidate.Websockets &&
 		protocol.Protocol(candidate.ResolveUpstreamProtocol(string(protocol.Codex))) == protocol.Codex
+}
+
+func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {
+	switch action {
+	case cooldown.ActionRetryKey, cooldown.ActionRetryModel, cooldown.ActionRetryChannel:
+		return true
+	default:
+		return false
+	}
 }
 
 func writeResponsesWebsocketSyntheticPrewarm(
@@ -782,32 +823,71 @@ func sseEventData(rawEvent []byte) []byte {
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, code string, message string) error {
+	return writeResponsesWebsocketErrorPayload(
+		conn, http.StatusBadRequest, "invalid_request_error", code, "", message,
+	)
+}
+
+func writeResponsesWebsocketClientRetryError(conn *websocket.Conn) error {
+	return writeResponsesWebsocketErrorPayload(
+		conn,
+		http.StatusBadGateway,
+		"server_error",
+		"upstream_unavailable",
+		"",
+		responsesWebsocketRetryMessage,
+	)
+}
+
+func writeResponsesWebsocketErrorPayload(
+	conn *websocket.Conn,
+	status int,
+	errorType string,
+	code string,
+	param string,
+	message string,
+) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 		return err
 	}
+	errorPayload := gin.H{
+		"type":    errorType,
+		"code":    code,
+		"message": message,
+	}
+	if strings.TrimSpace(param) != "" {
+		errorPayload["param"] = param
+	}
 	return conn.WriteJSON(gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    "invalid_request_error",
-			"code":    code,
-			"message": message,
-		},
+		"type":   "error",
+		"status": status,
+		"error":  errorPayload,
 	})
 }
 
 func writeResponsesWebsocketPreviousResponseNotFound(conn *websocket.Conn) error {
-	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
-		return err
+	return writeResponsesWebsocketErrorPayload(
+		conn,
+		http.StatusBadRequest,
+		"invalid_request_error",
+		"previous_response_not_found",
+		"previous_response_id",
+		errResponsesWebsocketPreviousResponseNotFound.Error(),
+	)
+}
+
+func closeResponsesWebsocketForClientRetry(conn *websocket.Conn) error {
+	if conn == nil {
+		return errors.New("websocket connection is nil")
 	}
-	return conn.WriteJSON(gin.H{
-		"type": "error",
-		"error": gin.H{
-			"type":    "invalid_request_error",
-			"code":    "previous_response_not_found",
-			"param":   "previous_response_id",
-			"message": errResponsesWebsocketPreviousResponseNotFound.Error(),
-		},
-	})
+	return conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(
+			websocket.CloseInternalServerErr,
+			"upstream unavailable; reconnect to retry",
+		),
+		time.Now().Add(responsesWebsocketWriteTimeout),
+	)
 }
 
 func writeResponsesWebsocketPayload(conn *websocket.Conn, payload []byte) error {

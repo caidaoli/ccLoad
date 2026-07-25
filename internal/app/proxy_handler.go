@@ -507,7 +507,17 @@ func (s *Server) runProxyAttemptLoop(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (lastResult *proxyResult, succeeded bool) {
-	for _, cfg := range cands {
+	return s.runProxyAttemptLoopWithFailureBoundary(ctx, cands, reqCtx, w, nil)
+}
+
+func (s *Server) runProxyAttemptLoopWithFailureBoundary(
+	ctx context.Context,
+	cands []*model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
+) (lastResult *proxyResult, succeeded bool) {
+	for index, cfg := range cands {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
 		// 所有Key冷却：触发渠道级冷却(503)，防止后续请求重复尝试
@@ -547,6 +557,11 @@ func (s *Server) runProxyAttemptLoop(
 			}
 
 			if shouldStopTryingChannels(result) {
+				break
+			}
+
+			if stopAfterFailure != nil && index+1 < len(cands) &&
+				stopAfterFailure(cfg, cands[index+1], result) {
 				break
 			}
 		}
