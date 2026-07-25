@@ -480,10 +480,12 @@ func parseTestStreamResponseBytes(
 
 	result["raw_response"] = collector.rawResponse()
 	if scanner.Err() != nil {
+		result["success"] = false
 		result["error"] = "读取流式响应失败: " + scanner.Err().Error()
 		return result
 	}
 	if collector.dataLineCount == 0 {
+		result["success"] = false
 		result["error"] = summarizeUnexpectedTestResponse("text/event-stream", raw)
 		return result
 	}

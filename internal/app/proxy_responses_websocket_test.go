@@ -3129,7 +3129,8 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 	}
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test",
-		"input": []any{map[string]any{"role": "user", "content": "show active transport"}},
+		"reasoning": map[string]any{"effort": "high"},
+		"input":     []any{map[string]any{"role": "user", "content": "show active transport"}},
 	}); err != nil {
 		t.Fatalf("write active-request websocket request: %v", err)
 	}
@@ -3139,12 +3140,23 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 		t.Fatal("upstream websocket request did not start")
 	}
 
-	active := env.server.activeRequests.List()
-	if len(active) != 1 {
-		t.Fatalf("active requests=%d, want 1", len(active))
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active_requests", nil))
+	env.server.HandleActiveRequests(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("active requests status=%d, want %d", w.Code, http.StatusOK)
 	}
-	if !active[0].UpstreamWebsocket {
+	var activeResponse struct {
+		Data []ActiveRequest `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &activeResponse)
+	if len(activeResponse.Data) != 1 {
+		t.Fatalf("active requests=%d, want 1", len(activeResponse.Data))
+	}
+	if !activeResponse.Data[0].UpstreamWebsocket {
 		t.Fatal("active request must expose the actual upstream websocket transport")
+	}
+	if activeResponse.Data[0].ThinkingEffort != "high" {
+		t.Fatalf("active request thinking_effort=%q, want high", activeResponse.Data[0].ThinkingEffort)
 	}
 
 	close(releaseResponse)
