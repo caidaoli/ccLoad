@@ -285,6 +285,86 @@ func TestChannelTestCodexDoesNotHideRejectedWebsocketHandshake(t *testing.T) {
 	}
 }
 
+func TestHandleChannelWebsocketProbeDetectsSupportedUpstream(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !websocket.IsWebSocketUpgrade(r) {
+			t.Errorf("probe used HTTP instead of WebSocket: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-probe" {
+			t.Errorf("Authorization=%q, want bearer probe key", got)
+		}
+		if beta := r.Header.Get("OpenAI-Beta"); !strings.Contains(beta, "responses_websockets=") {
+			t.Errorf("OpenAI-Beta=%q, want responses_websockets feature", beta)
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade probe websocket: %v", err)
+			return
+		}
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/websocket-probe", map[string]any{
+		"url":     upstream.URL,
+		"api_key": "sk-probe",
+	}))
+
+	srv.HandleChannelWebsocketProbe(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	result := mustParseAPIResponse[struct {
+		Supported bool `json:"supported"`
+	}](t, w.Body.Bytes())
+	if !result.Data.Supported {
+		t.Fatalf("supported=false, want true; body=%s", w.Body.String())
+	}
+}
+
+func TestHandleChannelWebsocketProbeRejectsUnsupportedUpstreamWithoutHTTPFallback(t *testing.T) {
+	var httpFallbacks atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
+		httpFallbacks.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/websocket-probe", map[string]any{
+		"url":     upstream.URL,
+		"api_key": "sk-probe",
+	}))
+
+	srv.HandleChannelWebsocketProbe(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", w.Code, w.Body.String())
+	}
+	result := mustParseAPIResponse[struct {
+		Supported bool `json:"supported"`
+		Status    int  `json:"status"`
+	}](t, w.Body.Bytes())
+	if result.Data.Supported {
+		t.Fatalf("supported=true, want false; body=%s", w.Body.String())
+	}
+	if result.Data.Status != http.StatusUpgradeRequired {
+		t.Fatalf("status=%d, want %d; body=%s", result.Data.Status, http.StatusUpgradeRequired, w.Body.String())
+	}
+	if got := httpFallbacks.Load(); got != 0 {
+		t.Fatalf("probe fell back to HTTP: calls=%d", got)
+	}
+}
+
 func TestTestChannelAPI_MultiURL5xxDoesNotFallbackOrCooldownURL(t *testing.T) {
 	failCalls := 0
 	okCalls := 0

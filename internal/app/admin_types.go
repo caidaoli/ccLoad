@@ -124,6 +124,23 @@ func validateChannelBaseURL(raw string) (string, error) {
 	return normalized, nil
 }
 
+func normalizeChannelProxyURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	proxyURL, err := neturl.Parse(raw)
+	if err != nil || proxyURL.Host == "" {
+		return "", fmt.Errorf("invalid proxy_url: %q", raw)
+	}
+	switch proxyURL.Scheme {
+	case "http", "https", "socks5", "socks5h":
+		return raw, nil
+	default:
+		return "", fmt.Errorf("invalid proxy_url scheme: %q (allowed: http, https, socks5, socks5h)", proxyURL.Scheme)
+	}
+}
+
 // validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
 func validateChannelURLs(raw string) (string, error) {
 	if !strings.Contains(raw, "\n") {
@@ -264,17 +281,9 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CooldownDetectionRules = nil
 	}
 
-	cr.ProxyURL = strings.TrimSpace(cr.ProxyURL)
-	if cr.ProxyURL != "" {
-		pu, err := neturl.Parse(cr.ProxyURL)
-		if err != nil || pu.Host == "" {
-			return fmt.Errorf("invalid proxy_url: %q", cr.ProxyURL)
-		}
-		switch pu.Scheme {
-		case "http", "https", "socks5", "socks5h":
-		default:
-			return fmt.Errorf("invalid proxy_url scheme: %q (allowed: http, https, socks5, socks5h)", pu.Scheme)
-		}
+	cr.ProxyURL, err = normalizeChannelProxyURL(cr.ProxyURL)
+	if err != nil {
+		return err
 	}
 
 	if cr.RPMLimit < 0 {

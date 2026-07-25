@@ -527,6 +527,25 @@
       display: none !important;
     }
 
+    .channel-editor-checkbox-label.is-disabled,
+    .channel-editor-checkbox-label.is-disabled input {
+      color: var(--neutral-400);
+      cursor: not-allowed;
+    }
+
+    .channel-editor-websocket-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .channel-websocket-probe-button.is-disabled {
+      color: var(--neutral-400);
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+
     .channel-editor-footer-fields {
       display: flex;
       align-items: center;
@@ -544,24 +563,6 @@
 
     .channel-editor-inline-field[hidden] {
       display: none !important;
-    }
-
-    .channel-editor-inline-field--scheduled-model {
-      flex: 0 1 auto;
-    }
-
-    .channel-editor-scheduled-model-control {
-      width: 184px;
-      min-width: 184px;
-      max-width: 184px;
-    }
-
-    .channel-editor-scheduled-model-control .filter-select:disabled {
-      color: var(--neutral-400);
-    }
-
-    .channel-editor-scheduled-model-control .filter-select {
-      width: 100%;
     }
 
     .channel-editor-inline-field-input {
@@ -3361,12 +3362,9 @@
         border-top: 1px solid var(--neutral-200);
       }
 
-      #channelModal #channelScheduledCheckEnabledWrapper {
-        order: 1;
-        width: auto;
-        align-self: center;
-        white-space: nowrap;
-        flex-shrink: 0;
+      .channel-editor-websocket-control {
+        grid-column: 1 / -1;
+        justify-self: start;
       }
 
       .channel-editor-footer-fields {
@@ -3384,12 +3382,6 @@
         align-items: center;
         justify-content: stretch;
         gap: 8px;
-      }
-
-      .channel-editor-scheduled-model-control {
-        width: 100%;
-        min-width: 0;
-        max-width: none;
       }
 
       .channel-editor-inline-field-input {
@@ -4325,10 +4317,6 @@
         grid-template-columns: 1fr;
       }
 
-      #channelModal #channelScheduledCheckEnabledWrapper {
-        justify-self: start;
-      }
-
       #channelModal .channel-editor-footer-actions {
         grid-column: 1 / -1;
         width: 100%;
@@ -4436,6 +4424,42 @@
 
     .advanced-settings-panel.hidden {
       display: none;
+    }
+
+    .advanced-settings-other-fields {
+      display: grid;
+      grid-template-columns: minmax(0, 420px);
+      align-content: start;
+      gap: 16px;
+    }
+
+    .advanced-settings-other-field {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      align-items: center;
+      gap: 12px;
+    }
+
+    .advanced-settings-other-field[hidden] {
+      display: none;
+    }
+
+    .advanced-settings-other-field .form-label {
+      margin: 0;
+      white-space: nowrap;
+    }
+
+    .channel-editor-scheduled-model-control {
+      width: 100%;
+      min-width: 0;
+    }
+
+    .channel-editor-scheduled-model-control .filter-select {
+      width: 100%;
+    }
+
+    .channel-editor-scheduled-model-control .filter-select:disabled {
+      color: var(--neutral-400);
     }
 
     .advanced-settings-proxy-field {
@@ -4937,6 +4961,7 @@
       }
 
       .advanced-settings-proxy-field,
+      .advanced-settings-other-field,
       .cooldown-detection-field,
       .cooldown-detection-name {
         grid-template-columns: 1fr;

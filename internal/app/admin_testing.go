@@ -40,6 +40,96 @@ func (s *Server) HandleChannelURLTest(c *gin.Context) {
 	s.handleChannelTestRequest(c, true)
 }
 
+type channelWebsocketProbeRequest struct {
+	URL                string                    `json:"url" binding:"required"`
+	APIKey             string                    `json:"api_key" binding:"required"`
+	ProxyURL           string                    `json:"proxy_url,omitempty"`
+	CustomRequestRules *model.CustomRequestRules `json:"custom_request_rules,omitempty"`
+}
+
+func (r *channelWebsocketProbeRequest) Validate() error {
+	var err error
+	r.URL, err = validateChannelBaseURL(r.URL)
+	if err != nil {
+		return err
+	}
+	r.APIKey = strings.TrimSpace(r.APIKey)
+	if r.APIKey == "" {
+		return errors.New("api_key cannot be empty")
+	}
+	r.ProxyURL, err = normalizeChannelProxyURL(r.ProxyURL)
+	if err != nil {
+		return err
+	}
+	return validateCustomRequestRules(r.CustomRequestRules)
+}
+
+type channelWebsocketProbeResult struct {
+	Supported bool   `json:"supported"`
+	Status    int    `json:"status,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+// HandleChannelWebsocketProbe 只探测 Codex Responses WebSocket 握手能力。
+// 它不发送模型请求，不写日志、冷却或渠道配置。
+func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
+	var probe channelWebsocketProbeRequest
+	if err := BindAndValidate(c, &probe); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid websocket probe request: "+err.Error())
+		return
+	}
+
+	cfg := &model.Config{
+		ChannelType:        util.ChannelTypeCodex,
+		URL:                probe.URL,
+		ProxyURL:           probe.ProxyURL,
+		CustomRequestRules: probe.CustomRequestRules,
+	}
+	testReq := &testutil.TestChannelRequest{Model: "websocket-probe", Stream: true, Content: "probe"}
+	fullURL, headers, _, err := (&testutil.CodexTester{}).Build(cfg, probe.APIKey, testReq)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("build websocket probe: %w", err))
+		return
+	}
+	applyHeaderRules(headers, cfg.HeaderRules())
+	websocketURL, err := codexWebsocketURL(fullURL)
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	conn, resp, dialErr := s.codexWebsocketDialer(cfg).DialContext(
+		c.Request.Context(), websocketURL, codexWebsocketHeaders(headers),
+	)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}
+	if dialErr != nil {
+		errorMessage := dialErr.Error()
+		if resp != nil && resp.Status != "" {
+			errorMessage = resp.Status
+		}
+		RespondJSON(c, http.StatusOK, channelWebsocketProbeResult{
+			Supported: false,
+			Status:    status,
+			Error:     errorMessage,
+		})
+		return
+	}
+
+	RespondJSON(c, http.StatusOK, channelWebsocketProbeResult{
+		Supported: true,
+		Status:    http.StatusSwitchingProtocols,
+	})
+}
+
 type channelTestRequestPlan struct {
 	clientProtocol   string
 	upstreamProtocol string
