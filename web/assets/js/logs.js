@@ -332,13 +332,13 @@ function buildActiveRequestChannelDisplay(req) {
 
 function buildLogChannelCell(channelHtml, multiplierValue, upstreamWebsocket) {
   const badges = [];
+  if (upstreamWebsocket === true) {
+    badges.push('<sup class="log-channel-badge log-channel-websocket-badge">ws</sup>');
+  }
   const multiplier = Number(multiplierValue);
   if (Number.isFinite(multiplier) && multiplier >= 0 && Math.abs(multiplier - 1) >= 1e-9) {
     const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
     badges.push(`<sup class="log-channel-badge log-channel-multiplier-badge">${multiplierText}</sup>`);
-  }
-  if (upstreamWebsocket === true) {
-    badges.push('<sup class="log-channel-badge log-channel-websocket-badge">ws</sup>');
   }
   if (badges.length === 0) return channelHtml;
 

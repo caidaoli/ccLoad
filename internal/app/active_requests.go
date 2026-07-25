@@ -27,6 +27,7 @@ type ActiveRequest struct {
 	BytesReceived       int64   `json:"bytes_received,omitempty"`         // 上游已返回的字节数（快照）
 	ClientFirstByteTime float64 `json:"client_first_byte_time,omitempty"` // 客户端侧首字节响应时间（秒），流式请求有效
 	CostMultiplier      float64 `json:"cost_multiplier"`                  // 渠道成本倍率
+	UpstreamWebsocket   bool    `json:"upstream_websocket,omitempty"`     // 实际上游请求是否使用WebSocket
 	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
 	ThinkingEffort      string  `json:"thinking_effort,omitempty"`
 }
@@ -44,9 +45,10 @@ type activeRequest struct {
 	TokenID     int64
 	BaseURL     string
 
-	CostMultiplier float64 // 渠道成本倍率
-	ThinkingEffort string
-	debugCapture   *debugCapture
+	CostMultiplier    float64 // 渠道成本倍率
+	UpstreamWebsocket bool
+	ThinkingEffort    string
+	debugCapture      *debugCapture
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
@@ -100,9 +102,19 @@ func (m *activeRequestManager) Update(id int64, channelID int64, channelName, ch
 		req.APIKeyUsed = util.MaskAPIKey(apiKey)
 		req.TokenID = tokenID
 		req.CostMultiplier = costMultiplier
+		req.UpstreamWebsocket = false
 		req.StartTime = time.Now().UnixMilli()
 		req.clientFirstByteTimeUsec.Store(0)
 		req.bytesCounter.Store(0)
+	}
+	m.mu.Unlock()
+}
+
+// SetUpstreamWebsocket records the transport actually used by the current upstream attempt.
+func (m *activeRequestManager) SetUpstreamWebsocket(id int64, upstreamWebsocket bool) {
+	m.mu.Lock()
+	if req, ok := m.requests[id]; ok {
+		req.UpstreamWebsocket = upstreamWebsocket
 	}
 	m.mu.Unlock()
 }
@@ -205,6 +217,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			BaseURL:           req.BaseURL,
 			BytesReceived:     req.bytesCounter.Load(),
 			CostMultiplier:    req.CostMultiplier,
+			UpstreamWebsocket: req.UpstreamWebsocket,
 			DebugLogAvailable: req.debugCapture != nil,
 			ThinkingEffort:    req.ThinkingEffort,
 		}

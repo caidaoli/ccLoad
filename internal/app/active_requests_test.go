@@ -33,6 +33,7 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	m := newActiveRequestManager()
 
 	id := m.Register(time.UnixMilli(100), "m", "1.1.1.1", false)
+	m.SetUpstreamWebsocket(id, true)
 	rawKey := "sk-1234567890abcdef"
 	m.Update(id, 1, "ch", "anthropic", rawKey, 0, 1.0)
 
@@ -45,6 +46,9 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	}
 	if got[0].APIKeyUsed != "****" && !strings.Contains(got[0].APIKeyUsed, ".") {
 		t.Fatalf("expected masked key format, got %q", got[0].APIKeyUsed)
+	}
+	if got[0].UpstreamWebsocket {
+		t.Fatal("channel/key update must reset upstream websocket state")
 	}
 }
 

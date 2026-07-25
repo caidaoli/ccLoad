@@ -310,34 +310,44 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	var executionSession *responsesExecutionSession
+	var executionSessionRequestBody []byte
 	var nativeRequestBody []byte
 	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
 		protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyResponses {
 		hint := responsesExecutionSessionHint(c.Request.Header, all)
-		var releaseSession func()
-		var errSession error
-		executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
-		if errSession != nil {
-			c.JSON(http.StatusTooManyRequests, gin.H{"error": errSession.Error()})
-			return
-		}
-		defer releaseSession()
-		if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
-			c.JSON(http.StatusRequestTimeout, gin.H{"error": errAcquire.Error()})
-			return
-		}
-		defer executionSession.releaseTurn()
-		var localContinuation bool
-		var errNormalize error
-		all, nativeRequestBody, localContinuation, errNormalize = executionSession.transcript.normalizeHTTPRequests(all)
-		if errNormalize != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
-			return
-		}
-		if !localContinuation {
-			executionSession = nil
-			all = incoming.body
-			nativeRequestBody = nil
+		// Ordinary HTTP requests only need process-local state when the client supplied
+		// a stable session identity. A one-shot transient session cannot reuse a socket.
+		if tokenHashStr != "" && hint != "" {
+			var releaseSession func()
+			var errSession error
+			executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
+			if errSession != nil {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": errSession.Error()})
+				return
+			}
+			defer releaseSession()
+			if errAcquire := executionSession.acquireTurn(ctx); errAcquire != nil {
+				c.JSON(http.StatusRequestTimeout, gin.H{"error": errAcquire.Error()})
+				return
+			}
+			defer executionSession.releaseTurn()
+			replayBody, incrementalBody, localContinuation, errNormalize :=
+				executionSession.transcript.normalizeHTTPRequests(all)
+			if errNormalize != nil {
+				c.JSON(http.StatusBadRequest, gin.H{"error": errNormalize.Error()})
+				return
+			}
+			if !localContinuation {
+				executionSession = nil
+			} else {
+				executionSessionRequestBody = replayBody
+				// HTTP may continue an already established upstream websocket, but it must
+				// never create one. Without an attached socket, preserve HTTP wire semantics.
+				if _, connected := executionSession.upstream.targetSnapshot(); connected {
+					all = replayBody
+					nativeRequestBody = incrementalBody
+				}
+			}
 		}
 	}
 
@@ -402,7 +412,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		startTime:      startTime,
 		thinkingEffort: thinkingEffort,
 	}
-	if executionSession != nil {
+	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream
 		reqCtx.nativeCodexBody = nativeRequestBody
 	}
@@ -413,6 +423,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		OnFirstByteRead: func() {
 			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
 		},
+		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
+			s.activeRequests.SetUpstreamWebsocket(activeID, upstreamWebsocket)
+		},
 		OnDebugCapture: func(dc *debugCapture) {
 			s.activeRequests.SetDebugCapture(activeID, dc)
 		},
@@ -421,7 +434,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
-			executionSession.commit(all, lastResult.responsesTurn)
+			executionSession.commit(executionSessionRequestBody, lastResult.responsesTurn)
 		}
 		return
 	}

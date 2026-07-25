@@ -375,6 +375,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 		OnFirstByteRead: func() {
 			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
 		},
+		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
+			s.activeRequests.SetUpstreamWebsocket(activeID, upstreamWebsocket)
+		},
 		OnDebugCapture: func(dc *debugCapture) {
 			s.activeRequests.SetDebugCapture(activeID, dc)
 		},

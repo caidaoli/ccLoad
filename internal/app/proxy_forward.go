@@ -1463,8 +1463,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			sentBody = responsesBodyForHTTPTransport(plan, replayBody)
 			req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
+		} else {
+			usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 		}
-		usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
 		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
@@ -1479,6 +1480,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		sentBody = responsesBodyForHTTPTransport(plan, replayBody)
 		req = cloneRequestWithBody(req, sentBody)
 		resp, err = s.doUpstreamRequest(cfg, req)
+	}
+	if observer != nil && observer.OnUpstreamWebsocket != nil {
+		observer.OnUpstreamWebsocket(usedNativeWebsocket)
 	}
 	if req != nil {
 		reqCtx.translatedBody = sentBody
