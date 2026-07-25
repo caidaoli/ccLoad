@@ -47,6 +47,7 @@ ccLoad handles those cases with:
 - **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
 - **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
+- **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
 - **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
   - JSON responses containing `{"error": {...}}` structure
@@ -64,6 +65,7 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
+- 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
 - 🏷️ **Build Tags** - GOTAGS support, high-performance JSON library enabled by default
@@ -557,6 +559,12 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
+
+**Codex Responses WebSocket**:
+
+Authenticated clients can upgrade `GET /v1/responses` or the Codex direct-route alias `GET /backend-api/codex/responses`. Enable `websockets` on a channel whose resolved upstream protocol is Codex to use a native upstream WebSocket; other candidates use the existing HTTP/SSE bridge. Keep a stable `Session-Id` header (or `prompt_cache_key`) across reconnects so the execution session retains transcript and upstream affinity.
+
+Before the first semantic output, ccLoad handles non-WebSocket → non-WebSocket, native WebSocket → non-WebSocket, and native WebSocket → native WebSocket failures internally. Native WebSocket → non-WebSocket sends the complete transcript from the execution session. When a failed non-WebSocket candidate would switch to a native WebSocket candidate, ccLoad instead sends a retryable `502/server_error/upstream_unavailable` event and closes the downstream connection with WebSocket code `1011`; Codex reconnects and replays the complete request. Clients with automatic retries disabled must perform that reconnect and replay themselves. After any semantic output has been forwarded, ccLoad does not switch transports or request replay, avoiding duplicate text, tool calls, and charges.
 
 **Codex Alpha Search (Native Passthrough Only)**:
 
