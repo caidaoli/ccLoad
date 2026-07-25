@@ -581,9 +581,52 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Codex Responses WebSocket**：
 
-认证后的客户端可升级 `GET /v1/responses`，也可使用 Codex 直连别名 `GET /backend-api/codex/responses`。对“实际上游协议为 Codex”的渠道启用 `websockets` 后，该渠道使用原生上游 WebSocket；其他候选渠道继续使用现有 HTTP/SSE 桥接。客户端重连时应保持稳定的 `Session-Id` 请求头（也支持 `prompt_cache_key`），让 execution session 保留 transcript 和上游亲和性。
+下游 WebSocket 和上游 WebSocket 是两个独立开关：认证后的客户端始终可以升级 `GET /v1/responses`，也可以使用 Codex 直连别名 `GET /backend-api/codex/responses`；渠道的 `websockets` 只决定 ccLoad 是否尝试连接原生 Codex 上游 WebSocket。未启用该字段的渠道仍可通过 HTTP/SSE 桥接参与候选和故障切换。
 
-首个语义输出前，非 WS→非 WS、原生 WS→非 WS、原生 WS→原生 WS 的故障均由 ccLoad 内部处理，其中原生 WS→非 WS 会使用 execution session 保存的完整 transcript。当失败的非 WS 候选即将切换到原生 WS 候选时，ccLoad 改为返回可重试的 `502/server_error/upstream_unavailable` 事件，并以 WebSocket close code `1011` 关闭下游连接；Codex 随后重连并完整 replay。关闭自动重试的客户端需要自行完成重连和完整 replay。一旦已经转发任何语义输出，ccLoad 不再切换传输或要求重放，避免重复文本、工具调用和费用。
+在 `/web/channels.html` 中选择 Codex 渠道，勾选“原生 WebSocket”并点击“检测”即可启用。使用 Admin API 时对应的关键字段如下；`url` 仍填写 `http://` 或 `https://` 地址，ccLoad 会在原生 WS 请求时转换为 `ws://` 或 `wss://`：
+
+```json
+{
+  "channel_type": "codex",
+  "url": "https://upstream.example.com",
+  "websockets": true
+}
+```
+
+以 `websocat` 为例连接下游：
+
+```bash
+websocat \
+  -H='Authorization: Bearer your-api-token' \
+  -H='Session-Id: stable-conversation-id' \
+  ws://localhost:8080/v1/responses
+```
+
+连接后发送文本帧。第一轮必须使用 `response.create` 并包含 `model`；后续轮次可使用 `response.append` 和上一轮返回的 `response.id`：
+
+```json
+{"type":"response.create","model":"your-model","input":[{"type":"message","role":"user","content":"Hello"}]}
+```
+
+```json
+{"type":"response.append","previous_response_id":"resp_xxx","input":[{"type":"message","role":"user","content":"Continue"}]}
+```
+
+客户端持续读取 Responses 事件，直到收到 `response.completed`、`response.done`、`response.incomplete`、`response.failed` 或 `error`。只支持文本帧；二进制帧会返回 `unsupported_frame`。
+
+故障切换只处理分类为可重试的 Key、模型或渠道级上游错误。客户端参数错误、无法转换的请求和消息过大不会切换。跨 Key、URL、渠道或传输的切换只发生在下游尚未提交任何可见的非心跳事件时；原生 WS 在同一上游上的一次内部重连使用下面单独说明的语义边界。
+
+| 当前上游 | 后续动作 | ccLoad 行为 | 客户端行为 |
+|---|---|---|---|
+| HTTP/SSE 在提交可见事件前失败 | 切换到另一个 HTTP/SSE 候选 | 内部切换并重放完整 transcript | 无需处理 |
+| 原生 WS 连接中断或 `previous_response_not_found`，且尚无语义事件 | 重连同一上游 | 内部重连一次并重放完整 transcript | 无需处理 |
+| 原生 WS 在提交可见事件前失败 | 切换到 HTTP/SSE 或另一个原生 WS 候选 | 内部切换并重放完整 transcript | 无需处理 |
+| 原生 WS 握手被拒绝或握手 EOF | 回退同渠道、同 Key、同 URL 的 HTTP/SSE | 内部回退并重放完整 transcript | 无需处理 |
+| HTTP/SSE | 下一候选是原生 WS | 发送 `502/server_error/upstream_unavailable`，随后以 close code `1011` 关闭下游 | 使用相同会话标识重连，并发送不带 `previous_response_id` 的完整会话输入 |
+
+原生 WS 的同一上游内部重连把 `response.created`、`response.queued` 和 `response.in_progress` 视为非语义事件，因此在这些事件之后仍可重连一次；其他事件都越过该重连边界。注意，这三个生命周期事件仍是已经提交给下游的可见事件，不能据此承诺继续跨候选切换。一旦文本、推理、工具调用或其他实际输出已经转发，ccLoad 不再切换或重放，避免重复输出、工具调用和费用。消息过大使用 close code `1009`，也不会故障切换。
+
+重连时必须使用相同的 API 令牌，并保持稳定的 `Session-Id` 请求头或 `prompt_cache_key`。execution session 是单进程内存状态：默认最多保留 32 个会话，空闲 60 分钟后过期，进程重启不会恢复。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。上限和 TTL 可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes` 调整，运行状态可通过 `GET /admin/runtime-metrics` 查看。
 
 **Codex Alpha Search（仅原生透传）**：
 

@@ -562,9 +562,52 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 **Codex Responses WebSocket**:
 
-Authenticated clients can upgrade `GET /v1/responses` or the Codex direct-route alias `GET /backend-api/codex/responses`. Enable `websockets` on a channel whose resolved upstream protocol is Codex to use a native upstream WebSocket; other candidates use the existing HTTP/SSE bridge. Keep a stable `Session-Id` header (or `prompt_cache_key`) across reconnects so the execution session retains transcript and upstream affinity.
+The downstream and upstream WebSockets are independent. Authenticated clients can always upgrade `GET /v1/responses` or the Codex direct-route alias `GET /backend-api/codex/responses`; a channel's `websockets` field only controls whether ccLoad tries a native Codex upstream WebSocket. Channels without that field still participate through the HTTP/SSE bridge and remain eligible for failover.
 
-Before the first semantic output, ccLoad handles non-WebSocket → non-WebSocket, native WebSocket → non-WebSocket, and native WebSocket → native WebSocket failures internally. Native WebSocket → non-WebSocket sends the complete transcript from the execution session. When a failed non-WebSocket candidate would switch to a native WebSocket candidate, ccLoad instead sends a retryable `502/server_error/upstream_unavailable` event and closes the downstream connection with WebSocket code `1011`; Codex reconnects and replays the complete request. Clients with automatic retries disabled must perform that reconnect and replay themselves. After any semantic output has been forwarded, ccLoad does not switch transports or request replay, avoiding duplicate text, tool calls, and charges.
+In `/web/channels.html`, select a Codex channel, enable **Native WebSocket**, and run **Probe**. For the Admin API, the relevant fields are shown below. Keep `url` as an `http://` or `https://` URL; ccLoad converts the scheme to `ws://` or `wss://` for native upstream WebSocket requests:
+
+```json
+{
+  "channel_type": "codex",
+  "url": "https://upstream.example.com",
+  "websockets": true
+}
+```
+
+For example, connect to the downstream endpoint with `websocat`:
+
+```bash
+websocat \
+  -H='Authorization: Bearer your-api-token' \
+  -H='Session-Id: stable-conversation-id' \
+  ws://localhost:8080/v1/responses
+```
+
+Send text frames after connecting. The first turn must use `response.create` and include `model`; later turns may use `response.append` with the previous response's `response.id`:
+
+```json
+{"type":"response.create","model":"your-model","input":[{"type":"message","role":"user","content":"Hello"}]}
+```
+
+```json
+{"type":"response.append","previous_response_id":"resp_xxx","input":[{"type":"message","role":"user","content":"Continue"}]}
+```
+
+Read Responses events until `response.completed`, `response.done`, `response.incomplete`, `response.failed`, or `error`. Only text frames are accepted; binary frames receive an `unsupported_frame` error.
+
+Failover applies only to upstream errors classified as retryable key-, model-, or channel-level failures. Client input errors, unrepresentable protocol conversions, and oversized messages do not fail over. Switching across keys, URLs, channels, or transports occurs only before any visible non-heartbeat event has been committed downstream. One same-upstream native WebSocket reconnect uses the separate semantic boundary described below.
+
+| Current upstream | Next action | ccLoad behavior | Client behavior |
+|---|---|---|---|
+| HTTP/SSE fails before a visible event is committed | Try another HTTP/SSE candidate | Switches internally and replays the complete transcript | None |
+| Native WS disconnect or `previous_response_not_found` before a semantic event | Reconnect the same upstream | Reconnects once internally and replays the complete transcript | None |
+| Native WS fails before a visible event is committed | Switch to HTTP/SSE or another native WS candidate | Switches internally and replays the complete transcript | None |
+| Native WS handshake rejection or EOF | Fall back to HTTP/SSE on the same channel, key, and URL | Falls back internally and replays the complete transcript | None |
+| HTTP/SSE | The next candidate is native WS | Sends `502/server_error/upstream_unavailable`, then closes downstream with code `1011` | Reconnect with the same session hint and send the complete conversation input without `previous_response_id` |
+
+For the same-upstream native WebSocket reconnect, `response.created`, `response.queued`, and `response.in_progress` are non-semantic, so ccLoad may still reconnect once after those events; every other event crosses that reconnect boundary. Those three lifecycle events are still visible events committed downstream, so they do not imply that cross-candidate failover remains available. Once text, reasoning, a tool call, or another actual output has been forwarded, ccLoad does not switch or replay, avoiding duplicate output, tool calls, and charges. Oversized messages close with code `1009` and do not fail over.
+
+Reconnects must use the same API token and a stable `Session-Id` header or `prompt_cache_key`. An execution session is in-memory and process-local: by default, at most 32 sessions are retained and idle sessions expire after 60 minutes; process restarts do not restore them. Multi-instance deployments need sticky routing so reconnects reach the same instance. Otherwise, the client must send the complete conversation input without `previous_response_id`. Adjust the limits with `responses_ws_max_sessions` and `responses_ws_session_ttl_minutes` in system settings; inspect current usage with `GET /admin/runtime-metrics`.
 
 **Codex Alpha Search (Native Passthrough Only)**:
 
