@@ -16,9 +16,9 @@ import (
 )
 
 const (
-	responsesExecutionSessionTTL             = time.Hour
 	responsesExecutionSessionCleanupInterval = 15 * time.Minute
 	defaultResponsesExecutionSessionLimit    = 32
+	defaultResponsesExecutionSessionTTL      = 60 // minutes
 )
 
 var errResponsesExecutionSessionCapacity = errors.New("responses execution session capacity exceeded")
@@ -85,20 +85,42 @@ type responsesExecutionSessionStoreStats struct {
 type responsesExecutionSessionStore struct {
 	mu              sync.Mutex
 	sessions        map[string]*responsesExecutionSession
-	ttl             time.Duration
+	configService   *ConfigService
+	ttlOverride     time.Duration // non-zero overrides configService (tests only)
 	maxSessions     int
 	nextTransientID uint64
 }
 
-func newResponsesExecutionSessionStore(ttl time.Duration) *responsesExecutionSessionStore {
-	if ttl <= 0 {
-		ttl = responsesExecutionSessionTTL
-	}
+func newResponsesExecutionSessionStore(cfg *ConfigService) *responsesExecutionSessionStore {
 	return &responsesExecutionSessionStore{
-		sessions:    make(map[string]*responsesExecutionSession),
-		ttl:         ttl,
-		maxSessions: defaultResponsesExecutionSessionLimit,
+		sessions:      make(map[string]*responsesExecutionSession),
+		configService: cfg,
+		maxSessions:   defaultResponsesExecutionSessionLimit,
 	}
+}
+
+func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
+	if s.ttlOverride > 0 {
+		return s.ttlOverride
+	}
+	minutes := defaultResponsesExecutionSessionTTL
+	if s.configService != nil {
+		minutes = s.configService.GetInt("responses_ws_session_ttl_minutes", defaultResponsesExecutionSessionTTL)
+		if minutes <= 0 {
+			minutes = defaultResponsesExecutionSessionTTL
+		}
+	}
+	return time.Duration(minutes) * time.Minute
+}
+
+func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
+	if s.configService != nil {
+		n := s.configService.GetInt("responses_ws_max_sessions", s.maxSessions)
+		if n > 0 {
+			return n
+		}
+	}
+	return s.maxSessions
 }
 
 func responsesExecutionSessionHint(header http.Header, payload []byte) string {
@@ -142,7 +164,7 @@ func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*respons
 		session = s.sessions[key]
 	}
 	if session == nil {
-		if s.maxSessions > 0 && len(s.sessions) >= s.maxSessions {
+		if limit := s.maxSessionsLimit(); limit > 0 && len(s.sessions) >= limit {
 			s.mu.Unlock()
 			closeResponsesExecutionSessions(expired)
 			return nil, nil, errResponsesExecutionSessionCapacity
@@ -183,7 +205,7 @@ func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreS
 	defer s.mu.Unlock()
 	stats := responsesExecutionSessionStoreStats{
 		Sessions:    len(s.sessions),
-		MaxSessions: s.maxSessions,
+		MaxSessions: s.maxSessionsLimit(),
 	}
 	for _, session := range s.sessions {
 		stats.ActiveAttachments += session.active
@@ -198,9 +220,10 @@ func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreS
 }
 
 func (s *responsesExecutionSessionStore) removeExpiredLocked(now time.Time) []*responsesExecutionSession {
+	ttl := s.sessionTTL()
 	var expired []*responsesExecutionSession
 	for key, session := range s.sessions {
-		if session.active == 0 && now.Sub(session.lastAccess) >= s.ttl {
+		if session.active == 0 && now.Sub(session.lastAccess) >= ttl {
 			delete(s.sessions, key)
 			expired = append(expired, session)
 		}

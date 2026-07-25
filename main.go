@@ -169,7 +169,7 @@ func main() {
 	}
 
 	// 使用http.Server支持优雅关闭
-	// WriteTimeout 动态计算：确保 >= nonStreamTimeout，避免传输层截断业务层超时
+	// WriteTimeout 动态计算：确保不早于流式/非流式业务总超时
 	writeTimeout := srv.GetWriteTimeout()
 	httpServer := &http.Server{
 		Addr:    addr,
@@ -179,7 +179,7 @@ func main() {
 		// 即使绕过应用层并发控制，也会在HTTP层被杀死
 		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速发送header（slowloris攻击）
 		ReadTimeout:       120 * time.Second, // 防止慢速发送body（兼容长请求）
-		WriteTimeout:      writeTimeout,      // 动态值，>= nonStreamTimeout
+		WriteTimeout:      writeTimeout,      // 动态值，>= 业务层请求总超时
 		IdleTimeout:       60 * time.Second,  // 防止keep-alive连接占用fd
 	}
 	log.Printf("[CONFIG] HTTP WriteTimeout: %v", writeTimeout)

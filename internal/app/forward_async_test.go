@@ -924,6 +924,60 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 
 }
 
+func TestStreamTimeout_ClosesLongRunningStreamingResponse(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	const testTimeout = 50 * time.Millisecond
+	srv.streamTimeout = testTimeout
+
+	upstreamCanceled := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+		close(upstreamCanceled)
+	}))
+	defer upstream.Close()
+
+	cfg := &model.Config{ID: 1, URL: upstream.URL, Name: "test-stream-timeout"}
+	recorder := newRecorder()
+	started := time.Now()
+	res, _, err := srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
+		http.Header{},
+		"",
+		cfg.URL,
+		recorder,
+		nil,
+	)
+
+	if err == nil || !strings.Contains(err.Error(), "stream timeout") {
+		t.Fatalf("error=%v, want stream timeout", err)
+	}
+	if !errors.Is(err, util.ErrUpstreamStreamTimeout) || errors.Is(err, context.Canceled) {
+		t.Fatalf("error=%v, want upstream timeout sentinel without client cancellation", err)
+	}
+	if res == nil || res.Status != util.StatusStreamIncomplete {
+		t.Fatalf("result=%+v, want status %d", res, util.StatusStreamIncomplete)
+	}
+	if elapsed := time.Since(started); elapsed > 10*testTimeout {
+		t.Fatalf("stream closed after %v, want no later than %v", elapsed, 10*testTimeout)
+	}
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(10 * testTimeout):
+		t.Fatal("upstream request context was not canceled")
+	}
+}
+
 // TestFirstByteTimeout_StreamingResponseBodyDelayed 测试响应头已到但响应体迟迟不来时的首字节超时
 // 场景：上游先发送响应头并 flush，但延迟发送 SSE body
 // 期望：返回 598 状态码和 ErrUpstreamFirstByteTimeout 错误

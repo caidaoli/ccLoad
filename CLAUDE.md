@@ -69,7 +69,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 - **选择**:渠道平滑加权轮询(按有效 Key 数)+ 渠道/Key/模型冷却感知,成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;渠道 URL 末尾 `#`(`ExactUpstreamURLMarker`)= 精确转发,不自动追加路径
 - **协议转换**:四协议 12 个有向转换对,覆盖请求、流式响应、非流式响应;`upstream`(原生)/`local`(本地翻译)两模式;渠道配 `ProtocolTransformMode`+`ProtocolTransforms`
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
-- **上游超时**(`server.go:loadChannelTypeTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`non_stream_timeout`(120s),按渠道类型 `{type}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
+- **上游超时**(`server.go:loadChannelTypeTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`stream_timeout`(0=禁用,流式总时长)、`non_stream_timeout`(120s),首字节与非流式超时可按渠道类型 `{type}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
 - **Anthropic thinking**:项目生成的 Anthropic 请求用 `thinking.type=adaptive` + `output_config.effort`;anyrouter `/v1/messages` 兜底补 adaptive 并归一旧 `enabled`;anyrouter 额外注入 `anthropic-beta: context-1m`
 - **定时检测**(`channel_check_scheduler.go`):全局 `channel_check_interval_hours`(0=禁用,热重载)+ 渠道级开关
 

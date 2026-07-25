@@ -145,9 +145,12 @@ type channelTestRequestPlan struct {
 type channelTestTimeout struct {
 	cancel                     context.CancelFunc
 	firstByteTimeout           time.Duration
+	streamTimeout              time.Duration
 	nonStreamTimeout           time.Duration
 	firstStreamContentTimer    *time.Timer
+	streamTimer                *time.Timer
 	firstStreamContentTimedOut atomic.Bool
+	streamTimedOut             atomic.Bool
 }
 
 func (t *channelTestTimeout) cancelAll() {
@@ -156,6 +159,9 @@ func (t *channelTestTimeout) cancelAll() {
 	}
 	if t.firstStreamContentTimer != nil {
 		t.firstStreamContentTimer.Stop()
+	}
+	if t.streamTimer != nil {
+		t.streamTimer.Stop()
 	}
 	if t.cancel != nil {
 		t.cancel()
@@ -171,6 +177,10 @@ func (t *channelTestTimeout) markFirstStreamContent() {
 
 func (t *channelTestTimeout) firstStreamContentTimeoutTriggered() bool {
 	return t != nil && t.firstStreamContentTimedOut.Load()
+}
+
+func (t *channelTestTimeout) streamTimeoutTriggered() bool {
+	return t != nil && t.streamTimedOut.Load()
 }
 
 func newChannelTester(protocolName string) testutil.ChannelTester {
@@ -256,10 +266,17 @@ func (s *Server) newChannelTestTimeoutContextWithTimeouts(parent context.Context
 	timeout := &channelTestTimeout{
 		cancel:           cancel,
 		firstByteTimeout: timeouts.FirstByteTimeout,
+		streamTimeout:    timeouts.StreamTimeout,
 		nonStreamTimeout: timeouts.NonStreamTimeout,
 	}
 
 	if stream {
+		if timeouts.StreamTimeout > 0 {
+			timeout.streamTimer = time.AfterFunc(timeouts.StreamTimeout, func() {
+				timeout.streamTimedOut.Store(true)
+				cancel()
+			})
+		}
 		if timeouts.FirstByteTimeout > 0 {
 			timeout.firstStreamContentTimer = time.AfterFunc(timeouts.FirstByteTimeout, func() {
 				timeout.firstStreamContentTimedOut.Store(true)
@@ -289,7 +306,12 @@ func (s *Server) describeChannelTestTimeoutError(start time.Time, testReq *testu
 			threshold = s.firstByteTimeout
 		}
 		return util.StatusFirstByteTimeout,
-			fmt.Sprintf("上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, threshold, err),
+			fmt.Sprintf("流式请求首个有效内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v", durationSec, threshold, err),
+			true
+	}
+	if timeout.streamTimeoutTriggered() {
+		return util.StatusStreamIncomplete,
+			fmt.Sprintf("流式请求总超时: upstream stream timeout after %.2fs (threshold=%v): %v", durationSec, timeout.streamTimeout, err),
 			true
 	}
 	if !testReq.Stream && timeout != nil && timeout.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {

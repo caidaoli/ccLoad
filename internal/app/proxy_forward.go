@@ -194,6 +194,11 @@ func (s *Server) handleRequestError(
 		}
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		log.Printf("[TIMEOUT] [上游首字节超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, durationSec)
+	} else if reqCtx.streamTimeoutTriggered() {
+		statusCode = util.StatusStreamIncomplete
+		err = fmt.Errorf("upstream stream timeout after %.2fs (threshold=%v): %w",
+			durationSec, reqCtx.streamTimeout, util.ErrUpstreamStreamTimeout)
+		log.Printf("[TIMEOUT] [流式请求总超时] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.streamTimeout, durationSec)
 	} else if errors.Is(err, context.DeadlineExceeded) {
 		if reqCtx.isStreaming {
 			// 流式请求超时
@@ -1594,6 +1599,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		err = fmt.Errorf("%s: %w", timeoutMsg, util.ErrUpstreamFirstByteTimeout)
 		res.Status = util.StatusFirstByteTimeout
 		log.Printf("[TIMEOUT] [上游首字节超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, timeout, duration)
+	} else if err != nil && reqCtx.streamTimeoutTriggered() {
+		err = fmt.Errorf("upstream stream timeout after %.2fs (threshold=%v): %w",
+			duration, reqCtx.streamTimeout, util.ErrUpstreamStreamTimeout)
+		if res != nil {
+			res.Status = util.StatusStreamIncomplete
+		}
+		log.Printf("[TIMEOUT] [流式请求总超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.streamTimeout, duration)
 	}
 
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
@@ -1824,6 +1836,14 @@ func (s *Server) forwardAttempt(
 		}
 		if errors.Is(err, ErrChannelRPMExceeded) || errors.Is(err, ErrChannelConcurrencyExceeded) {
 			return nil, cooldown.ActionRetryChannel, err
+		}
+		if errors.Is(err, util.ErrUpstreamStreamTimeout) && res != nil {
+			res.Body = []byte(err.Error())
+			res.StreamDiagMsg = err.Error()
+			result, action := s.handleCommittedAwareProxyError(
+				ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
+			)
+			return result, action, nil
 		}
 		result, action := s.handleNetworkError(
 			ctx, cfg, keyIndex, actualModel, selectedKey, reqCtx.tokenID, reqCtx.clientIP,

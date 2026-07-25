@@ -3985,6 +3985,55 @@ func TestProxy_MultiURLFallbackOn598_DoesNotChannelCooldownEarly(t *testing.T) {
 	}
 }
 
+func TestProxy_StreamTimeoutDoesNotRetryAfterResponseCommit(t *testing.T) {
+	t.Parallel()
+
+	upstreamStarted := make(chan struct{})
+	upstreamTimedOut := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		close(upstreamStarted)
+		<-r.Context().Done()
+	}))
+	defer upstreamTimedOut.Close()
+
+	var fallbackCalls atomic.Int64
+	upstreamFallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer upstreamFallback.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "timeout", models: "gpt-4", priority: 100},
+		{name: "fallback", models: "gpt-4", priority: 1},
+	}, map[int]string{0: upstreamTimedOut.URL, 1: upstreamFallback.URL})
+	env.server.streamTimeout = 50 * time.Millisecond
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-4",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	select {
+	case <-upstreamStarted:
+	default:
+		t.Fatal("timed-out upstream was not selected first")
+	}
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "partial") {
+		t.Fatalf("response status=%d body=%q, want committed partial stream", response.Code, response.Body.String())
+	}
+	if calls := fallbackCalls.Load(); calls != 0 {
+		t.Fatalf("fallback calls=%d, want 0 after response commit", calls)
+	}
+}
+
 func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {
 	t.Parallel()
 

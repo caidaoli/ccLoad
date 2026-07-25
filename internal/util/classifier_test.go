@@ -290,6 +290,14 @@ func TestClassifyError_ContextCanceled(t *testing.T) {
 			expectedRetry:  true,
 			reason:         "上游超时（context.DeadlineExceeded）应返回504+ErrorLevelChannel，可重试其他渠道",
 		},
+		{
+			name:           "upstream_stream_timeout",
+			err:            fmt.Errorf("stream canceled: %w", ErrUpstreamStreamTimeout),
+			expectedStatus: StatusStreamIncomplete,
+			expectedLevel:  ErrorLevelChannel,
+			expectedRetry:  true,
+			reason:         "上游流式总超时应记为599并允许切换渠道，不能误判为客户端取消",
+		},
 	}
 
 	for _, tt := range tests {
@@ -434,6 +442,7 @@ func TestIsModelScopedNetworkError(t *testing.T) {
 		want bool
 	}{
 		{name: "first byte timeout", err: ErrUpstreamFirstByteTimeout, want: true},
+		{name: "stream timeout", err: ErrUpstreamStreamTimeout, want: true},
 		{name: "empty response", err: ErrUpstreamEmptyResponse, want: true},
 		{name: "deadline exceeded", err: context.DeadlineExceeded, want: true},
 		{name: "connection reset", err: errors.New("read: connection reset by peer"), want: true},

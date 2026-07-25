@@ -372,15 +372,16 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}{
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
-		{"upstream_first_byte_timeout", "0", "duration", "上游首个有效流内容超时(秒,0=禁用，仅流式)", "0"},
+		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
+		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
-		{"anthropic_first_byte_timeout", "0", "duration", "Anthropic首个有效流内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
+		{"anthropic_first_byte_timeout", "0", "duration", "Anthropic流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"anthropic_non_stream_timeout", "0", "duration", "Anthropic非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
-		{"codex_first_byte_timeout", "0", "duration", "Codex首个有效流内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
+		{"codex_first_byte_timeout", "0", "duration", "Codex流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"codex_non_stream_timeout", "0", "duration", "Codex非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
-		{"openai_first_byte_timeout", "0", "duration", "OpenAI首个有效流内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
+		{"openai_first_byte_timeout", "0", "duration", "OpenAI流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"openai_non_stream_timeout", "0", "duration", "OpenAI非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
-		{"gemini_first_byte_timeout", "0", "duration", "Gemini首个有效流内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
+		{"gemini_first_byte_timeout", "0", "duration", "Gemini流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
@@ -406,6 +407,9 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"debug_log_retention_minutes", "2", "int", "Debug日志保留时长(分钟,1-1440)", "2"},
 		// 前端自动刷新
 		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
+		// Responses WebSocket
+		{"responses_ws_max_sessions", "32", "int", "Responses WebSocket execution session limit (process-wide, 0 = use default 32)", "32"},
+		{"responses_ws_session_ttl_minutes", "60", "int", "Responses WebSocket idle session retention (minutes, >= 1)", "60"},
 	}
 
 	var query string
@@ -430,7 +434,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
-			"上游首个有效流内容超时(秒,0=禁用，仅流式)",
+			"流式请求首个有效内容超时(秒,0=禁用)",
 			"0",
 			"duration",
 			"upstream_first_byte_timeout",
