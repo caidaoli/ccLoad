@@ -123,7 +123,8 @@ const (
 // 启动超时配置（Fail-Fast：启动阶段网络问题应快速失败，避免卡死）
 const (
 	// StartupDBPingTimeout 数据库连接测试超时
-	StartupDBPingTimeout = 10 * time.Second
+	// 远端数据库冷启动、DNS 和 TLS 建连可能超过 10 秒；30 秒仍能在不可达时快速失败。
+	StartupDBPingTimeout = 30 * time.Second
 	// StartupMigrationTimeout 数据库迁移超时
 	// 5min 选取理由：跨版本升级时，多次 ALTER TABLE ADD COLUMN（每次远程 RTT 可达数秒）
 	// 加上 CREATE INDEX 会轻易耗尽 60s。正常重启路径因 loadAllExistingIndexes 跳过

@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
@@ -191,7 +190,7 @@ func TestSyncManager_RestoreOnStartup_RestoresProtocolTransforms(t *testing.T) {
 	}
 }
 
-func TestSyncManager_RestoreLogsIncremental(t *testing.T) {
+func TestSyncManager_RestoreLogsSnapshot(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_logs")
 	sqlite := createTestStoreForSync(t, "sqlite_logs")
 	defer func() {
@@ -245,7 +244,127 @@ func TestSyncManager_RestoreLogsIncremental(t *testing.T) {
 	}
 }
 
-func TestSyncManager_RestoreLogsIncremental_ZeroDays(t *testing.T) {
+func TestSyncManager_RestoreLogs_DoesNotDuplicateSameLogWithDifferentIDs(t *testing.T) {
+	mysql := createTestStoreForSync(t, "mysql_different_ids")
+	sqlite := createTestStoreForSync(t, "sqlite_different_ids")
+	defer func() {
+		_ = mysql.Close()
+		_ = sqlite.Close()
+	}()
+
+	ctx := context.Background()
+	now := time.Now()
+
+	// 先推进 MySQL 自增序列，模拟两库独立分配日志 ID。
+	for i := 0; i < 3; i++ {
+		if err := mysql.AddLog(ctx, &model.LogEntry{
+			Time:       model.JSONTime{Time: now.AddDate(0, 0, -8).Add(time.Duration(i) * time.Minute)},
+			ChannelID:  99,
+			Model:      "old",
+			StatusCode: 200,
+			Message:    "outside restore window",
+		}); err != nil {
+			t.Fatalf("添加窗口外 MySQL 日志: %v", err)
+		}
+	}
+
+	entry := &model.LogEntry{
+		Time:         model.JSONTime{Time: now},
+		ChannelID:    280,
+		Model:        "gpt-5.6-sol",
+		StatusCode:   200,
+		Message:      "ok",
+		Duration:     1.25,
+		InputTokens:  100,
+		OutputTokens: 20,
+	}
+	if err := mysql.AddLog(ctx, entry); err != nil {
+		t.Fatalf("添加 MySQL 日志: %v", err)
+	}
+	if err := sqlite.AddLog(ctx, entry); err != nil {
+		t.Fatalf("添加已有 SQLite 日志: %v", err)
+	}
+
+	if err := NewSyncManager(mysql, sqlite).RestoreOnStartup(ctx, 7); err != nil {
+		t.Fatalf("RestoreOnStartup: %v", err)
+	}
+
+	logs, err := sqlite.ListLogs(ctx, now.Add(-time.Hour), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("查询恢复后的 SQLite 日志: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("同一业务日志被重复恢复: got %d rows, want 1", len(logs))
+	}
+}
+
+func TestSyncManager_RestoreLogs_RestoresRowsWhenSQLiteIDIsAhead(t *testing.T) {
+	mysql := createTestStoreForSync(t, "mysql_id_behind")
+	sqlite := createTestStoreForSync(t, "sqlite_id_ahead")
+	defer func() {
+		_ = mysql.Close()
+		_ = sqlite.Close()
+	}()
+
+	ctx := context.Background()
+	now := time.Now()
+	for i := 0; i < 5; i++ {
+		if err := sqlite.AddLog(ctx, &model.LogEntry{
+			Time:       model.JSONTime{Time: now.AddDate(0, 0, -8).Add(time.Duration(i) * time.Minute)},
+			ChannelID:  99,
+			Model:      "old-local",
+			StatusCode: 200,
+			Message:    "outside restore window",
+		}); err != nil {
+			t.Fatalf("添加窗口外 SQLite 日志: %v", err)
+		}
+	}
+
+	first := &model.LogEntry{
+		Time:       model.JSONTime{Time: now.Add(-time.Hour)},
+		ChannelID:  280,
+		Model:      "gpt-5.6-sol",
+		StatusCode: 200,
+		Message:    "first",
+	}
+	second := &model.LogEntry{
+		Time:       model.JSONTime{Time: now},
+		ChannelID:  280,
+		Model:      "gpt-5.6-sol",
+		StatusCode: 500,
+		Message:    "second",
+	}
+	if err := mysql.AddLog(ctx, first); err != nil {
+		t.Fatalf("添加第一条 MySQL 日志: %v", err)
+	}
+	if err := mysql.AddLog(ctx, second); err != nil {
+		t.Fatalf("添加第二条 MySQL 日志: %v", err)
+	}
+	if err := sqlite.AddLog(ctx, first); err != nil {
+		t.Fatalf("添加已有 SQLite 日志: %v", err)
+	}
+
+	if err := NewSyncManager(mysql, sqlite).RestoreOnStartup(ctx, 7); err != nil {
+		t.Fatalf("RestoreOnStartup: %v", err)
+	}
+
+	recentLogs, err := sqlite.ListLogs(ctx, now.Add(-2*time.Hour), 10, 0, nil)
+	if err != nil {
+		t.Fatalf("查询恢复后的 SQLite 日志: %v", err)
+	}
+	if len(recentLogs) != 2 {
+		t.Fatalf("SQLite ID 超前时漏恢复日志: got %d rows, want 2", len(recentLogs))
+	}
+	oldLogs, err := sqlite.ListLogs(ctx, now.AddDate(0, 0, -9), 20, 0, nil)
+	if err != nil {
+		t.Fatalf("查询 SQLite 全部日志: %v", err)
+	}
+	if len(oldLogs) != 7 {
+		t.Fatalf("恢复窗口外日志被修改: got %d total rows, want 7", len(oldLogs))
+	}
+}
+
+func TestSyncManager_RestoreLogsSnapshot_ZeroDays(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_nologs")
 	sqlite := createTestStoreForSync(t, "sqlite_nologs")
 	defer func() {
@@ -287,9 +406,8 @@ func TestSyncManager_RestoreLogsIncremental_ZeroDays(t *testing.T) {
 	}
 }
 
-// TestSyncManager_RestoreLogsIncremental_TrueIncremental 验证真正的增量恢复：
-// SQLite 已有部分数据时，只拉取新增的记录
-func TestSyncManager_RestoreLogsIncremental_TrueIncremental(t *testing.T) {
+// TestSyncManager_RestoreLogsSnapshot_RefreshesWindow 验证快照恢复会刷新窗口内数据。
+func TestSyncManager_RestoreLogsSnapshot_RefreshesWindow(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_incr")
 	sqlite := createTestStoreForSync(t, "sqlite_incr")
 	defer func() {
@@ -374,49 +492,5 @@ func TestSyncManager_RestoreLogsIncremental_TrueIncremental(t *testing.T) {
 	}
 	if count2 != 2 {
 		t.Errorf("新增日志（channel_id=2）数量不对: got %d, want 2", count2)
-	}
-}
-
-type fakeRowsErrAfterOne struct {
-	scanned bool
-	err     error
-}
-
-func (r *fakeRowsErrAfterOne) Next() bool {
-	if r.scanned {
-		return false
-	}
-	r.scanned = true
-	return true
-}
-
-func (r *fakeRowsErrAfterOne) Scan(dest ...any) error {
-	for i := range dest {
-		*(dest[i].(*any)) = int64(i + 1)
-	}
-	return nil
-}
-
-func (r *fakeRowsErrAfterOne) Err() error { return r.err }
-
-func TestSyncManager_InsertLogBatch_ChecksRowsErr(t *testing.T) {
-	mysql := createTestStoreForSync(t, "mysql_data")
-	sqlite := createTestStoreForSync(t, "sqlite_data")
-	defer func() {
-		_ = mysql.Close()
-		_ = sqlite.Close()
-	}()
-
-	sm := NewSyncManager(mysql, sqlite)
-
-	_, _, err := sm.insertLogBatchWithLastID(
-		context.Background(),
-		&fakeRowsErrAfterOne{err: errors.New("driver error")},
-		2,
-		[]string{"id"},
-		[]int{0},
-	)
-	if err == nil {
-		t.Fatalf("期望返回错误，但得到 nil")
 	}
 }

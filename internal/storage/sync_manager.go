@@ -15,7 +15,7 @@ import (
 // 核心职责：
 // - 启动时从 MySQL 恢复数据到 SQLite
 // - 配置表全量恢复（~500 条数据，<1 秒）
-// - logs 表按天数增量恢复（分批处理，避免内存溢出）
+// - logs 表按天数恢复 MySQL 快照（流式处理，避免内存溢出）
 // - **无超时机制**：恢复失败直接返回错误，降级到纯 MySQL
 //
 // 设计原则：
@@ -69,7 +69,7 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 	// logDays: -1=全量, 0=不恢复, >0=恢复指定天数
 	if logDays != 0 {
 		logsStart := time.Now()
-		if err := sm.restoreLogsIncremental(ctx, logDays); err != nil {
+		if err := sm.restoreLogsSnapshot(ctx, logDays); err != nil {
 			// 日志恢复失败不阻止启动，仅警告
 			log.Printf("[WARN] 日志恢复失败: %v（历史日志可能不完整）", err)
 		} else {
@@ -228,49 +228,22 @@ func (sm *SyncManager) getTableColumns(ctx context.Context, store *sqlstore.SQLS
 	return rows.Columns()
 }
 
-// restoreLogsIncremental 增量恢复 logs 表（基于 id 增量同步）
+// restoreLogsSnapshot 使用 MySQL 快照重建 SQLite 的日志时间窗口。
 //
-// 设计：不删除 SQLite 现有数据，只拉取 id > MAX(sqlite.id) 的新记录
-// 优势：
-//   - SQLite 为空时（HuggingFace 重启）：MAX(id)=0，等价于全量恢复
-//   - SQLite 有数据时（程序重启）：只拉取增量，启动更快
-//   - 避免 DELETE 导致的数据丢失风险
-func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) error {
-	// 1. 获取 SQLite 中最大的 id（为空时返回 0）
-	var maxID int64
-	if err := sm.sqlite.QueryRowContext(ctx, "SELECT COALESCE(MAX(id), 0) FROM logs").Scan(&maxID); err != nil {
-		return fmt.Errorf("获取 SQLite 最大 ID 失败: %w", err)
-	}
-
-	// 2. 计算时间范围
+// 两个数据库独立分配 logs.id，跨库比较 MAX(id) 会同时造成漏行和重复。
+// SQLite 是本地副本，恢复时复制 MySQL 的业务列但排除 id，由 SQLite 维护自己的本地主键。
+// 删除与重建处于同一事务，任何错误都会保留旧快照。
+func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error {
 	var startTime int64
 	if days < 0 {
-		startTime = 0 // 全量恢复
-		log.Printf("[INFO] 准备增量恢复 logs 表（从 id > %d）...", maxID)
+		startTime = 0
+		log.Print("[INFO] 准备全量恢复 logs 表快照...")
 	} else {
 		startTime = time.Now().AddDate(0, 0, -days).UnixMilli()
-		log.Printf("[INFO] 准备增量恢复最近 %d 天的日志（从 id > %d）...", days, maxID)
+		log.Printf("[INFO] 准备恢复最近 %d 天的 logs 表快照...", days)
 	}
 
-	// 3. 统计需要恢复的数量
-	var count int64
-	countQuery := "SELECT COUNT(*) FROM logs WHERE id > ? AND time >= ?"
-	if err := sm.mysql.QueryRowContext(ctx, countQuery, maxID, startTime).Scan(&count); err != nil {
-		return fmt.Errorf("统计日志数量失败: %w", err)
-	}
-
-	if count == 0 {
-		if maxID > 0 {
-			log.Print("[INFO] SQLite 日志已是最新，无需恢复")
-		} else {
-			log.Print("[INFO] MySQL 无日志需要恢复")
-		}
-		return nil
-	}
-
-	log.Printf("[INFO] 预计恢复 %d 条日志", count)
-
-	// 4. 预先计算列映射（只计算一次）
+	// 预先计算列映射。id 是每个数据库的本地主键，不属于复制契约。
 	sqliteCols, err := sm.getTableColumns(ctx, sm.sqlite, "logs")
 	if err != nil {
 		return fmt.Errorf("获取 SQLite logs 表列失败: %w", err)
@@ -289,7 +262,7 @@ func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) err
 	var commonCols []string
 	var mysqlColIndices []int
 	for i, col := range mysqlCols {
-		if sqliteColSet[col] {
+		if col != "id" && sqliteColSet[col] {
 			commonCols = append(commonCols, col)
 			mysqlColIndices = append(mysqlColIndices, i)
 		}
@@ -299,86 +272,43 @@ func (sm *SyncManager) restoreLogsIncremental(ctx context.Context, days int) err
 		return fmt.Errorf("logs 表无共同列，无法恢复")
 	}
 
-	// 5. 分批增量恢复（基于 id 游标，避免 OFFSET 性能问题）
-	const batchSize = 5000
-	lastID := maxID
+	rows, err := sm.mysql.QueryContext(ctx, "SELECT * FROM logs WHERE time >= ?", startTime)
+	if err != nil {
+		return fmt.Errorf("查询 MySQL 日志快照失败: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+
+	tx, err := sm.sqlite.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启 SQLite 日志恢复事务失败: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	if _, err := tx.ExecContext(ctx, "DELETE FROM logs WHERE time >= ?", startTime); err != nil {
+		return fmt.Errorf("清理 SQLite 日志窗口失败: %w", err)
+	}
+
+	colNames := strings.Join(commonCols, ", ")
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(commonCols)), ",")
+	insertQuery := fmt.Sprintf("INSERT INTO logs (%s) VALUES (%s)", colNames, placeholders) //nolint:gosec // G201: 列名来自数据库 schema 交集
+	stmt, err := tx.PrepareContext(ctx, insertQuery)
+	if err != nil {
+		return fmt.Errorf("准备 SQLite 日志恢复语句失败: %w", err)
+	}
+	defer func() { _ = stmt.Close() }()
+
 	totalRestored := 0
-
-	for {
-		// 查询一批数据（id > lastID，无需 OFFSET）
-		query := "SELECT * FROM logs WHERE id > ? AND time >= ? ORDER BY id LIMIT ?"
-		rows, err := sm.mysql.QueryContext(ctx, query, lastID, startTime, batchSize)
-		if err != nil {
-			return fmt.Errorf("查询日志失败: %w", err)
-		}
-
-		// 读取批次并插入（传入列映射）
-		batchCount, batchLastID, err := sm.insertLogBatchWithLastID(ctx, rows, len(mysqlCols), commonCols, mysqlColIndices)
-		_ = rows.Close()
-		if err != nil {
-			return fmt.Errorf("批量插入日志失败: %w", err)
-		}
-
-		if batchCount == 0 {
-			break
-		}
-
-		lastID = batchLastID
-		totalRestored += batchCount
-
-		// 进度提示
-		if totalRestored%50000 == 0 {
-			log.Printf("[INFO] 已恢复 %d 条日志...", totalRestored)
-		}
-
-		// 如果读取的数量小于批次大小，说明已经读完
-		if batchCount < batchSize {
-			break
-		}
-	}
-
-	log.Printf("[INFO] 日志恢复完成，共 %d 条（%d/%d 列）", totalRestored, len(commonCols), len(mysqlCols))
-	return nil
-}
-
-// insertLogBatchWithLastID 批量插入日志到 SQLite，返回插入数量和最后一条记录的 ID
-// mysqlColCount: MySQL 结果集的列数
-// commonCols: 交集列名列表
-// mysqlColIndices: 交集列在 MySQL 结果集中的索引
-func (sm *SyncManager) insertLogBatchWithLastID(ctx context.Context, rows interface {
-	Next() bool
-	Scan(...any) error
-	Err() error
-}, mysqlColCount int, commonCols []string, mysqlColIndices []int) (count int, lastID int64, err error) {
-	// 找到 id 列在 commonCols 中的索引
-	idColIdx := -1
-	for i, col := range commonCols {
-		if col == "id" {
-			idColIdx = i
-			break
-		}
-	}
-	if idColIdx < 0 {
-		return 0, 0, fmt.Errorf("commonCols 中缺少 id 列")
-	}
-
-	// 读取所有数据到内存，只保留交集列
-	var records [][]any
 	for rows.Next() {
-		// 扫描 MySQL 所有列
-		scanArgs := make([]any, mysqlColCount)
-		scanVals := make([]any, mysqlColCount)
+		scanArgs := make([]any, len(mysqlCols))
+		scanVals := make([]any, len(mysqlCols))
 		for i := range scanVals {
 			scanArgs[i] = &scanVals[i]
 		}
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return 0, 0, fmt.Errorf("扫描行失败: %w", err)
+			return fmt.Errorf("扫描 MySQL 日志失败: %w", err)
 		}
 
-		// 只保留交集列的值
-		// 注意：MySQL 驱动将 VARCHAR 扫描为 []byte，需要转换为 string
-		// 否则 SQLite 驱动会将 []byte 绑定为 BLOB（类型亲和性问题）
 		record := make([]any, len(commonCols))
 		for i, idx := range mysqlColIndices {
 			val := scanVals[idx]
@@ -388,56 +318,23 @@ func (sm *SyncManager) insertLogBatchWithLastID(ctx context.Context, rows interf
 				record[i] = val
 			}
 		}
-		records = append(records, record)
-	}
-
-	if err := rows.Err(); err != nil {
-		return 0, 0, fmt.Errorf("读取日志失败: %w", err)
-	}
-
-	if len(records) == 0 {
-		return 0, 0, nil
-	}
-
-	// 提取最后一条记录的 ID
-	lastRecord := records[len(records)-1]
-	switch v := lastRecord[idColIdx].(type) {
-	case int64:
-		lastID = v
-	case int:
-		lastID = int64(v)
-	default:
-		return 0, 0, fmt.Errorf("无法解析 id 列值: %T", v)
-	}
-
-	// 批量插入 SQLite
-	tx, err := sm.sqlite.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	// 构建 INSERT 语句（显式列名）
-	colNames := strings.Join(commonCols, ", ")
-	placeholders := strings.Repeat("?,", len(commonCols))
-	placeholders = placeholders[:len(placeholders)-1]                                       // 去掉末尾逗号
-	insertQuery := fmt.Sprintf("INSERT INTO logs (%s) VALUES (%s)", colNames, placeholders) //nolint:gosec // G201: 列名来自代码，非用户输入
-
-	stmt, err := tx.Prepare(insertQuery)
-	if err != nil {
-		return 0, 0, fmt.Errorf("准备插入语句失败: %w", err)
-	}
-	defer func() { _ = stmt.Close() }()
-
-	for _, record := range records {
-		if _, err := stmt.Exec(record...); err != nil {
-			return 0, 0, fmt.Errorf("插入数据失败: %w", err)
+		if _, err := stmt.ExecContext(ctx, record...); err != nil {
+			return fmt.Errorf("插入 SQLite 日志快照失败: %w", err)
+		}
+		totalRestored++
+		if totalRestored%50000 == 0 {
+			log.Printf("[INFO] 已恢复 %d 条日志...", totalRestored)
 		}
 	}
 
-	if err := tx.Commit(); err != nil {
-		return 0, 0, fmt.Errorf("提交事务失败: %w", err)
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取 MySQL 日志快照失败: %w", err)
 	}
 
-	return len(records), lastID, nil
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("提交 SQLite 日志快照失败: %w", err)
+	}
+
+	log.Printf("[INFO] 日志快照恢复完成，共 %d 条（%d/%d 列，不复制 id）", totalRestored, len(commonCols), len(mysqlCols))
+	return nil
 }
