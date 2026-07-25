@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title data-i18n="www.usage.title">API Usage - ccLoad</title>
-  <meta name="description" data-i18n-content="www.usage.meta.description" content="Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including native Codex Alpha Search passthrough.">
+  <meta name="description" data-i18n-content="www.usage.meta.description" content="Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including Responses WebSocket and native Codex Alpha Search passthrough.">
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="icon" type="image/x-icon" href="favicon.ico">
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
+  <link rel="stylesheet" href="assets/css/www.css?v=20260725-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260720-1"></script>
-  <script defer src="assets/locales/en.js?v=20260720-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
+  <script defer src="assets/locales/en.js?v=20260725-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260615-13"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -24,7 +24,7 @@
       <span class="www-eyebrow">API Usage</span>
       <h1 class="www-page-title" data-i18n="www.usage.title">API Usage</h1>
       <p class="www-page-subtitle" data-i18n="www.usage.subtitle">
-        ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints. Clients only need a new base URL and token.
+        ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including Responses WebSocket and native Codex Alpha Search passthrough. Clients only need a new base URL and token.
       </p>
       <div class="www-badge-row" aria-label="Compatible protocols">
         <span class="www-badge">Anthropic Messages</span>
@@ -99,6 +99,11 @@
                 <td>Responses-compatible endpoint for Codex-style requests and streams.</td>
               </tr>
               <tr>
+                <td>Codex WebSocket clients</td>
+                <td><code>GET /v1/responses</code></td>
+                <td>Authenticated Responses WebSocket; the direct-route alias is <code>GET /backend-api/codex/responses</code>.</td>
+              </tr>
+              <tr>
                 <td>Codex Alpha Search</td>
                 <td><code>POST /v1/alpha/search</code></td>
                 <td>Native Codex search passthrough. Only resolved Codex upstreams are eligible.</td>
@@ -120,6 +125,35 @@
               </tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="www-section">
+      <div class="www-container">
+        <div class="www-section-header">
+          <h2>Codex Responses WebSocket</h2>
+          <p>The downstream client keeps one authenticated WebSocket while each selected upstream candidate may use native Codex WebSocket or the existing HTTP/SSE bridge.</p>
+        </div>
+
+        <div class="www-doc-grid">
+          <article class="www-info-card">
+            <h3>Channel and session setup</h3>
+            <ul class="www-check-list">
+              <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
+              <li>Enable <code>websockets</code> only on channels whose resolved upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
+              <li>Keep <code>Session-Id</code>, or <code>prompt_cache_key</code>, stable across reconnects so ccLoad can retain transcript and upstream affinity.</li>
+            </ul>
+          </article>
+
+          <article class="www-info-card">
+            <h3>Failover boundary</h3>
+            <ul class="www-check-list">
+              <li>Before semantic output, HTTP/SSE &rarr; HTTP/SSE, native WebSocket &rarr; HTTP/SSE and native WebSocket &rarr; native WebSocket failover happens inside ccLoad.</li>
+              <li>HTTP/SSE &rarr; native WebSocket returns a retryable <code>502/server_error/upstream_unavailable</code> event and closes with code <code>1011</code>; the client must reconnect and replay the complete request.</li>
+              <li>After any semantic output, ccLoad does not switch transports or replay, preventing duplicate text, tool calls and charges.</li>
+            </ul>
+          </article>
         </div>
       </div>
     </section>
@@ -343,11 +377,12 @@
               <p>The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li>Channels: create, edit, delete and test upstream channels; import or export CSV.</li>
+              <li>Channels: create, edit, delete and test upstream channels; detect native WebSocket support; configure provider-specific cooldown rules; import or export CSV.</li>
               <li>Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li>Logs: filter requests by status code, channel, model and token to locate failures.</li>
               <li>Stats: inspect requests, tokens, cost, first-byte latency and health.</li>
               <li>Trends: observe RPM, cost and latency by time range.</li>
+              <li>Model test: run chat-style requests, calibrate statistical fingerprints and compare claimed models against saved baselines. Fingerprint sampling sends real upstream requests and incurs real cost.</li>
             </ul>
           </div>
           <figure class="www-media-frame">
