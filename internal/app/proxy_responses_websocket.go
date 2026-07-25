@@ -344,7 +344,9 @@ func (s *Server) executeResponsesWebsocketTurn(
 	startTime := time.Now()
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
+	thinkingEffort := extractThinkingEffortFromJSON(requestBody)
 	activeID := s.activeRequests.Register(startTime, modelName, c.ClientIP(), true)
+	s.activeRequests.SetThinkingEffort(activeID, thinkingEffort)
 	defer s.activeRequests.Remove(activeID)
 
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
@@ -364,7 +366,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		clientIP:        c.ClientIP(),
 		activeReqID:     activeID,
 		startTime:       startTime,
-		thinkingEffort:  extractThinkingEffortFromJSON(requestBody),
+		thinkingEffort:  thinkingEffort,
 		nativeCodexWS:   nativeCodexWS,
 		nativeCodexBody: bytes.Clone(nativeRequestBody),
 	}
