@@ -13,11 +13,11 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
 
   <!-- Styles -->
-  <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
+  <link rel="stylesheet" href="assets/css/www.css?v=20260725-1">
 
   <!-- Locale bundles + i18n -->
-  <script defer src="assets/locales/zh-CN.js?v=20260720-1"></script>
-  <script defer src="assets/locales/en.js?v=20260720-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
+  <script defer src="assets/locales/en.js?v=20260725-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
 
   <!-- Scripts -->
@@ -155,12 +155,12 @@
           </p>
         </div>
 
-        <!-- Auto update -->
+        <!-- Responses WebSocket -->
         <div class="www-feature-card">
-          <span class="www-feature-icon">⬆️</span>
-          <h3 class="www-feature-title" data-i18n="www.home.features.autoupdate.title">Auto Updates</h3>
-          <p class="www-feature-desc" data-i18n="www.home.features.autoupdate.desc">
-            Check for new releases every 12 hours by default, with the interval configurable from admin settings
+          <span class="www-feature-icon">🔗</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.websocket.title">Responses WebSocket</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.websocket.desc">
+            Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover
           </p>
         </div>
       </div>
@@ -174,11 +174,11 @@
         <div>
           <div class="www-section-header">
             <h2 data-i18n="www.home.admin.title">Not a black-box proxy</h2>
-            <p data-i18n="www.home.admin.desc">ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and chat-style model testing into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.</p>
+            <p data-i18n="www.home.admin.desc">ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.</p>
           </div>
           <ul class="www-check-list">
             <li data-i18n="www.home.admin.item1">Track requests, tokens, cost and latency system-wide as an administrator or within one API token's scope.</li>
-            <li data-i18n="www.home.admin.item2">Run chat-style model testing with image upload, reasoning level, built-in search and streaming controls.</li>
+            <li data-i18n="www.home.admin.item2">Run chat-style tests or compare statistical model fingerprints against saved baselines.</li>
             <li data-i18n="www.home.admin.item3">Configure multiple URLs, multiple keys, RPM limits, concurrency limits and daily cost limits per channel.</li>
             <li data-i18n="www.home.admin.item4">Export conversations as Markdown or HTML, then inspect masked upstream requests and responses when tracking protocol transform issues.</li>
           </ul>

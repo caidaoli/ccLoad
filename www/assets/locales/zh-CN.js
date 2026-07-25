@@ -34,6 +34,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
   'www.home.features.cost.desc': '渠道每日成本限额、API 令牌费用限额，精确到微美元',
   'www.home.features.multiapi.title': '多 API 兼容',
   'www.home.features.multiapi.desc': 'Claude/Codex/Gemini/OpenAI 四大协议完全兼容，一套配置走天下',
+  'www.home.features.websocket.title': 'Responses WebSocket',
+  'www.home.features.websocket.desc': 'Codex 客户端保持一条 WebSocket，由 ccLoad 在原生 WebSocket 与 HTTP/SSE 上游之间桥接，并按完整会话故障切换',
   'www.home.features.token.title': '本地 Token 计算',
   'www.home.features.token.desc': '<5ms 响应，93%+ 准确度，无需调用 API 即可计算 Token 数量',
   'www.home.features.protocol.title': '协议转换',
@@ -51,9 +53,9 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
 
   // 首页 - 管理后台预览
   'www.home.admin.title': '不是黑盒代理',
-  'www.home.admin.desc': 'ccLoad 把渠道、模型、令牌、成本、首字延迟、失败原因和对话式模型测试放到同一个后台里。管理员负责配置网关；API Token 用户只能只读查看获准渠道和自身用量数据。',
+  'www.home.admin.desc': 'ccLoad 把渠道、模型、令牌、成本、首字延迟、失败原因和模型验证放到同一个后台里。管理员负责配置网关；API Token 用户只能只读查看获准渠道和自身用量数据。',
   'www.home.admin.item1': '管理员可查看全局请求、Token、成本和延迟；API Token 会话只显示自身作用域。',
-  'www.home.admin.item2': '对话式模型测试支持图片上传、思考等级、模型内置搜索和流式控制。',
+  'www.home.admin.item2': '既能对话式测试模型，也能把统计指纹与已保存基线做比较。',
   'www.home.admin.item3': '渠道支持多 URL、多 Key、RPM 限制、并发限制和每日成本限额。',
   'www.home.admin.item4': '导出对话为 Markdown / HTML 后，可结合调试日志查看脱敏后的上游请求与响应，定位协议转换问题。',
   'www.home.admin.usage': '查看使用指南',
@@ -99,8 +101,8 @@ window.I18N_LOCALES['zh-CN'] = Object.assign(window.I18N_LOCALES['zh-CN'] || {},
 
   // 使用页
   'www.usage.title': 'API 使用',
-  'www.usage.meta.description': 'ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例，包含原生 Codex Alpha Search 透传。',
-  'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，并支持原生 Codex Alpha Search 透传；客户端只需要换 base URL 和访问令牌',
+  'www.usage.meta.description': 'ccLoad Anthropic、OpenAI、Gemini、Codex 兼容 API 使用示例，包含 Responses WebSocket 与原生 Codex Alpha Search 透传。',
+  'www.usage.subtitle': 'ccLoad 暴露标准 Anthropic、OpenAI、Gemini 与 Codex 兼容端点，并支持 Responses WebSocket 与原生 Codex Alpha Search 透传；客户端只需要换 base URL 和访问令牌',
 
   // 反馈页
   'www.feedback.title': '反馈支持',

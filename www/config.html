@@ -10,10 +10,10 @@
   <link rel="apple-touch-icon" href="apple-touch-icon.png">
 
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
-  <link rel="stylesheet" href="assets/css/www.css?v=breathe-v2-20260615-13">
+  <link rel="stylesheet" href="assets/css/www.css?v=20260725-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260720-1"></script>
-  <script defer src="assets/locales/en.js?v=20260720-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
+  <script defer src="assets/locales/en.js?v=20260725-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260615-13"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -197,6 +197,7 @@
               <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
+              <li><code>websockets</code>: Codex channels only. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
             </ul>
           </article>
 
@@ -218,6 +219,12 @@
         <div class="www-callout www-mt-4">
           <strong>An explicit channel-wide fixed-window quota is treated as a real channel cooldown.</strong> When the upstream provides a concrete channel reset time, ccLoad waits for that reset instead of guessing with exponential backoff.
         </div>
+        <div class="www-callout www-mt-4">
+          <strong>Provider-specific failures belong in channel cooldown detection rules.</strong> Rules run in priority order and the first match wins. Match status and response text, choose key/model/channel scope, then use a fixed duration or parse the provider's reset time. Test an unsaved rule against a raw response or standard upstream log before saving; no match or an unusable reset time falls back to the built-in classifier.
+        </div>
+        <div class="www-callout www-mt-4">
+          <strong>Bulk model cleanup is explicit.</strong> After refreshing selected channels, the console can lowercase model names or remove source prefixes in one operation. Review the selected channels first because these actions change the persisted model list.
+        </div>
       </div>
     </section>
 
@@ -237,7 +244,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
             <h3>Protocol timeouts</h3>
-            <p>Supports global first-byte timeout and non-stream timeout, plus Anthropic, Codex, OpenAI and Gemini overrides by upstream protocol.</p>
+            <p><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📈</span>
@@ -258,6 +265,11 @@
             <span class="www-doc-icon">🧪</span>
             <h3>Channel checks</h3>
             <p>Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🔗</span>
+            <h3>WebSocket sessions</h3>
+            <p><code>responses_ws_max_sessions</code> caps process-wide execution sessions; <code>0</code> uses the default of 32. <code>responses_ws_session_ttl_minutes</code> controls idle transcript retention and must be at least one minute. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📚</span>

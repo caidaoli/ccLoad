@@ -34,6 +34,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.cost.desc': 'Daily cost limits per channel, API token cost limits, accurate to micro-dollars',
   'www.home.features.multiapi.title': 'Multi-API Support',
   'www.home.features.multiapi.desc': 'Fully compatible with Claude/Codex/Gemini/OpenAI, one config for all',
+  'www.home.features.websocket.title': 'Responses WebSocket',
+  'www.home.features.websocket.desc': 'Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover',
   'www.home.features.token.title': 'Local Token Count',
   'www.home.features.token.desc': '<5ms response, 93%+ accuracy, count tokens without API calls',
   'www.home.features.protocol.title': 'Protocol Transform',
@@ -51,9 +53,9 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Home - Admin preview
   'www.home.admin.title': 'Not a black-box proxy',
-  'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and chat-style model testing into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.',
+  'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.',
   'www.home.admin.item1': 'Track requests, tokens, cost and latency system-wide as an administrator or within one API token\'s scope.',
-  'www.home.admin.item2': 'Run chat-style model testing with image upload, reasoning level, built-in search and streaming controls.',
+  'www.home.admin.item2': 'Run chat-style tests or compare statistical model fingerprints against saved baselines.',
   'www.home.admin.item3': 'Configure multiple URLs, multiple keys, RPM limits, concurrency limits and daily cost limits per channel.',
   'www.home.admin.item4': 'Export conversations as Markdown or HTML, then inspect masked upstream requests and responses when tracking protocol transform issues.',
   'www.home.admin.usage': 'View API usage',
@@ -99,8 +101,8 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
 
   // Usage
   'www.usage.title': 'API Usage',
-  'www.usage.meta.description': 'Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including native Codex Alpha Search passthrough.',
-  'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including native Codex Alpha Search passthrough. Clients only need a new base URL and token.',
+  'www.usage.meta.description': 'Use ccLoad with Anthropic, OpenAI, Gemini and Codex-compatible API endpoints, including Responses WebSocket and native Codex Alpha Search passthrough.',
+  'www.usage.subtitle': 'ccLoad exposes Anthropic, OpenAI, Gemini, and Codex-compatible endpoints, including Responses WebSocket and native Codex Alpha Search passthrough. Clients only need a new base URL and token.',
 
   // Feedback
   'www.feedback.title': 'Support',

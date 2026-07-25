@@ -105,16 +105,18 @@ cp -r www /path/to/webroot/
 ### ✅ 配置手册（config.html）
 - 启动环境变量表
 - SQLite / MySQL / PostgreSQL / Hybrid 存储模式对比
-- 渠道配置说明
+- 渠道配置、原生 WebSocket 检测和供应商冷却探测规则
+- 全局流式总超时、首字节/非流式协议覆盖和 WebSocket 会话限制
+- 批量模型名小写与来源前缀清理
 - API Token 模型、渠道白名单/黑名单、费用和并发限制
 - 管理后台热配置说明
 - 安全上线检查
 
 ### ✅ API 使用（usage.html）
 - Anthropic / OpenAI / Gemini / Codex / Token 统计示例
-- 端点速查表
+- HTTP 与 Responses WebSocket 端点速查表、会话和故障切换边界
 - 多协议内置搜索映射说明
-- 管理后台使用说明
+- 管理后台与模型统计指纹比较说明
 - 渠道管理 API 与 CSV 导入导出
 
 ### ✅ 反馈渠道（feedback.html）
