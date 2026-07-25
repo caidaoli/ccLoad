@@ -892,10 +892,6 @@ ccLoad 使用的核心技术栈：
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，Images API自动放宽至20MB） |
-| `CCLOAD_RESPONSES_WS_MAX_SESSIONS` | `32` | 进程级 Responses WebSocket execution session 上限 |
-| `CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN` | `4` | 单个认证 API Token 的 execution session 上限 |
-| `CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION` | `2` | 单个稳定 session 可同时附着的下游连接上限 |
-| `CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES` | `60` | 空闲 execution session 保留分钟数 |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | 超时错误(597/598)初始冷却时间（秒） |
@@ -943,15 +939,16 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 |--------|--------|------|
 | `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
-| `upstream_first_byte_timeout` | `0` | 上游首个有效流内容超时（秒，0=禁用，仅流式） |
+| `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
+| `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
 | `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
-| `anthropic_first_byte_timeout` | `0` | Anthropic 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
+| `anthropic_first_byte_timeout` | `0` | Anthropic 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `anthropic_non_stream_timeout` | `0` | Anthropic 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `codex_first_byte_timeout` | `0` | Codex 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
+| `codex_first_byte_timeout` | `0` | Codex 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `codex_non_stream_timeout` | `0` | Codex 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `openai_first_byte_timeout` | `0` | OpenAI 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
+| `openai_first_byte_timeout` | `0` | OpenAI 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `openai_non_stream_timeout` | `0` | OpenAI 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
-| `gemini_first_byte_timeout` | `0` | Gemini 上游首个有效流内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
+| `gemini_first_byte_timeout` | `0` | Gemini 流式请求首个有效内容超时（秒，0=使用全局 `upstream_first_byte_timeout`） |
 | `gemini_non_stream_timeout` | `0` | Gemini 非流式请求超时（秒，0=使用全局 `non_stream_timeout`） |
 | `enable_health_score` | `false` | 启用基于健康度的渠道动态排序 |
 | `success_rate_penalty_weight` | `100` | 成功率惩罚权重（见下方说明） |

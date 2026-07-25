@@ -64,6 +64,7 @@ type Server struct {
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int           // 单个渠道内最大Key重试次数
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 仅供测试注入（缩短 idle/ping 间隔以覆盖保活路径）；生产始终为零值，
 	// 实际取值回退到 proxy_responses_websocket.go 的常量，见 responsesWebsocketTimeouts()。
@@ -162,6 +163,7 @@ func NewServer(store storage.Store) *Server {
 		// 运行时配置（启动时加载，修改后重启生效）
 		maxKeyRetries:       runtimeCfg.MaxKeyRetries,
 		firstByteTimeout:    runtimeCfg.FirstByteTimeout,
+		streamTimeout:       runtimeCfg.StreamTimeout,
 		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
 		channelTypeTimeouts: runtimeCfg.ChannelTypeTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
@@ -188,7 +190,7 @@ func NewServer(store storage.Store) *Server {
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
 		activeRequests:             newActiveRequestManager(),
-		responsesExecutionSessions: newResponsesExecutionSessionStore(0),
+		responsesExecutionSessions: newResponsesExecutionSessionStore(configService),
 		channelRPMLimiter:          newChannelRPMLimiter(time.Now),
 		channelConcurrencyLimiter:  newChannelConcurrencyLimiter(),
 	}
@@ -313,6 +315,7 @@ func (s *Server) StartModelCatalogSync() {
 
 type channelTypeTimeoutConfig struct {
 	FirstByteTimeout time.Duration
+	StreamTimeout    time.Duration
 	NonStreamTimeout time.Duration
 }
 
@@ -320,6 +323,7 @@ type channelTypeTimeoutConfig struct {
 type serverRuntimeConfig struct {
 	MaxKeyRetries       int
 	FirstByteTimeout    time.Duration
+	StreamTimeout       time.Duration
 	NonStreamTimeout    time.Duration
 	ChannelTypeTimeouts map[string]channelTypeTimeoutConfig
 	LogRetentionDays    int
@@ -340,6 +344,12 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		firstByteTimeout = 0
 	}
 
+	streamTimeout := cs.GetDuration("stream_timeout", 0)
+	if streamTimeout < 0 {
+		log.Printf("[WARN] 无效的 stream_timeout=%v（必须 >= 0，0=禁用），已设为 0", streamTimeout)
+		streamTimeout = 0
+	}
+
 	nonStreamTimeout := cs.GetDuration("non_stream_timeout", 120*time.Second)
 	if nonStreamTimeout < 0 {
 		log.Printf("[WARN] 无效的 non_stream_timeout=%v（必须 >= 0，0=禁用），已使用默认值 %v", nonStreamTimeout, 120*time.Second)
@@ -358,6 +368,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	return serverRuntimeConfig{
 		MaxKeyRetries:       maxKeyRetries,
 		FirstByteTimeout:    firstByteTimeout,
+		StreamTimeout:       streamTimeout,
 		NonStreamTimeout:    nonStreamTimeout,
 		ChannelTypeTimeouts: channelTypeTimeouts,
 		LogRetentionDays:    logRetentionDays,
@@ -782,10 +793,13 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 }
 
 // GetWriteTimeout 返回建议的 HTTP WriteTimeout
-// 基于 nonStreamTimeout 动态计算，确保传输层超时 >= 业务层超时
+// 基于请求总超时动态计算，确保传输层不会早于业务层截断响应
 func (s *Server) GetWriteTimeout() time.Duration {
 	const minWriteTimeout = 120 * time.Second
 	maxTimeout := s.nonStreamTimeout
+	if s.streamTimeout > maxTimeout {
+		maxTimeout = s.streamTimeout
+	}
 	for _, timeouts := range s.channelTypeTimeouts {
 		if timeouts.NonStreamTimeout > maxTimeout {
 			maxTimeout = timeouts.NonStreamTimeout
@@ -800,6 +814,7 @@ func (s *Server) GetWriteTimeout() time.Duration {
 func (s *Server) resolveProtocolTimeouts(cfg *model.Config, plan protocol.TransformPlan) channelTypeTimeoutConfig {
 	timeouts := channelTypeTimeoutConfig{
 		FirstByteTimeout: s.firstByteTimeout,
+		StreamTimeout:    s.streamTimeout,
 		NonStreamTimeout: s.nonStreamTimeout,
 	}
 

@@ -20,6 +20,9 @@ import (
 // ErrUpstreamFirstByteTimeout 是上游首字节超时的统一错误标识，避免依赖具体报错文案。
 var ErrUpstreamFirstByteTimeout = errors.New("upstream first byte timeout")
 
+// ErrUpstreamStreamTimeout 是上游流式请求总超时的统一错误标识。
+var ErrUpstreamStreamTimeout = errors.New("upstream stream timeout")
+
 // ErrUpstreamEmptyResponse 是上游 200 但无响应体的统一错误标识。
 var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
 
@@ -980,6 +983,9 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 	if errors.Is(err, ErrUpstreamFirstByteTimeout) {
 		return StatusFirstByteTimeout, ErrorLevelChannel, true
 	}
+	if errors.Is(err, ErrUpstreamStreamTimeout) {
+		return StatusStreamIncomplete, ErrorLevelChannel, true
+	}
 
 	// 快速路径1.2：上游 200 空体是坏网关，不是成功响应。
 	if errors.Is(err, ErrUpstreamEmptyResponse) {
@@ -1016,7 +1022,13 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 // IsModelScopedNetworkError 判断网络错误是否只应冷却当前实际模型。
 // DNS、连接拒绝、路由不可达等基础设施错误仍属于渠道级。
 func IsModelScopedNetworkError(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrUpstreamStreamTimeout) {
+		return true
+	}
+	if errors.Is(err, context.Canceled) {
 		return false
 	}
 	if errors.Is(err, ErrUpstreamFirstByteTimeout) ||

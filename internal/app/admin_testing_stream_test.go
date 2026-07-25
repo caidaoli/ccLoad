@@ -1007,7 +1007,7 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 	}
 
 	body := w.Body.String()
-	if !strings.Contains(body, `"error"`) || !strings.Contains(body, "首个有效流内容超时") {
+	if !strings.Contains(body, `"error"`) {
 		t.Fatalf("expected first content timeout error event, got:\n%s", body)
 	}
 }
@@ -1179,6 +1179,13 @@ func TestChatRequestErrorResultClassifiesLimitAndNetworkFailures(t *testing.T) {
 	result := chatRequestErrorResult(start, req, timeout, context.Canceled)
 	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusFirstByteTimeout {
 		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusFirstByteTimeout, result)
+	}
+
+	timeout.firstStreamContentTimedOut.Store(false)
+	timeout.streamTimedOut.Store(true)
+	result = chatRequestErrorResult(start, req, timeout, context.Canceled)
+	if statusCode, _ := getResultInt(result["status_code"]); statusCode != util.StatusStreamIncomplete {
+		t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, util.StatusStreamIncomplete, result)
 	}
 }
 

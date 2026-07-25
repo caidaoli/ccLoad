@@ -867,10 +867,6 @@ Check out the awesome admin dashboard 👇
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
 | `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, Images API auto-expands to 20MB) |
-| `CCLOAD_RESPONSES_WS_MAX_SESSIONS` | `32` | Process-wide Responses WebSocket execution-session limit |
-| `CCLOAD_RESPONSES_WS_MAX_SESSIONS_PER_TOKEN` | `4` | Execution-session limit per authenticated API token |
-| `CCLOAD_RESPONSES_WS_MAX_ATTACHMENTS_PER_SESSION` | `2` | Concurrent downstream connection limit for one stable session |
-| `CCLOAD_RESPONSES_WS_SESSION_TTL_MINUTES` | `60` | Idle execution-session retention time in minutes |
 | `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
 | `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
@@ -919,6 +915,7 @@ These settings have been migrated to database, managed via Web interface `/web/s
 | `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
 | `max_key_retries` | `3` | Max key retries within single channel |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
+| `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
 | `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
 | `anthropic_first_byte_timeout` | `0` | Anthropic first valid stream content timeout (seconds, 0=use global `upstream_first_byte_timeout`) |
 | `anthropic_non_stream_timeout` | `0` | Anthropic non-stream request timeout (seconds, 0=use global `non_stream_timeout`) |

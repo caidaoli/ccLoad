@@ -84,7 +84,7 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 }
 
 func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(time.Hour)
+	store := newResponsesExecutionSessionStore(nil)
 	store.maxSessions = 1
 	defer store.close()
 
@@ -105,7 +105,7 @@ func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing
 // session is only reclaimed once it crosses the TTL, via the same sweep that
 // already runs at the top of acquire().
 func TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired(t *testing.T) {
-	store := newResponsesExecutionSessionStore(time.Hour)
+	store := newResponsesExecutionSessionStore(nil)
 	store.maxSessions = 1
 	defer store.close()
 
@@ -136,7 +136,7 @@ func TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired(t *te
 }
 
 func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(time.Hour)
+	store := newResponsesExecutionSessionStore(nil)
 	store.maxSessions = 1
 	defer store.close()
 
@@ -1359,7 +1359,7 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "expiring-session", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	env.server.responsesExecutionSessions.ttl = 20 * time.Millisecond
+	env.server.responsesExecutionSessions.ttlOverride = 20 * time.Millisecond
 	first := dialResponsesWebsocket(t, env.engine)
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring first deadline: %v", err)

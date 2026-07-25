@@ -323,12 +323,20 @@ func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelReques
 	if timeout != nil && timeout.firstStreamContentTimeoutTriggered() {
 		threshold := timeout.firstByteTimeout
 		errorMsg = fmt.Sprintf(
-			"上游首个有效流内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v",
+			"流式请求首个有效内容超时: upstream first valid stream content timeout after %.2fs (threshold=%v): %v",
 			time.Since(start).Seconds(),
 			threshold,
 			err,
 		)
 		statusCode = util.StatusFirstByteTimeout
+	} else if timeout != nil && timeout.streamTimeoutTriggered() {
+		errorMsg = fmt.Sprintf(
+			"流式请求总超时: upstream stream timeout after %.2fs (threshold=%v): %v",
+			time.Since(start).Seconds(),
+			timeout.streamTimeout,
+			err,
+		)
+		statusCode = util.StatusStreamIncomplete
 	} else if testReq != nil && !testReq.Stream && timeout != nil && timeout.nonStreamTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
 		errorMsg = fmt.Sprintf(
 			"非流式请求超时: upstream timeout after %.2fs (threshold=%v): %v",

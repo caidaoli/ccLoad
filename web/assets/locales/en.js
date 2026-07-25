@@ -1036,7 +1036,9 @@ window.I18N_LOCALES['en'] = {
   // Group names
   'settings.group.channel': 'Channel & Testing',
   'settings.group.model': 'Model Matching',
-  'settings.group.timeout': 'Timeout',
+  'settings.group.streamTimeout': 'Stream Request Timeout',
+  'settings.group.nonStreamTimeout': 'Non-stream Request Timeout',
+  'settings.group.websocket': 'WebSocket',
   'settings.group.health': 'Dynamic Channel Sorting',
   'settings.group.cooldown': 'Cooldown Fallback',
   'settings.group.log': 'Logging',
@@ -1062,6 +1064,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.log_retention_days': 'Log retention days (-1 = permanent, 1-365 days)',
   'settings.desc.max_key_retries': 'Max key retries per channel',
   'settings.desc.upstream_first_byte_timeout': 'Upstream first valid stream content timeout (seconds, 0 = disabled, stream only)',
+  'settings.desc.stream_timeout': 'Stream request total timeout (seconds, 0 = disabled)',
   'settings.desc.non_stream_timeout': 'Non-stream request timeout (seconds, 0 = disabled)',
   'settings.desc.anthropic_first_byte_timeout': 'Anthropic first valid stream content timeout (seconds, 0 = use global first-byte timeout)',
   'settings.desc.anthropic_non_stream_timeout': 'Anthropic non-stream request timeout (seconds, 0 = use global non-stream timeout)',
@@ -1090,6 +1093,8 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.debug_log_enabled': 'Enable debug logging (record raw upstream request/response data)',
   'settings.desc.debug_log_retention_minutes': 'Debug log retention duration (minutes, 1-1440)',
   'settings.desc.auto_refresh_interval_seconds': 'Page auto-refresh interval (seconds, 0 = disabled, recommended ≥30; skipped while a modal is open)',
+  'settings.desc.responses_ws_max_sessions': 'Responses WebSocket execution session limit (process-wide, 0 = use default 32)',
+  'settings.desc.responses_ws_session_ttl_minutes': 'Responses WebSocket idle session retention (minutes, ≥1)',
   // Messages
   'settings.msg.saveSuccess': 'Settings saved successfully',
   'settings.msg.saveFailed': 'Settings save failed',

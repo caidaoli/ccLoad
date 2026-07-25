@@ -160,6 +160,11 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 	if got := s.GetWriteTimeout(); got != 300*time.Second {
 		t.Fatalf("GetWriteTimeout()=%v, want 300s", got)
 	}
+
+	s.streamTimeout = 600 * time.Second
+	if got := s.GetWriteTimeout(); got != 600*time.Second {
+		t.Fatalf("GetWriteTimeout()=%v, want 600s", got)
+	}
 }
 
 func TestServer_GetWriteTimeout_IncludesChannelTypeNonStreamTimeout(t *testing.T) {
