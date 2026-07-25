@@ -47,23 +47,27 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	now := model.JSONTime{Time: time.Now()}
 	for _, entry := range []*model.LogEntry{
 		{
-			Time:                 now,
-			Model:                "gpt-5.6",
-			ActualModel:          "gpt-5.6-2026-07-01",
-			LogSource:            model.LogSourceProxy,
-			ChannelID:            secretChannel.ID,
-			ChannelName:          "secret-channel",
-			StatusCode:           http.StatusOK,
-			Message:              "upstream https://secret-upstream.example rejected " + googleKey + " and " + relayKey + " on secret-channel",
-			AuthTokenID:          42,
-			AuthTokenDescription: "owner",
-			APIKeyUsed:           googleKey,
-			APIKeyHash:           "secret-hash",
-			ClientIP:             "10.0.0.1",
-			BaseURL:              "https://secret-upstream.example",
-			Cost:                 1.25,
-			CostMultiplier:       0,
-			UpstreamWebsocket:    true,
+			Time:                     now,
+			Model:                    "gpt-5.6",
+			ActualModel:              "gpt-5.6-2026-07-01",
+			LogSource:                model.LogSourceProxy,
+			ChannelID:                secretChannel.ID,
+			ChannelName:              "secret-channel",
+			StatusCode:               http.StatusOK,
+			Message:                  "upstream https://secret-upstream.example rejected " + googleKey + " and " + relayKey + " on secret-channel",
+			AuthTokenID:              42,
+			AuthTokenDescription:     "owner",
+			APIKeyUsed:               googleKey,
+			APIKeyHash:               "secret-hash",
+			ClientIP:                 "10.0.0.1",
+			BaseURL:                  "https://secret-upstream.example",
+			InputTokens:              1_000,
+			OutputTokens:             500,
+			CacheReadInputTokens:     250,
+			CacheCreationInputTokens: 125,
+			Cost:                     1.25,
+			CostMultiplier:           0,
+			UpstreamWebsocket:        true,
 		},
 		{
 			Time:        now,
@@ -113,6 +117,27 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	}
 	if effectiveCost != 0 {
 		t.Fatalf("effective_cost=%v, want 0 for a free channel", effectiveCost)
+	}
+	var costBreakdown struct {
+		Input struct {
+			Quantity int `json:"quantity"`
+		} `json:"input"`
+		Output struct {
+			Quantity int `json:"quantity"`
+		} `json:"output"`
+		CacheRead struct {
+			Quantity int `json:"quantity"`
+		} `json:"cache_read"`
+		CacheWrite struct {
+			Quantity int `json:"quantity"`
+		} `json:"cache_write"`
+	}
+	if err := json.Unmarshal(entry["cost_breakdown"], &costBreakdown); err != nil {
+		t.Fatalf("decode cost_breakdown: %v", err)
+	}
+	if costBreakdown.Input.Quantity != 1_000 || costBreakdown.Output.Quantity != 500 ||
+		costBreakdown.CacheRead.Quantity != 250 || costBreakdown.CacheWrite.Quantity != 125 {
+		t.Fatalf("unexpected cost breakdown quantities: %+v", costBreakdown)
 	}
 	var message string
 	if err := json.Unmarshal(entry["message"], &message); err != nil {

@@ -997,20 +997,15 @@ func computeRequestCost(model string, serviceTier string, res *fwResult) float64
 	if res == nil {
 		return 0
 	}
-	if serviceTier == "fast" && util.IsFastModeModel(model) {
-		return util.CalculateFastModeCost(
-			res.InputTokens, res.OutputTokens,
-			res.CacheReadInputTokens, res.Cache5mInputTokens, res.Cache1hInputTokens,
-		)
-	}
-	return util.CalculateCostDetailed(
+	return util.CalculateStandardCostBreakdown(
 		model,
+		serviceTier,
 		res.InputTokens,
 		res.OutputTokens,
 		res.CacheReadInputTokens,
 		res.Cache5mInputTokens,
 		res.Cache1hInputTokens,
-	) * util.OpenAIServiceTierMultiplier(model, serviceTier)
+	).Total
 }
 
 // truncateErr 截断错误信息到512字符（防止日志过长）

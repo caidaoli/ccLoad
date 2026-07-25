@@ -41,7 +41,7 @@ func (s *Server) HandleErrors(c *gin.Context) {
 		RespondJSONWithCount(c, http.StatusOK, projectTokenLogs(logs, channels), total)
 		return
 	}
-	RespondJSONWithCount(c, http.StatusOK, logs, total)
+	RespondJSONWithCount(c, http.StatusOK, projectDashboardLogs(logs), total)
 }
 
 func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (map[int64]tokenLogChannelMetadata, error) {

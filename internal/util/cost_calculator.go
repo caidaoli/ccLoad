@@ -20,6 +20,66 @@ type ImageGenerationToolUsage struct {
 	ImageOutputTokens int
 }
 
+// CostComponent 是一项标准 Token 成本的可展示计算过程。
+// PricePerMillion 单位为美元/百万 Token，Cost 单位为美元。
+type CostComponent struct {
+	PricePerMillion float64 `json:"price_per_million"`
+	Quantity        int     `json:"quantity"`
+	Cost            float64 `json:"cost"`
+}
+
+// StandardCostBreakdown 是请求标准成本的 Token 计费明细。
+// CacheWrite 将 5m/1h 两种缓存创建费用合并为一项；两者同时存在时，
+// PricePerMillion 为按 Token 数加权后的实际单价。
+type StandardCostBreakdown struct {
+	Input      CostComponent `json:"input"`
+	Output     CostComponent `json:"output"`
+	CacheRead  CostComponent `json:"cache_read"`
+	CacheWrite CostComponent `json:"cache_write"`
+	Total      float64       `json:"total"`
+}
+
+func newCostComponent(quantity int, pricePerMillion float64) CostComponent {
+	return CostComponent{
+		PricePerMillion: pricePerMillion,
+		Quantity:        quantity,
+		Cost:            float64(quantity) * pricePerMillion / 1_000_000,
+	}
+}
+
+func newCacheWriteCostComponent(cache5mTokens, cache1hTokens int, inputPricePerMillion float64) CostComponent {
+	quantity := cache5mTokens + cache1hTokens
+	cost := (float64(cache5mTokens)*inputPricePerMillion*cacheWrite5mMultiplier +
+		float64(cache1hTokens)*inputPricePerMillion*cacheWrite1hMultiplier) / 1_000_000
+	pricePerMillion := 0.0
+	if quantity > 0 {
+		pricePerMillion = cost * 1_000_000 / float64(quantity)
+	}
+	return CostComponent{
+		PricePerMillion: pricePerMillion,
+		Quantity:        quantity,
+		Cost:            cost,
+	}
+}
+
+func scaleCostBreakdown(breakdown StandardCostBreakdown, multiplier float64) StandardCostBreakdown {
+	if multiplier == 1 {
+		return breakdown
+	}
+	components := []*CostComponent{
+		&breakdown.Input,
+		&breakdown.Output,
+		&breakdown.CacheRead,
+		&breakdown.CacheWrite,
+	}
+	for _, component := range components {
+		component.PricePerMillion *= multiplier
+		component.Cost *= multiplier
+	}
+	breakdown.Total *= multiplier
+	return breakdown
+}
+
 type imageGenerationToolPricing struct {
 	TextInputPrice   float64
 	TextCachedPrice  float64
@@ -152,11 +212,35 @@ func selectTokenPricingTier(tiers []TokenPricingTier, inputTokens int) TokenPric
 //
 // 返回：总成本（美元），如果模型未知则返回0.0
 func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
+	return calculateCostBreakdownDetailed(model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
+}
+
+// CalculateStandardCostBreakdown 返回日志页展示所需的标准成本计算过程。
+// serviceTier 与实际请求计费语义一致，包含 OpenAI priority/flex 和 Anthropic fast 定价。
+func CalculateStandardCostBreakdown(
+	model, serviceTier string,
+	inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int,
+) StandardCostBreakdown {
+	if serviceTier == "fast" && IsFastModeModel(model) {
+		return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
+	}
+	breakdown := calculateCostBreakdownDetailed(
+		model,
+		inputTokens,
+		outputTokens,
+		cacheReadTokens,
+		cache5mTokens,
+		cache1hTokens,
+	)
+	return scaleCostBreakdown(breakdown, OpenAIServiceTierMultiplier(model, serviceTier))
+}
+
+func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	// 防御性检查:拒绝负数token
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
 		log.Printf("[ERROR] 检测到负数 token（model=%s）: input=%d output=%d cache_read=%d cache_5m=%d cache_1h=%d",
 			model, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens)
-		return 0.0
+		return StandardCostBreakdown{}
 	}
 
 	pricing, ok := getPricing(model)
@@ -164,13 +248,11 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 		// 尝试模糊匹配(例如:claude-3-opus-xxx → claude-3-opus)
 		pricing, ok = fuzzyMatchModel(model)
 		if !ok {
-			return 0.0 // 未知模型
+			return StandardCostBreakdown{} // 未知模型
 		}
 	}
 
-	// 成本计算公式(单位:美元)
-	// 注意:价格是per 1M tokens,需要除以1,000,000
-	cost := 0.0
+	breakdown := StandardCostBreakdown{}
 
 	// 分段定价逻辑（当前用于 Gemini / Qwen / MiMo / MiniMax-M3 系列）
 	// 默认仅按非缓存输入判断；仅 MiMo 这类「input + cache_read 总量分档」的模型
@@ -200,54 +282,42 @@ func CalculateCostDetailed(model string, inputTokens, outputTokens, cacheReadTok
 	}
 
 	// 1. 基础输入token成本（inputTokens已由解析层归一化，无需再处理平台差异）
-	if inputTokens > 0 {
-		cost += float64(inputTokens) * inputPricePerM / 1_000_000
-	}
+	breakdown.Input = newCostComponent(inputTokens, inputPricePerM)
 
 	// 2. 输出token成本
-	if outputTokens > 0 {
-		cost += float64(outputTokens) * outputPricePerM / 1_000_000
-	}
+	breakdown.Output = newCostComponent(outputTokens, outputPricePerM)
 
 	// 3. 缓存读取成本（OpenAI按模型系列有不同折扣率）
-	if cacheReadTokens > 0 {
-		cacheReadPrice := pricing.CacheReadPrice
-		if hasSelectedTier && selectedTier.HasCacheReadPrice {
-			cacheReadPrice = selectedTier.CacheReadPrice
-		} else if !pricing.HasCacheReadPrice {
-			cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
-			if isOpenAIModel(model) {
-				// OpenAI缓存折扣率按模型系列区分（2025-12官方定价）
-				cacheMultiplier = getOpenAICacheMultiplier(model)
-			} else if isOpusModel(model) {
-				cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
-			}
-			cacheReadPrice = inputPricePerM * cacheMultiplier
-		} else if useHighPricing && pricing.CacheReadPriceHigh > 0 {
-			cacheReadPrice = pricing.CacheReadPriceHigh
+	cacheReadPrice := pricing.CacheReadPrice
+	if hasSelectedTier && selectedTier.HasCacheReadPrice {
+		cacheReadPrice = selectedTier.CacheReadPrice
+	} else if !pricing.HasCacheReadPrice {
+		cacheMultiplier := cacheReadMultiplierClaude // Claude全系/Gemini: 10%折扣
+		if isOpenAIModel(model) {
+			// OpenAI缓存折扣率按模型系列区分（2025-12官方定价）
+			cacheMultiplier = getOpenAICacheMultiplier(model)
+		} else if isOpusModel(model) {
+			cacheMultiplier = cacheReadMultiplierOpus // Opus: 10%折扣
 		}
-		cost += float64(cacheReadTokens) * cacheReadPrice / 1_000_000
+		cacheReadPrice = inputPricePerM * cacheMultiplier
+	} else if useHighPricing && pricing.CacheReadPriceHigh > 0 {
+		cacheReadPrice = pricing.CacheReadPriceHigh
 	}
+	breakdown.CacheRead = newCostComponent(cacheReadTokens, cacheReadPrice)
 
-	// 4. 5分钟缓存创建成本(1.25x基础价格,仅Claude支持)
-	if cache5mTokens > 0 {
-		cache5mWritePrice := inputPricePerM * cacheWrite5mMultiplier
-		cost += float64(cache5mTokens) * cache5mWritePrice / 1_000_000
-	}
+	// 4/5. 缓存创建成本。日志 UI 只展示一行，因此按 Token 数合并为实际加权单价。
+	breakdown.CacheWrite = newCacheWriteCostComponent(cache5mTokens, cache1hTokens, inputPricePerM)
 
-	// 5. 1小时缓存创建成本(2.0x基础价格,仅Claude支持)
-	if cache1hTokens > 0 {
-		cache1hWritePrice := inputPricePerM * cacheWrite1hMultiplier
-		cost += float64(cache1hTokens) * cache1hWritePrice / 1_000_000
-	}
+	breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
+		breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
 
 	// 6. 固定按次计费（图像生成等非token计费模型）
 	// 当token成本为0但模型有固定费用时，使用每次请求成本
-	if cost == 0 && pricing.FixedCostPerRequest > 0 {
-		return pricing.FixedCostPerRequest
+	if breakdown.Total == 0 && pricing.FixedCostPerRequest > 0 {
+		breakdown.Total = pricing.FixedCostPerRequest
 	}
 
-	return cost
+	return breakdown
 }
 
 // CalculateImageGenerationToolCost 计算 Responses image_generation 工具费用。
@@ -434,8 +504,12 @@ func IsFastModeModel(model string) bool {
 // 故缓存成本基于基础价 $5 而非 fast 价 $30，与标准路径 CalculateCostDetailed 一致。
 // 参考: https://docs.anthropic.com/en/docs/about-claude/pricing
 func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) float64 {
+	return calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens).Total
+}
+
+func calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
 	if inputTokens < 0 || outputTokens < 0 || cacheReadTokens < 0 || cache5mTokens < 0 || cache1hTokens < 0 {
-		return 0.0
+		return StandardCostBreakdown{}
 	}
 
 	// Fast mode 固定价格（全上下文统一，无 >200K 分段）
@@ -444,20 +518,16 @@ func CalculateFastModeCost(inputTokens, outputTokens, cacheReadTokens, cache5mTo
 	// 缓存倍率常量相对「基础 input 价」定义，缓存成本须基于基础价而非 fast 价
 	const baseInputPrice = 5.0 // claude-opus-4-6 基础 input 价 $5/MTok
 
-	cost := float64(inputTokens)*inputPrice/1e6 + float64(outputTokens)*outputPrice/1e6
-
-	// 缓存成本基于基础 input 价（倍率常量的定义基准）
-	if cacheReadTokens > 0 {
-		cost += float64(cacheReadTokens) * baseInputPrice * cacheReadMultiplierOpus / 1e6
-	}
-	if cache5mTokens > 0 {
-		cost += float64(cache5mTokens) * baseInputPrice * cacheWrite5mMultiplier / 1e6
-	}
-	if cache1hTokens > 0 {
-		cost += float64(cache1hTokens) * baseInputPrice * cacheWrite1hMultiplier / 1e6
+	breakdown := StandardCostBreakdown{
+		Input:     newCostComponent(inputTokens, inputPrice),
+		Output:    newCostComponent(outputTokens, outputPrice),
+		CacheRead: newCostComponent(cacheReadTokens, baseInputPrice*cacheReadMultiplierOpus),
 	}
 
-	return cost
+	breakdown.CacheWrite = newCacheWriteCostComponent(cache5mTokens, cache1hTokens, baseInputPrice)
+	breakdown.Total = breakdown.Input.Cost + breakdown.Output.Cost +
+		breakdown.CacheRead.Cost + breakdown.CacheWrite.Cost
+	return breakdown
 }
 
 // getOpenAICacheMultiplier 获取OpenAI模型的缓存价格倍数

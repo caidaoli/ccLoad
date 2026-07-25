@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,31 +22,74 @@ type tokenLogChannelMetadata struct {
 }
 
 type tokenLogEntry struct {
-	ID                       int64          `json:"id"`
-	Time                     model.JSONTime `json:"time"`
-	ChannelID                int64          `json:"channel_id"`
-	ChannelName              string         `json:"channel_name"`
-	ChannelType              string         `json:"channel_type"`
-	LogSource                string         `json:"log_source"`
-	Model                    string         `json:"model"`
-	ActualModel              string         `json:"actual_model,omitempty"`
-	StatusCode               int            `json:"status_code"`
-	Message                  string         `json:"message"`
-	Duration                 float64        `json:"duration"`
-	IsStreaming              bool           `json:"is_streaming"`
-	UpstreamWebsocket        bool           `json:"upstream_websocket,omitempty"`
-	FirstByteTime            float64        `json:"first_byte_time"`
-	ServiceTier              string         `json:"service_tier,omitempty"`
-	ThinkingEffort           string         `json:"thinking_effort,omitempty"`
-	InputTokens              int            `json:"input_tokens"`
-	OutputTokens             int            `json:"output_tokens"`
-	ReasoningTokens          int            `json:"reasoning_tokens,omitempty"`
-	CacheReadInputTokens     int            `json:"cache_read_input_tokens"`
-	CacheCreationInputTokens int            `json:"cache_creation_input_tokens"`
-	Cache5mInputTokens       int            `json:"cache_5m_input_tokens"`
-	Cache1hInputTokens       int            `json:"cache_1h_input_tokens"`
-	Cost                     float64        `json:"cost"`
-	EffectiveCost            float64        `json:"effective_cost"`
+	ID                       int64                       `json:"id"`
+	Time                     model.JSONTime              `json:"time"`
+	ChannelID                int64                       `json:"channel_id"`
+	ChannelName              string                      `json:"channel_name"`
+	ChannelType              string                      `json:"channel_type"`
+	LogSource                string                      `json:"log_source"`
+	Model                    string                      `json:"model"`
+	ActualModel              string                      `json:"actual_model,omitempty"`
+	StatusCode               int                         `json:"status_code"`
+	Message                  string                      `json:"message"`
+	Duration                 float64                     `json:"duration"`
+	IsStreaming              bool                        `json:"is_streaming"`
+	UpstreamWebsocket        bool                        `json:"upstream_websocket,omitempty"`
+	FirstByteTime            float64                     `json:"first_byte_time"`
+	ServiceTier              string                      `json:"service_tier,omitempty"`
+	ThinkingEffort           string                      `json:"thinking_effort,omitempty"`
+	InputTokens              int                         `json:"input_tokens"`
+	OutputTokens             int                         `json:"output_tokens"`
+	ReasoningTokens          int                         `json:"reasoning_tokens,omitempty"`
+	CacheReadInputTokens     int                         `json:"cache_read_input_tokens"`
+	CacheCreationInputTokens int                         `json:"cache_creation_input_tokens"`
+	Cache5mInputTokens       int                         `json:"cache_5m_input_tokens"`
+	Cache1hInputTokens       int                         `json:"cache_1h_input_tokens"`
+	Cost                     float64                     `json:"cost"`
+	EffectiveCost            float64                     `json:"effective_cost"`
+	CostBreakdown            *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
+}
+
+type dashboardLogEntry struct {
+	*model.LogEntry
+	CostBreakdown *util.StandardCostBreakdown `json:"cost_breakdown,omitempty"`
+}
+
+func buildLogCostBreakdown(entry *model.LogEntry) *util.StandardCostBreakdown {
+	if entry == nil || entry.Cost <= 0 {
+		return nil
+	}
+	billingModel := util.ResolveBillingModel(entry.ActualModel, entry.Model)
+	cache5mTokens := entry.Cache5mInputTokens
+	cache1hTokens := entry.Cache1hInputTokens
+	if cache5mTokens+cache1hTokens == 0 && entry.CacheCreationInputTokens > 0 {
+		// 旧日志只有缓存创建总量；历史计费语义等同 5m 缓存创建。
+		cache5mTokens = entry.CacheCreationInputTokens
+	}
+	breakdown := util.CalculateStandardCostBreakdown(
+		billingModel,
+		entry.ServiceTier,
+		entry.InputTokens,
+		entry.OutputTokens,
+		entry.CacheReadInputTokens,
+		cache5mTokens,
+		cache1hTokens,
+	)
+	return &breakdown
+}
+
+func projectDashboardLogs(logs []*model.LogEntry) []dashboardLogEntry {
+	projected := make([]dashboardLogEntry, 0, len(logs))
+	for _, entry := range logs {
+		if entry == nil {
+			continue
+		}
+		projected = append(projected, dashboardLogEntry{
+			LogEntry:      entry,
+			CostBreakdown: buildLogCostBreakdown(entry),
+		})
+	}
+	return projected
 }
 
 func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannelMetadata) []tokenLogEntry {
@@ -93,6 +137,7 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			Cache1hInputTokens:       entry.Cache1hInputTokens,
 			Cost:                     entry.Cost,
 			EffectiveCost:            entry.Cost * multiplier,
+			CostBreakdown:            buildLogCostBreakdown(entry),
 		})
 	}
 	return projected

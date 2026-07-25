@@ -27,6 +27,44 @@ func TestCalculateCost_Sonnet45(t *testing.T) {
 	}
 }
 
+func TestCalculateStandardCostBreakdown_ExposesFormulaComponents(t *testing.T) {
+	breakdown := CalculateStandardCostBreakdown(
+		"claude-sonnet-4-5-20250929", "",
+		12, 73, 17_558, 278, 100,
+	)
+
+	tests := []struct {
+		name      string
+		component CostComponent
+		quantity  int
+		pricePerM float64
+	}{
+		{name: "input", component: breakdown.Input, quantity: 12, pricePerM: 3},
+		{name: "output", component: breakdown.Output, quantity: 73, pricePerM: 15},
+		{name: "cache read", component: breakdown.CacheRead, quantity: 17_558, pricePerM: 0.3},
+		{name: "cache write", component: breakdown.CacheWrite, quantity: 378, pricePerM: (278*3.75 + 100*6.0) / 378},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.component.Quantity != tt.quantity {
+				t.Fatalf("quantity=%d, want %d", tt.component.Quantity, tt.quantity)
+			}
+			if !floatEquals(tt.component.PricePerMillion, tt.pricePerM, 1e-12) {
+				t.Fatalf("price_per_million=%v, want %v", tt.component.PricePerMillion, tt.pricePerM)
+			}
+			wantCost := float64(tt.quantity) * tt.pricePerM / 1_000_000
+			if !floatEquals(tt.component.Cost, wantCost, 1e-12) {
+				t.Fatalf("cost=%v, want %v", tt.component.Cost, wantCost)
+			}
+		})
+	}
+
+	wantTotal := CalculateCostDetailed("claude-sonnet-4-5-20250929", 12, 73, 17_558, 278, 100)
+	if !floatEquals(breakdown.Total, wantTotal, 1e-12) {
+		t.Fatalf("total=%v, want CalculateCostDetailed=%v", breakdown.Total, wantTotal)
+	}
+}
+
 func TestCalculateCost_Haiku45(t *testing.T) {
 	// 场景：Claude Haiku 4.5轻量请求
 	cost := CalculateCostDetailed("claude-haiku-4-5", 100, 50, 0, 0, 0)

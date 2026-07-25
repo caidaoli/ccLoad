@@ -538,17 +538,47 @@ function buildLogMessageContent(entry) {
   return `${sourceBadge}${inner}`;
 }
 
-function buildLogCostDisplay(entry) {
+function getLogCostInfo(entry) {
   const standardCost = Number(entry?.cost) || 0;
-  if (standardCost <= 0) return '';
+  if (standardCost <= 0) return null;
 
   const rawMultiplier = Number(entry?.cost_multiplier);
   const multiplier = (Number.isFinite(rawMultiplier) && rawMultiplier >= 0) ? rawMultiplier : 1;
   const responseEffectiveCost = Number(entry?.effective_cost);
-	const effectiveCost = Number.isFinite(responseEffectiveCost)
-		? responseEffectiveCost
+  const effectiveCost = Number.isFinite(responseEffectiveCost)
+    ? responseEffectiveCost
     : standardCost * multiplier;
-  const hasMultiplier = Math.abs(effectiveCost - standardCost) >= 1e-9;
+
+  return getCostDisplayInfo(standardCost, effectiveCost);
+}
+
+function formatLogCostFormulaValue(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric === 0) return '$0';
+  return `$${numeric.toFixed(9).replace(/\.?0+$/, '')}`;
+}
+
+function buildLogCostTooltip(entry, costInfo) {
+  const breakdown = entry?.cost_breakdown;
+  if (!costInfo || !breakdown) return '';
+
+  const components = [
+    ['logs.costTooltipInput', breakdown.input],
+    ['logs.costTooltipOutput', breakdown.output],
+    ['logs.costTooltipCacheRead', breakdown.cache_read],
+    ['logs.costTooltipCacheWrite', breakdown.cache_write]
+  ];
+  return components.map(([labelKey, component]) => t('logs.costTooltipLine', {
+    label: t(labelKey),
+    price: formatLogCostFormulaValue(component?.price_per_million),
+    quantity: (Number(component?.quantity) || 0).toLocaleString(),
+    cost: formatLogCostFormulaValue(component?.cost)
+  })).join('\n');
+}
+
+function buildLogCostDisplay(entry, costInfo = getLogCostInfo(entry)) {
+  if (!costInfo) return '';
+
   const badgeParts = [];
 
   switch (entry?.service_tier) {
@@ -566,14 +596,14 @@ function buildLogCostDisplay(entry) {
   const badgesHtml = badgeParts.length
     ? `<span class="log-cost-badges">${badgeParts.join('')}</span>`
     : '';
-  const costClasses = `log-cost${hasMultiplier ? ' log-cost--with-multiplier' : ''}${badgeParts.length ? ' log-cost--with-badges' : ''}`;
+  const costClasses = `log-cost${costInfo.hasMultiplier ? ' log-cost--with-multiplier' : ''}${badgeParts.length ? ' log-cost--with-badges' : ''}`;
   const openingTag = `<span class="${costClasses}">`;
 
-  if (!hasMultiplier) {
-    return `${openingTag}${badgesHtml}<span class="log-cost-effective">${formatCost(standardCost)}</span></span>`;
+  if (!costInfo.hasMultiplier) {
+    return `${openingTag}${badgesHtml}<span class="log-cost-effective">${formatCost(costInfo.standardCost)}</span></span>`;
   }
 
-  return `${openingTag}${badgesHtml}<span class="log-cost-standard">${formatCost(standardCost)}</span><span class="log-cost-effective">${formatCost(effectiveCost)}</span></span>`;
+  return `${openingTag}${badgesHtml}<span class="log-cost-standard">${formatCost(costInfo.standardCost)}</span><span class="log-cost-effective">${formatCost(costInfo.effectiveCost)}</span></span>`;
 }
 
 function formatDebugSettingValue(setting) {
@@ -1047,7 +1077,10 @@ function renderLogs(data) {
     }
 
     // 7. 成本显示
-    const costDisplay = buildLogCostDisplay(entry);
+    const costInfo = getLogCostInfo(entry);
+    const costDisplay = buildLogCostDisplay(entry, costInfo);
+    const costTitle = buildLogCostTooltip(entry, costInfo);
+    const costTitleAttr = costTitle ? ` title="${escapeHtml(costTitle)}"` : '';
     const cacheUtilDisplay = formatCacheUtilRate(
       entry.input_tokens,
       entry.cache_read_input_tokens,
@@ -1071,7 +1104,7 @@ function renderLogs(data) {
           <td class="logs-col-cache-read${cacheReadDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheRead}" style="text-align: right; white-space: nowrap;">${cacheReadDisplay}</td>
           <td class="logs-col-cache-write${cacheCreationDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheWrite}" style="text-align: right; white-space: nowrap;">${cacheCreationDisplay}</td>
           <td class="logs-col-cache-util${cacheUtilDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cacheUtil}" style="text-align: right; white-space: nowrap;">${cacheUtilDisplay}</td>
-          <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}" style="text-align: right; white-space: nowrap;">${costDisplay}</td>
+          <td class="logs-col-cost${costDisplay ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.cost}"${costTitleAttr} style="text-align: right; white-space: nowrap;">${costDisplay}</td>
           <td class="logs-col-message${messageContent ? '' : ' mobile-empty-cell'}" data-mobile-label="${logMobileLabels.message}" style="max-width: 300px; word-break: break-word;">${messageContent}</td>
         </tr>`;
   }
