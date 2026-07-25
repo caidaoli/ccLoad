@@ -12,6 +12,7 @@ func TestHandleActiveRequests(t *testing.T) {
 	m := newActiveRequestManager()
 	id := m.Register(time.Now(), "m1", "1.2.3.4", true)
 	m.Update(id, 10, "ch", "openai", "sk-test", 7, 1.5) //nolint:gosec // 测试用假凭证
+	m.SetUpstreamWebsocket(id, true)
 	m.AddBytes(id, 123)
 	m.SetClientFirstByteTime(id, 50*time.Millisecond)
 
@@ -42,6 +43,9 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 	if resp.Data[0].CostMultiplier != 1.5 {
 		t.Fatalf("cost_multiplier=%v, want 1.5", resp.Data[0].CostMultiplier)
+	}
+	if !resp.Data[0].UpstreamWebsocket {
+		t.Fatal("upstream_websocket=false, want true")
 	}
 }
 
