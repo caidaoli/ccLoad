@@ -266,7 +266,8 @@
     if (!hasDocument) return;
     const panels = {
       'custom-rules': document.getElementById('advancedSettingsPanelCustomRules'),
-      'cooldown-detection': document.getElementById('advancedSettingsPanelCooldownDetection')
+      'cooldown-detection': document.getElementById('advancedSettingsPanelCooldownDetection'),
+      other: document.getElementById('advancedSettingsPanelOther')
     };
     if (!Object.prototype.hasOwnProperty.call(panels, tab)) return;
     const buttons = document.querySelectorAll('[data-advanced-settings-tab]');

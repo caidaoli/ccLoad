@@ -606,24 +606,18 @@
         </div>
         <div class="form-group channel-editor-group channel-editor-group--footer">
           <div class="channel-editor-footer">
-            <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
-              <input type="checkbox" id="channelScheduledCheckEnabled"> <span data-i18n="channels.enableScheduledCheck">定时检测</span>
-            </label>
-            <label class="form-label channel-editor-checkbox-label" data-i18n-title="channels.enableWebsocketsHelp"
-              title="仅 Codex 渠道：复用原生上游 Responses WebSocket">
-              <input type="checkbox" id="channelWebsockets"> <span data-i18n="channels.enableWebsockets">原生 WebSocket</span>
-            </label>
+            <div class="channel-editor-websocket-control">
+              <label class="form-label channel-editor-checkbox-label" data-i18n-title="channels.enableWebsocketsHelp"
+                title="仅 Codex 渠道：复用原生上游 Responses WebSocket">
+                <input type="checkbox" id="channelWebsockets"> <span data-i18n="channels.enableWebsockets">原生 WebSocket</span>
+              </label>
+              <button type="button" id="channelWebsocketProbeBtn" class="btn btn-secondary btn-sm channel-websocket-probe-button"
+                data-action="probe-channel-websocket" data-i18n-title="channels.websocketsProbeHelp"
+                title="检测当前上游是否支持原生 WebSocket">
+                <span data-i18n="channels.websocketsProbe">检测</span>
+              </button>
+            </div>
             <div class="channel-editor-footer-fields">
-              <div id="channelScheduledCheckModelWrapper" class="channel-editor-inline-field channel-editor-inline-field--scheduled-model" hidden>
-                <label class="form-label channel-editor-inline-label" for="channelScheduledCheckModelInput"
-                  data-i18n="channels.scheduledCheckModel">检测模型</label>
-                <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
-                  <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
-                    autocomplete="off" spellcheck="false">
-                  <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
-                  <input type="hidden" id="channelScheduledCheckModel" value="">
-                </div>
-              </div>
               <div class="channel-editor-inline-field">
                 <label class="form-label channel-editor-inline-label" for="channelPriority"
                   data-i18n="channels.priority">优先级</label>
@@ -714,6 +708,10 @@
           <span data-i18n="channels.advancedSettings.tabCooldownDetection">冷却探测规则</span>
           <span class="advanced-settings-tab-count" id="cooldownDetectionRulesCount">(0)</span>
         </button>
+        <button type="button" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
+          data-advanced-settings-tab="other" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelOther">
+          <span data-i18n="channels.advancedSettings.tabOther">其他</span>
+        </button>
       </div>
 
       <section id="advancedSettingsPanelCustomRules" class="advanced-settings-panel" role="tabpanel">
@@ -796,6 +794,25 @@
           <pre id="cooldownDetectionTestResult" class="cooldown-detection-test-result" hidden></pre>
         </section>
         <div id="cooldownDetectionError" class="custom-rules-error" hidden></div>
+      </section>
+
+      <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">
+        <div class="advanced-settings-other-fields">
+          <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
+            <input type="checkbox" id="channelScheduledCheckEnabled">
+            <span data-i18n="channels.enableScheduledCheck">定时检测</span>
+          </label>
+          <div id="channelScheduledCheckModelWrapper" class="advanced-settings-other-field" hidden>
+            <label class="form-label" for="channelScheduledCheckModelInput"
+              data-i18n="channels.scheduledCheckModel">检测模型</label>
+            <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
+              <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
+                autocomplete="off" spellcheck="false">
+              <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
+              <input type="hidden" id="channelScheduledCheckModel" value="">
+            </div>
+          </div>
+        </div>
       </section>
 
       <div class="modal-footer custom-rules-footer">
