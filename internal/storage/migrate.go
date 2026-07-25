@@ -110,6 +110,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsCostMultiplier(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs cost_multiplier: %w", err)
 			}
+			if err := ensureLogsUpstreamWebsocket(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs upstream_websocket: %w", err)
+			}
 		}
 
 		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）

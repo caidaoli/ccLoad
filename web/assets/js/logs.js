@@ -327,13 +327,22 @@ function buildActiveRequestChannelDisplay(req) {
   }
 
   const channelHtml = buildChannelTrigger(req.channel_id, req.channel_name, req.base_url || '');
-  const multiplier = Number(req.cost_multiplier);
-  if (!Number.isFinite(multiplier) || multiplier < 0 || Math.abs(multiplier - 1) < 1e-9) {
-    return channelHtml;
-  }
+  return buildLogChannelCell(channelHtml, req.cost_multiplier, req.upstream_websocket);
+}
 
-  const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
-  return `<span class="log-channel-cell">${channelHtml}<sup class="log-channel-multiplier-badge">${multiplierText}</sup></span>`;
+function buildLogChannelCell(channelHtml, multiplierValue, upstreamWebsocket) {
+  const badges = [];
+  const multiplier = Number(multiplierValue);
+  if (Number.isFinite(multiplier) && multiplier >= 0 && Math.abs(multiplier - 1) >= 1e-9) {
+    const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
+    badges.push(`<sup class="log-channel-badge log-channel-multiplier-badge">${multiplierText}</sup>`);
+  }
+  if (upstreamWebsocket === true) {
+    badges.push('<sup class="log-channel-badge log-channel-websocket-badge">ws</sup>');
+  }
+  if (badges.length === 0) return channelHtml;
+
+  return `<span class="log-channel-cell">${channelHtml}<span class="log-channel-badges">${badges.join('')}</span></span>`;
 }
 
 function buildLogChannelDisplay(entry) {
@@ -348,13 +357,7 @@ function buildLogChannelDisplay(entry) {
   }
 
   const channelHtml = buildChannelTrigger(entry.channel_id, entry.channel_name || '', entry.base_url || '');
-  const multiplier = Number(entry.cost_multiplier);
-  if (!Number.isFinite(multiplier) || multiplier < 0 || Math.abs(multiplier - 1) < 1e-9) {
-    return channelHtml;
-  }
-
-  const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
-  return `<span class="log-channel-cell">${channelHtml}<sup class="log-channel-multiplier-badge">${multiplierText}</sup></span>`;
+  return buildLogChannelCell(channelHtml, entry.cost_multiplier, entry.upstream_websocket);
 }
 // 生成流式标志HTML（公共函数，避免重复）
 function getStreamFlagHtml(isStreaming) {

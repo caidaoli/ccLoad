@@ -450,6 +450,13 @@ func ensureLogsCostMultiplier(ctx context.Context, db *sql.DB, dialect Dialect) 
 		"REAL NOT NULL DEFAULT 1")
 }
 
+// ensureLogsUpstreamWebsocket ensures logs record the transport actually used for the upstream request.
+func ensureLogsUpstreamWebsocket(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "logs", "upstream_websocket",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 // ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
 func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	switch dialect {

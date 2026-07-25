@@ -72,16 +72,17 @@ type LogEntry struct {
 	ChannelName          string   `json:"channel_name,omitempty"`
 	StatusCode           int      `json:"status_code"`
 	Message              string   `json:"message"`
-	Duration             float64  `json:"duration"`               // 总耗时（秒）
-	IsStreaming          bool     `json:"is_streaming"`           // 是否为流式请求
-	FirstByteTime        float64  `json:"first_byte_time"`        // 上游首字节响应时间（秒）
-	APIKeyUsed           string   `json:"api_key_used"`           // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
-	APIKeyHash           string   `json:"api_key_hash,omitempty"` // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
-	AuthTokenID          int64    `json:"auth_token_id"`          // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
-	AuthTokenDescription string   `json:"auth_token_description"` // API令牌描述（查询时从auth_tokens表JOIN获取）
-	ClientIP             string   `json:"client_ip"`              // 客户端IP地址（新增2025-12）
-	BaseURL              string   `json:"base_url,omitempty"`     // 请求使用的上游URL（多URL场景）
-	ServiceTier          string   `json:"service_tier,omitempty"` // OpenAI service_tier: "priority"(2x)/"flex"(0.5x)
+	Duration             float64  `json:"duration"`                     // 总耗时（秒）
+	IsStreaming          bool     `json:"is_streaming"`                 // 是否为流式请求
+	UpstreamWebsocket    bool     `json:"upstream_websocket,omitempty"` // 实际上游请求是否使用WebSocket
+	FirstByteTime        float64  `json:"first_byte_time"`              // 上游首字节响应时间（秒）
+	APIKeyUsed           string   `json:"api_key_used"`                 // 使用的API Key（写入时强制脱敏为 abc.xyz 格式，数据库不存明文）
+	APIKeyHash           string   `json:"api_key_hash,omitempty"`       // API Key 的 SHA256（仅用于后台精确定位 key_index，不泄露明文）
+	AuthTokenID          int64    `json:"auth_token_id"`                // 客户端使用的API令牌ID（新增2025-12，0表示未使用token）
+	AuthTokenDescription string   `json:"auth_token_description"`       // API令牌描述（查询时从auth_tokens表JOIN获取）
+	ClientIP             string   `json:"client_ip"`                    // 客户端IP地址（新增2025-12）
+	BaseURL              string   `json:"base_url,omitempty"`           // 请求使用的上游URL（多URL场景）
+	ServiceTier          string   `json:"service_tier,omitempty"`       // OpenAI service_tier: "priority"(2x)/"flex"(0.5x)
 	ThinkingEffort       string   `json:"thinking_effort,omitempty"`
 
 	// Token统计（2025-11新增，支持Claude API usage字段）
