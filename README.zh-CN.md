@@ -47,6 +47,7 @@ ccLoad 直接处理这些问题：
 - ⏰ **模型感知冷却**：结构化 `model_cooldown`、上游 HTTP 5xx、Key 级 429 限流和模型不可用 404 都先只冷却当前实际模型，同渠道其他模型仍可用；只有所有配置模型或所有启用 Key 都在冷却时才升级为渠道冷却。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
 - 🔄 **协议转换**：Anthropic、OpenAI、Gemini、Codex 请求和响应可在网关层转换。
+- 🔌 **Responses WebSocket 桥接**：认证后的 Codex 客户端可保持下游 WebSocket，各候选渠道按配置使用原生 Codex WebSocket 或现有 HTTP/SSE 传输。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
 - 🔍 **软错误检测**：HTTP 200 伪装成功也会触发故障切换。已覆盖：
   - `{"error": {...}}` 结构的 JSON 错误
@@ -67,6 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/渠道指数退避 + 模型精确冷却 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计 | 一眼看清用量情况 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
+| 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |
 | 🐳 **云原生** | 多架构镜像+CI/CD | amd64/arm64都支持 |
 | 🤗 **免费托管** | Hugging Face免费托管 | 适合个人试用 |
@@ -576,6 +578,12 @@ curl -X POST http://localhost:8080/v1/chat/completions \
     ]
   }'
 ```
+
+**Codex Responses WebSocket**：
+
+认证后的客户端可升级 `GET /v1/responses`，也可使用 Codex 直连别名 `GET /backend-api/codex/responses`。对“实际上游协议为 Codex”的渠道启用 `websockets` 后，该渠道使用原生上游 WebSocket；其他候选渠道继续使用现有 HTTP/SSE 桥接。客户端重连时应保持稳定的 `Session-Id` 请求头（也支持 `prompt_cache_key`），让 execution session 保留 transcript 和上游亲和性。
+
+首个语义输出前，非 WS→非 WS、原生 WS→非 WS、原生 WS→原生 WS 的故障均由 ccLoad 内部处理，其中原生 WS→非 WS 会使用 execution session 保存的完整 transcript。当失败的非 WS 候选即将切换到原生 WS 候选时，ccLoad 改为返回可重试的 `502/server_error/upstream_unavailable` 事件，并以 WebSocket close code `1011` 关闭下游连接；Codex 随后重连并完整 replay。关闭自动重试的客户端需要自行完成重连和完整 replay。一旦已经转发任何语义输出，ccLoad 不再切换传输或要求重放，避免重复文本、工具调用和费用。
 
 **Codex Alpha Search（仅原生透传）**：
 

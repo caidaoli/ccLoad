@@ -38,6 +38,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 | 任务 | 入口 |
 |------|------|
 | 代理主链路 | `proxy_handler.go:HandleProxyRequest` → `runProxyAttemptLoop` → `proxy_forward.go` → `proxy_stream.go` |
+| Responses WebSocket | `proxy_responses_websocket.go:HandleResponsesWebsocket` → `executeResponsesWebsocketTurn` → `runProxyAttemptLoopWithFailureBoundary`;会话状态见 `responses_execution_session.go` |
 | 渠道/Key/URL 选择 | `selector*.go`、`key_selector.go`、`smooth_weighted_rr.go`、`url_selector.go` |
 | 错误分类/冷却 | `util/classifier.go`、`cooldown/manager.go` |
 | 协议转换 | `protocol/registry.go` → `protocol/builtin/register.go` → `protocol/builtin/cliproxy_adapter.go`;核心实现/同步规则见 `protocol/cliproxy/{UPSTREAM.md,...}` |
@@ -53,6 +54,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
 - Key/渠道级默认指数退避:2 → 4 → 8 → 30 min;模型级优先使用上游 reset 截止时间,缺失时固定 5 min
+- Responses WebSocket 特例(仅首个语义输出前):非 WS→非 WS、原生 WS→非 WS/原生 WS 均在网关内部切换,其中 WS→非 WS 使用 execution session 的完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并用 close code `1011` 断开,让 Codex 客户端完整 replay;已有语义输出后一律不切换或重放
 
 ## 自定义状态码(改相关代码前先读语义)
 
