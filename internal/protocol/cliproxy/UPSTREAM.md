@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `522bc13fa8e002f4549924ffc7fa17d975698fbb` (`fork/v8.42.0`)
-- Synchronized at: `2026-07-25`
+- Last synchronized commit: `e5ffb790d703e8320c2d4a4f841c9969e2e67b3f` (`fork/v8.43.0`)
+- Synchronized at: `2026-07-26`
 
 This directory contains the four-protocol conversion core only. Authentication,
 configuration, routing, caches, plugins, dynamic registries, network refreshers,
@@ -12,7 +12,7 @@ adaptation lives in `internal/protocol/builtin`, not in this directory.
 
 ## Synchronized tests
 
-The snapshot includes 32 upstream `_test.go` files from the same commit as the
+The snapshot includes 38 upstream `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -25,11 +25,12 @@ production sources:
 - `common`: 3
 - `gemini/claude`: 2
 - `gemini/openai/chat-completions`: 4
-- `gemini/openai/responses`: 2
+- `gemini/openai/responses`: 3
 - `openai/claude`: 2
 - `openai/gemini`: 2
 - `openai/openai/responses`: 2
-- `util`: 1
+- `signature`: 4
+- `util`: 2
 
 Tests for excluded packages are not copied. Performance-only benchmarks are
 also excluded: the translator-wide benchmark requires the excluded dynamic
@@ -37,7 +38,9 @@ Registry, Antigravity, and Interactions paths, while the Claude-to-Codex
 benchmark measures allocation details rather than a wire contract. Upstream
 `noop_optimization_test.go` files and allocation-reuse assertions are likewise
 excluded because they test private implementation and memory reuse instead of
-the public conversion contract.
+the public conversion contract. The signature sanitizer's logging-only test is
+also excluded because ccLoad keeps the synchronized conversion core free of
+upstream runtime logging side effects and dependencies.
 
 ## Local contract fixes
 
@@ -57,6 +60,11 @@ documented adaptations:
   Gemini camelCase fields, Codex top-level `instructions`, terminal `[DONE]`,
   top-level cache-creation usage, and unsigned Anthropic thinking preserved as
   OpenAI reasoning.
+- Gemini Responses `[DONE]` finalizes pending reasoning and emits the local
+  terminal `response.completed` event; upstream's core-only handler stops after
+  flushing pending reasoning.
+- Gemini signature sanitization keeps upstream signature ownership and parallel
+  function-call semantics without importing its runtime debug logger.
 
 ## Updating from CLIProxyAPI
 
