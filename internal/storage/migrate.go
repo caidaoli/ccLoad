@@ -85,6 +85,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := relaxDebugLogsRespBodyNullable(ctx, db, dialect); err != nil {
 				return fmt.Errorf("relax debug_logs.resp_body nullability: %w", err)
 			}
+			if err := rebuildDebugLogsForProtocolPayloads(ctx, db, dialect); err != nil {
+				return fmt.Errorf("rebuild debug_logs for protocol payloads: %w", err)
+			}
 			delete(allIndexes, "debug_logs")
 		}
 
@@ -100,6 +103,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		// 创建表
 		if _, err := db.ExecContext(ctx, buildDDL(tb, dialect)); err != nil {
 			return fmt.Errorf("create %s table: %w", tb.Name(), err)
+		}
+		if tb.Name() == "debug_logs" {
+			if err := ensureDebugLogsProtocolMetadata(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate debug_logs protocol metadata: %w", err)
+			}
 		}
 
 		// 增量迁移：确保logs表新字段存在（2025-12新增）

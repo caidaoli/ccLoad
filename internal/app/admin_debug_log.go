@@ -96,7 +96,26 @@ func debugLogResponse(entry *model.DebugLogEntry) gin.H {
 		resp["resp_body_encoding"] = "base64"
 	}
 
+	if entry.ProtocolTransformed {
+		resp["protocol_transformed"] = true
+		resp["original_req_url"] = entry.OriginalReqURL
+		resp["original_req_headers"] = maskSensitiveHeaderJSON(entry.OriginalReqHeaders)
+		addDebugResponseBody(resp, "original_req_body", entry.OriginalReqBody)
+		resp["translated_resp_status"] = entry.TranslatedRespStatus
+		resp["translated_resp_headers"] = maskSensitiveHeaderJSON(entry.TranslatedRespHeaders)
+		addDebugResponseBody(resp, "translated_resp_body", entry.TranslatedRespBody)
+	}
+
 	return resp
+}
+
+func addDebugResponseBody(resp gin.H, key string, body []byte) {
+	if utf8.Valid(body) {
+		resp[key] = string(body)
+		return
+	}
+	resp[key] = base64.StdEncoding.EncodeToString(body)
+	resp[key+"_encoding"] = "base64"
 }
 
 // HandleGetDebugLog 获取指定 log_id 对应的调试日志

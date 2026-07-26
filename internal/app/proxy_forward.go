@@ -1340,6 +1340,32 @@ func probeEmptyOKResponse(reqCtx *requestContext, resp *http.Response, hdrClone 
 	return false, nil, 0, nil
 }
 
+func invalidHTMLSuccessResponseResult(
+	reqCtx *requestContext,
+	resp *http.Response,
+	hdrClone http.Header,
+	readStats *streamReadStats,
+) (*fwResult, float64, error) {
+	body, readErr := io.ReadAll(io.LimitReader(resp.Body, int64(config.DefaultMaxBodyBytes)))
+	err := fmt.Errorf(
+		"%w (HTTP %d Content-Type %q)",
+		util.ErrUpstreamInvalidResponse,
+		resp.StatusCode,
+		resp.Header.Get("Content-Type"),
+	)
+	if readErr != nil {
+		err = fmt.Errorf("%w: read body: %v", err, readErr)
+	}
+	return &fwResult{
+		Status:         resp.StatusCode,
+		UpstreamStatus: resp.StatusCode,
+		Header:         hdrClone,
+		Body:           body,
+		FirstByteTime:  readStats.firstByteSec,
+		BytesReceived:  readStats.totalBytes,
+	}, reqCtx.Duration().Seconds(), err
+}
+
 // handleResponse 处理 HTTP 响应（错误或成功）
 // 从proxy.go提取，遵循SRP原则
 // channelType: 渠道类型,用于精确识别usage格式
@@ -1361,6 +1387,14 @@ func (s *Server) handleResponse(
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return s.handleErrorResponse(reqCtx, resp, hdrClone, readStats)
+	}
+	if looksLikeHTMLResponse(resp.Header.Get("Content-Type"), "") {
+		log.Printf(
+			"[WARN] 渠道ID=%d 返回 HTTP %d HTML 页面，拒绝作为 API 成功响应",
+			cfg.ID,
+			resp.StatusCode,
+		)
+		return invalidHTMLSuccessResponseResult(reqCtx, resp, hdrClone, readStats)
 	}
 
 	if handled, res, duration, err := probeEmptyOKResponse(reqCtx, resp, hdrClone, readStats); handled {
@@ -1515,6 +1549,17 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
+	if reqCtx.transformPlan.NeedsTransform {
+		originalReqURL := reqCtx.transformPlan.OriginalPath
+		if rawQuery != "" {
+			separator := "?"
+			if strings.Contains(originalReqURL, "?") {
+				separator = "&"
+			}
+			originalReqURL += separator + rawQuery
+		}
+		dc.markProtocolTransform(originalReqURL, hdr, reqCtx.transformPlan.OriginalBody)
+	}
 	if observer != nil && observer.OnDebugCapture != nil {
 		observer.OnDebugCapture(dc)
 	}
@@ -1561,7 +1606,11 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	// 4. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64
-	res, duration, err = s.handleResponse(reqCtx, resp, w, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
+	responseWriter := w
+	if reqCtx.transformPlan.NeedsTransform && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		responseWriter = dc.wrapTranslatedResponseWriter(w)
+	}
+	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
 	if usedNativeWebsocket {
 		// Reconnects happen while handleResponse drains the upstream frames. Take
 		// the final snapshot here so the persisted debug log describes the actual

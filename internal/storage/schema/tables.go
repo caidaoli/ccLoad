@@ -244,7 +244,7 @@ func DefineFingerprintTestResultsTable() *TableBuilder {
 		Index("idx_fp_test_results_created", "created_at DESC")
 }
 
-// DefineDebugLogsTable 定义debug_logs表结构（上游请求/响应原始数据）
+// DefineDebugLogsTable 定义debug_logs表结构
 // log_id 与 logs.id 1:1 对应，直接作为主键，无需独立自增ID
 func DefineDebugLogsTable() *TableBuilder {
 	return NewTable("debug_logs").
@@ -257,5 +257,12 @@ func DefineDebugLogsTable() *TableBuilder {
 		Column("resp_status INT NOT NULL DEFAULT 0").
 		Column("resp_headers TEXT NOT NULL").
 		Column("resp_body LONGBLOB").
+		Column("protocol_transformed TINYINT NOT NULL DEFAULT 0").
+		Column("original_req_url TEXT").
+		Column("original_req_headers TEXT").
+		Column("original_req_body LONGBLOB").
+		Column("translated_resp_status INT NOT NULL DEFAULT 0").
+		Column("translated_resp_headers TEXT").
+		Column("translated_resp_body LONGBLOB").
 		Index("idx_debug_logs_created_at", "created_at")
 }

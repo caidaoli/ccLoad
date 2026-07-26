@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
@@ -348,6 +349,19 @@ func TestClassifyError_EmptyResponse(t *testing.T) {
 			assertClassifyError(t, tt.err, tt.expectedStatus, tt.expectedLevel, tt.expectedRetry, tt.reason)
 		})
 	}
+}
+
+func TestClassifyError_InvalidUpstreamResponse(t *testing.T) {
+	t.Parallel()
+
+	assertClassifyError(
+		t,
+		fmt.Errorf("response validation failed: %w", ErrUpstreamInvalidResponse),
+		http.StatusBadGateway,
+		ErrorLevelChannel,
+		true,
+		"HTTP 2xx HTML 响应不是 API 成功，应按渠道故障重试",
+	)
 }
 
 // 测试HTTP/2流错误分类

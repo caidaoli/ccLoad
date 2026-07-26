@@ -26,6 +26,9 @@ var ErrUpstreamStreamTimeout = errors.New("upstream stream timeout")
 // ErrUpstreamEmptyResponse 是上游 200 但无响应体的统一错误标识。
 var ErrUpstreamEmptyResponse = errors.New("upstream returned empty response")
 
+// ErrUpstreamInvalidResponse 是上游返回 2xx 但正文不是 API 响应的统一错误标识。
+var ErrUpstreamInvalidResponse = errors.New("upstream returned invalid response")
+
 // resetTime1308Regex 匹配1308错误 message 中的重置时间（不依赖具体语言文案）
 // 格式示例: 2025-12-09 18:08:11
 var resetTime1308Regex = regexp.MustCompile(`\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}`)
@@ -989,6 +992,9 @@ func ClassifyError(err error) (statusCode int, errorLevel ErrorLevel, shouldRetr
 
 	// 快速路径1.2：上游 200 空体是坏网关，不是成功响应。
 	if errors.Is(err, ErrUpstreamEmptyResponse) {
+		return http.StatusBadGateway, ErrorLevelChannel, true
+	}
+	if errors.Is(err, ErrUpstreamInvalidResponse) {
 		return http.StatusBadGateway, ErrorLevelChannel, true
 	}
 

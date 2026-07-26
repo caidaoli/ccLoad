@@ -62,6 +62,48 @@ func TestHandleGetDebugLog_NotFoundIncludesRelevantSettings(t *testing.T) {
 	}
 }
 
+func TestDebugLogResponse_IncludesProtocolTransformBodiesOnlyForLocalTransform(t *testing.T) {
+	t.Parallel()
+
+	transformed := debugLogResponse(&model.DebugLogEntry{
+		ProtocolTransformed:   true,
+		OriginalReqURL:        "/v1/chat/completions",
+		OriginalReqHeaders:    `{"Content-Type":"application/json","Authorization":"Bearer secret"}`,
+		OriginalReqBody:       []byte(`{"messages":[{"content":"hello"}]}`),
+		ReqBody:               []byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
+		RespBody:              []byte(`{"candidates":[{"content":"world"}]}`),
+		TranslatedRespStatus:  http.StatusOK,
+		TranslatedRespHeaders: `{"Content-Type":"application/json"}`,
+		TranslatedRespBody:    []byte(`{"choices":[{"message":{"content":"world"}}]}`),
+	})
+	if got, ok := transformed["protocol_transformed"].(bool); !ok || !got {
+		t.Fatalf("protocol_transformed=%v, want true", transformed["protocol_transformed"])
+	}
+	if got := transformed["original_req_body"]; got != `{"messages":[{"content":"hello"}]}` {
+		t.Fatalf("original_req_body=%v", got)
+	}
+	if got := transformed["translated_resp_body"]; got != `{"choices":[{"message":{"content":"world"}}]}` {
+		t.Fatalf("translated_resp_body=%v", got)
+	}
+	if got := transformed["original_req_url"]; got != "/v1/chat/completions" {
+		t.Fatalf("original_req_url=%v", got)
+	}
+	if got := transformed["original_req_headers"].(string); strings.Contains(got, "Bearer secret") || !strings.Contains(got, "*") {
+		t.Fatalf("original_req_headers was not masked: %s", got)
+	}
+	if got := transformed["translated_resp_status"]; got != http.StatusOK {
+		t.Fatalf("translated_resp_status=%v", got)
+	}
+	if got := transformed["translated_resp_headers"]; got != `{"Content-Type":"application/json"}` {
+		t.Fatalf("translated_resp_headers=%v", got)
+	}
+
+	native := debugLogResponse(&model.DebugLogEntry{ReqBody: []byte(`{"model":"gpt-4"}`)})
+	if _, ok := native["protocol_transformed"]; ok {
+		t.Fatalf("native debug response should not expose protocol transform fields: %v", native)
+	}
+}
+
 func TestHandleMergeDebugResponse_AcceptsGzipBody(t *testing.T) {
 	t.Parallel()
 

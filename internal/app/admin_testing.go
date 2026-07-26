@@ -134,6 +134,8 @@ type channelTestRequestPlan struct {
 	clientProtocol   string
 	upstreamProtocol string
 	clientTester     testutil.ChannelTester
+	clientURL        string
+	clientHeaders    http.Header
 	fullURL          string
 	headers          http.Header
 	requestBody      []byte
@@ -405,6 +407,8 @@ func (s *Server) buildChannelTestRequestPlan(
 		clientProtocol:   clientProtocol,
 		upstreamProtocol: upstreamProtocol,
 		clientTester:     clientTester,
+		clientURL:        fullURL,
+		clientHeaders:    cloneHeaders(headers),
 		fullURL:          fullURL,
 		headers:          headers,
 		requestBody:      body,
@@ -1035,6 +1039,11 @@ func (s *Server) parseTestNonStreamResponse(
 				return result
 			}
 			parseBody = translatedBody
+			translatedHeader := resp.Header.Clone()
+			translatedHeader.Set("Content-Type", "application/json")
+			translatedHeader.Del("Content-Encoding")
+			requestPlan.debugCapture.captureTranslatedResponseMeta(resp.StatusCode, translatedHeader)
+			requestPlan.debugCapture.captureTranslatedResponse(translatedBody)
 		}
 
 		parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
@@ -1142,6 +1151,13 @@ func (s *Server) newTestUpstreamRequest(
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
+	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+		originalHeaders := cloneHeaders(requestPlan.clientHeaders)
+		for key, value := range testReq.Headers {
+			originalHeaders.Set(key, value)
+		}
+		requestPlan.debugCapture.markProtocolTransform(extractRequestPath(requestPlan.clientURL), originalHeaders, requestPlan.clientBody)
+	}
 
 	return req, timeout.cancelAll, nil
 }
@@ -1184,6 +1200,12 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	result map[string]any,
 ) map[string]any {
 	recorder := httptest.NewRecorder()
+	translatedWriter := http.ResponseWriter(recorder)
+	if requestPlan.debugCapture != nil {
+		translatedWriter = requestPlan.debugCapture.wrapTranslatedResponseWriter(recorder)
+	}
+	filterAndWriteResponseHeaders(translatedWriter, resp.Header)
+	translatedWriter.WriteHeader(resp.StatusCode)
 	var rawUpstreamBuf bytes.Buffer
 	upstreamTee := io.TeeReader(resp.Body, &rawUpstreamBuf)
 	streamReader := readerWithCloser{Reader: upstreamTee, Closer: resp.Body}
@@ -1195,7 +1217,7 @@ func (s *Server) parseTestTranslatedSSEResponse(
 	streamErr := streamTransformSSEEventsUntil(
 		ctx,
 		streamReader,
-		recorder,
+		translatedWriter,
 		func(rawEvent []byte) error {
 			if len(rawEvent) == 0 {
 				return nil
