@@ -558,6 +558,7 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	var state any
 	frontendState := &chatFrontendStreamState{}
 	ctx := c.Request.Context()
+	requestPlan.debugCapture.captureTranslatedResponseMeta(resp.StatusCode, resp.Header)
 
 	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
 	return streamTransformSSEEvents(ctx, src, c.Writer,
@@ -580,6 +581,9 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 			)
 			if err != nil {
 				return nil, err
+			}
+			for _, chunk := range translated {
+				requestPlan.debugCapture.captureTranslatedResponse(chunk)
 			}
 			var chunks [][]byte
 			for _, chunk := range translated {

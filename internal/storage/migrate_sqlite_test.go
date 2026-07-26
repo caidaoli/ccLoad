@@ -66,6 +66,138 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 }
 
+func TestMigrate_SQLite_RebuildsOnlyDebugLogsForProtocolPayloads(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+
+	result, err := db.ExecContext(ctx, "INSERT INTO logs (time, status_code, message) VALUES (1, 200, 'keep me')")
+	if err != nil {
+		t.Fatalf("insert ordinary log: %v", err)
+	}
+	logID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("ordinary log id: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", debugLogsProtocolPayloadsVersion); err != nil {
+		t.Fatalf("reset protocol payload migration: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE debug_logs"); err != nil {
+		t.Fatalf("drop current debug_logs: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE debug_logs (
+			log_id INTEGER PRIMARY KEY,
+			created_at INTEGER NOT NULL,
+			req_method TEXT NOT NULL DEFAULT '',
+			req_url TEXT NOT NULL,
+			req_headers TEXT NOT NULL,
+			req_body BLOB NOT NULL,
+			resp_status INTEGER NOT NULL DEFAULT 0,
+			resp_headers TEXT NOT NULL,
+			resp_body BLOB
+		)`); err != nil {
+		t.Fatalf("create pre-protocol debug_logs: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body)
+		VALUES (?, 1, 'POST', '/v1/messages', '{}', '{}', 200, '{}', '{}')`, logID); err != nil {
+		t.Fatalf("insert old debug log: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("upgrade migrate: %v", err)
+	}
+
+	var ordinaryLogCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM logs WHERE id = ?", logID).Scan(&ordinaryLogCount); err != nil {
+		t.Fatalf("count ordinary logs: %v", err)
+	}
+	if ordinaryLogCount != 1 {
+		t.Fatalf("ordinary logs changed during debug migration: count=%d", ordinaryLogCount)
+	}
+	var debugLogCount int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM debug_logs").Scan(&debugLogCount); err != nil {
+		t.Fatalf("count rebuilt debug logs: %v", err)
+	}
+	if debugLogCount != 0 {
+		t.Fatalf("rebuilt debug_logs should discard short-lived rows, count=%d", debugLogCount)
+	}
+	columns, err := sqliteExistingColumns(ctx, db, "debug_logs")
+	if err != nil {
+		t.Fatalf("list rebuilt debug columns: %v", err)
+	}
+	for _, column := range []string{
+		"protocol_transformed", "original_req_url", "original_req_headers", "original_req_body",
+		"translated_resp_status", "translated_resp_headers", "translated_resp_body",
+	} {
+		if !columns[column] {
+			t.Fatalf("rebuilt debug_logs missing column %q: %v", column, columns)
+		}
+	}
+}
+
+func TestMigrate_SQLite_AddsDebugProtocolMetadataWithoutDroppingRows(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, "DROP TABLE debug_logs"); err != nil {
+		t.Fatalf("drop current debug_logs: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE debug_logs (
+			log_id INTEGER PRIMARY KEY,
+			created_at INTEGER NOT NULL,
+			req_method TEXT NOT NULL DEFAULT '',
+			req_url TEXT NOT NULL,
+			req_headers TEXT NOT NULL,
+			req_body BLOB NOT NULL,
+			resp_status INTEGER NOT NULL DEFAULT 0,
+			resp_headers TEXT NOT NULL,
+			resp_body BLOB,
+			protocol_transformed INTEGER NOT NULL DEFAULT 0,
+			original_req_body BLOB,
+			translated_resp_body BLOB
+		)`); err != nil {
+		t.Fatalf("create v3 debug_logs: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO debug_logs (
+			log_id, created_at, req_method, req_url, req_headers, req_body,
+			resp_status, resp_headers, resp_body, protocol_transformed,
+			original_req_body, translated_resp_body
+		) VALUES (42, 1, 'POST', '/upstream', '{}', '{}', 200, '{}', '{}', 1, '{}', '{}')`); err != nil {
+		t.Fatalf("insert v3 debug log: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("upgrade migrate: %v", err)
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM debug_logs WHERE log_id = 42").Scan(&count); err != nil {
+		t.Fatalf("count preserved debug row: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("debug row count=%d, want 1", count)
+	}
+	columns, err := sqliteExistingColumns(ctx, db, "debug_logs")
+	if err != nil {
+		t.Fatalf("list debug columns: %v", err)
+	}
+	for _, column := range []string{"original_req_url", "original_req_headers", "translated_resp_status", "translated_resp_headers"} {
+		if !columns[column] {
+			t.Fatalf("debug_logs missing column %q: %v", column, columns)
+		}
+	}
+}
+
 func TestMigrateSQLite_SeedsModelCatalogSyncIntervalSetting(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

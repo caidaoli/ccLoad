@@ -1168,6 +1168,69 @@ func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 }
 
+func TestProxy_LocalTransformRejectsHTMLSuccessResponse(t *testing.T) {
+	t.Parallel()
+
+	const maintenancePage = `<!DOCTYPE html><html lang="zh-CN"><head><title>维护中</title></head><body><h1>正在进行系统维护</h1></body></html>`
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "gemini-html", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
+	}, map[int]string{0: "https://gemini-upstream.example.com"})
+	env.server.client = &http.Client{
+		Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header: http.Header{
+					"Content-Type": []string{"text/html; charset=utf-8"},
+				},
+				Body: io.NopCloser(strings.NewReader(maintenancePage)),
+			}, nil
+		}),
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs failed: configs=%d err=%v", len(configs), err)
+	}
+	cfg := configs[0]
+	cfg.ProtocolTransforms = []string{"openai"}
+	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+	env.server.configService.mu.Lock()
+	env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	env.server.configService.mu.Unlock()
+
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gemini-2.5-pro",
+		"stream":   true,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("HTTP 200 HTML upstream should become 502, got %d: %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "<!doctype html") {
+		t.Fatalf("maintenance page leaked as a successful client response: %s", w.Body.String())
+	}
+
+	entry := waitForProxyLog(t, env, "gemini-2.5-pro")
+	if entry.StatusCode != http.StatusBadGateway {
+		t.Fatalf("persisted status=%d, want 502", entry.StatusCode)
+	}
+	debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+	if err != nil || debugLog == nil {
+		t.Fatalf("GetDebugLogByLogID failed: debug=%+v err=%v", debugLog, err)
+	}
+	if string(debugLog.RespBody) != maintenancePage {
+		t.Fatalf("debug original response=%q, want maintenance page", debugLog.RespBody)
+	}
+	if len(debugLog.TranslatedRespBody) != 0 {
+		t.Fatalf("invalid HTML response must not have translated content: %s", debugLog.TranslatedRespBody)
+	}
+}
+
 func TestProxy_Success_NonStreaming_AnthropicToGeminiTransform(t *testing.T) {
 	t.Parallel()
 
@@ -1363,6 +1426,7 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 
 	var gotPath string
 	var gotBody []byte
+	rawUpstreamBody := "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" World\"}]}}]}\n\ndata: [DONE]\n\n"
 
 	env := setupProxyTestEnv(t, []testChannel{
 		{name: "gemini-ch", channelType: "gemini", models: "gemini-2.5-pro", apiKey: "sk-gem"},
@@ -1372,11 +1436,12 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			gotBody, _ = io.ReadAll(r.Body)
-			body := bytes.NewBufferString("data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello\"}]}}]}\n\ndata: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\" World\"}]}}]}\n\ndata: [DONE]\n\n")
+			body := bytes.NewBufferString(rawUpstreamBody)
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header: http.Header{
-					"Content-Type": []string{"text/event-stream"},
+					"Content-Type":     []string{"text/event-stream"},
+					"X-Upstream-Trace": []string{"stream-response"},
 				},
 				Body: io.NopCloser(body),
 			}, nil
@@ -1394,12 +1459,15 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
 	env.server.InvalidateChannelListCache()
+	env.server.configService.mu.Lock()
+	env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	env.server.configService.mu.Unlock()
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model":    "gemini-2.5-pro",
 		"stream":   true,
 		"messages": []map[string]string{{"role": "user", "content": "hi"}},
-	}, nil)
+	}, map[string]string{"X-Client-Trace": "stream-request"})
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
@@ -1419,6 +1487,39 @@ func TestProxy_Success_Streaming_OpenAIToGeminiTransform(t *testing.T) {
 	}
 	if !strings.Contains(body, "data: [DONE]") {
 		t.Fatalf("expected done marker, got %s", body)
+	}
+
+	entry := waitForProxyLog(t, env, "gemini-2.5-pro")
+	debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+	if err != nil {
+		t.Fatalf("GetDebugLogByLogID failed: %v", err)
+	}
+	if debugLog == nil || !debugLog.ProtocolTransformed {
+		t.Fatalf("expected persisted protocol transform debug log, got %+v", debugLog)
+	}
+	if got := gjson.GetBytes(debugLog.OriginalReqBody, "messages.0.content").String(); got != "hi" {
+		t.Fatalf("original request content=%q, want hi; body=%s", got, debugLog.OriginalReqBody)
+	}
+	if debugLog.OriginalReqURL != "/v1/chat/completions" {
+		t.Fatalf("original request URL=%q, want /v1/chat/completions", debugLog.OriginalReqURL)
+	}
+	if got := gjson.Get(debugLog.OriginalReqHeaders, "X-Client-Trace").String(); got != "stream-request" {
+		t.Fatalf("original request header=%q, want stream-request; headers=%s", got, debugLog.OriginalReqHeaders)
+	}
+	if string(debugLog.RespBody) != rawUpstreamBody {
+		t.Fatalf("original response body mismatch:\ngot=%s\nwant=%s", debugLog.RespBody, rawUpstreamBody)
+	}
+	if string(debugLog.TranslatedRespBody) != w.Body.String() {
+		t.Fatalf("translated response should match client body:\ndebug=%s\nclient=%s", debugLog.TranslatedRespBody, w.Body.String())
+	}
+	if debugLog.TranslatedRespStatus != http.StatusOK {
+		t.Fatalf("translated response status=%d, want 200", debugLog.TranslatedRespStatus)
+	}
+	if got := gjson.Get(debugLog.TranslatedRespHeaders, "Content-Type").String(); got != "text/event-stream" {
+		t.Fatalf("translated response content type=%q, want text/event-stream; headers=%s", got, debugLog.TranslatedRespHeaders)
+	}
+	if got := gjson.Get(debugLog.TranslatedRespHeaders, "X-Upstream-Trace").String(); got != "stream-response" {
+		t.Fatalf("translated response trace header=%q, want stream-response; headers=%s", got, debugLog.TranslatedRespHeaders)
 	}
 }
 

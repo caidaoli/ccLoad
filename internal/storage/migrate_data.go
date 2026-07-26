@@ -653,6 +653,42 @@ func relaxDebugLogsRespBodyNullable(ctx context.Context, db *sql.DB, dialect Dia
 	return recordMigration(ctx, db, debugLogsRespBodyNullableVersion, dialect)
 }
 
+// debug_logs 只保存短期调试数据。新增本地协议转换的原始请求与转换后响应字段时，
+// 直接重建表，避免为三种数据库维护无价值的临时数据搬迁逻辑。
+const debugLogsProtocolPayloadsVersion = "v3_debug_logs_protocol_payloads"
+
+func rebuildDebugLogsForProtocolPayloads(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, debugLogsProtocolPayloadsVersion, dialect) {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, "DROP TABLE IF EXISTS debug_logs"); err != nil {
+		return fmt.Errorf("drop debug_logs for protocol payloads: %w", err)
+	}
+	log.Printf("[MIGRATE] 已删除 debug_logs 表以增加协议转换调试字段")
+	return recordMigration(ctx, db, debugLogsProtocolPayloadsVersion, dialect)
+}
+
+func ensureDebugLogsProtocolMetadata(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	columns := []mysqlColumnDef{
+		{name: "original_req_url", definition: "TEXT"},
+		{name: "original_req_headers", definition: "TEXT"},
+		{name: "translated_resp_status", definition: "INT NOT NULL DEFAULT 0"},
+		{name: "translated_resp_headers", definition: "TEXT"},
+	}
+	switch dialect {
+	case DialectSQLite:
+		sqliteColumns := make([]sqliteColumnDef, 0, len(columns))
+		for _, column := range columns {
+			sqliteColumns = append(sqliteColumns, sqliteColumnDef(column))
+		}
+		return ensureSQLiteColumns(ctx, db, "debug_logs", sqliteColumns)
+	case DialectPostgres:
+		return ensurePostgresColumns(ctx, db, "debug_logs", columns)
+	default:
+		return ensureMySQLColumns(ctx, db, "debug_logs", columns)
+	}
+}
+
 func debugLogsHasLegacyIDColumn(ctx context.Context, db *sql.DB, dialect Dialect) (bool, error) {
 	switch dialect {
 	case DialectMySQL:

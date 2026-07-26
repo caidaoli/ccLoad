@@ -16,6 +16,7 @@ import (
 	"ccLoad/internal/util"
 
 	"github.com/bytedance/sonic"
+	"github.com/tidwall/gjson"
 )
 
 func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, body []byte) protocol.TransformPlan {
@@ -480,8 +481,13 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 	var gotPath string
 	var gotBody string
+	originalBody := []byte(`{"model":"alias-model","messages":[{"role":"user","content":"hi"}]}`)
+	rawResponseBody := `{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-2.5-pro"}`
 
 	srv := newInMemoryServer(t)
+	srv.configService.mu.Lock()
+	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	srv.configService.mu.Unlock()
 	srv.client = &http.Client{
 		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			rawBody, _ := io.ReadAll(r.Body)
@@ -490,9 +496,10 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusOK,
 				Header: http.Header{
-					"Content-Type": []string{"application/json"},
+					"Content-Type":     []string{"application/x-gemini+json"},
+					"X-Upstream-Trace": []string{"raw-response"},
 				},
-				Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"gemini-2.5-pro"}`)),
+				Body: io.NopCloser(strings.NewReader(rawResponseBody)),
 			}, nil
 		}),
 	}
@@ -508,7 +515,7 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		protocol.Gemini,
 		"/v1/chat/completions",
 		"/v1/chat/completions",
-		[]byte(`{"model":"alias-model","messages":[{"role":"user","content":"hi"}]}`),
+		originalBody,
 		[]byte(`{"model":"gemini-2.5-pro","messages":[{"role":"user","content":"hi"}]}`),
 		"alias-model",
 		"gemini-2.5-pro",
@@ -518,6 +525,10 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		t.Fatalf("BuildTransformPlan failed: %v", err)
 	}
 
+	clientHeaders := http.Header{
+		"Content-Type":   []string{"application/json"},
+		"X-Client-Trace": []string{"original-request"},
+	}
 	recorder := newRecorder()
 	result, _, err := srv.forwardOnceAsync(
 		context.Background(),
@@ -525,7 +536,7 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		"sk-test",
 		http.MethodPost,
 		plan,
-		http.Header{},
+		clientHeaders,
 		"",
 		cfg.URL,
 		recorder,
@@ -542,6 +553,39 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 	}
 	if !strings.Contains(gotBody, `"contents"`) {
 		t.Fatalf("expected transformed request body from plan, got %s", gotBody)
+	}
+	if result.DebugData == nil {
+		t.Fatal("expected debug data")
+	}
+	if !result.DebugData.ProtocolTransformed {
+		t.Fatal("debug data should mark local protocol transform")
+	}
+	if string(result.DebugData.OriginalReqBody) != string(originalBody) {
+		t.Fatalf("original request body=%s, want %s", result.DebugData.OriginalReqBody, originalBody)
+	}
+	if result.DebugData.OriginalReqURL != "/v1/chat/completions" {
+		t.Fatalf("original request URL=%q, want /v1/chat/completions", result.DebugData.OriginalReqURL)
+	}
+	if got := gjson.Get(result.DebugData.OriginalReqHeaders, "X-Client-Trace").String(); got != "original-request" {
+		t.Fatalf("original request header=%q, want original-request; headers=%s", got, result.DebugData.OriginalReqHeaders)
+	}
+	if string(result.DebugData.ReqBody) != gotBody {
+		t.Fatalf("translated request body=%s, want emitted body %s", result.DebugData.ReqBody, gotBody)
+	}
+	if string(result.DebugData.RespBody) != rawResponseBody {
+		t.Fatalf("original response body=%s, want %s", result.DebugData.RespBody, rawResponseBody)
+	}
+	if got := gjson.GetBytes(result.DebugData.TranslatedRespBody, "choices.0.message.content").String(); got != "ok" {
+		t.Fatalf("translated response content=%q, want ok; body=%s", got, result.DebugData.TranslatedRespBody)
+	}
+	if result.DebugData.TranslatedRespStatus != http.StatusOK {
+		t.Fatalf("translated response status=%d, want 200", result.DebugData.TranslatedRespStatus)
+	}
+	if got := gjson.Get(result.DebugData.TranslatedRespHeaders, "Content-Type").String(); got != "application/json" {
+		t.Fatalf("translated response content type=%q, want application/json; headers=%s", got, result.DebugData.TranslatedRespHeaders)
+	}
+	if got := gjson.Get(result.DebugData.RespHeaders, "Content-Type").String(); got != "application/x-gemini+json" {
+		t.Fatalf("raw response content type=%q, want application/x-gemini+json; headers=%s", got, result.DebugData.RespHeaders)
 	}
 }
 
@@ -617,6 +661,15 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	}
 	if string(result.DebugData.ReqBody) != string(gotBody) {
 		t.Fatalf("debug body does not match final upstream body:\ndebug=%s\nsent=%s", result.DebugData.ReqBody, gotBody)
+	}
+	if !result.DebugData.ProtocolTransformed || string(result.DebugData.OriginalReqBody) != string(originalBody) {
+		t.Fatalf("debug data lost local transform request bodies: %+v", result.DebugData)
+	}
+	if got := gjson.GetBytes(result.DebugData.RespBody, "error").String(); got != "boom" {
+		t.Fatalf("original error response=%q, want boom; body=%s", got, result.DebugData.RespBody)
+	}
+	if len(result.DebugData.TranslatedRespBody) != 0 {
+		t.Fatalf("failed upstream response was not translated, got translated body=%s", result.DebugData.TranslatedRespBody)
 	}
 }
 

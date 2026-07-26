@@ -2247,14 +2247,12 @@ function formatHeaderLines(headers) {
   return lines.join('\n');
 }
 
-function composeDebugRawRequest(data) {
+function composeDebugRequest(method, url, headerData, bodyData) {
   const parts = [];
-  const method = data.req_method || 'POST';
-  const url = data.req_url || '';
-  parts.push(`${method} ${url}`);
-  const headers = formatHeaderLines(data.req_headers);
+  parts.push(`${method || 'POST'} ${url || ''}`);
+  const headers = formatHeaderLines(headerData);
   if (headers) parts.push(headers);
-  const body = formatJsonSafe(data.req_body);
+  const body = formatJsonSafe(bodyData);
   if (body) {
     parts.push('');
     parts.push(body);
@@ -2262,27 +2260,94 @@ function composeDebugRawRequest(data) {
   return parts.join('\n');
 }
 
-function composeDebugRawResponse(data) {
+function composeDebugResponse(status, headerData, bodyData) {
   const parts = [];
-  if (data.resp_status) parts.push('HTTP ' + data.resp_status);
-  const headers = formatHeaderLines(data.resp_headers);
+  if (status) parts.push('HTTP ' + status);
+  const headers = formatHeaderLines(headerData);
   if (headers) parts.push(headers);
-  const body = formatJsonSafe(data.resp_body);
+  const body = formatJsonSafe(bodyData);
   if (body) {
     parts.push('');
     parts.push(body);
   }
   return parts.join('\n');
+}
+
+function composeDebugRawRequest(data) {
+  if (data?.protocol_transformed) {
+    return composeDebugRequest(data.req_method, data.original_req_url, data.original_req_headers, data.original_req_body);
+  }
+  return composeDebugRequest(data?.req_method, data?.req_url, data?.req_headers, data?.req_body);
+}
+
+function composeDebugRawResponse(data) {
+  return composeDebugResponse(data?.resp_status, data?.resp_headers, data?.resp_body);
+}
+
+function composeDebugTranslatedRequest(data) {
+  return composeDebugRequest(data?.req_method, data?.req_url, data?.req_headers, data?.req_body);
+}
+
+function composeDebugTranslatedResponse(data) {
+  return composeDebugResponse(data?.translated_resp_status, data?.translated_resp_headers, data?.translated_resp_body);
+}
+
+function setDebugTabLabel(buttonId, key, fallback) {
+  const button = document.getElementById(buttonId);
+  if (!button) return;
+  button.dataset.i18n = key;
+  button.textContent = (typeof t === 'function' ? t(key) : '') || fallback;
+}
+
+function activateDebugTab(target) {
+  const modal = document.getElementById('debugLogModal');
+  if (!modal) return;
+  modal.querySelectorAll('.upstream-tab').forEach(tab => {
+    tab.classList.toggle('active', tab.dataset.tab === target);
+  });
+  modal.querySelectorAll('.upstream-tab-panel').forEach(panel => {
+    panel.classList.toggle('active', panel.dataset.tab === target);
+  });
+  updateDebugResponseActionButtons();
+}
+
+function configureDebugProtocolTabs(data) {
+  const transformed = !!data?.protocol_transformed;
+  const translatedRequestTab = document.getElementById('debugTranslatedRequestTabBtn');
+  const translatedResponseTab = document.getElementById('debugTranslatedResponseTabBtn');
+  if (translatedRequestTab) translatedRequestTab.hidden = !transformed;
+  if (translatedResponseTab) translatedResponseTab.hidden = !transformed;
+
+  setDebugTabLabel('debugRequestTabBtn', transformed ? 'logs.debugOriginalRequest' : 'logs.debugRequest', transformed ? '原始请求' : '请求');
+  setDebugTabLabel('debugTranslatedRequestTabBtn', 'logs.debugTranslatedRequest', '转换后请求');
+  setDebugTabLabel('debugResponseTabBtn', transformed ? 'logs.debugOriginalResponse' : 'logs.debugResponse', transformed ? '原始响应' : '响应');
+  setDebugTabLabel('debugTranslatedResponseTabBtn', 'logs.debugTranslatedResponse', '转换后响应');
+
+  const activeTab = document.querySelector('#debugLogModal .upstream-tab.active');
+  if (!activeTab || activeTab.hidden) activateDebugTab('request');
 }
 
 const ACTIVE_DEBUG_LOG_REFRESH_INTERVAL_MS = 1500;
 let activeDebugLogRefreshTimer = null;
 let activeDebugLogRefreshInFlight = false;
-let debugResponseMergedVisible = false;
 let debugLogWrapEnabled = true;
 let currentDebugLogData = null;
-let debugMergedSourceBody = null;
-let debugMergedLoading = false;
+const debugResponseViews = {
+  response: {
+    rawId: 'debugRespRaw',
+    mergedId: 'debugRespMerged',
+    bodyKey: 'resp_body'
+  },
+  'translated-response': {
+    rawId: 'debugTranslatedRespRaw',
+    mergedId: 'debugTranslatedRespMerged',
+    bodyKey: 'translated_resp_body'
+  }
+};
+const debugMergedStates = {
+  response: { visible: false, sourceBody: null, loading: false },
+  'translated-response': { visible: false, sourceBody: null, loading: false }
+};
 
 async function showDebugLogModal(logId) {
   return showDebugLogModalFromUrl(`/admin/debug-logs/${logId}`, { activeRequestId: 0 });
@@ -2311,17 +2376,12 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
   content.style.display = 'none';
   setDebugLogStatus(null);
   currentDebugLogData = null;
-  debugMergedSourceBody = null;
-  debugMergedLoading = false;
   modal.classList.add('show');
 
   // Reset tabs
-  modal.querySelectorAll('.upstream-tab').forEach(tab => {
-    tab.classList.toggle('active', tab.dataset.tab === 'request');
-  });
-  document.getElementById('debugTabRequest').classList.add('active');
-  document.getElementById('debugTabResponse').classList.remove('active');
-  setDebugResponseMergedVisible(false);
+  configureDebugProtocolTabs(null);
+  activateDebugTab('request');
+  resetDebugMergedResponses();
   applyDebugLogWrapMode();
   updateDebugResponseActionButtons();
 
@@ -2342,9 +2402,12 @@ async function showDebugLogModalFromUrl(url, opts = {}) {
     loading.style.display = 'none';
     content.style.display = 'flex';
 
+    configureDebugProtocolTabs(data);
     window.setHighlightedCodeContent('debugReqRaw', composeDebugRawRequest(data), 'request');
+    window.setHighlightedCodeContent('debugTranslatedReqRaw', composeDebugTranslatedRequest(data), 'request');
     window.setHighlightedCodeContent('debugRespRaw', composeDebugRawResponse(data), 'response');
-    resetDebugMergedResponse();
+    window.setHighlightedCodeContent('debugTranslatedRespRaw', composeDebugTranslatedResponse(data), 'response');
+    resetDebugMergedResponses();
 
     // 如果是实时活跃请求，启动轮询
     const activeRequestId = Number(opts.activeRequestId);
@@ -2426,12 +2489,15 @@ async function refreshActiveDebugLogOnce(activeRequestId) {
 }
 
 function updateDebugLogContentPreserveScroll(data) {
+  configureDebugProtocolTabs(data);
   updateDebugPanePreserveScroll('debugReqRaw', composeDebugRawRequest(data), 'request');
+  updateDebugPanePreserveScroll('debugTranslatedReqRaw', composeDebugTranslatedRequest(data), 'request');
   updateDebugPanePreserveScroll('debugRespRaw', composeDebugRawResponse(data), 'response');
-  if (debugResponseMergedVisible) {
-    void refreshDebugMergedResponse(data);
-  } else if (String(data?.resp_body || '') !== String(debugMergedSourceBody || '')) {
-    resetDebugMergedResponse();
+  updateDebugPanePreserveScroll('debugTranslatedRespRaw', composeDebugTranslatedResponse(data), 'response');
+  for (const tab of Object.keys(debugResponseViews)) {
+    if (debugMergedStates[tab].visible) {
+      void refreshDebugMergedResponse(data, tab);
+    }
   }
 }
 
@@ -2483,8 +2549,7 @@ function closeDebugLogModal() {
   stopActiveDebugLogPolling();
   setDebugLogStatus(null);
   currentDebugLogData = null;
-  debugMergedSourceBody = null;
-  debugMergedLoading = false;
+  resetDebugMergedResponses();
   document.getElementById('debugLogModal').classList.remove('show');
 }
 
@@ -2511,70 +2576,91 @@ function setDebugLogWrapEnabled(enabled) {
 }
 
 function updateDebugResponseActionButtons() {
-  const responseActive = !!document.getElementById('debugTabResponse')?.classList.contains('active');
+  const activeTab = document.querySelector('#debugLogModal .upstream-tab.active')?.dataset.tab || 'request';
+  const responseView = debugResponseViews[activeTab];
+  const mergedVisible = responseView ? debugMergedStates[activeTab].visible : false;
+  const copyTargets = {
+    request: 'debugReqRaw',
+    'translated-request': 'debugTranslatedReqRaw',
+    response: debugMergedStates.response.visible ? 'debugRespMerged' : 'debugRespRaw',
+    'translated-response': debugMergedStates['translated-response'].visible
+      ? 'debugTranslatedRespMerged'
+      : 'debugTranslatedRespRaw'
+  };
   const copyBtn = document.querySelector('#debugLogModal .upstream-copy-btn--tabs');
   if (copyBtn) {
-    copyBtn.dataset.copyTarget = responseActive
-      ? (debugResponseMergedVisible ? 'debugRespMerged' : 'debugRespRaw')
-      : 'debugReqRaw';
+    copyBtn.dataset.copyTarget = copyTargets[activeTab] || 'debugReqRaw';
   }
 
   const mergeBtn = document.getElementById('debugMergeBtn');
   if (mergeBtn) {
-    mergeBtn.hidden = !responseActive;
+    mergeBtn.hidden = !responseView;
+    const key = mergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
+    mergeBtn.classList.toggle('active', mergedVisible);
+    mergeBtn.setAttribute('aria-pressed', mergedVisible ? 'true' : 'false');
+    mergeBtn.dataset.i18n = key;
+    mergeBtn.textContent = (typeof t === 'function' ? t(key) : '') || (mergedVisible ? '原始' : '合并');
   }
 }
 
-function setDebugResponseMergedVisible(visible) {
-  debugResponseMergedVisible = !!visible;
+function activeDebugResponseTab() {
+  const tab = document.querySelector('#debugLogModal .upstream-tab.active')?.dataset.tab;
+  return debugResponseViews[tab] ? tab : '';
+}
 
-  const raw = document.getElementById('debugRespRaw');
-  const merged = document.getElementById('debugRespMerged');
-  if (raw) raw.hidden = debugResponseMergedVisible;
-  if (merged) merged.hidden = !debugResponseMergedVisible;
-
-  const mergeBtn = document.getElementById('debugMergeBtn');
-  if (mergeBtn) {
-    const key = debugResponseMergedVisible ? 'logs.debugRaw' : 'logs.debugMerge';
-    mergeBtn.classList.toggle('active', debugResponseMergedVisible);
-    mergeBtn.setAttribute('aria-pressed', debugResponseMergedVisible ? 'true' : 'false');
-    mergeBtn.dataset.i18n = key;
-    mergeBtn.textContent = (typeof t === 'function' ? t(key) : '') || (debugResponseMergedVisible ? '原始' : '合并');
-  }
-
+function setDebugResponseMergedVisible(visible, tab = activeDebugResponseTab()) {
+  const view = debugResponseViews[tab];
+  const state = debugMergedStates[tab];
+  if (!view || !state) return;
+  state.visible = !!visible;
+  const raw = document.getElementById(view.rawId);
+  const merged = document.getElementById(view.mergedId);
+  if (raw) raw.hidden = state.visible;
+  if (merged) merged.hidden = !state.visible;
   updateDebugResponseActionButtons();
 
-  if (debugResponseMergedVisible) {
-    void refreshDebugMergedResponse(currentDebugLogData);
+  if (state.visible) {
+    void refreshDebugMergedResponse(currentDebugLogData, tab);
   }
 }
 
-function resetDebugMergedResponse() {
-  debugMergedSourceBody = null;
-  debugMergedLoading = false;
-  window.MarkdownRenderer.renderResponse('debugRespMerged', { reasoning: '', content: '' });
+function resetDebugMergedResponses() {
+  for (const [tab, view] of Object.entries(debugResponseViews)) {
+    const state = debugMergedStates[tab];
+    state.visible = false;
+    state.sourceBody = null;
+    state.loading = false;
+    const raw = document.getElementById(view.rawId);
+    const merged = document.getElementById(view.mergedId);
+    if (raw) raw.hidden = false;
+    if (merged) merged.hidden = true;
+    window.MarkdownRenderer.renderResponse(view.mergedId, { reasoning: '', content: '' });
+  }
+  updateDebugResponseActionButtons();
 }
 
-async function refreshDebugMergedResponse(data) {
-  if (!data || debugMergedLoading) return;
-  const sourceBody = String(data.resp_body || '');
-  if (debugMergedSourceBody === sourceBody) return;
-  debugMergedLoading = true;
-  window.MarkdownRenderer.renderResponse('debugRespMerged', {
+async function refreshDebugMergedResponse(data, tab) {
+  const view = debugResponseViews[tab];
+  const state = debugMergedStates[tab];
+  if (!data || !view || !state || state.loading) return;
+  const sourceBody = String(data[view.bodyKey] || '');
+  if (state.sourceBody === sourceBody) return;
+  state.loading = true;
+  window.MarkdownRenderer.renderResponse(view.mergedId, {
     reasoning: '',
     content: (typeof t === 'function' ? t('common.loading') : '加载中...') || '加载中...',
   });
   try {
     const merged = await window.MergedResponseClient.mergeUpstreamResponse(sourceBody);
-    debugMergedSourceBody = sourceBody;
-    updateDebugPanePreserveScroll('debugRespMerged', merged, 'markdown');
+    state.sourceBody = sourceBody;
+    updateDebugPanePreserveScroll(view.mergedId, merged, 'markdown');
   } catch (e) {
-    window.MarkdownRenderer.renderResponse('debugRespMerged', {
+    window.MarkdownRenderer.renderResponse(view.mergedId, {
       reasoning: '',
       content: e?.message || '合并响应失败',
     });
   } finally {
-    debugMergedLoading = false;
+    state.loading = false;
   }
 }
 
@@ -2584,17 +2670,14 @@ if (typeof document !== 'undefined' && typeof document.addEventListener === 'fun
   document.addEventListener('click', (e) => {
     const tab = e.target.closest('#debugLogModal .upstream-tab');
     if (tab) {
-      const target = tab.dataset.tab;
-      document.querySelectorAll('#debugLogModal .upstream-tab').forEach(t => t.classList.toggle('active', t === tab));
-      document.getElementById('debugTabRequest').classList.toggle('active', target === 'request');
-      document.getElementById('debugTabResponse').classList.toggle('active', target === 'response');
-      updateDebugResponseActionButtons();
+      activateDebugTab(tab.dataset.tab);
       return;
     }
 
     const mergeBtn = e.target.closest('#debugLogModal [data-action="merge-debug-response"]');
     if (mergeBtn) {
-      setDebugResponseMergedVisible(!debugResponseMergedVisible);
+      const tab = activeDebugResponseTab();
+      if (tab) setDebugResponseMergedVisible(!debugMergedStates[tab].visible, tab);
       return;
     }
 
