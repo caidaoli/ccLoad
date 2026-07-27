@@ -166,18 +166,19 @@ type proxyRequestContext struct {
 
 // proxyResult 代理请求结果
 type proxyResult struct {
-	status           int
-	header           http.Header
-	body             []byte
-	channelID        *int64
-	duration         float64
-	firstByteTime    float64
-	succeeded        bool
-	isClientCanceled bool            // 客户端主动取消请求（context.Canceled）
-	nextAction       cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
-	deferredCooldown *cooldown.ErrorInput
-	responsesTurn    responsesWebsocketTurnResult
-	hasResponsesTurn bool
+	status                 int
+	header                 http.Header
+	body                   []byte
+	channelID              *int64
+	duration               float64
+	firstByteTime          float64
+	succeeded              bool
+	isClientCanceled       bool            // 客户端主动取消请求（context.Canceled）
+	nextAction             cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	deferredCooldown       *cooldown.ErrorInput
+	alphaSearchUnsupported bool
+	responsesTurn          responsesWebsocketTurnResult
+	hasResponsesTurn       bool
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)
@@ -959,11 +960,13 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		entry.Cache1hInputTokens = res.Cache1hInputTokens
 		entry.ServiceTier = res.ServiceTier
 
-		// 使用实际转发的模型计算成本（重定向时价格可能不同）；
-		// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
-		// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
-		// alpha/search 固定按 search_call 计费。
-		entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+		if p.StatusCode >= http.StatusOK && p.StatusCode < http.StatusMultipleChoices {
+			// 使用实际转发的模型计算成本（重定向时价格可能不同）；
+			// 始终调用以支持按次计费图像模型（tokens=0 时返回固定成本）。
+			// 优先 actual（重定向可能换价）；无定价时回退 request（渠道第一列作定价别名）
+			// alpha/search 固定按 search_call 计费。
+			entry.Cost = computeRequestCost(billingModel, res.ServiceTier, res) + res.ToolCostUSD
+		}
 	} else {
 		entry.Message = "unknown"
 	}

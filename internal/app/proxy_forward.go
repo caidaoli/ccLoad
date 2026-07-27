@@ -2458,6 +2458,11 @@ func (s *Server) attemptKeyAcrossURLs(
 		if result != nil {
 			urlLastFailure = result
 		}
+		if result != nil && result.alphaSearchUnsupported {
+			// 能力缺失不是 URL 健康故障，不进入通用 URL 冷却。
+			s.markAlphaSearchUnsupported(cfg.ID, urlEntry.url)
+			continue
+		}
 
 		// Key级错误：换URL无意义，跳出URL循环
 		if nextAction == cooldown.ActionRetryKey {

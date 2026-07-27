@@ -4,12 +4,38 @@ import (
 	"context"
 	"net/url"
 	"strings"
+	"time"
 
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
+
+const alphaSearchCapabilityRetryInterval = 10 * time.Minute
+
+type alphaSearchEndpointKey struct {
+	channelID int64
+	url       string
+}
+
+func (s *Server) markAlphaSearchUnsupported(channelID int64, rawURL string) {
+	s.alphaSearchUnsupportedURLs.Store(alphaSearchEndpointKey{channelID: channelID, url: rawURL}, time.Now())
+}
+
+func (s *Server) isAlphaSearchUnsupported(channelID int64, rawURL string) bool {
+	key := alphaSearchEndpointKey{channelID: channelID, url: rawURL}
+	value, ok := s.alphaSearchUnsupportedURLs.Load(key)
+	if !ok {
+		return false
+	}
+	detectedAt, ok := value.(time.Time)
+	if !ok || time.Since(detectedAt) >= alphaSearchCapabilityRetryInterval {
+		s.alphaSearchUnsupportedURLs.Delete(key)
+		return false
+	}
+	return true
+}
 
 func normalizeOptionalChannelType(value string) string {
 	value = strings.TrimSpace(value)
@@ -76,12 +102,16 @@ func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType 
 	return s.filterCooldownChannels(ctx, channels, "*", channelType)
 }
 
-// alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints.
+// alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
+// endpoints that recently proved they do not implement alpha/search.
 // Normal base URLs remain eligible because the request path is appended later.
-func alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
+func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
 	urls := cfg.GetURLs()
 	compatible := make([]string, 0, len(urls))
 	for _, rawURL := range urls {
+		if s.isAlphaSearchUnsupported(cfg.ID, rawURL) {
+			continue
+		}
 		if !modelpkg.HasExactUpstreamURLMarker(rawURL) {
 			compatible = append(compatible, rawURL)
 			continue
@@ -111,7 +141,7 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 			continue
 		}
 
-		urls := alphaSearchUpstreamURLs(cfg)
+		urls := s.alphaSearchUpstreamURLs(cfg)
 		if len(urls) == 0 {
 			continue
 		}
