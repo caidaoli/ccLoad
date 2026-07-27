@@ -553,6 +553,7 @@ type responsesWebsocketBridgeWriter struct {
 	closedForMessageTooBig bool
 	outputItemsByIndex     map[int64][]byte
 	outputItemsUnindexed   [][]byte
+	outputItemsBytes       int64
 }
 
 func newResponsesWebsocketBridgeWriter(conn *websocket.Conn) *responsesWebsocketBridgeWriter {
@@ -593,7 +594,9 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			return 0, errors.New("invalid JSON in upstream SSE event")
 		}
 		eventType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
-		w.collectOutputItem(eventType, payload)
+		if err := w.collectOutputItem(eventType, payload); err != nil {
+			return 0, err
+		}
 		if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
 			w.completed = true
 			output := gjson.GetBytes(payload, "response.output")
@@ -645,21 +648,31 @@ func (w *responsesWebsocketBridgeWriter) SetWriteDeadline(deadline time.Time) er
 	return w.conn.SetWriteDeadline(deadline)
 }
 
-func (w *responsesWebsocketBridgeWriter) collectOutputItem(eventType string, payload []byte) {
+// collectOutputItem 累积单轮 output item 快照供 transcript 回放。pending 的
+// 单事件上限挡不住海量小事件：每个事件解析完就被清空，快照却逐条 clone
+// 留在内存里，所以这里必须再压一道累计字节上限（与请求侧 transcript 同限）。
+func (w *responsesWebsocketBridgeWriter) collectOutputItem(eventType string, payload []byte) error {
 	if eventType != "response.output_item.done" {
-		return
+		return nil
 	}
 	item := gjson.GetBytes(payload, "item")
 	if !item.Exists() || !item.IsObject() {
-		return
+		return nil
 	}
 	itemBytes := bytes.Clone([]byte(item.Raw))
 	index := gjson.GetBytes(payload, "output_index")
 	if index.Exists() {
-		w.outputItemsByIndex[index.Int()] = itemBytes
-		return
+		key := index.Int()
+		w.outputItemsBytes += int64(len(itemBytes)) - int64(len(w.outputItemsByIndex[key]))
+		w.outputItemsByIndex[key] = itemBytes
+	} else {
+		w.outputItemsBytes += int64(len(itemBytes))
+		w.outputItemsUnindexed = append(w.outputItemsUnindexed, itemBytes)
 	}
-	w.outputItemsUnindexed = append(w.outputItemsUnindexed, itemBytes)
+	if w.outputItemsBytes > maxProxyBodyBytes("/v1/responses") {
+		return errors.New("upstream response output exceeds websocket transcript limit")
+	}
+	return nil
 }
 
 func (w *responsesWebsocketBridgeWriter) collectedOutput() []byte {
