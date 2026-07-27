@@ -9,7 +9,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"os"
-	"strconv"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -132,14 +132,13 @@ func NewServer(store storage.Store) *Server {
 
 	// 从ConfigService读取运行时配置（启动时加载一次，修改后重启生效）
 	runtimeCfg := loadServerRuntimeConfig(configService)
+	warnMigratedEnvSettings()
 
-	// 最大并发数保留环境变量读取（启动参数，不支持Web管理）
-	maxConcurrency := config.DefaultMaxConcurrency
-	if concEnv := os.Getenv("CCLOAD_MAX_CONCURRENCY"); concEnv != "" {
-		if val, err := strconv.Atoi(concEnv); err == nil && val > 0 {
-			maxConcurrency = val
-		}
-	}
+	// 请求体上限与冷却时长是包级状态，启动期一次性注入后由请求链路只读消费
+	setMaxBodyBytesLimits(runtimeCfg.MaxBodyBytes, runtimeCfg.MaxImageBodyBytes)
+	util.ApplyCooldownSettings(runtimeCfg.Cooldown)
+
+	maxConcurrency := runtimeCfg.MaxConcurrency
 
 	// TLS证书验证配置（仅环境变量）
 	// 这是一个危险开关：一旦关闭证书校验，上游 HTTPS 等同明文 + 任意中间人。
@@ -322,12 +321,46 @@ type channelTypeTimeoutConfig struct {
 // serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
 type serverRuntimeConfig struct {
 	MaxKeyRetries       int
+	MaxConcurrency      int
+	MaxBodyBytes        int
+	MaxImageBodyBytes   int
 	FirstByteTimeout    time.Duration
 	StreamTimeout       time.Duration
 	NonStreamTimeout    time.Duration
 	ChannelTypeTimeouts map[string]channelTypeTimeoutConfig
 	LogRetentionDays    int
 	ModelFuzzyMatch     bool
+	Cooldown            util.CooldownSettings
+}
+
+// loadPositiveInt 读取必须为正数的配置项，非法值回退默认并告警。
+func loadPositiveInt(cs *ConfigService, key string, defaultValue int) int {
+	value := cs.GetInt(key, defaultValue)
+	if value <= 0 {
+		log.Printf("[WARN] 无效的 %s=%d（必须 > 0），已使用默认值 %d", key, value, defaultValue)
+		return defaultValue
+	}
+	return value
+}
+
+// loadCooldownSettings 从系统设置读取冷却时长（秒），非法值回退默认。
+func loadCooldownSettings(cs *ConfigService) util.CooldownSettings {
+	settings := util.CooldownSettings{
+		AuthSec:      loadPositiveInt(cs, "cooldown_auth_seconds", config.DefaultCooldownAuthSeconds),
+		ServerSec:    loadPositiveInt(cs, "cooldown_server_seconds", config.DefaultCooldownServerSeconds),
+		TimeoutSec:   loadPositiveInt(cs, "cooldown_timeout_seconds", config.DefaultCooldownTimeoutSeconds),
+		RateLimitSec: loadPositiveInt(cs, "cooldown_rate_limit_seconds", config.DefaultCooldownRateLimitSeconds),
+		MaxSec:       loadPositiveInt(cs, "cooldown_max_seconds", config.DefaultCooldownMaxSeconds),
+		MinSec:       loadPositiveInt(cs, "cooldown_min_seconds", config.DefaultCooldownMinSeconds),
+	}
+	// 上下限倒挂会让指数退避直接被 max 钳死在下限之下，语义不可用，回退默认对。
+	if settings.MinSec > settings.MaxSec {
+		log.Printf("[WARN] cooldown_min_seconds=%d 大于 cooldown_max_seconds=%d，已回退默认值 %d/%d",
+			settings.MinSec, settings.MaxSec, config.DefaultCooldownMinSeconds, config.DefaultCooldownMaxSeconds)
+		settings.MinSec = config.DefaultCooldownMinSeconds
+		settings.MaxSec = config.DefaultCooldownMaxSeconds
+	}
+	return settings
 }
 
 // loadServerRuntimeConfig 从 ConfigService 加载运行时配置并校验，无效值兜底为默认值
@@ -367,12 +400,16 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 
 	return serverRuntimeConfig{
 		MaxKeyRetries:       maxKeyRetries,
+		MaxConcurrency:      loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
+		MaxBodyBytes:        loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
+		MaxImageBodyBytes:   loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
 		FirstByteTimeout:    firstByteTimeout,
 		StreamTimeout:       streamTimeout,
 		NonStreamTimeout:    nonStreamTimeout,
 		ChannelTypeTimeouts: channelTypeTimeouts,
 		LogRetentionDays:    logRetentionDays,
 		ModelFuzzyMatch:     modelFuzzyMatch,
+		Cooldown:            loadCooldownSettings(cs),
 	}
 }
 
@@ -399,6 +436,32 @@ func loadChannelTypeTimeouts(cs *ConfigService) map[string]channelTypeTimeoutCon
 		}
 	}
 	return timeouts
+}
+
+// migratedEnvSettings 已迁移到系统设置的旧环境变量 → 新配置项。
+// 保留告警而非静默忽略：老部署仍在 .env 里设着这些值，不提示会让人以为限额还生效。
+var migratedEnvSettings = map[string]string{
+	"CCLOAD_MAX_CONCURRENCY":         "max_concurrency",
+	"CCLOAD_MAX_BODY_BYTES":          "max_body_bytes / max_image_body_bytes",
+	"CCLOAD_COOLDOWN_AUTH_SEC":       "cooldown_auth_seconds",
+	"CCLOAD_COOLDOWN_SERVER_SEC":     "cooldown_server_seconds",
+	"CCLOAD_COOLDOWN_TIMEOUT_SEC":    "cooldown_timeout_seconds",
+	"CCLOAD_COOLDOWN_RATE_LIMIT_SEC": "cooldown_rate_limit_seconds",
+	"CCLOAD_COOLDOWN_MAX_SEC":        "cooldown_max_seconds",
+	"CCLOAD_COOLDOWN_MIN_SEC":        "cooldown_min_seconds",
+}
+
+func warnMigratedEnvSettings() {
+	keys := make([]string, 0, len(migratedEnvSettings))
+	for key := range migratedEnvSettings {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if os.Getenv(key) != "" {
+			log.Printf("[WARN] 环境变量 %s 已废弃且不再生效，请改用系统设置项 %s", key, migratedEnvSettings[key])
+		}
+	}
 }
 
 func channelTypeFirstByteTimeoutSettingKey(channelType string) string {

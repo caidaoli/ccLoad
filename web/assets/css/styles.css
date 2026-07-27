@@ -2904,6 +2904,24 @@ body {
   width: auto;
 }
 
+.settings-restart-notice {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--space-4);
+  padding: 10px 12px;
+  background: var(--surface-bg-muted);
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  color: var(--neutral-700);
+}
+
+.settings-restart-notice-icon {
+  flex-shrink: 0;
+  color: var(--info-600);
+}
+
 .table-col-select {
   width: 30px;
 }

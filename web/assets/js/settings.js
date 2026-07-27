@@ -22,6 +22,7 @@ function getSettingGroupInfo(key) {
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
     { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('_first_byte_timeout') },
     { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
+    { id: 'limits', nameKey: 'settings.group.limits', order: 26, match: () => k === 'max_concurrency' || k.endsWith('_body_bytes') },
     { id: 'health', nameKey: 'settings.group.health', order: 30, match: () => k.includes('health_score') || k.includes('success_rate') || k.includes('penalty_weight') || k.includes('ttfb') || k === 'enable_health_score' || k === 'health_min_confident_sample' },
     { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
@@ -46,7 +47,17 @@ function getSettingOrder(key) {
     openai_first_byte_timeout: 130,
     openai_non_stream_timeout: 131,
     gemini_first_byte_timeout: 140,
-    gemini_non_stream_timeout: 141
+    gemini_non_stream_timeout: 141,
+    max_concurrency: 200,
+    max_body_bytes: 201,
+    max_image_body_bytes: 202,
+    cooldown_fallback_enabled: 300,
+    cooldown_auth_seconds: 301,
+    cooldown_server_seconds: 302,
+    cooldown_timeout_seconds: 303,
+    cooldown_rate_limit_seconds: 304,
+    cooldown_min_seconds: 305,
+    cooldown_max_seconds: 306
   };
   const normalizedKey = String(key || '').toLowerCase();
   return orders[normalizedKey] ?? 1000;

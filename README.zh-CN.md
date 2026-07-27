@@ -917,6 +917,8 @@ ccLoad 使用的核心技术栈：
 
 ### 环境变量
 
+环境变量只承载引导期配置——ccLoad 在数据库连接建立之前就需要的值。启动之后的策略类配置（限额、冷却时长、超时、健康度排序等）是系统设置，在管理界面修改。特别地，`SQLITE_PATH`、`SQLITE_JOURNAL_MODE`、`CCLOAD_MYSQL`、`CCLOAD_POSTGRES`、`CCLOAD_ENABLE_SQLITE_REPLICA` 和 `CCLOAD_SQLITE_LOG_DAYS` 决定的是*数据库怎么打开*，因此不可能存在那个数据库里，会一直保持为环境变量。
+
 | 变量名 | 默认值 | 说明 |
 |--------|--------|------|
 | `CCLOAD_PASS` | 无 | 管理界面密码（**必填**，未设置将退出） |
@@ -933,14 +935,6 @@ ccLoad 使用的核心技术栈：
 | `TRUSTED_PROXIES` | 私有网段 + Loopback + `100.64.0.0/10` | 可信代理 CIDR 列表（逗号分隔）；`none`=不信任任何代理 |
 | `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（仅 SQLite 模式） |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
-| `CCLOAD_MAX_CONCURRENCY` | `1000` | 最大并发请求数（限制同时处理的代理请求数量） |
-| `CCLOAD_MAX_BODY_BYTES` | `10485760` | 请求体最大字节数（10MB，Images API自动放宽至20MB） |
-| `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | 认证错误(401/402/403)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | 服务器错误(5xx)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | 超时错误(597/598)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | 限流错误(429)初始冷却时间（秒） |
-| `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | 指数退避冷却上限（秒，30分钟） |
-| `CCLOAD_COOLDOWN_MIN_SEC` | `10` | 指数退避冷却下限（秒） |
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
 
 > 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
@@ -974,14 +968,23 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | 纯 PostgreSQL | 设置 `CCLOAD_POSTGRES` | PostgreSQL 生产环境 |
 | 混合模式 | 主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces / 高延迟主库 |
 
-### Web 管理配置（支持热重载）
+### Web 管理配置（数据库存储，保存后自动重启）
 
-这些配置可在 Web 界面修改，保存后立即生效，无需重启：
+这些配置存在数据库中，在 Web 界面 `/web/settings.html` 修改。保存会先写库，随后约 2 秒自动重启进程——重启本身就是生效机制，因此没有热重载，进行中的请求会先跑完再退出：
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
 | `log_retention_days` | `7` | 日志保留天数（-1永久保留，1-365天） |
 | `max_key_retries` | `3` | 单个渠道内最大Key重试次数 |
+| `max_concurrency` | `1000` | 最大并发请求数，限制同时处理的代理请求数量 |
+| `max_body_bytes` | `10485760` | 请求体最大字节数，默认 10MB |
+| `max_image_body_bytes` | `20971520` | Images API 请求体最大字节数，默认 20MB |
+| `cooldown_auth_seconds` | `300` | 认证错误（401/402/403）初始冷却时间（秒） |
+| `cooldown_server_seconds` | `120` | 服务器错误（5xx）初始冷却时间（秒） |
+| `cooldown_timeout_seconds` | `60` | 超时错误（597/598）初始冷却时间（秒） |
+| `cooldown_rate_limit_seconds` | `60` | 限流错误（429）初始冷却时间（秒） |
+| `cooldown_min_seconds` | `10` | 指数退避冷却下限（秒） |
+| `cooldown_max_seconds` | `1800` | 指数退避冷却上限（秒；下限大于上限时整对回退默认值） |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
 | `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
 | `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
@@ -1157,7 +1160,7 @@ storage/
 - `key_rr` - 轮询指针（channel_id → idx）
 - `auth_tokens` - 认证令牌（支持费用限额、模型/渠道限制、并发限制、首字节时间记录）
 - `web_sessions` - 可绑定 API Token 的角色化 Web 会话
-- `system_settings` - 系统配置（支持热重载）
+- `system_settings` - 系统配置（数据库存储，保存后自动重启生效）
 
 **架构特性** (✅ 2025-12月 ~ 2026-04月持续优化):
 - ✅ **统一SQL层**（重构）：SQLite、MySQL 和 PostgreSQL 共享 `storage/sql/` 实现

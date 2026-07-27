@@ -1,12 +1,10 @@
 package util
 
 import (
-	"os"
-	"strconv"
 	"time"
 )
 
-// 冷却时间变量（支持环境变量覆盖，启动时读取一次）
+// 冷却时间变量（启动时由系统设置注入一次，修改后重启生效）
 var (
 	// AuthErrorInitialCooldown 认证错误（401/402/403）的初始冷却时间
 	AuthErrorInitialCooldown = 5 * time.Minute
@@ -27,42 +25,30 @@ var (
 	MinCooldownDuration = 10 * time.Second
 )
 
-func init() {
-	applyCooldownEnvOverrides(os.Getenv)
+// CooldownSettings 冷却时长配置（单位：秒）。非正值表示保留内置默认值。
+type CooldownSettings struct {
+	AuthSec      int
+	TimeoutSec   int
+	ServerSec    int
+	RateLimitSec int
+	MaxSec       int
+	MinSec       int
 }
 
-func envSecondsFrom(getenv func(string) string, key string) time.Duration {
-	s := getenv(key)
-	if s == "" {
-		return 0
+// ApplyCooldownSettings 用系统设置覆盖冷却时长。
+// 启动时调用一次（配置修改后进程会重启），因此无需加锁。
+func ApplyCooldownSettings(s CooldownSettings) {
+	assign := func(target *time.Duration, seconds int) {
+		if seconds > 0 {
+			*target = time.Duration(seconds) * time.Second
+		}
 	}
-	v, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || v <= 0 {
-		return 0
-	}
-	return time.Duration(v) * time.Second
-}
-
-func applyCooldownEnvOverrides(getenv func(string) string) {
-	// 环境变量覆盖（启动时读取一次，重启生效）
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_AUTH_SEC"); v > 0 {
-		AuthErrorInitialCooldown = v
-	}
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_TIMEOUT_SEC"); v > 0 {
-		TimeoutErrorCooldown = v
-	}
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_SERVER_SEC"); v > 0 {
-		ServerErrorInitialCooldown = v
-	}
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_RATE_LIMIT_SEC"); v > 0 {
-		RateLimitErrorCooldown = v
-	}
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_MAX_SEC"); v > 0 {
-		MaxCooldownDuration = v
-	}
-	if v := envSecondsFrom(getenv, "CCLOAD_COOLDOWN_MIN_SEC"); v > 0 {
-		MinCooldownDuration = v
-	}
+	assign(&AuthErrorInitialCooldown, s.AuthSec)
+	assign(&TimeoutErrorCooldown, s.TimeoutSec)
+	assign(&ServerErrorInitialCooldown, s.ServerSec)
+	assign(&RateLimitErrorCooldown, s.RateLimitSec)
+	assign(&MaxCooldownDuration, s.MaxSec)
+	assign(&MinCooldownDuration, s.MinSec)
 }
 
 // CalculateBackoffDuration 计算指数退避冷却时间

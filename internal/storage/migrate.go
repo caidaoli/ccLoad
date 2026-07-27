@@ -380,6 +380,15 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	}{
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
+		{"max_concurrency", "1000", "int", "最大并发请求数(限制同时处理的代理请求数量)", "1000"},
+		{"max_body_bytes", "10485760", "int", "请求体最大字节数(默认10MB)", "10485760"},
+		{"max_image_body_bytes", "20971520", "int", "Images API 请求体最大字节数(默认20MB)", "20971520"},
+		{"cooldown_auth_seconds", "300", "int", "认证错误(401/402/403)初始冷却时间(秒)", "300"},
+		{"cooldown_server_seconds", "120", "int", "服务器错误(5xx)初始冷却时间(秒)", "120"},
+		{"cooldown_timeout_seconds", "60", "int", "超时错误(597/598)初始冷却时间(秒)", "60"},
+		{"cooldown_rate_limit_seconds", "60", "int", "限流错误(429)初始冷却时间(秒)", "60"},
+		{"cooldown_max_seconds", "1800", "int", "指数退避冷却上限(秒)", "1800"},
+		{"cooldown_min_seconds", "10", "int", "指数退避冷却下限(秒)", "10"},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},
@@ -393,8 +402,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
-		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)", "5"},
-		{"model_catalog_sync_interval_hours", "6", "float", "模型目录同步间隔(小时,支持小数,0=关闭网络同步,修改后重启生效)", "6"},
+		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
+		{"model_catalog_sync_interval_hours", "6", "float", "模型目录同步间隔(小时,支持小数,0=关闭网络同步)", "6"},
 		{"auto_update_interval_hours", "12", "int", "自动更新检测间隔(小时整数,0=关闭,启用时最低1小时)", "12"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名行为(edit=打开编辑器,navigate=跳转到渠道管理定位)", "edit"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
@@ -483,7 +492,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	{
 		keyCol := quoteKeyIdent(dialect)
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
-		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭,修改后重启生效)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
+		typeSQL := fmt.Sprintf("UPDATE system_settings SET value_type = 'float', description = '渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)', default_value = '5' WHERE %s = 'channel_check_interval_hours' AND value_type = 'int'", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
 			return fmt.Errorf("migrate channel_check_interval_hours type: %w", err)
 		}

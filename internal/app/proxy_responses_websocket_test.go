@@ -464,7 +464,6 @@ func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
 }
 
 func TestResponsesWebsocketRejectsBinaryAndOversizedFrames(t *testing.T) {
-	t.Setenv("CCLOAD_MAX_BODY_BYTES", "256")
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Error("invalid websocket frame must not reach upstream")
 		w.WriteHeader(http.StatusInternalServerError)
@@ -472,6 +471,8 @@ func TestResponsesWebsocketRejectsBinaryAndOversizedFrames(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "codex-http", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
+	// 必须在建 Server 之后收紧：NewServer 会用系统设置重置包级上限
+	withMaxBodyBytes(t, 256)
 
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -785,7 +786,6 @@ func TestResponsesWebsocketExpandsIncrementalTurnForHTTPUpstream(t *testing.T) {
 }
 
 func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
-	t.Setenv("CCLOAD_MAX_BODY_BYTES", "600")
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
@@ -799,6 +799,8 @@ func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
 		apiKey:      "sk-upstream",
 		priority:    100,
 	}}, map[int]string{0: upstream.URL})
+	// 必须在建 Server 之后收紧：NewServer 会用系统设置重置包级上限
+	withMaxBodyBytes(t, 600)
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set websocket read deadline: %v", err)

@@ -40,14 +40,14 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Choose the deployment path first</h2>
-          <p>ccLoad has one hard startup requirement: set `CCLOAD_PASS` in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
+          <p>ccLoad has one hard startup requirement: set <code>CCLOAD_PASS</code> in production. Storage defaults to SQLite; add MySQL or PostgreSQL only when you need external persistence or shared deployment state.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🐳</span>
             <h3>Docker Compose</h3>
-            <p>Recommended path. Image, ports, environment variables and volumes live in `docker-compose.yml`, which is suitable for long-running servers.</p>
+            <p>Recommended path. Image, ports, environment variables and volumes live in <code>docker-compose.yml</code>, which is suitable for long-running servers.</p>
             <div class="www-card-actions">
               <a class="www-btn www-btn-primary" href="#docker">View Docker steps</a>
             </div>
@@ -65,7 +65,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔧</span>
             <h3>Source or Binary</h3>
-            <p>Use this for development, private environments and lightweight deployments. Source builds must use `-tags sonic`.</p>
+            <p>Use this for development, private environments and lightweight deployments. Source builds must use <code>-tags sonic</code>.</p>
             <div class="www-card-actions">
               <a class="www-btn www-btn-primary" href="#source-binary">View runtime options</a>
             </div>
@@ -85,13 +85,13 @@
           <div class="www-step">
             <div>
               <h3>Prepare configuration</h3>
-              <p>Copy the official `docker-compose.yml` and `.env.example`, then set a strong `CCLOAD_PASS` in `.env`.</p>
+              <p>Copy the official <code>docker-compose.yml</code> and <code>.env.example</code>, then set a strong <code>CCLOAD_PASS</code> in <code>.env</code>.</p>
             </div>
           </div>
           <div class="www-step">
             <div>
               <h3>Start the service</h3>
-              <p>The default port is `8080`; the admin console is under `/web/`, and API proxy endpoints are under `/v1/*` and `/v1beta/*`.</p>
+              <p>The default port is <code>8080</code>; the admin console is under <code>/web/</code>, and API proxy endpoints are under <code>/v1/*</code> and <code>/v1beta/*</code>.</p>
             </div>
           </div>
           <div class="www-step">
@@ -133,7 +133,7 @@ docker-compose logs -f ccload</code></pre>
       <div class="www-container">
         <div class="www-section-header">
           <h2>Hugging Face Spaces</h2>
-          <p>Spaces work well for quick public deployments. The operational risk is that `/tmp` is cleared on restart, so long-term usage should use external MySQL or PostgreSQL and optionally enable the SQLite replica for faster reads.</p>
+          <p>Spaces work well for quick public deployments. The operational risk is that <code>/tmp</code> is cleared on restart, so long-term usage should use external MySQL or PostgreSQL and optionally enable the SQLite replica for faster reads.</p>
         </div>
 
         <div class="www-doc-grid">
@@ -141,8 +141,8 @@ docker-compose logs -f ccload</code></pre>
             <h3>Space settings</h3>
             <ul class="www-check-list">
               <li>Create a Space and choose Docker as the SDK.</li>
-              <li>Use `ghcr.io/caidaoli/ccload:latest` in `Dockerfile`.</li>
-              <li>Add `CCLOAD_PASS` in Secrets; do not put it in public files.</li>
+              <li>Use <code>ghcr.io/caidaoli/ccload:latest</code> in <code>Dockerfile</code>.</li>
+              <li>Add <code>CCLOAD_PASS</code> in Secrets; do not put it in public files.</li>
               <li>Create an API access token in the admin console before production access.</li>
             </ul>
           </article>
@@ -150,10 +150,10 @@ docker-compose logs -f ccload</code></pre>
           <article class="www-info-card">
             <h3>Persistence guidance</h3>
             <ul class="www-check-list">
-              <li>Temporary testing: set only `CCLOAD_PASS` and use the default SQLite storage.</li>
+              <li>Temporary testing: set only <code>CCLOAD_PASS</code> and use the default SQLite storage.</li>
               <li>Long-term usage: set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code>.</li>
-              <li>High-read workloads: also set `CCLOAD_ENABLE_SQLITE_REPLICA=1`.</li>
-              <li>Control the log restore window with `CCLOAD_SQLITE_LOG_DAYS`.</li>
+              <li>High-read workloads: also set <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code>.</li>
+              <li>Control the log restore window with <code>CCLOAD_SQLITE_LOG_DAYS</code>. All storage variables are bootstrap-only and stay environment variables — they decide how the database is opened.</li>
             </ul>
           </article>
         </div>
@@ -178,14 +178,14 @@ EXPOSE 7860</code></pre>
       <div class="www-container">
         <div class="www-section-header">
           <h2>Source Builds and Binary Runtime</h2>
-          <p>Use source builds for development and customization, and binaries when you do not want to maintain a build environment. Both require `CCLOAD_PASS` before startup.</p>
+          <p>Use source builds for development and customization, and binaries when you do not want to maintain a build environment. Both require <code>CCLOAD_PASS</code> before startup.</p>
         </div>
 
         <div class="www-doc-grid">
           <article class="www-doc-card">
             <span class="www-doc-icon">⚙️</span>
             <h3>Source build</h3>
-            <p>Builds must enable the `sonic` tag. Use `make build` directly instead of maintaining a forked build script.</p>
+            <p>Builds must enable the <code>sonic</code> tag. Use <code>make build</code> directly instead of maintaining a forked build script.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>
@@ -205,7 +205,7 @@ make build
           <article class="www-doc-card">
             <span class="www-doc-icon">📦</span>
             <h3>Binary runtime</h3>
-            <p>Download the artifact for your platform from Releases, make it executable and run it. Pinning a version is easier to roll back than tracking `latest`.</p>
+            <p>Download the artifact for your platform from Releases, make it executable and run it. Pinning a version is easier to roll back than tracking <code>latest</code>.</p>
             <div class="www-code-block">
               <div class="www-code-header">
                 <span class="www-code-lang">bash</span>

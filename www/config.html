@@ -40,7 +40,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Startup Environment Variables</h2>
-          <p>Startup variables answer one question: can the service boot safely? Runtime policies that can be hot-updated should stay in the admin console, not in environment variables.</p>
+          <p>Environment variables cover bootstrap configuration only — values ccLoad needs before a database connection exists. Storage variables (<code>SQLITE_PATH</code>, <code>SQLITE_JOURNAL_MODE</code>, <code>CCLOAD_MYSQL</code>, <code>CCLOAD_POSTGRES</code>, <code>CCLOAD_ENABLE_SQLITE_REPLICA</code>, <code>CCLOAD_SQLITE_LOG_DAYS</code>) decide <em>how</em> the database is opened, so they cannot live inside that same database and will stay environment variables. Runtime policies belong in the admin console below.</p>
         </div>
 
         <div class="www-data-table-wrapper">
@@ -97,10 +97,22 @@
                 <td>Requires one primary DSN. Useful on Hugging Face Spaces or with a high-latency primary.</td>
               </tr>
               <tr>
+                <td><code>SQLITE_PATH</code></td>
+                <td><code>data/ccload.db</code></td>
+                <td>SQLite database file path. Falls back to a temporary directory when the default is not writable.</td>
+                <td>Set an explicit persistent path in production. Read while opening the database, so it cannot be a system setting.</td>
+              </tr>
+              <tr>
+                <td><code>SQLITE_JOURNAL_MODE</code></td>
+                <td><code>WAL</code></td>
+                <td>SQLite journal mode used to build the connection DSN. Accepts a fixed whitelist; an invalid value stops startup.</td>
+                <td><code>TRUNCATE</code> is safer in containers where WAL sidecar files can be lost. Read before the database exists, so it cannot be a system setting.</td>
+              </tr>
+              <tr>
                 <td><code>CCLOAD_SQLITE_LOG_DAYS</code></td>
                 <td><code>7</code></td>
                 <td>Number of log days restored from the primary database on hybrid startup.</td>
-                <td><code>-1</code> restores all logs; <code>0</code> restores no logs.</td>
+                <td><code>-1</code> restores all logs; <code>0</code> restores no logs. Only applies in hybrid mode.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ALLOW_INSECURE_TLS</code></td>
@@ -113,18 +125,6 @@
                 <td>None</td>
                 <td>Pins upstream hostnames to fixed IPs before dialing. Format: <code>host=ip,host2=ip2</code>.</td>
                 <td>Use for upstream DNS failures, for example <code>anyrouter.top=47.246.23.200</code>. TLS SNI, certificates and Host headers stay unchanged. Invalid entries fail startup.</td>
-              </tr>
-              <tr>
-                <td><code>CCLOAD_MAX_CONCURRENCY</code></td>
-                <td><code>1000</code></td>
-                <td>Global maximum concurrent proxy requests.</td>
-                <td>Tune it to machine resources and upstream limits. Do not leave concurrency unbounded.</td>
-              </tr>
-              <tr>
-                <td><code>CCLOAD_MAX_BODY_BYTES</code></td>
-                <td><code>10485760</code></td>
-                <td>Maximum request body size. Images API automatically raises this to 20MB.</td>
-                <td>Keep the default for public deployments to avoid oversized requests overwhelming the service.</td>
               </tr>
             </tbody>
           </table>
@@ -232,14 +232,14 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Runtime Settings in the Admin Console</h2>
-          <p>These settings are stored in the database and can be adjusted at runtime. They are policy, not startup configuration.</p>
+          <p>These settings are stored in the database and can be adjusted from <code>/web/settings.html</code>. Saving a change writes the new value and restarts the process about two seconds later; the restart is what applies it. There is no hot reload — in-flight requests finish before the process exits.</p>
         </div>
 
         <div class="www-doc-grid www-doc-grid-3">
           <article class="www-doc-card">
             <span class="www-doc-icon">🔁</span>
             <h3>Retries and cooldown</h3>
-            <p>Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, upstream HTTP 5xx, key-level 429 rate limits, and model-unavailable 404 — cool only the actual upstream model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
+            <p>Initial cooldown durations are settings, not environment variables: <code>cooldown_auth_seconds</code>, <code>cooldown_server_seconds</code>, <code>cooldown_timeout_seconds</code> and <code>cooldown_rate_limit_seconds</code>, bounded by <code>cooldown_min_seconds</code> and <code>cooldown_max_seconds</code>. An inverted floor/ceiling pair falls back to both defaults. Key errors (401/403) cool only the current key. Model-scoped errors — structured <code>model_cooldown</code> responses, upstream HTTP 5xx, key-level 429 rate limits, and model-unavailable 404 — cool only the actual upstream model. The channel is cooled only after every enabled key or every configured model is cooling. Network failures plus internal 598/599 errors remain channel-scoped; key and channel cooldowns use exponential backoff, while model cooldown uses the upstream reset time or a fixed five-minute fallback.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">⏱️</span>
@@ -265,6 +265,11 @@
             <span class="www-doc-icon">🧪</span>
             <h3>Channel checks</h3>
             <p>Manual and scheduled checks both count toward channel RPM limits. Use a low-cost, stable model for checks.</p>
+          </article>
+          <article class="www-doc-card">
+            <span class="www-doc-icon">🚦</span>
+            <h3>Concurrency and body limits</h3>
+            <p><code>max_concurrency</code> caps simultaneous proxy requests; <code>max_body_bytes</code> and <code>max_image_body_bytes</code> cap request bodies for regular and Images API paths respectively. All three take effect after the automatic restart that follows a settings change, and the body limits also bound Responses WebSocket frames and transcripts.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">🔗</span>
@@ -301,9 +306,9 @@
             <h3>Pre-production checklist</h3>
             <ul class="www-check-list">
               <li>Store the strong password in Secrets, not in the repository.</li>
-              <li>Create at least one API access token; otherwise `/v1/*` returns 401 by design.</li>
+              <li>Create at least one API access token; otherwise <code>/v1/*</code> returns 401 by design.</li>
               <li>Restrict admin-console access on public deployments or place it behind a protected network.</li>
-              <li>Do not use `CCLOAD_ALLOW_INSECURE_TLS` as a long-term setting.</li>
+              <li>Do not use <code>CCLOAD_ALLOW_INSECURE_TLS</code> as a long-term setting.</li>
             </ul>
           </article>
           <article class="www-info-card">

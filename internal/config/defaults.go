@@ -16,6 +16,24 @@ const (
 
 	// DefaultMaxImageBodyBytes Images API 默认最大请求体字节数（支持图片上传）
 	DefaultMaxImageBodyBytes = 20 * 1024 * 1024 // 20MB
+
+	// DefaultCooldownAuthSeconds 认证错误（401/402/403）初始冷却秒数
+	DefaultCooldownAuthSeconds = 300
+
+	// DefaultCooldownServerSeconds 服务器错误（5xx）初始冷却秒数
+	DefaultCooldownServerSeconds = 120
+
+	// DefaultCooldownTimeoutSeconds 超时错误（597/598）初始冷却秒数
+	DefaultCooldownTimeoutSeconds = 60
+
+	// DefaultCooldownRateLimitSeconds 限流错误（429）初始冷却秒数
+	DefaultCooldownRateLimitSeconds = 60
+
+	// DefaultCooldownMaxSeconds 指数退避冷却上限秒数
+	DefaultCooldownMaxSeconds = 1800
+
+	// DefaultCooldownMinSeconds 指数退避冷却下限秒数
+	DefaultCooldownMinSeconds = 10
 )
 
 // HTTP客户端配置常量
