@@ -3230,7 +3230,7 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 	readWebsocketUntilType(t, downstream, "response.completed")
 }
 
-func TestNativeCodexWebsocketFailedTerminalPersistsUsageAndCost(t *testing.T) {
+func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -3277,8 +3277,11 @@ func TestNativeCodexWebsocketFailedTerminalPersistsUsageAndCost(t *testing.T) {
 		}
 	}
 	entry := waitForProxyLog(t, env, "gpt-4o-mini")
-	if entry.InputTokens != 100 || entry.OutputTokens != 50 || entry.Cost <= 0 {
-		t.Fatalf("failed-terminal billing log=%+v", entry)
+	if entry.InputTokens != 100 || entry.OutputTokens != 50 {
+		t.Fatalf("failed-terminal usage log=%+v", entry)
+	}
+	if entry.Cost != 0 {
+		t.Fatalf("failed-terminal cost=%v, want 0", entry.Cost)
 	}
 }
 

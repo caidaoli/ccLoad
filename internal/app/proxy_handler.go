@@ -378,6 +378,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	if len(cands) == 0 {
+		if protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyAlphaSearch {
+			writeEmptyAlphaSearchResponse(c.Writer)
+			return
+		}
 		s.AddLogAsync(&model.LogEntry{
 			Time:           model.JSONTime{Time: time.Now()},
 			Model:          originalModel,
@@ -546,6 +550,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 	w http.ResponseWriter,
 	stopAfterFailure func(current, next *model.Config, result *proxyResult) bool,
 ) (lastResult *proxyResult, succeeded bool) {
+	sawAlphaSearchUnsupported := false
 	for index, cfg := range cands {
 		result, err := s.tryChannelWithKeys(ctx, cfg, reqCtx, w)
 
@@ -574,6 +579,9 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		}
 
 		if result != nil {
+			if result.alphaSearchUnsupported {
+				sawAlphaSearchUnsupported = true
+			}
 			if result.succeeded {
 				return result, true
 			}
@@ -595,8 +603,21 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 			}
 		}
 	}
+	if sawAlphaSearchUnsupported &&
+		protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch &&
+		(lastResult == nil || (!lastResult.isClientCanceled && lastResult.nextAction != cooldown.ActionReturnClient)) {
+		writeEmptyAlphaSearchResponse(w)
+		return &proxyResult{status: http.StatusOK, succeeded: true, nextAction: cooldown.ActionReturnClient}, true
+	}
 
 	return lastResult, false
+}
+
+func writeEmptyAlphaSearchResponse(w http.ResponseWriter) {
+	header := make(http.Header, 2)
+	header.Set("Content-Type", "application/json; charset=utf-8")
+	header.Set("X-CCLoad-Search-Fallback", "empty")
+	writeResponseWithHeaders(w, http.StatusOK, header, []byte(`{"encrypted_output":null,"output":"","results":[]}`))
 }
 
 // writeFinalProxyResponse 所有渠道失败时写最终响应：

@@ -52,6 +52,7 @@ type Server struct {
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client          // HTTP客户端（全局默认）
 	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
+	alphaSearchUnsupportedURLs    sync.Map              // alphaSearchEndpointKey → 探测失败时间
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	responsesExecutionSessions    *responsesExecutionSessionStore
@@ -821,6 +822,8 @@ func (s *Server) InvalidateChannelListCache() {
 	s.channelTypesCacheMu.Lock()
 	s.channelTypesCache = nil
 	s.channelTypesCacheMu.Unlock()
+	// URL/协议配置可能已变化，允许重新探测 alpha/search 能力。
+	s.alphaSearchUnsupportedURLs.Clear()
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效

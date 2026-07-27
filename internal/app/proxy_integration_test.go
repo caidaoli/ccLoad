@@ -484,6 +484,112 @@ func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 	}
 }
 
+func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
+	var upstreamHits atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid URL (POST /v1/alpha/search)"}}`))
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "alpha-search-failure", channelType: util.ChannelTypeCodex, models: "gpt-5"},
+	}, map[int]string{0: upstream.URL})
+
+	request := func() *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+	}
+
+	w := request()
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+	var fallback struct {
+		EncryptedOutput *string `json:"encrypted_output"`
+		Output          string  `json:"output"`
+		Results         []any   `json:"results"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &fallback)
+	if fallback.EncryptedOutput != nil || fallback.Output != "" || len(fallback.Results) != 0 {
+		t.Fatalf("unexpected empty search fallback: %+v", fallback)
+	}
+	entry := waitForProxyLog(t, env, util.BillingModelSearchCall)
+	if entry.Cost != 0 {
+		t.Fatalf("failed request Cost=%v, want 0", entry.Cost)
+	}
+	if got := env.server.costCache.Get(entry.ChannelID); got != 0 {
+		t.Fatalf("failed request cached cost=%v, want 0", got)
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns failed: %v", err)
+	}
+	if until := cooldowns[entry.ChannelID]; until.After(time.Now()) {
+		t.Fatalf("alpha search capability miss cooled channel until %v", until)
+	}
+
+	w = request()
+	if w.Code != http.StatusOK {
+		t.Fatalf("cached fallback status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+	if got := upstreamHits.Load(); got != 1 {
+		t.Fatalf("unsupported alpha search upstream hits=%d, want 1", got)
+	}
+}
+
+func TestProxy_AlphaSearchUnsupportedFallsBackToNextChannel(t *testing.T) {
+	var unsupportedHits atomic.Int64
+	unsupported := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		unsupportedHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":{"message":"Invalid URL (POST /v1/alpha/search)"}}`))
+	}))
+	defer unsupported.Close()
+
+	var supportedHits atomic.Int64
+	supported := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		supportedHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"encrypted_output":null,"output":"search result","results":[]}`))
+	}))
+	defer supported.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "alpha-search-unsupported", channelType: util.ChannelTypeCodex, models: "gpt-5", priority: 100},
+		{name: "alpha-search-supported", channelType: util.ChannelTypeCodex, models: "gpt-5", priority: 90},
+	}, map[int]string{0: unsupported.URL, 1: supported.URL})
+
+	request := func() *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/alpha/search", map[string]any{
+			"query": "codegraph",
+		}, nil)
+	}
+	for i := 0; i < 2; i++ {
+		w := request()
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d status=%d, want 200: %s", i+1, w.Code, w.Body.String())
+		}
+		var response struct {
+			Output string `json:"output"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+		if response.Output != "search result" {
+			t.Fatalf("request %d output=%q, want search result", i+1, response.Output)
+		}
+	}
+	if got := unsupportedHits.Load(); got != 1 {
+		t.Fatalf("unsupported upstream hits=%d, want 1", got)
+	}
+	if got := supportedHits.Load(); got != 2 {
+		t.Fatalf("supported upstream hits=%d, want 2", got)
+	}
+}
+
 func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
 	t.Run("local transform is not a native search upstream", func(t *testing.T) {
 		var upstreamHits atomic.Int64
@@ -505,8 +611,16 @@ func TestProxy_AlphaSearchSelectsOnlyNativeCompatibleChannels(t *testing.T) {
 			"query": "codegraph",
 		}, nil)
 
-		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status=%d, want 503: %s", w.Code, w.Body.String())
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want 200 fallback: %s", w.Code, w.Body.String())
+		}
+		var fallback struct {
+			Output  string `json:"output"`
+			Results []any  `json:"results"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &fallback)
+		if fallback.Output != "" || len(fallback.Results) != 0 {
+			t.Fatalf("unexpected empty search fallback: %+v", fallback)
 		}
 		if upstreamHits.Load() != 0 {
 			t.Fatalf("local transform upstream hits=%d, want 0", upstreamHits.Load())

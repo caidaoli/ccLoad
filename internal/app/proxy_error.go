@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
 
@@ -134,6 +135,15 @@ func networkErrorInput(channelID int64, keyIndex int, statusCode int) cooldown.E
 func cooldownInputForModel(in cooldown.ErrorInput, model string) cooldown.ErrorInput {
 	in.Model = strings.TrimSpace(model)
 	return in
+}
+
+func isAlphaSearchEndpointUnsupported(reqCtx *proxyRequestContext, res *fwResult) bool {
+	if reqCtx == nil || res == nil || res.Status != 404 ||
+		protocol.DetectRequestFamily(reqCtx.requestPath) != protocol.RequestFamilyAlphaSearch {
+		return false
+	}
+	classification := util.ClassifyHTTPResponseWithMeta(res.Status, res.Header, res.Body)
+	return classification.Level == util.ErrorLevelChannel && !classification.ModelScoped
 }
 
 func (s *Server) logProxyResult(
@@ -545,6 +555,14 @@ func (s *Server) handleProxyErrorResponse(
 		channelID: &cfg.ID,
 		duration:  duration,
 		succeeded: false,
+	}
+
+	// alpha/search 是独立能力。端点缺失只说明当前 URL 不支持搜索，
+	// 不能冷却 Key、模型或整个渠道，也不能阻断后续候选渠道。
+	if isAlphaSearchEndpointUnsupported(reqCtx, res) {
+		failure.nextAction = cooldown.ActionRetryChannel
+		failure.alphaSearchUnsupported = true
+		return failure, cooldown.ActionRetryChannel
 	}
 
 	if forceReturnClient {
