@@ -99,39 +99,50 @@ func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing
 	}
 }
 
-// TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired locks
-// down the single-instance capacity contract: once the flat ceiling is hit,
-// acquire rejects outright. There is no LRU eviction-on-insert; an idle
-// session is only reclaimed once it crosses the TTL, via the same sweep that
-// already runs at the top of acquire().
-func TestResponsesExecutionSessionStoreRejectsWhenIdleSessionNotYetExpired(t *testing.T) {
+// TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity locks down the
+// capacity contract: once the flat ceiling is hit, acquire evicts the
+// least-recently-used *idle* session instead of rejecting, so one subject's
+// idle sessions can never starve every other subject for a full TTL. The
+// evicted client recovers through the documented full-transcript replay path.
+func TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity(t *testing.T) {
 	store := newResponsesExecutionSessionStore(nil)
-	store.maxSessions = 1
+	store.maxSessions = 2
 	defer store.close()
 
-	first, releaseFirst, err := store.acquire("token-a", "session-a")
+	oldest, releaseOldest, err := store.acquire("token-a", "session-a")
 	if err != nil {
 		t.Fatalf("acquire first session: %v", err)
 	}
-	releaseFirst()
-
-	if _, _, err = store.acquire("token-a", "session-b"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
-		t.Fatalf("acquire at capacity with an idle, not-yet-expired session error=%v, want capacity error", err)
-	}
-
-	first.lastAccess = time.Now().Add(-2 * time.Hour)
-	second, releaseSecond, err := store.acquire("token-a", "session-b")
+	releaseOldest()
+	newer, releaseNewer, err := store.acquire("token-a", "session-b")
 	if err != nil {
-		t.Fatalf("acquire second session after ttl expiry: %v", err)
+		t.Fatalf("acquire second session: %v", err)
 	}
-	releaseSecond()
-	if first == second {
-		t.Fatal("ttl sweep reused the wrong execution session")
+	releaseNewer()
+	oldest.lastAccess = time.Now().Add(-time.Minute)
+
+	third, releaseThird, err := store.acquire("token-b", "session-c")
+	if err != nil {
+		t.Fatalf("acquire at capacity with idle sessions should evict LRU, got %v", err)
+	}
+	releaseThird()
+	if third == oldest || third == newer {
+		t.Fatal("eviction must create a fresh session, not reuse the victim")
 	}
 
 	stats := store.stats()
-	if stats.Sessions != 1 {
+	if stats.Sessions != 2 {
 		t.Fatalf("unexpected session store stats: %+v", stats)
+	}
+
+	// LRU 语义:被逐出的是最久未访问的 session-a,session-b 仍在。
+	survivor, releaseSurvivor, err := store.acquire("token-a", "session-b")
+	if err != nil {
+		t.Fatalf("reacquire surviving session: %v", err)
+	}
+	releaseSurvivor()
+	if survivor != newer {
+		t.Fatal("LRU eviction removed the wrong session")
 	}
 }
 
@@ -154,6 +165,60 @@ func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testi
 		t.Fatalf("acquire transient session after release: %v", err)
 	}
 	releaseAgain()
+}
+
+func newBridgeWriterTestConn(t *testing.T) *websocket.Conn {
+	t.Helper()
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		for {
+			if _, _, errRead := conn.ReadMessage(); errRead != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(server.Close)
+	conn, resp, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if resp != nil && resp.Body != nil {
+		_ = resp.Body.Close()
+	}
+	if err != nil {
+		t.Fatalf("dial bridge writer test websocket: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn
+}
+
+// TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes locks down the
+// cumulative output item ceiling: the per-event pending limit clears after
+// every parsed event, so a stream of many small response.output_item.done
+// events must still fail once the collected transcript snapshot exceeds the
+// request-side transcript limit, instead of accumulating without bound.
+func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
+	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t))
+
+	text := strings.Repeat("x", 512*1024)
+	var failed error
+	for i := 0; i < 64; i++ {
+		event := fmt.Sprintf(
+			`{"type":"response.output_item.done","output_index":%d,"item":{"id":"item_%d","type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}}`,
+			i, i, text,
+		)
+		if _, err := writer.Write([]byte("data: " + event + "\n\n")); err != nil {
+			failed = err
+			break
+		}
+	}
+	if failed == nil {
+		t.Fatal("unbounded output item accumulation must fail once past the transcript limit")
+	}
+	if !strings.Contains(failed.Error(), "transcript limit") {
+		t.Fatalf("unexpected error: %v", failed)
+	}
 }
 
 func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testing.T) {

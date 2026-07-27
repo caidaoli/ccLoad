@@ -142,11 +142,13 @@ func responsesExecutionSessionKey(subject, hint string) string {
 // from ever sharing conversation state.
 //
 // Capacity is one flat ceiling shared by every subject — single instance, no
-// per-subject bookkeeping. Once full, acquire rejects outright; there is no
-// LRU eviction. An idle session already frees itself through the TTL sweep
-// below, so eviction-on-insert would only ever fire under sustained overload,
-// where silently killing another subject's live session is worse than a
-// clear capacity error.
+// per-subject bookkeeping. Once full, acquire evicts the least-recently-used
+// *idle* session (active == 0) before giving up: an idle session is only
+// cached transcript state, and the evicted client recovers through the
+// documented replay path (resend the full conversation input). Without this,
+// one subject's 32 idle sessions would starve every other subject for a full
+// TTL. Live sessions (active > 0) are never evicted — when all sessions are
+// actively attached, acquire rejects with a clear capacity error.
 func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*responsesExecutionSession, func(), error) {
 	now := time.Now()
 	subject = strings.TrimSpace(subject)
@@ -165,9 +167,13 @@ func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*respons
 	}
 	if session == nil {
 		if limit := s.maxSessionsLimit(); limit > 0 && len(s.sessions) >= limit {
-			s.mu.Unlock()
-			closeResponsesExecutionSessions(expired)
-			return nil, nil, errResponsesExecutionSessionCapacity
+			evicted := s.evictIdleLocked()
+			if evicted == nil {
+				s.mu.Unlock()
+				closeResponsesExecutionSessions(expired)
+				return nil, nil, errResponsesExecutionSessionCapacity
+			}
+			expired = append(expired, evicted)
 		}
 		if !stable {
 			s.nextTransientID++
@@ -217,6 +223,26 @@ func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreS
 		}
 	}
 	return stats
+}
+
+// evictIdleLocked removes and returns the least-recently-used idle session,
+// or nil when every session is actively attached. Caller must hold s.mu and
+// close the returned session after unlocking.
+func (s *responsesExecutionSessionStore) evictIdleLocked() *responsesExecutionSession {
+	var victim *responsesExecutionSession
+	for _, session := range s.sessions {
+		if session.active != 0 {
+			continue
+		}
+		if victim == nil || session.lastAccess.Before(victim.lastAccess) {
+			victim = session
+		}
+	}
+	if victim == nil {
+		return nil
+	}
+	delete(s.sessions, victim.storeKey)
+	return victim
 }
 
 func (s *responsesExecutionSessionStore) removeExpiredLocked(now time.Time) []*responsesExecutionSession {
