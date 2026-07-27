@@ -155,8 +155,8 @@ graph TB
 ```bash
 # 方式 1: 使用 docker-compose（最简单）
 curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
-# 编辑 .env 文件设置密码
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+# 编辑 .env 文件设置 CCLOAD_PASS（必填，未设置服务会拒绝启动）
 docker-compose up -d
 
 # 方式 2: 直接运行镜像
@@ -177,6 +177,7 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # 使用 docker-compose 构建并运行
+cp .env.docker.example .env  # 编辑 .env 设置 CCLOAD_PASS
 docker-compose -f docker-compose.build.yml up -d
 
 # 或手动构建
@@ -287,7 +288,7 @@ Hugging Face Spaces 提供免费的 Docker 托管和自动 HTTPS，适合个人�
 
    | 变量名 | 值 | 必填 | 说明 |
    |--------|-----|------|------|
-   | `CCLOAD_PASS` | `your_admin_password` | ✅ **必填** | 管理界面密码 |
+   | `CCLOAD_PASS` | 无 | ✅ **必填** | 管理界面密码 |
    | `CCLOAD_API_TOKENS` | `token1\|生产,token2\|开发` | 可选 | 启动时预置 API 访问令牌 |
 
    **注意**:

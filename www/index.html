@@ -278,9 +278,9 @@
             <div class="www-code-content">
               <pre><code># Download docker-compose.yml and the .env template
 curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
 
-# Edit .env and set the admin password
+# Edit .env and set the admin password (required, service exits without it)
 nano .env  # set CCLOAD_PASS=your_password
 
 # Start the service
