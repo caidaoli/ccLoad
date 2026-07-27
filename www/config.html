@@ -184,7 +184,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Channel Configuration</h2>
-          <p>Channels are ccLoad's core runtime objects. A channel can have multiple keys, multiple upstream URLs, independent cooldown, RPM/concurrency limits and protocol transform policy.</p>
+          <p>Channels are ccLoad's core runtime objects. A channel has one primary protocol, optional additional protocols, multiple keys and URLs, plus independent cooldown, RPM/concurrency limits and protocol handling.</p>
         </div>
 
         <div class="www-doc-grid">
@@ -192,12 +192,14 @@
             <h3>Core fields</h3>
             <ul class="www-check-list">
               <li><code>name</code>: readable channel name used by logs and statistics.</li>
-              <li><code>type</code>: upstream protocol type such as Anthropic, OpenAI, Gemini or Codex.</li>
+              <li><code>channel_type</code>: the Primary Protocol, such as Anthropic, OpenAI, Gemini or Codex. It drives model discovery, scheduled checks and fallback behavior.</li>
+              <li><code>protocol_transforms</code>: the Additional Protocols accepted by this channel, excluding the primary protocol.</li>
+              <li><code>protocol_transform_mode</code>: <code>upstream</code> uses Upstream Passthrough; <code>local</code> uses ccLoad Translation to convert additional protocols into the primary protocol.</li>
               <li><code>url</code>: supports comma-separated URLs; a trailing <code>#</code> marks an exact upstream URL and disables automatic path joining.</li>
               <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
-              <li><code>websockets</code>: Codex channels only. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
+              <li><code>websockets</code>: channels whose primary protocol is Codex only. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
             </ul>
           </article>
 
@@ -213,6 +215,9 @@
           </article>
         </div>
 
+        <div class="www-callout www-mt-8">
+          <strong>Protocol settings are explicit.</strong> A key or model name does not identify one unique protocol. When the same URL/key supports several protocols natively, choose the provider's main or most complete API as the Primary Protocol, add the others under Additional Protocols, and keep Upstream Passthrough selected.
+        </div>
         <div class="www-callout www-mt-8">
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.
         </div>

@@ -46,7 +46,7 @@ function protocolTransformHintMarkup(protocol) {
 
   return `
           <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
-            ${window.i18nText('channels.modal.protocolTransformsHint', '额外暴露协议,不含原生上游协议')}
+            ${window.i18nText('channels.modal.protocolTransformsHint', '除主协议外，额外支持的协议')}
           </span>
         `;
 }
