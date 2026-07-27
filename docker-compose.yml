@@ -7,17 +7,12 @@ services:
     user: root
     restart: unless-stopped
     ports:
+      # 宿主机端口:容器端口。只改左边即可对外换端口，不要改右边
       - "8080:8080"
-    environment:
-      - PORT=8080
-      - SQLITE_PATH=/app/data/ccload.db
-      - GIN_MODE=release
-      # 必填：未设置将无法启动
-      - CCLOAD_PASS=${CCLOAD_PASS:-your_admin_password}
-      # 可选：启动时预置 API 访问令牌，格式 token 或 token|描述，逗号分隔
-      # - CCLOAD_API_TOKENS=token1|production,token2|development
-      - TZ=Asia/Shanghai
-      # API访问令牌也可通过Web界面管理: http://localhost:8080/web/tokens.html
+    # 所有配置统一写在 .env 里（从 .env.docker.example 复制）。
+    # 文件不存在时 Compose 直接报错拒绝启动，不会用弱默认密码跑起来。
+    env_file:
+      - .env
     volumes:
       - ./data:/app/data
     healthcheck:

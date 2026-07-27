@@ -151,8 +151,8 @@ Choose the deployment method that suits you best:
 ```bash
 # Option 1: Using docker-compose (Simplest)
 curl -o docker-compose.yml https://raw.githubusercontent.com/caidaoli/ccLoad/master/docker-compose.yml
-curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.example
-# Edit .env file to set password
+curl -o .env https://raw.githubusercontent.com/caidaoli/ccLoad/master/.env.docker.example
+# Edit .env file to set CCLOAD_PASS (required, service exits without it)
 docker-compose up -d
 
 # Option 2: Run image directly
@@ -171,6 +171,7 @@ git clone https://github.com/caidaoli/ccLoad.git
 cd ccLoad
 
 # Build and run with docker-compose
+cp .env.docker.example .env  # edit .env to set CCLOAD_PASS
 docker-compose -f docker-compose.build.yml up -d
 
 # Or build manually
@@ -277,7 +278,7 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
 
    | Variable | Value | Required | Description |
    |----------|-------|----------|-------------|
-   | `CCLOAD_PASS` | `your_admin_password` | ✅ **Required** | Admin interface password |
+   | `CCLOAD_PASS` | None | ✅ **Required** | Admin interface password |
    | `CCLOAD_API_TOKENS` | `token1\|production,token2\|development` | Optional | Pre-seed API access tokens on startup |
 
    **Note**: API access tokens can be pre-seeded with `CCLOAD_API_TOKENS` or managed in the Web admin interface `/web/tokens.html`.
