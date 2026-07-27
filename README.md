@@ -892,6 +892,8 @@ Check out the awesome admin dashboard 👇
 
 ### Environment Variables
 
+Environment variables cover bootstrap configuration only — the values ccLoad needs before a database connection exists. Everything the gateway consumes after startup (limits, cooldown durations, timeouts, health scoring) is a system setting managed from the admin console. In particular, `SQLITE_PATH`, `SQLITE_JOURNAL_MODE`, `CCLOAD_MYSQL`, `CCLOAD_POSTGRES`, `CCLOAD_ENABLE_SQLITE_REPLICA`, and `CCLOAD_SQLITE_LOG_DAYS` decide *how the database is opened*, so they cannot be stored in that same database and will stay environment variables.
+
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `CCLOAD_PASS` | None | Admin password (**Required**, exits if not set) |
@@ -908,14 +910,6 @@ Check out the awesome admin dashboard 👇
 | `TRUSTED_PROXIES` | Private ranges + Loopback + `100.64.0.0/10` | Trusted proxy CIDRs (comma-separated); `none` = trust no proxies |
 | `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
-| `CCLOAD_MAX_CONCURRENCY` | `1000` | Max concurrent requests (limits simultaneous proxy requests) |
-| `CCLOAD_MAX_BODY_BYTES` | `10485760` | Max request body bytes (10MB, Images API auto-expands to 20MB) |
-| `CCLOAD_COOLDOWN_AUTH_SEC` | `300` | Auth error (401/402/403) initial cooldown (seconds) |
-| `CCLOAD_COOLDOWN_SERVER_SEC` | `120` | Server error (5xx) initial cooldown (seconds) |
-| `CCLOAD_COOLDOWN_TIMEOUT_SEC` | `60` | Timeout error (597/598) initial cooldown (seconds) |
-| `CCLOAD_COOLDOWN_RATE_LIMIT_SEC` | `60` | Rate limit error (429) initial cooldown (seconds) |
-| `CCLOAD_COOLDOWN_MAX_SEC` | `1800` | Exponential backoff cooldown max (seconds, 30 minutes) |
-| `CCLOAD_COOLDOWN_MIN_SEC` | `10` | Exponential backoff cooldown min (seconds) |
 | `CCLOAD_HOST_OVERRIDES` | None | DNS override: pin upstream domains to fixed IPs, bypassing DNS resolution. Format: `host1=ip1,host2=ip2`, e.g. `anyrouter.top=47.246.23.200`. TLS SNI/cert/Host header unaffected |
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
@@ -949,14 +943,23 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | Pure PostgreSQL | Set `CCLOAD_POSTGRES` | Standard production (PG) |
 | Hybrid Mode | Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` | HuggingFace Spaces / high-latency primary |
 
-### Web Admin Configuration (Hot Reload Supported)
+### Web Admin Configuration (Database-backed, Auto Restart)
 
-These settings have been migrated to database, managed via Web interface `/web/settings.html`, changes take effect immediately without restart:
+These settings live in the database and are managed from `/web/settings.html`. Saving a change writes it to the database and restarts the process about two seconds later; the restart is what applies the new value, so in-flight requests finish first and there is no hot reload:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
 | `max_key_retries` | `3` | Max key retries within single channel |
+| `max_concurrency` | `1000` | Max concurrent proxy requests |
+| `max_body_bytes` | `10485760` | Max request body bytes, 10MB by default |
+| `max_image_body_bytes` | `20971520` | Max Images API request body bytes, 20MB by default |
+| `cooldown_auth_seconds` | `300` | Auth error (401/402/403) initial cooldown in seconds |
+| `cooldown_server_seconds` | `120` | Server error (5xx) initial cooldown in seconds |
+| `cooldown_timeout_seconds` | `60` | Timeout error (597/598) initial cooldown in seconds |
+| `cooldown_rate_limit_seconds` | `60` | Rate limit error (429) initial cooldown in seconds |
+| `cooldown_min_seconds` | `10` | Exponential backoff cooldown floor in seconds |
+| `cooldown_max_seconds` | `1800` | Exponential backoff cooldown ceiling in seconds (an inverted floor/ceiling pair falls back to both defaults) |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
 | `non_stream_timeout` | `120` | Non-stream request timeout (seconds, 0=disabled) |
@@ -1118,7 +1121,7 @@ storage/
 - `key_rr` - Round-robin pointers (channel_id → idx)
 - `auth_tokens` - Auth tokens (with cost limits, model/channel restrictions, concurrency limits, first byte time tracking)
 - `web_sessions` - Role-aware Web sessions bound to an optional API token
-- `system_settings` - System config (hot reload support)
+- `system_settings` - System config (database-backed, applied after automatic restart)
 
 **Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
 - ✅ **Unified SQL Layer** (refactor): SQLite, MySQL, and PostgreSQL share `storage/sql/` implementation

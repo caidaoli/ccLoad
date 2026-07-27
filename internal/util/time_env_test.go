@@ -5,42 +5,7 @@ import (
 	"time"
 )
 
-func TestEnvSecondsFrom(t *testing.T) {
-	t.Parallel()
-
-	getenv := func(k string) string {
-		switch k {
-		case "OK":
-			return "12"
-		case "BAD":
-			return "x"
-		case "ZERO":
-			return "0"
-		case "NEG":
-			return "-1"
-		default:
-			return ""
-		}
-	}
-
-	if got := envSecondsFrom(getenv, "MISSING"); got != 0 {
-		t.Fatalf("missing: got %v, want 0", got)
-	}
-	if got := envSecondsFrom(getenv, "BAD"); got != 0 {
-		t.Fatalf("bad: got %v, want 0", got)
-	}
-	if got := envSecondsFrom(getenv, "ZERO"); got != 0 {
-		t.Fatalf("zero: got %v, want 0", got)
-	}
-	if got := envSecondsFrom(getenv, "NEG"); got != 0 {
-		t.Fatalf("neg: got %v, want 0", got)
-	}
-	if got := envSecondsFrom(getenv, "OK"); got != 12*time.Second {
-		t.Fatalf("ok: got %v, want %v", got, 12*time.Second)
-	}
-}
-
-func TestApplyCooldownEnvOverrides(t *testing.T) {
+func TestApplyCooldownSettings(t *testing.T) {
 	origAuth := AuthErrorInitialCooldown
 	origTimeout := TimeoutErrorCooldown
 	origServer := ServerErrorInitialCooldown
@@ -56,7 +21,7 @@ func TestApplyCooldownEnvOverrides(t *testing.T) {
 		MinCooldownDuration = origMin
 	})
 
-	// 先重置到一组可预测值，避免受 init() 的环境变量影响
+	// 先重置到一组可预测值，避免受其他用例影响
 	AuthErrorInitialCooldown = 5 * time.Minute
 	TimeoutErrorCooldown = 1 * time.Minute
 	ServerErrorInitialCooldown = 2 * time.Minute
@@ -64,26 +29,15 @@ func TestApplyCooldownEnvOverrides(t *testing.T) {
 	MaxCooldownDuration = 30 * time.Minute
 	MinCooldownDuration = 10 * time.Second
 
-	getenv := func(k string) string {
-		switch k {
-		case "CCLOAD_COOLDOWN_AUTH_SEC":
-			return "7"
-		case "CCLOAD_COOLDOWN_TIMEOUT_SEC":
-			return ""
-		case "CCLOAD_COOLDOWN_SERVER_SEC":
-			return "9"
-		case "CCLOAD_COOLDOWN_RATE_LIMIT_SEC":
-			return "x"
-		case "CCLOAD_COOLDOWN_MAX_SEC":
-			return "1800"
-		case "CCLOAD_COOLDOWN_MIN_SEC":
-			return "11"
-		default:
-			return ""
-		}
-	}
-
-	applyCooldownEnvOverrides(getenv)
+	// 非正值（0/负数）表示"未配置"，必须保留原值而非清零
+	ApplyCooldownSettings(CooldownSettings{
+		AuthSec:      7,
+		TimeoutSec:   0,
+		ServerSec:    9,
+		RateLimitSec: -1,
+		MaxSec:       1800,
+		MinSec:       11,
+	})
 
 	if AuthErrorInitialCooldown != 7*time.Second {
 		t.Fatalf("AuthErrorInitialCooldown=%v, want %v", AuthErrorInitialCooldown, 7*time.Second)

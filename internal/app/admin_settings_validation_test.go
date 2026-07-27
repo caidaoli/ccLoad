@@ -34,6 +34,16 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_log_retention_days_ok_max", key: "log_retention_days", valueType: "int", value: "365", wantErr: false},
 		{name: "int_log_retention_days_reject_over", key: "log_retention_days", valueType: "int", value: "366", wantErr: true},
 
+		{name: "int_max_concurrency_reject_0", key: "max_concurrency", valueType: "int", value: "0", wantErr: true},
+		{name: "int_max_concurrency_ok", key: "max_concurrency", valueType: "int", value: "1000", wantErr: false},
+		{name: "int_max_body_bytes_reject_negative", key: "max_body_bytes", valueType: "int", value: "-1", wantErr: true},
+		{name: "int_max_body_bytes_ok", key: "max_body_bytes", valueType: "int", value: "10485760", wantErr: false},
+		{name: "int_max_image_body_bytes_ok", key: "max_image_body_bytes", valueType: "int", value: "20971520", wantErr: false},
+		{name: "int_cooldown_auth_reject_0", key: "cooldown_auth_seconds", valueType: "int", value: "0", wantErr: true},
+		{name: "int_cooldown_auth_ok", key: "cooldown_auth_seconds", valueType: "int", value: "300", wantErr: false},
+		{name: "int_cooldown_min_reject_0", key: "cooldown_min_seconds", valueType: "int", value: "0", wantErr: true},
+		{name: "int_cooldown_max_ok", key: "cooldown_max_seconds", valueType: "int", value: "1800", wantErr: false},
+
 		{name: "bool_ok_true", key: "any_bool", valueType: "bool", value: "true", wantErr: false},
 		{name: "bool_ok_false", key: "any_bool", valueType: "bool", value: "false", wantErr: false},
 		{name: "bool_ok_1", key: "any_bool", valueType: "bool", value: "1", wantErr: false},

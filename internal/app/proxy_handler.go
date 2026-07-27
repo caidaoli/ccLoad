@@ -10,9 +10,8 @@ import (
 	"mime"
 	"mime/multipart"
 	"net/http"
-	"os"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/config"
@@ -149,18 +148,35 @@ func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
 	}, nil
 }
 
+// 请求体上限（系统设置 max_body_bytes / max_image_body_bytes，启动时注入，修改后重启生效）。
+// 用 atomic 而非普通变量：值在启动期写入、请求期被多 goroutine 读取，测试也会覆写。
+var (
+	maxBodyBytesLimit      atomic.Int64
+	maxImageBodyBytesLimit atomic.Int64
+)
+
+func init() {
+	maxBodyBytesLimit.Store(config.DefaultMaxBodyBytes)
+	maxImageBodyBytesLimit.Store(config.DefaultMaxImageBodyBytes)
+}
+
+// setMaxBodyBytesLimits 注入请求体上限，非正值回退默认值。
+func setMaxBodyBytesLimits(maxBody, maxImageBody int) {
+	if maxBody <= 0 {
+		maxBody = config.DefaultMaxBodyBytes
+	}
+	if maxImageBody <= 0 {
+		maxImageBody = config.DefaultMaxImageBodyBytes
+	}
+	maxBodyBytesLimit.Store(int64(maxBody))
+	maxImageBodyBytesLimit.Store(int64(maxImageBody))
+}
+
 func maxProxyBodyBytes(requestPath string) int64 {
-	// 默认 10MB，images 路径 20MB，可通过 CCLOAD_MAX_BODY_BYTES 覆盖。
-	maxBody := int64(config.DefaultMaxBodyBytes)
 	if strings.HasPrefix(requestPath, "/v1/images/") {
-		maxBody = int64(config.DefaultMaxImageBodyBytes)
+		return maxImageBodyBytesLimit.Load()
 	}
-	if value := os.Getenv("CCLOAD_MAX_BODY_BYTES"); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
-			maxBody = int64(parsed)
-		}
-	}
-	return maxBody
+	return maxBodyBytesLimit.Load()
 }
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
