@@ -46,7 +46,7 @@ ccLoad handles those cases with:
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
 - **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
-- **Protocol transforms**: Anthropic, OpenAI, Gemini, and Codex request/response families can be converted at the gateway.
+- **Multi-protocol handling**: Each channel has one primary protocol plus optional additional protocols, handled by upstream passthrough or ccLoad translation.
 - **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
 - **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
@@ -81,7 +81,7 @@ ccLoad handles those cases with:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Protocol Transform** - All 12 directed Anthropic/OpenAI/Gemini/Codex conversion paths for requests plus streaming and non-streaming responses, including tool, reasoning/signature, usage, and SSE normalization
+- 🔄 **Multi-Protocol Handling** - One primary protocol plus additional protocols, with all 12 local conversion paths available when upstream passthrough is not appropriate
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -90,6 +90,8 @@ ccLoad handles those cases with:
 - 🎛️ **Log Column Customization** - Show/hide table columns per preference, settings persist in browser localStorage
 
 ## 🏗️ Architecture Overview
+
+Each channel has one primary protocol and zero or more additional protocols. `upstream` (Upstream Passthrough) forwards each client protocol natively, while `local` (ccLoad Translation) converts additional protocols into the primary protocol at the Registry boundary.
 
 ```mermaid
 graph TB
@@ -665,6 +667,9 @@ curl -X POST http://localhost:8080/admin/channels \
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
+    "channel_type": "anthropic",
+    "protocol_transforms": [],
+    "protocol_transform_mode": "upstream",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
@@ -672,6 +677,8 @@ curl -X POST http://localhost:8080/admin/channels \
     "enabled": true
   }'
 ```
+
+> **Multi-protocol configuration**: “Primary Protocol” maps to `channel_type`; it controls model discovery, scheduled checks, and fallback behavior when no client protocol is available. “Additional Protocols” map to `protocol_transforms`. The default `protocol_transform_mode=upstream` (Upstream Passthrough) forwards the client's actual protocol natively and is intended for upstreams where one URL/key supports several protocols. `local` (ccLoad Translation) converts additional protocols into the primary protocol. Protocol is not a unique property of a key or model name, so this configuration remains explicit instead of being guessed at runtime.
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
 
@@ -834,8 +841,8 @@ Check out the awesome admin dashboard 👇
   - `protocol/cliproxy/`: In-tree snapshot of the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) conversion core; provenance and synchronization rules live in [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
-  - Two modes: `upstream` (default, handled natively by upstream) / `local` (local translation)
-  - Channel config: `ProtocolTransformMode` + `ProtocolTransforms`
+  - Two protocol handling modes: `upstream` (default, Upstream Passthrough) / `local` (ccLoad Translation)
+  - Channel config: `ChannelType` (primary protocol) + `ProtocolTransforms` (additional protocols) + `ProtocolTransformMode` (protocol handling)
   - Codex `/v1/alpha/search` is native passthrough only and never enters local protocol translation
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
@@ -1114,7 +1121,7 @@ storage/
 - Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → Hybrid (primary write + SQLite read cache)
 
 **Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
-- `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with protocol transform config, scheduled check config, RPM/concurrency limit config)
+- `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with multi-protocol handling config, scheduled check config, RPM/concurrency limit config)
 - `api_keys` - API keys (key-level cooldown inline, multi-key strategies)
 - `channel_model_cooldowns` - Model-level runtime cooldown keyed by channel and actual upstream model
 - `logs` - Request logs (with base_url upstream URL tracking)

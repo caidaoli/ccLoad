@@ -442,7 +442,7 @@ function buildProtocolTransformBadges(channelType, protocolTransforms) {
   const translatedPrefix = window.t ? window.t('channels.modal.protocolTransforms') : '';
   const titlePrefix = translatedPrefix && translatedPrefix !== 'channels.modal.protocolTransforms'
     ? translatedPrefix
-    : 'Additional Protocol Transforms';
+    : 'Additional Protocols';
 
   const protocolBadgeStyle = buildInlineNameBadgeStyle({
     background: '#fff7ed',

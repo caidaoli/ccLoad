@@ -33,7 +33,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.cost.title': 'Cost Control',
   'www.home.features.cost.desc': 'Daily cost limits per channel, API token cost limits, accurate to micro-dollars',
   'www.home.features.multiapi.title': 'Multi-API Support',
-  'www.home.features.multiapi.desc': 'Fully compatible with Claude/Codex/Gemini/OpenAI, one config for all',
+  'www.home.features.multiapi.desc': 'Configure one primary protocol plus additional protocols, with upstream passthrough or local translation',
   'www.home.features.websocket.title': 'Responses WebSocket',
   'www.home.features.websocket.desc': 'Keep one Codex client WebSocket while ccLoad bridges native WebSocket and HTTP/SSE upstreams with transcript-aware failover',
   'www.home.features.token.title': 'Local Token Count',

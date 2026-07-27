@@ -53,7 +53,7 @@
           <div class="www-step">
             <div>
               <h3>Add channels</h3>
-              <p>Open the channel page and configure upstream type, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
+              <p>Open the channel page and configure the primary protocol, any additional protocols, protocol handling, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
             </div>
           </div>
           <div class="www-step">
@@ -70,7 +70,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Endpoint Reference</h2>
-          <p>After protocol transforms are enabled, one upstream channel can serve multiple client protocols. The default upstream mode keeps native upstream semantics whenever possible.</p>
+          <p>A channel can serve its primary protocol plus any configured additional protocols. Upstream Passthrough forwards the client's protocol natively; ccLoad Translation converts additional protocols into the primary protocol.</p>
         </div>
 
         <div class="www-data-table-wrapper">
@@ -141,7 +141,7 @@
             <h3>Channel and session setup</h3>
             <ul class="www-check-list">
               <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
-              <li>Enable <code>websockets</code> only on channels whose resolved upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
+              <li>Enable <code>websockets</code> only on channels whose primary protocol is Codex. Other candidates continue through HTTP/SSE.</li>
               <li>Keep <code>Session-Id</code>, or <code>prompt_cache_key</code>, stable across reconnects so ccLoad can retain transcript and upstream affinity.</li>
             </ul>
           </article>
