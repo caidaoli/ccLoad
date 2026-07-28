@@ -116,18 +116,21 @@ func streamCopyWithBufferSize(ctx context.Context, src io.Reader, dst http.Respo
 			}
 		}
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			// [FIX] 检查 context 是否在 Read 期间被取消
-			// 场景：客户端取消请求 → HTTP/2 流关闭 → Read 返回 "http2: response body closed"
-			// 此时应返回 context.Canceled，让上层正确识别为客户端断开（499）而非上游错误（502）
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
+			return normalizeStreamReadError(ctx, err)
 		}
 	}
+}
+
+// normalizeStreamReadError 保留 Read 的真实终止原因。
+// context 取消会主动 Close 源，底层可能因此返回 EOF；此时取消/超时必须优先。
+func normalizeStreamReadError(ctx context.Context, err error) error {
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	if err == io.EOF {
+		return nil
+	}
+	return err
 }
 
 func closeReaderOnContextCancel(ctx context.Context, src io.Reader) func() {
@@ -300,13 +303,7 @@ func streamTransformSSEEventsUntil(
 		}
 
 		if err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			return err
+			return normalizeStreamReadError(ctx, err)
 		}
 	}
 }

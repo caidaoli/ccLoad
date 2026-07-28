@@ -11,7 +11,6 @@ import (
 	"mime/multipart"
 	"net/http"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/config"
@@ -85,12 +84,12 @@ func (r incomingRequest) authorizationModel() string {
 	return r.originalModel
 }
 
-func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
+func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomingRequest, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
 
 	// 读取请求体（带上限，防止大包打爆内存）
-	maxBody := maxProxyBodyBytes(requestPath)
+	maxBody := bodyLimits.maxForPath(requestPath)
 	limited := io.LimitReader(c.Request.Body, maxBody+1)
 	all, err := io.ReadAll(limited)
 	if err != nil {
@@ -148,35 +147,40 @@ func parseIncomingRequest(c *gin.Context) (incomingRequest, error) {
 	}, nil
 }
 
-// 请求体上限（系统设置 max_body_bytes / max_image_body_bytes，启动时注入，修改后重启生效）。
-// 用 atomic 而非普通变量：值在启动期写入、请求期被多 goroutine 读取，测试也会覆写。
-var (
-	maxBodyBytesLimit      atomic.Int64
-	maxImageBodyBytesLimit atomic.Int64
-)
-
-func init() {
-	maxBodyBytesLimit.Store(config.DefaultMaxBodyBytes)
-	maxImageBodyBytesLimit.Store(config.DefaultMaxImageBodyBytes)
+// requestBodyLimits 是单个 Server 的不可变请求体上限。
+type requestBodyLimits struct {
+	standard int64
+	images   int64
 }
 
-// setMaxBodyBytesLimits 注入请求体上限，非正值回退默认值。
-func setMaxBodyBytesLimits(maxBody, maxImageBody int) {
+func normalizeMaxBodyBytes(maxBodyBytes int64) int64 {
+	if maxBodyBytes <= 0 {
+		return config.DefaultMaxBodyBytes
+	}
+	return maxBodyBytes
+}
+
+func newRequestBodyLimits(maxBody, maxImageBody int) requestBodyLimits {
 	if maxBody <= 0 {
 		maxBody = config.DefaultMaxBodyBytes
 	}
 	if maxImageBody <= 0 {
 		maxImageBody = config.DefaultMaxImageBodyBytes
 	}
-	maxBodyBytesLimit.Store(int64(maxBody))
-	maxImageBodyBytesLimit.Store(int64(maxImageBody))
+	return requestBodyLimits{standard: int64(maxBody), images: int64(maxImageBody)}
 }
 
-func maxProxyBodyBytes(requestPath string) int64 {
-	if strings.HasPrefix(requestPath, "/v1/images/") {
-		return maxImageBodyBytesLimit.Load()
+func (l requestBodyLimits) maxForPath(requestPath string) int64 {
+	if l.standard <= 0 {
+		l.standard = config.DefaultMaxBodyBytes
 	}
-	return maxBodyBytesLimit.Load()
+	if l.images <= 0 {
+		l.images = config.DefaultMaxImageBodyBytes
+	}
+	if strings.HasPrefix(requestPath, "/v1/images/") {
+		return l.images
+	}
+	return l.standard
 }
 
 // extractModelFromMultipart 从 multipart/form-data 原始字节中提取 model 字段
@@ -273,7 +277,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	requestMethod := c.Request.Method
 
-	incoming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c, s.bodyLimits)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
@@ -405,7 +409,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		}
 	}
 	if executionSession != nil {
-		if pinnedTarget, ok := executionSession.upstream.targetSnapshot(); ok {
+		if pinnedTarget, ok := executionSession.upstream.affinitySnapshot(); ok {
 			cands = prioritizePinnedCodexChannel(cands, pinnedTarget.channelID)
 		}
 	}
@@ -453,7 +457,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
-			executionSession.commit(executionSessionRequestBody, lastResult.responsesTurn)
+			s.responsesExecutionSessions.commit(executionSession, executionSessionRequestBody, lastResult.responsesTurn)
 		}
 		return
 	}

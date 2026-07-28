@@ -52,12 +52,21 @@ func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 
 func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	srv := newInMemoryServer(t)
+	srv.responsesWebsocketConnections = newResponsesWebsocketConnectionLimiter(1, 1)
+	releaseConnection, limit := srv.responsesWebsocketConnections.acquire("token-a")
+	if limit != nil {
+		t.Fatalf("acquire downstream websocket connection: %+v", limit)
+	}
+	defer releaseConnection()
+	if _, rejected := srv.responsesWebsocketConnections.acquire("token-a"); rejected == nil {
+		t.Fatal("expected per-token downstream websocket rejection")
+	}
 	session, release, err := srv.responsesExecutionSessions.acquire("token-a", "session-a")
 	if err != nil {
 		t.Fatalf("acquire execution session: %v", err)
 	}
 	defer release()
-	session.commit([]byte(`{}`), responsesWebsocketTurnResult{completedOutput: []byte(`[]`)})
+	srv.responsesExecutionSessions.commit(session, []byte(`{}`), responsesWebsocketTurnResult{completedOutput: []byte(`[]`)})
 	session.upstream.recordReconnect("test reconnect")
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
@@ -79,6 +88,26 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	}
 	if ws["max_sessions"] != float64(defaultResponsesExecutionSessionLimit) {
 		t.Fatalf("websocket limits missing: %#v", ws)
+	}
+	if ws["max_transcript_bytes"] != float64(128*1024*1024) {
+		t.Fatalf("websocket transcript budget missing: %#v", ws)
+	}
+	if ws["downstream_connections"] != float64(1) ||
+		ws["rejected_downstream_connections"] != float64(1) ||
+		ws["max_downstream_connections"] != float64(1) ||
+		ws["max_downstream_connections_per_token"] != float64(1) {
+		t.Fatalf("downstream websocket metrics missing: %#v", ws)
+	}
+	for _, key := range []string{
+		"upstream_handshakes",
+		"upstream_reuses",
+		"upstream_heartbeat_failures",
+		"upstream_queued_read_bytes",
+		"oldest_upstream_connection_seconds",
+	} {
+		if _, exists := ws[key]; !exists {
+			t.Fatalf("%s metric missing: %#v", key, ws)
+		}
 	}
 }
 

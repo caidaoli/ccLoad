@@ -878,7 +878,7 @@ func (s *Server) testChannelAPIWithURL(
 		requestPlan.fullURL = websocketURL
 		requestPlan.requestBody = preparedBody
 		requestPlan.debugCapture = s.captureDebugRequest(debugRequest, preparedBody)
-		websocketSession = newCodexUpstreamWebsocketSession()
+		websocketSession = newCodexUpstreamWebsocketSession(s.bodyLimits.maxForPath("/v1/responses"))
 		defer websocketSession.Close()
 	}
 
@@ -997,7 +997,9 @@ func (s *Server) doChannelTestCodexWebsocket(
 		return resp, err
 	}
 
-	resp, _, _, err := session.roundTrip(ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil, s.skipTLSVerify)
+	resp, _, _, err := session.roundTrip(
+		ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil, s.skipTLSVerify, s.codexWebsocketTimeouts(),
+	)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()
 		return resp, err

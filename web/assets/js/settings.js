@@ -2,15 +2,302 @@
 const t = window.t;
 
 let originalSettings = {}; // 保存原始值用于比较
+let runtimeMetricsLoading = false;
+let runtimeMetricsPreviousFocus = null;
+
+const byteSettingKeys = new Set([
+  'max_body_bytes',
+  'max_image_body_bytes',
+  'responses_ws_max_transcript_bytes'
+]);
+const bytesPerM = 1024 * 1024;
+
+function settingValueForDisplay(key, value) {
+  const normalizedValue = String(value ?? '');
+  if (!byteSettingKeys.has(key)) return normalizedValue;
+
+  const bytes = Number(normalizedValue);
+  return Number.isFinite(bytes) ? String(bytes / bytesPerM) : normalizedValue;
+}
+
+function settingValueForStorage(key, value) {
+  const normalizedValue = String(value ?? '');
+  if (!byteSettingKeys.has(key)) return normalizedValue;
+
+  const megabytes = Number(normalizedValue);
+  const bytes = Math.round(megabytes * bytesPerM);
+  return Number.isFinite(bytes) ? String(bytes) : normalizedValue;
+}
+
+const runtimeMetricGroups = [
+  {
+    titleKey: 'settings.runtimeMetrics.group.sessions',
+    metrics: [
+      { key: 'sessions', labelKey: 'settings.runtimeMetrics.metric.sessions' },
+      { key: 'max_sessions', labelKey: 'settings.runtimeMetrics.metric.maxSessions' },
+      { key: 'active_attachments', labelKey: 'settings.runtimeMetrics.metric.activeAttachments' }
+    ]
+  },
+  {
+    titleKey: 'settings.runtimeMetrics.group.downstream',
+    metrics: [
+      { key: 'downstream_connections', labelKey: 'settings.runtimeMetrics.metric.downstreamConnections' },
+      { key: 'max_downstream_connections', labelKey: 'settings.runtimeMetrics.metric.maxDownstreamConnections' },
+      { key: 'max_downstream_connections_per_token', labelKey: 'settings.runtimeMetrics.metric.maxDownstreamConnectionsPerToken' },
+      { key: 'rejected_downstream_connections', labelKey: 'settings.runtimeMetrics.metric.rejectedDownstreamConnections' }
+    ]
+  },
+  {
+    titleKey: 'settings.runtimeMetrics.group.upstream',
+    metrics: [
+      { key: 'upstream_connections', labelKey: 'settings.runtimeMetrics.metric.upstreamConnections' },
+      { key: 'upstream_handshakes', labelKey: 'settings.runtimeMetrics.metric.upstreamHandshakes' },
+      { key: 'upstream_reuses', labelKey: 'settings.runtimeMetrics.metric.upstreamReuses' },
+      { key: 'reconnects', labelKey: 'settings.runtimeMetrics.metric.reconnects' },
+      { key: 'upstream_heartbeat_failures', labelKey: 'settings.runtimeMetrics.metric.upstreamHeartbeatFailures' },
+      { key: 'upstream_queued_read_bytes', labelKey: 'settings.runtimeMetrics.metric.upstreamQueuedReadBytes', format: 'bytes' },
+      { key: 'oldest_upstream_connection_seconds', labelKey: 'settings.runtimeMetrics.metric.oldestUpstreamConnection', format: 'duration' }
+    ]
+  }
+];
 
 function bindSettingsPageActions() {
   const saveAllBtn = document.getElementById('save-all-btn');
-  if (!saveAllBtn || saveAllBtn.dataset.bound) return;
+  if (saveAllBtn && !saveAllBtn.dataset.bound) {
+    saveAllBtn.addEventListener('click', () => {
+      saveAllSettings();
+    });
+    saveAllBtn.dataset.bound = '1';
+  }
 
-  saveAllBtn.addEventListener('click', () => {
-    saveAllSettings();
+  const runtimeMetricsBtn = document.getElementById('runtime-metrics-btn');
+  if (runtimeMetricsBtn && !runtimeMetricsBtn.dataset.bound) {
+    runtimeMetricsBtn.addEventListener('click', openRuntimeMetricsModal);
+    runtimeMetricsBtn.dataset.bound = '1';
+  }
+
+  const refreshBtn = document.getElementById('refresh-runtime-metrics-btn');
+  if (refreshBtn && !refreshBtn.dataset.bound) {
+    refreshBtn.addEventListener('click', loadRuntimeMetrics);
+    refreshBtn.dataset.bound = '1';
+  }
+
+  document.querySelectorAll('[data-action="close-runtime-metrics"]').forEach((btn) => {
+    if (btn.dataset.bound) return;
+    btn.addEventListener('click', closeRuntimeMetricsModal);
+    btn.dataset.bound = '1';
   });
-  saveAllBtn.dataset.bound = '1';
+
+  const modal = document.getElementById('runtimeMetricsModal');
+  if (modal && !modal.dataset.bound) {
+    modal.addEventListener('click', (event) => {
+      if (event.target === modal) closeRuntimeMetricsModal();
+    });
+    modal.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') closeRuntimeMetricsModal();
+    });
+    modal.dataset.bound = '1';
+  }
+}
+
+function openRuntimeMetricsModal() {
+  const modal = document.getElementById('runtimeMetricsModal');
+  if (!modal) return;
+
+  runtimeMetricsPreviousFocus = document.activeElement;
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  modal.querySelector('.close-btn')?.focus();
+  loadRuntimeMetrics();
+}
+
+function closeRuntimeMetricsModal() {
+  const modal = document.getElementById('runtimeMetricsModal');
+  if (!modal) return;
+
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  if (runtimeMetricsPreviousFocus?.isConnected) runtimeMetricsPreviousFocus.focus();
+  runtimeMetricsPreviousFocus = null;
+}
+
+function normalizeRuntimeMetric(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : null;
+}
+
+function runtimeMetricsLocale() {
+  return window.i18n?.getLocale?.() || document.documentElement.lang || 'zh-CN';
+}
+
+function formatRuntimeInteger(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+  return new Intl.NumberFormat(runtimeMetricsLocale(), { maximumFractionDigits: 0 }).format(numeric);
+}
+
+function formatRuntimeDecimal(value, maximumFractionDigits = 1) {
+  return new Intl.NumberFormat(runtimeMetricsLocale(), { maximumFractionDigits }).format(value);
+}
+
+function formatRuntimeBytes(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let unitIndex = 0;
+  let amount = numeric;
+  while (amount >= 1024 && unitIndex < units.length - 1) {
+    amount /= 1024;
+    unitIndex++;
+  }
+  const digits = unitIndex === 0 ? 0 : 1;
+  return `${formatRuntimeDecimal(amount, digits)} ${units[unitIndex]}`;
+}
+
+function formatRuntimeDuration(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+
+  const seconds = Math.round(numeric);
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  if (hours > 0) return t('common.timeHM', { h: hours, m: minutes });
+  if (minutes > 0) return t('common.timeMS', { m: minutes, s: seconds % 60 });
+  return t('common.timeS', { s: seconds });
+}
+
+function formatRuntimeMetric(metric, stats) {
+  if (metric.format === 'bytes') return formatRuntimeBytes(stats[metric.key]);
+  if (metric.format === 'duration') return formatRuntimeDuration(stats[metric.key]);
+  return formatRuntimeInteger(stats[metric.key]);
+}
+
+function renderRuntimeMetricCard(metric, stats) {
+  return `
+    <div class="runtime-metric-card">
+      <span class="runtime-metric-label">${escapeHtml(t(metric.labelKey))}</span>
+      <strong class="runtime-metric-value">${escapeHtml(formatRuntimeMetric(metric, stats))}</strong>
+      <code class="runtime-metric-key">${escapeHtml(metric.key)}</code>
+    </div>`;
+}
+
+function renderTranscriptUsage(stats) {
+  const used = normalizeRuntimeMetric(stats.transcript_bytes);
+  const budget = normalizeRuntimeMetric(stats.max_transcript_bytes);
+  const percent = used !== null && budget !== null && budget > 0
+    ? (used / budget) * 100
+    : null;
+
+  let state = 'unavailable';
+  if (percent !== null) {
+    if (percent > 100) state = 'exceeded';
+    else if (percent >= 80) state = 'warning';
+    else state = 'normal';
+  }
+
+  const stateLabel = t(`settings.runtimeMetrics.transcriptStatus.${state}`);
+  const percentLabel = percent === null ? '—' : `${formatRuntimeDecimal(percent, 1)}%`;
+  const progressValue = percent === null ? 0 : Math.min(100, Math.max(0, percent));
+  const progressAria = percent === null
+    ? ''
+    : `aria-valuenow="${Math.round(progressValue)}"`;
+
+  return `
+    <section class="runtime-metrics-section runtime-transcript-card">
+      <div class="runtime-metrics-section-header">
+        <h3>${escapeHtml(t('settings.runtimeMetrics.group.transcript'))}</h3>
+        <span class="runtime-transcript-status runtime-transcript-status--${state}">${escapeHtml(stateLabel)}</span>
+      </div>
+      <div class="runtime-transcript-summary">
+        <strong>${escapeHtml(formatRuntimeBytes(used))} / ${escapeHtml(formatRuntimeBytes(budget))}</strong>
+        <span>${escapeHtml(percentLabel)}</span>
+      </div>
+      <div class="runtime-transcript-progress" role="progressbar" aria-label="${escapeHtml(t('settings.runtimeMetrics.group.transcript'))}" aria-valuemin="0" aria-valuemax="100" ${progressAria}>
+        <span class="runtime-transcript-progress-bar runtime-transcript-progress-bar--${state}" style="width: ${progressValue}%"></span>
+      </div>
+      <div class="runtime-transcript-details">
+        <span><b>${escapeHtml(t('settings.runtimeMetrics.metric.transcriptBytes'))}: ${escapeHtml(formatRuntimeBytes(used))}</b><code>transcript_bytes</code></span>
+        <span><b>${escapeHtml(t('settings.runtimeMetrics.metric.maxTranscriptBytes'))}: ${escapeHtml(formatRuntimeBytes(budget))}</b><code>max_transcript_bytes</code></span>
+      </div>
+      <p class="runtime-metrics-note">${escapeHtml(t('settings.runtimeMetrics.transcriptNote'))}</p>
+    </section>`;
+}
+
+function renderRuntimeMetrics(stats) {
+  const content = document.getElementById('runtime-metrics-content');
+  if (!content) return;
+
+  const sections = runtimeMetricGroups.map((group) => `
+    <section class="runtime-metrics-section">
+      <div class="runtime-metrics-section-header">
+        <h3>${escapeHtml(t(group.titleKey))}</h3>
+      </div>
+      <div class="runtime-metrics-grid">
+        ${group.metrics.map((metric) => renderRuntimeMetricCard(metric, stats)).join('')}
+      </div>
+    </section>`).join('');
+
+  content.innerHTML = `
+    ${renderTranscriptUsage(stats)}
+    ${sections}
+    <p class="runtime-metrics-note runtime-metrics-note--footer">${escapeHtml(t('settings.runtimeMetrics.cumulativeNote'))}</p>`;
+}
+
+function renderRuntimeMetricsLoading() {
+  const content = document.getElementById('runtime-metrics-content');
+  if (!content) return;
+  content.innerHTML = `
+    <div class="runtime-metrics-message">
+      <span class="loading-spinner" aria-hidden="true"></span>
+      <span>${escapeHtml(t('settings.runtimeMetrics.loading'))}</span>
+    </div>`;
+}
+
+function renderRuntimeMetricsError(error) {
+  const content = document.getElementById('runtime-metrics-content');
+  if (!content) return;
+  const message = error?.message || t('settings.runtimeMetrics.loadFailed');
+  content.innerHTML = `
+    <div class="runtime-metrics-message runtime-metrics-message--error" role="alert">
+      <strong>${escapeHtml(t('settings.runtimeMetrics.loadFailed'))}</strong>
+      <span>${escapeHtml(message)}</span>
+    </div>`;
+}
+
+async function loadRuntimeMetrics() {
+  if (runtimeMetricsLoading) return;
+
+  const content = document.getElementById('runtime-metrics-content');
+  const refreshBtn = document.getElementById('refresh-runtime-metrics-btn');
+  const updatedAt = document.getElementById('runtime-metrics-updated-at');
+  runtimeMetricsLoading = true;
+  if (content) content.setAttribute('aria-busy', 'true');
+  if (refreshBtn) refreshBtn.disabled = true;
+  if (updatedAt) updatedAt.textContent = '';
+  renderRuntimeMetricsLoading();
+
+  try {
+    const data = await fetchDataWithAuth('/admin/runtime-metrics');
+    const stats = data?.responses_websocket;
+    if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
+      throw new Error(t('settings.runtimeMetrics.invalidResponse'));
+    }
+
+    renderRuntimeMetrics(stats);
+    if (updatedAt) {
+      const time = new Date().toLocaleString(runtimeMetricsLocale());
+      updatedAt.textContent = t('settings.runtimeMetrics.updatedAt', { time });
+    }
+  } catch (error) {
+    console.error('Failed to load runtime metrics:', error);
+    renderRuntimeMetricsError(error);
+  } finally {
+    runtimeMetricsLoading = false;
+    if (content) content.setAttribute('aria-busy', 'false');
+    if (refreshBtn) refreshBtn.disabled = false;
+  }
 }
 
 function getSettingGroupInfo(key) {
@@ -145,7 +432,8 @@ function renderSettings(settings) {
     if (groupRow) tbody.appendChild(groupRow);
 
     for (const s of g.settings) {
-      originalSettings[s.key] = s.value;
+      const displayValue = settingValueForDisplay(s.key, s.value);
+      originalSettings[s.key] = displayValue;
       // 优先使用语言包中的描述，若没有则回退到后端返回的描述
       const descKey = `settings.desc.${s.key}`;
       const translatedDesc = t(descKey);
@@ -153,7 +441,7 @@ function renderSettings(settings) {
       const row = TemplateEngine.render('tpl-setting-row', {
         key: s.key,
         description: description,
-        inputHtml: renderInput(s),
+        inputHtml: renderInput({ ...s, value: displayValue }),
         mobileLabelDescription: t('settings.configItem'),
         mobileLabelValue: t('settings.currentValue'),
         mobileLabelActions: t('common.actions')
@@ -187,6 +475,14 @@ function initSettingsEventDelegation() {
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
+
+  if (byteSettingKeys.has(setting.key)) {
+    return `
+      <span class="settings-input-with-unit">
+        <input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">
+        <span class="settings-input-unit">M</span>
+      </span>`;
+  }
 
   switch (setting.value_type) {
     case 'bool':
@@ -253,7 +549,7 @@ function getSettingControl(key) {
 }
 
 function syncSettingState(key, value) {
-  const normalizedValue = String(value);
+  const normalizedValue = settingValueForDisplay(key, value);
   const control = getSettingControl(key);
 
   if (control?.radios) {
@@ -282,7 +578,7 @@ async function saveAllSettings() {
 
     const currentValue = control.value;
     if (currentValue !== originalSettings[key]) {
-      updates[key] = currentValue;
+      updates[key] = settingValueForStorage(key, currentValue);
     }
   }
 
@@ -290,6 +586,8 @@ async function saveAllSettings() {
     window.showNotification(t('settings.msg.noChanges'), 'info');
     return;
   }
+
+  if (!confirm(t('settings.msg.confirmSave'))) return;
 
   // 使用批量更新接口（单次请求，事务保护）
   try {

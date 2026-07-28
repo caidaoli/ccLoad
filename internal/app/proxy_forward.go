@@ -2380,7 +2380,7 @@ func selectPinnedCodexWebsocketKey(
 	triedKeys map[int]bool,
 	session *codexUpstreamWebsocketSession,
 ) (int, string, bool) {
-	target, ok := session.targetSnapshot()
+	target, ok := session.affinitySnapshot()
 	if !ok || target.channelID != cfg.ID {
 		return 0, "", false
 	}
@@ -2434,7 +2434,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
-	if target, ok := reqCtx.nativeCodexWS.targetSnapshot(); ok &&
+	if target, ok := reqCtx.nativeCodexWS.affinitySnapshot(); ok &&
 		target.channelID == cfg.ID && target.keyHash == codexWebsocketKeyHash(selectedKey) {
 		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, requestPath, reqCtx.rawQuery)
 	}

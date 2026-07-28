@@ -20,10 +20,14 @@ type responsesWebsocketSession struct {
 	lastResponseOutput []byte
 	lastResponseID     string
 	pendingToolCallIDs []string
+	maxBodyBytes       int64
 }
 
-func newResponsesWebsocketSession() *responsesWebsocketSession {
-	return &responsesWebsocketSession{lastResponseOutput: []byte("[]")}
+func newResponsesWebsocketSession(maxBodyBytes int64) *responsesWebsocketSession {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
+	}
+	return &responsesWebsocketSession{lastResponseOutput: []byte("[]"), maxBodyBytes: maxBodyBytes}
 }
 
 func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, error) {
@@ -41,7 +45,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String()) != "" {
 			return nil, errResponsesWebsocketPreviousResponseNotFound
 		}
-		return normalizeInitialResponsesWebsocketRequest(payload)
+		return normalizeInitialResponsesWebsocketRequest(payload, s.maxBodyBytes)
 	}
 
 	nextInput := gjson.GetBytes(payload, "input")
@@ -60,7 +64,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		return finalizeResponsesWebsocketRequest(normalized)
+		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 	}
 
 	if previousID == "" && inputContainsCompletedTranscript(nextInput) {
@@ -68,7 +72,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		if err != nil {
 			return nil, err
 		}
-		return finalizeResponsesWebsocketRequest(normalized)
+		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 	}
 
 	merged, err := mergeResponsesWebsocketInput(
@@ -88,7 +92,7 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 	if err != nil {
 		return nil, fmt.Errorf("set merged websocket input: %w", err)
 	}
-	return finalizeResponsesWebsocketRequest(normalized)
+	return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 }
 
 // normalizeRequests 同时生成两份请求：
@@ -144,7 +148,7 @@ func (s *responsesWebsocketSession) normalizeHTTPRequests(payload []byte) (
 		return nil, nil, false, nil
 	}
 	if previousID == "" {
-		replayRequest, err = normalizeInitialResponsesWebsocketRequest(websocketPayload)
+		replayRequest, err = normalizeInitialResponsesWebsocketRequest(websocketPayload, s.maxBodyBytes)
 		if err != nil {
 			return nil, nil, false, err
 		}
@@ -168,7 +172,7 @@ func (s *responsesWebsocketSession) commit(request []byte, result responsesWebso
 	s.pendingToolCallIDs = append([]string(nil), result.pendingToolCallIDs...)
 }
 
-func normalizeInitialResponsesWebsocketRequest(payload []byte) ([]byte, error) {
+func normalizeInitialResponsesWebsocketRequest(payload []byte, maxBodyBytes int64) ([]byte, error) {
 	modelName := strings.TrimSpace(gjson.GetBytes(payload, "model").String())
 	if modelName == "" {
 		return nil, errors.New("missing model in response.create request")
@@ -188,7 +192,7 @@ func normalizeInitialResponsesWebsocketRequest(payload []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("force streaming request: %w", err)
 	}
-	return finalizeResponsesWebsocketRequest(normalized)
+	return finalizeResponsesWebsocketRequest(normalized, maxBodyBytes)
 }
 
 func normalizeReplacementResponsesWebsocketRequest(payload []byte, lastRequest []byte) ([]byte, error) {
@@ -361,10 +365,9 @@ func validateResponsesWebsocketToolCallPairing(payload []byte) error {
 	return nil
 }
 
-func enforceResponsesWebsocketTranscriptLimit(payload []byte) ([]byte, error) {
-	maxBytes := maxProxyBodyBytes("/v1/responses")
-	if int64(len(payload)) > maxBytes {
-		return nil, fmt.Errorf("websocket transcript exceeds %d byte limit; compact and replay the conversation", maxBytes)
+func enforceResponsesWebsocketTranscriptLimit(payload []byte, maxBodyBytes int64) ([]byte, error) {
+	if int64(len(payload)) > maxBodyBytes {
+		return nil, fmt.Errorf("websocket transcript exceeds %d byte limit; compact and replay the conversation", maxBodyBytes)
 	}
 	return payload, nil
 }
@@ -372,9 +375,9 @@ func enforceResponsesWebsocketTranscriptLimit(payload []byte) ([]byte, error) {
 // finalizeResponsesWebsocketRequest is the single funnel every normalizeRequest
 // branch returns through: validate tool call pairing, then enforce the
 // transcript byte limit.
-func finalizeResponsesWebsocketRequest(payload []byte) ([]byte, error) {
+func finalizeResponsesWebsocketRequest(payload []byte, maxBodyBytes int64) ([]byte, error) {
 	if err := validateResponsesWebsocketToolCallPairing(payload); err != nil {
 		return nil, err
 	}
-	return enforceResponsesWebsocketTranscriptLimit(payload)
+	return enforceResponsesWebsocketTranscriptLimit(payload, maxBodyBytes)
 }

@@ -13,6 +13,23 @@ import (
 
 // ==================== 渠道级冷却方法（操作 channels 表内联字段）====================
 
+// ConfigureCooldown 原子替换当前存储实例的冷却策略。
+func (s *SQLStore) ConfigureCooldown(settings util.CooldownSettings) {
+	s.cooldownPolicy.Store(util.NewCooldownPolicy(settings))
+}
+
+func (s *SQLStore) calculateBackoffDuration(
+	prevMs int64,
+	until time.Time,
+	now time.Time,
+	statusCode *int,
+) time.Duration {
+	if policy := s.cooldownPolicy.Load(); policy != nil {
+		return policy.CalculateBackoffDuration(prevMs, until, now, statusCode)
+	}
+	return util.CalculateBackoffDuration(prevMs, until, now, statusCode)
+}
+
 func (s *SQLStore) cooldownSelectLockClause() string {
 	if s.supportsRowLock() {
 		return " FOR UPDATE"
@@ -45,7 +62,7 @@ func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now
 
 		// 2. 计算新的冷却时间(指数退避)
 		until := unixToTime(cooldownUntil)
-		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+		nextDuration = s.calculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
 		newUntil := now.Add(nextDuration)
 
 		// 3. 更新 channels 表(事务内)
@@ -348,7 +365,7 @@ func (s *SQLStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex
 
 		// 2. 计算新的冷却时间(指数退避)
 		until := unixToTime(cooldownUntil)
-		nextDuration = util.CalculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
+		nextDuration = s.calculateBackoffDuration(cooldownDurationMs, until, now, &statusCode)
 		newUntil := now.Add(nextDuration)
 
 		// 3. 更新 api_keys 表(事务内)

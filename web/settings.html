@@ -31,30 +31,18 @@
           </div>
         </section>
 
-        <section class="settings-restart-notice mt-2" role="note">
-          <svg class="settings-restart-notice-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-            <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-            <path d="M3 3v5h5"/>
-          </svg>
-          <span data-i18n="settings.msg.restartRequired">保存任意设置后，服务会在约 2 秒后自动重启以生效</span>
-        </section>
-
         <section class="glass-card mb-6">
           <div class="table-container settings-table-container mobile-card-table-container">
             <table class="modern-table settings-table mobile-card-table">
-              <thead>
-                <tr>
-                  <th class="settings-head-item" data-i18n="settings.configItem">配置项</th>
-                  <th class="settings-head-value" data-i18n="settings.currentValue">当前值</th>
-                  <th class="settings-head-actions" data-i18n="common.actions">操作</th>
-                </tr>
-              </thead>
               <tbody id="settings-tbody">
                 <!-- 动态填充 -->
               </tbody>
             </table>
           </div>
           <div class="settings-save-actions">
+            <button id="runtime-metrics-btn" type="button" class="btn btn-secondary settings-runtime-metrics-btn" data-i18n="settings.runtimeMetrics.button">
+              运行状态
+            </button>
             <button id="save-all-btn" class="btn btn-primary settings-save-btn" data-i18n="settings.saveAll">
               保存所有更改
             </button>
@@ -62,6 +50,29 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <!-- 进程运行指标 -->
+  <div id="runtimeMetricsModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="runtimeMetricsTitle" aria-hidden="true">
+    <div class="modal-content runtime-metrics-modal">
+      <div class="modal-header runtime-metrics-modal-header">
+        <div>
+          <h2 id="runtimeMetricsTitle" class="modal-title" data-i18n="settings.runtimeMetrics.title">运行状态</h2>
+          <p class="modal-description" data-i18n="settings.runtimeMetrics.description">当前进程中的 Responses WebSocket 资源占用</p>
+        </div>
+        <button type="button" class="close-btn" data-action="close-runtime-metrics" data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+      </div>
+
+      <div id="runtime-metrics-content" class="runtime-metrics-content" aria-live="polite"></div>
+
+      <div class="runtime-metrics-modal-footer">
+        <span id="runtime-metrics-updated-at" class="runtime-metrics-updated-at"></span>
+        <div class="runtime-metrics-footer-actions">
+          <button id="refresh-runtime-metrics-btn" type="button" class="btn btn-secondary" data-i18n="settings.runtimeMetrics.refresh">刷新</button>
+          <button type="button" class="btn btn-primary" data-action="close-runtime-metrics" data-i18n="common.close">关闭</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- 设置行模板 -->

@@ -79,6 +79,25 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		c.JSON(http.StatusUpgradeRequired, gin.H{"error": "websocket upgrade required"})
 		return
 	}
+	tokenHash, _ := c.Get("token_hash")
+	tokenHashString, _ := tokenHash.(string)
+	if s.authService == nil || !s.authService.IsTokenActive(tokenHashString) {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid or expired authorization"})
+		return
+	}
+	releaseConnection, connectionLimit := s.responsesWebsocketConnections.acquire(tokenHashString)
+	if connectionLimit != nil {
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
+			"message": fmt.Sprintf(
+				"Responses WebSocket connection limit exceeded: %d active of %d %s limit",
+				connectionLimit.active, connectionLimit.limit, connectionLimit.scope,
+			),
+			"type": "rate_limit_error",
+			"code": "responses_websocket_connection_limit_exceeded",
+		}})
+		return
+	}
+	defer releaseConnection()
 
 	conn, err := responsesWebsocketUpgrader.Upgrade(c.Writer, c.Request, nil)
 	if err != nil {
@@ -98,12 +117,14 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	})
 	defer stopShutdownClose()
 	idleTimeout, pingInterval := s.responsesWebsocketTimeouts()
-	conn.SetReadLimit(maxProxyBodyBytes("/v1/responses"))
+	conn.SetReadLimit(s.bodyLimits.maxForPath("/v1/responses"))
 	_ = conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(idleTimeout))
 	})
-	startResponsesWebsocketPingLoop(connectionCtx, cancelConnection, conn, pingInterval)
+	startResponsesWebsocketPingLoop(connectionCtx, cancelConnection, conn, pingInterval, func() bool {
+		return s.authService != nil && s.authService.IsTokenActive(tokenHashString)
+	})
 	messages := readResponsesWebsocketMessages(connectionCtx, cancelConnection, conn, idleTimeout)
 	var executionSession *responsesExecutionSession
 	var releaseExecutionSession func()
@@ -112,15 +133,16 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			releaseExecutionSession()
 		}
 	}()
-	tokenHash, _ := c.Get("token_hash")
-	tokenHashString, _ := tokenHash.(string)
-
 	for {
 		var message responsesWebsocketInboundMessage
 		select {
 		case <-connectionCtx.Done():
 			return
 		case message = <-messages:
+		}
+		if s.authService == nil || !s.authService.IsTokenActive(tokenHashString) {
+			_ = closeResponsesWebsocketPolicyViolation(conn, "authorization expired or revoked")
+			return
 		}
 		if message.messageType != websocket.TextMessage {
 			if errWrite := writeResponsesWebsocketError(conn, "unsupported_frame", "only text websocket messages are supported"); errWrite != nil {
@@ -189,7 +211,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				}
 				continue
 			}
-			executionSession.commit(requestBody, turnResult)
+			s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
 			executionSession.releaseTurn()
 		default:
 			if errWrite := writeResponsesWebsocketError(conn, "unsupported_event", "unsupported websocket request type"); errWrite != nil {
@@ -234,6 +256,7 @@ func startResponsesWebsocketPingLoop(
 	cancel context.CancelFunc,
 	conn *websocket.Conn,
 	interval time.Duration,
+	authorized func() bool,
 ) {
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -243,6 +266,12 @@ func startResponsesWebsocketPingLoop(
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				if authorized != nil && !authorized() {
+					_ = closeResponsesWebsocketPolicyViolation(conn, "authorization expired or revoked")
+					cancel()
+					_ = conn.Close()
+					return
+				}
 				if err := conn.WriteControl(
 					websocket.PingMessage, nil, time.Now().Add(responsesWebsocketWriteTimeout),
 				); err != nil {
@@ -253,6 +282,17 @@ func startResponsesWebsocketPingLoop(
 			}
 		}
 	}()
+}
+
+func closeResponsesWebsocketPolicyViolation(conn *websocket.Conn, reason string) error {
+	if conn == nil {
+		return errors.New("websocket connection is nil")
+	}
+	return conn.WriteControl(
+		websocket.CloseMessage,
+		websocket.FormatCloseMessage(websocket.ClosePolicyViolation, reason),
+		time.Now().Add(responsesWebsocketWriteTimeout),
+	)
 }
 
 type responsesWebsocketTurnResult struct {
@@ -333,7 +373,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	if len(candidates) == 0 {
 		return responsesWebsocketTurnResult{}, errors.New("no available upstream")
 	}
-	if pinnedTarget, ok := nativeCodexWS.targetSnapshot(); ok {
+	if pinnedTarget, ok := nativeCodexWS.affinitySnapshot(); ok {
 		candidates = prioritizePinnedCodexChannel(candidates, pinnedTarget.channelID)
 	}
 	if allowLocalPrewarm && responsesWebsocketGenerateDisabled(requestBody) &&
@@ -386,7 +426,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 	}()
 
-	bridgeWriter := newResponsesWebsocketBridgeWriter(conn)
+	bridgeWriter := newResponsesWebsocketBridgeWriter(conn, s.bodyLimits.maxForPath("/v1/responses"))
 	clientReplay := false
 	stopBeforeNativeWebsocket := func(current, next *model.Config, result *proxyResult) bool {
 		if isNativeCodexWebsocketCandidate(current) || !isNativeCodexWebsocketCandidate(next) {
@@ -555,13 +595,18 @@ type responsesWebsocketBridgeWriter struct {
 	outputItemsByIndex     map[int64][]byte
 	outputItemsUnindexed   [][]byte
 	outputItemsBytes       int64
+	maxBodyBytes           int64
 }
 
-func newResponsesWebsocketBridgeWriter(conn *websocket.Conn) *responsesWebsocketBridgeWriter {
+func newResponsesWebsocketBridgeWriter(conn *websocket.Conn, maxBodyBytes int64) *responsesWebsocketBridgeWriter {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
+	}
 	return &responsesWebsocketBridgeWriter{
 		conn:               conn,
 		header:             make(http.Header),
 		outputItemsByIndex: make(map[int64][]byte),
+		maxBodyBytes:       maxBodyBytes,
 	}
 }
 
@@ -579,7 +624,7 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 	}
 	originalLen := len(data)
 	_, _ = w.pending.Write(data)
-	if int64(w.pending.Len()) > maxProxyBodyBytes("/v1/responses") {
+	if int64(w.pending.Len()) > w.maxBodyBytes {
 		return 0, errors.New("upstream SSE event exceeds websocket body limit")
 	}
 	for {
@@ -670,7 +715,7 @@ func (w *responsesWebsocketBridgeWriter) collectOutputItem(eventType string, pay
 		w.outputItemsBytes += int64(len(itemBytes))
 		w.outputItemsUnindexed = append(w.outputItemsUnindexed, itemBytes)
 	}
-	if w.outputItemsBytes > maxProxyBodyBytes("/v1/responses") {
+	if w.outputItemsBytes > w.maxBodyBytes {
 		return errors.New("upstream response output exceeds websocket transcript limit")
 	}
 	return nil

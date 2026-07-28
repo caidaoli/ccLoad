@@ -426,7 +426,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
 		// Responses WebSocket
 		{"responses_ws_max_sessions", "32", "int", "Responses WebSocket execution session limit (process-wide, 0 = use default 32)", "32"},
-		{"responses_ws_session_ttl_minutes", "60", "int", "Responses WebSocket idle session retention (minutes, >= 1)", "60"},
+		{"responses_ws_session_ttl_minutes", "15", "int", "Responses WebSocket idle session retention (minutes, >= 1)", "15"},
+		{"responses_ws_max_transcript_bytes", "134217728", "int", "Responses WebSocket transcript payload budget (process-wide bytes, default 128 MiB)", "134217728"},
+		{"responses_ws_max_connections", "64", "int", "Responses WebSocket downstream connection limit (process-wide, 0 = use default 64)", "64"},
+		{"responses_ws_max_connections_per_token", "16", "int", "Responses WebSocket downstream connection limit per API token (0 = use default 16)", "16"},
 	}
 
 	var query string
@@ -473,6 +476,14 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			"auto_update_interval_hours",
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata auto_update_interval_hours: %w", err)
+		}
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
+			"Responses WebSocket idle session retention (minutes, >= 1)",
+			"15",
+			"int",
+			"responses_ws_session_ttl_minutes",
+		); err != nil {
+			return fmt.Errorf("refresh setting metadata responses_ws_session_ttl_minutes: %w", err)
 		}
 	}
 

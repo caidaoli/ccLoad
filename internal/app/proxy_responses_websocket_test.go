@@ -117,7 +117,7 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 }
 
 func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil)
+	store := newResponsesExecutionSessionStore(nil, 0)
 	store.maxSessions = 1
 	defer store.close()
 
@@ -132,13 +132,93 @@ func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing
 	}
 }
 
+func TestResponsesExecutionSessionStoreEvictsIdleTranscriptAtBudget(t *testing.T) {
+	cfg := &ConfigService{cache: map[string]*model.SystemSetting{
+		"responses_ws_max_transcript_bytes": {Value: "8"},
+	}}
+	store := newResponsesExecutionSessionStore(cfg, 0)
+	defer store.close()
+
+	oldest, releaseOldest, err := store.acquire("token-a", "session-a")
+	if err != nil {
+		t.Fatalf("acquire oldest session: %v", err)
+	}
+	store.commit(oldest, []byte("aaaa"), responsesWebsocketTurnResult{completedOutput: []byte("bb")})
+	releaseOldest()
+	oldest.lastAccess = time.Now().Add(-time.Minute)
+
+	newer, releaseNewer, err := store.acquire("token-a", "session-b")
+	if err != nil {
+		t.Fatalf("acquire newer session: %v", err)
+	}
+	store.commit(newer, []byte("cccc"), responsesWebsocketTurnResult{completedOutput: []byte("dd")})
+	releaseNewer()
+
+	_, releaseThird, err := store.acquire("token-b", "session-c")
+	if err != nil {
+		t.Fatalf("acquire after transcript budget eviction: %v", err)
+	}
+	releaseThird()
+
+	stats := store.stats()
+	if stats.Sessions != 2 || stats.TranscriptBytes != 6 {
+		t.Fatalf("unexpected transcript budget stats: %+v", stats)
+	}
+
+	survivor, releaseSurvivor, err := store.acquire("token-a", "session-b")
+	if err != nil {
+		t.Fatalf("reacquire newer session: %v", err)
+	}
+	releaseSurvivor()
+	if survivor != newer {
+		t.Fatal("transcript budget eviction removed the wrong idle session")
+	}
+
+	recreated, releaseRecreated, err := store.acquire("token-a", "session-a")
+	if err != nil {
+		t.Fatalf("recreate evicted session: %v", err)
+	}
+	releaseRecreated()
+	if recreated == oldest {
+		t.Fatal("oldest idle transcript was not evicted")
+	}
+}
+
+func TestResponsesExecutionSessionStoreRejectsNewSessionWhenActiveTranscriptsExceedBudget(t *testing.T) {
+	cfg := &ConfigService{cache: map[string]*model.SystemSetting{
+		"responses_ws_max_transcript_bytes": {Value: "4"},
+	}}
+	store := newResponsesExecutionSessionStore(cfg, 0)
+	defer store.close()
+
+	active, release, err := store.acquire("token-a", "session-a")
+	if err != nil {
+		t.Fatalf("acquire active session: %v", err)
+	}
+	store.commit(active, []byte("abc"), responsesWebsocketTurnResult{completedOutput: []byte("de")})
+
+	if _, _, err = store.acquire("token-b", "session-b"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
+		t.Fatalf("new session error=%v, want capacity error", err)
+	}
+	stats := store.stats()
+	if stats.Sessions != 1 || stats.TranscriptBytes != 5 {
+		t.Fatalf("active transcript accounting changed unexpectedly: %+v", stats)
+	}
+
+	release()
+	stats = store.stats()
+	if stats.Sessions != 0 || stats.TranscriptBytes != 0 {
+		t.Fatalf("idle over-budget transcript was retained: %+v", stats)
+	}
+}
+
 // TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity locks down the
 // capacity contract: once the flat ceiling is hit, acquire evicts the
 // least-recently-used *idle* session instead of rejecting, so one subject's
 // idle sessions can never starve every other subject for a full TTL. The
 // evicted client recovers through the documented full-transcript replay path.
 func TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil)
+	store := newResponsesExecutionSessionStore(nil, 0)
 	store.maxSessions = 2
 	defer store.close()
 
@@ -180,7 +260,7 @@ func TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity(t *testing.T)
 }
 
 func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil)
+	store := newResponsesExecutionSessionStore(nil, 0)
 	store.maxSessions = 1
 	defer store.close()
 
@@ -232,7 +312,7 @@ func newBridgeWriterTestConn(t *testing.T) *websocket.Conn {
 // events must still fail once the collected transcript snapshot exceeds the
 // request-side transcript limit, instead of accumulating without bound.
 func TestResponsesWebsocketBridgeWriterCapsCollectedOutputBytes(t *testing.T) {
-	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t))
+	writer := newResponsesWebsocketBridgeWriter(newBridgeWriterTestConn(t), 0)
 
 	text := strings.Repeat("x", 512*1024)
 	var failed error
@@ -266,14 +346,20 @@ func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testin
 	}))
 	defer upstream.Close()
 
-	session := newCodexUpstreamWebsocketSession()
+	session := newCodexUpstreamWebsocketSession(0)
 	defer session.Close()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/v1/responses", nil)
 	if err != nil {
 		t.Fatalf("build websocket request: %v", err)
 	}
 	target := codexWebsocketTarget{channelID: 1, url: req.URL.String()}
-	conn, resp, err := session.dial(context.Background(), websocket.DefaultDialer, target, req)
+	conn, resp, err := session.dial(
+		context.Background(),
+		websocket.DefaultDialer,
+		target,
+		req,
+		codexWebsocketTimeouts{idle: codexWebsocketReadTimeout, ping: codexWebsocketPingInterval},
+	)
 	if resp != nil && resp.Body != nil {
 		defer func() { _ = resp.Body.Close() }()
 	}
@@ -504,8 +590,7 @@ func TestResponsesWebsocketRejectsBinaryAndOversizedFrames(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "codex-http", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	// 必须在建 Server 之后收紧：NewServer 会用系统设置重置包级上限
-	withMaxBodyBytes(t, 256)
+	setMaxBodyBytesForTest(t, env.server, 256)
 
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -562,6 +647,140 @@ func TestResponsesWebsocketIdleConnectionsDoNotConsumeTokenConcurrency(t *testin
 	second := dialResponsesWebsocket(t, env.engine)
 	if first == nil || second == nil {
 		t.Fatal("expected both idle websocket connections to upgrade")
+	}
+}
+
+func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "connection-limit", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	appServer := httptest.NewServer(env.engine)
+	defer appServer.Close()
+
+	const expectedPerTokenLimit = 16
+	for range expectedPerTokenLimit {
+		dialResponsesWebsocketAtURL(t, appServer.URL, "test-api-key", "/v1/responses", nil)
+	}
+
+	headers := http.Header{"Authorization": []string{"Bearer test-api-key"}}
+	conn, resp, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(appServer.URL, "http")+"/v1/responses",
+		headers,
+	)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err == nil {
+		t.Fatal("17th idle websocket unexpectedly upgraded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("17th idle websocket status=%d, want %d", status, http.StatusTooManyRequests)
+	}
+}
+
+func TestResponsesWebsocketGlobalConnectionLimitRejectsIdleUpgrades(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "global-connection-limit", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.responsesWebsocketConnections = newResponsesWebsocketConnectionLimiter(1, 1)
+	injectAPIToken(env.server.authService, "second-api-key", 0, 2)
+	appServer := httptest.NewServer(env.engine)
+	defer appServer.Close()
+
+	dialResponsesWebsocketAtURL(t, appServer.URL, "test-api-key", "/v1/responses", nil)
+	headers := http.Header{"Authorization": []string{"Bearer second-api-key"}}
+	conn, resp, err := websocket.DefaultDialer.Dial(
+		"ws"+strings.TrimPrefix(appServer.URL, "http")+"/v1/responses",
+		headers,
+	)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	if resp != nil && resp.Body != nil {
+		defer func() { _ = resp.Body.Close() }()
+	}
+	if err == nil {
+		t.Fatal("second global websocket unexpectedly upgraded")
+	}
+	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		t.Fatalf("second global websocket status=%d, want %d", status, http.StatusTooManyRequests)
+	}
+}
+
+func TestResponsesWebsocketRevokedTokenClosesBeforeNextTurn(t *testing.T) {
+	upstreamCalls := atomic.Int32{}
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "revoked-token", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocket(t, env.engine)
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	delete(env.server.authService.authTokens, tokenHash)
+	env.server.authService.authTokensMux.Unlock()
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "must be rejected"}},
+	}); err != nil {
+		t.Fatalf("write revoked-token turn: %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set revoked-token deadline: %v", err)
+	}
+	_, _, err := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.ClosePolicyViolation {
+		t.Fatalf("revoked token close error=%v, want code %d", err, websocket.ClosePolicyViolation)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("revoked token reached upstream %d times", upstreamCalls.Load())
+	}
+}
+
+func TestResponsesWebsocketExpiredTokenClosesWhileIdle(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "expired-token", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
+	conn := dialResponsesWebsocket(t, env.engine)
+
+	tokenHash := model.HashToken("test-api-key")
+	env.server.authService.authTokensMux.Lock()
+	env.server.authService.authTokens[tokenHash] = time.Now().Add(-time.Second).UnixMilli()
+	env.server.authService.authTokensMux.Unlock()
+
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set expired-token deadline: %v", err)
+	}
+	_, _, err := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(err, &closeErr) || closeErr.Code != websocket.ClosePolicyViolation {
+		t.Fatalf("expired token close error=%v, want code %d", err, websocket.ClosePolicyViolation)
 	}
 }
 
@@ -832,8 +1051,7 @@ func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
 		apiKey:      "sk-upstream",
 		priority:    100,
 	}}, map[int]string{0: upstream.URL})
-	// 必须在建 Server 之后收紧：NewServer 会用系统设置重置包级上限
-	withMaxBodyBytes(t, 600)
+	setMaxBodyBytesForTest(t, env.server, 600)
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set websocket read deadline: %v", err)
@@ -1449,6 +1667,83 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 	}
 }
 
+func TestNativeCodexWebsocketRebuildsWhenHandshakeHeadersChange(t *testing.T) {
+	organizations := make(chan string, 2)
+	var handshakes atomic.Int32
+	var responses atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade header-fingerprint websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		handshakes.Add(1)
+		organizations <- r.Header.Get("OpenAI-Organization")
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+			responseID := fmt.Sprintf("resp-header-%d", responses.Add(1))
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": responseID, "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "header-fingerprint", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	first := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"Session-Id":          []string{"header-fingerprint"},
+		"OpenAI-Organization": []string{"org-a"},
+	})
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write first header-fingerprint request: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+	if organization := <-organizations; organization != "org-a" {
+		t.Fatalf("first handshake organization=%q, want org-a", organization)
+	}
+	_ = first.Close()
+
+	second := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"Session-Id":          []string{"header-fingerprint"},
+		"OpenAI-Organization": []string{"org-b"},
+	})
+	if err := second.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-header-1",
+		"input": []any{map[string]any{"role": "user", "content": "second"}},
+	}); err != nil {
+		t.Fatalf("write second header-fingerprint request: %v", err)
+	}
+	readWebsocketUntilType(t, second, "response.completed")
+
+	select {
+	case organization := <-organizations:
+		if organization != "org-b" {
+			t.Fatalf("second handshake organization=%q, want org-b", organization)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("changed handshake headers reused the old upstream websocket")
+	}
+	if handshakes.Load() != 2 {
+		t.Fatalf("handshakes=%d, want 2 after handshake header change", handshakes.Load())
+	}
+}
+
 func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1576,6 +1871,81 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("expired continuation reached upstream; calls=%d", calls.Load())
+	}
+}
+
+func TestResponsesWebsocketClosesDetachedUpstreamButKeepsTranscript(t *testing.T) {
+	upstreamClosed := make(chan struct{}, 1)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade detached-transport websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		connection := handshakes.Add(1)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read detached-transport request %d: %v", connection, err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": fmt.Sprintf("resp-detached-%d", connection), "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write detached-transport response %d: %v", connection, err)
+			return
+		}
+		if connection == 1 {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				upstreamClosed <- struct{}{}
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "detached-transport", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "detached-transport")
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write detached-transport first turn: %v", err)
+	}
+	readWebsocketUntilType(t, first, "response.completed")
+	_ = first.Close()
+
+	deadline := time.Now().Add(time.Second)
+	for env.server.responsesExecutionSessions.stats().ActiveAttachments != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("downstream attachment was not released")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	env.server.responsesExecutionSessions.cleanup(time.Now().Add(5*time.Minute + time.Second))
+	select {
+	case <-upstreamClosed:
+	case <-time.After(time.Second):
+		t.Fatal("detached upstream websocket was not closed")
+	}
+
+	second := dialResponsesWebsocketWithSessionID(t, env.engine, "detached-transport")
+	if err := second.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-detached-1",
+		"input": []any{map[string]any{"role": "user", "content": "second"}},
+	}); err != nil {
+		t.Fatalf("write detached-transport continuation: %v", err)
+	}
+	readWebsocketUntilType(t, second, "response.completed")
+	if handshakes.Load() != 2 {
+		t.Fatalf("detached transport handshakes=%d, want 2", handshakes.Load())
 	}
 }
 
@@ -2177,6 +2547,92 @@ func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
 	}
 }
 
+func TestNativeCodexWebsocketRetainsAffinityAfterPhysicalDisconnect(t *testing.T) {
+	authorizations := make(chan string, 2)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade affinity websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		connection := handshakes.Add(1)
+		authorizations <- r.Header.Get("Authorization")
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read affinity request %d: %v", connection, err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": fmt.Sprintf("resp-affinity-%d", connection), "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write affinity response %d: %v", connection, err)
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "disconnect-affinity", channelType: "codex", websockets: true,
+		models: "gpt-test", apiKey: "sk-affinity-0", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list affinity config: configs=%d err=%v", len(configs), err)
+	}
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: configs[0].ID, KeyIndex: 1, APIKey: "sk-affinity-1", KeyStrategy: model.KeyStrategyRoundRobin,
+	}}); err != nil {
+		t.Fatalf("create affinity key: %v", err)
+	}
+	if err := env.store.UpdateAPIKeysStrategy(
+		context.Background(), configs[0].ID, model.KeyStrategyRoundRobin,
+	); err != nil {
+		t.Fatalf("enable affinity round robin: %v", err)
+	}
+	env.server.InvalidateAPIKeysCache(configs[0].ID)
+
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "disconnect-affinity")
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set affinity downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write first affinity turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	deadline := time.Now().Add(time.Second)
+	for env.server.responsesExecutionSessions.stats().UpstreamConnections != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("upstream disconnect was not observed by the execution session")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-affinity-1",
+		"input": []any{map[string]any{"role": "user", "content": "second"}},
+	}); err != nil {
+		t.Fatalf("write second affinity turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	firstAuthorization := <-authorizations
+	secondAuthorization := <-authorizations
+	if secondAuthorization != firstAuthorization {
+		t.Fatalf("authorization changed after physical disconnect: first=%q second=%q", firstAuthorization, secondAuthorization)
+	}
+	if handshakes.Load() != 2 {
+		t.Fatalf("affinity handshakes=%d, want 2", handshakes.Load())
+	}
+}
+
 func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
 	pongReceived := make(chan bool, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -2243,6 +2699,154 @@ func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
 	readWebsocketUntilType(t, downstream, "response.completed")
 	if ok := <-pongReceived; !ok {
 		t.Fatal("native upstream ping was not processed between turns")
+	}
+}
+
+func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
+	pingReceived := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade active-ping websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		conn.SetPingHandler(func(appData string) error {
+			select {
+			case pingReceived <- struct{}{}:
+			default:
+			}
+			return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(time.Second))
+		})
+		for turn := 1; turn <= 2; turn++ {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				t.Errorf("read active-ping request %d: %v", turn, err)
+				return
+			}
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": fmt.Sprintf("resp-active-ping-%d", turn), "output": []any{},
+					"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+				},
+			}); err != nil {
+				t.Errorf("write active-ping completion %d: %v", turn, err)
+				return
+			}
+		}
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "active-ping-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set active-ping downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "ping upstream"}},
+	}); err != nil {
+		t.Fatalf("write active-ping downstream request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	select {
+	case <-pingReceived:
+	case <-time.After(time.Second):
+		t.Fatal("gateway did not actively ping the idle upstream websocket")
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-active-ping-1",
+		"input": []any{map[string]any{"role": "user", "content": "reuse upstream"}},
+	}); err != nil {
+		t.Fatalf("write active-ping reused request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
+	env.server.HandleRuntimeMetrics(c)
+	metrics := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	ws, ok := metrics.Data["responses_websocket"].(map[string]any)
+	if !ok {
+		t.Fatalf("responses websocket runtime metrics missing: %#v", metrics.Data)
+	}
+	if ws["upstream_handshakes"] != float64(1) || ws["upstream_reuses"] != float64(1) {
+		t.Fatalf("unexpected upstream websocket reuse metrics: %#v", ws)
+	}
+}
+
+func TestNativeCodexWebsocketClosesOnReadQueueOverflow(t *testing.T) {
+	upstreamClosed := make(chan bool, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade queue-overflow websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read queue-overflow request: %v", err)
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-queue-overflow", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write queue-overflow completion: %v", err)
+			return
+		}
+		for index := range 256 {
+			if err := conn.WriteJSON(map[string]any{
+				"type": "response.output_text.delta", "delta": fmt.Sprintf("late-%d", index),
+			}); err != nil {
+				upstreamClosed <- true
+				return
+			}
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+		_, _, err = conn.ReadMessage()
+		var netErr net.Error
+		upstreamClosed <- err != nil && (!errors.As(err, &netErr) || !netErr.Timeout())
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "queue-overflow-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set queue-overflow downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "bound the queue"}},
+	}); err != nil {
+		t.Fatalf("write queue-overflow request: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	select {
+	case closed := <-upstreamClosed:
+		if !closed {
+			t.Fatal("gateway left the upstream websocket open after unbounded unsolicited frames")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for queue-overflow upstream closure")
 	}
 }
 

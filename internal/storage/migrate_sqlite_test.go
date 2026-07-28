@@ -890,6 +890,11 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"health_score_update_interval",
 		"health_min_confident_sample",
 		"cooldown_fallback_enabled",
+		"responses_ws_max_sessions",
+		"responses_ws_session_ttl_minutes",
+		"responses_ws_max_transcript_bytes",
+		"responses_ws_max_connections",
+		"responses_ws_max_connections_per_token",
 	}
 
 	for _, key := range expectedKeys {
@@ -909,6 +914,18 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "stream_timeout" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
+		if key == "responses_ws_max_connections" && val != "64" {
+			t.Errorf("setting %q default = %q, want 64", key, val)
+		}
+		if key == "responses_ws_max_connections_per_token" && val != "16" {
+			t.Errorf("setting %q default = %q, want 16", key, val)
+		}
+		if key == "responses_ws_session_ttl_minutes" && val != "15" {
+			t.Errorf("setting %q default = %q, want 15", key, val)
+		}
+		if key == "responses_ws_max_transcript_bytes" && val != "134217728" {
+			t.Errorf("setting %q default = %q, want 134217728", key, val)
+		}
 	}
 	var valueType string
 	if err := db.QueryRowContext(ctx,
@@ -923,6 +940,58 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 	// 验证 idempotent：再次 init 不应报错
 	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("initDefaultSettings (second call): %v", err)
+	}
+}
+
+func TestInitDefaultSettings_PreservesExistingResponsesSessionTTL(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE system_settings
+		SET value = '60', default_value = '60', description = 'old default'
+		WHERE key = 'responses_ws_session_ttl_minutes'
+	`); err != nil {
+		t.Fatalf("restore old default: %v", err)
+	}
+	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate old default: %v", err)
+	}
+
+	var value, defaultValue string
+	if err := db.QueryRowContext(ctx, `
+		SELECT value, default_value
+		FROM system_settings
+		WHERE key = 'responses_ws_session_ttl_minutes'
+	`).Scan(&value, &defaultValue); err != nil {
+		t.Fatalf("query migrated TTL: %v", err)
+	}
+	if value != "60" || defaultValue != "15" {
+		t.Fatalf("existing TTL value/default=%q/%q, want 60/15", value, defaultValue)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE system_settings
+		SET value = '10', default_value = '60'
+		WHERE key = 'responses_ws_session_ttl_minutes'
+	`); err != nil {
+		t.Fatalf("set custom TTL: %v", err)
+	}
+	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("refresh custom TTL metadata: %v", err)
+	}
+	if err := db.QueryRowContext(ctx, `
+		SELECT value, default_value
+		FROM system_settings
+		WHERE key = 'responses_ws_session_ttl_minutes'
+	`).Scan(&value, &defaultValue); err != nil {
+		t.Fatalf("query custom TTL: %v", err)
+	}
+	if value != "10" || defaultValue != "15" {
+		t.Fatalf("custom TTL value/default=%q/%q, want 10/15", value, defaultValue)
 	}
 }
 
