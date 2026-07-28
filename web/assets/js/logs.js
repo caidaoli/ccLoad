@@ -356,12 +356,16 @@ function buildLogChannelCell(channelHtml, multiplierValue, upstreamWebsocket) {
   }
   const multiplier = Number(multiplierValue);
   if (Number.isFinite(multiplier) && multiplier >= 0 && Math.abs(multiplier - 1) >= 1e-9) {
-    const multiplierText = `${Number(multiplier.toFixed(2)).toString()}x`;
+    const multiplierText = formatMultiplierText(multiplier);
     badges.push(`<sup class="log-channel-badge log-channel-multiplier-badge">${multiplierText}</sup>`);
   }
   if (badges.length === 0) return channelHtml;
 
   return `<span class="log-channel-cell">${channelHtml}<span class="log-channel-badges">${badges.join('')}</span></span>`;
+}
+
+function formatMultiplierText(multiplier) {
+  return `${Number(multiplier.toFixed(2)).toString()}x`;
 }
 
 function buildLogChannelDisplay(entry) {
@@ -600,16 +604,20 @@ function buildLogCostDisplay(entry, costInfo = getLogCostInfo(entry)) {
 
   const badgeParts = [];
 
-  switch (entry?.service_tier) {
-    case 'priority':
-      badgeParts.push('<sup class="log-cost-badge log-cost-badge--priority">2x</sup>');
-      break;
-    case 'flex':
-      badgeParts.push('<sup class="log-cost-badge log-cost-badge--flex">0.5x</sup>');
-      break;
-    case 'fast':
-      badgeParts.push('<sup class="log-cost-badge log-cost-badge--fast">\u26A16x</sup>');
-      break;
+  const tierMultiplier = Number(entry?.cost_breakdown?.service_tier_multiplier);
+  if (Number.isFinite(tierMultiplier) && tierMultiplier > 0 && Math.abs(tierMultiplier - 1) >= 1e-9) {
+    const multiplierText = formatMultiplierText(tierMultiplier);
+    switch (entry?.service_tier) {
+      case 'priority':
+        badgeParts.push(`<sup class="log-cost-badge log-cost-badge--priority">${multiplierText}</sup>`);
+        break;
+      case 'flex':
+        badgeParts.push(`<sup class="log-cost-badge log-cost-badge--flex">${multiplierText}</sup>`);
+        break;
+      case 'fast':
+        badgeParts.push(`<sup class="log-cost-badge log-cost-badge--fast">\u26A1${multiplierText}</sup>`);
+        break;
+    }
   }
 
   const badgesHtml = badgeParts.length

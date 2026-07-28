@@ -32,11 +32,12 @@ type CostComponent struct {
 // CacheWrite 将 5m/1h 两种缓存创建费用合并为一项；两者同时存在时，
 // PricePerMillion 为按 Token 数加权后的实际单价。
 type StandardCostBreakdown struct {
-	Input      CostComponent `json:"input"`
-	Output     CostComponent `json:"output"`
-	CacheRead  CostComponent `json:"cache_read"`
-	CacheWrite CostComponent `json:"cache_write"`
-	Total      float64       `json:"total"`
+	Input                 CostComponent `json:"input"`
+	Output                CostComponent `json:"output"`
+	CacheRead             CostComponent `json:"cache_read"`
+	CacheWrite            CostComponent `json:"cache_write"`
+	Total                 float64       `json:"total"`
+	ServiceTierMultiplier float64       `json:"service_tier_multiplier,omitempty"`
 }
 
 func newCostComponent(quantity int, pricePerMillion float64) CostComponent {
@@ -232,7 +233,11 @@ func CalculateStandardCostBreakdown(
 		cache5mTokens,
 		cache1hTokens,
 	)
-	return scaleCostBreakdown(breakdown, OpenAIServiceTierMultiplier(model, serviceTier))
+	multiplier := OpenAIServiceTierMultiplier(model, serviceTier)
+	if multiplier != 1 {
+		breakdown.ServiceTierMultiplier = multiplier
+	}
+	return scaleCostBreakdown(breakdown, multiplier)
 }
 
 func calculateCostBreakdownDetailed(model string, inputTokens, outputTokens, cacheReadTokens, cache5mTokens, cache1hTokens int) StandardCostBreakdown {
@@ -526,9 +531,10 @@ func calculateFastModeCostBreakdown(inputTokens, outputTokens, cacheReadTokens, 
 	const baseInputPrice = 5.0 // claude-opus-4-6 基础 input 价 $5/MTok
 
 	breakdown := StandardCostBreakdown{
-		Input:     newCostComponent(inputTokens, inputPrice),
-		Output:    newCostComponent(outputTokens, outputPrice),
-		CacheRead: newCostComponent(cacheReadTokens, baseInputPrice*cacheReadMultiplierOpus),
+		Input:                 newCostComponent(inputTokens, inputPrice),
+		Output:                newCostComponent(outputTokens, outputPrice),
+		CacheRead:             newCostComponent(cacheReadTokens, baseInputPrice*cacheReadMultiplierOpus),
+		ServiceTierMultiplier: inputPrice / baseInputPrice,
 	}
 
 	breakdown.CacheWrite = newCacheWriteCostComponent(cache5mTokens, cache1hTokens, baseInputPrice)
