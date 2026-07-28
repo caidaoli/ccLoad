@@ -72,7 +72,7 @@ func (s *Server) responsesWebsocketTimeouts() (idle, ping time.Duration) {
 }
 
 // HandleResponsesWebsocket terminates the downstream Responses WebSocket.
-// Explicit session hints bind conversation state to the authenticated subject,
+// An explicit Session-Id binds conversation state to the authenticated subject,
 // so a downstream reconnect does not destroy transcript or upstream affinity.
 func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	if !websocket.IsWebSocketUpgrade(c.Request) {
@@ -133,9 +133,9 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 		switch eventType {
 		case responsesWebsocketRequestCreate, responsesWebsocketRequestAppend:
 			if executionSession == nil {
-				hint := responsesExecutionSessionHint(c.Request.Header, message.payload)
+				sessionID := responsesExecutionSessionID(c.Request.Header)
 				var errSession error
-				executionSession, releaseExecutionSession, errSession = s.responsesExecutionSessions.acquire(tokenHashString, hint)
+				executionSession, releaseExecutionSession, errSession = s.responsesExecutionSessions.acquire(tokenHashString, sessionID)
 				if errSession != nil {
 					if errWrite := writeResponsesWebsocketError(conn, "session_capacity", errSession.Error()); errWrite != nil {
 						return
@@ -345,9 +345,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 	tokenID, _ := c.Get("token_id")
 	tokenIDInt64, _ := tokenID.(int64)
 	thinkingEffort := extractThinkingEffortFromJSON(requestBody)
-	activeID := s.activeRequests.Register(startTime, modelName, c.ClientIP(), true)
-	s.activeRequests.SetThinkingEffort(activeID, thinkingEffort)
-	defer s.activeRequests.Remove(activeID)
 
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
 	header.Set("Content-Type", "application/json")
@@ -364,7 +361,6 @@ func (s *Server) executeResponsesWebsocketTurn(
 		tokenHash:       tokenHashString,
 		tokenID:         tokenIDInt64,
 		clientIP:        c.ClientIP(),
-		activeReqID:     activeID,
 		startTime:       startTime,
 		thinkingEffort:  thinkingEffort,
 		nativeCodexWS:   nativeCodexWS,
@@ -372,18 +368,23 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
-			s.activeRequests.AddBytes(activeID, n)
+			s.activeRequests.AddBytes(reqCtx.activeReqID, n)
 		},
 		OnFirstByteRead: func() {
-			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
+			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, time.Since(reqCtx.attemptStartTime))
 		},
 		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
-			s.activeRequests.SetUpstreamWebsocket(activeID, upstreamWebsocket)
+			s.activeRequests.SetUpstreamWebsocket(reqCtx.activeReqID, upstreamWebsocket)
 		},
 		OnDebugCapture: func(dc *debugCapture) {
-			s.activeRequests.SetDebugCapture(activeID, dc)
+			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
 		},
 	}
+	defer func() {
+		if reqCtx.activeReqID > 0 {
+			s.activeRequests.Remove(reqCtx.activeReqID)
+		}
+	}()
 
 	bridgeWriter := newResponsesWebsocketBridgeWriter(conn)
 	clientReplay := false

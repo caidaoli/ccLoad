@@ -312,11 +312,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		return
 	}
 
-	// 注册活跃请求（内存状态，用于前端实时显示）
-	activeID := s.activeRequests.Register(startTime, originalModel, c.ClientIP(), isStreaming)
-	s.activeRequests.SetThinkingEffort(activeID, thinkingEffort)
-	defer s.activeRequests.Remove(activeID)
-
 	timeout := parseTimeout(c.Request.URL.Query(), c.Request.Header)
 	ctx := c.Request.Context()
 	var cancel context.CancelFunc
@@ -330,13 +325,13 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	var nativeRequestBody []byte
 	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
 		protocol.DetectRequestFamily(effectiveRequestPath) == protocol.RequestFamilyResponses {
-		hint := responsesExecutionSessionHint(c.Request.Header, all)
+		sessionID := responsesExecutionSessionID(c.Request.Header)
 		// Ordinary HTTP requests only need process-local state when the client supplied
-		// a stable session identity. A one-shot transient session cannot reuse a socket.
-		if tokenHashStr != "" && hint != "" {
+		// the explicit Session-Id contract. Cache routing hints are not conversation IDs.
+		if tokenHashStr != "" && sessionID != "" {
 			var releaseSession func()
 			var errSession error
-			executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, hint)
+			executionSession, releaseSession, errSession = s.responsesExecutionSessions.acquire(tokenHashStr, sessionID)
 			if errSession != nil {
 				c.JSON(http.StatusTooManyRequests, gin.H{"error": errSession.Error()})
 				return
@@ -428,7 +423,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		tokenHash:      tokenHashStr,
 		tokenID:        tokenIDInt64,
 		clientIP:       c.ClientIP(),
-		activeReqID:    activeID,
 		startTime:      startTime,
 		thinkingEffort: thinkingEffort,
 	}
@@ -438,18 +432,23 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
-			s.activeRequests.AddBytes(activeID, n)
+			s.activeRequests.AddBytes(reqCtx.activeReqID, n)
 		},
 		OnFirstByteRead: func() {
-			s.activeRequests.SetClientFirstByteTime(activeID, time.Since(reqCtx.attemptStartTime))
+			s.activeRequests.SetClientFirstByteTime(reqCtx.activeReqID, time.Since(reqCtx.attemptStartTime))
 		},
 		OnUpstreamWebsocket: func(upstreamWebsocket bool) {
-			s.activeRequests.SetUpstreamWebsocket(activeID, upstreamWebsocket)
+			s.activeRequests.SetUpstreamWebsocket(reqCtx.activeReqID, upstreamWebsocket)
 		},
 		OnDebugCapture: func(dc *debugCapture) {
-			s.activeRequests.SetDebugCapture(activeID, dc)
+			s.activeRequests.SetDebugCapture(reqCtx.activeReqID, dc)
 		},
 	}
+	defer func() {
+		if reqCtx.activeReqID > 0 {
+			s.activeRequests.Remove(reqCtx.activeReqID)
+		}
+	}()
 
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
 	if succeeded {

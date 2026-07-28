@@ -10,8 +10,11 @@ func TestHandleActiveRequests(t *testing.T) {
 	t.Parallel()
 
 	m := newActiveRequestManager()
-	id := m.Register(time.Now(), "m1", "1.2.3.4", true)
-	m.Update(id, 10, "ch", "openai", "sk-test", 7, 1.5) //nolint:gosec // 测试用假凭证
+	id := m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4", Streaming: true,
+		ChannelID: 10, ChannelName: "ch", ChannelType: "openai", APIKey: "sk-test",
+		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 1.5,
+	})
 	m.SetUpstreamWebsocket(id, true)
 	m.AddBytes(id, 123)
 	m.SetClientFirstByteTime(id, 50*time.Millisecond)
@@ -47,6 +50,9 @@ func TestHandleActiveRequests(t *testing.T) {
 	if !resp.Data[0].UpstreamWebsocket {
 		t.Fatal("upstream_websocket=false, want true")
 	}
+	if resp.Data[0].UpstreamStatus != activeRequestStatusReceiving {
+		t.Fatalf("upstream_status=%q, want %q", resp.Data[0].UpstreamStatus, activeRequestStatusReceiving)
+	}
 }
 
 func TestActiveRequestManagerCount(t *testing.T) {
@@ -57,8 +63,8 @@ func TestActiveRequestManagerCount(t *testing.T) {
 		t.Fatalf("Count on empty manager = %d, want 0", got)
 	}
 
-	first := manager.Register(time.Now(), "model-a", "127.0.0.1", true)
-	second := manager.Register(time.Now(), "model-b", "127.0.0.1", false)
+	first := beginTestActiveRequest(manager, time.Now(), "model-a", "127.0.0.1", true)
+	second := beginTestActiveRequest(manager, time.Now(), "model-b", "127.0.0.1", false)
 	if got := manager.Count(); got != 2 {
 		t.Fatalf("Count after register = %d, want 2", got)
 	}
@@ -78,8 +84,11 @@ func TestHandleActiveRequests_PreservesZeroCostMultiplier(t *testing.T) {
 	t.Parallel()
 
 	m := newActiveRequestManager()
-	id := m.Register(time.Now(), "m1", "1.2.3.4", true)
-	m.Update(id, 10, "free-channel", "openai", "sk-test", 7, 0) //nolint:gosec // 测试用假凭证
+	m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4", Streaming: true,
+		ChannelID: 10, ChannelName: "free-channel", ChannelType: "openai", APIKey: "sk-test",
+		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 0,
+	})
 
 	s := &Server{activeRequests: m}
 

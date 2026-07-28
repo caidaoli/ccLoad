@@ -7,11 +7,19 @@ import (
 	"time"
 )
 
+func beginTestActiveRequest(m *activeRequestManager, start time.Time, model, clientIP string, streaming bool) int64 {
+	return m.BeginAttempt(0, activeRequestAttempt{
+		StartTime: start, Model: model, ClientIP: clientIP, Streaming: streaming,
+		ChannelID: 1, ChannelName: "test-channel", ChannelType: "openai",
+		APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+	})
+}
+
 func TestActiveRequestManager_ListSnapshotAndSort(t *testing.T) {
 	m := newActiveRequestManager()
 
-	id1 := m.Register(time.UnixMilli(100), "m1", "1.1.1.1", false)
-	id2 := m.Register(time.UnixMilli(200), "m2", "2.2.2.2", true)
+	id1 := beginTestActiveRequest(m, time.UnixMilli(100), "m1", "1.1.1.1", false)
+	id2 := beginTestActiveRequest(m, time.UnixMilli(200), "m2", "2.2.2.2", true)
 
 	got := m.List()
 	if len(got) != 2 {
@@ -29,13 +37,17 @@ func TestActiveRequestManager_ListSnapshotAndSort(t *testing.T) {
 	}
 }
 
-func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
+func TestActiveRequestManager_BeginAttemptMasksKey(t *testing.T) {
 	m := newActiveRequestManager()
 
-	id := m.Register(time.UnixMilli(100), "m", "1.1.1.1", false)
+	id := beginTestActiveRequest(m, time.UnixMilli(100), "m", "1.1.1.1", false)
 	m.SetUpstreamWebsocket(id, true)
 	rawKey := "sk-1234567890abcdef"
-	m.Update(id, 1, "ch", "anthropic", rawKey, 0, 1.0)
+	m.BeginAttempt(id, activeRequestAttempt{
+		StartTime: time.UnixMilli(200), Model: "m", ClientIP: "1.1.1.1",
+		ChannelID: 1, ChannelName: "ch", ChannelType: "anthropic",
+		APIKey: rawKey, BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+	})
 
 	got := m.List()
 	if len(got) != 1 {
@@ -52,10 +64,38 @@ func TestActiveRequestManager_UpdateMasksKey(t *testing.T) {
 	}
 }
 
+func TestActiveRequestManager_UpstreamStatusTransitions(t *testing.T) {
+	m := newActiveRequestManager()
+
+	id := beginTestActiveRequest(m, time.UnixMilli(100), "m", "1.1.1.1", true)
+	if got := m.List()[0].UpstreamStatus; got != activeRequestStatusRequesting {
+		t.Fatalf("status after register=%q, want %q", got, activeRequestStatusRequesting)
+	}
+
+	m.AddBytes(id, 10)
+	if got := m.List()[0].UpstreamStatus; got != activeRequestStatusReceiving {
+		t.Fatalf("status after receiving bytes=%q, want %q", got, activeRequestStatusReceiving)
+	}
+
+	m.Retry(id)
+	if got := m.List()[0].UpstreamStatus; got != activeRequestStatusRetrying {
+		t.Fatalf("status before retry=%q, want %q", got, activeRequestStatusRetrying)
+	}
+
+	m.BeginAttempt(id, activeRequestAttempt{
+		StartTime: time.UnixMilli(200), Model: "m", ClientIP: "1.1.1.1", Streaming: true,
+		ChannelID: 1, ChannelName: "ch", ChannelType: "codex",
+		APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+	})
+	if got := m.List()[0].UpstreamStatus; got != activeRequestStatusRetrying {
+		t.Fatalf("status during retry=%q, want %q", got, activeRequestStatusRetrying)
+	}
+}
+
 func TestActiveRequestManager_BytesAndFirstByteTime(t *testing.T) {
 	m := newActiveRequestManager()
 
-	id := m.Register(time.UnixMilli(100), "m", "1.1.1.1", true)
+	id := beginTestActiveRequest(m, time.UnixMilli(100), "m", "1.1.1.1", true)
 
 	m.AddBytes(id, 10)
 	m.AddBytes(id, 0) // no-op

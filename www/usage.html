@@ -142,7 +142,7 @@
             <ul class="www-check-list">
               <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
               <li>Enable <code>websockets</code> only on channels whose primary protocol is Codex. Other candidates continue through HTTP/SSE.</li>
-              <li>Keep <code>Session-Id</code>, or <code>prompt_cache_key</code>, stable across reconnects so ccLoad can retain transcript and upstream affinity.</li>
+              <li>Keep the API token and <code>Session-Id</code> header stable across reconnects so ccLoad can retain transcript and upstream affinity. Cache-routing hints such as <code>prompt_cache_key</code> and <code>Session_id</code> never identify an execution session.</li>
             </ul>
           </article>
 
