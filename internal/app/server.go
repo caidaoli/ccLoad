@@ -56,6 +56,7 @@ type Server struct {
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	responsesExecutionSessions    *responsesExecutionSessionStore
+	responsesWebsocketConnections *responsesWebsocketConnectionLimiter
 	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -63,12 +64,13 @@ type Server struct {
 	tokenStatsDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
-	maxKeyRetries    int           // 单个渠道内最大Key重试次数
+	maxKeyRetries    int // 单个渠道内最大Key重试次数
+	bodyLimits       requestBodyLimits
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
-	// 仅供测试注入（缩短 idle/ping 间隔以覆盖保活路径）；生产始终为零值，
-	// 实际取值回退到 proxy_responses_websocket.go 的常量，见 responsesWebsocketTimeouts()。
+	// 仅供测试注入（缩短下游与上游 WebSocket 的 idle/ping 间隔以覆盖保活路径）；
+	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
 	responsesWebsocketPingIntervalOverride time.Duration
 	channelTypeTimeouts                    map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
@@ -135,9 +137,9 @@ func NewServer(store storage.Store) *Server {
 	runtimeCfg := loadServerRuntimeConfig(configService)
 	warnMigratedEnvSettings()
 
-	// 请求体上限与冷却时长是包级状态，启动期一次性注入后由请求链路只读消费
-	setMaxBodyBytesLimits(runtimeCfg.MaxBodyBytes, runtimeCfg.MaxImageBodyBytes)
-	util.ApplyCooldownSettings(runtimeCfg.Cooldown)
+	// 运行时配置必须归属具体 Server/存储实例，构造函数不修改进程级状态。
+	bodyLimits := newRequestBodyLimits(runtimeCfg.MaxBodyBytes, runtimeCfg.MaxImageBodyBytes)
+	store.ConfigureCooldown(runtimeCfg.Cooldown)
 
 	maxConcurrency := runtimeCfg.MaxConcurrency
 
@@ -162,6 +164,7 @@ func NewServer(store storage.Store) *Server {
 
 		// 运行时配置（启动时加载，修改后重启生效）
 		maxKeyRetries:       runtimeCfg.MaxKeyRetries,
+		bodyLimits:          bodyLimits,
 		firstByteTimeout:    runtimeCfg.FirstByteTimeout,
 		streamTimeout:       runtimeCfg.StreamTimeout,
 		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
@@ -189,10 +192,20 @@ func NewServer(store storage.Store) *Server {
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
 
-		activeRequests:             newActiveRequestManager(),
-		responsesExecutionSessions: newResponsesExecutionSessionStore(configService),
-		channelRPMLimiter:          newChannelRPMLimiter(time.Now),
-		channelConcurrencyLimiter:  newChannelConcurrencyLimiter(),
+		activeRequests: newActiveRequestManager(),
+		responsesExecutionSessions: newResponsesExecutionSessionStore(
+			configService,
+			bodyLimits.maxForPath("/v1/responses"),
+		),
+		responsesWebsocketConnections: newResponsesWebsocketConnectionLimiter(
+			configService.GetInt("responses_ws_max_connections", defaultResponsesWebsocketConnectionLimit),
+			configService.GetInt(
+				"responses_ws_max_connections_per_token",
+				defaultResponsesWebsocketConnectionPerSubjectLimit,
+			),
+		),
+		channelRPMLimiter:         newChannelRPMLimiter(time.Now),
+		channelConcurrencyLimiter: newChannelConcurrencyLimiter(),
 	}
 
 	reg := protocol.NewRegistry()

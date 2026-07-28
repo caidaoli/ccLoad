@@ -1,7 +1,14 @@
 package app
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"ccLoad/internal/config"
 	"ccLoad/internal/model"
@@ -99,26 +106,99 @@ func TestLoadServerRuntimeConfigRejectsInvertedCooldownBounds(t *testing.T) {
 
 // Images 路径必须走独立上限：旧的 CCLOAD_MAX_BODY_BYTES 会把 20MB 特例一起吃掉。
 func TestMaxProxyBodyBytesUsesSeparateImageLimit(t *testing.T) {
-	prevBody := maxBodyBytesLimit.Load()
-	prevImage := maxImageBodyBytesLimit.Load()
-	t.Cleanup(func() {
-		maxBodyBytesLimit.Store(prevBody)
-		maxImageBodyBytesLimit.Store(prevImage)
-	})
-
-	setMaxBodyBytesLimits(1024, 8192)
-	if got := maxProxyBodyBytes("/v1/messages"); got != 1024 {
+	limits := newRequestBodyLimits(1024, 8192)
+	if got := limits.maxForPath("/v1/messages"); got != 1024 {
 		t.Fatalf("maxProxyBodyBytes(/v1/messages)=%d, want 1024", got)
 	}
-	if got := maxProxyBodyBytes("/v1/images/generations"); got != 8192 {
+	if got := limits.maxForPath("/v1/images/generations"); got != 8192 {
 		t.Fatalf("maxProxyBodyBytes(/v1/images/generations)=%d, want 8192", got)
 	}
 
-	setMaxBodyBytesLimits(0, -5)
-	if got := maxProxyBodyBytes("/v1/messages"); got != int64(config.DefaultMaxBodyBytes) {
+	limits = newRequestBodyLimits(0, -5)
+	if got := limits.maxForPath("/v1/messages"); got != int64(config.DefaultMaxBodyBytes) {
 		t.Fatalf("non-positive limit=%d, want default %d", got, config.DefaultMaxBodyBytes)
 	}
-	if got := maxProxyBodyBytes("/v1/images/edits"); got != int64(config.DefaultMaxImageBodyBytes) {
+	if got := limits.maxForPath("/v1/images/edits"); got != int64(config.DefaultMaxImageBodyBytes) {
 		t.Fatalf("non-positive image limit=%d, want default %d", got, config.DefaultMaxImageBodyBytes)
+	}
+}
+
+func TestNewServerParallelConstructionKeepsRuntimeConfigIsolated(t *testing.T) {
+	t.Setenv("CCLOAD_PASS", "parallel-construction-test-password")
+
+	type serverCase struct {
+		bodyLimit int
+		authDelay int
+		store     storage.Store
+		server    *Server
+	}
+	cases := []serverCase{
+		{bodyLimit: 128, authDelay: 7},
+		{bodyLimit: 1024, authDelay: 11},
+	}
+
+	ctx := context.Background()
+	for i := range cases {
+		store, err := storage.CreateSQLiteStore(":memory:")
+		if err != nil {
+			t.Fatalf("CreateSQLiteStore case %d: %v", i, err)
+		}
+		cases[i].store = store
+		if err = store.BatchUpdateSettings(ctx, map[string]string{
+			"max_body_bytes":        fmt.Sprint(cases[i].bodyLimit),
+			"cooldown_auth_seconds": fmt.Sprint(cases[i].authDelay),
+		}); err != nil {
+			t.Fatalf("BatchUpdateSettings case %d: %v", i, err)
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := range cases {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			cases[index].server = NewServer(cases[index].store)
+		}(i)
+	}
+	wg.Wait()
+	t.Cleanup(func() {
+		for i := range cases {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := cases[i].server.Shutdown(shutdownCtx); err != nil {
+				t.Errorf("Shutdown case %d: %v", i, err)
+			}
+			cancel()
+		}
+	})
+
+	body := []byte(`{"model":"missing","messages":[{"role":"user","content":"` + strings.Repeat("x", 256) + `"}]}`)
+	for i := range cases {
+		req := newRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		ginCtx, recorder := newTestContext(t, req)
+		cases[i].server.HandleProxyRequest(ginCtx)
+		if cases[i].bodyLimit < len(body) {
+			if recorder.Code != http.StatusRequestEntityTooLarge {
+				t.Fatalf("case %d status=%d, want %d for %d-byte body with %d-byte limit",
+					i, recorder.Code, http.StatusRequestEntityTooLarge, len(body), cases[i].bodyLimit)
+			}
+		} else if recorder.Code == http.StatusRequestEntityTooLarge {
+			t.Fatalf("case %d unexpectedly rejected %d-byte body with %d-byte limit",
+				i, len(body), cases[i].bodyLimit)
+		}
+
+		channel, err := cases[i].store.CreateConfig(ctx, &model.Config{
+			Name: "parallel-runtime-config", URL: "https://example.com", ChannelType: "openai", Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig case %d: %v", i, err)
+		}
+		duration, err := cases[i].store.BumpChannelCooldown(ctx, channel.ID, time.Now(), http.StatusUnauthorized)
+		if err != nil {
+			t.Fatalf("BumpChannelCooldown case %d: %v", i, err)
+		}
+		if want := time.Duration(cases[i].authDelay) * time.Second; duration != want {
+			t.Fatalf("case %d auth cooldown=%v, want %v", i, duration, want)
+		}
 	}
 }

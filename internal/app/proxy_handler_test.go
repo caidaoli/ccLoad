@@ -143,7 +143,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 
 			c, _ := newTestContext(t, req)
 
-			incoming, err := parseIncomingRequest(c)
+			incoming, err := parseIncomingRequest(c, requestBodyLimits{})
 
 			if tt.expectError && err == nil {
 				t.Errorf("期望错误但未发生")
@@ -164,7 +164,7 @@ func TestParseIncomingRequest_ValidJSON(t *testing.T) {
 // TestParseIncomingRequest_BodyTooLarge 测试请求体过大
 func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 	// 设置较小的限制以便测试
-	withMaxBodyBytes(t, 1048576) // 1MB
+	bodyLimits := newRequestBodyLimits(1048576, 1048576) // 1MB
 
 	// 创建超大请求体（>1MB）
 	largeBody := make([]byte, 2*1024*1024) // 2MB
@@ -177,7 +177,7 @@ func TestParseIncomingRequest_BodyTooLarge(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	_, err := parseIncomingRequest(c)
+	_, err := parseIncomingRequest(c, bodyLimits)
 
 	if err != errBodyTooLarge {
 		t.Errorf("期望errBodyTooLarge错误, 实际: %v", err)
@@ -439,7 +439,7 @@ func TestParseIncomingRequest_MultipartModel(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -459,7 +459,7 @@ func TestParseIncomingRequest_ImagesJSON(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
 	if err != nil {
 		t.Fatalf("不期望错误: %v", err)
 	}
@@ -488,7 +488,7 @@ func TestParseIncomingRequest_ImagesLargerBodyAllowed(t *testing.T) {
 
 	c, _ := newTestContext(t, req)
 
-	incoming, err := parseIncomingRequest(c)
+	incoming, err := parseIncomingRequest(c, requestBodyLimits{})
 	if err != nil {
 		t.Fatalf("images 路径 15MB 请求体不应报错, 实际: %v", err)
 	}

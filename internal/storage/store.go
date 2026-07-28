@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 // ErrSettingNotFound 系统设置未找到错误（重导出自 model 包以保持兼容性）
@@ -49,6 +50,7 @@ type Store interface {
 	DeleteAllAPIKeys(ctx context.Context, channelID int64) error
 
 	// === Cooldown Management ===
+	ConfigureCooldown(settings util.CooldownSettings)
 	// Channel-level cooldown
 	GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error)
 	BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error)

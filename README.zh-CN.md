@@ -627,7 +627,7 @@ websocat \
 
 原生 WS 的同一上游内部重连把 `response.created`、`response.queued` 和 `response.in_progress` 视为非语义事件，因此在这些事件之后仍可重连一次；其他事件都越过该重连边界。注意，这三个生命周期事件仍是已经提交给下游的可见事件，不能据此承诺继续跨候选切换。一旦文本、推理、工具调用或其他实际输出已经转发，ccLoad 不再切换或重放，避免重复输出、工具调用和费用。消息过大使用 close code `1009`，也不会故障切换。
 
-重连时必须使用相同的 API 令牌，并保持稳定的 `Session-Id` 请求头。`prompt_cache_key`、`Session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：默认最多保留 32 个会话，空闲 60 分钟后过期；容量满时优先逐出最久未访问的空闲会话（被逐出的客户端通过完整 transcript 重放恢复），仅当所有会话都在活跃使用时才返回容量错误。进程重启不会恢复会话。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。上限和 TTL 可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes` 调整，运行状态可通过 `GET /admin/runtime-metrics` 查看。
+重连时必须使用相同的 API 令牌，并保持稳定的 `Session-Id` 请求头。`prompt_cache_key`、`Session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：默认最多保留 32 个会话，新安装或重置后的空闲 TTL 默认为 15 分钟（小内存机器可设为 10 分钟）；升级只更新默认值元数据，不改已有 TTL，因此原值 60 分钟会继续保持。下游全部断开 5 分钟后，每分钟运行的清理器会关闭上游物理连接，因此实际回收时间约为 5–6 分钟，但会话 transcript 会继续保留到 TTL。进程级 transcript 有效载荷总预算默认 128 MiB；超预算时优先逐出最久未访问的空闲会话（被逐出的客户端通过完整 transcript 重放恢复），若超额仅由活跃会话占用，则拒绝新会话，防止继续扩张缓存。进程重启不会恢复会话。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。会话数、TTL 和 transcript 预算可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes`、`responses_ws_max_transcript_bytes` 调整。`GET /admin/runtime-metrics` 的 `transcript_bytes` 表示当前有效载荷字节数，不包含 Go 运行时、WebSocket 缓冲区和请求处理中临时对象的开销。
 
 **Codex Alpha Search（仅原生透传）**：
 

@@ -22,6 +22,13 @@ func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
 	if s.responsesExecutionSessions != nil {
 		stats = s.responsesExecutionSessions.stats()
 	}
+	if s.responsesWebsocketConnections != nil {
+		connections := s.responsesWebsocketConnections.stats()
+		stats.DownstreamConnections = connections.Active
+		stats.RejectedDownstreamConnections = connections.Rejected
+		stats.MaxDownstreamConnections = connections.Max
+		stats.MaxDownstreamConnectionsPerToken = connections.MaxPerSubject
+	}
 	RespondJSON(c, http.StatusOK, gin.H{"responses_websocket": stats})
 }
 

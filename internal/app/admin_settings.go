@@ -211,13 +211,19 @@ func validateSettingValue(key, valueType, value string) error {
 			if intVal != 0 && intVal < 1 {
 				return fmt.Errorf("auto_update_interval_hours must be 0 or >= 1")
 			}
-		case "responses_ws_max_sessions":
+		case "responses_ws_max_sessions",
+			"responses_ws_max_connections",
+			"responses_ws_max_connections_per_token":
 			if intVal < 0 {
-				return fmt.Errorf("responses_ws_max_sessions must be >= 0")
+				return fmt.Errorf("%s must be >= 0", key)
 			}
 		case "responses_ws_session_ttl_minutes":
 			if intVal < 1 {
 				return fmt.Errorf("responses_ws_session_ttl_minutes must be >= 1")
+			}
+		case "responses_ws_max_transcript_bytes":
+			if intVal < 1 {
+				return fmt.Errorf("responses_ws_max_transcript_bytes must be >= 1")
 			}
 		case "max_concurrency",
 			"max_body_bytes",

@@ -300,17 +300,13 @@ func newTestContext(t testing.TB, req *http.Request) (*gin.Context, *httptest.Re
 	return testutil.NewTestContext(t, req)
 }
 
-// withMaxBodyBytes 临时收紧请求体上限（含 Images 路径），用例结束自动还原。
-// 该上限是包级 atomic，用它的用例不能并行。
-func withMaxBodyBytes(t testing.TB, limit int) {
+// setMaxBodyBytesForTest 收紧单个 Server 及其尚未创建的 Responses 会话上限。
+func setMaxBodyBytesForTest(t testing.TB, srv *Server, limit int) {
 	t.Helper()
-	prevBody := maxBodyBytesLimit.Load()
-	prevImage := maxImageBodyBytesLimit.Load()
-	t.Cleanup(func() {
-		maxBodyBytesLimit.Store(prevBody)
-		maxImageBodyBytesLimit.Store(prevImage)
-	})
-	setMaxBodyBytesLimits(limit, limit)
+	srv.bodyLimits = newRequestBodyLimits(limit, limit)
+	if srv.responsesExecutionSessions != nil {
+		srv.responsesExecutionSessions.maxBodyBytes = int64(limit)
+	}
 }
 
 func newRecorder() *httptest.ResponseRecorder {

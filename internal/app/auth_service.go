@@ -401,6 +401,19 @@ func (s *AuthService) resolveAuthToken(token string) (tokenHash string, expiresA
 	return tokenHash, expiresAt, tokenID, exists
 }
 
+// IsTokenActive revalidates the identity attached to a long-lived connection.
+// Missing tokens fail closed: the absence of restriction maps must never turn a
+// revoked token into an unrestricted token.
+func (s *AuthService) IsTokenActive(tokenHash string) bool {
+	if s == nil || strings.TrimSpace(tokenHash) == "" {
+		return false
+	}
+	s.authTokensMux.RLock()
+	expiresAt, exists := s.authTokens[tokenHash]
+	s.authTokensMux.RUnlock()
+	return exists && (expiresAt <= 0 || time.Now().UnixMilli() <= expiresAt)
+}
+
 // RequireAPIAuth API 认证中间件（代理 API 使用）
 // [FIX] 2025-12: 添加过期时间校验，支持懒惰剔除过期令牌
 func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {

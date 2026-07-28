@@ -14,9 +14,11 @@ import (
 )
 
 const (
-	responsesExecutionSessionCleanupInterval = 15 * time.Minute
-	defaultResponsesExecutionSessionLimit    = 32
-	defaultResponsesExecutionSessionTTL      = 60 // minutes
+	responsesExecutionSessionCleanupInterval       = time.Minute
+	responsesExecutionSessionDetachedTransportTTL  = 5 * time.Minute
+	defaultResponsesExecutionSessionLimit          = 32
+	defaultResponsesExecutionSessionTTL            = 15 // minutes
+	defaultResponsesExecutionTranscriptBudgetBytes = 128 * 1024 * 1024
 )
 
 var errResponsesExecutionSessionCapacity = errors.New("responses execution session capacity exceeded")
@@ -35,11 +37,11 @@ type responsesExecutionSession struct {
 	transcriptBytes atomic.Int64
 }
 
-func newResponsesExecutionSession(now time.Time) *responsesExecutionSession {
+func newResponsesExecutionSession(now time.Time, maxBodyBytes int64) *responsesExecutionSession {
 	return &responsesExecutionSession{
 		turn:       make(chan struct{}, 1),
-		transcript: newResponsesWebsocketSession(),
-		upstream:   newCodexUpstreamWebsocketSession(),
+		transcript: newResponsesWebsocketSession(maxBodyBytes),
+		upstream:   newCodexUpstreamWebsocketSession(maxBodyBytes),
 		lastAccess: now,
 	}
 }
@@ -67,12 +69,22 @@ func (s *responsesExecutionSession) commit(request []byte, result responsesWebso
 }
 
 type responsesExecutionSessionStoreStats struct {
-	Sessions            int    `json:"sessions"`
-	ActiveAttachments   int    `json:"active_attachments"`
-	UpstreamConnections int    `json:"upstream_connections"`
-	Reconnects          uint64 `json:"reconnects"`
-	TranscriptBytes     int64  `json:"transcript_bytes"`
-	MaxSessions         int    `json:"max_sessions"`
+	Sessions                         int    `json:"sessions"`
+	ActiveAttachments                int    `json:"active_attachments"`
+	DownstreamConnections            int    `json:"downstream_connections"`
+	RejectedDownstreamConnections    uint64 `json:"rejected_downstream_connections"`
+	MaxDownstreamConnections         int    `json:"max_downstream_connections"`
+	MaxDownstreamConnectionsPerToken int    `json:"max_downstream_connections_per_token"`
+	UpstreamConnections              int    `json:"upstream_connections"`
+	UpstreamHandshakes               uint64 `json:"upstream_handshakes"`
+	UpstreamReuses                   uint64 `json:"upstream_reuses"`
+	UpstreamHeartbeatFailures        uint64 `json:"upstream_heartbeat_failures"`
+	UpstreamQueuedReadBytes          int64  `json:"upstream_queued_read_bytes"`
+	OldestUpstreamConnectionSeconds  int64  `json:"oldest_upstream_connection_seconds"`
+	Reconnects                       uint64 `json:"reconnects"`
+	TranscriptBytes                  int64  `json:"transcript_bytes"`
+	MaxTranscriptBytes               int64  `json:"max_transcript_bytes"`
+	MaxSessions                      int    `json:"max_sessions"`
 }
 
 // responsesExecutionSessionStore is a single-process, in-memory session map.
@@ -81,19 +93,26 @@ type responsesExecutionSessionStoreStats struct {
 // reconnect and resend the full transcript, which is the documented contract
 // of the WebSocket protocol this store backs.
 type responsesExecutionSessionStore struct {
-	mu              sync.Mutex
-	sessions        map[string]*responsesExecutionSession
-	configService   *ConfigService
-	ttlOverride     time.Duration // non-zero overrides configService (tests only)
-	maxSessions     int
-	nextTransientID uint64
+	mu                 sync.Mutex
+	sessions           map[string]*responsesExecutionSession
+	configService      *ConfigService
+	ttlOverride        time.Duration // non-zero overrides configService (tests only)
+	maxSessions        int
+	maxTranscriptBytes int64
+	maxBodyBytes       int64
+	nextTransientID    uint64
 }
 
-func newResponsesExecutionSessionStore(cfg *ConfigService) *responsesExecutionSessionStore {
+func newResponsesExecutionSessionStore(cfg *ConfigService, maxBodyBytes int64) *responsesExecutionSessionStore {
+	if maxBodyBytes <= 0 {
+		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
+	}
 	return &responsesExecutionSessionStore{
-		sessions:      make(map[string]*responsesExecutionSession),
-		configService: cfg,
-		maxSessions:   defaultResponsesExecutionSessionLimit,
+		sessions:           make(map[string]*responsesExecutionSession),
+		configService:      cfg,
+		maxSessions:        defaultResponsesExecutionSessionLimit,
+		maxTranscriptBytes: defaultResponsesExecutionTranscriptBudgetBytes,
+		maxBodyBytes:       maxBodyBytes,
 	}
 }
 
@@ -119,6 +138,33 @@ func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
 		}
 	}
 	return s.maxSessions
+}
+
+func (s *responsesExecutionSessionStore) transcriptBudgetLimit() int64 {
+	limit := s.maxTranscriptBytes
+	if s.configService != nil {
+		n := s.configService.GetInt("responses_ws_max_transcript_bytes", int(limit))
+		if n > 0 {
+			return int64(n)
+		}
+	}
+	return limit
+}
+
+func (s *responsesExecutionSessionStore) commit(
+	session *responsesExecutionSession,
+	request []byte,
+	result responsesWebsocketTurnResult,
+) {
+	if session == nil {
+		return
+	}
+	session.commit(request, result)
+
+	s.mu.Lock()
+	evicted, _ := s.trimTranscriptBudgetLocked()
+	s.mu.Unlock()
+	closeResponsesExecutionSessions(evicted)
 }
 
 // responsesExecutionSessionID returns only the explicit local execution-session
@@ -157,11 +203,21 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 
 	s.mu.Lock()
 	expired := s.removeExpiredLocked(now)
+	s.closeDetachedTransportsLocked(now)
 	var session *responsesExecutionSession
 	if stable {
 		session = s.sessions[key]
 	}
 	if session == nil {
+		var overBudget bool
+		var evicted []*responsesExecutionSession
+		evicted, overBudget = s.trimTranscriptBudgetLocked()
+		expired = append(expired, evicted...)
+		if overBudget {
+			s.mu.Unlock()
+			closeResponsesExecutionSessions(expired)
+			return nil, nil, errResponsesExecutionSessionCapacity
+		}
 		if limit := s.maxSessionsLimit(); limit > 0 && len(s.sessions) >= limit {
 			evicted := s.evictIdleLocked()
 			if evicted == nil {
@@ -175,7 +231,7 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 			s.nextTransientID++
 			key = "transient:" + strconv.FormatUint(s.nextTransientID, 10)
 		}
-		session = newResponsesExecutionSession(now)
+		session = newResponsesExecutionSession(now, s.maxBodyBytes)
 		session.storeKey = key
 		session.transient = !stable
 		s.sessions[key] = session
@@ -196,6 +252,8 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 				delete(s.sessions, session.storeKey)
 				released = append(released, session)
 			}
+			evicted, _ := s.trimTranscriptBudgetLocked()
+			released = append(released, evicted...)
 			s.mu.Unlock()
 			closeResponsesExecutionSessions(released)
 		})
@@ -205,17 +263,29 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	stats := responsesExecutionSessionStoreStats{
-		Sessions:    len(s.sessions),
-		MaxSessions: s.maxSessionsLimit(),
+		Sessions:           len(s.sessions),
+		MaxSessions:        s.maxSessionsLimit(),
+		MaxTranscriptBytes: s.transcriptBudgetLimit(),
 	}
 	for _, session := range s.sessions {
 		stats.ActiveAttachments += session.active
 		stats.TranscriptBytes += session.transcriptBytes.Load()
-		connected, reconnects := session.upstream.runtimeStats()
-		stats.Reconnects += reconnects
-		if connected {
+		upstream := session.upstream.runtimeStats()
+		stats.Reconnects += upstream.reconnects
+		stats.UpstreamHandshakes += upstream.handshakes
+		stats.UpstreamReuses += upstream.reuses
+		stats.UpstreamHeartbeatFailures += upstream.heartbeatFailures
+		stats.UpstreamQueuedReadBytes += upstream.queuedReadBytes
+		if upstream.connected {
 			stats.UpstreamConnections++
+			if !upstream.connectedAt.IsZero() {
+				age := int64(now.Sub(upstream.connectedAt).Seconds())
+				if age > stats.OldestUpstreamConnectionSeconds {
+					stats.OldestUpstreamConnectionSeconds = age
+				}
+			}
 		}
 	}
 	return stats
@@ -241,6 +311,29 @@ func (s *responsesExecutionSessionStore) evictIdleLocked() *responsesExecutionSe
 	return victim
 }
 
+func (s *responsesExecutionSessionStore) trimTranscriptBudgetLocked() ([]*responsesExecutionSession, bool) {
+	limit := s.transcriptBudgetLimit()
+	used := s.transcriptBytesLocked()
+	var evicted []*responsesExecutionSession
+	for used > limit {
+		victim := s.evictIdleLocked()
+		if victim == nil {
+			return evicted, true
+		}
+		used -= victim.transcriptBytes.Load()
+		evicted = append(evicted, victim)
+	}
+	return evicted, false
+}
+
+func (s *responsesExecutionSessionStore) transcriptBytesLocked() int64 {
+	var total int64
+	for _, session := range s.sessions {
+		total += session.transcriptBytes.Load()
+	}
+	return total
+}
+
 func (s *responsesExecutionSessionStore) removeExpiredLocked(now time.Time) []*responsesExecutionSession {
 	ttl := s.sessionTTL()
 	var expired []*responsesExecutionSession
@@ -253,9 +346,21 @@ func (s *responsesExecutionSessionStore) removeExpiredLocked(now time.Time) []*r
 	return expired
 }
 
+func (s *responsesExecutionSessionStore) closeDetachedTransportsLocked(now time.Time) {
+	for _, session := range s.sessions {
+		if session.active != 0 || now.Sub(session.lastAccess) < responsesExecutionSessionDetachedTransportTTL {
+			continue
+		}
+		session.upstream.CloseTransport()
+	}
+}
+
 func (s *responsesExecutionSessionStore) cleanup(now time.Time) {
 	s.mu.Lock()
 	expired := s.removeExpiredLocked(now)
+	s.closeDetachedTransportsLocked(now)
+	evicted, _ := s.trimTranscriptBudgetLocked()
+	expired = append(expired, evicted...)
 	s.mu.Unlock()
 	closeResponsesExecutionSessions(expired)
 }

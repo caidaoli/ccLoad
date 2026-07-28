@@ -27,6 +27,13 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "int_auto_update_interval_ok_min", key: "auto_update_interval_hours", valueType: "int", value: "1", wantErr: false},
 		{name: "int_auto_update_interval_reject_fraction", key: "auto_update_interval_hours", valueType: "int", value: "0.5", wantErr: true},
 		{name: "int_auto_update_interval_reject_negative", key: "auto_update_interval_hours", valueType: "int", value: "-1", wantErr: true},
+		{name: "int_responses_ws_max_connections_ok_default", key: "responses_ws_max_connections", valueType: "int", value: "0", wantErr: false},
+		{name: "int_responses_ws_max_connections_ok_positive", key: "responses_ws_max_connections", valueType: "int", value: "64", wantErr: false},
+		{name: "int_responses_ws_max_connections_reject_negative", key: "responses_ws_max_connections", valueType: "int", value: "-1", wantErr: true},
+		{name: "int_responses_ws_max_connections_per_token_ok_default", key: "responses_ws_max_connections_per_token", valueType: "int", value: "0", wantErr: false},
+		{name: "int_responses_ws_max_connections_per_token_reject_negative", key: "responses_ws_max_connections_per_token", valueType: "int", value: "-1", wantErr: true},
+		{name: "int_responses_ws_max_transcript_bytes_ok", key: "responses_ws_max_transcript_bytes", valueType: "int", value: "134217728", wantErr: false},
+		{name: "int_responses_ws_max_transcript_bytes_reject_zero", key: "responses_ws_max_transcript_bytes", valueType: "int", value: "0", wantErr: true},
 
 		{name: "int_log_retention_days_ok_disabled", key: "log_retention_days", valueType: "int", value: "-1", wantErr: false},
 		{name: "int_log_retention_days_reject_0", key: "log_retention_days", valueType: "int", value: "0", wantErr: true},

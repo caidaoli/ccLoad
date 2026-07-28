@@ -1,0 +1,188 @@
+const assert = require('node:assert/strict');
+const test = require('node:test');
+
+const confirmMessage = '保存任意设置后,服务会在约 2 秒后自动重启以生效，是否继续';
+
+function flushAsyncWork() {
+  return new Promise((resolve) => setImmediate(resolve));
+}
+
+async function loadSettingsPage(t, settings, inputValues) {
+  const clickListeners = [];
+  const saveButton = {
+    dataset: {},
+    addEventListener(type, listener) {
+      if (type === 'click') clickListeners.push(listener);
+    },
+    click() {
+      for (const listener of clickListeners) listener();
+    }
+  };
+  const settingsBody = {
+    dataset: {},
+    innerHTML: '',
+    addEventListener() {},
+    appendChild() {}
+  };
+  const inputs = {};
+  const elements = new Map([
+    ['save-all-btn', saveButton],
+    ['settings-tbody', settingsBody]
+  ]);
+  for (const [key, value] of Object.entries(inputValues)) {
+    const row = { style: {} };
+    const input = {
+      value,
+      closest() {
+        return row;
+      }
+    };
+    inputs[key] = input;
+    elements.set(key, input);
+  }
+
+  let bootstrap;
+  let allowSave = false;
+  const prompts = [];
+  const notifications = [];
+  const requests = [];
+
+  global.window = {
+    t(key) {
+      if (key === 'settings.msg.confirmSave') return confirmMessage;
+      return key;
+    },
+    showNotification(message, type) {
+      notifications.push({ message, type });
+    },
+    initPageBootstrap(config) {
+      bootstrap = config;
+    }
+  };
+  global.document = {
+    activeElement: null,
+    documentElement: { lang: 'zh-CN' },
+    getElementById(id) {
+      return elements.get(id) || null;
+    },
+    querySelectorAll() {
+      return [];
+    }
+  };
+  global.TemplateEngine = { render: () => null };
+  global.escapeHtml = (value) => String(value);
+  global.showError = (error) => {
+    throw error;
+  };
+  global.showSuccess = () => {};
+  global.confirm = (message) => {
+    prompts.push(message);
+    return allowSave;
+  };
+  global.fetchDataWithAuth = async (url, options) => {
+    requests.push({ url, options });
+    if (!options) return settings;
+    return { message: 'saved' };
+  };
+
+  const settingsModule = require.resolve('./settings.js');
+  t.after(() => {
+    delete require.cache[settingsModule];
+    for (const name of [
+      'window',
+      'document',
+      'TemplateEngine',
+      'escapeHtml',
+      'showError',
+      'showSuccess',
+      'confirm',
+      'fetchDataWithAuth'
+    ]) {
+      delete global[name];
+    }
+  });
+
+  require(settingsModule);
+  bootstrap.run();
+  await flushAsyncWork();
+
+  return {
+    inputs,
+    notifications,
+    prompts,
+    requests,
+    saveButton,
+    setAllowSave(value) {
+      allowSave = value;
+    }
+  };
+}
+
+function saveRequests(page) {
+  return page.requests.filter(({ options }) => options?.method === 'POST');
+}
+
+test('保存设置须经用户确认', async (t) => {
+  const page = await loadSettingsPage(t, [{
+    key: 'sample_setting',
+    value: 'old-value',
+    value_type: 'string',
+    description: ''
+  }], {
+    sample_setting: 'new-value'
+  });
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.deepEqual(page.prompts, [confirmMessage]);
+  assert.equal(saveRequests(page).length, 0);
+  assert.equal(page.notifications.length, 0);
+
+  page.setAllowSave(true);
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.deepEqual(page.prompts, [confirmMessage, confirmMessage]);
+  assert.equal(saveRequests(page).length, 1);
+});
+
+test('字节型设置以 M 编辑并以字节保存', async (t) => {
+  const transcriptKey = 'responses_ws_max_transcript_bytes';
+  const bodyKey = 'max_body_bytes';
+  const imageBodyKey = 'max_image_body_bytes';
+  const page = await loadSettingsPage(t, [
+    { key: transcriptKey, value: '134217728', value_type: 'int', description: '' },
+    { key: bodyKey, value: '10485760', value_type: 'int', description: '' },
+    { key: imageBodyKey, value: '20971520', value_type: 'int', description: '' }
+  ], {
+    [transcriptKey]: '128',
+    [bodyKey]: '10',
+    [imageBodyKey]: '20'
+  });
+  page.setAllowSave(true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.deepEqual(page.prompts, []);
+  assert.deepEqual(page.notifications, [{ message: 'settings.msg.noChanges', type: 'info' }]);
+  assert.equal(saveRequests(page).length, 0);
+
+  page.inputs[transcriptKey].value = '256';
+  page.inputs[bodyKey].value = '12';
+  page.inputs[imageBodyKey].value = '24';
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  const requests = saveRequests(page);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    [transcriptKey]: '268435456',
+    [bodyKey]: '12582912',
+    [imageBodyKey]: '25165824'
+  });
+  assert.equal(page.inputs[transcriptKey].value, '256');
+  assert.equal(page.inputs[bodyKey].value, '12');
+  assert.equal(page.inputs[imageBodyKey].value, '24');
+});

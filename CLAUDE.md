@@ -46,6 +46,8 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 | 加 Admin API | `admin_types.go` 定类型 → `admin_<feature>.go` 实现 → `server.go:SetupRoutes` 注册 |
 | 数据库 | Schema 启动自动 `migrate.go`;事务 `(*SQLStore).WithTransaction`;改后失效 `InvalidateChannelListCache`/`InvalidateAPIKeysCache` |
 
+Responses WebSocket 默认限制：下游连接全局 64、单 Token 16；上游每 45 秒发送 Ping，连续 5 分钟未收到任何帧/Pong 判定失活。下游全部断开满 5 分钟后由每分钟清理器关闭上游物理连接（实际约 5–6 分钟），逻辑会话与 transcript 仍按 `responses_ws_session_ttl_minutes`（新安装/重置默认 15 分钟，小内存机器可设 10；升级不改已有值）保留；进程级 transcript payload 预算由 `responses_ws_max_transcript_bytes` 控制（默认 128 MiB），超额先逐出空闲 LRU，若只剩活跃会话则拒绝新会话。`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload，不是 Go 堆占用。下一轮会优先原渠道/Key/URL 并按需重连。
+
 ## 故障切换(`util/classifier.go`)
 
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却

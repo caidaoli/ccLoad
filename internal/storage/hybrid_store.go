@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/model"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/util"
 )
 
 // HybridStore 混合存储（MySQL 主 + SQLite 本地缓存）
@@ -426,6 +427,11 @@ func (h *HybridStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) err
 }
 
 // === Cooldown Management ===
+
+func (h *HybridStore) ConfigureCooldown(settings util.CooldownSettings) {
+	h.mysql.ConfigureCooldown(settings)
+	h.sqlite.ConfigureCooldown(settings)
+}
 
 func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]time.Time, error) {
 	return h.sqlite.GetAllChannelCooldowns(ctx)

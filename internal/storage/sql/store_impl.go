@@ -6,9 +6,11 @@ import (
 	"fmt"
 	"log"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 )
 
 // SQLStore 通用SQL存储实现
@@ -23,6 +25,9 @@ type SQLStore struct {
 	// 删除渠道后，异步日志队列里可能还有旧渠道日志等待刷盘。
 	// tombstone 让迟到日志在存储层被丢弃，避免删除后又被插回。
 	deletedChannels sync.Map // map[int64]struct{}
+
+	// 冷却策略归属存储实例，避免多个 Server 并行构造时互相覆盖。
+	cooldownPolicy atomic.Pointer[util.CooldownPolicy]
 }
 
 func (s *SQLStore) markChannelDeleted(id int64) {
@@ -113,10 +118,12 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 // db: 数据库连接（由调用方初始化）
 // driverName: "sqlite" | "mysql" | "postgres"
 func NewSQLStore(db *sql.DB, driverName string) *SQLStore {
-	return &SQLStore{
+	store := &SQLStore{
 		db:         db,
 		driverName: driverName,
 	}
+	store.ConfigureCooldown(util.CooldownSettings{})
+	return store
 }
 
 // DriverName 返回底层驱动名
