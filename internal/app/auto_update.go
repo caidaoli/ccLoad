@@ -54,8 +54,11 @@ func (s *Server) startAutoUpdateLoop(interval time.Duration) {
 }
 
 func (s *Server) activeRequestCount() int {
-	if s == nil || s.activeRequests == nil {
+	if s == nil {
 		return 0
 	}
-	return s.activeRequests.Count()
+	// 自动更新关心的是所有已经进入代理处理流程的客户端请求，包含仍在等待
+	// Responses 会话锁的请求。activeRequests 只表示已经开始的上游尝试，不能
+	// 再拿来判断服务是否空闲。
+	return len(s.concurrencySem)
 }

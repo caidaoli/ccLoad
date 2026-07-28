@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -29,6 +30,36 @@ func dialResponsesWebsocketWithToken(t testing.TB, handler http.Handler, token s
 	return dialResponsesWebsocketAtPath(t, handler, token, "/v1/responses")
 }
 
+func dialResponsesWebsocketWithSessionID(t testing.TB, handler http.Handler, sessionID string) *websocket.Conn {
+	return dialResponsesWebsocketWithTokenAndSessionID(t, handler, "test-api-key", sessionID)
+}
+
+func dialResponsesWebsocketWithTokenAndSessionID(
+	t testing.TB,
+	handler http.Handler,
+	token string,
+	sessionID string,
+) *websocket.Conn {
+	return dialResponsesWebsocketWithTokenAndHeaders(
+		t,
+		handler,
+		token,
+		http.Header{"Session-Id": []string{sessionID}},
+	)
+}
+
+func dialResponsesWebsocketWithTokenAndHeaders(
+	t testing.TB,
+	handler http.Handler,
+	token string,
+	extraHeaders http.Header,
+) *websocket.Conn {
+	t.Helper()
+	appServer := httptest.NewServer(handler)
+	t.Cleanup(appServer.Close)
+	return dialResponsesWebsocketAtURL(t, appServer.URL, token, "/v1/responses", extraHeaders)
+}
+
 // dialResponsesWebsocketAtPath dials a Responses WebSocket at an arbitrary
 // upgrade path, so tests can cover route aliases (e.g. the Codex CLI direct
 // route /backend-api/codex/responses) alongside the canonical /v1/responses.
@@ -36,7 +67,7 @@ func dialResponsesWebsocketAtPath(t testing.TB, handler http.Handler, token, pat
 	t.Helper()
 	appServer := httptest.NewServer(handler)
 	t.Cleanup(appServer.Close)
-	return dialResponsesWebsocketAtURL(t, appServer.URL, token, path, "")
+	return dialResponsesWebsocketAtURL(t, appServer.URL, token, path, nil)
 }
 
 func dialResponsesWebsocketAtURL(
@@ -44,12 +75,14 @@ func dialResponsesWebsocketAtURL(
 	serverURL string,
 	token string,
 	path string,
-	sessionID string,
+	extraHeaders http.Header,
 ) *websocket.Conn {
 	t.Helper()
 	headers := http.Header{"Authorization": []string{"Bearer " + token}}
-	if sessionID != "" {
-		headers.Set("Session-Id", sessionID)
+	for name, values := range extraHeaders {
+		for _, value := range values {
+			headers.Add(name, value)
+		}
 	}
 	wsURL := "ws" + strings.TrimPrefix(serverURL, "http") + path
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
@@ -1380,12 +1413,12 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 		name: "resumable-native", channelType: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	first := dialResponsesWebsocket(t, env.engine)
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "resume-me")
 	if err := first.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set first resumable deadline: %v", err)
 	}
 	if err := first.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "resume-me",
+		"type": "response.create", "model": "gpt-test",
 		"input": []any{map[string]any{"role": "user", "content": "one"}},
 	}); err != nil {
 		t.Fatalf("write first resumable request: %v", err)
@@ -1393,12 +1426,12 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 	readWebsocketUntilType(t, first, "response.completed")
 	_ = first.Close()
 
-	second := dialResponsesWebsocket(t, env.engine)
+	second := dialResponsesWebsocketWithSessionID(t, env.engine, "resume-me")
 	if err := second.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set second resumable deadline: %v", err)
 	}
 	if err := second.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "resume-me",
+		"type": "response.create", "model": "gpt-test",
 		"previous_response_id": "resp-resume-1",
 		"input":                []any{map[string]any{"role": "user", "content": "two"}},
 	}); err != nil {
@@ -1416,6 +1449,83 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 	}
 }
 
+func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
+	tests := []struct {
+		name         string
+		bodyHint     map[string]any
+		extraHeaders http.Header
+	}{
+		{
+			name:     "shared prompt_cache_key",
+			bodyHint: map[string]any{"prompt_cache_key": "shared-cache-bucket"},
+		},
+		{
+			name:         "shared Session_id",
+			bodyHint:     map[string]any{},
+			extraHeaders: http.Header{"Session_id": []string{"shared-cache-session"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			requests := make(chan map[string]any, 2)
+			var calls atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				turn := calls.Add(1)
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Errorf("decode independent websocket request %d: %v", turn, err)
+					return
+				}
+				requests <- request
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-independent-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer-%d\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", turn, turn)
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "independent-websockets", channelType: "codex", models: "gpt-test", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+			env.server.client = upstream.Client()
+
+			for _, prompt := range []string{"one", "independent two"} {
+				downstream := dialResponsesWebsocketWithTokenAndHeaders(
+					t,
+					env.engine,
+					"test-api-key",
+					tt.extraHeaders,
+				)
+				if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+					t.Fatalf("set independent websocket deadline: %v", err)
+				}
+				payload := map[string]any{
+					"type": "response.create", "model": "gpt-test",
+					"input": []any{map[string]any{"role": "user", "content": prompt}},
+				}
+				for key, value := range tt.bodyHint {
+					payload[key] = value
+				}
+				if err := downstream.WriteJSON(payload); err != nil {
+					t.Fatalf("write independent websocket request: %v", err)
+				}
+				readWebsocketUntilType(t, downstream, "response.completed")
+				_ = downstream.Close()
+			}
+
+			<-requests
+			second := <-requests
+			input, ok := second["input"].([]any)
+			if !ok || len(input) != 1 {
+				t.Fatalf("independent websocket request inherited transcript: %#v", second["input"])
+			}
+			message, ok := input[0].(map[string]any)
+			if !ok || message["content"] != "independent two" {
+				t.Fatalf("independent websocket input=%#v, want only second prompt", input)
+			}
+		})
+	}
+}
+
 func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	var calls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1427,12 +1537,12 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 		name: "expiring-session", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.responsesExecutionSessions.ttlOverride = 20 * time.Millisecond
-	first := dialResponsesWebsocket(t, env.engine)
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring first deadline: %v", err)
 	}
 	if err := first.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "expire-me",
+		"type": "response.create", "model": "gpt-test",
 		"input": []any{map[string]any{"role": "user", "content": "one"}},
 	}); err != nil {
 		t.Fatalf("write expiring first request: %v", err)
@@ -1441,12 +1551,12 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	_ = first.Close()
 	time.Sleep(80 * time.Millisecond)
 
-	second := dialResponsesWebsocket(t, env.engine)
+	second := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring second deadline: %v", err)
 	}
 	if err := second.WriteJSON(map[string]any{
-		"type": "response.append", "prompt_cache_key": "expire-me",
+		"type":                 "response.append",
 		"previous_response_id": "resp-expire",
 		"input":                []any{map[string]any{"role": "user", "content": "two"}},
 	}); err != nil {
@@ -1480,24 +1590,24 @@ func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
 		name: "isolated-session", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	injectAPIToken(env.server.authService, "other-api-key", 0, 2)
-	first := dialResponsesWebsocketWithToken(t, env.engine, "test-api-key")
+	first := dialResponsesWebsocketWithTokenAndSessionID(t, env.engine, "test-api-key", "shared-name")
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set isolated first deadline: %v", err)
 	}
 	if err := first.WriteJSON(map[string]any{
-		"type": "response.create", "model": "gpt-test", "prompt_cache_key": "shared-name",
+		"type": "response.create", "model": "gpt-test",
 		"input": []any{map[string]any{"role": "user", "content": "private"}},
 	}); err != nil {
 		t.Fatalf("write isolated first request: %v", err)
 	}
 	readWebsocketUntilType(t, first, "response.completed")
 
-	second := dialResponsesWebsocketWithToken(t, env.engine, "other-api-key")
+	second := dialResponsesWebsocketWithTokenAndSessionID(t, env.engine, "other-api-key", "shared-name")
 	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set isolated second deadline: %v", err)
 	}
 	if err := second.WriteJSON(map[string]any{
-		"type": "response.append", "prompt_cache_key": "shared-name",
+		"type":                 "response.append",
 		"previous_response_id": "resp-private",
 		"input":                []any{map[string]any{"role": "user", "content": "steal"}},
 	}); err != nil {
@@ -1567,6 +1677,202 @@ func TestHTTPResponsesWithoutExistingUpstreamWebsocketUsesHTTP(t *testing.T) {
 	}
 }
 
+func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) {
+	tests := []struct {
+		name       string
+		body       map[string]any
+		headerName string
+		header     string
+	}{
+		{
+			name: "shared prompt_cache_key",
+			body: map[string]any{"prompt_cache_key": "shared-cache-bucket"},
+		},
+		{
+			name:       "shared Session_id",
+			body:       map[string]any{},
+			headerName: "Session_id",
+			header:     "shared-cache-session",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			arrived := make(chan struct{}, 2)
+			release := make(chan struct{})
+			var releaseOnce sync.Once
+			releaseUpstream := func() { releaseOnce.Do(func() { close(release) }) }
+			t.Cleanup(releaseUpstream)
+
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				arrived <- struct{}{}
+				<-release
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-done\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "parallel-http", channelType: "codex", models: "gpt-test", priority: 100,
+			}}, map[int]string{0: upstream.URL})
+			env.server.client = upstream.Client()
+
+			responses := make(chan *httptest.ResponseRecorder, 2)
+			for index := 0; index < 2; index++ {
+				payload := map[string]any{
+					"model": "gpt-test", "stream": true,
+					"input": []any{map[string]any{"role": "user", "content": fmt.Sprintf("request-%d", index)}},
+				}
+				for key, value := range tt.body {
+					payload[key] = value
+				}
+				body, err := json.Marshal(payload)
+				if err != nil {
+					t.Fatalf("marshal request %d: %v", index, err)
+				}
+				req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+				req.Header.Set("Content-Type", "application/json")
+				req.Header.Set("Authorization", "Bearer test-api-key")
+				if tt.headerName != "" {
+					req.Header.Set(tt.headerName, tt.header)
+				}
+				recorder := httptest.NewRecorder()
+				go func() {
+					env.engine.ServeHTTP(recorder, req)
+					responses <- recorder
+				}()
+			}
+
+			arrivals := 0
+			timer := time.NewTimer(time.Second)
+			for arrivals < 2 {
+				select {
+				case <-arrived:
+					arrivals++
+				case <-timer.C:
+					releaseUpstream()
+					for completed := 0; completed < 2; completed++ {
+						select {
+						case <-responses:
+						case <-time.After(2 * time.Second):
+						}
+					}
+					t.Fatalf("upstream arrivals before release=%d, want 2; requests were serialized", arrivals)
+				}
+			}
+			if !timer.Stop() {
+				<-timer.C
+			}
+			releaseUpstream()
+
+			for completed := 0; completed < 2; completed++ {
+				select {
+				case recorder := <-responses:
+					if recorder.Code != http.StatusOK {
+						t.Fatalf("HTTP response status=%d body=%s", recorder.Code, recorder.Body.String())
+					}
+				case <-time.After(2 * time.Second):
+					t.Fatal("parallel HTTP response did not finish")
+				}
+			}
+		})
+	}
+}
+
+func TestHTTPResponsesReportsActiveUpstreamLifecycle(t *testing.T) {
+	requestArrived := make(chan struct{})
+	allowResponse := make(chan struct{}, 1)
+	responseFlushed := make(chan struct{})
+	finishResponse := make(chan struct{}, 1)
+	defer func() {
+		select {
+		case allowResponse <- struct{}{}:
+		default:
+		}
+		select {
+		case finishResponse <- struct{}{}:
+		default:
+		}
+	}()
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		close(requestArrived)
+		<-allowResponse
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		w.(http.Flusher).Flush()
+		close(responseFlushed)
+		<-finishResponse
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-done\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "active-upstream", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	env.server.client = upstream.Client()
+
+	body, err := json.Marshal(map[string]any{
+		"model": "gpt-test", "stream": true,
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test-api-key")
+	recorder := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		env.engine.ServeHTTP(recorder, req)
+		close(done)
+	}()
+
+	select {
+	case <-requestArrived:
+	case <-time.After(time.Second):
+		t.Fatal("request did not reach upstream")
+	}
+	active := env.server.activeRequests.List()
+	if len(active) != 1 {
+		t.Fatalf("active upstream requests=%d, want 1", len(active))
+	}
+	if active[0].UpstreamStatus != activeRequestStatusRequesting {
+		t.Fatalf("upstream status before response=%q, want %q", active[0].UpstreamStatus, activeRequestStatusRequesting)
+	}
+	if active[0].ChannelName != "active-upstream" || active[0].BaseURL != upstream.URL {
+		t.Fatalf("active upstream route=%+v", active[0])
+	}
+
+	allowResponse <- struct{}{}
+	select {
+	case <-responseFlushed:
+	case <-time.After(time.Second):
+		t.Fatal("upstream response was not flushed")
+	}
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		active = env.server.activeRequests.List()
+		if len(active) == 1 && active[0].UpstreamStatus == activeRequestStatusReceiving && active[0].BytesReceived > 0 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if len(active) != 1 || active[0].UpstreamStatus != activeRequestStatusReceiving || active[0].BytesReceived == 0 {
+		t.Fatalf("active upstream did not enter receiving state: %+v", active)
+	}
+
+	finishResponse <- struct{}{}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("HTTP response did not finish")
+	}
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("HTTP response status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testing.T) {
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -1601,7 +1907,7 @@ func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testi
 		name: "cross-transport", channelType: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	downstreamWS := dialResponsesWebsocket(t, env.engine)
+	downstreamWS := dialResponsesWebsocketWithSessionID(t, env.engine, "cross-mode")
 	if err := downstreamWS.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set cross-transport WS deadline: %v", err)
 	}
@@ -1615,10 +1921,10 @@ func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testi
 	_ = downstreamWS.Close()
 
 	downstreamHTTP := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-		"model": "gpt-test", "stream": true, "prompt_cache_key": "cross-mode",
+		"model": "gpt-test", "stream": true,
 		"previous_response_id": "resp-cross-1",
 		"input":                []any{map[string]any{"role": "user", "content": "two"}},
-	}, nil)
+	}, map[string]string{"Session-Id": "cross-mode"})
 	if downstreamHTTP.Code != http.StatusOK || !strings.Contains(downstreamHTTP.Body.String(), "resp-cross-2") {
 		t.Fatalf("cross-transport HTTP status=%d body=%s", downstreamHTTP.Code, downstreamHTTP.Body.String())
 	}
@@ -2545,7 +2851,11 @@ func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *te
 	defer appServer.Close()
 
 	first := dialResponsesWebsocketAtURL(
-		t, appServer.URL, "test-api-key", "/v1/responses", "retryable-replay",
+		t,
+		appServer.URL,
+		"test-api-key",
+		"/v1/responses",
+		http.Header{"Session-Id": []string{"retryable-replay"}},
 	)
 	if err := first.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("set first websocket deadline: %v", err)
@@ -2589,7 +2899,11 @@ func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *te
 	}
 
 	reconnected := dialResponsesWebsocketAtURL(
-		t, appServer.URL, "test-api-key", "/v1/responses", "retryable-replay",
+		t,
+		appServer.URL,
+		"test-api-key",
+		"/v1/responses",
+		http.Header{"Session-Id": []string{"retryable-replay"}},
 	)
 	defer func() { _ = reconnected.Close() }()
 	if err := reconnected.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {

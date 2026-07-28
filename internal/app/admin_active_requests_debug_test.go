@@ -18,7 +18,7 @@ func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 
 	srv := newInMemoryServer(t)
 	m := newActiveRequestManager()
-	id := m.Register(time.Now(), "claude-3-opus", "1.2.3.4", true)
+	id := beginTestActiveRequest(m, time.Now(), "claude-3-opus", "1.2.3.4", true)
 	m.SetDebugCapture(id, &debugCapture{})
 
 	srv.activeRequests = m
@@ -122,7 +122,7 @@ func TestHandleGetActiveRequestDebugLog_ReturnsLiveSnapshot(t *testing.T) {
 	}
 
 	m := newActiveRequestManager()
-	id := m.Register(time.Now(), "claude-3-opus", "1.2.3.4", true)
+	id := beginTestActiveRequest(m, time.Now(), "claude-3-opus", "1.2.3.4", true)
 	m.SetDebugCapture(id, dc)
 	srv.activeRequests = m
 

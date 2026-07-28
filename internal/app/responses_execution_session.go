@@ -11,8 +11,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/tidwall/gjson"
 )
 
 const (
@@ -123,22 +121,20 @@ func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
 	return s.maxSessions
 }
 
-func responsesExecutionSessionHint(header http.Header, payload []byte) string {
-	for _, name := range []string{"Session_id", "Session-Id", "X-Session-Id", "X-Claude-Code-Session-Id"} {
-		if hint := strings.TrimSpace(header.Get(name)); hint != "" {
-			return hint
-		}
-	}
-	return strings.TrimSpace(gjson.GetBytes(payload, "prompt_cache_key").String())
+// responsesExecutionSessionID returns only the explicit local execution-session
+// identity. Session_id and prompt_cache_key are upstream cache-routing signals;
+// they must never own mutable transcript state or the per-session turn lock.
+func responsesExecutionSessionID(header http.Header) string {
+	return strings.TrimSpace(header.Get("Session-Id"))
 }
 
-func responsesExecutionSessionKey(subject, hint string) string {
-	sum := sha256.Sum256([]byte(subject + "\x00" + hint))
+func responsesExecutionSessionKey(subject, sessionID string) string {
+	sum := sha256.Sum256([]byte(subject + "\x00" + sessionID))
 	return hex.EncodeToString(sum[:])
 }
 
 // acquire returns a private transient session unless the client supplied an
-// explicit stable hint. This prevents unrelated requests sharing a model or IP
+// explicit stable Session-Id. This prevents unrelated requests sharing a model or IP
 // from ever sharing conversation state.
 //
 // Capacity is one flat ceiling shared by every subject — single instance, no
@@ -149,14 +145,14 @@ func responsesExecutionSessionKey(subject, hint string) string {
 // one subject's 32 idle sessions would starve every other subject for a full
 // TTL. Live sessions (active > 0) are never evicted — when all sessions are
 // actively attached, acquire rejects with a clear capacity error.
-func (s *responsesExecutionSessionStore) acquire(subject, hint string) (*responsesExecutionSession, func(), error) {
+func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*responsesExecutionSession, func(), error) {
 	now := time.Now()
 	subject = strings.TrimSpace(subject)
-	hint = strings.TrimSpace(hint)
-	stable := subject != "" && hint != ""
+	sessionID = strings.TrimSpace(sessionID)
+	stable := subject != "" && sessionID != ""
 	key := ""
 	if stable {
-		key = responsesExecutionSessionKey(subject, hint)
+		key = responsesExecutionSessionKey(subject, sessionID)
 	}
 
 	s.mu.Lock()

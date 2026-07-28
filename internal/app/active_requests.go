@@ -11,6 +11,12 @@ import (
 	"ccLoad/internal/util"
 )
 
+const (
+	activeRequestStatusRequesting = "requesting"
+	activeRequestStatusReceiving  = "receiving"
+	activeRequestStatusRetrying   = "retrying"
+)
+
 // ActiveRequest 表示一个进行中的请求
 type ActiveRequest struct {
 	ID                  int64   `json:"id"`
@@ -30,6 +36,7 @@ type ActiveRequest struct {
 	UpstreamWebsocket   bool    `json:"upstream_websocket,omitempty"`     // 实际上游请求是否使用WebSocket
 	DebugLogAvailable   bool    `json:"debug_log_available,omitempty"`    // 运行中请求是否已有可读取的调试快照
 	ThinkingEffort      string  `json:"thinking_effort,omitempty"`
+	UpstreamStatus      string  `json:"upstream_status"`
 }
 
 type activeRequest struct {
@@ -48,18 +55,26 @@ type activeRequest struct {
 	CostMultiplier    float64 // 渠道成本倍率
 	UpstreamWebsocket bool
 	ThinkingEffort    string
+	UpstreamStatus    string
 	debugCapture      *debugCapture
 
 	bytesCounter            atomic.Int64 // 上游已返回的字节数（原子累加）
 	clientFirstByteTimeUsec atomic.Int64 // 客户端侧首字节响应时间（微秒），CAS保证只写一次，0表示未设置
 }
 
-func (m *activeRequestManager) SetThinkingEffort(id int64, thinkingEffort string) {
-	m.mu.Lock()
-	if req, ok := m.requests[id]; ok {
-		req.ThinkingEffort = normalizeThinkingEffort(thinkingEffort)
-	}
-	m.mu.Unlock()
+type activeRequestAttempt struct {
+	StartTime      time.Time
+	Model          string
+	ClientIP       string
+	Streaming      bool
+	ChannelID      int64
+	ChannelName    string
+	ChannelType    string
+	APIKey         string
+	TokenID        int64
+	BaseURL        string
+	CostMultiplier float64
+	ThinkingEffort string
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
@@ -75,35 +90,48 @@ func newActiveRequestManager() *activeRequestManager {
 	}
 }
 
-// Register 注册一个新的活跃请求，返回请求ID（用于后续移除）
-func (m *activeRequestManager) Register(startTime time.Time, model, clientIP string, streaming bool) int64 {
-	id := m.nextID.Add(1)
-	req := &activeRequest{
-		ID:        id,
-		Model:     model,
-		ClientIP:  clientIP,
-		StartTime: startTime.UnixMilli(),
-		Streaming: streaming,
-	}
+// BeginAttempt 在上游渠道、Key 和 URL 均已确定后登记当前尝试。
+// id=0 表示首次尝试；已有 id 表示故障切换后的重试。
+func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttempt) int64 {
 	m.mu.Lock()
-	m.requests[id] = req
-	m.mu.Unlock()
+	defer m.mu.Unlock()
+
+	req := m.requests[id]
+	if req == nil {
+		id = m.nextID.Add(1)
+		req = &activeRequest{ID: id, UpstreamStatus: activeRequestStatusRequesting}
+		m.requests[id] = req
+	} else {
+		req.UpstreamStatus = activeRequestStatusRetrying
+	}
+
+	req.Model = attempt.Model
+	req.ClientIP = attempt.ClientIP
+	req.StartTime = attempt.StartTime.UnixMilli()
+	req.Streaming = attempt.Streaming
+	req.ChannelID = attempt.ChannelID
+	req.ChannelName = attempt.ChannelName
+	req.ChannelType = attempt.ChannelType
+	req.APIKeyUsed = util.MaskAPIKey(attempt.APIKey)
+	req.TokenID = attempt.TokenID
+	req.BaseURL = attempt.BaseURL
+	req.CostMultiplier = attempt.CostMultiplier
+	req.UpstreamWebsocket = false
+	req.ThinkingEffort = normalizeThinkingEffort(attempt.ThinkingEffort)
+	req.debugCapture = nil
+	req.clientFirstByteTimeUsec.Store(0)
+	req.bytesCounter.Store(0)
 	return id
 }
 
-// Update 更新活跃请求的渠道信息（在选择渠道/key后调用）
-// 每次切换渠道/Key 时重置首字节计时和已接收字节，避免前次失败尝试的残留数据误导前端显示
-func (m *activeRequestManager) Update(id int64, channelID int64, channelName, channelType, apiKey string, tokenID int64, costMultiplier float64) {
+// Retry 标记同一渠道、Key 和 URL 上的内部重试。
+func (m *activeRequestManager) Retry(id int64) {
 	m.mu.Lock()
-	if req, ok := m.requests[id]; ok {
-		req.ChannelID = channelID
-		req.ChannelName = channelName
-		req.ChannelType = channelType
-		req.APIKeyUsed = util.MaskAPIKey(apiKey)
-		req.TokenID = tokenID
-		req.CostMultiplier = costMultiplier
-		req.UpstreamWebsocket = false
+	if req := m.requests[id]; req != nil {
 		req.StartTime = time.Now().UnixMilli()
+		req.UpstreamStatus = activeRequestStatusRetrying
+		req.UpstreamWebsocket = false
+		req.debugCapture = nil
 		req.clientFirstByteTimeUsec.Store(0)
 		req.bytesCounter.Store(0)
 	}
@@ -115,15 +143,6 @@ func (m *activeRequestManager) SetUpstreamWebsocket(id int64, upstreamWebsocket 
 	m.mu.Lock()
 	if req, ok := m.requests[id]; ok {
 		req.UpstreamWebsocket = upstreamWebsocket
-	}
-	m.mu.Unlock()
-}
-
-// SetBaseURL 更新活跃请求的上游URL（在URL循环中调用）
-func (m *activeRequestManager) SetBaseURL(id int64, baseURL string) {
-	m.mu.Lock()
-	if req, ok := m.requests[id]; ok {
-		req.BaseURL = baseURL
 	}
 	m.mu.Unlock()
 }
@@ -172,12 +191,13 @@ func (m *activeRequestManager) AddBytes(id int64, n int64) {
 	if n <= 0 {
 		return
 	}
-	m.mu.RLock()
+	m.mu.Lock()
 	req := m.requests[id]
-	m.mu.RUnlock()
 	if req != nil {
 		req.bytesCounter.Add(n)
+		req.UpstreamStatus = activeRequestStatusReceiving
 	}
+	m.mu.Unlock()
 }
 
 // SetClientFirstByteTime 设置客户端侧首字节响应时间（CAS保证只写一次，线程安全）
@@ -185,17 +205,20 @@ func (m *activeRequestManager) SetClientFirstByteTime(id int64, d time.Duration)
 	if d <= 0 {
 		return
 	}
-	m.mu.RLock()
+	m.mu.Lock()
 	req := m.requests[id]
-	m.mu.RUnlock()
 	if req == nil {
+		m.mu.Unlock()
 		return
 	}
 	usec := d.Microseconds()
 	if usec <= 0 {
+		m.mu.Unlock()
 		return
 	}
 	req.clientFirstByteTimeUsec.CompareAndSwap(0, usec) // 只有首次（0值）才写入
+	req.UpstreamStatus = activeRequestStatusReceiving
+	m.mu.Unlock()
 }
 
 // List 返回所有活跃请求的快照（按开始时间降序，最新的在前）
@@ -220,6 +243,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			UpstreamWebsocket: req.UpstreamWebsocket,
 			DebugLogAvailable: req.debugCapture != nil,
 			ThinkingEffort:    req.ThinkingEffort,
+			UpstreamStatus:    req.UpstreamStatus,
 		}
 		if usec := req.clientFirstByteTimeUsec.Load(); usec > 0 {
 			view.ClientFirstByteTime = float64(usec) / 1e6

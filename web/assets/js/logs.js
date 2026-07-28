@@ -269,7 +269,9 @@ function formatBytes(bytes) {
 function buildActiveRequestInfoContent(req) {
   const bytesInfo = formatBytes(req?.bytes_received);
   const hasBytes = !!bytesInfo;
-  const infoDisplay = hasBytes ? `已接收 ${bytesInfo}` : '请求处理中...';
+  const infoDisplay = hasBytes
+    ? t('logs.receivedBytes', { bytes: bytesInfo })
+    : (req?.debug_log_available ? t('logs.upstreamDetails') : '-');
   const infoColor = hasBytes ? 'var(--success-600)' : 'var(--neutral-500)';
   const infoHtml = `<span style="color: ${infoColor};">${escapeHtml(infoDisplay)}</span>`;
   const activeRequestId = Number(req?.id);
@@ -323,11 +325,28 @@ function buildChannelTrigger(channelId, channelName, baseURL = '') {
 
 function buildActiveRequestChannelDisplay(req) {
   if (!req.channel_id || !req.channel_name) {
-    return '<span style="color: var(--neutral-500);">选择中...</span>';
+    return '<span style="color: var(--neutral-500);">-</span>';
   }
 
   const channelHtml = buildChannelTrigger(req.channel_id, req.channel_name, req.base_url || '');
   return buildLogChannelCell(channelHtml, req.cost_multiplier, req.upstream_websocket);
+}
+
+function activeRequestStatusLabel(req) {
+  switch (req?.upstream_status) {
+    case 'receiving':
+      return t('logs.upstreamStatusReceiving');
+    case 'retrying':
+      return t('logs.upstreamStatusRetrying');
+    case 'requesting':
+      return t('logs.upstreamStatusRequesting');
+    default:
+      return '-';
+  }
+}
+
+function buildActiveRequestStatusHtml(req) {
+  return `<span class="status-pending active-upstream-status">${escapeHtml(activeRequestStatusLabel(req))}</span>`;
 }
 
 function buildLogChannelCell(channelHtml, multiplierValue, upstreamWebsocket) {
@@ -852,6 +871,7 @@ function renderActiveRequests(activeRequests) {
     const durationDisplay = startMs ? buildActiveRequestTimingHtml(req, elapsedRaw, elapsed) : '-';
 
     const channelDisplay = buildActiveRequestChannelDisplay(req);
+    const statusDisplay = buildActiveRequestStatusHtml(req);
     const modelDisplay = buildLogModelDisplay(req.model, '', req.thinking_effort, req.reasoning_tokens);
     const tokenDescDisplay = buildActiveRequestTokenDescDisplay(req);
     const tokenDescCellClass = `logs-col-token-desc${tokenDescDisplay ? '' : ' mobile-empty-cell'}`;
@@ -872,6 +892,10 @@ function renderActiveRequests(activeRequests) {
       if (timingCell) timingCell.innerHTML = `${durationDisplay} ${streamFlag}`;
       const channelCell = existingRow.querySelector('.logs-col-channel');
       if (channelCell) channelCell.innerHTML = channelDisplay;
+      const statusCell = existingRow.querySelector('.logs-col-status');
+      if (statusCell) statusCell.innerHTML = statusDisplay;
+      const compactStatus = existingRow.querySelector('.active-upstream-status');
+      if (compactStatus && !statusCell) compactStatus.textContent = activeRequestStatusLabel(req);
       const msgCell = existingRow.querySelector('.logs-col-message');
       if (msgCell) msgCell.innerHTML = infoContent;
     } else {
@@ -882,7 +906,7 @@ function renderActiveRequests(activeRequests) {
       if (totalCols < 8) {
         row.innerHTML = `
             <td colspan="${totalCols}">
-              <span class="status-pending">进行中</span>
+              ${statusDisplay}
               <span style="margin-left: 8px;">${formatTime(req.start_time)}</span>
               <span class="logs-mono-text" style="margin-left: 8px;" title="${escapeHtml(req.client_ip || '')}">${escapeHtml(maskIP(req.client_ip) || '-')}</span>
               <span style="margin-left: 8px;">${modelDisplay}</span>
@@ -898,7 +922,7 @@ function renderActiveRequests(activeRequests) {
             <td class="logs-col-api-key" data-mobile-label="${logMobileLabels.apiKey}" style="text-align: center; white-space: nowrap;">${keyDisplay}</td>
             <td class="logs-col-channel" data-mobile-label="${logMobileLabels.channel}" style="text-align: left;">${channelDisplay}</td>
             <td class="logs-col-model" data-mobile-label="${logMobileLabels.model}">${modelDisplay}</td>
-            <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}"><span class="status-pending">进行中</span></td>
+            <td class="logs-col-status" data-mobile-label="${logMobileLabels.status}">${statusDisplay}</td>
             <td class="logs-col-timing" data-mobile-label="${logMobileLabels.timing}" style="text-align: right; white-space: nowrap;">${durationDisplay} ${streamFlag}</td>
             <td class="logs-col-speed mobile-empty-cell" data-mobile-label="${logMobileLabels.speed}" style="text-align: right; white-space: nowrap;"></td>
             <td class="logs-col-input mobile-empty-cell" data-mobile-label="${logMobileLabels.input}" style="text-align: right; white-space: nowrap;"></td>

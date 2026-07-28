@@ -1851,6 +1851,7 @@ func (s *Server) forwardAttempt(
 		retryStrategies = append(retryStrategies, retryStrategy)
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
+		s.activeRequests.Retry(reqCtx.activeReqID)
 		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt,
@@ -2437,10 +2438,20 @@ func (s *Server) attemptKeyAcrossURLs(
 			return buildCtxDoneResult(cfg, ctxErr), nil, nil
 		}
 
-		// 更新活跃请求的当前URL（用于前端显示）
-		if reqCtx.activeReqID > 0 {
-			s.activeRequests.SetBaseURL(reqCtx.activeReqID, urlEntry.url)
-		}
+		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
+			StartTime:      time.Now(),
+			Model:          reqCtx.originalModel,
+			ClientIP:       reqCtx.clientIP,
+			Streaming:      reqCtx.isStreaming,
+			ChannelID:      cfg.ID,
+			ChannelName:    cfg.Name,
+			ChannelType:    cfg.GetChannelType(),
+			APIKey:         selectedKey,
+			TokenID:        reqCtx.tokenID,
+			BaseURL:        urlEntry.url,
+			CostMultiplier: cfg.CostMultiplier,
+			ThinkingEffort: reqCtx.thinkingEffort,
+		})
 
 		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
 		result, nextAction, attemptErr := s.forwardAttempt(
@@ -2589,11 +2600,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 		// 标记Key为已尝试
 		triedKeys[keyIndex] = true
-
-		// 更新活跃请求的渠道信息（用于前端显示）
-		if reqCtx.activeReqID > 0 {
-			s.activeRequests.Update(reqCtx.activeReqID, cfg.ID, cfg.Name, cfg.GetChannelType(), selectedKey, reqCtx.tokenID, cfg.CostMultiplier)
-		}
 
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
