@@ -810,7 +810,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'logs.debugSettingEnabledOff': '已关闭',
   'logs.debugSettingRetentionMinutes': '{minutes} 分钟',
   'logs.upstreamStatusRequesting': '请求上游',
-  'logs.upstreamStatusReceiving': '接收响应',
+  'logs.upstreamStatusReceiving': '接收中',
   'logs.upstreamStatusRetrying': '重试上游',
   'logs.receivedBytes': '已接收 {bytes}',
   'logs.upstreamDetails': '上游详情',
