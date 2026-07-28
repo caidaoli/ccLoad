@@ -27,14 +27,8 @@ func (s *SQLStore) executeStatsQuery(ctx context.Context, startTime, endTime tim
 			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
 			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
 			SUM(CASE WHEN status_code != 499 THEN 1 ELSE 0 END) AS total,
-			ROUND(
-				AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END),
-				3
-			) as avg_first_byte_time,
-			ROUND(
-				AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END),
-				3
-			) as avg_duration,
+			AVG(CASE WHEN is_streaming = 1 AND first_byte_time > 0 AND status_code >= 200 AND status_code < 300 THEN first_byte_time ELSE NULL END) as avg_first_byte_time,
+			AVG(CASE WHEN duration > 0 THEN duration ELSE NULL END) as avg_duration,
 			` + lastSuccessCol + `SUM(COALESCE(input_tokens, 0)) as total_input_tokens,
 			SUM(COALESCE(output_tokens, 0)) as total_output_tokens,
 			SUM(COALESCE(cache_read_input_tokens, 0)) as total_cache_read_input_tokens,

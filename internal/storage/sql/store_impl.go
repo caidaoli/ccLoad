@@ -94,11 +94,13 @@ func (s *SQLStore) GetHealthTimeline(ctx context.Context, params model.HealthTim
 	var result []model.HealthTimelineRow
 	for rows.Next() {
 		var r model.HealthTimelineRow
-		if err := rows.Scan(&r.BucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount, &r.RateLimitedCount,
+		var bucketTs float64
+		if err := rows.Scan(&bucketTs, &r.ChannelID, &r.Model, &r.Success, &r.ErrorCount, &r.RateLimitedCount,
 			&r.AvgFirstByteTime, &r.AvgDuration, &r.InputTokens, &r.OutputTokens,
 			&r.CacheReadTokens, &r.CacheCreationTokens, &r.TotalCost, &r.EffectiveCost); err != nil {
-			continue
+			return nil, fmt.Errorf("scan health timeline: %w", err)
 		}
+		r.BucketTs = int64(bucketTs)
 		result = append(result, r)
 	}
 	if err := rows.Err(); err != nil {
