@@ -6,12 +6,14 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
+	sqlstore "ccLoad/internal/storage/sql"
 
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
@@ -134,6 +136,17 @@ func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 			t.Logf("DROP TABLE %s: %v", table, err)
 		}
 	}
+}
+
+func newPostgresQueryStore(t *testing.T, env *postgresTestEnv) Store {
+	t.Helper()
+	cleanupPostgresTables(t, env.db)
+	store, err := CreatePostgresStoreForTest(env.dsn)
+	if err != nil {
+		t.Fatalf("创建 PostgreSQL store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }
 
 func TestPostgres(t *testing.T) {
@@ -349,6 +362,641 @@ func TestPostgres(t *testing.T) {
 		if len(logsAfter) != 0 {
 			t.Fatalf("CleanupLogsBefore 后仍有 %d 条日志", len(logsAfter))
 		}
+	})
+
+	t.Run("DashboardAggregates", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		ch, err := store.CreateConfig(ctx, &model.Config{
+			Name:        "pg-dashboard-aggregates",
+			URL:         "https://api.example.com",
+			Priority:    1,
+			ChannelType: "openai",
+			Enabled:     true,
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-4o"},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig: %v", err)
+		}
+		authToken := &model.AuthToken{
+			Token:       "pg-dashboard-token",
+			Description: "dashboard aggregate queries",
+			IsActive:    true,
+			CreatedAt:   time.Now(),
+		}
+		if err := store.CreateAuthToken(ctx, authToken); err != nil {
+			t.Fatalf("CreateAuthToken: %v", err)
+		}
+
+		now := time.Now().UTC().Truncate(time.Second)
+		for _, entry := range []*model.LogEntry{
+			{
+				Time:          model.JSONTime{Time: now.Add(-20 * time.Second)},
+				Model:         "gpt-4o",
+				LogSource:     model.LogSourceProxy,
+				ChannelID:     ch.ID,
+				StatusCode:    200,
+				Message:       "ok",
+				Duration:      0.1234,
+				IsStreaming:   true,
+				FirstByteTime: 0.01234,
+				AuthTokenID:   authToken.ID,
+				BaseURL:       "https://api.example.com",
+				InputTokens:   10,
+				OutputTokens:  20,
+				Cost:          0.01,
+			},
+			{
+				Time:          model.JSONTime{Time: now.Add(-10 * time.Second)},
+				Model:         "gpt-4o",
+				LogSource:     model.LogSourceProxy,
+				ChannelID:     ch.ID,
+				StatusCode:    200,
+				Message:       "ok",
+				Duration:      0.2345,
+				IsStreaming:   true,
+				FirstByteTime: 0.02345,
+				AuthTokenID:   authToken.ID,
+				BaseURL:       "https://api.example.com",
+				InputTokens:   30,
+				OutputTokens:  40,
+				Cost:          0.02,
+			},
+		} {
+			if err := store.AddLog(ctx, entry); err != nil {
+				t.Fatalf("AddLog: %v", err)
+			}
+		}
+
+		start := now.Add(-time.Minute)
+		end := now.Add(time.Minute)
+		filter := &model.LogFilter{LogSource: model.LogSourceProxy}
+
+		assertStats := func(t *testing.T, stats []model.StatsEntry) {
+			t.Helper()
+			if len(stats) != 1 {
+				t.Fatalf("stats len=%d want=1", len(stats))
+			}
+			got := stats[0]
+			if got.Success != 2 || got.Error != 0 || got.Total != 2 {
+				t.Fatalf("stats counts=%+v want success=2 error=0 total=2", got)
+			}
+			if got.AvgFirstByteTimeSeconds == nil || math.Abs(*got.AvgFirstByteTimeSeconds-0.017895) > 0.001 {
+				t.Fatalf("avg first byte=%v want about 0.017895", got.AvgFirstByteTimeSeconds)
+			}
+			if got.AvgDurationSeconds == nil || math.Abs(*got.AvgDurationSeconds-0.17895) > 0.001 {
+				t.Fatalf("avg duration=%v want about 0.17895", got.AvgDurationSeconds)
+			}
+		}
+
+		t.Run("GetStatsLite", func(t *testing.T) {
+			stats, err := store.GetStatsLite(ctx, start, end, filter)
+			if err != nil {
+				t.Fatalf("GetStatsLite: %v", err)
+			}
+			assertStats(t, stats)
+		})
+
+		t.Run("GetStats", func(t *testing.T) {
+			stats, err := store.GetStats(ctx, start, end, filter, false)
+			if err != nil {
+				t.Fatalf("GetStats: %v", err)
+			}
+			assertStats(t, stats)
+
+			modelFilter := *filter
+			modelFilter.Model = "gpt-4o"
+			stats, err = store.GetStats(ctx, start, end, &modelFilter, false)
+			if err != nil {
+				t.Fatalf("GetStats model filter: %v", err)
+			}
+			assertStats(t, stats)
+		})
+
+		t.Run("AggregateRangeWithFilter", func(t *testing.T) {
+			points, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, filter)
+			if err != nil {
+				t.Fatalf("AggregateRangeWithFilter: %v", err)
+			}
+			for _, point := range points {
+				if point.Success != 2 {
+					continue
+				}
+				if point.Error != 0 || point.AvgFirstByteTimeSeconds == nil || point.AvgDurationSeconds == nil {
+					t.Fatalf("aggregate point=%+v", point)
+				}
+				return
+			}
+			t.Fatalf("未找到包含两次成功请求的聚合点: %+v", points)
+		})
+
+		t.Run("RemainingMetricQueries", func(t *testing.T) {
+			models, err := store.GetDistinctModels(ctx, start, end, "openai", filter)
+			if err != nil {
+				t.Fatalf("GetDistinctModels: %v", err)
+			}
+			if len(models) != 1 || models[0] != "gpt-4o" {
+				t.Fatalf("models=%v want=[gpt-4o]", models)
+			}
+
+			channels, err := store.GetDistinctChannels(ctx, start, end, "openai", filter)
+			if err != nil {
+				t.Fatalf("GetDistinctChannels: %v", err)
+			}
+			if len(channels) != 1 || channels[0].ID != ch.ID {
+				t.Fatalf("channels=%v want channel_id=%d", channels, ch.ID)
+			}
+
+			rpm, err := store.GetRPMStats(ctx, start, end, filter, true)
+			if err != nil {
+				t.Fatalf("GetRPMStats: %v", err)
+			}
+			if rpm.PeakRPM <= 0 || rpm.AvgRPM <= 0 {
+				t.Fatalf("rpm=%+v want positive peak and average", rpm)
+			}
+
+			rates, err := store.GetChannelSuccessRates(ctx, start)
+			if err != nil {
+				t.Fatalf("GetChannelSuccessRates: %v", err)
+			}
+			if rates[ch.ID].SampleCount != 2 {
+				t.Fatalf("success rates=%+v want channel sample_count=2", rates)
+			}
+
+			timeline, err := store.GetHealthTimeline(ctx, model.HealthTimelineParams{
+				SinceMs:  start.UnixMilli(),
+				UntilMs:  end.UnixMilli(),
+				BucketMs: time.Minute.Milliseconds(),
+				Filter:   filter,
+			})
+			if err != nil {
+				t.Fatalf("GetHealthTimeline: %v", err)
+			}
+			if len(timeline) == 0 {
+				t.Fatal("GetHealthTimeline returned no rows")
+			}
+
+			costs, err := store.GetTodayChannelCosts(ctx, now.Add(-time.Hour))
+			if err != nil {
+				t.Fatalf("GetTodayChannelCosts: %v", err)
+			}
+			if _, ok := costs[ch.ID]; !ok {
+				t.Fatalf("today channel costs=%v missing channel_id=%d", costs, ch.ID)
+			}
+
+			urlStats, err := store.GetTodayChannelURLStats(ctx, now.Add(-time.Hour))
+			if err != nil {
+				t.Fatalf("GetTodayChannelURLStats: %v", err)
+			}
+			if len(urlStats) != 1 || urlStats[0].ChannelID != ch.ID {
+				t.Fatalf("url stats=%v want channel_id=%d", urlStats, ch.ID)
+			}
+
+			tokenStats, err := store.GetAuthTokenStatsInRange(ctx, start, end)
+			if err != nil {
+				t.Fatalf("GetAuthTokenStatsInRange: %v", err)
+			}
+			if tokenStats[authToken.ID] == nil || tokenStats[authToken.ID].SuccessCount != 2 {
+				t.Fatalf("auth token stats=%+v want token_id=%d success=2", tokenStats, authToken.ID)
+			}
+			if err := store.FillAuthTokenRPMStats(ctx, tokenStats, start, end, true); err != nil {
+				t.Fatalf("FillAuthTokenRPMStats: %v", err)
+			}
+			if tokenStats[authToken.ID].PeakRPM <= 0 {
+				t.Fatalf("auth token rpm=%+v want positive peak", tokenStats[authToken.ID])
+			}
+		})
+	})
+
+	t.Run("RuntimeQueryCompatibility", func(t *testing.T) {
+		t.Run("ChannelsAndAPIKeys", func(t *testing.T) {
+			store := newPostgresQueryStore(t, env)
+			ch, err := store.CreateConfig(ctx, &model.Config{
+				Name:        "pg-query-channel",
+				URL:         "https://api.example.com",
+				Priority:    10,
+				ChannelType: "openai",
+				Enabled:     true,
+				ProtocolTransforms: []string{
+					"anthropic",
+				},
+				ModelEntries: []model.ModelEntry{
+					{Model: "gpt-4o"},
+				},
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig: %v", err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: ch.ID, KeyIndex: 0, APIKey: "sk-pg-0", KeyStrategy: model.KeyStrategySequential},
+				{ChannelID: ch.ID, KeyIndex: 1, APIKey: "sk-pg-1", KeyStrategy: model.KeyStrategySequential},
+				{ChannelID: ch.ID, KeyIndex: 2, APIKey: "sk-pg-2", KeyStrategy: model.KeyStrategySequential},
+			}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch: %v", err)
+			}
+
+			if configs, err := store.ListConfigs(ctx); err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs: configs=%v err=%v", configs, err)
+			}
+			if _, err := store.GetConfig(ctx, ch.ID); err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			if channels, err := store.GetEnabledChannelsByModel(ctx, "gpt-4o"); err != nil || len(channels) != 1 {
+				t.Fatalf("GetEnabledChannelsByModel: channels=%v err=%v", channels, err)
+			}
+			if channels, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "openai"); err != nil || len(channels) != 1 {
+				t.Fatalf("GetEnabledChannelsByModelAndProtocol: channels=%v err=%v", channels, err)
+			}
+			if channels, err := store.GetEnabledChannelsByType(ctx, "openai"); err != nil || len(channels) != 1 {
+				t.Fatalf("GetEnabledChannelsByType: channels=%v err=%v", channels, err)
+			}
+			if channels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai"); err != nil || len(channels) != 1 {
+				t.Fatalf("GetEnabledChannelsByExposedProtocol: channels=%v err=%v", channels, err)
+			}
+
+			ch.Name = "pg-query-channel-updated"
+			ch.Priority = 20
+			if _, err := store.UpdateConfig(ctx, ch.ID, ch); err != nil {
+				t.Fatalf("UpdateConfig: %v", err)
+			}
+			if _, err := store.UpdateChannelEnabled(ctx, ch.ID, false); err != nil {
+				t.Fatalf("UpdateChannelEnabled false: %v", err)
+			}
+			if _, err := store.UpdateChannelEnabled(ctx, ch.ID, true); err != nil {
+				t.Fatalf("UpdateChannelEnabled true: %v", err)
+			}
+			priorityUpdates := []struct {
+				ID       int64
+				Priority int
+			}{{ID: ch.ID, Priority: 30}}
+			if _, err := store.BatchUpdatePriority(ctx, priorityUpdates); err != nil {
+				t.Fatalf("BatchUpdatePriority: %v", err)
+			}
+
+			if err := store.SetURLDisabled(ctx, ch.ID, "https://a.example.com", true); err != nil {
+				t.Fatalf("SetURLDisabled a: %v", err)
+			}
+			if err := store.SetURLDisabled(ctx, ch.ID, "https://b.example.com", true); err != nil {
+				t.Fatalf("SetURLDisabled b: %v", err)
+			}
+			if _, err := store.LoadDisabledURLs(ctx); err != nil {
+				t.Fatalf("LoadDisabledURLs: %v", err)
+			}
+			if err := store.CleanupOrphanedURLStates(ctx, ch.ID, []string{"https://a.example.com"}); err != nil {
+				t.Fatalf("CleanupOrphanedURLStates keep: %v", err)
+			}
+			if err := store.CleanupOrphanedURLStates(ctx, ch.ID, nil); err != nil {
+				t.Fatalf("CleanupOrphanedURLStates empty: %v", err)
+			}
+
+			if _, err := store.GetAPIKey(ctx, ch.ID, 0); err != nil {
+				t.Fatalf("GetAPIKey: %v", err)
+			}
+			if _, err := store.GetAPIKeys(ctx, ch.ID); err != nil {
+				t.Fatalf("GetAPIKeys: %v", err)
+			}
+			if _, err := store.GetAllAPIKeys(ctx); err != nil {
+				t.Fatalf("GetAllAPIKeys: %v", err)
+			}
+			if err := store.UpdateAPIKeysStrategy(ctx, ch.ID, model.KeyStrategyRoundRobin); err != nil {
+				t.Fatalf("UpdateAPIKeysStrategy: %v", err)
+			}
+			if err := store.UpdateAPIKeyNotes(ctx, ch.ID, map[int]string{0: "primary", 1: "backup"}); err != nil {
+				t.Fatalf("UpdateAPIKeyNotes: %v", err)
+			}
+			if err := store.SetAPIKeyDisabled(ctx, ch.ID, 0, true); err != nil {
+				t.Fatalf("SetAPIKeyDisabled true: %v", err)
+			}
+			if err := store.SetAPIKeyDisabled(ctx, ch.ID, 0, false); err != nil {
+				t.Fatalf("SetAPIKeyDisabled false: %v", err)
+			}
+			if err := store.DeleteAPIKey(ctx, ch.ID, 1); err != nil {
+				t.Fatalf("DeleteAPIKey: %v", err)
+			}
+			if err := store.CompactKeyIndices(ctx, ch.ID, 1); err != nil {
+				t.Fatalf("CompactKeyIndices: %v", err)
+			}
+			if err := store.DeleteAllAPIKeys(ctx, ch.ID); err != nil {
+				t.Fatalf("DeleteAllAPIKeys: %v", err)
+			}
+			if err := store.DeleteConfig(ctx, ch.ID); err != nil {
+				t.Fatalf("DeleteConfig: %v", err)
+			}
+		})
+
+		t.Run("Cooldowns", func(t *testing.T) {
+			store := newPostgresQueryStore(t, env)
+			ch, err := store.CreateConfig(ctx, &model.Config{
+				Name: "pg-query-cooldowns", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig: %v", err)
+			}
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+				ChannelID: ch.ID, KeyIndex: 0, APIKey: "sk-cooldown", KeyStrategy: model.KeyStrategySequential,
+			}}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch: %v", err)
+			}
+
+			now := time.Now()
+			if _, err := store.BumpChannelCooldown(ctx, ch.ID, now, 500); err != nil {
+				t.Fatalf("BumpChannelCooldown: %v", err)
+			}
+			if err := store.SetChannelCooldown(ctx, ch.ID, now.Add(time.Minute)); err != nil {
+				t.Fatalf("SetChannelCooldown: %v", err)
+			}
+			if _, err := store.GetAllChannelCooldowns(ctx); err != nil {
+				t.Fatalf("GetAllChannelCooldowns: %v", err)
+			}
+			if err := store.ResetChannelCooldown(ctx, ch.ID); err != nil {
+				t.Fatalf("ResetChannelCooldown: %v", err)
+			}
+
+			if _, err := store.BumpKeyCooldown(ctx, ch.ID, 0, now, 401); err != nil {
+				t.Fatalf("BumpKeyCooldown: %v", err)
+			}
+			if err := store.SetKeyCooldown(ctx, ch.ID, 0, now.Add(time.Minute)); err != nil {
+				t.Fatalf("SetKeyCooldown: %v", err)
+			}
+			if _, err := store.GetAllKeyCooldowns(ctx); err != nil {
+				t.Fatalf("GetAllKeyCooldowns: %v", err)
+			}
+			sqlStore, ok := store.(*sqlstore.SQLStore)
+			if !ok {
+				t.Fatalf("store type=%T want *sqlstore.SQLStore", store)
+			}
+			if _, ok := sqlStore.GetKeyCooldownUntil(ctx, ch.ID, 0); !ok {
+				t.Fatal("GetKeyCooldownUntil returned no active cooldown")
+			}
+			if err := sqlStore.ClearAllKeyCooldowns(ctx, ch.ID); err != nil {
+				t.Fatalf("ClearAllKeyCooldowns: %v", err)
+			}
+			if err := store.ResetKeyCooldown(ctx, ch.ID, 0); err != nil {
+				t.Fatalf("ResetKeyCooldown: %v", err)
+			}
+
+			if err := store.SetModelCooldown(ctx, ch.ID, "gpt-4o", now.Add(time.Minute)); err != nil {
+				t.Fatalf("SetModelCooldown: %v", err)
+			}
+			if _, err := store.GetAllModelCooldowns(ctx); err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			if err := store.ResetModelCooldown(ctx, ch.ID, "gpt-4o"); err != nil {
+				t.Fatalf("ResetModelCooldown: %v", err)
+			}
+			if err := store.ResetAllCooldowns(ctx, ch.ID); err != nil {
+				t.Fatalf("ResetAllCooldowns: %v", err)
+			}
+		})
+
+		t.Run("LogsAndDebugLogs", func(t *testing.T) {
+			store := newPostgresQueryStore(t, env)
+			ch, err := store.CreateConfig(ctx, &model.Config{
+				Name: "pg-query-logs", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig: %v", err)
+			}
+			authToken := &model.AuthToken{
+				Token: "pg-query-log-token", Description: "log query token", IsActive: true, CreatedAt: time.Now(),
+			}
+			if err := store.CreateAuthToken(ctx, authToken); err != nil {
+				t.Fatalf("CreateAuthToken: %v", err)
+			}
+
+			now := time.Now().UTC().Truncate(time.Second)
+			if err := store.AddLog(ctx, &model.LogEntry{
+				Time: model.JSONTime{Time: now.Add(-30 * time.Second)}, Model: "gpt-4o", LogSource: model.LogSourceProxy,
+				ChannelID: ch.ID, StatusCode: 200, Message: "single", Duration: 0.2, AuthTokenID: authToken.ID,
+				BaseURL: "https://api.example.com", Cost: 0.01,
+			}); err != nil {
+				t.Fatalf("AddLog: %v", err)
+			}
+			if err := store.BatchAddLogs(ctx, []*model.LogEntry{
+				{
+					Time: model.JSONTime{Time: now.Add(-20 * time.Second)}, Model: "gpt-4o", LogSource: model.LogSourceProxy,
+					ChannelID: ch.ID, StatusCode: 500, Message: "plain-batch", Duration: 0.4, AuthTokenID: authToken.ID,
+					BaseURL: "https://api.example.com",
+				},
+				{
+					Time: model.JSONTime{Time: now.Add(-10 * time.Second)}, Model: "gpt-4o", LogSource: model.LogSourceProxy,
+					ChannelID: ch.ID, StatusCode: 200, Message: "debug-batch", Duration: 0.3, AuthTokenID: authToken.ID,
+					BaseURL: "https://api.example.com",
+					DebugData: &model.DebugLogEntry{
+						CreatedAt: now.Unix(), ReqMethod: "POST", ReqURL: "https://api.example.com/v1/chat/completions",
+						ReqHeaders: "{}", ReqBody: []byte(`{"model":"gpt-4o"}`), RespStatus: 200,
+						RespHeaders: "{}", RespBody: []byte(`{"ok":true}`),
+					},
+				},
+			}); err != nil {
+				t.Fatalf("BatchAddLogs: %v", err)
+			}
+
+			channelID := ch.ID
+			filter := &model.LogFilter{ChannelID: &channelID, ModelLike: "gpt"}
+			logs, err := store.ListLogs(ctx, now.Add(-time.Hour), 20, 0, filter)
+			if err != nil || len(logs) != 3 {
+				t.Fatalf("ListLogs: logs=%v err=%v", logs, err)
+			}
+			if _, err := store.ListLogsRange(ctx, now.Add(-time.Hour), now.Add(time.Hour), 20, 0, filter); err != nil {
+				t.Fatalf("ListLogsRange: %v", err)
+			}
+			if _, count, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Hour), now.Add(time.Hour), 20, 0, filter); err != nil || count != 3 {
+				t.Fatalf("ListLogsRangeWithCount: count=%d err=%v", count, err)
+			}
+			if count, err := store.CountLogs(ctx, now.Add(-time.Hour), filter); err != nil || count != 3 {
+				t.Fatalf("CountLogs: count=%d err=%v", count, err)
+			}
+			if count, err := store.CountLogsRange(ctx, now.Add(-time.Hour), now.Add(time.Hour), filter); err != nil || count != 3 {
+				t.Fatalf("CountLogsRange: count=%d err=%v", count, err)
+			}
+			if stats, err := store.GetTodayChannelURLStats(ctx, now.Add(-time.Hour)); err != nil || len(stats) != 1 {
+				t.Fatalf("GetTodayChannelURLStats: stats=%v err=%v", stats, err)
+			}
+
+			var debugLogID int64
+			var directDebugLogID int64
+			for _, entry := range logs {
+				switch entry.Message {
+				case "debug-batch":
+					debugLogID = entry.ID
+				case "single":
+					directDebugLogID = entry.ID
+				}
+			}
+			if debugLogID == 0 || directDebugLogID == 0 {
+				t.Fatalf("log ids missing: debug=%d direct=%d", debugLogID, directDebugLogID)
+			}
+			if debugLog, err := store.GetDebugLogByLogID(ctx, debugLogID); err != nil || debugLog == nil {
+				t.Fatalf("GetDebugLogByLogID batch: debug=%v err=%v", debugLog, err)
+			}
+			if err := store.AddDebugLog(ctx, &model.DebugLogEntry{
+				LogID: directDebugLogID, CreatedAt: now.Unix(), ReqMethod: "POST", ReqURL: "https://api.example.com",
+				ReqHeaders: "{}", ReqBody: []byte(`{}`), RespStatus: 200, RespHeaders: "{}", RespBody: []byte(`{}`),
+			}); err != nil {
+				t.Fatalf("AddDebugLog: %v", err)
+			}
+			if err := store.CleanupDebugLogsBefore(ctx, now.Add(-time.Hour)); err != nil {
+				t.Fatalf("CleanupDebugLogsBefore: %v", err)
+			}
+			if err := store.TruncateDebugLogs(ctx); err != nil {
+				t.Fatalf("TruncateDebugLogs: %v", err)
+			}
+			if err := store.CleanupLogsBefore(ctx, now.Add(-time.Hour)); err != nil {
+				t.Fatalf("CleanupLogsBefore: %v", err)
+			}
+		})
+
+		t.Run("AuthSessionsAndSettings", func(t *testing.T) {
+			store := newPostgresQueryStore(t, env)
+			const tokenValue = "pg-query-auth-token"
+			token := &model.AuthToken{
+				Token: tokenValue, Description: "query compatibility", IsActive: true, CreatedAt: time.Now(),
+				AllowedModels: []string{"gpt-4o"}, MaxConcurrency: 2,
+			}
+			if err := store.CreateAuthToken(ctx, token); err != nil {
+				t.Fatalf("CreateAuthToken: %v", err)
+			}
+			ensured := &model.AuthToken{Token: tokenValue, Description: "ignored", IsActive: true, CreatedAt: time.Now()}
+			if created, err := store.EnsureAuthToken(ctx, ensured); err != nil || created || ensured.ID != token.ID {
+				t.Fatalf("EnsureAuthToken: created=%v token=%+v err=%v", created, ensured, err)
+			}
+			got, err := store.GetAuthToken(ctx, token.ID)
+			if err != nil {
+				t.Fatalf("GetAuthToken: %v", err)
+			}
+			if _, err := store.GetAuthTokenByValue(ctx, tokenValue); err != nil {
+				t.Fatalf("GetAuthTokenByValue: %v", err)
+			}
+			if tokens, err := store.ListAuthTokens(ctx); err != nil || len(tokens) != 1 {
+				t.Fatalf("ListAuthTokens: tokens=%v err=%v", tokens, err)
+			}
+			if tokens, err := store.ListActiveAuthTokens(ctx); err != nil || len(tokens) != 1 {
+				t.Fatalf("ListActiveAuthTokens: tokens=%v err=%v", tokens, err)
+			}
+
+			got.Description = "query compatibility updated"
+			got.AllowedChannelIDs = []int64{11, 22}
+			got.ChannelRestrictionMode = model.ChannelRestrictionModeDeny
+			if err := store.UpdateAuthToken(ctx, got); err != nil {
+				t.Fatalf("UpdateAuthToken: %v", err)
+			}
+			sqlStore, ok := store.(*sqlstore.SQLStore)
+			if !ok {
+				t.Fatalf("store type=%T want *sqlstore.SQLStore", store)
+			}
+			if err := sqlStore.UpsertAuthTokenAllFields(ctx, got); err != nil {
+				t.Fatalf("UpsertAuthTokenAllFields: %v", err)
+			}
+			if err := store.UpdateTokenLastUsed(ctx, tokenValue, time.Now()); err != nil {
+				t.Fatalf("UpdateTokenLastUsed: %v", err)
+			}
+			if err := store.UpdateTokenStats(ctx, tokenValue, true, 0.5, false, 0, 10, 20, 3, 4, 0.01, 0.02); err != nil {
+				t.Fatalf("UpdateTokenStats: %v", err)
+			}
+
+			if err := store.CreateWebSession(ctx, "pg-query-valid-session", model.WebSession{
+				Role: model.WebRoleAPIToken, AuthTokenID: token.ID, ExpiresAt: time.Now().Add(time.Hour),
+			}); err != nil {
+				t.Fatalf("CreateWebSession valid: %v", err)
+			}
+			if err := store.CreateWebSession(ctx, "pg-query-expired-session", model.WebSession{
+				Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(-time.Hour),
+			}); err != nil {
+				t.Fatalf("CreateWebSession expired: %v", err)
+			}
+			if _, exists, err := store.GetWebSession(ctx, "pg-query-valid-session"); err != nil || !exists {
+				t.Fatalf("GetWebSession: exists=%v err=%v", exists, err)
+			}
+			if sessions, err := store.LoadWebSessions(ctx); err != nil || len(sessions) != 1 {
+				t.Fatalf("LoadWebSessions: sessions=%v err=%v", sessions, err)
+			}
+			if err := store.CleanExpiredWebSessions(ctx); err != nil {
+				t.Fatalf("CleanExpiredWebSessions: %v", err)
+			}
+			if err := store.DeleteWebSession(ctx, "pg-query-expired-session"); err != nil {
+				t.Fatalf("DeleteWebSession: %v", err)
+			}
+			if err := store.DeleteWebSessionsByAuthTokenID(ctx, token.ID); err != nil {
+				t.Fatalf("DeleteWebSessionsByAuthTokenID: %v", err)
+			}
+
+			if _, err := store.GetSetting(ctx, "log_retention_days"); err != nil {
+				t.Fatalf("GetSetting: %v", err)
+			}
+			if _, err := store.ListAllSettings(ctx); err != nil {
+				t.Fatalf("ListAllSettings: %v", err)
+			}
+			if err := store.UpdateSetting(ctx, "log_retention_days", "8"); err != nil {
+				t.Fatalf("UpdateSetting: %v", err)
+			}
+			if err := store.BatchUpdateSettings(ctx, map[string]string{"log_retention_days": "9"}); err != nil {
+				t.Fatalf("BatchUpdateSettings: %v", err)
+			}
+			if err := store.DeleteAuthToken(ctx, token.ID); err != nil {
+				t.Fatalf("DeleteAuthToken: %v", err)
+			}
+			if err := store.Ping(ctx); err != nil {
+				t.Fatalf("Ping: %v", err)
+			}
+		})
+
+		t.Run("Fingerprints", func(t *testing.T) {
+			store := newPostgresQueryStore(t, env)
+			ch, err := store.CreateConfig(ctx, &model.Config{
+				Name: "pg-query-fingerprint", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig: %v", err)
+			}
+			channelID := ch.ID
+			fingerprint, err := store.CreateModelFingerprint(ctx, &model.ModelFingerprint{
+				Name: "pg-query-fingerprint", ChannelID: &channelID, ChannelName: ch.Name,
+				Model: "gpt-4o", ChannelType: "openai", SampleCount: 3,
+				Distribution: []float64{0.5, 0.25, 0.25},
+				Stats: model.FingerprintStats{
+					Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1,
+				},
+				RawData: []int{1, 2, 3}, PromptVersion: "v1",
+			})
+			if err != nil {
+				t.Fatalf("CreateModelFingerprint: %v", err)
+			}
+			if fingerprints, err := store.ListModelFingerprints(ctx); err != nil || len(fingerprints) != 1 {
+				t.Fatalf("ListModelFingerprints: fingerprints=%v err=%v", fingerprints, err)
+			}
+			if _, err := store.GetModelFingerprint(ctx, fingerprint.ID); err != nil {
+				t.Fatalf("GetModelFingerprint: %v", err)
+			}
+			if err := store.ClearFingerprintChannelID(ctx, ch.ID); err != nil {
+				t.Fatalf("ClearFingerprintChannelID: %v", err)
+			}
+
+			result := &model.FingerprintTestRecord{
+				ChannelID: &channelID, ChannelName: ch.Name, Model: "gpt-4o", SampleCount: 3,
+				BestScore: 0.9, Distribution: []float64{0.5, 0.25, 0.25}, MatchesJSON: `[{"score":0.9}]`,
+			}
+			if err := store.CreateFingerprintTestResult(ctx, result); err != nil {
+				t.Fatalf("CreateFingerprintTestResult: %v", err)
+			}
+			if results, err := store.ListFingerprintTestResults(ctx, 10); err != nil || len(results) != 1 {
+				t.Fatalf("ListFingerprintTestResults: results=%v err=%v", results, err)
+			}
+			if err := store.DeleteFingerprintTestResult(ctx, result.ID); err != nil {
+				t.Fatalf("DeleteFingerprintTestResult: %v", err)
+			}
+			if err := store.DeleteModelFingerprint(ctx, fingerprint.ID); err != nil {
+				t.Fatalf("DeleteModelFingerprint: %v", err)
+			}
+		})
 	})
 
 	t.Run("URLState_ONConflict", func(t *testing.T) {

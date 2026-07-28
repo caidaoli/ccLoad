@@ -537,8 +537,14 @@ func (s *SQLStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	args := make([]any, 0, len(updates)*2+1+len(updates))
 
 	caseBuilder.WriteString("UPDATE channels SET priority = CASE id ")
+	priorityPlaceholder := "?"
+	if s.IsPostgres() {
+		priorityPlaceholder = "CAST(? AS INTEGER)"
+	}
 	for _, update := range updates {
-		caseBuilder.WriteString("WHEN ? THEN ? ")
+		caseBuilder.WriteString("WHEN ? THEN ")
+		caseBuilder.WriteString(priorityPlaceholder)
+		caseBuilder.WriteByte(' ')
 		args = append(args, update.ID, update.Priority)
 	}
 	caseBuilder.WriteString("END, updated_at = ? WHERE id IN (")
