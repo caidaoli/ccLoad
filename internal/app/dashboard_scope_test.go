@@ -61,6 +61,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 			APIKeyHash:               "secret-hash",
 			ClientIP:                 "10.0.0.1",
 			BaseURL:                  "https://secret-upstream.example",
+			ServiceTier:              "priority",
 			InputTokens:              1_000,
 			OutputTokens:             500,
 			CacheReadInputTokens:     250,
@@ -119,7 +120,8 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 		t.Fatalf("effective_cost=%v, want 0 for a free channel", effectiveCost)
 	}
 	var costBreakdown struct {
-		Input struct {
+		ServiceTierMultiplier float64 `json:"service_tier_multiplier"`
+		Input                 struct {
 			Quantity int `json:"quantity"`
 		} `json:"input"`
 		Output struct {
@@ -138,6 +140,9 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	if costBreakdown.Input.Quantity != 1_000 || costBreakdown.Output.Quantity != 500 ||
 		costBreakdown.CacheRead.Quantity != 250 || costBreakdown.CacheWrite.Quantity != 125 {
 		t.Fatalf("unexpected cost breakdown quantities: %+v", costBreakdown)
+	}
+	if costBreakdown.ServiceTierMultiplier != 2.5 {
+		t.Fatalf("service_tier_multiplier=%v, want 2.5", costBreakdown.ServiceTierMultiplier)
 	}
 	var message string
 	if err := json.Unmarshal(entry["message"], &message); err != nil {
