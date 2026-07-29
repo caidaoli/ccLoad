@@ -362,11 +362,21 @@ func serveHTTP(t testing.TB, h http.Handler, req *http.Request) *httptest.Respon
 }
 
 func newInMemoryServer(t testing.TB) *Server {
+	return newInMemoryServerWithSettings(t, nil)
+}
+
+func newInMemoryServerWithSettings(t testing.TB, settings map[string]string) *Server {
 	t.Helper()
 
 	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
 		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+	if len(settings) > 0 {
+		if err = store.BatchUpdateSettings(context.Background(), settings); err != nil {
+			_ = store.Close()
+			t.Fatalf("BatchUpdateSettings failed: %v", err)
+		}
 	}
 
 	srv := NewServer(store)

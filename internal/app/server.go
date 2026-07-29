@@ -76,6 +76,8 @@ type Server struct {
 	channelTypeTimeouts                    map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	// 渠道未配置专属规则时使用的进程级默认规则。
+	globalCooldownDetectionRules *model.CooldownDetectionRules
 
 	// 登录速率限制器（用于传递给AuthService）
 	loginRateLimiter *util.LoginRateLimiter
@@ -170,7 +172,8 @@ func NewServer(store storage.Store) *Server {
 		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
 		channelTypeTimeouts: runtimeCfg.ChannelTypeTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
-		modelFuzzyMatch: runtimeCfg.ModelFuzzyMatch,
+		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
+		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端
 		client: &http.Client{
@@ -334,17 +337,27 @@ type channelTypeTimeoutConfig struct {
 
 // serverRuntimeConfig 启动期从数据库读取的运行时配置（修改后重启生效）
 type serverRuntimeConfig struct {
-	MaxKeyRetries       int
-	MaxConcurrency      int
-	MaxBodyBytes        int
-	MaxImageBodyBytes   int
-	FirstByteTimeout    time.Duration
-	StreamTimeout       time.Duration
-	NonStreamTimeout    time.Duration
-	ChannelTypeTimeouts map[string]channelTypeTimeoutConfig
-	LogRetentionDays    int
-	ModelFuzzyMatch     bool
-	Cooldown            util.CooldownSettings
+	MaxKeyRetries                int
+	MaxConcurrency               int
+	MaxBodyBytes                 int
+	MaxImageBodyBytes            int
+	FirstByteTimeout             time.Duration
+	StreamTimeout                time.Duration
+	NonStreamTimeout             time.Duration
+	ChannelTypeTimeouts          map[string]channelTypeTimeoutConfig
+	LogRetentionDays             int
+	ModelFuzzyMatch              bool
+	GlobalCooldownDetectionRules *model.CooldownDetectionRules
+	Cooldown                     util.CooldownSettings
+}
+
+func loadGlobalCooldownDetectionRules(cs *ConfigService) *model.CooldownDetectionRules {
+	rules, err := parseGlobalCooldownDetectionRules(cs.GetString(globalCooldownDetectionRulesSettingKey, "{}"))
+	if err != nil {
+		log.Printf("[WARN] 无效的 %s，已回退为空规则: %v", globalCooldownDetectionRulesSettingKey, err)
+		return nil
+	}
+	return rules
 }
 
 // loadPositiveInt 读取必须为正数的配置项，非法值回退默认并告警。
@@ -413,17 +426,18 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 
 	return serverRuntimeConfig{
-		MaxKeyRetries:       maxKeyRetries,
-		MaxConcurrency:      loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
-		MaxBodyBytes:        loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
-		MaxImageBodyBytes:   loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
-		FirstByteTimeout:    firstByteTimeout,
-		StreamTimeout:       streamTimeout,
-		NonStreamTimeout:    nonStreamTimeout,
-		ChannelTypeTimeouts: channelTypeTimeouts,
-		LogRetentionDays:    logRetentionDays,
-		ModelFuzzyMatch:     modelFuzzyMatch,
-		Cooldown:            loadCooldownSettings(cs),
+		MaxKeyRetries:                maxKeyRetries,
+		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
+		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
+		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		FirstByteTimeout:             firstByteTimeout,
+		StreamTimeout:                streamTimeout,
+		NonStreamTimeout:             nonStreamTimeout,
+		ChannelTypeTimeouts:          channelTypeTimeouts,
+		LogRetentionDays:             logRetentionDays,
+		ModelFuzzyMatch:              modelFuzzyMatch,
+		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
+		Cooldown:                     loadCooldownSettings(cs),
 	}
 }
 

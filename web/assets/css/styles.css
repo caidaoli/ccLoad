@@ -3636,6 +3636,18 @@ body {
   min-width: 120px;
 }
 
+.global-cooldown-rules-control {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+}
+
+.global-cooldown-rules-summary {
+  color: var(--color-text-secondary);
+  font-size: 0.875rem;
+}
+
 .modal-content.runtime-metrics-modal {
   display: flex;
   flex-direction: column;

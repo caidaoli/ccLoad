@@ -710,7 +710,7 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 
 // ExtractUpstreamErrorCodeAndMessage returns the canonical error code and message
 // from the JSON shapes accepted by the built-in upstream classifier. It is used by
-// channel-local cooldown detection so configured rules and built-in handling see
+// configurable cooldown detection so configured rules and built-in handling see
 // the same normalized fields.
 func ExtractUpstreamErrorCodeAndMessage(responseBody []byte) (string, string) {
 	parsed, ok := parseStructuredQuotaError(responseBody)

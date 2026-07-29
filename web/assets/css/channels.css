@@ -4998,4 +4998,14 @@
       .cooldown-detection-test-controls {
         grid-template-columns: minmax(0, 1fr) max-content;
       }
+
+      #customRulesModal #advancedSettingsPanelCooldownDetection {
+        overflow-y: auto;
+      }
+
+      #customRulesModal #advancedSettingsPanelCooldownDetection .cooldown-detection-rule-list {
+        flex: 0 0 auto;
+        overflow-y: visible;
+        padding-right: 0;
+      }
     }

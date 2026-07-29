@@ -4,6 +4,9 @@ const t = window.t;
 let originalSettings = {}; // 保存原始值用于比较
 let runtimeMetricsLoading = false;
 let runtimeMetricsPreviousFocus = null;
+let globalCooldownRulesPreviousFocus = null;
+
+const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
 
 const byteSettingKeys = new Set([
   'max_body_bytes',
@@ -98,6 +101,129 @@ function bindSettingsPageActions() {
     });
     modal.dataset.bound = '1';
   }
+
+  bindGlobalCooldownRulesModal();
+}
+
+function bindGlobalCooldownRulesModal() {
+  const modal = document.getElementById('customRulesModal');
+  if (!modal || modal.dataset.bound) return;
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) {
+      closeGlobalCooldownRulesModal();
+      return;
+    }
+    const button = event.target.closest('[data-action]');
+    if (!button) return;
+    const index = Number(button.dataset.cooldownDetectionIndex);
+    switch (button.dataset.action) {
+      case 'close-global-cooldown-rules':
+        closeGlobalCooldownRulesModal();
+        break;
+      case 'apply-global-cooldown-rules':
+        applyGlobalCooldownRules();
+        break;
+      case 'add-cooldown-detection-rule':
+        window.addCooldownDetectionRule?.();
+        break;
+      case 'remove-cooldown-detection-rule':
+        window.removeCooldownDetectionRule?.(index);
+        break;
+      case 'move-cooldown-detection-rule':
+        window.moveCooldownDetectionRule?.(index, Number(button.dataset.cooldownDetectionDirection));
+        break;
+      case 'test-cooldown-detection-rules':
+        window.testCooldownDetectionRules?.();
+        break;
+    }
+  });
+  modal.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeGlobalCooldownRulesModal();
+      return;
+    }
+    if (event.key === 'Tab') trapModalFocus(modal, event);
+  });
+  modal.dataset.bound = '1';
+}
+
+function trapModalFocus(modal, event) {
+  const focusable = Array.from(modal.querySelectorAll(
+    'button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+  )).filter((element) => !element.hidden && element.offsetParent !== null);
+  if (focusable.length === 0) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+function parseGlobalCooldownRules(value) {
+  try {
+    const parsed = JSON.parse(String(value || '{}'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch (_) {
+    return {};
+  }
+}
+
+function globalCooldownRuleCount(value) {
+  const parsed = parseGlobalCooldownRules(value);
+  return Array.isArray(parsed.rules) ? parsed.rules.length : 0;
+}
+
+function updateGlobalCooldownRulesSummary(value) {
+  const summary = document.getElementById('global-cooldown-rules-summary');
+  if (!summary) return;
+  summary.textContent = t('settings.globalCooldownRules.ruleCount', {
+    count: globalCooldownRuleCount(value)
+  });
+}
+
+function openGlobalCooldownRulesModal(trigger) {
+  const modal = document.getElementById('customRulesModal');
+  const input = document.getElementById(globalCooldownRulesSettingKey);
+  if (!modal || !input || typeof window.resetCooldownDetectionState !== 'function') return;
+
+  globalCooldownRulesPreviousFocus = trigger || document.activeElement;
+  window.resetCooldownDetectionState(parseGlobalCooldownRules(input.value));
+  window.beginCooldownDetectionDraft?.();
+  document.querySelector('.app-container')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  modal.querySelector('.close-btn')?.focus();
+}
+
+function closeGlobalCooldownRulesModal() {
+  const modal = document.getElementById('customRulesModal');
+  if (!modal) return;
+
+  window.discardCooldownDetectionDraft?.();
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.querySelector('.app-container')?.removeAttribute('inert');
+  if (globalCooldownRulesPreviousFocus?.isConnected) globalCooldownRulesPreviousFocus.focus();
+  globalCooldownRulesPreviousFocus = null;
+}
+
+function applyGlobalCooldownRules() {
+  if (!window.validateCooldownDetectionDraft?.()) return;
+  if (!window.commitCooldownDetectionRules?.()) return;
+
+  const input = document.getElementById(globalCooldownRulesSettingKey);
+  if (!input) return;
+  const payload = window.collectCooldownDetectionRulesForSubmit?.();
+  input.value = JSON.stringify(payload || {});
+  markChanged(input);
+  updateGlobalCooldownRulesSummary(input.value);
+  closeGlobalCooldownRulesModal();
 }
 
 function openRuntimeMetricsModal() {
@@ -314,6 +440,7 @@ function getSettingGroupInfo(key) {
     { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
     { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
+    { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => k === globalCooldownRulesSettingKey },
   ];
 
   for (const d of defs) {
@@ -344,7 +471,8 @@ function getSettingOrder(key) {
     cooldown_timeout_seconds: 303,
     cooldown_rate_limit_seconds: 304,
     cooldown_min_seconds: 305,
-    cooldown_max_seconds: 306
+    cooldown_max_seconds: 306,
+    global_cooldown_detection_rules: 700
   };
   const normalizedKey = String(key || '').toLowerCase();
   return orders[normalizedKey] ?? 1000;
@@ -459,6 +587,11 @@ function initSettingsEventDelegation() {
 
   // 重置按钮点击
   tbody.addEventListener('click', (e) => {
+    const editGlobalRulesBtn = e.target.closest('[data-action="edit-global-cooldown-rules"]');
+    if (editGlobalRulesBtn) {
+      openGlobalCooldownRulesModal(editGlobalRulesBtn);
+      return;
+    }
     const resetBtn = e.target.closest('.setting-reset-btn');
     if (resetBtn) {
       resetSetting(resetBtn.dataset.key);
@@ -475,6 +608,20 @@ function initSettingsEventDelegation() {
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
+
+  if (setting.key === globalCooldownRulesSettingKey) {
+    const count = globalCooldownRuleCount(setting.value);
+    return `
+      <div class="global-cooldown-rules-control">
+        <input type="hidden" id="${safeKey}" value="${safeValue}">
+        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules">
+          ${escapeHtml(t('settings.globalCooldownRules.edit'))}
+        </button>
+        <span id="global-cooldown-rules-summary" class="global-cooldown-rules-summary">
+          ${escapeHtml(t('settings.globalCooldownRules.ruleCount', { count }))}
+        </span>
+      </div>`;
+  }
 
   if (byteSettingKeys.has(setting.key)) {
     return `
@@ -566,6 +713,7 @@ function syncSettingState(key, value) {
   if (control?.row) {
     control.row.style.background = '';
   }
+  if (key === globalCooldownRulesSettingKey) updateGlobalCooldownRulesSummary(normalizedValue);
 }
 
 async function saveAllSettings() {

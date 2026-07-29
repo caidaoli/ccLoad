@@ -9,7 +9,8 @@
   const VALID_SCOPES = new Set(['key', 'model', 'channel']);
   const VALID_MODES = new Set(['fixed', 'reset_time']);
   const DEFAULT_TIME_FORMAT = 'datetime';
-  const VALID_TIME_FORMATS = new Set(['datetime', 'unix', 'unix_ms', 'duration_seconds']);
+  const TIME_FORMAT_TIME_OF_DAY = 'time_of_day';
+  const VALID_TIME_FORMATS = new Set(['datetime', TIME_FORMAT_TIME_OF_DAY, 'unix', 'unix_ms', 'duration_seconds']);
   const hasWindow = typeof window !== 'undefined';
   const hasDocument = typeof document !== 'undefined';
 
@@ -153,7 +154,7 @@
         errors.push(`${label}: ${t('channels.cooldownDetection.errTimeFormat', 'Invalid time value type')}`);
         return;
       }
-      if (rule.time_format === DEFAULT_TIME_FORMAT) {
+      if (usesTimeLayout(rule.time_format)) {
         if (!rule.time_layout.trim() || rule.time_layout.trim().length > MAX_TIME_FIELD_LENGTH) {
           errors.push(`${label}: ${t('channels.cooldownDetection.errTimeLayout', 'A valid Go time layout is required')}`);
         }
@@ -182,7 +183,7 @@
       } else {
         entry.time_capture = rule.time_capture.trim();
         entry.time_format = rule.time_format;
-        if (rule.time_format === DEFAULT_TIME_FORMAT) {
+        if (usesTimeLayout(rule.time_format)) {
           entry.time_layout = rule.time_layout.trim();
           entry.timezone = rule.timezone.trim();
         }
@@ -379,19 +380,20 @@
     dynamic.appendChild(buildTextField(t('channels.cooldownDetection.timeCapture', 'Time capture'), rule.time_capture, 'reset_time', (value) => { rule.time_capture = value; }, t('channels.cooldownDetection.timeCaptureHelp', 'The named regex capture containing the reset time, for example reset_time.')));
     const timeFormat = buildSelectField(t('channels.cooldownDetection.timeFormat', 'Time value type'), rule.time_format, [
       ['datetime', t('channels.cooldownDetection.timeFormatDateTime', 'Date and time')],
+      [TIME_FORMAT_TIME_OF_DAY, t('channels.cooldownDetection.timeFormatTimeOfDay', 'Daily time')],
       ['unix', t('channels.cooldownDetection.timeFormatUnix', 'Unix seconds')],
       ['unix_ms', t('channels.cooldownDetection.timeFormatUnixMilliseconds', 'Unix milliseconds')],
       ['duration_seconds', t('channels.cooldownDetection.timeFormatDurationSeconds', 'Seconds from now')]
     ], (value) => {
       rule.time_format = value;
       updateTimeFormatFields(card, rule);
-    }, t('channels.cooldownDetection.timeFormatHelp', 'Choose how to parse the captured value. Only date and time requires a layout and timezone.'));
+    }, t('channels.cooldownDetection.timeFormatHelp', 'Choose how to parse the captured value. Date and time and daily time require a layout and timezone.'));
     timeFormat.classList.add('cooldown-detection-time-format');
     dynamic.appendChild(timeFormat);
     const timeLayout = buildTextField(t('channels.cooldownDetection.timeLayout', 'Layout'), rule.time_layout, '2006-01-02 15:04:05', (value) => { rule.time_layout = value; }, t('channels.cooldownDetection.timeLayoutHelp', 'Go time layout for a date-and-time capture, for example 2006-01-02 15:04:05.'));
     timeLayout.classList.add('cooldown-detection-time-format-datetime');
     dynamic.appendChild(timeLayout);
-    const timezone = buildTextField(t('channels.cooldownDetection.timezone', 'Timezone'), rule.timezone, 'UTC', (value) => { rule.timezone = value; }, t('channels.cooldownDetection.timezoneHelp', 'IANA timezone used when a date-and-time capture has no timezone, for example UTC or Asia/Shanghai.'));
+    const timezone = buildTextField(t('channels.cooldownDetection.timezone', 'Timezone'), rule.timezone, 'UTC', (value) => { rule.timezone = value; }, t('channels.cooldownDetection.timezoneHelp', 'IANA timezone used when a captured time has no timezone, for example UTC or Asia/Shanghai.'));
     timezone.classList.add('cooldown-detection-time-format-datetime');
     dynamic.appendChild(timezone);
     card.appendChild(dynamic);
@@ -481,12 +483,16 @@
   }
 
   function updateTimeFormatFields(card, rule) {
-    const usesDateTime = rule.time_format === DEFAULT_TIME_FORMAT;
+    const usesLayout = usesTimeLayout(rule.time_format);
     card.querySelectorAll('.cooldown-detection-time-format-datetime').forEach((field) => {
-      field.hidden = !usesDateTime;
+      field.hidden = !usesLayout;
     });
     const dynamic = card.querySelector('.cooldown-detection-dynamic');
-    if (dynamic) dynamic.classList.toggle('cooldown-detection-dynamic--compact', !usesDateTime);
+    if (dynamic) dynamic.classList.toggle('cooldown-detection-dynamic--compact', !usesLayout);
+  }
+
+  function usesTimeLayout(timeFormat) {
+    return timeFormat === DEFAULT_TIME_FORMAT || timeFormat === TIME_FORMAT_TIME_OF_DAY;
   }
 
   function showError(message) {
