@@ -105,7 +105,10 @@
       ),
       status: buildFilterGroup(
         `${buildFilterLabel('f_status', 'logs.statusCode', '状态码')}
-        ${buildInput('number', 'f_status', 'logs.statusPlaceholder', '如 200 / 403', 'filter-control--narrow')}`,
+        <div class="filter-combobox-wrapper filter-control--narrow">
+          <input id="f_status" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
+          <div id="f_status_dropdown" class="filter-dropdown" role="listbox"></div>
+        </div>`,
         groupClass
       ),
       logSource: buildFilterGroup(
