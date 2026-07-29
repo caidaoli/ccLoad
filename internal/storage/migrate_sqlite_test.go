@@ -64,6 +64,18 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	if val != "7" {
 		t.Errorf("log_retention_days=%q, want %q", val, "7")
 	}
+
+	var valueType, defaultValue string
+	if err := db.QueryRowContext(ctx, `
+		SELECT value, value_type, default_value
+		FROM system_settings
+		WHERE key = 'global_cooldown_detection_rules'
+	`).Scan(&val, &valueType, &defaultValue); err != nil {
+		t.Fatalf("get global_cooldown_detection_rules: %v", err)
+	}
+	if val != "{}" || valueType != "json" || defaultValue != "{}" {
+		t.Fatalf("global_cooldown_detection_rules=%q/%q/%q, want {}/json/{}", val, valueType, defaultValue)
+	}
 }
 
 func TestMigrate_SQLite_RebuildsOnlyDebugLogsForProtocolPayloads(t *testing.T) {

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -14,9 +16,40 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const maxCooldownDetectionTestBodyBytes = 256 * 1024
+const (
+	globalCooldownDetectionRulesSettingKey = "global_cooldown_detection_rules"
+	maxCooldownDetectionTestBodyBytes      = 256 * 1024
+	maxGlobalCooldownDetectionRulesBytes   = 64 * 1024
+)
 
 var upstreamStatusLogPattern = regexp.MustCompile(`(?i)\bupstream\s+status\s+(\d{3})\s*:`)
+
+func parseGlobalCooldownDetectionRules(value string) (*model.CooldownDetectionRules, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "null" || value == "{}" {
+		return nil, nil
+	}
+	if len(value) > maxGlobalCooldownDetectionRulesBytes {
+		return nil, fmt.Errorf("exceeds maximum size of %d bytes", maxGlobalCooldownDetectionRulesBytes)
+	}
+
+	var rules model.CooldownDetectionRules
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&rules); err != nil {
+		return nil, fmt.Errorf("invalid cooldown detection rules JSON: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, fmt.Errorf("invalid cooldown detection rules JSON: trailing data")
+	}
+	if err := cooldown.NormalizeCooldownDetectionRules(&rules); err != nil {
+		return nil, err
+	}
+	if rules.IsEmpty() {
+		return nil, nil
+	}
+	return &rules, nil
+}
 
 // cooldownDetectionTestRequest is intentionally independent of a persisted
 // channel. The editor must be able to test unsaved rule drafts without touching

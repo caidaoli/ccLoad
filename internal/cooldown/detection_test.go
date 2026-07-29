@@ -155,6 +155,63 @@ func TestEvaluateCooldownDetectionRules_ParsesConfiguredResetTimeFormats(t *test
 	}
 }
 
+func TestEvaluateCooldownDetectionRules_TimeOfDayUsesNextOccurrence(t *testing.T) {
+	location, err := time.LoadLocation("Asia/Shanghai")
+	if err != nil {
+		t.Fatalf("LoadLocation() error = %v", err)
+	}
+	rules := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+		Enabled: true, Name: "Daily availability", Priority: 0, StatusCodes: []int{403},
+		MessagePattern: `可调用时段为：(?P<reset_time>\d{2}:\d{2})~`,
+		Scope:          model.CooldownScopeChannel,
+		Mode:           model.CooldownModeResetTime,
+		TimeCapture:    "reset_time",
+		TimeFormat:     model.CooldownTimeFormatTimeOfDay,
+		TimeLayout:     "15:04",
+		Timezone:       "Asia/Shanghai",
+	}}}
+	if err = NormalizeCooldownDetectionRules(rules); err != nil {
+		t.Fatalf("NormalizeCooldownDetectionRules() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		now       time.Time
+		wantUntil time.Time
+	}{
+		{
+			name:      "before target uses today",
+			now:       time.Date(2026, time.July, 29, 8, 30, 0, 0, location),
+			wantUntil: time.Date(2026, time.July, 29, 9, 0, 0, 0, location),
+		},
+		{
+			name:      "at target uses tomorrow",
+			now:       time.Date(2026, time.July, 29, 9, 0, 0, 0, location),
+			wantUntil: time.Date(2026, time.July, 30, 9, 0, 0, 0, location),
+		},
+		{
+			name:      "after target uses tomorrow",
+			now:       time.Date(2026, time.July, 29, 18, 0, 0, 0, location),
+			wantUntil: time.Date(2026, time.July, 30, 9, 0, 0, 0, location),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			evaluation := EvaluateCooldownDetectionRules(rules, DetectionInput{
+				StatusCode: 403,
+				ErrorBody:  []byte(`{"error":{"message":"当前分组本时段不可调用，可调用时段为：09:00~18:00"}}`),
+			}, tt.now)
+			if !evaluation.Actionable {
+				t.Fatalf("evaluation = %+v, want actionable", evaluation)
+			}
+			if got := evaluation.CooldownUntil; !got.Equal(tt.wantUntil) {
+				t.Fatalf("CooldownUntil = %v, want %v", got, tt.wantUntil)
+			}
+		})
+	}
+}
+
 func TestEvaluateCooldownDetectionRules_ParsesResetTimeAndFallsBackWhenInvalid(t *testing.T) {
 	rules := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 		Enabled: true, Name: "Reset time", Priority: 0, StatusCodes: []int{429},

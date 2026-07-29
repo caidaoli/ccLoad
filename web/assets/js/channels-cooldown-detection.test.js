@@ -92,6 +92,30 @@ test('Unix 和剩余秒数不要求布局和时区', () => {
   assert.deepEqual(errors, []);
 });
 
+test('每日时间点要求并提交布局和时区', () => {
+  mod.resetCooldownDetectionState({
+    rules: [{
+      enabled: true,
+      name: 'Daily availability',
+      priority: 0,
+      status_codes: [403],
+      message_pattern: '可调用时段为：(?P<reset_time>\\d{2}:\\d{2})~',
+      scope: 'channel',
+      mode: 'reset_time',
+      time_capture: 'reset_time',
+      time_format: 'time_of_day',
+      time_layout: '15:04',
+      timezone: 'Asia/Shanghai'
+    }]
+  });
+
+  assert.deepEqual(mod.validateCooldownDetectionRulesForSubmit(), []);
+  const payload = mod.collectCooldownDetectionRulesForSubmit();
+  assert.equal(payload.rules[0].time_format, 'time_of_day');
+  assert.equal(payload.rules[0].time_layout, '15:04');
+  assert.equal(payload.rules[0].timezone, 'Asia/Shanghai');
+});
+
 test('提交前校验拒绝空规则名称', () => {
   mod.resetCooldownDetectionState({
     rules: [{

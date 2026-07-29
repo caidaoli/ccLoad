@@ -25,7 +25,7 @@ const (
 )
 
 // DetectionInput contains the upstream response fields available to a
-// channel-local cooldown rule. Network failures deliberately do not enter this
+// configured cooldown rule. Network failures deliberately do not enter this
 // matcher because they do not have a trustworthy upstream error body.
 type DetectionInput struct {
 	StatusCode int
@@ -176,7 +176,7 @@ func normalizeCooldownDetectionRule(rule *model.CooldownDetectionRule, path stri
 			return nil, fmt.Errorf("%s.time_capture: %q is not present in message_pattern", path, rule.TimeCapture)
 		}
 		switch rule.TimeFormat {
-		case model.CooldownTimeFormatDateTime:
+		case model.CooldownTimeFormatDateTime, model.CooldownTimeFormatTimeOfDay:
 			if rule.TimeLayout == "" || len(rule.TimeLayout) > maxCooldownDetectionTimeField {
 				return nil, fmt.Errorf("%s.time_layout: required and limited to %d bytes", path, maxCooldownDetectionTimeField)
 			}
@@ -192,7 +192,7 @@ func normalizeCooldownDetectionRule(rule *model.CooldownDetectionRule, path stri
 			rule.TimeLayout = ""
 			rule.Timezone = ""
 		default:
-			return nil, fmt.Errorf("%s.time_format: invalid value %q (allowed: datetime, unix, unix_ms, duration_seconds)", path, rule.TimeFormat)
+			return nil, fmt.Errorf("%s.time_format: invalid value %q (allowed: datetime, time_of_day, unix, unix_ms, duration_seconds)", path, rule.TimeFormat)
 		}
 		rule.CooldownSeconds = 0
 	}
@@ -213,6 +213,21 @@ func (r *compiledCooldownDetectionRule) parseCapturedResetTime(capture string, n
 		until, err := time.ParseInLocation(r.rule.TimeLayout, capture, r.location)
 		if err != nil {
 			return time.Time{}, "reset_time_parse_failed"
+		}
+		return until, ""
+	case model.CooldownTimeFormatTimeOfDay:
+		clock, err := time.ParseInLocation(r.rule.TimeLayout, capture, r.location)
+		if err != nil {
+			return time.Time{}, "reset_time_parse_failed"
+		}
+		localNow := now.In(r.location)
+		until := time.Date(
+			localNow.Year(), localNow.Month(), localNow.Day(),
+			clock.Hour(), clock.Minute(), clock.Second(), clock.Nanosecond(),
+			r.location,
+		)
+		if !until.After(localNow) {
+			until = until.AddDate(0, 0, 1)
 		}
 		return until, ""
 	case model.CooldownTimeFormatUnix:
@@ -274,7 +289,7 @@ func isValidCaptureName(name string) bool {
 	return true
 }
 
-// EvaluateCooldownDetectionRules evaluates the configured channel rules in
+// EvaluateCooldownDetectionRules evaluates the configured rules in
 // priority order. It does not persist state and can therefore be shared by the
 // proxy path and the admin rule-test endpoint.
 func EvaluateCooldownDetectionRules(rules *model.CooldownDetectionRules, input DetectionInput, now time.Time) DetectionEvaluation {
