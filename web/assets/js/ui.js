@@ -654,13 +654,33 @@ window.WebAuth = window.WebAuth || {
     }
   }
 
+  function createBrandWordmark() {
+    const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    const use = document.createElementNS('http://www.w3.org/2000/svg', 'use');
+    el.setAttribute('viewBox', '0 0 132 36');
+    el.setAttribute('aria-hidden', 'true');
+    el.classList.add('brand-wordmark');
+    use.setAttribute('href', '/web/brand-wordmark.svg#brand-wordmark');
+    use.setAttribute('width', '132');
+    use.setAttribute('height', '36');
+    el.appendChild(use);
+    return el;
+  }
+
   function buildTopbar(active) {
     const bar = h('header', { class: 'topbar' });
 
-    // CC 图标 + 脉冲/角标包装
-    const iconImg = h('img', { class: 'brand-icon', src: '/web/favicon.svg', alt: 'Logo' });
+    // 图标与字标独立复用；活动动画层只属于图标
+    const iconImg = h('img', { class: 'brand-mark', src: '/web/brand-mark.svg', alt: '' });
+    const wordmark = createBrandWordmark();
+    const speedLines = h('span', { class: 'brand-speed-lines', 'aria-hidden': 'true' }, [
+      h('i'), h('i'), h('i'), h('i'), h('i')
+    ]);
+    const flowDots = h('span', { class: 'brand-flow-dots', 'aria-hidden': 'true' }, [
+      h('i'), h('i'), h('i')
+    ]);
     _activeBadge = h('span', { class: 'brand-badge' }, '0');
-    _activeWrap = h('div', { class: 'brand-icon-wrap' }, [iconImg, _activeBadge]);
+    _activeWrap = h('span', { class: 'brand-icon-wrap' }, [speedLines, iconImg, flowDots, _activeBadge]);
 
     const left = h('div', { class: 'topbar-left' }, [
       h('a', {
@@ -668,10 +688,11 @@ window.WebAuth = window.WebAuth || {
         href: GITHUB_REPO_URL,
         target: '_blank',
         rel: 'noopener noreferrer',
-        title: t('nav.githubRepo')
+        title: t('nav.githubRepo'),
+        'aria-label': 'ccLoad — API Load Balancer & Proxy'
       }, [
         _activeWrap,
-        h('div', { class: 'brand-text' }, 'Claude Code & Codex Proxy')
+        wordmark
       ])
     ]);
     const role = window.getWebRole();
