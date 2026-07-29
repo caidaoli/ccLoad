@@ -11,7 +11,7 @@
       <text x="4" y="24.5" fill="currentColor" textLength="34" lengthAdjust="spacingAndGlyphs">cc</text>
       <text x="40" y="24.5" fill="#2563eb" textLength="17" lengthAdjust="spacingAndGlyphs">L</text>
       <circle cx="68.5" cy="16" r="8.5" fill="url(#wordmark-blue-gradient)"/>
-      <path d="M71.2 5 61.5 16.5h5.9l-2 10.5 11.2-13.5h-6.3Z" fill="#fbbf24"/>
+      <path d="M70.7 3.2 64 15.4h3.9L66 28.8l8-14.7h-4.2Z" fill="#fbbf24" transform="rotate(34.6 68.5 16)"/>
       <text x="80" y="24.5" fill="#2563eb" textLength="46" lengthAdjust="spacingAndGlyphs">ad</text>
     </g>
 
