@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,7 +22,10 @@ const (
 	defaultResponsesExecutionTranscriptBudgetBytes = 128 * 1024 * 1024
 )
 
-var errResponsesExecutionSessionCapacity = errors.New("responses execution session capacity exceeded")
+var (
+	errResponsesExecutionSessionCapacity         = errors.New("responses execution session capacity exceeded")
+	errResponsesExecutionSessionTranscriptBudget = errors.New("responses execution transcript budget exceeded")
+)
 
 // responsesExecutionSession owns conversation state. Neither transcript nor
 // upstream transport belongs to a particular downstream TCP/WebSocket connection.
@@ -33,6 +37,9 @@ type responsesExecutionSession struct {
 	active     int
 	storeKey   string
 	transient  bool
+
+	subjectFingerprint string
+	sessionFingerprint string
 
 	transcriptBytes atomic.Int64
 }
@@ -85,6 +92,10 @@ type responsesExecutionSessionStoreStats struct {
 	TranscriptBytes                  int64  `json:"transcript_bytes"`
 	MaxTranscriptBytes               int64  `json:"max_transcript_bytes"`
 	MaxSessions                      int    `json:"max_sessions"`
+	TTLExpired                       uint64 `json:"ttl_expired"`
+	CapacityRejected                 uint64 `json:"capacity_rejected"`
+	BudgetRejected                   uint64 `json:"budget_rejected"`
+	PreviousResponseMisses           uint64 `json:"previous_response_misses"`
 }
 
 // responsesExecutionSessionStore is a single-process, in-memory session map.
@@ -93,14 +104,18 @@ type responsesExecutionSessionStoreStats struct {
 // reconnect and resend the full transcript, which is the documented contract
 // of the WebSocket protocol this store backs.
 type responsesExecutionSessionStore struct {
-	mu                 sync.Mutex
-	sessions           map[string]*responsesExecutionSession
-	configService      *ConfigService
-	ttlOverride        time.Duration // non-zero overrides configService (tests only)
-	maxSessions        int
-	maxTranscriptBytes int64
-	maxBodyBytes       int64
-	nextTransientID    uint64
+	mu                     sync.Mutex
+	sessions               map[string]*responsesExecutionSession
+	configService          *ConfigService
+	ttlOverride            time.Duration // non-zero overrides configService (tests only)
+	maxSessions            int
+	maxTranscriptBytes     int64
+	maxBodyBytes           int64
+	nextTransientID        uint64
+	ttlExpired             uint64
+	capacityRejected       uint64
+	budgetRejected         uint64
+	previousResponseMisses uint64
 }
 
 func newResponsesExecutionSessionStore(cfg *ConfigService, maxBodyBytes int64) *responsesExecutionSessionStore {
@@ -167,11 +182,21 @@ func (s *responsesExecutionSessionStore) commit(
 	closeResponsesExecutionSessions(evicted)
 }
 
-// responsesExecutionSessionID returns only the explicit local execution-session
-// identity. Session_id and prompt_cache_key are upstream cache-routing signals;
-// they must never own mutable transcript state or the per-session turn lock.
+// responsesExecutionSessionID returns the explicit local execution identity.
+// Codex uses Session-Id for the top-level session and Thread-Id for independent
+// parent/subagent threads. Clients without Thread-Id retain the Session-Id-only
+// contract. Body fields such as session_id and prompt_cache_key remain upstream
+// cache-routing signals and must never own mutable transcript state.
 func responsesExecutionSessionID(header http.Header) string {
-	return strings.TrimSpace(header.Get("Session-Id"))
+	sessionID := strings.TrimSpace(header.Get("Session-Id"))
+	if sessionID == "" {
+		return ""
+	}
+	threadID := strings.TrimSpace(header.Get("Thread-Id"))
+	if threadID == "" {
+		return sessionID
+	}
+	return sessionID + "\x00thread\x00" + threadID
 }
 
 func responsesExecutionSessionKey(subject, sessionID string) string {
@@ -179,18 +204,48 @@ func responsesExecutionSessionKey(subject, sessionID string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+func responsesExecutionFingerprint(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "none"
+	}
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:8])
+}
+
+func logResponsesExecutionSessionEvent(
+	reason string,
+	subjectFingerprint string,
+	sessionFingerprint string,
+	responseFingerprint string,
+) {
+	log.Printf(
+		"[WARN] Responses execution session event reason=%s subject_fingerprint=%s session_fingerprint=%s response_fingerprint=%s",
+		reason,
+		subjectFingerprint,
+		sessionFingerprint,
+		responseFingerprint,
+	)
+}
+
+func logResponsesExecutionSessionRemovals(reason string, sessions []*responsesExecutionSession) {
+	for _, session := range sessions {
+		logResponsesExecutionSessionEvent(
+			reason,
+			session.subjectFingerprint,
+			session.sessionFingerprint,
+			responsesExecutionFingerprint(session.transcript.lastResponseID),
+		)
+	}
+}
+
 // acquire returns a private transient session unless the client supplied an
 // explicit stable Session-Id. This prevents unrelated requests sharing a model or IP
 // from ever sharing conversation state.
 //
-// Capacity is one flat ceiling shared by every subject — single instance, no
-// per-subject bookkeeping. Once full, acquire evicts the least-recently-used
-// *idle* session (active == 0) before giving up: an idle session is only
-// cached transcript state, and the evicted client recovers through the
-// documented replay path (resend the full conversation input). Without this,
-// one subject's 32 idle sessions would starve every other subject for a full
-// TTL. Live sessions (active > 0) are never evicted — when all sessions are
-// actively attached, acquire rejects with a clear capacity error.
+// Stable sessions are protocol state, not cache entries. Capacity and transcript
+// pressure may reclaim only transient sessions; a stable session lives until its
+// TTL expires or the process exits.
 func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*responsesExecutionSession, func(), error) {
 	now := time.Now()
 	subject = strings.TrimSpace(subject)
@@ -208,24 +263,37 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 	if stable {
 		session = s.sessions[key]
 	}
+	evicted, overBudget := s.trimTranscriptBudgetLocked()
+	if overBudget {
+		s.budgetRejected++
+		s.mu.Unlock()
+		logResponsesExecutionSessionRemovals("ttl_expired", expired)
+		closeResponsesExecutionSessions(append(expired, evicted...))
+		logResponsesExecutionSessionEvent(
+			"capacity_budget",
+			responsesExecutionFingerprint(subject),
+			responsesExecutionFingerprint(sessionID),
+			"none",
+		)
+		return nil, nil, errResponsesExecutionSessionTranscriptBudget
+	}
 	if session == nil {
-		var overBudget bool
-		var evicted []*responsesExecutionSession
-		evicted, overBudget = s.trimTranscriptBudgetLocked()
-		expired = append(expired, evicted...)
-		if overBudget {
-			s.mu.Unlock()
-			closeResponsesExecutionSessions(expired)
-			return nil, nil, errResponsesExecutionSessionCapacity
-		}
 		if limit := s.maxSessionsLimit(); limit > 0 && len(s.sessions) >= limit {
-			evicted := s.evictIdleLocked()
-			if evicted == nil {
+			victim := s.evictIdleLocked(true)
+			if victim == nil {
+				s.capacityRejected++
 				s.mu.Unlock()
-				closeResponsesExecutionSessions(expired)
+				logResponsesExecutionSessionRemovals("ttl_expired", expired)
+				closeResponsesExecutionSessions(append(expired, evicted...))
+				logResponsesExecutionSessionEvent(
+					"capacity_session",
+					responsesExecutionFingerprint(subject),
+					responsesExecutionFingerprint(sessionID),
+					"none",
+				)
 				return nil, nil, errResponsesExecutionSessionCapacity
 			}
-			expired = append(expired, evicted)
+			evicted = append(evicted, victim)
 		}
 		if !stable {
 			s.nextTransientID++
@@ -234,12 +302,15 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 		session = newResponsesExecutionSession(now, s.maxBodyBytes)
 		session.storeKey = key
 		session.transient = !stable
+		session.subjectFingerprint = responsesExecutionFingerprint(subject)
+		session.sessionFingerprint = responsesExecutionFingerprint(sessionID)
 		s.sessions[key] = session
 	}
 	session.active++
 	session.lastAccess = now
 	s.mu.Unlock()
-	closeResponsesExecutionSessions(expired)
+	logResponsesExecutionSessionRemovals("ttl_expired", expired)
+	closeResponsesExecutionSessions(append(expired, evicted...))
 
 	var once sync.Once
 	return session, func() {
@@ -260,14 +331,64 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 	}, nil
 }
 
+func (s *responsesExecutionSessionStore) admitTurn(session *responsesExecutionSession) error {
+	if session == nil {
+		return nil
+	}
+	s.mu.Lock()
+	evicted, overBudget := s.trimTranscriptBudgetLocked()
+	if overBudget {
+		s.budgetRejected++
+	}
+	s.mu.Unlock()
+	closeResponsesExecutionSessions(evicted)
+	if !overBudget {
+		return nil
+	}
+	logResponsesExecutionSessionEvent(
+		"capacity_budget",
+		session.subjectFingerprint,
+		session.sessionFingerprint,
+		responsesExecutionFingerprint(session.transcript.lastResponseID),
+	)
+	return errResponsesExecutionSessionTranscriptBudget
+}
+
+func (s *responsesExecutionSessionStore) recordPreviousResponseMiss(
+	session *responsesExecutionSession,
+	previousResponseID string,
+	emptySession bool,
+) {
+	if session == nil {
+		return
+	}
+	s.mu.Lock()
+	s.previousResponseMisses++
+	s.mu.Unlock()
+	reason := "stale_response_id"
+	if emptySession {
+		reason = "empty_session"
+	}
+	logResponsesExecutionSessionEvent(
+		reason,
+		session.subjectFingerprint,
+		session.sessionFingerprint,
+		responsesExecutionFingerprint(previousResponseID),
+	)
+}
+
 func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreStats {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
 	stats := responsesExecutionSessionStoreStats{
-		Sessions:           len(s.sessions),
-		MaxSessions:        s.maxSessionsLimit(),
-		MaxTranscriptBytes: s.transcriptBudgetLimit(),
+		Sessions:               len(s.sessions),
+		MaxSessions:            s.maxSessionsLimit(),
+		MaxTranscriptBytes:     s.transcriptBudgetLimit(),
+		TTLExpired:             s.ttlExpired,
+		CapacityRejected:       s.capacityRejected,
+		BudgetRejected:         s.budgetRejected,
+		PreviousResponseMisses: s.previousResponseMisses,
 	}
 	for _, session := range s.sessions {
 		stats.ActiveAttachments += session.active
@@ -291,13 +412,12 @@ func (s *responsesExecutionSessionStore) stats() responsesExecutionSessionStoreS
 	return stats
 }
 
-// evictIdleLocked removes and returns the least-recently-used idle session,
-// or nil when every session is actively attached. Caller must hold s.mu and
-// close the returned session after unlocking.
-func (s *responsesExecutionSessionStore) evictIdleLocked() *responsesExecutionSession {
+// evictIdleLocked removes and returns the least-recently-used eligible idle
+// session. skipStable protects TTL-bound protocol state from resource pressure.
+func (s *responsesExecutionSessionStore) evictIdleLocked(skipStable bool) *responsesExecutionSession {
 	var victim *responsesExecutionSession
 	for _, session := range s.sessions {
-		if session.active != 0 {
+		if session.active != 0 || (skipStable && !session.transient) {
 			continue
 		}
 		if victim == nil || session.lastAccess.Before(victim.lastAccess) {
@@ -316,7 +436,7 @@ func (s *responsesExecutionSessionStore) trimTranscriptBudgetLocked() ([]*respon
 	used := s.transcriptBytesLocked()
 	var evicted []*responsesExecutionSession
 	for used > limit {
-		victim := s.evictIdleLocked()
+		victim := s.evictIdleLocked(true)
 		if victim == nil {
 			return evicted, true
 		}
@@ -343,6 +463,7 @@ func (s *responsesExecutionSessionStore) removeExpiredLocked(now time.Time) []*r
 			expired = append(expired, session)
 		}
 	}
+	s.ttlExpired += uint64(len(expired))
 	return expired
 }
 
@@ -360,9 +481,9 @@ func (s *responsesExecutionSessionStore) cleanup(now time.Time) {
 	expired := s.removeExpiredLocked(now)
 	s.closeDetachedTransportsLocked(now)
 	evicted, _ := s.trimTranscriptBudgetLocked()
-	expired = append(expired, evicted...)
 	s.mu.Unlock()
-	closeResponsesExecutionSessions(expired)
+	logResponsesExecutionSessionRemovals("ttl_expired", expired)
+	closeResponsesExecutionSessions(append(expired, evicted...))
 }
 
 func (s *responsesExecutionSessionStore) close() {
