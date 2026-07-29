@@ -743,6 +743,7 @@ window.I18N_LOCALES['en'] = {
   // ============================================================
   'logs.title': 'Request Logs - Claude Code & Codex Proxy',
   'logs.statusCode': 'Status',
+  'logs.allStatusCodes': 'All statuses',
   'logs.logSource': 'Source',
   'logs.statusPlaceholder': 'e.g. 200 / 403',
   'logs.colTime': 'Time',

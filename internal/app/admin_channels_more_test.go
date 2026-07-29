@@ -6,7 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
@@ -232,6 +234,8 @@ func TestHandleBatchUpdatePriority(t *testing.T) {
 func TestHandleBatchSetEnabled(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.cooldownManager = cooldown.NewManager(store, server)
 
 	ctx := context.Background()
 	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
@@ -310,6 +314,85 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 		}
 		if updated2.Enabled {
 			t.Fatalf("c2 should remain disabled")
+		}
+	})
+
+	t.Run("enable clears all cooldowns", func(t *testing.T) {
+		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+			{ChannelID: c1.ID, KeyIndex: 0, APIKey: "sk-c1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: c2.ID, KeyIndex: 0, APIKey: "sk-c2", KeyStrategy: model.KeyStrategySequential},
+		}); err != nil {
+			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+		}
+
+		cooldownUntil := time.Now().Add(2 * time.Minute)
+		for _, channelID := range []int64{c1.ID, c2.ID} {
+			if err := store.SetChannelCooldown(ctx, channelID, cooldownUntil); err != nil {
+				t.Fatalf("SetChannelCooldown(%d) failed: %v", channelID, err)
+			}
+			if err := store.SetKeyCooldown(ctx, channelID, 0, cooldownUntil); err != nil {
+				t.Fatalf("SetKeyCooldown(%d) failed: %v", channelID, err)
+			}
+			if err := store.SetModelCooldown(ctx, channelID, "m", cooldownUntil); err != nil {
+				t.Fatalf("SetModelCooldown(%d) failed: %v", channelID, err)
+			}
+		}
+
+		if _, err := server.getAllChannelCooldowns(ctx); err != nil {
+			t.Fatalf("prewarm channel cooldowns failed: %v", err)
+		}
+		if _, err := server.getAllKeyCooldowns(ctx); err != nil {
+			t.Fatalf("prewarm key cooldowns failed: %v", err)
+		}
+		if _, err := server.getAllModelCooldowns(ctx); err != nil {
+			t.Fatalf("prewarm model cooldowns failed: %v", err)
+		}
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-enabled", map[string]any{
+			"channel_ids": []int64{c1.ID, c2.ID},
+			"enabled":     true,
+		}))
+		server.HandleBatchSetEnabled(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		channelCooldowns, err := server.getAllChannelCooldowns(ctx)
+		if err != nil {
+			t.Fatalf("get channel cooldowns failed: %v", err)
+		}
+		keyCooldowns, err := server.getAllKeyCooldowns(ctx)
+		if err != nil {
+			t.Fatalf("get key cooldowns failed: %v", err)
+		}
+		modelCooldowns, err := server.getAllModelCooldowns(ctx)
+		if err != nil {
+			t.Fatalf("get model cooldowns failed: %v", err)
+		}
+		for _, channelID := range []int64{c1.ID, c2.ID} {
+			cfg, err := store.GetConfig(ctx, channelID)
+			if err != nil {
+				t.Fatalf("GetConfig(%d) failed: %v", channelID, err)
+			}
+			if !cfg.Enabled || cfg.CooldownUntil != 0 || cfg.CooldownDurationMs != 0 {
+				t.Fatalf("channel %d not enabled with cleared cooldown: %+v", channelID, cfg)
+			}
+			keys, err := store.GetAPIKeys(ctx, channelID)
+			if err != nil {
+				t.Fatalf("GetAPIKeys(%d) failed: %v", channelID, err)
+			}
+			if len(keys) != 1 || keys[0].CooldownUntil != 0 || keys[0].CooldownDurationMs != 0 {
+				t.Fatalf("channel %d key cooldown not cleared: %+v", channelID, keys)
+			}
+			if _, ok := channelCooldowns[channelID]; ok {
+				t.Fatalf("channel %d remains in channel cooldown cache: %+v", channelID, channelCooldowns)
+			}
+			if len(keyCooldowns[channelID]) != 0 {
+				t.Fatalf("channel %d remains in key cooldown cache: %+v", channelID, keyCooldowns[channelID])
+			}
+			if len(modelCooldowns[channelID]) != 0 {
+				t.Fatalf("channel %d remains in model cooldown cache: %+v", channelID, modelCooldowns[channelID])
+			}
 		}
 	})
 }

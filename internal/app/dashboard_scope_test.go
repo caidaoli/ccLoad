@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -434,8 +435,8 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	const sensitiveLastRequestMessage = "SENSITIVE_STATS_SENTINEL https://upstream.example/v1?key=sk-stats-secret"
 	for _, entry := range []*model.LogEntry{
 		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel.ID, StatusCode: 200, Message: sensitiveLastRequestMessage, AuthTokenID: 42},
-		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel2.ID, StatusCode: 200, AuthTokenID: 42},
-		{Time: now, Model: "foreign-model", LogSource: model.LogSourceProxy, ChannelID: foreignChannel.ID, StatusCode: 200, AuthTokenID: 99},
+		{Time: now, Model: "owner-model", LogSource: model.LogSourceProxy, ChannelID: ownerChannel2.ID, StatusCode: 201, AuthTokenID: 42},
+		{Time: now, Model: "foreign-model", LogSource: model.LogSourceProxy, ChannelID: foreignChannel.ID, StatusCode: 503, AuthTokenID: 99},
 	} {
 		if err := store.AddLog(ctx, entry); err != nil {
 			t.Fatalf("add log: %v", err)
@@ -448,6 +449,9 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	models := mustParseAPIResponse[ModelsChannelsResponse](t, modelsW.Body.Bytes()).Data
 	if len(models.Models) != 1 || models.Models[0] != "owner-model" {
 		t.Fatalf("models=%v, want [owner-model]", models.Models)
+	}
+	if got, want := models.StatusCodes, []int{200, 201}; !slices.Equal(got, want) {
+		t.Fatalf("model status codes=%v, want %v", got, want)
 	}
 	wantChannels := map[int64]string{ownerChannel.ID: "owner-channel", ownerChannel2.ID: "owner-channel-2"}
 	if got := channelNameMap(models.Channels); !reflect.DeepEqual(got, wantChannels) {
@@ -550,15 +554,19 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 	bootstrapCtx.Set(webIdentityContextKey, WebIdentity{Role: model.WebRoleAPIToken, AuthTokenID: 42})
 	server.HandleLogsBootstrap(bootstrapCtx)
 	bootstrap := mustParseAPIResponse[struct {
-		Models     []string              `json:"models"`
-		Channels   []model.ChannelNameID `json:"channels"`
-		AuthTokens []json.RawMessage     `json:"auth_tokens"`
+		Models      []string              `json:"models"`
+		Channels    []model.ChannelNameID `json:"channels"`
+		StatusCodes []int                 `json:"status_codes"`
+		AuthTokens  []json.RawMessage     `json:"auth_tokens"`
 	}](t, bootstrapW.Body.Bytes()).Data
 	if len(bootstrap.Models) != 1 || bootstrap.Models[0] != "owner-model" {
 		t.Fatalf("bootstrap models=%v, want [owner-model]", bootstrap.Models)
 	}
 	if got := channelNameMap(bootstrap.Channels); !reflect.DeepEqual(got, wantChannels) {
 		t.Fatalf("bootstrap channels=%v, want %v", got, wantChannels)
+	}
+	if got, want := bootstrap.StatusCodes, []int{200, 201}; !slices.Equal(got, want) {
+		t.Fatalf("bootstrap status codes=%v, want %v", got, want)
 	}
 	if len(bootstrap.AuthTokens) != 0 {
 		t.Fatalf("bootstrap auth tokens=%d, want 0", len(bootstrap.AuthTokens))

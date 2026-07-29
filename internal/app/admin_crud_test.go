@@ -1115,6 +1115,116 @@ func TestHandleUpdateChannel_ClearAllCooldownsShouldTakeEffectImmediately(t *tes
 	}
 }
 
+func TestHandleUpdateChannel_EnableClearsAllCooldownsImmediately(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.cooldownManager = cooldown.NewManager(store, server)
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "Enable-Cooldown-Channel",
+		URL:          "https://api.example.com",
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+		Enabled:      false,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   created.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-enable-test-key",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建测试 API Key 失败: %v", err)
+	}
+
+	cooldownUntil := time.Now().Add(2 * time.Minute)
+	if err := store.SetChannelCooldown(ctx, created.ID, cooldownUntil); err != nil {
+		t.Fatalf("设置渠道冷却失败: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, created.ID, 0, cooldownUntil); err != nil {
+		t.Fatalf("设置 Key 冷却失败: %v", err)
+	}
+	if err := store.SetModelCooldown(ctx, created.ID, "model-1", cooldownUntil); err != nil {
+		t.Fatalf("设置模型冷却失败: %v", err)
+	}
+	storedBefore, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询启用前渠道失败: %v", err)
+	}
+	keysBefore, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询启用前 Key 失败: %v", err)
+	}
+	modelCooldownsBefore, err := store.GetAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("查询启用前模型冷却失败: %v", err)
+	}
+	if storedBefore.CooldownUntil <= time.Now().Unix() || len(keysBefore) != 1 ||
+		keysBefore[0].CooldownUntil <= time.Now().Unix() || len(modelCooldownsBefore[created.ID]) != 1 {
+		t.Fatalf("预期启用前存在三层冷却，实际 channel=%+v keys=%+v models=%+v",
+			storedBefore, keysBefore, modelCooldownsBefore[created.ID])
+	}
+
+	channelPath := "/admin/channels/" + strconv.FormatInt(created.ID, 10)
+	beforeCtx, beforeWriter := newTestContext(t, newRequest(http.MethodGet, channelPath, nil))
+	server.handleGetChannel(beforeCtx, created.ID)
+	if beforeWriter.Code != http.StatusOK {
+		t.Fatalf("预热渠道冷却缓存失败: %d body=%s", beforeWriter.Code, beforeWriter.Body.String())
+	}
+
+	updateCtx, updateWriter := newTestContext(t, newJSONRequest(t, http.MethodPut, channelPath, map[string]any{
+		"enabled": true,
+	}))
+	updateCtx.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.handleUpdateChannel(updateCtx, created.ID)
+	if updateWriter.Code != http.StatusOK {
+		t.Fatalf("启用渠道失败: %d body=%s", updateWriter.Code, updateWriter.Body.String())
+	}
+
+	updated := mustParseAPIResponse[*model.Config](t, updateWriter.Body.Bytes())
+	if updated.Data == nil || !updated.Data.Enabled {
+		t.Fatalf("预期渠道已启用，实际 data=%+v", updated.Data)
+	}
+
+	afterCtx, afterWriter := newTestContext(t, newRequest(http.MethodGet, channelPath, nil))
+	server.handleGetChannel(afterCtx, created.ID)
+	if afterWriter.Code != http.StatusOK {
+		t.Fatalf("启用后查询渠道失败: %d body=%s", afterWriter.Code, afterWriter.Body.String())
+	}
+	after := mustParseAPIResponse[ChannelWithCooldown](t, afterWriter.Body.Bytes())
+	if after.Data.CooldownUntil != nil || after.Data.CooldownRemainingMS > 0 {
+		t.Fatalf("预期渠道冷却已清除，实际 cooldown_until=%v cooldown_remaining_ms=%d", after.Data.CooldownUntil, after.Data.CooldownRemainingMS)
+	}
+	for _, keyCooldown := range after.Data.KeyCooldowns {
+		if keyCooldown.CooldownUntil != nil || keyCooldown.CooldownRemainingMS > 0 {
+			t.Fatalf("预期 Key 冷却已清除，实际 key_cooldowns=%+v", after.Data.KeyCooldowns)
+		}
+	}
+	if len(after.Data.ModelCooldowns) != 0 {
+		t.Fatalf("预期模型冷却已清除，实际 model_cooldowns=%+v", after.Data.ModelCooldowns)
+	}
+
+	stored, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询启用后渠道失败: %v", err)
+	}
+	if stored.CooldownUntil != 0 || stored.CooldownDurationMs != 0 {
+		t.Fatalf("预期渠道完整冷却状态已清除，实际 cooldown_until=%d duration_ms=%d", stored.CooldownUntil, stored.CooldownDurationMs)
+	}
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("查询启用后 Key 失败: %v", err)
+	}
+	if len(keys) != 1 || keys[0].CooldownUntil != 0 || keys[0].CooldownDurationMs != 0 {
+		t.Fatalf("预期 Key 完整冷却状态已清除，实际 keys=%+v", keys)
+	}
+}
+
 func TestHandleAPIKeyToggleRejectsMissingOrNegativeKeyIndex(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

@@ -742,6 +742,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   'logs.title': '请求日志 - Claude Code & Codex Proxy',
   'logs.statusCode': '状态码',
+  'logs.allStatusCodes': '全部状态码',
   'logs.logSource': '来源',
   'logs.statusPlaceholder': '如 200 / 403',
   'logs.colTime': '时间',
