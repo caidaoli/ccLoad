@@ -4626,6 +4626,24 @@ html[data-theme="dark"] .upstream-pre {
   max-width: min(92%, 980px);
 }
 
+/* Debug 合并响应按内容确定气泡宽度，长内容最多占满可用面板。 */
+#debugLogModal .upstream-merged-markdown > .chat-message {
+  width: fit-content;
+  max-width: 100%;
+  min-width: 0;
+  align-items: stretch;
+  box-sizing: border-box;
+}
+
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-message-content,
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-thinking,
+#debugLogModal .upstream-merged-markdown > .chat-message > .chat-tool-calls {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 .upstream-merged-markdown--nowrap {
   overflow-x: auto;
 }
