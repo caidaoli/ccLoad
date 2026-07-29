@@ -882,6 +882,77 @@ func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
 	}
 }
 
+func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade primary websocket: %v", err)
+			return
+		}
+		defer close(stopped)
+		defer func() { _ = conn.Close() }()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			t.Errorf("read primary websocket request: %v", err)
+			return
+		}
+		close(started)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer primary.Close()
+
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "primary-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-http", channelType: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "cancel native turn"}},
+	}); err != nil {
+		t.Fatalf("write websocket request: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("primary websocket turn did not start")
+	}
+	if err := downstream.Close(); err != nil {
+		t.Fatalf("close downstream websocket: %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("primary websocket was not closed after downstream cancellation")
+	}
+	deadline := time.Now().Add(time.Second)
+	for env.server.responsesWebsocketConnections.stats().Active != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("downstream websocket handler did not stop after cancellation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-test")
+	if entry.StatusCode != StatusClientClosedRequest {
+		t.Fatalf(
+			"canceled websocket status=%d, want %d (channel=%q message=%q fallback_calls=%d)",
+			entry.StatusCode, StatusClientClosedRequest, entry.ChannelName, entry.Message, fallbackCalls.Load(),
+		)
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("fallback called %d times after downstream cancellation", fallbackCalls.Load())
+	}
+}
+
 func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 	requestSeen := make(chan map[string]any, 1)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
