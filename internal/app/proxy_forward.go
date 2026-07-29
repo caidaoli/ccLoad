@@ -1655,6 +1655,13 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			res.Status = util.StatusStreamIncomplete
 		}
 		log.Printf("[TIMEOUT] [流式请求总超时-流传输中断] 渠道ID=%d, 阈值=%v, 实际耗时=%.2fs", cfg.ID, reqCtx.streamTimeout, duration)
+	} else if err != nil {
+		// Cancellation closes the response body to unblock a pending read. Depending
+		// on scheduling, that read may report io.ErrClosedPipe/net.ErrClosed before
+		// the transport returns ctx.Err(). Preserve the cause that controls retries.
+		if ctxErr := reqCtx.ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
 	}
 
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
