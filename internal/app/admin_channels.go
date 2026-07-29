@@ -738,6 +738,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 				}
 				return
 			}
+			if enabled {
+				s.clearAllChannelCooldowns(c.Request.Context(), id)
+			}
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
 			s.InvalidateChannelListCache()
 			RespondJSON(c, http.StatusOK, upd)
@@ -858,21 +861,11 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
-	// 清除渠道、Key 和模型冷却状态（编辑保存后重置冷却）
-	// 设计原则: 清除失败不应影响渠道更新成功，但需要记录用于监控
-	if s.cooldownManager != nil {
-		if err := s.cooldownManager.ClearAllCooldowns(c.Request.Context(), id); err != nil {
-			log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", id, err)
-		}
-	}
-	// 冷却状态可能被更新，必须失效冷却缓存，避免前端立即刷新仍读到旧冷却状态
-	s.invalidateCooldownCache()
+	// 编辑保存后重置渠道、Key 和模型冷却状态。
+	s.clearAllChannelCooldowns(c.Request.Context(), id)
 
 	// 渠道更新后刷新缓存，确保选择器立即生效
 	s.InvalidateChannelListCache()
-
-	// 保存会清除 Key 冷却，必须无条件失效 API Keys 缓存，避免选择器继续使用旧冷却时间。
-	s.InvalidateAPIKeysCache(id)
 
 	// URL 更新后立即清理失效的 URL 状态（内存+数据库同步）
 	if s.urlSelector != nil {
@@ -882,6 +875,17 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	s.cleanupOrphanedURLStates(c.Request.Context(), id, upd.GetURLs())
 
 	RespondJSON(c, http.StatusOK, upd)
+}
+
+// clearAllChannelCooldowns 清除渠道的全部冷却状态并立即失效选择器相关缓存。
+// 清除失败不回滚已经成功的渠道配置更新，但必须记录并丢弃缓存快照。
+func (s *Server) clearAllChannelCooldowns(ctx context.Context, channelID int64) {
+	if s.cooldownManager != nil {
+		if err := s.cooldownManager.ClearAllCooldowns(ctx, channelID); err != nil {
+			log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", channelID, err)
+		}
+	}
+	s.invalidateChannelRelatedCache(channelID)
 }
 
 // 删除渠道
@@ -1168,6 +1172,9 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 
 		if cfg.Enabled == *req.Enabled {
 			unchanged++
+			if *req.Enabled {
+				s.clearAllChannelCooldowns(ctx, channelID)
+			}
 			continue
 		}
 
@@ -1176,6 +1183,9 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 			log.Printf("批量启用更新渠道 %d 失败: %v", channelID, err)
 			RespondError(c, http.StatusInternalServerError, err)
 			return
+		}
+		if *req.Enabled {
+			s.clearAllChannelCooldowns(ctx, channelID)
 		}
 		updated++
 	}
