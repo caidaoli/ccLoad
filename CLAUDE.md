@@ -46,7 +46,7 @@ internal/{model,config,version,testutil}/   web/  前端(HTML+assets/{css,js,loc
 | 加 Admin API | `admin_types.go` 定类型 → `admin_<feature>.go` 实现 → `server.go:SetupRoutes` 注册 |
 | 数据库 | Schema 启动自动 `migrate.go`;事务 `(*SQLStore).WithTransaction`;改后失效 `InvalidateChannelListCache`/`InvalidateAPIKeysCache` |
 
-Responses WebSocket 默认限制：下游连接全局 64、单 Token 16；上游每 45 秒发送 Ping，连续 5 分钟未收到任何帧/Pong 判定失活。下游全部断开满 5 分钟后由每分钟清理器关闭上游物理连接（实际约 5–6 分钟），逻辑会话与 transcript 仍按 `responses_ws_session_ttl_minutes`（新安装/重置默认 15 分钟，小内存机器可设 10；升级不改已有值）保留；进程级 transcript payload 预算由 `responses_ws_max_transcript_bytes` 控制（默认 128 MiB），超额先逐出空闲 LRU，若只剩活跃会话则拒绝新会话。`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload，不是 Go 堆占用。下一轮会优先原渠道/Key/URL 并按需重连。
+Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶层会话；存在 `Thread-Id` 时组合两者，使 Codex 主代理/子代理 transcript、Response ID、turn lock 隔离；无 `Thread-Id` 时回退原 `Session-Id` 契约，禁止改用请求体 `session_id`、`prompt_cache_key` 或每回合变化的 request/turn/window ID。默认限制：下游连接全局 64、单 Token 16；上游每 45 秒发送 Ping，连续 5 分钟未收到任何帧/Pong 判定失活。下游全部断开满 5 分钟后由每分钟清理器关闭上游物理连接（实际约 5–6 分钟），稳定逻辑会话与已提交 transcript 在 `responses_ws_session_ttl_minutes` 到期前（新安装/重置默认 15 分钟，小内存机器可设 10；升级不改已有值）不会因容量/预算压力被逐出。达到 `responses_ws_max_sessions` 只拒绝新会话身份；已提交 payload 超过 `responses_ws_max_transcript_bytes`（默认 128 MiB）后，所有新回合在触达上游前以 `429/rate_limit_error/rate_limit` 拒绝，已准入回合仍可提交，有限最坏超量为 `max_sessions × max_body_bytes`。`/admin/runtime-metrics` 的 `transcript_bytes` 只统计有效 payload，不是 Go 堆占用，并提供 `ttl_expired`、`capacity_rejected`、`budget_rejected`、`previous_response_misses` 进程累计计数。下一轮会优先原渠道/Key/URL 并按需重连。
 
 ## 故障切换(`util/classifier.go`)
 
