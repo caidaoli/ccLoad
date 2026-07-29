@@ -169,6 +169,9 @@
     root.document?.querySelectorAll('#upstreamDetailModal .upstream-pre').forEach(pre => {
       pre.classList.toggle('upstream-pre--nowrap', !upstreamWrapEnabled);
     });
+    root.document?.querySelectorAll('#upstreamDetailModal .upstream-merged-markdown').forEach(merged => {
+      merged.classList.toggle('upstream-merged-markdown--nowrap', !upstreamWrapEnabled);
+    });
     updateUpstreamWrapButton();
   }
 

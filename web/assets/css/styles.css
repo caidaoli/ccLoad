@@ -4445,7 +4445,9 @@ html[data-theme="dark"] .upstream-pre {
 .upstream-merged-markdown {
   margin: 0;
   padding: 0;
-  overflow: auto;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
   background: transparent;
   border: 0;
   border-radius: 0;
@@ -4461,6 +4463,21 @@ html[data-theme="dark"] .upstream-pre {
 .upstream-merged-markdown > .chat-message {
   flex: 0 0 auto;
   max-width: min(92%, 980px);
+}
+
+.upstream-merged-markdown--nowrap {
+  overflow-x: auto;
+}
+
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-message .chat-code-pre {
+  overflow-x: hidden;
+}
+
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-code-pre code,
+.upstream-merged-markdown:not(.upstream-merged-markdown--nowrap) .chat-code-pre code.hljs {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .upstream-field--full {
