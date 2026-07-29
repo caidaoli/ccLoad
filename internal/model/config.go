@@ -64,6 +64,9 @@ func (e *ModelEntry) Validate() error {
 	if strings.ContainsAny(e.RedirectModel, "\x00\r\n") {
 		return errors.New("redirect_model contains illegal characters")
 	}
+	if isModelPattern(e.RedirectModel) {
+		return errors.New("redirect_model must not contain '*' or '?' (target must be a concrete model)")
+	}
 	return nil
 }
 
@@ -231,13 +234,14 @@ type Config struct {
 	CooldownFallback bool `json:"-"`
 
 	// 模型查找索引（懒加载，不序列化）
-	modelIndex map[string]*ModelEntry `json:"-"`
-	indexMu    sync.RWMutex           `json:"-"` // 保护索引的并发访问
+	modelIndex     map[string]*ModelEntry `json:"-"` // 精确条目（不含通配符）
+	patternEntries []ModelEntry           `json:"-"` // 通配模式条目（Model 含 '*' 或 '?'）
+	indexMu        sync.RWMutex           `json:"-"` // 保护索引的并发访问
 }
 
 // Clone 返回 Config 的深拷贝。
 // 拷贝所有可变字段（ModelEntries / ProtocolTransforms slice），
-// 重置懒加载索引（modelIndex + indexMu），避免共享 sync.RWMutex 与指向旧 slice 的 map。
+// 重置懒加载索引（modelIndex + patternEntries + indexMu），避免共享 sync.RWMutex 与指向旧 slice 的 map。
 func (c *Config) Clone() *Config {
 	if c == nil {
 		return nil
@@ -398,9 +402,48 @@ func (c *Config) buildIndexIfNeeded() {
 		return
 	}
 	c.modelIndex = make(map[string]*ModelEntry, len(c.ModelEntries))
+	c.patternEntries = nil
 	for i := range c.ModelEntries {
-		c.modelIndex[c.ModelEntries[i].Model] = &c.ModelEntries[i]
+		e := &c.ModelEntries[i]
+		if isModelPattern(e.Model) {
+			c.patternEntries = append(c.patternEntries, *e)
+		} else {
+			c.modelIndex[e.Model] = e
+		}
 	}
+}
+
+// isModelPattern 判断模型名是否为通配模式（含 '*' 或 '?'）。
+func isModelPattern(s string) bool {
+	return strings.ContainsRune(s, '*') || strings.ContainsRune(s, '?')
+}
+
+// matchModelGlob 仅识别 '*'（任意串，含空）与 '?'（单个任意字符）两个通配元字符，
+// 其余字符精确匹配；不支持字符类 [...] 以避免模型名中字面方括号/问号的误匹配。
+// 大小写敏感，与 modelIndex 精确查找保持一致。
+func matchModelGlob(pattern, name string) bool {
+	p, n := 0, 0
+	starP, starN := -1, 0
+	for n < len(name) {
+		switch {
+		case p < len(pattern) && pattern[p] == '*':
+			starP, starN = p, n
+			p++
+		case p < len(pattern) && (pattern[p] == name[n] || pattern[p] == '?'):
+			p++
+			n++
+		case starP >= 0: // 回溯：'*' 多吃一个字符后重试
+			p = starP + 1
+			starN++
+			n = starN
+		default:
+			return false
+		}
+	}
+	for p < len(pattern) && pattern[p] == '*' { // 尾部连续 '*' 视为匹配空
+		p++
+	}
+	return p == len(pattern) // 剩余若有 '?' 则不匹配（'?' 必须吃一个字符）
 }
 
 // GetRedirectModel 获取模型的重定向目标
@@ -412,6 +455,12 @@ func (c *Config) GetRedirectModel(model string) (string, bool) {
 	if entry, exists := c.modelIndex[model]; exists && entry.RedirectModel != "" {
 		return entry.RedirectModel, true
 	}
+	// 精确未命中：遍历通配模式条目（按配置顺序，首个命中即返回）
+	for i := range c.patternEntries {
+		if e := &c.patternEntries[i]; matchModelGlob(e.Model, model) && e.RedirectModel != "" {
+			return e.RedirectModel, true
+		}
+	}
 	return "", false
 }
 
@@ -420,8 +469,15 @@ func (c *Config) SupportsModel(model string) bool {
 	c.buildIndexIfNeeded()
 	c.indexMu.RLock()
 	defer c.indexMu.RUnlock()
-	_, exists := c.modelIndex[model]
-	return exists
+	if _, exists := c.modelIndex[model]; exists {
+		return true
+	}
+	for i := range c.patternEntries {
+		if matchModelGlob(c.patternEntries[i].Model, model) {
+			return true
+		}
+	}
+	return false
 }
 
 // GetChannelType 默认返回"anthropic"（Claude API）
@@ -491,6 +547,9 @@ func (c *Config) FuzzyMatchModel(query string) (string, bool) {
 	var matches []string
 
 	for _, entry := range c.ModelEntries {
+		if isModelPattern(entry.Model) { // 通配模式不参与子串模糊匹配
+			continue
+		}
 		if strings.Contains(strings.ToLower(entry.Model), queryLower) {
 			matches = append(matches, entry.Model)
 		}

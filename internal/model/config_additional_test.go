@@ -41,6 +41,27 @@ func TestModelEntry_Validate(t *testing.T) {
 			t.Fatal("expected error for illegal chars in redirect_model")
 		}
 	})
+
+	t.Run("accept_wildcard_in_model", func(t *testing.T) {
+		entry := &ModelEntry{Model: "claude-opus-*", RedirectModel: "glm-5.2"}
+		if err := entry.Validate(); err != nil {
+			t.Fatalf("expected no error for wildcard in model, got %v", err)
+		}
+	})
+
+	t.Run("reject_wildcard_in_redirect", func(t *testing.T) {
+		entry := &ModelEntry{Model: "claude-opus-*", RedirectModel: "glm-*"}
+		if err := entry.Validate(); err == nil {
+			t.Fatal("expected error for '*' in redirect_model")
+		}
+	})
+
+	t.Run("reject_questionmark_in_redirect", func(t *testing.T) {
+		entry := &ModelEntry{Model: "gpt-?", RedirectModel: "glm-?"}
+		if err := entry.Validate(); err == nil {
+			t.Fatal("expected error for '?' in redirect_model")
+		}
+	})
 }
 
 func TestConfig_SupportsModel(t *testing.T) {
@@ -185,5 +206,107 @@ func TestGetURLs_WhitespaceOnlyReturnsEmpty(t *testing.T) {
 	urls := c.GetURLs()
 	if len(urls) != 0 {
 		t.Fatalf("expected empty urls for whitespace-only input, got %v", urls)
+	}
+}
+
+func TestMatchModelGlob(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		pattern, name string
+		want          bool
+	}{
+		{"claude-opus-*", "claude-opus-4", true},
+		{"claude-opus-*", "claude-opus-5-20250929", true},
+		{"claude-opus-*", "claude-opus-", true}, // '*' 匹配空串
+		{"claude-opus-*", "claude-opus", false}, // 前缀要求末尾 '-'
+		{"claude-opus-*", "claude-sonnet-4", false},
+		{"*-opus-*", "claude-opus-4", true},
+		{"*-opus-*", "claude-opus", false},
+		{"gpt-?-mini", "gpt-5-mini", true},
+		{"gpt-?-mini", "gpt-55-mini", false}, // '?' 只吃一个字符
+		{"gpt-?-mini", "gpt-mini", false},    // '?' 不匹配空
+		{"*", "anything", true},
+		{"*", "", true},
+		{"?", "x", true},
+		{"?", "", false},
+		{"a*b?d", "aXxbYd", true},
+		{"claude-opus-4", "claude-opus-4", true}, // 无通配精确
+		{"claude-opus-4", "claude-opus-5", false},
+		{"Claude-*", "claude-opus-4", false}, // 大小写敏感
+	} {
+		if got := matchModelGlob(tc.pattern, tc.name); got != tc.want {
+			t.Errorf("matchModelGlob(%q, %q) = %v, want %v", tc.pattern, tc.name, got, tc.want)
+		}
+	}
+}
+
+func TestConfig_WildcardModelMatch(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		ModelEntries: []ModelEntry{
+			{Model: "claude-opus-4", RedirectModel: "glm-4"},
+			{Model: "claude-opus-*", RedirectModel: "glm-5.2"},
+			{Model: "gpt-?-mini", RedirectModel: "gpt-5-mini"},
+		},
+	}
+
+	// SupportsModel：精确优先，未命中再回退到通配模式
+	if !cfg.SupportsModel("claude-opus-4") { // 精确
+		t.Fatal("expected precise SupportsModel(claude-opus-4)=true")
+	}
+	if !cfg.SupportsModel("claude-opus-9") { // claude-opus-*
+		t.Fatal("expected pattern SupportsModel(claude-opus-9)=true")
+	}
+	if !cfg.SupportsModel("gpt-7-mini") { // gpt-?-mini
+		t.Fatal("expected pattern SupportsModel(gpt-7-mini)=true")
+	}
+	if cfg.SupportsModel("claude-sonnet-4") {
+		t.Fatal("expected SupportsModel(claude-sonnet-4)=false")
+	}
+
+	// GetRedirectModel：精确优先于通配模式
+	if r, ok := cfg.GetRedirectModel("claude-opus-4"); !ok || r != "glm-4" {
+		t.Fatalf("precise redirect expected glm-4, got %q %v", r, ok)
+	}
+	if r, ok := cfg.GetRedirectModel("claude-opus-9"); !ok || r != "glm-5.2" {
+		t.Fatalf("pattern redirect expected glm-5.2, got %q %v", r, ok)
+	}
+	if r, ok := cfg.GetRedirectModel("gpt-7-mini"); !ok || r != "gpt-5-mini" {
+		t.Fatalf("pattern redirect expected gpt-5-mini, got %q %v", r, ok)
+	}
+	if _, ok := cfg.GetRedirectModel("claude-sonnet-4"); ok {
+		t.Fatal("expected no redirect for claude-sonnet-4")
+	}
+}
+
+func TestConfig_WildcardPassthrough(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		ModelEntries: []ModelEntry{
+			{Model: "claude-*"}, // 无重定向：声明支持，直通上游
+		},
+	}
+	if !cfg.SupportsModel("claude-sonnet-4") {
+		t.Fatal("expected passthrough pattern SupportsModel=true")
+	}
+	if r, ok := cfg.GetRedirectModel("claude-sonnet-4"); ok {
+		t.Fatalf("passthrough should not redirect, got %q", r)
+	}
+}
+
+func TestConfig_FuzzyMatchSkipsPattern(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{
+		ModelEntries: []ModelEntry{
+			{Model: "claude-opus-*"},     // 通配模式，应被模糊匹配跳过
+			{Model: "claude-sonnet-4-5"}, // 精确条目
+		},
+	}
+	matched, ok := cfg.FuzzyMatchModel("sonnet")
+	if !ok || matched != "claude-sonnet-4-5" {
+		t.Fatalf("expected fuzzy match claude-sonnet-4-5, got %q %v", matched, ok)
+	}
+	if _, ok := cfg.FuzzyMatchModel("opus"); ok {
+		t.Fatal("expected no fuzzy match for opus (pattern entry skipped)")
 	}
 }

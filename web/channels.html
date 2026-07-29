@@ -592,6 +592,7 @@
                     <input type="text" id="modelFilterInput" class="table-filter-input"
                       data-i18n-placeholder="channels.searchModelPlaceholder" placeholder="搜索模型名称..."
                       data-input-action="filter-models-by-keyword">
+                    <small class="redirect-wildcard-hint" data-i18n="channels.modelWildcardHint">模型名支持通配符:* 和 ?</small>
                   </th>
                   <th style="width: 38%;" data-i18n="channels.redirectTarget">重定向目标（可选）</th>
                   <th class="redirect-col-status" data-i18n="common.status">状态</th>
@@ -1316,6 +1317,7 @@
       <td class="redirect-col-model" data-mobile-label="{{mobileLabelModel}}">
         <div class="redirect-model-field">
           <input type="text" class="redirect-from-input modal-inline-input" data-index="{{index}}" value="{{from}}"
+            data-i18n-title="channels.modelWildcardHint" title="模型名支持通配符:* 和 ?"
             placeholder="claude-3-opus-20240229">
           <button type="button" class="lowercase-btn redirect-lowercase-btn" data-index="{{index}}"
             data-i18n-title="channels.toLowercase" title="转为小写">

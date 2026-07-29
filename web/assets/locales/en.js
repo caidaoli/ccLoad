@@ -1380,6 +1380,7 @@ window.I18N_LOCALES['en'] = {
   'channels.modelAddedWithDuplicates': 'Successfully added {added} models, {duplicates} duplicates ignored',
   'channels.allModelsExist': 'All models already exist, no new additions',
   'channels.leaveEmptyNoRedirect': 'Leave empty for no redirect',
+  'channels.modelWildcardHint': 'Model name supports wildcards: * (any string) and ? (single char), e.g. claude-opus-* or gpt-?-mini; redirect target must be a concrete model name',
   'channels.fetchModelsSource.api': 'From API',
   'channels.fetchModelsSource.predefined': 'Predefined list',
   'channels.fetchModelsSuccess': 'Synced {total} models ({source}, added {added})',

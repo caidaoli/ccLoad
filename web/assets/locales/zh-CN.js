@@ -1379,6 +1379,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.modelAddedWithDuplicates': '成功添加 {added} 个模型，{duplicates} 个重复已忽略',
   'channels.allModelsExist': '所有模型已存在，无新增',
   'channels.leaveEmptyNoRedirect': '留空则不重定向',
+  'channels.modelWildcardHint': '模型名支持通配符:*(任意字符串)、?(单个字符),如 claude-opus-* 或 gpt-?-mini;重定向目标须为具体模型名',
   'channels.fetchModelsSource.api': '从API获取',
   'channels.fetchModelsSource.predefined': '预定义列表',
   'channels.fetchModelsSuccess': '已同步 {total} 个模型（{source}，新增 {added} 个）',

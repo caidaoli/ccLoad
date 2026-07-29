@@ -2633,6 +2633,15 @@
       line-height: 1.35;
     }
 
+    .redirect-wildcard-hint {
+      display: block;
+      margin-top: 4px;
+      font-weight: 400;
+      font-size: 11px;
+      line-height: 1.35;
+      color: var(--neutral-500);
+    }
+
     .channel-duplicate-hint {
       margin-top: 6px;
       padding: 7px 10px;
