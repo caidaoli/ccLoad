@@ -33,12 +33,10 @@ const (
 	codexWebsocketPingInterval        = 45 * time.Second
 	codexWebsocketReadTimeout         = 5 * time.Minute
 	codexWebsocketControlWriteTimeout = 10 * time.Second
-	codexWebsocketReadQueueFrameLimit = 64
+	codexWebsocketReadQueueFrameLimit = 128
 )
 
 const codexInputItemIDLimit = 64
-
-var errCodexWebsocketReadQueueOverflow = errors.New("codex websocket read queue overflow")
 
 type codexWebsocketTimeouts struct {
 	idle time.Duration
@@ -65,18 +63,19 @@ type codexWebsocketDebugSnapshot struct {
 // codexUpstreamWebsocketSession belongs to one execution session.
 // The socket is disposable; responsesWebsocketSession owns the durable transcript.
 type codexUpstreamWebsocketSession struct {
-	turnMu       sync.Mutex
-	writeMu      sync.Mutex
-	mu           sync.Mutex
-	conn         *websocket.Conn
-	connDone     chan struct{}
-	target       codexWebsocketTarget
-	affinity     codexWebsocketTarget
-	hasAffinity  bool
-	reads        []codexWebsocketRead
-	readBytes    int64
-	readNotify   chan struct{}
-	maxBodyBytes int64
+	turnMu          sync.Mutex
+	writeMu         sync.Mutex
+	mu              sync.Mutex
+	conn            *websocket.Conn
+	connDone        chan struct{}
+	target          codexWebsocketTarget
+	affinity        codexWebsocketTarget
+	hasAffinity     bool
+	reads           []codexWebsocketRead
+	readBytes       int64
+	readNotify      chan struct{}
+	readSpaceNotify chan struct{}
+	maxBodyBytes    int64
 
 	handshakeRequestHeaders  http.Header
 	handshakeResponseStatus  int
@@ -95,8 +94,9 @@ func newCodexUpstreamWebsocketSession(maxBodyBytes int64) *codexUpstreamWebsocke
 		maxBodyBytes = config.DefaultMaxBodyBytes
 	}
 	return &codexUpstreamWebsocketSession{
-		readNotify:   make(chan struct{}, 1),
-		maxBodyBytes: maxBodyBytes,
+		readNotify:      make(chan struct{}, 1),
+		readSpaceNotify: make(chan struct{}, 1),
+		maxBodyBytes:    maxBodyBytes,
 	}
 }
 
@@ -174,35 +174,42 @@ func (s *codexUpstreamWebsocketSession) signalReadLocked() {
 	}
 }
 
+func (s *codexUpstreamWebsocketSession) signalReadSpaceLocked() {
+	select {
+	case s.readSpaceNotify <- struct{}{}:
+	default:
+	}
+}
+
 func (s *codexUpstreamWebsocketSession) enqueueRead(event codexWebsocketRead) bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.conn != event.conn {
-		return false
-	}
 	eventBytes := int64(len(event.payload))
-	maxQueueBytes := s.maxBodyBytes
-	if len(s.reads) >= codexWebsocketReadQueueFrameLimit ||
-		eventBytes > maxQueueBytes-s.readBytes {
-		overflow := codexWebsocketRead{conn: event.conn, err: errCodexWebsocketReadQueueOverflow}
-		s.reads = []codexWebsocketRead{overflow}
-		s.readBytes = 0
-		if s.connDone != nil {
-			close(s.connDone)
-			s.connDone = nil
+	for {
+		s.mu.Lock()
+		if s.conn != event.conn {
+			s.mu.Unlock()
+			return false
 		}
-		_ = event.conn.Close()
-		s.conn = nil
-		s.target = codexWebsocketTarget{}
-		s.connectedAt = time.Time{}
-		s.lastCloseReason = errCodexWebsocketReadQueueOverflow.Error()
-		s.signalReadLocked()
-		return false
+		maxQueueBytes := s.maxBodyBytes
+		// Read failures must remain observable even when the data queue is full.
+		if event.err != nil ||
+			(len(s.reads) < codexWebsocketReadQueueFrameLimit && eventBytes <= maxQueueBytes-s.readBytes) {
+			s.reads = append(s.reads, event)
+			s.readBytes += eventBytes
+			s.signalReadLocked()
+			s.mu.Unlock()
+			return true
+		}
+		done := s.connDone
+		s.mu.Unlock()
+		if done == nil {
+			return false
+		}
+		select {
+		case <-done:
+			return false
+		case <-s.readSpaceNotify:
+		}
 	}
-	s.reads = append(s.reads, event)
-	s.readBytes += eventBytes
-	s.signalReadLocked()
-	return true
 }
 
 func (s *codexUpstreamWebsocketSession) nextRead(ctx context.Context, conn *websocket.Conn) (codexWebsocketRead, error) {
@@ -216,6 +223,7 @@ func (s *codexUpstreamWebsocketSession) nextRead(ctx context.Context, conn *webs
 			if s.readBytes < 0 {
 				s.readBytes = 0
 			}
+			s.signalReadSpaceLocked()
 			if len(s.reads) > 0 {
 				s.signalReadLocked()
 			}

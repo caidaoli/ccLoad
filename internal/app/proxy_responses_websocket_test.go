@@ -2785,7 +2785,7 @@ func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
 	}
 }
 
-func TestNativeCodexWebsocketClosesOnReadQueueOverflow(t *testing.T) {
+func TestNativeCodexWebsocketBackpressuresFullReadQueue(t *testing.T) {
 	upstreamClosed := make(chan bool, 1)
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2842,11 +2842,97 @@ func TestNativeCodexWebsocketClosesOnReadQueueOverflow(t *testing.T) {
 
 	select {
 	case closed := <-upstreamClosed:
-		if !closed {
-			t.Fatal("gateway left the upstream websocket open after unbounded unsolicited frames")
+		if closed {
+			t.Fatal("gateway closed the upstream websocket instead of applying read backpressure")
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for queue-overflow upstream closure")
+		t.Fatal("timed out waiting for upstream backpressure observation")
+	}
+}
+
+func TestNativeCodexWebsocketCancelUnblocksFullReadQueue(t *testing.T) {
+	started := make(chan struct{})
+	upstreamStopped := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade queue-cancel websocket: %v", err)
+			return
+		}
+		defer close(upstreamStopped)
+		defer func() { _ = conn.Close() }()
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read queue-cancel request: %v", err)
+			return
+		}
+		close(started)
+		payload, err := json.Marshal(map[string]any{
+			"type":  "response.output_text.delta",
+			"delta": strings.Repeat("x", 64*1024),
+		})
+		if err != nil {
+			t.Errorf("marshal queue-cancel payload: %v", err)
+			return
+		}
+		_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+		for {
+			if err := conn.WriteMessage(websocket.TextMessage, payload); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "queue-cancel-native", channelType: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if tcpConn, ok := downstream.UnderlyingConn().(*net.TCPConn); ok {
+		if err := tcpConn.SetReadBuffer(1024); err != nil {
+			t.Fatalf("shrink downstream receive buffer: %v", err)
+		}
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "cancel full queue"}},
+	}); err != nil {
+		t.Fatalf("write queue-cancel request: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("queue-cancel upstream turn did not start")
+	}
+
+	const queuedBytesTarget = 8 * 1024 * 1024
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
+		env.server.HandleRuntimeMetrics(c)
+		metrics := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+		websocketMetrics, ok := metrics.Data["responses_websocket"].(map[string]any)
+		if !ok {
+			t.Fatalf("responses websocket runtime metrics missing: %#v", metrics.Data)
+		}
+		queuedBytes, _ := websocketMetrics["upstream_queued_read_bytes"].(float64)
+		if queuedBytes >= queuedBytesTarget {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("upstream read queue did not fill: queued_bytes=%.0f", queuedBytes)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if err := downstream.Close(); err != nil {
+		t.Fatalf("close queue-cancel downstream: %v", err)
+	}
+	select {
+	case <-upstreamStopped:
+	case <-time.After(time.Second):
+		t.Fatal("cancel did not unblock the full upstream read queue")
 	}
 }
 
