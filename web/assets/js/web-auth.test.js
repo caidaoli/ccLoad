@@ -13,6 +13,63 @@ function memoryStorage() {
   };
 }
 
+async function captureChannelReadURLs(role) {
+  const urls = [];
+  const storage = memoryStorage();
+  storage.setItem('ccload_web_role', role);
+  const globals = {
+    window: { WebAuth, t: key => key, showError: () => {} },
+    localStorage: storage,
+    filters: { search: '', searchExact: false, status: 'all', model: 'all', modelExact: false },
+    channelsReadURL: (adminPath, dashboardPath) => (
+      WebAuth.isAPITokenRole(storage) ? dashboardPath : adminPath
+    ),
+    channels: [],
+    channelsTotalCount: 0,
+    channelsTotalPages: 1,
+    channelsCurrentPage: 1,
+    channelsPageSize: 20,
+    allAvailableChannelNames: [],
+    allAvailableModels: [],
+    channelStatsRange: 'today',
+    channelStatsById: {},
+    fetchAPIWithAuth: async (url) => {
+      urls.push(url);
+      return { success: true, data: [], count: 0 };
+    },
+    fetchDataWithAuth: async (url) => {
+      urls.push(url);
+      if (url.includes('filter-options')) return { channel_names: [], models: [] };
+      return { stats: [], channel_health: {} };
+    },
+    filterChannels: () => {},
+    updateChannelsPagination: () => {},
+    updateModelOptions: () => {},
+    updateChannelNameOptions: () => {}
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+
+  const modulePath = require.resolve('./channels-data.js');
+  delete require.cache[modulePath];
+  try {
+    const channelsData = require('./channels-data.js');
+    await channelsData.loadChannels('all');
+    await channelsData.loadChannelsFilterOptions('all', 'all');
+    await channelsData.loadChannelStats('today');
+    return urls;
+  } finally {
+    delete require.cache[modulePath];
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+}
+
 test('buildLoginPayload separates administrator password and API token', () => {
   assert.deepEqual(WebAuth.buildLoginPayload('admin', 'secret'), {
     mode: 'admin',
@@ -48,6 +105,23 @@ test('navigation excludes administrative pages for API token role', () => {
     'index', 'stats', 'trend', 'logs'
   ]);
   assert.deepEqual(WebAuth.filterNavigation(navKeys, 'admin'), navKeys);
+});
+
+test('channel data uses endpoints allowed for the current web role', async () => {
+  const apiTokenURLs = await captureChannelReadURLs('api_token');
+  assert.deepEqual(apiTokenURLs.map(url => url.split('?')[0]), [
+    '/dashboard/channels',
+    '/dashboard/channels/filter-options',
+    '/dashboard/stats'
+  ]);
+  assert.ok(apiTokenURLs.every(url => !url.includes('auth_token_id=')));
+
+  const adminURLs = await captureChannelReadURLs('admin');
+  assert.deepEqual(adminURLs.map(url => url.split('?')[0]), [
+    '/admin/channels',
+    '/admin/channels/filter-options',
+    '/admin/stats'
+  ]);
 });
 
 test('login redirect stays on the current origin', () => {

@@ -82,7 +82,7 @@ window.I18N_LOCALES['en'] = {
   // ============================================================
   // Login Page
   // ============================================================
-  'login.title': 'Login - Claude Code & Codex Proxy',
+  'login.title': 'Login - ccLoad',
   'login.brandSubtitle': 'Intelligent API Proxy Management System',
   'login.adminLogin': 'Admin Login',
   'login.passwordHint': 'Enter your admin password to access the system',

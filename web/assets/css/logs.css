@@ -652,6 +652,7 @@
       justify-content: flex-end;
       gap: 6px;
       max-width: 100%;
+      font-size: 0.9em;
       font-variant-numeric: tabular-nums;
       font-feature-settings: "tnum";
       vertical-align: middle;

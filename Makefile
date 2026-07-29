@@ -93,7 +93,7 @@ www-setup:
 	@cp -f web/assets/css/styles.css www/assets/css/ 2>/dev/null || true
 	@cp -f web/assets/js/i18n.js www/assets/js/ 2>/dev/null || true
 	@cp -f web/assets/js/theme-init.js www/assets/js/ 2>/dev/null || true
-	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png www/ 2>/dev/null || true
+	@cp -f web/favicon.svg web/favicon.ico web/apple-touch-icon.png web/brand-mark.svg web/brand-wordmark.svg www/ 2>/dev/null || true
 	@cp -f images/ccload.jpg images/ccload-dashboard.jpeg images/ccload-logs.jpg www/assets/images/ 2>/dev/null || true
 	@echo "✓ www 设置完成，现在是完全独立的静态网站"
 

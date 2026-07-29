@@ -66,20 +66,10 @@
       <nav class="www-nav">
         <div class="www-nav-container">
           <a href="index.html" class="www-nav-logo">
-            <svg width="24" height="24" viewBox="0 0 64 64" class="www-logo-icon">
-              <defs>
-                <linearGradient id="logoGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-                  <stop offset="0%" style="stop-color:#3b82f6;stop-opacity:1" />
-                  <stop offset="100%" style="stop-color:#1d4ed8;stop-opacity:1" />
-                </linearGradient>
-              </defs>
-              <rect width="64" height="64" rx="14" fill="url(#logoGrad)"/>
-              <g fill="white" transform="translate(32,32) scale(1.3) translate(-32,-32)">
-                <path d="M 15 32 C 15 26.5 19.5 22 25 22 C 27.5 22 29.7 23 31.2 24.5 L 28.5 27.2 C 27.5 26.2 26.3 25.5 25 25.5 C 21.4 25.5 18.5 28.4 18.5 32 C 18.5 35.6 21.4 38.5 25 38.5 C 26.3 38.5 27.5 37.8 28.5 36.8 L 31.2 39.5 C 29.7 41 27.5 42 25 42 C 19.5 42 15 37.5 15 32 Z" />
-                <path d="M 33 32 C 33 26.5 37.5 22 43 22 C 45.5 22 47.7 23 49.2 24.5 L 46.5 27.2 C 45.5 26.2 44.3 25.5 43 25.5 C 39.4 25.5 36.5 28.4 36.5 32 C 36.5 35.6 39.4 38.5 43 38.5 C 44.3 38.5 45.5 37.8 46.5 36.8 L 49.2 39.5 C 47.7 41 45.5 42 43 42 C 37.5 42 33 37.5 33 32 Z" />
-              </g>
+            <img class="www-logo-icon" src="brand-mark.svg" alt="">
+            <svg class="www-logo-wordmark" viewBox="0 0 132 36" role="img" aria-label="ccLoad">
+              <use href="brand-wordmark.svg#brand-wordmark" width="132" height="36"></use>
             </svg>
-            <span>ccLoad</span>
           </a>
 
           <ul class="www-nav-menu" id="www-nav-menu">
@@ -87,7 +77,7 @@
           </ul>
 
           <div class="www-nav-actions">
-            <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn-secondary www-icon-button" data-i18n-title="www.nav.github" aria-label="GitHub">
+            <a href="https://github.com/caidaoli/ccLoad" target="_blank" rel="noopener" class="www-btn-secondary www-icon-button www-github-button" data-i18n-title="www.nav.github" aria-label="GitHub">
               <svg class="www-action-icon" viewBox="0 0 24 24" aria-hidden="true">
                 <path d="M12 0c-6.626 0-12 5.373-12 12 0 5.302 3.438 9.8 8.207 11.387.599.111.793-.261.793-.577v-2.234c-3.338.726-4.033-1.416-4.033-1.416-.546-1.387-1.333-1.756-1.333-1.756-1.089-.745.083-.729.083-.729 1.205.084 1.839 1.237 1.839 1.237 1.07 1.834 2.807 1.304 3.492.997.107-.775.418-1.305.762-1.604-2.665-.305-5.467-1.334-5.467-5.931 0-1.311.469-2.381 1.236-3.221-.124-.303-.535-1.524.117-3.176 0 0 1.008-.322 3.301 1.23.957-.266 1.983-.399 3.003-.404 1.02.005 2.047.138 3.006.404 2.291-1.552 3.297-1.23 3.297-1.23.653 1.653.242 2.874.118 3.176.77.84 1.235 1.911 1.235 3.221 0 4.609-2.807 5.624-5.479 5.921.43.372.823 1.102.823 2.222v3.293c0 .319.192.694.801.576 4.765-1.589 8.199-6.086 8.199-11.386 0-6.627-5.373-12-12-12z"/>
               </svg>

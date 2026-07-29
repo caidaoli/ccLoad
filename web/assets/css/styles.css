@@ -5454,8 +5454,16 @@ body.trend-page .chart-info {
   margin-bottom: var(--space-10);
 }
 
-.brand-logo {
+.login-brand-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
   margin-bottom: var(--space-4);
+}
+
+.brand-logo {
+  flex: 0 0 auto;
 }
 
 .logo-icon {
@@ -5465,12 +5473,11 @@ body.trend-page .chart-info {
   box-shadow: 0 8px 32px rgba(59, 130, 246, 0.3);
 }
 
-.brand-title {
-  font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
+.login-brand-wordmark {
+  display: block;
+  width: 176px;
+  height: auto;
   color: var(--neutral-900);
-  margin: var(--space-4) 0 var(--space-2) 0;
-  letter-spacing: -0.01em;
 }
 
 .brand-subtitle {
@@ -5921,13 +5928,13 @@ body.web-role-api-token .filter-group--auth-token {
     padding: var(--space-5);
   }
 
-  .brand-title {
-    font-size: var(--text-xl);
-  }
-
   .logo-icon {
     width: 56px;
     height: 56px;
+  }
+
+  .login-brand-wordmark {
+    width: 156px;
   }
 
   .modal-content {

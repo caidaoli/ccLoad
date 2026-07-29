@@ -82,7 +82,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   // 登录页
   // ============================================================
-  'login.title': '登录 - Claude Code & Codex Proxy',
+  'login.title': '登录 - ccLoad',
   'login.brandSubtitle': '智能API代理管理系统',
   'login.adminLogin': '管理员登录',
   'login.passwordHint': '请输入您的管理密码以访问系统',
