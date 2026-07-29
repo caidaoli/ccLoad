@@ -224,6 +224,63 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 	return models, nil
 }
 
+// GetDistinctStatusCodes 获取指定时间范围内的去重状态码列表。
+// channelType 为空时返回所有状态码，否则只返回指定渠道类型的状态码。
+func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]int, error) {
+	args := []any{since.UnixMilli(), until.UnixMilli()}
+	query := `
+		SELECT DISTINCT logs.status_code
+		FROM logs
+		WHERE logs.time >= ? AND logs.time <= ?
+			AND logs.status_code BETWEEN 100 AND 999
+	`
+
+	if channelType != "" {
+		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
+		if err != nil {
+			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
+		}
+		if len(channelIDs) == 0 {
+			return []int{}, nil
+		}
+		placeholders := make([]string, len(channelIDs))
+		for i := range channelIDs {
+			placeholders[i] = "?"
+			args = append(args, channelIDs[i])
+		}
+		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
+	}
+
+	wb := NewWhereBuilder()
+	wb.ApplyLogFilter(filter)
+	whereClause, whereArgs := wb.Build()
+	if whereClause != "" {
+		query += " AND " + whereClause
+		args = append(args, whereArgs...)
+	}
+
+	query += " ORDER BY logs.status_code"
+
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	statusCodes := make([]int, 0)
+	for rows.Next() {
+		var statusCode int
+		if err := rows.Scan(&statusCode); err != nil {
+			return nil, err
+		}
+		statusCodes = append(statusCodes, statusCode)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return statusCodes, nil
+}
+
 // GetDistinctChannels 获取指定时间范围内有日志数据的渠道列表（ID+名称）
 func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error) {
 	args := []any{since.UnixMilli(), until.UnixMilli()}

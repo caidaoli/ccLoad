@@ -21,6 +21,7 @@ type LogsBootstrapResponse struct {
 	AuthTokens                []*model.AuthToken    `json:"auth_tokens"`
 	Models                    []string              `json:"models"`
 	Channels                  []model.ChannelNameID `json:"channels"`
+	StatusCodes               []int                 `json:"status_codes"`
 }
 
 // HandleLogsBootstrap 聚合 logs 页首屏 5 个独立请求，并发组装后一次性返回
@@ -115,7 +116,7 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 		mu.Unlock()
 	})
 
-	// goroutine 5: distinct models + channels（顺序调用，共享同一 goroutine）
+	// goroutine 5: distinct models + channels + status codes（顺序调用，共享同一 goroutine）
 	wg.Go(func() {
 		models, err := s.store.GetDistinctModels(ctx, since, until, channelType, logFilter)
 		if err != nil {
@@ -127,15 +128,24 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 			setErr(err)
 			return
 		}
+		statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, channelType, logFilter)
+		if err != nil {
+			setErr(err)
+			return
+		}
 		if models == nil {
 			models = make([]string, 0)
 		}
 		if channels == nil {
 			channels = make([]model.ChannelNameID, 0)
 		}
+		if statusCodes == nil {
+			statusCodes = make([]int, 0)
+		}
 		mu.Lock()
 		resp.Models = models
 		resp.Channels = channels
+		resp.StatusCodes = statusCodes
 		mu.Unlock()
 	})
 
@@ -155,6 +165,9 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 	}
 	if resp.Channels == nil {
 		resp.Channels = make([]model.ChannelNameID, 0)
+	}
+	if resp.StatusCodes == nil {
+		resp.StatusCodes = make([]int, 0)
 	}
 
 	RespondJSON(c, http.StatusOK, resp)
@@ -184,9 +197,18 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	if channels == nil {
 		channels = make([]model.ChannelNameID, 0)
 	}
+	statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, "", &filter)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if statusCodes == nil {
+		statusCodes = make([]int, 0)
+	}
 	RespondJSON(c, http.StatusOK, LogsBootstrapResponse{
-		AuthTokens: make([]*model.AuthToken, 0),
-		Models:     models,
-		Channels:   channels,
+		AuthTokens:  make([]*model.AuthToken, 0),
+		Models:      models,
+		Channels:    channels,
+		StatusCodes: statusCodes,
 	})
 }

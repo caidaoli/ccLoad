@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -56,6 +57,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
+		{Time: model.JSONTime{Time: now}, ChannelID: 0, StatusCode: 502, Message: "exhausted backends", LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
@@ -74,6 +76,20 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 	if len(modelsOpenAI) != 1 || modelsOpenAI[0] != "gpt-4o" {
 		t.Fatalf("GetDistinctModels(openai) got %v, want [gpt-4o]", modelsOpenAI)
+	}
+	statusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil {
+		t.Fatalf("GetDistinctStatusCodes(openai) failed: %v", err)
+	}
+	if got, want := statusCodes, []int{200, 499, 500}; !slices.Equal(got, want) {
+		t.Fatalf("GetDistinctStatusCodes(openai) got %v, want %v", got, want)
+	}
+	allStatusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, "", &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil {
+		t.Fatalf("GetDistinctStatusCodes(all) failed: %v", err)
+	}
+	if got, want := allStatusCodes, []int{200, 499, 500, 502}; !slices.Equal(got, want) {
+		t.Fatalf("GetDistinctStatusCodes(all) got %v, want %v", got, want)
 	}
 
 	// GetChannelSuccessRates：openai 成功率 1/2（499 不纳入口径）
