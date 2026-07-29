@@ -2599,6 +2599,9 @@ function applyDebugLogWrapMode() {
   document.querySelectorAll('#debugLogModal .upstream-pre').forEach(pre => {
     pre.classList.toggle('upstream-pre--nowrap', !debugLogWrapEnabled);
   });
+  document.querySelectorAll('#debugLogModal .upstream-merged-markdown').forEach(merged => {
+    merged.classList.toggle('upstream-merged-markdown--nowrap', !debugLogWrapEnabled);
+  });
   updateDebugWrapButton();
 }
 
