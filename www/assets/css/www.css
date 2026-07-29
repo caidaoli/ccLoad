@@ -79,31 +79,28 @@ html[data-theme="dark"] {
 
 .www-nav-logo {
   display: flex;
+  flex: none;
   align-items: center;
-  gap: var(--space-3);
+  gap: 4px;
   text-decoration: none;
-  color: var(--color-text-primary);
-  font-weight: 600;
-  font-size: 1.25rem;
+  color: color-mix(in srgb, var(--color-text-primary) 88%, #071b35);
 }
 
 .www-nav-logo:hover {
-  color: var(--color-primary);
+  opacity: 0.8;
 }
 
 .www-logo-icon {
-  animation: breathe 3s ease-in-out infinite;
+  display: block;
+  width: 54px;
+  height: 36px;
+  filter: drop-shadow(0 4px 10px rgba(59, 130, 246, 0.2));
 }
 
-@keyframes breathe {
-  0%, 100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.6;
-    transform: scale(1.15);
-  }
+.www-logo-wordmark {
+  display: block;
+  width: 132px;
+  height: 36px;
 }
 
 .www-nav-menu {
@@ -187,6 +184,24 @@ html[data-theme="dark"] {
 
 /* 移动端导航 */
 @media (max-width: 768px) {
+  .www-nav-container {
+    padding: 0 var(--space-4);
+  }
+
+  .www-logo-icon {
+    width: 44px;
+    height: 28px;
+  }
+
+  .www-logo-wordmark {
+    width: 103px;
+    height: 28px;
+  }
+
+  .www-lang-button {
+    min-width: auto;
+  }
+
   .www-nav-menu {
     position: fixed;
     top: var(--www-nav-height);
@@ -223,6 +238,23 @@ html[data-theme="dark"] {
 
   .www-nav-toggle {
     display: block;
+  }
+}
+
+@media (max-width: 480px) {
+  .www-github-button {
+    display: none;
+  }
+}
+
+@media (max-width: 360px) {
+  .www-logo-wordmark {
+    display: none;
+  }
+
+  .www-logo-icon {
+    width: 44px;
+    height: 32px;
   }
 }
 
