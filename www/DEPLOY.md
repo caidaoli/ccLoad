@@ -148,6 +148,7 @@ cp ../web/assets/css/styles.css assets/css/
 cp ../web/assets/js/i18n.js assets/js/
 cp ../web/assets/js/theme-init.js assets/js/
 cp ../web/favicon.* ../web/apple-touch-icon.png .
+cp ../web/brand-mark.svg ../web/brand-wordmark.svg .
 mkdir -p assets/images
 cp ../images/ccload.jpg ../images/ccload-dashboard.jpeg ../images/ccload-logs.jpg assets/images/
 
@@ -165,6 +166,8 @@ www/
 ├── feedback.html           # 反馈渠道
 ├── favicon.svg/ico         # 图标
 ├── apple-touch-icon.png
+├── brand-mark.svg          # 共享品牌图标
+├── brand-wordmark.svg      # 共享品牌字标
 ├── assets/
 │   ├── css/
 │   │   ├── styles.css      # 共享设计系统（复制自 web）
@@ -236,7 +239,7 @@ sudo certbot --apache -d your-domain.com
 
 ### 图标未显示
 
-确认 `favicon.svg` 和 `favicon.ico` 已复制到 www 根目录。
+确认 `favicon.svg`、`favicon.ico`、`brand-mark.svg` 和 `brand-wordmark.svg` 已复制到 www 根目录。
 
 ### 相对路径问题
 
