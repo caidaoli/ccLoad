@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -142,14 +141,10 @@ func cooldownInputForModel(in cooldown.ErrorInput, model string) cooldown.ErrorI
 }
 
 func isProtocolEndpointMissing(res *fwResult) bool {
-	if res == nil || res.ResponseCommitted || (res.Status != http.StatusNotFound && res.Status != http.StatusMethodNotAllowed) {
+	if res == nil || res.ResponseCommitted {
 		return false
 	}
-	if res.Status == http.StatusMethodNotAllowed {
-		return true
-	}
-	classification := util.ClassifyHTTPResponseWithMeta(res.Status, res.Header, res.Body)
-	return classification.Level == util.ErrorLevelChannel && !classification.ModelScoped
+	return util.ShouldFallbackProtocol(res.Status, res.Body)
 }
 
 func (s *Server) logProxyResult(

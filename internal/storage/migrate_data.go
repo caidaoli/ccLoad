@@ -6,10 +6,98 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
 )
+
+func migrateChannelURLsToStructuredJSON(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, structuredChannelURLsMigrationVersion, dialect) {
+		return nil
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT id, url FROM channels ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("query channel URLs: %w", err)
+	}
+	type candidate struct {
+		id      int64
+		encoded string
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var channelID int64
+		var raw string
+		if err := rows.Scan(&channelID, &raw); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan channel URL: %w", err)
+		}
+
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d has empty URL configuration", channelID)
+		}
+
+		var urls model.ChannelURLs
+		jsonErr := json.Unmarshal([]byte(trimmed), &urls)
+		if jsonErr != nil {
+			if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+				_ = rows.Close()
+				return fmt.Errorf("channel %d has invalid structured URL JSON: %w", channelID, jsonErr)
+			}
+			for line := range strings.SplitSeq(raw, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				exact := model.HasExactUpstreamURLMarker(line)
+				urls = append(urls, model.ChannelURL{
+					URL:   model.StripExactUpstreamURLMarker(line),
+					Exact: exact,
+				})
+			}
+		}
+		if len(urls) == 0 {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d has no valid URLs", channelID)
+		}
+		if err := urls.Normalize(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d: %w", channelID, err)
+		}
+		encoded, err := json.Marshal(urls)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("marshal channel %d URLs: %w", channelID, err)
+		}
+		candidates = append(candidates, candidate{id: channelID, encoded: string(encoded)})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate channel URLs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close channel URL rows: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin structured URL migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	updateSQL := rebindIfPostgres(dialect, "UPDATE channels SET url = ? WHERE id = ?")
+	for _, item := range candidates {
+		if _, err := tx.ExecContext(ctx, updateSQL, item.encoded, item.id); err != nil {
+			return fmt.Errorf("update channel %d structured URLs: %w", item.id, err)
+		}
+	}
+	if err := recordMigrationTx(ctx, tx, structuredChannelURLsMigrationVersion, dialect); err != nil {
+		return fmt.Errorf("record structured URL migration: %w", err)
+	}
+	return tx.Commit()
+}
 
 // backfillLogsMinuteBucketSQLite 分批回填 logs.minute_bucket（SQLite）
 func backfillLogsMinuteBucketSQLite(ctx context.Context, db *sql.DB, batchSize int) error {

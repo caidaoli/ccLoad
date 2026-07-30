@@ -15,16 +15,16 @@ function memoryStorage(initial = {}) {
 test('load reads only the current filter storage key', () => {
   const storage = memoryStorage({
     'trend.range': 'yesterday',
-    'trend.filters': JSON.stringify({ range: 'today', channelType: 'all' })
+    'trend.filters': JSON.stringify({ range: 'today', model: '' })
   });
 
-  assert.deepEqual(load('trend.filters', storage), { range: 'today', channelType: 'all' });
+  assert.deepEqual(load('trend.filters', storage), { range: 'today', model: '' });
 });
 
 test('load ignores legacy split filter keys', () => {
   const storage = memoryStorage({
     'trend.range': 'yesterday',
-    'trend.channelType': 'openai'
+    'trend.model': 'gpt-5'
   });
 
   assert.equal(load('trend.filters', storage), null);
@@ -33,10 +33,10 @@ test('load ignores legacy split filter keys', () => {
 test('save serializes filters to the current storage key', () => {
   const storage = memoryStorage();
 
-  save('trend.filters', { range: 'this_week', channelType: 'gemini' }, storage);
+  save('trend.filters', { range: 'this_week', model: 'gpt-5' }, storage);
 
   assert.deepEqual(JSON.parse(storage.dump()['trend.filters']), {
     range: 'this_week',
-    channelType: 'gemini'
+    model: 'gpt-5'
   });
 });

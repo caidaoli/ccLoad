@@ -134,7 +134,7 @@ func TestDeleteChannelByIDRemovesChannelRPMState(t *testing.T) {
 	cfg, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:        "rpm-channel",
 		ChannelType: "openai",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    1,
 		Enabled:     true,
 		RPMLimit:    1,

@@ -20,9 +20,9 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 
 	// 创建测试渠道，支持不同模型
 	channels := []*model.Config{
-		{Name: "high-priority", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "claude-3-opus", RedirectModel: ""}, {Model: "claude-3-sonnet", RedirectModel: ""}}, Enabled: true},
-		{Name: "mid-priority", URL: "https://api2.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "claude-3-sonnet", RedirectModel: ""}, {Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
-		{Name: "low-priority", URL: "https://api3.com", Priority: 10, ModelEntries: []model.ModelEntry{{Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
+		{Name: "high-priority", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "claude-3-opus", RedirectModel: ""}, {Model: "claude-3-sonnet", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-priority", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "claude-3-sonnet", RedirectModel: ""}, {Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
+		{Name: "low-priority", URLs: model.ChannelURLs{{URL: "https://api3.com"}}, Priority: 10, ModelEntries: []model.ModelEntry{{Model: "claude-3-haiku", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -93,7 +93,7 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "gemini-upstream",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    100,
 		Enabled:     true,
 		ChannelType: "gemini",
@@ -124,7 +124,7 @@ func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "openai-upstream",
-		URL:         "https://api.openai.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority:    50,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -153,7 +153,7 @@ func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "codex-upstream",
-		URL:         "https://api.codex.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.codex.example.com"}},
 		Priority:    40,
 		Enabled:     true,
 		ChannelType: "codex",
@@ -186,9 +186,9 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 
 	// 创建3个渠道，其中2个处于冷却状态
 	channels := []*model.Config{
-		{Name: "active-channel", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "cooled-channel-1", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "cooled-channel-2", URL: "https://api3.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "active-channel", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooled-channel-1", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooled-channel-2", URLs: model.ChannelURLs{{URL: "https://api3.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var createdIDs []int64
@@ -235,7 +235,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 
 	primary, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "model-cooldown-primary",
-		URL:      "https://primary.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://primary.example.com"}},
 		Priority: 100,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -248,7 +248,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 	}
 	secondary, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "model-cooldown-secondary",
-		URL:          "https://secondary.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://secondary.example.com"}},
 		Priority:     50,
 		Enabled:      true,
 		ModelEntries: []model.ModelEntry{{Model: "model-a"}},
@@ -287,8 +287,8 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 	now := time.Now()
 
 	channels := []*model.Config{
-		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-long", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-short", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -340,8 +340,8 @@ func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *te
 	server := &Server{store: store, configService: cs}
 
 	channels := []*model.Config{
-		{Name: "cooldown-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "cooldown-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-long", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "cooldown-short", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -380,8 +380,8 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 	now := time.Now()
 
 	channels := []*model.Config{
-		{Name: "keys-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "keys-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "keys-long", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "keys-short", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -441,8 +441,8 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 	now := time.Now()
 
 	channels := []*model.Config{
-		{Name: "channel-cooled-long", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "keys-cooled-short", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-cooled-long", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "keys-cooled-short", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	var ids []int64
@@ -510,14 +510,14 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	// 创建2个渠道，1个启用，1个禁用
 	enabledCfg := &model.Config{
 		Name:         "enabled-channel",
-		URL:          "https://api1.com",
+		URLs:         model.ChannelURLs{{URL: "https://api1.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:      true,
 	}
 	disabledCfg := &model.Config{
 		Name:         "disabled-channel",
-		URL:          "https://api2.com",
+		URLs:         model.ChannelURLs{{URL: "https://api2.com"}},
 		Priority:     90,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:      false,
@@ -558,9 +558,9 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 
 	// 创建相同优先级的多个渠道
 	samePriorityChannels := []*model.Config{
-		{Name: "channel-a", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "channel-b", URL: "https://api2.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "channel-c", URL: "https://api3.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-a", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-b", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-c", URLs: model.ChannelURLs{{URL: "https://api3.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range samePriorityChannels {
@@ -597,8 +597,8 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 	ctx := context.Background()
 
 	channels := []*model.Config{
-		{Name: "anthropic-channel", URL: "https://anthropic.example.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URL: "https://openai.example.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://anthropic.example.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
+		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://openai.example.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -651,9 +651,9 @@ func TestSelectCandidatesByChannelType_GeminiClientCanUseAllUpstreamProtocols(t 
 
 	// 创建不同类型的渠道
 	channels := []*model.Config{
-		{Name: "gemini-channel", URL: "https://gemini.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro", RedirectModel: ""}}, ChannelType: "gemini", Enabled: true},
-		{Name: "anthropic-channel", URL: "https://api.anthropic.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URL: "https://api.openai.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "gemini-channel", URLs: model.ChannelURLs{{URL: "https://gemini.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro", RedirectModel: ""}}, ChannelType: "gemini", Enabled: true},
+		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
+		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://api.openai.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -684,9 +684,9 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 
 	// 创建多个支持不同模型的渠道
 	channels := []*model.Config{
-		{Name: "channel-1", URL: "https://api1.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "model-a", RedirectModel: ""}}, Enabled: true},
-		{Name: "channel-2", URL: "https://api2.com", Priority: 90, ModelEntries: []model.ModelEntry{{Model: "model-b", RedirectModel: ""}}, Enabled: true},
-		{Name: "channel-3", URL: "https://api3.com", Priority: 80, ModelEntries: []model.ModelEntry{{Model: "model-c", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-1", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "model-a", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-2", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "model-b", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-3", URLs: model.ChannelURLs{{URL: "https://api3.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "model-c", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -726,7 +726,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	// 创建只支持特定模型的渠道
 	cfg := &model.Config{
 		Name:         "specific-channel",
-		URL:          "https://api.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "specific-model", RedirectModel: ""}},
 		Enabled:      true,
@@ -759,7 +759,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 	// 渠道配置"带日期后缀"的模型
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "dated-model-channel",
-		URL:          "https://api.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
 		Enabled:      true,
@@ -802,7 +802,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact(t *testing.T) {
 	// base 渠道：配置无日期后缀
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "base-model-channel",
-		URL:          "https://api-base.com",
+		URLs:         model.ChannelURLs{{URL: "https://api-base.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5", RedirectModel: ""}},
 		Enabled:      true,
@@ -814,7 +814,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact(t *testing.T) {
 	// dated 渠道：配置带日期后缀
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:         "dated-model-channel",
-		URL:          "https://api-dated.com",
+		URLs:         model.ChannelURLs{{URL: "https://api-dated.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
 		Enabled:      true,
@@ -848,7 +848,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing
 	// 精确匹配渠道：但处于冷却中
 	exactCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "exact-cooled-channel",
-		URL:          "https://api-exact.com",
+		URLs:         model.ChannelURLs{{URL: "https://api-exact.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "gemini-3-flash", RedirectModel: ""}},
 		Enabled:      true,
@@ -863,7 +863,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing
 	// 模糊匹配渠道：可用
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:         "fuzzy-available-channel",
-		URL:          "https://api-fuzzy.com",
+		URLs:         model.ChannelURLs{{URL: "https://api-fuzzy.com"}},
 		Priority:     90,
 		ModelEntries: []model.ModelEntry{{Model: "gemini-3-flash-preview", RedirectModel: ""}},
 		Enabled:      true,
@@ -898,7 +898,7 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 
 	target, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "target-cooled",
-		URL:          "https://target.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://target.example.com"}},
 		Priority:     100,
 		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-opus-4-7"}},
@@ -913,7 +913,7 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 
 	if _, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "same-protocol-other-model",
-		URL:          "https://other.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://other.example.com"}},
 		Priority:     90,
 		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-haiku"}},
@@ -958,7 +958,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch(t *testing.T) {
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "claude-channel",
-		URL:          "https://api.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-5-20250929", RedirectModel: ""}},
 		Enabled:      true,
@@ -992,11 +992,11 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 
 	// 创建不同优先级的渠道
 	channels := []*model.Config{
-		{Name: "low-1", URL: "https://api1.com", Priority: 10, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "high-1", URL: "https://api2.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "mid-1", URL: "https://api3.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "high-2", URL: "https://api4.com", Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
-		{Name: "mid-2", URL: "https://api5.com", Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "low-1", URLs: model.ChannelURLs{{URL: "https://api1.com"}}, Priority: 10, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "high-1", URLs: model.ChannelURLs{{URL: "https://api2.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-1", URLs: model.ChannelURLs{{URL: "https://api3.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "high-2", URLs: model.ChannelURLs{{URL: "https://api4.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
+		{Name: "mid-2", URLs: model.ChannelURLs{{URL: "https://api5.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -1046,8 +1046,8 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 
 	// 创建两个相同优先级的渠道（模拟渠道22和23）
 	channels := []*model.Config{
-		{Name: "channel-22", URL: "https://api22.com", Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
-		{Name: "channel-23", URL: "https://api23.com", Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-22", URLs: model.ChannelURLs{{URL: "https://api22.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-23", URLs: model.ChannelURLs{{URL: "https://api23.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -1222,9 +1222,9 @@ func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) 
 
 	// 创建 2 个 gemini 渠道和 1 个 anthropic 渠道
 	channels := []*model.Config{
-		{Name: "gemini-1", URL: "https://g1.com", Priority: 100, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "gemini-2", URL: "https://g2.com", Priority: 90, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "anthropic-1", URL: "https://a1.com", Priority: 80, ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
+		{Name: "gemini-1", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "gemini-2", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a1.com"}}, Priority: 80, ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -1254,7 +1254,7 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 
 	// 创建 gemini 渠道，使 selector 层进入全冷却兜底
 	geminiCfg := &model.Config{
-		Name: "gemini-cooled", URL: "https://g.com", Priority: 100,
+		Name: "gemini-cooled", URLs: model.ChannelURLs{{URL: "https://g.com"}}, Priority: 100,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, geminiCfg)
@@ -1268,7 +1268,7 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 	}
 
 	anthropic, err := store.CreateConfig(ctx, &model.Config{
-		Name: "anthropic-1", URL: "https://a.com", Priority: 100,
+		Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a.com"}}, Priority: 100,
 		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1304,7 +1304,7 @@ func TestSelectCandidatesByChannelType_TypeNormalization(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name: "codex-ch", URL: "https://codex.com", Priority: 100,
+		Name: "codex-ch", URLs: model.ChannelURLs{{URL: "https://codex.com"}}, Priority: 100,
 		ChannelType: "codex", ModelEntries: []model.ModelEntry{{Model: "gpt-4"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1334,7 +1334,7 @@ func TestSelectCandidatesByChannelType_EmptyType(t *testing.T) {
 
 	// 创建一个 anthropic 渠道（ChannelType="" 默认为 anthropic）
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name: "default-ch", URL: "https://default.com", Priority: 100,
+		Name: "default-ch", URLs: model.ChannelURLs{{URL: "https://default.com"}}, Priority: 100,
 		ChannelType: "", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1360,7 +1360,7 @@ func TestSelectCandidatesByChannelType_ClientProtocolWithoutNativeChannelStillRo
 
 	// 只创建 anthropic 渠道
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name: "anthropic-only", URL: "https://a.com", Priority: 100,
+		Name: "anthropic-only", URLs: model.ChannelURLs{{URL: "https://a.com"}}, Priority: 100,
 		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1388,14 +1388,14 @@ func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
 
 	// 创建 2 个 gemini 渠道
 	ch1, err := store.CreateConfig(ctx, &model.Config{
-		Name: "gemini-active", URL: "https://g1.com", Priority: 100,
+		Name: "gemini-active", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 	ch2, err := store.CreateConfig(ctx, &model.Config{
-		Name: "gemini-cooled", URL: "https://g2.com", Priority: 90,
+		Name: "gemini-cooled", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1431,7 +1431,7 @@ func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name: "enabled-gemini", URL: "https://g1.com", Priority: 100,
+		Name: "enabled-gemini", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
@@ -1439,7 +1439,7 @@ func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
 	}
 
 	_, err = store.CreateConfig(ctx, &model.Config{
-		Name: "disabled-gemini", URL: "https://g2.com", Priority: 90,
+		Name: "disabled-gemini", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90,
 		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: false,
 	})
 	if err != nil {

@@ -39,7 +39,7 @@ func TestHybridStore_BasicOperations(t *testing.T) {
 	cfg := &model.Config{
 		Name:        "test-channel",
 		ChannelType: "openai",
-		URL:         "https://api.openai.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority:    100,
 		Enabled:     true,
 	}
@@ -179,7 +179,7 @@ func TestHybridStore_ImportChannelBatch(t *testing.T) {
 			Config: &model.Config{
 				Name:        "import-chan",
 				ChannelType: "codex",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Priority:    10,
 				Enabled:     true,
 				ModelEntries: []model.ModelEntry{
@@ -368,7 +368,7 @@ func TestHybridStore_BatchAddLogs_DoesNotDuplicateSurvivingLogsAfterDeletedChann
 	ctx := context.Background()
 	created, err := hybrid.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -468,7 +468,7 @@ func TestHybridStore_SQLiteCacheFailureDoesNotBlockWrite(t *testing.T) {
 	cfg := &model.Config{
 		Name:        "test-channel",
 		ChannelType: "openai",
-		URL:         "https://api.openai.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority:    100,
 		Enabled:     true,
 	}

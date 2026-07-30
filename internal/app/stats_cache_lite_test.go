@@ -20,7 +20,7 @@ func TestStatsCache_GetStatsLite_CachesResult(t *testing.T) {
 	// 渠道存在性：GetStatsLite 内部会过滤 channel_id > 0，但不会填充 channel 名称。
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,

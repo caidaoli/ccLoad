@@ -381,7 +381,7 @@ func TestHandleListAuthTokens_StatsAggregation(t *testing.T) {
 	// 创建渠道供日志引用
 	cfg := &model.Config{
 		Name:         "test-ch",
-		URL:          "https://test.com",
+		URLs:         model.ChannelURLs{{URL: "https://test.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
 		Enabled:      true,
@@ -562,7 +562,7 @@ func TestHandleListAuthTokens_RPMStats(t *testing.T) {
 	now := time.Now()
 	cfg := &model.Config{
 		Name:         "rpm-ch",
-		URL:          "https://rpm.com",
+		URLs:         model.ChannelURLs{{URL: "https://rpm.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "m"}},
 		Enabled:      true,

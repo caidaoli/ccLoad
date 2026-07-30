@@ -4,7 +4,6 @@ let currentLogsPage = 1;
 let logsPageSize = 15;
 let totalLogsPages = 1;
 let totalLogs = 0;
-let currentChannelType = 'all'; // 当前选中的渠道类型
 let currentLogsCustomTimeRange = null;
 let authTokens = []; // 令牌列表
 let logsChannelNameCombobox = null; // 渠道名筛选组合框
@@ -769,7 +768,6 @@ function filterActiveRequests(requests) {
   const model = normalizeLogsFilterValue(filters.model);
   const channelNameExact = filters.channelNameExact;
   const modelExact = filters.modelExact;
-  const channelType = (document.getElementById('f_channel_type')?.value || '').trim();
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
@@ -780,11 +778,6 @@ function filterActiveRequests(requests) {
     if (model) {
       const reqModel = normalizeLogsFilterValue(req.model || '');
       if (modelExact ? reqModel !== model : !reqModel.includes(model)) return false;
-    }
-    // 渠道类型精确匹配（'all' 表示全部，不过滤）
-    if (channelType && channelType !== 'all') {
-      const reqType = (typeof req.channel_type === 'string' ? req.channel_type : '').toLowerCase();
-      if (reqType !== channelType.toLowerCase()) return false;
     }
     // 令牌ID精确匹配
     if (tokenId) {
@@ -1269,7 +1262,6 @@ async function resetLogsFilters() {
   const defaults = getDefaultLogsFilters();
 
   currentLogsCustomTimeRange = null;
-  currentChannelType = defaults.channelType || 'all';
   currentLogsPage = 1;
   totalLogsPages = 1;
   rememberExactLogsFilters({
@@ -1279,7 +1271,7 @@ async function resetLogsFilters() {
   });
 
   applyLogsFilterValues(defaults);
-  await loadLogsFilterOptions(currentChannelType, defaults.range || 'today');
+  await loadLogsFilterOptions(defaults.range || 'today');
   await syncLogSourceVisibility();
 
   window.persistFilterState({
@@ -1315,9 +1307,6 @@ function applyLogsFilterValues(filters) {
     logsStatusCombobox.setValue(filters.status || '', filters.status || t('logs.allStatusCodes'));
   }
 
-  currentChannelType = filters.channelType || 'all';
-  const channelTypeEl = document.getElementById('f_channel_type');
-  if (channelTypeEl) channelTypeEl.value = currentChannelType;
 }
 
 function getLogSourceFilterElements() {
@@ -1368,13 +1357,11 @@ async function syncLogSourceVisibility(preloadedIntervalHours) {
   return scheduledCheckEnabledByConfig;
 }
 
-async function loadLogsFilterOptions(channelType, range) {
+async function loadLogsFilterOptions(range) {
   try {
     const params = new URLSearchParams();
-    const ct = channelType || currentChannelType || 'all';
     const r = range || document.getElementById('f_hours')?.value || 'today';
     appendLogsTimeRangeParams(params, { range: r });
-    if (ct && ct !== 'all') params.set('channel_type', ct);
     const resp = await fetchDataWithAuth('/dashboard/models?' + params.toString()) || {};
     const rawModels = Array.isArray(resp.models) ? resp.models : [];
     const rawChannels = Array.isArray(resp.channels) ? resp.channels : [];
@@ -1519,7 +1506,7 @@ async function initFilters(restoredFilters, preloaded) {
       }
       currentLogsPage = 1;
       totalLogsPages = 1;
-      await loadLogsFilterOptions(currentChannelType, nextRange);
+      await loadLogsFilterOptions(nextRange);
       applyFilter();
     }
   });
@@ -1545,7 +1532,7 @@ async function initFilters(restoredFilters, preloaded) {
       },
       ...(preloaded ? { preloadedTokens: preloaded.authTokens } : {})
     }),
-    preloaded ? Promise.resolve() : loadLogsFilterOptions(currentChannelType, range)
+    preloaded ? Promise.resolve() : loadLogsFilterOptions(range)
   ]);
   authTokens = tokens;
 
@@ -1557,7 +1544,7 @@ async function initFilters(restoredFilters, preloaded) {
   window.bindFilterApplyInputs({
     apply: applyFilter,
     debounceInputIds: [],
-    enterInputIds: ['f_hours', 'f_auth_token', 'f_channel_type', 'f_log_source']
+    enterInputIds: ['f_hours', 'f_auth_token', 'f_log_source']
   });
 }
 
@@ -1759,18 +1746,7 @@ const LOGS_FILTER_FIELDS = [
   },
   { key: 'logSource', queryKeys: ['log_source'], requestKey: 'log_source', defaultValue: 'proxy' },
   { key: 'status', queryKeys: ['status_code'], defaultValue: '' },
-  { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
-  {
-    key: 'channelType',
-    queryKeys: ['channel_type'],
-    defaultValue: 'all',
-    includeInQuery(value) {
-      return Boolean(value) && value !== 'all';
-    },
-    includeInRequest(value) {
-      return Boolean(value) && value !== 'all';
-    }
-  }
+  { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' }
 ];
 
 function getLogsFilters() {
@@ -1796,8 +1772,7 @@ function getLogsFilters() {
     modelExact: isExactLogsModelFilter(model),
     channelName,
     channelNameExact: isExactLogsChannelNameFilter(channelName),
-    logSource,
-    channelType: document.getElementById('f_channel_type')?.value || 'all',
+    logSource
   };
 }
 
@@ -1840,29 +1815,12 @@ window.initPageBootstrap({
     channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
     modelExact: !hasUrlParams && savedFilters?.modelExact === true
   }, hasUrlParams ? u : null);
-  currentChannelType = restoredFilters.channelType || 'all';
-
   // 构造 bootstrap 请求参数（和 loadLogsFilterOptions 一致）
   const bootstrapParams = new URLSearchParams();
   appendLogsTimeRangeParams(bootstrapParams, { range: restoredFilters.range || 'today' });
-  if (currentChannelType && currentChannelType !== 'all') {
-    bootstrapParams.set('channel_type', currentChannelType);
-  }
 
-  // Wave 1：channel-types（浏览器缓存）+ bootstrap（合并 5 个请求）
-  const [, bootstrap] = await Promise.all([
-    window.initChannelTypeFilter('f_channel_type', currentChannelType, async (value) => {
-      currentChannelType = value;
-      window.persistFilterState({
-        key: LOGS_FILTER_KEY,
-        getValues: getLogsFilters
-      });
-      currentLogsPage = 1;
-      await loadLogsFilterOptions(value);
-      load();
-    }),
-    fetchDataWithAuth('/dashboard/logs/bootstrap?' + bootstrapParams.toString()).catch(() => null)
-  ]);
+  // Wave 1：bootstrap 合并页面初始化请求
+  const bootstrap = await fetchDataWithAuth('/dashboard/logs/bootstrap?' + bootstrapParams.toString()).catch(() => null);
 
   // 从 bootstrap 数据应用设置（bootstrap 失败时各字段回退到原有 fetch 路径）
   if (bootstrap) {
@@ -2000,7 +1958,7 @@ window.addEventListener('pageshow', async function (event) {
       }
 
       document.getElementById('f_hours').value = restoredFilters.range || 'today';
-      await loadLogsFilterOptions(restoredFilters.channelType || 'all', restoredFilters.range || 'today');
+      await loadLogsFilterOptions(restoredFilters.range || 'today');
       applyLogsFilterValues(restoredFilters);
       await syncLogSourceVisibility();
 
@@ -2021,7 +1979,7 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
     maskedApiKey: apiKey,
     apiKeyHash,
     originalModel: model,
-    channelType: null, // 将在异步加载渠道配置后填充
+    channelProtocol: null, // 将在异步加载渠道配置后填充
     keyIndex: null
   };
 
@@ -2045,8 +2003,8 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
     ]);
     const apiKeys = apiKeysRaw || [];
 
-    // ✅ 保存渠道类型,用于后续测试请求
-    testingKeyData.channelType = channel.channel_type || 'anthropic';
+    // 保存渠道协议，用于后续测试请求
+    testingKeyData.channelProtocol = channel.channel_type || 'anthropic';
     const { keyIndex: matchedIndex, matchCount, method } = await resolveKeyIndexForLogEntry(apiKeys, apiKey, apiKeyHash);
     testingKeyData.keyIndex = matchedIndex;
     if (apiKeys.length > 0) {
@@ -2151,7 +2109,7 @@ async function runKeyTest() {
       model: selectedModel,
       stream: streamEnabled,
       content: testContent,
-      channel_type: testingKeyData.channelType || 'anthropic' // ✅ 添加渠道类型
+      channel_type: testingKeyData.channelProtocol || 'anthropic'
     };
     if (testingKeyData && testingKeyData.keyIndex !== null && testingKeyData.keyIndex !== undefined) {
       testRequest.key_index = testingKeyData.keyIndex;

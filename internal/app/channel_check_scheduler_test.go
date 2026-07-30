@@ -75,8 +75,9 @@ func TestExecuteChannelTest_SuccessResetsCooldowns(t *testing.T) {
 
 	created := createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "scheduled-success",
-		URL:                   upstream.URL,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:           "openai",
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
 		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
@@ -128,7 +129,7 @@ func TestExecuteChannelTest_FailureAppliesCooldown(t *testing.T) {
 
 	created := createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "scheduled-failure",
-		URL:                   upstream.URL,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
@@ -196,7 +197,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 
 	eligible := createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "eligible-channel",
-		URL:                   eligibleUpstream.URL,
+		URLs:                  model.ChannelURLs{{URL: eligibleUpstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
@@ -216,7 +217,7 @@ func TestRunScheduledChannelChecks_UsesScheduledCheckModelAndAvailableKey(t *tes
 
 	createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "disabled-channel",
-		URL:                   disabledUpstream.URL,
+		URLs:                  model.ChannelURLs{{URL: disabledUpstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               false,
 		ScheduledCheckEnabled: true,
@@ -257,7 +258,7 @@ func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *test
 
 	createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "scheduled-log-success",
-		URL:                   upstream.URL,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
@@ -266,7 +267,7 @@ func TestRunScheduledChannelChecks_WritesScheduledCheckLogsForRunAndSkip(t *test
 
 	createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "scheduled-log-skip",
-		URL:                   upstream.URL,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
@@ -324,7 +325,7 @@ func TestRunScheduledChannelChecks_SkipsChannelsWithoutRunnableKey(t *testing.T)
 
 	created := createScheduledCheckChannel(t, srv, &model.Config{
 		Name:                  "all-keys-cooldown",
-		URL:                   upstream.URL,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,

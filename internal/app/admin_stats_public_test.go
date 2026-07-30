@@ -18,7 +18,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 
 	anth, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "anth",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
 		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
@@ -29,7 +29,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 	}
 	oai, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "oai",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
 		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},

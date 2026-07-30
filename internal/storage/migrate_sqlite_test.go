@@ -5,8 +5,10 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
 
 	_ "modernc.org/sqlite"
@@ -21,6 +23,63 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestMigrate_SQLite_AddsProtocolTransformModeWithAutoDefault(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			url TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			channel_type TEXT NOT NULL DEFAULT 'anthropic',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		INSERT INTO channels(name, url, created_at, updated_at)
+		VALUES('legacy', 'https://example.com
+https://example.com/v1/messages#', 1, 1)
+	`); err != nil {
+		t.Fatalf("create legacy channels: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy channels: %v", err)
+	}
+	columns, err := sqliteExistingColumns(ctx, db, "channels")
+	if err != nil {
+		t.Fatalf("list channels columns: %v", err)
+	}
+	if !columns["protocol_transform_mode"] {
+		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
+	}
+	var mode string
+	if err := db.QueryRowContext(ctx, "SELECT protocol_transform_mode FROM channels WHERE name='legacy'").Scan(&mode); err != nil {
+		t.Fatalf("read migrated mode: %v", err)
+	}
+	if mode != "auto" {
+		t.Fatalf("migrated mode=%q, want auto", mode)
+	}
+	var rawURLs string
+	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {
+		t.Fatalf("read migrated URLs: %v", err)
+	}
+	var urls model.ChannelURLs
+	if err := json.Unmarshal([]byte(rawURLs), &urls); err != nil {
+		t.Fatalf("migrated URLs are not structured JSON: %v (%q)", err, rawURLs)
+	}
+	if len(urls) != 2 || urls[0].URL != "https://example.com" || urls[0].Exact ||
+		urls[1].URL != "https://example.com/v1/messages" || !urls[1].Exact {
+		t.Fatalf("migrated URLs=%+v", urls)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migrate must be idempotent: %v", err)
+	}
 }
 
 func TestMigrate_SQLite_FullFlow(t *testing.T) {

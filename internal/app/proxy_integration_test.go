@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -31,6 +32,7 @@ import (
 type testChannel struct {
 	name                   string
 	channelType            string
+	protocolTransformMode  string
 	websockets             bool
 	customRequestRules     *model.CustomRequestRules
 	cooldownDetectionRules *model.CooldownDetectionRules
@@ -44,6 +46,35 @@ type proxyTestEnv struct {
 	server *Server
 	store  storage.Store
 	engine *gin.Engine
+}
+
+func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chat-1","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "single-url-stats", channelType: "openai", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model":    "gpt-test",
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	stats := env.server.urlSelector.GetURLStats(configs[0].ID, configs[0].GetURLs())
+	if len(stats) != 1 || stats[0].Requests != 1 || stats[0].LatencyMs <= 0 {
+		t.Fatalf("unexpected single URL runtime stats: %+v", stats)
+	}
 }
 
 func TestProxy_NonResponsesGenerateFieldIsPreserved(t *testing.T) {
@@ -106,6 +137,10 @@ func setupProxyTestEnvWithSettings(
 		if chType == "" {
 			chType = util.ChannelTypeOpenAI
 		}
+		transformMode := ch.protocolTransformMode
+		if transformMode == "" {
+			transformMode = model.ProtocolTransformModeLocal
+		}
 
 		// 构建模型列表
 		var modelEntries []model.ModelEntry
@@ -118,8 +153,9 @@ func setupProxyTestEnvWithSettings(
 
 		cfg := &model.Config{
 			Name:                   ch.name,
-			URL:                    upURL,
+			URLs:                   channelURLsForTest(upURL),
 			ChannelType:            chType,
+			ProtocolTransformMode:  transformMode,
 			Websockets:             ch.websockets,
 			CustomRequestRules:     ch.customRequestRules,
 			CooldownDetectionRules: ch.cooldownDetectionRules,
@@ -576,7 +612,7 @@ func TestProxy_AlphaSearchUnsupportedFallsBackToEmptyResult(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "alpha-search-failure", channelType: util.ChannelTypeCodex, models: "gpt-5"},
+		{name: "alpha-search-failure", channelType: util.ChannelTypeCodex, protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5"},
 	}, map[int]string{0: upstream.URL})
 
 	request := func() *httptest.ResponseRecorder {
@@ -1842,7 +1878,7 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 	var gotBodies [][]byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "anthropic-ch", channelType: "anthropic", models: "claude-3-5-sonnet", apiKey: "sk-ant"},
+		{name: "anthropic-ch", channelType: "anthropic", protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-3-5-sonnet", apiKey: "sk-ant"},
 	}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	env.server.client = &http.Client{
@@ -1853,8 +1889,8 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 			if r.URL.Path == "/v1/chat/completions" {
 				return &http.Response{
 					StatusCode: http.StatusNotFound,
-					Header:     http.Header{"Content-Type": []string{"application/json"}},
-					Body:       io.NopCloser(bytes.NewReader([]byte(`{"error":{"message":"endpoint not found"}}`))),
+					Header:     http.Header{"Content-Type": []string{"text/plain; charset=utf-8"}},
+					Body:       io.NopCloser(bytes.NewReader([]byte("404: Not Found (DEPLOYMENT_NOT_FOUND)\n\nThe requested deployment does not exist."))),
 				}, nil
 			}
 			return &http.Response{
@@ -1896,12 +1932,110 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 	request()
 	request()
 
-	if got := strings.Join(gotPaths, ","); got != "/v1/chat/completions,/v1/messages,/v1/messages" {
-		t.Fatalf("upstream paths=%s, want native probe then cached local path", got)
+	if got := strings.Join(gotPaths, ","); got != "/v1/messages,/v1/messages" {
+		t.Fatalf("upstream paths=%s, want Anthropic first then cached Anthropic", got)
 	}
-	for i, body := range gotBodies[1:] {
+	for i, body := range gotBodies {
 		if !bytes.Contains(body, []byte(`"messages"`)) || !bytes.Contains(body, []byte(`"text":"hi"`)) {
 			t.Fatalf("local request body %d is not Anthropic: %s", i, body)
+		}
+	}
+}
+
+func TestProxy_URLProtocolsSkipNativeProbeAndUseDeclaredChannelProtocol(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/messages" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"unexpected native probe"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "declared-anthropic", channelType: "anthropic", models: "claude-3-5-sonnet",
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	configs[0].URLs[0].Protocols = []string{"anthropic"}
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "claude-3-5-sonnet", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !slices.Equal(paths, []string{"/v1/messages"}) {
+		t.Fatalf("paths=%v, want one direct local request", paths)
+	}
+}
+
+func TestProxy_URLProtocolsSkipIncompatibleEndpointWithoutCoolingChannel(t *testing.T) {
+	var incompatibleHits atomic.Int64
+	incompatible := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		incompatibleHits.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer incompatible.Close()
+
+	var compatibleHits atomic.Int64
+	compatible := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		compatibleHits.Add(1)
+		if r.URL.Path != "/v1/embeddings" {
+			t.Errorf("compatible path=%q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[{"object":"embedding","embedding":[0.1],"index":0}],"model":"shared-model","usage":{"prompt_tokens":1,"total_tokens":1}}`)
+	}))
+	defer compatible.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "incompatible", channelType: "anthropic", models: "shared-model", priority: 100},
+		{name: "compatible", channelType: "openai", models: "shared-model", priority: 90},
+	}, map[int]string{0: incompatible.URL, 1: compatible.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 2 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	for _, cfg := range configs {
+		switch cfg.Name {
+		case "incompatible":
+			cfg.URLs[0].Protocols = []string{"codex"}
+		case "compatible":
+			cfg.URLs[0].Protocols = []string{"openai"}
+		}
+		if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
+			t.Fatalf("UpdateConfig(%s): %v", cfg.Name, err)
+		}
+	}
+	env.server.InvalidateChannelListCache()
+
+	w := doProxyRequest(t, env.engine, "/v1/embeddings", map[string]any{
+		"model": "shared-model", "input": "hi",
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if incompatibleHits.Load() != 0 || compatibleHits.Load() != 1 {
+		t.Fatalf("hits incompatible=%d compatible=%d, want 0/1", incompatibleHits.Load(), compatibleHits.Load())
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllChannelCooldowns: %v", err)
+	}
+	for _, cfg := range configs {
+		if cfg.Name == "incompatible" && cooldowns[cfg.ID].After(time.Now()) {
+			t.Fatalf("incompatible declared URL cooled channel until %v", cooldowns[cfg.ID])
 		}
 	}
 }
@@ -1915,6 +2049,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 		headers       map[string]string
 		channelType   string
 		localPath     string
+		wantPaths     string
 		missingStatus int
 		upstreamBody  string
 	}{
@@ -1922,6 +2057,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 			name: "OpenAI", clientPath: "/v1/chat/completions", channelType: "anthropic", localPath: "/v1/messages",
 			requestBody:  map[string]any{"model": modelName, "messages": []map[string]string{{"role": "user", "content": "hi"}}},
 			upstreamBody: `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"shared-model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			wantPaths:    "/v1/messages,/v1/messages",
 		},
 		{
 			name: "Anthropic", clientPath: "/v1/messages", channelType: "openai", localPath: "/v1/chat/completions",
@@ -1929,6 +2065,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 			requestBody:   map[string]any{"model": modelName, "messages": []map[string]string{{"role": "user", "content": "hi"}}},
 			headers:       map[string]string{"anthropic-version": "2023-06-01"},
 			upstreamBody:  `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			wantPaths:     "/v1/messages,/v1/chat/completions,/v1/chat/completions",
 		},
 		{
 			name: "Codex", clientPath: "/v1/responses", channelType: "openai", localPath: "/v1/chat/completions",
@@ -1936,11 +2073,13 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 				"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "hi"}},
 			}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			wantPaths:    "/v1/messages,/v1/chat/completions,/v1/chat/completions",
 		},
 		{
 			name: "Gemini", clientPath: "/v1beta/models/shared-model:generateContent", channelType: "openai", localPath: "/v1/chat/completions",
 			requestBody:  map[string]any{"contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "hi"}}}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			wantPaths:    "/v1/messages,/v1/chat/completions,/v1/chat/completions",
 		},
 	}
 
@@ -1963,7 +2102,8 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 			}))
 			defer upstream.Close()
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: strings.ToLower(tc.name) + "-fallback", channelType: tc.channelType, models: modelName,
+				name: strings.ToLower(tc.name) + "-fallback", channelType: tc.channelType,
+				protocolTransformMode: model.ProtocolTransformModeAuto, models: modelName,
 			}}, map[int]string{0: upstream.URL})
 
 			for i := 0; i < 2; i++ {
@@ -1972,9 +2112,60 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 					t.Fatalf("request %d status=%d body=%s", i+1, w.Code, w.Body.String())
 				}
 			}
-			want := tc.clientPath + "," + tc.localPath + "," + tc.localPath
-			if got := strings.Join(paths, ","); got != want {
-				t.Fatalf("paths=%s want=%s", got, want)
+			if got := strings.Join(paths, ","); got != tc.wantPaths {
+				t.Fatalf("paths=%s want=%s", got, tc.wantPaths)
+			}
+		})
+	}
+}
+
+func TestProxy_ProtocolTransformModeStrict(t *testing.T) {
+	tests := []struct {
+		name       string
+		mode       string
+		wantPath   string
+		wantStatus int
+	}{
+		{name: "upstream never falls back", mode: model.ProtocolTransformModeUpstream, wantPath: "/v1/chat/completions", wantStatus: http.StatusNotFound},
+		{name: "local translates immediately", mode: model.ProtocolTransformModeLocal, wantPath: "/v1/messages", wantStatus: http.StatusOK},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var paths []string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.URL.Path)
+				w.Header().Set("Content-Type", "application/json")
+				if r.URL.Path == "/v1/chat/completions" {
+					w.WriteHeader(http.StatusNotFound)
+					_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+					return
+				}
+				_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "strict-mode", channelType: "anthropic", models: "claude-3-5-sonnet",
+			}}, map[int]string{0: upstream.URL})
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+			}
+			configs[0].ProtocolTransformMode = tt.mode
+			if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+				t.Fatalf("UpdateConfig: %v", err)
+			}
+			env.server.InvalidateChannelListCache()
+
+			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "claude-3-5-sonnet", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			if w.Code != tt.wantStatus {
+				t.Fatalf("status=%d want=%d body=%s", w.Code, tt.wantStatus, w.Body.String())
+			}
+			if !slices.Equal(paths, []string{tt.wantPath}) {
+				t.Fatalf("paths=%v, want exactly [%s]", paths, tt.wantPath)
 			}
 		})
 	}
@@ -1986,12 +2177,12 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 		return newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			*paths = append(*paths, r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
-			if r.URL.Path == "/v1/chat/completions" {
+			if r.URL.Path == "/v1/messages" {
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/chat/completions)"}}`)
+				_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/messages)"}}`)
 				return
 			}
-			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+			_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"claude-3-5-sonnet","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
 		}))
 	}
 	upstreamA := newUpstream(&pathsA)
@@ -2000,7 +2191,8 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 	defer upstreamB.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "multi-url-anthropic", channelType: "anthropic", models: "claude-3-5-sonnet",
+		name: "multi-url-anthropic", channelType: "anthropic",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-3-5-sonnet",
 	}}, map[int]string{0: upstreamA.URL + "\n" + upstreamB.URL})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
@@ -2024,11 +2216,11 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 	env.server.urlSelector.DisableURL(channelID, upstreamA.URL)
 	request()
 
-	if got := strings.Join(pathsA, ","); got != "/v1/chat/completions,/v1/messages,/v1/messages" {
-		t.Fatalf("URL A paths=%s, want native probe then cached local", got)
+	if got := strings.Join(pathsA, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("URL A paths=%s, want ordered discovery then cached OpenAI", got)
 	}
-	if got := strings.Join(pathsB, ","); got != "/v1/chat/completions,/v1/messages" {
-		t.Fatalf("URL B paths=%s, want an independent native probe then local", got)
+	if got := strings.Join(pathsB, ","); got != "/v1/messages,/v1/chat/completions" {
+		t.Fatalf("URL B paths=%s, want independent ordered discovery", got)
 	}
 }
 
@@ -2051,7 +2243,8 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "family-anthropic", channelType: "anthropic", models: "claude-3-5-sonnet",
+		name: "family-anthropic", channelType: "anthropic",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-3-5-sonnet",
 	}}, map[int]string{0: upstream.URL})
 
 	chat := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -2073,7 +2266,7 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 		t.Fatalf("cached chat status=%d body=%s", chat.Code, chat.Body.String())
 	}
 
-	if got := strings.Join(paths, ","); got != "/v1/chat/completions,/v1/messages,/v1/embeddings,/v1/messages" {
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/embeddings,/v1/messages" {
 		t.Fatalf("upstream paths=%s, want Chat cache isolated from Embeddings", got)
 	}
 }
@@ -2103,7 +2296,8 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 			}))
 			defer upstream.Close()
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: "error-anthropic", channelType: "anthropic", models: "claude-3-5-sonnet",
+				name: "error-anthropic", channelType: "anthropic",
+				protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-3-5-sonnet",
 			}}, map[int]string{0: upstream.URL})
 
 			w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -2112,10 +2306,80 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 			if w.Code != tc.wantStatus {
 				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.wantStatus, w.Body.String())
 			}
-			if got := strings.Join(paths, ","); got != "/v1/chat/completions" {
-				t.Fatalf("upstream paths=%s, ordinary error must not trigger local translation", got)
+			if got := strings.Join(paths, ","); got != "/v1/messages" {
+				t.Fatalf("upstream paths=%s, ordinary error must stop protocol fallback", got)
 			}
 		})
+	}
+}
+
+func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/messages" {
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"claude-4.5-haiku","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-to-openai", channelType: "openai",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-4.5-haiku",
+	}}, map[int]string{0: upstream.URL})
+
+	request := func() {
+		t.Helper()
+		w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "claude-4.5-haiku",
+			"input": []map[string]any{{
+				"type": "message", "role": "user",
+				"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+			}},
+		}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+
+	request()
+	request()
+
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want Anthropic failure then cached OpenAI", got)
+	}
+}
+
+func TestProxy_AutomaticProtocolFallback_SkipsUnrepresentableTransforms(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"gpt-5.6-sol","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-unrepresentable-transform", channelType: "codex",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-5.6-sol",
+	}}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.6-sol",
+		"input": []map[string]any{{
+			"type":              "compaction",
+			"encrypted_content": "opaque",
+		}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if !slices.Equal(paths, []string{"/v1/responses"}) {
+		t.Fatalf("paths=%v, want native Codex after local transform rejection", paths)
 	}
 }
 
@@ -2128,7 +2392,8 @@ func TestProxy_AutomaticProtocolFallback_ExactURLTranslatesDirectly(t *testing.T
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "exact-anthropic", channelType: "anthropic", models: "claude-3-5-sonnet",
+		name: "exact-anthropic", channelType: "anthropic",
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "claude-3-5-sonnet",
 	}}, map[int]string{0: upstream.URL + "/v1/messages#"})
 
 	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -2237,7 +2502,7 @@ func TestProxy_NonStreamingOpenAIClientNormalizesAnthropicJSONFromUpstreamMode(t
 	t.Parallel()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "anthropic-upstream-mode", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+		{name: "anthropic-upstream-mode", channelType: "anthropic", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "mimo-v2.5", apiKey: "sk-ant"},
 	}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	var gotPath string
@@ -2288,7 +2553,7 @@ func TestProxy_NonStreamingAnthropicClientNormalizesOpenAIJSONFromUpstreamMode(t
 	t.Parallel()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-upstream-mode", channelType: "openai", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	var gotPath string
@@ -2445,7 +2710,7 @@ func TestProxy_OpenAIShapedBodyOnGeminiPathIsRejected(t *testing.T) {
 	}
 }
 
-func TestProxy_AutomaticProtocolFallback_PrefersNativeProtocol(t *testing.T) {
+func TestProxy_AutomaticProtocolFallback_UsesFixedProtocolOrder(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
@@ -2454,7 +2719,7 @@ func TestProxy_AutomaticProtocolFallback_PrefersNativeProtocol(t *testing.T) {
 	var gotBody []byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "anthropic-ch", channelType: "anthropic", models: "gpt-4o", apiKey: "sk-openai-upstream"},
+		{name: "anthropic-ch", channelType: "anthropic", protocolTransformMode: model.ProtocolTransformModeAuto, models: "gpt-4o", apiKey: "sk-openai-upstream"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	env.server.client = &http.Client{
@@ -2467,7 +2732,7 @@ func TestProxy_AutomaticProtocolFallback_PrefersNativeProtocol(t *testing.T) {
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body: io.NopCloser(bytes.NewReader([]byte(
-					`{"id":"chatcmpl-upstream","object":"chat.completion","created":123,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"native upstream"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
+					`{"id":"msg-upstream","type":"message","role":"assistant","content":[{"type":"text","text":"anthropic first"}],"model":"gpt-4o","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`,
 				))),
 			}, nil
 		}),
@@ -2497,20 +2762,20 @@ func TestProxy_AutomaticProtocolFallback_PrefersNativeProtocol(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if gotPath != "/v1/chat/completions" {
-		t.Fatalf("expected native openai upstream path, got %s", gotPath)
+	if gotPath != "/v1/messages" {
+		t.Fatalf("expected Anthropic-first upstream path, got %s", gotPath)
 	}
 	if gotAuth != "Bearer sk-openai-upstream" {
-		t.Fatalf("expected openai auth header, got %q", gotAuth)
+		t.Fatalf("expected bearer auth header, got %q", gotAuth)
 	}
 	if gotAPIKey != "sk-openai-upstream" {
-		t.Fatalf("expected openai x-api-key header, got %q", gotAPIKey)
+		t.Fatalf("expected x-api-key header, got %q", gotAPIKey)
 	}
 	if !bytes.Contains(gotBody, []byte(`"messages"`)) {
-		t.Fatalf("expected native openai request body, got %s", gotBody)
+		t.Fatalf("expected Anthropic request body, got %s", gotBody)
 	}
-	if bytes.Contains(gotBody, []byte(`"anthropic_version"`)) {
-		t.Fatalf("expected request body to skip anthropic transform, got %s", gotBody)
+	if !bytes.Contains(gotBody, []byte(`"max_tokens"`)) {
+		t.Fatalf("expected Anthropic max_tokens, got %s", gotBody)
 	}
 
 	var resp struct {
@@ -2521,7 +2786,7 @@ func TestProxy_AutomaticProtocolFallback_PrefersNativeProtocol(t *testing.T) {
 		t.Fatalf("unmarshal response: %v", err)
 	}
 	if resp.Object != "chat.completion" || resp.Model != "gpt-4o" {
-		t.Fatalf("expected native openai response passthrough, got %+v", resp)
+		t.Fatalf("expected response translated back to OpenAI, got %+v", resp)
 	}
 }
 
@@ -2585,7 +2850,7 @@ func TestProxy_StreamingOpenAIClientNormalizesAnthropicSSEFromUpstreamMode(t *te
 	t.Parallel()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "anthropic-upstream-mode", channelType: "anthropic", models: "mimo-v2.5", apiKey: "sk-ant"},
+		{name: "anthropic-upstream-mode", channelType: "anthropic", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "mimo-v2.5", apiKey: "sk-ant"},
 	}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	var gotPath string
@@ -2649,7 +2914,7 @@ func TestProxy_StreamingAnthropicClientNormalizesOpenAISSEFromUpstreamMode(t *te
 	t.Parallel()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-upstream-mode", channelType: "openai", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	var gotPath string
@@ -2709,7 +2974,7 @@ func TestProxy_StreamingGeminiClientNormalizesOpenAISSEFromUpstreamMode(t *testi
 	t.Parallel()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-upstream-mode", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-upstream-mode", channelType: "openai", protocolTransformMode: model.ProtocolTransformModeUpstream, models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	var gotPath string
@@ -4666,7 +4931,7 @@ func TestProxy_KeyRetry_On401(t *testing.T) {
 	ctx := context.Background()
 	cfg := &model.Config{
 		Name:         "ch1-multikey",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		ChannelType:  util.ChannelTypeOpenAI,
 		Priority:     100,
 		Enabled:      true,

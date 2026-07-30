@@ -22,8 +22,9 @@ type ChannelRequest struct {
 	APIKeys                []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
 	ChannelType            string                        `json:"channel_type,omitempty"` // 上游协议:anthropic, codex, openai, gemini
 	Websockets             bool                          `json:"websockets,omitempty"`
+	ProtocolTransformMode  string                        `json:"protocol_transform_mode,omitempty"`
 	KeyStrategy            string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL                    string                        `json:"url" binding:"required"`
+	URLs                   model.ChannelURLs             `json:"urls" binding:"required,min=1"`
 	Priority               int                           `json:"priority"`
 	RPMLimit               int                           `json:"rpm_limit"`                       // 每分钟请求数限制，0表示无限制
 	MaxConcurrency         int                           `json:"max_concurrency"`                 // 最大并发请求数，0表示无限制
@@ -137,33 +138,30 @@ func normalizeChannelProxyURL(raw string) (string, error) {
 	}
 }
 
-// validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
-func validateChannelURLs(raw string) (string, error) {
-	if !strings.Contains(raw, "\n") {
-		return validateChannelBaseURL(raw)
+func validateChannelURLConfigs(urls model.ChannelURLs) (model.ChannelURLs, error) {
+	urls = urls.Clone()
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("urls cannot be empty")
 	}
-	lines := strings.Split(raw, "\n")
-	var normalized []string
-	seen := make(map[string]struct{}, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	if err := urls.Normalize(); err != nil {
+		return nil, err
+	}
+	for i := range urls {
+		raw := urls[i].URL
+		if urls[i].Exact {
+			raw += model.ExactUpstreamURLMarker
 		}
-		u, err := validateChannelBaseURL(line)
+		normalized, err := validateChannelBaseURL(raw)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("urls[%d]: %w", i, err)
 		}
-		if _, exists := seen[u]; exists {
-			continue
-		}
-		seen[u] = struct{}{}
-		normalized = append(normalized, u)
+		urls[i].Exact = model.HasExactUpstreamURLMarker(normalized)
+		urls[i].URL = model.StripExactUpstreamURLMarker(normalized)
 	}
-	if len(normalized) == 0 {
-		return "", fmt.Errorf("url cannot be empty")
+	if err := urls.Normalize(); err != nil {
+		return nil, err
 	}
-	return strings.Join(normalized, "\n"), nil
+	return urls, nil
 }
 
 // Validate 实现RequestValidator接口
@@ -216,12 +214,12 @@ func (cr *ChannelRequest) Validate() error {
 		}
 	}
 
-	// URL 验证：支持换行分隔的多URL，逐个校验并标准化
-	normalizedURL, err := validateChannelURLs(cr.URL)
+	// URL 能力属于具体端点；先规范化结构，再逐项验证网络地址。
+	var err error
+	cr.URLs, err = validateChannelURLConfigs(cr.URLs)
 	if err != nil {
 		return err
 	}
-	cr.URL = normalizedURL
 
 	// [FIX] channel_type 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值anthropic），非空值必须合法
@@ -237,6 +235,11 @@ func (cr *ChannelRequest) Validate() error {
 	}
 	if cr.Websockets && util.NormalizeChannelType(cr.ChannelType) != util.ChannelTypeCodex {
 		return fmt.Errorf("websockets is only supported for codex channels")
+	}
+	rawProtocolTransformMode := cr.ProtocolTransformMode
+	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
+	if cr.ProtocolTransformMode == "" {
+		return fmt.Errorf("invalid protocol_transform_mode: %q (allowed: auto, upstream, local)", rawProtocolTransformMode)
 	}
 	// [FIX] key_strategy 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值sequential），非空值必须合法
@@ -264,10 +267,11 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CooldownDetectionRules = nil
 	}
 
-	cr.ProxyURL, err = normalizeChannelProxyURL(cr.ProxyURL)
+	normalizedProxyURL, err := normalizeChannelProxyURL(cr.ProxyURL)
 	if err != nil {
 		return err
 	}
+	cr.ProxyURL = normalizedProxyURL
 
 	if cr.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be >= 0 (got %d)", cr.RPMLimit)
@@ -302,7 +306,8 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		Name:                   strings.TrimSpace(cr.Name),
 		ChannelType:            strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		Websockets:             cr.Websockets,
-		URL:                    strings.TrimSpace(cr.URL),
+		ProtocolTransformMode:  cr.ProtocolTransformMode,
+		URLs:                   cr.URLs.Clone(),
 		Priority:               cr.Priority,
 		RPMLimit:               cr.RPMLimit,
 		MaxConcurrency:         cr.MaxConcurrency,
@@ -475,19 +480,30 @@ type SettingUpdateRequest struct {
 
 // CheckDuplicateRequest 渠道重复检测请求
 type CheckDuplicateRequest struct {
-	ChannelType string   `json:"channel_type" binding:"required"`
-	URLs        []string `json:"urls"         binding:"required,min=1"`
+	ChannelType string            `json:"channel_type" binding:"required"`
+	URLs        model.ChannelURLs `json:"urls"         binding:"required,min=1"`
 }
 
-// Validate 实现 RequestValidator 接口，无额外业务约束
-func (r *CheckDuplicateRequest) Validate() error { return nil }
+// Validate implements RequestValidator.
+func (r *CheckDuplicateRequest) Validate() error {
+	r.ChannelType = util.NormalizeChannelType(r.ChannelType)
+	if !util.IsValidChannelType(r.ChannelType) {
+		return fmt.Errorf("invalid channel_type: %q", r.ChannelType)
+	}
+	urls, err := validateChannelURLConfigs(r.URLs)
+	if err != nil {
+		return err
+	}
+	r.URLs = urls
+	return nil
+}
 
 // DuplicateChannelInfo 重复渠道信息
 type DuplicateChannelInfo struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	ChannelType string `json:"channel_type"`
-	URL         string `json:"url"`
+	ID          int64             `json:"id"`
+	Name        string            `json:"name"`
+	ChannelType string            `json:"channel_type"`
+	URLs        model.ChannelURLs `json:"urls"`
 }
 
 // CheckDuplicateResponse 重复检测响应

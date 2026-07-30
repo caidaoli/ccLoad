@@ -1702,6 +1702,13 @@ window.WebAuth = window.WebAuth || {
       dropdownHome = dropdown.parentElement;
     }
 
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-haspopup', 'listbox');
+    input.setAttribute('aria-controls', dropdown.id);
+    input.setAttribute('aria-expanded', 'false');
+    dropdown.setAttribute('role', 'listbox');
+
     let activeIndex = -1;
     let outsideHandler = null;
     let repositionHandler = null;
@@ -1723,6 +1730,8 @@ window.WebAuth = window.WebAuth || {
     function closeDropdown() {
       dropdown.style.display = 'none';
       dropdown.dataset.open = '0';
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
       activeIndex = -1;
       clearOutsideHandler();
       clearRepositionHandler();
@@ -1864,6 +1873,7 @@ window.WebAuth = window.WebAuth || {
         const row = document.createElement('div');
         row.className = 'filter-dropdown-item';
         row.setAttribute('role', 'option');
+        row.id = `${dropdown.id}-option-${idx}`;
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
         row.textContent = item.label;
@@ -1871,7 +1881,9 @@ window.WebAuth = window.WebAuth || {
           row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
         }
 
-        if (item.value === currentValue) row.classList.add('selected');
+        const selected = item.value === currentValue;
+        row.setAttribute('aria-selected', selected ? 'true' : 'false');
+        if (selected) row.classList.add('selected');
         if (idx === activeIndex) row.classList.add('active');
 
         row.addEventListener('mousedown', (e) => {
@@ -1882,6 +1894,12 @@ window.WebAuth = window.WebAuth || {
 
         dropdown.appendChild(row);
       });
+
+      if (activeIndex >= 0 && activeIndex < items.length) {
+        input.setAttribute('aria-activedescendant', `${dropdown.id}-option-${activeIndex}`);
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
     }
 
     function positionDropdown() {
@@ -1906,6 +1924,7 @@ window.WebAuth = window.WebAuth || {
       }
       dropdown.style.display = 'block';
       dropdown.dataset.open = '1';
+      input.setAttribute('aria-expanded', 'true');
       renderDropdown();
       positionDropdown();
 
@@ -2367,29 +2386,6 @@ window.WebAuth = window.WebAuth || {
     });
   }
 
-  /**
-   * 初始化渠道类型筛选下拉框
-   * @param {string} selectId - select 元素 ID
-   * @param {string} initialType - 初始选中的类型
-   * @param {function(string)} onChange - 选中值变更回调
-   */
-  async function initChannelTypeFilter(selectId, initialType, onChange) {
-    const select = document.getElementById(selectId);
-    if (!select) return;
-
-    const types = await window.ChannelTypeManager.getChannelTypes();
-    select.innerHTML = `<option value="all">${window.t('common.all')}</option>`;
-    types.forEach(type => {
-      const option = document.createElement('option');
-      option.value = type.value;
-      option.textContent = type.display_name;
-      if (type.value === initialType) option.selected = true;
-      select.appendChild(option);
-    });
-
-    select.addEventListener('change', (e) => onChange(e.target.value));
-  }
-
   async function loadAuthTokensIntoSelect(selectId, opts) {
     const o = opts || {};
 	if (window.isAPITokenRole()) return [];
@@ -2499,7 +2495,6 @@ window.WebAuth = window.WebAuth || {
   window.copyToClipboard = copyToClipboard;
   window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
   window.setHighlightedCodeContent = setHighlightedCodeContent;
-  window.initChannelTypeFilter = initChannelTypeFilter;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
   window.bindTimeRangeSelector = bindTimeRangeSelector;

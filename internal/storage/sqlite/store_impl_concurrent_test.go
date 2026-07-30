@@ -34,7 +34,7 @@ func TestConcurrentConfigCreate(t *testing.T) {
 
 			cfg := &model.Config{
 				Name:         fmt.Sprintf("concurrent-channel-%d", idx),
-				URL:          "https://api.example.com",
+				URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 				Enabled:      true,
 				ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
 			}
@@ -81,7 +81,7 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 	// 预先创建一个配置
 	cfg := &model.Config{
 		Name:         "test-rw-channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled:      true,
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
 	}
@@ -118,9 +118,8 @@ func TestConcurrentConfigReadWrite(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			for j := 0; j < 5; j++ {
-				updates := &model.Config{
-					Priority: idx*10 + j,
-				}
+				updates := created.Clone()
+				updates.Priority = idx*10 + j
 				_, err := store.UpdateConfig(ctx, created.ID, updates)
 				if err == nil {
 					writeCount.Add(1)
@@ -266,7 +265,7 @@ func TestConcurrentAPIKeyOperations(t *testing.T) {
 	// 预先创建一个渠道
 	cfg := &model.Config{
 		Name:    "test-apikey-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -353,7 +352,7 @@ func TestConcurrentCooldownOperations(t *testing.T) {
 	// 预先创建渠道和Keys
 	cfg := &model.Config{
 		Name:    "test-cooldown-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -454,7 +453,7 @@ func TestConcurrentMixedOperations(t *testing.T) {
 			default:
 				cfg := &model.Config{
 					Name:    fmt.Sprintf("mixed-channel-%d", idx),
-					URL:     "https://api.example.com",
+					URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 					Enabled: true,
 				}
 				_, _ = store.CreateConfig(ctx, cfg)

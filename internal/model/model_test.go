@@ -120,7 +120,7 @@ func TestConfig_JSONSerialization(t *testing.T) {
 		ID:          1,
 		Name:        "test-channel",
 		ChannelType: "gemini",
-		URL:         "https://api.example.com",
+		URLs:        ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    10,
 		ModelEntries: []ModelEntry{
 			{Model: "model-1", RedirectModel: ""},

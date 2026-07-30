@@ -25,6 +25,23 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func channelURLsForTest(rawValues ...string) model.ChannelURLs {
+	urls := make(model.ChannelURLs, 0, len(rawValues))
+	for _, raw := range rawValues {
+		for line := range strings.SplitSeq(raw, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			urls = append(urls, model.ChannelURL{
+				URL:   model.StripExactUpstreamURLMarker(line),
+				Exact: model.HasExactUpstreamURLMarker(line),
+			})
+		}
+	}
+	return urls
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {

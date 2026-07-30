@@ -923,7 +923,7 @@ func TestStripAnthropicProtocolHeaders(t *testing.T) {
 }
 
 func anyrouterAnthropicCfg() *model.Config {
-	return &model.Config{Name: "anyrouter-claude", URL: "https://anyrouter.top", ChannelType: util.ChannelTypeAnthropic}
+	return &model.Config{Name: "anyrouter-claude", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}, ChannelType: util.ChannelTypeAnthropic}
 }
 
 func TestNormalizeAnyrouterAdaptiveThinking(t *testing.T) {
@@ -1003,7 +1003,7 @@ func TestNormalizeAnyrouterAdaptiveThinking(t *testing.T) {
 	})
 
 	t.Run("anyrouter URL is enough even when channel name does not contain anyrouter", func(t *testing.T) {
-		cfg := &model.Config{Name: "regular-channel", URL: "https://anyrouter.top", ChannelType: util.ChannelTypeAnthropic}
+		cfg := &model.Config{Name: "regular-channel", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}, ChannelType: util.ChannelTypeAnthropic}
 		body := []byte(`{"model":"claude-opus-4-8","thinking":{"type":"enabled","budget_tokens":1024}}`)
 		got := decode(normalizeAnyrouterAdaptiveThinking(cfg, "/v1/messages", body))
 		if thinkingType(got) != "adaptive" {
@@ -1015,7 +1015,7 @@ func TestNormalizeAnyrouterAdaptiveThinking(t *testing.T) {
 	})
 
 	t.Run("regular anthropic channel → no fallback normalization", func(t *testing.T) {
-		cfg := &model.Config{Name: "regular-channel", URL: "https://api.anthropic.com", ChannelType: util.ChannelTypeAnthropic}
+		cfg := &model.Config{Name: "regular-channel", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, ChannelType: util.ChannelTypeAnthropic}
 		body := []byte(`{"model":"claude-opus-4-8","thinking":{"type":"enabled","budget_tokens":1024}}`)
 		got := decode(normalizeAnyrouterAdaptiveThinking(cfg, "/v1/messages", body))
 		if thinkingType(got) != "enabled" {

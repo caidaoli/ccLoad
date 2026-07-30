@@ -608,6 +608,12 @@ func ensureChannelsWebsockets(ctx context.Context, db *sql.DB, dialect Dialect) 
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "protocol_transform_mode",
+		"VARCHAR(32) NOT NULL DEFAULT 'auto'",
+		"TEXT NOT NULL DEFAULT 'auto'")
+}
+
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
 // 支持多URL存储（换行分隔）
 func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {

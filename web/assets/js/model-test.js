@@ -1517,7 +1517,7 @@ function populateModelSelector() {
 function renderModelModeRows() {
   const previousSelectionState = captureRowSelectionState();
   if (!selectedProtocol) {
-    renderEmptyRow(i18nText('modelTest.selectProtocolFirst', '请先选择客户端请求协议'));
+    renderEmptyRow(i18nText('modelTest.selectProtocolFirst', '请先选择请求协议'));
     return;
   }
 

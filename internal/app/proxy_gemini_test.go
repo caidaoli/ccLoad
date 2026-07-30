@@ -18,7 +18,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		t.Helper()
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        name,
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    priority,
 			Enabled:     true,
 			ChannelType: channelType,
@@ -79,7 +79,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "g1",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    1,
 		Enabled:     true,
 		ChannelType: "gemini",
@@ -93,7 +93,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	}
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:        "o1",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    1,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -179,7 +179,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "o2",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    2,
 			Enabled:     true,
 			ChannelType: "openai",
@@ -215,7 +215,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "allowed-model-list-channel",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    3,
 			Enabled:     true,
 			ChannelType: "openai",
@@ -228,7 +228,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 		denied, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "disallowed-model-list-channel",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    4,
 			Enabled:     true,
 			ChannelType: "openai",
@@ -279,7 +279,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	t.Run("handleListOpenAIModels returns codex view for openai upstream with codex transform", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "o2-codex",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    3,
 			Enabled:     true,
 			ChannelType: "openai",
@@ -331,7 +331,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	t.Run("handleListOpenAIModels returns anthropic style for anthropic view", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "g3-anthropic",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    5,
 			Enabled:     true,
 			ChannelType: "gemini",
@@ -394,7 +394,7 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 	t.Run("handleListOpenAIModels keeps openai shape for codex view", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "c1",
-			URL:         "https://example.com",
+			URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 			Priority:    6,
 			Enabled:     true,
 			ChannelType: "codex",

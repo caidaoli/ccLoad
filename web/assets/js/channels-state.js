@@ -4,6 +4,7 @@ let channelStatsById = {};
 let editingChannelId = null;
 let deletingChannelRequest = null;
 let testingChannelId = null;
+let testingChannelProtocol = 'anthropic';
 let currentChannelKeyCooldowns = []; // 当前编辑渠道的Key冷却信息
 let redirectTableData = []; // 模型重定向表格数据: [{from: '', to: ''}]
 let selectedModelIndices = new Set(); // 选中的模型索引集合
@@ -39,7 +40,6 @@ function normalizeSelectedChannelID(id) {
 let filters = {
   search: '',
   searchExact: false,
-  channelType: 'all',
   status: 'all',
   model: 'all',
   modelExact: false
@@ -50,7 +50,7 @@ let inlineKeyTableData = [];
 let inlineKeyVisible = false; // 密码可见性状态
 let selectedKeyIndices = new Set(); // 选中的Key索引集合
 let currentKeyStatusFilter = 'all'; // 当前状态筛选：all/normal/cooldown/disabled
-let inlineURLTableData = []; // API URL 表格数据
+let inlineURLTableData = []; // API URL 表格数据: [{url: '', exact: false, protocols: []}]
 let selectedURLIndices = new Set(); // 选中的 URL 索引集合
 let urlStatsMap = {}; // URL实时状态：{ url: { latency_ms, cooled_down, cooldown_remain_ms } }
 let channelFormDirty = false; // 表单是否有未保存的更改

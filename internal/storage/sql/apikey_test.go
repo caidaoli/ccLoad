@@ -275,7 +275,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 		{
 			Config: &model.Config{
 				Name:                  "imported-channel-1",
-				URL:                   "https://api1.example.com",
+				URLs:                  model.ChannelURLs{{URL: "https://api1.example.com"}},
 				Priority:              10,
 				Enabled:               true,
 				ScheduledCheckEnabled: true,
@@ -297,7 +297,7 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 		{
 			Config: &model.Config{
 				Name:                  "imported-channel-2",
-				URL:                   "https://api2.example.com",
+				URLs:                  model.ChannelURLs{{URL: "https://api2.example.com"}},
 				Priority:              20,
 				Enabled:               true,
 				ScheduledCheckEnabled: false,
@@ -395,7 +395,7 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 		Config: &model.Config{
 			ID:                    42,
 			Name:                  "imported-channel-explicit-id",
-			URL:                   "https://api.example.com",
+			URLs:                  model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority:              5,
 			Enabled:               true,
 			ScheduledCheckEnabled: true,
@@ -435,7 +435,7 @@ func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
 	channel := &model.ChannelWithKeys{
 		Config: &model.Config{
 			Name:        "imported-channel-order",
-			URL:         "https://api.example.com",
+			URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority:    5,
 			Enabled:     true,
 			ChannelType: "openai",

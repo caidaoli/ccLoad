@@ -18,7 +18,7 @@ func newValidChannelRequest() *ChannelRequest {
 	return &ChannelRequest{
 		Name:   "test-channel",
 		APIKey: "test-key",
-		URL:    "https://example.com",
+		URLs:   model.ChannelURLs{{URL: "https://example.com"}},
 		Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 	}
 }
@@ -246,7 +246,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "anthropic",
 				KeyStrategy: "round_robin",
@@ -258,7 +258,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "invalid",
 				KeyStrategy: "sequential",
@@ -271,7 +271,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "anthropic",
 				KeyStrategy: "invalid",
@@ -284,7 +284,7 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 				ChannelType: "invalid_type",
 				KeyStrategy: "invalid_strategy",
@@ -415,16 +415,16 @@ func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
 	}
 }
 
-func TestChannelRequestValidation_URLDeduplication(t *testing.T) {
+func TestChannelRequestValidation_RejectsDuplicateURLs(t *testing.T) {
 	req := newValidChannelRequest()
-	req.URL = " https://a.example.com/\nhttps://b.example.com\nhttps://a.example.com \nhttps://b.example.com/ "
-
-	if err := req.Validate(); err != nil {
-		t.Fatalf("Validate() failed: %v", err)
+	req.URLs = model.ChannelURLs{
+		{URL: " https://a.example.com/"},
+		{URL: "https://b.example.com"},
+		{URL: "https://a.example.com "},
 	}
 
-	if req.URL != "https://a.example.com\nhttps://b.example.com" {
-		t.Fatalf("URL dedupe/normalize failed, got %q", req.URL)
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("Validate() error=%v, want duplicate URL error", err)
 	}
 }
 

@@ -206,8 +206,7 @@ async function saveSortOrder() {
 
     window.showSuccess(window.t('channels.sortSaveSuccess'));
     closeSortModal();
-    const currentType = (filters && filters.channelType) ? filters.channelType : 'all';
-    if (typeof loadChannels === 'function') await loadChannels(currentType);
+    if (typeof loadChannels === 'function') await loadChannels();
   } catch (error) {
     console.error('Save sort order failed:', error);
     window.showError(error.message || window.t('channels.sortSaveFailed'));

@@ -749,14 +749,7 @@ async function testSingleKey(keyIndex, testButton) {
     return;
   }
 
-  const channelTypeRadios = document.querySelectorAll('input[name="channelType"]');
-  let channelType = 'anthropic';
-  for (const radio of channelTypeRadios) {
-    if (radio.checked) {
-      channelType = radio.value.toLowerCase();
-      break;
-    }
-  }
+  const channelType = getChannelEditorChannelType();
 
   if (!testButton) return;
   const originalHTML = testButton.innerHTML;

@@ -45,7 +45,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -94,18 +94,24 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			}
 			cooldownDetectionRulesJSON = string(jsonBytes)
 		}
+		urlsJSON, err := sonic.Marshal(cfg.URLs)
+		if err != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("serialize urls for channel %d: %w", cfg.ID, err))
+			return
+		}
 
 		record := []string{
 			strconv.FormatInt(cfg.ID, 10),
 			cfg.Name,
 			apiKeyStr,
-			cfg.URL,
+			string(urlsJSON),
 			strconv.Itoa(cfg.Priority),
 			strconv.Itoa(cfg.RPMLimit),
 			strconv.Itoa(cfg.MaxConcurrency),
 			strings.Join(models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
+			cfg.GetProtocolTransformMode(),
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
@@ -161,7 +167,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	columnIndex := buildCSVColumnIndex(headerRow)
-	required := []string{"name", "api_key", "url", "models"}
+	required := []string{"name", "api_key", "urls", "models"}
 	for _, key := range required {
 		if _, ok := columnIndex[key]; !ok {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("缺少必需列: %s", key))
@@ -304,10 +310,11 @@ func (s *Server) parseChannelImportRow(
 	name := fetch("name")
 	rawID := fetch("id")
 	apiKey := fetch("api_key")
-	url := fetch("url")
+	urlsRaw := fetch("urls")
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
 	channelType := fetch("channel_type")
+	rawProtocolTransformMode := fetch("protocol_transform_mode")
 	keyStrategy := fetch("key_strategy")
 
 	var missing []string
@@ -317,8 +324,8 @@ func (s *Server) parseChannelImportRow(
 	if apiKey == "" {
 		missing = append(missing, "api_key")
 	}
-	if url == "" {
-		missing = append(missing, "url")
+	if urlsRaw == "" {
+		missing = append(missing, "urls")
 	}
 	if modelsRaw == "" {
 		missing = append(missing, "models")
@@ -332,16 +339,23 @@ func (s *Server) parseChannelImportRow(
 		return nil, fmt.Sprintf("第%d行渠道ID格式错误: %v", lineNo, err), true
 	}
 
-	normalizedURL, err := validateChannelURLs(url)
+	var urls model.ChannelURLs
+	if err := sonic.Unmarshal([]byte(urlsRaw), &urls); err != nil {
+		return nil, fmt.Sprintf("第%d行 urls JSON无效: %v", lineNo, err), true
+	}
+	urls, err = validateChannelURLConfigs(urls)
 	if err != nil {
 		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
 	}
-	url = normalizedURL
 
 	// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
 	channelType = util.NormalizeChannelType(channelType)
 	if !util.IsValidChannelType(channelType) {
 		return nil, fmt.Sprintf("第%d行上游协议无效: %s(仅支持anthropic/codex/openai/gemini)", lineNo, channelType), true
+	}
+	protocolTransformMode := model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
+	if protocolTransformMode == "" {
+		return nil, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, rawProtocolTransformMode), true
 	}
 
 	// 验证Key使用策略(可选字段,默认sequential)
@@ -467,12 +481,13 @@ func (s *Server) parseChannelImportRow(
 	cfg := &model.Config{
 		ID:                     channelID,
 		Name:                   name,
-		URL:                    url,
+		URLs:                   urls,
 		Priority:               priority,
 		RPMLimit:               rpmLimit,
 		MaxConcurrency:         maxConcurrency,
 		ModelEntries:           modelEntries,
 		ChannelType:            channelType,
+		ProtocolTransformMode:  protocolTransformMode,
 		Enabled:                enabled,
 		ScheduledCheckEnabled:  scheduledCheckEnabled,
 		ScheduledCheckModel:    scheduledCheckModel,

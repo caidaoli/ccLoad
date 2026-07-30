@@ -75,8 +75,18 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 			continue
 		}
 		if len(urls) != len(cfg.GetURLs()) {
+			configuredURLs := cfg.URLs
 			cfg = cfg.Clone()
-			cfg.URL = strings.Join(urls, "\n")
+			allowed := make(map[string]struct{}, len(urls))
+			for _, runtimeURL := range urls {
+				allowed[runtimeURL] = struct{}{}
+			}
+			cfg.URLs = cfg.URLs[:0]
+			for _, entry := range configuredURLs {
+				if _, ok := allowed[entry.RuntimeURL()]; ok {
+					cfg.URLs = append(cfg.URLs, entry)
+				}
+			}
 		}
 		compatible = append(compatible, cfg)
 	}

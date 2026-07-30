@@ -313,7 +313,7 @@ func TestPrepareCodexResponsesBodyForUpstream_StripsAnyrouterUnsupportedInputBef
 			{"type":"reasoning","summary":[]}
 		]
 	}`)
-	cfg := &model.Config{Name: "regular-codex", URL: "https://anyrouter.top", ChannelType: util.ChannelTypeCodex}
+	cfg := &model.Config{Name: "regular-codex", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}, ChannelType: util.ChannelTypeCodex}
 
 	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	text := string(got)
@@ -336,7 +336,7 @@ func TestPrepareCodexResponsesBodyForUpstream_KeepsRegularCodexToolSearch(t *tes
 			{"type":"tool_search_call","arguments":{"query":"keep"}}
 		]
 	}`)
-	cfg := &model.Config{Name: "regular-codex", URL: "https://api.openai.com", ChannelType: util.ChannelTypeCodex}
+	cfg := &model.Config{Name: "regular-codex", URLs: model.ChannelURLs{{URL: "https://api.openai.com"}}, ChannelType: util.ChannelTypeCodex}
 
 	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	if !strings.Contains(string(got), `"tool_search_call"`) {

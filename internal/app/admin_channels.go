@@ -374,11 +374,8 @@ func (s *Server) HandleCheckDuplicateChannel(c *gin.Context) {
 
 	// 构建新渠道 URL 集合（去除空行）
 	newURLSet := make(map[string]struct{}, len(req.URLs))
-	for _, u := range req.URLs {
-		u = strings.TrimSpace(u)
-		if u != "" {
-			newURLSet[u] = struct{}{}
-		}
+	for _, entry := range req.URLs {
+		newURLSet[entry.RuntimeURL()] = struct{}{}
 	}
 
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
@@ -393,17 +390,13 @@ func (s *Server) HandleCheckDuplicateChannel(c *gin.Context) {
 			continue
 		}
 		// 遍历已有渠道的 URL 行，检查是否与新渠道 URL 有交集
-		for line := range strings.SplitSeq(cfg.URL, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
+		for _, line := range cfg.GetURLs() {
 			if _, ok := newURLSet[line]; ok {
 				duplicates = append(duplicates, DuplicateChannelInfo{
 					ID:          cfg.ID,
 					Name:        cfg.Name,
 					ChannelType: cfg.ChannelType,
-					URL:         cfg.URL,
+					URLs:        cfg.URLs.Clone(),
 				})
 				break // 同一渠道只报告一次
 			}
@@ -569,7 +562,7 @@ func (s *Server) HandleChannelModelStats(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, result)
 }
 
-// HandleChannelURLStats 返回多URL渠道各URL的实时状态（延迟、冷却）
+// HandleChannelURLStats 返回渠道各URL的实时状态（延迟、冷却）
 // GET /admin/channels/:id/url-stats
 func (s *Server) HandleChannelURLStats(c *gin.Context) {
 	id, err := ParseInt64Param(c, "id")
@@ -585,7 +578,7 @@ func (s *Server) HandleChannelURLStats(c *gin.Context) {
 	}
 
 	urls := cfg.GetURLs()
-	if len(urls) <= 1 || s.urlSelector == nil {
+	if len(urls) == 0 || s.urlSelector == nil {
 		RespondJSON(c, http.StatusOK, []URLStat{})
 		return
 	}

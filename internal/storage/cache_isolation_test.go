@@ -25,7 +25,7 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:     "test-channel",
-		URL:      "https://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 		Priority: 10,
 		// 验证缓存深拷贝不会丢字段：DailyCostLimit 需被正确保留，否则成本限额过滤会失效。
 		DailyCostLimit: 2.0,
@@ -143,7 +143,7 @@ func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
 	cfg := &model.Config{
 		Name:           "test-anthropic",
 		ChannelType:    "anthropic",
-		URL:            "https://test.example.com",
+		URLs:           model.ChannelURLs{{URL: "https://test.example.com"}},
 		Priority:       10,
 		DailyCostLimit: 2.0,
 		ModelEntries: []model.ModelEntry{
@@ -224,7 +224,7 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:     "multi-query-test",
-		URL:      "https://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-1", RedirectModel: ""},
@@ -288,7 +288,7 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     "wildcard-test-" + string(rune('A'+i-1)),
-			URL:      "https://test.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 			Priority: i * 10,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-common", RedirectModel: ""},

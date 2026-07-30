@@ -1,8 +1,104 @@
 package app
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
+
+	"ccLoad/internal/model"
 )
+
+func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:        "test",
+		APIKey:      "sk-test",
+		ChannelType: "openai",
+		URLs: model.ChannelURLs{
+			{URL: " https://api.example.com/ ", Protocols: []string{"CODEX", "openai", "codex"}},
+			{URL: "https://api.example.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
+		},
+		Models: []model.ModelEntry{{Model: "test-model"}},
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if got := req.URLs[0]; got.URL != "https://api.example.com" || got.Exact ||
+		len(got.Protocols) != 2 || got.Protocols[0] != "openai" || got.Protocols[1] != "codex" {
+		t.Fatalf("normalized first URL=%+v", got)
+	}
+	if got := req.ToConfig().URLs[1]; got.URL != "https://api.example.com/v1/responses" || !got.Exact {
+		t.Fatalf("ToConfig exact URL=%+v", got)
+	}
+
+	payload, err := json.Marshal(req.ToConfig())
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, ok := object["url"]; ok {
+		t.Fatalf("legacy url field leaked into JSON: %s", payload)
+	}
+	if urls, ok := object["urls"].([]any); !ok || len(urls) != 2 {
+		t.Fatalf("structured urls missing from JSON: %s", payload)
+	}
+}
+
+func TestChannelRequestValidate_NormalizesProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "default", want: model.ProtocolTransformModeAuto},
+		{name: "auto", mode: " AUTO ", want: model.ProtocolTransformModeAuto},
+		{name: "upstream", mode: "upstream", want: model.ProtocolTransformModeUpstream},
+		{name: "local", mode: "local", want: model.ProtocolTransformModeLocal},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ChannelRequest{
+				Name:                  "test",
+				APIKey:                "sk-test",
+				URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
+				ChannelType:           "codex",
+				ProtocolTransformMode: tt.mode,
+				Models:                []model.ModelEntry{{Model: "test-model"}},
+			}
+			if err := req.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if req.ProtocolTransformMode != tt.want {
+				t.Fatalf("protocol_transform_mode=%q, want %q", req.ProtocolTransformMode, tt.want)
+			}
+			if got := req.ToConfig().GetProtocolTransformMode(); got != tt.want {
+				t.Fatalf("ToConfig mode=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:                  "test",
+		APIKey:                "sk-test",
+		URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
+		ChannelType:           "codex",
+		ProtocolTransformMode: "remote",
+		Models:                []model.ModelEntry{{Model: "test-model"}},
+	}
+	err := req.Validate()
+	if err == nil || !strings.Contains(err.Error(), "protocol_transform_mode") {
+		t.Fatalf("Validate() error=%v, want protocol_transform_mode validation error", err)
+	}
+}
 
 func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 	t.Parallel()

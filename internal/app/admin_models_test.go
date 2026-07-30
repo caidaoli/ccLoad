@@ -68,52 +68,6 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
-	t.Run("multi url fallback", func(t *testing.T) {
-		failCalls := 0
-		okCalls := 0
-
-		failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			failCalls++
-			http.Error(w, "boom", http.StatusBadGateway)
-		}))
-		t.Cleanup(failUpstream.Close)
-
-		okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			okCalls++
-			time.Sleep(15 * time.Millisecond)
-			if r.URL.Path != "/v1/models" {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4.1-mini"}]}`))
-		}))
-		t.Cleanup(okUpstream.Close)
-
-		payload := map[string]any{
-			"channel_type": "openai",
-			"url":          failUpstream.URL + "\n" + okUpstream.URL,
-			"api_key":      "sk-test",
-		}
-		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
-
-		server.HandleFetchModelsPreview(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp struct {
-			Success bool                `json:"success"`
-			Data    FetchModelsResponse `json:"data"`
-		}
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-4.1-mini" {
-			t.Fatalf("unexpected resp: %+v", resp)
-		}
-		if failCalls < 1 || okCalls < 1 {
-			t.Fatalf("expected fallback attempts, failCalls=%d okCalls=%d", failCalls, okCalls)
-		}
-	})
 }
 
 func TestAdminModels_HandleFetchModels(t *testing.T) {
@@ -145,7 +99,7 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "c1",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
 		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
@@ -230,7 +184,7 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "multi-url-channel",
-		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		URLs:         channelURLsForTest(failUpstream.URL, okUpstream.URL),
 		Priority:     1,
 		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
@@ -308,7 +262,7 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "multi-url-key-error",
-		URL:          keyErrUpstream.URL + "\n" + okUpstream.URL,
+		URLs:         channelURLsForTest(keyErrUpstream.URL, okUpstream.URL),
 		Priority:     1,
 		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
@@ -381,7 +335,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		c1, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c1",
-			URL:          upstream1.URL,
+			URLs:         model.ChannelURLs{{URL: upstream1.URL}},
 			Priority:     1,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "m1"}},
@@ -392,7 +346,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		c2, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c2",
-			URL:          upstream2.URL,
+			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "x1"}},
@@ -403,7 +357,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		c3, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c3-no-key",
-			URL:          upstream2.URL,
+			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "y1"}},
@@ -483,7 +437,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:        "replace-channel",
-			URL:         upstream.URL,
+			URLs:        model.ChannelURLs{{URL: upstream.URL}},
 			Priority:    1,
 			ChannelType: "openai",
 			ModelEntries: []model.ModelEntry{
@@ -536,7 +490,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "lowercase-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
 			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "CamelCase-Model"}},
@@ -592,7 +546,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "strip-prefix-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
 			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5"}},
@@ -649,7 +603,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "lowercase-merge-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
 			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "legacy/ExistingModel"}},
@@ -706,7 +660,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "empty-list-channel",
-			URL:          upstream.URL,
+			URLs:         model.ChannelURLs{{URL: upstream.URL}},
 			Priority:     1,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "keep-me"}},

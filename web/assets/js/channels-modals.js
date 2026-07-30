@@ -6,6 +6,130 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
+function normalizeProtocolTransformMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return ['auto', 'upstream', 'local'].includes(mode) ? mode : 'auto';
+}
+
+let channelTypeCombobox = null;
+let protocolTransformModeCombobox = null;
+let channelTypeOptions = [];
+
+function getProtocolTransformModeOptions() {
+  return [
+    { value: 'auto', label: window.t('channels.modal.protocolTransformModeAuto') },
+    { value: 'upstream', label: window.t('channels.modal.protocolTransformModeUpstream') },
+    { value: 'local', label: window.t('channels.modal.protocolTransformModeLocal') }
+  ];
+}
+
+function getProtocolTransformModeLabel(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  return getProtocolTransformModeOptions().find(option => option.value === mode)?.label || mode;
+}
+
+function getProtocolTransformModeHelp(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  const keys = {
+    auto: 'channels.modal.protocolTransformModeAutoHelp',
+    upstream: 'channels.modal.protocolTransformModeUpstreamHelp',
+    local: 'channels.modal.protocolTransformModeLocalHelp'
+  };
+  return window.t(keys[mode]);
+}
+
+function getChannelEditorChannelType() {
+  const hiddenInput = document.getElementById?.('channelTypeValue');
+  const value = hiddenInput?.value || channelTypeCombobox?.getValue() ||
+    document.querySelector('input[name="channelType"]:checked')?.value;
+  return String(value || 'anthropic').trim().toLowerCase();
+}
+
+function getChannelTypeLabel(value) {
+  return channelTypeOptions.find(option => option.value === value)?.label || value;
+}
+
+function syncChannelProtocolVisibility() {
+  const control = document.getElementById('channelTypeControl');
+  if (control) control.hidden = getProtocolTransformMode() !== 'local';
+}
+
+function setProtocolTransformMode(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  const hiddenInput = document.getElementById('protocolTransformModeValue');
+  if (hiddenInput) hiddenInput.value = mode;
+  protocolTransformModeCombobox?.setValue(mode, getProtocolTransformModeLabel(mode));
+  const visibleInput = protocolTransformModeCombobox?.getInput();
+  if (visibleInput) visibleInput.title = getProtocolTransformModeHelp(mode);
+  syncChannelProtocolVisibility();
+}
+
+function getProtocolTransformMode() {
+  const hiddenInput = document.getElementById('protocolTransformModeValue');
+  return normalizeProtocolTransformMode(hiddenInput?.value || protocolTransformModeCombobox?.getValue());
+}
+
+function setChannelEditorChannelType(value) {
+  const channelType = String(value || 'anthropic').trim().toLowerCase();
+  const hiddenInput = document.getElementById('channelTypeValue');
+  if (hiddenInput) hiddenInput.value = channelType;
+  channelTypeCombobox?.setValue(channelType, getChannelTypeLabel(channelType));
+}
+
+async function ensureChannelProtocolComboboxes(channelType, transformMode) {
+  const types = await window.ChannelTypeManager.getChannelTypes();
+  channelTypeOptions = (Array.isArray(types) ? types : []).map(type => ({
+    value: String(type.value || '').trim().toLowerCase(),
+    label: type.display_name || type.value
+  })).filter(option => option.value);
+
+  if (!protocolTransformModeCombobox) {
+    protocolTransformModeCombobox = createSearchableCombobox({
+      container: 'protocolTransformModeSelectContainer',
+      inputId: 'protocolTransformModeInput',
+      dropdownId: 'protocolTransformModeDropdown',
+      minWidth: 0,
+      getOptions: getProtocolTransformModeOptions,
+      initialValue: 'auto',
+      initialLabel: getProtocolTransformModeLabel('auto'),
+      onSelect: (value) => {
+        setProtocolTransformMode(value);
+        markChannelFormDirty();
+      }
+    });
+  }
+
+  if (!channelTypeCombobox) {
+    channelTypeCombobox = createSearchableCombobox({
+      container: 'channelTypeSelectContainer',
+      inputId: 'channelTypeInput',
+      dropdownId: 'channelTypeDropdown',
+      minWidth: 0,
+      getOptions: () => channelTypeOptions,
+      initialValue: 'anthropic',
+      initialLabel: getChannelTypeLabel('anthropic'),
+      onSelect: (value) => {
+        setChannelEditorChannelType(value);
+        syncChannelWebsocketState();
+        scheduleChannelDuplicateHintCheck();
+        markChannelFormDirty();
+      }
+    });
+  }
+
+  setProtocolTransformMode(transformMode ?? getProtocolTransformMode());
+  setChannelEditorChannelType(channelType ?? getChannelEditorChannelType());
+  protocolTransformModeCombobox?.refresh();
+  channelTypeCombobox?.refresh();
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('localechange', () => {
+    setProtocolTransformMode(getProtocolTransformMode());
+    protocolTransformModeCombobox?.refresh();
+  });
+}
+
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
   const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
@@ -108,8 +232,7 @@ function syncScheduledCheckModelState() {
 }
 
 function channelSupportsNativeWebsocket() {
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  return channelType === 'codex';
+  return getChannelEditorChannelType() === 'codex';
 }
 
 function handleChannelWebsocketClick(event) {
@@ -135,9 +258,12 @@ function setChannelWebsocketChecked(checkbox, checked) {
 }
 
 function getEnabledChannelWebsocketURLs() {
-  if (typeof getValidInlineURLs !== 'function') return [];
+  if (typeof getValidInlineURLConfigs !== 'function' || typeof runtimeInlineURL !== 'function') return [];
   const stats = typeof urlStatsMap !== 'undefined' && urlStatsMap ? urlStatsMap : {};
-  return getValidInlineURLs().filter(url => !stats[url]?.disabled);
+  return getValidInlineURLConfigs()
+    .filter(entry => entry.protocols.length === 0 || entry.protocols.includes('codex'))
+    .map(runtimeInlineURL)
+    .filter(url => url && !stats[url]?.disabled);
 }
 
 function getEnabledChannelWebsocketKeys() {
@@ -262,26 +388,15 @@ async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedCha
     return;
   }
 
-  const hasFilters = typeof filters !== 'undefined' && filters;
-  const currentType = hasFilters ? filters.channelType : 'all';
-  let nextType = currentType || 'all';
-
-  // 新增渠道时，如果类型与当前筛选器不匹配，切换到新渠道的类型
-  if (isNewChannel && hasFilters && currentType !== 'all' && currentType !== newChannelType) {
-    filters.channelType = newChannelType;
-    nextType = newChannelType;
-    const typeFilter = document.getElementById('channelTypeFilter');
-    if (typeFilter) typeFilter.value = newChannelType;
-  }
   if (isNewChannel) {
     channelsCurrentPage = 1;
   }
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
 
   if (typeof reloadChannelsList === 'function') {
-    await reloadChannelsList(nextType, filters.status);
+    await reloadChannelsList(filters.status);
   } else if (typeof loadChannels === 'function') {
-    await loadChannels(nextType);
+    await loadChannels();
   }
 }
 
@@ -369,17 +484,6 @@ function initChannelEditorActions() {
     websocketCheckbox.dataset.websocketBound = '1';
   }
 
-	const channelTypeRadios = document.getElementById('channelTypeRadios');
-	if (channelTypeRadios && !channelTypeRadios.dataset.channelTypeBound) {
-		channelTypeRadios.addEventListener('change', (event) => {
-			if (event.target && event.target.name === 'channelType') {
-				syncChannelWebsocketState();
-				scheduleChannelDuplicateHintCheck();
-			}
-		});
-		channelTypeRadios.dataset.channelTypeBound = '1';
-  }
-
   ensureScheduledCheckModelCombobox();
 }
 
@@ -395,7 +499,7 @@ async function showAddModal() {
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
-	document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
+	await ensureChannelProtocolComboboxes('anthropic', 'auto');
 	syncChannelWebsocketState();
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
@@ -407,7 +511,7 @@ async function showAddModal() {
   renderRedirectTable();
   syncScheduledCheckModelState();
 
-  inlineURLTableData = [''];
+  inlineURLTableData = [emptyInlineURLConfig()];
   selectedURLIndices.clear();
   urlStatsMap = {};
   renderInlineURLTable();
@@ -435,14 +539,17 @@ async function editChannel(id) {
   const apiKeysPromise = fetchEditableChannelKeys(id);
   const modelStatsPromise = fetchEditableChannelModelStats(id);
   const channelType = channel.channel_type || 'anthropic';
-  const channelTypeRenderPromise = window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
+  const channelProtocolRenderPromise = ensureChannelProtocolComboboxes(
+    channelType,
+    channel.protocol_transform_mode
+  );
 
   editingChannelId = id;
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
-  setInlineURLTableData(channel.url);
+  setInlineURLTableData(channel.urls);
 
   // 多URL时加载实时状态，确保检测前已拿到禁用标记
   const urlCount = getValidInlineURLs().length;
@@ -452,7 +559,7 @@ async function editChannel(id) {
     apiKeysPromise,
     modelStatsPromise,
     scheduledVisibilityPromise,
-    channelTypeRenderPromise,
+    channelProtocolRenderPromise,
     urlStatsPromise
   ]);
 
@@ -629,15 +736,15 @@ async function refreshChannelDuplicateHint() {
     return;
   }
 
-  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
-  if (validURLs.length === 0) {
+  const validURLConfigs = typeof getValidInlineURLConfigs === 'function' ? getValidInlineURLConfigs() : [];
+  if (validURLConfigs.length === 0) {
     clearChannelDuplicateHint();
     return;
   }
 
   const requestSeq = ++channelDuplicateHintRequestSeq;
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  const dupes = await checkChannelDuplicate(channelType, validURLs, { silent: true });
+  const channelType = getChannelEditorChannelType();
+  const dupes = await checkChannelDuplicate(channelType, validURLConfigs, { silent: true });
   if (requestSeq !== channelDuplicateHintRequestSeq) return;
   if (dupes.length > 0) {
     renderChannelDuplicateHint(dupes);
@@ -663,8 +770,8 @@ function scheduleChannelDuplicateHintCheck() {
     return;
   }
 
-  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
-  if (validURLs.length === 0) {
+  const validURLConfigs = typeof getValidInlineURLConfigs === 'function' ? getValidInlineURLConfigs() : [];
+  if (validURLConfigs.length === 0) {
     clearChannelDuplicateHint();
     return;
   }
@@ -682,7 +789,9 @@ function scheduleChannelDuplicateHintCheck() {
 
 function confirmDuplicateChannel(dupes) {
   const list = dupes.map(d => {
-    const urls = d.url.split('\n').filter(u => u.trim());
+    const urls = (Array.isArray(d.urls) ? d.urls : [])
+      .map(runtimeInlineURL)
+      .filter(Boolean);
     return `• ${d.name}（${d.channel_type}）\n  ${urls.join('\n  ')}`;
   }).join('\n\n');
   return confirm(window.t('channels.duplicateChannelFound', { list }));
@@ -708,8 +817,8 @@ async function saveChannel(event) {
     return;
   }
 
-  const validURLs = getValidInlineURLs();
-  if (validURLs.length === 0) {
+  const validURLConfigs = getValidInlineURLConfigs();
+  if (validURLConfigs.length === 0) {
     alert(window.t('channels.fillApiUrlFirst'));
     return;
   }
@@ -721,7 +830,6 @@ async function saveChannel(event) {
     return;
   }
 
-  document.getElementById('channelUrl').value = validURLs.join('\n');
   document.getElementById('channelApiKey').value = validKeys.join(',');
 
   // 构建模型配置（新格式：models 数组）
@@ -752,15 +860,16 @@ async function saveChannel(event) {
     return;
   }
 
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const channelType = getChannelEditorChannelType();
   const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
-    url: validURLs.join('\n'),
+    urls: validURLConfigs,
     api_key: validKeys.join(','),
 		api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
 		channel_type: channelType,
+		protocol_transform_mode: getProtocolTransformMode(),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
@@ -780,7 +889,7 @@ async function saveChannel(event) {
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim()
   };
 
-  if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
+  if (!formData.name || formData.urls.length === 0 || !formData.api_key || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
   }
@@ -788,7 +897,7 @@ async function saveChannel(event) {
   setChannelSavePending(true);
   try {
     if (!editingChannelId) {
-      const dupes = await checkChannelDuplicate(channelType, validURLs);
+      const dupes = await checkChannelDuplicate(channelType, validURLConfigs);
       if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
     }
 
@@ -1428,7 +1537,7 @@ async function copyChannel(id, name) {
   currentChannelKeyCooldowns = [];
   setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
-  setInlineURLTableData(channel.url);
+  setInlineURLTableData(channel.urls);
 
   let apiKeys = [];
   try {
@@ -1445,10 +1554,7 @@ async function copyChannel(id, name) {
   renderInlineKeyTable();
 
   const channelType = channel.channel_type || 'anthropic';
-  const radioButton = document.querySelector(`input[name="channelType"][value="${channelType}"]`);
-  if (radioButton) {
-    radioButton.checked = true;
-  }
+  await ensureChannelProtocolComboboxes(channelType, channel.protocol_transform_mode);
   scheduleChannelDuplicateHintCheck();
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -2203,7 +2309,7 @@ function areModelRowsEqual(left, right) {
 
 async function fetchModelsFromAPI() {
   const channelUrl = getValidInlineURLs()[0] || '';
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const channelType = getChannelEditorChannelType();
   const firstValidKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
 
   if (!channelUrl) {
@@ -2303,7 +2409,7 @@ const COMMON_MODELS = {
 };
 
 function addCommonModels() {
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const channelType = getChannelEditorChannelType();
   const commonModels = COMMON_MODELS[channelType];
 
   if (!commonModels || commonModels.length === 0) {

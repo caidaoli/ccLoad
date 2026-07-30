@@ -17,7 +17,7 @@ func TestCooldown_GetKeyCooldownUntil_AndClearAll(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "c1",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
 		Enabled:      true,
 		ChannelType:  "openai",
