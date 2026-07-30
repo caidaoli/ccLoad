@@ -159,7 +159,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				var errSession error
 				executionSession, releaseExecutionSession, errSession = s.responsesExecutionSessions.acquire(tokenHashString, sessionID)
 				if errSession != nil {
-					if errWrite := writeResponsesWebsocketError(conn, "session_capacity", errSession.Error()); errWrite != nil {
+					if errWrite := writeResponsesWebsocketRateLimit(conn, errSession.Error()); errWrite != nil {
 						return
 					}
 					continue
@@ -168,11 +168,24 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			if errAcquire := executionSession.acquireTurn(connectionCtx); errAcquire != nil {
 				return
 			}
-			allowLocalPrewarm := len(executionSession.transcript.lastRequest) == 0
+			if errAdmit := s.responsesExecutionSessions.admitTurn(executionSession); errAdmit != nil {
+				executionSession.releaseTurn()
+				if errWrite := writeResponsesWebsocketRateLimit(conn, errAdmit.Error()); errWrite != nil {
+					return
+				}
+				continue
+			}
+			emptySession := len(executionSession.transcript.lastRequest) == 0
+			allowLocalPrewarm := emptySession
 			requestBody, nativeRequestBody, errNormalize := executionSession.transcript.normalizeRequests(message.payload)
 			if errNormalize != nil {
 				executionSession.releaseTurn()
 				if errors.Is(errNormalize, errResponsesWebsocketPreviousResponseNotFound) {
+					s.responsesExecutionSessions.recordPreviousResponseMiss(
+						executionSession,
+						gjson.GetBytes(message.payload, "previous_response_id").String(),
+						emptySession,
+					)
 					if errWrite := writeResponsesWebsocketPreviousResponseNotFound(conn); errWrite != nil {
 						return
 					}
@@ -889,6 +902,12 @@ func sseEventData(rawEvent []byte) []byte {
 func writeResponsesWebsocketError(conn *websocket.Conn, code string, message string) error {
 	return writeResponsesWebsocketErrorPayload(
 		conn, http.StatusBadRequest, "invalid_request_error", code, "", message,
+	)
+}
+
+func writeResponsesWebsocketRateLimit(conn *websocket.Conn, message string) error {
+	return writeResponsesWebsocketErrorPayload(
+		conn, http.StatusTooManyRequests, "rate_limit_error", "rate_limit", "", message,
 	)
 }
 

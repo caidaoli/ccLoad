@@ -136,6 +136,8 @@ const (
 
 	// CooldownTimeFormatDateTime parses the capture with a Go time layout.
 	CooldownTimeFormatDateTime = "datetime"
+	// CooldownTimeFormatTimeOfDay resolves a captured clock value to its next occurrence.
+	CooldownTimeFormatTimeOfDay = "time_of_day"
 	// CooldownTimeFormatUnix treats the capture as Unix seconds.
 	CooldownTimeFormatUnix = "unix"
 	// CooldownTimeFormatUnixMilliseconds treats the capture as Unix milliseconds.
@@ -144,7 +146,7 @@ const (
 	CooldownTimeFormatDurationSeconds = "duration_seconds"
 )
 
-// CooldownDetectionRule describes one channel-local upstream error policy.
+// CooldownDetectionRule describes one configured upstream error policy.
 // Rules are evaluated by ascending Priority; the first match wins.
 type CooldownDetectionRule struct {
 	Enabled        bool   `json:"enabled"`
@@ -158,17 +160,17 @@ type CooldownDetectionRule struct {
 
 	CooldownSeconds int64  `json:"cooldown_seconds,omitempty"`
 	TimeCapture     string `json:"time_capture,omitempty"`
-	TimeFormat      string `json:"time_format,omitempty"` // datetime | unix | unix_ms | duration_seconds
+	TimeFormat      string `json:"time_format,omitempty"` // datetime | time_of_day | unix | unix_ms | duration_seconds
 	TimeLayout      string `json:"time_layout,omitempty"`
 	Timezone        string `json:"timezone,omitempty"`
 }
 
-// CooldownDetectionRules groups all channel-local error rules.
+// CooldownDetectionRules groups configured upstream error rules.
 type CooldownDetectionRules struct {
 	Rules []CooldownDetectionRule `json:"rules,omitempty"`
 }
 
-// IsEmpty reports whether the channel has no configured cooldown detection rules.
+// IsEmpty reports whether there are no configured cooldown detection rules.
 func (r *CooldownDetectionRules) IsEmpty() bool {
 	return r == nil || len(r.Rules) == 0
 }

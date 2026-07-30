@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -116,168 +117,165 @@ func readWebsocketUntilType(t testing.TB, conn *websocket.Conn, wanted string) m
 	}
 }
 
-func TestResponsesExecutionSessionStoreRejectsUnboundedActiveSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil, 0)
-	store.maxSessions = 1
-	defer store.close()
-
-	_, release, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("acquire first session: %v", err)
-	}
-	defer release()
-
-	if _, _, err = store.acquire("token-a", "session-b"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
-		t.Fatalf("second active session error=%v, want capacity error", err)
-	}
-}
-
-func TestResponsesExecutionSessionStoreEvictsIdleTranscriptAtBudget(t *testing.T) {
-	cfg := &ConfigService{cache: map[string]*model.SystemSetting{
-		"responses_ws_max_transcript_bytes": {Value: "8"},
-	}}
-	store := newResponsesExecutionSessionStore(cfg, 0)
-	defer store.close()
-
-	oldest, releaseOldest, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("acquire oldest session: %v", err)
-	}
-	store.commit(oldest, []byte("aaaa"), responsesWebsocketTurnResult{completedOutput: []byte("bb")})
-	releaseOldest()
-	oldest.lastAccess = time.Now().Add(-time.Minute)
-
-	newer, releaseNewer, err := store.acquire("token-a", "session-b")
-	if err != nil {
-		t.Fatalf("acquire newer session: %v", err)
-	}
-	store.commit(newer, []byte("cccc"), responsesWebsocketTurnResult{completedOutput: []byte("dd")})
-	releaseNewer()
-
-	_, releaseThird, err := store.acquire("token-b", "session-c")
-	if err != nil {
-		t.Fatalf("acquire after transcript budget eviction: %v", err)
-	}
-	releaseThird()
-
-	stats := store.stats()
-	if stats.Sessions != 2 || stats.TranscriptBytes != 6 {
-		t.Fatalf("unexpected transcript budget stats: %+v", stats)
-	}
-
-	survivor, releaseSurvivor, err := store.acquire("token-a", "session-b")
-	if err != nil {
-		t.Fatalf("reacquire newer session: %v", err)
-	}
-	releaseSurvivor()
-	if survivor != newer {
-		t.Fatal("transcript budget eviction removed the wrong idle session")
-	}
-
-	recreated, releaseRecreated, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("recreate evicted session: %v", err)
-	}
-	releaseRecreated()
-	if recreated == oldest {
-		t.Fatal("oldest idle transcript was not evicted")
+func waitForResponsesWebsocketAttachments(
+	t testing.TB,
+	store *responsesExecutionSessionStore,
+	want int,
+) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for store.stats().ActiveAttachments != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("active websocket attachments did not become %d", want)
+		}
+		runtime.Gosched()
 	}
 }
 
-func TestResponsesExecutionSessionStoreRejectsNewSessionWhenActiveTranscriptsExceedBudget(t *testing.T) {
-	cfg := &ConfigService{cache: map[string]*model.SystemSetting{
-		"responses_ws_max_transcript_bytes": {Value: "4"},
-	}}
-	store := newResponsesExecutionSessionStore(cfg, 0)
-	defer store.close()
-
-	active, release, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("acquire active session: %v", err)
+func readResponsesWebsocketRateLimit(t testing.TB, conn *websocket.Conn) {
+	t.Helper()
+	var event struct {
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
+			Type string `json:"type"`
+			Code string `json:"code"`
+		} `json:"error"`
 	}
-	store.commit(active, []byte("abc"), responsesWebsocketTurnResult{completedOutput: []byte("de")})
-
-	if _, _, err = store.acquire("token-b", "session-b"); !errors.Is(err, errResponsesExecutionSessionCapacity) {
-		t.Fatalf("new session error=%v, want capacity error", err)
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read websocket rate limit: %v", err)
 	}
-	stats := store.stats()
-	if stats.Sessions != 1 || stats.TranscriptBytes != 5 {
-		t.Fatalf("active transcript accounting changed unexpectedly: %+v", stats)
-	}
-
-	release()
-	stats = store.stats()
-	if stats.Sessions != 0 || stats.TranscriptBytes != 0 {
-		t.Fatalf("idle over-budget transcript was retained: %+v", stats)
+	if event.Type != "error" || event.Status != http.StatusTooManyRequests ||
+		event.Error.Type != "rate_limit_error" || event.Error.Code != "rate_limit" {
+		t.Fatalf("unexpected websocket rate limit: %+v", event)
 	}
 }
 
-// TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity locks down the
-// capacity contract: once the flat ceiling is hit, acquire evicts the
-// least-recently-used *idle* session instead of rejecting, so one subject's
-// idle sessions can never starve every other subject for a full TTL. The
-// evicted client recovers through the documented full-transcript replay path.
-func TestResponsesExecutionSessionStoreEvictsIdleSessionAtCapacity(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil, 0)
-	store.maxSessions = 2
-	defer store.close()
+func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	requests := make(chan []byte, 2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		turn := upstreamCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read capacity upstream request: %v", err)
+			return
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(
+			w,
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-capacity-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer-%d\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+			turn,
+			turn,
+		)
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "stable-capacity", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"responses_ws_max_sessions": "1",
+	})
 
-	oldest, releaseOldest, err := store.acquire("token-a", "session-a")
-	if err != nil {
-		t.Fatalf("acquire first session: %v", err)
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "stable-a")
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first capacity turn: %v", err)
 	}
-	releaseOldest()
-	newer, releaseNewer, err := store.acquire("token-a", "session-b")
-	if err != nil {
-		t.Fatalf("acquire second session: %v", err)
-	}
-	releaseNewer()
-	oldest.lastAccess = time.Now().Add(-time.Minute)
+	readWebsocketUntilType(t, first, "response.completed")
+	_ = first.Close()
+	waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
 
-	third, releaseThird, err := store.acquire("token-b", "session-c")
-	if err != nil {
-		t.Fatalf("acquire at capacity with idle sessions should evict LRU, got %v", err)
+	unrelated := dialResponsesWebsocketWithSessionID(t, env.engine, "stable-b")
+	if err := unrelated.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "unrelated"}},
+	}); err != nil {
+		t.Fatalf("write capacity-rejected turn: %v", err)
 	}
-	releaseThird()
-	if third == oldest || third == newer {
-		t.Fatal("eviction must create a fresh session, not reuse the victim")
-	}
-
-	stats := store.stats()
-	if stats.Sessions != 2 {
-		t.Fatalf("unexpected session store stats: %+v", stats)
+	readResponsesWebsocketRateLimit(t, unrelated)
+	_ = unrelated.Close()
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("capacity-rejected work reached upstream; calls=%d", got)
 	}
 
-	// LRU 语义:被逐出的是最久未访问的 session-a,session-b 仍在。
-	survivor, releaseSurvivor, err := store.acquire("token-a", "session-b")
-	if err != nil {
-		t.Fatalf("reacquire surviving session: %v", err)
+	continued := dialResponsesWebsocketWithSessionID(t, env.engine, "stable-a")
+	if err := continued.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"previous_response_id": "resp-capacity-1",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write stable continuation after capacity pressure: %v", err)
 	}
-	releaseSurvivor()
-	if survivor != newer {
-		t.Fatal("LRU eviction removed the wrong session")
+	readWebsocketUntilType(t, continued, "response.completed")
+	if got := upstreamCalls.Load(); got != 2 {
+		t.Fatalf("stable continuation upstream calls=%d, want 2", got)
+	}
+	<-requests
+	secondRequest := <-requests
+	if input := gjson.GetBytes(secondRequest, "input"); !input.IsArray() || len(input.Array()) != 3 {
+		t.Fatalf("stable continuation did not replay complete transcript: %s", secondRequest)
 	}
 }
 
-func TestResponsesExecutionSessionStoreCountsTransientWebsocketSessions(t *testing.T) {
-	store := newResponsesExecutionSessionStore(nil, 0)
-	store.maxSessions = 1
-	defer store.close()
+func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSession(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-budget","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "stable-budget", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"responses_ws_max_transcript_bytes": "1",
+	})
 
-	_, release, err := store.acquire("token-a", "")
-	if err != nil {
-		t.Fatalf("acquire transient session: %v", err)
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "budget-a")
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first budget turn: %v", err)
 	}
-	if _, _, err = store.acquire("token-a", ""); !errors.Is(err, errResponsesExecutionSessionCapacity) {
-		t.Fatalf("second transient session error=%v, want capacity error", err)
+	readWebsocketUntilType(t, first, "response.completed")
+	if err := first.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"previous_response_id": "resp-budget",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write in-place budget-rejected continuation: %v", err)
 	}
-	release()
+	readResponsesWebsocketRateLimit(t, first)
+	_ = first.Close()
+	waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
 
-	_, releaseAgain, err := store.acquire("token-a", "")
-	if err != nil {
-		t.Fatalf("acquire transient session after release: %v", err)
+	continued := dialResponsesWebsocketWithSessionID(t, env.engine, "budget-a")
+	if err := continued.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"previous_response_id": "resp-budget",
+		"input":                []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write budget-rejected continuation: %v", err)
 	}
-	releaseAgain()
+	readResponsesWebsocketRateLimit(t, continued)
+
+	unrelated := dialResponsesWebsocketWithSessionID(t, env.engine, "budget-b")
+	if err := unrelated.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "unrelated"}},
+	}); err != nil {
+		t.Fatalf("write budget-rejected new session: %v", err)
+	}
+	readResponsesWebsocketRateLimit(t, unrelated)
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("budget-rejected work reached upstream; calls=%d", got)
+	}
+	stats := env.server.responsesExecutionSessions.stats()
+	if stats.Sessions != 1 || stats.TranscriptBytes <= stats.MaxTranscriptBytes || stats.BudgetRejected != 3 {
+		t.Fatalf("budget pressure silently changed stable state: %+v", stats)
+	}
 }
 
 func newBridgeWriterTestConn(t *testing.T) *websocket.Conn {
@@ -879,6 +877,77 @@ func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
 	case <-canceled:
 	case <-time.After(time.Second):
 		t.Fatal("upstream request was not canceled after websocket client disconnected")
+	}
+}
+
+func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
+	started := make(chan struct{})
+	stopped := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade primary websocket: %v", err)
+			return
+		}
+		defer close(stopped)
+		defer func() { _ = conn.Close() }()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			t.Errorf("read primary websocket request: %v", err)
+			return
+		}
+		close(started)
+		_, _, _ = conn.ReadMessage()
+	}))
+	defer primary.Close()
+
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "primary-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-http", channelType: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "cancel native turn"}},
+	}); err != nil {
+		t.Fatalf("write websocket request: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("primary websocket turn did not start")
+	}
+	if err := downstream.Close(); err != nil {
+		t.Fatalf("close downstream websocket: %v", err)
+	}
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("primary websocket was not closed after downstream cancellation")
+	}
+	deadline := time.Now().Add(time.Second)
+	for env.server.responsesWebsocketConnections.stats().Active != 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("downstream websocket handler did not stop after cancellation")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-test")
+	if entry.StatusCode != StatusClientClosedRequest {
+		t.Fatalf(
+			"canceled websocket status=%d, want %d (channel=%q message=%q fallback_calls=%d)",
+			entry.StatusCode, StatusClientClosedRequest, entry.ChannelName, entry.Message, fallbackCalls.Load(),
+		)
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("fallback called %d times after downstream cancellation", fallbackCalls.Load())
 	}
 }
 
@@ -1831,7 +1900,6 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "expiring-session", channelType: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	env.server.responsesExecutionSessions.ttlOverride = 20 * time.Millisecond
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring first deadline: %v", err)
@@ -1844,33 +1912,46 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	}
 	readWebsocketUntilType(t, first, "response.completed")
 	_ = first.Close()
-	time.Sleep(80 * time.Millisecond)
+	waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
+	env.server.responsesExecutionSessions.cleanup(
+		time.Now().Add(env.server.responsesExecutionSessions.sessionTTL() + time.Second),
+	)
 
 	second := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := second.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring second deadline: %v", err)
 	}
 	if err := second.WriteJSON(map[string]any{
-		"type":                 "response.append",
+		"type":                 "response.create",
+		"model":                "gpt-test",
 		"previous_response_id": "resp-expire",
 		"input":                []any{map[string]any{"role": "user", "content": "two"}},
 	}); err != nil {
 		t.Fatalf("write expired continuation: %v", err)
 	}
 	var event struct {
-		Type  string `json:"type"`
-		Error struct {
-			Code string `json:"code"`
+		Type   string `json:"type"`
+		Status int    `json:"status"`
+		Error  struct {
+			Type  string `json:"type"`
+			Code  string `json:"code"`
+			Param string `json:"param"`
 		} `json:"error"`
 	}
 	if err := second.ReadJSON(&event); err != nil {
 		t.Fatalf("read expired continuation error: %v", err)
 	}
-	if event.Type != "error" || event.Error.Code != "invalid_request" {
+	if event.Type != "error" || event.Status != http.StatusBadRequest ||
+		event.Error.Type != "invalid_request_error" ||
+		event.Error.Code != "previous_response_not_found" ||
+		event.Error.Param != "previous_response_id" {
 		t.Fatalf("expired continuation event=%+v", event)
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("expired continuation reached upstream; calls=%d", calls.Load())
+	}
+	if stats := env.server.responsesExecutionSessions.stats(); stats.TTLExpired != 1 || stats.PreviousResponseMisses != 1 {
+		t.Fatalf("expired continuation metrics=%+v", stats)
 	}
 }
 
@@ -1992,6 +2073,80 @@ func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("cross-subject continuation reached upstream; calls=%d", calls.Load())
+	}
+}
+
+func TestResponsesWebsocketThreadIsolationPreservesParentContinuation(t *testing.T) {
+	var calls atomic.Int32
+	requests := make(chan []byte, 3)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		turn := calls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read thread-isolation upstream request: %v", err)
+			return
+		}
+		requests <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprintf(
+			w,
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-thread-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"answer-%d\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n",
+			turn,
+			turn,
+		)
+	}))
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "thread-isolation", channelType: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+
+	parentHeaders := http.Header{
+		"Session-Id": {"shared-session"},
+		"Thread-Id":  {"parent-thread"},
+	}
+	parent := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", parentHeaders)
+	if err := parent.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "parent-one"}},
+	}); err != nil {
+		t.Fatalf("write parent thread first turn: %v", err)
+	}
+	readWebsocketUntilType(t, parent, "response.completed")
+	_ = parent.Close()
+
+	child := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"Session-Id": {"shared-session"},
+		"Thread-Id":  {"child-thread"},
+	})
+	if err := child.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "developer", "content": "child-prewarm"}},
+	}); err != nil {
+		t.Fatalf("write child thread first turn: %v", err)
+	}
+	readWebsocketUntilType(t, child, "response.completed")
+
+	parent = dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", parentHeaders)
+	if err := parent.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"previous_response_id": "resp-thread-1",
+		"input":                []any{map[string]any{"role": "user", "content": "parent-two"}},
+	}); err != nil {
+		t.Fatalf("write parent continuation after child turn: %v", err)
+	}
+	readWebsocketUntilType(t, parent, "response.completed")
+
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("thread-isolated upstream calls=%d, want 3", got)
+	}
+	<-requests
+	childRequest := <-requests
+	if input := gjson.GetBytes(childRequest, "input"); !input.IsArray() || len(input.Array()) != 1 ||
+		input.Array()[0].Get("content").String() != "child-prewarm" {
+		t.Fatalf("child thread inherited parent transcript: %s", childRequest)
+	}
+	parentContinuation := <-requests
+	if input := gjson.GetBytes(parentContinuation, "input"); !input.IsArray() || len(input.Array()) != 3 {
+		t.Fatalf("parent thread continuation lost its transcript: %s", parentContinuation)
 	}
 }
 

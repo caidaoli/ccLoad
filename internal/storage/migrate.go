@@ -389,6 +389,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"cooldown_rate_limit_seconds", "60", "int", "限流错误(429)初始冷却时间(秒)", "60"},
 		{"cooldown_max_seconds", "1800", "int", "指数退避冷却上限(秒)", "1800"},
 		{"cooldown_min_seconds", "10", "int", "指数退避冷却下限(秒)", "10"},
+		{"global_cooldown_detection_rules", "{}", "json", "未配置渠道专属规则时继承的全局冷却探测规则", "{}"},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
 		{"non_stream_timeout", "120", "duration", "非流式请求超时(秒,0=禁用)", "120"},

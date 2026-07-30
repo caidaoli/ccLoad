@@ -76,9 +76,18 @@ func TestProxy_NonResponsesGenerateFieldIsPreserved(t *testing.T) {
 // setupProxyTestEnv 创建指向 mockUpstream 的完整测试 Server
 // 每个渠道的 URL 使用 upstreamURLs map（channelIndex → upstreamURL）
 func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[int]string) *proxyTestEnv {
+	return setupProxyTestEnvWithSettings(t, channels, upstreamURLs, nil)
+}
+
+func setupProxyTestEnvWithSettings(
+	t testing.TB,
+	channels []testChannel,
+	upstreamURLs map[int]string,
+	settings map[string]string,
+) *proxyTestEnv {
 	t.Helper()
 
-	srv := newInMemoryServer(t)
+	srv := newInMemoryServerWithSettings(t, settings)
 	store := srv.store
 
 	ctx := context.Background()
@@ -151,6 +160,82 @@ func setupProxyTestEnv(t testing.TB, channels []testChannel, upstreamURLs map[in
 		store:  store,
 		engine: engine,
 	}
+}
+
+func TestProxy_GlobalCooldownDetectionRulesFallbackAndChannelOverride(t *testing.T) {
+	globalRules := `{"rules":[{"enabled":true,"name":"Global maintenance","priority":0,"status_codes":[406],"message_pattern":"planned maintenance","scope":"channel","mode":"fixed","cooldown_seconds":120}]}`
+
+	t.Run("channel without rules inherits global rules", func(t *testing.T) {
+		var fallbackCalls atomic.Int64
+		upstreamFail := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotAcceptable)
+			_, _ = w.Write([]byte(`{"error":{"message":"planned maintenance"}}`))
+		}))
+		defer upstreamFail.Close()
+		upstreamFallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fallbackCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"global-fallback","choices":[],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+		}))
+		defer upstreamFallback.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{
+			{name: "inherits-global", models: "gpt-4", priority: 100},
+			{name: "fallback", models: "gpt-4", priority: 50},
+		}, map[int]string{0: upstreamFail.URL, 1: upstreamFallback.URL}, map[string]string{
+			"global_cooldown_detection_rules": globalRules,
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "gpt-4", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "global-fallback") {
+			t.Fatalf("status=%d body=%s, want fallback success", response.Code, response.Body.String())
+		}
+		if got := fallbackCalls.Load(); got != 1 {
+			t.Fatalf("fallback calls=%d, want 1", got)
+		}
+	})
+
+	t.Run("channel rules replace global rules", func(t *testing.T) {
+		var fallbackCalls atomic.Int64
+		upstreamFail := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotAcceptable)
+			_, _ = w.Write([]byte(`{"error":{"message":"planned maintenance"}}`))
+		}))
+		defer upstreamFail.Close()
+		upstreamFallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			fallbackCalls.Add(1)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"id":"unexpected-fallback","choices":[]}`))
+		}))
+		defer upstreamFallback.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{
+			{
+				name: "overrides-global", models: "gpt-4", priority: 100,
+				cooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "Local teapot", Priority: 0, StatusCodes: []int{http.StatusTeapot},
+					Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+				}}},
+			},
+			{name: "fallback", models: "gpt-4", priority: 50},
+		}, map[int]string{0: upstreamFail.URL, 1: upstreamFallback.URL}, map[string]string{
+			"global_cooldown_detection_rules": globalRules,
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "gpt-4", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if response.Code != http.StatusNotAcceptable {
+			t.Fatalf("status=%d body=%s, want channel rule override to preserve 406", response.Code, response.Body.String())
+		}
+		if got := fallbackCalls.Load(); got != 0 {
+			t.Fatalf("fallback calls=%d, want 0", got)
+		}
+	})
 }
 
 // doProxyRequest 发送代理请求并返回响应

@@ -191,6 +191,11 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 // validateSettingValue 验证配置值的合法性
 func validateSettingValue(key, valueType, value string) error {
+	if key == globalCooldownDetectionRulesSettingKey {
+		_, err := parseGlobalCooldownDetectionRules(value)
+		return err
+	}
+
 	switch valueType {
 	case "int":
 		intVal, err := strconv.Atoi(value)

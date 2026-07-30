@@ -1,6 +1,7 @@
 package app
 
 import (
+	"errors"
 	"io"
 	"net/http"
 	"strconv"
@@ -61,12 +62,40 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	if _, rejected := srv.responsesWebsocketConnections.acquire("token-a"); rejected == nil {
 		t.Fatal("expected per-token downstream websocket rejection")
 	}
+
+	expired, releaseExpired, err := srv.responsesExecutionSessions.acquire("token-a", "expired-session")
+	if err != nil {
+		t.Fatalf("acquire expiring execution session: %v", err)
+	}
+	releaseExpired()
+	srv.responsesExecutionSessions.cleanup(time.Now().Add(srv.responsesExecutionSessions.sessionTTL() + time.Second))
+	if expired == nil {
+		t.Fatal("expected expiring execution session")
+	}
+
+	srv.configService.mu.Lock()
+	srv.configService.cache["responses_ws_max_sessions"] = &model.SystemSetting{
+		Key: "responses_ws_max_sessions", Value: "1",
+	}
+	srv.configService.mu.Unlock()
 	session, release, err := srv.responsesExecutionSessions.acquire("token-a", "session-a")
 	if err != nil {
 		t.Fatalf("acquire execution session: %v", err)
 	}
 	defer release()
+	if _, _, errCapacity := srv.responsesExecutionSessions.acquire("token-b", "session-b"); !errors.Is(errCapacity, errResponsesExecutionSessionCapacity) {
+		t.Fatalf("capacity rejection error=%v", errCapacity)
+	}
 	srv.responsesExecutionSessions.commit(session, []byte(`{}`), responsesWebsocketTurnResult{completedOutput: []byte(`[]`)})
+	srv.configService.mu.Lock()
+	srv.configService.cache["responses_ws_max_transcript_bytes"] = &model.SystemSetting{
+		Key: "responses_ws_max_transcript_bytes", Value: "1",
+	}
+	srv.configService.mu.Unlock()
+	if _, _, errBudget := srv.responsesExecutionSessions.acquire("token-b", "session-b"); !errors.Is(errBudget, errResponsesExecutionSessionTranscriptBudget) {
+		t.Fatalf("budget rejection error=%v", errBudget)
+	}
+	srv.responsesExecutionSessions.recordPreviousResponseMiss(session, "resp-stale", true)
 	session.upstream.recordReconnect("test reconnect")
 
 	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
@@ -86,11 +115,21 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	if ws["reconnects"] != float64(1) {
 		t.Fatalf("websocket reconnect metric missing: %#v", ws)
 	}
-	if ws["max_sessions"] != float64(defaultResponsesExecutionSessionLimit) {
+	if ws["max_sessions"] != float64(1) {
 		t.Fatalf("websocket limits missing: %#v", ws)
 	}
-	if ws["max_transcript_bytes"] != float64(128*1024*1024) {
+	if ws["max_transcript_bytes"] != float64(1) {
 		t.Fatalf("websocket transcript budget missing: %#v", ws)
+	}
+	for key, want := range map[string]float64{
+		"ttl_expired":              1,
+		"capacity_rejected":        1,
+		"budget_rejected":          1,
+		"previous_response_misses": 1,
+	} {
+		if ws[key] != want {
+			t.Fatalf("%s=%v, want %v; metrics=%#v", key, ws[key], want, ws)
+		}
 	}
 	if ws["downstream_connections"] != float64(1) ||
 		ws["rejected_downstream_connections"] != float64(1) ||

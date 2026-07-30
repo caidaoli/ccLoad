@@ -298,6 +298,30 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 	})
 
+	t.Run("AdminBatchUpdateSettings_invalid_global_cooldown_rules_reject", func(t *testing.T) {
+		before, err := store.GetSetting(context.Background(), globalCooldownDetectionRulesSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting before update failed: %v", err)
+		}
+		invalidRules := `{"rules":[{"enabled":true,"name":"Broken","priority":0,"status_codes":[429],"scope":"channel","mode":"fixed","cooldown_seconds":0}]}`
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+			globalCooldownDetectionRulesSettingKey: invalidRules,
+		}))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		after, err := store.GetSetting(context.Background(), globalCooldownDetectionRulesSettingKey)
+		if err != nil {
+			t.Fatalf("GetSetting after update failed: %v", err)
+		}
+		if after.Value != before.Value {
+			t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+		}
+	})
+
 	t.Run("AdminBatchUpdateSettings_ok_triggers_restart", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/settings/batch", []byte(`{"log_retention_days":"14","max_key_retries":"5"}`)))
 

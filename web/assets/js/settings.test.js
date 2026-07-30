@@ -186,3 +186,24 @@ test('字节型设置以 M 编辑并以字节保存', async (t) => {
   assert.equal(page.inputs[bodyKey].value, '12');
   assert.equal(page.inputs[imageBodyKey].value, '24');
 });
+
+test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
+  const key = 'global_cooldown_detection_rules';
+  const rules = '{"rules":[{"enabled":true,"name":"Maintenance","priority":0,"status_codes":[503],"scope":"channel","mode":"fixed","cooldown_seconds":60}]}';
+  const page = await loadSettingsPage(t, [{
+    key,
+    value: '{}',
+    value_type: 'json',
+    description: ''
+  }], {
+    [key]: rules
+  });
+  page.setAllowSave(true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  const requests = saveRequests(page);
+  assert.equal(requests.length, 1);
+  assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
+});
