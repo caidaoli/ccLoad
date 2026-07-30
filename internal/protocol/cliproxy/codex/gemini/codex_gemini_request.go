@@ -137,10 +137,7 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		items := contents.Array()
 		for i := 0; i < len(items); i++ {
 			item := items[i]
-			role := item.Get("role").String()
-			if role == "model" {
-				role = "assistant"
-			}
+			role := translatorcommon.GeminiMessageRole(item.Get("role").String())
 
 			parts := item.Get("parts")
 			if !parts.IsArray() {

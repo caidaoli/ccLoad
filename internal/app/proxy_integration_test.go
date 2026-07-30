@@ -1932,12 +1932,15 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 	request()
 	request()
 
-	if got := strings.Join(gotPaths, ","); got != "/v1/messages,/v1/messages" {
-		t.Fatalf("upstream paths=%s, want Anthropic first then cached Anthropic", got)
+	if got := strings.Join(gotPaths, ","); got != "/v1/chat/completions,/v1/messages,/v1/messages" {
+		t.Fatalf("upstream paths=%s, want native OpenAI then cached Anthropic fallback", got)
 	}
-	for i, body := range gotBodies {
+	if !bytes.Contains(gotBodies[0], []byte(`"messages"`)) || bytes.Contains(gotBodies[0], []byte(`"text":"hi"`)) {
+		t.Fatalf("native request is not OpenAI: %s", gotBodies[0])
+	}
+	for i, body := range gotBodies[1:] {
 		if !bytes.Contains(body, []byte(`"messages"`)) || !bytes.Contains(body, []byte(`"text":"hi"`)) {
-			t.Fatalf("local request body %d is not Anthropic: %s", i, body)
+			t.Fatalf("fallback request body %d is not Anthropic: %s", i+1, body)
 		}
 	}
 }
@@ -2057,7 +2060,7 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 			name: "OpenAI", clientPath: "/v1/chat/completions", channelType: "anthropic", localPath: "/v1/messages",
 			requestBody:  map[string]any{"model": modelName, "messages": []map[string]string{{"role": "user", "content": "hi"}}},
 			upstreamBody: `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"shared-model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
-			wantPaths:    "/v1/messages,/v1/messages",
+			wantPaths:    "/v1/chat/completions,/v1/messages,/v1/messages",
 		},
 		{
 			name: "Anthropic", clientPath: "/v1/messages", channelType: "openai", localPath: "/v1/chat/completions",
@@ -2073,13 +2076,13 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 				"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "hi"}},
 			}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			wantPaths:    "/v1/messages,/v1/chat/completions,/v1/chat/completions",
+			wantPaths:    "/v1/responses,/v1/messages,/v1/chat/completions,/v1/chat/completions",
 		},
 		{
 			name: "Gemini", clientPath: "/v1beta/models/shared-model:generateContent", channelType: "openai", localPath: "/v1/chat/completions",
 			requestBody:  map[string]any{"contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "hi"}}}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			wantPaths:    "/v1/messages,/v1/chat/completions,/v1/chat/completions",
+			wantPaths:    "/v1beta/models/shared-model:generateContent,/v1/messages,/v1/chat/completions,/v1/chat/completions",
 		},
 	}
 
@@ -2177,12 +2180,12 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 		return newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			*paths = append(*paths, r.URL.Path)
 			w.Header().Set("Content-Type", "application/json")
-			if r.URL.Path == "/v1/messages" {
+			if r.URL.Path == "/v1/chat/completions" {
 				w.WriteHeader(http.StatusNotFound)
-				_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/messages)"}}`)
+				_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/chat/completions)"}}`)
 				return
 			}
-			_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"claude-3-5-sonnet","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+			_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-3-5-sonnet","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
 		}))
 	}
 	upstreamA := newUpstream(&pathsA)
@@ -2216,11 +2219,11 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByURL(t *testing.T) {
 	env.server.urlSelector.DisableURL(channelID, upstreamA.URL)
 	request()
 
-	if got := strings.Join(pathsA, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions" {
-		t.Fatalf("URL A paths=%s, want ordered discovery then cached OpenAI", got)
+	if got := strings.Join(pathsA, ","); got != "/v1/chat/completions,/v1/messages,/v1/messages" {
+		t.Fatalf("URL A paths=%s, want native discovery then cached Anthropic", got)
 	}
-	if got := strings.Join(pathsB, ","); got != "/v1/messages,/v1/chat/completions" {
-		t.Fatalf("URL B paths=%s, want independent ordered discovery", got)
+	if got := strings.Join(pathsB, ","); got != "/v1/chat/completions,/v1/messages" {
+		t.Fatalf("URL B paths=%s, want independent native discovery", got)
 	}
 }
 
@@ -2266,7 +2269,7 @@ func TestProxy_AutomaticProtocolFallback_CacheIsolatedByRequestFamily(t *testing
 		t.Fatalf("cached chat status=%d body=%s", chat.Code, chat.Body.String())
 	}
 
-	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/embeddings,/v1/messages" {
+	if got := strings.Join(paths, ","); got != "/v1/chat/completions,/v1/messages,/v1/embeddings,/v1/messages" {
 		t.Fatalf("upstream paths=%s, want Chat cache isolated from Embeddings", got)
 	}
 }
@@ -2306,7 +2309,7 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 			if w.Code != tc.wantStatus {
 				t.Fatalf("status=%d want=%d body=%s", w.Code, tc.wantStatus, w.Body.String())
 			}
-			if got := strings.Join(paths, ","); got != "/v1/messages" {
+			if got := strings.Join(paths, ","); got != "/v1/chat/completions" {
 				t.Fatalf("upstream paths=%s, ordinary error must stop protocol fallback", got)
 			}
 		})
@@ -2318,7 +2321,12 @@ func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/messages" {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/responses)"}}`)
+			return
+		case "/v1/messages":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`)
 			return
@@ -2349,8 +2357,8 @@ func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing
 	request()
 	request()
 
-	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions" {
-		t.Fatalf("upstream paths=%s, want Anthropic failure then cached OpenAI", got)
+	if got := strings.Join(paths, ","); got != "/v1/responses,/v1/messages,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want native Codex failure, Anthropic failure, then cached OpenAI", got)
 	}
 }
 
@@ -2710,7 +2718,7 @@ func TestProxy_OpenAIShapedBodyOnGeminiPathIsRejected(t *testing.T) {
 	}
 }
 
-func TestProxy_AutomaticProtocolFallback_UsesFixedProtocolOrder(t *testing.T) {
+func TestProxy_AutomaticProtocolFallback_UsesNativeProtocolFirst(t *testing.T) {
 	t.Parallel()
 
 	var gotPath string
@@ -2732,7 +2740,7 @@ func TestProxy_AutomaticProtocolFallback_UsesFixedProtocolOrder(t *testing.T) {
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body: io.NopCloser(bytes.NewReader([]byte(
-					`{"id":"msg-upstream","type":"message","role":"assistant","content":[{"type":"text","text":"anthropic first"}],"model":"gpt-4o","stop_reason":"end_turn","usage":{"input_tokens":3,"output_tokens":2}}`,
+					`{"id":"chatcmpl-upstream","object":"chat.completion","model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"openai native"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`,
 				))),
 			}, nil
 		}),
@@ -2762,20 +2770,17 @@ func TestProxy_AutomaticProtocolFallback_UsesFixedProtocolOrder(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
 	}
-	if gotPath != "/v1/messages" {
-		t.Fatalf("expected Anthropic-first upstream path, got %s", gotPath)
+	if gotPath != "/v1/chat/completions" {
+		t.Fatalf("expected native OpenAI upstream path, got %s", gotPath)
 	}
 	if gotAuth != "Bearer sk-openai-upstream" {
 		t.Fatalf("expected bearer auth header, got %q", gotAuth)
 	}
 	if gotAPIKey != "sk-openai-upstream" {
-		t.Fatalf("expected x-api-key header, got %q", gotAPIKey)
+		t.Fatalf("expected configured x-api-key header, got %q", gotAPIKey)
 	}
 	if !bytes.Contains(gotBody, []byte(`"messages"`)) {
-		t.Fatalf("expected Anthropic request body, got %s", gotBody)
-	}
-	if !bytes.Contains(gotBody, []byte(`"max_tokens"`)) {
-		t.Fatalf("expected Anthropic max_tokens, got %s", gotBody)
+		t.Fatalf("expected OpenAI request body, got %s", gotBody)
 	}
 
 	var resp struct {

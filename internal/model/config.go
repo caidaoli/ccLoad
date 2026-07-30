@@ -12,8 +12,8 @@ import (
 )
 
 const (
-	// ProtocolTransformModeAuto probes supported upstream protocols in the fixed order
-	// Anthropic, OpenAI, Codex, Gemini and caches the working protocol per URL and request family.
+	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
+	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
 	ProtocolTransformModeAuto = "auto"
 	// ProtocolTransformModeUpstream always forwards the client protocol natively.
 	ProtocolTransformModeUpstream = "upstream"

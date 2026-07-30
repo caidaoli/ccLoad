@@ -193,7 +193,7 @@
             <ul class="www-check-list">
               <li><code>name</code>: readable channel name used by logs and statistics.</li>
               <li><code>channel_type</code>: the Upstream Protocol, such as Anthropic, OpenAI, Gemini or Codex. It drives upstream authentication, paths, model discovery and scheduled checks.</li>
-              <li><code>protocol_transform_mode</code>: <code>auto</code> (default) negotiates Anthropic → OpenAI → Codex → Gemini; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> is ccLoad-translation-only.</li>
+              <li><code>protocol_transform_mode</code>: <code>auto</code> (default) tries the client protocol first, then falls back through Anthropic → OpenAI → Codex → Gemini without retrying it; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> is ccLoad-translation-only.</li>
               <li><code>url</code>: supports comma-separated URLs; a trailing <code>#</code> marks an exact upstream URL and disables automatic path joining.</li>
               <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
@@ -215,7 +215,7 @@
         </div>
 
         <div class="www-callout www-mt-8">
-          <strong>Auto mode learns protocol capability at runtime.</strong> For each URL and request family, ccLoad tries Anthropic, OpenAI, Codex and Gemini in that order, then caches the working protocol. It advances only after an uncommitted non-model 404/405, a structured 500 with <code>convert_request_failed</code> plus <code>not implemented</code>, a pre-origin Cloudflare 403 block page, or a transform that cannot represent the request. Exact URLs marked with <code>#</code> translate directly when a conversion exists. Choose <code>upstream</code> or <code>local</code> when the route must be strict.
+          <strong>Auto mode learns protocol capability at runtime.</strong> For each URL and request family, ccLoad tries the client protocol first, then falls back through Anthropic, OpenAI, Codex and Gemini while skipping the protocol already attempted, and caches the working protocol. It advances only after an uncommitted non-model 404/405, a structured 500 with <code>convert_request_failed</code> plus <code>not implemented</code>, a pre-origin Cloudflare 403 block page, or a transform that cannot represent the request. Exact URLs marked with <code>#</code> translate directly when a conversion exists. Choose <code>upstream</code> or <code>local</code> when the route must be strict.
         </div>
         <div class="www-callout www-mt-8">
           <strong>Multiple URLs are channel-internal resilience, not a replacement for channel priority.</strong> ccLoad explores URLs first, then selects by 1/EWMA latency weighting. Failed URLs back off independently and do not drag down other URLs in the same channel.

@@ -46,7 +46,7 @@ ccLoad 直接处理这些问题：
 - 🔀 **自动故障切换**：按错误作用域跳过故障 Key、模型、渠道或 URL。
 - ⏰ **模型感知冷却**：结构化 `model_cooldown`、上游 HTTP 5xx、Key 级 429 限流和模型不可用 404 都先只冷却当前实际模型，同渠道其他模型仍可用；只有所有配置模型或所有启用 Key 都在冷却时才升级为渠道冷却。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
-- 🔄 **逐 URL 协议路由**：每个 URL 可声明实际支持的线协议；显式声明直接选路，留空则按固定顺序自动探测并缓存成功协议。
+- 🔄 **逐 URL 协议路由**：每个 URL 可声明实际支持的线协议；显式声明直接选路，留空则原生协议优先探测并缓存成功协议。
 - 🔌 **Responses WebSocket 桥接**：认证后的 Codex 客户端可保持下游 WebSocket，各候选渠道按配置使用原生 Codex WebSocket 或现有 HTTP/SSE 传输。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
 - 🔍 **软错误检测**：HTTP 200 伪装成功也会触发故障切换。已覆盖：
@@ -91,7 +91,7 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。`channel_type` 定义渠道的本地转换目标；每个 URL 还可声明实际接受的上游线协议。非空声明是权威配置：ccLoad 不探测，直接选择兼容的声明协议；不兼容 URL 不发请求、不冷却，直接跳过。声明留空时按 Anthropic → OpenAI → Codex → Gemini 固定顺序协商。仅当响应尚未提交，且收到非模型语义的 404/405、结构化 `convert_request_failed` + `not implemented` 500、请求到达 API 前返回的 Cloudflare 403 拦截页，或当前转换无法表示请求时，才继续下一协议。成功协议按 URL 和请求族缓存 10 分钟。
+请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。`channel_type` 定义渠道的本地转换目标；每个 URL 还可声明实际接受的上游线协议。非空声明是权威配置：ccLoad 不探测，直接选择兼容的声明协议；不兼容 URL 不发请求、不冷却，直接跳过。声明留空时先直通客户端协议，失败后按 Anthropic → OpenAI → Codex → Gemini 回落，并跳过已经尝试的直通协议。仅当响应尚未提交，且收到非模型语义的 404/405、结构化 `convert_request_failed` + `not implemented` 500、请求到达 API 前返回的 Cloudflare 403 拦截页，或当前转换无法表示请求时，才继续下一协议。成功协议按 URL 和请求族缓存 10 分钟。
 
 ```mermaid
 graph TB
@@ -867,7 +867,7 @@ ccLoad 使用的核心技术栈：
   - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
   - `ChannelType` 是本地转换目标；每个结构化 URL 可声明实际接受的上游线协议
-  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；省略声明才按 Anthropic → OpenAI → Codex → Gemini 运行时学习
+  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；省略声明时先试客户端协议，再按 Anthropic → OpenAI → Codex → Gemini 回落学习
   - 自动检测仅在未提交响应的非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎

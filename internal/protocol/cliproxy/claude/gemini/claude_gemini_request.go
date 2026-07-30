@@ -286,19 +286,7 @@ func ConvertGeminiRequestToClaude(modelName string, inputRawJSON []byte, stream 
 	// Contents conversion to messages with proper role mapping
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
 		contents.ForEach(func(_, content gjson.Result) bool {
-			role := content.Get("role").String()
-			// Map Gemini roles to Claude Code roles
-			if role == "model" {
-				role = "assistant"
-			}
-
-			if role == "function" {
-				role = "user"
-			}
-
-			if role == "tool" {
-				role = "user"
-			}
+			role := translatorcommon.GeminiMessageRole(content.Get("role").String())
 
 			contentItems := make([][]byte, 0, 4)
 			if parts := content.Get("parts"); parts.Exists() && parts.IsArray() {

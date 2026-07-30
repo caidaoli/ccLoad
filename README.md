@@ -46,7 +46,7 @@ ccLoad handles those cases with:
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
 - **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
-- **Per-URL protocol routing**: Each URL can declare the upstream wire protocols it accepts. Explicit declarations route directly; an empty declaration uses fixed-order capability detection and caches the working protocol.
+- **Per-URL protocol routing**: Each URL can declare the upstream wire protocols it accepts. Explicit declarations route directly; an empty declaration tries the client protocol first and caches the working fallback.
 - **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
 - **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
@@ -81,7 +81,7 @@ ccLoad handles those cases with:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Per-URL Protocol Routing** - Explicit Anthropic/OpenAI/Codex/Gemini capability per URL, with fixed-order automatic detection when left empty
+- 🔄 **Per-URL Protocol Routing** - Explicit Anthropic/OpenAI/Codex/Gemini capability per URL, with native-first automatic detection when left empty
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -91,7 +91,7 @@ ccLoad handles those cases with:
 
 ## 🏗️ Architecture Overview
 
-`channel_type` defines the channel's local-translation target. Each URL may additionally declare the upstream wire protocols it accepts. A non-empty declaration is authoritative: ccLoad selects a compatible declared protocol without probing, and skips incompatible URLs without sending a request or applying cooldown. An empty declaration negotiates in the fixed order Anthropic → OpenAI → Codex → Gemini. ccLoad advances only when the response is still uncommitted and it receives a non-model endpoint 404/405, a structured `convert_request_failed` + `not implemented` 500, a Cloudflare 403 block page returned before the API origin, or the current transform cannot represent the request. The working protocol is cached for 10 minutes per URL and request family.
+`channel_type` defines the channel's local-translation target. Each URL may additionally declare the upstream wire protocols it accepts. A non-empty declaration is authoritative: ccLoad selects a compatible declared protocol without probing, and skips incompatible URLs without sending a request or applying cooldown. An empty declaration tries the client's native wire protocol first, then falls back through Anthropic → OpenAI → Codex → Gemini while skipping the native protocol already attempted. ccLoad advances only when the response is still uncommitted and it receives a non-model endpoint 404/405, a structured `convert_request_failed` + `not implemented` 500, a Cloudflare 403 block page returned before the API origin, or the current transform cannot represent the request. The working protocol is cached for 10 minutes per URL and request family.
 
 ```mermaid
 graph TB
@@ -846,7 +846,7 @@ Check out the awesome admin dashboard 👇
   - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
   - `ChannelType` is the local-translation target; each structured URL can declare its accepted upstream wire protocols
-  - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; omitted declarations use Anthropic → OpenAI → Codex → Gemini runtime learning
+  - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; omitted declarations try the client protocol first, then learn from the Anthropic → OpenAI → Codex → Gemini fallback order
   - Automatic detection translates only after an uncommitted non-model 404/405, a structured `convert_request_failed` + `not implemented` 500, or a Cloudflare 403 block page returned before the API origin; exact URLs without declarations translate directly across protocols
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
@@ -1150,7 +1150,7 @@ storage/
 - ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
-- ✅ **Automatic protocol fallback**: Anthropic → OpenAI → Codex → Gemini fixed-order routing with family-aware capability caching
+- ✅ **Automatic protocol fallback**: client-native routing first, then Anthropic → OpenAI → Codex → Gemini fallback with the native protocol skipped and family-aware capability caching
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 - ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped
