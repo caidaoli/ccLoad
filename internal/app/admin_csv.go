@@ -45,7 +45,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	header := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -106,8 +106,6 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strings.Join(models, ","),
 			modelRedirectsJSON,
 			cfg.GetChannelType(), // 使用GetChannelType确保默认值
-			strings.Join(cfg.GetProtocolTransforms(), ","),
-			cfg.GetProtocolTransformMode(),
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
@@ -310,8 +308,6 @@ func (s *Server) parseChannelImportRow(
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
 	channelType := fetch("channel_type")
-	protocolTransformsRaw := fetch("protocol_transforms")
-	protocolTransformMode := model.NormalizeProtocolTransformMode(fetch("protocol_transform_mode"))
 	keyStrategy := fetch("key_strategy")
 
 	var missing []string
@@ -345,7 +341,7 @@ func (s *Server) parseChannelImportRow(
 	// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
 	channelType = util.NormalizeChannelType(channelType)
 	if !util.IsValidChannelType(channelType) {
-		return nil, fmt.Sprintf("第%d行渠道类型无效: %s(仅支持anthropic/codex/gemini)", lineNo, channelType), true
+		return nil, fmt.Sprintf("第%d行上游协议无效: %s(仅支持anthropic/codex/openai/gemini)", lineNo, channelType), true
 	}
 
 	// 验证Key使用策略(可选字段,默认sequential)
@@ -354,15 +350,6 @@ func (s *Server) parseChannelImportRow(
 	} else if !model.IsValidKeyStrategy(keyStrategy) {
 		return nil, fmt.Sprintf("第%d行Key使用策略无效: %s(仅支持sequential/round_robin)", lineNo, keyStrategy), true
 	}
-	if protocolTransformMode == "" {
-		return nil, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, fetch("protocol_transform_mode")), true
-	}
-	rawProtocolTransforms := parseProtocolTransformsCSV(protocolTransformsRaw)
-	if err := validateProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms); err != nil {
-		return nil, fmt.Sprintf("第%d行 protocol_transforms 无效: %v", lineNo, err), true
-	}
-	protocolTransforms := normalizeProtocolTransforms(channelType, protocolTransformMode, rawProtocolTransforms)
-
 	models := parseImportModels(modelsRaw)
 	if len(models) == 0 {
 		return nil, fmt.Sprintf("第%d行模型格式无效", lineNo), true
@@ -486,8 +473,6 @@ func (s *Server) parseChannelImportRow(
 		MaxConcurrency:         maxConcurrency,
 		ModelEntries:           modelEntries,
 		ChannelType:            channelType,
-		ProtocolTransformMode:  protocolTransformMode,
-		ProtocolTransforms:     protocolTransforms,
 		Enabled:                enabled,
 		ScheduledCheckEnabled:  scheduledCheckEnabled,
 		ScheduledCheckModel:    scheduledCheckModel,
@@ -509,23 +494,6 @@ func (s *Server) parseChannelImportRow(
 		Config:  cfg,
 		APIKeys: apiKeys,
 	}, "", false
-}
-
-func parseProtocolTransformsCSV(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	transforms := make([]string, 0, len(parts))
-	for _, part := range parts {
-		part = strings.TrimSpace(part)
-		if part == "" {
-			continue
-		}
-		transforms = append(transforms, part)
-	}
-	return transforms
 }
 
 // ==================== CSV辅助函数 ====================

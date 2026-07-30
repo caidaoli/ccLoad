@@ -7,15 +7,9 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	protocolpkg "ccLoad/internal/protocol"
 )
 
 const (
-	// ProtocolTransformModeLocal keeps extra exposed protocols on the existing local-translation path.
-	ProtocolTransformModeLocal = "local"
-	// ProtocolTransformModeUpstream forwards extra exposed protocols to upstream natively.
-	ProtocolTransformModeUpstream = "upstream"
 	// ExactUpstreamURLMarker marks a configured channel URL as the exact upstream request URL.
 	ExactUpstreamURLMarker = "#"
 )
@@ -28,18 +22,6 @@ func HasExactUpstreamURLMarker(raw string) bool {
 // StripExactUpstreamURLMarker trims spaces and removes the exact upstream URL marker when present.
 func StripExactUpstreamURLMarker(raw string) string {
 	return strings.TrimSuffix(strings.TrimSpace(raw), ExactUpstreamURLMarker)
-}
-
-// NormalizeProtocolTransformMode normalizes admin or persisted values and returns an empty string for invalid modes.
-func NormalizeProtocolTransformMode(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "", ProtocolTransformModeUpstream:
-		return ProtocolTransformModeUpstream
-	case ProtocolTransformModeLocal:
-		return ProtocolTransformModeLocal
-	default:
-		return ""
-	}
 }
 
 // ModelEntry 模型配置条目
@@ -187,19 +169,17 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 
 // Config 渠道配置
 type Config struct {
-	ID                    int64    `json:"id"`
-	Name                  string   `json:"name"`
-	ChannelType           string   `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
-	Websockets            bool     `json:"websockets,omitempty"`
-	ProtocolTransformMode string   `json:"protocol_transform_mode,omitempty"`
-	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
-	URL                   string   `json:"url"`
-	Priority              int      `json:"priority"`
-	RPMLimit              int      `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
-	MaxConcurrency        int      `json:"max_concurrency"` // 最大并发请求数，0表示无限制
-	Enabled               bool     `json:"enabled"`
-	ScheduledCheckEnabled bool     `json:"scheduled_check_enabled"`
-	ScheduledCheckModel   string   `json:"scheduled_check_model"`
+	ID                    int64  `json:"id"`
+	Name                  string `json:"name"`
+	ChannelType           string `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
+	Websockets            bool   `json:"websockets,omitempty"`
+	URL                   string `json:"url"`
+	Priority              int    `json:"priority"`
+	RPMLimit              int    `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
+	MaxConcurrency        int    `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+	Enabled               bool   `json:"enabled"`
+	ScheduledCheckEnabled bool   `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string `json:"scheduled_check_model"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`
@@ -238,7 +218,7 @@ type Config struct {
 }
 
 // Clone 返回 Config 的深拷贝。
-// 拷贝所有可变字段（ModelEntries / ProtocolTransforms slice），
+// 拷贝所有可变字段，
 // 重置懒加载索引（modelIndex + indexMu），避免共享 sync.RWMutex 与指向旧 slice 的 map。
 func (c *Config) Clone() *Config {
 	if c == nil {
@@ -249,8 +229,6 @@ func (c *Config) Clone() *Config {
 		Name:                   c.Name,
 		ChannelType:            c.ChannelType,
 		Websockets:             c.Websockets,
-		ProtocolTransformMode:  c.ProtocolTransformMode,
-		ProtocolTransforms:     append([]string(nil), c.ProtocolTransforms...),
 		URL:                    c.URL,
 		Priority:               c.Priority,
 		RPMLimit:               c.RPMLimit,
@@ -284,73 +262,6 @@ func (c *Config) GetModels() []string {
 		models = append(models, e.Model)
 	}
 	return models
-}
-
-// GetProtocolTransforms 返回去重后的额外协议转换集合。
-func (c *Config) GetProtocolTransforms() []string {
-	if len(c.ProtocolTransforms) == 0 {
-		return nil
-	}
-	base := c.GetChannelType()
-	mode := c.GetProtocolTransformMode()
-	seen := make(map[string]struct{}, len(c.ProtocolTransforms))
-	transforms := make([]string, 0, len(c.ProtocolTransforms))
-	for _, protocol := range c.ProtocolTransforms {
-		protocol = strings.TrimSpace(strings.ToLower(protocol))
-		if protocol == "" || protocol == base {
-			continue
-		}
-		if mode == ProtocolTransformModeLocal && !protocolpkg.SupportsTransform(protocolpkg.Protocol(protocol), protocolpkg.Protocol(base)) {
-			continue
-		}
-		if _, ok := seen[protocol]; ok {
-			continue
-		}
-		seen[protocol] = struct{}{}
-		transforms = append(transforms, protocol)
-	}
-	slices.Sort(transforms)
-	return transforms
-}
-
-// GetProtocolTransformMode returns the normalized transform mode and defaults to upstream mode.
-func (c *Config) GetProtocolTransformMode() string {
-	mode := NormalizeProtocolTransformMode(c.ProtocolTransformMode)
-	if mode == "" {
-		return ProtocolTransformModeUpstream
-	}
-	return mode
-}
-
-// ResolveUpstreamProtocol returns the runtime upstream protocol for the current client protocol under this channel config.
-func (c *Config) ResolveUpstreamProtocol(clientProtocol string) string {
-	clientProtocol = strings.TrimSpace(strings.ToLower(clientProtocol))
-	if clientProtocol == "" {
-		return c.GetChannelType()
-	}
-	if c.GetProtocolTransformMode() == ProtocolTransformModeUpstream && c.SupportsProtocol(clientProtocol) {
-		return clientProtocol
-	}
-	return c.GetChannelType()
-}
-
-// SupportsProtocol 检查渠道是否暴露指定客户端协议。
-func (c *Config) SupportsProtocol(protocol string) bool {
-	protocol = strings.TrimSpace(strings.ToLower(protocol))
-	if protocol == "" {
-		return false
-	}
-	if c.GetChannelType() == protocol {
-		return true
-	}
-	return slices.Contains(c.GetProtocolTransforms(), protocol)
-}
-
-// SupportedProtocols 返回渠道对外暴露的全部客户端协议集合。
-func (c *Config) SupportedProtocols() []string {
-	protocols := append([]string{c.GetChannelType()}, c.GetProtocolTransforms()...)
-	slices.Sort(protocols)
-	return slices.Compact(protocols)
 }
 
 // GetURLs 解析URL字段，返回URL列表

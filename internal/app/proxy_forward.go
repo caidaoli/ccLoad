@@ -1786,9 +1786,7 @@ func (s *Server) forwardAttempt(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string, // [INFO] 重定向后的实际模型名称
-	bodyToSend []byte,
-	requestPath string, // [FIX] 2026-01: 可能经过模型名替换的请求路径
+	upstreamProtocol protocol.Protocol,
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
@@ -1796,10 +1794,11 @@ func (s *Server) forwardAttempt(
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
+	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
+	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
-	upstreamProtocol := protocol.Protocol(cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol)))
 	bodyToSend = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, bodyToSend)
 	plan, err := protocol.BuildTransformPlan(
 		reqCtx.clientProtocol,
@@ -1925,6 +1924,19 @@ func (s *Server) forwardAttempt(
 
 		result, action := s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		return result, action, nil
+	}
+
+	if upstreamProtocol == reqCtx.clientProtocol && isProtocolEndpointMissing(res) {
+		return &proxyResult{
+			status:                    res.Status,
+			header:                    res.Header,
+			body:                      res.Body,
+			channelID:                 &cfg.ID,
+			duration:                  duration,
+			succeeded:                 false,
+			nextAction:                cooldown.ActionRetryChannel,
+			protocolCapabilityMissing: true,
+		}, cooldown.ActionRetryChannel, nil
 	}
 
 	// 处理错误响应
@@ -2435,16 +2447,17 @@ func (s *Server) attemptKeyAcrossURLs(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string,
-	bodyToSend []byte,
-	requestPath string,
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	if target, ok := reqCtx.nativeCodexWS.affinitySnapshot(); ok &&
 		target.channelID == cfg.ID && target.keyHash == codexWebsocketKeyHash(selectedKey) {
-		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, requestPath, reqCtx.rawQuery)
+		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, reqCtx.requestPath, reqCtx.rawQuery)
 	}
+	clientProtocol := reqCtx.clientProtocol
+	channelProtocol := protocol.Protocol(cfg.GetChannelType())
+	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
+	canTransform := protocol.SupportsTransformFamily(clientProtocol, channelProtocol, requestFamily)
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2467,10 +2480,54 @@ func (s *Server) attemptKeyAcrossURLs(
 		})
 
 		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
+		capabilityKey := protocolCapabilityKey{
+			channelID: cfg.ID, baseURL: urlEntry.url,
+			clientProtocol: clientProtocol, requestFamily: requestFamily,
+		}
+		state := s.protocolCapabilities.get(capabilityKey)
+		if model.HasExactUpstreamURLMarker(urlEntry.url) && clientProtocol != channelProtocol {
+			if canTransform {
+				state = protocolCapabilityLocal
+			} else {
+				state = protocolCapabilityUnsupported
+			}
+			s.protocolCapabilities.set(capabilityKey, state)
+		}
+		if state == protocolCapabilityUnsupported {
+			urlLastFailure = &proxyResult{
+				status:                    http.StatusNotFound,
+				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
+				channelID:                 &cfg.ID,
+				succeeded:                 false,
+				nextAction:                cooldown.ActionRetryChannel,
+				protocolCapabilityMissing: true,
+			}
+			continue
+		}
+
+		upstreamProtocol := clientProtocol
+		if state == protocolCapabilityLocal {
+			upstreamProtocol = channelProtocol
+		}
 		result, nextAction, attemptErr := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
+			ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
 		if attemptErr != nil {
 			return nil, nil, attemptErr
+		}
+		if result != nil && result.protocolCapabilityMissing {
+			if canTransform {
+				s.protocolCapabilities.set(capabilityKey, protocolCapabilityLocal)
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				result, nextAction, attemptErr = s.forwardAttempt(
+					ctx, cfg, keyIndex, selectedKey, reqCtx, channelProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
+				if attemptErr != nil {
+					return nil, nil, attemptErr
+				}
+			} else {
+				s.protocolCapabilities.set(capabilityKey, protocolCapabilityUnsupported)
+			}
+		} else if upstreamProtocol == clientProtocol {
+			s.protocolCapabilities.set(capabilityKey, protocolCapabilityNative)
 		}
 
 		if result != nil && result.succeeded {
@@ -2482,9 +2539,8 @@ func (s *Server) attemptKeyAcrossURLs(
 		if result != nil {
 			urlLastFailure = result
 		}
-		if result != nil && result.alphaSearchUnsupported {
-			// 能力缺失不是 URL 健康故障，不进入通用 URL 冷却。
-			s.markAlphaSearchUnsupported(cfg.ID, urlEntry.url)
+		if result != nil && result.protocolCapabilityMissing {
+			// 能力协商不是 URL 健康故障，不进入通用 URL 冷却。
 			continue
 		}
 
@@ -2570,15 +2626,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	var lastFailure *proxyResult
 
-	// 准备请求体（处理模型重定向）
-	// [INFO] 修复：保存重定向后的模型名称，用于日志记录和调试
-	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
-
-	// [FIX] 2026-01: 模型名变更时同步替换 URL 路径
-	// 场景：Gemini API 的模型名在 URL 路径中（如 /v1beta/models/gemini-3-flash:streamGenerateContent）
-	// 如果模糊匹配将 gemini-3-flash 改为 gemini-3-flash-preview，URL 路径也需要同步更新
-	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
-
 	// 获取渠道URL列表（单URL时退化为单元素切片）
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
@@ -2617,7 +2664,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
 			ctx, cfg, urls, selector,
-			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+			keyIndex, selectedKey, reqCtx, w)
 		if attemptErr != nil {
 			return nil, attemptErr
 		}

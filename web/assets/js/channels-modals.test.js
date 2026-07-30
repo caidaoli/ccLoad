@@ -4,10 +4,9 @@ const assert = require('node:assert/strict');
 const { selectFirstEnabledInlineKey } = require('./channels-keys.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelType = 'openai' }) {
-  const globals = {
-    window: {
-      ChannelProtocolConfig: {},
-      t: key => key,
+	const globals = {
+		window: {
+			t: key => key,
       showError: onError,
       showWarning: onWarning
     },
@@ -59,10 +58,9 @@ function installWebsocketProbeGlobals({
   const notifications = [];
   const requests = [];
   let dirty = false;
-  const globals = {
-    window: {
-      ChannelProtocolConfig: {},
-      t: key => key,
+	const globals = {
+		window: {
+			t: key => key,
       showNotification: (message, type) => notifications.push({ message, type }),
       collectCustomRulesForSubmit: () => ({
         headers: [{ action: 'override', name: 'X-Probe', value: '1' }]

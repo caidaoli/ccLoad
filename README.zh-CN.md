@@ -46,7 +46,7 @@ ccLoad 直接处理这些问题：
 - 🔀 **自动故障切换**：按错误作用域跳过故障 Key、模型、渠道或 URL。
 - ⏰ **模型感知冷却**：结构化 `model_cooldown`、上游 HTTP 5xx、Key 级 429 限流和模型不可用 404 都先只冷却当前实际模型，同渠道其他模型仍可用；只有所有配置模型或所有启用 Key 都在冷却时才升级为渠道冷却。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
-- 🔄 **多协议处理**：每个渠道配置一个主协议和多个额外支持协议，可选择上游直通或 ccLoad转换（实验性）。
+- 🔄 **自动协议回退**：每个渠道只配置一个上游协议；四个核心客户端协议默认可使用所有模型兼容渠道，确认端点缺失后才由 ccLoad 本地转换。
 - 🔌 **Responses WebSocket 桥接**：认证后的 Codex 客户端可保持下游 WebSocket，各候选渠道按配置使用原生 Codex WebSocket 或现有 HTTP/SSE 传输。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
 - 🔍 **软错误检测**：HTTP 200 伪装成功也会触发故障切换。已覆盖：
@@ -81,7 +81,7 @@ ccLoad 直接处理这些问题：
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **多协议处理** | 主协议 + 额外支持协议，四协议全部 12 个本地转换组合 | 默认上游直通，需要时由 ccLoad 转换请求、流式与非流式响应 |
+| 🔄 **自动协议回退** | 每渠道一个上游协议，四协议全部 12 个本地转换组合 | 原生端点优先，仅确认端点级 404/405 后转换并缓存能力 |
 | 💬 **对话式模型测试** | 按渠道/按模型/对话三种模式 | 支持图片上传、思考等级、内置搜索与对话导出 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
@@ -91,7 +91,7 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。每个渠道包含一个主协议和零个或多个额外支持协议；`upstream`（上游直通）模式按客户端协议原样转发，`local`（ccLoad转换（实验性））模式在 Registry 边界把额外协议转换为主协议。日志、指标、成本控制和三种数据库实现不侵入协议核心。
+请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。每个渠道只声明一个上游协议，候选选择只看模型兼容性。ccLoad 对每个 URL 和请求族先按客户端协议原生请求；只有响应尚未提交且收到非模型语义的 404/405，才在同渠道、Key、URL 上转换到上游协议重试，并缓存 10 分钟能力结果。
 
 ```mermaid
 graph TB
@@ -633,7 +633,7 @@ Transcript 预算是新工作准入阈值，不是严格分配上限：已经准
 
 **Codex Alpha Search（仅原生透传）**：
 
-`POST /v1/alpha/search` 接收 Codex 原生搜索请求，`model` 字段可省略。该端点只会转发到“实际上游协议为 Codex”的渠道，不参与本地跨协议转换。
+`POST /v1/alpha/search` 接收 Codex 原生搜索请求，`model` 字段可省略。该请求族没有本地转换路径：ccLoad 会在所有模型兼容渠道上尝试 Codex 原生端点，按 URL 缓存端点缺失结果，然后切换到下一个 URL 或渠道。
 
 ```bash
 curl -X POST http://localhost:8080/v1/alpha/search \
@@ -689,8 +689,6 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "channel_type": "anthropic",
-    "protocol_transforms": [],
-    "protocol_transform_mode": "upstream",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
@@ -699,7 +697,7 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-> **多协议配置说明**：Web 界面的“主协议”对应 `channel_type`，用于模型列表拉取、定时检测和未指定客户端协议时的默认行为；“额外支持”对应 `protocol_transforms`。`protocol_transform_mode=upstream`（默认“上游直通”）会按客户端实际协议原样转发，适合同一 URL/Key 原生支持多个协议的上游；`local`（“ccLoad转换（实验性）”）会把额外协议转换成主协议。协议不是 Key 或模型名的唯一属性，因此配置保持显式，不做运行时猜测。
+> **协议行为说明**：Web 界面的“上游协议”对应 `channel_type`，决定上游认证、路径、模型拉取和定时检测。四个核心生成协议默认可使用所有模型兼容渠道；每个 URL 先尝试客户端原协议，只有端点级 404/405 才转换到上游协议。以 `#` 标记的 Exact URL 不探测其他路径，存在转换时直接本地转换。
 
 > **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
 
@@ -852,7 +850,7 @@ ccLoad 使用的核心技术栈：
   - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型/渠道限制、并发限制）
   - `admin_settings.go`：系统设置管理
   - `admin_models.go`：模型列表管理
-  - `admin_testing.go`：渠道测试功能（支持协议转换测试）
+  - `admin_testing.go`：渠道测试功能（显式选择客户端请求协议）
   - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
   - `channel_check_scheduler.go`：渠道定时检测调度器
   - `detection_log.go`：检测日志构建（定时检测结果→LogEntry）
@@ -864,9 +862,9 @@ ccLoad 使用的核心技术栈：
   - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 转换核心快照；来源和同步规则见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
-  - 两种协议处理方式：`upstream`（默认，上游直通）/ `local`（ccLoad转换（实验性））
-  - 渠道配置：`ChannelType`（主协议）+ `ProtocolTransforms`（额外支持协议）+ `ProtocolTransformMode`（协议处理方式）
-  - Codex `/v1/alpha/search` 仅支持原生透传，不进入本地协议转换
+  - 渠道只配置 `ChannelType`（上游协议）；客户端协议支持按渠道、URL、客户端协议和请求族在运行时学习
+  - 原生端点优先；只有响应未提交的非模型 404/405 才在同 URL 本地转换重试
+  - Exact URL 跨协议直接转换；Codex `/v1/alpha/search` 等不可转换请求族只走原生端点，缺失后切换 URL/渠道
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
@@ -1160,7 +1158,7 @@ storage/
 - 主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → 混合模式
 
 **核心表结构**（SQLite / MySQL / PostgreSQL 共用）:
-- `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含多协议处理配置、定时检测配置、RPM/并发限制配置）
+- `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含上游协议、定时检测配置、RPM/并发限制配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
 - `channel_model_cooldowns` - 模型级运行时冷却，主键为渠道和实际上游模型
 - `logs` - 请求日志（含base_url上游URL追踪）

@@ -46,7 +46,7 @@ ccLoad handles those cases with:
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
 - **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
-- **Multi-protocol handling**: Each channel has one primary protocol plus optional additional protocols, handled by upstream passthrough or ccLoad translation.
+- **Automatic protocol fallback**: Each channel declares one upstream protocol. All four core client protocols can use every model-compatible channel; ccLoad tries the native endpoint first and translates only after a non-model 404/405 proves that endpoint is missing.
 - **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
 - **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
@@ -81,7 +81,7 @@ ccLoad handles those cases with:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Multi-Protocol Handling** - One primary protocol plus additional protocols, with all 12 local conversion paths available when upstream passthrough is not appropriate
+- 🔄 **Automatic Protocol Fallback** - One upstream protocol per channel, native endpoint first, then cached local translation on a confirmed endpoint-level 404/405
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -91,7 +91,7 @@ ccLoad handles those cases with:
 
 ## 🏗️ Architecture Overview
 
-Each channel has one primary protocol and zero or more additional protocols. `upstream` (Upstream Passthrough) forwards each client protocol natively, while `local` (ccLoad Translation) converts additional protocols into the primary protocol at the Registry boundary.
+Each channel declares one upstream protocol. Channel selection is based on model compatibility, not client protocol. For each URL and request family, ccLoad first uses the client's native protocol; only an uncommitted endpoint-level 404/405 triggers a retry translated to the channel's upstream protocol. Learned capability is cached for 10 minutes.
 
 ```mermaid
 graph TB
@@ -616,7 +616,7 @@ The transcript budget is an admission threshold, not a strict allocation cap: tu
 
 **Codex Alpha Search (Native Passthrough Only)**:
 
-`POST /v1/alpha/search` accepts the native Codex search payload. The `model` field is optional. This endpoint is forwarded only to channels whose resolved upstream protocol is Codex; it is not handled by local cross-protocol transforms.
+`POST /v1/alpha/search` accepts the native Codex search payload. The `model` field is optional. This request family has no local conversion path: ccLoad tries the native endpoint, caches endpoint-missing responses per URL, and moves to the next URL or channel.
 
 ```bash
 curl -X POST http://localhost:8080/v1/alpha/search \
@@ -670,8 +670,6 @@ curl -X POST http://localhost:8080/admin/channels \
     "api_key": "sk-ant-api03-xxx",
     "url": "https://api.anthropic.com,https://api2.anthropic.com",
     "channel_type": "anthropic",
-    "protocol_transforms": [],
-    "protocol_transform_mode": "upstream",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
@@ -680,7 +678,7 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-> **Multi-protocol configuration**: “Primary Protocol” maps to `channel_type`; it controls model discovery, scheduled checks, and fallback behavior when no client protocol is available. “Additional Protocols” map to `protocol_transforms`. The default `protocol_transform_mode=upstream` (Upstream Passthrough) forwards the client's actual protocol natively and is intended for upstreams where one URL/key supports several protocols. `local` (ccLoad Translation) converts additional protocols into the primary protocol. Protocol is not a unique property of a key or model name, so this configuration remains explicit instead of being guessed at runtime.
+> **Protocol behavior**: “Upstream Protocol” maps to `channel_type` and controls upstream authentication, paths, model discovery, and scheduled checks. The four core generation protocols can use every model-compatible channel. ccLoad tries the client protocol on each URL first, then retries in the upstream protocol only for an endpoint-level 404/405. Exact URLs marked with `#` skip path probing and translate directly when a conversion exists.
 
 > **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
 
@@ -831,7 +829,7 @@ Check out the awesome admin dashboard 👇
   - `admin_auth_tokens.go`: API access token CRUD (with token stats, cost limits, model/channel restrictions, concurrency limits)
   - `admin_settings.go`: System settings management
   - `admin_models.go`: Model list management
-  - `admin_testing.go`: Channel testing (with protocol transform testing)
+  - `admin_testing.go`: Channel testing with an explicit client request protocol
   - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
   - `channel_check_scheduler.go`: Scheduled channel check scheduler
   - `detection_log.go`: Detection result to LogEntry builder
@@ -843,9 +841,9 @@ Check out the awesome admin dashboard 👇
   - `protocol/cliproxy/`: In-tree snapshot of the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) conversion core; provenance and synchronization rules live in [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
-  - Two protocol handling modes: `upstream` (default, Upstream Passthrough) / `local` (ccLoad Translation)
-  - Channel config: `ChannelType` (primary protocol) + `ProtocolTransforms` (additional protocols) + `ProtocolTransformMode` (protocol handling)
-  - Codex `/v1/alpha/search` is native passthrough only and never enters local protocol translation
+  - Channel config contains only `ChannelType`, the upstream protocol; client protocol support is learned at runtime per channel, URL, client protocol, and request family
+  - Native endpoints are preferred; only an uncommitted non-model 404/405 triggers local translation and same-URL retry
+  - Exact URLs translate directly across protocols; request families without a conversion, including Codex `/v1/alpha/search`, stay native and move on after an endpoint miss
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
@@ -1148,7 +1146,7 @@ storage/
 - ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
-- ✅ **Protocol transform system**: Anthropic/OpenAI/Gemini/Codex four-protocol cross-conversion, upstream/local modes
+- ✅ **Automatic protocol fallback**: Anthropic/OpenAI/Gemini/Codex native-first routing with family-aware cached local conversion
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 - ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped

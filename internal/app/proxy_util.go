@@ -166,19 +166,19 @@ type proxyRequestContext struct {
 
 // proxyResult 代理请求结果
 type proxyResult struct {
-	status                 int
-	header                 http.Header
-	body                   []byte
-	channelID              *int64
-	duration               float64
-	firstByteTime          float64
-	succeeded              bool
-	isClientCanceled       bool            // 客户端主动取消请求（context.Canceled）
-	nextAction             cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
-	deferredCooldown       *cooldown.ErrorInput
-	alphaSearchUnsupported bool
-	responsesTurn          responsesWebsocketTurnResult
-	hasResponsesTurn       bool
+	status                    int
+	header                    http.Header
+	body                      []byte
+	channelID                 *int64
+	duration                  float64
+	firstByteTime             float64
+	succeeded                 bool
+	isClientCanceled          bool            // 客户端主动取消请求（context.Canceled）
+	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
+	deferredCooldown          *cooldown.ErrorInput
+	protocolCapabilityMissing bool
+	responsesTurn             responsesWebsocketTurnResult
+	hasResponsesTurn          bool
 }
 
 // ErrorAction 已迁移到 cooldown.Action (internal/cooldown/manager.go)
@@ -612,9 +612,8 @@ func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel stri
 	return resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
 }
 
-func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext) (actualModel string, bodyToSend []byte) {
-	upstreamProtocol := cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol))
-	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, upstreamProtocol)
+func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestContext, upstreamProtocol protocol.Protocol) (actualModel string, bodyToSend []byte) {
+	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
 	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)

@@ -258,8 +258,8 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 }
 
-func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
-	store := newTestStore(t, "metrics_protocol_transforms.db")
+func TestMetrics_ChannelTypeFilterUsesConfiguredChannelType(t *testing.T) {
+	store := newTestStore(t, "metrics_channel_type.db")
 	ctx := context.Background()
 
 	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
@@ -275,19 +275,18 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConfig native-openai failed: %v", err)
 	}
-	anthropicOpenAI, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "anthropic-openai-transform",
-		URL:                "https://anthropic.example.com",
-		Priority:           20,
-		Enabled:            true,
-		ChannelType:        "anthropic",
-		ProtocolTransforms: []string{"openai"},
+	anthropic, err := store.CreateConfig(ctx, &model.Config{
+		Name:        "anthropic",
+		URL:         "https://anthropic.example.com",
+		Priority:    20,
+		Enabled:     true,
+		ChannelType: "anthropic",
 		ModelEntries: []model.ModelEntry{
 			{Model: "bridge-model"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CreateConfig anthropic-openai-transform failed: %v", err)
+		t.Fatalf("CreateConfig anthropic failed: %v", err)
 	}
 	geminiOnly, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "gemini-only",
@@ -308,7 +307,7 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	end := now.Add(time.Minute)
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
 		{Time: model.JSONTime{Time: now}, ChannelID: nativeOpenAI.ID, Model: "native-model", StatusCode: 200, Duration: 0.1, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthropicOpenAI.ID, Model: "bridge-model", StatusCode: 200, Duration: 0.2, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthropic.ID, Model: "bridge-model", StatusCode: 200, Duration: 0.2, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: geminiOnly.ID, Model: "skip-model", StatusCode: 200, Duration: 0.3, LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
@@ -325,8 +324,8 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	for _, entry := range stats {
 		gotStatsNames[entry.ChannelName] = true
 	}
-	if !gotStatsNames["native-openai"] || !gotStatsNames["anthropic-openai-transform"] || gotStatsNames["gemini-only"] {
-		t.Fatalf("GetStats(openai) channel names=%v, want native and transformed openai only", gotStatsNames)
+	if len(gotStatsNames) != 1 || !gotStatsNames["native-openai"] {
+		t.Fatalf("GetStats(openai) channel names=%v, want configured openai only", gotStatsNames)
 	}
 
 	channels, err := store.GetDistinctChannels(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
@@ -337,16 +336,16 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	for _, channel := range channels {
 		gotChannelNames = append(gotChannelNames, channel.Name)
 	}
-	if len(gotChannelNames) != 2 || gotChannelNames[0] != "anthropic-openai-transform" || gotChannelNames[1] != "native-openai" {
-		t.Fatalf("GetDistinctChannels(openai)=%v, want [anthropic-openai-transform native-openai]", gotChannelNames)
+	if len(gotChannelNames) != 1 || gotChannelNames[0] != "native-openai" {
+		t.Fatalf("GetDistinctChannels(openai)=%v, want [native-openai]", gotChannelNames)
 	}
 
 	models, err := store.GetDistinctModels(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
 	if err != nil {
 		t.Fatalf("GetDistinctModels(openai) failed: %v", err)
 	}
-	if len(models) != 2 || models[0] != "bridge-model" || models[1] != "native-model" {
-		t.Fatalf("GetDistinctModels(openai)=%v, want [bridge-model native-model]", models)
+	if len(models) != 1 || models[0] != "native-model" {
+		t.Fatalf("GetDistinctModels(openai)=%v, want [native-model]", models)
 	}
 }
 

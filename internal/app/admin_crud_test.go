@@ -188,7 +188,7 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	}
 }
 
-func TestHandleListChannelsTypeFilterIncludesProtocolTransforms(t *testing.T) {
+func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -203,22 +203,20 @@ func TestHandleListChannelsTypeFilterIncludesProtocolTransforms(t *testing.T) {
 			Enabled:      true,
 		},
 		{
-			Name:               "anthropic-openai-transform",
-			URL:                "https://anthropic.example.com",
-			Priority:           20,
-			ChannelType:        "anthropic",
-			ProtocolTransforms: []string{"openai"},
-			ModelEntries:       []model.ModelEntry{{Model: "bridge-model"}},
-			Enabled:            true,
+			Name:         "anthropic-channel",
+			URL:          "https://anthropic.example.com",
+			Priority:     20,
+			ChannelType:  "anthropic",
+			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
+			Enabled:      true,
 		},
 		{
-			Name:               "codex-gemini-transform",
-			URL:                "https://codex.example.com",
-			Priority:           30,
-			ChannelType:        "codex",
-			ProtocolTransforms: []string{"gemini"},
-			ModelEntries:       []model.ModelEntry{{Model: "skip-model"}},
-			Enabled:            true,
+			Name:         "codex-channel",
+			URL:          "https://codex.example.com",
+			Priority:     30,
+			ChannelType:  "codex",
+			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
+			Enabled:      true,
 		},
 	}
 	for _, fixture := range fixtures {
@@ -235,21 +233,21 @@ func TestHandleListChannelsTypeFilterIncludesProtocolTransforms(t *testing.T) {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
-	if resp.Count != 2 {
-		t.Fatalf("count=%d, want 2 body=%s", resp.Count, w.Body.String())
+	if resp.Count != 1 {
+		t.Fatalf("count=%d, want 1 body=%s", resp.Count, w.Body.String())
 	}
 	gotNames := make([]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
 		gotNames = append(gotNames, item.Name)
 	}
 	sort.Strings(gotNames)
-	wantNames := []string{"anthropic-openai-transform", "native-openai"}
+	wantNames := []string{"native-openai"}
 	if !slices.Equal(gotNames, wantNames) {
 		t.Fatalf("names=%v, want %v", gotNames, wantNames)
 	}
 }
 
-func TestHandleChannelsFilterOptionsTypeFilterIncludesProtocolTransforms(t *testing.T) {
+func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -264,22 +262,20 @@ func TestHandleChannelsFilterOptionsTypeFilterIncludesProtocolTransforms(t *test
 			Enabled:      true,
 		},
 		{
-			Name:               "anthropic-openai-transform",
-			URL:                "https://anthropic.example.com",
-			Priority:           20,
-			ChannelType:        "anthropic",
-			ProtocolTransforms: []string{"openai"},
-			ModelEntries:       []model.ModelEntry{{Model: "bridge-model"}},
-			Enabled:            true,
+			Name:         "anthropic-channel",
+			URL:          "https://anthropic.example.com",
+			Priority:     20,
+			ChannelType:  "anthropic",
+			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
+			Enabled:      true,
 		},
 		{
-			Name:               "codex-gemini-transform",
-			URL:                "https://codex.example.com",
-			Priority:           30,
-			ChannelType:        "codex",
-			ProtocolTransforms: []string{"gemini"},
-			ModelEntries:       []model.ModelEntry{{Model: "skip-model"}},
-			Enabled:            true,
+			Name:         "codex-channel",
+			URL:          "https://codex.example.com",
+			Priority:     30,
+			ChannelType:  "codex",
+			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
+			Enabled:      true,
 		},
 	}
 	for _, fixture := range fixtures {
@@ -300,11 +296,11 @@ func TestHandleChannelsFilterOptionsTypeFilterIncludesProtocolTransforms(t *test
 		Models       []string `json:"models"`
 	}
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
-	wantNames := []string{"anthropic-openai-transform", "native-openai"}
+	wantNames := []string{"native-openai"}
 	if !slices.Equal(data.ChannelNames, wantNames) {
 		t.Fatalf("channel_names=%v, want %v", data.ChannelNames, wantNames)
 	}
-	wantModels := []string{"bridge-model", "native-model"}
+	wantModels := []string{"native-model"}
 	if !slices.Equal(data.Models, wantModels) {
 		t.Fatalf("models=%v, want %v", data.Models, wantModels)
 	}
@@ -474,21 +470,22 @@ func TestHandleCreateChannel_RejectsIncompleteCooldownRulesWithoutPersisting(t *
 	}
 }
 
-func TestHandleCreateChannel_PersistsProtocolTransforms(t *testing.T) {
-	server, store, cleanup := setupAdminTestServer(t)
+func TestHandleCreateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
+	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
-	payload := ChannelRequest{
-		Name:               "Transform-Channel",
-		APIKey:             "sk-transform",
-		URL:                "https://transform.example.com",
-		Priority:           42,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai", "anthropic"},
-		Models: []model.ModelEntry{
-			{Model: "gemini-2.5-pro", RedirectModel: ""},
+	payload := map[string]any{
+		"name":                    "Transform-Channel",
+		"api_key":                 "sk-transform",
+		"url":                     "https://transform.example.com",
+		"priority":                42,
+		"channel_type":            "gemini",
+		"protocol_transforms":     []string{"openai", "anthropic"},
+		"protocol_transform_mode": "local",
+		"models": []map[string]any{
+			{"model": "gemini-2.5-pro"},
 		},
-		Enabled: true,
+		"enabled": true,
 	}
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels", payload))
@@ -497,28 +494,12 @@ func TestHandleCreateChannel_PersistsProtocolTransforms(t *testing.T) {
 		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
 	}
 
-	var resp struct {
-		Success bool          `json:"success"`
-		Data    *model.Config `json:"data"`
-	}
-	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-	if resp.Data == nil {
-		t.Fatalf("期望返回创建后的渠道数据")
-	}
-	if len(resp.Data.ProtocolTransforms) != 2 || resp.Data.ProtocolTransforms[0] != "anthropic" || resp.Data.ProtocolTransforms[1] != "openai" {
-		t.Fatalf("返回的 protocol transforms 不正确: %#v", resp.Data.ProtocolTransforms)
-	}
-
-	stored, err := store.GetConfig(context.Background(), resp.Data.ID)
-	if err != nil {
-		t.Fatalf("查询持久化渠道失败: %v", err)
-	}
-	if len(stored.ProtocolTransforms) != 2 || stored.ProtocolTransforms[0] != "anthropic" || stored.ProtocolTransforms[1] != "openai" {
-		t.Fatalf("持久化 protocol transforms 不正确: %#v", stored.ProtocolTransforms)
+	if strings.Contains(w.Body.String(), "protocol_transform") {
+		t.Fatalf("response must not expose removed protocol fields: %s", w.Body.String())
 	}
 }
 
-func TestHandleCreateChannel_AllowsUpstreamModeForExtraProtocols(t *testing.T) {
+func TestHandleCreateChannel_DoesNotEchoRemovedProtocolFields(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
@@ -542,8 +523,8 @@ func TestHandleCreateChannel_AllowsUpstreamModeForExtraProtocols(t *testing.T) {
 		t.Fatalf("期望 status=%d 允许 upstream 模式创建，实际=%d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
 	}
 
-	if !strings.Contains(w.Body.String(), `"protocol_transform_mode":"upstream"`) {
-		t.Fatalf("期望响应包含 protocol_transform_mode=upstream，实际响应: %s", w.Body.String())
+	if strings.Contains(w.Body.String(), "protocol_transform") {
+		t.Fatalf("response must not echo removed protocol fields: %s", w.Body.String())
 	}
 }
 
@@ -941,18 +922,17 @@ func TestHandleUpdateChannel(t *testing.T) {
 	}
 }
 
-func TestHandleUpdateChannel_UpdatesProtocolTransforms(t *testing.T) {
+func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "Update-Transform-Channel",
-		URL:                "https://update-transform.example.com",
-		Priority:           10,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
+		Name:        "Update-Transform-Channel",
+		URL:         "https://update-transform.example.com",
+		Priority:    10,
+		Enabled:     true,
+		ChannelType: "gemini",
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro", RedirectModel: ""},
 		},
@@ -966,17 +946,18 @@ func TestHandleUpdateChannel_UpdatesProtocolTransforms(t *testing.T) {
 		t.Fatalf("创建测试 API Key 失败: %v", err)
 	}
 
-	payload := ChannelRequest{
-		Name:               "Update-Transform-Channel",
-		APIKey:             "sk-update-transform",
-		URL:                "https://update-transform.example.com",
-		Priority:           10,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"codex", "anthropic"},
-		Models: []model.ModelEntry{
-			{Model: "gemini-2.5-pro", RedirectModel: ""},
+	payload := map[string]any{
+		"name":                    "Update-Transform-Channel",
+		"api_key":                 "sk-update-transform",
+		"url":                     "https://update-transform.example.com",
+		"priority":                10,
+		"channel_type":            "gemini",
+		"protocol_transforms":     []string{"codex", "anthropic"},
+		"protocol_transform_mode": "upstream",
+		"models": []map[string]any{
+			{"model": "gemini-2.5-pro"},
 		},
-		Enabled: true,
+		"enabled": true,
 	}
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/channels/"+strconv.FormatInt(created.ID, 10), payload))
@@ -986,12 +967,8 @@ func TestHandleUpdateChannel_UpdatesProtocolTransforms(t *testing.T) {
 		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusOK, w.Code, w.Body.String())
 	}
 
-	updated, err := store.GetConfig(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("查询更新后渠道失败: %v", err)
-	}
-	if len(updated.ProtocolTransforms) != 2 || updated.ProtocolTransforms[0] != "anthropic" || updated.ProtocolTransforms[1] != "codex" {
-		t.Fatalf("更新后的 protocol transforms 不正确: %#v", updated.ProtocolTransforms)
+	if strings.Contains(w.Body.String(), "protocol_transform") {
+		t.Fatalf("response must not echo removed protocol fields: %s", w.Body.String())
 	}
 }
 
@@ -1906,12 +1883,11 @@ func TestChannelRequestValidate(t *testing.T) {
 		{
 			name: "URL以#结尾保留完整地址标记",
 			req: ChannelRequest{
-				Name:                  "Test",
-				APIKey:                "sk-test",
-				URL:                   "https://api.com#",
-				ProtocolTransformMode: "local",
-				Priority:              100,
-				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com#",
+				Priority: 100,
+				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError:       false,
 			expectNormalize: "https://api.com#",
@@ -1943,28 +1919,26 @@ func TestChannelRequestValidate(t *testing.T) {
 		{
 			name: "URL以#结尾允许显式/v1完整地址",
 			req: ChannelRequest{
-				Name:                  "Test",
-				APIKey:                "sk-test",
-				URL:                   "https://api.com/v1/messages#",
-				ProtocolTransformMode: "local",
-				Priority:              100,
-				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com/v1/messages#",
+				Priority: 100,
+				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError:       false,
 			expectNormalize: "https://api.com/v1/messages#",
 		},
 		{
-			name: "URL以#结尾禁止上游转换方式",
+			name: "URL以#结尾不再依赖协议处理配置",
 			req: ChannelRequest{
-				Name:                  "Test",
-				APIKey:                "sk-test",
-				URL:                   "https://api.com/v1/messages#",
-				ProtocolTransformMode: "upstream",
-				Priority:              100,
-				Models:                []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
+				Name:     "Test",
+				APIKey:   "sk-test",
+				URL:      "https://api.com/v1/messages#",
+				Priority: 100,
+				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
-			wantError: true,
-			errorMsg:  "protocol_transform_mode upstream is not allowed when url uses exact upstream marker #",
+			wantError:       false,
+			expectNormalize: "https://api.com/v1/messages#",
 		},
 		{
 			name: "URL包含/api路径（允许）",

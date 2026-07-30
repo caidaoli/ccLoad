@@ -47,7 +47,7 @@
           </header>
           <div class="token-model-test-grid">
             <label class="model-test-control">
-              <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
+              <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">客户端请求协议</span>
               <select id="tokenModelTestProtocol" class="filter-select">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
@@ -166,10 +166,6 @@
                 <span class="model-test-control__label" data-i18n="modelTest.channel">渠道</span>
                 <div id="testChannelSelectContainer"></div>
               </label>
-              <label id="modelTypeLabel" class="model-test-control model-test-control--type hidden">
-                <span class="model-test-control__label" data-i18n="common.type">类型</span>
-                <select id="testModelType" class="filter-select model-test-inline-select" aria-label="类型"></select>
-              </label>
               <label id="modelSelectorLabel" class="model-test-control model-test-control--model hidden">
                 <span class="model-test-control__label" data-i18n="common.model">模型</span>
                 <div class="filter-combobox-wrapper model-test-model-combobox">
@@ -185,9 +181,9 @@
                   <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
                 </div>
               </label>
-              <div id="protocolTransformContainer" class="model-test-control model-test-control--protocol">
-                <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
-                <div id="protocolTransformOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="协议"></div>
+              <div id="clientProtocolContainer" class="model-test-control model-test-control--protocol">
+                <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">客户端请求协议</span>
+                <div id="clientProtocolOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="客户端请求协议"></div>
               </div>
               <div class="model-test-control model-test-control--content">
                 <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>

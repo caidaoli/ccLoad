@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
 
@@ -659,7 +660,7 @@ func TestPrepareRequestBody_FuzzyMatch(t *testing.T) {
 			}
 
 			// 调用被测函数
-			actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
+			actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, protocol.OpenAI)
 
 			// 验证返回的模型名
 			if actualModel != tt.wantModel {
@@ -694,7 +695,7 @@ func TestPrepareRequestBody_PreservesLargeIntegersOnModelRewrite(t *testing.T) {
 		body:          []byte(`{"model":"gemini-3-flash","id":9223372036854775807,"messages":[]}`),
 	}
 
-	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
+	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, protocol.OpenAI)
 	if actualModel != "gemini-3-flash-preview" {
 		t.Fatalf("actualModel = %q, want %q", actualModel, "gemini-3-flash-preview")
 	}

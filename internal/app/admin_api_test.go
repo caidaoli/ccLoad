@@ -109,7 +109,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transforms", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	expectedHeaders := []string{"id", "name", "api_key", "url", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -120,9 +120,8 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	// 验证数据行（应该有17个字段）
-	if len(records[1]) < 17 {
-		t.Errorf("数据行字段不足，期望至少17个字段，实际: %d", len(records[1]))
+	if len(records[1]) < 15 {
+		t.Errorf("数据行字段不足，期望至少15个字段，实际: %d", len(records[1]))
 	}
 }
 
@@ -227,15 +226,6 @@ Import-Test-2,https://import2.example.com,5,0,0,"test-model-2,test-model-3","{""
 		}
 		if cfg.Name == "Import-Test-2" && cfg.ScheduledCheckModel != "test-model-3" {
 			t.Errorf("渠道 %s scheduled_check_model = %q", cfg.Name, cfg.ScheduledCheckModel)
-		}
-		if cfg.Name == "Import-Test-1" && (len(cfg.ProtocolTransforms) != 1 || cfg.ProtocolTransforms[0] != "openai") {
-			t.Errorf("渠道 %s protocol_transforms = %#v", cfg.Name, cfg.ProtocolTransforms)
-		}
-		if cfg.Name == "Import-Test-2" && (len(cfg.ProtocolTransforms) != 2 || cfg.ProtocolTransforms[0] != "anthropic" || cfg.ProtocolTransforms[1] != "openai") {
-			t.Errorf("渠道 %s protocol_transforms = %#v", cfg.Name, cfg.ProtocolTransforms)
-		}
-		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
-			t.Errorf("渠道 %s protocol_transform_mode = %q", cfg.Name, cfg.GetProtocolTransformMode())
 		}
 	}
 }
@@ -608,7 +598,7 @@ Bad-Scheduled-Model,https://bad.example.com,10,test-model,{},anthropic,true,sk-i
 	}
 }
 
-func TestAdminAPI_ImportChannelsCSV_InvalidProtocolTransformsRejected(t *testing.T) {
+func TestAdminAPI_ImportChannelsCSV_RemovedProtocolColumnsAreIgnored(t *testing.T) {
 	server := newInMemoryServer(t)
 
 	csvContent := `name,url,priority,models,model_redirects,channel_type,protocol_transforms,enabled,api_key,key_strategy
@@ -641,11 +631,8 @@ Good-Transforms,https://good.example.com,10,test-model,{},anthropic,openai,true,
 
 	var summary ChannelImportSummary
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &summary)
-	if summary.Skipped != 1 || len(summary.Errors) == 0 {
-		t.Fatalf("期望非法 protocol_transforms 行被跳过并返回错误，实际 summary=%+v", summary)
-	}
-	if !strings.Contains(summary.Errors[0], "protocol_transforms") {
-		t.Fatalf("期望错误包含 protocol_transforms，实际: %v", summary.Errors)
+	if summary.Created != 2 || summary.Skipped != 0 {
+		t.Fatalf("removed protocol columns should be ignored, summary=%+v", summary)
 	}
 
 	ctx := context.Background()
@@ -663,11 +650,8 @@ Good-Transforms,https://good.example.com,10,test-model,{},anthropic,openai,true,
 			hasGood = true
 		}
 	}
-	if hasBad {
-		t.Fatalf("Bad-Transforms 不应被导入")
-	}
-	if !hasGood {
-		t.Fatalf("Good-Transforms 应被导入")
+	if !hasBad || !hasGood {
+		t.Fatalf("both rows should be imported when obsolete columns are ignored: bad=%v good=%v", hasBad, hasGood)
 	}
 }
 

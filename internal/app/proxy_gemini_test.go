@@ -14,15 +14,14 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	ctx := context.Background()
 
-	createModelConfig := func(t testing.TB, name, channelType string, transforms []string, priority int, modelName string) {
+	createModelConfig := func(t testing.TB, name, channelType string, _ []string, priority int, modelName string) {
 		t.Helper()
 		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               name,
-			URL:                "https://example.com",
-			Priority:           priority,
-			Enabled:            true,
-			ChannelType:        channelType,
-			ProtocolTransforms: transforms,
+			Name:        name,
+			URL:         "https://example.com",
+			Priority:    priority,
+			Enabled:     true,
+			ChannelType: channelType,
 			ModelEntries: []model.ModelEntry{
 				{Model: modelName},
 			},
@@ -121,15 +120,22 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 			} `json:"models"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if len(resp.Models) != 2 {
-			t.Fatalf("models len=%d, want 2", len(resp.Models))
+		if len(resp.Models) != 3 {
+			t.Fatalf("models len=%d, want all 3 enabled models", len(resp.Models))
 		}
+		seen := make(map[string]bool, len(resp.Models))
 		for _, m := range resp.Models {
 			if m.Name == "" || m.DisplayName == "" {
 				t.Fatalf("bad model entry: %+v", m)
 			}
 			if m.Name[:7] != "models/" {
 				t.Fatalf("expected gemini name prefix models/, got %q", m.Name)
+			}
+			seen[m.Name] = true
+		}
+		for _, want := range []string{"models/gemini-1.5-pro", "models/gemini-2.5-flash-20250101", "models/gpt-4o"} {
+			if !seen[want] {
+				t.Fatalf("missing model %q: %+v", want, resp.Models)
 			}
 		}
 	})
@@ -150,8 +156,17 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 			} `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if resp.Object != "list" || len(resp.Data) != 1 || resp.Data[0].ID != "gpt-4o" {
+		if resp.Object != "list" || len(resp.Data) != 3 {
 			t.Fatalf("unexpected resp: %+v", resp)
+		}
+		seen := make(map[string]bool, len(resp.Data))
+		for _, item := range resp.Data {
+			seen[item.ID] = true
+		}
+		for _, want := range []string{"gemini-1.5-pro", "gemini-2.5-flash-20250101", "gpt-4o"} {
+			if !seen[want] {
+				t.Fatalf("missing model %q: %+v", want, resp)
+			}
 		}
 	})
 
@@ -263,12 +278,11 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	t.Run("handleListOpenAIModels returns codex view for openai upstream with codex transform", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               "o2-codex",
-			URL:                "https://example.com",
-			Priority:           3,
-			Enabled:            true,
-			ChannelType:        "openai",
-			ProtocolTransforms: []string{"codex"},
+			Name:        "o2-codex",
+			URL:         "https://example.com",
+			Priority:    3,
+			Enabled:     true,
+			ChannelType: "openai",
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-5-codex"},
 			},
@@ -316,12 +330,11 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 	t.Run("handleListOpenAIModels returns anthropic style for anthropic view", func(t *testing.T) {
 		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:               "g3-anthropic",
-			URL:                "https://example.com",
-			Priority:           5,
-			Enabled:            true,
-			ChannelType:        "gemini",
-			ProtocolTransforms: []string{"anthropic"},
+			Name:        "g3-anthropic",
+			URL:         "https://example.com",
+			Priority:    5,
+			Enabled:     true,
+			ChannelType: "gemini",
 			ModelEntries: []model.ModelEntry{
 				{Model: "claude-3-5-sonnet"},
 			},

@@ -4448,13 +4448,19 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	requestSeen := make(chan struct {
 		path string
 		body []byte
-	}, 1)
+	}, 2)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		requestSeen <- struct {
 			path string
 			body []byte
 		}{path: r.URL.Path, body: body}
+		if r.URL.Path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/responses)"}}`)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello from Gemini\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
@@ -4470,8 +4476,6 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("list test channel: configs=%d err=%v", len(configs), err)
 	}
-	configs[0].ProtocolTransformMode = model.ProtocolTransformModeLocal
-	configs[0].ProtocolTransforms = []string{"codex"}
 	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
 		t.Fatalf("enable codex transform: %v", err)
 	}
@@ -4493,8 +4497,12 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}
 	readWebsocketUntilType(t, conn, "response.completed")
 
-	seen := <-requestSeen
-	if seen.path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" || !bytes.Contains(seen.body, []byte(`"contents"`)) {
-		t.Fatalf("unexpected Gemini bridge request path=%q body=%s", seen.path, seen.body)
+	native := <-requestSeen
+	if native.path != "/v1/responses" {
+		t.Fatalf("native probe path=%q, want /v1/responses", native.path)
+	}
+	local := <-requestSeen
+	if local.path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" || !bytes.Contains(local.body, []byte(`"contents"`)) {
+		t.Fatalf("unexpected Gemini bridge request path=%q body=%s", local.path, local.body)
 	}
 }

@@ -215,11 +215,8 @@ function renderInlineURLTable() {
   }
 
   initInlineURLTableEventDelegation();
-  updateInlineURLCount();
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+	updateInlineURLCount();
+	syncInlineURLInput();
   updateURLStatsHeader();
 
   tbody.innerHTML = '';
@@ -259,11 +256,8 @@ function updateInlineURL(index, value) {
   const nextValue = withInlineExactURLMarker(value, keepExactURL);
   if (inlineURLTableData[index] === nextValue) return;
 
-  inlineURLTableData[index] = nextValue;
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+	inlineURLTableData[index] = nextValue;
+	syncInlineURLInput();
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }
@@ -279,11 +273,8 @@ function updateInlineURLExact(index, checked) {
   const nextValue = cleanURL ? withInlineExactURLMarker(cleanURL, checked) : (checked ? INLINE_EXACT_URL_MARKER : '');
   if (inlineURLTableData[index] === nextValue) return;
 
-  inlineURLTableData[index] = nextValue;
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+	inlineURLTableData[index] = nextValue;
+	syncInlineURLInput();
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }

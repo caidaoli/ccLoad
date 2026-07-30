@@ -50,9 +50,9 @@ type Server struct {
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
-	client                        *http.Client          // HTTP客户端（全局默认）
-	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
-	alphaSearchUnsupportedURLs    sync.Map              // alphaSearchEndpointKey → 探测失败时间
+	client                        *http.Client // HTTP客户端（全局默认）
+	proxyTransports               sync.Map     // proxyURL → *http.Transport（渠道级代理缓存）
+	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	responsesExecutionSessions    *responsesExecutionSessionStore
@@ -849,8 +849,8 @@ func (s *Server) InvalidateChannelListCache() {
 	s.channelTypesCacheMu.Lock()
 	s.channelTypesCache = nil
 	s.channelTypesCacheMu.Unlock()
-	// URL/协议配置可能已变化，允许重新探测 alpha/search 能力。
-	s.alphaSearchUnsupportedURLs.Clear()
+	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
+	s.protocolCapabilities.clear()
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
@@ -1180,9 +1180,9 @@ func (s *Server) getModelsByChannelType(ctx context.Context, channelType string)
 	return modelNamesFromChannels(channels), nil
 }
 
-// getModelsByExposedProtocol 获取指定暴露协议的去重模型列表
-func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string) ([]string, error) {
-	channels, err := s.store.GetEnabledChannelsByExposedProtocol(ctx, protocol)
+// getAllEnabledModels 获取所有启用渠道的去重模型列表。
+func (s *Server) getAllEnabledModels(ctx context.Context) ([]string, error) {
+	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}

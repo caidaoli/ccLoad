@@ -13,7 +13,7 @@ import (
 // Gemini API 特殊处理
 // ============================================================================
 
-func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, models []string) []string {
+func (s *Server) filterVisibleModelsForRequest(c *gin.Context, _ string, models []string) []string {
 	if s.authService == nil {
 		return models
 	}
@@ -25,7 +25,7 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, 
 	}
 
 	if restriction, hasRestriction := s.authService.getChannelRestriction(tokenHashStr); hasRestriction {
-		channels, err := s.getEnabledChannelsByExposedProtocol(c.Request.Context(), protocol)
+		channels, err := s.GetEnabledChannelsByModel(c.Request.Context(), "*")
 		if err != nil {
 			return nil
 		}
@@ -52,8 +52,7 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, 
 func (s *Server) handleListGeminiModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
-	// 获取所有暴露 gemini 协议的去重模型列表
-	models, err := s.getModelsByExposedProtocol(ctx, "gemini")
+	models, err := s.getAllEnabledModels(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return
@@ -100,7 +99,7 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	channelType := detectModelsChannelType(c)
-	models, err := s.getModelsByExposedProtocol(ctx, channelType)
+	models, err := s.getAllEnabledModels(ctx)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load models"})
 		return

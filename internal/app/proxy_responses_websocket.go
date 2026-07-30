@@ -503,7 +503,7 @@ func responsesWebsocketGenerateDisabled(payload []byte) bool {
 
 func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 	return candidate != nil && candidate.Websockets &&
-		protocol.Protocol(candidate.ResolveUpstreamProtocol(string(protocol.Codex))) == protocol.Codex
+		protocol.Protocol(candidate.GetChannelType()) == protocol.Codex
 }
 
 func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {

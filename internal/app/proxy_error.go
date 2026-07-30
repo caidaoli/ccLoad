@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net/http"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -75,13 +76,13 @@ func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
 		return nil
 	}
 
-	protocols := cfg.SupportedProtocols()
 	seen := make(map[string]struct{}, len(cfg.ModelEntries))
 	models := make([]string, 0, len(cfg.ModelEntries))
-	for _, clientProtocol := range protocols {
-		upstreamProtocol := cfg.ResolveUpstreamProtocol(clientProtocol)
+	for _, upstreamProtocol := range []protocol.Protocol{
+		protocol.Anthropic, protocol.Codex, protocol.OpenAI, protocol.Gemini,
+	} {
 		for _, entry := range cfg.ModelEntries {
-			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, entry.Model, upstreamProtocol))
+			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, entry.Model, string(upstreamProtocol)))
 			if modelName == "" {
 				continue
 			}
@@ -140,10 +141,12 @@ func cooldownInputForModel(in cooldown.ErrorInput, model string) cooldown.ErrorI
 	return in
 }
 
-func isAlphaSearchEndpointUnsupported(reqCtx *proxyRequestContext, res *fwResult) bool {
-	if reqCtx == nil || res == nil || res.Status != 404 ||
-		protocol.DetectRequestFamily(reqCtx.requestPath) != protocol.RequestFamilyAlphaSearch {
+func isProtocolEndpointMissing(res *fwResult) bool {
+	if res == nil || res.ResponseCommitted || (res.Status != http.StatusNotFound && res.Status != http.StatusMethodNotAllowed) {
 		return false
+	}
+	if res.Status == http.StatusMethodNotAllowed {
+		return true
 	}
 	classification := util.ClassifyHTTPResponseWithMeta(res.Status, res.Header, res.Body)
 	return classification.Level == util.ErrorLevelChannel && !classification.ModelScoped
@@ -558,14 +561,6 @@ func (s *Server) handleProxyErrorResponse(
 		channelID: &cfg.ID,
 		duration:  duration,
 		succeeded: false,
-	}
-
-	// alpha/search 是独立能力。端点缺失只说明当前 URL 不支持搜索，
-	// 不能冷却 Key、模型或整个渠道，也不能阻断后续候选渠道。
-	if isAlphaSearchEndpointUnsupported(reqCtx, res) {
-		failure.nextAction = cooldown.ActionRetryChannel
-		failure.alphaSearchUnsupported = true
-		return failure, cooldown.ActionRetryChannel
 	}
 
 	if forceReturnClient {

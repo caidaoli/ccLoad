@@ -28,7 +28,6 @@
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-state.js?v=__VERSION__"></script>
-  <script defer src="/web/assets/js/channels-protocols.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-render.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-filters.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
@@ -317,27 +316,9 @@
 
             <div class="channel-editor-primary-field channel-editor-primary-field--type">
               <label class="form-label channel-editor-inline-label channel-editor-inline-label--muted"
-                data-i18n="channels.modal.upstreamProtocol">主协议</label>
+                data-i18n="channels.modal.upstreamProtocol">上游协议</label>
               <div class="channel-editor-radio-group" id="channelTypeRadios">
                 <!-- 动态加载渠道类型 -->
-              </div>
-            </div>
-          </div>
-          <div class="channel-editor-primary-row">
-            <div class="channel-editor-primary-field channel-editor-primary-field--transforms">
-              <div class="channel-editor-inline-group">
-                <label class="form-label channel-editor-inline-label"
-                  data-i18n="channels.modal.protocolTransforms">额外支持</label>
-                <div class="channel-editor-radio-group" id="protocolTransformsContainer">
-                  <!-- 动态渲染额外支持选项 -->
-                </div>
-              </div>
-            </div>
-            <div class="channel-editor-primary-field channel-editor-primary-field--mode">
-              <label class="form-label channel-editor-inline-label"
-                data-i18n="channels.modal.protocolTransformMode">协议处理</label>
-              <div class="channel-editor-radio-group" id="protocolTransformModeContainer">
-                <!-- 动态渲染协议处理选项 -->
               </div>
             </div>
           </div>
@@ -1252,7 +1233,7 @@
       <td class="ch-col-name">
         <div class="ch-name-cell">
           <div class="ch-name-line">
-            <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong>{{{protocolTransformBadges}}}</div>
+            <div class="ch-name-main">{{{typeBadge}}}<strong>{{name}}</strong></div>
           </div>
           <div class="ch-url-line" title="{{url}}">{{url}}</div>
           <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>
