@@ -505,7 +505,7 @@
             <div class="channel-editor-section-actions channel-editor-section-actions--models">
               <div class="channel-editor-action-row">
                 <button type="button" class="btn btn-secondary btn-sm" data-action="add-common-models"
-                  data-i18n-title="channels.addCommonModelsTitle" title="添加当前渠道协议的常用模型">
+                  data-i18n-title="channels.addCommonModelsTitle" title="选择类型并添加常用模型">
                   <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                     <path d="M8 1L10 5.5L15 6L11.5 9.5L12.5 14.5L8 12L3.5 14.5L4.5 9.5L1 6L6 5.5L8 1Z"
                       stroke="currentColor" stroke-width="1.2" stroke-linejoin="round" />
@@ -586,12 +586,12 @@
           <div class="channel-editor-footer">
             <div class="channel-editor-websocket-control">
               <label class="form-label channel-editor-checkbox-label" data-i18n-title="channels.enableWebsocketsHelp"
-                title="仅 Codex 渠道：复用原生上游 Responses WebSocket">
+                title="实际使用 Codex Responses 上游协议时复用原生 WebSocket">
                 <input type="checkbox" id="channelWebsockets"> <span data-i18n="channels.enableWebsockets">原生 WebSocket</span>
               </label>
               <button type="button" id="channelWebsocketProbeBtn" class="btn btn-secondary btn-sm channel-websocket-probe-button"
                 data-action="probe-channel-websocket" data-i18n-title="channels.websocketsProbeHelp"
-                title="检测当前上游是否支持原生 WebSocket">
+                title="使用 Codex 协议检测当前上游是否支持原生 WebSocket">
                 <span data-i18n="channels.websocketsProbe">检测</span>
               </button>
             </div>
@@ -653,6 +653,47 @@
           </div>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- 常用模型类型选择模态框 -->
+  <div id="commonModelsModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="commonModelsModalTitle" aria-describedby="commonModelsModalDescription" aria-hidden="true">
+    <div class="modal-content modal-content--sm common-models-modal-content">
+      <div class="modal-header">
+        <h2 id="commonModelsModalTitle" class="modal-title" data-i18n="channels.commonModelsDialogTitle">选择常用模型类型</h2>
+        <button type="button" class="close-btn" data-action="close-common-models-modal"
+          data-i18n-aria-label="common.close" aria-label="关闭">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true" focusable="false">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+      <p id="commonModelsModalDescription" class="common-models-description"
+        data-i18n="channels.commonModelsDialogDescription">可多选；确认后会添加对应类型的全部常用模型，并自动忽略重复项。</p>
+      <fieldset class="common-model-types">
+        <legend data-i18n="channels.commonModelTypeLegend">模型类型</legend>
+        <label class="common-model-type-option">
+          <input type="checkbox" name="commonModelType" value="anthropic">
+          <span>Anthropic</span>
+        </label>
+        <label class="common-model-type-option">
+          <input type="checkbox" name="commonModelType" value="codex">
+          <span>Codex</span>
+        </label>
+        <label class="common-model-type-option">
+          <input type="checkbox" name="commonModelType" value="gemini">
+          <span>Gemini</span>
+        </label>
+      </fieldset>
+      <div class="form-actions common-models-actions">
+        <button type="button" class="btn btn-secondary" data-action="close-common-models-modal"
+          data-i18n="common.cancel">取消</button>
+        <button type="button" class="btn btn-primary" data-action="confirm-common-models"
+          data-i18n="channels.addSelectedCommonModels">添加所选模型</button>
+      </div>
     </div>
   </div>
 

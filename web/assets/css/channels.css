@@ -539,12 +539,6 @@
       display: none !important;
     }
 
-    .channel-editor-checkbox-label.is-disabled,
-    .channel-editor-checkbox-label.is-disabled input {
-      color: var(--neutral-400);
-      cursor: not-allowed;
-    }
-
     .channel-editor-websocket-control {
       display: inline-flex;
       align-items: center;
@@ -552,10 +546,65 @@
       white-space: nowrap;
     }
 
-    .channel-websocket-probe-button.is-disabled {
-      color: var(--neutral-400);
-      cursor: not-allowed;
-      opacity: 0.65;
+    .common-models-modal-content {
+      width: calc(100% - 32px);
+      max-width: 460px;
+    }
+
+    .common-models-description {
+      margin: 0 0 16px;
+      color: var(--neutral-600);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .common-model-types {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .common-model-types legend {
+      margin-bottom: 8px;
+      color: var(--neutral-800);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .common-model-type-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--field-bg);
+      color: var(--neutral-800);
+      cursor: pointer;
+    }
+
+    .common-model-type-option:focus-within {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
+    }
+
+    .common-model-type-option input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--primary-500);
+    }
+
+    .common-model-type-option span {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .common-models-actions {
+      margin-top: 20px;
     }
 
     .channel-editor-footer-fields {

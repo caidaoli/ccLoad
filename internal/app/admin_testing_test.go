@@ -296,6 +296,9 @@ func TestHandleChannelWebsocketProbeDetectsSupportedUpstream(t *testing.T) {
 			w.WriteHeader(http.StatusBadRequest)
 			return
 		}
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("probe path=%q, want Codex Responses path /v1/responses", r.URL.Path)
+		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-probe" {
 			t.Errorf("Authorization=%q, want bearer probe key", got)
 		}

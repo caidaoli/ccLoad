@@ -44,6 +44,41 @@ function loadFetchModelsFromAPI() {
   return loadChannelsModals().fetchModelsFromAPI;
 }
 
+function installCommonModelsGlobals(initialRows = []) {
+  const rows = initialRows.map(row => ({ ...row }));
+  const notifications = [];
+  let dirty = false;
+  let renders = 0;
+  const globals = {
+    window: {
+      t: (key, params) => ({ key, params }),
+      showSuccess: message => notifications.push({ type: 'success', message }),
+      showWarning: message => notifications.push({ type: 'warning', message })
+    },
+    redirectTableData: rows,
+    renderRedirectTable: () => { renders++; },
+    markChannelFormDirty: () => { dirty = true; },
+    alert: () => {}
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  return {
+    rows,
+    notifications,
+    get dirty() { return dirty; },
+    get renders() { return renders; },
+    restore() {
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(global, name, descriptor);
+        else delete global[name];
+      }
+    }
+  };
+}
+
 function installWebsocketProbeGlobals({
   supported,
   initialChecked,
@@ -156,63 +191,6 @@ test('WebSocket probe skips disabled URLs and keys and checks every enabled URL'
   }
 });
 
-test('unsupported native WebSocket click is rejected with a clear warning', () => {
-  let warning = '';
-  let prevented = false;
-  const checkbox = { checked: true };
-  const restore = installFetchModelsGlobals({
-    rows: [],
-    states: [],
-    onFetch: async () => ({}),
-    onError: () => {},
-    onWarning: message => { warning = message; }
-  });
-
-  try {
-    const { handleChannelWebsocketClick } = loadChannelsModals();
-    const supported = handleChannelWebsocketClick({
-      currentTarget: checkbox,
-      preventDefault: () => { prevented = true; }
-    });
-
-    assert.equal(supported, false);
-    assert.equal(prevented, true);
-    assert.equal(checkbox.checked, false);
-    assert.equal(warning, 'channels.websocketsCodexOnly');
-  } finally {
-    restore();
-  }
-});
-
-test('Codex native WebSocket click remains editable', () => {
-  let warned = false;
-  let prevented = false;
-  const checkbox = { checked: true };
-  const restore = installFetchModelsGlobals({
-    rows: [],
-    states: [],
-    onFetch: async () => ({}),
-    onError: () => {},
-    onWarning: () => { warned = true; },
-    channelType: 'codex'
-  });
-
-  try {
-    const { handleChannelWebsocketClick } = loadChannelsModals();
-    const supported = handleChannelWebsocketClick({
-      currentTarget: checkbox,
-      preventDefault: () => { prevented = true; }
-    });
-
-    assert.equal(supported, true);
-    assert.equal(prevented, false);
-    assert.equal(checkbox.checked, true);
-    assert.equal(warned, false);
-  } finally {
-    restore();
-  }
-});
-
 for (const testCase of [
   {
     name: 'WebSocket probe selects the option when upstream supports it',
@@ -258,6 +236,44 @@ for (const testCase of [
     }
   });
 }
+
+test('common models add every selected type and ignore existing names case-insensitively', () => {
+  const rows = [
+    { model: 'GPT-5.4', redirect_model: 'custom-upstream-model' }
+  ];
+
+  const restore = installCommonModelsGlobals();
+  try {
+    const { addCommonModelsToRows } = loadChannelsModals();
+    const result = addCommonModelsToRows(rows, ['anthropic', 'codex', 'anthropic']);
+
+    assert.deepEqual(result, { addedCount: 9, hasSupportedTypes: true });
+    assert.equal(rows.length, 10);
+    assert.equal(rows.filter(row => row.model.toLowerCase() === 'gpt-5.4').length, 1);
+    assert.ok(rows.some(row => row.model === 'claude-opus-4-8'));
+    assert.ok(rows.some(row => row.model === 'gpt-5.6-terra'));
+  } finally {
+    restore.restore();
+  }
+});
+
+test('common models require at least one supported type', () => {
+  const fixture = installCommonModelsGlobals();
+
+  try {
+    const { addCommonModels } = loadChannelsModals();
+    assert.equal(addCommonModels([]), 0);
+    assert.equal(fixture.rows.length, 0);
+    assert.equal(fixture.dirty, false);
+    assert.equal(fixture.renders, 0);
+    assert.deepEqual(fixture.notifications, [{
+      type: 'warning',
+      message: { key: 'channels.selectCommonModelType', params: undefined }
+    }]);
+  } finally {
+    fixture.restore();
+  }
+});
 
 test('fetchModelsFromAPI sends the first enabled API key', async () => {
   let requestBody;

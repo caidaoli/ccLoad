@@ -110,7 +110,6 @@ async function ensureChannelProtocolComboboxes(channelType, transformMode) {
       initialLabel: getChannelTypeLabel('anthropic'),
       onSelect: (value) => {
         setChannelEditorChannelType(value);
-        syncChannelWebsocketState();
         scheduleChannelDuplicateHintCheck();
         markChannelFormDirty();
       }
@@ -231,24 +230,6 @@ function syncScheduledCheckModelState() {
   input.disabled = wrapper.hidden || !checkbox.checked;
 }
 
-function channelSupportsNativeWebsocket() {
-  return getChannelEditorChannelType() === 'codex';
-}
-
-function handleChannelWebsocketClick(event) {
-  if (channelSupportsNativeWebsocket()) return true;
-
-  event.preventDefault();
-  event.currentTarget.checked = false;
-  const message = window.t('channels.websocketsCodexOnly');
-  if (window.showWarning) {
-    window.showWarning(message);
-  } else {
-    alert(message);
-  }
-  return false;
-}
-
 function setChannelWebsocketChecked(checkbox, checked) {
   if (checkbox.checked === checked) return;
   checkbox.checked = checked;
@@ -286,13 +267,6 @@ function getEnabledChannelWebsocketKeys() {
 async function detectChannelWebsocketSupport(button) {
   const checkbox = document.getElementById('channelWebsockets');
   if (!checkbox) return false;
-  if (!channelSupportsNativeWebsocket()) {
-    setChannelWebsocketChecked(checkbox, false);
-    const message = window.t('channels.websocketsCodexOnly');
-    if (window.showWarning) window.showWarning(message);
-    else alert(message);
-    return false;
-  }
 
   const baseURLs = getEnabledChannelWebsocketURLs();
   if (baseURLs.length === 0) {
@@ -352,21 +326,6 @@ async function detectChannelWebsocketSupport(button) {
   }
 }
 
-function syncChannelWebsocketState() {
-  const checkbox = document.getElementById('channelWebsockets');
-  if (!checkbox) return;
-  const supported = channelSupportsNativeWebsocket();
-  checkbox.disabled = false;
-  checkbox.setAttribute('aria-disabled', supported ? 'false' : 'true');
-  checkbox.closest('.channel-editor-checkbox-label')?.classList.toggle('is-disabled', !supported);
-  const probeButton = document.getElementById('channelWebsocketProbeBtn');
-  if (probeButton) {
-    probeButton.setAttribute('aria-disabled', supported ? 'false' : 'true');
-    probeButton.classList.toggle('is-disabled', !supported);
-  }
-  if (!supported) checkbox.checked = false;
-}
-
 async function resolveEditableChannel(id) {
   const cachedChannel = Array.isArray(channels) ? channels.find(c => c.id === id) : null;
   try {
@@ -422,7 +381,9 @@ function initChannelEditorActions() {
         'open-key-export-modal': () => invokeChannelEditorAction('openKeyExportModal'),
         'toggle-inline-key-visibility': () => invokeChannelEditorAction('toggleInlineKeyVisibility'),
         'batch-delete-keys': () => invokeChannelEditorAction('batchDeleteSelectedKeys'),
-        'add-common-models': () => invokeChannelEditorAction('addCommonModels'),
+        'add-common-models': (actionTarget) => openCommonModelsModal(actionTarget),
+        'close-common-models-modal': () => closeCommonModelsModal(),
+        'confirm-common-models': () => confirmCommonModelsSelection(),
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
@@ -478,12 +439,7 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
-  const websocketCheckbox = document.getElementById('channelWebsockets');
-  if (websocketCheckbox && !websocketCheckbox.dataset.websocketBound) {
-    websocketCheckbox.addEventListener('click', handleChannelWebsocketClick);
-    websocketCheckbox.dataset.websocketBound = '1';
-  }
-
+  initCommonModelsModalEvents();
   ensureScheduledCheckModelCombobox();
 }
 
@@ -500,7 +456,6 @@ async function showAddModal() {
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
 	await ensureChannelProtocolComboboxes('anthropic', 'auto');
-	syncChannelWebsocketState();
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -597,7 +552,6 @@ async function editChannel(id) {
   document.getElementById('channelEnabled').checked = channel.enabled;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
-  syncChannelWebsocketState();
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
@@ -1569,7 +1523,6 @@ async function copyChannel(id, name) {
   document.getElementById('channelEnabled').checked = true;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
-  syncChannelWebsocketState();
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
@@ -2408,45 +2361,145 @@ const COMMON_MODELS = {
   ]
 };
 
-function addCommonModels() {
-  const channelType = getChannelEditorChannelType();
-  const commonModels = COMMON_MODELS[channelType];
+let commonModelsTrigger = null;
 
-  if (!commonModels || commonModels.length === 0) {
-    if (window.showWarning) {
-      window.showWarning(window.t('channels.noPresetModels', { type: channelType }));
-    } else {
-      alert(window.t('channels.noPresetModels', { type: channelType }));
-    }
-    return;
+function getCommonModelsModalCheckboxes() {
+  return Array.from(document.querySelectorAll('#commonModelsModal input[name="commonModelType"]'));
+}
+
+function openCommonModelsModal(trigger) {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal) return false;
+
+  commonModelsTrigger = trigger || document.activeElement;
+  const currentType = getChannelEditorChannelType();
+  const checkboxes = getCommonModelsModalCheckboxes();
+  checkboxes.forEach(checkbox => {
+    checkbox.checked = checkbox.value === currentType;
+  });
+
+  document.getElementById('channelModal')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  (checkboxes.find(checkbox => checkbox.checked) || checkboxes[0])?.focus();
+  return true;
+}
+
+function closeCommonModelsModal() {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal) return;
+
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('channelModal')?.removeAttribute('inert');
+  if (commonModelsTrigger && typeof commonModelsTrigger.focus === 'function') {
+    commonModelsTrigger.focus();
   }
+  commonModelsTrigger = null;
+}
 
-  // 获取现有模型名称集合
+function getSelectedCommonModelTypes() {
+  return getCommonModelsModalCheckboxes()
+    .filter(checkbox => checkbox.checked)
+    .map(checkbox => checkbox.value);
+}
+
+function initCommonModelsModalEvents() {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal || modal.dataset.bound) return;
+
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeCommonModelsModal();
+  });
+  document.addEventListener('keydown', event => {
+    if (!modal.classList.contains('show')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCommonModelsModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled])'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, true);
+  modal.dataset.bound = '1';
+}
+
+function addCommonModelsToRows(rows, channelTypes) {
+  const selectedTypes = Array.from(new Set(
+    (Array.isArray(channelTypes) ? channelTypes : [])
+      .map(type => String(type || '').trim().toLowerCase())
+      .filter(type => COMMON_MODELS[type])
+  ));
+  const commonModels = selectedTypes.flatMap(type => COMMON_MODELS[type]);
+  if (commonModels.length === 0) return { addedCount: 0, hasSupportedTypes: false };
+
   const existingModels = new Set(
-    redirectTableData
+    rows
       .map(r => (r.model || '').trim().toLowerCase())
       .filter(Boolean)
   );
 
-  // 添加常用模型（不重复）
   let addedCount = 0;
   for (const modelName of commonModels) {
     const modelKey = modelName.toLowerCase();
     if (!existingModels.has(modelKey)) {
-      redirectTableData.push({ model: modelName, redirect_model: '' });
+      rows.push({ model: modelName, redirect_model: '' });
       existingModels.add(modelKey);
       addedCount++;
     }
   }
+  return { addedCount, hasSupportedTypes: true };
+}
+
+function addCommonModels(channelTypes) {
+  const result = addCommonModelsToRows(redirectTableData, channelTypes);
+  if (!result.hasSupportedTypes) {
+    if (window.showWarning) {
+      window.showWarning(window.t('channels.selectCommonModelType'));
+    } else {
+      alert(window.t('channels.selectCommonModelType'));
+    }
+    return 0;
+  }
 
   renderRedirectTable();
-  if (addedCount > 0) markChannelFormDirty();
+  if (result.addedCount > 0) markChannelFormDirty();
 
   if (window.showSuccess) {
-    window.showSuccess(window.t('channels.addedCommonModels', { count: addedCount }));
+    window.showSuccess(window.t('channels.addedCommonModels', { count: result.addedCount }));
   }
+  return result.addedCount;
+}
+
+function confirmCommonModelsSelection() {
+  const selectedTypes = getSelectedCommonModelTypes();
+  if (selectedTypes.length === 0) {
+    if (window.showWarning) {
+      window.showWarning(window.t('channels.selectCommonModelType'));
+    } else {
+      alert(window.t('channels.selectCommonModelType'));
+    }
+    getCommonModelsModalCheckboxes()[0]?.focus();
+    return false;
+  }
+
+  addCommonModels(selectedTypes);
+  closeCommonModelsModal();
+  return true;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels, detectChannelWebsocketSupport, fetchModelsFromAPI, handleChannelWebsocketClick };
+  module.exports = { addCommonModels, addCommonModelsToRows, detectChannelWebsocketSupport, fetchModelsFromAPI };
 }

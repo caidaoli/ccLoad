@@ -157,19 +157,15 @@ func TestChannelRequestValidation_ChannelType(t *testing.T) {
 	)
 }
 
-func TestChannelRequestValidation_WebsocketsRequiresCodex(t *testing.T) {
+func TestChannelRequestValidation_WebsocketsIsIndependentOfChannelType(t *testing.T) {
 	req := newValidChannelRequest()
-	req.ChannelType = "openai"
 	req.Websockets = true
 
-	err := req.Validate()
-	if err == nil || !strings.Contains(err.Error(), "websockets") {
-		t.Fatalf("Validate() error = %v, want websockets/codex validation error", err)
-	}
-
-	req.ChannelType = "codex"
-	if err := req.Validate(); err != nil {
-		t.Fatalf("Validate() rejected codex websockets channel: %v", err)
+	for _, channelType := range []string{"anthropic", "openai", "gemini", "codex"} {
+		req.ChannelType = channelType
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() rejected websockets channel_type=%q: %v", channelType, err)
+		}
 	}
 }
 
