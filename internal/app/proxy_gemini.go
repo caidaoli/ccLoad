@@ -34,7 +34,7 @@ func (s *Server) filterVisibleModelsForRequest(c *gin.Context, protocol string, 
 			if cfg == nil || !restriction.Allows(cfg.ID) {
 				continue
 			}
-			for _, modelName := range cfg.GetModels() {
+			for _, modelName := range cfg.GetConcreteModels() {
 				modelSet[modelName] = struct{}{}
 			}
 		}

@@ -1192,7 +1192,7 @@ func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string
 func modelNamesFromChannels(channels []*model.Config) []string {
 	modelSet := make(map[string]struct{})
 	for _, cfg := range channels {
-		for _, modelName := range cfg.GetModels() {
+		for _, modelName := range cfg.GetConcreteModels() {
 			modelSet[modelName] = struct{}{}
 		}
 	}

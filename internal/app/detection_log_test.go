@@ -78,6 +78,147 @@ func TestDetectionLogFromResult_UsesRequestThinkingEffort(t *testing.T) {
 	}
 }
 
+func TestSelectScheduledCheckModel(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty falls back to concrete wildcard redirect", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{ModelEntries: []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}}}
+		got, reason := selectScheduledCheckModel(cfg)
+		if reason != "" || got != "glm-5.2" {
+			t.Fatalf("got (%q,%q), want (glm-5.2,\"\")", got, reason)
+		}
+	})
+
+	t.Run("empty with passthrough wildcard errors", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{ModelEntries: []model.ModelEntry{{Model: "gpt-*"}}}
+		got, reason := selectScheduledCheckModel(cfg)
+		if reason == "" || got != "" {
+			t.Fatalf("got (%q,%q), want error (cannot send gpt-* verbatim)", got, reason)
+		}
+	})
+
+	t.Run("nonempty wildcard match allowed", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*"}},
+			ScheduledCheckModel: "gpt-4.1",
+		}
+		got, reason := selectScheduledCheckModel(cfg)
+		if reason != "" || got != "gpt-4.1" {
+			t.Fatalf("got (%q,%q), want (gpt-4.1,\"\")", got, reason)
+		}
+	})
+
+	t.Run("nonempty unsupported rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*"}},
+			ScheduledCheckModel: "claude-x",
+		}
+		got, reason := selectScheduledCheckModel(cfg)
+		if reason == "" || got != "" {
+			t.Fatalf("got (%q,%q), want error", got, reason)
+		}
+	})
+
+	t.Run("nonempty wildcard literal rejected", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*"}},
+			ScheduledCheckModel: "gpt-*",
+		}
+		got, reason := selectScheduledCheckModel(cfg)
+		if reason == "" || got != "" {
+			t.Fatalf("got (%q,%q), want error (wildcard literal not allowed as check model)", got, reason)
+		}
+	})
+}
+
+func TestReconcileScheduledCheckModel_Wildcard(t *testing.T) {
+	t.Parallel()
+
+	t.Run("supported_by_wildcard_retained", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}},
+			ScheduledCheckModel: "gpt-4.1",
+		}
+		changed := reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if changed || cfg.ScheduledCheckModel != "gpt-4.1" {
+			t.Fatalf("expected retained gpt-4.1 (supported by wildcard), got changed=%v model=%q", changed, cfg.ScheduledCheckModel)
+		}
+	})
+
+	t.Run("redirect_target_not_mapped_to_wildcard_literal", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}},
+			ScheduledCheckModel: "glm-5.2",
+		}
+		changed := reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if cfg.ScheduledCheckModel != "" || !changed {
+			t.Fatalf("expected cleared \"\" + changed=true, got %q changed=%v", cfg.ScheduledCheckModel, changed)
+		}
+	})
+
+	t.Run("unsupported_cleared", func(t *testing.T) {
+		t.Parallel()
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*"}},
+			ScheduledCheckModel: "claude-x",
+		}
+		changed := reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if !changed || cfg.ScheduledCheckModel != "" {
+			t.Fatalf("expected cleared, got changed=%v model=%q", changed, cfg.ScheduledCheckModel)
+		}
+	})
+
+	t.Run("precise_redirect_target_remapped_to_entry_model", func(t *testing.T) {
+		t.Parallel()
+		// 非通配既有纠错行为保留：原值=条目重定向目标，映射到条目 Model
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-4", RedirectModel: "gpt-4-new"}},
+			ScheduledCheckModel: "gpt-4-new",
+		}
+		reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if cfg.ScheduledCheckModel != "gpt-4" {
+			t.Fatalf("expected remap to gpt-4, got %q", cfg.ScheduledCheckModel)
+		}
+	})
+
+	t.Run("wildcard_literal_cleared", func(t *testing.T) {
+		t.Parallel()
+		// 存量通配字面 ScheduledCheckModel="gpt-*" 应被前置守卫清空
+		cfg := &model.Config{
+			ModelEntries:        []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}},
+			ScheduledCheckModel: "gpt-*",
+		}
+		changed := reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if cfg.ScheduledCheckModel != "" || !changed {
+			t.Fatalf("expected cleared \"\" + changed=true for wildcard literal, got %q changed=%v", cfg.ScheduledCheckModel, changed)
+		}
+	})
+
+	t.Run("wildcard_then_concrete_same_redirect_remaps_to_concrete", func(t *testing.T) {
+		t.Parallel()
+		// 多条目共享同一 RedirectModel 时，通配条目命中后 continue，后续具体条目应被映射，
+		// 保留用户显式设置而非清空。
+		cfg := &model.Config{
+			ModelEntries: []model.ModelEntry{
+				{Model: "gpt-*", RedirectModel: "glm-5.2"},
+				{Model: "gpt-4", RedirectModel: "glm-5.2"},
+			},
+			ScheduledCheckModel: "glm-5.2",
+		}
+		changed := reconcileScheduledCheckModel(cfg, modelNormalizationOptions{})
+		if cfg.ScheduledCheckModel != "gpt-4" || !changed {
+			t.Fatalf("expected remap to concrete gpt-4, got %q changed=%v", cfg.ScheduledCheckModel, changed)
+		}
+	})
+}
+
 func TestDetectionLogFromResult_UpstreamThinkingEffortOverridesRequest(t *testing.T) {
 	t.Parallel()
 

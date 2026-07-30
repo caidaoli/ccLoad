@@ -571,12 +571,20 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
+	if model.IsModelPattern(testReq.Model) {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"success": false,
+			"error":   "测试模型不能为通配模式: " + testReq.Model,
+			"model":   testReq.Model,
+		})
+		return
+	}
 	if !cfg.SupportsModel(testReq.Model) {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":          false,
 			"error":            "模型 " + testReq.Model + " 不在此渠道的支持列表中",
 			"model":            testReq.Model,
-			"supported_models": cfg.GetModels(),
+			"supported_models": cfg.GetConcreteModels(),
 		})
 		return
 	}

@@ -198,12 +198,7 @@ func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, channelCooldo
 	// model | model_like（互斥）
 	if modelName := strings.TrimSpace(c.Query("model")); modelName != "" && modelName != "all" {
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			for _, entry := range cfg.ModelEntries {
-				if entry.Model == modelName {
-					return true
-				}
-			}
-			return false
+			return cfg.SupportsModel(modelName)
 		})
 	} else if modelLike := strings.TrimSpace(c.Query("model_like")); modelLike != "" && modelLike != "all" {
 		modelLikeLower := strings.ToLower(modelLike)

@@ -55,6 +55,36 @@ func (s *selectorMethodPreferenceStore) GetAllModelCooldowns(context.Context) (m
 	return map[int64]map[string]time.Time{}, nil
 }
 
+// TestSelectRouteCandidates_WildcardFallback 验证通配渠道经 selector fallback 被选中：
+// 仅含通配条目 gpt-* 的渠道不进 byModel 精确索引，请求 gpt-4 时精确未命中，
+// 回退到全量扫描 + SupportsModel 匹配通配。
+func TestSelectRouteCandidates_WildcardFallback(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+
+	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
+	ctx := context.Background()
+
+	cfg := &model.Config{
+		Name:         "wildcard-ch",
+		URL:          "https://api1.com",
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}},
+		Enabled:      true,
+	}
+	if _, err := store.CreateConfig(ctx, cfg); err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	candidates, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "")
+	if err != nil {
+		t.Fatalf("selectCandidates失败: %v", err)
+	}
+	if len(candidates) != 1 || candidates[0].Name != "wildcard-ch" {
+		t.Fatalf("期望通配渠道经 fallback 选中, got %d: %+v", len(candidates), candidates)
+	}
+}
+
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
 func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	store, cleanup := setupTestStore(t)

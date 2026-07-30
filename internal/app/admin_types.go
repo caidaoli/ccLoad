@@ -215,8 +215,12 @@ func (cr *ChannelRequest) Validate() error {
 
 	cr.ScheduledCheckModel = strings.TrimSpace(cr.ScheduledCheckModel)
 	if cr.ScheduledCheckModel != "" {
-		if _, exists := seenModels[strings.ToLower(cr.ScheduledCheckModel)]; !exists {
-			return fmt.Errorf("scheduled_check_model %q must exist in models", cr.ScheduledCheckModel)
+		if model.IsModelPattern(cr.ScheduledCheckModel) {
+			return fmt.Errorf("scheduled_check_model %q must not contain wildcard '*' or '?'", cr.ScheduledCheckModel)
+		}
+		tmpCfg := &model.Config{ModelEntries: cr.Models}
+		if !tmpCfg.SupportsModel(cr.ScheduledCheckModel) {
+			return fmt.Errorf("scheduled_check_model %q must be supported by models (exact or wildcard)", cr.ScheduledCheckModel)
 		}
 	}
 

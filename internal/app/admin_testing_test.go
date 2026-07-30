@@ -108,6 +108,50 @@ func TestHandleChannelTest(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_SupportedModelsExcludesWildcard(t *testing.T) {
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	cfg := &model.Config{
+		Name:         "wc-ch",
+		URL:          "http://test.example.com",
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-*", RedirectModel: "glm-5.2"}, {Model: "gpt-4"}},
+		Enabled:      true,
+	}
+	created, err := srv.store.CreateConfig(ctx, cfg)
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, APIKey: "sk-test", KeyIndex: 0, KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("创建 API Key 失败: %v", err)
+	}
+
+	idStr := fmt.Sprintf("%d", created.ID)
+	body := map[string]any{"model": "claude-x", "channel_type": "anthropic"}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+idStr+"/test", body))
+	c.Params = gin.Params{{Key: "id", Value: idStr}}
+	srv.HandleChannelTest(c)
+
+	var hasWildcard, hasConcrete bool
+	gjson.GetBytes(w.Body.Bytes(), "data.supported_models").ForEach(func(_, item gjson.Result) bool {
+		switch item.String() {
+		case "gpt-*":
+			hasWildcard = true
+		case "gpt-4":
+			hasConcrete = true
+		}
+		return true
+	})
+	if hasWildcard {
+		t.Fatal("supported_models 不应含通配模式 gpt-*")
+	}
+	if !hasConcrete {
+		t.Fatal("supported_models 应含具体模型 gpt-4")
+	}
+}
+
 func TestChannelTestCodexStopsAfterResponseCompleted(t *testing.T) {
 	streamBody := []byte("event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\",\"created_at\":1784768634,\"model\":\"gpt-5.6-sol\"}}\n\n" +
 		"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n" +

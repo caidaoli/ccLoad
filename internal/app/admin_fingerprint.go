@@ -95,6 +95,10 @@ func (s *Server) HandleCalibrateFingerprint(c *gin.Context) {
 		return
 	}
 
+	if model.IsModelPattern(req.Model) {
+		RespondErrorMsg(c, http.StatusBadRequest, "测试模型不能为通配模式: "+req.Model)
+		return
+	}
 	if !cfg.SupportsModel(req.Model) {
 		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("channel %d does not support model %q", req.ChannelID, req.Model))
 		return
@@ -138,6 +142,10 @@ func (s *Server) HandleTestFingerprint(c *gin.Context) {
 		return
 	}
 
+	if model.IsModelPattern(req.Model) {
+		RespondErrorMsg(c, http.StatusBadRequest, "测试模型不能为通配模式: "+req.Model)
+		return
+	}
 	if !cfg.SupportsModel(req.Model) {
 		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("channel %d does not support model %q", req.ChannelID, req.Model))
 		return

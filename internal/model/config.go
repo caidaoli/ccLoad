@@ -64,7 +64,7 @@ func (e *ModelEntry) Validate() error {
 	if strings.ContainsAny(e.RedirectModel, "\x00\r\n") {
 		return errors.New("redirect_model contains illegal characters")
 	}
-	if isModelPattern(e.RedirectModel) {
+	if IsModelPattern(e.RedirectModel) && e.RedirectModel != e.Model {
 		return errors.New("redirect_model must not contain '*' or '?' (target must be a concrete model)")
 	}
 	return nil
@@ -281,11 +281,25 @@ func (c *Config) Clone() *Config {
 	return dst
 }
 
-// GetModels 获取所有支持的模型名称列表
+// GetModels 获取所有模型名称列表（含通配模式条目）。
+// 仅用于测试中的配置完整性/CSV round-trip 验证；生产代码（模型列表 API、
+// 展示下拉、缓存索引、错误响应）请用 GetConcreteModels() 过滤通配模式。
 func (c *Config) GetModels() []string {
 	models := make([]string, 0, len(c.ModelEntries))
 	for _, e := range c.ModelEntries {
 		models = append(models, e.Model)
+	}
+	return models
+}
+
+// GetConcreteModels 返回不含通配符的具体模型名列表，供模型列表 API（/v1/models、
+// /v1beta/models）与展示下拉使用，避免把通配模式（如 gpt-*）暴露给客户端或作为可选项。
+func (c *Config) GetConcreteModels() []string {
+	models := make([]string, 0, len(c.ModelEntries))
+	for _, e := range c.ModelEntries {
+		if !IsModelPattern(e.Model) {
+			models = append(models, e.Model)
+		}
 	}
 	return models
 }
@@ -407,7 +421,7 @@ func (c *Config) buildIndexIfNeeded() {
 	c.patternEntries = nil
 	for i := range c.ModelEntries {
 		e := &c.ModelEntries[i]
-		if isModelPattern(e.Model) {
+		if IsModelPattern(e.Model) {
 			c.patternEntries = append(c.patternEntries, *e)
 		} else {
 			c.modelIndex[e.Model] = e
@@ -415,23 +429,25 @@ func (c *Config) buildIndexIfNeeded() {
 	}
 }
 
-// isModelPattern 判断模型名是否为通配模式（含 '*' 或 '?'）。
-func isModelPattern(s string) bool {
+// IsModelPattern 判断模型名是否为通配模式（含 '*' 或 '?'）。
+func IsModelPattern(s string) bool {
 	return strings.ContainsRune(s, '*') || strings.ContainsRune(s, '?')
 }
 
-// matchModelGlob 仅识别 '*'（任意串，含空）与 '?'（单个任意字符）两个通配元字符，
+// matchModelGlob 仅识别 '*'（任意串，含空）与 '?'（单个字符）两个通配元字符，
 // 其余字符精确匹配；不支持字符类 [...] 以避免模型名中字面方括号/问号的误匹配。
-// 大小写敏感，与 modelIndex 精确查找保持一致。
+// 按 rune（Unicode 字符）匹配，'?' 匹配一个字符而非一个字节，大小写敏感。
 func matchModelGlob(pattern, name string) bool {
+	pr := []rune(pattern)
+	nr := []rune(name)
 	p, n := 0, 0
 	starP, starN := -1, 0
-	for n < len(name) {
+	for n < len(nr) {
 		switch {
-		case p < len(pattern) && pattern[p] == '*':
+		case p < len(pr) && pr[p] == '*':
 			starP, starN = p, n
 			p++
-		case p < len(pattern) && (pattern[p] == name[n] || pattern[p] == '?'):
+		case p < len(pr) && (pr[p] == nr[n] || pr[p] == '?'):
 			p++
 			n++
 		case starP >= 0: // 回溯：'*' 多吃一个字符后重试
@@ -442,44 +458,67 @@ func matchModelGlob(pattern, name string) bool {
 			return false
 		}
 	}
-	for p < len(pattern) && pattern[p] == '*' { // 尾部连续 '*' 视为匹配空
+	for p < len(pr) && pr[p] == '*' { // 尾部连续 '*' 视为匹配空
 		p++
 	}
-	return p == len(pattern) // 剩余若有 '?' 则不匹配（'?' 必须吃一个字符）
+	return p == len(pr) // 剩余若有 '?' 则不匹配（'?' 必须吃一个字符）
+}
+
+// ResolveModelEntry 是渠道模型解析的唯一契约：精确条目优先（无论是否设置重定向，
+// 空重定向视为直通但仍算命中），否则返回首个匹配的通配模式条目。未命中返回 false。
+// SupportsModel / GetRedirectModel / 定时检测验证均复用它，避免各自遍历 ModelEntries。
+func (c *Config) ResolveModelEntry(model string) (ModelEntry, bool) {
+	c.buildIndexIfNeeded()
+	c.indexMu.RLock()
+	defer c.indexMu.RUnlock()
+	if entry, exists := c.modelIndex[model]; exists {
+		return *entry, true // 精确命中即决定结果（含空重定向=直通）
+	}
+	for i := range c.patternEntries {
+		if matchModelGlob(c.patternEntries[i].Model, model) {
+			return c.patternEntries[i], true
+		}
+	}
+	return ModelEntry{}, false
 }
 
 // GetRedirectModel 获取模型的重定向目标
 // 返回 (目标模型, 是否有重定向)
 func (c *Config) GetRedirectModel(model string) (string, bool) {
-	c.buildIndexIfNeeded()
-	c.indexMu.RLock()
-	defer c.indexMu.RUnlock()
-	if entry, exists := c.modelIndex[model]; exists && entry.RedirectModel != "" {
+	entry, ok := c.ResolveModelEntry(model)
+	if !ok {
+		return "", false
+	}
+	if entry.RedirectModel != "" {
 		return entry.RedirectModel, true
 	}
-	// 精确未命中：遍历通配模式条目（按配置顺序，首个命中即返回）
-	for i := range c.patternEntries {
-		if e := &c.patternEntries[i]; matchModelGlob(e.Model, model) && e.RedirectModel != "" {
+	return "", false // 命中条目但为直通（空重定向），不重定向
+}
+
+// SupportsModel 检查渠道是否支持指定模型（精确优先，回退通配模式）
+func (c *Config) SupportsModel(model string) bool {
+	_, ok := c.ResolveModelEntry(model)
+	return ok
+}
+
+// DefaultCheckModel 返回首个可作为真实上游检测模型的名称：
+// 第一优先：首个精确条目（具体模型名）；第二优先：首个通配条目的重定向目标（具体模型）；
+// 直通通配条目（含通配符且无重定向）跳过。全无则返回 false。
+// 用于定时检测留空时避免把通配字面值（如 gpt-*）当真实模型发给上游。
+func (c *Config) DefaultCheckModel() (string, bool) {
+	for i := range c.ModelEntries {
+		e := &c.ModelEntries[i]
+		if !IsModelPattern(e.Model) {
+			return e.Model, true
+		}
+	}
+	for i := range c.ModelEntries {
+		e := &c.ModelEntries[i]
+		if IsModelPattern(e.Model) && e.RedirectModel != "" {
 			return e.RedirectModel, true
 		}
 	}
 	return "", false
-}
-
-// SupportsModel 检查渠道是否支持指定模型
-func (c *Config) SupportsModel(model string) bool {
-	c.buildIndexIfNeeded()
-	c.indexMu.RLock()
-	defer c.indexMu.RUnlock()
-	if _, exists := c.modelIndex[model]; exists {
-		return true
-	}
-	for i := range c.patternEntries {
-		if matchModelGlob(c.patternEntries[i].Model, model) {
-			return true
-		}
-	}
-	return false
 }
 
 // GetChannelType 默认返回"anthropic"（Claude API）
@@ -549,7 +588,7 @@ func (c *Config) FuzzyMatchModel(query string) (string, bool) {
 	var matches []string
 
 	for _, entry := range c.ModelEntries {
-		if isModelPattern(entry.Model) { // 通配模式不参与子串模糊匹配
+		if IsModelPattern(entry.Model) { // 通配模式不参与子串模糊匹配
 			continue
 		}
 		if strings.Contains(strings.ToLower(entry.Model), queryLower) {

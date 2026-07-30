@@ -14,7 +14,13 @@ func selectScheduledCheckModel(cfg *model.Config) (string, string) {
 		return "", "未配置模型"
 	}
 	if cfg.ScheduledCheckModel == "" {
-		return cfg.ModelEntries[0].Model, ""
+		if m, ok := cfg.DefaultCheckModel(); ok {
+			return m, ""
+		}
+		return "", "未配置具体检测模型（仅含直通通配模式）"
+	}
+	if model.IsModelPattern(cfg.ScheduledCheckModel) {
+		return "", "scheduled_check_model 不能为通配模式"
 	}
 	if cfg.SupportsModel(cfg.ScheduledCheckModel) {
 		return cfg.ScheduledCheckModel, ""

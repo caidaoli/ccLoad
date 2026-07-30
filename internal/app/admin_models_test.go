@@ -759,3 +759,35 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 	})
 }
+
+func TestNormalizeModelEntriesForSave_WildcardPassthrough(t *testing.T) {
+	t.Parallel()
+	// 直通通配条目（大写 Model）经小写化不应产生含通配的 RedirectModel
+	entries := []model.ModelEntry{{Model: "Claude-*", RedirectModel: ""}}
+	got := normalizeModelEntriesForSave(entries, modelNormalizationOptions{lowercaseModels: true})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %#v", len(got), got)
+	}
+	if got[0].Model != "claude-*" {
+		t.Fatalf("Model = %q, want claude-*", got[0].Model)
+	}
+	if got[0].RedirectModel != "" {
+		t.Fatalf("RedirectModel = %q, want \"\" (passthrough, no wildcard target)", got[0].RedirectModel)
+	}
+}
+
+func TestNormalizeModelEntriesForSave_WildcardPassthrough_StripPrefix(t *testing.T) {
+	t.Parallel()
+	// 直通通配条目（带源前缀）经去前缀后不应产生含通配的 RedirectModel
+	entries := []model.ModelEntry{{Model: "openai/gpt-*", RedirectModel: ""}}
+	got := normalizeModelEntriesForSave(entries, modelNormalizationOptions{stripModelSourcePrefix: true})
+	if len(got) != 1 {
+		t.Fatalf("expected 1 entry, got %d: %#v", len(got), got)
+	}
+	if got[0].Model != "gpt-*" {
+		t.Fatalf("Model = %q, want gpt-*", got[0].Model)
+	}
+	if got[0].RedirectModel != "" {
+		t.Fatalf("RedirectModel = %q, want \"\" (passthrough after strip prefix)", got[0].RedirectModel)
+	}
+}

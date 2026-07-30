@@ -252,8 +252,8 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 			byExposedProtocol[protocol] = append(byExposedProtocol[protocol], channel)
 		}
 
-		// 同时填充模型索引（使用 GetModels() 辅助方法）
-		for _, model := range channel.GetModels() {
+		// 同时填充模型索引（只索引具体模型名，通配模式不作为查找键）
+		for _, model := range channel.GetConcreteModels() {
 			byModel[model] = append(byModel[model], channel) // 内部共享
 			if _, exists := byModelAndProtocol[model]; !exists {
 				byModelAndProtocol[model] = make(map[string][]*modelpkg.Config)

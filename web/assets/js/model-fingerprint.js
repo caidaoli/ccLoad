@@ -82,7 +82,7 @@
       const models = ch.models || [];
       models.forEach(m => {
         const name = (typeof m === 'string') ? m : (m.model || m.name || '');
-        if (name && !seen.has(name)) {
+        if (name && !/[*?]/.test(name) && !seen.has(name)) {
           seen.add(name);
           options.push({ value: name, label: name });
         }
@@ -91,18 +91,34 @@
     return options;
   }
 
+  /** 仅识别 '*'(任意串含空)与 '?'(单字符)的通配匹配，与后端 matchModelGlob 一致。 */
+  function matchModelGlob(pattern, name) {
+    let p = 0, n = 0, starP = -1, starN = 0;
+    while (n < name.length) {
+      if (p < pattern.length && pattern[p] === '*') { starP = p; starN = n; p++; }
+      else if (p < pattern.length && (pattern[p] === name[n] || pattern[p] === '?')) { p++; n++; }
+      else if (starP >= 0) { p = starP + 1; starN++; n = starN; }
+      else return false;
+    }
+    while (p < pattern.length && pattern[p] === '*') p++;
+    return p === pattern.length;
+  }
+
+  /** 判断渠道是否支持指定模型（精确条目或通配模式匹配）。 */
+  function channelSupportsModel(cfg, modelName) {
+    const models = cfg.models || [];
+    return models.some(m => {
+      const name = (typeof m === 'string') ? m : (m.model || m.name || '');
+      return name === modelName || matchModelGlob(name, modelName);
+    });
+  }
+
   /** 过滤出包含指定模型的渠道。 */
   function getChannelOptionsForModel(modelName) {
     if (!modelName) return getChannelOptions();
     const channels = window.channelsList || [];
     return channels
-      .filter(ch => {
-        const models = ch.models || [];
-        return models.some(m => {
-          const name = (typeof m === 'string') ? m : (m.model || m.name || '');
-          return name === modelName;
-        });
-      })
+      .filter(ch => channelSupportsModel(ch, modelName))
       .map(ch => ({ value: String(ch.id), label: channelLabel(ch) }));
   }
 
@@ -113,7 +129,7 @@
     const models = (ch && ch.models) ? ch.models : [];
     return models
       .map(m => (typeof m === 'string') ? m : (m.model || m.name || ''))
-      .filter(Boolean)
+      .filter(name => name && !/[*?]/.test(name))
       .map(name => ({ value: name, label: name }));
   }
 

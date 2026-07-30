@@ -876,7 +876,7 @@
       const modelSet = new Set();
       allChannels.forEach(ch => {
         (ch.models || []).forEach(m => {
-          if (m.model) modelSet.add(m.model);
+          if (m.model && !/[*?]/.test(m.model)) modelSet.add(m.model);
         });
       });
       return Array.from(modelSet).sort();
@@ -913,7 +913,7 @@
           return;
         }
         (ch.models || []).forEach(m => {
-          if (m.model) modelSet.add(m.model);
+          if (m.model && !/[*?]/.test(m.model)) modelSet.add(m.model);
         });
       });
       return Array.from(modelSet).sort();

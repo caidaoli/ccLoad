@@ -2073,6 +2073,7 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
       // channel.models 是 ModelEntry 对象数组，需访问 .model 属性
       channel.models.forEach(m => {
         const modelName = m.model || m; // 兼容字符串和对象
+        if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免字面通配符发给上游
         const option = document.createElement('option');
         option.value = modelName;
         option.textContent = modelName;
@@ -2080,7 +2081,7 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
       });
 
       // 如果日志中的模型在支持列表中，则预选；否则选择第一个
-      const modelNames = channel.models.map(m => m.model || m);
+      const modelNames = channel.models.map(m => m.model || m).filter(name => !/[*?]/.test(name));
       if (modelNames.includes(model)) {
         modelSelect.value = model;
       } else {

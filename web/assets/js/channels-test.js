@@ -16,6 +16,7 @@ async function testChannel(id, name) {
   models.forEach(entry => {
     // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
     const modelName = typeof entry === 'string' ? entry : entry.model;
+    if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免把字面通配符作为测试模型发给上游
     const option = document.createElement('option');
     option.value = modelName;
     option.textContent = modelName;

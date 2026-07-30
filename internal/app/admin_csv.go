@@ -458,21 +458,28 @@ func (s *Server) parseChannelImportRow(
 		if redirect, ok := modelRedirects[m]; ok {
 			entry.RedirectModel = redirect
 		}
+		if entry.RedirectModel == entry.Model {
+			entry.RedirectModel = "" // 直通归一化（与 ToConfig 一致），避免含通配的字面入库
+		}
+		if err := entry.Validate(); err != nil {
+			return nil, fmt.Sprintf("第%d行模型条目无效: %v", lineNo, err), true
+		}
 		modelEntries = append(modelEntries, entry)
 	}
 	if scheduledCheckModel != "" {
-		declared := false
-		for _, entry := range modelEntries {
-			if entry.Model == scheduledCheckModel {
-				declared = true
-				break
-			}
-		}
-		if !declared {
+		if model.IsModelPattern(scheduledCheckModel) {
 			if shouldValidateScheduledCheckModel {
-				return nil, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel), true
+				return nil, fmt.Sprintf("第%d行 scheduled_check_model 不能为通配模式: %s", lineNo, scheduledCheckModel), true
 			}
 			scheduledCheckModel = ""
+		} else {
+			tmpCfg := &model.Config{ModelEntries: modelEntries}
+			if !tmpCfg.SupportsModel(scheduledCheckModel) {
+				if shouldValidateScheduledCheckModel {
+					return nil, fmt.Sprintf("第%d行 scheduled_check_model 无效: %s", lineNo, scheduledCheckModel), true
+				}
+				scheduledCheckModel = ""
+			}
 		}
 	}
 

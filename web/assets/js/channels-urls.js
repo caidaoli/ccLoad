@@ -377,7 +377,7 @@ async function testInlineURL(index, buttonElement) {
 
   const models = redirectTableData
     .map(r => r.model)
-    .filter(m => m && m.trim());
+    .filter(m => m && m.trim() && !/[*?]/.test(m));
   if (models.length === 0) {
     alert(window.t('channels.configModelsFirst'));
     return;

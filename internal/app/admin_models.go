@@ -506,6 +506,12 @@ func normalizeModelEntriesForSave(entries []model.ModelEntry, options modelNorma
 		} else {
 			clean.RedirectModel = upstreamModel
 		}
+		// 直通条目经小写化/去前缀后不应产生含通配的重定向目标（原 RedirectModel 为空时
+		// upstreamModel 回退到 Model；若 Model 含通配且 normalize 改变了大小写/前缀，
+		// 会错误地把通配字面当作重定向目标入库）。
+		if clean.RedirectModel != "" && model.IsModelPattern(clean.RedirectModel) {
+			clean.RedirectModel = ""
+		}
 
 		candidate := normalizedModelCandidate{
 			upstreamModel:   upstreamModel,
@@ -565,22 +571,41 @@ func modelEntriesEqual(left, right []model.ModelEntry) bool {
 }
 
 // reconcileScheduledCheckModel 在刷新归一化或移除模型后，保证定时检测别名仍然有效。
+// 通配条目命中时不映射为通配字面值（避免 gpt-* 字面发给上游）：
+// 具体 Model 直接映射；通配 Model 则保留原值若仍被支持，否则清空。
 func reconcileScheduledCheckModel(cfg *model.Config, options modelNormalizationOptions) bool {
 	if cfg == nil || cfg.ScheduledCheckModel == "" {
 		return false
 	}
 
 	original := cfg.ScheduledCheckModel
+	// 存量通配字面不再合法（入口验证已拒通配字面），清空回退默认检测模型
+	if model.IsModelPattern(original) {
+		cfg.ScheduledCheckModel = ""
+		return true
+	}
 	normalizedOriginal, _ := normalizeModelAlias(original, options)
 	for _, entry := range cfg.ModelEntries {
 		if strings.EqualFold(entry.Model, original) ||
 			strings.EqualFold(entry.Model, normalizedOriginal) ||
 			strings.EqualFold(entry.RedirectModel, original) {
-			cfg.ScheduledCheckModel = entry.Model
-			return cfg.ScheduledCheckModel != original
+			// 命中条目：具体 Model 直接映射；通配 Model 不设字面，continue 继续查找后续具体条目
+			if !model.IsModelPattern(entry.Model) {
+				cfg.ScheduledCheckModel = entry.Model
+				return cfg.ScheduledCheckModel != original
+			}
+			continue
 		}
 	}
 
+	// 未精确命中条目：若原值仍被通配模式支持则保留，否则清空
+	if cfg.SupportsModel(original) {
+		return false
+	}
+	if normalizedOriginal != original && cfg.SupportsModel(normalizedOriginal) {
+		cfg.ScheduledCheckModel = normalizedOriginal
+		return true
+	}
 	cfg.ScheduledCheckModel = ""
 	return true
 }

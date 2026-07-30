@@ -735,7 +735,7 @@ async function testSingleKey(keyIndex, testButton) {
   // 从 redirectTableData 获取模型列表（定义在 channels-state.js）
   const models = redirectTableData
     .map(r => r.model)
-    .filter(m => m && m.trim());
+    .filter(m => m && m.trim() && !/[*?]/.test(m));
   if (models.length === 0) {
     alert(window.t('channels.configModelsFirst'));
     return;

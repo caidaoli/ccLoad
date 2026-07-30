@@ -1337,7 +1337,7 @@ function getAllModelsForProtocol(protocol) {
     if (!channelExposesProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
-      if (modelName) modelSet.add(modelName);
+      if (modelName && !/[*?]/.test(modelName)) modelSet.add(modelName);
     });
   });
   return Array.from(modelSet).sort((a, b) => a.localeCompare(b));
@@ -1385,9 +1385,25 @@ function renderProtocolTransformOptions() {
   }).join('');
 }
 
+/** 仅识别 '*'(任意串含空)与 '?'(单字符)的通配匹配，与后端 matchModelGlob 一致。 */
+function matchModelGlob(pattern, name) {
+  let p = 0, n = 0, starP = -1, starN = 0;
+  while (n < name.length) {
+    if (p < pattern.length && pattern[p] === '*') { starP = p; starN = n; p++; }
+    else if (p < pattern.length && (pattern[p] === name[n] || pattern[p] === '?')) { p++; n++; }
+    else if (starP >= 0) { p = starP + 1; starN++; n = starN; }
+    else return false;
+  }
+  while (p < pattern.length && pattern[p] === '*') p++;
+  return p === pattern.length;
+}
+
 function isModelSupported(channel, modelName) {
   if (!channel || !modelName || !Array.isArray(channel.models)) return false;
-  return channel.models.some(entry => getModelName(entry) === modelName);
+  return channel.models.some(entry => {
+    const name = getModelName(entry);
+    return name === modelName || matchModelGlob(name, modelName);
+  });
 }
 
 function getChannelsSupportingModel(protocol, modelName) {
@@ -1416,7 +1432,7 @@ function getChannelModelPairsMatching(protocol, keyword) {
     .forEach(ch => {
       (ch.models || []).forEach(entry => {
         const name = getModelName(entry);
-        if (name && name.toLowerCase().includes(trimmed)) {
+        if (name && !/[*?]/.test(name) && name.toLowerCase().includes(trimmed)) {
           pairs.push({ channel: ch, model: name });
         }
       });
@@ -1552,6 +1568,7 @@ function renderChannelModeRows() {
   models.forEach(entry => {
     const modelName = getModelName(entry);
     if (!modelName) return;
+    if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免字面通配符作为测试模型
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
@@ -3575,7 +3592,7 @@ function getAllChatModelOptions() {
   channelsList.forEach(ch => {
     (ch.models || []).forEach(entry => {
       const m = getModelName(entry);
-      if (m) set.add(m);
+      if (m && !/[*?]/.test(m)) set.add(m);
     });
   });
   return Array.from(set).sort((a, b) => a.localeCompare(b));

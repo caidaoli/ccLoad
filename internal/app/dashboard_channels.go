@@ -154,10 +154,8 @@ func buildChannelFilterOptions(cfgs []*model.Config) channelFilterOptionsRespons
 		if name := strings.TrimSpace(cfg.Name); name != "" {
 			nameSet[name] = struct{}{}
 		}
-		for _, entry := range cfg.ModelEntries {
-			if entry.Model != "" {
-				modelSet[entry.Model] = struct{}{}
-			}
+		for _, name := range cfg.GetConcreteModels() {
+			modelSet[name] = struct{}{}
 		}
 	}
 

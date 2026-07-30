@@ -344,6 +344,41 @@ func TestChannelRequestValidation_ScheduledCheckModel(t *testing.T) {
 			t.Fatalf("expected scheduled_check_model error, got %v", err)
 		}
 	})
+
+	t.Run("wildcard pattern matches concrete model allowed", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "gpt-*"}}
+		req.ScheduledCheckModel = "gpt-4.1"
+
+		if err := req.Validate(); err != nil {
+			t.Fatalf("Validate() error = %v, want nil (wildcard should accept concrete model)", err)
+		}
+	})
+
+	t.Run("wildcard literal in scheduled_check_model rejected", func(t *testing.T) {
+		req := newValidChannelRequest()
+		req.Models = []model.ModelEntry{{Model: "gpt-*"}}
+		req.ScheduledCheckModel = "gpt-*"
+
+		err := req.Validate()
+		if err == nil {
+			t.Fatal("Validate() error = nil, want error for wildcard literal")
+		}
+		if !strings.Contains(err.Error(), "scheduled_check_model") {
+			t.Fatalf("expected scheduled_check_model error, got %v", err)
+		}
+	})
+}
+
+func TestChannelRequest_ToConfig_PassthroughBackfillCleared(t *testing.T) {
+	t.Parallel()
+	req := newValidChannelRequest()
+	req.Models = []model.ModelEntry{{Model: "gpt-*", RedirectModel: "gpt-*"}}
+
+	cfg := req.ToConfig()
+	if len(cfg.ModelEntries) != 1 || cfg.ModelEntries[0].RedirectModel != "" {
+		t.Fatalf("expected RedirectModel cleared for passthrough backfill, got %#v", cfg.ModelEntries)
+	}
 }
 
 func TestChannelRequest_ToConfigCopiesScheduledCheckModel(t *testing.T) {

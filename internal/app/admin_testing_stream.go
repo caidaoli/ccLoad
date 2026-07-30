@@ -60,6 +60,10 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		return
 	}
 
+	if model.IsModelPattern(testReq.Model) {
+		writeChatErrorEvent(c, "测试模型不能为通配模式: "+testReq.Model)
+		return
+	}
 	if !cfg.SupportsModel(testReq.Model) {
 		writeChatErrorEvent(c, "模型 "+testReq.Model+" 不在此渠道的支持列表中")
 		return

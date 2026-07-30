@@ -170,7 +170,7 @@ let scheduledCheckModelCombobox = null;
 function getScheduledCheckModelNames() {
   return redirectTableData
     .map(entry => (entry && entry.model ? entry.model.trim() : ''))
-    .filter(Boolean);
+    .filter(name => name && !/[*?]/.test(name));
 }
 
 function getScheduledCheckModelDefaultLabel() {
