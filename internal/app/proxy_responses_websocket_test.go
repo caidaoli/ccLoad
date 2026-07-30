@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -4448,7 +4449,7 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	requestSeen := make(chan struct {
 		path string
 		body []byte
-	}, 2)
+	}, 4)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		requestSeen <- struct {
@@ -4467,10 +4468,11 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-http",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		priority:    100,
+		name:                  "gemini-http",
+		channelType:           "gemini",
+		protocolTransformMode: model.ProtocolTransformModeAuto,
+		models:                "gemini-2.5-pro",
+		priority:              100,
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
@@ -4497,12 +4499,23 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}
 	readWebsocketUntilType(t, conn, "response.completed")
 
-	native := <-requestSeen
-	if native.path != "/v1/responses" {
-		t.Fatalf("native probe path=%q, want /v1/responses", native.path)
+	attempts := make([]struct {
+		path string
+		body []byte
+	}, 4)
+	for idx := range attempts {
+		attempts[idx] = <-requestSeen
 	}
-	local := <-requestSeen
-	if local.path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" || !bytes.Contains(local.body, []byte(`"contents"`)) {
-		t.Fatalf("unexpected Gemini bridge request path=%q body=%s", local.path, local.body)
+	paths := []string{attempts[0].path, attempts[1].path, attempts[2].path, attempts[3].path}
+	if !slices.Equal(paths, []string{
+		"/v1/messages",
+		"/v1/chat/completions",
+		"/v1/responses",
+		"/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+	}) {
+		t.Fatalf("protocol attempts=%v, want fixed order", paths)
+	}
+	if !bytes.Contains(attempts[3].body, []byte(`"contents"`)) {
+		t.Fatalf("unexpected Gemini bridge request body=%s", attempts[3].body)
 	}
 }

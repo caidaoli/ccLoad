@@ -20,7 +20,7 @@ func TestHandleDeleteAPIKey(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -102,7 +102,7 @@ func TestHandleAddAndDeleteModels(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -183,11 +183,11 @@ func TestHandleBatchUpdatePriority(t *testing.T) {
 	defer cleanup()
 
 	ctx := context.Background()
-	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateConfig c1 failed: %v", err)
 	}
-	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URL: "https://x", Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateConfig c2 failed: %v", err)
 	}
@@ -238,11 +238,11 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 	server.cooldownManager = cooldown.NewManager(store, server)
 
 	ctx := context.Background()
-	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateConfig c1 failed: %v", err)
 	}
-	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URL: "https://x", Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: false})
+	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: false})
 	if err != nil {
 		t.Fatalf("CreateConfig c2 failed: %v", err)
 	}
@@ -403,11 +403,11 @@ func TestHandleBatchDeleteChannels(t *testing.T) {
 	server.urlSelector = NewURLSelector()
 
 	ctx := context.Background()
-	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URL: "https://x", Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	c1, err := store.CreateConfig(ctx, &model.Config{Name: "c1", URLs: model.ChannelURLs{{URL: "https://x"}}, Priority: 1, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateConfig c1 failed: %v", err)
 	}
-	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URL: "https://y", Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
+	c2, err := store.CreateConfig(ctx, &model.Config{Name: "c2", URLs: model.ChannelURLs{{URL: "https://y"}}, Priority: 2, ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true})
 	if err != nil {
 		t.Fatalf("CreateConfig c2 failed: %v", err)
 	}

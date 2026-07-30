@@ -28,7 +28,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		// 创建两个独立的测试渠道
 		channelCfg := &model.Config{
 			Name:    "channel-level-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		channelCreated, err := store.CreateConfig(ctx, channelCfg)
@@ -38,7 +38,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &model.Config{
 			Name:    "key-level-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		keyCreated, err := store.CreateConfig(ctx, keyCfg)
@@ -88,7 +88,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 		// 创建两个测试渠道
 		channelCfg := &model.Config{
 			Name:    "channel-backoff-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		channelCreated, err := store.CreateConfig(ctx, channelCfg)
@@ -98,7 +98,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &model.Config{
 			Name:    "key-backoff-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		keyCreated, err := store.CreateConfig(ctx, keyCfg)
@@ -156,7 +156,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 	t.Run("403错误冷却时间一致性", func(t *testing.T) {
 		channelCfg := &model.Config{
 			Name:    "channel-403-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		channelCreated, err := store.CreateConfig(ctx, channelCfg)
@@ -166,7 +166,7 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 
 		keyCfg := &model.Config{
 			Name:    "key-403-test",
-			URL:     "https://api.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 			Enabled: true,
 		}
 		keyCreated, err := store.CreateConfig(ctx, keyCfg)
@@ -211,14 +211,14 @@ func TestCooldownConsistency_401Error(t *testing.T) {
 			t.Run(tc.name, func(t *testing.T) {
 				channelCfg := &model.Config{
 					Name:    "channel-" + tc.name,
-					URL:     "https://api.example.com",
+					URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 					Enabled: true,
 				}
 				channelCreated, _ := store.CreateConfig(ctx, channelCfg)
 
 				keyCfg := &model.Config{
 					Name:    "key-" + tc.name,
-					URL:     "https://api.example.com",
+					URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 					Enabled: true,
 				}
 				keyCreated, _ := store.CreateConfig(ctx, keyCfg)

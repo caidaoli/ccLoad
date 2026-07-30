@@ -439,7 +439,7 @@ func isAnyrouterChannel(cfg *model.Config) bool {
 	if cfg == nil {
 		return false
 	}
-	haystack := strings.ToLower(cfg.Name + "\n" + cfg.URL)
+	haystack := strings.ToLower(cfg.Name + "\n" + strings.Join(cfg.GetURLs(), "\n"))
 	return strings.Contains(haystack, "anyrouter")
 }
 

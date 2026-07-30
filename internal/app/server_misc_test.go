@@ -313,7 +313,7 @@ func TestServer_GetConfig_FallbackToStore(t *testing.T) {
 
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -341,7 +341,7 @@ func TestServer_GetModelsByChannelType(t *testing.T) {
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "a1",
 		ChannelType:  "openai",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}, {Model: "m2"}},
 		Enabled:      true,
@@ -352,7 +352,7 @@ func TestServer_GetModelsByChannelType(t *testing.T) {
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:         "a2",
 		ChannelType:  "openai",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m2"}, {Model: "m3"}},
 		Enabled:      true,
@@ -363,7 +363,7 @@ func TestServer_GetModelsByChannelType(t *testing.T) {
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name:         "b1",
 		ChannelType:  "gemini",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "x1"}},
 		Enabled:      true,
@@ -399,7 +399,7 @@ func TestServer_HandleChannelKeys(t *testing.T) {
 
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,

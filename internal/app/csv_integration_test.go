@@ -39,7 +39,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 	testConfigs := []*model.Config{
 		{
 			Name:     "CSV-Export-Test-1",
-			URL:      "https://export1.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://export1.example.com"}},
 			Priority: 10,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-1"},
@@ -51,7 +51,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 		},
 		{
 			Name:     "CSV-Export-Test-2",
-			URL:      "https://export2.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://export2.example.com"}},
 			Priority: 5,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-3"},
@@ -147,11 +147,15 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal model_redirects failed: %v", err)
 		}
+		urlsJSON, err := json.Marshal(cfg.URLs)
+		if err != nil {
+			t.Fatalf("marshal urls failed: %v", err)
+		}
 
 		record := []string{
 			string(rune(cfg.ID + '0')),       // id (简化为单字符)
 			cfg.Name,                         // name
-			cfg.URL,                          // url
+			string(urlsJSON),                 // urls
 			string(rune(cfg.Priority + '0')), // priority
 			string(modelsJSON),               // models
 			string(redirectsJSON),            // model_redirects
@@ -200,24 +204,24 @@ func TestCSVImport_DataValidation(t *testing.T) {
 	}{
 		{
 			name: "有效的完整数据",
-			csvContent: `name,url,priority,models,channel_type,enabled
-Valid-Channel,https://valid.example.com,10,"[""model-1""]",anthropic,true
+			csvContent: `name,urls,priority,models,channel_type,enabled
+Valid-Channel,"[{""url"":""https://valid.example.com""}]",10,"[""model-1""]",anthropic,true
 `,
 			expectError: false,
 			description: "应该成功解析",
 		},
 		{
 			name: "缺少必要字段（name）",
-			csvContent: `url,priority,models
-https://missing-name.com,10,"[""model-1""]"
+			csvContent: `urls,priority,models
+"[{""url"":""https://missing-name.com""}]",10,"[""model-1""]"
 `,
 			expectError: true,
 			description: "应该因缺少name字段失败",
 		},
 		{
 			name: "空的渠道名称",
-			csvContent: `name,url,priority,models,channel_type,enabled
-,https://empty-name.com,10,"[""model-1""]",anthropic,true
+			csvContent: `name,urls,priority,models,channel_type,enabled
+,"[{""url"":""https://empty-name.com""}]",10,"[""model-1""]",anthropic,true
 `,
 			expectError: true,
 			description: "应该因name为空失败",
@@ -228,7 +232,7 @@ https://missing-name.com,10,"[""model-1""]"
 No-URL-Channel,10,"[""model-1""]",anthropic,true
 `,
 			expectError: true,
-			description: "应该因缺少url字段失败",
+			description: "应该因缺少urls字段失败",
 		},
 	}
 
@@ -271,13 +275,13 @@ No-URL-Channel,10,"[""model-1""]",anthropic,true
 
 			// 查找name字段索引
 			nameIdx := -1
-			urlIdx := -1
+			urlsIdx := -1
 			for i, h := range header {
 				if h == "name" {
 					nameIdx = i
 				}
-				if h == "url" {
-					urlIdx = i
+				if h == "urls" {
+					urlsIdx = i
 				}
 			}
 
@@ -289,10 +293,10 @@ No-URL-Channel,10,"[""model-1""]",anthropic,true
 				t.Logf("数据验证失败：name字段缺失或为空")
 			}
 
-			// 验证url字段
-			if urlIdx < 0 || urlIdx >= len(dataRow) || strings.TrimSpace(dataRow[urlIdx]) == "" {
+			// 验证 urls 字段
+			if urlsIdx < 0 || urlsIdx >= len(dataRow) || strings.TrimSpace(dataRow[urlsIdx]) == "" || !json.Valid([]byte(dataRow[urlsIdx])) {
 				hasError = true
-				t.Logf("数据验证失败：url字段缺失或为空")
+				t.Logf("数据验证失败：urls字段缺失或不是 JSON")
 			}
 
 			if hasError != tt.expectError {
@@ -313,7 +317,7 @@ func TestCSVExportImport_SpecialCharacters(t *testing.T) {
 	// 包含特殊字符的测试数据
 	specialConfig := &model.Config{
 		Name:     "Special-Chars-Test \"with quotes\"",
-		URL:      "https://special.example.com?param=value&other=123",
+		URLs:     model.ChannelURLs{{URL: "https://special.example.com?param=value&other=123"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model, with, commas"},
@@ -362,7 +366,7 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 	for i := 0; i < totalChannels; i++ {
 		cfg := &model.Config{
 			Name:     "Large-Test-" + string(rune('A'+i%26)) + string(rune('0'+i%10)),
-			URL:      "https://large" + string(rune('0'+i%10)) + ".example.com",
+			URLs:     model.ChannelURLs{{URL: "https://large" + string(rune('0'+i%10)) + ".example.com"}},
 			Priority: i % 20,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-" + string(rune('1'+i%9))},

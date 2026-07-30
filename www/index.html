@@ -97,7 +97,7 @@
           <span class="www-feature-icon">🔌</span>
           <h3 class="www-feature-title" data-i18n="www.home.features.multiapi.title">Multi-API Support</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.multiapi.desc">
-            Configure one upstream protocol; ccLoad learns native support per URL and falls back to local translation when needed
+            Configure one channel target; ccLoad negotiates upstream wire protocols in a fixed order and caches the working one per URL
           </p>
         </div>
 
@@ -115,7 +115,7 @@
           <span class="www-feature-icon">🔀</span>
           <h3 class="www-feature-title" data-i18n="www.home.features.protocol.title">Automatic Protocol Fallback</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.protocol.desc">
-            Try the client protocol first, then translate only after an endpoint-level 404/405 confirms that the native endpoint is missing
+            Negotiate Anthropic, OpenAI, Codex and Gemini in a fixed order, then cache the working protocol per URL
           </p>
         </div>
 

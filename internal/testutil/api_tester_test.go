@@ -13,7 +13,7 @@ import (
 var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 func TestOpenAITesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com/custom/chat#"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com/custom/chat#"}}}
 	req := &TestChannelRequest{Model: "gpt-test", Content: "hello"}
 
 	fullURL, _, _, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
@@ -30,7 +30,7 @@ func TestOpenAITesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 }
 
 func TestOpenAITesterBuild_AddsSessionIDHeader(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gpt-test", Content: "hello"}
 
 	_, headers, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
@@ -59,7 +59,7 @@ func TestOpenAITesterBuild_AddsSessionIDHeader(t *testing.T) {
 }
 
 func TestOpenAITesterBuild_AppliesThinkingEffortAndWebSearchOptions(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model:          "gpt-test",
 		Content:        "hello",
@@ -92,7 +92,7 @@ func TestOpenAITesterBuild_AppliesThinkingEffortAndWebSearchOptions(t *testing.T
 }
 
 func TestOpenAITesterBuild_MapsMaxThinkingEffortToXHigh(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gpt-test", Content: "hello", ThinkingEffort: "max"}
 
 	_, _, body, err := (&OpenAITester{}).Build(cfg, "sk-test", req)
@@ -110,7 +110,7 @@ func TestOpenAITesterBuild_MapsMaxThinkingEffortToXHigh(t *testing.T) {
 }
 
 func TestOpenAITesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	temperature := 0.7
 	topP := 0.9
 	req := &TestChannelRequest{
@@ -151,7 +151,7 @@ func TestOpenAITesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
 }
 
 func TestOpenAITesterBuild_SupportsStructuredImageMessages(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model: "gpt-test",
 		Messages: []ChatMessage{
@@ -180,7 +180,7 @@ func TestOpenAITesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 }
 
 func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", Stream: true}
 
 	fullURL, headers, _, err := (&CodexTester{}).Build(cfg, "sk-test", req)
@@ -231,7 +231,7 @@ func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
 }
 
 func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", Stream: true}
 
 	_, headers, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
@@ -289,7 +289,7 @@ func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
 }
 
 func TestCodexTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model:          "gpt-5.5",
 		Content:        "hello",
@@ -334,7 +334,7 @@ func TestCodexTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 }
 
 func TestCodexTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model: "gpt-5.5",
 		Messages: []ChatMessage{
@@ -363,7 +363,7 @@ func TestCodexTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 }
 
 func TestCodexTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gpt-5.5", Content: "hello", ThinkingEffort: "none"}
 
 	_, _, body, err := (&CodexTester{}).Build(cfg, "sk-test", req)
@@ -384,7 +384,7 @@ func TestCodexTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
 }
 
 func TestCodexTesterBuild_PrependsSystemPromptAsDeveloperInputAndAppliesSampling(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	temperature := 0.3
 	topP := 0.95
 	req := &TestChannelRequest{
@@ -439,7 +439,7 @@ func TestCodexTesterBuild_PrependsSystemPromptAsDeveloperInputAndAppliesSampling
 }
 
 func TestCodexTesterBuild_UsesMessagesAsResponsesInput(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model:  "gpt-5.5",
 		Stream: true,
@@ -507,7 +507,7 @@ func TestCodexTesterBuild_UsesMessagesAsResponsesInput(t *testing.T) {
 }
 
 func TestGeminiTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model:          "gemini-test",
 		Content:        "hello",
@@ -552,7 +552,7 @@ func TestGeminiTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
 }
 
 func TestGeminiTesterBuild_MapsXHighToGemini3ThinkingLevel(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gemini-3.1-pro", Content: "hello", ThinkingEffort: "xhigh"}
 
 	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
@@ -581,7 +581,7 @@ func TestGeminiTesterBuild_MapsXHighToGemini3ThinkingLevel(t *testing.T) {
 }
 
 func TestGeminiTesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	temperature := 0.5
 	topP := 0.8
 	req := &TestChannelRequest{
@@ -630,7 +630,7 @@ func TestGeminiTesterBuild_AppliesSamplingAndSystemPrompt(t *testing.T) {
 }
 
 func TestGeminiTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "gemini-test", Content: "hello", ThinkingEffort: "none"}
 
 	_, _, body, err := (&GeminiTester{}).Build(cfg, "sk-test", req)
@@ -659,7 +659,7 @@ func TestGeminiTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
 }
 
 func TestGeminiTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model: "gemini-test",
 		Messages: []ChatMessage{
@@ -688,7 +688,7 @@ func TestGeminiTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
 }
 
 func TestAnthropicTesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com/custom/messages#"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com/custom/messages#"}}}
 	req := &TestChannelRequest{Model: "claude-test", Content: "hello"}
 
 	fullURL, _, _, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
@@ -705,7 +705,7 @@ func TestAnthropicTesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 }
 
 func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model:          "claude-test",
 		Content:        "hello",
@@ -756,7 +756,7 @@ func TestAnthropicTesterBuild_AppliesThinkingEffortAndBuiltinSearch(t *testing.T
 }
 
 func TestAnthropicTesterBuild_MapsXHighThinkingEffortToMax(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "claude-test", Content: "hello", ThinkingEffort: "xhigh"}
 
 	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
@@ -778,7 +778,7 @@ func TestAnthropicTesterBuild_MapsXHighThinkingEffortToMax(t *testing.T) {
 }
 
 func TestAnthropicTesterBuild_AppendsSystemPromptAndAppliesSampling(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	temperature := 0.2
 	topP := 0.85
 	req := &TestChannelRequest{
@@ -823,7 +823,7 @@ func TestAnthropicTesterBuild_AppendsSystemPromptAndAppliesSampling(t *testing.T
 }
 
 func TestAnthropicTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{Model: "claude-test", Content: "hello", ThinkingEffort: "none"}
 
 	_, _, body, err := (&AnthropicTester{}).Build(cfg, "sk-test", req)
@@ -845,7 +845,7 @@ func TestAnthropicTesterBuild_DisablesThinkingWhenRequested(t *testing.T) {
 }
 
 func TestAnthropicTesterBuild_SupportsStructuredImageMessages(t *testing.T) {
-	cfg := &model.Config{URL: "https://api.example.com"}
+	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com"}}}
 	req := &TestChannelRequest{
 		Model: "claude-test",
 		Messages: []ChatMessage{

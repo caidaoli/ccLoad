@@ -27,7 +27,7 @@ func createTestChannel(t testing.TB, ctx context.Context, store storage.Store, n
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        name,
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    1,
 		Enabled:     true,
 		ChannelType: "openai",

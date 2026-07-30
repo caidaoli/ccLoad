@@ -19,7 +19,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// 两个渠道：用于覆盖 type/name 过滤与交集逻辑
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:           "openai-main",
-		URL:            "https://example.com",
+		URLs:           model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:       10,
 		Enabled:        true,
 		ChannelType:    "openai",
@@ -33,7 +33,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 	anthCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "anthropic-1",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    20,
 		Enabled:     true,
 		ChannelType: "anthropic",
@@ -264,7 +264,7 @@ func TestMetrics_ChannelTypeFilterUsesConfiguredChannelType(t *testing.T) {
 
 	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "native-openai",
-		URL:         "https://openai.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://openai.example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -277,7 +277,7 @@ func TestMetrics_ChannelTypeFilterUsesConfiguredChannelType(t *testing.T) {
 	}
 	anthropic, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "anthropic",
-		URL:         "https://anthropic.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://anthropic.example.com"}},
 		Priority:    20,
 		Enabled:     true,
 		ChannelType: "anthropic",
@@ -290,7 +290,7 @@ func TestMetrics_ChannelTypeFilterUsesConfiguredChannelType(t *testing.T) {
 	}
 	geminiOnly, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "gemini-only",
-		URL:         "https://gemini.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://gemini.example.com"}},
 		Priority:    30,
 		Enabled:     true,
 		ChannelType: "gemini",
@@ -355,7 +355,7 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "openai-main",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -369,7 +369,7 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 	}
 	anthCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "anthropic-main",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    20,
 		Enabled:     true,
 		ChannelType: "anthropic",
@@ -433,7 +433,7 @@ func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "last-success-channel",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -499,7 +499,7 @@ func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "multi-model-channel",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -556,7 +556,7 @@ func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "history-success-channel",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -606,7 +606,7 @@ func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "history-request-channel",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -662,7 +662,7 @@ func TestMetrics_LastStateIsChannelLevelWithoutModelFilter(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "channel-level-state",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -719,7 +719,7 @@ func TestMetrics_LastStateRespectsModelFilter(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "model-filter-state",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -776,7 +776,7 @@ func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "status-filter-channel",
-		URL:         "https://example.com",
+		URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -841,7 +841,7 @@ func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:           "free-channel",
-		URL:            "https://example.com",
+		URLs:           model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:       1,
 		Enabled:        true,
 		ChannelType:    "openai",

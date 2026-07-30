@@ -46,7 +46,7 @@ ccLoad handles those cases with:
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
 - **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
-- **Automatic protocol fallback**: Each channel declares one upstream protocol. All four core client protocols can use every model-compatible channel; ccLoad tries the native endpoint first and translates only after a non-model 404/405 proves that endpoint is missing.
+- **Per-URL protocol routing**: Each URL can declare the upstream wire protocols it accepts. Explicit declarations route directly; an empty declaration uses fixed-order capability detection and caches the working protocol.
 - **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
 - **Live monitoring**: Active requests, logs, token usage, TTFB, cost, and upstream details are visible in the web dashboard.
 - **Soft-error detection**: HTTP 200 responses that are actually errors trigger the same failover path as regular upstream failures. Common cases include:
@@ -81,7 +81,7 @@ ccLoad handles those cases with:
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
-- 🔄 **Automatic Protocol Fallback** - One upstream protocol per channel, native endpoint first, then cached local translation on a confirmed endpoint-level 404/405
+- 🔄 **Per-URL Protocol Routing** - Explicit Anthropic/OpenAI/Codex/Gemini capability per URL, with fixed-order automatic detection when left empty
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
@@ -91,7 +91,7 @@ ccLoad handles those cases with:
 
 ## 🏗️ Architecture Overview
 
-Each channel declares one upstream protocol. Channel selection is based on model compatibility, not client protocol. For each URL and request family, ccLoad first uses the client's native protocol; only an uncommitted endpoint-level 404/405 triggers a retry translated to the channel's upstream protocol. Learned capability is cached for 10 minutes.
+`channel_type` defines the channel's local-translation target. Each URL may additionally declare the upstream wire protocols it accepts. A non-empty declaration is authoritative: ccLoad selects a compatible declared protocol without probing, and skips incompatible URLs without sending a request or applying cooldown. An empty declaration negotiates in the fixed order Anthropic → OpenAI → Codex → Gemini. ccLoad advances only when the response is still uncommitted and it receives a non-model endpoint 404/405, a structured `convert_request_failed` + `not implemented` 500, a Cloudflare 403 block page returned before the API origin, or the current transform cannot represent the request. The working protocol is cached for 10 minutes per URL and request family.
 
 ```mermaid
 graph TB
@@ -627,7 +627,7 @@ curl -X POST http://localhost:8080/v1/alpha/search \
   }'
 ```
 
-For a regular channel base URL, ccLoad appends `/v1/alpha/search`. If the channel uses the trailing `#` exact-URL marker, the configured URL must already point to this endpoint, for example `https://upstream.example.com/v1/alpha/search#`. Responses-only fields `prompt_cache_key` and `prompt_cache_retention` are removed before forwarding.
+For a regular channel base URL, ccLoad appends `/v1/alpha/search`. For an exact URL, set `exact: true` and make `url` point to the complete endpoint, for example `{"url":"https://upstream.example.com/v1/alpha/search","exact":true,"protocols":["codex"]}`. Responses-only fields `prompt_cache_key` and `prompt_cache_retention` are removed before forwarding.
 
 ### Local Token Counting
 
@@ -662,25 +662,29 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 Manage channels via Web interface `/web/channels.html` or API:
 
 ```bash
-# Add channel (supports multiple URLs, comma-separated)
+# Add a channel with per-URL protocol capabilities
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
-    "url": "https://api.anthropic.com,https://api2.anthropic.com",
+    "urls": [
+      {"url": "https://api.anthropic.com", "protocols": ["anthropic"]},
+      {"url": "https://api2.anthropic.com"}
+    ],
     "channel_type": "anthropic",
+    "protocol_transform_mode": "auto",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
-    "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
+    "models": [{"model": "claude-sonnet-4-6"}, {"model": "claude-opus-4-6"}],
     "enabled": true
   }'
 ```
 
-> **Protocol behavior**: “Upstream Protocol” maps to `channel_type` and controls upstream authentication, paths, model discovery, and scheduled checks. The four core generation protocols can use every model-compatible channel. ccLoad tries the client protocol on each URL first, then retries in the upstream protocol only for an endpoint-level 404/405. Exact URLs marked with `#` skip path probing and translate directly when a conversion exists.
+> **Protocol behavior**: “Upstream Protocol” maps to `channel_type`, the local-translation target. Each `urls` entry may list `protocols` (`anthropic`, `openai`, `codex`, `gemini`). A non-empty list is authoritative; an empty or omitted list enables automatic detection. `protocol_transform_mode` still constrains routing to `auto`, `upstream`, or `local`.
 
-> **Multi-URL Note**: The `url` field supports comma-separated multiple URLs. The system uses latency-weighted random selection for optimal URL choice, with automatic cooldown for failed URLs, enabling URL-level load balancing and failover within a single channel.
+> **Multi-URL Note**: `urls` is an ordered array of `{url, exact, protocols}` objects. `exact: true` means the URL is already the complete upstream request URL. The system uses latency-weighted random selection and independent URL cooldown for URL-level load balancing and failover.
 
 > **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
 
@@ -750,9 +754,9 @@ curl -X POST -H "Authorization: Bearer your_token" \
 
 **CSV Format Example**:
 ```csv
-name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
+name,api_key,urls,priority,models,enabled
+Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,claude-sonnet-4-6,true
+Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opus-4-6,true
 ```
 
 **Features**:
@@ -841,9 +845,9 @@ Check out the awesome admin dashboard 👇
   - `protocol/cliproxy/`: In-tree snapshot of the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) conversion core; provenance and synchronization rules live in [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
-  - Channel config contains only `ChannelType`, the upstream protocol; client protocol support is learned at runtime per channel, URL, client protocol, and request family
-  - Native endpoints are preferred; only an uncommitted non-model 404/405 triggers local translation and same-URL retry
-  - Exact URLs translate directly across protocols; request families without a conversion, including Codex `/v1/alpha/search`, stay native and move on after an endpoint miss
+  - `ChannelType` is the local-translation target; each structured URL can declare its accepted upstream wire protocols
+  - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; omitted declarations use Anthropic → OpenAI → Codex → Gemini runtime learning
+  - Automatic detection translates only after an uncommitted non-model 404/405, a structured `convert_request_failed` + `not implemented` 500, or a Cloudflare 403 block page returned before the API origin; exact URLs without declarations translate directly across protocols
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
@@ -1146,7 +1150,7 @@ storage/
 - ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
-- ✅ **Automatic protocol fallback**: Anthropic/OpenAI/Gemini/Codex native-first routing with family-aware cached local conversion
+- ✅ **Automatic protocol fallback**: Anthropic → OpenAI → Codex → Gemini fixed-order routing with family-aware capability caching
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 - ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped

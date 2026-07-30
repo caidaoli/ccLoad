@@ -53,7 +53,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
 - 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
-- 原生协议端点缺失(响应未提交的非模型 404/405)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;可转换时同渠道/Key/URL 转到 `ChannelType` 重试,不可转换时切 URL/渠道
+- 原生协议能力不支持(响应未提交的非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;可转换时同渠道/Key/URL 转到 `ChannelType` 重试,不可转换时切 URL/渠道
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
 - Key/渠道级默认指数退避:2 → 4 → 8 → 30 min;模型级优先使用上游 reset 截止时间,缺失时固定 5 min
@@ -69,8 +69,8 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 关键机制(要点,细节读对应文件)
 
-- **选择**:渠道平滑加权轮询(按有效 Key 数)+ 渠道/Key/模型冷却感知,成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;渠道 URL 末尾 `#`(`ExactUpstreamURLMarker`)= 精确转发,不自动追加路径
-- **多协议处理**:渠道只用 `ChannelType` 定上游协议;四个核心客户端协议默认可选全部模型兼容渠道。每个 URL 首次按客户端协议原生请求,仅未提交响应的非模型 404/405 才转成上游协议并按 URL/请求族缓存能力;Exact URL 跨协议直接本地转换
+- **选择**:渠道平滑加权轮询(按有效 Key 数)+ 渠道/Key/模型冷却感知,成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;`ChannelURL.Exact` 派生运行时 `#` 标记实现精确转发,持久化 URL 本身不含标记
+- **多协议处理**:渠道用 `ChannelType` 定本地转换目标,用 `protocol_transform_mode` 选择策略:`auto`(默认)、`upstream`(只原生直通)、`local`(只本地转换)。每个 `ChannelURL.Protocols` 可显式声明端点线协议能力:非空声明是权威配置,直接选择兼容协议,不兼容 URL 无请求、无冷却地跳过;空声明按 Anthropic → OpenAI → Codex → Gemini 固定顺序协商。未提交响应的非模型 404/405、明确未实现 500、请求到达 API 前的 Cloudflare 403 拦截页或当前转换无法表示请求时才继续下一协议,成功协议按 URL+请求族缓存 10 分钟。auto 下未声明协议的 Exact URL 跨协议直接本地转换
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **系统设置无热重载**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读一次进内存,运行期只读;单改/重置/批量三个写入口都是写库后 `go triggerRestart()`,2 秒后重启进程生效。别在 `AdminUpdateSetting` 里加"顺手刷新缓存"——重启才是生效机制
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置

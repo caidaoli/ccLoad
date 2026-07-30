@@ -302,10 +302,17 @@ func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, reques
 	primary := protocol.Protocol(cfg.GetChannelType())
 	client := protocol.Protocol(util.NormalizeChannelType(requestProtocol))
 	protocols := []protocol.Protocol{primary}
-	if client != "" && client != primary {
-		protocols = []protocol.Protocol{client}
-		if protocol.SupportsTransform(client, primary) {
-			protocols = append(protocols, primary)
+	if client != "" {
+		switch cfg.GetProtocolTransformMode() {
+		case modelpkg.ProtocolTransformModeUpstream:
+			protocols = []protocol.Protocol{client}
+		case modelpkg.ProtocolTransformModeLocal:
+			protocols = []protocol.Protocol{primary}
+		default:
+			protocols = []protocol.Protocol{client}
+			if client != primary && protocol.SupportsTransform(client, primary) {
+				protocols = append(protocols, primary)
+			}
 		}
 	}
 

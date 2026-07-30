@@ -47,7 +47,7 @@
           </header>
           <div class="token-model-test-grid">
             <label class="model-test-control">
-              <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">客户端请求协议</span>
+              <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
               <select id="tokenModelTestProtocol" class="filter-select">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
@@ -182,8 +182,8 @@
                 </div>
               </label>
               <div id="clientProtocolContainer" class="model-test-control model-test-control--protocol">
-                <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">客户端请求协议</span>
-                <div id="clientProtocolOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="客户端请求协议"></div>
+                <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
+                <div id="clientProtocolOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="请求协议"></div>
               </div>
               <div class="model-test-control model-test-control--content">
                 <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>
@@ -382,6 +382,11 @@
                   <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpCalibrateChannel">
                 </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
+                  <div id="fpCalibrateClientProtocolContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpCalibrateClientProtocol" value="anthropic">
+                </div>
                 <div class="fp-form-row fp-form-row--pair">
                   <label class="fp-pair-item">
                     <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
@@ -416,6 +421,11 @@
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
                   <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpTestChannel">
+                </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
+                  <div id="fpTestClientProtocolContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpTestClientProtocol" value="anthropic">
                 </div>
                 <label class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>

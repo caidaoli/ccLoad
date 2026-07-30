@@ -4,7 +4,6 @@
     window.trendData = null;
     window.currentRange = 'today'; // 默认"本日"
     window.currentTrendType = 'first_byte'; // 默认显示首字响应趋势 (count/rpm/first_byte/duration/tokens/cost)
-    window.currentChannelType = 'all'; // 当前选中的渠道类型
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
     window.currentChannelName = ''; // 当前选中的渠道名称
@@ -79,17 +78,6 @@
       { key: 'model', queryKeys: ['model'], defaultValue: '' },
       { key: 'authToken', queryKeys: ['token'], requestKey: 'auth_token_id', defaultValue: '' },
       {
-        key: 'channelType',
-        queryKeys: ['channel_type'],
-        defaultValue: 'all',
-        includeInQuery(value) {
-          return Boolean(value) && value !== 'all';
-        },
-        includeInRequest(value) {
-          return Boolean(value) && value !== 'all';
-        }
-      },
-      {
         key: 'channelName',
         queryKeys: ['channel_name_like'],
         defaultValue: '',
@@ -98,9 +86,7 @@
         }
       }
     ];
-    const TREND_MODELS_REQUEST_FIELDS = TREND_FILTER_FIELDS.filter((field) =>
-      field.key === 'range' || field.key === 'channelType'
-    );
+    const TREND_MODELS_REQUEST_FIELDS = TREND_FILTER_FIELDS.filter((field) => field.key === 'range');
 
     function getTrendFilters() {
       const range = window.currentRange || 'today';
@@ -112,7 +98,6 @@
         trendType: window.currentTrendType || 'first_byte',
         model: window.currentModel || '',
         authToken: window.currentAuthToken || '',
-        channelType: window.currentChannelType || 'all',
         channelName: window.currentChannelName || ''
       };
     }
@@ -162,15 +147,12 @@
       return params;
     }
 
-    // 加载可用模型列表
-    // channelType 参数：渠道类型筛选，空字符串或 'all' 表示全部
-    // range 参数：时间范围，可选，默认使用当前选择的时间范围
-    async function loadModels(channelType, range) {
+    // 加载当前时间范围内的可用模型和渠道列表
+    async function loadModels(range) {
       try {
         const filters = {
           ...getTrendFilters(),
-          range: range || window.currentRange || 'today',
-          channelType: channelType || window.currentChannelType || 'all'
+          range: range || window.currentRange || 'today'
         };
         const params = window.FilterQuery.buildRequestParams(filters, TREND_MODELS_REQUEST_FIELDS);
         appendTrendTimeRangeParams(params, filters);
@@ -1537,17 +1519,9 @@ function shouldShowZoom(points, hours, trendType) {
       // 初始化渠道名 combobox
       initTrendChannelNameCombobox(window.currentChannelName);
 
-      // 并行化：三个独立的初始化请求同时发出，消除串行等待
-      // initChannelTypeFilter / loadModels / initAuthTokenFilter 互不依赖
-      const [, , authTokens] = await Promise.all([
-        window.initChannelTypeFilter('f_channel_type', window.currentChannelType, async (value) => {
-          window.currentChannelType = value;
-          persistState();
-          window.visibleChannels.clear();
-          await loadModels(value);
-          loadData();
-        }),
-        loadModels(window.currentChannelType),
+      // 模型/渠道选项与令牌选项互不依赖
+      const [, authTokens] = await Promise.all([
+        loadModels(),
         window.initAuthTokenFilter({
           selectId: 'f_auth_token',
           value: window.currentAuthToken,
@@ -1639,7 +1613,7 @@ function shouldShowZoom(points, hours, trendType) {
         label.textContent = t('trend.dataDisplay', { range: rangeLabel });
       }
       persistState();
-      await loadModels(window.currentChannelType, range);
+      await loadModels(range);
       loadData();
     }
 
@@ -1693,9 +1667,6 @@ function shouldShowZoom(points, hours, trendType) {
 
         // 恢复令牌选择
         window.currentAuthToken = restoredFilters.authToken || '';
-
-        // 恢复渠道类型
-        window.currentChannelType = restoredFilters.channelType || 'all';
 
         // 恢复渠道名（combobox 初始化时通过 initialValue 恢复）
         window.currentChannelName = restoredFilters.channelName || '';

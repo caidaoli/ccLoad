@@ -106,7 +106,6 @@ test('model filter options contain request models but not redirected models', as
       restore: () => ({
         range: 'today',
         authToken: '',
-        channelType: 'all',
         model: '',
         channelName: '',
         logSource: 'proxy',

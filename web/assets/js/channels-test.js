@@ -59,9 +59,7 @@ async function testChannel(id, name) {
   }
 
   resetTestModal();
-
-  const channelType = channel.channel_type || 'anthropic';
-  await window.ChannelTypeManager.renderChannelTypeSelect('testChannelType', channelType);
+  testingChannelProtocol = channel.channel_type || 'anthropic';
 
   document.getElementById('testModal').classList.add('show');
 }
@@ -69,6 +67,7 @@ async function testChannel(id, name) {
 function closeTestModal() {
   document.getElementById('testModal').classList.remove('show');
   testingChannelId = null;
+  testingChannelProtocol = 'anthropic';
 }
 
 function resetTestModal() {
@@ -79,7 +78,6 @@ function resetTestModal() {
   document.getElementById('runTestBtn').disabled = false;
   document.getElementById('batchTestBtn').disabled = false;
   document.getElementById('testContentInput').value = defaultTestContent;
-  document.getElementById('testChannelType').value = 'anthropic';
   document.getElementById('testConcurrency').value = '10';
 }
 
@@ -88,13 +86,11 @@ async function runChannelTest() {
 
   const modelSelect = document.getElementById('testModelSelect');
   const contentInput = document.getElementById('testContentInput');
-  const channelTypeSelect = document.getElementById('testChannelType');
   const keySelect = document.getElementById('testKeySelect');
   const streamCheckbox = document.getElementById('testStreamEnabled');
   const keySelectGroup = document.getElementById('testKeySelectGroup');
   const selectedModel = modelSelect.value;
   const testContent = contentInput.value.trim() || defaultTestContent;
-  const channelType = channelTypeSelect.value;
   const streamEnabled = streamCheckbox.checked;
 
   if (!selectedModel) {
@@ -111,7 +107,7 @@ async function runChannelTest() {
       model: selectedModel,
       stream: streamEnabled,
       content: testContent,
-      channel_type: channelType
+      channel_type: testingChannelProtocol
     };
 
     if (keySelect && keySelectGroup && !keySelectGroup.classList.contains('hidden')) {
@@ -135,7 +131,7 @@ async function runChannelTest() {
     document.getElementById('testProgress').classList.remove('show');
     document.getElementById('runTestBtn').disabled = false;
 
-    await loadChannels(filters.channelType);
+    await loadChannels();
   }
 }
 
@@ -160,13 +156,11 @@ async function runBatchTest() {
 
   const modelSelect = document.getElementById('testModelSelect');
   const contentInput = document.getElementById('testContentInput');
-  const channelTypeSelect = document.getElementById('testChannelType');
   const streamCheckbox = document.getElementById('testStreamEnabled');
   const concurrencyInput = document.getElementById('testConcurrency');
 
   const selectedModel = modelSelect.value;
   const testContent = contentInput.value.trim() || defaultTestContent;
-  const channelType = channelTypeSelect.value;
   const streamEnabled = streamCheckbox.checked;
   const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10));
 
@@ -204,7 +198,7 @@ async function runBatchTest() {
         model: selectedModel,
         stream: streamEnabled,
         content: testContent,
-        channel_type: channelType,
+        channel_type: testingChannelProtocol,
         key_index: keyIndex
       };
 
@@ -250,7 +244,7 @@ async function runBatchTest() {
   document.getElementById('runTestBtn').disabled = false;
   document.getElementById('batchTestBtn').disabled = false;
 
-  await loadChannels(filters.channelType);
+  await loadChannels();
 }
 
 function displayBatchTestResult(successCount, failedCount, totalCount, failedKeys) {

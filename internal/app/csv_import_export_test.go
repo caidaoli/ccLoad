@@ -52,7 +52,7 @@ func TestCSVExportImportCycle(t *testing.T) {
 		ID:          1,
 		Name:        "test-cycle",
 		ChannelType: "", // 数据库中的空值
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "test-model"},

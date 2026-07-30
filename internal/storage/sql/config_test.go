@@ -27,14 +27,18 @@ func TestConfig_CreateAndGet(t *testing.T) {
 
 	// 创建渠道
 	cfg := &model.Config{
-		Name:           "test-channel",
-		URL:            "https://api.openai.com",
-		Priority:       10,
-		Enabled:        true,
-		ChannelType:    "openai",
-		Websockets:     true,
-		RPMLimit:       60,
-		MaxConcurrency: 3,
+		Name: "test-channel",
+		URLs: model.ChannelURLs{
+			{URL: "https://api.openai.com", Protocols: []string{"openai", "codex"}},
+			{URL: "https://api.openai.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
+		},
+		Priority:              10,
+		Enabled:               true,
+		ChannelType:           "openai",
+		Websockets:            true,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		RPMLimit:              60,
+		MaxConcurrency:        3,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
@@ -60,8 +64,11 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	if got.Name != "test-channel" {
 		t.Errorf("name: got %q, want %q", got.Name, "test-channel")
 	}
-	if got.URL != "https://api.openai.com" {
-		t.Errorf("url: got %q, want %q", got.URL, "https://api.openai.com")
+	if urls := got.GetURLs(); len(urls) != 2 || urls[0] != "https://api.openai.com" || urls[1] != "https://api.openai.com/v1/responses#" {
+		t.Errorf("urls: got %v", urls)
+	}
+	if len(got.URLs[0].Protocols) != 2 || got.URLs[0].Protocols[0] != "openai" || got.URLs[1].Protocols[0] != "codex" {
+		t.Errorf("URL protocols: got %+v", got.URLs)
 	}
 	if got.Priority != 10 {
 		t.Errorf("priority: got %d, want %d", got.Priority, 10)
@@ -74,6 +81,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if !got.Websockets {
 		t.Error("expected websockets=true")
+	}
+	if got.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+		t.Fatalf("protocol_transform_mode=%q, want local", got.GetProtocolTransformMode())
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)
@@ -110,7 +120,7 @@ func TestConfig_ListConfigs(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     fmt.Sprintf("channel-%c", rune('A'+i-1)),
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: i * 10,
 			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
@@ -130,6 +140,11 @@ func TestConfig_ListConfigs(t *testing.T) {
 	if len(configs) != 3 {
 		t.Errorf("expected 3 configs, got %d", len(configs))
 	}
+	for _, cfg := range configs {
+		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeAuto {
+			t.Fatalf("channel %d protocol_transform_mode=%q, want auto", cfg.ID, cfg.GetProtocolTransformMode())
+		}
+	}
 
 	// 验证按优先级降序排列
 	for i := 1; i < len(configs); i++ {
@@ -148,7 +163,7 @@ func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "toggle-only",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    42,
 		Enabled:     true,
 		ChannelType: "gemini",
@@ -184,7 +199,7 @@ func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
 	if got.Enabled {
 		t.Fatalf("stored channel should be disabled")
 	}
-	if got.Name != created.Name || got.URL != created.URL || got.Priority != created.Priority || got.ChannelType != created.ChannelType {
+	if got.Name != created.Name || got.GetURLs()[0] != created.GetURLs()[0] || got.Priority != created.Priority || got.ChannelType != created.ChannelType {
 		t.Fatalf("non-enabled fields changed: got=%+v want=%+v", got, created)
 	}
 	if len(got.ModelEntries) != 2 || got.ModelEntries[1].RedirectModel != "flash-upstream" {
@@ -215,7 +230,7 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	// 创建渠道
 	cfg := &model.Config{
 		Name:     "original-name",
-		URL:      "https://old.api.com",
+		URLs:     model.ChannelURLs{{URL: "https://old.api.com"}},
 		Priority: 1,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -229,7 +244,7 @@ func TestConfig_UpdateConfig(t *testing.T) {
 
 	// 更新渠道
 	created.Name = "updated-name"
-	created.URL = "https://new.api.com"
+	created.URLs = model.ChannelURLs{{URL: "https://new.api.com"}}
 	created.Priority = 100
 	created.Enabled = false
 	created.ModelEntries = []model.ModelEntry{
@@ -254,8 +269,8 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	if got.Name != "updated-name" {
 		t.Errorf("name: got %q, want %q", got.Name, "updated-name")
 	}
-	if got.URL != "https://new.api.com" {
-		t.Errorf("url: got %q, want %q", got.URL, "https://new.api.com")
+	if urls := got.GetURLs(); len(urls) != 1 || urls[0] != "https://new.api.com" {
+		t.Errorf("urls: got %v, want [https://new.api.com]", urls)
 	}
 	if got.Priority != 100 {
 		t.Errorf("priority: got %d, want %d", got.Priority, 100)
@@ -286,7 +301,7 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	// 创建渠道
 	cfg := &model.Config{
 		Name:     "to-delete",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 	}
@@ -320,7 +335,7 @@ func TestConfig_DeleteConfig_RemovesLogsAndDebugLogs(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "delete-with-logs",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -397,7 +412,7 @@ func TestLog_AddLogAndBatchAddLogs_IgnoreDeletedChannel(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -516,7 +531,7 @@ func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-before-restore",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -530,7 +545,7 @@ func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
 		Config: &model.Config{
 			ID:      created.ID,
 			Name:    "restored-channel",
-			URL:     "https://api-restored.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api-restored.example.com"}},
 			Enabled: true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "restored-model"},
@@ -580,7 +595,7 @@ func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "to-delete-memory",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -601,7 +616,7 @@ func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(
 	recreated, err := store.CreateConfig(ctx, &model.Config{
 		ID:      created.ID,
 		Name:    "recreated-memory",
-		URL:     "https://api-recreated.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api-recreated.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -633,7 +648,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建启用的渠道支持 gpt-4
 	cfg1 := &model.Config{
 		Name:     "gpt4-channel",
-		URL:      "https://api.openai.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -649,7 +664,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建启用的渠道支持 claude
 	cfg2 := &model.Config{
 		Name:     "claude-channel",
-		URL:      "https://api.anthropic.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.anthropic.com"}},
 		Priority: 20,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -664,7 +679,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建禁用的渠道支持 gpt-4
 	cfg3 := &model.Config{
 		Name:     "disabled-channel",
-		URL:      "https://api.disabled.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.disabled.com"}},
 		Priority: 30,
 		Enabled:  false,
 		ModelEntries: []model.ModelEntry{
@@ -717,7 +732,7 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 
 	cooled, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "cooled-enabled",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    100,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -734,7 +749,7 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 
 	disabled, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "disabled",
-		URL:         "https://disabled.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://disabled.example.com"}},
 		Priority:    90,
 		Enabled:     false,
 		ChannelType: "openai",
@@ -792,7 +807,7 @@ func TestConfig_GetEnabledChannelsByType(t *testing.T) {
 	// 创建 openai 类型渠道
 	cfg1 := &model.Config{
 		Name:        "openai-channel",
-		URL:         "https://api.openai.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",
@@ -808,7 +823,7 @@ func TestConfig_GetEnabledChannelsByType(t *testing.T) {
 	// 创建 anthropic 类型渠道
 	cfg2 := &model.Config{
 		Name:        "anthropic-channel",
-		URL:         "https://api.anthropic.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.anthropic.com"}},
 		Priority:    20,
 		Enabled:     true,
 		ChannelType: "anthropic",
@@ -859,7 +874,7 @@ func TestConfig_BatchUpdatePriority(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     "channel-" + string(rune('A'+i-1)),
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: i,
 			Enabled:  true,
 		}
@@ -906,7 +921,7 @@ func TestConfig_ModelRedirect(t *testing.T) {
 	// 创建带模型重定向的渠道
 	cfg := &model.Config{
 		Name:        "redirect-channel",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "openai",

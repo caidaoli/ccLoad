@@ -246,8 +246,10 @@
     const hint = document.getElementById('customRulesAnyrouterHint');
     if (!hint) return;
     const name = (document.getElementById('channelName')?.value || '').toLowerCase();
-    const url = (document.getElementById('channelUrl')?.value || '').toLowerCase();
-    const type = document.querySelector('input[name="channelType"]:checked')?.value || '';
+    const url = typeof getValidInlineURLs === 'function'
+      ? getValidInlineURLs().join('\n').toLowerCase()
+      : '';
+    const type = getChannelEditorChannelType();
     hint.hidden = !(type === 'anthropic' && (name.includes('anyrouter') || url.includes('anyrouter')));
   }
 

@@ -23,7 +23,7 @@ func TestGetChannelSuccessRates_IgnoresClientNoise(t *testing.T) {
 
 	cfg := &model.Config{
 		Name:     "test-channel",
-		URL:      "https://example.com",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-a", RedirectModel: ""},
@@ -84,7 +84,7 @@ func TestGetChannelSuccessRates_NoEligibleResults(t *testing.T) {
 
 	cfg := &model.Config{
 		Name:     "test-channel",
-		URL:      "https://example.com",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-a", RedirectModel: ""},

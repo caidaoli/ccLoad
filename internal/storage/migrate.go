@@ -12,6 +12,7 @@ import (
 const (
 	channelModelsRedirectMigrationVersion = "v1_channel_models_redirect"
 	channelModelsOrderRepairVersion       = "v2_channel_models_created_at_order"
+	structuredChannelURLsMigrationVersion = "v4_structured_channel_urls"
 )
 
 // Dialect 数据库方言
@@ -157,9 +158,15 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsWebsockets(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels websockets: %w", err)
 			}
+			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
+			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels url to text: %w", err)
+			}
+			if err := migrateChannelURLsToStructuredJSON(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels url to structured JSON: %w", err)
 			}
 		}
 

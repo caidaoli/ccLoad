@@ -29,7 +29,7 @@ func TestDashboardLogsForceTokenScopeAndExposeSafeChannelFields(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	secretChannel, err := store.CreateConfig(ctx, &model.Config{
-		Name: "secret-channel", URL: "https://secret-upstream.example", Priority: 10,
+		Name: "secret-channel", URLs: model.ChannelURLs{{URL: "https://secret-upstream.example"}}, Priority: 10,
 		ChannelType: "openai", Enabled: true,
 		ModelEntries: []model.ModelEntry{{Model: "gpt-5.6"}},
 	})
@@ -171,7 +171,7 @@ func TestDashboardLogsFailClosedWhenPersistedKeyNoLongerExists(t *testing.T) {
 	ctx := context.Background()
 	channel, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "rotated-key-channel",
-		URL:          "https://rotated-key.example",
+		URLs:         model.ChannelURLs{{URL: "https://rotated-key.example"}},
 		Priority:     10,
 		ChannelType:  "openai",
 		Enabled:      true,
@@ -243,7 +243,7 @@ func TestDashboardLogsMetadataFailureReturnsServerError(t *testing.T) {
 	ctx := context.Background()
 	channel, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "metadata-error-channel",
-		URL:          "https://metadata-error.example",
+		URLs:         model.ChannelURLs{{URL: "https://metadata-error.example"}},
 		Priority:     10,
 		ChannelType:  "openai",
 		Enabled:      true,
@@ -288,7 +288,7 @@ func TestDashboardChannelsForceTokenScopeAndHideSensitiveConfig(t *testing.T) {
 	ctx := context.Background()
 	ownerChannel, err := store.CreateConfig(ctx, &model.Config{
 		Name:               "owner-channel",
-		URL:                "https://owner-upstream.example",
+		URLs:               model.ChannelURLs{{URL: "https://owner-upstream.example"}},
 		ProxyURL:           "https://owner-proxy.example",
 		Priority:           10,
 		ChannelType:        "openai",
@@ -302,7 +302,7 @@ func TestDashboardChannelsForceTokenScopeAndHideSensitiveConfig(t *testing.T) {
 	}
 	foreignChannel, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "foreign-channel",
-		URL:          "https://foreign-upstream.example",
+		URLs:         model.ChannelURLs{{URL: "https://foreign-upstream.example"}},
 		Priority:     10,
 		ChannelType:  "openai",
 		Enabled:      true,
@@ -351,7 +351,7 @@ func TestDashboardChannelFilterOptionsUseBoundToken(t *testing.T) {
 	ctx := context.Background()
 	ownerChannel, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "owner-channel",
-		URL:          "https://owner-upstream.example",
+		URLs:         model.ChannelURLs{{URL: "https://owner-upstream.example"}},
 		Priority:     10,
 		ChannelType:  "openai",
 		Enabled:      true,
@@ -362,7 +362,7 @@ func TestDashboardChannelFilterOptionsUseBoundToken(t *testing.T) {
 	}
 	foreignChannel, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "foreign-channel",
-		URL:          "https://foreign-upstream.example",
+		URLs:         model.ChannelURLs{{URL: "https://foreign-upstream.example"}},
 		Priority:     10,
 		ChannelType:  "openai",
 		Enabled:      true,
@@ -407,7 +407,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 
 	ctx := context.Background()
 	ownerChannel, err := store.CreateConfig(ctx, &model.Config{
-		Name: "owner-channel", URL: "https://owner.example", Priority: 10,
+		Name: "owner-channel", URLs: model.ChannelURLs{{URL: "https://owner.example"}}, Priority: 10,
 		ChannelType: "openai", Enabled: true,
 		ModelEntries: []model.ModelEntry{{Model: "owner-model"}},
 	})
@@ -415,7 +415,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 		t.Fatalf("create owner channel: %v", err)
 	}
 	foreignChannel, err := store.CreateConfig(ctx, &model.Config{
-		Name: "foreign-channel", URL: "https://foreign.example", Priority: 10,
+		Name: "foreign-channel", URLs: model.ChannelURLs{{URL: "https://foreign.example"}}, Priority: 10,
 		ChannelType: "openai", Enabled: true,
 		ModelEntries: []model.ModelEntry{{Model: "foreign-model"}},
 	})
@@ -423,7 +423,7 @@ func TestDashboardModelsMetricsAndStatsExposeOnlyScopedChannels(t *testing.T) {
 		t.Fatalf("create foreign channel: %v", err)
 	}
 	ownerChannel2, err := store.CreateConfig(ctx, &model.Config{
-		Name: "owner-channel-2", URL: "https://owner-2.example", Priority: 5,
+		Name: "owner-channel-2", URLs: model.ChannelURLs{{URL: "https://owner-2.example"}}, Priority: 5,
 		ChannelType: "anthropic", Enabled: true,
 		ModelEntries: []model.ModelEntry{{Model: "owner-model"}},
 	})

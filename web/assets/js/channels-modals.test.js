@@ -48,6 +48,7 @@ function installWebsocketProbeGlobals({
   supported,
   initialChecked,
   urls = ['https://upstream.test'],
+  urlConfigs = urls.map(url => ({ url, exact: false, protocols: [] })),
   rows = [{ api_key: 'sk-probe' }],
   urlStats = {},
   keyStates = []
@@ -73,7 +74,8 @@ function installWebsocketProbeGlobals({
         channelProxyURL: proxyInput
       })[id] || null
     },
-    getValidInlineURLs: () => urls,
+    getValidInlineURLConfigs: () => urlConfigs,
+    runtimeInlineURL: entry => entry.exact ? `${entry.url}#` : entry.url,
     getInlineKeyRows: () => rows,
     urlStatsMap: urlStats,
     currentChannelKeyCooldowns: keyStates,
@@ -112,8 +114,15 @@ test('WebSocket probe skips disabled URLs and keys and checks every enabled URL'
     initialChecked: false,
     urls: [
       'https://disabled-upstream.test',
+      'https://anthropic-only.test',
       'https://enabled-a.test',
       'https://enabled-b.test'
+    ],
+    urlConfigs: [
+      { url: 'https://disabled-upstream.test', exact: false, protocols: ['codex'] },
+      { url: 'https://anthropic-only.test', exact: false, protocols: ['anthropic'] },
+      { url: 'https://enabled-a.test', exact: false, protocols: ['codex'] },
+      { url: 'https://enabled-b.test', exact: false, protocols: [] }
     ],
     rows: [
       { api_key: 'disabled-key' },

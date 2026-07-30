@@ -80,7 +80,7 @@ func BenchmarkHybrid_ListConfigs_SQLite(b *testing.B) {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:        fmt.Sprintf("bench-channel-%d", i),
 			ChannelType: "openai",
-			URL:         "https://api.openai.com",
+			URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 			Priority:    100,
 			Enabled:     true,
 		})
@@ -285,7 +285,7 @@ func BenchmarkHybrid_ListConfigs_SQLite_Parallel(b *testing.B) {
 		_, _ = store.CreateConfig(ctx, &model.Config{
 			Name:        fmt.Sprintf("bench-parallel-%d", i),
 			ChannelType: "openai",
-			URL:         "https://api.openai.com",
+			URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 			Priority:    100,
 			Enabled:     true,
 		})

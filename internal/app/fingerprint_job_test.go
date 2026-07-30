@@ -32,17 +32,25 @@ func openAIReply(content string) []byte {
 	))
 }
 
+func codexReply(content string) []byte {
+	return []byte(fmt.Sprintf(
+		`{"id":"resp-test","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}],"usage":{"input_tokens":5,"output_tokens":2}}`,
+		content,
+	))
+}
+
 // createFingerprintChannel creates a channel + key in the test server store and returns the channel ID.
 func createFingerprintChannel(t *testing.T, srv *Server, upstreamURL string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	cfg := &model.Config{
-		Name:         "fp-test-channel",
-		URL:          upstreamURL,
-		Priority:     1,
-		ChannelType:  "openai",
-		ModelEntries: []model.ModelEntry{{Model: "fp-model"}},
-		Enabled:      true,
+		Name:                  "fp-test-channel",
+		URLs:                  model.ChannelURLs{{URL: upstreamURL}},
+		Priority:              1,
+		ChannelType:           "openai",
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "fp-model"}},
+		Enabled:               true,
 	}
 	created, err := srv.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -92,11 +100,15 @@ func pollJob(t *testing.T, mgr *FingerprintJobManager, jobID string) *Fingerprin
 func TestFingerprintCalibrateAndTest(t *testing.T) {
 	// Upstream returns numbers cycling through 1..50 to produce a valid (>= 40 valid samples) distribution.
 	var counter atomic.Int32
+	var wrongPaths atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			wrongPaths.Add(1)
+		}
 		n := int(counter.Add(1)%50) + 1
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(openAIReply(fmt.Sprintf("%d", n)))
+		_, _ = w.Write(codexReply(fmt.Sprintf("%d", n)))
 	}))
 	defer upstream.Close()
 
@@ -107,12 +119,13 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 
 	// ---- Calibrate ----
 	jobID, err := mgr.StartCalibrate(srv, calibrateReq{
-		Name:        "test-baseline",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50, // minimum valid
-		Concurrency: 5,
-		KeyIndex:    0,
+		Name:           "test-baseline",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "codex",
+		Iterations:     50, // minimum valid
+		Concurrency:    5,
+		KeyIndex:       0,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -147,12 +160,13 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 
 	// ---- Test against baseline (same upstream ⇒ high score) ----
 	jobID2, err := mgr.StartTest(srv, testFingerprintReq{
-		ChannelID:     channelID,
-		Model:         "fp-model",
-		FingerprintID: &fp.ID,
-		Iterations:    50,
-		Concurrency:   5,
-		KeyIndex:      0,
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "codex",
+		FingerprintID:  &fp.ID,
+		Iterations:     50,
+		Concurrency:    5,
+		KeyIndex:       0,
 	})
 	if err != nil {
 		t.Fatalf("StartTest: %v", err)
@@ -181,6 +195,9 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 	}
 	if len(logs) != 100 {
 		t.Fatalf("expected one log per fingerprint sampling call, got %d", len(logs))
+	}
+	if got := wrongPaths.Load(); got != 0 {
+		t.Fatalf("fingerprint sent %d requests to a non-Codex endpoint", got)
 	}
 	for _, entry := range logs {
 		if entry.ChannelID != channelID {

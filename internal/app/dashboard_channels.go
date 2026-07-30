@@ -13,14 +13,15 @@ import (
 )
 
 type dashboardChannelView struct {
-	ID                  int64              `json:"id"`
-	Name                string             `json:"name"`
-	ChannelType         string             `json:"channel_type"`
-	Priority            int                `json:"priority"`
-	Enabled             bool               `json:"enabled"`
-	Models              []model.ModelEntry `json:"models"`
-	CostMultiplier      float64            `json:"cost_multiplier"`
-	CooldownRemainingMS int64              `json:"cooldown_remaining_ms,omitempty"`
+	ID                    int64              `json:"id"`
+	Name                  string             `json:"name"`
+	ChannelType           string             `json:"channel_type"`
+	ProtocolTransformMode string             `json:"protocol_transform_mode"`
+	Priority              int                `json:"priority"`
+	Enabled               bool               `json:"enabled"`
+	Models                []model.ModelEntry `json:"models"`
+	CostMultiplier        float64            `json:"cost_multiplier"`
+	CooldownRemainingMS   int64              `json:"cooldown_remaining_ms,omitempty"`
 }
 
 type channelFilterOptionsResponse struct {
@@ -78,13 +79,14 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 	out := make([]dashboardChannelView, 0, len(configs))
 	for _, cfg := range configs {
 		view := dashboardChannelView{
-			ID:             cfg.ID,
-			Name:           cfg.Name,
-			ChannelType:    cfg.ChannelType,
-			Priority:       cfg.Priority,
-			Enabled:        cfg.Enabled,
-			Models:         append([]model.ModelEntry(nil), cfg.ModelEntries...),
-			CostMultiplier: cfg.CostMultiplier,
+			ID:                    cfg.ID,
+			Name:                  cfg.Name,
+			ChannelType:           cfg.ChannelType,
+			ProtocolTransformMode: cfg.GetProtocolTransformMode(),
+			Priority:              cfg.Priority,
+			Enabled:               cfg.Enabled,
+			Models:                append([]model.ModelEntry(nil), cfg.ModelEntries...),
+			CostMultiplier:        cfg.CostMultiplier,
 		}
 		if until, ok := cooldowns[cfg.ID]; ok && until.After(now) {
 			view.CooldownRemainingMS = until.Sub(now).Milliseconds()

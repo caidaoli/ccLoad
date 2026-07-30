@@ -56,7 +56,7 @@ func Test_HandleProxyError_Basic(t *testing.T) {
 			cfg := &model.Config{
 				ID:       1,
 				Name:     "test",
-				URL:      "http://test.example.com",
+				URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
 				Priority: 1,
 				Enabled:  true,
 			}
@@ -151,7 +151,7 @@ func Test_HandleNetworkError_Basic(t *testing.T) {
 	cfg := &model.Config{
 		ID:       1,
 		Name:     "test",
-		URL:      "http://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -232,7 +232,7 @@ func Test_HandleProxySuccess_Basic(t *testing.T) {
 	cfg := &model.Config{
 		ID:       1,
 		Name:     "test",
-		URL:      "http://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 	}
@@ -275,7 +275,7 @@ func Test_HandleProxyError_499(t *testing.T) {
 	cfg := &model.Config{
 		ID:       1,
 		Name:     "test",
-		URL:      "http://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -319,7 +319,7 @@ func Test_HandleNetworkError_499_PreservesTokenStats(t *testing.T) {
 	cfg := &model.Config{
 		ID:       1,
 		Name:     "test",
-		URL:      "http://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 	}

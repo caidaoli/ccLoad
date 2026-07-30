@@ -343,42 +343,6 @@ function inlineCooldownBadge(c) {
   return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.68rem; font-weight: 600; line-height: 1; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
 }
 
-/**
- * 获取渠道类型配置信息
- * @param {string} channelType - 渠道类型
- * @returns {Object} 类型配置
- */
-function getChannelTypeConfig(channelType) {
-  const configs = {
-    'anthropic': {
-      text: 'Claude',
-      color: '#8b5cf6',
-      bgColor: '#f3e8ff',
-      borderColor: '#c4b5fd'
-    },
-    'codex': {
-      text: 'Codex',
-      color: '#059669',
-      bgColor: '#d1fae5',
-      borderColor: '#6ee7b7'
-    },
-    'openai': {
-      text: 'OpenAI',
-      color: '#10b981',
-      bgColor: '#d1fae5',
-      borderColor: '#6ee7b7'
-    },
-    'gemini': {
-      text: 'Gemini',
-      color: '#2563eb',
-      bgColor: '#dbeafe',
-      borderColor: '#93c5fd'
-    }
-  };
-  const type = (channelType || '').toLowerCase();
-  return configs[type] || configs['anthropic'];
-}
-
 function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle = 'solid' }) {
   return [
     'display: inline-flex',
@@ -392,21 +356,6 @@ function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle
     `border: 1px ${borderStyle} ${borderColor}`,
     'line-height: 1'
   ].join('; ');
-}
-
-/**
- * 生成渠道类型徽章HTML
- * @param {string} channelType - 渠道类型
- * @returns {string} 徽章HTML
- */
-function buildChannelTypeBadge(channelType) {
-  const config = getChannelTypeConfig(channelType);
-  const badgeStyle = buildInlineNameBadgeStyle({
-    background: config.bgColor,
-    color: config.color,
-    borderColor: config.borderColor
-  });
-  return `<span style="${badgeStyle}">${config.text}</span>`;
 }
 
 /**
@@ -620,13 +569,19 @@ function createChannelCard(channel) {
   }
 
   // 准备模板数据
+  const configuredURLs = (Array.isArray(channel.urls) ? channel.urls : [])
+    .map(entry => {
+      const url = String(entry?.url || '').trim();
+      return url && entry?.exact ? `${url}#` : url;
+    })
+    .filter(Boolean);
+
   const cardData = {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
 		name: channel.name,
 		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
-		typeBadge: buildChannelTypeBadge(channelTypeRaw),
-    url: channel.url,
+    url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,
     priority: channel.priority,

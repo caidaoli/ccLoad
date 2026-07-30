@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -173,6 +174,48 @@ func TestMySQL(t *testing.T) {
 				t.Fatalf("表 %s 查询失败: %v", table, err)
 			}
 			t.Logf("表 %s 存在（行数: %d）", table, count)
+		}
+	})
+
+	t.Run("StructuredChannelURLs", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		ctx := context.Background()
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:        "mysql-legacy-urls",
+			URLs:        model.ChannelURLs{{URL: "https://placeholder.example.com"}},
+			ChannelType: "anthropic",
+			Enabled:     true,
+		})
+		if err != nil {
+			t.Fatalf("创建迁移夹具失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "UPDATE channels SET url = ? WHERE id = ?", "https://one.example.com\nhttps://two.example.com/v1/messages#", created.ID); err != nil {
+			t.Fatalf("写入旧 URL 格式失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", structuredChannelURLsMigrationVersion); err != nil {
+			t.Fatalf("重置迁移标记失败: %v", err)
+		}
+		if err := migrateMySQL(ctx, env.db); err != nil {
+			t.Fatalf("迁移结构化 URL 失败: %v", err)
+		}
+
+		var raw string
+		if err := env.db.QueryRowContext(ctx, "SELECT url FROM channels WHERE id = ?", created.ID).Scan(&raw); err != nil {
+			t.Fatalf("读取迁移结果失败: %v", err)
+		}
+		var urls model.ChannelURLs
+		if err := json.Unmarshal([]byte(raw), &urls); err != nil {
+			t.Fatalf("迁移结果不是 JSON: %v (%q)", err, raw)
+		}
+		if len(urls) != 2 || urls[0].URL != "https://one.example.com" || urls[1].URL != "https://two.example.com/v1/messages" || !urls[1].Exact {
+			t.Fatalf("迁移 URL=%+v", urls)
 		}
 	})
 
@@ -370,12 +413,24 @@ func TestMySQL(t *testing.T) {
 			t.Fatalf("api_keys.api_key 可空性错误: got=%s want=NO", isNullable)
 		}
 
+		var protocolTransformDefault sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT COLUMN_DEFAULT
+			FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'channels' AND COLUMN_NAME = 'protocol_transform_mode'
+		`).Scan(&protocolTransformDefault); err != nil {
+			t.Fatalf("查询 channels.protocol_transform_mode 失败: %v", err)
+		}
+		if !protocolTransformDefault.Valid || protocolTransformDefault.String != "auto" {
+			t.Fatalf("protocol_transform_mode 默认值=%v, want auto", protocolTransformDefault)
+		}
+
 		longKey := "sk-" + strings.Repeat("x", 197) // 长度 200，验证迁移后的 VARCHAR(255) 契约
 		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{
 					Name:        "legacy-key-len",
-					URL:         "https://api.example.com",
+					URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 					Priority:    1,
 					ChannelType: "openai",
 					Enabled:     true,

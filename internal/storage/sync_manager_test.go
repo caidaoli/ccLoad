@@ -56,7 +56,7 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	cfg := &model.Config{
 		Name:        "test-channel",
 		ChannelType: "openai",
-		URL:         "https://api.openai.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority:    100,
 		Enabled:     true,
 	}

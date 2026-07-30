@@ -174,6 +174,13 @@ func TestClassifyHTTPResponse(t *testing.T) {
 			reason:       "404非model_not_found应返回渠道级错误以触发切换",
 		},
 		{
+			name:         "404_deployment_not_found",
+			statusCode:   404,
+			responseBody: []byte("404: Not Found (DEPLOYMENT_NOT_FOUND)\n\nThe requested deployment does not exist."),
+			expected:     ErrorLevelChannel,
+			reason:       "已下线部署不是模型错误，应切换URL或渠道",
+		},
+		{
 			name:         "500_internal_error",
 			statusCode:   500,
 			responseBody: []byte(`{"error":"internal server error"}`),
@@ -974,6 +981,77 @@ func TestClassifyHTTPResponseStreamFailuresAreModelScoped(t *testing.T) {
 	}
 }
 
+func TestShouldFallbackProtocol(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		body       string
+		want       bool
+	}{
+		{
+			name:       "protocol conversion not implemented",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"upstream failed"}}`,
+		},
+		{
+			name:       "conversion code without unsupported message",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"conversion failed","code":"convert_request_failed"}}`,
+		},
+		{
+			name:       "unsupported message without conversion code",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":{"message":"not implemented","code":"server_error"}}`,
+		},
+		{
+			name:       "malformed server error",
+			statusCode: http.StatusInternalServerError,
+			body:       `{"error":`,
+		},
+		{
+			name:       "non-model endpoint 404",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":{"message":"endpoint not found"}}`,
+			want:       true,
+		},
+		{
+			name:       "model 404",
+			statusCode: http.StatusNotFound,
+			body:       `{"error":{"message":"model gpt-test not found","code":"model_not_found"}}`,
+		},
+		{
+			name:       "method not allowed",
+			statusCode: http.StatusMethodNotAllowed,
+			want:       true,
+		},
+		{
+			name:       "cloudflare block page before origin",
+			statusCode: http.StatusForbidden,
+			body:       `<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head><body><h1>Sorry, you have been blocked</h1><p>Cloudflare Ray ID: test</p></body></html>`,
+			want:       true,
+		},
+		{
+			name:       "ordinary api forbidden",
+			statusCode: http.StatusForbidden,
+			body:       `{"error":{"message":"forbidden"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ShouldFallbackProtocol(tt.statusCode, []byte(tt.body)); got != tt.want {
+				t.Fatalf("ShouldFallbackProtocol(%d, %q)=%v, want %v", tt.statusCode, tt.body, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestClassify404Error(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -1002,8 +1080,8 @@ func TestClassify404Error(t *testing.T) {
 		{
 			name:         "resource_not_exist",
 			responseBody: []byte(`{"error": {"message": "The requested resource does not exist"}}`),
-			expected:     ErrorLevelClient,
-			reason:       "资源不存在应判定为客户端级错误",
+			expected:     ErrorLevelChannel,
+			reason:       "未明确指向模型的资源404应判定为渠道级错误",
 		},
 		{
 			name: "html_error_page",

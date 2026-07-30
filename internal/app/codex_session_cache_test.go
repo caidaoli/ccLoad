@@ -237,7 +237,7 @@ func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
 	cfg := &model.Config{
 		ID:          1,
 		Name:        "codex-ch",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		ChannelType: "openai",
 	}
 
@@ -263,7 +263,7 @@ func TestBuildProxyRequest_CodexSessionInjection_Anthropic(t *testing.T) {
 		http.Header{"Content-Type": []string{"application/json"}},
 		"",
 		"/v1/responses",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -290,7 +290,7 @@ func TestBuildProxyRequest_CodexSessionInjection_NonCodexUpstreamSkipped(t *test
 	cfg := &model.Config{
 		ID:          1,
 		Name:        "anthropic-ch",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		ChannelType: "anthropic",
 	}
 
@@ -312,7 +312,7 @@ func TestBuildProxyRequest_CodexSessionInjection_NonCodexUpstreamSkipped(t *test
 		http.Header{"Content-Type": []string{"application/json"}},
 		"",
 		"/v1/messages",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -330,7 +330,7 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 	cfg := &model.Config{
 		ID:          1,
 		Name:        "codex-ch",
-		URL:         "https://api.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
 		ChannelType: "openai",
 	}
 
@@ -355,7 +355,7 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 		},
 		"",
 		"/v1/responses",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)

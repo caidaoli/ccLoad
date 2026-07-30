@@ -46,7 +46,7 @@ ccLoad 直接处理这些问题：
 - 🔀 **自动故障切换**：按错误作用域跳过故障 Key、模型、渠道或 URL。
 - ⏰ **模型感知冷却**：结构化 `model_cooldown`、上游 HTTP 5xx、Key 级 429 限流和模型不可用 404 都先只冷却当前实际模型，同渠道其他模型仍可用；只有所有配置模型或所有启用 Key 都在冷却时才升级为渠道冷却。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
-- 🔄 **自动协议回退**：每个渠道只配置一个上游协议；四个核心客户端协议默认可使用所有模型兼容渠道，确认端点缺失后才由 ccLoad 本地转换。
+- 🔄 **逐 URL 协议路由**：每个 URL 可声明实际支持的线协议；显式声明直接选路，留空则按固定顺序自动探测并缓存成功协议。
 - 🔌 **Responses WebSocket 桥接**：认证后的 Codex 客户端可保持下游 WebSocket，各候选渠道按配置使用原生 Codex WebSocket 或现有 HTTP/SSE 传输。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
 - 🔍 **软错误检测**：HTTP 200 伪装成功也会触发故障切换。已覆盖：
@@ -81,7 +81,7 @@ ccLoad 直接处理这些问题：
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **自动协议回退** | 每渠道一个上游协议，四协议全部 12 个本地转换组合 | 原生端点优先，仅确认端点级 404/405 后转换并缓存能力 |
+| 🔄 **逐 URL 协议路由** | 每个 URL 显式声明 Anthropic/OpenAI/Codex/Gemini 能力 | 显式配置直接选路，留空时自动探测并缓存能力 |
 | 💬 **对话式模型测试** | 按渠道/按模型/对话三种模式 | 支持图片上传、思考等级、内置搜索与对话导出 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
@@ -91,7 +91,7 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。每个渠道只声明一个上游协议，候选选择只看模型兼容性。ccLoad 对每个 URL 和请求族先按客户端协议原生请求；只有响应尚未提交且收到非模型语义的 404/405，才在同渠道、Key、URL 上转换到上游协议重试，并缓存 10 分钟能力结果。
+请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。`channel_type` 定义渠道的本地转换目标；每个 URL 还可声明实际接受的上游线协议。非空声明是权威配置：ccLoad 不探测，直接选择兼容的声明协议；不兼容 URL 不发请求、不冷却，直接跳过。声明留空时按 Anthropic → OpenAI → Codex → Gemini 固定顺序协商。仅当响应尚未提交，且收到非模型语义的 404/405、结构化 `convert_request_failed` + `not implemented` 500、请求到达 API 前返回的 Cloudflare 403 拦截页，或当前转换无法表示请求时，才继续下一协议。成功协议按 URL 和请求族缓存 10 分钟。
 
 ```mermaid
 graph TB
@@ -644,7 +644,7 @@ curl -X POST http://localhost:8080/v1/alpha/search \
   }'
 ```
 
-普通渠道 URL 会自动追加 `/v1/alpha/search`。如果渠道使用以 `#` 结尾的精确 URL，则配置值必须已指向该端点，例如 `https://upstream.example.com/v1/alpha/search#`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
+普通渠道 URL 会自动追加 `/v1/alpha/search`。精确 URL 需要设置 `exact: true`，且 `url` 已指向完整端点，例如 `{"url":"https://upstream.example.com/v1/alpha/search","exact":true,"protocols":["codex"]}`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
 
 ### 本地 Token 计数
 
@@ -681,25 +681,29 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 通过 Web 界面 `/web/channels.html` 或 API 管理渠道：
 
 ```bash
-# 添加渠道（支持多URL，逗号分隔）
+# 添加渠道，并逐 URL 声明协议能力
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
-    "url": "https://api.anthropic.com,https://api2.anthropic.com",
+    "urls": [
+      {"url": "https://api.anthropic.com", "protocols": ["anthropic"]},
+      {"url": "https://api2.anthropic.com"}
+    ],
     "channel_type": "anthropic",
+    "protocol_transform_mode": "auto",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
-    "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
+    "models": [{"model": "claude-sonnet-4-6"}, {"model": "claude-opus-4-6"}],
     "enabled": true
   }'
 ```
 
-> **协议行为说明**：Web 界面的“上游协议”对应 `channel_type`，决定上游认证、路径、模型拉取和定时检测。四个核心生成协议默认可使用所有模型兼容渠道；每个 URL 先尝试客户端原协议，只有端点级 404/405 才转换到上游协议。以 `#` 标记的 Exact URL 不探测其他路径，存在转换时直接本地转换。
+> **协议行为说明**：Web 界面的“上游协议”对应 `channel_type`，它是本地转换目标。每个 `urls` 条目可通过 `protocols` 声明 `anthropic`、`openai`、`codex`、`gemini` 能力；非空列表是权威配置，省略或留空才自动检测。`protocol_transform_mode` 仍可用 `auto`、`upstream`、`local` 约束选路。
 
-> **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+> **多URL说明**：`urls` 是有序的 `{url, exact, protocols}` 对象数组。`exact: true` 表示该地址已经是完整上游请求 URL。系统按延迟加权随机选择 URL，并对故障 URL 独立冷却。
 
 > **RPM限制说明**：`rpm_limit` 是渠道级请求数上限，按滚动 60 秒窗口统计；`0` 表示不限制。代理转发、手动测试、单 URL 测试和定时检测都会计入，达到上限后该渠道会被跳过；多 URL 故障重试按实际发出的上游 HTTP 请求计数。计数保存在当前进程内，服务重启会清空，多实例部署时各实例独立统计。
 
@@ -769,9 +773,9 @@ curl -X POST -H "Authorization: Bearer your_token" \
 
 **CSV格式示例**:
 ```csv
-name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
+name,api_key,urls,priority,models,enabled
+Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,claude-sonnet-4-6,true
+Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opus-4-6,true
 ```
 
 **特性**:
@@ -862,9 +866,9 @@ ccLoad 使用的核心技术栈：
   - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 转换核心快照；来源和同步规则见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
-  - 渠道只配置 `ChannelType`（上游协议）；客户端协议支持按渠道、URL、客户端协议和请求族在运行时学习
-  - 原生端点优先；只有响应未提交的非模型 404/405 才在同 URL 本地转换重试
-  - Exact URL 跨协议直接转换；Codex `/v1/alpha/search` 等不可转换请求族只走原生端点，缺失后切换 URL/渠道
+  - `ChannelType` 是本地转换目标；每个结构化 URL 可声明实际接受的上游线协议
+  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；省略声明才按 Anthropic → OpenAI → Codex → Gemini 运行时学习
+  - 自动检测仅在未提交响应的非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
@@ -1183,7 +1187,7 @@ storage/
 - ✅ **Responses 图像工具成本计量**：`image_generation` 工具调用费用并入日志、统计和限额口径
 - ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
 - ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
-- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
+- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex 四协议互转，支持 auto/upstream/local 三种模式
 - ✅ **调试日志**：上游请求/响应原始数据捕获，敏感头脱敏，独立清理策略
 - ✅ **渠道定时检测**：后台定时探测渠道可用性，支持指定检测模型
 - ✅ **渠道RPM限制**：每渠道滚动60秒请求数上限，`0` 表示无限制，超限自动跳过该渠道

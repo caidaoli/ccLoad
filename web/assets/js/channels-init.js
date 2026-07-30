@@ -32,7 +32,6 @@ const CHANNELS_FILTER_KEY = 'channels.filters';
 function saveChannelsFilters() {
   try {
     localStorage.setItem(CHANNELS_FILTER_KEY, JSON.stringify({
-      channelType: filters.channelType,
       status: filters.status,
       model: filters.model,
       modelExact: filters.modelExact,
@@ -89,28 +88,28 @@ function firstChannelsPage() {
   if (channelsCurrentPage <= 1) return;
   channelsCurrentPage = 1;
   saveChannelsFilters();
-  loadChannels(filters.channelType);
+  loadChannels();
 }
 
 function prevChannelsPage() {
   if (channelsCurrentPage <= 1) return;
   channelsCurrentPage--;
   saveChannelsFilters();
-  loadChannels(filters.channelType);
+  loadChannels();
 }
 
 function nextChannelsPage() {
   if (channelsCurrentPage >= channelsTotalPages) return;
   channelsCurrentPage++;
   saveChannelsFilters();
-  loadChannels(filters.channelType);
+  loadChannels();
 }
 
 function lastChannelsPage() {
   if (channelsCurrentPage >= channelsTotalPages) return;
   channelsCurrentPage = channelsTotalPages;
   saveChannelsFilters();
-  loadChannels(filters.channelType);
+  loadChannels();
 }
 
 function jumpChannelsPage() {
@@ -124,7 +123,7 @@ function jumpChannelsPage() {
   if (page !== channelsCurrentPage) {
     channelsCurrentPage = page;
     saveChannelsFilters();
-    loadChannels(filters.channelType);
+    loadChannels();
   }
   input.value = '';
 }
@@ -162,9 +161,6 @@ function initChannelsPageActions() {
             window.toggleResponse(responseTarget);
           }
         }
-      },
-      change: {
-        'update-test-url': () => updateTestURL()
       }
     });
   }
@@ -190,7 +186,7 @@ function initChannelsPageActions() {
         localStorage.setItem('channels.pageSize', String(newSize));
         channelsCurrentPage = 1;
         saveChannelsFilters();
-        loadChannels(filters.channelType);
+        loadChannels();
       }
     });
     pageSizeSelect.dataset.bound = '1';
@@ -224,18 +220,14 @@ window.initPageBootstrap({
       updateBatchChannelSelectionUI();
     }
 
-    // 并行化第一批：渠道类型渲染、目标渠道查询与管理员设置请求同时发起
+    // 并行化第一批：协议下拉初始化、目标渠道查询与管理员设置请求同时发起
     const savedFilters = loadChannelsFilters();
     channelsCurrentPage = Math.max(1, parseInt(savedFilters?.page, 10) || 1);
     const [, targetChannel] = await Promise.all([
-      window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios'),
+      ensureChannelProtocolComboboxes('anthropic', 'auto'),
       readOnly ? null : getTargetChannel(),
       ...(readOnly ? [] : [loadDefaultTestContent(), loadChannelStatsRange()])
     ]);
-    const targetChannelType = targetChannel?.channel_type || null;
-    const initialType = targetChannelType || (savedFilters?.channelType) || 'all';
-
-    filters.channelType = initialType;
     const urlChannelId = new URLSearchParams(location.search).get('id');
     if (urlChannelId) {
       filters.status = 'all';
@@ -284,30 +276,10 @@ window.initPageBootstrap({
       saveChannelsFilters();
     }
 
-    // 并行化第二批：依赖 initialType 的请求 + stats（channelStatsRange 已在第一批设置）
+    // 并行化第二批：筛选选项、渠道列表与统计互不依赖
     await Promise.all([
-      window.initChannelTypeFilter('channelTypeFilter', initialType, (type) => {
-        filters.channelType = type;
-        filters.model = 'all';
-        filters.modelExact = false;
-        filters.search = '';
-        filters.searchExact = false;
-        channelsCurrentPage = 1;
-        if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
-          modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
-        } else {
-          const modelFilterEl = document.getElementById('modelFilter');
-          if (modelFilterEl) modelFilterEl.value = modelFilterInputValueFromFilterValue('all');
-        }
-        if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
-          channelNameCombobox.setValue('', getChannelNameAllLabel());
-        }
-        saveChannelsFilters();
-        loadChannelsFilterOptions(type, filters.status);
-        loadChannels(type);
-      }),
-      loadChannelsFilterOptions(initialType, filters.status),
-      loadChannels(initialType),
+      loadChannelsFilterOptions(filters.status),
+      loadChannels(),
       loadChannelStats()
     ]);
     highlightFromHash();
@@ -324,7 +296,7 @@ window.initPageBootstrap({
     if (typeof window.createAutoRefresh === 'function') {
       window.createAutoRefresh({
         load: () => Promise.all([
-          loadChannels(filters.channelType || 'all'),
+          loadChannels(),
           loadChannelStats()
         ])
       }).init();
@@ -369,5 +341,5 @@ window.addEventListener('pageshow', async (event) => {
 
   resetChannelSearchFilter();
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-  await loadChannels(filters.channelType || 'all');
+  await loadChannels();
 });

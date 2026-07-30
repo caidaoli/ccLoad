@@ -55,7 +55,7 @@ func TestHandleListChannels(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     "Test-Channel-" + string(rune('A'-1+i)),
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: i * 10,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-1", RedirectModel: ""},
@@ -119,7 +119,7 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	for _, fixture := range fixtures {
 		_, err := store.CreateConfig(ctx, &model.Config{
 			Name:     fixture.name,
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: 1,
 			ModelEntries: []model.ModelEntry{
 				{Model: fixture.model},
@@ -196,7 +196,7 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 	fixtures := []*model.Config{
 		{
 			Name:         "native-openai",
-			URL:          "https://openai.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://openai.example.com"}},
 			Priority:     10,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
@@ -204,7 +204,7 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 		},
 		{
 			Name:         "anthropic-channel",
-			URL:          "https://anthropic.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com"}},
 			Priority:     20,
 			ChannelType:  "anthropic",
 			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
@@ -212,7 +212,7 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 		},
 		{
 			Name:         "codex-channel",
-			URL:          "https://codex.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://codex.example.com"}},
 			Priority:     30,
 			ChannelType:  "codex",
 			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
@@ -255,7 +255,7 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 	fixtures := []*model.Config{
 		{
 			Name:         "native-openai",
-			URL:          "https://openai.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://openai.example.com"}},
 			Priority:     10,
 			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
@@ -263,7 +263,7 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 		},
 		{
 			Name:         "anthropic-channel",
-			URL:          "https://anthropic.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com"}},
 			Priority:     20,
 			ChannelType:  "anthropic",
 			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
@@ -271,7 +271,7 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 		},
 		{
 			Name:         "codex-channel",
-			URL:          "https://codex.example.com",
+			URLs:         model.ChannelURLs{{URL: "https://codex.example.com"}},
 			Priority:     30,
 			ChannelType:  "codex",
 			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
@@ -322,7 +322,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:                  "New-Channel",
 				APIKey:                "sk-test-key",
-				URL:                   "https://api.new.com",
+				URLs:                  model.ChannelURLs{{URL: "https://api.new.com"}},
 				Priority:              100,
 				Models:                []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}},
 				Enabled:               true,
@@ -336,7 +336,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:        "Multi-Key-Channel",
 				APIKey:      "sk-key1,sk-key2,sk-key3",
-				URL:         "https://api.multi.com",
+				URLs:        model.ChannelURLs{{URL: "https://api.multi.com"}},
 				Priority:    90,
 				Models:      []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}},
 				KeyStrategy: model.KeyStrategyRoundRobin,
@@ -350,7 +350,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Multi-URL-Channel",
 				APIKey:   "sk-test-key",
-				URL:      "https://us.api.com\nhttps://eu.api.com",
+				URLs:     channelURLsForTest("https://us.api.com", "https://eu.api.com"),
 				Priority: 80,
 				Models:   []model.ModelEntry{{Model: "gpt-4o-mini", RedirectModel: ""}},
 				Enabled:  true,
@@ -363,7 +363,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 50,
 				Models:   []model.ModelEntry{{Model: "model", RedirectModel: ""}},
 			},
@@ -375,7 +375,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 50,
 				Models:   []model.ModelEntry{{Model: "model", RedirectModel: ""}},
 			},
@@ -387,7 +387,7 @@ func TestHandleCreateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 50,
 				Models:   []model.ModelEntry{},
 			},
@@ -448,7 +448,7 @@ func TestHandleCreateChannel_RejectsIncompleteCooldownRulesWithoutPersisting(t *
 	payload := ChannelRequest{
 		Name:   "incomplete-cooldown-rule",
 		APIKey: "sk-test",
-		URL:    "https://api.example.com",
+		URLs:   model.ChannelURLs{{URL: "https://api.example.com"}},
 		Models: []model.ModelEntry{{Model: "test-model"}},
 		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 			Enabled: true, Priority: 0, StatusCodes: []int{200},
@@ -470,14 +470,14 @@ func TestHandleCreateChannel_RejectsIncompleteCooldownRulesWithoutPersisting(t *
 	}
 }
 
-func TestHandleCreateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
+func TestHandleCreateChannel_PersistsProtocolTransformModeAndIgnoresRemovedTransforms(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	payload := map[string]any{
 		"name":                    "Transform-Channel",
 		"api_key":                 "sk-transform",
-		"url":                     "https://transform.example.com",
+		"urls":                    []map[string]any{{"url": "https://transform.example.com"}},
 		"priority":                42,
 		"channel_type":            "gemini",
 		"protocol_transforms":     []string{"openai", "anthropic"},
@@ -494,19 +494,23 @@ func TestHandleCreateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
 	}
 
-	if strings.Contains(w.Body.String(), "protocol_transform") {
-		t.Fatalf("response must not expose removed protocol fields: %s", w.Body.String())
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if resp.Data["protocol_transform_mode"] != model.ProtocolTransformModeLocal {
+		t.Fatalf("protocol_transform_mode=%v, want local", resp.Data["protocol_transform_mode"])
+	}
+	if _, exists := resp.Data["protocol_transforms"]; exists {
+		t.Fatalf("response must not expose removed protocol_transforms: %+v", resp.Data)
 	}
 }
 
-func TestHandleCreateChannel_DoesNotEchoRemovedProtocolFields(t *testing.T) {
+func TestHandleCreateChannel_PersistsUpstreamProtocolTransformMode(t *testing.T) {
 	server, _, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	payload := map[string]any{
 		"name":                    "Upstream-Mode-Channel",
 		"api_key":                 "sk-upstream-mode",
-		"url":                     "https://upstream-mode.example.com",
+		"urls":                    []map[string]any{{"url": "https://upstream-mode.example.com"}},
 		"priority":                23,
 		"channel_type":            "anthropic",
 		"protocol_transforms":     []string{"gemini"},
@@ -523,8 +527,12 @@ func TestHandleCreateChannel_DoesNotEchoRemovedProtocolFields(t *testing.T) {
 		t.Fatalf("期望 status=%d 允许 upstream 模式创建，实际=%d，响应体: %s", http.StatusCreated, w.Code, w.Body.String())
 	}
 
-	if strings.Contains(w.Body.String(), "protocol_transform") {
-		t.Fatalf("response must not echo removed protocol fields: %s", w.Body.String())
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if resp.Data["protocol_transform_mode"] != model.ProtocolTransformModeUpstream {
+		t.Fatalf("protocol_transform_mode=%v, want upstream", resp.Data["protocol_transform_mode"])
+	}
+	if _, exists := resp.Data["protocol_transforms"]; exists {
+		t.Fatalf("response must not echo removed protocol_transforms: %+v", resp.Data)
 	}
 }
 
@@ -538,7 +546,7 @@ func TestHandleGetChannel(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:         "Test-Get-Channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -630,7 +638,7 @@ func TestHandleGetChannelIncludesActiveModelCooldowns(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "model-cooldown-detail",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 100,
 		ModelEntries: []model.ModelEntry{
 			{Model: "external-model", RedirectModel: "upstream-model"},
@@ -690,7 +698,7 @@ func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "model-stats-channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		ModelEntries: []model.ModelEntry{{Model: "external-model"}},
 		Enabled:      true,
 	})
@@ -699,7 +707,7 @@ func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.
 	}
 	other, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "other-model-stats-channel",
-		URL:          "https://other.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://other.example.com"}},
 		ModelEntries: []model.ModelEntry{{Model: "external-model"}},
 		Enabled:      true,
 	})
@@ -792,7 +800,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:         "Original-Name",
-		URL:          "https://api.original.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.original.com"}},
 		Priority:     50,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -826,7 +834,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Updated-Name",
 				APIKey:   "sk-updated-key",
-				URL:      "https://api.updated.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.updated.com"}},
 				Priority: 100,
 				Models: []model.ModelEntry{
 					{Model: "model-1", RedirectModel: ""},
@@ -844,7 +852,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Updated-Name",
 				APIKey:   "sk-updated-key",
-				URL:      "https://api.updated.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.updated.com"}},
 				Priority: 100,
 				Models: []model.ModelEntry{
 					{Model: "gpt-5.2", RedirectModel: "gpt-5.2"},
@@ -861,7 +869,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 50,
 				Models:   []model.ModelEntry{{Model: "model", RedirectModel: ""}},
 			},
@@ -874,7 +882,7 @@ func TestHandleUpdateChannel(t *testing.T) {
 			payload: ChannelRequest{
 				Name:     "",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 50,
 				Models:   []model.ModelEntry{{Model: "model", RedirectModel: ""}},
 			},
@@ -929,7 +937,7 @@ func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:        "Update-Transform-Channel",
-		URL:         "https://update-transform.example.com",
+		URLs:        model.ChannelURLs{{URL: "https://update-transform.example.com"}},
 		Priority:    10,
 		Enabled:     true,
 		ChannelType: "gemini",
@@ -949,7 +957,7 @@ func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 	payload := map[string]any{
 		"name":                    "Update-Transform-Channel",
 		"api_key":                 "sk-update-transform",
-		"url":                     "https://update-transform.example.com",
+		"urls":                    []map[string]any{{"url": "https://update-transform.example.com"}},
 		"priority":                10,
 		"channel_type":            "gemini",
 		"protocol_transforms":     []string{"codex", "anthropic"},
@@ -967,8 +975,12 @@ func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 		t.Fatalf("期望状态码 %d，实际 %d，响应体: %s", http.StatusOK, w.Code, w.Body.String())
 	}
 
-	if strings.Contains(w.Body.String(), "protocol_transform") {
-		t.Fatalf("response must not echo removed protocol fields: %s", w.Body.String())
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if resp.Data["protocol_transform_mode"] != model.ProtocolTransformModeUpstream {
+		t.Fatalf("protocol_transform_mode=%v, want upstream", resp.Data["protocol_transform_mode"])
+	}
+	if _, exists := resp.Data["protocol_transforms"]; exists {
+		t.Fatalf("response must not echo removed protocol_transforms: %+v", resp.Data)
 	}
 }
 
@@ -983,7 +995,7 @@ func TestHandleUpdateChannel_ClearAllCooldownsShouldTakeEffectImmediately(t *tes
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "Cooldown-Channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1039,7 +1051,7 @@ func TestHandleUpdateChannel_ClearAllCooldownsShouldTakeEffectImmediately(t *tes
 	updatePayload := ChannelRequest{
 		Name:     "Cooldown-Channel-Updated",
 		APIKey:   "sk-test-key",
-		URL:      "https://api.updated.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.updated.com"}},
 		Priority: 20,
 		Models: []model.ModelEntry{
 			{Model: "model-1", RedirectModel: ""},
@@ -1102,7 +1114,7 @@ func TestHandleUpdateChannel_EnableClearsAllCooldownsImmediately(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "Enable-Cooldown-Channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      false,
@@ -1209,7 +1221,7 @@ func TestHandleAPIKeyToggleRejectsMissingOrNegativeKeyIndex(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "toggle-validation",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1263,7 +1275,7 @@ func TestHandleAPIKeyToggleInvalidatesKeyCooldownCache(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "toggle-cache",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1314,7 +1326,7 @@ func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "preserve-disabled",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1335,7 +1347,7 @@ func TestHandleUpdateChannelPreservesDisabledKeysWhenRebuilding(t *testing.T) {
 	payload := ChannelRequest{
 		Name:     "preserve-disabled",
 		APIKey:   "sk-live,sk-disabled,sk-new",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:  true,
@@ -1374,7 +1386,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 	ctx := context.Background()
 	createPayload := ChannelRequest{
 		Name: "key-notes",
-		URL:  "https://api.example.com",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
 			{APIKey: "sk-primary", Note: "primary"},
 			{APIKey: "sk-backup", Note: "backup"},
@@ -1412,7 +1424,7 @@ func TestHandleChannelAPIKeyNotesCreateReadAndUpdate(t *testing.T) {
 
 	updatePayload := ChannelRequest{
 		Name: "key-notes",
-		URL:  "https://api.example.com",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 		APIKeys: []ChannelAPIKeyRequest{
 			{APIKey: "sk-primary", Note: "primary-renamed"},
 			{APIKey: "sk-backup", Note: "backup-renamed"},
@@ -1454,7 +1466,7 @@ func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "update-prune",
-		URL:          "https://old-1.example.com\nhttps://keep.example.com",
+		URLs:         channelURLsForTest("https://old-1.example.com", "https://keep.example.com"),
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1474,7 +1486,7 @@ func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	// 另一渠道状态，用于验证不会被误删
 	otherCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "other-channel",
-		URL:          "https://other.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://other.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1491,7 +1503,7 @@ func TestHandleUpdateChannel_PrunesURLSelectorState(t *testing.T) {
 	payload := ChannelRequest{
 		Name:     "update-prune",
 		APIKey:   "sk-update-prune",
-		URL:      "https://keep.example.com\nhttps://new.example.com",
+		URLs:     channelURLsForTest("https://keep.example.com", "https://new.example.com"),
 		Priority: 11,
 		Models:   []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:  true,
@@ -1525,7 +1537,7 @@ func TestHandleUpdateChannel_CleansOrphanedURLDisabledState(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "update-url-state",
-		URL:          "https://old-state.example.com\nhttps://keep-state.example.com",
+		URLs:         channelURLsForTest("https://old-state.example.com", "https://keep-state.example.com"),
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1544,7 +1556,7 @@ func TestHandleUpdateChannel_CleansOrphanedURLDisabledState(t *testing.T) {
 
 	otherCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "other-url-state",
-		URL:          "https://other-state.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://other-state.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1566,7 +1578,7 @@ func TestHandleUpdateChannel_CleansOrphanedURLDisabledState(t *testing.T) {
 	payload := ChannelRequest{
 		Name:     "update-url-state",
 		APIKey:   "sk-update-url-state",
-		URL:      "https://keep-state.example.com\nhttps://new-state.example.com",
+		URLs:     channelURLsForTest("https://keep-state.example.com", "https://new-state.example.com"),
 		Priority: 11,
 		Models:   []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:  true,
@@ -1603,7 +1615,7 @@ func TestHandleDeleteChannel(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:         "To-Be-Deleted",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     50,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1674,7 +1686,7 @@ func TestHandleDeleteChannel_RemovesURLSelectorState(t *testing.T) {
 	ctx := context.Background()
 	targetCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "delete-prune-target",
-		URL:          "https://target-1.example.com\nhttps://target-2.example.com",
+		URLs:         channelURLsForTest("https://target-1.example.com", "https://target-2.example.com"),
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1684,7 +1696,7 @@ func TestHandleDeleteChannel_RemovesURLSelectorState(t *testing.T) {
 	}
 	otherCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "delete-prune-other",
-		URL:          "https://other.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://other.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1730,7 +1742,7 @@ func TestHandleGetChannelKeys(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:         "Test-Keys-Channel",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     100,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 		Enabled:      true,
@@ -1802,7 +1814,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Valid-Channel",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1813,79 +1825,79 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "  ",
+				URLs:     model.ChannelURLs{{URL: "  "}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url cannot be empty",
+			errorMsg:  "urls[0].url cannot be empty",
 		},
 		{
 			name: "URL缺少scheme",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "api.com",
+				URLs:     model.ChannelURLs{{URL: "api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "invalid url: \"api.com\"",
+			errorMsg:  "urls[0]: invalid url: \"api.com\"",
 		},
 		{
 			name: "URL scheme非法",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "ftp://api.com",
+				URLs:     model.ChannelURLs{{URL: "ftp://api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "invalid url scheme: \"ftp\" (allowed: http, https)",
+			errorMsg:  "urls[0]: invalid url scheme: \"ftp\" (allowed: http, https)",
 		},
 		{
 			name: "URL包含userinfo",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://user:pass@api.com",
+				URLs:     model.ChannelURLs{{URL: "https://user:pass@api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url must not contain user info",
+			errorMsg:  "urls[0]: url must not contain user info",
 		},
 		{
 			name: "URL包含query",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com?x=1",
+				URLs:     model.ChannelURLs{{URL: "https://api.com?x=1"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url must not contain query or fragment",
+			errorMsg:  "urls[0]: url must not contain query or fragment",
 		},
 		{
 			name: "URL包含fragment",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com#x",
+				URLs:     model.ChannelURLs{{URL: "https://api.com#x"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url must not contain query or fragment",
+			errorMsg:  "urls[0]: url must not contain query or fragment",
 		},
 		{
 			name: "URL以#结尾保留完整地址标记",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com#",
+				URLs:     model.ChannelURLs{{URL: "https://api.com", Exact: true}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1897,31 +1909,31 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com/v1",
+				URLs:     model.ChannelURLs{{URL: "https://api.com/v1"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url should not contain API endpoint path like /v1 (current path: \"/v1\")",
+			errorMsg:  "urls[0]: url should not contain API endpoint path like /v1 (current path: \"/v1\")",
 		},
 		{
 			name: "URL包含/v1/messages路径（禁止）",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com/v1/messages",
+				URLs:     model.ChannelURLs{{URL: "https://api.com/v1/messages"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
 			wantError: true,
-			errorMsg:  "url should not contain API endpoint path like /v1 (current path: \"/v1/messages\")",
+			errorMsg:  "urls[0]: url should not contain API endpoint path like /v1 (current path: \"/v1/messages\")",
 		},
 		{
 			name: "URL以#结尾允许显式/v1完整地址",
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com/v1/messages#",
+				URLs:     model.ChannelURLs{{URL: "https://api.com/v1/messages", Exact: true}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1933,7 +1945,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com/v1/messages#",
+				URLs:     model.ChannelURLs{{URL: "https://api.com/v1/messages", Exact: true}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1945,7 +1957,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://example.com/api",
+				URLs:     model.ChannelURLs{{URL: "https://example.com/api"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1957,7 +1969,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://example.com/openai/",
+				URLs:     model.ChannelURLs{{URL: "https://example.com/openai/"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1969,7 +1981,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com/",
+				URLs:     model.ChannelURLs{{URL: "https://api.com/"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1981,7 +1993,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com:8080/",
+				URLs:     model.ChannelURLs{{URL: "https://api.com:8080/"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -1993,7 +2005,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "http://api.example.com:8080/",
+				URLs:     model.ChannelURLs{{URL: "http://api.example.com:8080/"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -2005,7 +2017,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -2017,7 +2029,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 			},
@@ -2029,7 +2041,7 @@ func TestChannelRequestValidate(t *testing.T) {
 			req: ChannelRequest{
 				Name:     "Test",
 				APIKey:   "sk-test",
-				URL:      "https://api.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.com"}},
 				Priority: 100,
 				Models:   []model.ModelEntry{},
 			},
@@ -2053,8 +2065,8 @@ func TestChannelRequestValidate(t *testing.T) {
 					t.Errorf("期望成功，但返回错误: %v", err)
 				} else {
 					// 验证 URL 标准化
-					if tt.expectNormalize != "" && tt.req.URL != tt.expectNormalize {
-						t.Errorf("URL标准化失败：期望 %q，实际 %q", tt.expectNormalize, tt.req.URL)
+					if tt.expectNormalize != "" && tt.req.URLs[0].RuntimeURL() != tt.expectNormalize {
+						t.Errorf("URL标准化失败：期望 %q，实际 %q", tt.expectNormalize, tt.req.URLs[0].RuntimeURL())
 					}
 				}
 			}

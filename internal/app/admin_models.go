@@ -131,13 +131,13 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	normalizedURL, err := validateChannelURLs(req.URL)
+	normalizedURL, err := validateChannelBaseURL(req.URL)
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "url无效: "+err.Error())
 		return
 	}
 
-	tmpCfg := &model.Config{URL: normalizedURL}
+	tmpCfg := &model.Config{URLs: model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(normalizedURL), Exact: model.HasExactUpstreamURLMarker(normalizedURL)}}}
 	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, tmpCfg.GetURLs(), req.ChannelType, req.APIKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）

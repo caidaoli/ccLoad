@@ -1888,6 +1888,16 @@ func (s *Server) forwardAttempt(
 	if err != nil {
 		var translationErr *protocol.RequestTranslationError
 		if errors.As(err, &translationErr) {
+			if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto {
+				return &proxyResult{
+					status:                    http.StatusBadRequest,
+					body:                      []byte(err.Error()),
+					channelID:                 &cfg.ID,
+					succeeded:                 false,
+					nextAction:                cooldown.ActionRetryChannel,
+					protocolCapabilityMissing: true,
+				}, cooldown.ActionRetryChannel, nil
+			}
 			return &proxyResult{
 				status:     http.StatusBadRequest,
 				body:       []byte(err.Error()),
@@ -1926,7 +1936,8 @@ func (s *Server) forwardAttempt(
 		return result, action, nil
 	}
 
-	if upstreamProtocol == reqCtx.clientProtocol && isProtocolEndpointMissing(res) {
+	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto &&
+		isProtocolEndpointMissing(res) {
 		return &proxyResult{
 			status:                    res.Status,
 			header:                    res.Header,
@@ -2415,10 +2426,10 @@ func selectPinnedCodexWebsocketKey(
 	return 0, "", false
 }
 
-// recordSuccessTTFBToSelector 在多URL场景的2xx响应里把TTFB回报给URLSelector，
-// 单URL/非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
-func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCount int, urlStr string, result *proxyResult) {
-	if urlsCount <= 1 || selector == nil || result == nil {
+// recordSuccessTTFBToSelector 在2xx响应里把TTFB回报给URLSelector。
+// 非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
+func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlStr string, result *proxyResult) {
+	if selector == nil || result == nil {
 		return
 	}
 	if result.status < 200 || result.status >= 300 {
@@ -2456,8 +2467,8 @@ func (s *Server) attemptKeyAcrossURLs(
 	}
 	clientProtocol := reqCtx.clientProtocol
 	channelProtocol := protocol.Protocol(cfg.GetChannelType())
+	transformMode := cfg.GetProtocolTransformMode()
 	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
-	canTransform := protocol.SupportsTransformFamily(clientProtocol, channelProtocol, requestFamily)
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2484,16 +2495,22 @@ func (s *Server) attemptKeyAcrossURLs(
 			channelID: cfg.ID, baseURL: urlEntry.url,
 			clientProtocol: clientProtocol, requestFamily: requestFamily,
 		}
-		state := s.protocolCapabilities.get(capabilityKey)
-		if model.HasExactUpstreamURLMarker(urlEntry.url) && clientProtocol != channelProtocol {
-			if canTransform {
-				state = protocolCapabilityLocal
-			} else {
-				state = protocolCapabilityUnsupported
-			}
-			s.protocolCapabilities.set(capabilityKey, state)
+		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
+			return nil, nil, fmt.Errorf("invalid URL selector index %d for channel %d", urlEntry.idx, cfg.ID)
 		}
-		if state == protocolCapabilityUnsupported {
+		protocolCandidates, declared := protocolCandidatesForURL(
+			cfg.URLs[urlEntry.idx], transformMode, clientProtocol, channelProtocol, requestFamily,
+		)
+		learnCapability := transformMode == model.ProtocolTransformModeAuto && !declared
+		if learnCapability {
+			state := s.protocolCapabilities.get(capabilityKey)
+			if state == protocolCapabilityUnsupported {
+				protocolCandidates = nil
+			} else if cachedProtocol, ok := state.upstreamProtocol(); ok {
+				protocolCandidates = prioritizeProtocolCandidate(protocolCandidates, cachedProtocol)
+			}
+		}
+		if len(protocolCandidates) == 0 {
 			urlLastFailure = &proxyResult{
 				status:                    http.StatusNotFound,
 				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
@@ -2505,34 +2522,33 @@ func (s *Server) attemptKeyAcrossURLs(
 			continue
 		}
 
-		upstreamProtocol := clientProtocol
-		if state == protocolCapabilityLocal {
-			upstreamProtocol = channelProtocol
-		}
-		result, nextAction, attemptErr := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
-		if attemptErr != nil {
-			return nil, nil, attemptErr
-		}
-		if result != nil && result.protocolCapabilityMissing {
-			if canTransform {
-				s.protocolCapabilities.set(capabilityKey, protocolCapabilityLocal)
-				s.activeRequests.Retry(reqCtx.activeReqID)
-				result, nextAction, attemptErr = s.forwardAttempt(
-					ctx, cfg, keyIndex, selectedKey, reqCtx, channelProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
-				if attemptErr != nil {
-					return nil, nil, attemptErr
+		var result *proxyResult
+		var nextAction cooldown.Action
+		for protocolIdx, upstreamProtocol := range protocolCandidates {
+			var attemptErr error
+			result, nextAction, attemptErr = s.forwardAttempt(
+				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
+			if attemptErr != nil {
+				return nil, nil, attemptErr
+			}
+			if result == nil || !result.protocolCapabilityMissing {
+				if learnCapability {
+					s.protocolCapabilities.set(capabilityKey, protocolCapabilityFor(upstreamProtocol))
 				}
-			} else {
+				break
+			}
+			if protocolIdx < len(protocolCandidates)-1 {
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				continue
+			}
+			if learnCapability {
 				s.protocolCapabilities.set(capabilityKey, protocolCapabilityUnsupported)
 			}
-		} else if upstreamProtocol == clientProtocol {
-			s.protocolCapabilities.set(capabilityKey, protocolCapabilityNative)
 		}
 
 		if result != nil && result.succeeded {
-			// 成功：记录TTFB到URLSelector（仅多URL场景）
-			recordSuccessTTFBToSelector(selector, cfg.ID, urlsCount, urlEntry.url, result)
+			// 成功：记录TTFB到URLSelector，供单URL和多URL统一展示实时统计。
+			recordSuccessTTFBToSelector(selector, cfg.ID, urlEntry.url, result)
 			return result, nil, nil
 		}
 

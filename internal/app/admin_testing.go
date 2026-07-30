@@ -81,7 +81,7 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 
 	cfg := &model.Config{
 		ChannelType:        util.ChannelTypeCodex,
-		URL:                probe.URL,
+		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(probe.URL), Exact: model.HasExactUpstreamURLMarker(probe.URL)}},
 		ProxyURL:           probe.ProxyURL,
 		CustomRequestRules: probe.CustomRequestRules,
 	}
@@ -207,10 +207,6 @@ func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelReque
 	if protocolName := strings.TrimSpace(testReq.ChannelType); protocolName != "" {
 		return strings.ToLower(protocolName)
 	}
-	return cfg.GetChannelType()
-}
-
-func resolveTestUpstreamProtocol(cfg *model.Config, _ string) string {
 	return cfg.GetChannelType()
 }
 
@@ -366,26 +362,12 @@ func patchUpstreamSystemPrompt(translatedBody, upstreamBody []byte, upstreamProt
 	return result
 }
 
-func supportsRuntimeTestProtocol(clientProtocol, upstreamProtocol string) bool {
-	if clientProtocol == "" || upstreamProtocol == "" {
-		return false
-	}
-	if !util.IsValidChannelType(clientProtocol) || !util.IsValidChannelType(upstreamProtocol) {
-		return false
-	}
-	if clientProtocol == upstreamProtocol {
-		return true
-	}
-	return protocol.SupportsTransform(protocol.Protocol(clientProtocol), protocol.Protocol(upstreamProtocol))
-}
-
 func (s *Server) buildChannelTestRequestPlan(
 	cfgForBuild *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	clientProtocol string,
+	clientProtocol, upstreamProtocol string,
 ) (*channelTestRequestPlan, error) {
-	upstreamProtocol := resolveTestUpstreamProtocol(cfgForBuild, clientProtocol)
 	clientTester := newChannelTester(clientProtocol)
 
 	fullURL, headers, body, err := clientTester.Build(cfgForBuild, apiKey, testReq)
@@ -573,11 +555,18 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 
 	requestedModel := testReq.Model
 	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
-	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, testReq.Model, keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
+	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
 
 	RespondJSON(c, http.StatusOK, testResult)
+}
+
+func channelTestActualModel(result map[string]any, fallback string) string {
+	if actualModel, _ := result["actual_model"].(string); strings.TrimSpace(actualModel) != "" {
+		return actualModel
+	}
+	return fallback
 }
 
 type channelTestKeySelection struct {
@@ -624,9 +613,8 @@ func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyI
 }
 
 func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
-	clientProtocol := resolveClientProtocol(cfg, testReq)
-	actualModel := s.resolveFinalUpstreamModel(cfg, testReq.Model, resolveTestUpstreamProtocol(cfg, clientProtocol))
 	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
+	actualModel := channelTestActualModel(result, testReq.Model)
 	if success, ok := result["success"].(bool); ok && success {
 		if updatePersistedCooldown {
 			if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
@@ -714,6 +702,41 @@ func channelConcurrencyExceededTestResult(start time.Time, err error) map[string
 	}
 }
 
+func resolveConfiguredURLUpstreamProtocols(
+	cfg *model.Config,
+	entry model.ChannelURL,
+	clientProtocol string,
+) (upstreamProtocols []string, declared bool) {
+	client := protocol.Protocol(clientProtocol)
+	candidates, declared := protocolCandidatesForURL(
+		entry,
+		cfg.GetProtocolTransformMode(),
+		client,
+		protocol.Protocol(cfg.GetChannelType()),
+		channelTestRequestFamily(client),
+	)
+	upstreamProtocols = make([]string, len(candidates))
+	for idx, candidate := range candidates {
+		upstreamProtocols[idx] = string(candidate)
+	}
+	return upstreamProtocols, declared
+}
+
+func configuredURLAt(cfg *model.Config, index int, runtimeURL string) model.ChannelURL {
+	if index >= 0 && index < len(cfg.URLs) && cfg.URLs[index].RuntimeURL() == runtimeURL {
+		return cfg.URLs[index]
+	}
+	for _, entry := range cfg.URLs {
+		if entry.RuntimeURL() == runtimeURL {
+			return entry
+		}
+	}
+	return model.ChannelURL{
+		URL:   model.StripExactUpstreamURLMarker(runtimeURL),
+		Exact: model.HasExactUpstreamURLMarker(runtimeURL),
+	}
+}
+
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
 	// 设置默认测试内容（从配置读取）
@@ -721,24 +744,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
 	}
 
-	// 应用完整模型改写逻辑（与正常代理流程保持一致）
-	originalModel := testReq.Model
 	clientProtocol := resolveClientProtocol(cfg, testReq)
-	upstreamProto := resolveTestUpstreamProtocol(cfg, clientProtocol)
-	actualModel := s.resolveFinalUpstreamModel(cfg, originalModel, upstreamProto)
-
-	// 如果模型发生改写，更新测试请求中的模型名称
-	if actualModel != originalModel {
-		testReq.Model = actualModel
-		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, actualModel)
-	}
-
-	if !supportsRuntimeTestProtocol(clientProtocol, upstreamProto) {
-		return map[string]any{
-			"success": false,
-			"error":   fmt.Sprintf("不支持协议转换 %s -> %s", clientProtocol, upstreamProto),
-		}
-	}
 
 	urls := cfg.GetURLs()
 	if forcedBaseURL := strings.TrimSpace(testReq.BaseURL); forcedBaseURL != "" {
@@ -756,28 +762,50 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		attemptResult := s.testChannelAPIWithURL(reqCtx, cfg, apiKey, testReq, clientProtocol, entry.url)
-		attemptResult["base_url"] = entry.url
-		success, _ := attemptResult["success"].(bool)
-		if success {
-			if selector != nil {
-				latency := pickURLSelectorLatency(attemptResult)
-				selector.RecordLatency(cfg.ID, entry.url, latency)
+		upstreamProtocols, declared := resolveConfiguredURLUpstreamProtocols(
+			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
+		)
+		if len(upstreamProtocols) == 0 {
+			lastResult = map[string]any{
+				"success":  false,
+				"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
+				"base_url": entry.url,
 			}
-			return attemptResult
+			continue
 		}
 
-		lastResult = attemptResult
+		capabilityExhausted := false
+		for protocolIdx, upstreamProtocol := range upstreamProtocols {
+			lastResult = s.testChannelAPIWithURLForProtocol(
+				reqCtx, cfg, apiKey, testReq, clientProtocol, upstreamProtocol, entry.url,
+			)
+			lastResult["base_url"] = entry.url
+			success, _ := lastResult["success"].(bool)
+			if success {
+				if selector != nil {
+					latency := pickURLSelectorLatency(lastResult)
+					selector.RecordLatency(cfg.ID, entry.url, latency)
+				}
+				return lastResult
+			}
+			if declared || !isChannelTestProtocolEndpointMissing(lastResult) {
+				break
+			}
+			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
+		}
 		if idx == len(orderedURLs)-1 {
 			break
 		}
+		if capabilityExhausted {
+			continue
+		}
 
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(attemptResult)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}
 		if !continueFallback {
-			return attemptResult
+			return lastResult
 		}
 	}
 
@@ -787,13 +815,27 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	return map[string]any{"success": false, "error": "渠道测试失败: 未找到可用URL"}
 }
 
-func (s *Server) testChannelAPIWithURL(
+func (s *Server) testChannelAPIWithURLForProtocol(
 	reqCtx context.Context,
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	clientProtocol, selectedURL string,
-) map[string]any {
+	clientProtocol, upstreamProtocol, selectedURL string,
+) (result map[string]any) {
+	attemptReq := *testReq
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, testReq.Model, upstreamProtocol)
+	if attemptReq.Model != testReq.Model {
+		log.Printf("[INFO] [测试-请求体修改] 渠道ID=%d, 修改后模型=%s", cfg.ID, attemptReq.Model)
+	}
+	testReq = &attemptReq
+	defer func() {
+		if result == nil {
+			return
+		}
+		result["upstream_protocol"] = upstreamProtocol
+		result["actual_model"] = attemptReq.Model
+	}()
+
 	start := time.Now()
 	var (
 		req              *http.Request
@@ -805,7 +847,9 @@ func (s *Server) testChannelAPIWithURL(
 	)
 	if testReq.WaitForCapacity {
 		var cfgForBuild *model.Config
-		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, selectedURL)
+		cfgForBuild, requestPlan, err = s.buildTestUpstreamRequestPlan(
+			cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+		)
 		if err == nil {
 			capacityRelease, err = s.waitForUpstreamRequest(reqCtx, cfg)
 		}
@@ -816,14 +860,20 @@ func (s *Server) testChannelAPIWithURL(
 			capacityRelease()
 		}
 	} else {
-		req, requestPlan, cancel, err = s.buildTestUpstreamRequest(reqCtx, cfg, apiKey, testReq, clientProtocol, selectedURL)
+		req, requestPlan, cancel, err = s.buildTestUpstreamRequestForProtocol(
+			reqCtx, cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+		)
 	}
 	if err != nil {
-		return map[string]any{
+		result := map[string]any{
 			"success":     false,
 			"error":       err.Error(),
 			"duration_ms": time.Since(start).Milliseconds(),
 		}
+		if isAutomaticProtocolTranslationFailure(cfg, err) {
+			result["protocol_capability_missing"] = true
+		}
+		return result
 	}
 	defer cancel()
 	ctx := req.Context()
@@ -919,7 +969,7 @@ func (s *Server) testChannelAPIWithURL(
 	isEventStream := strings.Contains(strings.ToLower(contentType), "text/event-stream")
 
 	// 通用结果初始化
-	result := map[string]any{
+	result = map[string]any{
 		"success":      resp.StatusCode >= 200 && resp.StatusCode < 300,
 		"status_code":  resp.StatusCode,
 		"is_streaming": testReq.Stream,
@@ -1087,18 +1137,18 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	clientProtocol, selectedURL string,
+	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*model.Config, *channelTestRequestPlan, error) {
 	cfgForBuild := &model.Config{
 		ID:                 cfg.ID,
 		Name:               cfg.Name,
 		ChannelType:        cfg.ChannelType,
-		URL:                selectedURL,
+		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(selectedURL), Exact: model.HasExactUpstreamURLMarker(selectedURL)}},
 		ModelEntries:       append([]model.ModelEntry(nil), cfg.ModelEntries...),
 		CustomRequestRules: cfg.CustomRequestRules,
 	}
 
-	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)
+	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol, upstreamProtocol)
 	if err != nil {
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
@@ -1152,16 +1202,14 @@ func (s *Server) newTestUpstreamRequest(
 	return req, timeout.cancelAll, nil
 }
 
-// buildTestUpstreamRequest 构造测试用上游 HTTP 请求（含 plan 构造、anyrouter 注入、body/header 规则）。
-// 返回的 cancel 必须由调用者 defer。
-func (s *Server) buildTestUpstreamRequest(
+func (s *Server) buildTestUpstreamRequestForProtocol(
 	reqCtx context.Context,
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	clientProtocol, selectedURL string,
+	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*http.Request, *channelTestRequestPlan, context.CancelFunc, error) {
-	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, selectedURL)
+	cfgForBuild, requestPlan, err := s.buildTestUpstreamRequestPlan(cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -1655,6 +1703,26 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	default:
 		return false, false
 	}
+}
+
+func isChannelTestProtocolEndpointMissing(result map[string]any) bool {
+	if missing, _ := result["protocol_capability_missing"].(bool); missing {
+		return true
+	}
+	statusCode, ok := getResultInt(result["status_code"])
+	if !ok {
+		return false
+	}
+	_, errorBody, _ := buildTestFailureClassificationInput(result)
+	return util.ShouldFallbackProtocol(statusCode, errorBody)
+}
+
+func isAutomaticProtocolTranslationFailure(cfg *model.Config, err error) bool {
+	if cfg == nil || cfg.GetProtocolTransformMode() != model.ProtocolTransformModeAuto || err == nil {
+		return false
+	}
+	var translationErr *protocol.RequestTranslationError
+	return errors.As(err, &translationErr)
 }
 
 func pickURLSelectorLatency(result map[string]any) time.Duration {
