@@ -1413,12 +1413,12 @@ func TestHandleChannelTest_AutoFallsBackOnNonModelDeployment404(t *testing.T) {
 		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	if !reflect.DeepEqual(gotPaths, []string{
+		"/v1/responses",
 		"/v1/messages",
 		"/v1/chat/completions",
-		"/v1/responses",
 		"/v1beta/models/claude-4.5-haiku:streamGenerateContent",
 	}) {
-		t.Fatalf("paths=%v, want all protocols in fixed order", gotPaths)
+		t.Fatalf("paths=%v, want native Codex then Anthropic, OpenAI, Gemini", gotPaths)
 	}
 	if len(gotBodies) != 4 {
 		t.Fatalf("request count=%d, want 4", len(gotBodies))
@@ -1445,7 +1445,13 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 		gotPaths = append(gotPaths, r.URL.Path)
 		gotBodies = append(gotBodies, body)
 
-		if r.URL.Path == "/v1/messages" {
+		switch {
+		case strings.Contains(r.URL.Path, ":streamGenerateContent"):
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
+		case r.URL.Path == "/v1/messages":
 			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 			w.Header().Set("Server", "cloudflare")
 			w.WriteHeader(http.StatusForbidden)
@@ -1490,14 +1496,24 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
-	if !reflect.DeepEqual(gotPaths, []string{"/v1/messages", "/v1/chat/completions"}) {
-		t.Fatalf("paths=%v, want Anthropic then OpenAI", gotPaths)
+	if !reflect.DeepEqual(gotPaths, []string{
+		"/v1beta/models/test-model:streamGenerateContent",
+		"/v1/messages",
+		"/v1/chat/completions",
+	}) {
+		t.Fatalf("paths=%v, want native Gemini then Anthropic and OpenAI", gotPaths)
 	}
-	if !gjson.GetBytes(gotBodies[0], "messages").IsArray() {
-		t.Fatalf("Anthropic request must use messages: %s", gotBodies[0])
+	if !gjson.GetBytes(gotBodies[0], "contents").IsArray() {
+		t.Fatalf("native Gemini request must use contents: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
-		t.Fatalf("fallback request must use OpenAI messages: %s", gotBodies[1])
+		t.Fatalf("Anthropic request must use messages: %s", gotBodies[1])
+	}
+	if got := gjson.GetBytes(gotBodies[1], "messages.0.role").String(); got != "user" {
+		t.Fatalf("Anthropic request role=%q, want user: %s", got, gotBodies[1])
+	}
+	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
+		t.Fatalf("OpenAI fallback request must use messages: %s", gotBodies[2])
 	}
 
 	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
@@ -1509,7 +1525,7 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 	}
 }
 
-func TestHandleChannelTest_AutoTriesProtocolsInFixedOrder(t *testing.T) {
+func TestHandleChannelTest_AutoTriesNativeThenFallbackProtocols(t *testing.T) {
 	var gotPaths []string
 	var gotBodies [][]byte
 
@@ -1521,12 +1537,12 @@ func TestHandleChannelTest_AutoTriesProtocolsInFixedOrder(t *testing.T) {
 		gotPaths = append(gotPaths, r.URL.Path)
 		gotBodies = append(gotBodies, body)
 		w.Header().Set("Content-Type", "application/json")
-		if !strings.Contains(r.URL.Path, ":generateContent") {
+		if r.URL.Path != "/v1/responses" {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2},"modelVersion":"test-model"}`)
+		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","status":"completed","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 	}))
 	defer upstream.Close()
 
@@ -1534,7 +1550,7 @@ func TestHandleChannelTest_AutoTriesProtocolsInFixedOrder(t *testing.T) {
 	srv.client = upstream.Client()
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:                  "auto-fixed-protocol-order",
+		Name:                  "auto-native-then-fallback",
 		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 		Priority:              1,
 		ChannelType:           "gemini",
@@ -1551,7 +1567,7 @@ func TestHandleChannelTest_AutoTriesProtocolsInFixedOrder(t *testing.T) {
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
 		"model":           "test-model",
-		"client_protocol": "openai",
+		"client_protocol": "gemini",
 		"content":         "hello",
 	}))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
@@ -1562,32 +1578,32 @@ func TestHandleChannelTest_AutoTriesProtocolsInFixedOrder(t *testing.T) {
 		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	if !reflect.DeepEqual(gotPaths, []string{
+		"/v1beta/models/test-model:generateContent",
 		"/v1/messages",
 		"/v1/chat/completions",
 		"/v1/responses",
-		"/v1beta/models/test-model:generateContent",
 	}) {
-		t.Fatalf("paths=%v, want Anthropic, OpenAI, Codex, Gemini", gotPaths)
+		t.Fatalf("paths=%v, want native Gemini then Anthropic, OpenAI, Codex", gotPaths)
 	}
-	if !gjson.GetBytes(gotBodies[0], "messages").IsArray() {
-		t.Fatalf("Anthropic request must contain messages: %s", gotBodies[0])
+	if !gjson.GetBytes(gotBodies[0], "contents").IsArray() {
+		t.Fatalf("native Gemini request must contain contents: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
-		t.Fatalf("OpenAI request must contain messages: %s", gotBodies[1])
+		t.Fatalf("Anthropic request must contain messages: %s", gotBodies[1])
 	}
-	if !gjson.GetBytes(gotBodies[2], "input").IsArray() {
-		t.Fatalf("Codex request must contain input: %s", gotBodies[2])
+	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
+		t.Fatalf("OpenAI request must contain messages: %s", gotBodies[2])
 	}
-	if !gjson.GetBytes(gotBodies[3], "contents").IsArray() {
-		t.Fatalf("Gemini request must contain contents: %s", gotBodies[3])
+	if !gjson.GetBytes(gotBodies[3], "input").IsArray() {
+		t.Fatalf("Codex request must contain input: %s", gotBodies[3])
 	}
 
 	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
 	if success, _ := resp.Data["success"].(bool); !success {
 		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
 	}
-	if got, _ := resp.Data["upstream_protocol"].(string); got != "gemini" {
-		t.Fatalf("upstream_protocol=%q, want gemini, data=%+v", got, resp.Data)
+	if got, _ := resp.Data["upstream_protocol"].(string); got != "codex" {
+		t.Fatalf("upstream_protocol=%q, want codex, data=%+v", got, resp.Data)
 	}
 }
 
@@ -1603,7 +1619,12 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 		gotPaths = append(gotPaths, r.URL.Path)
 		gotBodies = append(gotBodies, body)
 		w.Header().Set("Content-Type", "application/json")
-		if r.URL.Path == "/v1/messages" {
+		switch r.URL.Path {
+		case "/v1/responses":
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
+		case "/v1/messages":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`)
 			return
@@ -1648,17 +1669,20 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 	if success, _ := resp.Data["success"].(bool); !success {
 		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
 	}
-	if !reflect.DeepEqual(gotPaths, []string{"/v1/messages", "/v1/chat/completions"}) {
-		t.Fatalf("paths=%v, want Anthropic then OpenAI", gotPaths)
+	if !reflect.DeepEqual(gotPaths, []string{"/v1/responses", "/v1/messages", "/v1/chat/completions"}) {
+		t.Fatalf("paths=%v, want native Codex then Anthropic and OpenAI", gotPaths)
 	}
-	if len(gotBodies) != 2 {
-		t.Fatalf("request count=%d, want 2", len(gotBodies))
+	if len(gotBodies) != 3 {
+		t.Fatalf("request count=%d, want 3", len(gotBodies))
 	}
-	if !gjson.GetBytes(gotBodies[0], "messages").IsArray() {
-		t.Fatalf("Anthropic request must use messages: %s", gotBodies[0])
+	if !gjson.GetBytes(gotBodies[0], "input").IsArray() {
+		t.Fatalf("native Codex request must use input: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
-		t.Fatalf("fallback request must use OpenAI messages: %s", gotBodies[1])
+		t.Fatalf("Anthropic request must use messages: %s", gotBodies[1])
+	}
+	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
+		t.Fatalf("OpenAI fallback request must use messages: %s", gotBodies[2])
 	}
 	if got, _ := resp.Data["upstream_protocol"].(string); got != "openai" {
 		t.Fatalf("upstream_protocol=%q, want openai, data=%+v", got, resp.Data)

@@ -21,7 +21,7 @@ const (
 	protocolCapabilityGemini
 )
 
-var automaticUpstreamProtocolOrder = [...]protocol.Protocol{
+var automaticFallbackProtocolOrder = [...]protocol.Protocol{
 	protocol.Anthropic,
 	protocol.OpenAI,
 	protocol.Codex,
@@ -92,7 +92,9 @@ func protocolCandidatesForURL(
 
 	switch transformMode {
 	case model.ProtocolTransformModeUpstream:
-		appendIfSupported(clientProtocol)
+		if protocolCapabilityFor(clientProtocol) != protocolCapabilityUnsupported {
+			appendIfSupported(clientProtocol)
+		}
 	case model.ProtocolTransformModeLocal:
 		appendIfSupported(channelProtocol)
 	default:
@@ -100,7 +102,13 @@ func protocolCandidatesForURL(
 			appendIfSupported(channelProtocol)
 			return candidates, false
 		}
-		for _, upstream := range automaticUpstreamProtocolOrder {
+		if protocolCapabilityFor(clientProtocol) != protocolCapabilityUnsupported {
+			appendIfSupported(clientProtocol)
+		}
+		for _, upstream := range automaticFallbackProtocolOrder {
+			if upstream == clientProtocol {
+				continue
+			}
 			appendIfSupported(upstream)
 		}
 		if declared && len(candidates) > 1 {

@@ -4508,12 +4508,12 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}
 	paths := []string{attempts[0].path, attempts[1].path, attempts[2].path, attempts[3].path}
 	if !slices.Equal(paths, []string{
+		"/v1/responses",
 		"/v1/messages",
 		"/v1/chat/completions",
-		"/v1/responses",
 		"/v1beta/models/gemini-2.5-pro:streamGenerateContent",
 	}) {
-		t.Fatalf("protocol attempts=%v, want fixed order", paths)
+		t.Fatalf("protocol attempts=%v, want native Codex then fallback order", paths)
 	}
 	if !bytes.Contains(attempts[3].body, []byte(`"contents"`)) {
 		t.Fatalf("unexpected Gemini bridge request body=%s", attempts[3].body)
