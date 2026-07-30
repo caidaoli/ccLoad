@@ -152,7 +152,6 @@
             updateChannelRestrictionModeUI();
           },
           'toggle-select-all-channels': (actionTarget) => toggleSelectAllChannels(actionTarget.checked),
-          'filter-available-channel-type': () => filterAvailableChannels(document.getElementById('channelSearchInput')?.value || ''),
           'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
           'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
           'toggle-allowed-channel': (actionTarget) => {
@@ -1050,8 +1049,6 @@
       await ensureChannelTypeDisplayNameMap();
       selectedChannelsForAdd.clear();
       document.getElementById('channelSearchInput').value = '';
-      const channelTypeFilter = document.getElementById('channelTypeFilterSelect');
-      if (channelTypeFilter) channelTypeFilter.value = '';
       renderAvailableChannels('');
       document.getElementById('channelSelectModal').style.display = 'block';
       pushModal(closeChannelSelectModal);
@@ -1108,21 +1105,21 @@
       return channelTypeDisplayNamesPromise;
     }
 
-    function getChannelTypeGroupKey(channel) {
+    function getChannelTypeKey(channel) {
       return normalizeChannelTypeValue(channel?.channel_type);
     }
 
-    function getChannelTypeGroupLabel(typeKey) {
+    function getChannelTypeLabel(typeKey) {
       const normalizedTypeKey = normalizeChannelTypeValue(typeKey);
-      return channelTypeDisplayNameMap.get(normalizedTypeKey) || normalizedTypeKey || t('tokens.channelTypeOther');
+      return channelTypeDisplayNameMap.get(normalizedTypeKey) || normalizedTypeKey;
     }
 
     function matchesChannelSearchText(channel, searchText) {
       const search = String(searchText || '').trim().toLowerCase();
       if (!search) return true;
 
-      const normalizedTypeKey = getChannelTypeGroupKey(channel);
-      const displayTypeName = getChannelTypeGroupLabel(normalizedTypeKey).toLowerCase();
+      const normalizedTypeKey = getChannelTypeKey(channel);
+      const displayTypeName = getChannelTypeLabel(normalizedTypeKey).toLowerCase();
       const name = String(channel?.name || '').toLowerCase();
       const rawType = String(channel?.channel_type || '').trim().toLowerCase();
       const id = String(channel?.id || '');
@@ -1132,51 +1129,6 @@
         normalizedTypeKey.includes(search) ||
         displayTypeName.includes(search) ||
         id.includes(search);
-    }
-
-    function sortChannelTypeGroups(groups) {
-      const order = ['anthropic', 'codex', 'openai', 'gemini'];
-      return groups.sort((a, b) => {
-        const indexA = order.includes(a.typeKey) ? order.indexOf(a.typeKey) : order.length;
-        const indexB = order.includes(b.typeKey) ? order.indexOf(b.typeKey) : order.length;
-        if (indexA !== indexB) return indexA - indexB;
-        return a.label.localeCompare(b.label);
-      });
-    }
-
-    function groupChannelsByType(channels) {
-      const groupMap = new Map();
-      channels.forEach((channel) => {
-        const typeKey = getChannelTypeGroupKey(channel);
-        if (!groupMap.has(typeKey)) {
-          groupMap.set(typeKey, {
-            typeKey,
-            label: getChannelTypeGroupLabel(typeKey),
-            channels: []
-          });
-        }
-        groupMap.get(typeKey).channels.push(channel);
-      });
-      return sortChannelTypeGroups(Array.from(groupMap.values()));
-    }
-
-    function updateChannelTypeFilterOptions(channels) {
-      const select = document.getElementById('channelTypeFilterSelect');
-      if (!select) return '';
-
-      const currentValue = select.value;
-      const channelGroups = groupChannelsByType(channels);
-      select.innerHTML = [
-        `<option value="">${escapeHtml(t('tokens.channelTypeAll'))}</option>`,
-        ...channelGroups.map(group => `<option value="${escapeHtml(group.typeKey)}">${escapeHtml(group.label)}</option>`)
-      ].join('');
-
-      if (channelGroups.some(group => group.typeKey === currentValue)) {
-        select.value = currentValue;
-      } else {
-        select.value = '';
-      }
-      return select.value;
     }
 
     function renderAvailableChannels(searchText) {
@@ -1189,21 +1141,17 @@
 
       const existingChannelIDs = new Set(editAllowedChannelIDs);
       const availableChannels = allChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
-      const selectedTypeKey = updateChannelTypeFilterOptions(availableChannels);
       let channels = availableChannels;
 
       if (searchText) {
         channels = channels.filter(ch => matchesChannelSearchText(ch, searchText));
-      }
-      if (selectedTypeKey) {
-        channels = channels.filter(ch => getChannelTypeGroupKey(ch) === selectedTypeKey);
       }
 
       currentVisibleChannels = channels;
       if (countSpan) countSpan.textContent = selectedChannelsForAdd.size;
 
       if (channels.length === 0) {
-        const hasFilter = Boolean(searchText || selectedTypeKey);
+        const hasFilter = Boolean(searchText);
         const message = hasFilter
           ? t('tokens.noMatchingChannel')
           : allChannels.length === 0
@@ -1231,30 +1179,18 @@
         visibleChannelsCount.textContent = t('tokens.visibleChannelsCount', { count: channels.length });
       }
 
-      const channelGroups = groupChannelsByType(channels);
-      container.innerHTML = channelGroups.map(group => `
-        <section class="channel-type-group" data-channel-type-key="${escapeHtml(group.typeKey)}">
-          <div class="channel-type-group-header">
-            <div class="channel-type-group-title">
-              <span class="channel-type-group-name">${escapeHtml(group.label)}</span>
-              <span class="channel-type-group-count">${t('tokens.visibleChannelsCount', { count: group.channels.length })}</span>
-            </div>
-          </div>
-          <div class="channel-type-group-list">
-            ${group.channels.map(ch => {
-              const channelID = normalizeChannelID(ch.id);
-              return `
-                <label class="channel-option-item" data-channel-id="${channelID}">
-                  <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
-                    ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
-                  <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
-                  <span class="channel-option-meta">#${channelID} · ${escapeHtml(ch.channel_type || '-')}</span>
-                </label>
-              `;
-            }).join('')}
-          </div>
-        </section>
-      `).join('');
+      container.innerHTML = `<div class="channel-option-list">${channels.map(ch => {
+        const channelID = normalizeChannelID(ch.id);
+        const channelType = getChannelTypeLabel(getChannelTypeKey(ch));
+        return `
+          <label class="channel-option-item" data-channel-id="${channelID}">
+            <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
+              ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
+            <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
+            <span class="channel-option-meta">#${channelID} · ${escapeHtml(channelType)}</span>
+          </label>
+        `;
+      }).join('')}</div>`;
 
       if (!container.dataset.delegated) {
         container.addEventListener('change', (e) => {

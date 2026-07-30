@@ -1,6 +1,7 @@
 (function () {
   const CHANNEL_MODAL_IDS = [
     'channelModal',
+    'commonModelsModal',
     'keyImportModal',
     'keyExportModal',
     'modelImportModal',

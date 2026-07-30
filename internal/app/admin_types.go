@@ -233,9 +233,6 @@ func (cr *ChannelRequest) Validate() error {
 		}
 		cr.ChannelType = normalized // 应用标准化结果
 	}
-	if cr.Websockets && util.NormalizeChannelType(cr.ChannelType) != util.ChannelTypeCodex {
-		return fmt.Errorf("websockets is only supported for codex channels")
-	}
 	rawProtocolTransformMode := cr.ProtocolTransformMode
 	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
 	if cr.ProtocolTransformMode == "" {
