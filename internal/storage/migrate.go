@@ -49,6 +49,9 @@ func migratePostgres(ctx context.Context, db *sql.DB) error {
 
 // migrate 统一迁移逻辑
 func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	// 迁移约束：不得在启动迁移中删除废弃字段或表。
+	// 新库由当前 schema 决定不创建；旧库保留原结构和数据，以支持版本回退。
+	// 确需执行破坏性迁移时，必须脱离启动路径，由显式运维操作完成。
 	// 表定义（顺序重要：外键依赖）
 	tables := []func() *schema.TableBuilder{
 		schema.DefineSchemaMigrationsTable, // 迁移版本表必须最先创建
@@ -56,7 +59,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		schema.DefineAPIKeysTable,
 		schema.DefineChannelModelsTable,
 		schema.DefineChannelModelCooldownsTable,
-		schema.DefineChannelProtocolTransformsTable,
 		schema.DefineChannelURLStatesTable,
 		schema.DefineAuthTokensTable,
 		schema.DefineSystemSettingsTable,
@@ -133,9 +135,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureChannelsMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels max_concurrency: %w", err)
-			}
-			if err := ensureChannelsProtocolTransformMode(ctx, db, dialect); err != nil {
-				return fmt.Errorf("migrate channels protocol_transform_mode: %w", err)
 			}
 			if err := ensureChannelsScheduledCheckEnabled(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels scheduled_check_enabled: %w", err)

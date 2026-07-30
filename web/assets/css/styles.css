@@ -3233,10 +3233,6 @@ body {
   min-width: 280px;
 }
 
-.model-test-control--type {
-  min-width: 160px;
-}
-
 #channelSelectorLabel {
   flex: 0 0 auto;
 }
@@ -7228,9 +7224,8 @@ body.web-role-api-token .filter-group--auth-token {
   }
 
   #channelSelectorLabel,
-  #modelTypeLabel,
   #modelSelectorLabel,
-  #protocolTransformContainer,
+  #clientProtocolContainer,
   .model-test-control--content,
   .model-test-run-controls {
     grid-column: 1 / -1;

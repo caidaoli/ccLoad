@@ -54,21 +54,6 @@ func filterConfigs(cfgs []*model.Config, keep func(*model.Config) bool) []*model
 	return out
 }
 
-func channelExposesProtocol(cfg *model.Config, normalizedProtocol string) bool {
-	if util.NormalizeChannelType(cfg.ChannelType) == normalizedProtocol {
-		return true
-	}
-	for _, transform := range cfg.ProtocolTransforms {
-		if strings.TrimSpace(transform) == "" {
-			continue
-		}
-		if util.NormalizeChannelType(transform) == normalizedProtocol {
-			return true
-		}
-	}
-	return false
-}
-
 func (s *Server) handleListChannels(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
@@ -163,7 +148,7 @@ func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, channelCooldo
 	if t := c.Query("type"); t != "" && t != "all" {
 		normalized := util.NormalizeChannelType(t)
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			return channelExposesProtocol(cfg, normalized)
+			return cfg.GetChannelType() == normalized
 		})
 	}
 

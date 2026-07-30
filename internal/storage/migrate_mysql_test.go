@@ -140,7 +140,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}

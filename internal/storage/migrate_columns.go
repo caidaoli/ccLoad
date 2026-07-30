@@ -11,15 +11,14 @@ import (
 // sqliteMigratableTables 允许增量迁移的SQLite表名白名单
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
-	"logs":                        true,
-	"auth_tokens":                 true,
-	"channel_models":              true,
-	"channel_protocol_transforms": true,
-	"api_keys":                    true,
-	"channels":                    true,
-	"debug_logs":                  true,
-	"fingerprint_test_results":    true,
-	"schema_migrations":           true,
+	"logs":                     true,
+	"auth_tokens":              true,
+	"channel_models":           true,
+	"api_keys":                 true,
+	"channels":                 true,
+	"debug_logs":               true,
+	"fingerprint_test_results": true,
+	"schema_migrations":        true,
 }
 
 type sqliteColumnDef struct {
@@ -546,12 +545,6 @@ func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dia
 			{name: "max_concurrency", definition: "INTEGER NOT NULL DEFAULT 0"},
 		})
 	}
-}
-
-func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "channels", "protocol_transform_mode",
-		"VARCHAR(32) NOT NULL DEFAULT 'local'",
-		"TEXT NOT NULL DEFAULT 'local'")
 }
 
 // ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段

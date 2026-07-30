@@ -6,136 +6,6 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
-if (!window.ChannelProtocolConfig) {
-  throw new Error('ChannelProtocolConfig helper is required before channels-modals.js');
-}
-
-function protocolTransformLabel(protocol) {
-  const labels = {
-    anthropic: 'channels.protocolTransformAnthropic',
-    codex: 'channels.protocolTransformCodex',
-    openai: 'channels.protocolTransformOpenAI',
-    gemini: 'channels.protocolTransformGemini'
-  };
-  const key = labels[protocol] || protocol;
-  return window.t ? window.t(key) : key;
-}
-
-function protocolTransformModeLabel(mode) {
-  const labels = {
-    local: 'channels.protocolTransformModeLocal',
-    upstream: 'channels.protocolTransformModeUpstream'
-  };
-  const key = labels[mode] || mode;
-  return window.t ? window.t(key) : key;
-}
-
-function hasExactURLMarker(url) {
-  return String(url || '').trim().endsWith('#');
-}
-
-function hasExactURLInEditor() {
-  if (typeof getValidInlineURLs === 'function') {
-    return getValidInlineURLs().some(hasExactURLMarker);
-  }
-  return Array.isArray(inlineURLTableData) && inlineURLTableData.some(hasExactURLMarker);
-}
-
-function protocolTransformHintMarkup(protocol) {
-  if (protocol !== 'gemini') return '';
-
-  return `
-          <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
-            ${window.i18nText('channels.modal.protocolTransformsHint', '除主协议外，额外支持的协议')}
-          </span>
-        `;
-}
-
-function normalizeProtocolTransformSelection(channelType, selectedValues) {
-  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
-}
-
-function renderProtocolTransformOptions(channelType, selectedValues = []) {
-  const container = document.getElementById('protocolTransformsContainer');
-  if (!container) return;
-
-  const currentType = window.ChannelProtocolConfig.normalizeProtocol(channelType) || 'anthropic';
-  const selected = new Set(normalizeProtocolTransformSelection(currentType, selectedValues));
-  const options = window.ChannelProtocolConfig.getProtocolTransformRenderOptions(currentType);
-  container.innerHTML = options.map((protocol) => {
-    const disabled = protocol === currentType;
-    const checked = !disabled && selected.has(protocol);
-    const copyClass = protocol === 'gemini'
-      ? 'channel-editor-radio-option-copy channel-editor-radio-option-copy--with-hint'
-      : 'channel-editor-radio-option-copy';
-    return `
-      <label class="channel-editor-radio-option">
-        <input type="checkbox"
-               name="protocolTransform"
-               value="${protocol}"
-               ${checked ? 'checked' : ''}
-               ${disabled ? 'disabled' : ''}
-        >
-        <span class="${copyClass}">
-          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${window.i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
-          ${protocolTransformHintMarkup(protocol)}
-        </span>
-      </label>
-    `;
-  }).join('');
-}
-
-function getSelectedProtocolTransforms(channelType) {
-  const selectedValues = Array.from(document.querySelectorAll('input[name="protocolTransform"]:checked'))
-    .map((input) => input.value);
-  return normalizeProtocolTransformSelection(channelType, selectedValues);
-}
-
-function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
-  const container = document.getElementById('protocolTransformModeContainer');
-  if (!container) return;
-
-  const exactURL = hasExactURLInEditor();
-  const selectedMode = exactURL
-    ? 'local'
-    : window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
-  container.innerHTML = window.ChannelProtocolConfig.PROTOCOL_TRANSFORM_MODES.map((mode) => `
-      <label class="channel-editor-radio-option">
-        <input type="radio"
-               name="protocolTransformMode"
-               value="${mode}"
-               ${exactURL && mode === 'upstream' ? 'disabled' : ''}
-               ${mode === selectedMode ? 'checked' : ''}
-        >
-        <span>${protocolTransformModeLabel(mode)}</span>
-      </label>
-    `).join('');
-}
-
-function syncProtocolTransformModeForURLs() {
-  const exactURL = hasExactURLInEditor();
-  const localInput = document.querySelector('input[name="protocolTransformMode"][value="local"]');
-  const upstreamInput = document.querySelector('input[name="protocolTransformMode"][value="upstream"]');
-
-  if (upstreamInput) {
-    upstreamInput.disabled = exactURL;
-  }
-  if (exactURL && upstreamInput && upstreamInput.checked) {
-    upstreamInput.checked = false;
-  }
-  if (exactURL && localInput) {
-    localInput.checked = true;
-  }
-}
-
-function getSelectedProtocolTransformMode() {
-  if (hasExactURLInEditor()) {
-    return 'local';
-  }
-  const selected = document.querySelector('input[name="protocolTransformMode"]:checked')?.value;
-  return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
-}
-
 async function syncScheduledCheckVisibility() {
   const scheduledCheckWrapper = document.getElementById('channelScheduledCheckEnabledWrapper');
   const scheduledCheckModelWrapper = document.getElementById('channelScheduledCheckModelWrapper');
@@ -499,16 +369,15 @@ function initChannelEditorActions() {
     websocketCheckbox.dataset.websocketBound = '1';
   }
 
-  const channelTypeRadios = document.getElementById('channelTypeRadios');
-  if (channelTypeRadios && !channelTypeRadios.dataset.protocolTransformsBound) {
-    channelTypeRadios.addEventListener('change', (event) => {
-      if (event.target && event.target.name === 'channelType') {
-        renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
-        syncChannelWebsocketState();
-        scheduleChannelDuplicateHintCheck();
-      }
-    });
-    channelTypeRadios.dataset.protocolTransformsBound = '1';
+	const channelTypeRadios = document.getElementById('channelTypeRadios');
+	if (channelTypeRadios && !channelTypeRadios.dataset.channelTypeBound) {
+		channelTypeRadios.addEventListener('change', (event) => {
+			if (event.target && event.target.name === 'channelType') {
+				syncChannelWebsocketState();
+				scheduleChannelDuplicateHintCheck();
+			}
+		});
+		channelTypeRadios.dataset.channelTypeBound = '1';
   }
 
   ensureScheduledCheckModelCombobox();
@@ -526,10 +395,8 @@ async function showAddModal() {
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
-  document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
-  syncChannelWebsocketState();
-  renderProtocolTransformOptions('anthropic', []);
-  renderProtocolTransformModeOptions('upstream');
+	document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
+	syncChannelWebsocketState();
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -610,8 +477,6 @@ async function editChannel(id) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
-  renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
-  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'upstream');
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -894,10 +759,8 @@ async function saveChannel(event) {
     name: document.getElementById('channelName').value.trim(),
     url: validURLs.join('\n'),
     api_key: validKeys.join(','),
-    api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
-    channel_type: channelType,
-    protocol_transform_mode: getSelectedProtocolTransformMode(),
-    protocol_transforms: getSelectedProtocolTransforms(channelType),
+		api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
+		channel_type: channelType,
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,

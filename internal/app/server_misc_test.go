@@ -201,9 +201,7 @@ func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 	}
 
 	localCfg := &model.Config{
-		ChannelType:           util.ChannelTypeAnthropic,
-		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		ProtocolTransforms:    []string{util.ChannelTypeOpenAI},
+		ChannelType: util.ChannelTypeAnthropic,
 	}
 	localPlan := protocol.TransformPlan{
 		ClientProtocol:   protocol.OpenAI,
@@ -215,9 +213,7 @@ func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 	}
 
 	upstreamCfg := &model.Config{
-		ChannelType:           util.ChannelTypeAnthropic,
-		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
-		ProtocolTransforms:    []string{util.ChannelTypeOpenAI},
+		ChannelType: util.ChannelTypeAnthropic,
 	}
 	upstreamPlan := protocol.TransformPlan{
 		ClientProtocol:   protocol.OpenAI,

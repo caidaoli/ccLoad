@@ -2,8 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
-	"strings"
 	"testing"
 	"time"
 
@@ -11,49 +9,6 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/testutil"
 )
-
-type protocolAwareSelectorStore struct {
-	storage.Store
-	calls     []struct{ model, protocol string }
-	responses map[string][]*model.Config
-}
-
-func (s *protocolAwareSelectorStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName string, protocol string) ([]*model.Config, error) {
-	s.calls = append(s.calls, struct{ model, protocol string }{model: modelName, protocol: protocol})
-	if s.responses == nil {
-		return nil, nil
-	}
-	return s.responses[modelName+"|"+protocol], nil
-}
-
-type selectorMethodPreferenceStore struct {
-	storage.Store
-	modelCalls         int
-	modelProtocolCalls int
-	channels           []*model.Config
-}
-
-func (s *selectorMethodPreferenceStore) GetEnabledChannelsByModel(_ context.Context, _ string) ([]*model.Config, error) {
-	s.modelCalls++
-	return nil, nil
-}
-
-func (s *selectorMethodPreferenceStore) GetEnabledChannelsByModelAndProtocol(_ context.Context, _ string, _ string) ([]*model.Config, error) {
-	s.modelProtocolCalls++
-	return s.channels, nil
-}
-
-func (s *selectorMethodPreferenceStore) GetAllChannelCooldowns(context.Context) (map[int64]time.Time, error) {
-	return map[int64]time.Time{}, nil
-}
-
-func (s *selectorMethodPreferenceStore) GetAllKeyCooldowns(context.Context) (map[int64]map[int]time.Time, error) {
-	return map[int64]map[int]time.Time{}, nil
-}
-
-func (s *selectorMethodPreferenceStore) GetAllModelCooldowns(context.Context) (map[int64]map[string]time.Time, error) {
-	return map[int64]map[string]time.Time{}, nil
-}
 
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
 func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
@@ -129,7 +84,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	}
 }
 
-func TestSelectRouteCandidates_UsesExposedProtocolInsteadOfChannelType(t *testing.T) {
+func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -137,12 +92,11 @@ func TestSelectRouteCandidates_UsesExposedProtocolInsteadOfChannelType(t *testin
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "gemini-openai-transform",
-		URL:                "https://api.example.com",
-		Priority:           100,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
+		Name:        "gemini-upstream",
+		URL:         "https://api.example.com",
+		Priority:    100,
+		Enabled:     true,
+		ChannelType: "gemini",
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro", RedirectModel: ""},
 		},
@@ -158,145 +112,8 @@ func TestSelectRouteCandidates_UsesExposedProtocolInsteadOfChannelType(t *testin
 	if len(candidates) != 1 {
 		t.Fatalf("期望1个候选渠道，实际%d个", len(candidates))
 	}
-	if candidates[0].Name != "gemini-openai-transform" {
-		t.Fatalf("期望命中 transform 渠道，实际 %s", candidates[0].Name)
-	}
-}
-
-func TestSelectRouteCandidates_EmitsDefaultProtocolTransformMode(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	ctx := context.Background()
-
-	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "gemini-openai-transform",
-		URL:                "https://api.example.com",
-		Priority:           100,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
-		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-2.5-pro", RedirectModel: ""},
-		},
-	})
-	if err != nil {
-		t.Fatalf("创建测试渠道失败: %v", err)
-	}
-
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-2.5-pro", "openai")
-	if err != nil {
-		t.Fatalf("selectCandidates失败: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("期望1个候选渠道，实际%d个", len(candidates))
-	}
-
-	body, err := json.Marshal(candidates[0])
-	if err != nil {
-		t.Fatalf("marshal candidate: %v", err)
-	}
-	if !strings.Contains(string(body), `"protocol_transform_mode":"upstream"`) {
-		t.Fatalf("期望候选渠道默认输出 protocol_transform_mode=upstream，实际 JSON: %s", body)
-	}
-}
-
-func TestSelectRouteCandidates_PrefersModelAndProtocolQueryWhenAvailable(t *testing.T) {
-	baseStore, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	_, err := baseStore.CreateConfig(ctx, &model.Config{
-		Name:        "anthropic-only",
-		URL:         "https://anthropic.example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "anthropic",
-		ModelEntries: []model.ModelEntry{
-			{Model: "shared-model"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("创建 anthropic 测试渠道失败: %v", err)
-	}
-
-	codexCfg, err := baseStore.CreateConfig(ctx, &model.Config{
-		Name:        "codex-only",
-		URL:         "https://codex.example.com",
-		Priority:    20,
-		Enabled:     true,
-		ChannelType: "codex",
-		ModelEntries: []model.ModelEntry{
-			{Model: "shared-model"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("创建 codex 测试渠道失败: %v", err)
-	}
-
-	spyStore := &protocolAwareSelectorStore{
-		Store: baseStore,
-		responses: map[string][]*model.Config{
-			"shared-model|codex": {codexCfg},
-			"*|codex":            {codexCfg},
-		},
-	}
-	server := &Server{store: spyStore, channelBalancer: NewSmoothWeightedRR()}
-
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "shared-model", "CODEX")
-	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
-	}
-
-	if len(spyStore.calls) == 0 {
-		t.Fatalf("期望优先调用 GetEnabledChannelsByModelAndProtocol")
-	}
-	if spyStore.calls[0].model != "shared-model" || spyStore.calls[0].protocol != "codex" {
-		t.Fatalf("联合查询参数异常: %+v", spyStore.calls[0])
-	}
-	if len(candidates) != 1 || candidates[0].Name != "codex-only" {
-		t.Fatalf("期望命中 codex-only，实际 %+v", candidates)
-	}
-}
-
-func TestSelectRouteCandidates_PrefersModelAndProtocolQuery(t *testing.T) {
-	server := &Server{
-		store: &selectorMethodPreferenceStore{
-			channels: []*model.Config{
-				{
-					ID:                 1,
-					Name:               "gemini-openai-transform",
-					URL:                "https://api.example.com",
-					Priority:           100,
-					Enabled:            true,
-					ChannelType:        "gemini",
-					ProtocolTransforms: []string{"openai"},
-					ModelEntries: []model.ModelEntry{
-						{Model: "gemini-2.5-pro"},
-					},
-				},
-			},
-		},
-		channelBalancer: NewSmoothWeightedRR(),
-	}
-
-	ctx := context.Background()
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-2.5-pro", "openai")
-	if err != nil {
-		t.Fatalf("selectCandidates失败: %v", err)
-	}
-	if len(candidates) != 1 {
-		t.Fatalf("期望1个候选渠道，实际%d个", len(candidates))
-	}
-
-	store := server.store.(*selectorMethodPreferenceStore)
-	if store.modelProtocolCalls != 1 {
-		t.Fatalf("期望优先调用 GetEnabledChannelsByModelAndProtocol 1 次，实际 %d", store.modelProtocolCalls)
-	}
-	if store.modelCalls != 0 {
-		t.Fatalf("不应回退调用 GetEnabledChannelsByModel，实际 %d", store.modelCalls)
+	if candidates[0].Name != "gemini-upstream" {
+		t.Fatalf("期望命中 Gemini 上游渠道，实际 %s", candidates[0].Name)
 	}
 }
 
@@ -306,12 +123,11 @@ func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "openai-codex-transform",
-		URL:                "https://api.openai.com",
-		Priority:           50,
-		Enabled:            true,
-		ChannelType:        "openai",
-		ProtocolTransforms: []string{"codex"},
+		Name:        "openai-upstream",
+		URL:         "https://api.openai.com",
+		Priority:    50,
+		Enabled:     true,
+		ChannelType: "openai",
 		ModelEntries: []model.ModelEntry{
 			{Model: "shared-model"},
 		},
@@ -336,12 +152,11 @@ func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "codex-openai-transform",
-		URL:                "https://api.codex.example.com",
-		Priority:           40,
-		Enabled:            true,
-		ChannelType:        "codex",
-		ProtocolTransforms: []string{"openai"},
+		Name:        "codex-upstream",
+		URL:         "https://api.codex.example.com",
+		Priority:    40,
+		Enabled:     true,
+		ChannelType: "codex",
 		ModelEntries: []model.ModelEntry{
 			{Model: "shared-model"},
 		},
@@ -774,8 +589,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	}
 }
 
-// TestSelectCandidates_FilterByChannelType 测试按渠道类型过滤
-func TestSelectCandidates_FilterByChannelType(t *testing.T) {
+func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -805,8 +619,8 @@ func TestSelectCandidates_FilterByChannelType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
 	}
-	if len(filtered) != 1 || filtered[0].Name != "codex-channel" {
-		t.Fatalf("渠道类型过滤失败，返回结果: %+v", filtered)
+	if len(filtered) != 2 {
+		t.Fatalf("客户端协议不应过滤上游主协议，返回结果: %+v", filtered)
 	}
 
 	// 保证类型过滤支持大小写输入
@@ -814,22 +628,21 @@ func TestSelectCandidates_FilterByChannelType(t *testing.T) {
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndType(大写)失败: %v", err)
 	}
-	if len(filteredUpper) != 1 || filteredUpper[0].Name != "codex-channel" {
-		t.Fatalf("渠道类型大小写规范化失败，返回结果: %+v", filteredUpper)
+	if len(filteredUpper) != 2 {
+		t.Fatalf("客户端协议大小写不应改变候选集合，返回结果: %+v", filteredUpper)
 	}
 
-	// 未匹配到指定类型时应返回空切片
+	// 客户端协议即使与所有上游主协议不同，也不应缩小候选集合。
 	filteredNone, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByModelAndType(无匹配)失败: %v", err)
 	}
-	if len(filteredNone) != 0 {
-		t.Fatalf("预期无匹配渠道，实际返回%d个", len(filteredNone))
+	if len(filteredNone) != 2 {
+		t.Fatalf("客户端协议不应过滤候选，实际返回%d个", len(filteredNone))
 	}
 }
 
-// TestSelectCandidatesByChannelType_GeminiFilter 测试按渠道类型选择（Gemini）
-func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
+func TestSelectCandidatesByChannelType_GeminiClientCanUseAllUpstreamProtocols(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -856,18 +669,8 @@ func TestSelectCandidatesByChannelType_GeminiFilter(t *testing.T) {
 		t.Fatalf("selectCandidatesByChannelType失败: %v", err)
 	}
 
-	// 验证只返回Gemini渠道
-	if len(candidates) != 1 {
-		t.Errorf("期望1个Gemini渠道，实际%d个", len(candidates))
-	}
-
-	if len(candidates) > 0 {
-		if candidates[0].ChannelType != "gemini" {
-			t.Errorf("期望渠道类型为gemini，实际为%s", candidates[0].ChannelType)
-		}
-		if candidates[0].Name != "gemini-channel" {
-			t.Errorf("期望返回gemini-channel，实际返回%s", candidates[0].Name)
-		}
+	if len(candidates) != 3 {
+		t.Fatalf("期望全部3个上游协议渠道，实际%d个", len(candidates))
 	}
 }
 
@@ -1410,9 +1213,7 @@ func setupTestStore(t *testing.T) (storage.Store, func()) {
 
 // --- selectCandidatesByChannelType 补充测试 ---
 
-// TestSelectCandidatesByChannelType_CacheHit 测试缓存命中路径
-// 当 GetEnabledChannelsByType 返回结果时，不应走 ListConfigs 兜底
-func TestSelectCandidatesByChannelType_CacheHit(t *testing.T) {
+func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1437,13 +1238,8 @@ func TestSelectCandidatesByChannelType_CacheHit(t *testing.T) {
 		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
 	}
 
-	if len(candidates) != 2 {
-		t.Fatalf("Expected 2 gemini channels, got %d", len(candidates))
-	}
-	for _, c := range candidates {
-		if c.ChannelType != "gemini" {
-			t.Errorf("Expected gemini type, got %s", c.ChannelType)
-		}
+	if len(candidates) != 3 {
+		t.Fatalf("Expected all 3 enabled channels, got %d", len(candidates))
 	}
 }
 
@@ -1471,18 +1267,20 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 		t.Fatalf("SetChannelCooldown failed: %v", err)
 	}
 
-	// 还需要一个 anthropic 渠道确保不被误选
-	_, err = store.CreateConfig(ctx, &model.Config{
+	anthropic, err := store.CreateConfig(ctx, &model.Config{
 		Name: "anthropic-1", URL: "https://a.com", Priority: 100,
 		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
+	if err := store.SetChannelCooldown(ctx, anthropic.ID, now.Add(3*time.Minute)); err != nil {
+		t.Fatalf("SetChannelCooldown failed: %v", err)
+	}
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 
-	// 全冷却场景下，兜底返回最早恢复的 gemini 渠道
+	// 所有协议的渠道都冷却时，兜底返回最早恢复的渠道。
 	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
@@ -1553,8 +1351,7 @@ func TestSelectCandidatesByChannelType_EmptyType(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesByChannelType_NoMatchingType 测试无匹配类型
-func TestSelectCandidatesByChannelType_NoMatchingType(t *testing.T) {
+func TestSelectCandidatesByChannelType_ClientProtocolWithoutNativeChannelStillRoutes(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1570,13 +1367,13 @@ func TestSelectCandidatesByChannelType_NoMatchingType(t *testing.T) {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	// 查询 gemini 类型应返回空
+	// 没有 Gemini 主协议渠道也不影响 Gemini 客户端使用模型兼容渠道。
 	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
 	if err != nil {
 		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
 	}
-	if len(candidates) != 0 {
-		t.Errorf("Expected 0 channels for unmatched type, got %d", len(candidates))
+	if len(candidates) != 1 || candidates[0].Name != "anthropic-only" {
+		t.Errorf("Expected anthropic channel for Gemini client, got %+v", candidates)
 	}
 }
 

@@ -585,9 +585,6 @@ func TestPostgres(t *testing.T) {
 				Priority:    10,
 				ChannelType: "openai",
 				Enabled:     true,
-				ProtocolTransforms: []string{
-					"anthropic",
-				},
 				ModelEntries: []model.ModelEntry{
 					{Model: "gpt-4o"},
 				},
@@ -612,14 +609,8 @@ func TestPostgres(t *testing.T) {
 			if channels, err := store.GetEnabledChannelsByModel(ctx, "gpt-4o"); err != nil || len(channels) != 1 {
 				t.Fatalf("GetEnabledChannelsByModel: channels=%v err=%v", channels, err)
 			}
-			if channels, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByModelAndProtocol: channels=%v err=%v", channels, err)
-			}
 			if channels, err := store.GetEnabledChannelsByType(ctx, "openai"); err != nil || len(channels) != 1 {
 				t.Fatalf("GetEnabledChannelsByType: channels=%v err=%v", channels, err)
-			}
-			if channels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByExposedProtocol: channels=%v err=%v", channels, err)
 			}
 
 			ch.Name = "pg-query-channel-updated"

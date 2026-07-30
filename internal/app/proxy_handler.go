@@ -582,7 +582,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		}
 
 		if result != nil {
-			if result.alphaSearchUnsupported {
+			if result.protocolCapabilityMissing && protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch {
 				sawAlphaSearchUnsupported = true
 			}
 			if result.succeeded {

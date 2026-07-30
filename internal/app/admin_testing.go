@@ -201,7 +201,7 @@ func newChannelTester(protocolName string) testutil.ChannelTester {
 }
 
 func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelRequest) string {
-	if protocolName := strings.TrimSpace(testReq.ProtocolTransform); protocolName != "" {
+	if protocolName := strings.TrimSpace(testReq.ClientProtocol); protocolName != "" {
 		return strings.ToLower(protocolName)
 	}
 	if protocolName := strings.TrimSpace(testReq.ChannelType); protocolName != "" {
@@ -210,17 +210,7 @@ func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelReque
 	return cfg.GetChannelType()
 }
 
-// resolveTestUpstreamProtocol 测试链路专用：跳过 ProtocolTransforms 白名单，
-// 仅按 ProtocolTransformMode 决定上游协议（upstream→client 直通；local→渠道原生触发翻译）。
-// 让测试者无需先把协议加入 ProtocolTransforms 列表即可验证任意 client 协议下的渠道行为。
-func resolveTestUpstreamProtocol(cfg *model.Config, clientProtocol string) string {
-	clientProtocol = strings.ToLower(strings.TrimSpace(clientProtocol))
-	if clientProtocol == "" || !util.IsValidChannelType(clientProtocol) {
-		return cfg.GetChannelType()
-	}
-	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeUpstream {
-		return clientProtocol
-	}
+func resolveTestUpstreamProtocol(cfg *model.Config, _ string) string {
 	return cfg.GetChannelType()
 }
 
@@ -1100,14 +1090,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	clientProtocol, selectedURL string,
 ) (*model.Config, *channelTestRequestPlan, error) {
 	cfgForBuild := &model.Config{
-		ID:                    cfg.ID,
-		Name:                  cfg.Name,
-		ChannelType:           cfg.ChannelType,
-		ProtocolTransformMode: cfg.ProtocolTransformMode,
-		ProtocolTransforms:    cfg.ProtocolTransforms,
-		URL:                   selectedURL,
-		ModelEntries:          append([]model.ModelEntry(nil), cfg.ModelEntries...),
-		CustomRequestRules:    cfg.CustomRequestRules,
+		ID:                 cfg.ID,
+		Name:               cfg.Name,
+		ChannelType:        cfg.ChannelType,
+		URL:                selectedURL,
+		ModelEntries:       append([]model.ModelEntry(nil), cfg.ModelEntries...),
+		CustomRequestRules: cfg.CustomRequestRules,
 	}
 
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol)

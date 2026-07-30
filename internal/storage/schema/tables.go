@@ -11,7 +11,6 @@ func DefineChannelsTable() *TableBuilder {
 		Column("max_concurrency INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("websockets TINYINT NOT NULL DEFAULT 0").
-		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'local'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
 		Column("scheduled_check_enabled TINYINT NOT NULL DEFAULT 0").
 		Column("scheduled_check_model VARCHAR(191) NOT NULL DEFAULT ''").
@@ -73,16 +72,6 @@ func DefineChannelModelCooldownsTable() *TableBuilder {
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
 		Index("idx_channel_model_cooldowns_until", "cooldown_until")
-}
-
-// DefineChannelProtocolTransformsTable 定义渠道协议转换表结构
-func DefineChannelProtocolTransformsTable() *TableBuilder {
-	return NewTable("channel_protocol_transforms").
-		Column("channel_id INT NOT NULL").
-		Column("protocol VARCHAR(64) NOT NULL").
-		Column("PRIMARY KEY (channel_id, protocol)").
-		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
-		Index("idx_channel_protocol_transforms_protocol", "protocol")
 }
 
 // DefineChannelURLStatesTable 定义渠道URL运行状态持久化表（当前仅记录手动禁用URL）

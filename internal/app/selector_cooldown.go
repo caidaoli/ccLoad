@@ -8,6 +8,8 @@ import (
 	"time"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 )
 
 // filterCooldownChannels 过滤冷却中的渠道
@@ -278,10 +280,49 @@ func (s *Server) modelCooldownUntil(
 	if len(models) == 0 {
 		return time.Time{}, false
 	}
-	upstreamProtocol := cfg.ResolveUpstreamProtocol(requestProtocol)
-	actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, upstreamProtocol)
-	until, ok := models[actualModel]
-	return until, ok
+	possibleModels := s.possibleActualModels(cfg, requestModel, requestProtocol)
+	if len(possibleModels) == 0 {
+		return time.Time{}, false
+	}
+
+	var earliest time.Time
+	for _, actualModel := range possibleModels {
+		until, ok := models[actualModel]
+		if !ok || !until.After(time.Now()) {
+			return time.Time{}, false
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest, true
+}
+
+func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
+	primary := protocol.Protocol(cfg.GetChannelType())
+	client := protocol.Protocol(util.NormalizeChannelType(requestProtocol))
+	protocols := []protocol.Protocol{primary}
+	if client != "" && client != primary {
+		protocols = []protocol.Protocol{client}
+		if protocol.SupportsTransform(client, primary) {
+			protocols = append(protocols, primary)
+		}
+	}
+
+	seen := make(map[string]struct{}, len(protocols))
+	models := make([]string, 0, len(protocols))
+	for _, upstreamProtocol := range protocols {
+		actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, string(upstreamProtocol))
+		if actualModel == "" {
+			continue
+		}
+		if _, ok := seen[actualModel]; ok {
+			continue
+		}
+		seen[actualModel] = struct{}{}
+		models = append(models, actualModel)
+	}
+	return models
 }
 
 // filterCostLimitExceededChannels 过滤超过每日成本限额的渠道
