@@ -48,13 +48,14 @@ let chatAdvancedOptions = {
 
 let channelSelectCombobox = null;
 let modelSelectCombobox = null;
+let clientProtocolCombobox = null;
 
 const headRow = document.getElementById('model-test-head-row');
 const tbody = document.getElementById('model-test-tbody');
 const toolbar = document.querySelector('.model-test-toolbar');
 const channelSelectorLabel = document.getElementById('channelSelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
-const clientProtocolOptions = document.getElementById('clientProtocolOptions');
+const clientProtocolSelect = document.getElementById('clientProtocolSelect');
 const modelSelect = document.getElementById('testModelSelect');
 const mobileNameFilterInput = document.getElementById('modelTestMobileNameFilter');
 const chatToolbar = document.getElementById('chatToolbar');
@@ -1291,23 +1292,51 @@ function ensureSelectedProtocolForCurrentMode() {
   selectedProtocol = 'anthropic';
 }
 
-function renderClientProtocolOptions() {
-  if (!clientProtocolOptions) return;
-
+function syncClientProtocolCombobox() {
   ensureSelectedProtocolForCurrentMode();
 
-  clientProtocolOptions.innerHTML = ALL_PROTOCOLS.map((protocol) => {
-    const checked = selectedProtocol === protocol;
-    return `
-      <label class="channel-editor-radio-option">
-        <input type="radio"
-               name="modelTestClientProtocol"
-               value="${protocol}"
-               ${checked ? 'checked' : ''}>
-        <span>${protocolLabel(protocol)}</span>
-      </label>
-    `;
-  }).join('');
+  if (!clientProtocolCombobox && clientProtocolSelect && typeof window.createSearchableCombobox === 'function') {
+    clientProtocolCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'clientProtocolSelect',
+      dropdownId: 'clientProtocolSelectDropdown',
+      initialValue: selectedProtocol,
+      initialLabel: protocolLabel(selectedProtocol),
+      getOptions: () => ALL_PROTOCOLS.map(protocol => ({
+        value: protocol,
+        label: protocolLabel(protocol)
+      })),
+      onSelect: (value) => selectClientProtocol(value)
+    });
+  }
+
+  const label = protocolLabel(selectedProtocol);
+  if (clientProtocolCombobox) {
+    clientProtocolCombobox.setValue(selectedProtocol, label);
+    clientProtocolCombobox.refresh();
+  } else if (clientProtocolSelect) {
+    clientProtocolSelect.value = label;
+  }
+}
+
+function selectClientProtocol(value) {
+  const protocol = normalizeProtocol(value);
+  if (!ALL_PROTOCOLS.includes(protocol)) {
+    syncClientProtocolCombobox();
+    return;
+  }
+
+  selectedProtocol = protocol;
+  if (testMode === TEST_MODE_MODEL) {
+    selectedModelModeProtocol = selectedProtocol;
+  }
+  saveSelectedProtocolToStorage(selectedProtocol);
+  clearProgress();
+  syncClientProtocolCombobox();
+
+  if (testMode === TEST_MODE_MODEL) {
+    renderModelModeRows();
+  }
 }
 
 function isModelSupported(channel, modelName) {
@@ -1643,7 +1672,7 @@ function updateModeUI() {
     deleteModelsBtn.disabled = false;
     deleteModelsBtn.title = isModelMode ? i18nText('modelTest.deleteBySelectionHint', '按勾选记录删除对应渠道中的模型') : '';
   }
-  renderClientProtocolOptions();
+  syncClientProtocolCombobox();
 }
 
 function getSelectedTargets() {
@@ -2651,12 +2680,12 @@ async function deleteSelectedModels() {
 
 async function onChannelChange() {
   if (!selectedChannel) {
-    renderClientProtocolOptions();
+    syncClientProtocolCombobox();
     renderEmptyRow(i18nText('modelTest.selectChannelFirst', '请先选择渠道'));
     return;
   }
 
-  renderClientProtocolOptions();
+  syncClientProtocolCombobox();
   populateModelSelector();
 
   if (testMode === TEST_MODE_CHANNEL) {
@@ -2749,7 +2778,7 @@ async function loadChannels(options = {}) {
       selectedModelModeProtocol = selectedProtocol;
     }
 
-    renderClientProtocolOptions();
+    syncClientProtocolCombobox();
     populateModelSelector();
     renderRowsByMode();
 
@@ -2783,6 +2812,8 @@ async function loadDefaultTestContent() {
 
 function bindEvents() {
   ensureModelSelectCombobox();
+  syncClientProtocolCombobox();
+  window.addEventListener('localechange', syncClientProtocolCombobox);
   const streamEnabled = document.getElementById('streamEnabled');
   if (streamEnabled) {
     streamEnabled.addEventListener('change', () => {
@@ -2797,24 +2828,6 @@ function bindEvents() {
       saveChatStreamEnabledToStorage(chatStreamEnabled.checked);
     });
   }
-
-  clientProtocolOptions?.addEventListener('change', (event) => {
-    const target = event.target;
-    if (!(target instanceof HTMLInputElement) || target.name !== 'modelTestClientProtocol') return;
-    if (target.disabled) return;
-
-    selectedProtocol = normalizeProtocol(target.value) || selectedProtocol;
-    if (testMode === TEST_MODE_MODEL) {
-      selectedModelModeProtocol = selectedProtocol;
-    }
-    saveSelectedProtocolToStorage(selectedProtocol);
-    clearProgress();
-    renderClientProtocolOptions();
-
-    if (testMode === TEST_MODE_MODEL) {
-      renderModelModeRows();
-    }
-  });
 
   if (!modelSelectCombobox && modelSelect) {
     modelSelect.addEventListener('change', () => {
@@ -2966,7 +2979,7 @@ function setTestMode(mode) {
     }
     if (selectedModelModeProtocol) {
       selectedProtocol = selectedModelModeProtocol;
-      renderClientProtocolOptions();
+      syncClientProtocolCombobox();
     }
     populateModelSelector();
   }

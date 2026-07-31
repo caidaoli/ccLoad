@@ -770,17 +770,20 @@
       cancelRequested = false;
     }
 
-    const calibrateBtn       = el('fpCalibrateBtn');
-    const calibrateCancelBtn = el('fpCalibrateCancelBtn');
-    const testBtn            = el('fpTestBtn');
+    const calibrateBtn = el('fpCalibrateBtn');
+    const testBtn = el('fpTestBtn');
     Object.keys(CLIENT_PROTOCOL_FIELDS).forEach(scope => {
       const protocolInput = clientProtocolCombos[scope]?.getInput();
       if (protocolInput) protocolInput.disabled = running;
     });
-    if (calibrateBtn)       calibrateBtn.disabled = running;
-    if (calibrateCancelBtn) {
-      calibrateCancelBtn.disabled = false;
-      calibrateCancelBtn.classList.toggle('hidden', !running || jobType !== 'calibrate');
+    if (calibrateBtn) {
+      const calibrating = running && jobType === 'calibrate';
+      const textKey = calibrating ? 'common.cancel' : 'modelTest.fingerprint.calibrate';
+      calibrateBtn.disabled = running && !calibrating;
+      calibrateBtn.setAttribute('data-i18n', textKey);
+      calibrateBtn.textContent = t(textKey, calibrating ? '取消' : '标定基准');
+      calibrateBtn.classList.toggle('btn-primary', !calibrating);
+      calibrateBtn.classList.toggle('btn-danger', calibrating);
     }
     if (testBtn) {
       const testing = running && jobType === 'test';
@@ -1028,8 +1031,8 @@
       const testBtn = el('fpTestBtn');
       if (testBtn) testBtn.disabled = true;
     } else {
-      const cancelBtn = el('fpCalibrateCancelBtn');
-      if (cancelBtn) cancelBtn.disabled = true;
+      const calibrateBtn = el('fpCalibrateBtn');
+      if (calibrateBtn) calibrateBtn.disabled = true;
     }
     if (activeJobId) requestJobCancellation(activeJobId);
   }
@@ -1177,8 +1180,13 @@
 
   function _bindEvents() {
     window.addEventListener('localechange', refreshClientProtocolComboboxes);
-    el('fpCalibrateBtn')?.addEventListener('click', onCalibrateSubmit);
-    el('fpCalibrateCancelBtn')?.addEventListener('click', cancelJob);
+    el('fpCalibrateBtn')?.addEventListener('click', () => {
+      if (activeJobType === 'calibrate') {
+        cancelJob();
+        return;
+      }
+      if (!activeJobType) onCalibrateSubmit();
+    });
     el('fpTestBtn')?.addEventListener('click', () => {
       if (activeJobType === 'test') {
         cancelJob();

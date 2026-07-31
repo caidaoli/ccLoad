@@ -3265,12 +3265,10 @@ body {
   flex: 0 0 auto;
 }
 
-.model-test-control--protocol .channel-editor-radio-group {
-  flex-wrap: nowrap;
-}
-
-.model-test-control--protocol .channel-editor-radio-option {
-  white-space: nowrap;
+.model-test-protocol-combobox {
+  width: 170px;
+  min-width: 150px;
+  flex: 0 1 170px;
 }
 
 .model-test-control--content {
@@ -5214,6 +5212,23 @@ body.trend-page .chart-info {
   flex: 0 0 auto;
 }
 
+.trend-chart-type-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.trend-chart-type-btn {
+  min-height: 32px;
+  transition-property: color, background-color, border-color, box-shadow;
+}
+
+.trend-chart-type-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-500);
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+  box-shadow: none;
+}
+
 .chart-loading,
 .chart-error {
   display: flex;
@@ -7056,6 +7071,12 @@ body.web-role-api-token .filter-group--auth-token {
     white-space: nowrap;
   }
 
+  .trend-chart-toolbar .trend-chart-type-toggle {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: end;
+  }
+
   .trend-chart-toolbar .channel-filter-container {
     grid-column: 2;
     grid-row: 1;
@@ -7246,15 +7267,6 @@ body.web-role-api-token .filter-group--auth-token {
     grid-column: 1 / -1;
   }
 
-  .model-test-control--protocol .channel-editor-radio-group {
-    flex-wrap: wrap;
-    min-width: 0;
-  }
-
-  .model-test-control--protocol .channel-editor-radio-option {
-    flex: 0 1 auto;
-  }
-
   .model-test-control--name-filter {
     display: flex;
     flex: 2 1 auto;
@@ -7309,7 +7321,8 @@ body.web-role-api-token .filter-group--auth-token {
   .model-test-control,
   .model-test-control--model,
   .model-test-control--content,
-  .model-test-model-combobox {
+  .model-test-model-combobox,
+  .model-test-protocol-combobox {
     width: 100%;
     min-width: 0;
   }

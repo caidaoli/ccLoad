@@ -681,6 +681,9 @@ window.I18N_LOCALES['zh-CN'] = {
   // ============================================================
   'trend.title': '请求趋势 - Claude Code & Codex Proxy',
   'trend.chartTitle': '请求趋势图表',
+  'trend.chartType': '图表类型',
+  'trend.lineChart': '折线图',
+  'trend.barChart': '柱状图',
   'trend.allModels': '全部模型',
   'trend.typeCount': '调用次数',
   'trend.typeRpm': 'RPM',

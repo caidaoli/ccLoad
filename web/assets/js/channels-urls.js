@@ -579,7 +579,7 @@ async function toggleURLDisabled(btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
-    // 本地更新状态，避免依赖 fetchURLStats（单URL渠道后端返回空数组）
+    // 先更新本地状态，避免按钮反馈依赖额外网络往返。
     const newDisabled = !isCurrentlyDisabled;
     if (!urlStatsMap[url]) {
       urlStatsMap[url] = { url, latency_ms: -1, cooled_down: false, cooldown_remain_ms: 0, requests: 0, failures: 0, disabled: newDisabled };
@@ -597,6 +597,7 @@ async function toggleURLDisabled(btn) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    fetchURLStats,
     normalizeInlineURLConfig,
     normalizeInlineURLConfigs,
     runtimeInlineURL

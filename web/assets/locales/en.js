@@ -682,6 +682,9 @@ window.I18N_LOCALES['en'] = {
   // ============================================================
   'trend.title': 'Trends - Claude Code & Codex Proxy',
   'trend.chartTitle': 'Request Trend Chart',
+  'trend.chartType': 'Chart type',
+  'trend.lineChart': 'Line',
+  'trend.barChart': 'Bar',
   'trend.allModels': 'All Models',
   'trend.typeCount': 'Call Count',
   'trend.typeRpm': 'RPM',
