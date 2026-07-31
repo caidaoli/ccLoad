@@ -168,9 +168,36 @@ function setScheduledCheckModelHint(i18nKey) {
 let scheduledCheckModelCombobox = null;
 
 function getScheduledCheckModelNames() {
+  // 下拉候选：具体模型条目 + 通配条目的重定向目标（具体模型）。
+  // 直通通配条目（含通配符且无重定向）不作为候选——其字面值不能作为检测模型发给上游，
+  // 但用户可通过 allowCustomInput 自行输入一个被通配覆盖的具体模型。
+  const names = [];
+  for (const entry of redirectTableData) {
+    const model = entry && entry.model ? entry.model.trim() : '';
+    const redirect = entry && entry.redirect_model ? entry.redirect_model.trim() : '';
+    if (model && !isModelPattern(model)) {
+      names.push(model);
+    } else if (redirect && !isModelPattern(redirect)) {
+      names.push(redirect);
+    }
+  }
+  return [...new Set(names)];
+}
+
+// 全部条目 model 名（含通配），供校验“具体模型是否被渠道支持”
+function getScheduledCheckModelPatterns() {
   return redirectTableData
     .map(entry => (entry && entry.model ? entry.model.trim() : ''))
-    .filter(name => name && !/[*?]/.test(name));
+    .filter(Boolean);
+}
+
+// 定时检测模型合法性校验，与后端 SupportsModel 一致：
+// 空值（用默认）合法；检测模型本身不得为通配字面值；否则须被某条目精确或通配覆盖。
+// 抽成纯函数以便契约测试覆盖“编辑渠道不再静默清空合法定时检测模型”。
+function isScheduledCheckModelValid(currentValue, patterns) {
+  if (!currentValue) return true;
+  if (isModelPattern(currentValue)) return false; // 禁止把通配字面值作为检测模型
+  return patterns.some(p => p === currentValue || window.matchModelGlob(p, currentValue));
 }
 
 function getScheduledCheckModelDefaultLabel() {
@@ -201,6 +228,7 @@ function ensureScheduledCheckModelCombobox() {
     dropdownId: 'channelScheduledCheckModelDropdown',
     initialValue: hiddenInput.value || '',
     initialLabel: scheduledCheckModelInputValueFromValue(hiddenInput.value || ''),
+    allowCustomInput: true,
     getOptions: () => getScheduledCheckModelOptions(),
     onSelect: (value) => {
       hiddenInput.value = value;
@@ -218,9 +246,9 @@ function syncScheduledCheckModelState() {
   const checkbox = document.getElementById('channelScheduledCheckEnabled');
   if (!wrapper || !hiddenInput || !input || !checkbox) return;
 
-  const modelNames = getScheduledCheckModelNames();
+  const patterns = getScheduledCheckModelPatterns();
   const currentValue = hiddenInput.value || '';
-  const isValid = currentValue === '' || modelNames.includes(currentValue);
+  const isValid = isScheduledCheckModelValid(currentValue, patterns);
   const nextValue = isValid ? currentValue : '';
   hiddenInput.value = nextValue;
   setScheduledCheckModelHint(isValid ? 'channels.scheduledCheckModelHint' : 'channels.scheduledCheckModelFallback');
@@ -2479,5 +2507,5 @@ function addCommonModels() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels, detectChannelWebsocketSupport, fetchModelsFromAPI, handleChannelWebsocketClick };
+  module.exports = { addCommonModels, detectChannelWebsocketSupport, fetchModelsFromAPI, handleChannelWebsocketClick, isScheduledCheckModelValid };
 }

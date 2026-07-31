@@ -20,6 +20,8 @@
   <script defer src="/web/assets/js/highlight.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-glob.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-pick-dialog.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/purify.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
@@ -843,9 +845,10 @@
 
         <div class="form-group channel-test-field">
           <label class="form-label" for="testModelSelect" data-i18n="channels.selectTestModel">选择测试模型</label>
-          <select id="testModelSelect" class="model-select">
-            <!-- 动态填充模型选项 -->
-          </select>
+          <div class="filter-combobox-wrapper">
+            <input id="testModelSelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="channels.selectTestModel" placeholder="选择测试模型">
+            <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+          </div>
         </div>
       </div>
 
