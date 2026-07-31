@@ -302,7 +302,7 @@ async function handleChannelSaveSuccess({ isNewChannel, savedChannelId, response
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
 
   if (typeof reloadChannelsList === 'function') {
-    await reloadChannelsList(filters.status);
+    await reloadChannelsList();
   } else if (typeof loadChannels === 'function') {
     await loadChannels();
   }

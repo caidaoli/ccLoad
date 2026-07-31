@@ -20,7 +20,7 @@ async function captureChannelReadURLs(role) {
   const globals = {
     window: { WebAuth, t: key => key, showError: () => {} },
     localStorage: storage,
-    filters: { search: '', searchExact: false, status: 'all', model: 'all', modelExact: false },
+    filters: { search: 'any', searchExact: false, status: 'enabled', model: 'claude-opus-5', modelExact: true },
     channelsReadURL: (adminPath, dashboardPath) => (
       WebAuth.isAPITokenRole(storage) ? dashboardPath : adminPath
     ),
@@ -35,11 +35,16 @@ async function captureChannelReadURLs(role) {
     channelStatsById: {},
     fetchAPIWithAuth: async (url) => {
       urls.push(url);
-      return { success: true, data: [], count: 0 };
+      return { success: true, data: [{ name: 'anyrouter' }], count: 1 };
     },
     fetchDataWithAuth: async (url) => {
       urls.push(url);
-      if (url.includes('filter-options')) return { channel_names: [], models: [] };
+      if (url.includes('filter-options')) {
+        return {
+          channel_names: ['anyrouter', 'luoqianyi', 'other-channel'],
+          models: ['claude-opus-5', 'gpt-5.4']
+        };
+      }
       return { stats: [], channel_health: {} };
     },
     filterChannels: () => {},
@@ -58,9 +63,13 @@ async function captureChannelReadURLs(role) {
   try {
     const channelsData = require('./channels-data.js');
     await channelsData.loadChannels('all');
-    await channelsData.loadChannelsFilterOptions('all', 'all');
+    await channelsData.loadChannelsFilterOptions('enabled');
     await channelsData.loadChannelStats('today');
-    return urls;
+    return {
+      urls,
+      channelNames: [...global.allAvailableChannelNames],
+      models: [...global.allAvailableModels]
+    };
   } finally {
     delete require.cache[modulePath];
     for (const [name, descriptor] of previous) {
@@ -108,7 +117,8 @@ test('navigation excludes administrative pages for API token role', () => {
 });
 
 test('channel data uses endpoints allowed for the current web role', async () => {
-  const apiTokenURLs = await captureChannelReadURLs('api_token');
+  const apiTokenResult = await captureChannelReadURLs('api_token');
+  const apiTokenURLs = apiTokenResult.urls;
   assert.deepEqual(apiTokenURLs.map(url => url.split('?')[0]), [
     '/dashboard/channels',
     '/dashboard/channels/filter-options',
@@ -116,12 +126,21 @@ test('channel data uses endpoints allowed for the current web role', async () =>
   ]);
   assert.ok(apiTokenURLs.every(url => !url.includes('auth_token_id=')));
 
-  const adminURLs = await captureChannelReadURLs('admin');
+  const adminResult = await captureChannelReadURLs('admin');
+  const adminURLs = adminResult.urls;
   assert.deepEqual(adminURLs.map(url => url.split('?')[0]), [
     '/admin/channels',
     '/admin/channels/filter-options',
     '/admin/stats'
   ]);
+  for (const url of [...apiTokenURLs, ...adminURLs].filter(value => value.includes('/channels/filter-options'))) {
+    const params = new URL(url, 'http://localhost').searchParams;
+    assert.equal(params.has('search'), false);
+    assert.equal(params.has('status'), false);
+    assert.equal(params.has('model'), false);
+  }
+  assert.deepEqual(adminResult.channelNames, ['anyrouter', 'luoqianyi', 'other-channel']);
+  assert.deepEqual(adminResult.models, ['claude-opus-5', 'gpt-5.4']);
 });
 
 test('login redirect stays on the current origin', () => {
