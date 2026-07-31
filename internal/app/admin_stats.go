@@ -224,8 +224,7 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		totalSuccess += stat.SuccessRequests
 		totalError += stat.ErrorRequests
 
-		switch protocol.Protocol(stat.ClientProtocol) {
-		case protocol.Anthropic, protocol.Codex, protocol.OpenAI, protocol.Gemini:
+		if protocol.IsValid(protocol.Protocol(stat.ClientProtocol)) {
 			byClientProtocol[stat.ClientProtocol] = stat
 		}
 	}
@@ -244,12 +243,12 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// HandleGetProtocols 获取协议配置(公开端点,前端动态加载)
+// HandleGetProtocols 获取支持的协议列表(公开端点,前端动态加载)
 // GET /public/protocols
 // 编译时常量，浏览器缓存24小时减少HF Spaces等高延迟环境的网络往返
 func (s *Server) HandleGetProtocols(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=86400")
-	RespondJSON(c, http.StatusOK, util.Protocols)
+	RespondJSON(c, http.StatusOK, protocol.AllProtocols())
 }
 
 // HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)

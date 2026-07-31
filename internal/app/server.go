@@ -437,23 +437,25 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 }
 
 func loadProtocolTimeouts(cs *ConfigService) map[string]protocolTimeoutConfig {
-	timeouts := make(map[string]protocolTimeoutConfig, len(util.Protocols))
-	for _, supportedProtocol := range util.Protocols {
-		firstByteTimeout := cs.GetDuration(protocolFirstByteTimeoutSettingKey(supportedProtocol.Value), 0)
+	supported := protocol.AllProtocols()
+	timeouts := make(map[string]protocolTimeoutConfig, len(supported))
+	for _, supportedProtocol := range supported {
+		name := string(supportedProtocol)
+		firstByteTimeout := cs.GetDuration(protocolFirstByteTimeoutSettingKey(name), 0)
 		if firstByteTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局首字超时）",
-				protocolFirstByteTimeoutSettingKey(supportedProtocol.Value), firstByteTimeout)
+				protocolFirstByteTimeoutSettingKey(name), firstByteTimeout)
 			firstByteTimeout = 0
 		}
 
-		nonStreamTimeout := cs.GetDuration(protocolNonStreamTimeoutSettingKey(supportedProtocol.Value), 0)
+		nonStreamTimeout := cs.GetDuration(protocolNonStreamTimeoutSettingKey(name), 0)
 		if nonStreamTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局非流超时）",
-				protocolNonStreamTimeoutSettingKey(supportedProtocol.Value), nonStreamTimeout)
+				protocolNonStreamTimeoutSettingKey(name), nonStreamTimeout)
 			nonStreamTimeout = 0
 		}
 
-		timeouts[supportedProtocol.Value] = protocolTimeoutConfig{
+		timeouts[name] = protocolTimeoutConfig{
 			FirstByteTimeout: firstByteTimeout,
 			NonStreamTimeout: nonStreamTimeout,
 		}

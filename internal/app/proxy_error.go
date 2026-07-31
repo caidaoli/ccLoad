@@ -76,9 +76,7 @@ func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {
 
 	seen := make(map[string]struct{}, len(cfg.ModelEntries))
 	models := make([]string, 0, len(cfg.ModelEntries))
-	for _, upstreamProtocol := range []protocol.Protocol{
-		protocol.Anthropic, protocol.Codex, protocol.OpenAI, protocol.Gemini,
-	} {
+	for _, upstreamProtocol := range protocol.AllProtocols() {
 		for _, entry := range cfg.ModelEntries {
 			modelName := strings.TrimSpace(s.resolveFinalUpstreamModel(cfg, entry.Model, string(upstreamProtocol)))
 			if modelName == "" {

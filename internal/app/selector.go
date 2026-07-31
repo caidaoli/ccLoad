@@ -38,7 +38,7 @@ func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
 			channelID: cfg.ID, baseURL: rawURL,
 			clientProtocol: protocol.Codex, requestFamily: protocol.RequestFamilyAlphaSearch,
 		}
-		if s.protocolCapabilities.get(key) == protocolCapabilityUnsupported {
+		if cached, known := s.protocolCapabilities.get(key); known && cached == protocolUnsupported {
 			continue
 		}
 		if !modelpkg.HasExactUpstreamURLMarker(rawURL) {

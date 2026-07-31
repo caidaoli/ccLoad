@@ -2504,11 +2504,12 @@ func (s *Server) attemptKeyAcrossURLs(
 		)
 		learnCapability := transformMode == model.ProtocolTransformModeAuto && !declared
 		if learnCapability {
-			state := s.protocolCapabilities.get(capabilityKey)
-			if state == protocolCapabilityUnsupported {
-				protocolCandidates = nil
-			} else if cachedProtocol, ok := state.upstreamProtocol(); ok {
-				protocolCandidates = prioritizeProtocolCandidate(protocolCandidates, cachedProtocol)
+			if cachedProtocol, known := s.protocolCapabilities.get(capabilityKey); known {
+				if cachedProtocol == protocolUnsupported {
+					protocolCandidates = nil
+				} else {
+					protocolCandidates = prioritizeProtocolCandidate(protocolCandidates, cachedProtocol)
+				}
 			}
 		}
 		if len(protocolCandidates) == 0 {
@@ -2535,7 +2536,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			}
 			if result == nil || !result.protocolCapabilityMissing {
 				if learnCapability {
-					s.protocolCapabilities.set(capabilityKey, protocolCapabilityFor(upstreamProtocol))
+					s.protocolCapabilities.set(capabilityKey, upstreamProtocol)
 				}
 				break
 			}
@@ -2544,7 +2545,7 @@ func (s *Server) attemptKeyAcrossURLs(
 				continue
 			}
 			if learnCapability {
-				s.protocolCapabilities.set(capabilityKey, protocolCapabilityUnsupported)
+				s.protocolCapabilities.set(capabilityKey, protocolUnsupported)
 			}
 		}
 

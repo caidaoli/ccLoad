@@ -309,7 +309,7 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, fmt.Errorf("渠道URL为空")
 	}
 	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
-	if overrideProtocol != "" && protocolCapabilityFor(protocol.Protocol(overrideProtocol)) == protocolCapabilityUnsupported {
+	if overrideProtocol != "" && !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
 		return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
 	}
 
