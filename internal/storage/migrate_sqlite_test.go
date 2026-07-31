@@ -148,6 +148,39 @@ func TestMigrateSQLite_BackfillsClientProtocolFromHistoricalModels(t *testing.T)
 	})
 }
 
+func TestBackfillLogsClientProtocolBatches_ProcessesAllRowsAcrossBatches(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+
+	const rowCount = 5
+	for i := 1; i <= rowCount; i++ {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO logs (time, model, log_source, status_code, message)
+			VALUES (?, 'claude-sonnet-5', 'proxy', 200, 'ok')
+		`, i); err != nil {
+			t.Fatalf("insert log %d: %v", i, err)
+		}
+	}
+
+	// batchSize=2 强制多批循环，验证批间推进直到清零
+	if err := backfillLogsClientProtocolBatches(ctx, db, DialectSQLite, 2); err != nil {
+		t.Fatalf("backfill batches: %v", err)
+	}
+
+	var filled int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM logs WHERE log_source = 'proxy' AND client_protocol = 'anthropic'",
+	).Scan(&filled); err != nil {
+		t.Fatalf("count filled rows: %v", err)
+	}
+	if filled != rowCount {
+		t.Fatalf("filled rows = %d, want %d", filled, rowCount)
+	}
+}
+
 func verifyClientProtocolBackfill(
 	t *testing.T,
 	ctx context.Context,
@@ -182,6 +215,25 @@ func verifyClientProtocolBackfill(
 			t.Fatalf("insert log time=%d: %v", tc.time, err)
 		}
 	}
+	// model_fingerprints 历史行：client_protocol 为空时从保留的 channel_type 物理列复制
+	fingerprintCases := []struct {
+		name           string
+		channelType    string
+		clientProtocol string
+		wantProtocol   string
+	}{
+		{"fp-legacy-backfill", "anthropic", "", "anthropic"},
+		{"fp-already-set", "openai", "gemini", "gemini"},
+		{"fp-both-empty", "", "", ""},
+	}
+	for _, fp := range fingerprintCases {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+			INSERT INTO model_fingerprints (name, model, channel_type, client_protocol, distribution, stats, raw_data, created_at, updated_at)
+			VALUES (?, 'fp-model', ?, ?, '{}', '{}', '{}', 0, 0)
+		`), fp.name, fp.channelType, fp.clientProtocol); err != nil {
+			t.Fatalf("insert fingerprint %s: %v", fp.name, err)
+		}
+	}
 	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, "DELETE FROM schema_migrations WHERE version = ?"), clientProtocolBackfillMigrationVersion); err != nil {
 		t.Fatalf("reset client protocol migration: %v", err)
 	}
@@ -196,6 +248,15 @@ func verifyClientProtocolBackfill(
 		}
 		if got != tc.wantProtocol {
 			t.Errorf("model=%q source=%q protocol=%q, want %q", tc.model, tc.logSource, got, tc.wantProtocol)
+		}
+	}
+	for _, fp := range fingerprintCases {
+		var got string
+		if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, "SELECT client_protocol FROM model_fingerprints WHERE name = ?"), fp.name).Scan(&got); err != nil {
+			t.Fatalf("query fingerprint %s: %v", fp.name, err)
+		}
+		if got != fp.wantProtocol {
+			t.Errorf("fingerprint=%q protocol=%q, want %q", fp.name, got, fp.wantProtocol)
 		}
 	}
 
