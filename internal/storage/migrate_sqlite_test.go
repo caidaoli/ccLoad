@@ -137,6 +137,86 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLite_BackfillsClientProtocolFromHistoricalModels(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	verifyClientProtocolBackfill(t, ctx, db, DialectSQLite, func(ctx context.Context, db *sql.DB) error {
+		return migrate(ctx, db, DialectSQLite)
+	})
+}
+
+func verifyClientProtocolBackfill(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	dialect Dialect,
+	migrateDB func(context.Context, *sql.DB) error,
+) {
+	t.Helper()
+	testCases := []struct {
+		time           int64
+		model          string
+		logSource      string
+		clientProtocol string
+		wantProtocol   string
+	}{
+		{1, "gpt-5.6-sol", "proxy", "", "codex"},
+		{2, "OpenAI/GPT-5.4", "proxy", "", "codex"},
+		{3, "codex-mini-latest", "proxy", "", "codex"},
+		{4, "claude-sonnet-5", "proxy", "", "anthropic"},
+		{5, "anthropic/opus-4-8", "proxy", "", "anthropic"},
+		{6, "google/gemini-3.6-flash", "proxy", "", "gemini"},
+		{7, "grok-4.5", "proxy", "", "openai"},
+		{8, "", "proxy", "", "openai"},
+		{9, "gpt-5.6-sol", "scheduled_check", "", ""},
+		{10, "gpt-5.6-sol", "proxy", "gemini", "gemini"},
+	}
+	for _, tc := range testCases {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+			INSERT INTO logs (time, model, log_source, client_protocol, status_code, message)
+			VALUES (?, ?, ?, ?, 200, 'ok')
+		`), tc.time, tc.model, tc.logSource, tc.clientProtocol); err != nil {
+			t.Fatalf("insert log time=%d: %v", tc.time, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, "DELETE FROM schema_migrations WHERE version = ?"), clientProtocolBackfillMigrationVersion); err != nil {
+		t.Fatalf("reset client protocol migration: %v", err)
+	}
+
+	if err := migrateDB(ctx, db); err != nil {
+		t.Fatalf("backfill client protocol: %v", err)
+	}
+	for _, tc := range testCases {
+		var got string
+		if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, "SELECT client_protocol FROM logs WHERE time = ?"), tc.time).Scan(&got); err != nil {
+			t.Fatalf("query log time=%d: %v", tc.time, err)
+		}
+		if got != tc.wantProtocol {
+			t.Errorf("model=%q source=%q protocol=%q, want %q", tc.model, tc.logSource, got, tc.wantProtocol)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+		INSERT INTO logs (time, model, log_source, status_code, message)
+		VALUES (11, 'gpt-5.6-terra', 'proxy', 200, 'after migration')
+	`)); err != nil {
+		t.Fatalf("insert post-migration log: %v", err)
+	}
+	if err := migrateDB(ctx, db); err != nil {
+		t.Fatalf("idempotent migrate: %v", err)
+	}
+	var postMigrationProtocol string
+	if err := db.QueryRowContext(ctx, "SELECT client_protocol FROM logs WHERE time = 11").Scan(&postMigrationProtocol); err != nil {
+		t.Fatalf("query post-migration log: %v", err)
+	}
+	if postMigrationProtocol != "" {
+		t.Fatalf("post-migration protocol=%q, want empty", postMigrationProtocol)
+	}
+}
+
 func TestMigrate_SQLite_AddsModelCooldownDuration(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -700,8 +780,8 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 	if upstreamWebsocket != 0 {
 		t.Fatalf("legacy upstream_websocket=%d, want 0", upstreamWebsocket)
 	}
-	if clientProtocol != "" {
-		t.Fatalf("legacy client_protocol=%q, want empty", clientProtocol)
+	if clientProtocol != "openai" {
+		t.Fatalf("legacy client_protocol=%q, want openai", clientProtocol)
 	}
 
 	var effectiveCost float64
