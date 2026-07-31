@@ -878,6 +878,49 @@ func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	}
 }
 
+func TestMigrateSQLite_AddsChannelModelsDisabled(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channel_models (
+			channel_id INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			redirect_model TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (channel_id, model)
+		)
+	`); err != nil {
+		t.Fatalf("create legacy channel_models: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy channel_models: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "channel_models")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns: %v", err)
+	}
+	if !cols["disabled"] {
+		t.Fatal("disabled column not added to legacy channel_models")
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
+		VALUES (1, 'legacy-model', '', 1)
+	`); err != nil {
+		t.Fatalf("insert legacy-shaped model: %v", err)
+	}
+	var disabled int
+	if err := db.QueryRowContext(ctx, `SELECT disabled FROM channel_models WHERE model = 'legacy-model'`).Scan(&disabled); err != nil {
+		t.Fatalf("query migrated disabled default: %v", err)
+	}
+	if disabled != 0 {
+		t.Fatalf("legacy model disabled=%d, want 0", disabled)
+	}
+}
+
 func TestRelaxDeprecatedChannelFields_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()

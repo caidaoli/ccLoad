@@ -238,7 +238,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 
 		switch mode {
 		case "replace":
-			removed, hasChange := replaceModelEntries(cfg, fetched)
+			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
 			item.Removed = removed
 			item.Total = len(cfg.ModelEntries)
 			modelEntriesChanged = hasChange
@@ -620,16 +620,33 @@ func mergeModelEntries(cfg *model.Config, fetched []model.ModelEntry) (added int
 	return added, added > 0
 }
 
-func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry) (removed int, changed bool) {
+func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options modelNormalizationOptions) (removed int, changed bool) {
 	oldEntries := cfg.ModelEntries
 	oldSet := make(map[string]struct{}, len(oldEntries))
+	disabledAliases := make(map[string]struct{}, len(oldEntries))
 	newSet := make(map[string]struct{}, len(fetched))
 
 	for _, entry := range oldEntries {
-		oldSet[strings.ToLower(entry.Model)] = struct{}{}
+		key := strings.ToLower(entry.Model)
+		oldSet[key] = struct{}{}
+		if !entry.Disabled {
+			continue
+		}
+		disabledAliases[key] = struct{}{}
+		normalizedModel, _ := normalizeModelAlias(entry.Model, options)
+		disabledAliases[strings.ToLower(normalizedModel)] = struct{}{}
+		if entry.RedirectModel != "" {
+			disabledAliases[strings.ToLower(entry.RedirectModel)] = struct{}{}
+		}
 	}
-	for _, entry := range fetched {
-		newSet[strings.ToLower(entry.Model)] = struct{}{}
+	for i := range fetched {
+		key := strings.ToLower(fetched[i].Model)
+		newSet[key] = struct{}{}
+		_, disabled := disabledAliases[key]
+		if !disabled && fetched[i].RedirectModel != "" {
+			_, disabled = disabledAliases[strings.ToLower(fetched[i].RedirectModel)]
+		}
+		fetched[i].Disabled = fetched[i].Disabled || disabled
 	}
 	for key := range oldSet {
 		if _, exists := newSet[key]; !exists {

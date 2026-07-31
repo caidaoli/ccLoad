@@ -116,7 +116,8 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 	            LEFT JOIN api_keys k ON c.id = k.channel_id
 	            WHERE c.enabled = 1
               AND cm.model = ?
-            GROUP BY c.id
+	              AND cm.disabled = 0
+	            GROUP BY c.id
             ORDER BY c.priority DESC, c.id ASC
         `
 		args = []any{modelName}
@@ -474,7 +475,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 
 	//nolint:gosec // G201: placeholders 由内部构建的 "?" 占位符组成，安全可控
 	query := fmt.Sprintf(
-		`SELECT channel_id, model, redirect_model FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
+		`SELECT channel_id, model, redirect_model, disabled FROM channel_models WHERE channel_id IN (%s) ORDER BY channel_id, created_at ASC, model ASC`,
 		strings.Join(placeholders, ","),
 	)
 
@@ -487,7 +488,7 @@ func (s *SQLStore) loadModelEntriesForConfigs(ctx context.Context, configs []*mo
 	for rows.Next() {
 		var channelID int64
 		var entry model.ModelEntry
-		if err := rows.Scan(&channelID, &entry.Model, &entry.RedirectModel); err != nil {
+		if err := rows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
 			return fmt.Errorf("scan model entry: %w", err)
 		}
 		if cfg, ok := idToConfig[channelID]; ok {
@@ -535,14 +536,14 @@ func (s *SQLStore) saveModelEntriesImpl(ctx context.Context, exec dbExecutor, ch
 		chunk := entries[offset:end]
 
 		var b strings.Builder
-		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, created_at) VALUES `)
-		args := make([]any, 0, len(chunk)*4)
+		b.WriteString(`INSERT INTO channel_models (channel_id, model, redirect_model, disabled, created_at) VALUES `)
+		args := make([]any, 0, len(chunk)*5)
 		for i, entry := range chunk {
 			if i > 0 {
 				b.WriteByte(',')
 			}
-			b.WriteString("(?, ?, ?, ?)")
-			args = append(args, channelID, entry.Model, entry.RedirectModel, baseCreatedAt+int64(offset+i))
+			b.WriteString("(?, ?, ?, ?, ?)")
+			args = append(args, channelID, entry.Model, entry.RedirectModel, entry.Disabled, baseCreatedAt+int64(offset+i))
 		}
 		if _, err := exec.ExecContext(ctx, s.q(b.String()), args...); err != nil {
 			return fmt.Errorf("save model entries (offset %d): %w", offset, err)

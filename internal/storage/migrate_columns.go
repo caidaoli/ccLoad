@@ -742,6 +742,12 @@ func ensureChannelModelsRedirectField(ctx context.Context, db *sql.DB, dialect D
 		"TEXT NOT NULL DEFAULT ''")
 }
 
+func ensureChannelModelsDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channel_models", "disabled",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
+}
+
 func ensureAPIKeysDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "api_keys", "disabled",
 		"TINYINT NOT NULL DEFAULT 0",

@@ -187,6 +187,7 @@ func (urls *ChannelURLs) Scan(src any) error {
 type ModelEntry struct {
 	Model         string `json:"model"`                    // 模型名称
 	RedirectModel string `json:"redirect_model,omitempty"` // 重定向目标模型（空表示不重定向）
+	Disabled      bool   `json:"disabled,omitempty"`       // 是否停用该渠道的此模型
 }
 
 // Validate 验证并规范化模型条目
@@ -414,10 +415,13 @@ func (c *Config) Clone() *Config {
 	return dst
 }
 
-// GetModels 获取所有支持的模型名称列表
+// GetModels 获取所有已启用的模型名称列表
 func (c *Config) GetModels() []string {
 	models := make([]string, 0, len(c.ModelEntries))
 	for _, e := range c.ModelEntries {
+		if e.Disabled {
+			continue
+		}
 		models = append(models, e.Model)
 	}
 	return models
@@ -461,6 +465,9 @@ func (c *Config) buildIndexIfNeeded() {
 	}
 	c.modelIndex = make(map[string]*ModelEntry, len(c.ModelEntries))
 	for i := range c.ModelEntries {
+		if c.ModelEntries[i].Disabled {
+			continue
+		}
 		c.modelIndex[c.ModelEntries[i].Model] = &c.ModelEntries[i]
 	}
 }
@@ -545,6 +552,9 @@ func (c *Config) FuzzyMatchModel(query string) (string, bool) {
 	var matches []string
 
 	for _, entry := range c.ModelEntries {
+		if entry.Disabled {
+			continue
+		}
 		if strings.Contains(strings.ToLower(entry.Model), queryLower) {
 			matches = append(matches, entry.Model)
 		}

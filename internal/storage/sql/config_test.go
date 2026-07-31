@@ -664,6 +664,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "claude-3-opus"},
+			{Model: "gpt-4", RedirectModel: "gpt-4-upstream", Disabled: true},
 		},
 	}
 	created2, err := store.CreateConfig(ctx, cfg2)
@@ -707,6 +708,17 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	}
 	if len(configs) > 0 && configs[0].Name != "gpt4-channel" {
 		t.Errorf("expected gpt4-channel, got %s", configs[0].Name)
+	}
+
+	persisted, err := store.GetConfig(ctx, created2.ID)
+	if err != nil {
+		t.Fatalf("get config with disabled model: %v", err)
+	}
+	if len(persisted.ModelEntries) != 2 || !persisted.ModelEntries[1].Disabled {
+		t.Fatalf("disabled model state not persisted: %#v", persisted.ModelEntries)
+	}
+	if persisted.SupportsModel("gpt-4") {
+		t.Fatal("persisted disabled model must not be supported")
 	}
 
 	// 通配符查询所有启用渠道
