@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
@@ -134,6 +135,66 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 	if val != "{}" || valueType != "json" || defaultValue != "{}" {
 		t.Fatalf("global_cooldown_detection_rules=%q/%q/%q, want {}/json/{}", val, valueType, defaultValue)
+	}
+}
+
+func TestMigrate_SQLite_AddsModelCooldownDuration(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, "DROP TABLE channel_model_cooldowns"); err != nil {
+		t.Fatalf("drop current model cooldown table: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channel_model_cooldowns (
+			channel_id INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			cooldown_until INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (channel_id, model),
+			FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE
+		)
+	`); err != nil {
+		t.Fatalf("create legacy model cooldown table: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channels (name, url, created_at, updated_at)
+		VALUES ('legacy-model-cooldown', 'https://api.example.com', 700, 700)
+	`); err != nil {
+		t.Fatalf("create legacy cooldown channel: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_model_cooldowns (channel_id, model, cooldown_until, updated_at)
+		VALUES (1, 'legacy-model', 1000, 700)
+	`); err != nil {
+		t.Fatalf("insert legacy model cooldown: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("upgrade migrate: %v", err)
+	}
+
+	columns, err := sqliteExistingColumns(ctx, db, "channel_model_cooldowns")
+	if err != nil {
+		t.Fatalf("read model cooldown columns: %v", err)
+	}
+	if !columns["cooldown_duration_ms"] {
+		t.Fatal("channel_model_cooldowns.cooldown_duration_ms was not migrated")
+	}
+
+	var durationMs int64
+	if err := db.QueryRowContext(ctx, `
+		SELECT cooldown_duration_ms
+		FROM channel_model_cooldowns
+		WHERE channel_id = 1 AND model = 'legacy-model'
+	`).Scan(&durationMs); err != nil {
+		t.Fatalf("read migrated model cooldown duration: %v", err)
+	}
+	if durationMs != int64(5*time.Minute/time.Millisecond) {
+		t.Fatalf("migrated model cooldown duration=%dms, want %dms", durationMs, 5*time.Minute/time.Millisecond)
 	}
 }
 

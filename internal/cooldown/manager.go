@@ -69,6 +69,7 @@ type cooldownDecision struct {
 	model                   string
 	modelScoped             bool
 	modelCooldownUntil      time.Time
+	hasModelCooldownUntil   bool
 	channelCooldownUntil    time.Time
 	hasChannelCooldownUntil bool
 	channelCooldownReason   string
@@ -111,7 +112,6 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			decision.model = strings.TrimSpace(in.Model)
 			if decision.model != "" {
 				decision.modelScoped = true
-				decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
 			}
 		}
 	} else {
@@ -125,16 +125,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
 		decision.channelCooldownReason = classification.ChannelCooldownReason
 
-		if decision.hasKeyCooldownUntil && decision.keyCooldownReason == "model_cooldown" {
-			decision.model = strings.TrimSpace(in.Model)
-			if decision.model == "" {
-				decision.model = strings.TrimSpace(classification.Model)
-			}
-			decision.modelScoped = true
-			decision.modelCooldownUntil = decision.keyCooldownUntil
-			// 模型级故障需要切换渠道，但不得冷却 Key 或整个渠道。
-			errLevel = util.ErrorLevelChannel
-		} else if classification.ModelScoped {
+		if classification.ModelScoped {
 			decision.model = strings.TrimSpace(in.Model)
 			if decision.model == "" {
 				decision.model = strings.TrimSpace(classification.Model)
@@ -143,8 +134,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 				decision.modelScoped = true
 				if classification.HasModelCooldownUntil {
 					decision.modelCooldownUntil = classification.ModelCooldownUntil
-				} else {
-					decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
+					decision.hasModelCooldownUntil = true
 				}
 			}
 		} else if errLevel == util.ErrorLevelChannel &&
@@ -153,7 +143,6 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			decision.model = strings.TrimSpace(in.Model)
 			if decision.model != "" {
 				decision.modelScoped = true
-				decision.modelCooldownUntil = time.Now().Add(util.DefaultModelCooldownDuration)
 			}
 		}
 	}
@@ -208,10 +197,11 @@ func configuredCooldownDecision(in ErrorInput, now time.Time) (cooldownDecision,
 			return cooldownDecision{}, false
 		}
 		return cooldownDecision{
-			action:             ActionRetryModel,
-			model:              modelName,
-			modelScoped:        true,
-			modelCooldownUntil: evaluation.CooldownUntil,
+			action:                ActionRetryModel,
+			model:                 modelName,
+			modelScoped:           true,
+			modelCooldownUntil:    evaluation.CooldownUntil,
+			hasModelCooldownUntil: true,
 		}, true
 	case model.CooldownScopeChannel:
 		return cooldownDecision{
@@ -287,14 +277,31 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 			log.Printf("[WARN] 收到 model_cooldown 但缺少模型名，跳过持久化 (channel=%d)", channelID)
 			return ActionRetryModel
 		}
-		if err := m.store.SetModelCooldown(ctx, channelID, decision.model, decision.modelCooldownUntil); err != nil {
-			log.Printf("[WARN] 设置模型冷却失败 (channel=%d, model=%s, until=%v): %v",
-				channelID, decision.model, decision.modelCooldownUntil, err)
+		modelCooldownUntil := decision.modelCooldownUntil
+		persisted := false
+		if decision.hasModelCooldownUntil {
+			if err := m.store.SetModelCooldown(ctx, channelID, decision.model, modelCooldownUntil); err != nil {
+				log.Printf("[WARN] 设置模型冷却失败 (channel=%d, model=%s, until=%v): %v",
+					channelID, decision.model, modelCooldownUntil, err)
+			} else {
+				persisted = true
+			}
 		} else {
-			duration := time.Until(decision.modelCooldownUntil)
+			now := time.Now()
+			duration, err := m.store.BumpModelCooldown(ctx, channelID, decision.model, now, statusCode)
+			if err != nil {
+				log.Printf("[WARN] 更新模型冷却失败 (channel=%d, model=%s): %v",
+					channelID, decision.model, err)
+			} else {
+				modelCooldownUntil = now.Add(duration)
+				persisted = true
+			}
+		}
+		if persisted {
+			duration := time.Until(modelCooldownUntil)
 			log.Printf("[COOLDOWN] 模型冷却: 渠道=%d 模型=%s 禁用至 %s (%.1f分钟)",
 				channelID, decision.model,
-				decision.modelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
+				modelCooldownUntil.Format("2006-01-02 15:04:05"), duration.Minutes())
 		}
 		if m.promoteExhaustedResources(ctx, in) {
 			return ActionRetryChannel

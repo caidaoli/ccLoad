@@ -14,6 +14,7 @@ var sqliteMigratableTables = map[string]bool{
 	"logs":                     true,
 	"auth_tokens":              true,
 	"channel_models":           true,
+	"channel_model_cooldowns":  true,
 	"api_keys":                 true,
 	"channels":                 true,
 	"debug_logs":               true,
@@ -130,6 +131,29 @@ func ensureColumn(ctx context.Context, db *sql.DB, dialect Dialect, table, col, 
 	default:
 		return ensureSQLiteColumns(ctx, db, table, []sqliteColumnDef{{name: col, definition: sqliteDef}})
 	}
+}
+
+func ensureModelCooldownDuration(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(
+		ctx,
+		db,
+		dialect,
+		"channel_model_cooldowns",
+		"cooldown_duration_ms",
+		"BIGINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0",
+	); err != nil {
+		return err
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE channel_model_cooldowns
+		SET cooldown_duration_ms = (cooldown_until - updated_at) * 1000
+		WHERE cooldown_duration_ms = 0 AND cooldown_until > updated_at
+	`); err != nil {
+		return fmt.Errorf("backfill model cooldown duration: %w", err)
+	}
+	return nil
 }
 
 func ensureFingerprintTestResultsDistribution(ctx context.Context, db *sql.DB, dialect Dialect) error {
