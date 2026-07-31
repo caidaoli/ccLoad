@@ -135,13 +135,21 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.metrics.successRate': '成功率',
   'index.metrics.successFailed': '成功/失败 (成功率)',
   'index.metrics.rpm': 'RPM(峰值 平均 最近)',
-  'index.apiSection': 'API 接口',
-  'index.apiClaudeDesc': 'Claude API 透明代理',
-  'index.apiCodexDesc': 'Codex API 透明代理',
-  'index.apiGeminiDesc': 'Gemini 透明代理',
-  'index.apiSummaryDesc': '公开统计数据',
-  'index.apiTip': '管理功能需要登录访问，代理服务公开使用',
-
+  'index.health.title': '服务健康监测',
+  'index.health.period': '最近 7 天',
+  'index.health.earlier': '7 天前',
+  'index.health.latest': '现在',
+  'index.health.noRequests': '无请求',
+  'index.health.critical': '异常',
+  'index.health.warning': '波动',
+  'index.health.healthy': '健康',
+  'index.health.legendLabel': '健康状态图例',
+  'index.health.loading': '正在加载服务健康数据',
+  'index.health.unavailable': '健康数据暂时无法加载，将在下次刷新时重试。',
+  'index.health.noData': '最近 7 天暂无请求数据',
+  'index.health.summary': '最近 7 天服务成功率 {rate}，成功 {success} 次，失败 {error} 次',
+  'index.health.tooltipNoData': '{time} · 无请求',
+  'index.health.tooltip': '{time} · {state}\n成功 {success} · 失败 {error} · 成功率 {rate}',
   // ============================================================
   // 渠道管理
   // ============================================================

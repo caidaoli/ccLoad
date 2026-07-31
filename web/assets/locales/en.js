@@ -135,13 +135,21 @@ window.I18N_LOCALES['en'] = {
   'index.metrics.successRate': 'Success Rate',
   'index.metrics.successFailed': 'Success/Failed (Rate)',
   'index.metrics.rpm': 'RPM (Peak Avg Recent)',
-  'index.apiSection': 'API Endpoints',
-  'index.apiClaudeDesc': 'Claude API Transparent Proxy',
-  'index.apiCodexDesc': 'Codex API Transparent Proxy',
-  'index.apiGeminiDesc': 'Gemini Transparent Proxy',
-  'index.apiSummaryDesc': 'Public Statistics',
-  'index.apiTip': 'Admin features require login, proxy services are public',
-
+  'index.health.title': 'Service health',
+  'index.health.period': 'Last 7 days',
+  'index.health.earlier': '7 days ago',
+  'index.health.latest': 'Now',
+  'index.health.noRequests': 'No requests',
+  'index.health.critical': 'Critical',
+  'index.health.warning': 'Degraded',
+  'index.health.healthy': 'Healthy',
+  'index.health.legendLabel': 'Health status legend',
+  'index.health.loading': 'Loading service health data',
+  'index.health.unavailable': 'Health data is temporarily unavailable. The next refresh will retry.',
+  'index.health.noData': 'No request data in the last 7 days',
+  'index.health.summary': 'Service success rate for the last 7 days: {rate}; {success} succeeded and {error} failed',
+  'index.health.tooltipNoData': '{time} · No requests',
+  'index.health.tooltip': '{time} · {state}\n{success} succeeded · {error} failed · {rate} success rate',
   // ============================================================
   // Channels Management
   // ============================================================
