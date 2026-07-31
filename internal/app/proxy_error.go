@@ -167,6 +167,7 @@ func (s *Server) logProxyResult(
 		IsStreaming:    reqCtx.isStreaming,
 		APIKeyUsed:     selectedKey,
 		AuthTokenID:    reqCtx.tokenID,
+		ClientProtocol: reqCtx.clientProtocol,
 		ClientIP:       reqCtx.clientIP,
 		BaseURL:        reqCtx.baseURL,
 		Result:         res,

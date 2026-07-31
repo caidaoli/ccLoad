@@ -266,7 +266,7 @@ func TestPostgres(t *testing.T) {
 			t.Logf("列 %s.%s 存在", table, col)
 		}
 
-		for _, col := range []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
+		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
 			checkCol("logs", col)
 		}
 		for _, col := range []string{"allowed_models", "cost_used_microusd", "cost_limit_microusd"} {
@@ -438,7 +438,8 @@ func TestPostgres(t *testing.T) {
 			t.Fatalf("CreateAuthToken: %v", err)
 		}
 
-		now := time.Now().UTC().Truncate(time.Second)
+		// 固定在分钟中点，避免并行执行或容器启动耗时使两条夹具数据跨越分钟桶。
+		now := time.Now().UTC().Truncate(time.Minute).Add(30 * time.Second)
 		for _, entry := range []*model.LogEntry{
 			{
 				Time:          model.JSONTime{Time: now.Add(-20 * time.Second)},

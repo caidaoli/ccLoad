@@ -88,6 +88,20 @@ type StatsEntry struct {
 	HealthTimeline []HealthPoint `json:"health_timeline,omitempty"` // 固定24个时间点的健康状态
 }
 
+// ClientProtocolStats 按客户端入口协议聚合首页统计。
+type ClientProtocolStats struct {
+	ClientProtocol           string  `json:"client_protocol"`
+	TotalRequests            int     `json:"total_requests"`
+	SuccessRequests          int     `json:"success_requests"`
+	ErrorRequests            int     `json:"error_requests"`
+	TotalInputTokens         int64   `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens        int64   `json:"total_output_tokens,omitempty"`
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens,omitempty"`
+	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens,omitempty"`
+	TotalCost                float64 `json:"total_cost,omitempty"`
+	EffectiveCost            float64 `json:"effective_cost"`
+}
+
 // RPMStats 包含RPM/QPS相关的统计数据
 type RPMStats struct {
 	PeakRPM   float64 `json:"peak_rpm"`   // 峰值RPM（每分钟最大请求数）

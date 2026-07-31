@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 
@@ -161,7 +162,7 @@ func projectTokenStats(stats []model.StatsEntry) []model.StatsEntry {
 
 // HandlePublicSummary 获取基础统计摘要(公开端点,无需认证)
 // GET /public/summary?range=today
-// 按渠道类型分组统计，Claude和Codex类型包含Token和成本信息
+// 按客户端入口协议分组统计。
 //
 // [SECURITY NOTE] 该端点故意设计为公开访问，用于首页仪表盘展示。
 // 认证仪表盘使用 /dashboard/summary，并由 Web 身份强制作用域。
@@ -172,47 +173,36 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	// 判断是否为本日（本日才计算最近一分钟）
 	isToday := params.Range == "today" || params.Range == ""
 	ctx := c.Request.Context()
-	var logFilter *model.LogFilter
+	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
 	if _, ok := WebIdentityFromContext(c); ok {
 		filter := BuildLogFilter(c)
 		filter.LogSource = model.LogSourceProxy
 		logFilter = &filter
 	}
 
-	// [OPT] P1: 并行执行三个独立查询
+	// 协议摘要与 RPM 相互独立，并行查询。
 	var (
-		stats        []model.StatsEntry
-		rpmStats     *model.RPMStats
-		channelTypes map[int64]string
-		statsErr     error
-		rpmErr       error
-		typesErr     error
-		wg           sync.WaitGroup
+		stats    []model.ClientProtocolStats
+		rpmStats *model.RPMStats
+		statsErr error
+		rpmErr   error
+		wg       sync.WaitGroup
 	)
 
-	wg.Add(3)
+	wg.Add(2)
 
-	// 查询1: 基础统计（使用 Lite 版本跳过 fillStatsRPM）
 	go func() {
 		defer wg.Done()
-		stats, statsErr = s.statsCache.GetStatsLite(ctx, startTime, endTime, logFilter)
+		stats, statsErr = s.statsCache.GetClientProtocolStats(ctx, startTime, endTime, logFilter)
 	}()
 
-	// 查询2: RPM统计
 	go func() {
 		defer wg.Done()
 		rpmStats, rpmErr = s.statsCache.GetRPMStats(ctx, startTime, endTime, logFilter, isToday)
 	}()
 
-	// 查询3: 渠道类型映射（带缓存）
-	go func() {
-		defer wg.Done()
-		channelTypes, typesErr = s.getChannelTypesMapCached(ctx)
-	}()
-
 	wg.Wait()
 
-	// 错误处理
 	if statsErr != nil {
 		RespondError(c, http.StatusInternalServerError, statsErr)
 		return
@@ -221,159 +211,38 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, rpmErr)
 		return
 	}
-	if typesErr != nil {
-		RespondError(c, http.StatusInternalServerError, typesErr)
-		return
-	}
-
 	// 计算时间跨度（秒），用于前端计算RPM和QPS
 	durationSeconds := endTime.Sub(startTime).Seconds()
 	if durationSeconds < 1 {
 		durationSeconds = 1 // 防止除零
 	}
 
-	// 按渠道类型分组统计
-	typeStats := make(map[string]*TypeSummary)
+	byClientProtocol := make(map[string]model.ClientProtocolStats)
 	totalSuccess := 0
 	totalError := 0
 
 	for _, stat := range stats {
-		// 获取渠道类型，跳过无法确定类型的记录（已删除的渠道）
-		var channelType string
-		if stat.ChannelID != nil {
-			if ct, ok := channelTypes[int64(*stat.ChannelID)]; ok {
-				channelType = ct
-			}
-		}
-		if channelType == "" {
-			// 渠道已删除或类型未知，不计入按类型统计（与 /admin/stats 保持一致）
-			continue
-		}
+		totalSuccess += stat.SuccessRequests
+		totalError += stat.ErrorRequests
 
-		totalSuccess += stat.Success
-		totalError += stat.Error
-
-		// 初始化类型统计
-		if _, exists := typeStats[channelType]; !exists {
-			typeStats[channelType] = &TypeSummary{
-				ChannelType:     channelType,
-				TotalRequests:   0,
-				SuccessRequests: 0,
-				ErrorRequests:   0,
-			}
-		}
-
-		ts := typeStats[channelType]
-		ts.TotalRequests += stat.Success + stat.Error
-		ts.SuccessRequests += stat.Success
-		ts.ErrorRequests += stat.Error
-
-		// 所有渠道类型都统计Token和成本
-		if stat.TotalInputTokens != nil {
-			ts.TotalInputTokens += *stat.TotalInputTokens
-		}
-		if stat.TotalOutputTokens != nil {
-			ts.TotalOutputTokens += *stat.TotalOutputTokens
-		}
-		if stat.TotalCost != nil {
-			ts.TotalCost += *stat.TotalCost
-		}
-		if stat.EffectiveCost != nil {
-			if ts.EffectiveCost == nil {
-				ts.EffectiveCost = new(float64)
-			}
-			*ts.EffectiveCost += *stat.EffectiveCost
-		} else if stat.TotalCost != nil {
-			if ts.EffectiveCost == nil {
-				ts.EffectiveCost = new(float64)
-			}
-			*ts.EffectiveCost += *stat.TotalCost
-		}
-
-		// Claude和Codex类型额外统计缓存（其他类型不支持prompt caching）
-		if channelType == "anthropic" || channelType == "codex" {
-			if stat.TotalCacheReadInputTokens != nil {
-				ts.TotalCacheReadTokens += *stat.TotalCacheReadInputTokens
-			}
-			if stat.TotalCacheCreationInputTokens != nil {
-				ts.TotalCacheCreationTokens += *stat.TotalCacheCreationInputTokens
-			}
+		switch protocol.Protocol(stat.ClientProtocol) {
+		case protocol.Anthropic, protocol.Codex, protocol.OpenAI, protocol.Gemini:
+			byClientProtocol[stat.ClientProtocol] = stat
 		}
 	}
 
 	response := gin.H{
-		"total_requests":   totalSuccess + totalError,
-		"success_requests": totalSuccess,
-		"error_requests":   totalError,
-		"range":            params.Range,
-		"duration_seconds": durationSeconds,
-		"rpm_stats":        rpmStats,
-		"is_today":         isToday,
-		"by_type":          typeStats, // 按渠道类型分组的统计
+		"total_requests":     totalSuccess + totalError,
+		"success_requests":   totalSuccess,
+		"error_requests":     totalError,
+		"range":              params.Range,
+		"duration_seconds":   durationSeconds,
+		"rpm_stats":          rpmStats,
+		"is_today":           isToday,
+		"by_client_protocol": byClientProtocol,
 	}
 
 	RespondJSON(c, http.StatusOK, response)
-}
-
-// TypeSummary 按渠道类型的统计摘要
-type TypeSummary struct {
-	ChannelType              string   `json:"channel_type"`
-	TotalRequests            int      `json:"total_requests"`
-	SuccessRequests          int      `json:"success_requests"`
-	ErrorRequests            int      `json:"error_requests"`
-	TotalInputTokens         int64    `json:"total_input_tokens,omitempty"`          // 所有类型
-	TotalOutputTokens        int64    `json:"total_output_tokens,omitempty"`         // 所有类型
-	TotalCacheReadTokens     int64    `json:"total_cache_read_tokens,omitempty"`     // Claude/Codex专用（prompt caching）
-	TotalCacheCreationTokens int64    `json:"total_cache_creation_tokens,omitempty"` // Claude/Codex专用（prompt caching）
-	TotalCost                float64  `json:"total_cost,omitempty"`                  // 标准成本
-	EffectiveCost            *float64 `json:"effective_cost,omitempty"`              // 倍率后成本
-}
-
-// fetchChannelTypesMap 查询所有渠道的类型映射
-func (s *Server) fetchChannelTypesMap(ctx context.Context) (map[int64]string, error) {
-	configs, err := s.store.ListConfigs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	channelTypes := make(map[int64]string, len(configs))
-	for _, cfg := range configs {
-		channelTypes[cfg.ID] = cfg.ChannelType
-	}
-	return channelTypes, nil
-}
-
-// getChannelTypesMapCached 带 TTL 缓存的渠道类型映射查询
-// [OPT] P3: 渠道类型变化频率极低，使用 60 秒缓存减少数据库查询
-const channelTypesCacheTTL = 60 * time.Second
-
-func (s *Server) getChannelTypesMapCached(ctx context.Context) (map[int64]string, error) {
-	// 读锁检查缓存
-	s.channelTypesCacheMu.RLock()
-	if s.channelTypesCache != nil && time.Since(s.channelTypesCacheTime) < channelTypesCacheTTL {
-		result := s.channelTypesCache
-		s.channelTypesCacheMu.RUnlock()
-		return result, nil
-	}
-	s.channelTypesCacheMu.RUnlock()
-
-	// 写锁更新缓存
-	s.channelTypesCacheMu.Lock()
-	defer s.channelTypesCacheMu.Unlock()
-
-	// 双重检查：可能其他 goroutine 已更新
-	if s.channelTypesCache != nil && time.Since(s.channelTypesCacheTime) < channelTypesCacheTTL {
-		return s.channelTypesCache, nil
-	}
-
-	channelTypes, err := s.fetchChannelTypesMap(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	s.channelTypesCache = channelTypes
-	s.channelTypesCacheTime = time.Now()
-	return channelTypes, nil
 }
 
 // HandleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)

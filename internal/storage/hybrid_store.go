@@ -671,6 +671,10 @@ func (h *HybridStore) GetStatsLite(ctx context.Context, startTime, endTime time.
 	return h.sqlite.GetStatsLite(ctx, startTime, endTime, filter)
 }
 
+func (h *HybridStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
+	return h.sqlite.GetClientProtocolStats(ctx, startTime, endTime, filter)
+}
+
 func (h *HybridStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	return h.sqlite.GetRPMStats(ctx, startTime, endTime, filter, isToday)
 }

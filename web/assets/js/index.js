@@ -60,13 +60,12 @@
       const isToday = statsData.is_today !== false;
       updateGlobalRpmDisplay('total-rpm', rpmStats, isToday);
 
-      // 更新按渠道类型统计
-      if (statsData.by_type) {
-        updateTypeStats('anthropic', statsData.by_type.anthropic);
-        updateTypeStats('codex', statsData.by_type.codex);
-        updateTypeStats('openai', statsData.by_type.openai);
-        updateTypeStats('gemini', statsData.by_type.gemini);
-      }
+      // 更新按客户端入口协议统计
+      const protocolStats = statsData.by_client_protocol || {};
+      updateClientProtocolStats('anthropic', protocolStats.anthropic);
+      updateClientProtocolStats('codex', protocolStats.codex);
+      updateClientProtocolStats('openai', protocolStats.openai);
+      updateClientProtocolStats('gemini', protocolStats.gemini);
     }
 
     // 更新全局 RPM 显示（格式：数值 数值 数值）
@@ -95,8 +94,8 @@
       el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
     }
 
-    // 更新单个渠道类型的统计
-    function updateTypeStats(type, data) {
+    // 更新单个客户端入口协议的统计
+    function updateClientProtocolStats(type, data) {
       // 始终显示所有卡片，保持界面完整性
       const card = document.getElementById(`type-${type}-card`);
       if (card) card.style.display = 'block';
@@ -116,7 +115,7 @@
       document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
       document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
 
-      // 所有渠道类型的Token和成本统计
+      // 所有客户端协议的Token和成本统计
       const inputTokens = data ? (data.total_input_tokens || 0) : 0;
       const outputTokens = data ? (data.total_output_tokens || 0) : 0;
       const totalCost = data ? (data.total_cost || 0) : 0;

@@ -480,6 +480,13 @@ func ensureLogsUpstreamWebsocket(ctx context.Context, db *sql.DB, dialect Dialec
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+// ensureLogsClientProtocol ensures protocol statistics use the immutable client request protocol.
+func ensureLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "logs", "client_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
 // ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
 func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	switch dialect {
