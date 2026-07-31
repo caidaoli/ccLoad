@@ -85,9 +85,6 @@ function setupFilterListeners() {
     filters.status = e.target.value;
     channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    if (typeof loadChannelsFilterOptions === 'function') {
-      loadChannelsFilterOptions(filters.status);
-    }
     loadChannels();
   });
 
@@ -102,6 +99,7 @@ function setupFilterListeners() {
       initialLabel: modelFilterInputValueFromFilterValue(filters.model),
       allowCustomInput: true,
       commitEmptyAsFirst: true,
+      showAllOptionsOnOpen: true,
       getOptions: () => {
         const allLabel = getModelAllLabel();
         const models = Array.isArray(allAvailableModels) ? allAvailableModels : [];
@@ -132,6 +130,7 @@ function setupFilterListeners() {
       initialLabel: filters.search || allLabel,
       allowCustomInput: true,
       commitEmptyAsFirst: true,
+      showAllOptionsOnOpen: true,
       getOptions: () => {
         // 使用服务端在 search 过滤前冻结的全集，避免选中某渠道名后下拉收敛为单一项
         const names = Array.isArray(allAvailableChannelNames) ? allAvailableChannelNames : [];

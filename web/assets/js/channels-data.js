@@ -49,18 +49,17 @@ async function loadChannels() {
 }
 
 // CRUD 操作后同时刷新列表分页与筛选下拉全集
-async function reloadChannelsList(status = filters.status) {
+async function reloadChannelsList() {
   await Promise.all([
-    loadChannelsFilterOptions(status),
+    loadChannelsFilterOptions(),
     loadChannels()
   ]);
 }
 
-// 加载渠道筛选下拉的全集（按状态联动），与列表分页/搜索/模型筛选解耦
-async function loadChannelsFilterOptions(status = 'all') {
+// 加载渠道筛选下拉全集，与列表的分页和全部筛选条件彻底解耦
+async function loadChannelsFilterOptions() {
   try {
     const params = new URLSearchParams();
-    if (status && status !== 'all') params.set('status', status);
     const optionsBase = channelsReadURL('/admin/channels/filter-options', '/dashboard/channels/filter-options');
     params.set('range', channelStatsRange);
     const url = optionsBase + '?' + params.toString();

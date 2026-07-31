@@ -50,21 +50,6 @@ function loadChannelsFilters() {
   return null;
 }
 
-function resetChannelSearchFilter() {
-  filters.search = '';
-  filters.searchExact = false;
-  channelsCurrentPage = 1;
-  if (typeof channelNameCombobox !== 'undefined' && channelNameCombobox) {
-    channelNameCombobox.setValue('', getChannelNameAllLabel());
-  } else {
-    const searchInputEl = document.getElementById('searchInput');
-    if (searchInputEl) {
-      const allLabel = (window.t && window.t('channels.channelNameAll')) || '所有渠道';
-      searchInputEl.value = allLabel;
-    }
-  }
-}
-
 function updateChannelsPagination() {
   const currentPageEl = document.getElementById('channels_current_page');
   const totalPagesEl = document.getElementById('channels_total_pages');
@@ -278,7 +263,7 @@ window.initPageBootstrap({
 
     // 并行化第二批：筛选选项、渠道列表与统计互不依赖
     await Promise.all([
-      loadChannelsFilterOptions(filters.status),
+      loadChannelsFilterOptions(),
       loadChannels(),
       loadChannelStats()
     ]);
@@ -339,7 +324,8 @@ window.addEventListener('pageshow', async (event) => {
   const urlChannelId = new URLSearchParams(location.search).get('id');
   if (!event.persisted || urlChannelId) return;
 
-  resetChannelSearchFilter();
-  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-  await loadChannels();
+  await Promise.all([
+    loadChannelsFilterOptions(),
+    loadChannels()
+  ]);
 });
