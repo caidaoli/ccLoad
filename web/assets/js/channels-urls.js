@@ -375,15 +375,32 @@ async function testInlineURL(index, buttonElement) {
     return;
   }
 
-  const models = redirectTableData
-    .map(r => r.model)
-    .filter(m => m && m.trim() && !/[*?]/.test(m));
-  if (models.length === 0) {
-    alert(window.t('channels.configModelsFirst'));
+  const url = normalizeInlineURLValue(inlineURLTableData[index]);
+  if (!url) {
+    alert(window.t('channels.fillApiUrlFirst'));
     return;
   }
 
-  const firstModel = models[0];
+  const candidates = getTestModelCandidates();
+  if (candidates.length === 0) {
+    // 仅配置通配规则且无重定向目标：让用户输入一个具体测试模型，由后端 SupportsModel 校验
+    if (typeof window.pickConcreteModelDialog !== 'function') {
+      alert(window.t('channels.configModelsFirst'));
+      return;
+    }
+    window.pickConcreteModelDialog({
+      title: window.t('channels.test.pickModel') || '请输入一个具体测试模型',
+      options: [],
+      onConfirm: (model) => { performInlineURLTest(index, buttonElement, model); },
+      onCancel: () => {}
+    });
+    return;
+  }
+
+  await performInlineURLTest(index, buttonElement, candidates[0]);
+}
+
+async function performInlineURLTest(index, buttonElement, model) {
   const url = normalizeInlineURLValue(inlineURLTableData[index]);
   if (!url) {
     alert(window.t('channels.fillApiUrlFirst'));
@@ -415,7 +432,7 @@ async function testInlineURL(index, buttonElement) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        model: firstModel,
+        model: model,
         stream: true,
         content: 'test',
         channel_type: channelType,

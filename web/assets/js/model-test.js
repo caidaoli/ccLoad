@@ -1337,7 +1337,7 @@ function getAllModelsForProtocol(protocol) {
     if (!channelExposesProtocol(ch, normalizedProtocol)) return;
     (ch.models || []).forEach(entry => {
       const modelName = getModelName(entry);
-      if (modelName && !/[*?]/.test(modelName)) modelSet.add(modelName);
+      if (modelName && !isModelPattern(modelName)) modelSet.add(modelName);
     });
   });
   return Array.from(modelSet).sort((a, b) => a.localeCompare(b));
@@ -1385,24 +1385,14 @@ function renderProtocolTransformOptions() {
   }).join('');
 }
 
-/** 仅识别 '*'(任意串含空)与 '?'(单字符)的通配匹配，与后端 matchModelGlob 一致。 */
-function matchModelGlob(pattern, name) {
-  let p = 0, n = 0, starP = -1, starN = 0;
-  while (n < name.length) {
-    if (p < pattern.length && pattern[p] === '*') { starP = p; starN = n; p++; }
-    else if (p < pattern.length && (pattern[p] === name[n] || pattern[p] === '?')) { p++; n++; }
-    else if (starP >= 0) { p = starP + 1; starN++; n = starN; }
-    else return false;
-  }
-  while (p < pattern.length && pattern[p] === '*') p++;
-  return p === pattern.length;
-}
+// matchModelGlob / isModelPattern 由共享的 model-glob.js 提供（window.matchModelGlob），
+// 按 Unicode code point 匹配，与后端 internal/model/config.go 的 []rune 实现一致。
 
 function isModelSupported(channel, modelName) {
   if (!channel || !modelName || !Array.isArray(channel.models)) return false;
   return channel.models.some(entry => {
     const name = getModelName(entry);
-    return name === modelName || matchModelGlob(name, modelName);
+    return name === modelName || window.matchModelGlob(name, modelName);
   });
 }
 
@@ -1432,7 +1422,7 @@ function getChannelModelPairsMatching(protocol, keyword) {
     .forEach(ch => {
       (ch.models || []).forEach(entry => {
         const name = getModelName(entry);
-        if (name && !/[*?]/.test(name) && name.toLowerCase().includes(trimmed)) {
+        if (name && !isModelPattern(name) && name.toLowerCase().includes(trimmed)) {
           pairs.push({ channel: ch, model: name });
         }
       });
@@ -1568,7 +1558,7 @@ function renderChannelModeRows() {
   models.forEach(entry => {
     const modelName = getModelName(entry);
     if (!modelName) return;
-    if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免字面通配符作为测试模型
+    if (isModelPattern(modelName)) return; // 过滤通配模式，避免字面通配符作为测试模型
     const row = TemplateEngine.render('tpl-model-row', {
       model: modelName,
       displayName: modelName,
@@ -1579,7 +1569,12 @@ function renderChannelModeRows() {
     if (row) fragment.appendChild(row);
   });
 
+  // 仅配置通配规则的渠道无具体模型行：引导用户到"按模型测试"输入具体模型测试
   tbody.innerHTML = '';
+  if (fragment.childElementCount === 0) {
+    renderEmptyRow(i18nText('modelTest.channelOnlyWildcard', '该渠道仅配置通配规则，请切换到"按模型测试"输入具体模型测试'));
+    return;
+  }
   tbody.appendChild(fragment);
   finalizeTableRender();
 }
@@ -2037,6 +2032,10 @@ async function runModelTests() {
 
   if (testMode === TEST_MODE_MODEL && !selectedModelName) {
     showError(i18nText('modelTest.selectModelFirst', '请先选择模型'));
+    return;
+  }
+  if (testMode === TEST_MODE_MODEL && isModelPattern(selectedModelName)) {
+    showError(i18nText('channels.test.modelNameNoWildcard', '模型名不能包含通配符 * 或 ?，请输入具体模型名'));
     return;
   }
 
@@ -3592,7 +3591,7 @@ function getAllChatModelOptions() {
   channelsList.forEach(ch => {
     (ch.models || []).forEach(entry => {
       const m = getModelName(entry);
-      if (m && !/[*?]/.test(m)) set.add(m);
+      if (m && !isModelPattern(m)) set.add(m);
     });
   });
   return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -3842,6 +3841,10 @@ async function retryChatMessage(actionTarget) {
     showError(i18nText('modelTest.chat.selectModel', '请先选择模型'));
     return;
   }
+  if (isModelPattern(currentModel)) {
+    showError(i18nText('channels.test.modelNameNoWildcard', '模型名不能包含通配符 * 或 ?，请输入具体模型名'));
+    return;
+  }
 
   const content = cloneChatMessageContent(found.message.content);
   trimChatHistory(found.index);
@@ -3880,6 +3883,10 @@ async function sendChatMessage() {
   const currentModel = document.getElementById('chatModelSelect')?.value?.trim() || chatModel;
   if (!currentModel) {
     showError(i18nText('modelTest.chat.selectModel', '请先选择模型'));
+    return;
+  }
+  if (isModelPattern(currentModel)) {
+    showError(i18nText('channels.test.modelNameNoWildcard', '模型名不能包含通配符 * 或 ?，请输入具体模型名'));
     return;
   }
   chatModel = currentModel;

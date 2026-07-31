@@ -82,7 +82,7 @@
       const models = ch.models || [];
       models.forEach(m => {
         const name = (typeof m === 'string') ? m : (m.model || m.name || '');
-        if (name && !/[*?]/.test(name) && !seen.has(name)) {
+        if (name && !isModelPattern(name) && !seen.has(name)) {
           seen.add(name);
           options.push({ value: name, label: name });
         }
@@ -91,25 +91,15 @@
     return options;
   }
 
-  /** 仅识别 '*'(任意串含空)与 '?'(单字符)的通配匹配，与后端 matchModelGlob 一致。 */
-  function matchModelGlob(pattern, name) {
-    let p = 0, n = 0, starP = -1, starN = 0;
-    while (n < name.length) {
-      if (p < pattern.length && pattern[p] === '*') { starP = p; starN = n; p++; }
-      else if (p < pattern.length && (pattern[p] === name[n] || pattern[p] === '?')) { p++; n++; }
-      else if (starP >= 0) { p = starP + 1; starN++; n = starN; }
-      else return false;
-    }
-    while (p < pattern.length && pattern[p] === '*') p++;
-    return p === pattern.length;
-  }
+  // matchModelGlob / isModelPattern 由共享的 model-glob.js 提供（window.matchModelGlob），
+  // 按 Unicode code point 匹配，与后端 internal/model/config.go 的 []rune 实现一致。
 
   /** 判断渠道是否支持指定模型（精确条目或通配模式匹配）。 */
   function channelSupportsModel(cfg, modelName) {
     const models = cfg.models || [];
     return models.some(m => {
       const name = (typeof m === 'string') ? m : (m.model || m.name || '');
-      return name === modelName || matchModelGlob(name, modelName);
+      return name === modelName || window.matchModelGlob(name, modelName);
     });
   }
 
@@ -129,7 +119,7 @@
     const models = (ch && ch.models) ? ch.models : [];
     return models
       .map(m => (typeof m === 'string') ? m : (m.model || m.name || ''))
-      .filter(name => name && !/[*?]/.test(name))
+      .filter(name => name && !isModelPattern(name))
       .map(name => ({ value: name, label: name }));
   }
 
@@ -144,6 +134,7 @@
       dropdownId: hiddenId + '_dropdown',
       placeholder: t('modelTest.fingerprint.selectModel', '搜索模型...'),
       minWidth: 120,
+      allowCustomInput: true,
       getOptions: getAllModelOptions,
       onSelect: (value) => {
         const hidden = el(hiddenId);
@@ -196,6 +187,7 @@
       dropdownId: 'fpCalibrateModel_dropdown',
       placeholder: t('modelTest.fingerprint.selectModel', '搜索模型...'),
       minWidth: 120,
+      allowCustomInput: true,
       getOptions: getAllModelOptions,
       onSelect: (value) => {
         const hidden = el('fpCalibrateModel');
@@ -969,6 +961,7 @@
     if (!name)      { alert(t('modelTest.fingerprint.needName', '请输入基准名称')); return; }
     if (!channelId) { alert(t('modelTest.fingerprint.needChannel', '请选择渠道')); return; }
     if (!model)     { alert(t('modelTest.fingerprint.needModel', '请选择模型')); return; }
+    if (isModelPattern(model)) { alert(t('channels.test.modelNameNoWildcard', '模型名不能包含通配符 * 或 ?，请输入具体模型名')); return; }
 
     const confirmMsg = t('modelTest.fingerprint.costConfirm', '将向渠道发起约 {n} 次请求，产生实际上游费用。是否继续？')
       .replace('{n}', iterations);
@@ -1009,6 +1002,7 @@
 
     if (!channelId) { alert(t('modelTest.fingerprint.needChannel', '请选择渠道')); return; }
     if (!model)     { alert(t('modelTest.fingerprint.needModel', '请选择模型')); return; }
+    if (isModelPattern(model)) { alert(t('channels.test.modelNameNoWildcard', '模型名不能包含通配符 * 或 ?，请输入具体模型名')); return; }
 
     const confirmMsg = t('modelTest.fingerprint.costConfirm', '将向渠道发起约 {n} 次请求，产生实际上游费用。是否继续？')
       .replace('{n}', iterations);

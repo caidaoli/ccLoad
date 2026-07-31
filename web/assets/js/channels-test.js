@@ -1,3 +1,54 @@
+let testModelCombobox = null;
+let currentTestModels = [];
+
+function getConcreteTestModels(channel) {
+  const models = (channel && channel.models) || [];
+  const names = [];
+  models.forEach(entry => {
+    const modelName = typeof entry === 'string' ? entry : (entry && entry.model);
+    const redirect = typeof entry === 'string' ? '' : (entry && entry.redirect_model);
+    // 具体模型条目直接作候选；通配条目用其重定向目标（具体模型）作候选，与后端 DefaultCheckModel 一致
+    if (modelName && !isModelPattern(modelName)) names.push(modelName);
+    else if (redirect && !isModelPattern(redirect)) names.push(redirect);
+  });
+  return [...new Set(names)];
+}
+
+function ensureTestModelCombobox() {
+  if (testModelCombobox) return testModelCombobox;
+  if (typeof window.createSearchableCombobox !== 'function') return null;
+  const input = document.getElementById('testModelSelect');
+  const dropdown = document.getElementById('testModelSelectDropdown');
+  if (!input || !dropdown) return null;
+  testModelCombobox = window.createSearchableCombobox({
+    attachMode: true,
+    inputId: 'testModelSelect',
+    dropdownId: 'testModelSelectDropdown',
+    initialValue: '',
+    initialLabel: '',
+    allowCustomInput: true,
+    getOptions: () => currentTestModels.map(name => ({ value: name, label: name })),
+    onSelect: () => {}
+  });
+  return testModelCombobox;
+}
+
+function getSelectedTestModel() {
+  const input = document.getElementById('testModelSelect');
+  return input ? input.value.trim() : '';
+}
+
+function setSelectedTestModel(value) {
+  const combobox = ensureTestModelCombobox();
+  if (combobox) {
+    combobox.setValue(value, value);
+    combobox.refresh();
+  } else {
+    const input = document.getElementById('testModelSelect');
+    if (input) input.value = value;
+  }
+}
+
 async function testChannel(id, name) {
   const channel = channels.find(c => c.id === id);
   if (!channel) return;
@@ -11,17 +62,10 @@ async function testChannel(id, name) {
     return;
   }
 
-  const modelSelect = document.getElementById('testModelSelect');
-  modelSelect.innerHTML = '';
-  models.forEach(entry => {
-    // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
-    const modelName = typeof entry === 'string' ? entry : entry.model;
-    if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免把字面通配符作为测试模型发给上游
-    const option = document.createElement('option');
-    option.value = modelName;
-    option.textContent = modelName;
-    modelSelect.appendChild(option);
-  });
+  currentTestModels = getConcreteTestModels(channel);
+  ensureTestModelCombobox();
+  // 预选首个具体模型；纯通配渠道无具体候选则留空，由用户自行输入被通配覆盖的具体模型
+  setSelectedTestModel(currentTestModels[0] || '');
 
   let apiKeys = [];
   try {
@@ -82,24 +126,28 @@ function resetTestModal() {
   document.getElementById('testContentInput').value = defaultTestContent;
   document.getElementById('testChannelType').value = 'anthropic';
   document.getElementById('testConcurrency').value = '10';
+  setSelectedTestModel('');
 }
 
 async function runChannelTest() {
   if (!testingChannelId) return;
 
-  const modelSelect = document.getElementById('testModelSelect');
   const contentInput = document.getElementById('testContentInput');
   const channelTypeSelect = document.getElementById('testChannelType');
   const keySelect = document.getElementById('testKeySelect');
   const streamCheckbox = document.getElementById('testStreamEnabled');
   const keySelectGroup = document.getElementById('testKeySelectGroup');
-  const selectedModel = modelSelect.value;
+  const selectedModel = getSelectedTestModel();
   const testContent = contentInput.value.trim() || defaultTestContent;
   const channelType = channelTypeSelect.value;
   const streamEnabled = streamCheckbox.checked;
 
   if (!selectedModel) {
     if (window.showError) window.showError(window.t('channels.test.selectModelRequired'));
+    return;
+  }
+  if (isModelPattern(selectedModel)) {
+    if (window.showError) window.showError(window.t('channels.test.modelNameNoWildcard') || '模型名不能包含通配符 * 或 ?，请输入具体模型名');
     return;
   }
 
@@ -159,13 +207,12 @@ async function runBatchTest() {
     return;
   }
 
-  const modelSelect = document.getElementById('testModelSelect');
   const contentInput = document.getElementById('testContentInput');
   const channelTypeSelect = document.getElementById('testChannelType');
   const streamCheckbox = document.getElementById('testStreamEnabled');
   const concurrencyInput = document.getElementById('testConcurrency');
 
-  const selectedModel = modelSelect.value;
+  const selectedModel = getSelectedTestModel();
   const testContent = contentInput.value.trim() || defaultTestContent;
   const channelType = channelTypeSelect.value;
   const streamEnabled = streamCheckbox.checked;
@@ -173,6 +220,10 @@ async function runBatchTest() {
 
   if (!selectedModel) {
     if (window.showError) window.showError(window.t('channels.test.selectModelRequired'));
+    return;
+  }
+  if (isModelPattern(selectedModel)) {
+    if (window.showError) window.showError(window.t('channels.test.modelNameNoWildcard') || '模型名不能包含通配符 * 或 ?，请输入具体模型名');
     return;
   }
 

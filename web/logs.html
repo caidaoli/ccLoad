@@ -25,6 +25,7 @@
   <script defer src="/web/assets/js/highlight.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-glob.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/markdown-renderer.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/merged-response-client.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs.js?v=__VERSION__"></script>
@@ -155,9 +156,10 @@
 
       <div class="form-group">
         <label class="form-label" for="testKeyModel" data-i18n="logs.testModel">测试模型</label>
-        <select id="testKeyModel" class="form-input">
-          <option value="" data-i18n="common.loading">加载中...</option>
-        </select>
+        <div class="filter-combobox-wrapper">
+          <input id="testKeyModel" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" data-i18n-placeholder="logs.testModel" placeholder="测试模型">
+          <div id="testKeyModelDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+        </div>
         <small class="logs-test-key-hint">
           <span data-i18n="logs.originalModel">日志中的模型:</span> <code id="testKeyOriginalModel" class="logs-test-key-original"></code>
         </small>

@@ -2065,47 +2065,65 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
       updateTestKeyIndexInfo('未获取到渠道 Key，将按默认顺序测试');
     }
 
-    // 填充模型下拉列表
-    const modelSelect = document.getElementById('testKeyModel');
-    modelSelect.innerHTML = '';
-
+    // 填充模型下拉列表：候选为具体模型；纯通配渠道无具体候选时仍允许用户输入被通配覆盖的具体模型
+    currentTestKeyModels = [];
     if (channel.models && channel.models.length > 0) {
-      // channel.models 是 ModelEntry 对象数组，需访问 .model 属性
       channel.models.forEach(m => {
         const modelName = m.model || m; // 兼容字符串和对象
-        if (/[*?]/.test(modelName)) return; // 过滤通配模式，避免字面通配符发给上游
-        const option = document.createElement('option');
-        option.value = modelName;
-        option.textContent = modelName;
-        modelSelect.appendChild(option);
+        if (modelName && !isModelPattern(modelName)) currentTestKeyModels.push(modelName);
       });
-
-      // 如果日志中的模型在支持列表中，则预选；否则选择第一个
-      const modelNames = channel.models.map(m => m.model || m).filter(name => !/[*?]/.test(name));
-      if (modelNames.includes(model)) {
-        modelSelect.value = model;
-      } else {
-        modelSelect.value = modelNames[0];
-      }
-    } else {
-      // 没有配置模型，使用日志中的模型
-      const option = document.createElement('option');
-      option.value = model;
-      option.textContent = model;
-      modelSelect.appendChild(option);
-      modelSelect.value = model;
     }
+    ensureTestKeyModelCombobox();
+    // 预选：优先日志模型（若为具体模型），否则首个具体候选，否则留空由用户输入
+    const preset = (model && !isModelPattern(model))
+      ? model
+      : (currentTestKeyModels[0] || '');
+    setSelectedTestKeyModel(preset);
   } catch (e) {
     console.error('加载渠道配置失败', e);
     // 降级方案：使用日志中的模型
-    const modelSelect = document.getElementById('testKeyModel');
-    modelSelect.innerHTML = '';
-    const option = document.createElement('option');
-    option.value = model;
-    option.textContent = model;
-    modelSelect.appendChild(option);
-    modelSelect.value = model;
+    currentTestKeyModels = (model && !isModelPattern(model)) ? [model] : [];
+    ensureTestKeyModelCombobox();
+    setSelectedTestKeyModel(model && !isModelPattern(model) ? model : '');
     updateTestKeyIndexInfo('渠道配置加载失败，将按默认顺序测试');
+  }
+}
+
+let testKeyModelCombobox = null;
+let currentTestKeyModels = [];
+
+function ensureTestKeyModelCombobox() {
+  if (testKeyModelCombobox) return testKeyModelCombobox;
+  if (typeof window.createSearchableCombobox !== 'function') return null;
+  const input = document.getElementById('testKeyModel');
+  const dropdown = document.getElementById('testKeyModelDropdown');
+  if (!input || !dropdown) return null;
+  testKeyModelCombobox = window.createSearchableCombobox({
+    attachMode: true,
+    inputId: 'testKeyModel',
+    dropdownId: 'testKeyModelDropdown',
+    initialValue: '',
+    initialLabel: '',
+    allowCustomInput: true,
+    getOptions: () => currentTestKeyModels.map(name => ({ value: name, label: name })),
+    onSelect: () => {}
+  });
+  return testKeyModelCombobox;
+}
+
+function getSelectedTestKeyModel() {
+  const input = document.getElementById('testKeyModel');
+  return input ? input.value.trim() : '';
+}
+
+function setSelectedTestKeyModel(value) {
+  const combobox = ensureTestKeyModelCombobox();
+  if (combobox) {
+    combobox.setValue(value, value);
+    combobox.refresh();
+  } else {
+    const input = document.getElementById('testKeyModel');
+    if (input) input.value = value;
   }
 }
 
@@ -2122,22 +2140,25 @@ function resetTestKeyModal() {
   document.getElementById('testKeyStream').checked = true;
   updateTestKeyIndexInfo('');
   // 重置模型选择框
-  const modelSelect = document.getElementById('testKeyModel');
-  modelSelect.innerHTML = '<option value="">加载中...</option>';
+  currentTestKeyModels = [];
+  setSelectedTestKeyModel('');
 }
 
 async function runKeyTest() {
   if (!testingKeyData) return;
 
-  const modelSelect = document.getElementById('testKeyModel');
   const contentInput = document.getElementById('testKeyContent');
   const streamCheckbox = document.getElementById('testKeyStream');
-  const selectedModel = modelSelect.value;
+  const selectedModel = getSelectedTestKeyModel();
   const testContent = contentInput.value.trim() || logsDefaultTestContent;
   const streamEnabled = streamCheckbox.checked;
 
   if (!selectedModel) {
-    if (window.showError) window.showError('请选择一个测试模型');
+    if (window.showError) window.showError(window.t('logs.testModelRequired') || '请选择一个测试模型');
+    return;
+  }
+  if (isModelPattern(selectedModel)) {
+    if (window.showError) window.showError(window.t('channels.test.modelNameNoWildcard') || '模型名不能包含通配符 * 或 ?，请输入具体模型名');
     return;
   }
 

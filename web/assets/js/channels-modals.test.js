@@ -298,3 +298,57 @@ test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async (
   assert.equal(fetchCalled, false);
   assert.equal(shownError, 'channels.addAtLeastOneEnabledKey');
 });
+
+const { matchModelGlob, isModelPattern } = require('./model-glob.js');
+
+function installScheduledCheckGlobals() {
+  const globals = {
+    window: { ChannelProtocolConfig: {}, t: key => key, matchModelGlob, isModelPattern },
+    document: { getElementById: () => null, querySelector: () => ({ value: 'openai' }) }
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  return () => {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  };
+}
+
+test('isScheduledCheckModelValid 与后端 SupportsModel 一致：不再静默清空通配覆盖的合法定时检测模型', () => {
+  const restore = installScheduledCheckGlobals();
+  try {
+    const { isScheduledCheckModelValid } = loadChannelsModals();
+
+    // 空值（用默认）始终合法
+    assert.equal(isScheduledCheckModelValid('', ['gpt-*']), true);
+    assert.equal(isScheduledCheckModelValid('', []), true);
+
+    // 核心契约：具体模型被通配条目覆盖 → 合法（打开编辑器保存不再被清空）
+    assert.equal(isScheduledCheckModelValid('gpt-4.1', ['gpt-*']), true);
+    assert.equal(isScheduledCheckModelValid('gpt-4.1', ['claude-*', 'gpt-*']), true);
+
+    // 精确命中 → 合法
+    assert.equal(isScheduledCheckModelValid('gpt-4.1', ['gpt-4.1']), true);
+
+    // 不被任何条目支持 → 非法（仍清空，避免发给上游不支持的模型）
+    assert.equal(isScheduledCheckModelValid('glm-5.2', ['gpt-*']), false);
+    assert.equal(isScheduledCheckModelValid('claude-4', ['gpt-*']), false);
+    assert.equal(isScheduledCheckModelValid('gpt-4.1', []), false);
+
+    // 检测模型本身是通配字面值 → 非法（不把 gpt-* 当检测模型发给上游）
+    assert.equal(isScheduledCheckModelValid('gpt-*', ['gpt-*']), false);
+    assert.equal(isScheduledCheckModelValid('gpt-?', ['gpt-?']), false);
+
+    // 通配 ? 按 Unicode code point 匹配（与后端 []rune 一致）
+    assert.equal(isScheduledCheckModelValid('model-😀', ['model-?']), true);
+    assert.equal(isScheduledCheckModelValid('model-x', ['model-?']), true);
+    assert.equal(isScheduledCheckModelValid('model-😀', ['model-*']), true);
+  } finally {
+    restore();
+  }
+});

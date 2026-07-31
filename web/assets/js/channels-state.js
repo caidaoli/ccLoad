@@ -19,6 +19,20 @@ let allAvailableModels = [];
 let allAvailableChannelNames = [];
 let batchRefreshResultsByChannelId = new Map();
 
+// 候选测试模型：具体模型条目 + 通配条目的重定向目标（与后端 DefaultCheckModel 一致）。
+// 直通通配条目（无重定向目标）不作为候选——其字面值不能发给上游，由弹框让用户输入具体模型。
+// 由 channels-keys.js / channels-urls.js 的单 Key/URL 测试复用，避免重复定义。
+function getTestModelCandidates() {
+  const candidates = [];
+  for (const entry of redirectTableData) {
+    const model = entry && entry.model ? entry.model.trim() : '';
+    const redirect = entry && entry.redirect_model ? entry.redirect_model.trim() : '';
+    if (model && !isModelPattern(model)) candidates.push(model);
+    else if (redirect && !isModelPattern(redirect)) candidates.push(redirect);
+  }
+  return [...new Set(candidates)];
+}
+
 function isTokenChannelsReadOnly() {
   return Boolean(window.WebAuth && window.WebAuth.isAPITokenRole(localStorage));
 }
