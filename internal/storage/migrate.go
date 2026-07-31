@@ -128,9 +128,6 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsClientProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs client_protocol: %w", err)
 			}
-			if err := backfillLogsClientProtocol(ctx, db, dialect); err != nil {
-				return fmt.Errorf("backfill logs client_protocol: %w", err)
-			}
 			if err := ensureLogsUpstreamProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_protocol: %w", err)
 			}
@@ -277,6 +274,12 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	// effective_cost_usd 的历史回填依赖 logs.cost_multiplier，必须等 logs 增量迁移完成后再执行。
 	if err := ensureAuthTokensEffectiveCost(ctx, db, dialect); err != nil {
 		return fmt.Errorf("migrate auth_tokens effective_cost: %w", err)
+	}
+
+	// client_protocol 回填同时写 logs 与 model_fingerprints，两表的列迁移都在建表循环内完成，
+	// 必须等循环结束后执行（logs 在循环中先于 model_fingerprints 处理）。
+	if err := backfillLogsClientProtocol(ctx, db, dialect); err != nil {
+		return fmt.Errorf("backfill logs client_protocol: %w", err)
 	}
 
 	// 初始化默认配置
