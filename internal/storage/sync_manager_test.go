@@ -54,11 +54,10 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 
 	// 在 MySQL 中创建测试数据
 	cfg := &model.Config{
-		Name:        "test-channel",
-		ChannelType: "openai",
-		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
-		Priority:    100,
-		Enabled:     true,
+		Name:     "test-channel",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+		Priority: 100,
+		Enabled:  true,
 	}
 	created, err := mysql.CreateConfig(ctx, cfg)
 	if err != nil {

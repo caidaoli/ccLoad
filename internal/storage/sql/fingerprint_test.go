@@ -113,7 +113,6 @@ func TestModelFingerprintCRUDAndClearChannel(t *testing.T) {
 		ChannelName:  "test-channel",
 		Model:        "gpt-4",
 		ActualModel:  "gpt-4-0613",
-		ChannelType:  "openai",
 		SampleCount:  5,
 		Distribution: []float64{0.1, 0.2, 0.3, 0.2, 0.2},
 		Stats: model.FingerprintStats{
@@ -222,7 +221,6 @@ func TestModelFingerprintNullChannelID(t *testing.T) {
 		Name:         "orphan-baseline",
 		ChannelID:    nil,
 		Model:        "claude-3-5-sonnet",
-		ChannelType:  "anthropic",
 		SampleCount:  3,
 		Distribution: []float64{0.33, 0.33, 0.34},
 		Stats: model.FingerprintStats{

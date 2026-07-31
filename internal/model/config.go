@@ -17,7 +17,7 @@ const (
 	ProtocolTransformModeAuto = "auto"
 	// ProtocolTransformModeUpstream always forwards the client protocol natively.
 	ProtocolTransformModeUpstream = "upstream"
-	// ProtocolTransformModeLocal always translates the client protocol to the channel protocol.
+	// ProtocolTransformModeLocal translates to URL-declared protocols or the local fallback order.
 	ProtocolTransformModeLocal = "local"
 	// ExactUpstreamURLMarker marks a configured channel URL as the exact upstream request URL.
 	ExactUpstreamURLMarker = "#"
@@ -48,10 +48,15 @@ func StripExactUpstreamURLMarker(raw string) string {
 	return strings.TrimSuffix(strings.TrimSpace(raw), ExactUpstreamURLMarker)
 }
 
-var channelURLProtocolOrder = []string{"anthropic", "openai", "codex", "gemini"}
+var supportedURLProtocols = map[string]struct{}{
+	"anthropic": {},
+	"codex":     {},
+	"openai":    {},
+	"gemini":    {},
+}
 
-// ChannelURL is one configured upstream endpoint. Protocols is the set of wire
-// protocols accepted by this endpoint; an empty set means automatic detection.
+// ChannelURL is one configured upstream endpoint. Protocols is the ordered list
+// of wire protocols accepted by this endpoint; an empty list means automatic detection.
 type ChannelURL struct {
 	URL       string   `json:"url"`
 	Exact     bool     `json:"exact,omitempty"`
@@ -106,19 +111,19 @@ func (urls *ChannelURLs) Normalize() error {
 		}
 
 		selected := make(map[string]struct{}, len(entry.Protocols))
+		normalized := make([]string, 0, len(entry.Protocols))
 		for _, rawProtocol := range entry.Protocols {
 			value := strings.ToLower(strings.TrimSpace(rawProtocol))
-			if !slices.Contains(channelURLProtocolOrder, value) {
+			if _, ok := supportedURLProtocols[value]; !ok {
 				return fmt.Errorf("urls[%d].protocols contains unsupported protocol %q", i, rawProtocol)
 			}
-			selected[value] = struct{}{}
-		}
-		entry.Protocols = entry.Protocols[:0]
-		for _, protocolName := range channelURLProtocolOrder {
-			if _, ok := selected[protocolName]; ok {
-				entry.Protocols = append(entry.Protocols, protocolName)
+			if _, exists := selected[value]; exists {
+				continue
 			}
+			selected[value] = struct{}{}
+			normalized = append(normalized, value)
 		}
+		entry.Protocols = normalized
 		if len(entry.Protocols) == 0 {
 			entry.Protocols = nil
 		}
@@ -325,7 +330,6 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 type Config struct {
 	ID                    int64       `json:"id"`
 	Name                  string      `json:"name"`
-	ChannelType           string      `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
 	Websockets            bool        `json:"websockets,omitempty"`
 	ProtocolTransformMode string      `json:"protocol_transform_mode"`
 	URLs                  ChannelURLs `json:"urls"`
@@ -382,7 +386,6 @@ func (c *Config) Clone() *Config {
 	dst := &Config{
 		ID:                     c.ID,
 		Name:                   c.Name,
-		ChannelType:            c.ChannelType,
 		Websockets:             c.Websockets,
 		ProtocolTransformMode:  c.ProtocolTransformMode,
 		URLs:                   c.URLs.Clone(),
@@ -481,14 +484,6 @@ func (c *Config) SupportsModel(model string) bool {
 	defer c.indexMu.RUnlock()
 	_, exists := c.modelIndex[model]
 	return exists
-}
-
-// GetChannelType 默认返回"anthropic"（Claude API）
-func (c *Config) GetChannelType() string {
-	if c.ChannelType == "" {
-		return "anthropic"
-	}
-	return c.ChannelType
 }
 
 // IsCoolingDown 检查渠道是否处于冷却状态

@@ -231,19 +231,19 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		dist := util.FingerprintDistribution(samples)
 		utilStats := util.CalculateFingerprintStats(samples)
 		fp := &model.ModelFingerprint{
-			Name:          req.Name,
-			ChannelID:     &req.ChannelID,
-			Model:         req.Model,
-			SampleCount:   len(samples),
-			Distribution:  dist,
-			Stats:         statsToModel(utilStats),
-			RawData:       samples,
-			PromptVersion: util.FingerprintPromptVersion,
+			Name:           req.Name,
+			ChannelID:      &req.ChannelID,
+			Model:          req.Model,
+			SampleCount:    len(samples),
+			Distribution:   dist,
+			Stats:          statsToModel(utilStats),
+			RawData:        samples,
+			PromptVersion:  util.FingerprintPromptVersion,
+			ClientProtocol: req.ClientProtocol,
 		}
 		// 尝试获取渠道元信息快照
 		if cfg, err := s.store.GetConfig(ctx, req.ChannelID); err == nil && cfg != nil {
 			fp.ChannelName = cfg.Name
-			fp.ChannelType = cfg.ChannelType
 		}
 
 		if ctx.Err() != nil {

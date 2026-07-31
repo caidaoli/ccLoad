@@ -1263,10 +1263,6 @@ function getModelName(entry) {
   return (typeof entry === 'string') ? entry : entry?.model;
 }
 
-function getChannelType(channel) {
-  return normalizeProtocol(channel?.channel_type) || 'anthropic';
-}
-
 function getClientProtocols() {
   return [...ALL_PROTOCOLS];
 }
@@ -1286,13 +1282,13 @@ function ensureSelectedProtocolForCurrentMode() {
   if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
     const clientProtocols = getClientProtocols();
     if (!selectedProtocol || !clientProtocols.includes(selectedProtocol)) {
-      selectedProtocol = getChannelType(selectedChannel);
+      selectedProtocol = 'anthropic';
     }
     return;
   }
 
   if (selectedProtocol) return;
-  selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+  selectedProtocol = 'anthropic';
 }
 
 function renderClientProtocolOptions() {
@@ -2505,9 +2501,8 @@ async function fetchAndAddModels() {
     return;
   }
 
-  const channelType = getChannelType(selectedChannel);
   try {
-    const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch?channel_type=${channelType}`);
+    const resp = await fetchAPIWithAuth(`/admin/channels/${selectedChannel.id}/models/fetch`);
     if (!resp.success || !resp.data?.models) {
       showError(resp.error || i18nText('modelTest.fetchModelsFailed', '获取模型失败'));
       return;
@@ -2661,7 +2656,6 @@ async function onChannelChange() {
     return;
   }
 
-  selectedProtocol = getChannelType(selectedChannel);
   renderClientProtocolOptions();
   populateModelSelector();
 
@@ -2675,7 +2669,7 @@ async function onChannelChange() {
 
 function formatModelTestChannelOptionLabel(ch) {
   if (!ch) return '';
-  return `[${getChannelType(ch)}] ${ch.name}`;
+  return ch.name;
 }
 
 function getModelTestChannelOptionClass(ch) {
@@ -2716,7 +2710,7 @@ async function loadChannels(options = {}) {
 
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
-    channelsList = list.sort((a, b) => getChannelType(a).localeCompare(getChannelType(b)) || b.priority - a.priority);
+    channelsList = list.sort((a, b) => b.priority - a.priority || String(a.name || '').localeCompare(String(b.name || '')));
     // 指纹模式等跨脚本读取：let 重绑定后必须同步到 window
     window.channelsList = channelsList;
 
@@ -2746,10 +2740,10 @@ async function loadChannels(options = {}) {
       if (storedProtocol) {
         selectedProtocol = storedProtocol;
       } else {
-        selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+        selectedProtocol = 'anthropic';
       }
     } else {
-      selectedProtocol = channelsList[0] ? getChannelType(channelsList[0]) : 'anthropic';
+      selectedProtocol = 'anthropic';
     }
     if (testMode === TEST_MODE_MODEL) {
       selectedModelModeProtocol = selectedProtocol;
@@ -2963,9 +2957,6 @@ function setTestMode(mode) {
     return;
   }
 
-  if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
-    selectedProtocol = getChannelType(selectedChannel);
-  }
   updateHeadByMode();
   updateModeUI();
 

@@ -39,16 +39,16 @@ type sseUsageParser struct {
 	usageAccumulator
 
 	// 内部状态（增量解析）
-	buffer      bytes.Buffer // 未完成的数据缓冲区
-	bufferSize  int          // 当前缓冲区大小
-	eventType   string       // 当前正在解析的事件类型（跨Feed保存）
-	dataLines   []string     // 当前事件的data行（跨Feed保存）
-	oversized   bool         // 当前事件超出大小限制，丢弃到事件边界后恢复解析
-	channelType string       // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
-	discardTail string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
-	scanner     jsonUsageParser
-	scanVersion int
-	sanitizer   sseLargeFieldSanitizer
+	buffer           bytes.Buffer // 未完成的数据缓冲区
+	bufferSize       int          // 当前缓冲区大小
+	eventType        string       // 当前正在解析的事件类型（跨Feed保存）
+	dataLines        []string     // 当前事件的data行（跨Feed保存）
+	oversized        bool         // 当前事件超出大小限制，丢弃到事件边界后恢复解析
+	upstreamProtocol string       // 实际上游协议，用于精确平台判断。
+	discardTail      string       // 丢弃超大事件时保留少量尾部，用于识别跨chunk的空行边界
+	scanner          jsonUsageParser
+	scanVersion      int
+	sanitizer        sseLargeFieldSanitizer
 
 	// [INFO] 新增：存储SSE流中检测到的error事件（用于1308等错误的延迟处理）
 	lastError []byte // 最后一个error事件的完整JSON（data字段内容）
@@ -68,10 +68,10 @@ type sseUsageParser struct {
 
 type jsonUsageParser struct {
 	usageAccumulator
-	buffer      bytes.Buffer
-	truncated   bool
-	channelType string // 渠道类型(anthropic/openai/codex/gemini),用于精确平台判断
-	hasBody     bool
+	buffer           bytes.Buffer
+	truncated        bool
+	upstreamProtocol string // 实际上游协议，用于精确平台判断。
+	hasBody          bool
 
 	scanInString       bool
 	scanEscape         bool
@@ -144,19 +144,19 @@ const (
 )
 
 // newSSEUsageParser 创建SSE usage解析器
-// channelType: 渠道类型(anthropic/openai/codex/gemini),用于精确识别平台usage格式
-func newSSEUsageParser(channelType string) *sseUsageParser {
+// upstreamProtocol 用于精确识别平台 usage 格式。
+func newSSEUsageParser(upstreamProtocol string) *sseUsageParser {
 	p := &sseUsageParser{
-		channelType: channelType,
+		upstreamProtocol: upstreamProtocol,
 	}
-	p.scanner.channelType = channelType
+	p.scanner.upstreamProtocol = upstreamProtocol
 	return p
 }
 
 // newJSONUsageParser 创建JSON响应的usage解析器
-// channelType: 渠道类型(anthropic/openai/codex/gemini),用于精确识别平台usage格式
-func newJSONUsageParser(channelType string) *jsonUsageParser {
-	return &jsonUsageParser{channelType: channelType}
+// upstreamProtocol 用于精确识别平台 usage 格式。
+func newJSONUsageParser(upstreamProtocol string) *jsonUsageParser {
+	return &jsonUsageParser{upstreamProtocol: upstreamProtocol}
 }
 
 // Feed 喂入数据进行解析（供streamCopySSE调用）
@@ -480,7 +480,7 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 		return fmt.Errorf("json unmarshal failed: %w", err)
 	}
 	if usage := extractUsage(event); usage != nil {
-		p.applyUsage(usage, p.channelType)
+		p.applyUsage(usage, p.upstreamProtocol)
 	}
 	p.applyToolUsageFromPayload(event)
 
@@ -558,19 +558,19 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 // - Gemini: promptTokenCount包含cachedContentTokenCount，已自动扣除
 // - Claude: input_tokens本身就是非缓存部分，无需处理
 func (p *sseUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
-	return p.normalizedUsage(p.channelType)
+	return p.normalizedUsage(p.upstreamProtocol)
 }
 
-func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, outputTokens, cacheRead, cacheCreation int) {
+func (u *usageAccumulator) normalizedUsage(upstreamProtocol string) (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	billableInput := u.InputTokens
 
 	// OpenAI/Codex/Gemini语义归一化: prompt_tokens/input_tokens 包含缓存分项，需扣除避免双计
 	// - cached_tokens / cache_read → CacheReadInputTokens
 	// - cache_write_tokens / cache_creation → CacheCreationInputTokens（仅 openai/codex 计入 input）
 	// 设计原则: 平台差异在解析层处理，计费层无需关心
-	if channelType == "openai" || channelType == "codex" || channelType == "gemini" {
+	if upstreamProtocol == "openai" || upstreamProtocol == "codex" || upstreamProtocol == "gemini" {
 		includedCache := u.CacheReadInputTokens
-		if channelType == "openai" || channelType == "codex" {
+		if upstreamProtocol == "openai" || upstreamProtocol == "codex" {
 			includedCache += u.CacheCreationInputTokens
 		}
 		if includedCache > 0 {
@@ -578,7 +578,7 @@ func (u *usageAccumulator) normalizedUsage(channelType string) (inputTokens, out
 				billableInput = u.InputTokens - includedCache
 			} else {
 				log.Printf("[WARN] %s usage 中 cacheRead(%d)+cacheCreation(%d) > inputTokens(%d)，将 inputTokens 视为非缓存 token",
-					channelType, u.CacheReadInputTokens, u.CacheCreationInputTokens, u.InputTokens)
+					upstreamProtocol, u.CacheReadInputTokens, u.CacheCreationInputTokens, u.InputTokens)
 			}
 		}
 	}
@@ -871,7 +871,7 @@ func (p *jsonUsageParser) applyUsageMap(usage map[string]any) {
 	if speed, ok := usage["speed"].(string); ok && speed == "fast" {
 		p.ServiceTier = "fast"
 	}
-	p.applyUsage(usage, p.channelType)
+	p.applyUsage(usage, p.upstreamProtocol)
 }
 
 func (p *jsonUsageParser) clearJSONPendingKey() {
@@ -885,17 +885,17 @@ func isJSONWhitespace(b byte) bool {
 
 func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cacheCreation int) {
 	if p.truncated {
-		return p.normalizedUsage(p.channelType)
+		return p.normalizedUsage(p.upstreamProtocol)
 	}
 	if p.buffer.Len() == 0 {
-		return p.normalizedUsage(p.channelType)
+		return p.normalizedUsage(p.upstreamProtocol)
 	}
 
 	data := p.buffer.Bytes()
 
 	// 兼容 text/plain SSE 回退：上游偶尔用 text/plain 发送 SSE 事件
 	if looksLikeSSE(data) {
-		sseParser := newSSEUsageParser(p.channelType)
+		sseParser := newSSEUsageParser(p.upstreamProtocol)
 		if err := sseParser.Feed(data); err != nil {
 			log.Printf("[WARN] 类 SSE 格式的 usage 解析失败: %v", err)
 		} else {
@@ -930,7 +930,7 @@ func (p *jsonUsageParser) GetUsage() (inputTokens, outputTokens, cacheRead, cach
 		}
 	}
 
-	return p.normalizedUsage(p.channelType)
+	return p.normalizedUsage(p.upstreamProtocol)
 }
 
 // [INFO] GetLastError 返回nil（jsonUsageParser不处理SSE error事件）
@@ -1131,15 +1131,14 @@ func usageFirstInt(m map[string]any, keys ...string) int {
 	return 0
 }
 
-func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) {
+func (u *usageAccumulator) applyUsage(usage map[string]any, upstreamProtocol string) {
 	if usage == nil {
 		return
 	}
 	u.usageVersion++
 
-	// 平台判断:优先使用channelType(配置明确),fallback到字段特征检测
-	// 设计原则:Trust Configuration > Guess from Data
-	switch channelType {
+	// 优先使用本次请求的实际上游协议，缺失时才回退到字段特征检测。
+	switch upstreamProtocol {
 	case "gemini":
 		// Gemini平台:usageMetadata包装或直接字段
 		u.applyGeminiUsage(usage)
@@ -1162,8 +1161,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 		u.applyAnthropicOrResponsesUsage(usage)
 
 	default:
-		// 未知channelType,fallback到字段特征检测(向后兼容)
-		log.Printf("[WARN] 未知 channel_type '%s'，回退到字段探测", channelType)
+		log.Printf("[WARN] 未知 upstream_protocol '%s'，回退到字段探测", upstreamProtocol)
 		switch {
 		case hasGeminiUsageFields(usage):
 			u.applyGeminiUsage(usage)
@@ -1172,7 +1170,7 @@ func (u *usageAccumulator) applyUsage(usage map[string]any, channelType string) 
 		case hasAnthropicUsageFields(usage):
 			u.applyAnthropicOrResponsesUsage(usage)
 		default:
-			log.Printf("[ERROR] 无法识别 channel_type '%s' 的 usage 格式，keys: %v", channelType, getUsageKeys(usage))
+			log.Printf("[ERROR] 无法识别 upstream_protocol '%s' 的 usage 格式，keys: %v", upstreamProtocol, getUsageKeys(usage))
 		}
 	}
 }

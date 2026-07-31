@@ -127,6 +127,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsClientProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs client_protocol: %w", err)
 			}
+			if err := ensureLogsUpstreamProtocol(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs upstream_protocol: %w", err)
+			}
 		}
 
 		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）
@@ -242,6 +245,11 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 		if tb.Name() == "fingerprint_test_results" {
 			if err := ensureFingerprintTestResultsDistribution(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate fingerprint_test_results distribution: %w", err)
+			}
+		}
+		if tb.Name() == "model_fingerprints" {
+			if err := ensureModelFingerprintsClientProtocol(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate model_fingerprints client_protocol: %w", err)
 			}
 		}
 

@@ -167,13 +167,13 @@ func TestServer_GetWriteTimeout(t *testing.T) {
 	}
 }
 
-func TestServer_GetWriteTimeout_IncludesChannelTypeNonStreamTimeout(t *testing.T) {
+func TestServer_GetWriteTimeout_IncludesProtocolNonStreamTimeout(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{
 		nonStreamTimeout: 10 * time.Second,
-		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
-			util.ChannelTypeOpenAI: {NonStreamTimeout: 300 * time.Second},
+		protocolTimeouts: map[string]protocolTimeoutConfig{
+			util.ProtocolOpenAI: {NonStreamTimeout: 300 * time.Second},
 		},
 	}
 
@@ -188,57 +188,50 @@ func TestServer_ResolveProtocolTimeouts(t *testing.T) {
 	s := &Server{
 		firstByteTimeout: 90 * time.Second,
 		nonStreamTimeout: 120 * time.Second,
-		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
-			util.ChannelTypeAnthropic: {
+		protocolTimeouts: map[string]protocolTimeoutConfig{
+			util.ProtocolAnthropic: {
 				FirstByteTimeout: 11 * time.Second,
 				NonStreamTimeout: 12 * time.Second,
 			},
-			util.ChannelTypeOpenAI: {
+			util.ProtocolOpenAI: {
 				FirstByteTimeout: 21 * time.Second,
 				NonStreamTimeout: 22 * time.Second,
 			},
 		},
 	}
 
-	localCfg := &model.Config{
-		ChannelType: util.ChannelTypeAnthropic,
-	}
 	localPlan := protocol.TransformPlan{
 		ClientProtocol:   protocol.OpenAI,
 		UpstreamProtocol: protocol.Anthropic,
 	}
-	localTimeouts := s.resolveProtocolTimeouts(localCfg, localPlan)
+	localTimeouts := s.resolveProtocolTimeouts(localPlan)
 	if localTimeouts.FirstByteTimeout != 11*time.Second || localTimeouts.NonStreamTimeout != 12*time.Second {
 		t.Fatalf("local timeouts=%+v, want anthropic bucket", localTimeouts)
 	}
 
-	upstreamCfg := &model.Config{
-		ChannelType: util.ChannelTypeAnthropic,
-	}
 	upstreamPlan := protocol.TransformPlan{
 		ClientProtocol:   protocol.OpenAI,
 		UpstreamProtocol: protocol.OpenAI,
 	}
-	upstreamTimeouts := s.resolveProtocolTimeouts(upstreamCfg, upstreamPlan)
+	upstreamTimeouts := s.resolveProtocolTimeouts(upstreamPlan)
 	if upstreamTimeouts.FirstByteTimeout != 21*time.Second || upstreamTimeouts.NonStreamTimeout != 22*time.Second {
 		t.Fatalf("upstream timeouts=%+v, want openai bucket", upstreamTimeouts)
 	}
 }
 
-func TestServer_ResolveProtocolTimeouts_ZeroChannelTypeFallsBackToGlobal(t *testing.T) {
+func TestServer_ResolveProtocolTimeouts_ZeroProtocolOverrideFallsBackToGlobal(t *testing.T) {
 	t.Parallel()
 
 	s := &Server{
 		firstByteTimeout: 90 * time.Second,
 		nonStreamTimeout: 120 * time.Second,
-		channelTypeTimeouts: map[string]channelTypeTimeoutConfig{
-			util.ChannelTypeCodex: {},
+		protocolTimeouts: map[string]protocolTimeoutConfig{
+			util.ProtocolCodex: {},
 		},
 	}
-	cfg := &model.Config{ChannelType: util.ChannelTypeCodex}
 	plan := protocol.TransformPlan{UpstreamProtocol: protocol.Codex}
 
-	timeouts := s.resolveProtocolTimeouts(cfg, plan)
+	timeouts := s.resolveProtocolTimeouts(plan)
 	if timeouts.FirstByteTimeout != 90*time.Second || timeouts.NonStreamTimeout != 120*time.Second {
 		t.Fatalf("timeouts=%+v, want global fallback", timeouts)
 	}
@@ -273,7 +266,7 @@ func TestNewServer_ZeroNonStreamTimeoutDisablesTimeout(t *testing.T) {
 	}
 }
 
-func TestNewServer_LoadsChannelTypeTimeoutOverrides(t *testing.T) {
+func TestNewServer_LoadsProtocolTimeoutOverrides(t *testing.T) {
 	t.Parallel()
 
 	store, err := storage.CreateSQLiteStore(":memory:")
@@ -301,7 +294,7 @@ func TestNewServer_LoadsChannelTypeTimeoutOverrides(t *testing.T) {
 		}
 	})
 
-	got := srv.channelTypeTimeouts[util.ChannelTypeOpenAI]
+	got := srv.protocolTimeouts[util.ProtocolOpenAI]
 	if got.FirstByteTimeout != 9*time.Second || got.NonStreamTimeout != 33*time.Second {
 		t.Fatalf("openai timeouts=%+v, want 9s/33s", got)
 	}
@@ -329,66 +322,6 @@ func TestServer_GetConfig_FallbackToStore(t *testing.T) {
 	}
 	if got.ID != cfg.ID || got.Name != "ch" {
 		t.Fatalf("unexpected config: %+v", got)
-	}
-}
-
-func TestServer_GetModelsByChannelType(t *testing.T) {
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-
-	ctx := context.Background()
-
-	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:         "a1",
-		ChannelType:  "openai",
-		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:     1,
-		ModelEntries: []model.ModelEntry{{Model: "m1"}, {Model: "m2"}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("CreateConfig #1 failed: %v", err)
-	}
-	_, err = store.CreateConfig(ctx, &model.Config{
-		Name:         "a2",
-		ChannelType:  "openai",
-		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:     1,
-		ModelEntries: []model.ModelEntry{{Model: "m2"}, {Model: "m3"}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("CreateConfig #2 failed: %v", err)
-	}
-	_, err = store.CreateConfig(ctx, &model.Config{
-		Name:         "b1",
-		ChannelType:  "gemini",
-		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:     1,
-		ModelEntries: []model.ModelEntry{{Model: "x1"}},
-		Enabled:      true,
-	})
-	if err != nil {
-		t.Fatalf("CreateConfig #3 failed: %v", err)
-	}
-
-	server.store = store
-
-	models, err := server.getModelsByChannelType(ctx, "openai")
-	if err != nil {
-		t.Fatalf("getModelsByChannelType failed: %v", err)
-	}
-	set := make(map[string]bool)
-	for _, m := range models {
-		set[m] = true
-	}
-	for _, must := range []string{"m1", "m2", "m3"} {
-		if !set[must] {
-			t.Fatalf("models missing %q: %v", must, models)
-		}
-	}
-	if set["x1"] {
-		t.Fatalf("unexpected model from other channel type: %v", models)
 	}
 }
 

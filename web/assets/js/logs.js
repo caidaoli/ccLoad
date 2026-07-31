@@ -1060,7 +1060,7 @@ function renderLogs(data) {
       const deleteBtnIcon = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true" focusable="false"><path d="M3 6H21" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M8 6V4H16V6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M19 6L18 20H6L5 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M10 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M14 11V17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>`;
       let buttons = '';
       if (showTestBtn) {
-        buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${attr(entry.channel_name)}" data-api-key="${attr(entry.api_key_used)}" data-api-key-hash="${keyHashAttr}" data-model="${attr(entry.model)}" title="测试此 API Key">${testBtnIcon}</button>`;
+        buttons += `<button class="test-key-btn" data-action="test" data-channel-id="${entry.channel_id}" data-channel-name="${attr(entry.channel_name)}" data-api-key="${attr(entry.api_key_used)}" data-api-key-hash="${keyHashAttr}" data-model="${attr(entry.model)}" data-client-protocol="${attr(entry.client_protocol)}" title="测试此 API Key">${testBtnIcon}</button>`;
       }
       if (showDeleteBtn) {
         buttons += `<button class="test-key-btn" style="color: var(--error-600);" data-action="delete" data-channel-id="${entry.channel_id}" data-channel-name="${attr(entry.channel_name)}" data-api-key="${attr(entry.api_key_used)}" data-api-key-hash="${keyHashAttr}" title="删除此 API Key">${deleteBtnIcon}</button>`;
@@ -1917,9 +1917,10 @@ window.initPageBootstrap({
       const apiKey = btn.dataset.apiKey || '';
       const apiKeyHash = btn.dataset.apiKeyHash || '';
       const model = btn.dataset.model || '';
+      const clientProtocol = btn.dataset.clientProtocol || 'anthropic';
 
       if (action === 'test') {
-        testKey(channelId, channelName, apiKey, model, apiKeyHash);
+        testKey(channelId, channelName, apiKey, model, apiKeyHash, clientProtocol);
       } else if (action === 'delete') {
         deleteKeyFromLog(channelId, channelName, apiKey, apiKeyHash);
       }
@@ -1972,14 +1973,14 @@ window.addEventListener('pageshow', async function (event) {
 // ========== API Key 测试功能 ==========
 let testingKeyData = null;
 
-async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
+async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '', clientProtocol = 'anthropic') {
   testingKeyData = {
     channelId,
     channelName,
     maskedApiKey: apiKey,
     apiKeyHash,
     originalModel: model,
-    channelProtocol: null, // 将在异步加载渠道配置后填充
+    clientProtocol,
     keyIndex: null
   };
 
@@ -2003,8 +2004,6 @@ async function testKey(channelId, channelName, apiKey, model, apiKeyHash = '') {
     ]);
     const apiKeys = apiKeysRaw || [];
 
-    // 保存渠道协议，用于后续测试请求
-    testingKeyData.channelProtocol = channel.channel_type || 'anthropic';
     const { keyIndex: matchedIndex, matchCount, method } = await resolveKeyIndexForLogEntry(apiKeys, apiKey, apiKeyHash);
     testingKeyData.keyIndex = matchedIndex;
     if (apiKeys.length > 0) {
@@ -2109,7 +2108,7 @@ async function runKeyTest() {
       model: selectedModel,
       stream: streamEnabled,
       content: testContent,
-      channel_type: testingKeyData.channelProtocol || 'anthropic'
+      client_protocol: testingKeyData.clientProtocol || 'anthropic'
     };
     if (testingKeyData && testingKeyData.keyIndex !== null && testingKeyData.keyIndex !== undefined) {
       testRequest.key_index = testingKeyData.keyIndex;

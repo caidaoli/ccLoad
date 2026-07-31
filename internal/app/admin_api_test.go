@@ -36,8 +36,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-1", RedirectModel: ""},
 			},
-			ChannelType: "anthropic",
-			Enabled:     true,
+			Enabled: true,
 		},
 		{
 			Name:     "Test-Export-2",
@@ -46,8 +45,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-2", RedirectModel: ""},
 			},
-			ChannelType: "gemini",
-			Enabled:     false,
+			Enabled: false,
 		},
 	}
 
@@ -109,7 +107,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -130,9 +128,9 @@ func TestAdminAPI_ImportChannelsCSV(t *testing.T) {
 	server := newInMemoryServer(t)
 
 	// 创建测试CSV文件（注意：列名是api_key而不是api_keys）
-	csvContent := `name,urls,priority,rpm_limit,max_concurrency,models,model_redirects,channel_type,protocol_transform_mode,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model
-Import-Test-1,"[{""url"":""https://import1.example.com"",""protocols"" : [""anthropic"",""openai""]}]",10,0,3,test-model-1,{},anthropic,local,openai,true,sk-import-key-1,sequential,test-model-1
-Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0,"test-model-2,test-model-3","{""old"":""new""}",gemini,upstream,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3
+	csvContent := `name,urls,priority,rpm_limit,max_concurrency,models,model_redirects,protocol_transform_mode,protocol_transforms,enabled,api_key,key_strategy,scheduled_check_model
+Import-Test-1,"[{""url"":""https://import1.example.com"",""protocols"" : [""anthropic"",""openai""]}]",10,0,3,test-model-1,{},local,openai,true,sk-import-key-1,sequential,test-model-1
+Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0,"test-model-2,test-model-3","{""old"":""new""}",upstream,"openai,anthropic",false,sk-import-key-2,round_robin,test-model-3
 `
 
 	// 创建multipart表单
@@ -251,7 +249,6 @@ func TestAdminAPI_ImportChannelsCSV_UsesExplicitIDForRename(t *testing.T) {
 		URLs:         model.ChannelURLs{{URL: "https://old-id.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
-		ChannelType:  "openai",
 		Enabled:      true,
 	})
 	if err != nil {
@@ -266,9 +263,9 @@ func TestAdminAPI_ImportChannelsCSV_UsesExplicitIDForRename(t *testing.T) {
 		t.Fatalf("创建现有 key 失败: %v", err)
 	}
 
-	csvContent := fmt.Sprintf(`id,name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-%d,Import-Rename-Target,"[{""url"":""https://new-id.example.com""}]",20,new-model,{},openai,true,sk-new-id-key,sequential
-,Import-Rename-Brand-New,"[{""url"":""https://brand-new.example.com""}]",5,brand-model,{},anthropic,true,sk-brand-new,sequential
+	csvContent := fmt.Sprintf(`id,name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+%d,Import-Rename-Target,"[{""url"":""https://new-id.example.com""}]",20,new-model,{},true,sk-new-id-key,sequential
+,Import-Rename-Brand-New,"[{""url"":""https://brand-new.example.com""}]",5,brand-model,{},true,sk-brand-new,sequential
 `, created.ID)
 
 	body := &bytes.Buffer{}
@@ -351,7 +348,6 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		URLs:                  model.ChannelURLs{{URL: "https://old.example.com"}},
 		Priority:              10,
 		ModelEntries:          []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
-		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
 		ScheduledCheckModel:   "old-model",
@@ -372,8 +368,8 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 		t.Fatalf("创建现有 key 失败: %v", err)
 	}
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-model,new-model",{},openai,true,sk-new-key,sequential
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-model,new-model",{},true,sk-new-key,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -442,7 +438,6 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnClearsInvalidLega
 		URLs:                  model.ChannelURLs{{URL: "https://old.example.com"}},
 		Priority:              10,
 		ModelEntries:          []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
-		ChannelType:           "openai",
 		Enabled:               true,
 		ScheduledCheckEnabled: true,
 		ScheduledCheckModel:   "old-model",
@@ -459,8 +454,8 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnClearsInvalidLega
 		t.Fatalf("创建现有 key 失败: %v", err)
 	}
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Import-Clear-Scheduled,"[{""url"":""https://new.example.com""}]",20,new-model,{},openai,true,sk-new-key,sequential
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Import-Clear-Scheduled,"[{""url"":""https://new.example.com""}]",20,new-model,{},true,sk-new-key,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -504,9 +499,9 @@ Import-Clear-Scheduled,"[{""url"":""https://new.example.com""}]",20,new-model,{}
 func TestAdminAPI_ImportChannelsCSV_InvalidURLRejected(t *testing.T) {
 	server := newInMemoryServer(t)
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Bad-URL,"[{""url"":""https://bad.example.com/v1""}]",10,test-model,{},anthropic,true,sk-import-key-1,sequential
-Good-URL,"[{""url"":""https://good.example.com""}]",10,test-model,{},anthropic,true,sk-import-key-2,sequential
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Bad-URL,"[{""url"":""https://bad.example.com/v1""}]",10,test-model,{},true,sk-import-key-1,sequential
+Good-URL,"[{""url"":""https://good.example.com""}]",10,test-model,{},true,sk-import-key-2,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -573,8 +568,8 @@ Good-URL,"[{""url"":""https://good.example.com""}]",10,test-model,{},anthropic,t
 func TestAdminAPI_ImportChannelsCSV_InvalidScheduledCheckModelRejected(t *testing.T) {
 	server := newInMemoryServer(t)
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy,scheduled_check_model
-Bad-Scheduled-Model,"[{""url"":""https://bad.example.com""}]",10,test-model,{},anthropic,true,sk-import-key-1,sequential,missing-model
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy,scheduled_check_model
+Bad-Scheduled-Model,"[{""url"":""https://bad.example.com""}]",10,test-model,{},true,sk-import-key-1,sequential,missing-model
 `
 
 	body := &bytes.Buffer{}
@@ -613,9 +608,9 @@ Bad-Scheduled-Model,"[{""url"":""https://bad.example.com""}]",10,test-model,{},a
 func TestAdminAPI_ImportChannelsCSV_RemovedProtocolColumnsAreIgnored(t *testing.T) {
 	server := newInMemoryServer(t)
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,protocol_transforms,enabled,api_key,key_strategy
-Bad-Transforms,"[{""url"":""https://bad.example.com""}]",10,test-model,{},anthropic,"openai,gemini,openai",true,sk-import-key-1,sequential
-Good-Transforms,"[{""url"":""https://good.example.com""}]",10,test-model,{},anthropic,openai,true,sk-import-key-2,sequential
+	csvContent := `name,urls,priority,models,model_redirects,protocol_transforms,enabled,api_key,key_strategy
+Bad-Transforms,"[{""url"":""https://bad.example.com""}]",10,test-model,{},"openai,gemini,openai",true,sk-import-key-1,sequential
+Good-Transforms,"[{""url"":""https://good.example.com""}]",10,test-model,{},openai,true,sk-import-key-2,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -676,7 +671,6 @@ func TestAdminAPI_ImportChannelsCSV_PrunesURLSelectorStateForUpdatedChannel(t *t
 		URLs:         channelURLsForTest("https://old-import.example.com", "https://keep-import.example.com"),
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	})
 	if err != nil {
@@ -696,7 +690,6 @@ func TestAdminAPI_ImportChannelsCSV_PrunesURLSelectorStateForUpdatedChannel(t *t
 		URLs:         model.ChannelURLs{{URL: "https://other-import.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	})
 	if err != nil {
@@ -708,8 +701,8 @@ func TestAdminAPI_ImportChannelsCSV_PrunesURLSelectorStateForUpdatedChannel(t *t
 	server.urlSelector.CooldownURL(targetCfg.ID, "https://old-import.example.com")
 	server.urlSelector.RecordLatency(otherCfg.ID, "https://other-import.example.com", 30*time.Millisecond)
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Import-Prune-Target,"[{""url"":""https://keep-import.example.com""}]",10,m1,{},anthropic,true,sk-target-import,sequential
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Import-Prune-Target,"[{""url"":""https://keep-import.example.com""}]",10,m1,{},true,sk-target-import,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -764,7 +757,6 @@ func TestAdminAPI_ImportChannelsCSV_CleansOrphanedURLDisabledStateForNameUpdate(
 		URLs:         channelURLsForTest("https://old-import-state.example.com", "https://keep-import-state.example.com"),
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	})
 	if err != nil {
@@ -784,7 +776,6 @@ func TestAdminAPI_ImportChannelsCSV_CleansOrphanedURLDisabledStateForNameUpdate(
 		URLs:         model.ChannelURLs{{URL: "https://other-import-state.example.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "m1", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	})
 	if err != nil {
@@ -801,8 +792,8 @@ func TestAdminAPI_ImportChannelsCSV_CleansOrphanedURLDisabledStateForNameUpdate(
 		t.Fatalf("禁用其他渠道 URL 失败: %v", err)
 	}
 
-	csvContent := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Import-URL-State,"[{""url"":""https://keep-import-state.example.com""}]",10,m1,{},anthropic,true,sk-import-state,sequential
+	csvContent := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Import-URL-State,"[{""url"":""https://keep-import-state.example.com""}]",10,m1,{},true,sk-import-state,sequential
 `
 
 	body := &bytes.Buffer{}
@@ -866,8 +857,7 @@ func TestAdminAPI_ExportImportRoundTrip(t *testing.T) {
 			{Model: "model-b", RedirectModel: ""},
 			{Model: "old-model", RedirectModel: "new-model"},
 		},
-		ChannelType: "anthropic",
-		Enabled:     true,
+		Enabled: true,
 		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 			Enabled: true, Name: "Round-trip cooldown", Priority: 0, StatusCodes: []int{429},
 			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
@@ -1041,7 +1031,6 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 		URLs:         model.ChannelURLs{{URL: "https://existing.com"}},
 		Priority:     10,
 		ModelEntries: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	}
 
@@ -1051,8 +1040,8 @@ func TestAdminAPI_ImportCSV_DuplicateNames(t *testing.T) {
 	}
 
 	// 尝试导入同名渠道 - [INFO] 修复：添加必需的api_key和key_strategy列
-	duplicateCSV := `name,urls,priority,models,model_redirects,channel_type,enabled,api_key,key_strategy
-Duplicate-Test,"[{""url"":""https://duplicate.com""}]",5,model-2,{},gemini,false,sk-duplicate-key,sequential
+	duplicateCSV := `name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
+Duplicate-Test,"[{""url"":""https://duplicate.com""}]",5,model-2,{},false,sk-duplicate-key,sequential
 `
 
 	body := &bytes.Buffer{}

@@ -117,11 +117,10 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 func TestConfig_JSONSerialization(t *testing.T) {
 	now := time.Now()
 	config := &Config{
-		ID:          1,
-		Name:        "test-channel",
-		ChannelType: "gemini",
-		URLs:        ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:    10,
+		ID:       1,
+		Name:     "test-channel",
+		URLs:     ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
 		ModelEntries: []ModelEntry{
 			{Model: "model-1", RedirectModel: ""},
 			{Model: "model-2", RedirectModel: "model-2-new"},
@@ -144,10 +143,6 @@ func TestConfig_JSONSerialization(t *testing.T) {
 	}
 
 	// 验证关键字段
-	if restored.ChannelType != "gemini" {
-		t.Errorf("channel_type不匹配: 期望 gemini, 实际 %s", restored.ChannelType)
-	}
-
 	if restored.Name != "test-channel" {
 		t.Errorf("name不匹配: 期望 test-channel, 实际 %s", restored.Name)
 	}
@@ -170,43 +165,6 @@ func TestConfig_JSONSerialization(t *testing.T) {
 	// 时间比较：允许1秒误差（JSON序列化精度损失）
 	if !restored.CreatedAt.Time.Truncate(time.Second).Equal(now.Truncate(time.Second)) {
 		t.Errorf("created_at时间不匹配:\n期望: %v\n实际: %v", now, restored.CreatedAt.Time)
-	}
-}
-
-// ==================== GetChannelType 默认值测试 ====================
-
-func TestConfig_GetChannelType(t *testing.T) {
-	tests := []struct {
-		name        string
-		channelType string
-		expected    string
-	}{
-		{
-			name:        "非空值原样返回",
-			channelType: "gemini",
-			expected:    "gemini",
-		},
-		{
-			name:        "空字符串返回默认值",
-			channelType: "",
-			expected:    "anthropic",
-		},
-		{
-			name:        "codex值正确返回",
-			channelType: "codex",
-			expected:    "codex",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			config := &Config{ChannelType: tt.channelType}
-			result := config.GetChannelType()
-
-			if result != tt.expected {
-				t.Errorf("GetChannelType()结果不匹配:\n期望: %s\n实际: %s", tt.expected, result)
-			}
-		})
 	}
 }
 

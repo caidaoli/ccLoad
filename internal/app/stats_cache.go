@@ -247,8 +247,8 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.ChannelID != nil {
 		parts = append(parts, fmt.Sprintf("ch:%d", *filter.ChannelID))
 	}
-	if filter.ChannelType != "" {
-		parts = append(parts, fmt.Sprintf("type:%s", filter.ChannelType))
+	if filter.UpstreamProtocol != "" {
+		parts = append(parts, fmt.Sprintf("upstream_protocol:%s", filter.UpstreamProtocol))
 	}
 	if filter.ChannelName != "" {
 		parts = append(parts, fmt.Sprintf("name_exact:%s", filter.ChannelName))

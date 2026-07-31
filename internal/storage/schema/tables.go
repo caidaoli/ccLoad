@@ -26,7 +26,6 @@ func DefineChannelsTable() *TableBuilder {
 		Column("updated_at BIGINT NOT NULL").
 		Index("idx_channels_enabled", "enabled").
 		Index("idx_channels_priority", "priority DESC").
-		Index("idx_channels_type_enabled", "channel_type, enabled").
 		Index("idx_channels_cooldown", "cooldown_until")
 }
 
@@ -171,6 +170,7 @@ func DefineLogsTable() *TableBuilder {
 		Column("api_key_hash VARCHAR(64) NOT NULL DEFAULT ''"). // API Key SHA256（用于精确定位 key_index）
 		Column("auth_token_id BIGINT NOT NULL DEFAULT 0").      // 客户端使用的API令牌ID（新增2025-12）
 		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
+		Column("upstream_protocol VARCHAR(32) NOT NULL DEFAULT ''").
 		Column("client_ip VARCHAR(45) NOT NULL DEFAULT ''").    // 客户端IP地址（新增2025-12）
 		Column("base_url VARCHAR(500) NOT NULL DEFAULT ''").    // 请求使用的上游URL（多URL场景）
 		Column("service_tier VARCHAR(20) NOT NULL DEFAULT ''"). // OpenAI service_tier: priority/flex
@@ -207,7 +207,9 @@ func DefineModelFingerprintsTable() *TableBuilder {
 		Column("channel_name VARCHAR(191) NOT NULL DEFAULT ''").
 		Column("model VARCHAR(191) NOT NULL").
 		Column("actual_model VARCHAR(191) NOT NULL DEFAULT ''").
+		// 保留 channel_type 物理列，旧版本回滚时仍可读取原数据；新代码不读写它。
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT ''").
+		Column("client_protocol VARCHAR(32) NOT NULL DEFAULT ''").
 		Column("sample_count INT NOT NULL DEFAULT 0").
 		Column("distribution LONGTEXT NOT NULL").
 		Column("stats TEXT NOT NULL").

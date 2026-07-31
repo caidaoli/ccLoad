@@ -10,21 +10,21 @@ import (
 	"ccLoad/internal/util"
 )
 
-func normalizeOptionalChannelType(value string) string {
+func normalizeOptionalProtocol(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	return util.NormalizeChannelType(value)
+	return util.NormalizeProtocol(value)
 }
 
-// selectCandidatesByChannelType 返回所有启用渠道；channelType 仅用于计算客户端协议对应的模型冷却键。
-func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
+// selectCandidatesByClientProtocol 返回所有启用渠道；clientProtocol 仅用于计算客户端协议对应的模型冷却键。
+func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientProtocol string) ([]*modelpkg.Config, error) {
 	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}
-	return s.filterCooldownChannels(ctx, channels, "*", channelType)
+	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol)
 }
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
@@ -94,9 +94,9 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex))
 }
 
-// selectCandidatesByModelAndType 按模型选择候选渠道；channelType 仅表示客户端协议，不过滤上游主协议。
-func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
-	normalizedType := normalizeOptionalChannelType(channelType)
+// selectCandidatesByModelAndClientProtocol 按模型选择候选渠道；clientProtocol 仅表示客户端协议，不过滤上游主协议。
+func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
+	normalizedType := normalizeOptionalProtocol(clientProtocol)
 
 	channels, err := s.GetEnabledChannelsByModel(ctx, model)
 	if err != nil {

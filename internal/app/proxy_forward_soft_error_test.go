@@ -71,27 +71,27 @@ func TestCheckSoftError(t *testing.T) {
 	}
 }
 
-func TestShouldCheckSoftErrorForChannelType(t *testing.T) {
+func TestShouldCheckSoftErrorForUpstreamProtocol(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		channelType string
-		want        bool
+		name             string
+		upstreamProtocol string
+		want             bool
 	}{
-		{name: "anthropic", channelType: "anthropic", want: true},
-		{name: "codex", channelType: "codex", want: true},
-		{name: "anthropic_default_empty", channelType: "", want: true},
-		{name: "openai", channelType: "openai", want: false},
-		{name: "gemini", channelType: "gemini", want: false},
-		{name: "unknown", channelType: "something", want: false},
+		{name: "anthropic", upstreamProtocol: "anthropic", want: true},
+		{name: "codex", upstreamProtocol: "codex", want: true},
+		{name: "empty", upstreamProtocol: "", want: false},
+		{name: "openai", upstreamProtocol: "openai", want: false},
+		{name: "gemini", upstreamProtocol: "gemini", want: false},
+		{name: "unknown", upstreamProtocol: "something", want: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := shouldCheckSoftErrorForChannelType(tt.channelType); got != tt.want {
-				t.Fatalf("shouldCheckSoftErrorForChannelType()=%v, want %v", got, tt.want)
+			if got := shouldCheckSoftErrorForUpstreamProtocol(tt.upstreamProtocol); got != tt.want {
+				t.Fatalf("shouldCheckSoftErrorForUpstreamProtocol()=%v, want %v", got, tt.want)
 			}
 		})
 	}

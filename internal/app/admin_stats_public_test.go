@@ -20,7 +20,6 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		Name:         "anth",
 		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -31,7 +30,6 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		Name:         "oai",
 		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -166,10 +164,10 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 	})
 
-	t.Run("HandleGetChannelTypes", func(t *testing.T) {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/channel-types", nil))
+	t.Run("HandleGetProtocols", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/protocols", nil))
 
-		server.HandleGetChannelTypes(c)
+		server.HandleGetProtocols(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
 		}
@@ -185,20 +183,20 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 		if !resp.Success || len(resp.Data) == 0 {
-			t.Fatalf("unexpected channel types resp: %+v", resp)
+			t.Fatalf("unexpected protocols resp: %+v", resp)
 		}
-		for _, channelType := range resp.Data {
+		for _, upstreamProtocol := range resp.Data {
 			for _, field := range []string{"value", "display_name", "description"} {
-				value, ok := channelType[field].(string)
+				value, ok := upstreamProtocol[field].(string)
 				if !ok || value == "" {
-					t.Fatalf("channel type missing %s: %#v", field, channelType)
+					t.Fatalf("protocol missing %s: %#v", field, upstreamProtocol)
 				}
 			}
-			if _, ok := channelType["path_patterns"]; ok {
-				t.Fatalf("channel type leaked legacy path_patterns: %#v", channelType)
+			if _, ok := upstreamProtocol["path_patterns"]; ok {
+				t.Fatalf("protocol leaked legacy path_patterns: %#v", upstreamProtocol)
 			}
-			if _, ok := channelType["match_type"]; ok {
-				t.Fatalf("channel type leaked legacy match_type: %#v", channelType)
+			if _, ok := upstreamProtocol["match_type"]; ok {
+				t.Fatalf("protocol leaked legacy match_type: %#v", upstreamProtocol)
 			}
 		}
 	})

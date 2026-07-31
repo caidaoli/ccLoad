@@ -44,7 +44,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 
 	args := []any{bucketMinutes, bucketMinutes, sinceBucket, untilBucket}
 
-	// 应用渠道筛选（channel_type、channel_id、channel_name、channel_name_like）
+	// 应用渠道筛选（channel_id、channel_name、channel_name_like）及实际上游协议筛选。
 	if filter != nil {
 		channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
 		if err != nil {
@@ -107,20 +107,7 @@ func (s *SQLStore) resolveChannelFilter(ctx context.Context, filter *model.LogFi
 	}
 
 	var candidateIDs []int64
-	hasTypeFilter := filter.ChannelType != ""
 	hasNameFilter := filter.ChannelName != "" || filter.ChannelNameLike != ""
-
-	// 按渠道类型过滤
-	if hasTypeFilter {
-		ids, err := s.fetchChannelIDsByType(ctx, filter.ChannelType)
-		if err != nil {
-			return nil, false, err
-		}
-		if len(ids) == 0 {
-			return nil, true, nil // 无匹配结果
-		}
-		candidateIDs = ids
-	}
 
 	// 按渠道名称过滤
 	if hasNameFilter {
@@ -132,15 +119,7 @@ func (s *SQLStore) resolveChannelFilter(ctx context.Context, filter *model.LogFi
 			return nil, true, nil // 无匹配结果
 		}
 
-		if hasTypeFilter {
-			// 取交集
-			candidateIDs = intersectIDs(candidateIDs, ids)
-			if len(candidateIDs) == 0 {
-				return nil, true, nil
-			}
-		} else {
-			candidateIDs = ids
-		}
+		candidateIDs = ids
 	}
 
 	return candidateIDs, false, nil
@@ -162,8 +141,7 @@ func buildEmptyMetricPoints(since, until time.Time, bucket time.Duration) []mode
 }
 
 // GetDistinctModels 获取指定时间范围内的去重模型列表
-// channelType 为空时返回所有模型，否则只返回指定渠道类型的模型
-func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error) {
+func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]string, error) {
 	args := []any{since.UnixMilli(), until.UnixMilli()}
 
 	query := `
@@ -171,23 +149,6 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 		FROM logs
 		WHERE logs.time >= ? AND logs.time <= ? AND logs.model != '' AND logs.channel_id > 0
 	`
-
-	// 按渠道类型筛选
-	if channelType != "" {
-		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
-		if err != nil {
-			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
-		}
-		if len(channelIDs) == 0 {
-			return []string{}, nil // 无匹配渠道，返回空列表
-		}
-		placeholders := make([]string, len(channelIDs))
-		for i := range channelIDs {
-			placeholders[i] = "?"
-			args = append(args, channelIDs[i])
-		}
-		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
-	}
 
 	wb := NewWhereBuilder()
 	wb.ApplyLogFilter(filter)
@@ -225,8 +186,7 @@ func (s *SQLStore) GetDistinctModels(ctx context.Context, since, until time.Time
 }
 
 // GetDistinctStatusCodes 获取指定时间范围内的去重状态码列表。
-// channelType 为空时返回所有状态码，否则只返回指定渠道类型的状态码。
-func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]int, error) {
+func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]int, error) {
 	args := []any{since.UnixMilli(), until.UnixMilli()}
 	query := `
 		SELECT DISTINCT logs.status_code
@@ -234,22 +194,6 @@ func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time
 		WHERE logs.time >= ? AND logs.time <= ?
 			AND logs.status_code BETWEEN 100 AND 999
 	`
-
-	if channelType != "" {
-		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
-		if err != nil {
-			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
-		}
-		if len(channelIDs) == 0 {
-			return []int{}, nil
-		}
-		placeholders := make([]string, len(channelIDs))
-		for i := range channelIDs {
-			placeholders[i] = "?"
-			args = append(args, channelIDs[i])
-		}
-		query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
-	}
 
 	wb := NewWhereBuilder()
 	wb.ApplyLogFilter(filter)
@@ -282,7 +226,7 @@ func (s *SQLStore) GetDistinctStatusCodes(ctx context.Context, since, until time
 }
 
 // GetDistinctChannels 获取指定时间范围内有日志数据的渠道列表（ID+名称）
-func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error) {
+func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]model.ChannelNameID, error) {
 	args := []any{since.UnixMilli(), until.UnixMilli()}
 
 	query := `
@@ -290,22 +234,6 @@ func (s *SQLStore) GetDistinctChannels(ctx context.Context, since, until time.Ti
 		FROM logs l JOIN channels c ON l.channel_id = c.id
 		WHERE l.time >= ? AND l.time <= ? AND l.channel_id > 0
 	`
-
-	if channelType != "" {
-		channelIDs, err := s.fetchChannelIDsByType(ctx, channelType)
-		if err != nil {
-			return nil, fmt.Errorf("fetch channel IDs by type: %w", err)
-		}
-		if len(channelIDs) == 0 {
-			return []model.ChannelNameID{}, nil
-		}
-		placeholders := make([]string, len(channelIDs))
-		for i := range channelIDs {
-			placeholders[i] = "?"
-			args = append(args, channelIDs[i])
-		}
-		query += fmt.Sprintf(" AND l.channel_id IN (%s)", strings.Join(placeholders, ","))
-	}
 
 	wb := NewWhereBuilder()
 	wb.ApplyLogFilter(filter)

@@ -78,11 +78,10 @@ func BenchmarkHybrid_ListConfigs_SQLite(b *testing.B) {
 	// 准备测试数据
 	for i := range 10 {
 		_, err := store.CreateConfig(ctx, &model.Config{
-			Name:        fmt.Sprintf("bench-channel-%d", i),
-			ChannelType: "openai",
-			URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
-			Priority:    100,
-			Enabled:     true,
+			Name:     fmt.Sprintf("bench-channel-%d", i),
+			URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+			Priority: 100,
+			Enabled:  true,
 		})
 		if err != nil {
 			b.Fatalf("创建渠道失败: %v", err)
@@ -283,11 +282,10 @@ func BenchmarkHybrid_ListConfigs_SQLite_Parallel(b *testing.B) {
 	// 准备测试数据
 	for i := range 10 {
 		_, _ = store.CreateConfig(ctx, &model.Config{
-			Name:        fmt.Sprintf("bench-parallel-%d", i),
-			ChannelType: "openai",
-			URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
-			Priority:    100,
-			Enabled:     true,
+			Name:     fmt.Sprintf("bench-parallel-%d", i),
+			URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+			Priority: 100,
+			Enabled:  true,
 		})
 	}
 

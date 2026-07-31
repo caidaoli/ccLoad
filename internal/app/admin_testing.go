@@ -80,7 +80,6 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	}
 
 	cfg := &model.Config{
-		ChannelType:        util.ChannelTypeCodex,
 		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(probe.URL), Exact: model.HasExactUpstreamURLMarker(probe.URL)}},
 		ProxyURL:           probe.ProxyURL,
 		CustomRequestRules: probe.CustomRequestRules,
@@ -186,7 +185,7 @@ func (t *channelTestTimeout) streamTimeoutTriggered() bool {
 }
 
 func newChannelTester(protocolName string) testutil.ChannelTester {
-	switch util.NormalizeChannelType(protocolName) {
+	switch util.NormalizeProtocol(protocolName) {
 	case "codex":
 		return &testutil.CodexTester{}
 	case "openai":
@@ -200,14 +199,11 @@ func newChannelTester(protocolName string) testutil.ChannelTester {
 	}
 }
 
-func resolveClientProtocol(cfg *model.Config, testReq *testutil.TestChannelRequest) string {
+func resolveClientProtocol(testReq *testutil.TestChannelRequest) string {
 	if protocolName := strings.TrimSpace(testReq.ClientProtocol); protocolName != "" {
 		return strings.ToLower(protocolName)
 	}
-	if protocolName := strings.TrimSpace(testReq.ChannelType); protocolName != "" {
-		return strings.ToLower(protocolName)
-	}
-	return cfg.GetChannelType()
+	return ""
 }
 
 func cloneHeaders(src http.Header) http.Header {
@@ -249,7 +245,7 @@ func extractRequestPath(fullURL string) string {
 	return path
 }
 
-func (s *Server) newChannelTestTimeoutContextWithTimeouts(parent context.Context, stream bool, timeouts channelTypeTimeoutConfig) (context.Context, *channelTestTimeout) {
+func (s *Server) newChannelTestTimeoutContextWithTimeouts(parent context.Context, stream bool, timeouts protocolTimeoutConfig) (context.Context, *channelTestTimeout) {
 	ctx, cancel := context.WithCancel(parent)
 	timeout := &channelTestTimeout{
 		cancel:           cancel,
@@ -706,35 +702,30 @@ func resolveConfiguredURLUpstreamProtocols(
 	cfg *model.Config,
 	entry model.ChannelURL,
 	clientProtocol string,
-) (upstreamProtocols []string, declared bool) {
+) []string {
 	client := protocol.Protocol(clientProtocol)
-	candidates, declared := protocolCandidatesForURL(
+	candidates, _ := protocolCandidatesForURL(
 		entry,
 		cfg.GetProtocolTransformMode(),
 		client,
-		protocol.Protocol(cfg.GetChannelType()),
 		channelTestRequestFamily(client),
+		localUpstreamProtocolOrder(cfg.URLs),
 	)
-	upstreamProtocols = make([]string, len(candidates))
+	upstreamProtocols := make([]string, len(candidates))
 	for idx, candidate := range candidates {
 		upstreamProtocols[idx] = string(candidate)
 	}
-	return upstreamProtocols, declared
+	return upstreamProtocols
 }
 
 func configuredURLAt(cfg *model.Config, index int, runtimeURL string) model.ChannelURL {
-	if index >= 0 && index < len(cfg.URLs) && cfg.URLs[index].RuntimeURL() == runtimeURL {
-		return cfg.URLs[index]
-	}
-	for _, entry := range cfg.URLs {
-		if entry.RuntimeURL() == runtimeURL {
-			return entry
+	if cfg == nil {
+		return model.ChannelURL{
+			URL:   model.StripExactUpstreamURLMarker(runtimeURL),
+			Exact: model.HasExactUpstreamURLMarker(runtimeURL),
 		}
 	}
-	return model.ChannelURL{
-		URL:   model.StripExactUpstreamURLMarker(runtimeURL),
-		Exact: model.HasExactUpstreamURLMarker(runtimeURL),
-	}
+	return configuredURLFrom(cfg.URLs, index, runtimeURL)
 }
 
 // 测试渠道API连通性
@@ -744,7 +735,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
 	}
 
-	clientProtocol := resolveClientProtocol(cfg, testReq)
+	clientProtocol := resolveClientProtocol(testReq)
 
 	urls := cfg.GetURLs()
 	if forcedBaseURL := strings.TrimSpace(testReq.BaseURL); forcedBaseURL != "" {
@@ -759,10 +750,13 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		selector = s.urlSelector
 	}
 	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeLocal {
+		orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
+	}
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		upstreamProtocols, declared := resolveConfiguredURLUpstreamProtocols(
+		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
 			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
 		)
 		if len(upstreamProtocols) == 0 {
@@ -788,7 +782,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 				}
 				return lastResult
 			}
-			if declared || !isChannelTestProtocolEndpointMissing(lastResult) {
+			if !isChannelTestProtocolEndpointMissing(lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -796,7 +790,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		if idx == len(orderedURLs)-1 {
 			break
 		}
-		if capabilityExhausted {
+		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 			continue
 		}
 
@@ -832,6 +826,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		if result == nil {
 			return
 		}
+		result["client_protocol"] = clientProtocol
 		result["upstream_protocol"] = upstreamProtocol
 		result["actual_model"] = attemptReq.Model
 	}()
@@ -1142,7 +1137,6 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	cfgForBuild := &model.Config{
 		ID:                 cfg.ID,
 		Name:               cfg.Name,
-		ChannelType:        cfg.ChannelType,
 		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(selectedURL), Exact: model.HasExactUpstreamURLMarker(selectedURL)}},
 		ModelEntries:       append([]model.ModelEntry(nil), cfg.ModelEntries...),
 		CustomRequestRules: cfg.CustomRequestRules,
@@ -1156,7 +1150,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	// anyrouter Anthropic thinking 兜底归一（与代理链路保持一致）
 	if requestPlan.upstreamProtocol == "anthropic" {
 		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
-			requestPlan.requestBody = normalizeAnyrouterAdaptiveThinking(cfgForBuild, "/v1/messages", requestPlan.requestBody)
+			requestPlan.requestBody = normalizeAnyrouterAdaptiveThinking(cfgForBuild, requestPlan.upstreamProtocol, "/v1/messages", requestPlan.requestBody)
 		}
 	}
 
@@ -1171,7 +1165,7 @@ func (s *Server) newTestUpstreamRequest(
 	testReq *testutil.TestChannelRequest,
 	requestPlan *channelTestRequestPlan,
 ) (*http.Request, context.CancelFunc, error) {
-	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(cfgForBuild, protocol.TransformPlan{
+	ctx, timeout := s.newChannelTestTimeoutContextWithTimeouts(reqCtx, testReq.Stream, s.resolveProtocolTimeouts(protocol.TransformPlan{
 		UpstreamProtocol: protocol.Protocol(requestPlan.upstreamProtocol),
 	}))
 	requestPlan.timeout = timeout

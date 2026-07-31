@@ -53,7 +53,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
 - 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
-- 原生协议能力不支持(响应未提交的非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;可转换时同渠道/Key/URL 转到 `ChannelType` 重试,不可转换时切 URL/渠道
+- 原生协议能力不支持(响应未提交的非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;auto 模式可转换时同渠道/Key/URL 探测其他协议,不可转换时切 URL/渠道
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
 - Key/模型/渠道共用指数退避策略:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),随后翻倍并在 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
@@ -70,12 +70,12 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 ## 关键机制(要点,细节读对应文件)
 
 - **选择**:渠道平滑加权轮询(按有效 Key 数)+ 渠道/Key/模型冷却感知,成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;`ChannelURL.Exact` 派生运行时 `#` 标记实现精确转发,持久化 URL 本身不含标记
-- **多协议处理**:渠道用 `ChannelType` 定本地转换目标,用 `protocol_transform_mode` 选择策略:`auto`(默认)、`upstream`(只原生直通)、`local`(只本地转换)。每个 `ChannelURL.Protocols` 可显式声明端点线协议能力:非空声明是权威配置,直接选择兼容协议,不兼容 URL 无请求、无冷却地跳过;空声明先直通客户端协议,失败后按 Anthropic → OpenAI → Codex → Gemini 回落并跳过已试的直通协议。未提交响应的非模型 404/405、明确未实现 500、请求到达 API 前的 Cloudflare 403 拦截页或当前转换无法表示请求时才继续下一协议,成功协议按 URL+请求族缓存 10 分钟。auto 下未声明协议的 Exact URL 跨协议直接本地转换
+- **多协议处理**:每个渠道默认接受四种客户端协议,`protocol_transform_mode` 选择策略:`auto`(默认)、`upstream`(只直通客户端协议)、`local`(只本地转换)。实际上游能力只由 `ChannelURL.Protocols` 声明:非空声明是权威配置,不兼容 URL 无请求、无冷却地跳过。local 优先有声明的 URL 并保持声明顺序;仅当全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 请求。auto 先试客户端协议,再按 Anthropic → OpenAI → Codex → Gemini 自动探测;未提交响应的非模型 404/405、明确未实现 500、请求到达 API 前的 Cloudflare 403 拦截页或当前转换无法表示请求时才继续下一协议,成功协议按 URL+请求族缓存 10 分钟
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **系统设置无热重载**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读一次进内存,运行期只读;单改/重置/批量三个写入口都是写库后 `go triggerRestart()`,2 秒后重启进程生效。别在 `AdminUpdateSetting` 里加"顺手刷新缓存"——重启才是生效机制
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置
 - **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量,注意与 Auth Token 同名字段不是一回事)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `setMaxBodyBytesLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(注入 `util.ApplyCooldownSettings`;下限>上限时整对回退默认)。旧 `CCLOAD_MAX_CONCURRENCY`/`CCLOAD_MAX_BODY_BYTES`/`CCLOAD_COOLDOWN_*` 已废弃,仍设置时启动打 WARN
-- **上游超时**(`server.go:loadChannelTypeTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`stream_timeout`(0=禁用,流式总时长)、`non_stream_timeout`(120s),首字节与非流式超时可按渠道类型 `{type}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
+- **上游超时**(`server.go:loadProtocolTimeouts`):`upstream_first_byte_timeout`(0=禁用,仅流式)、`stream_timeout`(0=禁用,流式总时长)、`non_stream_timeout`(120s),首字节与非流式超时可按实际上游协议 `{protocol}_*` 覆盖;写回前调 `disableResponseWriteTimeout` 防 `WriteTimeout` 截断响应体
 - **Anthropic thinking**:项目生成的 Anthropic 请求用 `thinking.type=adaptive` + `output_config.effort`;anyrouter `/v1/messages` 兜底补 adaptive 并归一旧 `enabled`;anyrouter 额外注入 `anthropic-beta: context-1m`
 - **定时检测**(`channel_check_scheduler.go`):全局 `channel_check_interval_hours`(0=禁用,启动读一次,改后重启生效)+ 渠道级开关
 

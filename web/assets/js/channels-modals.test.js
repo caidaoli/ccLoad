@@ -3,17 +3,15 @@ const assert = require('node:assert/strict');
 
 const { selectFirstEnabledInlineKey } = require('./channels-keys.js');
 
-function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelType = 'openai' }) {
+function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }) {
 	const globals = {
 		window: {
 			t: key => key,
       showError: onError,
       showWarning: onWarning
     },
-    document: {
-      querySelector: () => ({ value: channelType })
-    },
-    getValidInlineURLs: () => ['https://upstream.test'],
+    document: { querySelector: () => null },
+    getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }],
     getInlineKeyRows: () => rows,
     currentChannelKeyCooldowns: states,
     selectFirstEnabledInlineKey,
@@ -297,6 +295,7 @@ test('fetchModelsFromAPI sends the first enabled API key', async () => {
   }
 
   assert.equal(requestBody.api_key, 'enabled-key');
+  assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
 });
 
 test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async () => {

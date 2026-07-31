@@ -142,6 +142,7 @@ type ForwardObserver struct {
 type proxyRequestContext struct {
 	originalModel    string
 	clientProtocol   protocol.Protocol
+	upstreamProtocol protocol.Protocol
 	requestMethod    string
 	requestPath      string
 	rawQuery         string
@@ -335,7 +336,7 @@ func copyRequestHeaders(dst *http.Request, src http.Header) {
 // 参数简化：直接接受API Key字符串，由调用方从KeySelector获取
 func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol string) {
 	switch strings.TrimSpace(strings.ToLower(upstreamProtocol)) {
-	case util.ChannelTypeGemini:
+	case util.ProtocolGemini:
 		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
 	default:
@@ -359,7 +360,7 @@ var anthropicProtocolHeaders = []string{
 
 // stripAnthropicProtocolHeaders 当上游非 Anthropic 时，移除客户端携带的 Anthropic 专属头。
 func stripAnthropicProtocolHeaders(req *http.Request, upstreamType string) {
-	if upstreamType == util.ChannelTypeAnthropic {
+	if upstreamType == util.ProtocolAnthropic {
 		return
 	}
 	for _, h := range anthropicProtocolHeaders {
@@ -381,7 +382,7 @@ func injectAnthropicBetaFlag(req *http.Request, flag string) {
 }
 
 func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
-	if upstreamType != util.ChannelTypeAnthropic {
+	if upstreamType != util.ProtocolAnthropic {
 		return
 	}
 	if req.Header.Get("anthropic-version") == "" {
@@ -391,11 +392,11 @@ func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {
 
 // normalizeAnyrouterAdaptiveThinking 为 anyrouter 的 Anthropic /v1/messages 请求补齐 adaptive thinking。
 // 自动注入只针对 anyrouter；普通 Anthropic 渠道不做兜底改写。
-func normalizeAnyrouterAdaptiveThinking(cfg *model.Config, requestPath string, body []byte) []byte {
+func normalizeAnyrouterAdaptiveThinking(cfg *model.Config, upstreamProtocol, requestPath string, body []byte) []byte {
 	if len(body) == 0 || cfg == nil {
 		return body
 	}
-	if cfg.GetChannelType() != util.ChannelTypeAnthropic {
+	if upstreamProtocol != util.ProtocolAnthropic {
 		return body
 	}
 	if !isAnyrouterChannel(cfg) {
@@ -606,7 +607,7 @@ func (s *Server) resolveActualModel(cfg *model.Config, originalModel string) str
 // Gemini 的模型位于 URL 路径，body 规则不改变其路由模型。
 func (s *Server) resolveFinalUpstreamModel(cfg *model.Config, originalModel string, upstreamProtocol string) string {
 	actualModel := s.resolveActualModel(cfg, originalModel)
-	if protocol.Protocol(util.NormalizeChannelType(upstreamProtocol)) == protocol.Gemini {
+	if protocol.Protocol(util.NormalizeProtocol(upstreamProtocol)) == protocol.Gemini {
 		return actualModel
 	}
 	return resolveModelAfterBodyRules(actualModel, cfg.BodyRules())
@@ -840,24 +841,25 @@ func stringMapValue(values map[string]any, key string) string {
 
 // logEntryParams 日志条目构建参数（避免多个 string 参数顺序混淆）
 type logEntryParams struct {
-	RequestModel   string // 客户端请求的原始模型名称
-	ActualModel    string // 实际转发到上游的模型名称（可能经过重定向）
-	RequestPath    string // 客户端请求路径（用于识别按次计费的特殊端点）
-	ChannelID      int64
-	StatusCode     int
-	Duration       float64
-	IsStreaming    bool
-	APIKeyUsed     string
-	AuthTokenID    int64
-	ClientProtocol protocol.Protocol
-	ClientIP       string
-	BaseURL        string // 请求使用的上游URL
-	Result         *fwResult
-	ErrMsg         string
-	StartTime      time.Time            // 渠道尝试开始时间（用于日志记录）
-	DebugData      *model.DebugLogEntry // Debug日志数据
-	CostMultiplier float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
-	ThinkingEffort string
+	RequestModel     string // 客户端请求的原始模型名称
+	ActualModel      string // 实际转发到上游的模型名称（可能经过重定向）
+	RequestPath      string // 客户端请求路径（用于识别按次计费的特殊端点）
+	ChannelID        int64
+	StatusCode       int
+	Duration         float64
+	IsStreaming      bool
+	APIKeyUsed       string
+	AuthTokenID      int64
+	ClientProtocol   protocol.Protocol
+	UpstreamProtocol protocol.Protocol
+	ClientIP         string
+	BaseURL          string // 请求使用的上游URL
+	Result           *fwResult
+	ErrMsg           string
+	StartTime        time.Time            // 渠道尝试开始时间（用于日志记录）
+	DebugData        *model.DebugLogEntry // Debug日志数据
+	CostMultiplier   float64              // 渠道成本倍率快照（0=免费，<0 视为 1）
+	ThinkingEffort   string
 }
 
 // resolveProxyBillingModel 选择代理请求的计费模型。
@@ -893,6 +895,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		APIKeyUsed:        p.APIKeyUsed,
 		AuthTokenID:       p.AuthTokenID,
 		ClientProtocol:    string(p.ClientProtocol),
+		UpstreamProtocol:  string(p.UpstreamProtocol),
 		ClientIP:          p.ClientIP,
 		BaseURL:           p.BaseURL,
 	}

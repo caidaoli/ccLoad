@@ -10,7 +10,6 @@ import (
 	"time"
 
 	modelpkg "ccLoad/internal/model"
-	"ccLoad/internal/util"
 )
 
 // ChannelCache 高性能渠道缓存层
@@ -18,7 +17,6 @@ import (
 type ChannelCache struct {
 	store           Store
 	channelsByModel map[string][]*modelpkg.Config // model → channels
-	channelsByType  map[string][]*modelpkg.Config // type → channels
 	allChannels     []*modelpkg.Config            // 所有渠道
 	lastUpdate      time.Time
 	mutex           sync.RWMutex
@@ -43,7 +41,6 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 	return &ChannelCache{
 		store:           store,
 		channelsByModel: make(map[string][]*modelpkg.Config),
-		channelsByType:  make(map[string][]*modelpkg.Config),
 		allChannels:     make([]*modelpkg.Config, 0),
 		ttl:             ttl,
 
@@ -105,27 +102,6 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 	return deepCopyConfigs(channels), nil
 }
 
-// GetEnabledChannelsByType 缓存优先的类型查询
-// [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
-func (c *ChannelCache) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
-	normalizedType := util.NormalizeChannelType(channelType)
-	if err := c.refreshIfNeeded(ctx); err != nil {
-		// 缓存失败时降级到数据库查询
-		return c.store.GetEnabledChannelsByType(ctx, normalizedType)
-	}
-
-	c.mutex.RLock()
-	defer c.mutex.RUnlock()
-
-	channels, exists := c.channelsByType[normalizedType]
-	if !exists {
-		return []*modelpkg.Config{}, nil
-	}
-
-	// 返回深拷贝（隔离可变字段：ModelEntries）
-	return deepCopyConfigs(channels), nil
-}
-
 // GetConfig 获取指定ID的渠道配置
 // 直接查询数据库，保证数据永远是最新的
 func (c *ChannelCache) GetConfig(ctx context.Context, channelID int64) (*modelpkg.Config, error) {
@@ -171,14 +147,9 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 		return err
 	}
 
-	// 构建按类型分组的索引（内部共享指针，对外深拷贝隔离）
 	byModel := make(map[string][]*modelpkg.Config)
-	byType := make(map[string][]*modelpkg.Config)
 
 	for _, channel := range allChannels {
-		channelType := channel.GetChannelType()
-		byType[channelType] = append(byType[channelType], channel) // 内部共享
-
 		// 同时填充模型索引（使用 GetModels() 辅助方法）
 		for _, model := range channel.GetModels() {
 			byModel[model] = append(byModel[model], channel) // 内部共享
@@ -189,14 +160,13 @@ func (c *ChannelCache) refreshCache(ctx context.Context) error {
 	c.mutex.Lock()
 	c.allChannels = allChannels
 	c.channelsByModel = byModel
-	c.channelsByType = byType
 	c.lastUpdate = time.Now()
 	c.mutex.Unlock()
 
 	refreshDuration := time.Since(start)
 	if refreshDuration > 5*time.Second {
-		log.Printf("[WARN]  缓存刷新过慢: %v, 渠道数: %d, 模型数: %d, 类型数: %d",
-			refreshDuration, len(allChannels), len(byModel), len(byType))
+		log.Printf("[WARN]  缓存刷新过慢: %v, 渠道数: %d, 模型数: %d",
+			refreshDuration, len(allChannels), len(byModel))
 	}
 
 	return nil

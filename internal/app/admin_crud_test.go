@@ -196,25 +196,22 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 	fixtures := []*model.Config{
 		{
 			Name:         "native-openai",
-			URLs:         model.ChannelURLs{{URL: "https://openai.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://openai.example.com", Protocols: []string{"openai"}}},
 			Priority:     10,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
 			Enabled:      true,
 		},
 		{
 			Name:         "anthropic-channel",
-			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com", Protocols: []string{"anthropic", "openai"}}},
 			Priority:     20,
-			ChannelType:  "anthropic",
 			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
 			Enabled:      true,
 		},
 		{
 			Name:         "codex-channel",
-			URLs:         model.ChannelURLs{{URL: "https://codex.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://codex.example.com", Protocols: []string{"codex"}}},
 			Priority:     30,
-			ChannelType:  "codex",
 			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
 			Enabled:      true,
 		},
@@ -225,7 +222,7 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 		}
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?type=openai&limit=20&offset=0", nil))
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?protocol=openai&limit=20&offset=0", nil))
 
 	server.handleListChannels(c)
 
@@ -233,15 +230,15 @@ func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
 	}
 	resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
-	if resp.Count != 1 {
-		t.Fatalf("count=%d, want 1 body=%s", resp.Count, w.Body.String())
+	if resp.Count != 2 {
+		t.Fatalf("count=%d, want 2 body=%s", resp.Count, w.Body.String())
 	}
 	gotNames := make([]string, 0, len(resp.Data))
 	for _, item := range resp.Data {
 		gotNames = append(gotNames, item.Name)
 	}
 	sort.Strings(gotNames)
-	wantNames := []string{"native-openai"}
+	wantNames := []string{"anthropic-channel", "native-openai"}
 	if !slices.Equal(gotNames, wantNames) {
 		t.Fatalf("names=%v, want %v", gotNames, wantNames)
 	}
@@ -255,25 +252,22 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 	fixtures := []*model.Config{
 		{
 			Name:         "native-openai",
-			URLs:         model.ChannelURLs{{URL: "https://openai.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://openai.example.com", Protocols: []string{"openai"}}},
 			Priority:     10,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "native-model"}},
 			Enabled:      true,
 		},
 		{
 			Name:         "anthropic-channel",
-			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://anthropic.example.com", Protocols: []string{"anthropic", "openai"}}},
 			Priority:     20,
-			ChannelType:  "anthropic",
 			ModelEntries: []model.ModelEntry{{Model: "bridge-model"}},
 			Enabled:      true,
 		},
 		{
 			Name:         "codex-channel",
-			URLs:         model.ChannelURLs{{URL: "https://codex.example.com"}},
+			URLs:         model.ChannelURLs{{URL: "https://codex.example.com", Protocols: []string{"codex"}}},
 			Priority:     30,
-			ChannelType:  "codex",
 			ModelEntries: []model.ModelEntry{{Model: "skip-model"}},
 			Enabled:      true,
 		},
@@ -284,7 +278,7 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 		}
 	}
 
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/filter-options?type=openai", nil))
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/filter-options?protocol=openai", nil))
 
 	server.HandleChannelsFilterOptions(c)
 
@@ -296,11 +290,11 @@ func TestHandleChannelsFilterOptionsTypeFilterUsesUpstreamProtocolOnly(t *testin
 		Models       []string `json:"models"`
 	}
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &data)
-	wantNames := []string{"native-openai"}
+	wantNames := []string{"anthropic-channel", "native-openai"}
 	if !slices.Equal(data.ChannelNames, wantNames) {
 		t.Fatalf("channel_names=%v, want %v", data.ChannelNames, wantNames)
 	}
-	wantModels := []string{"native-model"}
+	wantModels := []string{"bridge-model", "native-model"}
 	if !slices.Equal(data.Models, wantModels) {
 		t.Fatalf("models=%v, want %v", data.Models, wantModels)
 	}
@@ -479,7 +473,6 @@ func TestHandleCreateChannel_PersistsProtocolTransformModeAndIgnoresRemovedTrans
 		"api_key":                 "sk-transform",
 		"urls":                    []map[string]any{{"url": "https://transform.example.com"}},
 		"priority":                42,
-		"channel_type":            "gemini",
 		"protocol_transforms":     []string{"openai", "anthropic"},
 		"protocol_transform_mode": "local",
 		"models": []map[string]any{
@@ -512,7 +505,6 @@ func TestHandleCreateChannel_PersistsUpstreamProtocolTransformMode(t *testing.T)
 		"api_key":                 "sk-upstream-mode",
 		"urls":                    []map[string]any{{"url": "https://upstream-mode.example.com"}},
 		"priority":                23,
-		"channel_type":            "anthropic",
 		"protocol_transforms":     []string{"gemini"},
 		"protocol_transform_mode": "upstream",
 		"models": []map[string]any{
@@ -936,11 +928,10 @@ func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "Update-Transform-Channel",
-		URLs:        model.ChannelURLs{{URL: "https://update-transform.example.com"}},
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "gemini",
+		Name:     "Update-Transform-Channel",
+		URLs:     model.ChannelURLs{{URL: "https://update-transform.example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro", RedirectModel: ""},
 		},
@@ -959,7 +950,6 @@ func TestHandleUpdateChannel_IgnoresRemovedProtocolFields(t *testing.T) {
 		"api_key":                 "sk-update-transform",
 		"urls":                    []map[string]any{{"url": "https://update-transform.example.com"}},
 		"priority":                10,
-		"channel_type":            "gemini",
 		"protocol_transforms":     []string{"codex", "anthropic"},
 		"protocol_transform_mode": "upstream",
 		"models": []map[string]any{

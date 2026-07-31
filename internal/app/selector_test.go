@@ -60,7 +60,7 @@ func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			candidates, err := server.selectCandidatesByModelAndType(ctx, tt.model, "")
+			candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, tt.model, "")
 
 			if err != nil {
 				t.Errorf("selectCandidates失败: %v", err)
@@ -92,11 +92,10 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 	ctx := context.Background()
 
 	_, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "gemini-upstream",
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:    100,
-		Enabled:     true,
-		ChannelType: "gemini",
+		Name:     "gemini-upstream",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 100,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro", RedirectModel: ""},
 		},
@@ -105,7 +104,7 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-2.5-pro", "openai")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gemini-2.5-pro", "openai")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -123,11 +122,10 @@ func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "openai-upstream",
-		URLs:        model.ChannelURLs{{URL: "https://api.openai.com"}},
-		Priority:    50,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "openai-upstream",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+		Priority: 50,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "shared-model"},
 		},
@@ -137,9 +135,9 @@ func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
 	}
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "shared-model", "codex")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "codex")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].ID != created.ID {
 		t.Fatalf("期望命中 openai-codex-transform，实际 %+v", candidates)
@@ -152,11 +150,10 @@ func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
 
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "codex-upstream",
-		URLs:        model.ChannelURLs{{URL: "https://api.codex.example.com"}},
-		Priority:    40,
-		Enabled:     true,
-		ChannelType: "codex",
+		Name:     "codex-upstream",
+		URLs:     model.ChannelURLs{{URL: "https://api.codex.example.com"}},
+		Priority: 40,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "shared-model"},
 		},
@@ -166,9 +163,9 @@ func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
 	}
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "shared-model", "openai")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "openai")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].ID != created.ID {
 		t.Fatalf("期望命中 codex-openai-transform，实际 %+v", candidates)
@@ -211,7 +208,7 @@ func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -261,7 +258,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 		t.Fatalf("set model cooldown: %v", err)
 	}
 
-	modelACandidates, err := server.selectCandidatesByModelAndType(ctx, "model-a", "")
+	modelACandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "model-a", "")
 	if err != nil {
 		t.Fatalf("select model-a candidates: %v", err)
 	}
@@ -269,7 +266,7 @@ func TestSelectRouteCandidates_ModelCooldownDoesNotCoolWholeChannel(t *testing.T
 		t.Fatalf("model-a should exclude cooled primary channel, got %+v", modelACandidates)
 	}
 
-	modelBCandidates, err := server.selectCandidatesByModelAndType(ctx, "model-b", "")
+	modelBCandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "model-b", "")
 	if err != nil {
 		t.Fatalf("select model-b candidates: %v", err)
 	}
@@ -308,7 +305,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackChoosesEarliestChannelCooldown(
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -361,7 +358,7 @@ func TestSelectRouteCandidates_AllCooled_FallbackDisabledWhenThresholdZero(t *te
 		t.Fatalf("设置渠道冷却失败: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -419,7 +416,7 @@ func TestSelectRouteCandidates_AllCooledByKeys_FallbackChoosesEarliestKeyCooldow
 		}
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -486,7 +483,7 @@ func TestSelectRouteCandidates_AllCooled_MixedCooldown_RespectsChannelCooldown(t
 		}
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -533,7 +530,7 @@ func TestSelectRouteCandidates_DisabledChannels(t *testing.T) {
 	}
 
 	// 查询可用渠道
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -571,7 +568,7 @@ func TestSelectRouteCandidates_PriorityGrouping(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -597,8 +594,8 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 	ctx := context.Background()
 
 	channels := []*model.Config{
-		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://anthropic.example.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://openai.example.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://anthropic.example.com"}}, Priority: 50, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, Enabled: true},
+		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://openai.example.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -607,7 +604,7 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 		}
 	}
 
-	allCandidates, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "")
+	allCandidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -615,34 +612,34 @@ func TestSelectCandidates_ClientProtocolDoesNotFilterUpstreamType(t *testing.T) 
 		t.Fatalf("预期返回2个候选渠道，实际%d个", len(allCandidates))
 	}
 
-	filtered, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "codex")
+	filtered, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "codex")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 	}
 	if len(filtered) != 2 {
 		t.Fatalf("客户端协议不应过滤上游主协议，返回结果: %+v", filtered)
 	}
 
 	// 保证类型过滤支持大小写输入
-	filteredUpper, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "CODEX")
+	filteredUpper, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "CODEX")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType(大写)失败: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol(大写)失败: %v", err)
 	}
 	if len(filteredUpper) != 2 {
 		t.Fatalf("客户端协议大小写不应改变候选集合，返回结果: %+v", filteredUpper)
 	}
 
 	// 客户端协议即使与所有上游主协议不同，也不应缩小候选集合。
-	filteredNone, err := server.selectCandidatesByModelAndType(ctx, "gpt-4", "gemini")
+	filteredNone, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gpt-4", "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType(无匹配)失败: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol(无匹配)失败: %v", err)
 	}
 	if len(filteredNone) != 2 {
 		t.Fatalf("客户端协议不应过滤候选，实际返回%d个", len(filteredNone))
 	}
 }
 
-func TestSelectCandidatesByChannelType_GeminiClientCanUseAllUpstreamProtocols(t *testing.T) {
+func TestSelectCandidatesByClientProtocol_GeminiClientCanUseAllUpstreamProtocols(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -651,9 +648,9 @@ func TestSelectCandidatesByChannelType_GeminiClientCanUseAllUpstreamProtocols(t 
 
 	// 创建不同类型的渠道
 	channels := []*model.Config{
-		{Name: "gemini-channel", URLs: model.ChannelURLs{{URL: "https://gemini.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro", RedirectModel: ""}}, ChannelType: "gemini", Enabled: true},
-		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}}, ChannelType: "anthropic", Enabled: true},
-		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://api.openai.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "gemini-channel", URLs: model.ChannelURLs{{URL: "https://gemini.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro", RedirectModel: ""}}, Enabled: true},
+		{Name: "anthropic-channel", URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "claude-3", RedirectModel: ""}}, Enabled: true},
+		{Name: "codex-channel", URLs: model.ChannelURLs{{URL: "https://api.openai.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "gpt-4", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -664,9 +661,9 @@ func TestSelectCandidatesByChannelType_GeminiClientCanUseAllUpstreamProtocols(t 
 	}
 
 	// 查询Gemini类型渠道
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType失败: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol失败: %v", err)
 	}
 
 	if len(candidates) != 3 {
@@ -697,7 +694,7 @@ func TestSelectRouteCandidates_WildcardModel(t *testing.T) {
 	}
 
 	// 使用通配符"*"查询所有启用渠道
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "*", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "*", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -737,7 +734,7 @@ func TestSelectRouteCandidates_NoMatchingChannels(t *testing.T) {
 	}
 
 	// 查询不存在的模型
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "non-existent-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "non-existent-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -770,7 +767,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 
 	// 1) 默认关闭：模糊匹配不生效
 	serverDisabled := &Server{store: store, modelFuzzyMatch: false}
-	candidates, err := serverDisabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
+	candidates, err := serverDisabled.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -780,7 +777,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch(t *testing.T) {
 
 	// 2) 开启后：无日期后缀可匹配到带日期后缀的模型
 	serverEnabled := &Server{store: store, modelFuzzyMatch: true}
-	candidates, err = serverEnabled.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
+	candidates, err = serverEnabled.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -826,7 +823,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_PreferExact(t *testing.T) {
 	server := &Server{store: store, modelFuzzyMatch: true}
 
 	// 请求无日期后缀时，应优先精确匹配
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-sonnet-4-5", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "claude-sonnet-4-5", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -878,7 +875,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_AfterCooldownFiltering(t *testing
 		modelFuzzyMatch: true,
 	}
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "gemini-3-flash", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "gemini-3-flash", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -900,7 +897,6 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 		Name:         "target-cooled",
 		URLs:         model.ChannelURLs{{URL: "https://target.example.com"}},
 		Priority:     100,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-opus-4-7"}},
 		Enabled:      true,
 	})
@@ -915,7 +911,6 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 		Name:         "same-protocol-other-model",
 		URLs:         model.ChannelURLs{{URL: "https://other.example.com"}},
 		Priority:     90,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-haiku"}},
 		Enabled:      true,
 	}); err != nil {
@@ -936,9 +931,9 @@ func TestSelectRouteCandidates_CacheKeepsCooledEnabledChannelAfterCooldownClears
 	}
 	server.invalidateChannelRelatedCache(target.ID)
 
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "claude-opus-4-7", "anthropic")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "claude-opus-4-7", "anthropic")
 	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndType: %v", err)
+		t.Fatalf("selectCandidatesByModelAndClientProtocol: %v", err)
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("expected target candidate after cooldown clears, got %d: %+v", len(candidates), candidates)
@@ -970,7 +965,7 @@ func TestSelectRouteCandidates_ModelFuzzyMatch_SubstringMatch(t *testing.T) {
 	server := &Server{store: store, modelFuzzyMatch: true}
 
 	// 请求 "sonnet" 应匹配到 "claude-sonnet-4-5-20250929"
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "sonnet", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "sonnet", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -1007,7 +1002,7 @@ func TestSelectRouteCandidates_MixedPriorities(t *testing.T) {
 	}
 
 	// 查询渠道
-	candidates, err := server.selectCandidatesByModelAndType(ctx, "test-model", "")
+	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "test-model", "")
 	if err != nil {
 		t.Fatalf("selectCandidates失败: %v", err)
 	}
@@ -1046,8 +1041,8 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 
 	// 创建两个相同优先级的渠道（模拟渠道22和23）
 	channels := []*model.Config{
-		{Name: "channel-22", URLs: model.ChannelURLs{{URL: "https://api22.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
-		{Name: "channel-23", URLs: model.ChannelURLs{{URL: "https://api23.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, ChannelType: "codex", Enabled: true},
+		{Name: "channel-22", URLs: model.ChannelURLs{{URL: "https://api22.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, Enabled: true},
+		{Name: "channel-23", URLs: model.ChannelURLs{{URL: "https://api23.com"}}, Priority: 20, ModelEntries: []model.ModelEntry{{Model: "qwen-3-32b", RedirectModel: ""}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -1062,9 +1057,9 @@ func TestBalanceSamePriorityChannels(t *testing.T) {
 	firstPositionCount := make(map[string]int)
 
 	for i := 0; i < iterations; i++ {
-		candidates, err := server.selectCandidatesByModelAndType(ctx, "qwen-3-32b", "codex")
+		candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "qwen-3-32b", "codex")
 		if err != nil {
-			t.Fatalf("selectCandidatesByModelAndType失败: %v", err)
+			t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
 		}
 
 		if len(candidates) != 2 {
@@ -1211,9 +1206,9 @@ func setupTestStore(t *testing.T) (storage.Store, func()) {
 	return testutil.SetupTestStore(t)
 }
 
-// --- selectCandidatesByChannelType 补充测试 ---
+// --- selectCandidatesByClientProtocol 补充测试 ---
 
-func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) {
+func TestSelectCandidatesByClientProtocol_ReturnsAllEnabledChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1222,9 +1217,9 @@ func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) 
 
 	// 创建 2 个 gemini 渠道和 1 个 anthropic 渠道
 	channels := []*model.Config{
-		{Name: "gemini-1", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "gemini-2", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90, ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a1.com"}}, Priority: 80, ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
+		{Name: "gemini-1", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "gemini-2", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
+		{Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a1.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
 	}
 
 	for _, cfg := range channels {
@@ -1233,9 +1228,9 @@ func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) 
 		}
 	}
 
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 
 	if len(candidates) != 3 {
@@ -1243,9 +1238,9 @@ func TestSelectCandidatesByChannelType_ReturnsAllEnabledProtocols(t *testing.T) 
 	}
 }
 
-// TestSelectCandidatesByChannelType_AllCooledFallback 测试类型候选全冷却时的兜底选择。
+// TestSelectCandidatesByClientProtocol_AllCooledFallback 测试候选全冷却时的兜底选择。
 // GetEnabledChannels* 只表达配置态 enabled；冷却过滤和全冷却兜底由 selector 层完成。
-func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
+func TestSelectCandidatesByClientProtocol_AllCooledFallback(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1255,7 +1250,7 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 	// 创建 gemini 渠道，使 selector 层进入全冷却兜底
 	geminiCfg := &model.Config{
 		Name: "gemini-cooled", URLs: model.ChannelURLs{{URL: "https://g.com"}}, Priority: 100,
-		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, geminiCfg)
 	if err != nil {
@@ -1269,7 +1264,7 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 
 	anthropic, err := store.CreateConfig(ctx, &model.Config{
 		Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a.com"}}, Priority: 100,
-		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -1281,9 +1276,9 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 
 	// 所有协议的渠道都冷却时，兜底返回最早恢复的渠道。
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 
 	// 全冷却兜底：应返回1个渠道（最早恢复）
@@ -1295,8 +1290,8 @@ func TestSelectCandidatesByChannelType_AllCooledFallback(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesByChannelType_TypeNormalization 测试类型归一化（大小写）
-func TestSelectCandidatesByChannelType_TypeNormalization(t *testing.T) {
+// TestSelectCandidatesByClientProtocol_ProtocolNormalization 测试协议归一化（大小写）。
+func TestSelectCandidatesByClientProtocol_ProtocolNormalization(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1305,16 +1300,16 @@ func TestSelectCandidatesByChannelType_TypeNormalization(t *testing.T) {
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name: "codex-ch", URLs: model.ChannelURLs{{URL: "https://codex.com"}}, Priority: 100,
-		ChannelType: "codex", ModelEntries: []model.ModelEntry{{Model: "gpt-4"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-4"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
 	// 大写输入应匹配小写存储
-	candidates, err := server.selectCandidatesByChannelType(ctx, "CODEX")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "CODEX")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("Expected 1 channel, got %d", len(candidates))
@@ -1324,34 +1319,34 @@ func TestSelectCandidatesByChannelType_TypeNormalization(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesByChannelType_EmptyType 测试空类型（默认为 anthropic）
-func TestSelectCandidatesByChannelType_EmptyType(t *testing.T) {
+// TestSelectCandidatesByClientProtocol_EmptyProtocol 测试空协议不会过滤候选。
+func TestSelectCandidatesByClientProtocol_EmptyProtocol(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
 	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
 	ctx := context.Background()
 
-	// 创建一个 anthropic 渠道（ChannelType="" 默认为 anthropic）
+	// 创建一个普通渠道。
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name: "default-ch", URLs: model.ChannelURLs{{URL: "https://default.com"}}, Priority: 100,
-		ChannelType: "", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	// 空类型归一化为 "anthropic"
-	candidates, err := server.selectCandidatesByChannelType(ctx, "")
+	// 空客户端协议不会过滤候选。
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 	if len(candidates) != 1 {
-		t.Fatalf("Expected 1 channel (default anthropic type), got %d", len(candidates))
+		t.Fatalf("Expected 1 enabled channel, got %d", len(candidates))
 	}
 }
 
-func TestSelectCandidatesByChannelType_ClientProtocolWithoutNativeChannelStillRoutes(t *testing.T) {
+func TestSelectCandidatesByClientProtocol_WithoutNativeUpstreamStillRoutes(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1361,24 +1356,24 @@ func TestSelectCandidatesByChannelType_ClientProtocolWithoutNativeChannelStillRo
 	// 只创建 anthropic 渠道
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name: "anthropic-only", URLs: model.ChannelURLs{{URL: "https://a.com"}}, Priority: 100,
-		ChannelType: "anthropic", ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "claude"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
 	// 没有 Gemini 主协议渠道也不影响 Gemini 客户端使用模型兼容渠道。
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 	if len(candidates) != 1 || candidates[0].Name != "anthropic-only" {
 		t.Errorf("Expected anthropic channel for Gemini client, got %+v", candidates)
 	}
 }
 
-// TestSelectCandidatesByChannelType_CooldownFiltering 测试冷却渠道过滤
-func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
+// TestSelectCandidatesByClientProtocol_CooldownFiltering 测试冷却渠道过滤。
+func TestSelectCandidatesByClientProtocol_CooldownFiltering(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1389,14 +1384,14 @@ func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
 	// 创建 2 个 gemini 渠道
 	ch1, err := store.CreateConfig(ctx, &model.Config{
 		Name: "gemini-active", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100,
-		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 	ch2, err := store.CreateConfig(ctx, &model.Config{
 		Name: "gemini-cooled", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90,
-		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -1409,9 +1404,9 @@ func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
 	// ch1 保持活跃
 	_ = ch1
 
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 
 	if len(candidates) != 1 {
@@ -1422,8 +1417,8 @@ func TestSelectCandidatesByChannelType_CooldownFiltering(t *testing.T) {
 	}
 }
 
-// TestSelectCandidatesByChannelType_DisabledChannelExcluded 测试禁用渠道不参与选择
-func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
+// TestSelectCandidatesByClientProtocol_DisabledChannelExcluded 测试禁用渠道不参与选择。
+func TestSelectCandidatesByClientProtocol_DisabledChannelExcluded(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 
@@ -1432,7 +1427,7 @@ func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name: "enabled-gemini", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100,
-		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -1440,15 +1435,15 @@ func TestSelectCandidatesByChannelType_DisabledChannelExcluded(t *testing.T) {
 
 	_, err = store.CreateConfig(ctx, &model.Config{
 		Name: "disabled-gemini", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90,
-		ChannelType: "gemini", ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: false,
+		ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: false,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 
-	candidates, err := server.selectCandidatesByChannelType(ctx, "gemini")
+	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
 	if err != nil {
-		t.Fatalf("selectCandidatesByChannelType failed: %v", err)
+		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
 	}
 
 	if len(candidates) != 1 {

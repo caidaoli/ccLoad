@@ -28,6 +28,13 @@ var automaticFallbackProtocolOrder = [...]protocol.Protocol{
 	protocol.Gemini,
 }
 
+var localFallbackProtocolOrder = [...]protocol.Protocol{
+	protocol.Anthropic,
+	protocol.Codex,
+	protocol.OpenAI,
+	protocol.Gemini,
+}
+
 func protocolCapabilityFor(upstream protocol.Protocol) protocolCapabilityState {
 	switch upstream {
 	case protocol.Anthropic:
@@ -62,6 +69,40 @@ func supportsProtocolCandidate(client, upstream protocol.Protocol, family protoc
 	return client == upstream || protocol.SupportsTransformFamily(client, upstream, family)
 }
 
+func configCanUseUpstreamProtocol(cfg *model.Config, upstream protocol.Protocol) bool {
+	if cfg == nil || protocolCapabilityFor(upstream) == protocolCapabilityUnsupported {
+		return false
+	}
+	for _, entry := range cfg.URLs {
+		if entry.SupportsProtocol(string(upstream)) {
+			return true
+		}
+	}
+	return false
+}
+
+func localUpstreamProtocolOrder(urls model.ChannelURLs) []protocol.Protocol {
+	seen := make(map[protocol.Protocol]struct{}, len(localFallbackProtocolOrder))
+	ordered := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
+	for _, entry := range urls {
+		for _, configured := range entry.Protocols {
+			candidate := protocol.Protocol(configured)
+			if protocolCapabilityFor(candidate) == protocolCapabilityUnsupported {
+				continue
+			}
+			if _, exists := seen[candidate]; exists {
+				continue
+			}
+			seen[candidate] = struct{}{}
+			ordered = append(ordered, candidate)
+		}
+	}
+	if len(ordered) > 0 {
+		return ordered
+	}
+	return append([]protocol.Protocol(nil), localFallbackProtocolOrder[:]...)
+}
+
 func prioritizeProtocolCandidate(candidates []protocol.Protocol, preferred protocol.Protocol) []protocol.Protocol {
 	for idx, candidate := range candidates {
 		if candidate != preferred || idx == 0 {
@@ -79,8 +120,9 @@ func prioritizeProtocolCandidate(candidates []protocol.Protocol, preferred proto
 func protocolCandidatesForURL(
 	entry model.ChannelURL,
 	transformMode string,
-	clientProtocol, channelProtocol protocol.Protocol,
+	clientProtocol protocol.Protocol,
 	requestFamily protocol.RequestFamily,
+	localProtocolOrder []protocol.Protocol,
 ) (candidates []protocol.Protocol, declared bool) {
 	declared = !entry.UsesAutomaticProtocolDetection()
 	appendIfSupported := func(upstream protocol.Protocol) {
@@ -96,12 +138,16 @@ func protocolCandidatesForURL(
 			appendIfSupported(clientProtocol)
 		}
 	case model.ProtocolTransformModeLocal:
-		appendIfSupported(channelProtocol)
-	default:
-		if entry.Exact && !declared {
-			appendIfSupported(channelProtocol)
-			return candidates, false
+		if declared {
+			for _, configured := range entry.Protocols {
+				appendIfSupported(protocol.Protocol(configured))
+			}
+		} else {
+			for _, upstream := range localProtocolOrder {
+				appendIfSupported(upstream)
+			}
 		}
+	default:
 		if protocolCapabilityFor(clientProtocol) != protocolCapabilityUnsupported {
 			appendIfSupported(clientProtocol)
 		}

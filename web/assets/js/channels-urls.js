@@ -1,14 +1,14 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
 const INLINE_EXACT_URL_MARKER = '#';
-const INLINE_URL_PROTOCOLS = ['anthropic', 'openai', 'codex', 'gemini'];
+const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
 const inlineURLProtocolComboboxes = new Map();
 
 function getInlineURLProtocolOptions() {
   return [
     { value: '', label: window.t('channels.urlProtocolAuto') },
     { value: 'anthropic', label: 'Anthropic' },
-    { value: 'openai', label: 'OpenAI' },
     { value: 'codex', label: 'Codex' },
+    { value: 'openai', label: 'OpenAI' },
     { value: 'gemini', label: 'Gemini' }
   ];
 }
@@ -27,7 +27,7 @@ function normalizeInlineURLConfig(value) {
     (Array.isArray(source.protocols) ? source.protocols : [])
       .map(protocol => String(protocol || '').trim().toLowerCase())
   );
-  const selectedProtocol = INLINE_URL_PROTOCOLS.find(protocol => selectedProtocols.has(protocol));
+  const selectedProtocol = Array.from(selectedProtocols).find(protocol => INLINE_URL_PROTOCOLS.includes(protocol));
   return {
     url: String(source.url || '').trim(),
     exact: Boolean(source.exact),
@@ -445,8 +445,6 @@ async function testInlineURL(index, buttonElement) {
     return;
   }
 
-  const channelType = getChannelEditorChannelType();
-
   if (!buttonElement) return;
   const originalHTML = buttonElement.innerHTML;
   buttonElement.disabled = true;
@@ -460,7 +458,7 @@ async function testInlineURL(index, buttonElement) {
         model: firstModel,
         stream: true,
         content: 'test',
-        channel_type: channelType,
+        client_protocol: 'anthropic',
         key_index: 0,
         base_url: url
       })

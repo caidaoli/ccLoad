@@ -158,7 +158,6 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
-					stats[i].ChannelType = info.Type
 					if info.CostMultiplier != 1 {
 						costMultiplier := info.CostMultiplier
 						stats[i].CostMultiplier = &costMultiplier
@@ -693,7 +692,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		Where("channel_id > 0").
 		Where("status_code != 499")
 
-	// 应用渠道类型或名称过滤
+	// 应用渠道和上游协议过滤。
 	isEmpty, err := s.applyChannelFilter(ctx, combinedQB, filter)
 	if err != nil {
 		return nil, fmt.Errorf("apply channel filter: %w", err)

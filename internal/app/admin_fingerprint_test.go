@@ -27,7 +27,6 @@ func createFPChannel(t *testing.T, srv *Server, upstreamURL, modelName string) i
 		Name:                  "fp-api-channel",
 		URLs:                  model.ChannelURLs{{URL: upstreamURL}},
 		Priority:              1,
-		ChannelType:           "openai",
 		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
 		ModelEntries:          []model.ModelEntry{{Model: modelName}},
 		Enabled:               true,

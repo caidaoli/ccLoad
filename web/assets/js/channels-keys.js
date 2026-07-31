@@ -749,8 +749,6 @@ async function testSingleKey(keyIndex, testButton) {
     return;
   }
 
-  const channelType = getChannelEditorChannelType();
-
   if (!testButton) return;
   const originalHTML = testButton.innerHTML;
   testButton.disabled = true;
@@ -764,7 +762,7 @@ async function testSingleKey(keyIndex, testButton) {
         model: firstModel,
         stream: true,
         content: 'test',
-        channel_type: channelType,
+        client_protocol: 'anthropic',
         key_index: keyIndex,
         api_key: apiKey.trim()
       })

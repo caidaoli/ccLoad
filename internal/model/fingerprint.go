@@ -16,20 +16,20 @@ type FingerprintStats struct {
 // ModelFingerprint 持久化的模型指纹基线记录。
 // ChannelID 为 nil 表示渠道已被删除但基线保留（DeleteConfig 时清空，不级联删除）。
 type ModelFingerprint struct {
-	ID            int64            `json:"id"`
-	Name          string           `json:"name"`
-	ChannelID     *int64           `json:"channel_id"`
-	ChannelName   string           `json:"channel_name"`
-	Model         string           `json:"model"`
-	ActualModel   string           `json:"actual_model,omitempty"`
-	ChannelType   string           `json:"channel_type"`
-	SampleCount   int              `json:"sample_count"`
-	Distribution  []float64        `json:"distribution"`
-	Stats         FingerprintStats `json:"stats"`
-	RawData       []int            `json:"raw_data,omitempty"`
-	PromptVersion string           `json:"prompt_version"`
-	CreatedAt     JSONTime         `json:"created_at"`
-	UpdatedAt     JSONTime         `json:"updated_at"`
+	ID             int64            `json:"id"`
+	Name           string           `json:"name"`
+	ChannelID      *int64           `json:"channel_id"`
+	ChannelName    string           `json:"channel_name"`
+	Model          string           `json:"model"`
+	ActualModel    string           `json:"actual_model,omitempty"`
+	ClientProtocol string           `json:"client_protocol"`
+	SampleCount    int              `json:"sample_count"`
+	Distribution   []float64        `json:"distribution"`
+	Stats          FingerprintStats `json:"stats"`
+	RawData        []int            `json:"raw_data,omitempty"`
+	PromptVersion  string           `json:"prompt_version"`
+	CreatedAt      JSONTime         `json:"created_at"`
+	UpdatedAt      JSONTime         `json:"updated_at"`
 }
 
 // FingerprintTestRecord 持久化的指纹对比结果记录。

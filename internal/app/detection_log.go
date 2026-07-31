@@ -24,18 +24,20 @@ func selectScheduledCheckModel(cfg *model.Config) (string, string) {
 
 func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualModel, apiKeyUsed, clientIP, requestThinkingEffort string, result map[string]any) *model.LogEntry {
 	entry := &model.LogEntry{
-		Time:           model.JSONTime{Time: time.Now()},
-		LogSource:      logSource,
-		Model:          requestModel,
-		ClientIP:       clientIP,
-		APIKeyUsed:     apiKeyUsed,
-		BaseURL:        getResultString(result, "base_url"),
-		StatusCode:     getResultIntOrDefault(result, "status_code", 0),
-		Duration:       float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
-		FirstByteTime:  float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
-		Cost:           getResultFloat64OrDefault(result, "cost_usd", 0),
-		IsStreaming:    getResultBoolOrDefault(result, "is_streaming", false),
-		ThinkingEffort: detectionThinkingEffort(requestThinkingEffort, result),
+		Time:             model.JSONTime{Time: time.Now()},
+		LogSource:        logSource,
+		Model:            requestModel,
+		ClientIP:         clientIP,
+		APIKeyUsed:       apiKeyUsed,
+		BaseURL:          getResultString(result, "base_url"),
+		ClientProtocol:   getResultString(result, "client_protocol"),
+		UpstreamProtocol: getResultString(result, "upstream_protocol"),
+		StatusCode:       getResultIntOrDefault(result, "status_code", 0),
+		Duration:         float64(getResultInt64OrDefault(result, "duration_ms", 0)) / 1000,
+		FirstByteTime:    float64(getResultInt64OrDefault(result, "first_byte_duration_ms", 0)) / 1000,
+		Cost:             getResultFloat64OrDefault(result, "cost_usd", 0),
+		IsStreaming:      getResultBoolOrDefault(result, "is_streaming", false),
+		ThinkingEffort:   detectionThinkingEffort(requestThinkingEffort, result),
 	}
 	if cfg != nil {
 		entry.ChannelID = cfg.ID
@@ -43,11 +45,7 @@ func detectionLogFromResult(cfg *model.Config, logSource, requestModel, actualMo
 	if actualModel != "" && actualModel != requestModel {
 		entry.ActualModel = actualModel
 	}
-	channelType := ""
-	if cfg != nil {
-		channelType = cfg.GetChannelType()
-	}
-	populateDetectionUsage(entry, result, channelType)
+	populateDetectionUsage(entry, result, entry.UpstreamProtocol)
 	entry.Message = detectionMessage(result)
 	if debugData, ok := getResultDebugData(result, "debug_data"); ok {
 		entry.DebugData = debugData
@@ -88,7 +86,7 @@ func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry)
 	}
 }
 
-func populateDetectionUsage(entry *model.LogEntry, result map[string]any, channelType string) {
+func populateDetectionUsage(entry *model.LogEntry, result map[string]any, upstreamProtocol string) {
 	if usage, ok := getResultMap(result, "usage"); ok {
 		populateLogEntryUsage(entry, usage)
 		return
@@ -98,21 +96,21 @@ func populateDetectionUsage(entry *model.LogEntry, result map[string]any, channe
 	if !ok {
 		return
 	}
-	if normalized, ok := normalizeDetectionUsage(usage, channelType); ok {
+	if normalized, ok := normalizeDetectionUsage(usage, upstreamProtocol); ok {
 		populateLogEntryUsage(entry, normalized)
 		return
 	}
 	populateLogEntryUsage(entry, usage)
 }
 
-func normalizeDetectionUsage(usage map[string]any, channelType string) (map[string]any, bool) {
+func normalizeDetectionUsage(usage map[string]any, upstreamProtocol string) (map[string]any, bool) {
 	var accumulator usageAccumulator
-	accumulator.applyUsage(usage, channelType)
+	accumulator.applyUsage(usage, upstreamProtocol)
 	if accumulator.usageVersion == 0 {
 		return nil, false
 	}
 
-	input, output, cacheRead, cacheCreation := accumulator.normalizedUsage(channelType)
+	input, output, cacheRead, cacheCreation := accumulator.normalizedUsage(upstreamProtocol)
 	return map[string]any{
 		"input_tokens":                input,
 		"output_tokens":               output,
