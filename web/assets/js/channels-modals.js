@@ -450,9 +450,8 @@ async function editChannel(id) {
   document.getElementById('channelName').value = channel.name;
   setInlineURLTableData(channel.urls);
 
-  // 多URL时加载实时状态，确保检测前已拿到禁用标记
-  const urlCount = getValidInlineURLs().length;
-  const urlStatsPromise = urlCount > 1 ? fetchURLStats(id) : Promise.resolve();
+  // 所有已保存 URL 都有独立统计；单 URL 也必须加载。
+  const urlStatsPromise = fetchURLStats(id);
 
   const [apiKeys, modelStats] = await Promise.all([
     apiKeysPromise,
@@ -2443,5 +2442,5 @@ function confirmCommonModelsSelection() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels, addCommonModelsToRows, detectChannelWebsocketSupport, fetchModelsFromAPI };
+  module.exports = { addCommonModels, addCommonModelsToRows, detectChannelWebsocketSupport, editChannel, fetchModelsFromAPI };
 }

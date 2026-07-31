@@ -182,8 +182,23 @@
                 </div>
               </label>
               <div id="clientProtocolContainer" class="model-test-control model-test-control--protocol">
-                <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
-                <div id="clientProtocolOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="请求协议"></div>
+                <label class="model-test-control__label" for="clientProtocolSelect" data-i18n="modelTest.clientProtocol">请求协议</label>
+                <div class="filter-combobox-wrapper model-test-protocol-combobox">
+                  <input
+                    id="clientProtocolSelect"
+                    class="filter-select filter-combobox"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                  <div
+                    id="clientProtocolSelectDropdown"
+                    class="filter-dropdown"
+                    role="listbox"
+                    data-i18n-aria-label="modelTest.clientProtocol"
+                    aria-label="请求协议"
+                  ></div>
+                </div>
               </div>
               <div class="model-test-control model-test-control--content">
                 <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>
@@ -401,8 +416,6 @@
                   <div class="fp-form-actions">
                     <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
                       data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
-                    <button id="fpCalibrateCancelBtn" type="button" class="btn btn-secondary hidden"
-                      data-i18n="common.cancel">取消</button>
                   </div>
                 </div>
               </div>

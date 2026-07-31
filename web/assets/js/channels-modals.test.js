@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { selectFirstEnabledInlineKey } = require('./channels-keys.js');
+const { fetchURLStats } = require('./channels-urls.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }) {
 	const globals = {
@@ -40,6 +41,97 @@ function loadChannelsModals() {
 
 function loadFetchModelsFromAPI() {
   return loadChannelsModals().fetchModelsFromAPI;
+}
+
+function installEditChannelGlobals(channel) {
+  const requests = [];
+  const elements = new Map();
+  const makeElement = () => ({
+    value: '',
+    checked: false,
+    disabled: false,
+    hidden: false,
+    style: {},
+    dataset: {},
+    classList: { add() {}, remove() {}, contains() { return false; } },
+    setAttribute() {},
+    addEventListener() {},
+    appendChild() {},
+    querySelector: () => null
+  });
+  const getElement = id => {
+    if (id === 'channelScheduledCheckEnabledWrapper' || id === 'channelScheduledCheckModelWrapper') {
+      return null;
+    }
+    if (!elements.has(id)) elements.set(id, makeElement());
+    return elements.get(id);
+  };
+  const globals = {
+    window: {
+      t: key => key,
+      addEventListener() {}
+    },
+    document: {
+      getElementById: getElement,
+      querySelector: selector => [
+        '#channelModal .channel-editor-body',
+        '#inlineUrlTableBody'
+      ].includes(selector) ? null : makeElement()
+    },
+    channels: [],
+    editingChannelId: null,
+    currentChannelKeyCooldowns: [],
+    inlineKeyTableData: [{ api_key: '' }],
+    inlineKeyVisible: false,
+    inlineURLTableData: channel.urls,
+    inlineURLProtocolComboboxes: new Map(),
+    selectedURLIndices: new Set(),
+    redirectTableData: [],
+    selectedModelIndices: new Set(),
+    currentModelFilter: '',
+    fetchDataWithAuth: async url => {
+      requests.push(url);
+      if (url === `/admin/channels/${channel.id}`) return channel;
+      if (url === `/admin/channels/${channel.id}/keys`) return [];
+      if (url === `/admin/channels/${channel.id}/model-stats`) return [];
+      if (url === `/admin/channels/${channel.id}/url-stats`) {
+        return [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }];
+      }
+      throw new Error(`unexpected fetch: ${url}`);
+    },
+    createSearchableCombobox: () => ({
+      setValue() {},
+      refresh() {},
+      getInput: () => null,
+      getValue: () => 'auto'
+    }),
+    TemplateEngine: { render: () => null },
+    clearChannelDuplicateHint() {},
+    setInlineURLTableData() {},
+    fetchURLStats,
+    urlStatsMap: {},
+    renderInlineURLTable() {},
+    setInlineKeyTableDataFromAPI() {},
+    renderInlineKeyTable() {},
+    renderRedirectTable() {},
+    resetChannelFormDirty() {},
+    syncChannelEditorTableSizing() {},
+    scheduleChannelEditorTableSizingSync() {}
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  return {
+    requests,
+    restore() {
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(global, name, descriptor);
+        else delete global[name];
+      }
+    }
+  };
 }
 
 function installCommonModelsGlobals(initialRows = []) {
@@ -184,6 +276,27 @@ test('WebSocket probe skips disabled URLs and keys and checks every enabled URL'
         { url: 'https://enabled-b.test', api_key: 'enabled-key-b' }
       ]
     );
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('editing a single-URL channel loads its URL statistics', async () => {
+  const channel = {
+    id: 73,
+    name: 'single-url',
+    urls: [{ url: 'https://single.test', exact: false, protocols: [] }],
+    models: [],
+    priority: 100,
+    enabled: true,
+    protocol_transform_mode: 'auto'
+  };
+  const fixture = installEditChannelGlobals(channel);
+
+  try {
+    const { editChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    assert.ok(fixture.requests.includes(`/admin/channels/${channel.id}/url-stats`));
   } finally {
     fixture.restore();
   }
