@@ -386,6 +386,48 @@ test('common models require at least one supported type', () => {
   }
 });
 
+test('fetched models preserve existing disabled state and enable new rows', () => {
+  const { mergeModelRowsWithFetchedModels } = loadChannelsModals();
+  const result = mergeModelRowsWithFetchedModels([
+    { model: 'existing-model', redirect_model: 'upstream-model', disabled: true }
+  ], [
+    { model: 'existing-model', redirect_model: 'ignored-replacement' },
+    { model: 'new-model', redirect_model: 'new-upstream' }
+  ]);
+
+  assert.deepEqual(result, {
+    rows: [
+      { model: 'existing-model', redirect_model: 'upstream-model', disabled: true },
+      { model: 'new-model', redirect_model: 'new-upstream', disabled: false }
+    ],
+    added: 1,
+    removed: 0
+  });
+});
+
+test('model disabled state toggles without changing the model mapping', () => {
+  const { toggleModelDisabledState } = loadChannelsModals();
+  const rows = [{ model: 'model-a', redirect_model: 'upstream-a', disabled: false }];
+
+  assert.equal(toggleModelDisabledState(rows, 0), true);
+  assert.deepEqual(rows, [{ model: 'model-a', redirect_model: 'upstream-a', disabled: true }]);
+  assert.equal(toggleModelDisabledState(rows, 0), true);
+  assert.deepEqual(rows, [{ model: 'model-a', redirect_model: 'upstream-a', disabled: false }]);
+  assert.equal(toggleModelDisabledState(rows, 9), false);
+});
+
+test('model submit payload includes disabled state', () => {
+  const { collectModelsForSubmit } = loadChannelsModals();
+  assert.deepEqual(collectModelsForSubmit([
+    { model: '  model-a  ', redirect_model: ' upstream-a ', disabled: true },
+    { model: 'model-b', redirect_model: '', disabled: false },
+    { model: '   ', disabled: true }
+  ]), [
+    { model: 'model-a', redirect_model: 'upstream-a', disabled: true },
+    { model: 'model-b', redirect_model: '', disabled: false }
+  ]);
+});
+
 test('fetchModelsFromAPI sends the first enabled API key', async () => {
   let requestBody;
   const restore = installFetchModelsGlobals({

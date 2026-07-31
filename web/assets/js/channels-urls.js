@@ -425,6 +425,7 @@ async function testInlineURL(index, buttonElement) {
   }
 
   const models = redirectTableData
+    .filter(r => r && !r.disabled)
     .map(r => r.model)
     .filter(m => m && m.trim());
   if (models.length === 0) {

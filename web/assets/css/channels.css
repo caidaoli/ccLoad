@@ -2529,6 +2529,50 @@
       color: var(--neutral-400);
     }
 
+    .redirect-model-status--disabled {
+      color: var(--warning-700);
+      font-weight: 500;
+    }
+
+    .redirect-model-status-cell {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .redirect-model-status-content {
+      min-width: 0;
+    }
+
+    .redirect-model-toggle-btn {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      color: var(--neutral-500);
+      background: var(--surface-bg-strong);
+      border: 1px solid var(--surface-border-strong);
+      border-radius: 6px;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: color 0.2s, border-color 0.2s, background-color 0.2s;
+    }
+
+    .redirect-model-toggle-btn:focus-visible {
+      outline-offset: 2px;
+    }
+
+    .redirect-model-toggle-btn:hover {
+      color: var(--primary-600);
+      background: var(--primary-50);
+      border-color: var(--primary-300);
+    }
+
     .redirect-lowercase-btn,
     .redirect-delete-btn {
       display: inline-flex;

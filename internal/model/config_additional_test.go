@@ -48,7 +48,7 @@ func TestConfig_SupportsModel(t *testing.T) {
 
 	cfg := &Config{
 		ModelEntries: []ModelEntry{
-			{Model: "m1"},
+			{Model: "m1", RedirectModel: "upstream-m1", Disabled: true},
 			{Model: "m2"},
 		},
 	}
@@ -58,6 +58,15 @@ func TestConfig_SupportsModel(t *testing.T) {
 	}
 	if cfg.SupportsModel("none") {
 		t.Fatal("expected SupportsModel(none)=false")
+	}
+	if cfg.SupportsModel("m1") {
+		t.Fatal("disabled model must not be supported")
+	}
+	if redirect, ok := cfg.GetRedirectModel("m1"); ok || redirect != "" {
+		t.Fatalf("disabled model redirect must not resolve, got (%q, %v)", redirect, ok)
+	}
+	if models := cfg.GetModels(); len(models) != 1 || models[0] != "m2" {
+		t.Fatalf("GetModels()=%v, want only enabled model m2", models)
 	}
 }
 

@@ -232,6 +232,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := migrateChannelModelsSchema(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channel_models schema: %w", err)
 			}
+			if err := ensureChannelModelsDisabled(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channel_models disabled: %w", err)
+			}
 			if err := repairLegacyChannelModelOrder(ctx, db, dialect); err != nil {
 				return fmt.Errorf("repair legacy channel_models order: %w", err)
 			}

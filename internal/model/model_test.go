@@ -245,6 +245,16 @@ func TestConfig_FuzzyMatchModel(t *testing.T) {
 			expectMatch:   true,
 			expectedModel: "Claude-Sonnet-4-5",
 		},
+		{
+			name: "停用模型不参与模糊匹配",
+			models: []ModelEntry{
+				{Model: "claude-sonnet-5", Disabled: true},
+				{Model: "claude-sonnet-4-5"},
+			},
+			query:         "sonnet",
+			expectMatch:   true,
+			expectedModel: "claude-sonnet-4-5",
+		},
 	}
 
 	for _, tt := range tests {

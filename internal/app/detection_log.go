@@ -14,7 +14,11 @@ func selectScheduledCheckModel(cfg *model.Config) (string, string) {
 		return "", "未配置模型"
 	}
 	if cfg.ScheduledCheckModel == "" {
-		return cfg.ModelEntries[0].Model, ""
+		models := cfg.GetModels()
+		if len(models) == 0 {
+			return "", "未配置已启用模型"
+		}
+		return models[0], ""
 	}
 	if cfg.SupportsModel(cfg.ScheduledCheckModel) {
 		return cfg.ScheduledCheckModel, ""

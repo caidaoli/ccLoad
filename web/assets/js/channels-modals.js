@@ -111,7 +111,8 @@ let scheduledCheckModelCombobox = null;
 
 function getScheduledCheckModelNames() {
   return redirectTableData
-    .map(entry => (entry && entry.model ? entry.model.trim() : ''))
+    .filter(entry => entry && !entry.disabled)
+    .map(entry => (entry.model ? entry.model.trim() : ''))
     .filter(Boolean);
 }
 
@@ -511,6 +512,7 @@ async function editChannel(id) {
     return {
       model: modelName,
       redirect_model: redirectModel,
+      disabled: !!m.disabled,
       cooldown_until: cooldown?.cooldown_until || '',
       cooldown_remaining_ms: cooldown?.cooldown_remaining_ms || 0,
       model_stats: stats || null,
@@ -699,6 +701,16 @@ function setChannelSavePending(pending) {
   saveBtn.disabled = Boolean(pending);
 }
 
+function collectModelsForSubmit(rows) {
+  return (rows || [])
+    .filter(r => r.model && r.model.trim())
+    .map(r => ({
+      model: r.model.trim(),
+      redirect_model: (r.redirect_model || '').trim(),
+      disabled: !!r.disabled
+    }));
+}
+
 async function saveChannel(event) {
   event.preventDefault();
 
@@ -729,12 +741,7 @@ async function saveChannel(event) {
   document.getElementById('channelApiKey').value = validKeys.join(',');
 
   // 构建模型配置（新格式：models 数组）
-  const models = redirectTableData
-    .filter(r => r.model && r.model.trim())
-    .map(r => ({
-      model: r.model.trim(),
-      redirect_model: (r.redirect_model || '').trim()
-    }));
+  const models = collectModelsForSubmit(redirectTableData);
   const seenModels = new Set();
   const duplicateModels = [];
   for (const entry of models) {
@@ -1467,7 +1474,8 @@ async function copyChannel(id, name) {
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
     model: m.model || '',
-    redirect_model: m.redirect_model || ''
+    redirect_model: m.redirect_model || '',
+    disabled: !!m.disabled
   }));
   selectedModelIndices.clear();
   currentModelFilter = '';
@@ -1677,12 +1685,26 @@ function updateRedirectRow(index, field, value) {
     if (row) {
       const statusCell = row.querySelector('.redirect-col-status');
       if (statusCell) {
-        renderRedirectModelStatus(statusCell, redirectTableData[index]);
+        renderRedirectModelStatus(statusCell, redirectTableData[index], index);
       }
     }
 
     markChannelFormDirty();
   }
+}
+
+function toggleModelDisabledState(rows, index) {
+  const row = rows?.[index];
+  if (!row) return false;
+  row.disabled = !row.disabled;
+  return true;
+}
+
+function toggleRedirectModelDisabled(index) {
+  if (!toggleModelDisabledState(redirectTableData, index)) return;
+  renderRedirectTable();
+  document.querySelector(`#redirectTableBody .redirect-model-toggle-btn[data-index="${index}"]`)?.focus();
+  markChannelFormDirty();
 }
 
 /**
@@ -1718,14 +1740,43 @@ function createRedirectRow(redirect, index) {
 
   const statusCell = row.querySelector('.redirect-col-status');
   if (statusCell) {
-    renderRedirectModelStatus(statusCell, redirect);
+    renderRedirectModelStatus(statusCell, redirect, index);
   }
 
   return row;
 }
 
-function renderRedirectModelStatus(statusCell, redirect) {
+function renderRedirectModelStatus(statusCell, redirect, index) {
   statusCell.replaceChildren();
+  const wrapper = document.createElement('div');
+  wrapper.className = 'redirect-model-status-cell';
+  const content = document.createElement('div');
+  content.className = 'redirect-model-status-content';
+
+  if (redirect.disabled) {
+    appendRedirectModelStatus(content, 'disabled', [window.t('channels.modelStatusDisabled')]);
+  } else {
+    renderActiveRedirectModelStatus(content, redirect);
+  }
+
+  const toggleButton = document.createElement('button');
+  toggleButton.type = 'button';
+  toggleButton.className = 'redirect-model-toggle-btn';
+  toggleButton.dataset.index = String(index);
+  const toggleTitle = redirect.disabled
+    ? window.t('channels.enableThisModel')
+    : window.t('channels.disableThisModel');
+  toggleButton.title = toggleTitle;
+  toggleButton.setAttribute('aria-label', toggleTitle);
+  toggleButton.innerHTML = redirect.disabled
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+
+  wrapper.append(content, toggleButton);
+  statusCell.appendChild(wrapper);
+}
+
+function renderActiveRedirectModelStatus(statusCell, redirect) {
   const cooldownUntilMS = Date.parse(redirect.cooldown_until || '');
   const responseRemainingMS = Number(redirect.cooldown_remaining_ms || 0);
   const cooldownRemainingMS = Number.isFinite(cooldownUntilMS)
@@ -1874,6 +1925,13 @@ function initRedirectTableEventDelegation() {
 
   // 处理删除按钮和转小写按钮点击
   tbody.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('.redirect-model-toggle-btn');
+    if (toggleBtn) {
+      const index = parseInt(toggleBtn.dataset.index, 10);
+      toggleRedirectModelDisabled(index);
+      return;
+    }
+
     const deleteBtn = e.target.closest('.redirect-delete-btn');
     if (deleteBtn) {
       const index = parseInt(deleteBtn.dataset.index, 10);
@@ -2163,7 +2221,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
     existingModelKeys.add(modelKey);
     rows.push({
       model,
-      redirect_model: (row?.redirect_model || '').trim()
+      redirect_model: (row?.redirect_model || '').trim(),
+      disabled: !!row?.disabled
     });
   });
 
@@ -2181,7 +2240,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
       : modelName;
     rows.push({
       model: modelName,
-      redirect_model: fetchedRedirect
+      redirect_model: fetchedRedirect,
+      disabled: false
     });
     added++;
   }
@@ -2194,7 +2254,8 @@ function areModelRowsEqual(left, right) {
   return (left || []).every((row, index) => {
     const other = right[index] || {};
     return (row.model || '') === (other.model || '') &&
-      (row.redirect_model || '') === (other.redirect_model || '');
+      (row.redirect_model || '') === (other.redirect_model || '') &&
+      !!row.disabled === !!other.disabled;
   });
 }
 
@@ -2242,7 +2303,8 @@ async function fetchModelsFromAPI() {
 
     const previousRows = redirectTableData.map(row => ({
       model: row.model || '',
-      redirect_model: row.redirect_model || ''
+      redirect_model: row.redirect_model || '',
+      disabled: !!row.disabled
     }));
     const replacement = mergeModelRowsWithFetchedModels(redirectTableData, data.models);
     if (replacement.rows.length === 0) {
@@ -2442,5 +2504,14 @@ function confirmCommonModelsSelection() {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels, addCommonModelsToRows, detectChannelWebsocketSupport, editChannel, fetchModelsFromAPI };
+  module.exports = {
+    addCommonModels,
+    addCommonModelsToRows,
+    collectModelsForSubmit,
+    detectChannelWebsocketSupport,
+    editChannel,
+    fetchModelsFromAPI,
+    mergeModelRowsWithFetchedModels,
+    toggleModelDisabledState
+  };
 }

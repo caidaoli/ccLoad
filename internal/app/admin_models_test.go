@@ -434,7 +434,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			URLs:     model.ChannelURLs{{URL: upstream.URL}},
 			Priority: 1,
 			ModelEntries: []model.ModelEntry{
-				{Model: "old-1"},
+				{Model: "new-1", Disabled: true},
 				{Model: "old-2"},
 			},
 			Enabled: true,
@@ -461,7 +461,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
-		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" {
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" || !got.ModelEntries[0].Disabled {
 			t.Fatalf("unexpected models after replace: %#v", got.ModelEntries)
 		}
 	})
@@ -540,7 +540,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:                  "strip-prefix-channel",
 			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5"}},
+			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5", Disabled: true}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "cloudcompile/Grok-4.5",
 			Enabled:               true,
@@ -570,7 +570,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
 		wantModels := []model.ModelEntry{
-			{Model: "grok-4.5"},
+			{Model: "grok-4.5", Disabled: true},
 			{Model: "other-model", RedirectModel: "a-source/Other-Model"},
 		}
 		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
