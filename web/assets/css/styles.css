@@ -1207,64 +1207,190 @@ body {
   color: var(--neutral-500);
 }
 
-.index-api-list {
+.service-health-card {
+  padding: var(--space-6);
+  overflow: hidden;
+}
+
+.service-health-header {
   display: flex;
-  flex-direction: column;
-  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-5);
 }
 
-.index-api-entry {
-  background-color: var(--surface-bg-muted);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-lg);
-  padding: 12px;
-}
-
-.index-api-method {
-  font-size: var(--text-xs);
-  font-family: var(--font-family-mono);
+.service-health-title {
+  margin: 0;
+  color: var(--neutral-800);
+  font-size: var(--text-xl);
   font-weight: var(--font-semibold);
+  line-height: var(--leading-tight);
 }
 
-.index-api-method--post {
+.service-health-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.service-health-period,
+.service-health-edge {
+  color: var(--neutral-500);
+  font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.service-health-rate {
+  min-width: 4.5rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--radius-base);
+  background: var(--neutral-100);
+  color: var(--neutral-600);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
+}
+
+.service-health-rate[data-state="healthy"] {
+  background: rgba(16, 185, 129, 0.14);
   color: var(--success-600);
 }
 
-.index-api-method--get {
-  color: var(--primary-600);
+.service-health-rate[data-state="warning"] {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-600);
 }
 
-.index-api-path {
-  font-family: var(--font-family-mono);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--neutral-800);
+.service-health-rate[data-state="critical"] {
+  background: rgba(239, 68, 68, 0.14);
+  color: var(--error-600);
 }
 
-.index-api-desc {
-  margin-top: 4px;
-  font-size: var(--text-xs);
+.service-health-grid {
+  display: grid;
+  grid-template-columns: repeat(96, minmax(0, 1fr));
+  gap: 3px;
+  min-height: 6rem;
+}
+
+.service-health-cell,
+.service-health-swatch {
+  background: var(--neutral-200);
+}
+
+.service-health-cell {
+  aspect-ratio: 1;
+  min-width: 0;
+  border-radius: 3px;
+  cursor: help;
+}
+
+.service-health-cell.healthy,
+.service-health-swatch.healthy {
+  background: var(--success-500);
+}
+
+.service-health-cell.warning,
+.service-health-swatch.warning {
+  background: var(--warning-500);
+}
+
+.service-health-cell.critical,
+.service-health-swatch.critical {
+  background: var(--error-500);
+}
+
+.service-health-cell:hover {
+  outline: 2px solid var(--neutral-800);
+  outline-offset: 1px;
+  z-index: 1;
+}
+
+.service-health-footer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
+}
+
+.service-health-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.service-health-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
   color: var(--neutral-600);
-}
-
-.index-api-tip {
-  margin-top: var(--space-6);
-  padding: 12px;
-  background: var(--surface-bg-muted);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-lg);
-}
-
-.index-api-tip-title {
-  color: var(--info-600);
   font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  white-space: nowrap;
 }
 
-.index-api-tip-body {
-  margin-top: 4px;
+.service-health-swatch {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.service-health-message {
+  margin: var(--space-3) 0 0;
+  color: var(--neutral-600);
   font-size: var(--text-sm);
-  color: var(--neutral-700);
+  text-align: center;
+}
+
+@media (max-width: 47.99rem) {
+  .service-health-grid {
+    grid-template-columns: repeat(48, minmax(0, 1fr));
+    gap: 2px;
+  }
+
+  .service-health-legend {
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 25rem) {
+  .service-health-card {
+    padding: var(--space-4);
+  }
+
+  .service-health-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .service-health-summary {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .service-health-grid {
+    grid-template-columns: repeat(32, minmax(0, 1fr));
+  }
+
+  .service-health-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .service-health-edge {
+    display: none;
+  }
+
+  .service-health-legend {
+    flex-wrap: wrap;
+  }
 }
 
 .metric-card {

@@ -13,12 +13,152 @@
     // 当前选中的时间范围
     let currentTimeRange = 'today';
     let currentCustomTimeRange = null;
+    let serviceHealthRange = null;
+    let serviceHealthModel = null;
 
     function buildSummaryURL() {
       const query = typeof window.buildDateRangeQuery === 'function'
         ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
         : `range=${encodeURIComponent(currentTimeRange)}`;
       return `/dashboard/summary?${query}`;
+    }
+
+    function buildServiceHealthURL(range) {
+      const params = new URLSearchParams({
+        range: 'custom',
+        start_time: String(range.startBucketMs),
+        end_time: String(range.endMs),
+        bucket_min: String(range.bucketMinutes)
+      });
+      return `/dashboard/metrics?${params.toString()}`;
+    }
+
+    function serviceHealthText(key, fallback, params) {
+      if (typeof window.i18nText === 'function') return window.i18nText(key, fallback, params);
+      const translated = typeof window.t === 'function' ? window.t(key, params) : key;
+      return translated === key ? fallback : translated;
+    }
+
+    function serviceHealthStateText(state) {
+      const labels = {
+        healthy: ['index.health.healthy', '健康'],
+        warning: ['index.health.warning', '波动'],
+        critical: ['index.health.critical', '异常'],
+        unknown: ['index.health.noRequests', '无请求']
+      };
+      const [key, fallback] = labels[state] || labels.unknown;
+      return serviceHealthText(key, fallback);
+    }
+
+    function serviceHealthTimeFormatter() {
+      const locale = window.i18n && typeof window.i18n.getLocale === 'function' && window.i18n.getLocale() === 'en'
+        ? 'en-US'
+        : 'zh-CN';
+      return new Intl.DateTimeFormat(locale, {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      });
+    }
+
+    function renderServiceHealth(model) {
+      const grid = document.getElementById('service-health-grid');
+      const rateElement = document.getElementById('service-health-rate');
+      const message = document.getElementById('service-health-message');
+      if (!grid || !rateElement || !message || !model) return;
+
+      const formatter = serviceHealthTimeFormatter();
+      const fragment = document.createDocumentFragment();
+      for (const point of model.points) {
+        const cell = document.createElement('span');
+        cell.className = `service-health-cell ${point.state}`;
+        cell.setAttribute('aria-hidden', 'true');
+        const time = formatter.format(new Date(point.ts));
+        if (point.rate === null) {
+          cell.title = serviceHealthText('index.health.tooltipNoData', `${time} · 无请求`, { time });
+        } else {
+          const rate = `${(point.rate * 100).toFixed(1)}%`;
+          cell.title = serviceHealthText(
+            'index.health.tooltip',
+            `${time} · ${serviceHealthStateText(point.state)}\n成功 ${point.success} · 失败 ${point.error} · 成功率 ${rate}`,
+            {
+              time,
+              state: serviceHealthStateText(point.state),
+              success: formatNumber(point.success),
+              error: formatNumber(point.error),
+              rate
+            }
+          );
+        }
+        fragment.appendChild(cell);
+      }
+      grid.replaceChildren(fragment);
+
+      const hasData = model.rate !== null;
+      const rate = hasData ? `${(model.rate * 100).toFixed(1)}%` : '--';
+      rateElement.textContent = rate;
+      rateElement.dataset.state = model.state;
+      grid.setAttribute('aria-label', hasData
+        ? serviceHealthText(
+          'index.health.summary',
+          `最近 7 天服务成功率 ${rate}，成功 ${model.success} 次，失败 ${model.error} 次`,
+          {
+            rate,
+            success: formatNumber(model.success),
+            error: formatNumber(model.error)
+          }
+        )
+        : serviceHealthText('index.health.noData', '最近 7 天暂无请求数据'));
+      message.hidden = true;
+      message.textContent = '';
+    }
+
+    function renderServiceHealthUnavailable() {
+      const message = document.getElementById('service-health-message');
+      const rateElement = document.getElementById('service-health-rate');
+      if (rateElement) {
+        rateElement.textContent = '--';
+        rateElement.dataset.state = 'unknown';
+      }
+      if (message) {
+        message.hidden = false;
+        message.textContent = serviceHealthText(
+          'index.health.unavailable',
+          '健康数据暂时无法加载，将在下次刷新时重试。'
+        );
+      }
+    }
+
+    async function loadServiceHealth() {
+      const grid = document.getElementById('service-health-grid');
+      if (!window.ServiceHealth) {
+        renderServiceHealthUnavailable();
+        return;
+      }
+
+      serviceHealthRange = window.ServiceHealth.buildRange();
+      if (!serviceHealthModel) {
+        serviceHealthModel = window.ServiceHealth.buildModel([], serviceHealthRange);
+        renderServiceHealth(serviceHealthModel);
+      }
+      if (grid) grid.setAttribute('aria-busy', 'true');
+
+      try {
+        const metrics = await fetchDataWithAuth(buildServiceHealthURL(serviceHealthRange));
+        serviceHealthModel = window.ServiceHealth.buildModel(metrics, serviceHealthRange);
+        renderServiceHealth(serviceHealthModel);
+      } catch (error) {
+        console.error('Failed to load service health:', error);
+        renderServiceHealthUnavailable();
+      } finally {
+        if (grid) grid.setAttribute('aria-busy', 'false');
+      }
+    }
+
+    function loadDashboard() {
+      return Promise.all([loadStats(), loadServiceHealth()]);
     }
 
     // 加载统计数据
@@ -164,12 +304,18 @@
         }
       });
 
-      // 加载统计数据
-      loadStats();
+      // 加载统计和最近七天服务健康数据
+      loadDashboard();
+
+      if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+        window.i18n.onLocaleChange(() => {
+          if (serviceHealthModel) renderServiceHealth(serviceHealthModel);
+        });
+      }
 
       // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
       if (typeof window.createAutoRefresh === 'function') {
-        window.createAutoRefresh({ load: loadStats }).init();
+        window.createAutoRefresh({ load: loadDashboard }).init();
       }
 
       // 添加页面动画
