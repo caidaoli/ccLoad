@@ -5,21 +5,22 @@
 })(typeof window !== 'undefined' ? window : globalThis, function () {
   'use strict';
 
-  const DAYS = 7;
   const BUCKET_MINUTES = 15;
-  const BUCKET_MS = BUCKET_MINUTES * 60 * 1000;
-  const POINT_COUNT = DAYS * 24 * (60 / BUCKET_MINUTES);
+  const MAX_POINTS = 7 * 24 * (60 / BUCKET_MINUTES);
+  const BUCKET_CHOICES = [15, 30, 60, 120, 240, 480, 720, 1440];
 
-  function buildRange(nowMs = Date.now()) {
-    const safeNowMs = Number.isFinite(Number(nowMs)) ? Number(nowMs) : Date.now();
-    const endBucketMs = Math.floor(safeNowMs / BUCKET_MS) * BUCKET_MS;
+  function buildRequest(dateRangeQuery, rangeHours) {
+    const safeHours = Number.isFinite(Number(rangeHours)) && Number(rangeHours) > 0
+      ? Number(rangeHours)
+      : 24;
+    const requiredBucketMinutes = Math.max(BUCKET_MINUTES, Math.ceil(safeHours * 60 / MAX_POINTS));
+    const bucketMinutes = BUCKET_CHOICES.find(value => value >= requiredBucketMinutes)
+      || BUCKET_CHOICES.at(-1);
+    const params = new URLSearchParams(dateRangeQuery || 'range=today');
+    params.set('bucket_min', String(bucketMinutes));
     return {
-      startBucketMs: endBucketMs - (POINT_COUNT - 1) * BUCKET_MS,
-      endBucketMs,
-      endMs: safeNowMs,
-      bucketMs: BUCKET_MS,
-      bucketMinutes: BUCKET_MINUTES,
-      pointCount: POINT_COUNT
+      query: params.toString(),
+      bucketMinutes
     };
   }
 
@@ -43,25 +44,35 @@
     return 'critical';
   }
 
-  function buildModel(metrics, range = buildRange()) {
+  function buildModel(metrics, bucketMinutes = BUCKET_MINUTES) {
+    const safeBucketMinutes = Number.isFinite(Number(bucketMinutes)) && Number(bucketMinutes) > 0
+      ? Math.trunc(Number(bucketMinutes))
+      : BUCKET_MINUTES;
+    const bucketMs = safeBucketMinutes * 60 * 1000;
     const totalsByBucket = new Map();
+    let startBucketMs = Infinity;
+    let endBucketMs = -Infinity;
     for (const metric of Array.isArray(metrics) ? metrics : []) {
       const timestamp = parseTimestamp(metric && metric.ts);
       if (timestamp === null) continue;
-      const bucketTs = Math.floor(timestamp / range.bucketMs) * range.bucketMs;
-      if (bucketTs < range.startBucketMs || bucketTs > range.endBucketMs) continue;
+      const bucketTs = Math.floor(timestamp / bucketMs) * bucketMs;
 
       const current = totalsByBucket.get(bucketTs) || { success: 0, error: 0 };
       current.success += toCount(metric.success);
       current.error += toCount(metric.error);
       totalsByBucket.set(bucketTs, current);
+      startBucketMs = Math.min(startBucketMs, bucketTs);
+      endBucketMs = Math.max(endBucketMs, bucketTs);
     }
 
     let success = 0;
     let error = 0;
-    const points = new Array(range.pointCount);
-    for (let index = 0; index < range.pointCount; index += 1) {
-      const ts = range.startBucketMs + index * range.bucketMs;
+    const pointCount = totalsByBucket.size === 0
+      ? 0
+      : Math.floor((endBucketMs - startBucketMs) / bucketMs) + 1;
+    const points = new Array(pointCount);
+    for (let index = 0; index < pointCount; index += 1) {
+      const ts = startBucketMs + index * bucketMs;
       const counts = totalsByBucket.get(ts) || { success: 0, error: 0 };
       const total = counts.success + counts.error;
       const rate = total > 0 ? counts.success / total : null;
@@ -83,14 +94,15 @@
       success,
       error,
       rate,
-      state: classifyRate(rate)
+      state: classifyRate(rate),
+      bucketMs,
+      bucketMinutes: safeBucketMinutes
     };
   }
 
   return {
-    DAYS,
     BUCKET_MINUTES,
-    buildRange,
+    buildRequest,
     buildModel,
     classifyRate
   };

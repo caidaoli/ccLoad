@@ -115,8 +115,6 @@ window.I18N_LOCALES['zh-CN'] = {
   // 首页概览
   // ============================================================
   'index.title': 'Claude Code & Codex Proxy 代理服务',
-  'index.heroTitle': 'Claude Code & Codex API 代理服务',
-  'index.heroSubtitle': '智能路由 · 故障切换 · 统计分析',
   'index.timeRange.today': '本日',
   'index.timeRange.yesterday': '昨日',
   'index.timeRange.dayBeforeYesterday': '前日',
@@ -133,12 +131,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.metrics.success': '成功',
   'index.metrics.failed': '失败',
   'index.metrics.successRate': '成功率',
-  'index.metrics.successFailed': '成功/失败 (成功率)',
-  'index.metrics.rpm': 'RPM(峰值 平均 最近)',
   'index.health.title': '服务健康监测',
-  'index.health.period': '最近 7 天',
-  'index.health.earlier': '7 天前',
-  'index.health.latest': '现在',
   'index.health.noRequests': '无请求',
   'index.health.critical': '异常',
   'index.health.warning': '波动',
@@ -146,10 +139,8 @@ window.I18N_LOCALES['zh-CN'] = {
   'index.health.legendLabel': '健康状态图例',
   'index.health.loading': '正在加载服务健康数据',
   'index.health.unavailable': '健康数据暂时无法加载，将在下次刷新时重试。',
-  'index.health.noData': '最近 7 天暂无请求数据',
-  'index.health.summary': '最近 7 天服务成功率 {rate}，成功 {success} 次，失败 {error} 次',
-  'index.health.tooltipNoData': '{time} · 无请求',
-  'index.health.tooltip': '{time} · {state}\n成功 {success} · 失败 {error} · 成功率 {rate}',
+  'index.health.noData': '{period}暂无请求数据',
+  'index.health.summary': '{period}服务成功率 {rate}，成功 {success} 次，失败 {error} 次',
   // ============================================================
   // 渠道管理
   // ============================================================

@@ -26,25 +26,6 @@
     <!-- 主内容区域 -->
     <main class="main-content index-main-content">
       <div class="content-area">
-        <!-- 页面标题 -->
-        <header class="mb-6">
-          <div class="hero-header animate-slide-up">
-            <div class="hero-icon">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-              </svg>
-            </div>
-            <div>
-              <h1 class="hero-title" data-i18n="index.heroTitle">
-                Claude Code & Codex API 代理服务
-              </h1>
-              <p class="hero-subtitle" data-i18n="index.heroSubtitle">
-                智能路由 · 故障切换 · 统计分析
-              </p>
-            </div>
-          </div>
-        </header>
-
         <!-- 时间范围选择器 -->
         <section class="mb-4">
           <div class="time-range-container">
@@ -272,62 +253,43 @@
             </div>
           </div>
         </section>
-        <!-- 实时状态栏 - 总览 -->
-        <section class="mb-6">
-          <div class="flex index-summary-grid animate-slide-up animate-delay-2 gap-space-3 flex-nowrap">
-            <div class="summary-card summary-card-success">
-              <div class="summary-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 6L9 17l-5-5"/>
-                </svg>
-              </div>
-              <div class="summary-content">
-                <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span class="summary-value-note">(<span id="success-rate">--</span>)</span></div>
-                <div class="summary-label" data-i18n="index.metrics.successFailed">成功/失败 (成功率)</div>
-              </div>
-            </div>
-            <div class="summary-card summary-card-primary" title="每分钟请求数">
-              <div class="summary-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 6v6l4 2"/>
-                </svg>
-              </div>
-              <div class="summary-content">
-                <div class="summary-value" id="total-rpm">--</div>
-                <div class="summary-label" data-i18n="index.metrics.rpm">RPM(峰值 平均 最近)</div>
-              </div>
-            </div>
-          </div>
-        </section>
-
         <!-- 服务健康监测 -->
         <section class="mb-6">
-          <div class="glass-card service-health-card animate-slide-up animate-delay-3" aria-labelledby="service-health-title">
+          <div class="glass-card service-health-card animate-slide-up animate-delay-2" aria-labelledby="service-health-title">
             <div class="service-health-header">
               <h2 id="service-health-title" class="service-health-title" data-i18n="index.health.title">服务健康监测</h2>
               <div class="service-health-summary">
-                <span class="service-health-period" data-i18n="index.health.period">最近 7 天</span>
+                <span id="service-health-period" class="service-health-period">本日</span>
                 <span id="service-health-rate" class="service-health-rate" data-state="unknown" aria-live="polite">--</span>
               </div>
             </div>
-            <div
-              id="service-health-grid"
-              class="service-health-grid"
-              role="img"
-              aria-busy="true"
-              data-i18n-aria-label="index.health.loading"
-              aria-label="正在加载服务健康数据"
-            ></div>
-            <div class="service-health-footer">
-              <span class="service-health-edge" data-i18n="index.health.earlier">7 天前</span>
-              <div class="service-health-legend" data-i18n-aria-label="index.health.legendLabel" aria-label="健康状态图例">
-                <span class="service-health-legend-item"><i class="service-health-swatch unknown" aria-hidden="true"></i><span data-i18n="index.health.noRequests">无请求</span></span>
-                <span class="service-health-legend-item"><i class="service-health-swatch critical" aria-hidden="true"></i><span data-i18n="index.health.critical">异常</span></span>
-                <span class="service-health-legend-item"><i class="service-health-swatch warning" aria-hidden="true"></i><span data-i18n="index.health.warning">波动</span></span>
-                <span class="service-health-legend-item"><i class="service-health-swatch healthy" aria-hidden="true"></i><span data-i18n="index.health.healthy">健康</span></span>
+            <div class="service-health-plot">
+              <div
+                id="service-health-grid"
+                class="service-health-grid"
+                role="img"
+                aria-busy="true"
+                data-i18n-aria-label="index.health.loading"
+                aria-label="正在加载服务健康数据"
+              ></div>
+              <div id="service-health-tooltip" class="service-health-tooltip" role="tooltip" hidden>
+                <div id="service-health-tooltip-time" class="service-health-tooltip-time"></div>
+                <div class="service-health-tooltip-stats">
+                  <span class="service-health-tooltip-success">✓ <strong id="service-health-tooltip-success">0</strong></span>
+                  <span class="service-health-tooltip-error">× <strong id="service-health-tooltip-error">0</strong></span>
+                  <span id="service-health-tooltip-rate" class="service-health-tooltip-rate">--</span>
+                </div>
               </div>
-              <span class="service-health-edge" data-i18n="index.health.latest">现在</span>
+              <div class="service-health-footer">
+                <span id="service-health-earlier" class="service-health-edge">--</span>
+                <div class="service-health-legend" data-i18n-aria-label="index.health.legendLabel" aria-label="健康状态图例">
+                  <span class="service-health-legend-item"><i class="service-health-swatch unknown" aria-hidden="true"></i><span data-i18n="index.health.noRequests">无请求</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch critical" aria-hidden="true"></i><span data-i18n="index.health.critical">异常</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch warning" aria-hidden="true"></i><span data-i18n="index.health.warning">波动</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch healthy" aria-hidden="true"></i><span data-i18n="index.health.healthy">健康</span></span>
+                </div>
+                <span id="service-health-latest" class="service-health-edge">--</span>
+              </div>
             </div>
             <p id="service-health-message" class="service-health-message" role="status" hidden></p>
           </div>
