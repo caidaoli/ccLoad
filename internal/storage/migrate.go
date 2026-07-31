@@ -163,6 +163,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsProxyURL(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels proxy_url: %w", err)
 			}
+			if err := ensureChannelsRetryOtherKeysOnFailure(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels retry_other_keys_on_failure: %w", err)
+			}
 			if err := ensureChannelsWebsockets(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels websockets: %w", err)
 			}

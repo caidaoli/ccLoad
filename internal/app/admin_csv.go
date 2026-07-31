@@ -45,7 +45,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -116,6 +116,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.FormatBool(cfg.ScheduledCheckEnabled),
 			cfg.ScheduledCheckModel,
 			cooldownDetectionRulesJSON,
+			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -177,10 +178,12 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasScheduledCheckColumn := columnIndex["scheduled_check_enabled"]
 	_, hasScheduledCheckModelColumn := columnIndex["scheduled_check_model"]
 	_, hasCooldownDetectionRulesColumn := columnIndex["cooldown_detection_rules"]
+	_, hasRetryOtherKeysOnFailureColumn := columnIndex["retry_other_keys_on_failure"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
 	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
-	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn {
+	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
+	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -190,6 +193,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingScheduledCheckByName[cfg.Name] = cfg.ScheduledCheckEnabled
 			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
 			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
+			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
 		}
 	}
 
@@ -219,9 +223,11 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			hasScheduledCheckColumn,
 			hasScheduledCheckModelColumn,
 			hasCooldownDetectionRulesColumn,
+			hasRetryOtherKeysOnFailureColumn,
 			existingScheduledCheckByName,
 			existingScheduledCheckModelByName,
 			existingCooldownDetectionRulesByName,
+			existingRetryOtherKeysOnFailureByName,
 		)
 		if skip {
 			if errMsg != "" {
@@ -290,9 +296,11 @@ func (s *Server) parseChannelImportRow(
 	hasScheduledCheckColumn bool,
 	hasScheduledCheckModelColumn bool,
 	hasCooldownDetectionRulesColumn bool,
+	hasRetryOtherKeysOnFailureColumn bool,
 	existingScheduledCheckByName map[string]bool,
 	existingScheduledCheckModelByName map[string]string,
 	existingCooldownDetectionRulesByName map[string]*model.CooldownDetectionRules,
+	existingRetryOtherKeysOnFailureByName map[string]bool,
 ) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
 	if isCSVRecordEmpty(record) {
 		return nil, "", true
@@ -445,6 +453,17 @@ func (s *Server) parseChannelImportRow(
 		cooldownDetectionRules = nil
 	}
 
+	retryOtherKeysOnFailure := existingRetryOtherKeysOnFailureByName[name]
+	if raw := fetch("retry_other_keys_on_failure"); raw != "" {
+		val, ok := parseImportEnabled(raw)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 retry_other_keys_on_failure 格式错误: %s", lineNo, raw), true
+		}
+		retryOtherKeysOnFailure = val
+	} else if hasRetryOtherKeysOnFailureColumn {
+		retryOtherKeysOnFailure = false
+	}
+
 	// 构建模型条目（合并models和modelRedirects）
 	modelEntries := make([]model.ModelEntry, 0, len(models))
 	for _, m := range models {
@@ -472,18 +491,19 @@ func (s *Server) parseChannelImportRow(
 
 	// 构建渠道配置
 	cfg := &model.Config{
-		ID:                     channelID,
-		Name:                   name,
-		URLs:                   urls,
-		Priority:               priority,
-		RPMLimit:               rpmLimit,
-		MaxConcurrency:         maxConcurrency,
-		ModelEntries:           modelEntries,
-		ProtocolTransformMode:  protocolTransformMode,
-		Enabled:                enabled,
-		ScheduledCheckEnabled:  scheduledCheckEnabled,
-		ScheduledCheckModel:    scheduledCheckModel,
-		CooldownDetectionRules: cooldownDetectionRules,
+		ID:                      channelID,
+		Name:                    name,
+		URLs:                    urls,
+		Priority:                priority,
+		RPMLimit:                rpmLimit,
+		MaxConcurrency:          maxConcurrency,
+		ModelEntries:            modelEntries,
+		ProtocolTransformMode:   protocolTransformMode,
+		Enabled:                 enabled,
+		ScheduledCheckEnabled:   scheduledCheckEnabled,
+		ScheduledCheckModel:     scheduledCheckModel,
+		CooldownDetectionRules:  cooldownDetectionRules,
+		RetryOtherKeysOnFailure: retryOtherKeysOnFailure,
 	}
 
 	// 解析并构建API Keys

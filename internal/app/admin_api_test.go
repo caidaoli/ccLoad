@@ -36,7 +36,8 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-1", RedirectModel: ""},
 			},
-			Enabled: true,
+			Enabled:                 true,
+			RetryOtherKeysOnFailure: true,
 		},
 		{
 			Name:     "Test-Export-2",
@@ -107,7 +108,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -118,8 +119,11 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		}
 	}
 
-	if len(records[1]) < 15 {
-		t.Errorf("数据行字段不足，期望至少15个字段，实际: %d", len(records[1]))
+	if len(records[1]) < 16 {
+		t.Errorf("数据行字段不足，期望至少16个字段，实际: %d", len(records[1]))
+	}
+	if len(records[1]) >= 16 && records[1][15] != "true" {
+		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][15])
 	}
 }
 
@@ -344,13 +348,14 @@ func TestAdminAPI_ImportChannelsCSV_MissingScheduledCheckColumnPreservesExisting
 	ctx := context.Background()
 
 	created, err := server.store.CreateConfig(ctx, &model.Config{
-		Name:                  "Import-Preserve-Scheduled",
-		URLs:                  model.ChannelURLs{{URL: "https://old.example.com"}},
-		Priority:              10,
-		ModelEntries:          []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
-		Enabled:               true,
-		ScheduledCheckEnabled: true,
-		ScheduledCheckModel:   "old-model",
+		Name:                    "Import-Preserve-Scheduled",
+		URLs:                    model.ChannelURLs{{URL: "https://old.example.com"}},
+		Priority:                10,
+		ModelEntries:            []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
+		Enabled:                 true,
+		RetryOtherKeysOnFailure: true,
+		ScheduledCheckEnabled:   true,
+		ScheduledCheckModel:     "old-model",
 		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 			Enabled: true, Name: "preserved-rule", Priority: 0, StatusCodes: []int{429},
 			Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
@@ -413,6 +418,9 @@ Import-Preserve-Scheduled,"[{""url"":""https://new.example.com""}]",20,"old-mode
 	}
 	if updated.CooldownDetectionRules == nil || len(updated.CooldownDetectionRules.Rules) != 1 || updated.CooldownDetectionRules.Rules[0].Name != "preserved-rule" {
 		t.Fatalf("缺少 cooldown_detection_rules 列时应保留旧规则，实际为 %#v", updated.CooldownDetectionRules)
+	}
+	if !updated.RetryOtherKeysOnFailure {
+		t.Fatal("缺少 retry_other_keys_on_failure 列时应保留旧值 true")
 	}
 	if urls := updated.GetURLs(); len(urls) != 1 || urls[0] != "https://new.example.com" {
 		t.Fatalf("期望 URL 已更新，实际为 %v", urls)
