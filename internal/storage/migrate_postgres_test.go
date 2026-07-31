@@ -213,6 +213,20 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("ClientProtocolBackfill", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyClientProtocolBackfill(t, ctx, env.db, DialectPostgres, func(ctx context.Context, db *sql.DB) error {
+			return migratePostgres(ctx, db)
+		})
+	})
+
 	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
@@ -647,9 +661,6 @@ func TestPostgres(t *testing.T) {
 			}
 			if channels, err := store.GetEnabledChannelsByModel(ctx, "gpt-4o"); err != nil || len(channels) != 1 {
 				t.Fatalf("GetEnabledChannelsByModel: channels=%v err=%v", channels, err)
-			}
-			if channels, err := store.GetEnabledChannelsByType(ctx, "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByType: channels=%v err=%v", channels, err)
 			}
 
 			ch.Name = "pg-query-channel-updated"

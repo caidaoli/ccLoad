@@ -10,9 +10,10 @@ import (
 )
 
 const (
-	channelModelsRedirectMigrationVersion = "v1_channel_models_redirect"
-	channelModelsOrderRepairVersion       = "v2_channel_models_created_at_order"
-	structuredChannelURLsMigrationVersion = "v4_structured_channel_urls"
+	channelModelsRedirectMigrationVersion  = "v1_channel_models_redirect"
+	channelModelsOrderRepairVersion        = "v2_channel_models_created_at_order"
+	structuredChannelURLsMigrationVersion  = "v4_structured_channel_urls"
+	clientProtocolBackfillMigrationVersion = "v5_logs_client_protocol_backfill"
 )
 
 // Dialect 数据库方言
@@ -126,6 +127,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 			if err := ensureLogsClientProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs client_protocol: %w", err)
+			}
+			if err := backfillLogsClientProtocol(ctx, db, dialect); err != nil {
+				return fmt.Errorf("backfill logs client_protocol: %w", err)
 			}
 			if err := ensureLogsUpstreamProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_protocol: %w", err)

@@ -218,6 +218,20 @@ func TestMySQL(t *testing.T) {
 		}
 	})
 
+	t.Run("ClientProtocolBackfill", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyClientProtocolBackfill(t, context.Background(), env.db, DialectMySQL, func(ctx context.Context, db *sql.DB) error {
+			return migrateMySQL(ctx, db)
+		})
+	})
+
 	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 

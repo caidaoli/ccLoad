@@ -12,6 +12,53 @@ import (
 	"ccLoad/internal/model"
 )
 
+func backfillLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, clientProtocolBackfillMigrationVersion, dialect) {
+		return nil
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin client protocol backfill: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	query := `
+		UPDATE logs
+		SET client_protocol = CASE
+			WHEN LOWER(TRIM(model)) LIKE 'gpt-5%'
+				OR LOWER(TRIM(model)) LIKE '%/gpt-5%'
+				OR LOWER(TRIM(model)) LIKE 'codex-%'
+				OR LOWER(TRIM(model)) LIKE '%/codex-%'
+				THEN 'codex'
+			WHEN LOWER(TRIM(model)) LIKE 'claude-%'
+				OR LOWER(TRIM(model)) LIKE '%/claude-%'
+				OR LOWER(TRIM(model)) LIKE 'opus-%'
+				OR LOWER(TRIM(model)) LIKE '%/opus-%'
+				OR LOWER(TRIM(model)) LIKE 'sonnet-%'
+				OR LOWER(TRIM(model)) LIKE '%/sonnet-%'
+				OR LOWER(TRIM(model)) LIKE 'haiku-%'
+				OR LOWER(TRIM(model)) LIKE '%/haiku-%'
+				THEN 'anthropic'
+			WHEN LOWER(TRIM(model)) LIKE 'gemini-%'
+				OR LOWER(TRIM(model)) LIKE '%/gemini-%'
+				THEN 'gemini'
+			ELSE 'openai'
+		END
+		WHERE log_source = 'proxy' AND TRIM(client_protocol) = ''
+	`
+	if _, err := tx.ExecContext(ctx, query); err != nil {
+		return fmt.Errorf("classify historical proxy logs: %w", err)
+	}
+	if err := recordMigrationTx(ctx, tx, clientProtocolBackfillMigrationVersion, dialect); err != nil {
+		return fmt.Errorf("record client protocol backfill: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit client protocol backfill: %w", err)
+	}
+	return nil
+}
+
 func migrateChannelURLsToStructuredJSON(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if hasMigration(ctx, db, structuredChannelURLsMigrationVersion, dialect) {
 		return nil
