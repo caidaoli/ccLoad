@@ -1,4 +1,8 @@
     :root {
+      --channel-name-fg: var(--neutral-800);
+      --channel-multiplier-fg: var(--primary-700);
+      --channel-multiplier-bg: var(--primary-100);
+      --channel-multiplier-ring: rgba(29, 78, 216, 0.16);
       --channel-cooldown-row-bg-start: #fff7ed;
       --channel-cooldown-row-bg-end: #fffbeb;
       --channel-cooldown-row-hover-bg-start: #ffedd5;
@@ -18,6 +22,9 @@
     }
 
     html[data-theme="dark"] {
+      --channel-multiplier-fg: var(--primary-300);
+      --channel-multiplier-bg: rgba(59, 130, 246, 0.16);
+      --channel-multiplier-ring: rgba(124, 195, 255, 0.28);
       --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
       --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
       --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
@@ -37,6 +44,9 @@
     }
 
     html[data-theme="system"][data-resolved-theme="dark"] {
+      --channel-multiplier-fg: var(--primary-300);
+      --channel-multiplier-bg: rgba(59, 130, 246, 0.16);
+      --channel-multiplier-ring: rgba(124, 195, 255, 0.28);
       --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
       --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
       --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
@@ -1181,7 +1191,6 @@
       display: block;
       width: 100%;
       min-width: 0;
-      padding-right: 52px;
     }
 
     .ch-name-line {
@@ -1202,6 +1211,17 @@
       flex: 1 1 auto;
     }
 
+    .ch-name-main .cell-multiplier-badge {
+      position: static;
+      align-self: flex-start;
+      flex: 0 0 auto;
+      margin-top: -2px;
+      color: var(--channel-multiplier-fg);
+      background: var(--channel-multiplier-bg);
+      box-shadow: 0 0 0 1px var(--channel-multiplier-ring);
+      font-size: 10px;
+    }
+
     .ch-name-statuses {
       margin-left: auto;
       display: inline-flex;
@@ -1217,7 +1237,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--neutral-900);
+      color: var(--channel-name-fg);
       font-size: 13px;
     }
 
