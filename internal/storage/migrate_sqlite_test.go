@@ -690,12 +690,19 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 	if !cols["upstream_websocket"] {
 		t.Fatal("upstream_websocket column not found in logs")
 	}
+	if !cols["client_protocol"] {
+		t.Fatal("client_protocol column not found in logs")
+	}
 	var upstreamWebsocket int
-	if err := db.QueryRowContext(ctx, `SELECT upstream_websocket FROM logs WHERE time = 60000`).Scan(&upstreamWebsocket); err != nil {
+	var clientProtocol string
+	if err := db.QueryRowContext(ctx, `SELECT upstream_websocket, client_protocol FROM logs WHERE time = 60000`).Scan(&upstreamWebsocket, &clientProtocol); err != nil {
 		t.Fatalf("query legacy upstream_websocket: %v", err)
 	}
 	if upstreamWebsocket != 0 {
 		t.Fatalf("legacy upstream_websocket=%d, want 0", upstreamWebsocket)
+	}
+	if clientProtocol != "" {
+		t.Fatalf("legacy client_protocol=%q, want empty", clientProtocol)
 	}
 
 	var effectiveCost float64

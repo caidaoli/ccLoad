@@ -386,6 +386,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,
 			AuthTokenID:    tokenIDInt64,
+			ClientProtocol: string(clientProtocol),
 			StatusCode:     503,
 			Message:        "no available upstream (all cooled or none)",
 			IsStreaming:    isStreaming,
@@ -654,14 +655,15 @@ func (s *Server) writeFinalProxyResponse(
 	skipLog = skipLog || candidateCount <= 1
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{Time: reqCtx.startTime},
-			Model:       originalModel,
-			LogSource:   model.LogSourceProxy,
-			StatusCode:  finalStatus,
-			Message:     msg,
-			Duration:    time.Since(reqCtx.startTime).Seconds(),
-			IsStreaming: isStreaming,
-			ClientIP:    reqCtx.clientIP,
+			Time:           model.JSONTime{Time: reqCtx.startTime},
+			Model:          originalModel,
+			LogSource:      model.LogSourceProxy,
+			ClientProtocol: string(reqCtx.clientProtocol),
+			StatusCode:     finalStatus,
+			Message:        msg,
+			Duration:       time.Since(reqCtx.startTime).Seconds(),
+			IsStreaming:    isStreaming,
+			ClientIP:       reqCtx.clientIP,
 		})
 	}
 

@@ -96,11 +96,6 @@ type Server struct {
 	modelCatalogSyncStarted atomic.Bool
 	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
-	// [OPT] P3: 渠道类型缓存（TTL 30s）
-	channelTypesCache     map[int64]string
-	channelTypesCacheTime time.Time
-	channelTypesCacheMu   sync.RWMutex
-
 	// 指纹任务管理器（内存）
 	fingerprintJobs *FingerprintJobManager
 }
@@ -845,10 +840,6 @@ func (s *Server) InvalidateChannelListCache() {
 	if s.channelBalancer != nil {
 		s.channelBalancer.ResetAll()
 	}
-	// 一并失效渠道类型映射缓存，避免 admin CRUD 后 60s TTL 脏读（read-after-write 一致性）
-	s.channelTypesCacheMu.Lock()
-	s.channelTypesCache = nil
-	s.channelTypesCacheMu.Unlock()
 	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
 	s.protocolCapabilities.clear()
 }

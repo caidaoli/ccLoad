@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
@@ -1942,6 +1943,10 @@ func TestProxy_AutomaticProtocolFallback_OpenAIToAnthropic(t *testing.T) {
 		if !bytes.Contains(body, []byte(`"messages"`)) || !bytes.Contains(body, []byte(`"text":"hi"`)) {
 			t.Fatalf("fallback request body %d is not Anthropic: %s", i+1, body)
 		}
+	}
+	entry := waitForProxyLog(t, env, "claude-3-5-sonnet")
+	if entry.ClientProtocol != string(protocol.OpenAI) {
+		t.Fatalf("client_protocol=%q, want openai client despite Anthropic fallback", entry.ClientProtocol)
 	}
 }
 

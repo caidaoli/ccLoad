@@ -124,6 +124,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureLogsUpstreamWebsocket(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate logs upstream_websocket: %w", err)
 			}
+			if err := ensureLogsClientProtocol(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate logs client_protocol: %w", err)
+			}
 		}
 
 		// 增量迁移：确保channels表有daily_cost_limit字段（2026-01新增）

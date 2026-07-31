@@ -23,14 +23,15 @@ func TestLog_AddAndList(t *testing.T) {
 
 	now := time.Now()
 	log := &model.LogEntry{
-		Time:        newJSONTime(now),
-		Model:       "gpt-4",
-		ChannelID:   channelID,
-		StatusCode:  200,
-		Message:     "success",
-		Duration:    1.5,
-		IsStreaming: false,
-		APIKeyUsed:  "abcd...efgh",
+		Time:           newJSONTime(now),
+		Model:          "gpt-4",
+		ChannelID:      channelID,
+		ClientProtocol: "openai",
+		StatusCode:     200,
+		Message:        "success",
+		Duration:       1.5,
+		IsStreaming:    false,
+		APIKeyUsed:     "abcd...efgh",
 	}
 	if err := store.AddLog(ctx, log); err != nil {
 		t.Fatalf("add log: %v", err)
@@ -47,6 +48,9 @@ func TestLog_AddAndList(t *testing.T) {
 	}
 	if len(logs) > 0 && logs[0].Model != "gpt-4" {
 		t.Errorf("model: got %q, want %q", logs[0].Model, "gpt-4")
+	}
+	if len(logs) > 0 && logs[0].ClientProtocol != "openai" {
+		t.Errorf("client_protocol: got %q, want openai", logs[0].ClientProtocol)
 	}
 }
 

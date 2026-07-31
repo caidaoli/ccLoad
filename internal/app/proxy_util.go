@@ -849,6 +849,7 @@ type logEntryParams struct {
 	IsStreaming    bool
 	APIKeyUsed     string
 	AuthTokenID    int64
+	ClientProtocol protocol.Protocol
 	ClientIP       string
 	BaseURL        string // 请求使用的上游URL
 	Result         *fwResult
@@ -891,6 +892,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		UpstreamWebsocket: p.Result != nil && p.Result.UpstreamWebsocket,
 		APIKeyUsed:        p.APIKeyUsed,
 		AuthTokenID:       p.AuthTokenID,
+		ClientProtocol:    string(p.ClientProtocol),
 		ClientIP:          p.ClientIP,
 		BaseURL:           p.BaseURL,
 	}
