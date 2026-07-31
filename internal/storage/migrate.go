@@ -224,6 +224,12 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			}
 		}
 
+		if tb.Name() == "channel_model_cooldowns" {
+			if err := ensureModelCooldownDuration(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channel_model_cooldowns cooldown_duration_ms: %w", err)
+			}
+		}
+
 		if tb.Name() == "fingerprint_test_results" {
 			if err := ensureFingerprintTestResultsDistribution(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate fingerprint_test_results distribution: %w", err)

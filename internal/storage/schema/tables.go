@@ -69,6 +69,7 @@ func DefineChannelModelCooldownsTable() *TableBuilder {
 		Column("channel_id INT NOT NULL").
 		Column("model VARCHAR(191) NOT NULL").
 		Column("cooldown_until BIGINT NOT NULL").
+		Column("cooldown_duration_ms BIGINT NOT NULL DEFAULT 0").
 		Column("updated_at BIGINT NOT NULL").
 		Column("PRIMARY KEY (channel_id, model)").
 		Column("FOREIGN KEY (channel_id) REFERENCES channels(id) ON DELETE CASCADE").
