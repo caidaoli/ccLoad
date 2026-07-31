@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
-	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
 )
@@ -15,7 +14,7 @@ import (
 type dashboardChannelView struct {
 	ID                    int64              `json:"id"`
 	Name                  string             `json:"name"`
-	ChannelType           string             `json:"channel_type"`
+	URLs                  model.ChannelURLs  `json:"urls"`
 	ProtocolTransformMode string             `json:"protocol_transform_mode"`
 	Priority              int                `json:"priority"`
 	Enabled               bool               `json:"enabled"`
@@ -37,7 +36,7 @@ func (s *Server) tokenScopedChannelConfigs(c *gin.Context) ([]*model.Config, map
 	since, until := params.GetTimeRange()
 	filter := BuildLogFilter(c)
 	filter.LogSource = model.LogSourceProxy
-	visible, err := s.store.GetDistinctChannels(c.Request.Context(), since, until, "", &filter)
+	visible, err := s.store.GetDistinctChannels(c.Request.Context(), since, until, &filter)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -81,7 +80,7 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 		view := dashboardChannelView{
 			ID:                    cfg.ID,
 			Name:                  cfg.Name,
-			ChannelType:           cfg.ChannelType,
+			URLs:                  cfg.URLs.Clone(),
 			ProtocolTransformMode: cfg.GetProtocolTransformMode(),
 			Priority:              cfg.Priority,
 			Enabled:               cfg.Enabled,
@@ -105,7 +104,7 @@ func (s *Server) HandleDashboardChannelFilterOptions(c *gin.Context) {
 	}
 	configs = filterChannelOptionConfigs(
 		configs,
-		strings.TrimSpace(c.Query("type")),
+		strings.TrimSpace(c.Query("protocol")),
 		strings.TrimSpace(c.Query("status")),
 		cooldowns,
 		time.Now(),
@@ -115,15 +114,14 @@ func (s *Server) HandleDashboardChannelFilterOptions(c *gin.Context) {
 
 func filterChannelOptionConfigs(
 	cfgs []*model.Config,
-	channelType string,
+	configuredProtocol string,
 	status string,
 	cooldowns map[int64]time.Time,
 	now time.Time,
 ) []*model.Config {
-	if channelType != "" && channelType != "all" {
-		normalizedChannelType := util.NormalizeChannelType(channelType)
+	if configuredProtocol != "" && configuredProtocol != "all" {
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
-			return cfg.GetChannelType() == normalizedChannelType
+			return configHasURLProtocol(cfg, configuredProtocol)
 		})
 	}
 

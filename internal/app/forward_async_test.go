@@ -34,7 +34,7 @@ func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, body []byte) pr
 
 	plan, err := protocol.BuildTransformPlan(
 		detectClientProtocolFromPath(requestPath),
-		protocol.Protocol(cfg.GetChannelType()),
+		detectClientProtocolFromPath(requestPath),
 		requestPath,
 		requestPath,
 		body,
@@ -104,10 +104,9 @@ func TestBuildProxyRequest(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "test",
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "test",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -151,10 +150,9 @@ func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "test",
-		URLs:        channelURLsForTest("https://api.example.com/custom/messages#"),
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "test",
+		URLs: channelURLsForTest("https://api.example.com/custom/messages#"),
 	}
 
 	reqCtx := &requestContext{
@@ -186,10 +184,9 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "openai-compatible-anthropic",
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		ChannelType: "openai",
+		ID:   1,
+		Name: "openai-compatible-anthropic",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -234,10 +231,9 @@ func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "anthropic-channel-openai-upstream",
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "anthropic-channel-openai-upstream",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -282,10 +278,9 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "openai-to-anthropic",
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "openai-to-anthropic",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -504,10 +499,9 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		}),
 	}
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "gemini",
-		URLs:        model.ChannelURLs{{URL: "https://gemini-upstream.example.com"}},
-		ChannelType: "gemini",
+		ID:   1,
+		Name: "gemini",
+		URLs: model.ChannelURLs{{URL: "https://gemini-upstream.example.com"}},
 	}
 
 	plan, err := protocol.BuildTransformPlan(
@@ -612,10 +606,9 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	}
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "codex-upstream",
-		URLs:        model.ChannelURLs{{URL: "https://codex-upstream.example.com"}},
-		ChannelType: "codex",
+		ID:   1,
+		Name: "codex-upstream",
+		URLs: model.ChannelURLs{{URL: "https://codex-upstream.example.com"}},
 	}
 	originalBody := []byte(`{"model":"claude-3-5-sonnet","metadata":{"user_id":"claude-code-user-42"},"system":[{"type":"text","text":"be careful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 	plan, err := protocol.BuildTransformPlan(

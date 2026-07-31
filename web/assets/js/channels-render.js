@@ -509,7 +509,13 @@ function buildChannelLastRequestFailureHtml(stats) {
  */
 function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
-  const channelTypeRaw = (channel.channel_type || '').toLowerCase();
+  const configuredProtocols = new Set(
+    (Array.isArray(channel.urls) ? channel.urls : [])
+      .flatMap(entry => Array.isArray(entry?.protocols) ? entry.protocols : [])
+      .map(protocol => String(protocol || '').trim().toLowerCase())
+  );
+  const hasAutoProtocolURL = (Array.isArray(channel.urls) ? channel.urls : [])
+    .some(entry => !Array.isArray(entry?.protocols) || entry.protocols.length === 0);
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
@@ -537,7 +543,7 @@ function createChannelCard(channel) {
     const parts = [];
     parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.input')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.inputTokensText}</span></div>`);
     parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.output')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.outputTokensText}</span></div>`);
-    const supportsCaching = channelTypeRaw === 'anthropic' || channelTypeRaw === 'codex';
+    const supportsCaching = hasAutoProtocolURL || configuredProtocols.has('anthropic') || configuredProtocols.has('codex');
     if (supportsCaching) {
       parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheRead')}</span><span class="ch-usage-value" style="color: var(--success-500);">${statsCache.cacheReadText}</span></div>`);
       if (statsCache.cacheCreationTokens > 0) {

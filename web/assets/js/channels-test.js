@@ -59,7 +59,8 @@ async function testChannel(id, name) {
   }
 
   resetTestModal();
-  testingChannelProtocol = channel.channel_type || 'anthropic';
+  testingClientProtocol = 'anthropic';
+  await window.ProtocolManager.renderProtocolSelect('testClientProtocolSelect', testingClientProtocol);
 
   document.getElementById('testModal').classList.add('show');
 }
@@ -67,7 +68,7 @@ async function testChannel(id, name) {
 function closeTestModal() {
   document.getElementById('testModal').classList.remove('show');
   testingChannelId = null;
-  testingChannelProtocol = 'anthropic';
+  testingClientProtocol = 'anthropic';
 }
 
 function resetTestModal() {
@@ -88,10 +89,12 @@ async function runChannelTest() {
   const contentInput = document.getElementById('testContentInput');
   const keySelect = document.getElementById('testKeySelect');
   const streamCheckbox = document.getElementById('testStreamEnabled');
+  const clientProtocolSelect = document.getElementById('testClientProtocolSelect');
   const keySelectGroup = document.getElementById('testKeySelectGroup');
   const selectedModel = modelSelect.value;
   const testContent = contentInput.value.trim() || defaultTestContent;
   const streamEnabled = streamCheckbox.checked;
+  testingClientProtocol = clientProtocolSelect?.value || 'anthropic';
 
   if (!selectedModel) {
     if (window.showError) window.showError(window.t('channels.test.selectModelRequired'));
@@ -107,7 +110,7 @@ async function runChannelTest() {
       model: selectedModel,
       stream: streamEnabled,
       content: testContent,
-      channel_type: testingChannelProtocol
+      client_protocol: testingClientProtocol
     };
 
     if (keySelect && keySelectGroup && !keySelectGroup.classList.contains('hidden')) {
@@ -157,11 +160,13 @@ async function runBatchTest() {
   const modelSelect = document.getElementById('testModelSelect');
   const contentInput = document.getElementById('testContentInput');
   const streamCheckbox = document.getElementById('testStreamEnabled');
+  const clientProtocolSelect = document.getElementById('testClientProtocolSelect');
   const concurrencyInput = document.getElementById('testConcurrency');
 
   const selectedModel = modelSelect.value;
   const testContent = contentInput.value.trim() || defaultTestContent;
   const streamEnabled = streamCheckbox.checked;
+  testingClientProtocol = clientProtocolSelect?.value || 'anthropic';
   const concurrency = Math.max(1, Math.min(50, parseInt(concurrencyInput.value) || 10));
 
   if (!selectedModel) {
@@ -198,7 +203,7 @@ async function runBatchTest() {
         model: selectedModel,
         stream: streamEnabled,
         content: testContent,
-        channel_type: testingChannelProtocol,
+        client_protocol: testingClientProtocol,
         key_index: keyIndex
       };
 

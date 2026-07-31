@@ -69,7 +69,6 @@ func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (
 			continue
 		}
 		metadata := tokenLogChannelMetadata{
-			ChannelType:  cfg.ChannelType,
 			APIKeyHashes: make(map[string]struct{}, len(apiKeysByChannel[cfg.ID])),
 		}
 		for _, apiKey := range apiKeysByChannel[cfg.ID] {
@@ -84,7 +83,7 @@ func (s *Server) tokenLogChannels(ctx context.Context, logs []*model.LogEntry) (
 }
 
 // HandleMetrics 获取聚合指标数据
-// GET /admin/metrics?range=today&bucket_min=5&channel_type=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
+// GET /admin/metrics?range=today&bucket_min=5&upstream_protocol=anthropic&model=claude-3-5-sonnet-20241022&channel_id=1&channel_name_like=xxx
 func (s *Server) HandleMetrics(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	bucketMin, _ := strconv.Atoi(c.DefaultQuery("bucket_min", "5"))
@@ -92,7 +91,7 @@ func (s *Server) HandleMetrics(c *gin.Context) {
 		bucketMin = 5
 	}
 
-	// 使用统一的筛选参数构建器（支持 channel_type、channel_id、channel_name_like、model、auth_token_id）
+	// 使用统一的筛选参数构建器。
 	lf := BuildLogFilter(c)
 	lf.LogSource = model.LogSourceProxy
 
@@ -245,12 +244,12 @@ func (s *Server) HandlePublicSummary(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, response)
 }
 
-// HandleGetChannelTypes 获取渠道类型配置(公开端点,前端动态加载)
-// GET /public/channel-types
+// HandleGetProtocols 获取协议配置(公开端点,前端动态加载)
+// GET /public/protocols
 // 编译时常量，浏览器缓存24小时减少HF Spaces等高延迟环境的网络往返
-func (s *Server) HandleGetChannelTypes(c *gin.Context) {
+func (s *Server) HandleGetProtocols(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=86400")
-	RespondJSON(c, http.StatusOK, util.ChannelTypes)
+	RespondJSON(c, http.StatusOK, util.Protocols)
 }
 
 // HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)
@@ -276,14 +275,13 @@ type ModelsChannelsResponse struct {
 
 // HandleGetModels 获取数据库中有日志的模型、渠道和状态码列表（去重）。
 // GET /admin/models
-// 支持参数：range（时间范围）、channel_type（渠道类型筛选）
+// 支持参数：range（时间范围）、upstream_protocol（实际上游协议筛选）
 func (s *Server) HandleGetModels(c *gin.Context) {
 	rangeParam := c.DefaultQuery("range", "this_month")
 	params := ParsePaginationParams(c)
 	params.Range = rangeParam
 	since, until := params.GetTimeRange()
 
-	channelType := c.Query("channel_type")
 	logFilter := BuildLogFilter(c)
 	logFilter.LogSource = model.LogSourceProxy
 
@@ -296,13 +294,13 @@ func (s *Server) HandleGetModels(c *gin.Context) {
 	)
 
 	wg.Go(func() {
-		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, channelType, &logFilter)
+		models, modelsErr = s.store.GetDistinctModels(c.Request.Context(), since, until, &logFilter)
 	})
 	wg.Go(func() {
-		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, channelType, &logFilter)
+		channels, channelsErr = s.store.GetDistinctChannels(c.Request.Context(), since, until, &logFilter)
 	})
 	wg.Go(func() {
-		statusCodes, statusesErr = s.store.GetDistinctStatusCodes(c.Request.Context(), since, until, channelType, &logFilter)
+		statusCodes, statusesErr = s.store.GetDistinctStatusCodes(c.Request.Context(), since, until, &logFilter)
 	})
 	wg.Wait()
 
@@ -526,7 +524,7 @@ func (s *Server) fillHealthTimeline(ctx context.Context, stats []model.StatsEntr
 
 // HandleStatsFilterOptions 返回统计页筛选下拉的全集（渠道名/模型），
 // 从指定时间范围内的日志记录中提取，与表格数据解耦。
-// GET /admin/stats/filter-options?range=today&channel_type=
+// GET /admin/stats/filter-options?range=today&upstream_protocol=
 func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
 	params := ParsePaginationParams(c)
 	startTime, endTime := params.GetTimeRange()
@@ -534,18 +532,13 @@ func (s *Server) HandleStatsFilterOptions(c *gin.Context) {
 	lf := BuildLogFilter(c)
 	lf.LogSource = model.LogSourceProxy
 
-	channelType := c.Query("channel_type")
-	if channelType == "all" {
-		channelType = ""
-	}
-
-	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, channelType, &lf)
+	channels, err := s.store.GetDistinctChannels(c.Request.Context(), startTime, endTime, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
 
-	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, channelType, &lf)
+	models, err := s.store.GetDistinctModels(c.Request.Context(), startTime, endTime, &lf)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

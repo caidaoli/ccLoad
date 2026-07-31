@@ -326,11 +326,20 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
-			name:  "channel_type",
-			query: "channel_type=openai",
+			name:  "upstream_protocol",
+			query: "upstream_protocol=OpenAI",
 			check: func(t *testing.T, lf model.LogFilter) {
-				if lf.ChannelType != "openai" {
-					t.Errorf("ChannelType=%q, want %q", lf.ChannelType, "openai")
+				if lf.UpstreamProtocol != "openai" {
+					t.Errorf("UpstreamProtocol=%q, want %q", lf.UpstreamProtocol, "openai")
+				}
+			},
+		},
+		{
+			name:  "all_upstream_protocols",
+			query: "upstream_protocol=all",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.UpstreamProtocol != "" {
+					t.Errorf("UpstreamProtocol=%q, want no filter", lf.UpstreamProtocol)
 				}
 			},
 		},

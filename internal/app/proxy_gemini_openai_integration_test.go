@@ -16,7 +16,7 @@ func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
 	var gotBody []byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-ch", upstreamProtocol: "openai", models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	env.server.client = &http.Client{
@@ -70,7 +70,7 @@ func TestProxy_Success_Streaming_GeminiToOpenAITransform(t *testing.T) {
 	var gotPath string
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-ch", upstreamProtocol: "openai", models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	env.server.client = &http.Client{

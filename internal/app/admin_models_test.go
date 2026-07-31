@@ -41,9 +41,9 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		payload := map[string]any{
-			"channel_type": " openai ",
-			"url":          upstream.URL,
-			"api_key":      "sk-test",
+			"protocol": " openai ",
+			"urls":     []map[string]any{{"url": upstream.URL}},
+			"api_key":  "sk-test",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
 
@@ -101,7 +101,6 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 		Name:         "c1",
 		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -186,7 +185,6 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 		Name:         "multi-url-channel",
 		URLs:         channelURLsForTest(failUpstream.URL, okUpstream.URL),
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -264,7 +262,6 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 		Name:         "multi-url-key-error",
 		URLs:         channelURLsForTest(keyErrUpstream.URL, okUpstream.URL),
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -337,7 +334,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:         "c1",
 			URLs:         model.ChannelURLs{{URL: upstream1.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "m1"}},
 			Enabled:      true,
 		})
@@ -348,7 +344,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:         "c2",
 			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "x1"}},
 			Enabled:      true,
 		})
@@ -359,7 +354,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:         "c3-no-key",
 			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "y1"}},
 			Enabled:      true,
 		})
@@ -436,10 +430,9 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "replace-channel",
-			URLs:        model.ChannelURLs{{URL: upstream.URL}},
-			Priority:    1,
-			ChannelType: "openai",
+			Name:     "replace-channel",
+			URLs:     model.ChannelURLs{{URL: upstream.URL}},
+			Priority: 1,
 			ModelEntries: []model.ModelEntry{
 				{Model: "old-1"},
 				{Model: "old-2"},
@@ -492,7 +485,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:                  "lowercase-channel",
 			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "CamelCase-Model"}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "CamelCase-Model",
@@ -548,7 +540,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:                  "strip-prefix-channel",
 			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5"}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "cloudcompile/Grok-4.5",
@@ -605,7 +596,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:                  "lowercase-merge-channel",
 			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "legacy/ExistingModel"}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "legacy/ExistingModel",
@@ -662,7 +652,6 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			Name:         "empty-list-channel",
 			URLs:         model.ChannelURLs{{URL: upstream.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "keep-me"}},
 			Enabled:      true,
 		})

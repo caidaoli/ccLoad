@@ -31,7 +31,6 @@ const NoKeyIndex = -1
 // ErrorInput 包含错误处理所需的输入信息。
 type ErrorInput struct {
 	ChannelID          int64
-	ChannelType        string   // 渠道类型，用于特定渠道的错误处理策略
 	Model              string   // 实际发送给上游的模型名
 	ChannelModels      []string // 该渠道可实际发送的模型键，用于判断模型资源是否全部冷却
 	KeyIndex           int

@@ -299,22 +299,8 @@ func (s *Server) modelCooldownUntil(
 }
 
 func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
-	primary := protocol.Protocol(cfg.GetChannelType())
-	client := protocol.Protocol(util.NormalizeChannelType(requestProtocol))
-	protocols := []protocol.Protocol{primary}
-	if client != "" {
-		switch cfg.GetProtocolTransformMode() {
-		case modelpkg.ProtocolTransformModeUpstream:
-			protocols = []protocol.Protocol{client}
-		case modelpkg.ProtocolTransformModeLocal:
-			protocols = []protocol.Protocol{primary}
-		default:
-			protocols = []protocol.Protocol{client}
-			if client != primary && protocol.SupportsTransform(client, primary) {
-				protocols = append(protocols, primary)
-			}
-		}
-	}
+	client := protocol.Protocol(util.NormalizeProtocol(requestProtocol))
+	protocols := possibleUpstreamProtocols(cfg, client)
 
 	seen := make(map[string]struct{}, len(protocols))
 	models := make([]string, 0, len(protocols))
@@ -330,6 +316,39 @@ func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, reques
 		models = append(models, actualModel)
 	}
 	return models
+}
+
+func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) []protocol.Protocol {
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[protocol.Protocol]struct{})
+	result := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
+	appendProtocol := func(candidate protocol.Protocol) {
+		if protocolCapabilityFor(candidate) == protocolCapabilityUnsupported {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+
+	switch cfg.GetProtocolTransformMode() {
+	case modelpkg.ProtocolTransformModeUpstream:
+		appendProtocol(client)
+	case modelpkg.ProtocolTransformModeLocal:
+		for _, candidate := range localUpstreamProtocolOrder(cfg.URLs) {
+			appendProtocol(candidate)
+		}
+	default:
+		appendProtocol(client)
+		for _, candidate := range automaticFallbackProtocolOrder {
+			appendProtocol(candidate)
+		}
+	}
+	return result
 }
 
 // filterCostLimitExceededChannels 过滤超过每日成本限额的渠道

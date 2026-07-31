@@ -46,8 +46,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 				{Model: "model-2"},
 				{Model: "old", RedirectModel: "new"},
 			},
-			ChannelType: "anthropic",
-			Enabled:     true,
+			Enabled: true,
 		},
 		{
 			Name:     "CSV-Export-Test-2",
@@ -56,8 +55,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-3"},
 			},
-			ChannelType: "gemini",
-			Enabled:     false,
+			Enabled: false,
 		},
 	}
 
@@ -104,7 +102,7 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 	writer := csv.NewWriter(file)
 
 	// 写入Header
-	header := []string{"id", "name", "url", "priority", "models", "model_redirects", "channel_type", "enabled", "api_keys", "key_strategy"}
+	header := []string{"id", "name", "urls", "priority", "models", "model_redirects", "enabled", "api_keys", "key_strategy"}
 	if err := writer.Write(header); err != nil {
 		t.Fatalf("写入CSV header失败: %v", err)
 	}
@@ -159,7 +157,6 @@ func TestCSVExport_CompleteWorkflow(t *testing.T) {
 			string(rune(cfg.Priority + '0')), // priority
 			string(modelsJSON),               // models
 			string(redirectsJSON),            // model_redirects
-			cfg.GetChannelType(),             // channel_type
 			strconv.FormatBool(cfg.Enabled),  // enabled
 			apiKeysStr,                       // api_keys
 			keyStrategyStr,                   // key_strategy
@@ -204,8 +201,8 @@ func TestCSVImport_DataValidation(t *testing.T) {
 	}{
 		{
 			name: "有效的完整数据",
-			csvContent: `name,urls,priority,models,channel_type,enabled
-Valid-Channel,"[{""url"":""https://valid.example.com""}]",10,"[""model-1""]",anthropic,true
+			csvContent: `name,urls,priority,models,enabled
+Valid-Channel,"[{""url"":""https://valid.example.com""}]",10,"[""model-1""]",true
 `,
 			expectError: false,
 			description: "应该成功解析",
@@ -220,16 +217,16 @@ Valid-Channel,"[{""url"":""https://valid.example.com""}]",10,"[""model-1""]",ant
 		},
 		{
 			name: "空的渠道名称",
-			csvContent: `name,urls,priority,models,channel_type,enabled
-,"[{""url"":""https://empty-name.com""}]",10,"[""model-1""]",anthropic,true
+			csvContent: `name,urls,priority,models,enabled
+,"[{""url"":""https://empty-name.com""}]",10,"[""model-1""]",true
 `,
 			expectError: true,
 			description: "应该因name为空失败",
 		},
 		{
 			name: "缺少URL字段",
-			csvContent: `name,priority,models,channel_type,enabled
-No-URL-Channel,10,"[""model-1""]",anthropic,true
+			csvContent: `name,priority,models,enabled
+No-URL-Channel,10,"[""model-1""]",true
 `,
 			expectError: true,
 			description: "应该因缺少urls字段失败",
@@ -323,8 +320,7 @@ func TestCSVExportImport_SpecialCharacters(t *testing.T) {
 			{Model: "model, with, commas"},
 			{Model: "model\"with\"quotes"},
 		},
-		ChannelType: "anthropic",
-		Enabled:     true,
+		Enabled: true,
 	}
 
 	created, err := store.CreateConfig(ctx, specialConfig)
@@ -371,8 +367,7 @@ func TestCSVExportImport_LargeData(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-" + string(rune('1'+i%9))},
 			},
-			ChannelType: []string{"anthropic", "gemini", "codex"}[i%3], //nolint:gosec // 测试代码中 i 范围可控
-			Enabled:     i%2 == 0,
+			Enabled: i%2 == 0,
 		}
 
 		created, err := store.CreateConfig(ctx, cfg)

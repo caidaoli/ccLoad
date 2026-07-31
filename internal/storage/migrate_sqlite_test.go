@@ -35,7 +35,6 @@ func TestMigrate_SQLite_AddsProtocolTransformModeWithAutoDefault(t *testing.T) {
 			name TEXT NOT NULL UNIQUE,
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
-			channel_type TEXT NOT NULL DEFAULT 'anthropic',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			cooldown_until INTEGER NOT NULL DEFAULT 0,
 			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -814,8 +813,8 @@ func TestMigrateModelRedirectsData_WithLegacyData(t *testing.T) {
 
 	// 插入带旧格式数据的渠道
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (name, channel_type, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES ('test-ch', 'openai', 'https://api.example.com', 10, 1, '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
+		INSERT INTO channels (name, url, priority, enabled, models, model_redirects, created_at, updated_at)
+		VALUES ('test-ch', 'https://api.example.com', 10, 1, '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
 	`)
 	if err != nil {
 		t.Fatalf("insert channel: %v", err)
@@ -915,8 +914,8 @@ func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (id, name, channel_type, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES (1, 'repair-order', 'openai', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
+		INSERT INTO channels (id, name, url, priority, enabled, models, model_redirects, created_at, updated_at)
+		VALUES (1, 'repair-order', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
 	`)
 	if err != nil {
 		t.Fatalf("insert legacy channel: %v", err)

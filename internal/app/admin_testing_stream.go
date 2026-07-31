@@ -70,7 +70,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	}
 
 	originalModel := testReq.Model
-	clientProtocol := resolveClientProtocol(cfg, &testReq)
+	clientProtocol := resolveClientProtocol(&testReq)
 
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
@@ -83,6 +83,9 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		selector = s.urlSelector
 	}
 	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeLocal {
+		orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
+	}
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -93,7 +96,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		upstreamProtocols, declared := resolveConfiguredURLUpstreamProtocols(
+		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
 			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
 		)
 		if len(upstreamProtocols) == 0 {
@@ -116,7 +119,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				return
 			}
 			lastResult = attempt.result
-			if declared || !isChannelTestProtocolEndpointMissing(lastResult) {
+			if !isChannelTestProtocolEndpointMissing(lastResult) {
 				break
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
@@ -124,7 +127,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		if idx == len(orderedURLs)-1 {
 			break
 		}
-		if capabilityExhausted {
+		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 			continue
 		}
 
@@ -157,7 +160,8 @@ type chatStreamResult struct {
 	firstContentTime time.Time
 	usageParser      *sseUsageParser
 	model            string
-	channelType      string
+	clientProtocol   string
+	upstreamProtocol string
 	statusCode       int
 	requestThinking  string
 	errorResult      map[string]any
@@ -228,6 +232,7 @@ func (s *Server) streamChatWithURLForProtocol(
 		if out.result == nil {
 			return
 		}
+		out.result["client_protocol"] = clientProtocol
 		out.result["upstream_protocol"] = upstreamProtocol
 		out.result["actual_model"] = attemptReq.Model
 	}()
@@ -291,12 +296,13 @@ func (s *Server) streamChatWithURLForProtocol(
 	}
 
 	sr := &chatStreamResult{
-		start:           start,
-		usageParser:     newSSEUsageParser(requestPlan.upstreamProtocol),
-		model:           testReq.Model,
-		channelType:     cfg.GetChannelType(),
-		statusCode:      resp.StatusCode,
-		requestThinking: requestThinking,
+		start:            start,
+		usageParser:      newSSEUsageParser(requestPlan.upstreamProtocol),
+		model:            testReq.Model,
+		clientProtocol:   requestPlan.clientProtocol,
+		upstreamProtocol: requestPlan.upstreamProtocol,
+		statusCode:       resp.StatusCode,
+		requestThinking:  requestThinking,
 	}
 
 	firstContentMarked := false
@@ -427,9 +433,11 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 
 	result := map[string]any{
-		"success":      resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code":  resp.StatusCode,
-		"is_streaming": false,
+		"success":           resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code":       resp.StatusCode,
+		"is_streaming":      false,
+		"client_protocol":   requestPlan.clientProtocol,
+		"upstream_protocol": requestPlan.upstreamProtocol,
 	}
 	if requestThinking != "" {
 		result["thinking_effort"] = requestThinking
@@ -524,11 +532,13 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		return
 	}
 	result := map[string]any{
-		"success":      true,
-		"status_code":  sr.statusCode,
-		"is_streaming": true,
-		"duration_ms":  time.Since(sr.start).Milliseconds(),
-		"message":      "ok",
+		"success":           true,
+		"status_code":       sr.statusCode,
+		"is_streaming":      true,
+		"duration_ms":       time.Since(sr.start).Milliseconds(),
+		"message":           "ok",
+		"client_protocol":   sr.clientProtocol,
+		"upstream_protocol": sr.upstreamProtocol,
 	}
 	if sr.errorResult != nil {
 		result = sr.errorResult
@@ -537,6 +547,8 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 			result["status_code"] = sr.statusCode
 		}
 	}
+	result["client_protocol"] = sr.clientProtocol
+	result["upstream_protocol"] = sr.upstreamProtocol
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
 	}

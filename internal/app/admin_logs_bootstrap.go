@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,8 +41,13 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 		params.Range = "this_month"
 	}
 	since, until := params.GetTimeRange()
-	channelType := c.Query("channel_type")
-	logFilter := &model.LogFilter{LogSource: model.LogSourceProxy}
+	logFilter := &model.LogFilter{
+		LogSource:        model.LogSourceProxy,
+		UpstreamProtocol: strings.ToLower(strings.TrimSpace(c.Query("upstream_protocol"))),
+	}
+	if logFilter.UpstreamProtocol == "all" {
+		logFilter.UpstreamProtocol = ""
+	}
 
 	var (
 		resp     LogsBootstrapResponse
@@ -118,17 +124,17 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 
 	// goroutine 5: distinct models + channels + status codes（顺序调用，共享同一 goroutine）
 	wg.Go(func() {
-		models, err := s.store.GetDistinctModels(ctx, since, until, channelType, logFilter)
+		models, err := s.store.GetDistinctModels(ctx, since, until, logFilter)
 		if err != nil {
 			setErr(err)
 			return
 		}
-		channels, err := s.store.GetDistinctChannels(ctx, since, until, channelType, logFilter)
+		channels, err := s.store.GetDistinctChannels(ctx, since, until, logFilter)
 		if err != nil {
 			setErr(err)
 			return
 		}
-		statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, channelType, logFilter)
+		statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, logFilter)
 		if err != nil {
 			setErr(err)
 			return
@@ -181,7 +187,7 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	since, until := params.GetTimeRange()
 	filter := BuildLogFilter(c)
 	filter.LogSource = model.LogSourceProxy
-	models, err := s.store.GetDistinctModels(ctx, since, until, "", &filter)
+	models, err := s.store.GetDistinctModels(ctx, since, until, &filter)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -189,7 +195,7 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	if models == nil {
 		models = make([]string, 0)
 	}
-	channels, err := s.store.GetDistinctChannels(ctx, since, until, "", &filter)
+	channels, err := s.store.GetDistinctChannels(ctx, since, until, &filter)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -197,7 +203,7 @@ func (s *Server) handleTokenLogsBootstrap(ctx context.Context, c *gin.Context) {
 	if channels == nil {
 		channels = make([]model.ChannelNameID, 0)
 	}
-	statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, "", &filter)
+	statusCodes, err := s.store.GetDistinctStatusCodes(ctx, since, until, &filter)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return

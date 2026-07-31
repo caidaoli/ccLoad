@@ -20,7 +20,6 @@ type ChannelRequest struct {
 	Name                   string                        `json:"name" binding:"required"`
 	APIKey                 string                        `json:"api_key"`
 	APIKeys                []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
-	ChannelType            string                        `json:"channel_type,omitempty"` // 上游协议:anthropic, codex, openai, gemini
 	Websockets             bool                          `json:"websockets,omitempty"`
 	ProtocolTransformMode  string                        `json:"protocol_transform_mode,omitempty"`
 	KeyStrategy            string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
@@ -221,18 +220,6 @@ func (cr *ChannelRequest) Validate() error {
 		return err
 	}
 
-	// [FIX] channel_type 白名单校验 + 标准化
-	// 设计：空值允许（使用默认值anthropic），非空值必须合法
-	cr.ChannelType = strings.TrimSpace(cr.ChannelType)
-	if cr.ChannelType != "" {
-		// 先标准化（小写化）
-		normalized := util.NormalizeChannelType(cr.ChannelType)
-		// 再白名单校验
-		if !util.IsValidChannelType(normalized) {
-			return fmt.Errorf("invalid channel_type: %q (allowed: anthropic, openai, gemini, codex)", cr.ChannelType)
-		}
-		cr.ChannelType = normalized // 应用标准化结果
-	}
 	rawProtocolTransformMode := cr.ProtocolTransformMode
 	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
 	if cr.ProtocolTransformMode == "" {
@@ -301,7 +288,6 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 
 	return &model.Config{
 		Name:                   strings.TrimSpace(cr.Name),
-		ChannelType:            strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		Websockets:             cr.Websockets,
 		ProtocolTransformMode:  cr.ProtocolTransformMode,
 		URLs:                   cr.URLs.Clone(),
@@ -477,16 +463,11 @@ type SettingUpdateRequest struct {
 
 // CheckDuplicateRequest 渠道重复检测请求
 type CheckDuplicateRequest struct {
-	ChannelType string            `json:"channel_type" binding:"required"`
-	URLs        model.ChannelURLs `json:"urls"         binding:"required,min=1"`
+	URLs model.ChannelURLs `json:"urls" binding:"required,min=1"`
 }
 
 // Validate implements RequestValidator.
 func (r *CheckDuplicateRequest) Validate() error {
-	r.ChannelType = util.NormalizeChannelType(r.ChannelType)
-	if !util.IsValidChannelType(r.ChannelType) {
-		return fmt.Errorf("invalid channel_type: %q", r.ChannelType)
-	}
 	urls, err := validateChannelURLConfigs(r.URLs)
 	if err != nil {
 		return err
@@ -497,10 +478,9 @@ func (r *CheckDuplicateRequest) Validate() error {
 
 // DuplicateChannelInfo 重复渠道信息
 type DuplicateChannelInfo struct {
-	ID          int64             `json:"id"`
-	Name        string            `json:"name"`
-	ChannelType string            `json:"channel_type"`
-	URLs        model.ChannelURLs `json:"urls"`
+	ID   int64             `json:"id"`
+	Name string            `json:"name"`
+	URLs model.ChannelURLs `json:"urls"`
 }
 
 // CheckDuplicateResponse 重复检测响应

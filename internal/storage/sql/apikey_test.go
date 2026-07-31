@@ -279,7 +279,6 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 				Priority:              10,
 				Enabled:               true,
 				ScheduledCheckEnabled: true,
-				ChannelType:           "openai",
 				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
 					Enabled: true, Name: "Imported cooldown", Priority: 0, StatusCodes: []int{429},
 					Scope: model.CooldownScopeKey, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
@@ -301,7 +300,6 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 				Priority:              20,
 				Enabled:               true,
 				ScheduledCheckEnabled: false,
-				ChannelType:           "anthropic",
 				ModelEntries: []model.ModelEntry{
 					{Model: "claude-3"},
 				},
@@ -399,7 +397,6 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 			Priority:              5,
 			Enabled:               true,
 			ScheduledCheckEnabled: true,
-			ChannelType:           "openai",
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-4o-mini"},
 			},
@@ -434,11 +431,10 @@ func TestAPIKey_ImportChannelBatchPreservesModelEntryOrder(t *testing.T) {
 
 	channel := &model.ChannelWithKeys{
 		Config: &model.Config{
-			Name:        "imported-channel-order",
-			URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-			Priority:    5,
-			Enabled:     true,
-			ChannelType: "openai",
+			Name:     "imported-channel-order",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority: 5,
+			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "z-last"},
 				{Model: "a-first"},

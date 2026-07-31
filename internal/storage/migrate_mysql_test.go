@@ -188,10 +188,9 @@ func TestMySQL(t *testing.T) {
 
 		ctx := context.Background()
 		created, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "mysql-legacy-urls",
-			URLs:        model.ChannelURLs{{URL: "https://placeholder.example.com"}},
-			ChannelType: "anthropic",
-			Enabled:     true,
+			Name:    "mysql-legacy-urls",
+			URLs:    model.ChannelURLs{{URL: "https://placeholder.example.com"}},
+			Enabled: true,
 		})
 		if err != nil {
 			t.Fatalf("创建迁移夹具失败: %v", err)
@@ -339,7 +338,6 @@ func TestMySQL(t *testing.T) {
 				name VARCHAR(191) NOT NULL UNIQUE,
 				url VARCHAR(191) NOT NULL,
 				priority INT NOT NULL DEFAULT 0,
-				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
 				enabled TINYINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
 				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -348,7 +346,6 @@ func TestMySQL(t *testing.T) {
 				updated_at BIGINT NOT NULL,
 				INDEX idx_channels_enabled (enabled),
 				INDEX idx_channels_priority (priority DESC),
-				INDEX idx_channels_type_enabled (channel_type, enabled),
 				INDEX idx_channels_cooldown (cooldown_until)
 			)
 		`)
@@ -429,11 +426,10 @@ func TestMySQL(t *testing.T) {
 		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{
-					Name:        "legacy-key-len",
-					URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-					Priority:    1,
-					ChannelType: "openai",
-					Enabled:     true,
+					Name:     "legacy-key-len",
+					URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+					Priority: 1,
+					Enabled:  true,
 					ModelEntries: []model.ModelEntry{
 						{Model: "gpt-4"},
 					},

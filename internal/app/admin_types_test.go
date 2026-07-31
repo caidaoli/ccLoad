@@ -12,9 +12,8 @@ func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 	t.Parallel()
 
 	req := ChannelRequest{
-		Name:        "test",
-		APIKey:      "sk-test",
-		ChannelType: "openai",
+		Name:   "test",
+		APIKey: "sk-test",
 		URLs: model.ChannelURLs{
 			{URL: " https://api.example.com/ ", Protocols: []string{"CODEX", "openai", "codex"}},
 			{URL: "https://api.example.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
@@ -25,7 +24,7 @@ func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 		t.Fatalf("Validate() error = %v", err)
 	}
 	if got := req.URLs[0]; got.URL != "https://api.example.com" || got.Exact ||
-		len(got.Protocols) != 2 || got.Protocols[0] != "openai" || got.Protocols[1] != "codex" {
+		len(got.Protocols) != 2 || got.Protocols[0] != "codex" || got.Protocols[1] != "openai" {
 		t.Fatalf("normalized first URL=%+v", got)
 	}
 	if got := req.ToConfig().URLs[1]; got.URL != "https://api.example.com/v1/responses" || !got.Exact {
@@ -66,7 +65,6 @@ func TestChannelRequestValidate_NormalizesProtocolTransformMode(t *testing.T) {
 				Name:                  "test",
 				APIKey:                "sk-test",
 				URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
-				ChannelType:           "codex",
 				ProtocolTransformMode: tt.mode,
 				Models:                []model.ModelEntry{{Model: "test-model"}},
 			}
@@ -90,7 +88,6 @@ func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T
 		Name:                  "test",
 		APIKey:                "sk-test",
 		URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
-		ChannelType:           "codex",
 		ProtocolTransformMode: "remote",
 		Models:                []model.ModelEntry{{Model: "test-model"}},
 	}

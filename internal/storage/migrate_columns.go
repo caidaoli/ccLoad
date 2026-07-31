@@ -19,6 +19,7 @@ var sqliteMigratableTables = map[string]bool{
 	"channels":                 true,
 	"debug_logs":               true,
 	"fingerprint_test_results": true,
+	"model_fingerprints":       true,
 	"schema_migrations":        true,
 }
 
@@ -483,6 +484,18 @@ func ensureLogsUpstreamWebsocket(ctx context.Context, db *sql.DB, dialect Dialec
 // ensureLogsClientProtocol ensures protocol statistics use the immutable client request protocol.
 func ensureLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "logs", "client_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureLogsUpstreamProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "logs", "upstream_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureModelFingerprintsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "model_fingerprints", "client_protocol",
 		"VARCHAR(32) NOT NULL DEFAULT ''",
 		"TEXT NOT NULL DEFAULT ''")
 }

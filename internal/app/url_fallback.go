@@ -1,5 +1,36 @@
 package app
 
+import "ccLoad/internal/model"
+
+func configuredURLFrom(configured model.ChannelURLs, index int, runtimeURL string) model.ChannelURL {
+	if index >= 0 && index < len(configured) && configured[index].RuntimeURL() == runtimeURL {
+		return configured[index]
+	}
+	for _, entry := range configured {
+		if entry.RuntimeURL() == runtimeURL {
+			return entry
+		}
+	}
+	return model.ChannelURL{
+		URL:   model.StripExactUpstreamURLMarker(runtimeURL),
+		Exact: model.HasExactUpstreamURLMarker(runtimeURL),
+	}
+}
+
+func prioritizeDeclaredProtocolURLs(sorted []sortedURL, configured model.ChannelURLs) []sortedURL {
+	declared := make([]sortedURL, 0, len(sorted))
+	automatic := make([]sortedURL, 0, len(sorted))
+	for _, candidate := range sorted {
+		entry := configuredURLFrom(configured, candidate.idx, candidate.url)
+		if !entry.UsesAutomaticProtocolDetection() {
+			declared = append(declared, candidate)
+			continue
+		}
+		automatic = append(automatic, candidate)
+	}
+	return append(declared, automatic...)
+}
+
 // orderURLsWithSelector 返回用于故障切换的URL尝试顺序。
 // 当 selector 可用且存在多个URL时，优先用加权随机选首跳，其余URL按排序结果兜底。
 func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string) []sortedURL {

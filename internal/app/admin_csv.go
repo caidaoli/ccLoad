@@ -45,7 +45,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "channel_type", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -110,7 +110,6 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.Itoa(cfg.MaxConcurrency),
 			strings.Join(models, ","),
 			modelRedirectsJSON,
-			cfg.GetChannelType(), // 使用GetChannelType确保默认值
 			cfg.GetProtocolTransformMode(),
 			keyStrategy,
 			strconv.FormatBool(cfg.Enabled),
@@ -313,7 +312,6 @@ func (s *Server) parseChannelImportRow(
 	urlsRaw := fetch("urls")
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
-	channelType := fetch("channel_type")
 	rawProtocolTransformMode := fetch("protocol_transform_mode")
 	keyStrategy := fetch("key_strategy")
 
@@ -348,11 +346,6 @@ func (s *Server) parseChannelImportRow(
 		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
 	}
 
-	// 渠道类型规范化与校验(openai → codex,空值 → anthropic)
-	channelType = util.NormalizeChannelType(channelType)
-	if !util.IsValidChannelType(channelType) {
-		return nil, fmt.Sprintf("第%d行上游协议无效: %s(仅支持anthropic/codex/openai/gemini)", lineNo, channelType), true
-	}
 	protocolTransformMode := model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
 	if protocolTransformMode == "" {
 		return nil, fmt.Sprintf("第%d行 protocol_transform_mode 无效: %s", lineNo, rawProtocolTransformMode), true
@@ -486,7 +479,6 @@ func (s *Server) parseChannelImportRow(
 		RPMLimit:               rpmLimit,
 		MaxConcurrency:         maxConcurrency,
 		ModelEntries:           modelEntries,
-		ChannelType:            channelType,
 		ProtocolTransformMode:  protocolTransformMode,
 		Enabled:                enabled,
 		ScheduledCheckEnabled:  scheduledCheckEnabled,

@@ -188,7 +188,7 @@ func TestNewServerParallelConstructionKeepsRuntimeConfigIsolated(t *testing.T) {
 		}
 
 		channel, err := cases[i].store.CreateConfig(ctx, &model.Config{
-			Name: "parallel-runtime-config", URLs: model.ChannelURLs{{URL: "https://example.com"}}, ChannelType: "openai", Enabled: true,
+			Name: "parallel-runtime-config", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
 		})
 		if err != nil {
 			t.Fatalf("CreateConfig case %d: %v", i, err)

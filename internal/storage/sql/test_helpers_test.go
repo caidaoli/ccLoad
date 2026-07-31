@@ -26,11 +26,10 @@ func createTestChannel(t testing.TB, ctx context.Context, store storage.Store, n
 	t.Helper()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        name,
-		URLs:        model.ChannelURLs{{URL: "https://api.example.com"}},
-		Priority:    1,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     name,
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 1,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 		},

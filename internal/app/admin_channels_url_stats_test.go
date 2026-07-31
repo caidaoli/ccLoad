@@ -20,7 +20,6 @@ func TestHandleChannelURLStats_NilSelectorReturnsEmpty(t *testing.T) {
 		Name:         "url-stats-nil-selector",
 		URLs:         channelURLsForTest("https://a.example", "https://b.example"),
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
 		Enabled:      true,
 	})
@@ -55,7 +54,6 @@ func TestHandleChannelURLStats_SingleURLReturnsStats(t *testing.T) {
 		Name:         "single-url-stats",
 		URLs:         channelURLsForTest("https://single.example"),
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
 		Enabled:      true,
 	})
@@ -96,7 +94,6 @@ func TestNewServer_LoadsTodayURLStatsFromLogsOnStartup(t *testing.T) {
 		Name:         "url-stats-from-logs",
 		URLs:         channelURLsForTest("https://a.example", "https://b.example"),
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
 		Enabled:      true,
 	})

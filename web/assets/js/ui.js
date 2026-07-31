@@ -937,80 +937,80 @@ window.WebAuth = window.WebAuth || {
 })();
 
 // ============================================================
-// 渠道类型管理模块（动态加载配置，单一数据源）
+// 协议配置管理模块（动态加载配置，单一数据源）
 // ============================================================
 (function () {
-  let channelTypesCache = null;
+  let protocolsCache = null;
 
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
 
   /**
-   * 获取渠道类型配置（带缓存）
+   * 获取协议配置（带缓存）
    */
-  async function getChannelTypes() {
-    if (channelTypesCache) {
-      return channelTypesCache;
+  async function getProtocols() {
+    if (protocolsCache) {
+      return protocolsCache;
     }
 
-    const types = await fetchData('/public/channel-types');
-    channelTypesCache = types || [];
-    return channelTypesCache;
+    const protocols = await fetchData('/public/protocols');
+    protocolsCache = protocols || [];
+    return protocolsCache;
   }
 
   /**
-   * 渲染渠道类型单选按钮组（用于编辑渠道界面）
+   * 渲染协议单选按钮组
    * @param {string} containerId - 容器元素ID
    * @param {string} selectedValue - 选中的值（默认'anthropic'）
    */
-  async function renderChannelTypeRadios(containerId, selectedValue = 'anthropic') {
+  async function renderProtocolRadios(containerId, selectedValue = 'anthropic') {
     const container = document.getElementById(containerId);
     if (!container) {
       console.error('Container element not found:', containerId);
       return;
     }
 
-    const types = await getChannelTypes();
+    const protocols = await getProtocols();
 
-    container.innerHTML = types.map(type => `
+    container.innerHTML = protocols.map(protocol => `
       <label class="channel-editor-radio-option">
         <input type="radio"
-               name="channelType"
-               value="${escapeHtml(type.value)}"
-               ${type.value === selectedValue ? 'checked' : ''}>
-        <span title="${escapeHtml(type.description)}">${escapeHtml(type.display_name)}</span>
+               name="protocol"
+               value="${escapeHtml(protocol.value)}"
+               ${protocol.value === selectedValue ? 'checked' : ''}>
+        <span title="${escapeHtml(protocol.description)}">${escapeHtml(protocol.display_name)}</span>
       </label>
     `).join('');
   }
 
   /**
-   * 渲染渠道类型下拉选择框（用于测试渠道界面）
+   * 渲染协议下拉选择框
    * @param {string} selectId - select元素ID
    * @param {string} selectedValue - 选中的值（默认'anthropic'）
    */
-  async function renderChannelTypeSelect(selectId, selectedValue = 'anthropic') {
+  async function renderProtocolSelect(selectId, selectedValue = 'anthropic') {
     const select = document.getElementById(selectId);
     if (!select) {
       console.error('select element not found:', selectId);
       return;
     }
 
-    const types = await getChannelTypes();
+    const protocols = await getProtocols();
 
-    select.innerHTML = types.map(type => `
-      <option value="${escapeHtml(type.value)}"
-              ${type.value === selectedValue ? 'selected' : ''}
-              title="${escapeHtml(type.description)}">
-        ${escapeHtml(type.display_name)}
+    select.innerHTML = protocols.map(protocol => `
+      <option value="${escapeHtml(protocol.value)}"
+              ${protocol.value === selectedValue ? 'selected' : ''}
+              title="${escapeHtml(protocol.description)}">
+        ${escapeHtml(protocol.display_name)}
       </option>
     `).join('');
   }
 
   // 导出到全局作用域
-  window.ChannelTypeManager = {
-    getChannelTypes,
-    renderChannelTypeRadios,
-    renderChannelTypeSelect
+  window.ProtocolManager = {
+    getProtocols,
+    renderProtocolRadios,
+    renderProtocolSelect
   };
 })();
 

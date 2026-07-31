@@ -76,7 +76,7 @@ func TestConfig_ProtocolTransformMode(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			cfg := &Config{ChannelType: "codex", ProtocolTransformMode: tt.mode}
+			cfg := &Config{ProtocolTransformMode: tt.mode}
 			if got := cfg.GetProtocolTransformMode(); got != tt.wantMode {
 				t.Fatalf("GetProtocolTransformMode()=%q, want %q", got, tt.wantMode)
 			}
@@ -167,8 +167,8 @@ func TestConfig_ChannelURLs(t *testing.T) {
 		t.Fatalf("Normalize() unexpected error: %v", err)
 	}
 
-	if got := c.URLs[0].Protocols; len(got) != 2 || got[0] != "openai" || got[1] != "codex" {
-		t.Fatalf("normalized protocols = %v, want [openai codex]", got)
+	if got := c.URLs[0].Protocols; len(got) != 2 || got[0] != "codex" || got[1] != "openai" {
+		t.Fatalf("normalized protocols = %v, want configured order [codex openai]", got)
 	}
 	if got := c.GetURLs(); len(got) != 2 || got[0] != "https://api.openai.com" || got[1] != "https://api.example.com/v1/messages#" {
 		t.Fatalf("GetURLs() = %v", got)
@@ -182,7 +182,7 @@ func TestConfig_ChannelURLs(t *testing.T) {
 
 	clone := c.Clone()
 	clone.URLs[0].Protocols[0] = "anthropic"
-	if c.URLs[0].Protocols[0] != "openai" {
+	if c.URLs[0].Protocols[0] != "codex" {
 		t.Fatal("Clone() shares URL protocol storage")
 	}
 }

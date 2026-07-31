@@ -10,8 +10,7 @@ import (
 func beginTestActiveRequest(m *activeRequestManager, start time.Time, model, clientIP string, streaming bool) int64 {
 	return m.BeginAttempt(0, activeRequestAttempt{
 		StartTime: start, Model: model, ClientIP: clientIP, Streaming: streaming,
-		ChannelID: 1, ChannelName: "test-channel", ChannelType: "openai",
-		APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+		ChannelID: 1, ChannelName: "test-channel", APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
 	})
 }
 
@@ -45,8 +44,7 @@ func TestActiveRequestManager_BeginAttemptMasksKey(t *testing.T) {
 	rawKey := "sk-1234567890abcdef"
 	m.BeginAttempt(id, activeRequestAttempt{
 		StartTime: time.UnixMilli(200), Model: "m", ClientIP: "1.1.1.1",
-		ChannelID: 1, ChannelName: "ch", ChannelType: "anthropic",
-		APIKey: rawKey, BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+		ChannelID: 1, ChannelName: "ch", APIKey: rawKey, BaseURL: "https://upstream.example.com", CostMultiplier: 1,
 	})
 
 	got := m.List()
@@ -84,8 +82,7 @@ func TestActiveRequestManager_UpstreamStatusTransitions(t *testing.T) {
 
 	m.BeginAttempt(id, activeRequestAttempt{
 		StartTime: time.UnixMilli(200), Model: "m", ClientIP: "1.1.1.1", Streaming: true,
-		ChannelID: 1, ChannelName: "ch", ChannelType: "codex",
-		APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
+		ChannelID: 1, ChannelName: "ch", APIKey: "sk-test", BaseURL: "https://upstream.example.com", CostMultiplier: 1,
 	})
 	if got := m.List()[0].UpstreamStatus; got != activeRequestStatusRetrying {
 		t.Fatalf("status during retry=%q, want %q", got, activeRequestStatusRetrying)

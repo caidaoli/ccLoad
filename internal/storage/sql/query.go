@@ -64,8 +64,10 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.ChannelID != nil {
 		wb.AddCondition("channel_id = ?", *filter.ChannelID)
 	}
-	// 注意：ChannelType/ChannelName/ChannelNameLike 不在此处处理。
-	// logs 表只有 channel_id；这类过滤应由 SQLStore.applyChannelFilter 先解析出候选 channel_id 集合再 WhereIn。
+	// ChannelName/ChannelNameLike 需要先解析为 channel_id；实际协议直接存在日志行中。
+	if filter.UpstreamProtocol != "" {
+		wb.AddCondition("upstream_protocol = ?", filter.UpstreamProtocol)
+	}
 	if filter.Model != "" {
 		wb.AddCondition("model = ?", filter.Model)
 	}
@@ -131,7 +133,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URLs, &c.Priority,
-		&c.RPMLimit, &c.MaxConcurrency, &c.ChannelType, &websocketsInt, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
+		&c.RPMLimit, &c.MaxConcurrency, &websocketsInt, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &cooldownDetectionRules, &c.ProxyURL, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err

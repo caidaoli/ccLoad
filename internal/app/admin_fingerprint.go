@@ -170,7 +170,7 @@ func (s *Server) HandleTestFingerprint(c *gin.Context) {
 
 func validateFingerprintClientProtocol(clientProtocol string) (string, error) {
 	clientProtocol = strings.ToLower(strings.TrimSpace(clientProtocol))
-	if !util.IsValidChannelType(clientProtocol) {
+	if !util.IsValidProtocol(clientProtocol) {
 		return "", fmt.Errorf("invalid client_protocol %q", clientProtocol)
 	}
 	return clientProtocol, nil

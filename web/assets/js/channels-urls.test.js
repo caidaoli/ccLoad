@@ -24,7 +24,7 @@ test('channel URL configs serialize one selected protocol or automatic detection
     {
       url: 'https://upstream.test/v1/messages',
       exact: true,
-      protocols: ['openai']
+      protocols: ['codex']
     },
     {
       url: 'https://automatic.test',

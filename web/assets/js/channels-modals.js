@@ -11,9 +11,7 @@ function normalizeProtocolTransformMode(value) {
   return ['auto', 'upstream', 'local'].includes(mode) ? mode : 'auto';
 }
 
-let channelTypeCombobox = null;
 let protocolTransformModeCombobox = null;
-let channelTypeOptions = [];
 
 function getProtocolTransformModeOptions() {
   return [
@@ -38,22 +36,6 @@ function getProtocolTransformModeHelp(value) {
   return window.t(keys[mode]);
 }
 
-function getChannelEditorChannelType() {
-  const hiddenInput = document.getElementById?.('channelTypeValue');
-  const value = hiddenInput?.value || channelTypeCombobox?.getValue() ||
-    document.querySelector('input[name="channelType"]:checked')?.value;
-  return String(value || 'anthropic').trim().toLowerCase();
-}
-
-function getChannelTypeLabel(value) {
-  return channelTypeOptions.find(option => option.value === value)?.label || value;
-}
-
-function syncChannelProtocolVisibility() {
-  const control = document.getElementById('channelTypeControl');
-  if (control) control.hidden = getProtocolTransformMode() !== 'local';
-}
-
 function setProtocolTransformMode(value) {
   const mode = normalizeProtocolTransformMode(value);
   const hiddenInput = document.getElementById('protocolTransformModeValue');
@@ -61,7 +43,6 @@ function setProtocolTransformMode(value) {
   protocolTransformModeCombobox?.setValue(mode, getProtocolTransformModeLabel(mode));
   const visibleInput = protocolTransformModeCombobox?.getInput();
   if (visibleInput) visibleInput.title = getProtocolTransformModeHelp(mode);
-  syncChannelProtocolVisibility();
 }
 
 function getProtocolTransformMode() {
@@ -69,20 +50,7 @@ function getProtocolTransformMode() {
   return normalizeProtocolTransformMode(hiddenInput?.value || protocolTransformModeCombobox?.getValue());
 }
 
-function setChannelEditorChannelType(value) {
-  const channelType = String(value || 'anthropic').trim().toLowerCase();
-  const hiddenInput = document.getElementById('channelTypeValue');
-  if (hiddenInput) hiddenInput.value = channelType;
-  channelTypeCombobox?.setValue(channelType, getChannelTypeLabel(channelType));
-}
-
-async function ensureChannelProtocolComboboxes(channelType, transformMode) {
-  const types = await window.ChannelTypeManager.getChannelTypes();
-  channelTypeOptions = (Array.isArray(types) ? types : []).map(type => ({
-    value: String(type.value || '').trim().toLowerCase(),
-    label: type.display_name || type.value
-  })).filter(option => option.value);
-
+async function ensureProtocolTransformModeCombobox(transformMode) {
   if (!protocolTransformModeCombobox) {
     protocolTransformModeCombobox = createSearchableCombobox({
       container: 'protocolTransformModeSelectContainer',
@@ -99,27 +67,8 @@ async function ensureChannelProtocolComboboxes(channelType, transformMode) {
     });
   }
 
-  if (!channelTypeCombobox) {
-    channelTypeCombobox = createSearchableCombobox({
-      container: 'channelTypeSelectContainer',
-      inputId: 'channelTypeInput',
-      dropdownId: 'channelTypeDropdown',
-      minWidth: 0,
-      getOptions: () => channelTypeOptions,
-      initialValue: 'anthropic',
-      initialLabel: getChannelTypeLabel('anthropic'),
-      onSelect: (value) => {
-        setChannelEditorChannelType(value);
-        scheduleChannelDuplicateHintCheck();
-        markChannelFormDirty();
-      }
-    });
-  }
-
   setProtocolTransformMode(transformMode ?? getProtocolTransformMode());
-  setChannelEditorChannelType(channelType ?? getChannelEditorChannelType());
   protocolTransformModeCombobox?.refresh();
-  channelTypeCombobox?.refresh();
 }
 
 if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
@@ -336,11 +285,10 @@ async function resolveEditableChannel(id) {
   }
 }
 
-async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedChannelId, response }) {
+async function handleChannelSaveSuccess({ isNewChannel, savedChannelId, response }) {
   if (window.ChannelModalHooks && typeof window.ChannelModalHooks.afterSave === 'function') {
     await window.ChannelModalHooks.afterSave({
       isNewChannel,
-      newChannelType,
       savedChannelId,
       response
     });
@@ -455,7 +403,7 @@ async function showAddModal() {
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
-	await ensureChannelProtocolComboboxes('anthropic', 'auto');
+	await ensureProtocolTransformModeCombobox('auto');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -493,11 +441,7 @@ async function editChannel(id) {
   const scheduledVisibilityPromise = syncScheduledCheckVisibility();
   const apiKeysPromise = fetchEditableChannelKeys(id);
   const modelStatsPromise = fetchEditableChannelModelStats(id);
-  const channelType = channel.channel_type || 'anthropic';
-  const channelProtocolRenderPromise = ensureChannelProtocolComboboxes(
-    channelType,
-    channel.protocol_transform_mode
-  );
+  const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
   clearChannelDuplicateHint();
@@ -514,7 +458,7 @@ async function editChannel(id) {
     apiKeysPromise,
     modelStatsPromise,
     scheduledVisibilityPromise,
-    channelProtocolRenderPromise,
+    protocolModeRenderPromise,
     urlStatsPromise
   ]);
 
@@ -631,12 +575,12 @@ function closeModal() {
 let channelDuplicateHintTimer = null;
 let channelDuplicateHintRequestSeq = 0;
 
-async function checkChannelDuplicate(channelType, urls, options = {}) {
+async function checkChannelDuplicate(urls, options = {}) {
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/check-duplicate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel_type: channelType, urls })
+      body: JSON.stringify({ urls })
     });
     if (!resp.success) return [];
     return Array.isArray(resp.data?.duplicates) ? resp.data.duplicates : [];
@@ -697,8 +641,7 @@ async function refreshChannelDuplicateHint() {
   }
 
   const requestSeq = ++channelDuplicateHintRequestSeq;
-  const channelType = getChannelEditorChannelType();
-  const dupes = await checkChannelDuplicate(channelType, validURLConfigs, { silent: true });
+  const dupes = await checkChannelDuplicate(validURLConfigs, { silent: true });
   if (requestSeq !== channelDuplicateHintRequestSeq) return;
   if (dupes.length > 0) {
     renderChannelDuplicateHint(dupes);
@@ -746,7 +689,7 @@ function confirmDuplicateChannel(dupes) {
     const urls = (Array.isArray(d.urls) ? d.urls : [])
       .map(runtimeInlineURL)
       .filter(Boolean);
-    return `• ${d.name}（${d.channel_type}）\n  ${urls.join('\n  ')}`;
+    return `• ${d.name}\n  ${urls.join('\n  ')}`;
   }).join('\n\n');
   return confirm(window.t('channels.duplicateChannelFound', { list }));
 }
@@ -814,7 +757,6 @@ async function saveChannel(event) {
     return;
   }
 
-  const channelType = getChannelEditorChannelType();
   const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';
 
   const formData = {
@@ -822,7 +764,6 @@ async function saveChannel(event) {
     urls: validURLConfigs,
     api_key: validKeys.join(','),
 		api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
-		channel_type: channelType,
 		protocol_transform_mode: getProtocolTransformMode(),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
@@ -851,7 +792,7 @@ async function saveChannel(event) {
   setChannelSavePending(true);
   try {
     if (!editingChannelId) {
-      const dupes = await checkChannelDuplicate(channelType, validURLConfigs);
+      const dupes = await checkChannelDuplicate(validURLConfigs);
       if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
     }
 
@@ -870,12 +811,11 @@ async function saveChannel(event) {
     if (!resp.success) throw new Error(resp.error || window.t('channels.msg.saveFailed'));
 
     const isNewChannel = !editingChannelId;
-    const newChannelType = formData.channel_type;
     const savedChannelId = editingChannelId;
 
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
-    await handleChannelSaveSuccess({ isNewChannel, newChannelType, savedChannelId, response: resp });
+    await handleChannelSaveSuccess({ isNewChannel, savedChannelId, response: resp });
     if (window.showSuccess) window.showSuccess(isNewChannel ? window.t('channels.channelAdded') : window.t('channels.channelUpdated'));
   } catch (e) {
     console.error('Save channel failed', e);
@@ -1507,8 +1447,7 @@ async function copyChannel(id, name) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
-  const channelType = channel.channel_type || 'anthropic';
-  await ensureChannelProtocolComboboxes(channelType, channel.protocol_transform_mode);
+  await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
   scheduleChannelDuplicateHintCheck();
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -2261,8 +2200,8 @@ function areModelRowsEqual(left, right) {
 }
 
 async function fetchModelsFromAPI() {
-  const channelUrl = getValidInlineURLs()[0] || '';
-  const channelType = getChannelEditorChannelType();
+  const urls = getValidInlineURLConfigs();
+  const channelUrl = urls[0]?.url || '';
   const firstValidKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
 
   if (!channelUrl) {
@@ -2288,8 +2227,7 @@ async function fetchModelsFromAPI() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      channel_type: channelType,
-      url: channelUrl,
+      urls,
       api_key: firstValidKey
     })
   };
@@ -2372,10 +2310,14 @@ function openCommonModelsModal(trigger) {
   if (!modal) return false;
 
   commonModelsTrigger = trigger || document.activeElement;
-  const currentType = getChannelEditorChannelType();
+  const configuredProtocols = new Set(
+    getValidInlineURLConfigs().flatMap(entry => Array.isArray(entry.protocols) ? entry.protocols : [])
+  );
   const checkboxes = getCommonModelsModalCheckboxes();
   checkboxes.forEach(checkbox => {
-    checkbox.checked = checkbox.value === currentType;
+    checkbox.checked = configuredProtocols.size > 0
+      ? configuredProtocols.has(checkbox.value)
+      : checkbox.value === 'anthropic';
   });
 
   document.getElementById('channelModal')?.setAttribute('inert', '');
@@ -2436,13 +2378,13 @@ function initCommonModelsModalEvents() {
   modal.dataset.bound = '1';
 }
 
-function addCommonModelsToRows(rows, channelTypes) {
-  const selectedTypes = Array.from(new Set(
-    (Array.isArray(channelTypes) ? channelTypes : [])
-      .map(type => String(type || '').trim().toLowerCase())
-      .filter(type => COMMON_MODELS[type])
+function addCommonModelsToRows(rows, protocols) {
+  const selectedProtocols = Array.from(new Set(
+    (Array.isArray(protocols) ? protocols : [])
+      .map(protocol => String(protocol || '').trim().toLowerCase())
+      .filter(protocol => COMMON_MODELS[protocol])
   ));
-  const commonModels = selectedTypes.flatMap(type => COMMON_MODELS[type]);
+  const commonModels = selectedProtocols.flatMap(protocol => COMMON_MODELS[protocol]);
   if (commonModels.length === 0) return { addedCount: 0, hasSupportedTypes: false };
 
   const existingModels = new Set(
@@ -2463,8 +2405,8 @@ function addCommonModelsToRows(rows, channelTypes) {
   return { addedCount, hasSupportedTypes: true };
 }
 
-function addCommonModels(channelTypes) {
-  const result = addCommonModelsToRows(redirectTableData, channelTypes);
+function addCommonModels(protocols) {
+  const result = addCommonModelsToRows(redirectTableData, protocols);
   if (!result.hasSupportedTypes) {
     if (window.showWarning) {
       window.showWarning(window.t('channels.selectCommonModelType'));

@@ -59,7 +59,6 @@ func (s *Server) decideCooldownAction(
 }
 
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
-	in.ChannelType = cfg.ChannelType
 	in.CooldownDetectionRules = cfg.CooldownDetectionRules
 	if in.CooldownDetectionRules == nil || in.CooldownDetectionRules.IsEmpty() {
 		in.CooldownDetectionRules = s.globalCooldownDetectionRules
@@ -158,24 +157,25 @@ func (s *Server) logProxyResult(
 	errMsg string,
 ) {
 	s.AddLogAsync(buildLogEntry(logEntryParams{
-		RequestModel:   reqCtx.originalModel,
-		ActualModel:    actualModel,
-		RequestPath:    reqCtx.requestPath,
-		ChannelID:      cfg.ID,
-		StatusCode:     statusCode,
-		Duration:       duration,
-		IsStreaming:    reqCtx.isStreaming,
-		APIKeyUsed:     selectedKey,
-		AuthTokenID:    reqCtx.tokenID,
-		ClientProtocol: reqCtx.clientProtocol,
-		ClientIP:       reqCtx.clientIP,
-		BaseURL:        reqCtx.baseURL,
-		Result:         res,
-		ErrMsg:         errMsg,
-		StartTime:      reqCtx.attemptStartTime,
-		DebugData:      reqCtx.debugData,
-		CostMultiplier: cfg.CostMultiplier,
-		ThinkingEffort: reqCtx.thinkingEffort,
+		RequestModel:     reqCtx.originalModel,
+		ActualModel:      actualModel,
+		RequestPath:      reqCtx.requestPath,
+		ChannelID:        cfg.ID,
+		StatusCode:       statusCode,
+		Duration:         duration,
+		IsStreaming:      reqCtx.isStreaming,
+		APIKeyUsed:       selectedKey,
+		AuthTokenID:      reqCtx.tokenID,
+		ClientProtocol:   reqCtx.clientProtocol,
+		UpstreamProtocol: reqCtx.upstreamProtocol,
+		ClientIP:         reqCtx.clientIP,
+		BaseURL:          reqCtx.baseURL,
+		Result:           res,
+		ErrMsg:           errMsg,
+		StartTime:        reqCtx.attemptStartTime,
+		DebugData:        reqCtx.debugData,
+		CostMultiplier:   cfg.CostMultiplier,
+		ThinkingEffort:   reqCtx.thinkingEffort,
 	}))
 }
 

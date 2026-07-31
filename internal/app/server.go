@@ -73,7 +73,7 @@ type Server struct {
 	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
 	responsesWebsocketPingIntervalOverride time.Duration
-	channelTypeTimeouts                    map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
+	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 	// 渠道未配置专属规则时使用的进程级默认规则。
@@ -160,12 +160,12 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:       runtimeCfg.MaxKeyRetries,
-		bodyLimits:          bodyLimits,
-		firstByteTimeout:    runtimeCfg.FirstByteTimeout,
-		streamTimeout:       runtimeCfg.StreamTimeout,
-		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
-		channelTypeTimeouts: runtimeCfg.ChannelTypeTimeouts,
+		maxKeyRetries:    runtimeCfg.MaxKeyRetries,
+		bodyLimits:       bodyLimits,
+		firstByteTimeout: runtimeCfg.FirstByteTimeout,
+		streamTimeout:    runtimeCfg.StreamTimeout,
+		nonStreamTimeout: runtimeCfg.NonStreamTimeout,
+		protocolTimeouts: runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
@@ -324,7 +324,7 @@ func (s *Server) StartModelCatalogSync() {
 	go s.runModelCatalogSyncLoop(syncer, interval)
 }
 
-type channelTypeTimeoutConfig struct {
+type protocolTimeoutConfig struct {
 	FirstByteTimeout time.Duration
 	StreamTimeout    time.Duration
 	NonStreamTimeout time.Duration
@@ -339,7 +339,7 @@ type serverRuntimeConfig struct {
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
-	ChannelTypeTimeouts          map[string]channelTypeTimeoutConfig
+	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
@@ -411,7 +411,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		nonStreamTimeout = 120 * time.Second
 	}
 
-	channelTypeTimeouts := loadChannelTypeTimeouts(cs)
+	protocolTimeouts := loadProtocolTimeouts(cs)
 
 	logRetentionDays := cs.GetInt("log_retention_days", 7)
 
@@ -428,7 +428,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
-		ChannelTypeTimeouts:          channelTypeTimeouts,
+		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
@@ -436,24 +436,24 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 }
 
-func loadChannelTypeTimeouts(cs *ConfigService) map[string]channelTypeTimeoutConfig {
-	timeouts := make(map[string]channelTypeTimeoutConfig, len(util.ChannelTypes))
-	for _, channelType := range util.ChannelTypes {
-		firstByteTimeout := cs.GetDuration(channelTypeFirstByteTimeoutSettingKey(channelType.Value), 0)
+func loadProtocolTimeouts(cs *ConfigService) map[string]protocolTimeoutConfig {
+	timeouts := make(map[string]protocolTimeoutConfig, len(util.Protocols))
+	for _, supportedProtocol := range util.Protocols {
+		firstByteTimeout := cs.GetDuration(protocolFirstByteTimeoutSettingKey(supportedProtocol.Value), 0)
 		if firstByteTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局首字超时）",
-				channelTypeFirstByteTimeoutSettingKey(channelType.Value), firstByteTimeout)
+				protocolFirstByteTimeoutSettingKey(supportedProtocol.Value), firstByteTimeout)
 			firstByteTimeout = 0
 		}
 
-		nonStreamTimeout := cs.GetDuration(channelTypeNonStreamTimeoutSettingKey(channelType.Value), 0)
+		nonStreamTimeout := cs.GetDuration(protocolNonStreamTimeoutSettingKey(supportedProtocol.Value), 0)
 		if nonStreamTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局非流超时）",
-				channelTypeNonStreamTimeoutSettingKey(channelType.Value), nonStreamTimeout)
+				protocolNonStreamTimeoutSettingKey(supportedProtocol.Value), nonStreamTimeout)
 			nonStreamTimeout = 0
 		}
 
-		timeouts[channelType.Value] = channelTypeTimeoutConfig{
+		timeouts[supportedProtocol.Value] = protocolTimeoutConfig{
 			FirstByteTimeout: firstByteTimeout,
 			NonStreamTimeout: nonStreamTimeout,
 		}
@@ -487,12 +487,12 @@ func warnMigratedEnvSettings() {
 	}
 }
 
-func channelTypeFirstByteTimeoutSettingKey(channelType string) string {
-	return util.NormalizeChannelType(channelType) + "_first_byte_timeout"
+func protocolFirstByteTimeoutSettingKey(upstreamProtocol string) string {
+	return util.NormalizeProtocol(upstreamProtocol) + "_first_byte_timeout"
 }
 
-func channelTypeNonStreamTimeoutSettingKey(channelType string) string {
-	return util.NormalizeChannelType(channelType) + "_non_stream_timeout"
+func protocolNonStreamTimeoutSettingKey(upstreamProtocol string) string {
+	return util.NormalizeProtocol(upstreamProtocol) + "_non_stream_timeout"
 }
 
 // loadHealthScoreConfig 从 ConfigService 加载健康度配置，无效值兜底为默认值
@@ -754,19 +754,6 @@ func (s *Server) GetEnabledChannelsByModel(ctx context.Context, modelName string
 	)
 }
 
-// GetEnabledChannelsByType 根据渠道类型获取所有启用的渠道配置
-func (s *Server) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
-	return readThroughChannelCache(
-		s,
-		func(cache *storage.ChannelCache) ([]*model.Config, error) {
-			return cache.GetEnabledChannelsByType(ctx, channelType)
-		},
-		func() ([]*model.Config, error) {
-			return s.store.GetEnabledChannelsByType(ctx, channelType)
-		},
-	)
-}
-
 func (s *Server) getAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	return readThroughChannelCache(
 		s,
@@ -884,7 +871,7 @@ func (s *Server) GetWriteTimeout() time.Duration {
 	if s.streamTimeout > maxTimeout {
 		maxTimeout = s.streamTimeout
 	}
-	for _, timeouts := range s.channelTypeTimeouts {
+	for _, timeouts := range s.protocolTimeouts {
 		if timeouts.NonStreamTimeout > maxTimeout {
 			maxTimeout = timeouts.NonStreamTimeout
 		}
@@ -895,22 +882,19 @@ func (s *Server) GetWriteTimeout() time.Duration {
 	return minWriteTimeout
 }
 
-func (s *Server) resolveProtocolTimeouts(cfg *model.Config, plan protocol.TransformPlan) channelTypeTimeoutConfig {
-	timeouts := channelTypeTimeoutConfig{
+func (s *Server) resolveProtocolTimeouts(plan protocol.TransformPlan) protocolTimeoutConfig {
+	timeouts := protocolTimeoutConfig{
 		FirstByteTimeout: s.firstByteTimeout,
 		StreamTimeout:    s.streamTimeout,
 		NonStreamTimeout: s.nonStreamTimeout,
 	}
 
 	protocolKey := string(plan.UpstreamProtocol)
-	if protocolKey == "" && cfg != nil {
-		protocolKey = cfg.GetChannelType()
-	}
 	if protocolKey == "" {
 		return timeouts
 	}
 
-	override, ok := s.channelTypeTimeouts[util.NormalizeChannelType(protocolKey)]
+	override, ok := s.protocolTimeouts[util.NormalizeProtocol(protocolKey)]
 	if !ok {
 		return timeouts
 	}
@@ -967,7 +951,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	public := r.Group("/public", ZstdMiddleware())
 	{
 		public.GET("/summary", s.HandlePublicSummary)
-		public.GET("/channel-types", s.HandleGetChannelTypes)
+		public.GET("/protocols", s.HandleGetProtocols)
 		public.GET("/version", s.HandlePublicVersion)
 	}
 
@@ -1159,16 +1143,6 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 	// 委托给 LogService 处理日志写入
 	s.logService.AddLogAsync(entry)
-}
-
-// getModelsByChannelType 获取指定渠道类型的去重模型列表
-func (s *Server) getModelsByChannelType(ctx context.Context, channelType string) ([]string, error) {
-	// 直接查询数据库（KISS原则，避免过度设计）
-	channels, err := s.store.GetEnabledChannelsByType(ctx, channelType)
-	if err != nil {
-		return nil, err
-	}
-	return modelNamesFromChannels(channels), nil
 }
 
 // getAllEnabledModels 获取所有启用渠道的去重模型列表。

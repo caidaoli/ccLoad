@@ -313,12 +313,6 @@
                 <input id="protocolTransformModeValue" type="hidden" value="auto">
                 <div id="protocolTransformModeSelectContainer" class="channel-editor-protocol-select"></div>
               </div>
-              <div id="channelTypeControl" class="channel-editor-protocol-control" hidden>
-                <label class="form-label channel-editor-inline-label channel-editor-inline-label--muted"
-                  for="channelTypeInput" data-i18n="channels.modal.channelProtocol">渠道协议</label>
-                <input id="channelTypeValue" type="hidden" value="anthropic">
-                <div id="channelTypeSelectContainer" class="channel-editor-protocol-select"></div>
-              </div>
             </div>
           </div>
         </div>
@@ -857,6 +851,10 @@
           <select id="testModelSelect" class="model-select">
             <!-- 动态填充模型选项 -->
           </select>
+        </div>
+        <div class="form-group channel-test-field">
+          <label class="form-label" for="testClientProtocolSelect" data-i18n="modelTest.clientProtocol">请求协议</label>
+          <select id="testClientProtocolSelect" class="model-select"></select>
         </div>
       </div>
 

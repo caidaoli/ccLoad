@@ -16,10 +16,10 @@ func TestProxy_StructuredGeminiResponseToAnthropicTransform(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-ch",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		apiKey:      "sk-gem",
+		name:             "gemini-ch",
+		upstreamProtocol: "gemini",
+		models:           "gemini-2.5-pro",
+		apiKey:           "sk-gem",
 	}}, map[int]string{0: "https://gemini-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1beta/models/gemini-2.5-pro:generateContent", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -72,10 +72,10 @@ func TestProxy_StructuredGeminiResponseToCodexTransform(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-ch",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		apiKey:      "sk-gem",
+		name:             "gemini-ch",
+		upstreamProtocol: "gemini",
+		models:           "gemini-2.5-pro",
+		apiKey:           "sk-gem",
 	}}, map[int]string{0: "https://gemini-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1beta/models/gemini-2.5-pro:generateContent", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -129,10 +129,10 @@ func TestProxy_StructuredAnthropicResponseToOpenAITransform(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "anthropic-ch",
-		channelType: "anthropic",
-		models:      "claude-3-5-sonnet",
-		apiKey:      "sk-ant",
+		name:             "anthropic-ch",
+		upstreamProtocol: "anthropic",
+		models:           "claude-3-5-sonnet",
+		apiKey:           "sk-ant",
 	}}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1/messages", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -180,10 +180,10 @@ func TestProxy_StructuredAnthropicResponseToCodexTransform(t *testing.T) {
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "anthropic-ch",
-		channelType: "anthropic",
-		models:      "claude-3-5-sonnet",
-		apiKey:      "sk-ant",
+		name:             "anthropic-ch",
+		upstreamProtocol: "anthropic",
+		models:           "claude-3-5-sonnet",
+		apiKey:           "sk-ant",
 	}}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1/messages", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -235,10 +235,10 @@ func TestProxy_StreamingGeminiResponseToAnthropicTransform_MultipleToolCallsAcro
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-ch",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		apiKey:      "sk-gem",
+		name:             "gemini-ch",
+		upstreamProtocol: "gemini",
+		models:           "gemini-2.5-pro",
+		apiKey:           "sk-gem",
 	}}, map[int]string{0: "https://gemini-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1beta/models/gemini-2.5-pro:streamGenerateContent", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
@@ -336,10 +336,10 @@ func TestProxy_StreamingGeminiResponseToCodexTransform_MultipleToolCallsAcrossCh
 	var gotPath string
 	var gotBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-ch",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		apiKey:      "sk-gem",
+		name:             "gemini-ch",
+		upstreamProtocol: "gemini",
+		models:           "gemini-2.5-pro",
+		apiKey:           "sk-gem",
 	}}, map[int]string{0: "https://gemini-upstream.example.com"})
 
 	env.server.client = &http.Client{Transport: automaticFallbackToPath("/v1beta/models/gemini-2.5-pro:streamGenerateContent", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
