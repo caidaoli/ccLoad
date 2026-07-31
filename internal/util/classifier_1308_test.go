@@ -123,11 +123,11 @@ func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T
 	if got.Level != ErrorLevelKey {
 		t.Fatalf("Level=%v, want ErrorLevelKey", got.Level)
 	}
-	if !got.HasKeyCooldownUntil {
-		t.Fatal("expected fixed key cooldown until")
+	if !got.ModelScoped || !got.HasModelCooldownUntil {
+		t.Fatal("expected fixed model cooldown until")
 	}
-	if got.KeyCooldownReason != "model_cooldown" {
-		t.Fatalf("KeyCooldownReason=%q, want model_cooldown", got.KeyCooldownReason)
+	if got.ModelCooldownReason != "model_cooldown" {
+		t.Fatalf("ModelCooldownReason=%q, want model_cooldown", got.ModelCooldownReason)
 	}
 	if got.Model != "gpt-5.5" {
 		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
@@ -135,30 +135,27 @@ func TestClassifyHTTPResponseWithMeta_ModelCooldownUsesResetSeconds(t *testing.T
 
 	minUntil := before.Add(13792*time.Second - 2*time.Second)
 	maxUntil := after.Add(13792*time.Second + 2*time.Second)
-	if got.KeyCooldownUntil.Before(minUntil) || got.KeyCooldownUntil.After(maxUntil) {
-		t.Fatalf("KeyCooldownUntil=%s, want between %s and %s",
-			got.KeyCooldownUntil.Format(time.RFC3339),
+	if got.ModelCooldownUntil.Before(minUntil) || got.ModelCooldownUntil.After(maxUntil) {
+		t.Fatalf("ModelCooldownUntil=%s, want between %s and %s",
+			got.ModelCooldownUntil.Format(time.RFC3339),
 			minUntil.Format(time.RFC3339),
 			maxUntil.Format(time.RFC3339))
 	}
 }
 
-func TestClassifyHTTPResponseWithMeta_ModelCooldownWithoutResetUsesBoundedFallback(t *testing.T) {
+func TestClassifyHTTPResponseWithMeta_ModelCooldownWithoutResetUsesBackoff(t *testing.T) {
 	body := []byte(`{"error":{"code":"model_cooldown","message":"model temporarily unavailable","model":"gpt-5.5"}}`)
 
-	before := time.Now()
 	got := ClassifyHTTPResponseWithMeta(429, nil, body)
-	after := time.Now()
 
-	if got.KeyCooldownReason != "model_cooldown" || !got.HasKeyCooldownUntil {
-		t.Fatalf("classification=%+v, want model_cooldown with fixed deadline", got)
+	if got.ModelCooldownReason != "model_cooldown" || !got.ModelScoped {
+		t.Fatalf("classification=%+v, want model-scoped cooldown", got)
 	}
 	if got.Model != "gpt-5.5" {
 		t.Fatalf("Model=%q, want gpt-5.5", got.Model)
 	}
-	if got.KeyCooldownUntil.Before(before.Add(5*time.Minute-2*time.Second)) ||
-		got.KeyCooldownUntil.After(after.Add(5*time.Minute+2*time.Second)) {
-		t.Fatalf("KeyCooldownUntil=%s, want about 5 minutes", got.KeyCooldownUntil.Format(time.RFC3339))
+	if got.HasModelCooldownUntil {
+		t.Fatalf("ModelCooldownUntil=%s, want storage backoff without fixed deadline", got.ModelCooldownUntil.Format(time.RFC3339))
 	}
 }
 

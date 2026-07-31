@@ -56,7 +56,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - 原生协议能力不支持(响应未提交的非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;可转换时同渠道/Key/URL 转到 `ChannelType` 重试,不可转换时切 URL/渠道
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
-- Key/渠道级默认指数退避:2 → 4 → 8 → 30 min;模型级优先使用上游 reset 截止时间,缺失时固定 5 min
+- Key/模型/渠道共用指数退避策略:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),随后翻倍并在 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
 - Responses WebSocket 特例(仅首个语义输出前):非 WS→非 WS、原生 WS→非 WS/原生 WS 均在网关内部切换,其中 WS→非 WS 使用 execution session 的完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并用 close code `1011` 断开,让 Codex 客户端完整 replay;已有语义输出后一律不切换或重放
 
 ## 自定义状态码(改相关代码前先读语义)

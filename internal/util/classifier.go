@@ -71,8 +71,6 @@ const (
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
 	RetryAfterThresholdSeconds = 60
-	// DefaultModelCooldownDuration 是上游未给出模型恢复时间时的固定冷却时长。
-	DefaultModelCooldownDuration = 5 * time.Minute
 	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
 	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
 	WebsocketConnectionLimitCooldown = 5 * time.Second
@@ -334,6 +332,13 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
 				classification.Model = strings.TrimSpace(quotaErr.model)
 			}
+			classification.ModelScoped = true
+			classification.ModelCooldownReason = reason
+			if cooldownUntil.After(now) {
+				classification.ModelCooldownUntil = cooldownUntil
+				classification.HasModelCooldownUntil = true
+			}
+			return classification
 		}
 		if statusCode == 429 && level == ErrorLevelChannel {
 			classification.ModelScoped = true
@@ -612,7 +617,7 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
 			return until, "model_cooldown", ErrorLevelKey, true
 		}
-		return now.Add(DefaultModelCooldownDuration), "model_cooldown", ErrorLevelKey, true
+		return time.Time{}, "model_cooldown", ErrorLevelKey, true
 	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
 		if until, ok := parseRetryInCooldownUntil(message, now); ok {
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
