@@ -945,42 +945,35 @@ window.WebAuth = window.WebAuth || {
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
 
+  // 协议显示名由 locales 提供（与 model-test.js / model-fingerprint.js 共用词条）
+  const PROTOCOL_LABEL_KEYS = {
+    anthropic: 'modelTest.clientProtocolAnthropic',
+    codex: 'modelTest.clientProtocolCodex',
+    openai: 'modelTest.clientProtocolOpenAI',
+    gemini: 'modelTest.clientProtocolGemini'
+  };
+
+  function protocolDisplayName(value) {
+    const key = PROTOCOL_LABEL_KEYS[value];
+    const label = key && typeof window.t === 'function' ? window.t(key) : '';
+    return label && label !== key ? label : value;
+  }
+
   /**
-   * 获取协议配置（带缓存）
+   * 获取协议列表（带缓存）。后端返回协议名数组，显示名由前端 locales 补齐。
+   * @returns {Promise<Array<{value: string, display_name: string}>>}
    */
   async function getProtocols() {
     if (protocolsCache) {
       return protocolsCache;
     }
 
-    const protocols = await fetchData('/public/protocols');
-    protocolsCache = protocols || [];
+    const values = await fetchData('/public/protocols');
+    protocolsCache = (Array.isArray(values) ? values : []).map(value => ({
+      value,
+      display_name: protocolDisplayName(value)
+    }));
     return protocolsCache;
-  }
-
-  /**
-   * 渲染协议单选按钮组
-   * @param {string} containerId - 容器元素ID
-   * @param {string} selectedValue - 选中的值（默认'anthropic'）
-   */
-  async function renderProtocolRadios(containerId, selectedValue = 'anthropic') {
-    const container = document.getElementById(containerId);
-    if (!container) {
-      console.error('Container element not found:', containerId);
-      return;
-    }
-
-    const protocols = await getProtocols();
-
-    container.innerHTML = protocols.map(protocol => `
-      <label class="channel-editor-radio-option">
-        <input type="radio"
-               name="protocol"
-               value="${escapeHtml(protocol.value)}"
-               ${protocol.value === selectedValue ? 'checked' : ''}>
-        <span title="${escapeHtml(protocol.description)}">${escapeHtml(protocol.display_name)}</span>
-      </label>
-    `).join('');
   }
 
   /**
@@ -999,8 +992,7 @@ window.WebAuth = window.WebAuth || {
 
     select.innerHTML = protocols.map(protocol => `
       <option value="${escapeHtml(protocol.value)}"
-              ${protocol.value === selectedValue ? 'selected' : ''}
-              title="${escapeHtml(protocol.description)}">
+              ${protocol.value === selectedValue ? 'selected' : ''}>
         ${escapeHtml(protocol.display_name)}
       </option>
     `).join('');
@@ -1009,7 +1001,6 @@ window.WebAuth = window.WebAuth || {
   // 导出到全局作用域
   window.ProtocolManager = {
     getProtocols,
-    renderProtocolRadios,
     renderProtocolSelect
   };
 })();

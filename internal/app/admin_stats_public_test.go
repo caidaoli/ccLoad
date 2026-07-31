@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/version"
 )
 
@@ -178,25 +179,20 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 
 		var resp struct {
-			Success bool             `json:"success"`
-			Data    []map[string]any `json:"data"`
+			Success bool                `json:"success"`
+			Data    []protocol.Protocol `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if !resp.Success || len(resp.Data) == 0 {
+		if !resp.Success {
 			t.Fatalf("unexpected protocols resp: %+v", resp)
 		}
-		for _, upstreamProtocol := range resp.Data {
-			for _, field := range []string{"value", "display_name", "description"} {
-				value, ok := upstreamProtocol[field].(string)
-				if !ok || value == "" {
-					t.Fatalf("protocol missing %s: %#v", field, upstreamProtocol)
-				}
-			}
-			if _, ok := upstreamProtocol["path_patterns"]; ok {
-				t.Fatalf("protocol leaked legacy path_patterns: %#v", upstreamProtocol)
-			}
-			if _, ok := upstreamProtocol["match_type"]; ok {
-				t.Fatalf("protocol leaked legacy match_type: %#v", upstreamProtocol)
+		want := protocol.AllProtocols()
+		if len(resp.Data) != len(want) {
+			t.Fatalf("protocols=%v, want %v", resp.Data, want)
+		}
+		for i, p := range want {
+			if resp.Data[i] != p {
+				t.Fatalf("protocols[%d]=%q, want %q", i, resp.Data[i], p)
 			}
 		}
 	})

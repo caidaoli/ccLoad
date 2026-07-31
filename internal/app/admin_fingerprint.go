@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -170,7 +171,7 @@ func (s *Server) HandleTestFingerprint(c *gin.Context) {
 
 func validateFingerprintClientProtocol(clientProtocol string) (string, error) {
 	clientProtocol = strings.ToLower(strings.TrimSpace(clientProtocol))
-	if !util.IsValidProtocol(clientProtocol) {
+	if !protocol.IsValid(protocol.Protocol(clientProtocol)) {
 		return "", fmt.Errorf("invalid client_protocol %q", clientProtocol)
 	}
 	return clientProtocol, nil

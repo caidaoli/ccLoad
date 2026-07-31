@@ -325,7 +325,7 @@ func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) [
 	seen := make(map[protocol.Protocol]struct{})
 	result := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
 	appendProtocol := func(candidate protocol.Protocol) {
-		if protocolCapabilityFor(candidate) == protocolCapabilityUnsupported {
+		if !protocol.IsValid(candidate) {
 			return
 		}
 		if _, exists := seen[candidate]; exists {
