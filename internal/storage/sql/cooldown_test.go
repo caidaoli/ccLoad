@@ -3,6 +3,8 @@ package sql_test
 import (
 	"context"
 	"path/filepath"
+	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -31,7 +33,7 @@ func TestCooldown_ChannelCooldown(t *testing.T) {
 		t.Error("expected no cooldown initially")
 	}
 
-	// BumpChannelCooldown：触发第一次冷却（500错误，初始1秒起步）
+	// BumpChannelCooldown：触发第一次冷却（500 错误默认 2 分钟起步）
 	now := time.Now()
 	duration, err := store.BumpChannelCooldown(ctx, channelID, now, 500)
 	if err != nil {
@@ -113,7 +115,7 @@ func TestCooldown_KeyCooldown(t *testing.T) {
 		t.Errorf("expected no key cooldowns initially, got %d", len(allKeyCooldowns))
 	}
 
-	// BumpKeyCooldown：触发第一次冷却（429错误，初始1秒）
+	// BumpKeyCooldown：触发第一次冷却（429 错误默认 1 分钟）
 	now := time.Now()
 	duration, err := store.BumpKeyCooldown(ctx, channelID, 0, now, 429)
 	if err != nil {
@@ -185,6 +187,38 @@ func TestCooldown_ModelCooldown(t *testing.T) {
 
 	ctx := context.Background()
 	channelID := createTestChannel(t, ctx, store, "test-model-cooldown")
+	now := time.Now()
+
+	duration, err := store.BumpModelCooldown(ctx, channelID, "upstream-model-a", now, 502)
+	if err != nil {
+		t.Fatalf("bump model cooldown: %v", err)
+	}
+	if duration != 2*time.Minute {
+		t.Fatalf("first model cooldown duration=%v, want %v", duration, 2*time.Minute)
+	}
+
+	// 即使上一轮已经过期，失败历史仍应继续退避，直到成功或显式重置。
+	duration, err = store.BumpModelCooldown(ctx, channelID, "upstream-model-a", now.Add(3*time.Minute), 503)
+	if err != nil {
+		t.Fatalf("bump model cooldown second time: %v", err)
+	}
+	if duration != 4*time.Minute {
+		t.Fatalf("second model cooldown duration=%v, want %v", duration, 4*time.Minute)
+	}
+
+	if err := store.ResetModelCooldown(ctx, channelID, "upstream-model-a"); err != nil {
+		t.Fatalf("reset bumped model cooldown: %v", err)
+	}
+	duration, err = store.BumpModelCooldown(ctx, channelID, "upstream-model-a", now.Add(8*time.Minute), 502)
+	if err != nil {
+		t.Fatalf("bump reset model cooldown: %v", err)
+	}
+	if duration != 2*time.Minute {
+		t.Fatalf("reset model cooldown duration=%v, want %v", duration, 2*time.Minute)
+	}
+	if err := store.ResetModelCooldown(ctx, channelID, "upstream-model-a"); err != nil {
+		t.Fatalf("reset model cooldown before fixed deadline: %v", err)
+	}
 	until := time.Now().Add(10 * time.Minute)
 
 	if err := store.SetModelCooldown(ctx, channelID, "upstream-model-a", until); err != nil {
@@ -229,6 +263,55 @@ func TestCooldown_ModelCooldown(t *testing.T) {
 	}
 	if _, exists := cooldowns[channelID]; exists {
 		t.Fatal("expected channel deletion to remove model cooldowns")
+	}
+}
+
+func TestCooldown_ConcurrentModelCooldown(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "concurrent_model_cooldown.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	channelID := createTestChannel(t, ctx, store, "test-concurrent-model-cooldown")
+	now := time.Now()
+	start := make(chan struct{})
+	durations := make(chan time.Duration, 2)
+	errs := make(chan error, 2)
+
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			duration, err := store.BumpModelCooldown(ctx, channelID, "upstream-model", now, 502)
+			if err != nil {
+				errs <- err
+				return
+			}
+			durations <- duration
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	close(durations)
+
+	for err := range errs {
+		t.Fatalf("concurrent model cooldown: %v", err)
+	}
+	got := make([]time.Duration, 0, 2)
+	for duration := range durations {
+		got = append(got, duration)
+	}
+	sort.Slice(got, func(i, j int) bool { return got[i] < got[j] })
+	want := []time.Duration{2 * time.Minute, 4 * time.Minute}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("concurrent model cooldown durations=%v, want %v", got, want)
 	}
 }
 

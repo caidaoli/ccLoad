@@ -37,7 +37,7 @@ func (s *SQLStore) cooldownSelectLockClause() string {
 	return ""
 }
 
-// BumpChannelCooldown 渠道级冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
+// BumpChannelCooldown 渠道级冷却：使用统一 CooldownPolicy 指数退避。
 func (s *SQLStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
 	// 使用事务保护Read-Modify-Write操作,防止并发竞态
 	// 问题场景同BumpKeyCooldown,多个并发请求可能导致指数退避计算错误
@@ -191,6 +191,71 @@ func normalizeCooldownModel(model string) (string, error) {
 	return model, nil
 }
 
+// BumpModelCooldown 模型级冷却：与 Key、渠道共用同一套指数退避策略。
+func (s *SQLStore) BumpModelCooldown(
+	ctx context.Context,
+	channelID int64,
+	model string,
+	now time.Time,
+	statusCode int,
+) (time.Duration, error) {
+	model, err := normalizeCooldownModel(model)
+	if err != nil {
+		return 0, err
+	}
+
+	var nextDuration time.Duration
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		var insertQuery string
+		if s.supportsONConflict() {
+			insertQuery = `
+				INSERT INTO channel_model_cooldowns
+					(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+				VALUES (?, ?, 0, 0, ?)
+				ON CONFLICT(channel_id, model) DO NOTHING
+			`
+		} else {
+			insertQuery = `
+				INSERT INTO channel_model_cooldowns
+					(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+				VALUES (?, ?, 0, 0, ?)
+				ON DUPLICATE KEY UPDATE model = VALUES(model)
+			`
+		}
+		if _, err := s.execTx(ctx, tx, insertQuery, channelID, model, timeToUnix(now)); err != nil {
+			return fmt.Errorf("ensure model cooldown: %w", err)
+		}
+
+		var cooldownUntil, cooldownDurationMs int64
+		if err := s.queryRowTx(ctx, tx, `
+			SELECT cooldown_until, cooldown_duration_ms
+			FROM channel_model_cooldowns
+			WHERE channel_id = ? AND model = ?
+		`+s.cooldownSelectLockClause(), channelID, model).Scan(&cooldownUntil, &cooldownDurationMs); err != nil {
+			return fmt.Errorf("query model cooldown: %w", err)
+		}
+
+		nextDuration = s.calculateBackoffDuration(
+			cooldownDurationMs,
+			unixToTime(cooldownUntil),
+			now,
+			&statusCode,
+		)
+		newUntil := now.Add(nextDuration)
+		if _, err := s.execTx(ctx, tx, `
+			UPDATE channel_model_cooldowns
+			SET cooldown_until = ?, cooldown_duration_ms = ?, updated_at = ?
+			WHERE channel_id = ? AND model = ?
+		`, timeToUnix(newUntil), int64(nextDuration/time.Millisecond), timeToUnix(now), channelID, model); err != nil {
+			return fmt.Errorf("update model cooldown: %w", err)
+		}
+
+		return nil
+	})
+
+	return nextDuration, err
+}
+
 // GetAllModelCooldowns 批量查询未过期的模型冷却状态。
 func (s *SQLStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[string]time.Time, error) {
 	rows, err := s.QueryContext(ctx, `
@@ -229,33 +294,32 @@ func (s *SQLStore) SetModelCooldown(ctx context.Context, channelID int64, model 
 		return err
 	}
 	now := time.Now()
-	if _, err := s.ExecContext(ctx, `
-		DELETE FROM channel_model_cooldowns
-		WHERE channel_id = ? AND model = ? AND cooldown_until <= ?
-	`, channelID, model, timeToUnix(now)); err != nil {
-		return fmt.Errorf("cleanup expired model cooldown: %w", err)
-	}
+	durationMs := util.CalculateCooldownDuration(until, now)
 
 	var query string
 	if s.supportsONConflict() {
 		query = `
-			INSERT INTO channel_model_cooldowns (channel_id, model, cooldown_until, updated_at)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO channel_model_cooldowns
+				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+			VALUES (?, ?, ?, ?, ?)
 			ON CONFLICT(channel_id, model) DO UPDATE SET
 				cooldown_until = excluded.cooldown_until,
+				cooldown_duration_ms = excluded.cooldown_duration_ms,
 				updated_at = excluded.updated_at
 		`
 	} else {
 		query = `
-			INSERT INTO channel_model_cooldowns (channel_id, model, cooldown_until, updated_at)
-			VALUES (?, ?, ?, ?)
+			INSERT INTO channel_model_cooldowns
+				(channel_id, model, cooldown_until, cooldown_duration_ms, updated_at)
+			VALUES (?, ?, ?, ?, ?)
 			ON DUPLICATE KEY UPDATE
 				cooldown_until = VALUES(cooldown_until),
+				cooldown_duration_ms = VALUES(cooldown_duration_ms),
 				updated_at = VALUES(updated_at)
 		`
 	}
 
-	if _, err := s.ExecContext(ctx, query, channelID, model, timeToUnix(until), timeToUnix(now)); err != nil {
+	if _, err := s.ExecContext(ctx, query, channelID, model, timeToUnix(until), durationMs, timeToUnix(now)); err != nil {
 		return fmt.Errorf("set model cooldown: %w", err)
 	}
 	return nil
@@ -334,7 +398,7 @@ func (s *SQLStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int]ti
 	return result, nil
 }
 
-// BumpKeyCooldown Key级别冷却：指数退避策略（认证错误5分钟起，其他1秒起，最大30分钟）
+// BumpKeyCooldown Key 级冷却：使用统一 CooldownPolicy 指数退避。
 func (s *SQLStore) BumpKeyCooldown(ctx context.Context, configID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
 	// 使用事务保护Read-Modify-Write操作,防止并发竞态
 	// 问题场景:

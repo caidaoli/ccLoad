@@ -533,6 +533,26 @@ func (h *HybridStore) GetAllModelCooldowns(ctx context.Context) (map[int64]map[s
 	return h.sqlite.GetAllModelCooldowns(ctx)
 }
 
+func (h *HybridStore) BumpModelCooldown(
+	ctx context.Context,
+	channelID int64,
+	model string,
+	now time.Time,
+	statusCode int,
+) (time.Duration, error) {
+	duration, err := h.mysql.BumpModelCooldown(ctx, channelID, model, now, statusCode)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BumpModelCooldown", func() error {
+		_, err := h.sqlite.BumpModelCooldown(ctx, channelID, model, now, statusCode)
+		return err
+	})
+
+	return duration, nil
+}
+
 func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error {
 	if err := h.mysql.SetModelCooldown(ctx, channelID, model, until); err != nil {
 		return err

@@ -61,7 +61,7 @@ ccLoad handles those cases with:
 - 🧮 **Local Token Counting** - API-compliant local token estimation, <5ms response, 93%+ accuracy, supports large-scale tool scenarios
 - 🎯 **Smart Error Classification** - Distinguishes Key/Model/Channel/Client errors, soft error detection (200 masquerading as error), SSE rate-limit errors as 429, 1308 quota handling
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
-- 🛡️ **Failover** - Key/channel failures use exponential backoff; model cooldowns (structured responses, 5xx, 429, model-unavailable 404) honor the upstream reset deadline and switch channels without cooling the whole channel
+- 🛡️ **Failover** - Key, model, and channel failures share one exponential-backoff policy; explicit upstream reset deadlines take priority, and model-scoped failures switch channels without cooling the whole channel
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
