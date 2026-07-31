@@ -484,6 +484,10 @@ func (s *Server) handleProxySuccess(
 	// 冷却状态已恢复，刷新相关缓存避免下次命中过期数据
 	s.invalidateChannelRelatedCache(cfg.ID)
 
+	if cfg.RetryOtherKeysOnFailure && reqCtx.routingSession != nil {
+		reqCtx.routingSession.rememberPreferredChannel(cfg.ID)
+	}
+
 	// 记录成功日志
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
 
