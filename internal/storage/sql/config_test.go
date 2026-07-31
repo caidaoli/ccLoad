@@ -32,12 +32,13 @@ func TestConfig_CreateAndGet(t *testing.T) {
 			{URL: "https://api.openai.com", Protocols: []string{"openai", "codex"}},
 			{URL: "https://api.openai.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
 		},
-		Priority:              10,
-		Enabled:               true,
-		Websockets:            true,
-		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		RPMLimit:              60,
-		MaxConcurrency:        3,
+		Priority:                10,
+		Enabled:                 true,
+		Websockets:              true,
+		ProtocolTransformMode:   model.ProtocolTransformModeLocal,
+		RetryOtherKeysOnFailure: true,
+		RPMLimit:                60,
+		MaxConcurrency:          3,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
@@ -80,6 +81,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if got.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
 		t.Fatalf("protocol_transform_mode=%q, want local", got.GetProtocolTransformMode())
+	}
+	if !got.RetryOtherKeysOnFailure {
+		t.Error("expected retry_other_keys_on_failure=true")
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)
@@ -242,6 +246,7 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	created.URLs = model.ChannelURLs{{URL: "https://new.api.com"}}
 	created.Priority = 100
 	created.Enabled = false
+	created.RetryOtherKeysOnFailure = true
 	created.ModelEntries = []model.ModelEntry{
 		{Model: "new-model-1"},
 		{Model: "new-model-2"},
@@ -272,6 +277,9 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	}
 	if got.Enabled {
 		t.Error("expected enabled=false")
+	}
+	if !got.RetryOtherKeysOnFailure {
+		t.Error("expected retry_other_keys_on_failure=true")
 	}
 	if len(got.ModelEntries) != 2 {
 		t.Errorf("model entries count: got %d, want 2", len(got.ModelEntries))

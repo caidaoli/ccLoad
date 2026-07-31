@@ -97,6 +97,22 @@ func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T
 	}
 }
 
+func TestChannelRequestToConfigPreservesRetryOtherKeysOnFailure(t *testing.T) {
+	t.Parallel()
+
+	cfg := (&ChannelRequest{
+		Name:                    "independent-key-relay",
+		APIKey:                  "sk-test",
+		URLs:                    model.ChannelURLs{{URL: "https://relay.example.com"}},
+		Models:                  []model.ModelEntry{{Model: "test-model"}},
+		RetryOtherKeysOnFailure: true,
+	}).ToConfig()
+
+	if !cfg.RetryOtherKeysOnFailure {
+		t.Fatal("retry_other_keys_on_failure was not copied to config")
+	}
+}
+
 func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 	t.Parallel()
 

@@ -22,6 +22,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("custom_request_rules TEXT").
 		Column("cooldown_detection_rules TEXT").
 		Column("proxy_url VARCHAR(255) NOT NULL DEFAULT ''").
+		Column("retry_other_keys_on_failure TINYINT NOT NULL DEFAULT 0").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
 		Index("idx_channels_enabled", "enabled").

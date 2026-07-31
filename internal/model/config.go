@@ -363,6 +363,10 @@ type Config struct {
 	// 渠道级代理（http/https/socks5/socks5h），空串=环境变量代理
 	ProxyURL string `json:"proxy_url,omitempty"`
 
+	// 渠道故障时先将当前 Key 冷却并尝试同渠道其他 Key。
+	// 用于一个中转站下的 Key 实际对应不同上游服务商的场景；默认关闭，保持原有渠道/模型级切换语义。
+	RetryOtherKeysOnFailure bool `json:"retry_other_keys_on_failure"`
+
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
@@ -385,28 +389,29 @@ func (c *Config) Clone() *Config {
 		return nil
 	}
 	dst := &Config{
-		ID:                     c.ID,
-		Name:                   c.Name,
-		Websockets:             c.Websockets,
-		ProtocolTransformMode:  c.ProtocolTransformMode,
-		URLs:                   c.URLs.Clone(),
-		Priority:               c.Priority,
-		RPMLimit:               c.RPMLimit,
-		MaxConcurrency:         c.MaxConcurrency,
-		Enabled:                c.Enabled,
-		ScheduledCheckEnabled:  c.ScheduledCheckEnabled,
-		ScheduledCheckModel:    c.ScheduledCheckModel,
-		CooldownUntil:          c.CooldownUntil,
-		CooldownDurationMs:     c.CooldownDurationMs,
-		DailyCostLimit:         c.DailyCostLimit,
-		CostMultiplier:         c.CostMultiplier,
-		CustomRequestRules:     c.CustomRequestRules.Clone(),
-		CooldownDetectionRules: c.CooldownDetectionRules.Clone(),
-		ProxyURL:               c.ProxyURL,
-		CreatedAt:              c.CreatedAt,
-		UpdatedAt:              c.UpdatedAt,
-		KeyCount:               c.KeyCount,
-		CooldownFallback:       c.CooldownFallback,
+		ID:                      c.ID,
+		Name:                    c.Name,
+		Websockets:              c.Websockets,
+		ProtocolTransformMode:   c.ProtocolTransformMode,
+		URLs:                    c.URLs.Clone(),
+		Priority:                c.Priority,
+		RPMLimit:                c.RPMLimit,
+		MaxConcurrency:          c.MaxConcurrency,
+		Enabled:                 c.Enabled,
+		ScheduledCheckEnabled:   c.ScheduledCheckEnabled,
+		ScheduledCheckModel:     c.ScheduledCheckModel,
+		CooldownUntil:           c.CooldownUntil,
+		CooldownDurationMs:      c.CooldownDurationMs,
+		DailyCostLimit:          c.DailyCostLimit,
+		CostMultiplier:          c.CostMultiplier,
+		CustomRequestRules:      c.CustomRequestRules.Clone(),
+		CooldownDetectionRules:  c.CooldownDetectionRules.Clone(),
+		ProxyURL:                c.ProxyURL,
+		RetryOtherKeysOnFailure: c.RetryOtherKeysOnFailure,
+		CreatedAt:               c.CreatedAt,
+		UpdatedAt:               c.UpdatedAt,
+		KeyCount:                c.KeyCount,
+		CooldownFallback:        c.CooldownFallback,
 	}
 	if c.ModelEntries != nil {
 		dst.ModelEntries = make([]ModelEntry, len(c.ModelEntries))
