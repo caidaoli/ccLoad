@@ -224,7 +224,7 @@ window.initPageBootstrap({
     const savedFilters = loadChannelsFilters();
     channelsCurrentPage = Math.max(1, parseInt(savedFilters?.page, 10) || 1);
     const [, targetChannel] = await Promise.all([
-      ensureChannelProtocolComboboxes('anthropic', 'auto'),
+      ensureProtocolTransformModeCombobox('auto'),
       readOnly ? null : getTargetChannel(),
       ...(readOnly ? [] : [loadDefaultTestContent(), loadChannelStatsRange()])
     ]);
