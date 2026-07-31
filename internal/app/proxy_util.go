@@ -161,6 +161,7 @@ type proxyRequestContext struct {
 	baseURL          string               // 当前尝试使用的上游URL（多URL场景）
 	debugData        *model.DebugLogEntry // Debug日志数据（debug开启时填充）
 	thinkingEffort   string
+	routingSession   *responsesExecutionSession // 当前 Responses execution session 的首选渠道
 	nativeCodexWS    *codexUpstreamWebsocketSession
 	nativeCodexBody  []byte
 }

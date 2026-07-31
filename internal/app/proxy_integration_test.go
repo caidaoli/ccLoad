@@ -289,6 +289,157 @@ func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
 	}
 }
 
+func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
+	var phase atomic.Int32
+	var keyACalls, keyBCalls, fallbackCalls atomic.Int64
+
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var calls *atomic.Int64
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-provider-a":
+			calls = &keyACalls
+		case "Bearer sk-provider-b":
+			calls = &keyBCalls
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		calls.Add(1)
+
+		currentPhase := phase.Load()
+		failed := currentPhase == 4 ||
+			(currentPhase == 0 || currentPhase == 3) && r.Header.Get("Authorization") == "Bearer sk-provider-a"
+		if failed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"message":"provider unavailable"}}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-primary","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-fallback","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{
+			name: "relay", upstreamProtocol: "codex", models: "gpt-test",
+			apiKey: "sk-provider-a", priority: 100, retryOtherKeysOnFailure: true,
+		},
+		{
+			name: "fallback", upstreamProtocol: "codex", models: "gpt-test",
+			priority: 50, retryOtherKeysOnFailure: true,
+		},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("create relay keys: %v", err)
+	}
+	env.server.maxKeyRetries = 1
+
+	request := func(input string) *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": true, "input": input,
+		}, map[string]string{"Session-Id": "sticky-key-session"})
+	}
+	resetRelay := func() {
+		for keyIndex := range 2 {
+			if err := env.store.ResetKeyCooldown(context.Background(), 1, keyIndex); err != nil {
+				t.Fatalf("reset relay key %d: %v", keyIndex, err)
+			}
+		}
+		if err := env.store.ResetChannelCooldown(context.Background(), 1); err != nil {
+			t.Fatalf("reset relay channel: %v", err)
+		}
+		env.server.invalidateChannelRelatedCache(1)
+	}
+	assertCalls := func(wantA, wantB, wantFallback int64) {
+		t.Helper()
+		if keyACalls.Load() != wantA || keyBCalls.Load() != wantB || fallbackCalls.Load() != wantFallback {
+			t.Fatalf("calls a/b/fallback=%d/%d/%d, want %d/%d/%d",
+				keyACalls.Load(), keyBCalls.Load(), fallbackCalls.Load(), wantA, wantB, wantFallback)
+		}
+	}
+
+	if response := request("one"); response.Code != http.StatusOK {
+		t.Fatalf("first response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(1, 1, 0)
+
+	// Make the fallback globally preferable. Session affinity must still keep the
+	// established relay first while it has an available Key.
+	fallbackCfg, err := env.store.GetConfig(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("get fallback config: %v", err)
+	}
+	fallbackCfg.Priority = 200
+	if _, err := env.store.UpdateConfig(context.Background(), fallbackCfg.ID, fallbackCfg); err != nil {
+		t.Fatalf("raise fallback priority: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	phase.Store(1)
+	if response := request("two"); response.Code != http.StatusOK {
+		t.Fatalf("cooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(1, 2, 0)
+
+	// Once A recovers, sequential selection must fail back to it instead of
+	// pinning the last successful Key B.
+	if err := env.store.ResetKeyCooldown(context.Background(), 1, 0); err != nil {
+		t.Fatalf("recover relay key A: %v", err)
+	}
+	env.server.invalidateChannelRelatedCache(1)
+
+	phase.Store(2)
+	if response := request("three"); response.Code != http.StatusOK {
+		t.Fatalf("recovered-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(2, 2, 0)
+
+	phase.Store(3)
+	if response := request("four"); response.Code != http.StatusOK {
+		t.Fatalf("recooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(3, 3, 0)
+
+	phase.Store(1)
+	if response := request("five"); response.Code != http.StatusOK {
+		t.Fatalf("second cooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(3, 4, 0)
+
+	resetRelay()
+	phase.Store(4)
+	if response := request("six"); response.Code != http.StatusOK {
+		t.Fatalf("channel fallback response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(4, 5, 1)
+
+	// The preferred relay is now fully cooled, so the next turn must stay on the
+	// fallback without probing relay Keys early.
+	if response := request("seven"); response.Code != http.StatusOK {
+		t.Fatalf("cooled-channel response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(4, 5, 2)
+
+	// A successful fallback must not replace the first successful channel. Once
+	// the relay recovers it wins again despite the fallback's higher priority.
+	resetRelay()
+	phase.Store(5)
+	if response := request("eight"); response.Code != http.StatusOK {
+		t.Fatalf("recovered-channel response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(5, 5, 2)
+}
+
 func TestProxy_GlobalCooldownDetectionRulesFallbackAndChannelOverride(t *testing.T) {
 	globalRules := `{"rules":[{"enabled":true,"name":"Global maintenance","priority":0,"status_codes":[406],"message_pattern":"planned maintenance","scope":"channel","mode":"fixed","cooldown_seconds":120}]}`
 

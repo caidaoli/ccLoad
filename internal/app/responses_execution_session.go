@@ -30,13 +30,15 @@ var (
 // responsesExecutionSession owns conversation state. Neither transcript nor
 // upstream transport belongs to a particular downstream TCP/WebSocket connection.
 type responsesExecutionSession struct {
-	turn       chan struct{}
-	transcript *responsesWebsocketSession
-	upstream   *codexUpstreamWebsocketSession
-	lastAccess time.Time
-	active     int
-	storeKey   string
-	transient  bool
+	turn               chan struct{}
+	transcript         *responsesWebsocketSession
+	upstream           *codexUpstreamWebsocketSession
+	routeMu            sync.RWMutex
+	preferredChannelID int64
+	lastAccess         time.Time
+	active             int
+	storeKey           string
+	transient          bool
 
 	subjectFingerprint string
 	sessionFingerprint string
@@ -68,6 +70,37 @@ func (s *responsesExecutionSession) acquireTurn(ctx context.Context) error {
 
 func (s *responsesExecutionSession) releaseTurn() {
 	<-s.turn
+}
+
+func (s *responsesExecutionSession) preferredChannelSnapshot() (int64, bool) {
+	if s == nil {
+		return 0, false
+	}
+	s.routeMu.RLock()
+	defer s.routeMu.RUnlock()
+	return s.preferredChannelID, s.preferredChannelID > 0
+}
+
+func (s *responsesExecutionSession) routeChannelSnapshot() (int64, bool) {
+	if channelID, ok := s.preferredChannelSnapshot(); ok {
+		return channelID, true
+	}
+	if s == nil {
+		return 0, false
+	}
+	target, ok := s.upstream.affinitySnapshot()
+	return target.channelID, ok && target.channelID > 0
+}
+
+func (s *responsesExecutionSession) rememberPreferredChannel(channelID int64) {
+	if s == nil || channelID <= 0 {
+		return
+	}
+	s.routeMu.Lock()
+	if s.preferredChannelID == 0 {
+		s.preferredChannelID = channelID
+	}
+	s.routeMu.Unlock()
 }
 
 func (s *responsesExecutionSession) close() {
