@@ -192,6 +192,21 @@
     });
   }
 
+  function buildCooldownDetectionTestPayload(rulesSource, draft, statusCode, errorBody) {
+    return {
+      rules_source: rulesSource === 'global' ? 'global' : 'channel',
+      cooldown_detection_rules: { rules: serializeRules(draft) },
+      status_code: statusCode,
+      error_body: text(errorBody)
+    };
+  }
+
+  function cooldownDetectionRulesSource() {
+    if (!hasDocument) return 'channel';
+    const panel = document.getElementById('advancedSettingsPanelCooldownDetection');
+    return panel && panel.dataset.cooldownDetectionRulesSource === 'global' ? 'global' : 'channel';
+  }
+
   function collectCooldownDetectionRulesForSubmit() {
     const state = getState();
     if (state.rules.length === 0) return null;
@@ -531,6 +546,9 @@
     if (data.parsed_log) {
       fields.push(t('channels.cooldownDetection.testParsedLog', 'Parsed standard upstream log'));
     }
+    if (data.rules_source) {
+      fields.push(`${t('channels.cooldownDetection.testRulesSource', 'Rules source')}: ${rulesSourceLabel(data.rules_source)}`);
+    }
     if (data.actionable) {
       fields.push(t('channels.cooldownDetection.testMatched', 'Matched configured rule'));
       fields.push(`${t('channels.cooldownDetection.priority', 'Priority')} ${Number(data.priority) + 1}`);
@@ -557,6 +575,14 @@
       channel: t('channels.cooldownDetection.scopeChannel', 'Entire channel')
     };
     return labels[scope] || text(scope);
+  }
+
+  function rulesSourceLabel(source) {
+    const labels = {
+      channel: t('channels.cooldownDetection.rulesSourceChannel', 'Channel rules'),
+      global: t('channels.cooldownDetection.rulesSourceGlobal', 'Global rules')
+    };
+    return labels[source] || text(source);
   }
 
   function formatTime(value) {
@@ -612,11 +638,12 @@
       const data = await window.fetchDataWithAuth('/admin/channels/cooldown-detection/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          cooldown_detection_rules: { rules: serializeRules(_draft) },
-          status_code: statusCode,
-          error_body: bodyInput ? bodyInput.value : ''
-        })
+        body: JSON.stringify(buildCooldownDetectionTestPayload(
+          cooldownDetectionRulesSource(),
+          _draft,
+          statusCode,
+          bodyInput ? bodyInput.value : ''
+        ))
       });
       showTestResult(data || {});
     } catch (error) {
@@ -660,6 +687,7 @@
       cloneRules,
       parseStatusCodes,
       validateCooldownDetectionRulesLocally,
+      buildCooldownDetectionTestPayload,
       resetCooldownDetectionState,
       collectCooldownDetectionRulesForSubmit,
       validateCooldownDetectionRulesForSubmit,

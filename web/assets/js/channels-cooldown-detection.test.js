@@ -137,3 +137,22 @@ test('空规则集提交为 null', () => {
   mod.resetCooldownDetectionState(null);
   assert.equal(mod.collectCooldownDetectionRulesForSubmit(), null);
 });
+
+test('渠道规则测试载荷声明草稿来源', () => {
+  const payload = mod.buildCooldownDetectionTestPayload('channel', {
+    rules: [{
+      enabled: true,
+      name: 'Maintenance',
+      priority: 0,
+      status_codes: [503],
+      scope: 'channel',
+      mode: 'fixed',
+      cooldown_seconds: 120
+    }]
+  }, 503, '{"error":{"message":"maintenance"}}');
+
+  assert.equal(payload.rules_source, 'channel');
+  assert.equal(payload.status_code, 503);
+  assert.equal(payload.error_body, '{"error":{"message":"maintenance"}}');
+  assert.equal(payload.cooldown_detection_rules.rules[0].name, 'Maintenance');
+});

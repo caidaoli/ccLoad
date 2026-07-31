@@ -60,14 +60,18 @@ func (s *Server) decideCooldownAction(
 
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
 	in.ChannelType = cfg.ChannelType
-	in.CooldownDetectionRules = cfg.CooldownDetectionRules
-	if in.CooldownDetectionRules == nil || in.CooldownDetectionRules.IsEmpty() {
-		in.CooldownDetectionRules = s.globalCooldownDetectionRules
-	}
+	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
 		in.ChannelModels = s.channelModelCooldownKeys(cfg)
 	}
 	return in
+}
+
+func (s *Server) effectiveChannelCooldownDetectionRules(channelRules *model.CooldownDetectionRules) (*model.CooldownDetectionRules, bool) {
+	if channelRules == nil || channelRules.IsEmpty() {
+		return s.globalCooldownDetectionRules, true
+	}
+	return channelRules, false
 }
 
 func (s *Server) channelModelCooldownKeys(cfg *model.Config) []string {

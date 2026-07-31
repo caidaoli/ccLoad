@@ -20,6 +20,8 @@ const (
 	globalCooldownDetectionRulesSettingKey = "global_cooldown_detection_rules"
 	maxCooldownDetectionTestBodyBytes      = 256 * 1024
 	maxGlobalCooldownDetectionRulesBytes   = 64 * 1024
+	cooldownDetectionRulesSourceChannel    = "channel"
+	cooldownDetectionRulesSourceGlobal     = "global"
 )
 
 var upstreamStatusLogPattern = regexp.MustCompile(`(?i)\bupstream\s+status\s+(\d{3})\s*:`)
@@ -56,6 +58,7 @@ func parseGlobalCooldownDetectionRules(value string) (*model.CooldownDetectionRu
 // any cooldown state.
 type cooldownDetectionTestRequest struct {
 	CooldownDetectionRules *model.CooldownDetectionRules `json:"cooldown_detection_rules"`
+	RulesSource            string                        `json:"rules_source"`
 	StatusCode             int                           `json:"status_code"`
 	ErrorBody              string                        `json:"error_body"`
 	parsedLog              bool
@@ -72,6 +75,13 @@ func (r *cooldownDetectionTestRequest) Validate() error {
 	r.StatusCode = statusCode
 	r.ErrorBody = errorBody
 	r.parsedLog = parsedLog
+	r.RulesSource = strings.ToLower(strings.TrimSpace(r.RulesSource))
+	if r.RulesSource == "" {
+		r.RulesSource = cooldownDetectionRulesSourceChannel
+	}
+	if r.RulesSource != cooldownDetectionRulesSourceChannel && r.RulesSource != cooldownDetectionRulesSourceGlobal {
+		return fmt.Errorf("rules_source must be channel or global")
+	}
 	if r.StatusCode < http.StatusContinue || r.StatusCode > 599 {
 		return fmt.Errorf("status_code must be between 100 and 599")
 	}
@@ -105,6 +115,7 @@ func normalizeCooldownDetectionTestInput(statusCode int, input string) (int, str
 type cooldownDetectionTestResponse struct {
 	Code                  string            `json:"code,omitempty"`
 	Message               string            `json:"message,omitempty"`
+	RulesSource           string            `json:"rules_source"`
 	StatusCode            int               `json:"status_code"`
 	ParsedLog             bool              `json:"parsed_log"`
 	Matched               bool              `json:"matched"`
@@ -118,9 +129,9 @@ type cooldownDetectionTestResponse struct {
 	BuiltinFallbackReason string            `json:"builtin_fallback_reason,omitempty"`
 }
 
-// HandleCooldownDetectionTest evaluates unsaved channel-local cooldown rules.
-// It deliberately has no channel ID and no storage dependency: it must never
-// create or change a real cooldown while the user is editing a channel.
+// HandleCooldownDetectionTest evaluates unsaved cooldown rules. An empty
+// channel draft inherits the same process-level global rules as the proxy path.
+// It deliberately has no channel ID and never changes real cooldown state.
 func (s *Server) HandleCooldownDetectionTest(c *gin.Context) {
 	var req cooldownDetectionTestRequest
 	if err := BindAndValidate(c, &req); err != nil {
@@ -128,7 +139,17 @@ func (s *Server) HandleCooldownDetectionTest(c *gin.Context) {
 		return
 	}
 
-	evaluation := cooldown.EvaluateCooldownDetectionRules(req.CooldownDetectionRules, cooldown.DetectionInput{
+	effectiveRules := req.CooldownDetectionRules
+	effectiveSource := req.RulesSource
+	if effectiveSource == cooldownDetectionRulesSourceChannel {
+		var inherited bool
+		effectiveRules, inherited = s.effectiveChannelCooldownDetectionRules(effectiveRules)
+		if inherited {
+			effectiveSource = cooldownDetectionRulesSourceGlobal
+		}
+	}
+
+	evaluation := cooldown.EvaluateCooldownDetectionRules(effectiveRules, cooldown.DetectionInput{
 		StatusCode: req.StatusCode,
 		ErrorBody:  []byte(req.ErrorBody),
 	}, time.Now())
@@ -136,6 +157,7 @@ func (s *Server) HandleCooldownDetectionTest(c *gin.Context) {
 	response := cooldownDetectionTestResponse{
 		Code:              evaluation.Code,
 		Message:           evaluation.Message,
+		RulesSource:       effectiveSource,
 		StatusCode:        req.StatusCode,
 		ParsedLog:         req.parsedLog,
 		Matched:           evaluation.Matched,
