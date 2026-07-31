@@ -223,6 +223,7 @@
 
     .channel-editor-body {
       --channel-editor-section-header-height: 36px;
+      --channel-editor-table-border-height: 2px;
       --channel-editor-table-row-height: 36px;
       --channel-editor-table-header-height: 38px;
       --channel-editor-key-visible-rows: 1;
@@ -240,13 +241,21 @@
 
     #channelModal .inline-table-container {
       --channel-editor-table-visible-rows: 2;
-      --channel-editor-table-visible-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-table-visible-rows) * var(--channel-editor-table-row-height)));
+      --channel-editor-table-visible-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-table-visible-rows) * var(--channel-editor-table-row-height)));
       min-height: 0;
       max-height: var(--channel-editor-table-visible-height);
       overflow-y: auto;
       overflow-x: hidden;
       scrollbar-width: thin;
       scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+    }
+
+    #channelModal .channel-editor-group--urls .inline-table-container {
+      /* URL 行包含 38px 的协议选择器，比通用内联表行更高。 */
+      --channel-editor-table-visible-rows: 3;
+      --channel-editor-table-row-height: 45px;
+      --channel-editor-table-header-height: 46px;
+      max-height: var(--channel-editor-table-visible-height);
     }
 
     #channelModal .inline-table-container::-webkit-scrollbar {
@@ -290,7 +299,11 @@
       flex: 0 0 auto;
       height: var(--channel-editor-table-visible-height);
       min-height: var(--channel-editor-table-visible-height);
-      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-key-max-visible-rows) * var(--channel-editor-table-row-height)));
+      max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-key-max-visible-rows) * var(--channel-editor-table-row-height)));
+    }
+
+    #channelModal .channel-editor-group--keys .inline-table-container:has(tbody > tr:only-child) {
+      overflow-y: hidden;
     }
 
     #channelModal .channel-editor-group--urls > div {
@@ -303,14 +316,14 @@
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
-      min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
+      min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
     }
 
     #channelModal .channel-editor-group--models .inline-table-container {
       --channel-editor-table-visible-rows: var(--channel-editor-model-visible-rows);
       flex: 1 1 auto;
-      min-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-model-visible-rows) * var(--channel-editor-table-row-height)));
-      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
+      min-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-visible-rows) * var(--channel-editor-table-row-height)));
+      max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
       overflow-y: auto;
     }
 
