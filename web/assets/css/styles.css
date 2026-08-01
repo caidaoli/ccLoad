@@ -7233,18 +7233,14 @@ body.web-role-api-token .filter-group--auth-token {
     justify-content: flex-start;
   }
 
-  .model-test-mode-header .chat-control:first-child,
-  .model-test-mode-header .chat-control:nth-child(2) {
+  .model-test-mode-header .chat-control--selector {
     flex: 1 1 100%;
     max-width: none;
   }
 
-  .chat-channel-combobox {
-    flex: 1 1 auto;
-    max-width: none;
-  }
-
-  .chat-model-combobox {
+  .chat-channel-combobox,
+  .chat-model-combobox,
+  .chat-protocol-combobox {
     flex: 1 1 auto;
     max-width: none;
   }
@@ -8108,11 +8104,7 @@ body.web-role-api-token .filter-group--auth-token {
   min-width: max-content;
 }
 
-.model-test-mode-header .chat-control:first-child {
-  flex: 0 0 auto;
-}
-
-.model-test-mode-header .chat-control:nth-child(2) {
+.model-test-mode-header .chat-control--selector {
   flex: 0 0 auto;
 }
 
@@ -8146,6 +8138,13 @@ body.web-role-api-token .filter-group--auth-token {
   width: 250px;
   flex: 0 0 250px;
   max-width: 250px;
+  min-width: 0;
+}
+
+.chat-protocol-combobox {
+  width: 160px;
+  flex: 0 0 160px;
+  max-width: 160px;
   min-width: 0;
 }
 
@@ -9094,14 +9093,14 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
     min-width: 0;
   }
 
-  .model-test-mode-header .chat-control:first-child,
-  .model-test-mode-header .chat-control:nth-child(2) {
+  .model-test-mode-header .chat-control--selector {
     flex: 1 1 100%;
     min-width: 0;
   }
 
   .chat-channel-combobox,
-  .chat-model-combobox {
+  .chat-model-combobox,
+  .chat-protocol-combobox {
     width: 100%;
     flex: 1 1 auto;
     max-width: none;

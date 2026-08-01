@@ -116,7 +116,7 @@
 
           <!-- 对话工具栏（chat 模式下显示，独立于模式切换栏，避免 tabs 位置跳动） -->
           <div id="chatToolbar" class="chat-toolbar hidden">
-            <label class="chat-control">
+            <label class="chat-control chat-control--selector">
               <span class="chat-control__label" data-i18n="common.model">模型</span>
               <div class="filter-combobox-wrapper chat-model-combobox">
                 <input
@@ -131,7 +131,26 @@
                 <div id="chatModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
               </div>
             </label>
-            <label class="chat-control">
+            <label class="chat-control chat-control--selector">
+              <span class="chat-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
+              <div class="filter-combobox-wrapper chat-protocol-combobox">
+                <input
+                  id="chatProtocolSelect"
+                  class="filter-select filter-combobox"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <div
+                  id="chatProtocolSelectDropdown"
+                  class="filter-dropdown"
+                  role="listbox"
+                  data-i18n-aria-label="modelTest.clientProtocol"
+                  aria-label="请求协议"
+                ></div>
+              </div>
+            </label>
+            <label class="chat-control chat-control--selector">
               <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
               <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
             </label>
