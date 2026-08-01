@@ -703,6 +703,8 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **多URL说明**：`urls` 是有序的 `{url, exact, protocols}` 对象数组。`exact: true` 表示该地址已经是完整上游请求 URL。系统按延迟加权选择 URL，并对故障 URL 独立冷却；local 模式会先把显式声明协议的 URL 稳定排到自动 URL 前面，各组内部顺序不变。
 
+> **模型条目说明**：`models` 的每个元素是 `{model, redirect_model, disabled}`。`redirect_model` 只改写发往上游的模型名，客户端仍按原名请求。`disabled: true` 表示该渠道彻底不提供这个模型——不再对外暴露、不参与精确/模糊匹配、也不再写入模型冷却，但条目本身保留。用 `replace` 模式刷新模型列表时，已有的停用标记会按原名、归一化别名和重定向目标三种方式回填到新拉取的条目上，因此刷新不会把手动停用的模型悄悄改回启用。
+
 > **RPM限制说明**：`rpm_limit` 是渠道级请求数上限，按滚动 60 秒窗口统计；`0` 表示不限制。代理转发、手动测试、单 URL 测试和定时检测都会计入，达到上限后该渠道会被跳过；多 URL 故障重试按实际发出的上游 HTTP 请求计数。计数保存在当前进程内，服务重启会清空，多实例部署时各实例独立统计。
 
 > **并发限制说明**：`max_concurrency` 是渠道级同时在飞请求上限；`0` 表示不限制。槽位从发起上游请求前占用，到响应体关闭后释放，流式请求会占用到流结束；达到上限后该渠道会被跳过，不触发冷却。计数保存在当前进程内，多实例部署时各实例独立统计。
@@ -856,7 +858,7 @@ ccLoad 使用的核心技术栈：
   - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
   - `channel_check_scheduler.go`：渠道定时检测调度器
   - `detection_log.go`：检测日志构建（定时检测结果→LogEntry）
-- **协议转换系统**（2026-07 核心刷新）：
+- **协议转换系统**：
   - `protocol/types.go`：四大协议定义（Anthropic/OpenAI/Gemini/Codex）
   - `protocol/registry.go`：请求、流式响应和非流式响应的契约边界；同协议请求不进入转换
   - `protocol/builtin/register.go`：注册全部 12 个跨协议有向组合
@@ -880,16 +882,16 @@ ccLoad 使用的核心技术栈：
   - 加权随机：权重=1/EWMA延迟，延迟低的URL自动多分流
   - 独立冷却：故障URL指数退避，不影响同渠道其他URL
   - BaseURL追踪：活跃请求、日志和UI全链路携带上游URL
-- **存储层重构**（2025-12优化，消除467行重复代码）：
+- **存储层重构**（消除467行重复代码）：
   - `storage/schema/`：统一Schema定义（支持 SQLite/MySQL/PostgreSQL 差异）
   - `storage/sql/`：SQLite、MySQL 和 PostgreSQL 共享的通用 SQL 实现层
   - `storage/factory.go`：工厂模式自动选择数据库
   - 复合索引优化，统计查询性能提升
-- **OpenAI service_tier 定价**（2026-03新增）：
+- **OpenAI service_tier 定价**：
   - `util.OpenAIServiceTierMultiplier()`：返回 priority/flex/default 层级对应倍率
   - `LogEntry.ServiceTier`：持久化到数据库，日志成本列显示层级标注
   - 支持 GPT-5.4、GPT-5.4-pro 等最新模型定价
-- **Responses image_generation 工具计费**（2026-05新增）：
+- **Responses image_generation 工具计费**：
   - 解析 Responses API 的 `tool_usage.image_gen` 与 `image_generation` 工具模型
   - `gpt-image-2` 按文本输入、图像输入、图像输出 token 分项计费
   - 流式/非流式代理链路与渠道测试共用同一 usage 解析器，避免费用口径漂移
@@ -993,6 +995,9 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `cooldown_rate_limit_seconds` | `60` | 限流错误（429）初始冷却时间（秒） |
 | `cooldown_min_seconds` | `10` | 指数退避冷却下限（秒） |
 | `cooldown_max_seconds` | `1800` | 指数退避冷却上限（秒；下限大于上限时整对回退默认值） |
+| `cooldown_fallback_enabled` | `true` | 所有渠道都在冷却时，兜底选取「最早恢复」的渠道继续服务（Key 同样选最早恢复的）；设为 `false` 则直接拒绝请求 |
+| `global_cooldown_detection_rules` | `{}` | 全局冷却探测规则，渠道未配置自身 `cooldown_detection_rules` 时继承 |
+| `upstream_connection_reuse_limit_seconds` | `0` | 上游连接最长复用时间（秒，`0`=不限制）；统一约束 HTTP/1.1、HTTP/2 和 WebSocket，达到时限后不再接收新请求，在途请求跑完再关闭，下次按需重连 |
 | `upstream_first_byte_timeout` | `0` | 流式请求首个有效内容超时（秒，0=禁用） |
 | `stream_timeout` | `0` | 流式请求总超时（秒，0=禁用） |
 | `non_stream_timeout` | `120` | 非流式请求超时（秒，0=禁用） |
@@ -1016,6 +1021,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `channel_check_interval_hours` | `5` | 渠道定时检测间隔（小时，支持小数，0=禁用） |
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
 | `auto_update_interval_hours` | `12` | 自动更新检测间隔（小时，0=禁用，启用时最低 1 小时） |
+| `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
+| `responses_ws_max_connections` | `64` | 下游 Responses WebSocket 全局最大并发连接数 |
+| `responses_ws_max_connections_per_token` | `16` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数 |
+| `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
+| `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
 
 分协议超时按“实际转发到的上游协议”生效：协议转换后转发到 OpenAI，就读取 `openai_*_timeout`；对应值为 `0` 时回退全局超时。
 
@@ -1132,10 +1142,10 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 storage/
 ├── store.go         # Store 接口（统一契约）
 ├── factory.go       # NewStore() 自动选择数据库
-├── schema/          # 统一 Schema 定义层（2025-12 新增）
+├── schema/          # 统一 Schema 定义层
 │   ├── tables.go    # 表结构定义（DefineXxxTable 函数）
 │   └── builder.go   # Schema 构建器（支持 SQLite/MySQL/PostgreSQL 差异）
-├── sql/             # 通用 SQL 实现层（2025-12 重构，消除 467 行重复代码）
+├── sql/             # 通用 SQL 实现层（消除 467 行重复代码）
 │   ├── store_impl.go      # SQLStore 核心实现
 │   ├── config.go          # 渠道配置 CRUD
 │   ├── apikey.go          # API 密钥 CRUD
@@ -1170,7 +1180,7 @@ storage/
 - `web_sessions` - 可绑定 API Token 的角色化 Web 会话
 - `system_settings` - 系统配置（数据库存储，保存后自动重启生效）
 
-**架构特性** (✅ 2025-12月 ~ 2026-04月持续优化):
+**架构特性**:
 - ✅ **统一SQL层**（重构）：SQLite、MySQL 和 PostgreSQL 共享 `storage/sql/` 实现
 - ✅ **统一Schema定义**（新增）：`storage/schema/`定义表结构，支持数据库差异
 - ✅ 工厂模式统一接口（OCP 原则，易扩展新存储）

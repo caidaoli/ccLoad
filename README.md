@@ -686,6 +686,8 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **Multi-URL Note**: `urls` is an ordered array of `{url, exact, protocols}` objects. `exact: true` means the URL is already the complete upstream request URL. The system uses latency-weighted selection and independent URL cooldown; local mode first partitions explicitly declared URLs ahead of automatic ones while preserving order inside each group.
 
+> **Model Entry Note**: each `models` element is `{model, redirect_model, disabled}`. `redirect_model` rewrites the model name sent upstream while clients keep requesting the original name. `disabled: true` removes that model from the channel entirely — it stops being advertised, matched (exact or fuzzy), and cooled down, without deleting the entry. When you refresh the model list in `replace` mode, existing disabled flags are carried over to the newly fetched entries by original name, normalized alias, and redirect target, so a refresh does not silently re-enable models you turned off.
+
 > **RPM Limit Note**: `rpm_limit` is a per-channel request cap over a rolling 60-second window; `0` means unlimited. Proxy forwarding, manual tests, single-URL tests, and scheduled checks all count toward the cap. Multi-URL failover counts each actual upstream HTTP request. The counter is in-memory: restart clears it, and multiple instances count independently.
 
 > **Concurrency Limit Note**: `max_concurrency` is a per-channel cap on simultaneous in-flight upstream requests; `0` means unlimited. A slot is acquired before the upstream request starts and released when the response body is closed, so streaming requests hold the slot until the stream ends. Over-limit channels are skipped without cooldown. The counter is in-memory and per instance.
@@ -837,7 +839,7 @@ Check out the awesome admin dashboard 👇
   - `admin_debug_log.go`: Debug log API (sensitive header masking + base64 binary encoding)
   - `channel_check_scheduler.go`: Scheduled channel check scheduler
   - `detection_log.go`: Detection result to LogEntry builder
-- **Protocol Transform System** (2026-07 core refresh):
+- **Protocol Transform System**:
   - `protocol/types.go`: Four protocol definitions (Anthropic/OpenAI/Gemini/Codex)
   - `protocol/registry.go`: Contract boundary for request, streaming response, and non-stream response transforms; same-protocol traffic bypasses conversion
   - `protocol/builtin/register.go`: Registers all 12 directed cross-protocol pairs
@@ -861,16 +863,16 @@ Check out the awesome admin dashboard 👇
   - Weighted random: Weight = 1/EWMA latency, lower latency = higher selection probability
   - Independent cooldown: Failed URLs cool down independently without affecting other URLs
   - BaseURL tracking: Active requests, logs, and UI carry upstream URL throughout
-- **Storage Layer Refactor** (2025-12 optimization, eliminated 467 lines of duplicate code):
+- **Storage Layer Refactor** (eliminated 467 lines of duplicate code):
   - `storage/schema/`: Unified schema definition (supports SQLite/MySQL/PostgreSQL differences)
   - `storage/sql/`: Common SQL implementation layer shared by SQLite, MySQL, and PostgreSQL
   - `storage/factory.go`: Factory pattern auto-selects database
   - Composite index optimization, stats query performance improved
-- **OpenAI service_tier Pricing** (2026-03 new):
+- **OpenAI service_tier Pricing**:
   - `util.OpenAIServiceTierMultiplier()`: Returns multiplier for priority/flex/default tiers
   - `LogEntry.ServiceTier`: Persisted to database, log cost column shows tier annotation
   - Supports GPT-5.4, GPT-5.4-pro, and other latest model pricing
-- **Responses image_generation Tool Billing** (2026-05 new):
+- **Responses image_generation Tool Billing**:
   - Parses Responses API `tool_usage.image_gen` and the `image_generation` tool model
   - Bills `gpt-image-2` by text input, image input, and image output tokens
   - Streaming/non-streaming proxy paths and channel tests share the same usage parser to keep cost accounting consistent
@@ -972,6 +974,8 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `cooldown_rate_limit_seconds` | `60` | Rate limit error (429) initial cooldown in seconds |
 | `cooldown_min_seconds` | `10` | Exponential backoff cooldown floor in seconds |
 | `cooldown_max_seconds` | `1800` | Exponential backoff cooldown ceiling in seconds (an inverted floor/ceiling pair falls back to both defaults) |
+| `cooldown_fallback_enabled` | `true` | When every channel is cooling down, fall back to the channel that recovers soonest instead of failing (keys follow the same earliest-recovery rule); set to `false` to reject the request outright |
+| `global_cooldown_detection_rules` | `{}` | Global cooldown detection rules, inherited by channels that define no `cooldown_detection_rules` of their own |
 | `upstream_connection_reuse_limit_seconds` | `0` | Maximum upstream connection reuse time in seconds (`0` = unlimited); applies to HTTP/1.1, HTTP/2, and WebSocket, drains active requests, then reconnects on demand |
 | `upstream_first_byte_timeout` | `0` | Upstream first valid stream content timeout (seconds, 0=disabled, stream only) |
 | `stream_timeout` | `0` | Stream request total timeout (seconds, 0=disabled) |
@@ -996,6 +1000,11 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `channel_check_interval_hours` | `5` | Scheduled channel check interval (hours, supports decimals, 0=disabled) |
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
 | `auto_update_interval_hours` | `12` | Auto-update check interval (hours, 0=disabled, minimum enabled value is 1) |
+| `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
+| `responses_ws_max_connections` | `64` | Max concurrent downstream Responses WebSocket connections across the process |
+| `responses_ws_max_connections_per_token` | `16` | Max concurrent downstream Responses WebSocket connections per auth token |
+| `debug_log_enabled` | `false` | Capture upstream request/response debug logs |
+| `debug_log_retention_minutes` | `2` | Debug log retention in minutes |
 
 Per-protocol timeouts apply to the runtime upstream protocol: if a transformed request is forwarded to OpenAI, ccLoad reads `openai_*_timeout`; when that value is `0`, it falls back to the global timeout.
 
@@ -1098,10 +1107,10 @@ docker pull --platform linux/arm64 ghcr.io/caidaoli/ccload:latest
 storage/
 ├── store.go         # Store interface (unified contract)
 ├── factory.go       # NewStore() auto-selects database
-├── schema/          # Unified schema definition layer (2025-12 new)
+├── schema/          # Unified schema definition layer
 │   ├── tables.go    # Table definitions (DefineXxxTable functions)
 │   └── builder.go   # Schema builder (supports SQLite/MySQL/PostgreSQL differences)
-├── sql/             # Common SQL implementation layer (2025-12 refactor, eliminated 467 lines)
+├── sql/             # Common SQL implementation layer (eliminated 467 lines)
 │   ├── store_impl.go      # SQLStore core implementation
 │   ├── config.go          # Channel config CRUD
 │   ├── apikey.go          # API key CRUD
@@ -1136,7 +1145,7 @@ storage/
 - `web_sessions` - Role-aware Web sessions bound to an optional API token
 - `system_settings` - System config (database-backed, applied after automatic restart)
 
-**Architecture Features** (✅ 2025-12 through 2026-04 continuous improvements):
+**Architecture Features**:
 - ✅ **Unified SQL Layer** (refactor): SQLite, MySQL, and PostgreSQL share `storage/sql/` implementation
 - ✅ **Unified Schema Definition** (new): `storage/schema/` defines table structures, supports database differences
 - ✅ Factory pattern unified interface (OCP, easy to extend new storage)
