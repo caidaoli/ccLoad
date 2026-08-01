@@ -1455,6 +1455,125 @@ func TestResponsesWebsocketReconcilesCompletedToolCallBeforeReplay(t *testing.T)
 	}
 }
 
+// TestResponsesWebsocketRecoversCompletedToolCallAfterInterruptedStream locks
+// down the side-effect boundary: once a complete tool call has reached the
+// downstream client, losing the upstream stream before response.completed must
+// not make the client's matching tool output an orphan. The next turn must
+// replay the delivered call and its output without executing the tool again.
+func TestResponsesWebsocketRecoversCompletedToolCallAfterInterruptedStream(t *testing.T) {
+	requests := make(chan []byte, 3)
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch turn.Add(1) {
+		case 1:
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-base","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		case 2:
+			partial := `data: {"type":"response.created","response":{"id":"resp-interrupted","output":[]}}` + "\n\n" +
+				`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc-interrupted","call_id":"call-interrupted","name":"lookup","arguments":"{}"}}` + "\n\n"
+			w.Header().Set("Content-Length", fmt.Sprint(len(partial)+64))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, partial)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		case 3:
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-recovered","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "interrupted-tool-call", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "interrupted-tool-recovery")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set interrupted tool call deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write base turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.append", "previous_response_id": "resp-base",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "use tool"}},
+	}); err != nil {
+		t.Fatalf("write interrupted turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.output_item.done")
+	var retryEvent map[string]any
+	if err := conn.ReadJSON(&retryEvent); err != nil {
+		t.Fatalf("read interrupted turn retry error: %v", err)
+	}
+	errorObject, _ := retryEvent["error"].(map[string]any)
+	if retryEvent["type"] != "error" || retryEvent["status"] != float64(http.StatusBadGateway) ||
+		errorObject["type"] != "server_error" || errorObject["code"] != "upstream_stream_interrupted" {
+		t.Fatalf("interrupted turn retry event=%#v", retryEvent)
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("interrupted turn close error=%v, want websocket 1011", errClose)
+	}
+
+	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "interrupted-tool-recovery")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set interrupted tool replay deadline: %v", err)
+	}
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "first"},
+			map[string]any{"type": "message", "role": "user", "content": "use tool"},
+			map[string]any{
+				"type": "function_call", "id": "fc-interrupted", "call_id": "call-interrupted",
+				"name": "lookup", "arguments": "{}",
+			},
+			map[string]any{
+				"type": "function_call_output", "call_id": "call-interrupted", "output": "42",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("replay interrupted turn with tool output: %v", err)
+	}
+	recovered := readWebsocketUntilType(t, conn, "response.completed")
+	response, _ := recovered["response"].(map[string]any)
+	if response["id"] != "resp-recovered" {
+		t.Fatalf("recovered response=%#v", recovered)
+	}
+
+	<-requests
+	<-requests
+	replay := <-requests
+	input := gjson.GetBytes(replay, "input")
+	if !input.IsArray() {
+		t.Fatalf("recovered replay input is not an array: %s", replay)
+	}
+	var calls, outputs int
+	for _, item := range input.Array() {
+		switch item.Get("type").String() {
+		case "function_call":
+			if item.Get("call_id").String() == "call-interrupted" {
+				calls++
+			}
+		case "function_call_output":
+			if item.Get("call_id").String() == "call-interrupted" {
+				outputs++
+			}
+		}
+	}
+	if calls != 1 || outputs != 1 {
+		t.Fatalf("interrupted tool call pairing was not replayed exactly once: %s", replay)
+	}
+}
+
 // TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest locks down
 // local rejection of a function_call_output whose call_id has no matching
 // function_call anywhere in the same input array. Upstream would hard-reject
