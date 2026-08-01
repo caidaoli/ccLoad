@@ -913,7 +913,10 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		requestPlan.fullURL = websocketURL
 		requestPlan.requestBody = preparedBody
 		requestPlan.debugCapture = s.captureDebugRequest(debugRequest, preparedBody)
-		websocketSession = newCodexUpstreamWebsocketSession(s.bodyLimits.maxForPath("/v1/responses"))
+		websocketSession = newCodexUpstreamWebsocketSession(
+			s.bodyLimits.maxForPath("/v1/responses"),
+			s.upstreamConnectionMaxAge,
+		)
 		defer websocketSession.Close()
 	}
 

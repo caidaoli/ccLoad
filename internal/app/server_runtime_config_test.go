@@ -63,6 +63,25 @@ func TestLoadServerRuntimeConfigLimitsAndCooldown(t *testing.T) {
 	}
 }
 
+func TestLoadServerRuntimeConfigUpstreamConnectionMaxAge(t *testing.T) {
+	t.Parallel()
+
+	cfg := loadServerRuntimeConfig(newStubConfigService(map[string]string{
+		"upstream_connection_reuse_limit_seconds": "540",
+	}))
+
+	if cfg.UpstreamConnectionMaxAge != 9*time.Minute {
+		t.Fatalf("UpstreamConnectionMaxAge=%v, want 9m", cfg.UpstreamConnectionMaxAge)
+	}
+
+	disabled := loadServerRuntimeConfig(newStubConfigService(map[string]string{
+		"upstream_connection_reuse_limit_seconds": "0",
+	}))
+	if disabled.UpstreamConnectionMaxAge != 0 {
+		t.Fatalf("disabled UpstreamConnectionMaxAge=%v, want 0", disabled.UpstreamConnectionMaxAge)
+	}
+}
+
 func TestLoadServerRuntimeConfigFallsBackOnInvalidValues(t *testing.T) {
 	t.Parallel()
 

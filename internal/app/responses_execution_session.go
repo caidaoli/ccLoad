@@ -44,11 +44,15 @@ type responsesExecutionSession struct {
 	transcriptBytes atomic.Int64
 }
 
-func newResponsesExecutionSession(now time.Time, maxBodyBytes int64) *responsesExecutionSession {
+func newResponsesExecutionSession(
+	now time.Time,
+	maxBodyBytes int64,
+	upstreamConnectionMaxAge time.Duration,
+) *responsesExecutionSession {
 	return &responsesExecutionSession{
 		turn:       make(chan struct{}, 1),
 		transcript: newResponsesWebsocketSession(maxBodyBytes),
-		upstream:   newCodexUpstreamWebsocketSession(maxBodyBytes),
+		upstream:   newCodexUpstreamWebsocketSession(maxBodyBytes, upstreamConnectionMaxAge),
 		lastAccess: now,
 	}
 }
@@ -104,30 +108,36 @@ type responsesExecutionSessionStoreStats struct {
 // reconnect and resend the full transcript, which is the documented contract
 // of the WebSocket protocol this store backs.
 type responsesExecutionSessionStore struct {
-	mu                     sync.Mutex
-	sessions               map[string]*responsesExecutionSession
-	configService          *ConfigService
-	ttlOverride            time.Duration // non-zero overrides configService (tests only)
-	maxSessions            int
-	maxTranscriptBytes     int64
-	maxBodyBytes           int64
-	nextTransientID        uint64
-	ttlExpired             uint64
-	capacityRejected       uint64
-	budgetRejected         uint64
-	previousResponseMisses uint64
+	mu                       sync.Mutex
+	sessions                 map[string]*responsesExecutionSession
+	configService            *ConfigService
+	ttlOverride              time.Duration // non-zero overrides configService (tests only)
+	maxSessions              int
+	maxTranscriptBytes       int64
+	maxBodyBytes             int64
+	upstreamConnectionMaxAge time.Duration
+	nextTransientID          uint64
+	ttlExpired               uint64
+	capacityRejected         uint64
+	budgetRejected           uint64
+	previousResponseMisses   uint64
 }
 
-func newResponsesExecutionSessionStore(cfg *ConfigService, maxBodyBytes int64) *responsesExecutionSessionStore {
+func newResponsesExecutionSessionStore(
+	cfg *ConfigService,
+	maxBodyBytes int64,
+	upstreamConnectionMaxAge time.Duration,
+) *responsesExecutionSessionStore {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = normalizeMaxBodyBytes(maxBodyBytes)
 	}
 	return &responsesExecutionSessionStore{
-		sessions:           make(map[string]*responsesExecutionSession),
-		configService:      cfg,
-		maxSessions:        defaultResponsesExecutionSessionLimit,
-		maxTranscriptBytes: defaultResponsesExecutionTranscriptBudgetBytes,
-		maxBodyBytes:       maxBodyBytes,
+		sessions:                 make(map[string]*responsesExecutionSession),
+		configService:            cfg,
+		maxSessions:              defaultResponsesExecutionSessionLimit,
+		maxTranscriptBytes:       defaultResponsesExecutionTranscriptBudgetBytes,
+		maxBodyBytes:             maxBodyBytes,
+		upstreamConnectionMaxAge: upstreamConnectionMaxAge,
 	}
 }
 
@@ -299,7 +309,7 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 			s.nextTransientID++
 			key = "transient:" + strconv.FormatUint(s.nextTransientID, 10)
 		}
-		session = newResponsesExecutionSession(now, s.maxBodyBytes)
+		session = newResponsesExecutionSession(now, s.maxBodyBytes, s.upstreamConnectionMaxAge)
 		session.storeKey = key
 		session.transient = !stable
 		session.subjectFingerprint = responsesExecutionFingerprint(subject)

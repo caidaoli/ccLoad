@@ -51,7 +51,7 @@ type Server struct {
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client // HTTP客户端（全局默认）
-	proxyTransports               sync.Map     // proxyURL → *http.Transport（渠道级代理缓存）
+	proxyTransports               sync.Map     // proxyURL → *http.Client（渠道级代理缓存）
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -69,6 +69,8 @@ type Server struct {
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
+	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
+	upstreamConnectionMaxAge time.Duration
 	// 仅供测试注入（缩短下游与上游 WebSocket 的 idle/ping 间隔以覆盖保活路径）；
 	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
@@ -160,21 +162,19 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:    runtimeCfg.MaxKeyRetries,
-		bodyLimits:       bodyLimits,
-		firstByteTimeout: runtimeCfg.FirstByteTimeout,
-		streamTimeout:    runtimeCfg.StreamTimeout,
-		nonStreamTimeout: runtimeCfg.NonStreamTimeout,
-		protocolTimeouts: runtimeCfg.ProtocolTimeouts,
+		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
+		bodyLimits:               bodyLimits,
+		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
+		streamTimeout:            runtimeCfg.StreamTimeout,
+		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
+		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
+		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
-		// HTTP客户端
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   0, // 不设置全局超时，避免中断长时间任务
-		},
+		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
+		client:        newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
 		skipTLSVerify: skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
@@ -194,6 +194,7 @@ func NewServer(store storage.Store) *Server {
 		responsesExecutionSessions: newResponsesExecutionSessionStore(
 			configService,
 			bodyLimits.maxForPath("/v1/responses"),
+			runtimeCfg.UpstreamConnectionMaxAge,
 		),
 		responsesWebsocketConnections: newResponsesWebsocketConnectionLimiter(
 			configService.GetInt("responses_ws_max_connections", defaultResponsesWebsocketConnectionLimit),
@@ -339,6 +340,7 @@ type serverRuntimeConfig struct {
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
+	UpstreamConnectionMaxAge     time.Duration
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
@@ -411,6 +413,12 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		nonStreamTimeout = 120 * time.Second
 	}
 
+	upstreamConnectionMaxAge := cs.GetDuration("upstream_connection_reuse_limit_seconds", 0)
+	if upstreamConnectionMaxAge < 0 {
+		log.Printf("[WARN] 无效的 upstream_connection_reuse_limit_seconds=%v（必须 >= 0，0=不限制），已设为 0", upstreamConnectionMaxAge)
+		upstreamConnectionMaxAge = 0
+	}
+
 	protocolTimeouts := loadProtocolTimeouts(cs)
 
 	logRetentionDays := cs.GetInt("log_retention_days", 7)
@@ -428,6 +436,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
+		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
@@ -699,9 +708,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		return s.client
 	}
-	c := &http.Client{Transport: t, Timeout: 0}
+	c := newUpstreamHTTPClient(t, s.upstreamConnectionMaxAge)
 	if actual, loaded := s.proxyTransports.LoadOrStore(cfg.ProxyURL, c); loaded {
-		t.CloseIdleConnections()
+		closeUpstreamHTTPClient(c)
 		return actual.(*http.Client)
 	}
 	log.Printf("[INFO] 渠道 %d 使用独立代理: %s", cfg.ID, cfg.ProxyURL)
@@ -1251,9 +1260,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 关闭渠道级代理 Transport 的空闲连接
+	// 停止连接池老化计时器并关闭全局及渠道代理 Transport 的空闲连接。
+	closeUpstreamHTTPClient(s.client)
 	s.proxyTransports.Range(func(_, v any) bool {
-		v.(*http.Client).CloseIdleConnections()
+		closeUpstreamHTTPClient(v.(*http.Client))
 		return true
 	})
 

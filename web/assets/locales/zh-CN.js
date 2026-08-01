@@ -1088,6 +1088,7 @@ window.I18N_LOCALES['zh-CN'] = {
   // 分组名称
   'settings.group.channel': '渠道与测试',
   'settings.group.model': '模型匹配',
+  'settings.group.upstreamConnection': '上游连接',
   'settings.group.streamTimeout': '流式请求超时',
   'settings.group.nonStreamTimeout': '非流式请求超时',
   'settings.group.websocket': 'WebSocket',
@@ -1120,6 +1121,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.max_concurrency': '最大并发请求数(限制同时处理的代理请求数量)',
   'settings.desc.max_body_bytes': '请求体大小上限（单位 M，默认 10 M）',
   'settings.desc.max_image_body_bytes': 'Images API 请求体大小上限（单位 M，默认 20 M）',
+  'settings.desc.upstream_connection_reuse_limit_seconds': '上游连接最长复用时间（秒，适用于 HTTP/1.1、HTTP/2 和 WebSocket；0 表示不限制；达到时限后不再接收新请求，在途请求完成后关闭）',
   'settings.desc.upstream_first_byte_timeout': '流式请求首个有效内容超时(秒,0=禁用)',
   'settings.desc.stream_timeout': '流式请求总超时(秒,0=禁用)',
   'settings.desc.non_stream_timeout': '非流式请求超时(秒,0=禁用)',

@@ -1089,6 +1089,7 @@ window.I18N_LOCALES['en'] = {
   // Group names
   'settings.group.channel': 'Channel & Testing',
   'settings.group.model': 'Model Matching',
+  'settings.group.upstreamConnection': 'Upstream Connections',
   'settings.group.streamTimeout': 'Stream Request Timeout',
   'settings.group.nonStreamTimeout': 'Non-stream Request Timeout',
   'settings.group.websocket': 'WebSocket',
@@ -1121,6 +1122,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.max_concurrency': 'Max concurrent proxy requests',
   'settings.desc.max_body_bytes': 'Max request body size (in M; default 10 M)',
   'settings.desc.max_image_body_bytes': 'Max Images API request body size (in M; default 20 M)',
+  'settings.desc.upstream_connection_reuse_limit_seconds': 'Maximum upstream connection reuse time (seconds; applies to HTTP/1.1, HTTP/2, and WebSocket; 0 = unlimited; connections stop accepting new requests at the limit and close after active requests finish)',
   'settings.desc.upstream_first_byte_timeout': 'Upstream first valid stream content timeout (seconds, 0 = disabled, stream only)',
   'settings.desc.stream_timeout': 'Stream request total timeout (seconds, 0 = disabled)',
   'settings.desc.non_stream_timeout': 'Non-stream request timeout (seconds, 0 = disabled)',
