@@ -35,6 +35,7 @@ let chatModel = '';
 let isChatSending = false;
 let chatChannelCombobox = null;
 let chatModelCombobox = null;
+let chatProtocolCombobox = null;
 let chatThinkingCombobox = null;
 let chatThinkingEffort = '';
 let chatPendingImages = [];
@@ -1280,16 +1281,7 @@ function getAllModels() {
 }
 
 function ensureSelectedProtocolForCurrentMode() {
-  if (testMode === TEST_MODE_CHANNEL && selectedChannel) {
-    const clientProtocols = getClientProtocols();
-    if (!selectedProtocol || !clientProtocols.includes(selectedProtocol)) {
-      selectedProtocol = 'anthropic';
-    }
-    return;
-  }
-
-  if (selectedProtocol) return;
-  selectedProtocol = 'anthropic';
+  if (!getClientProtocols().includes(selectedProtocol)) selectedProtocol = 'anthropic';
 }
 
 function syncClientProtocolCombobox() {
@@ -1319,10 +1311,18 @@ function syncClientProtocolCombobox() {
   }
 }
 
+function syncChatClientProtocolCombobox() {
+  if (!chatProtocolCombobox) return;
+  ensureSelectedProtocolForCurrentMode();
+  chatProtocolCombobox.setValue(selectedProtocol, protocolLabel(selectedProtocol));
+  chatProtocolCombobox.refresh();
+}
+
 function selectClientProtocol(value) {
   const protocol = normalizeProtocol(value);
   if (!ALL_PROTOCOLS.includes(protocol)) {
     syncClientProtocolCombobox();
+    syncChatClientProtocolCombobox();
     return;
   }
 
@@ -1333,6 +1333,7 @@ function selectClientProtocol(value) {
   saveSelectedProtocolToStorage(selectedProtocol);
   clearProgress();
   syncClientProtocolCombobox();
+  syncChatClientProtocolCombobox();
 
   if (testMode === TEST_MODE_MODEL) {
     renderModelModeRows();
@@ -2791,7 +2792,10 @@ async function loadDefaultTestContent() {
 function bindEvents() {
   ensureModelSelectCombobox();
   syncClientProtocolCombobox();
-  window.addEventListener('localechange', syncClientProtocolCombobox);
+  window.addEventListener('localechange', () => {
+    syncClientProtocolCombobox();
+    syncChatClientProtocolCombobox();
+  });
   const streamEnabled = document.getElementById('streamEnabled');
   if (streamEnabled) {
     streamEnabled.addEventListener('change', () => {
@@ -3338,6 +3342,25 @@ function initChatPanel() {
     chatModelCombobox.refresh();
   }
 
+  // 请求协议 combobox（与其他测试模式共享协议状态和持久化）
+  if (!chatProtocolCombobox) {
+    chatProtocolCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'chatProtocolSelect',
+      dropdownId: 'chatProtocolSelectDropdown',
+      allowCustomInput: false,
+      initialValue: selectedProtocol,
+      initialLabel: protocolLabel(selectedProtocol),
+      getOptions: () => ALL_PROTOCOLS.map(protocol => ({
+        value: protocol,
+        label: protocolLabel(protocol)
+      })),
+      onSelect: (value) => selectClientProtocol(value),
+      onCancel: syncChatClientProtocolCombobox
+    });
+  }
+  syncChatClientProtocolCombobox();
+
   // 渠道 combobox（仅显示支持当前模型的渠道）
   if (!chatChannelCombobox) {
     chatChannelCombobox = window.createSearchableCombobox({
@@ -3751,6 +3774,7 @@ async function sendChatMessage() {
     const advancedAPI = getChatAdvancedOptionsAPI();
     const basePayload = {
       model: chatModel,
+      client_protocol: selectedProtocol,
       stream: chatStreamEnabled,
       thinking_effort: chatThinkingEffort,
       builtin_search: chatBuiltinSearch
