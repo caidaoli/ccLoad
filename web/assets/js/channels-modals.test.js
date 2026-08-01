@@ -169,6 +169,49 @@ function installCommonModelsGlobals(initialRows = []) {
   };
 }
 
+function installModelRequestTestGlobals({ dirty = false } = {}) {
+  const calls = [];
+  const notifications = [];
+  const button = {
+    disabled: false,
+    isConnected: true,
+    attributes: new Map(),
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    removeAttribute(name) { this.attributes.delete(name); }
+  };
+  const globals = {
+    window: {
+      t: key => key,
+      showWarning: message => notifications.push(message)
+    },
+    redirectTableData: [{ model: 'requested-model', redirect_model: 'upstream-model', disabled: false }],
+    editingChannelId: 7,
+    channelFormDirty: dirty,
+    channels: [{ id: 7, name: 'test-channel' }],
+    testChannel: async (...args) => {
+      calls.push({ type: 'open', args });
+      return true;
+    },
+    runChannelTest: async () => { calls.push({ type: 'run' }); }
+  };
+  const previous = new Map();
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+  return {
+    button,
+    calls,
+    notifications,
+    restore() {
+      for (const [name, descriptor] of previous) {
+        if (descriptor) Object.defineProperty(global, name, descriptor);
+        else delete global[name];
+      }
+    }
+  };
+}
+
 function installWebsocketProbeGlobals({
   supported,
   initialChecked,
@@ -414,6 +457,36 @@ test('model disabled state toggles without changing the model mapping', () => {
   assert.equal(toggleModelDisabledState(rows, 0), true);
   assert.deepEqual(rows, [{ model: 'model-a', redirect_model: 'upstream-a', disabled: false }]);
   assert.equal(toggleModelDisabledState(rows, 9), false);
+});
+
+test('model row test opens the existing test flow for the current model and runs it', async () => {
+  const fixture = installModelRequestTestGlobals();
+
+  try {
+    const { testRedirectModel } = loadChannelsModals();
+    assert.equal(await testRedirectModel(0, fixture.button), true);
+    assert.deepEqual(fixture.calls, [
+      { type: 'open', args: [7, 'test-channel', 'requested-model'] },
+      { type: 'run' }
+    ]);
+    assert.equal(fixture.button.disabled, false);
+    assert.equal(fixture.button.attributes.has('aria-busy'), false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('model row test rejects unsaved channel changes', async () => {
+  const fixture = installModelRequestTestGlobals({ dirty: true });
+
+  try {
+    const { testRedirectModel } = loadChannelsModals();
+    assert.equal(await testRedirectModel(0, fixture.button), false);
+    assert.deepEqual(fixture.calls, []);
+    assert.deepEqual(fixture.notifications, ['channels.saveBeforeModelTest']);
+  } finally {
+    fixture.restore();
+  }
 });
 
 test('model submit payload includes disabled state', () => {

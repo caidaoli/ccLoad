@@ -34,6 +34,7 @@
   <script defer src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-modals.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-custom-rules.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-cooldown-detection.js?v=__VERSION__"></script>
@@ -1050,9 +1051,10 @@
         <div class="form-group">
           <label class="form-label"><span data-i18n="channels.inputModelNames">输入模型名称</span>
             <span class="channel-import-hint"
-              data-i18n="channels.keysSeparatorHint">(支持逗号或换行分隔)</span></label>
+              data-i18n="channels.modelSeparatorHint">(逗号或换行分隔)</span></label>
           <textarea id="modelImportTextarea" class="form-input channel-import-textarea" rows="10"
-            placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"></textarea>
+            data-i18n-placeholder="channels.modelImportPlaceholder"
+            placeholder="gpt-4o|gpt-4.1&#10;gpt-4o-mini&#10;claude-3-5-sonnet-20241022"></textarea>
         </div>
         <div class="channel-import-info">
           <div class="channel-import-info-row">
@@ -1064,11 +1066,11 @@
             <div>
               <strong data-i18n="channels.usageInstructions">使用说明：</strong>
               <ul class="channel-import-info-list">
-                <li><span data-i18n="channels.commaSeparatedModel">支持逗号分隔：</span><code
-                    class="channel-import-code">model1,model2,model3</code>
+                <li><span data-i18n="channels.commaSeparatedModel">重定向格式：</span><code
+                    class="channel-import-code">request-model|redirect-model</code>
                 </li>
-                <li data-i18n="channels.newlineSeparatedModel">支持换行分隔：每行一个模型</li>
-                <li data-i18n="channels.autoDedupModel">自动去除空格、空行和重复模型</li>
+                <li data-i18n="channels.newlineSeparatedModel">无需重定向时只填写请求模型</li>
+                <li data-i18n="channels.autoDedupModel">自动去除空格、空项和重复请求模型</li>
               </ul>
             </div>
           </div>
@@ -1345,14 +1347,26 @@
         <div class="redirect-target-field">
           <input type="text" class="redirect-to-input modal-inline-input" data-index="{{index}}" value="{{to}}"
             placeholder="{{toPlaceholder}}">
-          <button type="button" class="redirect-delete-btn" data-index="{{index}}"
-            data-i18n-title="channels.deleteThisModel" title="删除此模型">
-            <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-              <path
-                d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"
-                stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
-            </svg>
-          </button>
+          <div class="redirect-row-actions">
+            <button type="button" class="redirect-model-toggle-btn" data-index="{{index}}"></button>
+            <button type="button" class="redirect-model-test-btn" data-index="{{index}}"
+              title="测试此模型" aria-label="测试此模型">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true" focusable="false">
+                <path d="M13 2L4 14H11L9 22L20 10H13V2Z" stroke="currentColor" stroke-width="1.8"
+                  stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <button type="button" class="redirect-delete-btn" data-index="{{index}}"
+              data-i18n-title="channels.deleteThisModel" title="删除此模型" aria-label="删除此模型">
+              <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+                aria-hidden="true" focusable="false">
+                <path
+                  d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"
+                  stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+          </div>
         </div>
       </td>
       <td class="redirect-col-status" data-mobile-label="{{mobileLabelStatus}}"></td>

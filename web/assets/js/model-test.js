@@ -2298,28 +2298,7 @@ async function executeDeletePlan(deletePlan, progress = null) {
   return { failed, successCount, totalChannelCount };
 }
 
-function parseBatchModelInput(value) {
-  const seen = new Set();
-  return String(value || '')
-    .split(/[,\n]+/)
-    .map(item => item.trim())
-    .filter(Boolean)
-    .filter((modelName) => {
-      const key = modelName.toLowerCase();
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-}
-
-function buildModelEntriesFromNames(modelNames) {
-  return modelNames.map(modelName => ({
-    model: modelName,
-    redirect_model: ''
-  }));
-}
-
-function appendModelsToChannelCache(channel, modelNames) {
+function appendModelsToChannelCache(channel, modelEntries) {
   if (!channel) return 0;
   if (!Array.isArray(channel.models)) {
     channel.models = [];
@@ -2333,13 +2312,13 @@ function appendModelsToChannelCache(channel, modelNames) {
   );
 
   let addedCount = 0;
-  modelNames.forEach((modelName) => {
-    const key = modelName.toLowerCase();
+  modelEntries.forEach((entry) => {
+    const key = entry.model.toLowerCase();
     if (existing.has(key)) return;
 
     channel.models.push({
-      model: modelName,
-      redirect_model: ''
+      model: entry.model,
+      redirect_model: entry.redirect_model
     });
     existing.add(key);
     addedCount++;
@@ -2372,11 +2351,10 @@ function formatAddFailDetails(failed, maxItems = 5) {
   return formatDeleteFailDetails(failed, maxItems);
 }
 
-async function executeAddModelsToChannels(modelNames, targets) {
+async function executeAddModelsToChannels(modelEntries, targets) {
   const failed = [];
   let successCount = 0;
   let addedModelCount = 0;
-  const modelEntries = buildModelEntriesFromNames(modelNames);
 
   for (const target of targets) {
     try {
@@ -2395,7 +2373,7 @@ async function executeAddModelsToChannels(modelNames, targets) {
       }
 
       successCount++;
-      addedModelCount += appendModelsToChannelCache(target.channel, modelNames);
+      addedModelCount += appendModelsToChannelCache(target.channel, modelEntries);
     } catch (error) {
       failed.push({
         channelId: target.channelId,
@@ -2458,8 +2436,8 @@ function openAddModelsModal() {
 async function confirmAddModelsFromModal() {
   if (isAddingModels) return;
 
-  const modelNames = parseBatchModelInput(addModelsTextarea?.value || '');
-  if (modelNames.length === 0) {
+  const modelEntries = window.ModelEntryParser.parseModelEntries(addModelsTextarea?.value || '');
+  if (modelEntries.length === 0) {
     showError(i18nText('modelTest.addModelsEmpty', '请输入要添加的模型'));
     return;
   }
@@ -2472,7 +2450,7 @@ async function confirmAddModelsFromModal() {
 
   setAddModelsModalBusy(true);
   try {
-    const result = await executeAddModelsToChannels(modelNames, targets);
+    const result = await executeAddModelsToChannels(modelEntries, targets);
     setAddModelsModalBusy(false);
 
     populateModelSelector();
