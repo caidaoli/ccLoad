@@ -560,7 +560,6 @@ func (m *FingerprintJobManager) runSampling(
 					Model:           modelName,
 					ClientProtocol:  clientProtocol,
 					Content:         util.FingerprintPrompt,
-					MaxTokens:       10,
 					Temperature:     &temp,
 					Stream:          false,
 					KeyIndex:        keyIndex,

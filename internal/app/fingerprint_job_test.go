@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,6 +15,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
+
+	"github.com/bytedance/sonic"
 )
 
 type failingFingerprintTestResultStore struct {
@@ -61,6 +64,70 @@ func createFingerprintChannel(t *testing.T, srv *Server, upstreamURL string) int
 		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
 	}
 	return created.ID
+}
+
+func TestFingerprintSamplingAnthropicMatchesModelTestRequestContract(t *testing.T) {
+	requestBodies := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read request body: %v", err)
+			http.Error(w, "read request body", http.StatusInternalServerError)
+			return
+		}
+		requestBodies <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"123"}],"usage":{"input_tokens":5,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	channelID := createFingerprintChannel(t, srv, upstream.URL)
+	job := &fpJob{progress: FingerprintProgress{Total: 1}}
+
+	samples, cancelled, err := srv.fingerprintJobs.runSampling(
+		context.Background(), job, srv, channelID, "fp-model", "anthropic", 0, 1, 1,
+	)
+	if err != nil {
+		t.Fatalf("runSampling: %v", err)
+	}
+	if cancelled {
+		t.Fatal("runSampling unexpectedly cancelled")
+	}
+	if len(samples) != 1 || samples[0] != 123 {
+		t.Fatalf("samples = %v, want [123]", samples)
+	}
+
+	body := <-requestBodies
+	var payload map[string]any
+	if err := sonic.Unmarshal(body, &payload); err != nil {
+		t.Fatalf("unmarshal request body: %v; body=%s", err, body)
+	}
+	if got, _ := payload["max_tokens"].(float64); got != 32000 {
+		t.Fatalf("max_tokens = %v, want 32000; body=%s", got, body)
+	}
+	if got, _ := payload["temperature"].(float64); got != 1 {
+		t.Fatalf("temperature = %v, want 1; body=%s", got, body)
+	}
+
+	wantOrder := []string{
+		`"model":`,
+		`"messages":`,
+		`"system":`,
+		`"tools":`,
+		`"metadata":`,
+		`"max_tokens":`,
+		`"temperature":`,
+		`"stream":`,
+	}
+	lastIndex := -1
+	for _, field := range wantOrder {
+		index := strings.Index(string(body), field)
+		if index <= lastIndex {
+			t.Fatalf("field order mismatch at %s; body=%s", field, body)
+		}
+		lastIndex = index
+	}
 }
 
 func setFingerprintChannelLimits(t *testing.T, srv *Server, channelID int64, rpm, concurrency int) {
