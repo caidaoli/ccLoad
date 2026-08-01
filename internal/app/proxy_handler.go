@@ -23,7 +23,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-var errUnknownChannelType = errors.New("unknown channel type for path")
+var errUnknownClientProtocol = errors.New("unknown client protocol for path")
 var errBodyTooLarge = errors.New("request body too large")
 
 // ErrAllKeysUnavailable 表示所有渠道密钥都不可用
@@ -210,24 +210,24 @@ func extractModelFromMultipart(body []byte, boundary string) string {
 
 // selectRouteCandidates 根据请求选择路由候选
 // 从proxy.go提取，遵循SRP原则
-func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, channelType string) ([]*model.Config, error) {
+func (s *Server) selectRouteCandidates(ctx context.Context, c *gin.Context, originalModel string, clientProtocol string) ([]*model.Config, error) {
 	requestMethod := c.Request.Method
 	requestFamily := protocol.DetectRequestFamily(c.Request.URL.Path)
 
 	// 智能路由选择：根据请求类型选择不同的路由策略
-	if requestMethod == http.MethodGet && channelType == util.ChannelTypeGemini {
-		// 按渠道类型筛选Gemini渠道
-		return s.selectCandidatesByChannelType(ctx, util.ChannelTypeGemini)
+	if requestMethod == http.MethodGet && clientProtocol == util.ProtocolGemini {
+		// Gemini 模型列表请求仍可路由到任意启用渠道。
+		return s.selectCandidatesByClientProtocol(ctx, util.ProtocolGemini)
 	}
 
-	if channelType == "" {
-		return nil, errUnknownChannelType
+	if clientProtocol == "" {
+		return nil, errUnknownClientProtocol
 	}
 	if requestFamily == protocol.RequestFamilyAlphaSearch {
 		return s.selectAlphaSearchCandidates(ctx, originalModel)
 	}
 
-	return s.selectCandidatesByModelAndType(ctx, originalModel, channelType)
+	return s.selectCandidatesByModelAndClientProtocol(ctx, originalModel, clientProtocol)
 }
 
 // ============================================================================
@@ -368,7 +368,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	cands, err := s.selectRouteCandidates(ctx, c, originalModel, string(clientProtocol))
 	if err != nil {
-		if errors.Is(err, errUnknownChannelType) {
+		if errors.Is(err, errUnknownClientProtocol) {
 			c.JSON(http.StatusNotFound, gin.H{"error": "unsupported path"})
 			return
 		}
@@ -386,6 +386,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,
 			AuthTokenID:    tokenIDInt64,
+			ClientProtocol: string(clientProtocol),
 			StatusCode:     503,
 			Message:        "no available upstream (all cooled or none)",
 			IsStreaming:    isStreaming,
@@ -582,7 +583,7 @@ func (s *Server) runProxyAttemptLoopWithFailureBoundary(
 		}
 
 		if result != nil {
-			if result.alphaSearchUnsupported {
+			if result.protocolCapabilityMissing && protocol.DetectRequestFamily(reqCtx.requestPath) == protocol.RequestFamilyAlphaSearch {
 				sawAlphaSearchUnsupported = true
 			}
 			if result.succeeded {
@@ -654,14 +655,15 @@ func (s *Server) writeFinalProxyResponse(
 	skipLog = skipLog || candidateCount <= 1
 	if !skipLog {
 		s.AddLogAsync(&model.LogEntry{
-			Time:        model.JSONTime{Time: reqCtx.startTime},
-			Model:       originalModel,
-			LogSource:   model.LogSourceProxy,
-			StatusCode:  finalStatus,
-			Message:     msg,
-			Duration:    time.Since(reqCtx.startTime).Seconds(),
-			IsStreaming: isStreaming,
-			ClientIP:    reqCtx.clientIP,
+			Time:           model.JSONTime{Time: reqCtx.startTime},
+			Model:          originalModel,
+			LogSource:      model.LogSourceProxy,
+			ClientProtocol: string(reqCtx.clientProtocol),
+			StatusCode:     finalStatus,
+			Message:        msg,
+			Duration:       time.Since(reqCtx.startTime).Seconds(),
+			IsStreaming:    isStreaming,
+			ClientIP:       reqCtx.clientIP,
 		})
 	}
 

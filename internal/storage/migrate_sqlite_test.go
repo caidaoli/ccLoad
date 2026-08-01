@@ -5,9 +5,11 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"testing"
 	"time"
 
+	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
 
 	_ "modernc.org/sqlite"
@@ -22,6 +24,62 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return db
+}
+
+func TestMigrate_SQLite_AddsProtocolTransformModeWithAutoDefault(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			url TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		INSERT INTO channels(name, url, created_at, updated_at)
+		VALUES('legacy', 'https://example.com
+https://example.com/v1/messages#', 1, 1)
+	`); err != nil {
+		t.Fatalf("create legacy channels: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy channels: %v", err)
+	}
+	columns, err := sqliteExistingColumns(ctx, db, "channels")
+	if err != nil {
+		t.Fatalf("list channels columns: %v", err)
+	}
+	if !columns["protocol_transform_mode"] {
+		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
+	}
+	var mode string
+	if err := db.QueryRowContext(ctx, "SELECT protocol_transform_mode FROM channels WHERE name='legacy'").Scan(&mode); err != nil {
+		t.Fatalf("read migrated mode: %v", err)
+	}
+	if mode != "auto" {
+		t.Fatalf("migrated mode=%q, want auto", mode)
+	}
+	var rawURLs string
+	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {
+		t.Fatalf("read migrated URLs: %v", err)
+	}
+	var urls model.ChannelURLs
+	if err := json.Unmarshal([]byte(rawURLs), &urls); err != nil {
+		t.Fatalf("migrated URLs are not structured JSON: %v (%q)", err, rawURLs)
+	}
+	if len(urls) != 2 || urls[0].URL != "https://example.com" || urls[0].Exact ||
+		urls[1].URL != "https://example.com/v1/messages" || !urls[1].Exact {
+		t.Fatalf("migrated URLs=%+v", urls)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migrate must be idempotent: %v", err)
+	}
 }
 
 func TestMigrate_SQLite_FullFlow(t *testing.T) {
@@ -76,6 +134,147 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 	if val != "{}" || valueType != "json" || defaultValue != "{}" {
 		t.Fatalf("global_cooldown_detection_rules=%q/%q/%q, want {}/json/{}", val, valueType, defaultValue)
+	}
+}
+
+func TestMigrateSQLite_BackfillsClientProtocolFromHistoricalModels(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+	verifyClientProtocolBackfill(t, ctx, db, DialectSQLite, func(ctx context.Context, db *sql.DB) error {
+		return migrate(ctx, db, DialectSQLite)
+	})
+}
+
+func TestBackfillLogsClientProtocolBatches_ProcessesAllRowsAcrossBatches(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("initial migrate: %v", err)
+	}
+
+	const rowCount = 5
+	for i := 1; i <= rowCount; i++ {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO logs (time, model, log_source, status_code, message)
+			VALUES (?, 'claude-sonnet-5', 'proxy', 200, 'ok')
+		`, i); err != nil {
+			t.Fatalf("insert log %d: %v", i, err)
+		}
+	}
+
+	// batchSize=2 强制多批循环，验证批间推进直到清零
+	if err := backfillLogsClientProtocolBatches(ctx, db, DialectSQLite, 2); err != nil {
+		t.Fatalf("backfill batches: %v", err)
+	}
+
+	var filled int
+	if err := db.QueryRowContext(ctx,
+		"SELECT COUNT(*) FROM logs WHERE log_source = 'proxy' AND client_protocol = 'anthropic'",
+	).Scan(&filled); err != nil {
+		t.Fatalf("count filled rows: %v", err)
+	}
+	if filled != rowCount {
+		t.Fatalf("filled rows = %d, want %d", filled, rowCount)
+	}
+}
+
+func verifyClientProtocolBackfill(
+	t *testing.T,
+	ctx context.Context,
+	db *sql.DB,
+	dialect Dialect,
+	migrateDB func(context.Context, *sql.DB) error,
+) {
+	t.Helper()
+	testCases := []struct {
+		time           int64
+		model          string
+		logSource      string
+		clientProtocol string
+		wantProtocol   string
+	}{
+		{1, "gpt-5.6-sol", "proxy", "", "codex"},
+		{2, "OpenAI/GPT-5.4", "proxy", "", "codex"},
+		{3, "codex-mini-latest", "proxy", "", "codex"},
+		{4, "claude-sonnet-5", "proxy", "", "anthropic"},
+		{5, "anthropic/opus-4-8", "proxy", "", "anthropic"},
+		{6, "google/gemini-3.6-flash", "proxy", "", "gemini"},
+		{7, "grok-4.5", "proxy", "", "openai"},
+		{8, "", "proxy", "", "openai"},
+		{9, "gpt-5.6-sol", "scheduled_check", "", ""},
+		{10, "gpt-5.6-sol", "proxy", "gemini", "gemini"},
+	}
+	for _, tc := range testCases {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+			INSERT INTO logs (time, model, log_source, client_protocol, status_code, message)
+			VALUES (?, ?, ?, ?, 200, 'ok')
+		`), tc.time, tc.model, tc.logSource, tc.clientProtocol); err != nil {
+			t.Fatalf("insert log time=%d: %v", tc.time, err)
+		}
+	}
+	// model_fingerprints 历史行：client_protocol 为空时从保留的 channel_type 物理列复制
+	fingerprintCases := []struct {
+		name           string
+		channelType    string
+		clientProtocol string
+		wantProtocol   string
+	}{
+		{"fp-legacy-backfill", "anthropic", "", "anthropic"},
+		{"fp-already-set", "openai", "gemini", "gemini"},
+		{"fp-both-empty", "", "", ""},
+	}
+	for _, fp := range fingerprintCases {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+			INSERT INTO model_fingerprints (name, model, channel_type, client_protocol, distribution, stats, raw_data, created_at, updated_at)
+			VALUES (?, 'fp-model', ?, ?, '{}', '{}', '{}', 0, 0)
+		`), fp.name, fp.channelType, fp.clientProtocol); err != nil {
+			t.Fatalf("insert fingerprint %s: %v", fp.name, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, "DELETE FROM schema_migrations WHERE version = ?"), clientProtocolBackfillMigrationVersion); err != nil {
+		t.Fatalf("reset client protocol migration: %v", err)
+	}
+
+	if err := migrateDB(ctx, db); err != nil {
+		t.Fatalf("backfill client protocol: %v", err)
+	}
+	for _, tc := range testCases {
+		var got string
+		if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, "SELECT client_protocol FROM logs WHERE time = ?"), tc.time).Scan(&got); err != nil {
+			t.Fatalf("query log time=%d: %v", tc.time, err)
+		}
+		if got != tc.wantProtocol {
+			t.Errorf("model=%q source=%q protocol=%q, want %q", tc.model, tc.logSource, got, tc.wantProtocol)
+		}
+	}
+	for _, fp := range fingerprintCases {
+		var got string
+		if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, "SELECT client_protocol FROM model_fingerprints WHERE name = ?"), fp.name).Scan(&got); err != nil {
+			t.Fatalf("query fingerprint %s: %v", fp.name, err)
+		}
+		if got != fp.wantProtocol {
+			t.Errorf("fingerprint=%q protocol=%q, want %q", fp.name, got, fp.wantProtocol)
+		}
+	}
+
+	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
+		INSERT INTO logs (time, model, log_source, status_code, message)
+		VALUES (11, 'gpt-5.6-terra', 'proxy', 200, 'after migration')
+	`)); err != nil {
+		t.Fatalf("insert post-migration log: %v", err)
+	}
+	if err := migrateDB(ctx, db); err != nil {
+		t.Fatalf("idempotent migrate: %v", err)
+	}
+	var postMigrationProtocol string
+	if err := db.QueryRowContext(ctx, "SELECT client_protocol FROM logs WHERE time = 11").Scan(&postMigrationProtocol); err != nil {
+		t.Fatalf("query post-migration log: %v", err)
+	}
+	if postMigrationProtocol != "" {
+		t.Fatalf("post-migration protocol=%q, want empty", postMigrationProtocol)
 	}
 }
 
@@ -631,12 +830,19 @@ func TestMigrateSQLite_BackfillsAuthTokenEffectiveCostFromLegacyLogs(t *testing.
 	if !cols["upstream_websocket"] {
 		t.Fatal("upstream_websocket column not found in logs")
 	}
+	if !cols["client_protocol"] {
+		t.Fatal("client_protocol column not found in logs")
+	}
 	var upstreamWebsocket int
-	if err := db.QueryRowContext(ctx, `SELECT upstream_websocket FROM logs WHERE time = 60000`).Scan(&upstreamWebsocket); err != nil {
+	var clientProtocol string
+	if err := db.QueryRowContext(ctx, `SELECT upstream_websocket, client_protocol FROM logs WHERE time = 60000`).Scan(&upstreamWebsocket, &clientProtocol); err != nil {
 		t.Fatalf("query legacy upstream_websocket: %v", err)
 	}
 	if upstreamWebsocket != 0 {
 		t.Fatalf("legacy upstream_websocket=%d, want 0", upstreamWebsocket)
+	}
+	if clientProtocol != "openai" {
+		t.Fatalf("legacy client_protocol=%q, want openai", clientProtocol)
 	}
 
 	var effectiveCost float64
@@ -669,6 +875,49 @@ func TestEnsureChannelModelsRedirectField_SQLite(t *testing.T) {
 	}
 	if !cols["redirect_model"] {
 		t.Fatal("redirect_model column not found in channel_models")
+	}
+}
+
+func TestMigrateSQLite_AddsChannelModelsDisabled(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channel_models (
+			channel_id INTEGER NOT NULL,
+			model TEXT NOT NULL,
+			redirect_model TEXT NOT NULL DEFAULT '',
+			created_at INTEGER NOT NULL DEFAULT 0,
+			PRIMARY KEY (channel_id, model)
+		)
+	`); err != nil {
+		t.Fatalf("create legacy channel_models: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy channel_models: %v", err)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "channel_models")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns: %v", err)
+	}
+	if !cols["disabled"] {
+		t.Fatal("disabled column not added to legacy channel_models")
+	}
+
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO channel_models (channel_id, model, redirect_model, created_at)
+		VALUES (1, 'legacy-model', '', 1)
+	`); err != nil {
+		t.Fatalf("insert legacy-shaped model: %v", err)
+	}
+	var disabled int
+	if err := db.QueryRowContext(ctx, `SELECT disabled FROM channel_models WHERE model = 'legacy-model'`).Scan(&disabled); err != nil {
+		t.Fatalf("query migrated disabled default: %v", err)
+	}
+	if disabled != 0 {
+		t.Fatalf("legacy model disabled=%d, want 0", disabled)
 	}
 }
 
@@ -748,8 +997,8 @@ func TestMigrateModelRedirectsData_WithLegacyData(t *testing.T) {
 
 	// 插入带旧格式数据的渠道
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (name, channel_type, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES ('test-ch', 'openai', 'https://api.example.com', 10, 1, '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
+		INSERT INTO channels (name, url, priority, enabled, models, model_redirects, created_at, updated_at)
+		VALUES ('test-ch', 'https://api.example.com', 10, 1, '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
 	`)
 	if err != nil {
 		t.Fatalf("insert channel: %v", err)
@@ -849,8 +1098,8 @@ func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (id, name, channel_type, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES (1, 'repair-order', 'openai', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
+		INSERT INTO channels (id, name, url, priority, enabled, models, model_redirects, created_at, updated_at)
+		VALUES (1, 'repair-order', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
 	`)
 	if err != nil {
 		t.Fatalf("insert legacy channel: %v", err)
@@ -942,6 +1191,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"log_retention_days",
 		"max_key_retries",
 		"upstream_first_byte_timeout",
+		"upstream_connection_reuse_limit_seconds",
 		"stream_timeout",
 		"non_stream_timeout",
 		"anthropic_first_byte_timeout",
@@ -985,6 +1235,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 			t.Errorf("setting %q default = %q, want 12", key, val)
 		}
 		if key == "stream_timeout" && val != "0" {
+			t.Errorf("setting %q default = %q, want 0", key, val)
+		}
+		if key == "upstream_connection_reuse_limit_seconds" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
 		if key == "responses_ws_max_connections" && val != "64" {

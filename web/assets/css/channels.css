@@ -1,4 +1,7 @@
     :root {
+      --channel-name-fg: var(--neutral-800);
+      --channel-multiplier-fg: var(--primary-700);
+      --channel-multiplier-ring: rgba(29, 78, 216, 0.16);
       --channel-cooldown-row-bg-start: #fff7ed;
       --channel-cooldown-row-bg-end: #fffbeb;
       --channel-cooldown-row-hover-bg-start: #ffedd5;
@@ -18,6 +21,8 @@
     }
 
     html[data-theme="dark"] {
+      --channel-multiplier-fg: var(--primary-300);
+      --channel-multiplier-ring: rgba(124, 195, 255, 0.28);
       --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
       --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
       --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
@@ -37,6 +42,8 @@
     }
 
     html[data-theme="system"][data-resolved-theme="dark"] {
+      --channel-multiplier-fg: var(--primary-300);
+      --channel-multiplier-ring: rgba(124, 195, 255, 0.28);
       --channel-cooldown-row-bg-start: rgba(127, 29, 29, 0.28);
       --channel-cooldown-row-bg-end: rgba(120, 53, 15, 0.22);
       --channel-cooldown-row-hover-bg-start: rgba(127, 29, 29, 0.36);
@@ -76,23 +83,18 @@
     }
 
     /* 单选框标签样式 */
-    #channelTypeRadios label,
     #keyStrategyRadios label {
-      transition: all 0.2s ease;
+      transition-property: background-color, color;
+      transition-duration: 0.2s;
+      transition-timing-function: ease;
       padding: 4px 4px;
       border-radius: 6px;
     }
 
-    #channelTypeRadios label {
-      padding-block: 0;
-    }
-
-    #channelTypeRadios label:hover,
     #keyStrategyRadios label:hover {
       background-color: var(--neutral-100);
     }
 
-    #channelTypeRadios label:has(input:checked),
     #keyStrategyRadios label:has(input:checked) {
       color: var(--primary-700);
       font-weight: 500;
@@ -221,6 +223,7 @@
 
     .channel-editor-body {
       --channel-editor-section-header-height: 36px;
+      --channel-editor-table-border-height: 2px;
       --channel-editor-table-row-height: 36px;
       --channel-editor-table-header-height: 38px;
       --channel-editor-key-visible-rows: 1;
@@ -238,13 +241,21 @@
 
     #channelModal .inline-table-container {
       --channel-editor-table-visible-rows: 2;
-      --channel-editor-table-visible-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-table-visible-rows) * var(--channel-editor-table-row-height)));
+      --channel-editor-table-visible-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-table-visible-rows) * var(--channel-editor-table-row-height)));
       min-height: 0;
       max-height: var(--channel-editor-table-visible-height);
       overflow-y: auto;
       overflow-x: hidden;
       scrollbar-width: thin;
       scrollbar-color: rgba(100, 116, 139, 0.45) transparent;
+    }
+
+    #channelModal .channel-editor-group--urls .inline-table-container {
+      /* URL 行包含 38px 的协议选择器，比通用内联表行更高。 */
+      --channel-editor-table-visible-rows: 3;
+      --channel-editor-table-row-height: 45px;
+      --channel-editor-table-header-height: 46px;
+      max-height: var(--channel-editor-table-visible-height);
     }
 
     #channelModal .inline-table-container::-webkit-scrollbar {
@@ -288,7 +299,11 @@
       flex: 0 0 auto;
       height: var(--channel-editor-table-visible-height);
       min-height: var(--channel-editor-table-visible-height);
-      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-key-max-visible-rows) * var(--channel-editor-table-row-height)));
+      max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-key-max-visible-rows) * var(--channel-editor-table-row-height)));
+    }
+
+    #channelModal .channel-editor-group--keys .inline-table-container:has(tbody > tr:only-child) {
+      overflow-y: hidden;
     }
 
     #channelModal .channel-editor-group--urls > div {
@@ -301,20 +316,20 @@
       display: flex;
       flex-direction: column;
       flex: 1 1 auto;
-      min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
+      min-height: calc(var(--channel-editor-section-header-height) + var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (2 * var(--channel-editor-table-row-height)));
     }
 
     #channelModal .channel-editor-group--models .inline-table-container {
       --channel-editor-table-visible-rows: var(--channel-editor-model-visible-rows);
       flex: 1 1 auto;
-      min-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-model-visible-rows) * var(--channel-editor-table-row-height)));
-      max-height: calc(var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
+      min-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-visible-rows) * var(--channel-editor-table-row-height)));
+      max-height: calc(var(--channel-editor-table-border-height) + var(--channel-editor-table-header-height) + (var(--channel-editor-model-max-visible-rows) * var(--channel-editor-table-row-height)));
       overflow-y: auto;
     }
 
     .channel-editor-group--primary {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) minmax(320px, max-content);
+      grid-template-columns: minmax(0, 1fr) max-content;
       column-gap: 20px;
       row-gap: 2px;
       align-items: start;
@@ -336,23 +351,40 @@
       align-self: center;
     }
 
-    .channel-editor-primary-field--type,
-    .channel-editor-primary-field--mode {
-      justify-content: flex-start;
-    }
+	.channel-editor-primary-field--type {
+		justify-content: flex-end;
+		align-items: center;
+		gap: 12px;
+		flex-wrap: nowrap;
+	}
 
-    .channel-editor-primary-field--transforms {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 4px;
-    }
+	.channel-editor-protocol-control {
+		display: flex;
+		align-items: center;
+		gap: 6px;
+		flex: 0 1 auto;
+		min-width: 0;
+	}
 
-    .channel-editor-inline-group {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      min-width: 0;
-    }
+	.channel-editor-protocol-control[hidden] {
+		display: none;
+	}
+
+	.channel-editor-protocol-select {
+		flex: 0 1 140px;
+		width: 140px;
+		min-width: 120px;
+		max-width: 140px;
+	}
+
+	.channel-editor-protocol-select .filter-combobox-wrapper {
+		width: 100%;
+		min-width: 0 !important;
+	}
+
+	.channel-editor-protocol-select .filter-select {
+		min-height: 38px;
+	}
 
     .channel-editor-primary-field--name .channel-editor-input {
       flex: 1 1 auto;
@@ -527,12 +559,6 @@
       display: none !important;
     }
 
-    .channel-editor-checkbox-label.is-disabled,
-    .channel-editor-checkbox-label.is-disabled input {
-      color: var(--neutral-400);
-      cursor: not-allowed;
-    }
-
     .channel-editor-websocket-control {
       display: inline-flex;
       align-items: center;
@@ -540,10 +566,65 @@
       white-space: nowrap;
     }
 
-    .channel-websocket-probe-button.is-disabled {
-      color: var(--neutral-400);
-      cursor: not-allowed;
-      opacity: 0.65;
+    .common-models-modal-content {
+      width: calc(100% - 32px);
+      max-width: 460px;
+    }
+
+    .common-models-description {
+      margin: 0 0 16px;
+      color: var(--neutral-600);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .common-model-types {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .common-model-types legend {
+      margin-bottom: 8px;
+      color: var(--neutral-800);
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .common-model-type-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 40px;
+      padding: 8px 12px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-md);
+      background: var(--field-bg);
+      color: var(--neutral-800);
+      cursor: pointer;
+    }
+
+    .common-model-type-option:focus-within {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
+    }
+
+    .common-model-type-option input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--primary-500);
+    }
+
+    .common-model-type-option span {
+      font-size: 14px;
+      font-weight: 600;
+    }
+
+    .common-models-actions {
+      margin-top: 20px;
     }
 
     .channel-editor-footer-fields {
@@ -1120,7 +1201,6 @@
       display: block;
       width: 100%;
       min-width: 0;
-      padding-right: 52px;
     }
 
     .ch-name-line {
@@ -1141,6 +1221,17 @@
       flex: 1 1 auto;
     }
 
+    .ch-name-main .cell-multiplier-badge {
+      position: static;
+      align-self: flex-start;
+      flex: 0 0 auto;
+      margin-top: -2px;
+      color: var(--channel-multiplier-fg);
+      background: transparent;
+      box-shadow: 0 0 0 1px var(--channel-multiplier-ring);
+      font-size: 10px;
+    }
+
     .ch-name-statuses {
       margin-left: auto;
       display: inline-flex;
@@ -1156,7 +1247,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-      color: var(--neutral-900);
+      color: var(--channel-name-fg);
       font-size: 13px;
     }
 
@@ -2278,6 +2369,23 @@
       min-width: 0;
     }
 
+    .inline-url-col-protocols {
+      width: 170px;
+      min-width: 150px;
+    }
+
+    .inline-url-protocol-label {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+
     .inline-url-col-exact {
       width: 88px;
       white-space: nowrap;
@@ -2421,8 +2529,59 @@
       color: var(--neutral-400);
     }
 
-    .redirect-lowercase-btn,
+    .redirect-model-status--disabled {
+      color: var(--warning-700);
+      font-weight: 500;
+    }
+
+    .redirect-row-actions {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .redirect-model-toggle-btn,
+    .redirect-model-test-btn,
     .redirect-delete-btn {
+      display: inline-flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: center;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      color: var(--neutral-500);
+      background: var(--surface-bg-strong);
+      border: 1px solid var(--surface-border-strong);
+      border-radius: 6px;
+      cursor: pointer;
+      touch-action: manipulation;
+      transition: color 0.2s, border-color 0.2s, background-color 0.2s;
+    }
+
+    .redirect-model-toggle-btn:focus-visible,
+    .redirect-model-test-btn:focus-visible,
+    .redirect-delete-btn:focus-visible {
+      outline-offset: 2px;
+    }
+
+    .redirect-model-toggle-btn:hover,
+    .redirect-model-test-btn:hover {
+      color: var(--primary-600);
+      background: var(--primary-50);
+      border-color: var(--primary-300);
+    }
+
+    .redirect-model-test-btn:disabled {
+      color: var(--neutral-400);
+      background: var(--surface-bg);
+      border-color: var(--neutral-200);
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+
+    .redirect-lowercase-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2430,16 +2589,12 @@
       color: var(--neutral-500);
       background: var(--surface-bg);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: color 0.2s, border-color 0.2s, background-color 0.2s;
     }
 
     .redirect-target-field .redirect-to-input {
       flex: 1 1 auto;
       min-width: 0;
-    }
-
-    .redirect-target-field .redirect-delete-btn {
-      flex: 0 0 auto;
     }
 
     .redirect-lowercase-btn {
@@ -2448,13 +2603,6 @@
       flex-shrink: 0;
       border: 1px solid var(--neutral-300);
       border-radius: 4px;
-    }
-
-    .redirect-delete-btn {
-      width: 24px;
-      height: 24px;
-      border: 1px solid var(--neutral-200);
-      border-radius: 6px;
     }
 
     .redirect-lowercase-btn:hover {
@@ -3114,29 +3262,21 @@
         gap: 12px;
       }
 
-      .channel-editor-group--primary .channel-editor-primary-row + .channel-editor-primary-row {
-        margin-top: 12px;
-      }
-
       .channel-editor-primary-field {
         flex-direction: row;
         align-items: center;
         gap: 6px;
       }
 
-      .channel-editor-primary-field--type,
-      .channel-editor-primary-field--mode,
-      .channel-editor-primary-field--transforms {
-        align-items: flex-start;
-      }
-
       .channel-editor-primary-field--type {
+		align-items: center;
         flex-wrap: wrap;
+		width: 100%;
       }
 
-      .channel-editor-inline-group {
-        width: 100%;
-      }
+		.channel-editor-protocol-control {
+			flex: 1 1 260px;
+		}
 
       .channel-editor-inline-label {
         white-space: nowrap;
@@ -3153,9 +3293,7 @@
         width: 100%;
       }
 
-      .channel-editor-primary-field--type .channel-editor-radio-group,
-      .channel-editor-primary-field--mode .channel-editor-radio-group,
-      .channel-editor-radio-group--strategy {
+		.channel-editor-radio-group--strategy {
         width: auto;
         flex: 1 1 auto;
         flex-direction: row;
@@ -3164,26 +3302,6 @@
         scrollbar-width: none;
       }
 
-      .channel-editor-primary-field--type .channel-editor-radio-group {
-        width: auto;
-        flex: 1 1 0;
-        flex-wrap: wrap;
-        row-gap: 1px;
-        overflow-x: visible;
-      }
-
-      .channel-editor-primary-field--type .channel-editor-radio-option {
-        min-height: 20px;
-        padding-block: 0;
-      }
-
-      .channel-editor-primary-field--type .channel-editor-radio-option input[type="radio"] {
-        width: 18px;
-        height: 18px;
-      }
-
-      .channel-editor-primary-field--type .channel-editor-radio-group::-webkit-scrollbar,
-      .channel-editor-primary-field--mode .channel-editor-radio-group::-webkit-scrollbar,
       .channel-editor-radio-group--strategy::-webkit-scrollbar,
       .channel-editor-section-actions::-webkit-scrollbar,
       .channel-editor-section-actions .channel-editor-action-row::-webkit-scrollbar {
@@ -3737,7 +3855,7 @@
       }
 
       .inline-url-table tbody .mobile-inline-row {
-        grid-template-columns: 28px minmax(36px, 1fr) auto auto auto;
+        grid-template-columns: 28px minmax(0, 1fr) auto auto auto;
         align-items: center;
         gap: 8px 6px;
       }
@@ -3768,9 +3886,24 @@
         min-width: 0;
       }
 
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-protocols {
+        order: 4;
+        grid-column: 1 / 3;
+        grid-row: 2;
+        display: block;
+        width: auto;
+        min-width: 0;
+      }
+
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-protocols .channel-editor-protocol-select {
+        width: 100%;
+        min-width: 0;
+        max-width: none;
+      }
+
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-status {
         order: 10;
-        grid-column: 1;
+        grid-column: 3;
         grid-row: 2;
         display: flex;
         align-items: center;
@@ -3781,7 +3914,7 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-latency {
         order: 11;
-        grid-column: 2;
+        grid-column: 4;
         grid-row: 2;
         display: flex;
         align-items: center;
@@ -3793,7 +3926,7 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-requests {
         order: 12;
-        grid-column: 3;
+        grid-column: 5;
         grid-row: 2;
         display: flex;
         align-items: center;
@@ -3810,8 +3943,8 @@
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-actions {
         order: 3;
-        grid-column: 4 / 6;
-        grid-row: 2;
+        grid-column: 1 / -1;
+        grid-row: 3;
         display: flex;
         align-items: center;
         justify-content: flex-end;
@@ -3843,6 +3976,7 @@
       }
 
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-url::before,
+      .inline-url-table tbody .mobile-inline-row td.inline-url-col-protocols::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-exact::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-status::before,
       .inline-url-table tbody .mobile-inline-row td.inline-url-col-latency::before,
@@ -4012,6 +4146,7 @@
       }
 
       .inline-url-table .mobile-inline-row .inline-url-col-url,
+      .inline-url-table .mobile-inline-row .inline-url-col-protocols,
       .inline-key-table .mobile-inline-row .inline-key-col-key,
       .inline-key-table .mobile-inline-row .inline-key-col-note,
       .inline-key-table .mobile-inline-row .inline-key-col-status,

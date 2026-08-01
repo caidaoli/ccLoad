@@ -12,10 +12,9 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
-	"ccLoad/internal/util"
 )
 
-func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, channelType string) (*fwResult, string) {
+func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, upstreamProtocol string) (*fwResult, string) {
 	t.Helper()
 
 	resp := &http.Response{
@@ -34,7 +33,7 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	s := &Server{}
 
 	cfg := &model.Config{ID: 1}
-	res, _, err := s.handleResponse(reqCtx, resp, rec, channelType, cfg, "sk-test", nil)
+	res, _, err := s.handleResponse(reqCtx, resp, rec, upstreamProtocol, cfg, "sk-test", nil)
 	if err != nil {
 		t.Fatalf("handleResponse returned error: %v", err)
 	}
@@ -174,67 +173,67 @@ func TestHandleSuccessResponse_StreamDiagMsg_NonAnthropicNoUsage(t *testing.T) {
 // TestBuildStreamDiagnostics_StreamComplete 验证检测到流结束标志时即使有streamErr也不触发诊断
 func TestBuildStreamDiagnostics_StreamComplete(t *testing.T) {
 	tests := []struct {
-		name           string
-		streamErr      error
-		streamComplete bool
-		channelType    string
-		wantDiag       bool
-		reason         string
+		name             string
+		streamErr        error
+		streamComplete   bool
+		upstreamProtocol string
+		wantDiag         bool
+		reason           string
 	}{
 		{
-			name:           "http2_closed_with_stream_complete",
-			streamErr:      errors.New("http2: response body closed"),
-			streamComplete: true,
-			channelType:    "anthropic",
-			wantDiag:       false,
-			reason:         "检测到流结束标志，http2关闭是正常结束",
+			name:             "http2_closed_with_stream_complete",
+			streamErr:        errors.New("http2: response body closed"),
+			streamComplete:   true,
+			upstreamProtocol: "anthropic",
+			wantDiag:         false,
+			reason:           "检测到流结束标志，http2关闭是正常结束",
 		},
 		{
-			name:           "http2_closed_without_stream_complete",
-			streamErr:      errors.New("http2: response body closed"),
-			streamComplete: false,
-			channelType:    "anthropic",
-			wantDiag:       true,
-			reason:         "无流结束标志时http2关闭是异常中断",
+			name:             "http2_closed_without_stream_complete",
+			streamErr:        errors.New("http2: response body closed"),
+			streamComplete:   false,
+			upstreamProtocol: "anthropic",
+			wantDiag:         true,
+			reason:           "无流结束标志时http2关闭是异常中断",
 		},
 		{
-			name:           "unexpected_eof_with_stream_complete",
-			streamErr:      errors.New("unexpected EOF"),
-			streamComplete: true,
-			channelType:    "anthropic",
-			wantDiag:       false,
-			reason:         "检测到流结束标志，EOF可能是正常关闭",
+			name:             "unexpected_eof_with_stream_complete",
+			streamErr:        errors.New("unexpected EOF"),
+			streamComplete:   true,
+			upstreamProtocol: "anthropic",
+			wantDiag:         false,
+			reason:           "检测到流结束标志，EOF可能是正常关闭",
 		},
 		{
-			name:           "stream_error_with_stream_complete",
-			streamErr:      errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
-			streamComplete: true,
-			channelType:    "codex",
-			wantDiag:       false,
-			reason:         "codex渠道检测到流结束标志也不应触发诊断",
+			name:             "stream_error_with_stream_complete",
+			streamErr:        errors.New("stream error: stream ID 7; INTERNAL_ERROR"),
+			streamComplete:   true,
+			upstreamProtocol: "codex",
+			wantDiag:         false,
+			reason:           "codex渠道检测到流结束标志也不应触发诊断",
 		},
 		{
-			name:           "no_error_no_stream_complete",
-			streamErr:      nil,
-			streamComplete: false,
-			channelType:    "anthropic",
-			wantDiag:       false,
-			reason:         "无错误时不触发诊断（正常EOF情况）",
+			name:             "no_error_no_stream_complete",
+			streamErr:        nil,
+			streamComplete:   false,
+			upstreamProtocol: "anthropic",
+			wantDiag:         false,
+			reason:           "无错误时不触发诊断（正常EOF情况）",
 		},
 		{
-			name:           "no_error_with_stream_complete",
-			streamErr:      nil,
-			streamComplete: true,
-			channelType:    "openai",
-			wantDiag:       false,
-			reason:         "无错误且有流结束标志，无诊断",
+			name:             "no_error_with_stream_complete",
+			streamErr:        nil,
+			streamComplete:   true,
+			upstreamProtocol: "openai",
+			wantDiag:         false,
+			reason:           "无错误且有流结束标志，无诊断",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			readStats := &streamReadStats{totalBytes: 1024, readCount: 4}
-			diag := buildStreamDiagnostics(tt.streamErr, readStats, tt.streamComplete, tt.channelType, "text/event-stream")
+			diag := buildStreamDiagnostics(tt.streamErr, readStats, tt.streamComplete, tt.upstreamProtocol, "text/event-stream")
 
 			hasDiag := diag != ""
 			if hasDiag != tt.wantDiag {
@@ -313,7 +312,7 @@ func TestPrepareCodexResponsesBodyForUpstream_StripsAnyrouterUnsupportedInputBef
 			{"type":"reasoning","summary":[]}
 		]
 	}`)
-	cfg := &model.Config{Name: "regular-codex", URL: "https://anyrouter.top", ChannelType: util.ChannelTypeCodex}
+	cfg := &model.Config{Name: "regular-codex", URLs: model.ChannelURLs{{URL: "https://anyrouter.top"}}}
 
 	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	text := string(got)
@@ -336,7 +335,7 @@ func TestPrepareCodexResponsesBodyForUpstream_KeepsRegularCodexToolSearch(t *tes
 			{"type":"tool_search_call","arguments":{"query":"keep"}}
 		]
 	}`)
-	cfg := &model.Config{Name: "regular-codex", URL: "https://api.openai.com", ChannelType: util.ChannelTypeCodex}
+	cfg := &model.Config{Name: "regular-codex", URLs: model.ChannelURLs{{URL: "https://api.openai.com"}}}
 
 	got := prepareCodexResponsesBodyForUpstream(cfg, protocol.Codex, "/v1/responses", body)
 	if !strings.Contains(string(got), `"tool_search_call"`) {

@@ -2,11 +2,8 @@ package sql_test
 
 import (
 	"context"
-	"database/sql"
-	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -30,14 +27,17 @@ func TestConfig_CreateAndGet(t *testing.T) {
 
 	// 创建渠道
 	cfg := &model.Config{
-		Name:           "test-channel",
-		URL:            "https://api.openai.com",
-		Priority:       10,
-		Enabled:        true,
-		ChannelType:    "openai",
-		Websockets:     true,
-		RPMLimit:       60,
-		MaxConcurrency: 3,
+		Name: "test-channel",
+		URLs: model.ChannelURLs{
+			{URL: "https://api.openai.com", Protocols: []string{"openai", "codex"}},
+			{URL: "https://api.openai.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
+		},
+		Priority:              10,
+		Enabled:               true,
+		Websockets:            true,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		RPMLimit:              60,
+		MaxConcurrency:        3,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4"},
 			{Model: "gpt-3.5-turbo"},
@@ -63,8 +63,11 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	if got.Name != "test-channel" {
 		t.Errorf("name: got %q, want %q", got.Name, "test-channel")
 	}
-	if got.URL != "https://api.openai.com" {
-		t.Errorf("url: got %q, want %q", got.URL, "https://api.openai.com")
+	if urls := got.GetURLs(); len(urls) != 2 || urls[0] != "https://api.openai.com" || urls[1] != "https://api.openai.com/v1/responses#" {
+		t.Errorf("urls: got %v", urls)
+	}
+	if len(got.URLs[0].Protocols) != 2 || got.URLs[0].Protocols[0] != "openai" || got.URLs[1].Protocols[0] != "codex" {
+		t.Errorf("URL protocols: got %+v", got.URLs)
 	}
 	if got.Priority != 10 {
 		t.Errorf("priority: got %d, want %d", got.Priority, 10)
@@ -72,11 +75,11 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	if !got.Enabled {
 		t.Error("expected enabled=true")
 	}
-	if got.ChannelType != "openai" {
-		t.Errorf("channel_type: got %q, want %q", got.ChannelType, "openai")
-	}
 	if !got.Websockets {
 		t.Error("expected websockets=true")
+	}
+	if got.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+		t.Fatalf("protocol_transform_mode=%q, want local", got.GetProtocolTransformMode())
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)
@@ -113,7 +116,7 @@ func TestConfig_ListConfigs(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     fmt.Sprintf("channel-%c", rune('A'+i-1)),
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: i * 10,
 			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
@@ -133,6 +136,11 @@ func TestConfig_ListConfigs(t *testing.T) {
 	if len(configs) != 3 {
 		t.Errorf("expected 3 configs, got %d", len(configs))
 	}
+	for _, cfg := range configs {
+		if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeAuto {
+			t.Fatalf("channel %d protocol_transform_mode=%q, want auto", cfg.ID, cfg.GetProtocolTransformMode())
+		}
+	}
 
 	// 验证按优先级降序排列
 	for i := 1; i < len(configs); i++ {
@@ -150,13 +158,10 @@ func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:                  "toggle-only",
-		URL:                   "https://api.example.com",
-		Priority:              42,
-		Enabled:               true,
-		ChannelType:           "gemini",
-		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
-		ProtocolTransforms:    []string{"openai", "anthropic"},
+		Name:     "toggle-only",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 42,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gemini-2.5-pro", RedirectModel: "gemini-2.5-pro"},
 			{Model: "gemini-2.5-flash", RedirectModel: "flash-upstream"},
@@ -189,14 +194,8 @@ func TestConfig_UpdateChannelEnabledOnlyTouchesEnabled(t *testing.T) {
 	if got.Enabled {
 		t.Fatalf("stored channel should be disabled")
 	}
-	if got.Name != created.Name || got.URL != created.URL || got.Priority != created.Priority || got.ChannelType != created.ChannelType {
+	if got.Name != created.Name || got.GetURLs()[0] != created.GetURLs()[0] || got.Priority != created.Priority {
 		t.Fatalf("non-enabled fields changed: got=%+v want=%+v", got, created)
-	}
-	if got.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
-		t.Fatalf("protocol transform mode changed: %q", got.GetProtocolTransformMode())
-	}
-	if strings.Join(got.ProtocolTransforms, ",") != "anthropic,openai" {
-		t.Fatalf("protocol transforms changed: %#v", got.ProtocolTransforms)
 	}
 	if len(got.ModelEntries) != 2 || got.ModelEntries[1].RedirectModel != "flash-upstream" {
 		t.Fatalf("model entries changed: %#v", got.ModelEntries)
@@ -226,7 +225,7 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	// 创建渠道
 	cfg := &model.Config{
 		Name:     "original-name",
-		URL:      "https://old.api.com",
+		URLs:     model.ChannelURLs{{URL: "https://old.api.com"}},
 		Priority: 1,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -240,7 +239,7 @@ func TestConfig_UpdateConfig(t *testing.T) {
 
 	// 更新渠道
 	created.Name = "updated-name"
-	created.URL = "https://new.api.com"
+	created.URLs = model.ChannelURLs{{URL: "https://new.api.com"}}
 	created.Priority = 100
 	created.Enabled = false
 	created.ModelEntries = []model.ModelEntry{
@@ -265,8 +264,8 @@ func TestConfig_UpdateConfig(t *testing.T) {
 	if got.Name != "updated-name" {
 		t.Errorf("name: got %q, want %q", got.Name, "updated-name")
 	}
-	if got.URL != "https://new.api.com" {
-		t.Errorf("url: got %q, want %q", got.URL, "https://new.api.com")
+	if urls := got.GetURLs(); len(urls) != 1 || urls[0] != "https://new.api.com" {
+		t.Errorf("urls: got %v, want [https://new.api.com]", urls)
 	}
 	if got.Priority != 100 {
 		t.Errorf("priority: got %d, want %d", got.Priority, 100)
@@ -297,7 +296,7 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	// 创建渠道
 	cfg := &model.Config{
 		Name:     "to-delete",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 1,
 		Enabled:  true,
 	}
@@ -331,7 +330,7 @@ func TestConfig_DeleteConfig_RemovesLogsAndDebugLogs(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "delete-with-logs",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -408,7 +407,7 @@ func TestLog_AddLogAndBatchAddLogs_IgnoreDeletedChannel(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -527,7 +526,7 @@ func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-before-restore",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -541,7 +540,7 @@ func TestConfig_DeleteConfig_ImportBatchWithSameIDAcceptsLogs(t *testing.T) {
 		Config: &model.Config{
 			ID:      created.ID,
 			Name:    "restored-channel",
-			URL:     "https://api-restored.example.com",
+			URLs:    model.ChannelURLs{{URL: "https://api-restored.example.com"}},
 			Enabled: true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "restored-model"},
@@ -591,7 +590,7 @@ func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(
 	ctx := context.Background()
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:    "to-delete-memory",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -612,7 +611,7 @@ func TestConfig_DeleteConfig_AllowsRecreateWithSameIDAndKeyIndicesInMemoryStore(
 	recreated, err := store.CreateConfig(ctx, &model.Config{
 		ID:      created.ID,
 		Name:    "recreated-memory",
-		URL:     "https://api-recreated.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api-recreated.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -644,7 +643,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建启用的渠道支持 gpt-4
 	cfg1 := &model.Config{
 		Name:     "gpt4-channel",
-		URL:      "https://api.openai.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -660,11 +659,12 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建启用的渠道支持 claude
 	cfg2 := &model.Config{
 		Name:     "claude-channel",
-		URL:      "https://api.anthropic.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.anthropic.com"}},
 		Priority: 20,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "claude-3-opus"},
+			{Model: "gpt-4", RedirectModel: "gpt-4-upstream", Disabled: true},
 		},
 	}
 	created2, err := store.CreateConfig(ctx, cfg2)
@@ -675,7 +675,7 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建禁用的渠道支持 gpt-4
 	cfg3 := &model.Config{
 		Name:     "disabled-channel",
-		URL:      "https://api.disabled.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.disabled.com"}},
 		Priority: 30,
 		Enabled:  false,
 		ModelEntries: []model.ModelEntry{
@@ -710,6 +710,17 @@ func TestConfig_GetEnabledChannelsByModel(t *testing.T) {
 		t.Errorf("expected gpt4-channel, got %s", configs[0].Name)
 	}
 
+	persisted, err := store.GetConfig(ctx, created2.ID)
+	if err != nil {
+		t.Fatalf("get config with disabled model: %v", err)
+	}
+	if len(persisted.ModelEntries) != 2 || !persisted.ModelEntries[1].Disabled {
+		t.Fatalf("disabled model state not persisted: %#v", persisted.ModelEntries)
+	}
+	if persisted.SupportsModel("gpt-4") {
+		t.Fatal("persisted disabled model must not be supported")
+	}
+
 	// 通配符查询所有启用渠道
 	allConfigs, err := store.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
@@ -727,11 +738,10 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 	ctx := context.Background()
 
 	cooled, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "cooled-enabled",
-		URL:         "https://api.example.com",
-		Priority:    100,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "cooled-enabled",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 100,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -744,11 +754,10 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 	}
 
 	disabled, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "disabled",
-		URL:         "https://disabled.example.com",
-		Priority:    90,
-		Enabled:     false,
-		ChannelType: "openai",
+		Name:     "disabled",
+		URLs:     model.ChannelURLs{{URL: "https://disabled.example.com"}},
+		Priority: 90,
+		Enabled:  false,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -785,383 +794,6 @@ func TestConfig_GetEnabledChannelsIncludesCooledEnabledChannels(t *testing.T) {
 	}
 	assertHasOnlyCooled("GetEnabledChannelsByModel(*)", allByModel)
 
-	byType, err := store.GetEnabledChannelsByType(ctx, "openai")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByType: %v", err)
-	}
-	assertHasOnlyCooled("GetEnabledChannelsByType", byType)
-
-	byProtocol, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByExposedProtocol: %v", err)
-	}
-	assertHasOnlyCooled("GetEnabledChannelsByExposedProtocol", byProtocol)
-
-	byModelAndProtocol, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "openai")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByModelAndProtocol: %v", err)
-	}
-	assertHasOnlyCooled("GetEnabledChannelsByModelAndProtocol", byModelAndProtocol)
-}
-
-func TestConfig_GetEnabledChannelsByType(t *testing.T) {
-	t.Parallel()
-
-	store := newTestStore(t, "type_query.db")
-
-	ctx := context.Background()
-
-	// 创建 openai 类型渠道
-	cfg1 := &model.Config{
-		Name:        "openai-channel",
-		URL:         "https://api.openai.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-4"},
-		},
-	}
-	created1, err := store.CreateConfig(ctx, cfg1)
-	if err != nil {
-		t.Fatalf("create openai config: %v", err)
-	}
-
-	// 创建 anthropic 类型渠道
-	cfg2 := &model.Config{
-		Name:        "anthropic-channel",
-		URL:         "https://api.anthropic.com",
-		Priority:    20,
-		Enabled:     true,
-		ChannelType: "anthropic",
-		ModelEntries: []model.ModelEntry{
-			{Model: "claude-3"},
-		},
-	}
-	created2, err := store.CreateConfig(ctx, cfg2)
-	if err != nil {
-		t.Fatalf("create anthropic config: %v", err)
-	}
-
-	// 添加 API Key
-	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created1.ID, KeyIndex: 0, APIKey: "sk-openai"},
-	})
-	_ = store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created2.ID, KeyIndex: 0, APIKey: "sk-anthropic"},
-	})
-
-	// 按类型查询
-	openaiChannels, err := store.GetEnabledChannelsByType(ctx, "openai")
-	if err != nil {
-		t.Fatalf("get openai channels: %v", err)
-	}
-	if len(openaiChannels) != 1 {
-		t.Errorf("expected 1 openai channel, got %d", len(openaiChannels))
-	}
-
-	anthropicChannels, err := store.GetEnabledChannelsByType(ctx, "anthropic")
-	if err != nil {
-		t.Fatalf("get anthropic channels: %v", err)
-	}
-	if len(anthropicChannels) != 1 {
-		t.Errorf("expected 1 anthropic channel, got %d", len(anthropicChannels))
-	}
-}
-
-func TestConfig_GetEnabledChannelsByExposedProtocol(t *testing.T) {
-	t.Parallel()
-
-	store := newTestStore(t, "protocol_query.db")
-
-	ctx := context.Background()
-
-	cfg := &model.Config{
-		Name:               "gemini-openai-channel",
-		URL:                "https://generativelanguage.googleapis.com",
-		Priority:           10,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
-		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-2.5-pro"},
-		},
-	}
-	created, err := store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("create gemini config: %v", err)
-	}
-
-	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "native-openai-channel",
-		URL:         "https://api.openai.com",
-		Priority:    20,
-		Enabled:     true,
-		ChannelType: "openai",
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-4.1"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create native openai config: %v", err)
-	}
-
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-gemini"},
-		{ChannelID: nativeOpenAI.ID, KeyIndex: 0, APIKey: "sk-openai"},
-	}); err != nil {
-		t.Fatalf("create api keys batch: %v", err)
-	}
-
-	openaiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai")
-	if err != nil {
-		t.Fatalf("get openai exposed channels: %v", err)
-	}
-	if len(openaiChannels) != 2 {
-		t.Fatalf("expected 2 openai-exposed channels, got %d", len(openaiChannels))
-	}
-	if openaiChannels[0].Name != "native-openai-channel" {
-		t.Fatalf("expected native channel first by priority, got %s", openaiChannels[0].Name)
-	}
-	if openaiChannels[1].Name != "gemini-openai-channel" {
-		t.Fatalf("expected transformed channel second, got %s", openaiChannels[1].Name)
-	}
-	if len(openaiChannels[1].ProtocolTransforms) != 1 || openaiChannels[1].ProtocolTransforms[0] != "openai" {
-		t.Fatalf("unexpected protocol transforms: %#v", openaiChannels[1].ProtocolTransforms)
-	}
-
-	geminiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "gemini")
-	if err != nil {
-		t.Fatalf("get gemini exposed channels: %v", err)
-	}
-	if len(geminiChannels) != 1 {
-		t.Fatalf("expected 1 gemini-exposed channel, got %d", len(geminiChannels))
-	}
-	if geminiChannels[0].Name != "gemini-openai-channel" {
-		t.Fatalf("unexpected gemini channel name: %s", geminiChannels[0].Name)
-	}
-}
-
-func TestConfig_GetConfig_EmitsDefaultProtocolTransformMode(t *testing.T) {
-	t.Parallel()
-
-	store := newTestStore(t, "protocol_transform_mode_default.db")
-	ctx := context.Background()
-
-	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "default-transform-mode",
-		URL:         "https://api.example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-4.1"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create config: %v", err)
-	}
-
-	got, err := store.GetConfig(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("get config: %v", err)
-	}
-
-	body, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal config: %v", err)
-	}
-	if !strings.Contains(string(body), `"protocol_transform_mode":"upstream"`) {
-		t.Fatalf("期望默认输出 protocol_transform_mode=upstream，实际 JSON: %s", body)
-	}
-}
-
-func TestConfig_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
-	t.Parallel()
-
-	store := newTestStore(t, "model_protocol_query.db")
-
-	ctx := context.Background()
-
-	openAIChannel, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "openai-native",
-		URL:         "https://api.openai.com",
-		Priority:    30,
-		Enabled:     true,
-		ChannelType: "openai",
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-4o"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create openai config: %v", err)
-	}
-
-	geminiTransform, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "gemini-openai-transform",
-		URL:                "https://generativelanguage.googleapis.com",
-		Priority:           20,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
-		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-2.5-pro"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create gemini transform config: %v", err)
-	}
-
-	anthropicTransform, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "gemini-anthropic-transform",
-		URL:                "https://generativelanguage.googleapis.com",
-		Priority:           10,
-		Enabled:            true,
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"anthropic"},
-		ModelEntries: []model.ModelEntry{
-			{Model: "claude-3-5-sonnet"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create anthropic transform config: %v", err)
-	}
-
-	codexTransform, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "openai-codex-transform",
-		URL:                "https://api.openai.com",
-		Priority:           15,
-		Enabled:            true,
-		ChannelType:        "openai",
-		ProtocolTransforms: []string{"codex"},
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-5-codex"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create codex transform config: %v", err)
-	}
-
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: openAIChannel.ID, KeyIndex: 0, APIKey: "sk-openai"},
-		{ChannelID: geminiTransform.ID, KeyIndex: 0, APIKey: "sk-gemini"},
-		{ChannelID: anthropicTransform.ID, KeyIndex: 0, APIKey: "sk-anthropic"},
-		{ChannelID: codexTransform.ID, KeyIndex: 0, APIKey: "sk-codex"},
-	}); err != nil {
-		t.Fatalf("create api keys batch: %v", err)
-	}
-
-	exact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
-	if err != nil {
-		t.Fatalf("query exact model+protocol: %v", err)
-	}
-	if len(exact) != 1 || exact[0].Name != "gemini-openai-transform" {
-		t.Fatalf("unexpected exact query result: %+v", exact)
-	}
-
-	wildcard, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "*", "openai")
-	if err != nil {
-		t.Fatalf("query wildcard model+protocol: %v", err)
-	}
-	if len(wildcard) != 3 {
-		t.Fatalf("expected 3 openai-exposed channels, got %d", len(wildcard))
-	}
-	if wildcard[0].Name != "openai-native" || wildcard[1].Name != "gemini-openai-transform" || wildcard[2].Name != "openai-codex-transform" {
-		t.Fatalf("unexpected wildcard ordering/result: %+v", wildcard)
-	}
-
-	anthropicExact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "claude-3-5-sonnet", "anthropic")
-	if err != nil {
-		t.Fatalf("query anthropic transform: %v", err)
-	}
-	if len(anthropicExact) != 1 || anthropicExact[0].Name != "gemini-anthropic-transform" {
-		t.Fatalf("unexpected anthropic exact result: %+v", anthropicExact)
-	}
-
-	codexExact, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-5-codex", "codex")
-	if err != nil {
-		t.Fatalf("query codex transform: %v", err)
-	}
-	if len(codexExact) != 1 || codexExact[0].Name != "openai-codex-transform" {
-		t.Fatalf("unexpected codex exact result: %+v", codexExact)
-	}
-
-	modelOnly, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "")
-	if err != nil {
-		t.Fatalf("query empty protocol fallback: %v", err)
-	}
-	if len(modelOnly) != 1 || modelOnly[0].Name != "openai-native" {
-		t.Fatalf("unexpected model-only fallback result: %+v", modelOnly)
-	}
-}
-
-func TestConfig_LegacyProtocolTransformsHonorCurrentCapabilityMatrix(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	dbPath := filepath.Join(tmp, "legacy_invalid_protocol.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("create sqlite store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	ctx := context.Background()
-	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "legacy-openai",
-		URL:         "https://api.openai.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
-		ModelEntries: []model.ModelEntry{
-			{Model: "gpt-4o"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("create config: %v", err)
-	}
-	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
-		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-openai"},
-	}); err != nil {
-		t.Fatalf("create api key: %v", err)
-	}
-
-	rawDB, err := sql.Open("sqlite", "file:"+dbPath)
-	if err != nil {
-		t.Fatalf("open raw sqlite db: %v", err)
-	}
-	t.Cleanup(func() { _ = rawDB.Close() })
-
-	if _, err := rawDB.ExecContext(ctx,
-		`INSERT INTO channel_protocol_transforms(channel_id, protocol) VALUES (?, ?)`,
-		created.ID, "gemini",
-	); err != nil {
-		t.Fatalf("insert legacy supported transform: %v", err)
-	}
-
-	got, err := store.GetConfig(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("get config: %v", err)
-	}
-	if len(got.ProtocolTransforms) != 1 || got.ProtocolTransforms[0] != "gemini" {
-		t.Fatalf("expected legacy gemini transform to remain loadable, got %#v", got.ProtocolTransforms)
-	}
-
-	geminiChannels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "gemini")
-	if err != nil {
-		t.Fatalf("get gemini exposed channels: %v", err)
-	}
-	if len(geminiChannels) != 1 || geminiChannels[0].ID != created.ID {
-		t.Fatalf("expected legacy gemini transform to expose channel, got %+v", geminiChannels)
-	}
-
-	modelAndProtocol, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "gemini")
-	if err != nil {
-		t.Fatalf("query model+protocol: %v", err)
-	}
-	if len(modelAndProtocol) != 1 || modelAndProtocol[0].ID != created.ID {
-		t.Fatalf("expected legacy gemini transform row to participate in model+protocol query, got %+v", modelAndProtocol)
-	}
 }
 
 func TestConfig_BatchUpdatePriority(t *testing.T) {
@@ -1176,7 +808,7 @@ func TestConfig_BatchUpdatePriority(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     "channel-" + string(rune('A'+i-1)),
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: i,
 			Enabled:  true,
 		}
@@ -1222,11 +854,10 @@ func TestConfig_ModelRedirect(t *testing.T) {
 
 	// 创建带模型重定向的渠道
 	cfg := &model.Config{
-		Name:        "redirect-channel",
-		URL:         "https://api.example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "redirect-channel",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4", RedirectModel: "gpt-4-turbo"},
 			{Model: "gpt-3.5-turbo"},

@@ -34,7 +34,7 @@ func mustBuildTestTransformPlan(t testing.TB, cfg *model.Config, body []byte) pr
 
 	plan, err := protocol.BuildTransformPlan(
 		detectClientProtocolFromPath(requestPath),
-		protocol.Protocol(cfg.GetChannelType()),
+		detectClientProtocolFromPath(requestPath),
 		requestPath,
 		requestPath,
 		body,
@@ -104,10 +104,9 @@ func TestBuildProxyRequest(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "test",
-		URL:         "https://api.example.com",
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "test",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -124,7 +123,7 @@ func TestBuildProxyRequest(t *testing.T) {
 		http.Header{"User-Agent": []string{"test"}},
 		"",
 		"/v1/messages",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 
 	if err != nil {
@@ -151,10 +150,9 @@ func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "test",
-		URL:         "https://api.example.com/custom/messages#",
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "test",
+		URLs: channelURLsForTest("https://api.example.com/custom/messages#"),
 	}
 
 	reqCtx := &requestContext{
@@ -171,7 +169,7 @@ func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 		http.Header{"User-Agent": []string{"test"}},
 		"beta=true&key=should-not-leak",
 		"/v1/messages",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -186,10 +184,9 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "openai-compatible-anthropic",
-		URL:         "https://api.example.com",
-		ChannelType: "openai",
+		ID:   1,
+		Name: "openai-compatible-anthropic",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -216,7 +213,7 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 		},
 		"",
 		"/v1/messages",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -234,10 +231,9 @@ func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "anthropic-channel-openai-upstream",
-		URL:         "https://api.example.com",
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "anthropic-channel-openai-upstream",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -261,7 +257,7 @@ func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
 		http.Header{"Content-Type": []string{"application/json"}},
 		"",
 		"/custom/responses",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -282,10 +278,9 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "openai-to-anthropic",
-		URL:         "https://api.example.com",
-		ChannelType: "anthropic",
+		ID:   1,
+		Name: "openai-to-anthropic",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
 	}
 
 	reqCtx := &requestContext{
@@ -313,7 +308,7 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 		},
 		"",
 		"/v1/messages",
-		cfg.URL,
+		cfg.GetURLs()[0],
 	)
 	if err != nil {
 		t.Fatalf("buildProxyRequest failed: %v", err)
@@ -412,7 +407,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	cfg := &model.Config{
 		ID:   1,
 		Name: "test",
-		URL:  upstream.URL,
+		URLs: model.ChannelURLs{{URL: upstream.URL}},
 	}
 
 	// 测试成功请求
@@ -426,7 +421,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			mustBuildTestTransformPlan(t, cfg, []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
-			cfg.URL,
+			cfg.GetURLs()[0],
 			recorder,
 			nil, // observer
 		)
@@ -459,7 +454,7 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 			mustBuildTestTransformPlan(t, cfg, []byte(`{"model":"claude-3"}`)),
 			http.Header{},
 			"",
-			cfg.URL,
+			cfg.GetURLs()[0],
 			recorder,
 			nil, // observer
 		)
@@ -504,10 +499,9 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		}),
 	}
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "gemini",
-		URL:         "https://gemini-upstream.example.com",
-		ChannelType: "gemini",
+		ID:   1,
+		Name: "gemini",
+		URLs: model.ChannelURLs{{URL: "https://gemini-upstream.example.com"}},
 	}
 
 	plan, err := protocol.BuildTransformPlan(
@@ -538,7 +532,7 @@ func TestForwardOnceAsync_UsesTransformPlanUpstreamPathAndBody(t *testing.T) {
 		plan,
 		clientHeaders,
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil,
 	)
@@ -612,10 +606,9 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	}
 
 	cfg := &model.Config{
-		ID:          1,
-		Name:        "codex-upstream",
-		URL:         "https://codex-upstream.example.com",
-		ChannelType: "codex",
+		ID:   1,
+		Name: "codex-upstream",
+		URLs: model.ChannelURLs{{URL: "https://codex-upstream.example.com"}},
 	}
 	originalBody := []byte(`{"model":"claude-3-5-sonnet","metadata":{"user_id":"claude-code-user-42"},"system":[{"type":"text","text":"be careful"}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
 	plan, err := protocol.BuildTransformPlan(
@@ -642,7 +635,7 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 		plan,
 		http.Header{"Content-Type": []string{"application/json"}},
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil,
 	)
@@ -721,7 +714,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 	cfg := &model.Config{
 		ID:   1,
 		Name: "test",
-		URL:  upstream.URL,
+		URLs: model.ChannelURLs{{URL: upstream.URL}},
 	}
 
 	// 创建可取消的context
@@ -744,7 +737,7 @@ func TestClientCancelClosesUpstream(t *testing.T) {
 			mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 			http.Header{},
 			"",
-			cfg.URL,
+			cfg.GetURLs()[0],
 			recorder,
 			nil, // observer
 		)
@@ -813,7 +806,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		cfg := &model.Config{ID: 1, URL: upstream.URL}
+		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
 		for i := 0; i < 30; i++ {
 			recorder := newRecorder()
@@ -825,7 +818,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				mustBuildTestTransformPlan(t, cfg, []byte(`{}`)),
 				http.Header{},
 				"",
-				cfg.URL,
+				cfg.GetURLs()[0],
 				recorder,
 				nil, // observer
 			)
@@ -849,7 +842,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		cfg := &model.Config{ID: 1, URL: upstream.URL}
+		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
 		for i := 0; i < 20; i++ {
 			ctx, cancel := context.WithCancel(context.Background())
@@ -861,7 +854,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				cancel()
 			}()
 
-			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, mustBuildTestTransformPlan(t, cfg, []byte(`{}`)), http.Header{}, "", cfg.URL, recorder, nil)
+			_, _, _ = srv.forwardOnceAsync(ctx, cfg, "sk-test", http.MethodPost, mustBuildTestTransformPlan(t, cfg, []byte(`{}`)), http.Header{}, "", cfg.GetURLs()[0], recorder, nil)
 		}
 
 		after := waitForGoroutineDeltaLE(t, before, maxDelta, waitTimeout)
@@ -885,7 +878,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 		}))
 		defer upstream.Close()
 
-		cfg := &model.Config{ID: 1, URL: upstream.URL}
+		cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}}
 
 		for i := 0; i < 10; i++ {
 			recorder := newRecorder()
@@ -897,7 +890,7 @@ func TestNoGoroutineLeak(t *testing.T) {
 				mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)), // 流式请求
 				http.Header{},
 				"",
-				cfg.URL,
+				cfg.GetURLs()[0],
 				recorder,
 				nil, // observer
 			)
@@ -936,7 +929,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 
 	cfg := &model.Config{
 		ID:   1,
-		URL:  upstream.URL,
+		URLs: model.ChannelURLs{{URL: upstream.URL}},
 		Name: "test-timeout",
 	}
 
@@ -949,7 +942,7 @@ func TestFirstByteTimeout_StreamingResponse(t *testing.T) {
 		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil, // observer
 	)
@@ -996,7 +989,7 @@ func TestStreamTimeout_ClosesLongRunningStreamingResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	cfg := &model.Config{ID: 1, URL: upstream.URL, Name: "test-stream-timeout"}
+	cfg := &model.Config{ID: 1, URLs: model.ChannelURLs{{URL: upstream.URL}}, Name: "test-stream-timeout"}
 	recorder := newRecorder()
 	started := time.Now()
 	res, _, err := srv.forwardOnceAsync(
@@ -1007,7 +1000,7 @@ func TestStreamTimeout_ClosesLongRunningStreamingResponse(t *testing.T) {
 		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil,
 	)
@@ -1055,7 +1048,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 
 	cfg := &model.Config{
 		ID:   1,
-		URL:  upstream.URL,
+		URLs: model.ChannelURLs{{URL: upstream.URL}},
 		Name: "test-timeout-body-delayed",
 	}
 
@@ -1068,7 +1061,7 @@ func TestFirstByteTimeout_StreamingResponseBodyDelayed(t *testing.T) {
 		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil, // observer
 	)
@@ -1122,7 +1115,7 @@ func TestFirstByteTimeout_StreamingHeartbeatBeforeContent(t *testing.T) {
 
 	cfg := &model.Config{
 		ID:   1,
-		URL:  upstream.URL,
+		URLs: model.ChannelURLs{{URL: upstream.URL}},
 		Name: "test-timeout-heartbeat-before-content",
 	}
 
@@ -1135,7 +1128,7 @@ func TestFirstByteTimeout_StreamingHeartbeatBeforeContent(t *testing.T) {
 		mustBuildTestTransformPlan(t, cfg, []byte(`{"stream":true}`)),
 		http.Header{},
 		"",
-		cfg.URL,
+		cfg.GetURLs()[0],
 		recorder,
 		nil,
 	)

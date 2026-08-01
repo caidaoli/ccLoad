@@ -58,7 +58,7 @@ func TestAuthErrorInitialCooldown(t *testing.T) {
 			// 创建测试渠道
 			cfg := &model.Config{
 				Name:    "test-channel",
-				URL:     "https://api.example.com",
+				URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 				Enabled: true,
 			}
 			created, err := store.CreateConfig(ctx, cfg)
@@ -109,7 +109,7 @@ func TestAuthErrorExponentialBackoff(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:    "test-channel-backoff",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -159,7 +159,7 @@ func TestKeyLevelAuthErrorCooldown(t *testing.T) {
 	// 创建多Key渠道
 	cfg := &model.Config{
 		Name:    "multi-key-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -223,7 +223,7 @@ func TestMixedErrorCodesCooldown(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:    "mixed-errors-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -277,7 +277,7 @@ func TestConcurrentCooldownUpdates(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:    "concurrent-test",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -329,7 +329,7 @@ func TestConcurrentKeyCooldownUpdates(t *testing.T) {
 	// 创建多Key渠道
 	cfg := &model.Config{
 		Name:    "concurrent-key-test",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)
@@ -410,7 +410,7 @@ func TestRaceConditionDetection(t *testing.T) {
 
 	cfg := &model.Config{
 		Name:    "race-test",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	}
 	created, err := store.CreateConfig(ctx, cfg)

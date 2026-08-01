@@ -12,7 +12,7 @@ func TestHandleActiveRequests(t *testing.T) {
 	m := newActiveRequestManager()
 	id := m.BeginAttempt(0, activeRequestAttempt{
 		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4", Streaming: true,
-		ChannelID: 10, ChannelName: "ch", ChannelType: "openai", APIKey: "sk-test",
+		ChannelID: 10, ChannelName: "ch", APIKey: "sk-test",
 		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 1.5,
 	})
 	m.SetUpstreamWebsocket(id, true)
@@ -86,7 +86,7 @@ func TestHandleActiveRequests_PreservesZeroCostMultiplier(t *testing.T) {
 	m := newActiveRequestManager()
 	m.BeginAttempt(0, activeRequestAttempt{
 		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4", Streaming: true,
-		ChannelID: 10, ChannelName: "free-channel", ChannelType: "openai", APIKey: "sk-test",
+		ChannelID: 10, ChannelName: "free-channel", APIKey: "sk-test",
 		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 0,
 	})
 

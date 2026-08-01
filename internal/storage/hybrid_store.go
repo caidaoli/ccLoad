@@ -271,18 +271,6 @@ func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName s
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
-func (h *HybridStore) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
-	return h.sqlite.GetEnabledChannelsByType(ctx, channelType)
-}
-
-func (h *HybridStore) GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error) {
-	return h.sqlite.GetEnabledChannelsByExposedProtocol(ctx, protocol)
-}
-
-func (h *HybridStore) GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error) {
-	return h.sqlite.GetEnabledChannelsByModelAndProtocol(ctx, modelName, protocol)
-}
-
 func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct {
 	ID       int64
 	Priority int
@@ -659,16 +647,16 @@ func (h *HybridStore) AggregateRangeWithFilter(ctx context.Context, since, until
 	return h.sqlite.AggregateRangeWithFilter(ctx, since, until, bucket, filter)
 }
 
-func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error) {
-	return h.sqlite.GetDistinctModels(ctx, since, until, channelType, filter)
+func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]string, error) {
+	return h.sqlite.GetDistinctModels(ctx, since, until, filter)
 }
 
-func (h *HybridStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]int, error) {
-	return h.sqlite.GetDistinctStatusCodes(ctx, since, until, channelType, filter)
+func (h *HybridStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]int, error) {
+	return h.sqlite.GetDistinctStatusCodes(ctx, since, until, filter)
 }
 
-func (h *HybridStore) GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error) {
-	return h.sqlite.GetDistinctChannels(ctx, since, until, channelType, filter)
+func (h *HybridStore) GetDistinctChannels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]model.ChannelNameID, error) {
+	return h.sqlite.GetDistinctChannels(ctx, since, until, filter)
 }
 
 func (h *HybridStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
@@ -677,6 +665,10 @@ func (h *HybridStore) GetStats(ctx context.Context, startTime, endTime time.Time
 
 func (h *HybridStore) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
 	return h.sqlite.GetStatsLite(ctx, startTime, endTime, filter)
+}
+
+func (h *HybridStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
+	return h.sqlite.GetClientProtocolStats(ctx, startTime, endTime, filter)
 }
 
 func (h *HybridStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {

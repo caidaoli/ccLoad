@@ -934,56 +934,6 @@ body {
   opacity: 1;
 }
 
-/* ===== 英雄标题 ===== */
-.hero-header {
-  background: var(--surface-gradient);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-2xl);
-  padding: var(--space-6);
-  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  position: relative;
-  overflow: hidden;
-}
-
-.hero-header > div:last-child {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-
-.hero-icon {
-  width: 56px;
-  height: 56px;
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
-  border-radius: var(--radius-xl);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  box-shadow: 0 8px 24px rgba(99, 102, 241, 0.3);
-  flex-shrink: 0;
-}
-
-.hero-title {
-  font-size: var(--text-3xl);
-  font-weight: var(--font-bold);
-  color: var(--neutral-900);
-  margin: 0;
-  letter-spacing: -0.02em;
-  line-height: 1.2;
-  overflow-wrap: anywhere;
-}
-
-.hero-subtitle {
-  font-size: var(--text-base);
-  color: var(--neutral-600);
-  margin: var(--space-1) 0 0 0;
-  font-weight: var(--font-medium);
-}
-
 /* ===== 渠道卡片 ===== */
 .channel-card {
   background: var(--surface-gradient);
@@ -1121,150 +1071,262 @@ body {
   color: var(--success-600);
 }
 
-/* ===== 总览卡片 ===== */
-.summary-card {
-  background: var(--surface-gradient);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-xl);
-  padding: var(--space-5);
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.06), 0 1px 4px rgba(0, 0, 0, 0.04);
-  transition: all var(--duration-normal) var(--timing-function);
-  position: relative;
+.service-health-card {
+  padding: var(--space-6);
   overflow: hidden;
 }
 
-.summary-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 4px;
-  height: 100%;
-  background: currentColor;
-  opacity: 0.8;
-}
-
-.summary-card:hover {
-  transform: none;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1), 0 2px 8px rgba(0, 0, 0, 0.06);
-}
-
-.summary-icon {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-lg);
+.service-health-header {
   display: flex;
   align-items: center;
-  justify-content: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-6);
+}
+
+.service-health-title {
+  margin: 0;
+  color: var(--neutral-800);
+  font-size: var(--text-xl);
+  font-weight: var(--font-semibold);
+  line-height: var(--leading-tight);
+}
+
+.service-health-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   flex-shrink: 0;
-  background: var(--surface-hover);
-  color: currentColor;
 }
 
-.summary-content {
-  flex: 1;
-}
-
-.summary-value {
-  font-size: var(--text-3xl);
-  font-weight: var(--font-bold);
-  line-height: 1.2;
-  margin-bottom: 4px;
-}
-
-.summary-label {
+.service-health-period,
+.service-health-edge {
+  color: var(--neutral-500);
   font-size: var(--text-sm);
+  white-space: nowrap;
+}
+
+.service-health-rate {
+  min-width: 4.5rem;
+  padding: 0.45rem 0.75rem;
+  border-radius: var(--radius-base);
+  background: var(--neutral-100);
   color: var(--neutral-600);
-  font-weight: var(--font-medium);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  text-align: center;
 }
 
-.summary-card-primary {
-  color: var(--primary-600);
-}
-
-.summary-card-success {
+.service-health-rate[data-state="healthy"] {
+  background: rgba(16, 185, 129, 0.14);
   color: var(--success-600);
 }
 
-.summary-card-error {
+.service-health-rate[data-state="warning"] {
+  background: rgba(245, 158, 11, 0.14);
+  color: var(--warning-600);
+}
+
+.service-health-rate[data-state="critical"] {
+  background: rgba(239, 68, 68, 0.14);
   color: var(--error-600);
 }
 
-.summary-card-rate {
-  color: var(--primary-600);
+.service-health-plot {
+  position: relative;
+  width: 100%;
 }
 
-.index-summary-grid .summary-card {
-  flex: 1 1 0;
+.service-health-grid {
+  display: grid;
+  grid-template-columns: repeat(96, minmax(0, 1fr));
+  gap: 3px;
+  width: 100%;
   min-width: 0;
+  isolation: isolate;
 }
 
-.summary-value-note {
-  font-size: 0.7em;
-  color: var(--neutral-500);
+.service-health-cell,
+.service-health-swatch {
+  background: var(--neutral-200);
 }
 
-.index-api-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+.service-health-cell {
+  aspect-ratio: 1;
+  min-width: 0;
+  border-radius: 3px;
+  transition: transform 120ms ease-out, filter 120ms ease-out;
 }
 
-.index-api-entry {
-  background-color: var(--surface-bg-muted);
+.service-health-cell.healthy,
+.service-health-swatch.healthy {
+  background: var(--success-500);
+}
+
+.service-health-cell.warning,
+.service-health-swatch.warning {
+  background: var(--warning-500);
+}
+
+.service-health-cell.critical,
+.service-health-swatch.critical {
+  background: var(--error-500);
+}
+
+.service-health-cell:hover {
+  filter: brightness(1.08) saturate(1.12);
+  transform: scale(1.24);
+  z-index: 2;
+}
+
+.service-health-tooltip {
+  position: absolute;
+  z-index: 10;
+  padding: 0.55rem 0.75rem;
   border: 1px solid var(--surface-border);
   border-radius: var(--radius-lg);
-  padding: 12px;
+  background: var(--surface-bg-strong);
+  box-shadow: 0 12px 32px rgba(15, 23, 42, 0.14), 0 2px 8px rgba(15, 23, 42, 0.08);
+  color: var(--neutral-700);
+  pointer-events: none;
+  white-space: nowrap;
 }
 
-.index-api-method {
+.service-health-tooltip::after {
+  content: '';
+  position: absolute;
+  left: var(--service-health-tooltip-arrow-x);
+  width: 10px;
+  height: 10px;
+  border-inline-end: 1px solid var(--surface-border);
+  border-block-end: 1px solid var(--surface-border);
+  background: var(--surface-bg-strong);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.service-health-tooltip[data-placement="top"]::after {
+  bottom: -6px;
+}
+
+.service-health-tooltip[data-placement="bottom"]::after {
+  top: -6px;
+  transform: translateX(-50%) rotate(225deg);
+}
+
+.service-health-tooltip-time {
+  margin-bottom: 0.35rem;
+  color: var(--neutral-600);
   font-size: var(--text-xs);
-  font-family: var(--font-family-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.service-health-tooltip-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.service-health-tooltip-stats strong {
   font-weight: var(--font-semibold);
 }
 
-.index-api-method--post {
+.service-health-tooltip-success {
   color: var(--success-600);
 }
 
-.index-api-method--get {
-  color: var(--primary-600);
+.service-health-tooltip-error {
+  color: var(--error-600);
 }
 
-.index-api-path {
-  font-family: var(--font-family-mono);
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  color: var(--neutral-800);
-}
-
-.index-api-desc {
-  margin-top: 4px;
-  font-size: var(--text-xs);
+.service-health-tooltip-rate {
   color: var(--neutral-600);
 }
 
-.index-api-tip {
-  margin-top: var(--space-6);
-  padding: 12px;
-  background: var(--surface-bg-muted);
-  border: 1px solid var(--surface-border);
-  border-radius: var(--radius-lg);
+.service-health-footer {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-4);
 }
 
-.index-api-tip-title {
-  color: var(--info-600);
+.service-health-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  min-width: 0;
+}
+
+.service-health-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--neutral-600);
   font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  white-space: nowrap;
 }
 
-.index-api-tip-body {
-  margin-top: 4px;
+.service-health-swatch {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 3px;
+  flex: 0 0 auto;
+}
+
+.service-health-message {
+  margin: var(--space-3) 0 0;
+  color: var(--neutral-600);
   font-size: var(--text-sm);
-  color: var(--neutral-700);
+  text-align: center;
+}
+
+@media (max-width: 48rem) {
+  .service-health-grid {
+    grid-template-columns: repeat(48, minmax(0, 1fr));
+    gap: 2px;
+  }
+
+  .service-health-legend {
+    gap: var(--space-2);
+  }
+}
+
+@media (max-width: 25rem) {
+  .service-health-card {
+    padding: var(--space-4);
+  }
+
+  .service-health-header {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .service-health-summary {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .service-health-grid {
+    grid-template-columns: repeat(32, minmax(0, 1fr));
+  }
+
+  .service-health-footer {
+    grid-template-columns: 1fr;
+  }
+
+  .service-health-edge {
+    display: none;
+  }
+
+  .service-health-legend {
+    flex-wrap: wrap;
+  }
 }
 
 .metric-card {
@@ -2117,19 +2179,6 @@ body {
     grid-template-columns: repeat(1, 1fr);
   }
 
-  .hero-header {
-    padding: var(--space-4);
-  }
-
-  .hero-icon {
-    width: 48px;
-    height: 48px;
-  }
-
-  .hero-title {
-    font-size: var(--text-2xl);
-  }
-
   .channel-card {
     padding: var(--space-4);
   }
@@ -2160,19 +2209,6 @@ body {
     flex-direction: row;
     justify-content: space-between;
     align-items: center;
-  }
-
-  .summary-card {
-    padding: var(--space-4);
-  }
-
-  .summary-icon {
-    width: 40px;
-    height: 40px;
-  }
-
-  .summary-value {
-    font-size: var(--text-2xl);
   }
 
   .time-range-container {
@@ -2427,29 +2463,8 @@ body {
     padding: var(--space-4);
   }
 
-  .hero-header {
-    flex-direction: column;
-    text-align: center;
-  }
-
-  .hero-title {
-    font-size: var(--text-xl);
-  }
-
   .channel-metrics {
     grid-template-columns: repeat(2, 1fr);
-  }
-
-  .summary-card {
-    flex-direction: column;
-    text-align: center;
-  }
-
-  .summary-card::before {
-    width: 100%;
-    height: 4px;
-    top: 0;
-    left: 0;
   }
 
   .filter-group {
@@ -3233,10 +3248,6 @@ body {
   min-width: 280px;
 }
 
-.model-test-control--type {
-  min-width: 160px;
-}
-
 #channelSelectorLabel {
   flex: 0 0 auto;
 }
@@ -3254,12 +3265,10 @@ body {
   flex: 0 0 auto;
 }
 
-.model-test-control--protocol .channel-editor-radio-group {
-  flex-wrap: nowrap;
-}
-
-.model-test-control--protocol .channel-editor-radio-option {
-  white-space: nowrap;
+.model-test-protocol-combobox {
+  width: 170px;
+  min-width: 150px;
+  flex: 0 1 170px;
 }
 
 .model-test-control--content {
@@ -5203,6 +5212,23 @@ body.trend-page .chart-info {
   flex: 0 0 auto;
 }
 
+.trend-chart-type-toggle {
+  display: inline-flex;
+  gap: var(--space-1);
+}
+
+.trend-chart-type-btn {
+  min-height: 32px;
+  transition-property: color, background-color, border-color, box-shadow;
+}
+
+.trend-chart-type-btn.active {
+  color: var(--primary-600);
+  border-color: var(--primary-500);
+  background: color-mix(in srgb, var(--primary-500) 12%, transparent);
+  box-shadow: none;
+}
+
 .chart-loading,
 .chart-error {
   display: flex;
@@ -7045,6 +7071,12 @@ body.web-role-api-token .filter-group--auth-token {
     white-space: nowrap;
   }
 
+  .trend-chart-toolbar .trend-chart-type-toggle {
+    grid-column: 1 / -1;
+    grid-row: 3;
+    justify-self: end;
+  }
+
   .trend-chart-toolbar .channel-filter-container {
     grid-column: 2;
     grid-row: 1;
@@ -7228,21 +7260,11 @@ body.web-role-api-token .filter-group--auth-token {
   }
 
   #channelSelectorLabel,
-  #modelTypeLabel,
   #modelSelectorLabel,
-  #protocolTransformContainer,
+  #clientProtocolContainer,
   .model-test-control--content,
   .model-test-run-controls {
     grid-column: 1 / -1;
-  }
-
-  .model-test-control--protocol .channel-editor-radio-group {
-    flex-wrap: wrap;
-    min-width: 0;
-  }
-
-  .model-test-control--protocol .channel-editor-radio-option {
-    flex: 0 1 auto;
   }
 
   .model-test-control--name-filter {
@@ -7299,7 +7321,8 @@ body.web-role-api-token .filter-group--auth-token {
   .model-test-control,
   .model-test-control--model,
   .model-test-control--content,
-  .model-test-model-combobox {
+  .model-test-model-combobox,
+  .model-test-protocol-combobox {
     width: 100%;
     min-width: 0;
   }

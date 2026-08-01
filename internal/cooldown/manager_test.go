@@ -190,7 +190,7 @@ func TestHandleError_HTTP404ModelAvailabilityScope(t *testing.T) {
 		t.Helper()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:     name,
-			URL:      "https://api.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority: 10,
 			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
@@ -263,7 +263,7 @@ func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-http-429-model-cooldown",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -318,7 +318,7 @@ func TestHandleError_ModelCooldownUsesExponentialBackoff(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-model-exponential-backoff",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -363,7 +363,7 @@ func TestHandleError_HTTP400CoolsOnlyCurrentModel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-http-400-model-scope",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -407,7 +407,7 @@ func TestHandleError_Upstream499CoolsOnlyCurrentModel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-upstream-499-model-scope",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -451,7 +451,7 @@ func TestHandleError_SSEChannelErrorCoolsOnlyCurrentModel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-sse-model-scope",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -508,7 +508,7 @@ func TestHandleError_StreamFailuresCoolOnlyCurrentModel(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, err := store.CreateConfig(ctx, &model.Config{
 				Name:     "test-" + tt.name + "-model-scope",
-				URL:      "https://api.example.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 				Priority: 10,
 				Enabled:  true,
 				ModelEntries: []model.ModelEntry{
@@ -555,7 +555,7 @@ func TestHandleError_HTTP5xxCoolsOnlyCurrentModel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-http-5xx-model-cooldown",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -610,7 +610,7 @@ func TestHandleError_LastModelCooldownPromotesChannel(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-all-models-cooled",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -1604,7 +1604,7 @@ func TestHandleError_GlobalFixedWindowQuotaCoolsModelUntilRetryClock(t *testing.
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:     "test-global-fixed-window-quota",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
@@ -1817,7 +1817,7 @@ func createTestChannel(t *testing.T, store storage.Store, name string) *model.Co
 
 	cfg := &model.Config{
 		Name:     name,
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "test-model", RedirectModel: ""},

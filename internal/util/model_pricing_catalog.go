@@ -49,13 +49,14 @@ var (
 		{MaxInputTokens: 272_000, InputPrice: 5.00, OutputPrice: 30.00, CacheReadPrice: 0.50, HasCacheReadPrice: true},
 		{InputPrice: 10.00, OutputPrice: 45.00, CacheReadPrice: 1.00, HasCacheReadPrice: true},
 	}
+	// Terra/Luna 应用 OpenAI 2026-07-31 调价；长上下文倍率保持不变。
 	gpt56TerraTiers = []TokenPricingTier{
-		{MaxInputTokens: 272_000, InputPrice: 2.50, OutputPrice: 15.00, CacheReadPrice: 0.25, HasCacheReadPrice: true},
-		{InputPrice: 5.00, OutputPrice: 22.50, CacheReadPrice: 0.50, HasCacheReadPrice: true},
+		{MaxInputTokens: 272_000, InputPrice: 2.00, OutputPrice: 12.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+		{InputPrice: 4.00, OutputPrice: 18.00, CacheReadPrice: 0.40, HasCacheReadPrice: true},
 	}
 	gpt56LunaTiers = []TokenPricingTier{
-		{MaxInputTokens: 272_000, InputPrice: 1.00, OutputPrice: 6.00, CacheReadPrice: 0.10, HasCacheReadPrice: true},
-		{InputPrice: 2.00, OutputPrice: 9.00, CacheReadPrice: 0.20, HasCacheReadPrice: true},
+		{MaxInputTokens: 272_000, InputPrice: 0.20, OutputPrice: 1.20, CacheReadPrice: 0.02, HasCacheReadPrice: true},
+		{InputPrice: 0.40, OutputPrice: 1.80, CacheReadPrice: 0.04, HasCacheReadPrice: true},
 	}
 	qwen3MaxTiers = []TokenPricingTier{
 		{MaxInputTokens: 32_000, InputPrice: 1.20, OutputPrice: 6.00},
@@ -167,11 +168,11 @@ var basePricing = map[string]ModelPricing{
 		TokenPricingTiers: gpt56SolTiers, CacheReadCountsTowardTier: true,
 	},
 	"gpt-5.6-terra": {
-		InputPrice: 2.50, OutputPrice: 15.00, CacheReadPrice: 0.25, HasCacheReadPrice: true,
+		InputPrice: 2.00, OutputPrice: 12.00, CacheReadPrice: 0.20, HasCacheReadPrice: true,
 		TokenPricingTiers: gpt56TerraTiers, CacheReadCountsTowardTier: true,
 	},
 	"gpt-5.6-luna": {
-		InputPrice: 1.00, OutputPrice: 6.00, CacheReadPrice: 0.10, HasCacheReadPrice: true,
+		InputPrice: 0.20, OutputPrice: 1.20, CacheReadPrice: 0.02, HasCacheReadPrice: true,
 		TokenPricingTiers: gpt56LunaTiers, CacheReadCountsTowardTier: true,
 	},
 	"gpt-5.5": {

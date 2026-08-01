@@ -6,10 +6,185 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"ccLoad/internal/model"
 )
+
+// logsClientProtocolBackfillCase 按模型名把历史日志分类到四种客户端协议。
+const logsClientProtocolBackfillCase = `CASE
+		WHEN LOWER(TRIM(model)) LIKE 'gpt-5%'
+			OR LOWER(TRIM(model)) LIKE '%/gpt-5%'
+			OR LOWER(TRIM(model)) LIKE 'codex-%'
+			OR LOWER(TRIM(model)) LIKE '%/codex-%'
+			THEN 'codex'
+		WHEN LOWER(TRIM(model)) LIKE 'claude-%'
+			OR LOWER(TRIM(model)) LIKE '%/claude-%'
+			OR LOWER(TRIM(model)) LIKE 'opus-%'
+			OR LOWER(TRIM(model)) LIKE '%/opus-%'
+			OR LOWER(TRIM(model)) LIKE 'sonnet-%'
+			OR LOWER(TRIM(model)) LIKE '%/sonnet-%'
+			OR LOWER(TRIM(model)) LIKE 'haiku-%'
+			OR LOWER(TRIM(model)) LIKE '%/haiku-%'
+			THEN 'anthropic'
+		WHEN LOWER(TRIM(model)) LIKE 'gemini-%'
+			OR LOWER(TRIM(model)) LIKE '%/gemini-%'
+			THEN 'gemini'
+		ELSE 'openai'
+	END`
+
+// backfillLogsClientProtocol 回填历史行的 client_protocol：
+// logs 按模型名推断，model_fingerprints 从保留的 channel_type 物理列复制。
+//
+// 模型名推断是 best-effort 启发式：client_protocol 的语义是客户端入口协议，与模型名
+// 没有必然对应（经 OpenAI 兼容端点调用 Claude 模型的历史日志会被误标为 anthropic）。
+// 历史数据仅用于统计展示，新日志由代理链路准确写入，误差可接受。
+//
+// 幂等标记在全部步骤完成后写入：中途失败重跑时从剩余未回填行继续。
+// 必须在 logs 与 model_fingerprints 两表的列迁移都完成后调用（建表循环之外）。
+func backfillLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, clientProtocolBackfillMigrationVersion, dialect) {
+		return nil
+	}
+
+	if err := backfillLogsClientProtocolBatches(ctx, db, dialect, 0); err != nil {
+		return err
+	}
+
+	// 历史指纹行：channel_type 与 client_protocol 取值域一致（四协议名），直接复制。
+	// 指纹表行数极少，无需分批。
+	if _, err := db.ExecContext(ctx,
+		"UPDATE model_fingerprints SET client_protocol = channel_type WHERE client_protocol = '' AND channel_type != ''",
+	); err != nil {
+		return fmt.Errorf("backfill model_fingerprints client_protocol: %w", err)
+	}
+
+	return recordMigration(ctx, db, clientProtocolBackfillMigrationVersion, dialect)
+}
+
+// backfillLogsClientProtocolBatches 分批更新 logs.client_protocol，每批独立提交，
+// 避免单事务全表 UPDATE 在 SQLite 长持写锁、在 MySQL/PG 膨胀 undo/dead tuple。
+func backfillLogsClientProtocolBatches(ctx context.Context, db *sql.DB, dialect Dialect, batchSize int) error {
+	var query string
+	switch dialect {
+	case DialectMySQL:
+		if batchSize <= 0 {
+			batchSize = 10_000
+		}
+		query = "UPDATE logs SET client_protocol = " + logsClientProtocolBackfillCase +
+			" WHERE log_source = 'proxy' AND client_protocol = '' LIMIT ?"
+	default:
+		// SQLite/PostgreSQL 的 UPDATE 不支持 LIMIT，用子查询圈定批次
+		if batchSize <= 0 {
+			batchSize = 5_000
+		}
+		query = "UPDATE logs SET client_protocol = " + logsClientProtocolBackfillCase +
+			" WHERE id IN (SELECT id FROM logs WHERE log_source = 'proxy' AND client_protocol = '' LIMIT ?)"
+	}
+	query = rebindIfPostgres(dialect, query)
+
+	for {
+		res, err := db.ExecContext(ctx, query, batchSize)
+		if err != nil {
+			return fmt.Errorf("classify historical proxy logs: %w", err)
+		}
+		affected, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if affected == 0 {
+			return nil
+		}
+	}
+}
+
+func migrateChannelURLsToStructuredJSON(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if hasMigration(ctx, db, structuredChannelURLsMigrationVersion, dialect) {
+		return nil
+	}
+
+	rows, err := db.QueryContext(ctx, "SELECT id, url FROM channels ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("query channel URLs: %w", err)
+	}
+	type candidate struct {
+		id      int64
+		encoded string
+	}
+	candidates := make([]candidate, 0)
+	for rows.Next() {
+		var channelID int64
+		var raw string
+		if err := rows.Scan(&channelID, &raw); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan channel URL: %w", err)
+		}
+
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d has empty URL configuration", channelID)
+		}
+
+		var urls model.ChannelURLs
+		jsonErr := json.Unmarshal([]byte(trimmed), &urls)
+		if jsonErr != nil {
+			if strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "{") {
+				_ = rows.Close()
+				return fmt.Errorf("channel %d has invalid structured URL JSON: %w", channelID, jsonErr)
+			}
+			for line := range strings.SplitSeq(raw, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" {
+					continue
+				}
+				exact := model.HasExactUpstreamURLMarker(line)
+				urls = append(urls, model.ChannelURL{
+					URL:   model.StripExactUpstreamURLMarker(line),
+					Exact: exact,
+				})
+			}
+		}
+		if len(urls) == 0 {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d has no valid URLs", channelID)
+		}
+		if err := urls.Normalize(); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("channel %d: %w", channelID, err)
+		}
+		encoded, err := json.Marshal(urls)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("marshal channel %d URLs: %w", channelID, err)
+		}
+		candidates = append(candidates, candidate{id: channelID, encoded: string(encoded)})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate channel URLs: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close channel URL rows: %w", err)
+	}
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin structured URL migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	updateSQL := rebindIfPostgres(dialect, "UPDATE channels SET url = ? WHERE id = ?")
+	for _, item := range candidates {
+		if _, err := tx.ExecContext(ctx, updateSQL, item.encoded, item.id); err != nil {
+			return fmt.Errorf("update channel %d structured URLs: %w", item.id, err)
+		}
+	}
+	if err := recordMigrationTx(ctx, tx, structuredChannelURLsMigrationVersion, dialect); err != nil {
+		return fmt.Errorf("record structured URL migration: %w", err)
+	}
+	return tx.Commit()
+}
 
 // backfillLogsMinuteBucketSQLite 分批回填 logs.minute_bucket（SQLite）
 func backfillLogsMinuteBucketSQLite(ctx context.Context, db *sql.DB, batchSize int) error {

@@ -1,102 +1,234 @@
     // 统计数据管理
-    let statsData = {
-      total_requests: 0,
-      success_requests: 0,
-      error_requests: 0,
-      active_channels: 0,
-      active_models: 0,
-      duration_seconds: 1,
-      rpm_stats: null,
-      is_today: true
-    };
+    let statsData = { by_client_protocol: {} };
 
     // 当前选中的时间范围
     let currentTimeRange = 'today';
     let currentCustomTimeRange = null;
+    let serviceHealthModel = null;
+    let dashboardLoadGeneration = 0;
 
-    function buildSummaryURL() {
-      const query = typeof window.buildDateRangeQuery === 'function'
+    function buildCurrentDateRangeQuery() {
+      return typeof window.buildDateRangeQuery === 'function'
         ? window.buildDateRangeQuery(currentTimeRange, currentCustomTimeRange)
         : `range=${encodeURIComponent(currentTimeRange)}`;
-      return `/dashboard/summary?${query}`;
     }
 
-    // 加载统计数据
-    async function loadStats() {
-      try {
-        // 添加加载状态
-        document.querySelectorAll('.metric-number').forEach(el => {
-          el.classList.add('animate-pulse');
-        });
-
-        const data = await fetchDataWithAuth(buildSummaryURL());
-        statsData = data || statsData;
-        updateStatsDisplay();
-
-      } catch (error) {
-        console.error('Failed to load stats:', error);
-        showError('无法加载统计数据');
-      } finally {
-        // 移除加载状态
-        document.querySelectorAll('.metric-number').forEach(el => {
-          el.classList.remove('animate-pulse');
-        });
+    function currentRangeHours() {
+      if (currentTimeRange === 'custom' && currentCustomTimeRange) {
+        const startMs = Number(currentCustomTimeRange.startMs);
+        const endMs = Number(currentCustomTimeRange.endMs);
+        if (Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs) {
+          return Math.max((endMs - startMs) / 3600000, 1 / 60);
+        }
       }
+      return typeof window.getRangeHours === 'function'
+        ? window.getRangeHours(currentTimeRange)
+        : 24;
+    }
+
+    function serviceHealthText(key, fallback, params) {
+      if (typeof window.i18nText === 'function') return window.i18nText(key, fallback, params);
+      const translated = typeof window.t === 'function' ? window.t(key, params) : key;
+      return translated === key ? fallback : translated;
+    }
+
+    function serviceHealthLocale() {
+      return window.i18n && typeof window.i18n.getLocale === 'function' && window.i18n.getLocale() === 'en'
+        ? 'en-US'
+        : 'zh-CN';
+    }
+
+    function serviceHealthTimeFormatter() {
+      return new Intl.DateTimeFormat(serviceHealthLocale(), {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hourCycle: 'h23'
+      });
+    }
+
+    function serviceHealthPeriodText() {
+      return typeof window.getRangeLabel === 'function'
+        ? window.getRangeLabel(currentTimeRange)
+        : currentTimeRange;
+    }
+
+    function hideServiceHealthTooltip() {
+      const tooltip = document.getElementById('service-health-tooltip');
+      if (tooltip) tooltip.hidden = true;
+    }
+
+    function showServiceHealthTooltip(cell, point, formatter, bucketMs) {
+      const plot = cell.closest('.service-health-plot');
+      const card = plot && plot.closest('.service-health-card');
+      const tooltip = document.getElementById('service-health-tooltip');
+      const timeElement = document.getElementById('service-health-tooltip-time');
+      const successElement = document.getElementById('service-health-tooltip-success');
+      const errorElement = document.getElementById('service-health-tooltip-error');
+      const rateElement = document.getElementById('service-health-tooltip-rate');
+      if (!plot || !card || !tooltip || !timeElement || !successElement || !errorElement || !rateElement) return;
+
+      const intervalMs = bucketMs || 15 * 60 * 1000;
+      timeElement.textContent = `${formatter.format(new Date(point.ts))} – ${formatter.format(new Date(point.ts + intervalMs))}`;
+      successElement.textContent = formatNumber(point.success);
+      errorElement.textContent = formatNumber(point.error);
+      rateElement.textContent = point.rate === null ? '--' : `(${(point.rate * 100).toFixed(1)}%)`;
+
+      tooltip.hidden = false;
+      tooltip.dataset.placement = 'top';
+
+      const plotRect = plot.getBoundingClientRect();
+      const cellRect = cell.getBoundingClientRect();
+      const tooltipRect = tooltip.getBoundingClientRect();
+      const cellCenter = cellRect.left - plotRect.left + cellRect.width / 2;
+      const inset = 8;
+      const maxLeft = Math.max(inset, plotRect.width - tooltipRect.width - inset);
+      const left = Math.min(Math.max(cellCenter - tooltipRect.width / 2, inset), maxLeft);
+      const roomAbove = cellRect.top - card.getBoundingClientRect().top;
+      let top = cellRect.top - plotRect.top - tooltipRect.height - 12;
+
+      if (roomAbove < tooltipRect.height + 16) {
+        top = cellRect.bottom - plotRect.top + 12;
+        tooltip.dataset.placement = 'bottom';
+      }
+
+      tooltip.style.left = `${left}px`;
+      tooltip.style.top = `${top}px`;
+      const arrowX = Math.min(Math.max(cellCenter - left, 12), tooltipRect.width - 12);
+      tooltip.style.setProperty('--service-health-tooltip-arrow-x', `${arrowX}px`);
+    }
+
+    function renderServiceHealth(model) {
+      const grid = document.getElementById('service-health-grid');
+      const rateElement = document.getElementById('service-health-rate');
+      const message = document.getElementById('service-health-message');
+      if (!grid || !rateElement || !message || !model) return;
+
+      hideServiceHealthTooltip();
+      const timeFormatter = serviceHealthTimeFormatter();
+      const fragment = document.createDocumentFragment();
+      for (const [index, point] of model.points.entries()) {
+        const cell = document.createElement('span');
+        cell.className = `service-health-cell ${point.state}`;
+        cell.setAttribute('aria-hidden', 'true');
+        cell.dataset.index = String(index);
+        fragment.appendChild(cell);
+      }
+      grid.replaceChildren(fragment);
+      grid.onmouseover = event => {
+        const cell = event.target.closest('.service-health-cell');
+        if (!cell || !grid.contains(cell)) return;
+        showServiceHealthTooltip(cell, model.points[Number(cell.dataset.index)], timeFormatter, model.bucketMs);
+      };
+      grid.onmouseleave = hideServiceHealthTooltip;
+
+      const hasData = model.rate !== null;
+      const rate = hasData ? `${(model.rate * 100).toFixed(1)}%` : '--';
+      const period = serviceHealthPeriodText();
+      rateElement.textContent = rate;
+      rateElement.dataset.state = model.state;
+      const periodElement = document.getElementById('service-health-period');
+      if (periodElement) periodElement.textContent = period;
+      const earlierElement = document.getElementById('service-health-earlier');
+      const latestElement = document.getElementById('service-health-latest');
+      if (earlierElement) {
+        earlierElement.textContent = model.points.length > 0
+          ? timeFormatter.format(new Date(model.points[0].ts))
+          : '--';
+      }
+      if (latestElement) {
+        latestElement.textContent = model.points.length > 0
+          ? timeFormatter.format(new Date(model.points.at(-1).ts))
+          : '--';
+      }
+      grid.setAttribute('aria-label', hasData
+        ? serviceHealthText(
+          'index.health.summary',
+          `${period}服务成功率 ${rate}，成功 ${model.success} 次，失败 ${model.error} 次`,
+          {
+            period,
+            rate,
+            success: formatNumber(model.success),
+            error: formatNumber(model.error)
+          }
+        )
+        : serviceHealthText('index.health.noData', `${period}暂无请求数据`, { period }));
+      message.hidden = true;
+      message.textContent = '';
+    }
+
+    function renderServiceHealthUnavailable() {
+      const message = document.getElementById('service-health-message');
+      const rateElement = document.getElementById('service-health-rate');
+      if (rateElement) {
+        rateElement.textContent = '--';
+        rateElement.dataset.state = 'unknown';
+      }
+      if (message) {
+        message.hidden = false;
+        message.textContent = serviceHealthText(
+          'index.health.unavailable',
+          '健康数据暂时无法加载，将在下次刷新时重试。'
+        );
+      }
+    }
+
+    async function loadDashboard() {
+      const generation = ++dashboardLoadGeneration;
+      const dateRangeQuery = buildCurrentDateRangeQuery();
+      const grid = document.getElementById('service-health-grid');
+      const loadingElements = document.querySelectorAll('.metric-number');
+      loadingElements.forEach(element => element.classList.add('animate-pulse'));
+      if (grid) grid.setAttribute('aria-busy', 'true');
+
+      const healthRequest = window.ServiceHealth
+        ? window.ServiceHealth.buildRequest(dateRangeQuery, currentRangeHours())
+        : null;
+      const [statsResult, healthResult] = await Promise.allSettled([
+        fetchDataWithAuth(`/dashboard/summary?${dateRangeQuery}`),
+        healthRequest
+          ? fetchDataWithAuth(`/dashboard/metrics?${healthRequest.query}`)
+          : Promise.reject(new Error('ServiceHealth unavailable'))
+      ]);
+
+      if (generation !== dashboardLoadGeneration) return;
+
+      if (statsResult.status === 'fulfilled') {
+        statsData = statsResult.value || statsData;
+        updateStatsDisplay();
+      } else {
+        console.error('Failed to load stats:', statsResult.reason);
+        showError('无法加载统计数据');
+      }
+
+      if (healthResult.status === 'fulfilled') {
+        serviceHealthModel = window.ServiceHealth.buildModel(
+          healthResult.value,
+          healthRequest.bucketMinutes
+        );
+        renderServiceHealth(serviceHealthModel);
+      } else {
+        console.error('Failed to load service health:', healthResult.reason);
+        renderServiceHealthUnavailable();
+      }
+
+      loadingElements.forEach(element => element.classList.remove('animate-pulse'));
+      if (grid) grid.setAttribute('aria-busy', 'false');
     }
 
     // 更新统计显示
     function updateStatsDisplay() {
-      const successRate = statsData.total_requests > 0
-        ? ((statsData.success_requests / statsData.total_requests) * 100).toFixed(1)
-        : '0.0';
-
-      // 更新总体数字显示（成功/失败合并显示）
-      document.getElementById('success-requests').textContent = formatNumber(statsData.success_requests || 0);
-      document.getElementById('error-requests').textContent = formatNumber(statsData.error_requests || 0);
-      document.getElementById('success-rate').textContent = successRate + '%';
-
-      // 更新 RPM（使用峰值/平均/最近格式）
-      const rpmStats = statsData.rpm_stats || null;
-      const isToday = statsData.is_today !== false;
-      updateGlobalRpmDisplay('total-rpm', rpmStats, isToday);
-
-      // 更新按渠道类型统计
-      if (statsData.by_type) {
-        updateTypeStats('anthropic', statsData.by_type.anthropic);
-        updateTypeStats('codex', statsData.by_type.codex);
-        updateTypeStats('openai', statsData.by_type.openai);
-        updateTypeStats('gemini', statsData.by_type.gemini);
-      }
+      // 更新按客户端入口协议统计
+      const protocolStats = statsData.by_client_protocol || {};
+      updateClientProtocolStats('anthropic', protocolStats.anthropic);
+      updateClientProtocolStats('codex', protocolStats.codex);
+      updateClientProtocolStats('openai', protocolStats.openai);
+      updateClientProtocolStats('gemini', protocolStats.gemini);
     }
 
-    // 更新全局 RPM 显示（格式：数值 数值 数值）
-    function updateGlobalRpmDisplay(elementId, stats, showRecent) {
-      const el = document.getElementById(elementId);
-      if (!el) return;
-
-      if (!stats || (stats.peak_rpm < 0.01 && stats.avg_rpm < 0.01)) {
-        el.innerHTML = '--';
-        return;
-      }
-
-      const fmt = v => v >= 1000 ? (v / 1000).toFixed(1) + 'K' : v.toFixed(1);
-      const parts = [];
-
-      if (stats.peak_rpm >= 0.01) {
-        parts.push(`<span style="color:${getRpmColor(stats.peak_rpm)}">${fmt(stats.peak_rpm)}</span>`);
-      }
-      if (stats.avg_rpm >= 0.01) {
-        parts.push(`<span style="color:${getRpmColor(stats.avg_rpm)}">${fmt(stats.avg_rpm)}</span>`);
-      }
-      if (showRecent && stats.recent_rpm >= 0.01) {
-        parts.push(`<span style="color:${getRpmColor(stats.recent_rpm)}">${fmt(stats.recent_rpm)}</span>`);
-      }
-
-      el.innerHTML = parts.length > 0 ? parts.join(' ') : '--';
-    }
-
-    // 更新单个渠道类型的统计
-    function updateTypeStats(type, data) {
+    // 更新单个客户端入口协议的统计
+    function updateClientProtocolStats(type, data) {
       // 始终显示所有卡片，保持界面完整性
       const card = document.getElementById(`type-${type}-card`);
       if (card) card.style.display = 'block';
@@ -116,7 +248,7 @@
       document.getElementById(`type-${type}-error`).textContent = formatNumber(errorRequests);
       document.getElementById(`type-${type}-rate`).textContent = successRate + '%';
 
-      // 所有渠道类型的Token和成本统计
+      // 所有客户端协议的Token和成本统计
       const inputTokens = data ? (data.total_input_tokens || 0) : 0;
       const outputTokens = data ? (data.total_output_tokens || 0) : 0;
       const totalCost = data ? (data.total_cost || 0) : 0;
@@ -161,16 +293,22 @@
         onChange: (range, customRange) => {
           currentTimeRange = range;
           if (range === 'custom') currentCustomTimeRange = customRange;
-          loadStats();
+          loadDashboard();
         }
       });
 
-      // 加载统计数据
-      loadStats();
+      // 费用与服务健康检测共用同一日期范围快照。
+      loadDashboard();
+
+      if (window.i18n && typeof window.i18n.onLocaleChange === 'function') {
+        window.i18n.onLocaleChange(() => {
+          if (serviceHealthModel) renderServiceHealth(serviceHealthModel);
+        });
+      }
 
       // 自动刷新（system_settings.auto_refresh_interval_seconds，0=禁用）
       if (typeof window.createAutoRefresh === 'function') {
-        window.createAutoRefresh({ load: loadStats }).init();
+        window.createAutoRefresh({ load: loadDashboard }).init();
       }
 
       // 添加页面动画

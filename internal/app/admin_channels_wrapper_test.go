@@ -17,7 +17,7 @@ func TestAdminChannelsWrappers(t *testing.T) {
 	// 创建一个渠道供 GET 使用
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,

@@ -76,6 +76,9 @@ type codexUpstreamWebsocketSession struct {
 	readNotify      chan struct{}
 	readSpaceNotify chan struct{}
 	maxBodyBytes    int64
+	maxAge          time.Duration
+	maxAgeTimer     *time.Timer
+	maxAgeExpired   bool
 
 	handshakeRequestHeaders  http.Header
 	handshakeResponseStatus  int
@@ -89,7 +92,10 @@ type codexUpstreamWebsocketSession struct {
 	lastCloseReason          string
 }
 
-func newCodexUpstreamWebsocketSession(maxBodyBytes int64) *codexUpstreamWebsocketSession {
+func newCodexUpstreamWebsocketSession(
+	maxBodyBytes int64,
+	maxAge time.Duration,
+) *codexUpstreamWebsocketSession {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = config.DefaultMaxBodyBytes
 	}
@@ -97,6 +103,7 @@ func newCodexUpstreamWebsocketSession(maxBodyBytes int64) *codexUpstreamWebsocke
 		readNotify:      make(chan struct{}, 1),
 		readSpaceNotify: make(chan struct{}, 1),
 		maxBodyBytes:    maxBodyBytes,
+		maxAge:          maxAge,
 	}
 }
 
@@ -152,6 +159,11 @@ func (s *codexUpstreamWebsocketSession) clearAffinityLocked() {
 }
 
 func (s *codexUpstreamWebsocketSession) closeLocked() {
+	if s.maxAgeTimer != nil {
+		s.maxAgeTimer.Stop()
+		s.maxAgeTimer = nil
+	}
+	s.maxAgeExpired = false
 	if s.connDone != nil {
 		close(s.connDone)
 		s.connDone = nil
@@ -300,6 +312,10 @@ func (s *codexUpstreamWebsocketSession) connectionReusable(target codexWebsocket
 	if s.conn == nil || s.target != target {
 		return nil, false
 	}
+	if s.maxAgeExpired || s.maxAge > 0 && time.Since(s.connectedAt) >= s.maxAge {
+		s.closeLocked()
+		return nil, false
+	}
 	if len(s.reads) > 0 {
 		// Any data between turns is either a recorded disconnect or an unsolicited
 		// response frame. Neither is safe to associate with the next request.
@@ -308,6 +324,37 @@ func (s *codexUpstreamWebsocketSession) connectionReusable(target codexWebsocket
 	}
 	s.reuses++
 	return s.conn, true
+}
+
+func (s *codexUpstreamWebsocketSession) expireConnection(conn *websocket.Conn) {
+	s.mu.Lock()
+	if s.conn != conn {
+		s.mu.Unlock()
+		return
+	}
+	s.maxAgeExpired = true
+	s.mu.Unlock()
+
+	// An idle socket can close immediately. An active turn owns turnMu and will
+	// retire the socket in finishTurn after its terminal event has drained.
+	if !s.turnMu.TryLock() {
+		return
+	}
+	s.mu.Lock()
+	if s.conn == conn && s.maxAgeExpired {
+		s.closeLocked()
+	}
+	s.mu.Unlock()
+	s.turnMu.Unlock()
+}
+
+func (s *codexUpstreamWebsocketSession) finishTurn() {
+	s.mu.Lock()
+	if s.maxAgeExpired {
+		s.closeLocked()
+	}
+	s.mu.Unlock()
+	s.turnMu.Unlock()
 }
 
 func (s *codexUpstreamWebsocketSession) startReader(
@@ -387,6 +434,11 @@ func (s *codexUpstreamWebsocketSession) detachReadFailure(
 ) {
 	s.mu.Lock()
 	if s.conn == conn {
+		if s.maxAgeTimer != nil {
+			s.maxAgeTimer.Stop()
+			s.maxAgeTimer = nil
+		}
+		s.maxAgeExpired = false
 		if s.connDone != nil {
 			close(s.connDone)
 			s.connDone = nil
@@ -438,6 +490,10 @@ func (s *codexUpstreamWebsocketSession) dial(
 	s.affinity = target
 	s.hasAffinity = true
 	s.connectedAt = time.Now()
+	s.maxAgeExpired = false
+	if s.maxAge > 0 {
+		s.maxAgeTimer = time.AfterFunc(s.maxAge, func() { s.expireConnection(conn) })
+	}
 	s.handshakes++
 	s.reads = nil
 	s.readBytes = 0
@@ -837,7 +893,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	reader, writer := io.Pipe()
 	body := &codexWebsocketResponseBody{PipeReader: reader, abort: func() { s.invalidate(conn) }}
 	go func() {
-		defer s.turnMu.Unlock()
+		defer s.finishTurn()
 		stopCancel := context.AfterFunc(ctx, func() {
 			if !body.completed.Load() {
 				s.invalidate(conn)
@@ -970,6 +1026,12 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	timeouts codexWebsocketTimeouts,
 ) (resp *http.Response, usedReq *http.Request, usedBody []byte, err error) {
 	s.turnMu.Lock()
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			s.finishTurn()
+		}
+	}()
 	target := codexWebsocketTargetForRequest(cfg, replayReq, skipTLSVerify)
 
 	conn, reuse := s.connectionReusable(target)
@@ -985,14 +1047,12 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	}
 	preparedBody, err := buildCodexWebsocketRequestBody(usedBody)
 	if err != nil {
-		s.turnMu.Unlock()
 		return nil, usedReq, usedBody, err
 	}
 
 	if !reuse {
 		conn, resp, err = s.dial(ctx, dialer, target, replayReq, timeouts)
 		if err != nil {
-			s.turnMu.Unlock()
 			if resp != nil {
 				if resp.Body == nil {
 					resp.Body = io.NopCloser(strings.NewReader(""))
@@ -1012,28 +1072,29 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 			connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq, timeouts)
 			if errDial == nil {
 				if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
-					return s.streamResponse(
+					response := s.streamResponse(
 						ctx, connRetry, replayReq, dialer, target, replayReq, replayBody, timeouts,
-					), replayReq, replayBody, nil
+					)
+					handedOff = true
+					return response, replayReq, replayBody, nil
 				}
 				s.invalidate(connRetry)
 			} else if respRetry != nil {
 				if respRetry.Body == nil {
 					respRetry.Body = io.NopCloser(strings.NewReader(""))
 				}
-				s.turnMu.Unlock()
 				return respRetry, replayReq, replayBody, nil
 			} else if isCodexWebsocketHandshakeFallbackError(errDial) {
-				s.turnMu.Unlock()
 				return nil, replayReq, replayBody, errDial
 			}
 		}
-		s.turnMu.Unlock()
 		return nil, usedReq, usedBody, err
 	}
-	return s.streamResponse(
+	response := s.streamResponse(
 		ctx, conn, usedReq, dialer, target, replayReq, replayBody, timeouts,
-	), usedReq, usedBody, nil
+	)
+	handedOff = true
+	return response, usedReq, usedBody, nil
 }
 
 func (s *Server) doCodexWebsocketRequest(

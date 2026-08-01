@@ -57,6 +57,29 @@
                   <div class="toggle-btn" data-type="tokens" data-i18n="trend.typeTokens">Token用量</div>
                   <div class="toggle-btn" data-type="cost" data-i18n="trend.typeCost">费用消耗</div>
                 </div>
+                <!-- 图表样式切换 -->
+                <div
+                  class="trend-chart-type-toggle"
+                  id="trend-chart-type-group"
+                  role="group"
+                  data-i18n-aria-label="trend.chartType"
+                  aria-label="图表类型"
+                >
+                  <button
+                    class="btn btn-secondary btn-sm trend-chart-type-btn active"
+                    type="button"
+                    data-chart-type="line"
+                    aria-pressed="true"
+                    data-i18n="trend.lineChart"
+                  >折线图</button>
+                  <button
+                    class="btn btn-secondary btn-sm trend-chart-type-btn"
+                    type="button"
+                    data-chart-type="bar"
+                    aria-pressed="false"
+                    data-i18n="trend.barChart"
+                  >柱状图</button>
+                </div>
                 <!-- 渠道筛选器 -->
                 <div class="channel-filter-container">
                   <button class="btn btn-secondary btn-sm" id="btn-channel-filter-toggle" type="button">

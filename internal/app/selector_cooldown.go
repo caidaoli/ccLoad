@@ -8,6 +8,8 @@ import (
 	"time"
 
 	modelpkg "ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	"ccLoad/internal/util"
 )
 
 // filterCooldownChannels 过滤冷却中的渠道
@@ -278,10 +280,75 @@ func (s *Server) modelCooldownUntil(
 	if len(models) == 0 {
 		return time.Time{}, false
 	}
-	upstreamProtocol := cfg.ResolveUpstreamProtocol(requestProtocol)
-	actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, upstreamProtocol)
-	until, ok := models[actualModel]
-	return until, ok
+	possibleModels := s.possibleActualModels(cfg, requestModel, requestProtocol)
+	if len(possibleModels) == 0 {
+		return time.Time{}, false
+	}
+
+	var earliest time.Time
+	for _, actualModel := range possibleModels {
+		until, ok := models[actualModel]
+		if !ok || !until.After(time.Now()) {
+			return time.Time{}, false
+		}
+		if earliest.IsZero() || until.Before(earliest) {
+			earliest = until
+		}
+	}
+	return earliest, true
+}
+
+func (s *Server) possibleActualModels(cfg *modelpkg.Config, requestModel, requestProtocol string) []string {
+	client := protocol.Protocol(util.NormalizeProtocol(requestProtocol))
+	protocols := possibleUpstreamProtocols(cfg, client)
+
+	seen := make(map[string]struct{}, len(protocols))
+	models := make([]string, 0, len(protocols))
+	for _, upstreamProtocol := range protocols {
+		actualModel := s.resolveFinalUpstreamModel(cfg, requestModel, string(upstreamProtocol))
+		if actualModel == "" {
+			continue
+		}
+		if _, ok := seen[actualModel]; ok {
+			continue
+		}
+		seen[actualModel] = struct{}{}
+		models = append(models, actualModel)
+	}
+	return models
+}
+
+func possibleUpstreamProtocols(cfg *modelpkg.Config, client protocol.Protocol) []protocol.Protocol {
+	if cfg == nil {
+		return nil
+	}
+	seen := make(map[protocol.Protocol]struct{})
+	result := make([]protocol.Protocol, 0, len(localFallbackProtocolOrder))
+	appendProtocol := func(candidate protocol.Protocol) {
+		if !protocol.IsValid(candidate) {
+			return
+		}
+		if _, exists := seen[candidate]; exists {
+			return
+		}
+		seen[candidate] = struct{}{}
+		result = append(result, candidate)
+	}
+
+	switch cfg.GetProtocolTransformMode() {
+	case modelpkg.ProtocolTransformModeUpstream:
+		appendProtocol(client)
+	case modelpkg.ProtocolTransformModeLocal:
+		for _, candidate := range localUpstreamProtocolOrder(cfg.URLs) {
+			appendProtocol(candidate)
+		}
+	default:
+		appendProtocol(client)
+		for _, candidate := range automaticFallbackProtocolOrder {
+			appendProtocol(candidate)
+		}
+	}
+	return result
 }
 
 // filterCostLimitExceededChannels 过滤超过每日成本限额的渠道

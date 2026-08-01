@@ -50,9 +50,9 @@ type Server struct {
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
-	client                        *http.Client          // HTTP客户端（全局默认）
-	proxyTransports               sync.Map              // proxyURL → *http.Transport（渠道级代理缓存）
-	alphaSearchUnsupportedURLs    sync.Map              // alphaSearchEndpointKey → 探测失败时间
+	client                        *http.Client // HTTP客户端（全局默认）
+	proxyTransports               sync.Map     // proxyURL → *http.Client（渠道级代理缓存）
+	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	responsesExecutionSessions    *responsesExecutionSessionStore
@@ -69,11 +69,13 @@ type Server struct {
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
 	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
+	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
+	upstreamConnectionMaxAge time.Duration
 	// 仅供测试注入（缩短下游与上游 WebSocket 的 idle/ping 间隔以覆盖保活路径）；
 	// 生产始终为零值，实际取值回退到各自的默认常量。
 	responsesWebsocketIdleTimeoutOverride  time.Duration
 	responsesWebsocketPingIntervalOverride time.Duration
-	channelTypeTimeouts                    map[string]channelTypeTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
+	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 	// 渠道未配置专属规则时使用的进程级默认规则。
@@ -95,11 +97,6 @@ type Server struct {
 	modelCatalogSyncMu      sync.Mutex         // 串行化模型目录启动和关闭，保护 WaitGroup
 	modelCatalogSyncStarted atomic.Bool
 	wg                      sync.WaitGroup // 等待所有后台goroutine结束
-
-	// [OPT] P3: 渠道类型缓存（TTL 30s）
-	channelTypesCache     map[int64]string
-	channelTypesCacheTime time.Time
-	channelTypesCacheMu   sync.RWMutex
 
 	// 指纹任务管理器（内存）
 	fingerprintJobs *FingerprintJobManager
@@ -165,21 +162,19 @@ func NewServer(store storage.Store) *Server {
 		loginRateLimiter: util.NewLoginRateLimiter(),
 
 		// 运行时配置（启动时加载，修改后重启生效）
-		maxKeyRetries:       runtimeCfg.MaxKeyRetries,
-		bodyLimits:          bodyLimits,
-		firstByteTimeout:    runtimeCfg.FirstByteTimeout,
-		streamTimeout:       runtimeCfg.StreamTimeout,
-		nonStreamTimeout:    runtimeCfg.NonStreamTimeout,
-		channelTypeTimeouts: runtimeCfg.ChannelTypeTimeouts,
+		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
+		bodyLimits:               bodyLimits,
+		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
+		streamTimeout:            runtimeCfg.StreamTimeout,
+		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
+		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
+		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
-		// HTTP客户端
-		client: &http.Client{
-			Transport: transport,
-			Timeout:   0, // 不设置全局超时，避免中断长时间任务
-		},
+		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
+		client:        newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
 		skipTLSVerify: skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
@@ -199,6 +194,7 @@ func NewServer(store storage.Store) *Server {
 		responsesExecutionSessions: newResponsesExecutionSessionStore(
 			configService,
 			bodyLimits.maxForPath("/v1/responses"),
+			runtimeCfg.UpstreamConnectionMaxAge,
 		),
 		responsesWebsocketConnections: newResponsesWebsocketConnectionLimiter(
 			configService.GetInt("responses_ws_max_connections", defaultResponsesWebsocketConnectionLimit),
@@ -329,7 +325,7 @@ func (s *Server) StartModelCatalogSync() {
 	go s.runModelCatalogSyncLoop(syncer, interval)
 }
 
-type channelTypeTimeoutConfig struct {
+type protocolTimeoutConfig struct {
 	FirstByteTimeout time.Duration
 	StreamTimeout    time.Duration
 	NonStreamTimeout time.Duration
@@ -344,7 +340,8 @@ type serverRuntimeConfig struct {
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
-	ChannelTypeTimeouts          map[string]channelTypeTimeoutConfig
+	UpstreamConnectionMaxAge     time.Duration
+	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
@@ -416,7 +413,13 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		nonStreamTimeout = 120 * time.Second
 	}
 
-	channelTypeTimeouts := loadChannelTypeTimeouts(cs)
+	upstreamConnectionMaxAge := cs.GetDuration("upstream_connection_reuse_limit_seconds", 0)
+	if upstreamConnectionMaxAge < 0 {
+		log.Printf("[WARN] 无效的 upstream_connection_reuse_limit_seconds=%v（必须 >= 0，0=不限制），已设为 0", upstreamConnectionMaxAge)
+		upstreamConnectionMaxAge = 0
+	}
+
+	protocolTimeouts := loadProtocolTimeouts(cs)
 
 	logRetentionDays := cs.GetInt("log_retention_days", 7)
 
@@ -433,7 +436,8 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
-		ChannelTypeTimeouts:          channelTypeTimeouts,
+		UpstreamConnectionMaxAge:     upstreamConnectionMaxAge,
+		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
@@ -441,24 +445,26 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 	}
 }
 
-func loadChannelTypeTimeouts(cs *ConfigService) map[string]channelTypeTimeoutConfig {
-	timeouts := make(map[string]channelTypeTimeoutConfig, len(util.ChannelTypes))
-	for _, channelType := range util.ChannelTypes {
-		firstByteTimeout := cs.GetDuration(channelTypeFirstByteTimeoutSettingKey(channelType.Value), 0)
+func loadProtocolTimeouts(cs *ConfigService) map[string]protocolTimeoutConfig {
+	supported := protocol.AllProtocols()
+	timeouts := make(map[string]protocolTimeoutConfig, len(supported))
+	for _, supportedProtocol := range supported {
+		name := string(supportedProtocol)
+		firstByteTimeout := cs.GetDuration(protocolFirstByteTimeoutSettingKey(name), 0)
 		if firstByteTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局首字超时）",
-				channelTypeFirstByteTimeoutSettingKey(channelType.Value), firstByteTimeout)
+				protocolFirstByteTimeoutSettingKey(name), firstByteTimeout)
 			firstByteTimeout = 0
 		}
 
-		nonStreamTimeout := cs.GetDuration(channelTypeNonStreamTimeoutSettingKey(channelType.Value), 0)
+		nonStreamTimeout := cs.GetDuration(protocolNonStreamTimeoutSettingKey(name), 0)
 		if nonStreamTimeout < 0 {
 			log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已设为 0（回退全局非流超时）",
-				channelTypeNonStreamTimeoutSettingKey(channelType.Value), nonStreamTimeout)
+				protocolNonStreamTimeoutSettingKey(name), nonStreamTimeout)
 			nonStreamTimeout = 0
 		}
 
-		timeouts[channelType.Value] = channelTypeTimeoutConfig{
+		timeouts[name] = protocolTimeoutConfig{
 			FirstByteTimeout: firstByteTimeout,
 			NonStreamTimeout: nonStreamTimeout,
 		}
@@ -492,12 +498,12 @@ func warnMigratedEnvSettings() {
 	}
 }
 
-func channelTypeFirstByteTimeoutSettingKey(channelType string) string {
-	return util.NormalizeChannelType(channelType) + "_first_byte_timeout"
+func protocolFirstByteTimeoutSettingKey(upstreamProtocol string) string {
+	return util.NormalizeProtocol(upstreamProtocol) + "_first_byte_timeout"
 }
 
-func channelTypeNonStreamTimeoutSettingKey(channelType string) string {
-	return util.NormalizeChannelType(channelType) + "_non_stream_timeout"
+func protocolNonStreamTimeoutSettingKey(upstreamProtocol string) string {
+	return util.NormalizeProtocol(upstreamProtocol) + "_non_stream_timeout"
 }
 
 // loadHealthScoreConfig 从 ConfigService 加载健康度配置，无效值兜底为默认值
@@ -702,9 +708,9 @@ func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
 		return s.client
 	}
-	c := &http.Client{Transport: t, Timeout: 0}
+	c := newUpstreamHTTPClient(t, s.upstreamConnectionMaxAge)
 	if actual, loaded := s.proxyTransports.LoadOrStore(cfg.ProxyURL, c); loaded {
-		t.CloseIdleConnections()
+		closeUpstreamHTTPClient(c)
 		return actual.(*http.Client)
 	}
 	log.Printf("[INFO] 渠道 %d 使用独立代理: %s", cfg.ID, cfg.ProxyURL)
@@ -755,19 +761,6 @@ func (s *Server) GetEnabledChannelsByModel(ctx context.Context, modelName string
 		},
 		func() ([]*model.Config, error) {
 			return s.store.GetEnabledChannelsByModel(ctx, modelName)
-		},
-	)
-}
-
-// GetEnabledChannelsByType 根据渠道类型获取所有启用的渠道配置
-func (s *Server) GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error) {
-	return readThroughChannelCache(
-		s,
-		func(cache *storage.ChannelCache) ([]*model.Config, error) {
-			return cache.GetEnabledChannelsByType(ctx, channelType)
-		},
-		func() ([]*model.Config, error) {
-			return s.store.GetEnabledChannelsByType(ctx, channelType)
 		},
 	)
 }
@@ -845,12 +838,8 @@ func (s *Server) InvalidateChannelListCache() {
 	if s.channelBalancer != nil {
 		s.channelBalancer.ResetAll()
 	}
-	// 一并失效渠道类型映射缓存，避免 admin CRUD 后 60s TTL 脏读（read-after-write 一致性）
-	s.channelTypesCacheMu.Lock()
-	s.channelTypesCache = nil
-	s.channelTypesCacheMu.Unlock()
-	// URL/协议配置可能已变化，允许重新探测 alpha/search 能力。
-	s.alphaSearchUnsupportedURLs.Clear()
+	// URL 或上游协议配置可能已变化，丢弃运行时学习结果。
+	s.protocolCapabilities.clear()
 }
 
 // InvalidateAPIKeysCache 使指定渠道的 API Keys 缓存失效
@@ -893,7 +882,7 @@ func (s *Server) GetWriteTimeout() time.Duration {
 	if s.streamTimeout > maxTimeout {
 		maxTimeout = s.streamTimeout
 	}
-	for _, timeouts := range s.channelTypeTimeouts {
+	for _, timeouts := range s.protocolTimeouts {
 		if timeouts.NonStreamTimeout > maxTimeout {
 			maxTimeout = timeouts.NonStreamTimeout
 		}
@@ -904,22 +893,19 @@ func (s *Server) GetWriteTimeout() time.Duration {
 	return minWriteTimeout
 }
 
-func (s *Server) resolveProtocolTimeouts(cfg *model.Config, plan protocol.TransformPlan) channelTypeTimeoutConfig {
-	timeouts := channelTypeTimeoutConfig{
+func (s *Server) resolveProtocolTimeouts(plan protocol.TransformPlan) protocolTimeoutConfig {
+	timeouts := protocolTimeoutConfig{
 		FirstByteTimeout: s.firstByteTimeout,
 		StreamTimeout:    s.streamTimeout,
 		NonStreamTimeout: s.nonStreamTimeout,
 	}
 
 	protocolKey := string(plan.UpstreamProtocol)
-	if protocolKey == "" && cfg != nil {
-		protocolKey = cfg.GetChannelType()
-	}
 	if protocolKey == "" {
 		return timeouts
 	}
 
-	override, ok := s.channelTypeTimeouts[util.NormalizeChannelType(protocolKey)]
+	override, ok := s.protocolTimeouts[util.NormalizeProtocol(protocolKey)]
 	if !ok {
 		return timeouts
 	}
@@ -976,7 +962,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 	public := r.Group("/public", ZstdMiddleware())
 	{
 		public.GET("/summary", s.HandlePublicSummary)
-		public.GET("/channel-types", s.HandleGetChannelTypes)
+		public.GET("/protocols", s.HandleGetProtocols)
 		public.GET("/version", s.HandlePublicVersion)
 	}
 
@@ -1170,19 +1156,9 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 	s.logService.AddLogAsync(entry)
 }
 
-// getModelsByChannelType 获取指定渠道类型的去重模型列表
-func (s *Server) getModelsByChannelType(ctx context.Context, channelType string) ([]string, error) {
-	// 直接查询数据库（KISS原则，避免过度设计）
-	channels, err := s.store.GetEnabledChannelsByType(ctx, channelType)
-	if err != nil {
-		return nil, err
-	}
-	return modelNamesFromChannels(channels), nil
-}
-
-// getModelsByExposedProtocol 获取指定暴露协议的去重模型列表
-func (s *Server) getModelsByExposedProtocol(ctx context.Context, protocol string) ([]string, error) {
-	channels, err := s.store.GetEnabledChannelsByExposedProtocol(ctx, protocol)
+// getAllEnabledModels 获取所有启用渠道的去重模型列表。
+func (s *Server) getAllEnabledModels(ctx context.Context) ([]string, error) {
+	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}
@@ -1284,9 +1260,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		}
 	}
 
-	// 关闭渠道级代理 Transport 的空闲连接
+	// 停止连接池老化计时器并关闭全局及渠道代理 Transport 的空闲连接。
+	closeUpstreamHTTPClient(s.client)
 	s.proxyTransports.Range(func(_, v any) bool {
-		v.(*http.Client).CloseIdleConnections()
+		closeUpstreamHTTPClient(v.(*http.Client))
 		return true
 	})
 

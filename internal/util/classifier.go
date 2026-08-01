@@ -876,17 +876,11 @@ func parseBeijingTomorrowResetTime(message string, now time.Time) (time.Time, bo
 
 // classify404Error 根据响应体内容智能分类 404 错误
 // 设计原则：404 本身是异常情况，只有明确的客户端错误才不切换
-//   - 模型不存在（客户端级）：明确的 model_not_found 或 does not exist
+//   - 模型不存在（客户端级）：明确的 model_not_found，或文案同时指向 model 与不可用状态
 //   - 其他情况（渠道级）：空响应、HTML、异常 JSON 等都应切换渠道
 func classify404Error(responseBody []byte) ErrorLevel {
-	if len(responseBody) == 0 {
-		return ErrorLevelChannel // 空响应 = 路径错误，渠道配置问题
-	}
-	bodyLower := strings.ToLower(string(responseBody))
-
 	// 仅当明确是"模型不存在"时才视为客户端错误
-	if strings.Contains(bodyLower, "model_not_found") ||
-		strings.Contains(bodyLower, "does not exist") {
+	if isModelUnavailable404(responseBody) {
 		return ErrorLevelClient
 	}
 
@@ -920,6 +914,49 @@ func isModelUnavailable404(responseBody []byte) bool {
 		strings.Contains(bodyLower, "not found") ||
 		strings.Contains(bodyLower, "does not exist") ||
 		strings.Contains(bodyLower, "not available")
+}
+
+// ShouldFallbackProtocol reports whether automatic protocol negotiation may
+// retry the same request using the channel protocol. This decision is separate
+// from cooldown classification: a non-model 404 can be a broken base URL or
+// deployment and still means the native protocol probe did not succeed. Some
+// compatible gateways report an unsupported native request shape as a
+// structured 500 instead of an endpoint status. A Cloudflare block page is
+// also safe to replay through the configured protocol because the request was
+// rejected before it reached the API origin.
+func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
+	switch statusCode {
+	case http.StatusForbidden:
+		return isCloudflareBlockPage(responseBody)
+	case 405:
+		return true
+	case 404:
+		return !isModelUnavailable404(responseBody)
+	case 500:
+		return isProtocolConversionNotImplemented(responseBody)
+	default:
+		return false
+	}
+}
+
+func isCloudflareBlockPage(responseBody []byte) bool {
+	body := strings.ToLower(string(responseBody))
+	return strings.Contains(body, "<title>attention required! | cloudflare</title>") &&
+		strings.Contains(body, "sorry, you have been blocked")
+}
+
+func isProtocolConversionNotImplemented(responseBody []byte) bool {
+	var payload struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(payload.Error.Code), "convert_request_failed") &&
+		strings.Contains(strings.ToLower(payload.Error.Message), "not implemented")
 }
 
 // ParseResetTimeFrom1308Error 从1308错误响应中提取重置时间

@@ -538,7 +538,7 @@ func applyAnthropicTestOptions(body []byte, req *TestChannelRequest) ([]byte, er
 	})
 }
 
-// ChannelTester 定义不同渠道类型的测试协议（OCP：新增类型无需修改调用方）
+// ChannelTester 定义不同上游协议的测试器（OCP：新增协议无需修改调用方）
 type ChannelTester interface {
 	// Build 构造完整请求：URL、基础请求头、请求体
 	// apiKey: 实际使用的API Key字符串（由调用方从数据库查询）
@@ -638,7 +638,7 @@ func buildTesterURL(baseURL, endpointSuffix string) string {
 	return strings.TrimRight(strings.TrimSpace(baseURL), "/") + endpointSuffix
 }
 
-// CodexTester 兼容 Codex 风格（渠道类型: codex）
+// CodexTester 兼容 Codex 风格协议。
 type CodexTester struct{}
 
 // Build 构建 Codex 格式的 API 请求
@@ -758,7 +758,7 @@ func (t *CodexTester) Parse(_ int, respBody []byte) map[string]any {
 	return parseAPIResponse(respBody, extractCodexResponseText, "usage")
 }
 
-// OpenAITester 标准OpenAI API格式（渠道类型: openai）
+// OpenAITester 使用标准 OpenAI API 格式。
 type OpenAITester struct{}
 
 // Build 构建 OpenAI 格式的 API 请求

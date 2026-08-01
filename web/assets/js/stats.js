@@ -6,7 +6,6 @@
     let rpmStats = null; // 全局RPM统计（峰值、平均、最近一分钟）
     let isToday = true;  // 是否为本日（本日才显示最近一分钟）
     let durationSeconds = 0; // 时间跨度（秒），用于计算RPM
-    let currentChannelType = 'all'; // 当前选中的渠道类型
     let currentStatsCustomTimeRange = null;
     let authTokens = []; // 令牌列表
     let hideZeroSuccess = true; // 是否隐藏0成功的模型（默认开启）
@@ -122,7 +121,7 @@
         isToday = statsData.is_today !== false;
         populateStatsComboboxOptions();
 
-        // 初始化时应用默认排序(渠道类型→优先级→渠道名称→模型名称)
+        // 初始化时应用默认排序（优先级→渠道名称→模型名称）
         applyDefaultSorting();
 
         renderStatsTable();
@@ -205,7 +204,7 @@
     }
 
     function applySorting() {
-      // 如果没有排序状态,从原始数据恢复默认排序(渠道类型→优先级→渠道名称→模型名称)
+      // 如果没有排序状态，从原始数据恢复默认排序（优先级→渠道名称→模型名称）
       if (!sortState.column || !sortState.order) {
         if (statsData && statsData.originalStats) {
           statsData.stats = [...statsData.originalStats];
@@ -660,9 +659,6 @@
       try {
         const params = new URLSearchParams();
         appendStatsTimeRangeParams(params, getStatsFilters());
-        if (currentChannelType && currentChannelType !== 'all') {
-          params.set('channel_type', currentChannelType);
-        }
         const data = await fetchDataWithAuth('/dashboard/stats/filter-options?' + params.toString());
         if (data) {
           statsChannelNameOptions = data.channel_names || [];
@@ -781,14 +777,9 @@
         return;
       }
 
-      // 按渠道类型升序,同类型按渠道优先级降序,再按渠道名称和模型名称升序
+      // 按渠道优先级降序，再按渠道名称和模型名称升序
       statsData.stats.sort((a, b) => {
-        const typeA = (a.channel_type || '').toLowerCase();
-        const typeB = (b.channel_type || '').toLowerCase();
-        const typeCompare = typeA.localeCompare(typeB, 'zh-CN');
-        if (typeCompare !== 0) return typeCompare;
-
-        // 同类型按优先级降序(数值大的在前)
+        // 按优先级降序（数值大的在前）
         const priorityA = a.channel_priority ?? 0;
         const priorityB = b.channel_priority ?? 0;
         if (priorityA !== priorityB) return priorityB - priorityA;
@@ -1014,17 +1005,6 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         defaultValue: ''
       },
       { key: 'authToken', queryKeys: ['auth_token_id'], defaultValue: '' },
-      {
-        key: 'channelType',
-        queryKeys: ['channel_type'],
-        defaultValue: 'all',
-        includeInQuery(value) {
-          return Boolean(value) && value !== 'all';
-        },
-        includeInRequest(value) {
-          return Boolean(value) && value !== 'all';
-        }
-      }
     ];
 
     function getStatsFilters() {
@@ -1043,7 +1023,6 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         channelNameExact: isExactStatsChannelNameFilter(channelName),
         model,
         modelExact: isExactStatsModelFilter(model),
-        channelType: currentChannelType,
         hideZeroSuccess: hideZeroSuccess
       };
     }
@@ -1104,8 +1083,6 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         channelNameExact: !hasUrlParams && savedFilters?.channelNameExact === true,
         modelExact: !hasUrlParams && savedFilters?.modelExact === true
       }, hasUrlParams ? u : null);
-      currentChannelType = restoredFilters.channelType || 'all';
-
       // 恢复隐藏0成功选项状态（从 localStorage 读取，默认 true）
       hideZeroSuccess = savedFilters?.hideZeroSuccess !== false;
       const hideZeroCheckbox = document.getElementById('f_hide_zero_success');
@@ -1122,17 +1099,6 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         });
       }
 
-      // 并行化：渠道类型过滤器初始化与数据加载同时进行，消除串行等待
-      const channelTypeReady = window.initChannelTypeFilter('f_channel_type', currentChannelType, (value) => {
-        currentChannelType = value;
-        window.persistFilterState({
-          key: STATS_FILTER_KEY,
-          getValues: getStatsFilters
-        });
-        loadStatsFilterOptions();
-        loadStats();
-      });
-
       initFilters(restoredFilters);
 
       if (!hasUrlParams && savedFilters) {
@@ -1144,10 +1110,8 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         });
       }
 
-      await Promise.all([
-        loadStats().then(() => restoreViewState()),
-        channelTypeReady
-      ]);
+      await loadStats();
+      restoreViewState();
 
       // 注册语言切换回调，重新渲染动态内容
       window.i18n.onLocaleChange(() => {

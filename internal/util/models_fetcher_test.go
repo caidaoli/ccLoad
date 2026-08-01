@@ -37,9 +37,9 @@ func newJSONResponse(status int, body string) *http.Response {
 
 func TestNewModelsFetcher(t *testing.T) {
 	tests := []struct {
-		name         string
-		channelType  string
-		expectedType string
+		name             string
+		upstreamProtocol string
+		expectedType     string
 	}{
 		{"Anthropic渠道", "anthropic", "*util.AnthropicModelsFetcher"},
 		{"OpenAI渠道", "openai", "*util.OpenAIModelsFetcher"},
@@ -51,7 +51,7 @@ func TestNewModelsFetcher(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fetcher := NewModelsFetcher(tt.channelType)
+			fetcher := NewModelsFetcher(tt.upstreamProtocol)
 			if fetcher == nil {
 				t.Fatal("fetcher不应为nil")
 			}

@@ -22,7 +22,7 @@ func TestChannelCache_GetConfig(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -56,7 +56,7 @@ func TestChannelCache_InvalidateCache_ForcesRefresh(t *testing.T) {
 	// 第一次创建并填充缓存
 	if _, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch1",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -74,7 +74,7 @@ func TestChannelCache_InvalidateCache_ForcesRefresh(t *testing.T) {
 	// 数据库新增一个渠道，但缓存未失效时不应看见
 	if _, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch2",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -112,7 +112,7 @@ func TestChannelCache_APIKeysCacheAndInvalidation(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -192,7 +192,7 @@ func TestChannelCache_CooldownCacheAndInvalidation(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "ch",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
@@ -327,7 +327,7 @@ func TestChannelCache_DeepCopyPreservesCostMultiplier(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name:           "multi",
-		URL:            "https://api.example.com",
+		URLs:           model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:       1,
 		ModelEntries:   []model.ModelEntry{{Model: "m1"}},
 		Enabled:        true,

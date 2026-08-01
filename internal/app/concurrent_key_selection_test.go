@@ -217,13 +217,12 @@ func TestConcurrentChannelOperations(t *testing.T) {
 
 			cfg := &model.Config{
 				Name:     fmt.Sprintf("concurrent-channel-%d", idx),
-				URL:      "https://api.example.com",
+				URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 				Priority: idx,
 				ModelEntries: []model.ModelEntry{
 					{Model: "model-1"},
 				},
-				ChannelType: "anthropic",
-				Enabled:     true,
+				Enabled: true,
 			}
 
 			if _, err := store.CreateConfig(ctx, cfg); err != nil {
@@ -258,13 +257,12 @@ func createTestChannelWithKeys(t *testing.T, store storage.Store, keyCount int, 
 
 	cfg := &model.Config{
 		Name:     "test-concurrent-channel",
-		URL:      "https://api.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "test-model"},
 		},
-		ChannelType: "anthropic",
-		Enabled:     true,
+		Enabled: true,
 	}
 
 	createdCfg, err := store.CreateConfig(ctx, cfg)

@@ -1,24 +1,42 @@
 package model
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
 	"time"
-
-	protocolpkg "ccLoad/internal/protocol"
 )
 
 const (
-	// ProtocolTransformModeLocal keeps extra exposed protocols on the existing local-translation path.
-	ProtocolTransformModeLocal = "local"
-	// ProtocolTransformModeUpstream forwards extra exposed protocols to upstream natively.
+	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
+	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
+	ProtocolTransformModeAuto = "auto"
+	// ProtocolTransformModeUpstream always forwards the client protocol natively.
 	ProtocolTransformModeUpstream = "upstream"
+	// ProtocolTransformModeLocal translates to URL-declared protocols or the local fallback order.
+	ProtocolTransformModeLocal = "local"
 	// ExactUpstreamURLMarker marks a configured channel URL as the exact upstream request URL.
 	ExactUpstreamURLMarker = "#"
 )
+
+// NormalizeProtocolTransformMode normalizes persisted/admin values.
+// Empty means the current default policy: automatic negotiation.
+func NormalizeProtocolTransformMode(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", ProtocolTransformModeAuto:
+		return ProtocolTransformModeAuto
+	case ProtocolTransformModeUpstream:
+		return ProtocolTransformModeUpstream
+	case ProtocolTransformModeLocal:
+		return ProtocolTransformModeLocal
+	default:
+		return ""
+	}
+}
 
 // HasExactUpstreamURLMarker reports whether raw ends with the exact upstream URL marker.
 func HasExactUpstreamURLMarker(raw string) bool {
@@ -30,22 +48,146 @@ func StripExactUpstreamURLMarker(raw string) string {
 	return strings.TrimSuffix(strings.TrimSpace(raw), ExactUpstreamURLMarker)
 }
 
-// NormalizeProtocolTransformMode normalizes admin or persisted values and returns an empty string for invalid modes.
-func NormalizeProtocolTransformMode(value string) string {
-	switch strings.TrimSpace(strings.ToLower(value)) {
-	case "", ProtocolTransformModeUpstream:
-		return ProtocolTransformModeUpstream
-	case ProtocolTransformModeLocal:
-		return ProtocolTransformModeLocal
-	default:
-		return ""
+var supportedURLProtocols = map[string]struct{}{
+	"anthropic": {},
+	"codex":     {},
+	"openai":    {},
+	"gemini":    {},
+}
+
+// ChannelURL is one configured upstream endpoint. Protocols is the ordered list
+// of wire protocols accepted by this endpoint; an empty list means automatic detection.
+type ChannelURL struct {
+	URL       string   `json:"url"`
+	Exact     bool     `json:"exact,omitempty"`
+	Protocols []string `json:"protocols,omitempty"`
+}
+
+// ChannelURLs is the persisted ordered URL configuration.
+type ChannelURLs []ChannelURL
+
+// UsesAutomaticProtocolDetection reports whether runtime capability learning owns
+// protocol selection for this URL.
+func (u ChannelURL) UsesAutomaticProtocolDetection() bool {
+	return len(u.Protocols) == 0
+}
+
+// SupportsProtocol reports whether this URL can accept protocol. URLs without an
+// explicit declaration remain eligible for automatic detection.
+func (u ChannelURL) SupportsProtocol(value string) bool {
+	if u.UsesAutomaticProtocolDetection() {
+		return true
 	}
+	value = strings.ToLower(strings.TrimSpace(value))
+	return slices.Contains(u.Protocols, value)
+}
+
+// RuntimeURL returns the existing forwarding key used by URL selection and exact
+// URL handling. The marker is derived at runtime and is never persisted.
+func (u ChannelURL) RuntimeURL() string {
+	if u.Exact {
+		return u.URL + ExactUpstreamURLMarker
+	}
+	return u.URL
+}
+
+// Normalize validates and canonicalizes URL entries in place.
+func (urls *ChannelURLs) Normalize() error {
+	if urls == nil {
+		return errors.New("urls cannot be nil")
+	}
+	if len(*urls) == 0 {
+		return errors.New("urls cannot be empty")
+	}
+	seenURLs := make(map[string]int, len(*urls))
+	for i := range *urls {
+		entry := &(*urls)[i]
+		entry.URL = strings.TrimSpace(entry.URL)
+		if entry.URL == "" {
+			return fmt.Errorf("urls[%d].url cannot be empty", i)
+		}
+		if strings.HasSuffix(entry.URL, ExactUpstreamURLMarker) {
+			return fmt.Errorf("urls[%d].url must not contain exact marker", i)
+		}
+
+		selected := make(map[string]struct{}, len(entry.Protocols))
+		normalized := make([]string, 0, len(entry.Protocols))
+		for _, rawProtocol := range entry.Protocols {
+			value := strings.ToLower(strings.TrimSpace(rawProtocol))
+			if _, ok := supportedURLProtocols[value]; !ok {
+				return fmt.Errorf("urls[%d].protocols contains unsupported protocol %q", i, rawProtocol)
+			}
+			if _, exists := selected[value]; exists {
+				continue
+			}
+			selected[value] = struct{}{}
+			normalized = append(normalized, value)
+		}
+		entry.Protocols = normalized
+		if len(entry.Protocols) == 0 {
+			entry.Protocols = nil
+		}
+
+		runtimeURL := entry.RuntimeURL()
+		if previous, ok := seenURLs[runtimeURL]; ok {
+			return fmt.Errorf("urls[%d] duplicates urls[%d]", i, previous)
+		}
+		seenURLs[runtimeURL] = i
+	}
+	return nil
+}
+
+// Clone returns a deep copy of URL configuration.
+func (urls ChannelURLs) Clone() ChannelURLs {
+	if urls == nil {
+		return nil
+	}
+	clone := make(ChannelURLs, len(urls))
+	for i := range urls {
+		clone[i] = urls[i]
+		clone[i].Protocols = append([]string(nil), urls[i].Protocols...)
+	}
+	return clone
+}
+
+// Value serializes ChannelURLs for the channels.url TEXT column.
+func (urls ChannelURLs) Value() (driver.Value, error) {
+	clone := urls.Clone()
+	if err := clone.Normalize(); err != nil {
+		return nil, err
+	}
+	encoded, err := json.Marshal(clone)
+	if err != nil {
+		return nil, fmt.Errorf("marshal channel urls: %w", err)
+	}
+	return string(encoded), nil
+}
+
+// Scan decodes the structured channels.url column.
+func (urls *ChannelURLs) Scan(src any) error {
+	var raw []byte
+	switch value := src.(type) {
+	case string:
+		raw = []byte(value)
+	case []byte:
+		raw = value
+	default:
+		return fmt.Errorf("scan channel urls from %T", src)
+	}
+	if err := json.Unmarshal(raw, urls); err != nil {
+		return fmt.Errorf("decode structured channel urls: %w", err)
+	}
+	if err := urls.Normalize(); err != nil {
+		return fmt.Errorf("normalize structured channel urls: %w", err)
+	}
+	return nil
 }
 
 // ModelEntry 模型配置条目
 type ModelEntry struct {
 	Model         string `json:"model"`                    // 模型名称
 	RedirectModel string `json:"redirect_model,omitempty"` // 重定向目标模型（空表示不重定向）
+	Disabled      bool   `json:"disabled,omitempty"`       // 是否停用该渠道的此模型
 }
 
 // Validate 验证并规范化模型条目
@@ -187,19 +329,17 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 
 // Config 渠道配置
 type Config struct {
-	ID                    int64    `json:"id"`
-	Name                  string   `json:"name"`
-	ChannelType           string   `json:"channel_type"` // 渠道类型: "anthropic" | "codex" | "openai" | "gemini"，默认anthropic
-	Websockets            bool     `json:"websockets,omitempty"`
-	ProtocolTransformMode string   `json:"protocol_transform_mode,omitempty"`
-	ProtocolTransforms    []string `json:"protocol_transforms,omitempty"`
-	URL                   string   `json:"url"`
-	Priority              int      `json:"priority"`
-	RPMLimit              int      `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
-	MaxConcurrency        int      `json:"max_concurrency"` // 最大并发请求数，0表示无限制
-	Enabled               bool     `json:"enabled"`
-	ScheduledCheckEnabled bool     `json:"scheduled_check_enabled"`
-	ScheduledCheckModel   string   `json:"scheduled_check_model"`
+	ID                    int64       `json:"id"`
+	Name                  string      `json:"name"`
+	Websockets            bool        `json:"websockets,omitempty"`
+	ProtocolTransformMode string      `json:"protocol_transform_mode"`
+	URLs                  ChannelURLs `json:"urls"`
+	Priority              int         `json:"priority"`
+	RPMLimit              int         `json:"rpm_limit"`       // 每分钟请求数限制，0表示无限制
+	MaxConcurrency        int         `json:"max_concurrency"` // 最大并发请求数，0表示无限制
+	Enabled               bool        `json:"enabled"`
+	ScheduledCheckEnabled bool        `json:"scheduled_check_enabled"`
+	ScheduledCheckModel   string      `json:"scheduled_check_model"`
 
 	// 模型配置（统一管理模型和重定向）
 	ModelEntries []ModelEntry `json:"models"`
@@ -238,7 +378,7 @@ type Config struct {
 }
 
 // Clone 返回 Config 的深拷贝。
-// 拷贝所有可变字段（ModelEntries / ProtocolTransforms slice），
+// 拷贝所有可变字段，
 // 重置懒加载索引（modelIndex + indexMu），避免共享 sync.RWMutex 与指向旧 slice 的 map。
 func (c *Config) Clone() *Config {
 	if c == nil {
@@ -247,11 +387,9 @@ func (c *Config) Clone() *Config {
 	dst := &Config{
 		ID:                     c.ID,
 		Name:                   c.Name,
-		ChannelType:            c.ChannelType,
 		Websockets:             c.Websockets,
 		ProtocolTransformMode:  c.ProtocolTransformMode,
-		ProtocolTransforms:     append([]string(nil), c.ProtocolTransforms...),
-		URL:                    c.URL,
+		URLs:                   c.URLs.Clone(),
 		Priority:               c.Priority,
 		RPMLimit:               c.RPMLimit,
 		MaxConcurrency:         c.MaxConcurrency,
@@ -277,106 +415,32 @@ func (c *Config) Clone() *Config {
 	return dst
 }
 
-// GetModels 获取所有支持的模型名称列表
+// GetModels 获取所有已启用的模型名称列表
 func (c *Config) GetModels() []string {
 	models := make([]string, 0, len(c.ModelEntries))
 	for _, e := range c.ModelEntries {
+		if e.Disabled {
+			continue
+		}
 		models = append(models, e.Model)
 	}
 	return models
 }
 
-// GetProtocolTransforms 返回去重后的额外协议转换集合。
-func (c *Config) GetProtocolTransforms() []string {
-	if len(c.ProtocolTransforms) == 0 {
-		return nil
-	}
-	base := c.GetChannelType()
-	mode := c.GetProtocolTransformMode()
-	seen := make(map[string]struct{}, len(c.ProtocolTransforms))
-	transforms := make([]string, 0, len(c.ProtocolTransforms))
-	for _, protocol := range c.ProtocolTransforms {
-		protocol = strings.TrimSpace(strings.ToLower(protocol))
-		if protocol == "" || protocol == base {
-			continue
-		}
-		if mode == ProtocolTransformModeLocal && !protocolpkg.SupportsTransform(protocolpkg.Protocol(protocol), protocolpkg.Protocol(base)) {
-			continue
-		}
-		if _, ok := seen[protocol]; ok {
-			continue
-		}
-		seen[protocol] = struct{}{}
-		transforms = append(transforms, protocol)
-	}
-	slices.Sort(transforms)
-	return transforms
-}
-
-// GetProtocolTransformMode returns the normalized transform mode and defaults to upstream mode.
+// GetProtocolTransformMode returns the normalized channel policy.
 func (c *Config) GetProtocolTransformMode() string {
 	mode := NormalizeProtocolTransformMode(c.ProtocolTransformMode)
 	if mode == "" {
-		return ProtocolTransformModeUpstream
+		return ProtocolTransformModeAuto
 	}
 	return mode
 }
 
-// ResolveUpstreamProtocol returns the runtime upstream protocol for the current client protocol under this channel config.
-func (c *Config) ResolveUpstreamProtocol(clientProtocol string) string {
-	clientProtocol = strings.TrimSpace(strings.ToLower(clientProtocol))
-	if clientProtocol == "" {
-		return c.GetChannelType()
-	}
-	if c.GetProtocolTransformMode() == ProtocolTransformModeUpstream && c.SupportsProtocol(clientProtocol) {
-		return clientProtocol
-	}
-	return c.GetChannelType()
-}
-
-// SupportsProtocol 检查渠道是否暴露指定客户端协议。
-func (c *Config) SupportsProtocol(protocol string) bool {
-	protocol = strings.TrimSpace(strings.ToLower(protocol))
-	if protocol == "" {
-		return false
-	}
-	if c.GetChannelType() == protocol {
-		return true
-	}
-	return slices.Contains(c.GetProtocolTransforms(), protocol)
-}
-
-// SupportedProtocols 返回渠道对外暴露的全部客户端协议集合。
-func (c *Config) SupportedProtocols() []string {
-	protocols := append([]string{c.GetChannelType()}, c.GetProtocolTransforms()...)
-	slices.Sort(protocols)
-	return slices.Compact(protocols)
-}
-
-// GetURLs 解析URL字段，返回URL列表
-// 支持换行分隔多个URL，向后兼容单URL场景
+// GetURLs returns the runtime URL keys used by forwarding and URL state.
 func (c *Config) GetURLs() []string {
-	raw := c.URL
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return nil
-	}
-	if !strings.Contains(raw, "\n") {
-		return []string{trimmed}
-	}
-	lines := strings.Split(raw, "\n")
-	urls := make([]string, 0, len(lines))
-	seen := make(map[string]struct{}, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if _, exists := seen[line]; exists {
-			continue
-		}
-		seen[line] = struct{}{}
-		urls = append(urls, line)
+	urls := make([]string, len(c.URLs))
+	for i := range c.URLs {
+		urls[i] = c.URLs[i].RuntimeURL()
 	}
 	return urls
 }
@@ -401,6 +465,9 @@ func (c *Config) buildIndexIfNeeded() {
 	}
 	c.modelIndex = make(map[string]*ModelEntry, len(c.ModelEntries))
 	for i := range c.ModelEntries {
+		if c.ModelEntries[i].Disabled {
+			continue
+		}
 		c.modelIndex[c.ModelEntries[i].Model] = &c.ModelEntries[i]
 	}
 }
@@ -424,14 +491,6 @@ func (c *Config) SupportsModel(model string) bool {
 	defer c.indexMu.RUnlock()
 	_, exists := c.modelIndex[model]
 	return exists
-}
-
-// GetChannelType 默认返回"anthropic"（Claude API）
-func (c *Config) GetChannelType() string {
-	if c.ChannelType == "" {
-		return "anthropic"
-	}
-	return c.ChannelType
 }
 
 // IsCoolingDown 检查渠道是否处于冷却状态
@@ -493,6 +552,9 @@ func (c *Config) FuzzyMatchModel(query string) (string, bool) {
 	var matches []string
 
 	for _, entry := range c.ModelEntries {
+		if entry.Disabled {
+			continue
+		}
 		if strings.Contains(strings.ToLower(entry.Model), queryLower) {
 			matches = append(matches, entry.Model)
 		}

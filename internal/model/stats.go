@@ -56,7 +56,6 @@ type StatsEntry struct {
 	ChannelID               *int     `json:"channel_id,omitempty"`
 	ChannelName             string   `json:"channel_name"`
 	ChannelPriority         *int     `json:"channel_priority,omitempty"` // 渠道优先级（用于前端排序）
-	ChannelType             string   `json:"channel_type,omitempty"`     // 渠道类型（用于前端筛选/排序）
 	CostMultiplier          *float64 `json:"cost_multiplier,omitempty"`  // 渠道配置倍率（默认1，前端角标仅显示该值）
 	Model                   string   `json:"model"`
 	Success                 int      `json:"success"`
@@ -86,6 +85,20 @@ type StatsEntry struct {
 
 	// 健康状态时间线（2025-12新增）
 	HealthTimeline []HealthPoint `json:"health_timeline,omitempty"` // 固定24个时间点的健康状态
+}
+
+// ClientProtocolStats 按客户端入口协议聚合首页统计。
+type ClientProtocolStats struct {
+	ClientProtocol           string  `json:"client_protocol"`
+	TotalRequests            int     `json:"total_requests"`
+	SuccessRequests          int     `json:"success_requests"`
+	ErrorRequests            int     `json:"error_requests"`
+	TotalInputTokens         int64   `json:"total_input_tokens,omitempty"`
+	TotalOutputTokens        int64   `json:"total_output_tokens,omitempty"`
+	TotalCacheReadTokens     int64   `json:"total_cache_read_tokens,omitempty"`
+	TotalCacheCreationTokens int64   `json:"total_cache_creation_tokens,omitempty"`
+	TotalCost                float64 `json:"total_cost,omitempty"`
+	EffectiveCost            float64 `json:"effective_cost"`
 }
 
 // RPMStats 包含RPM/QPS相关的统计数据

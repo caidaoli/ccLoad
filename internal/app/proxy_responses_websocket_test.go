@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -171,7 +172,7 @@ func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T)
 		)
 	}))
 	env := setupProxyTestEnvWithSettings(t, []testChannel{{
-		name: "stable-capacity", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "stable-capacity", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL}, map[string]string{
 		"responses_ws_max_sessions": "1",
 	})
@@ -227,7 +228,7 @@ func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSe
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-budget","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
 	}))
 	env := setupProxyTestEnvWithSettings(t, []testChannel{{
-		name: "stable-budget", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "stable-budget", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL}, map[string]string{
 		"responses_ws_max_transcript_bytes": "1",
 	})
@@ -344,7 +345,7 @@ func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testin
 	}))
 	defer upstream.Close()
 
-	session := newCodexUpstreamWebsocketSession(0)
+	session := newCodexUpstreamWebsocketSession(0, 0)
 	defer session.Close()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/v1/responses", nil)
 	if err != nil {
@@ -450,7 +451,7 @@ func TestResponsesWebsocketAcceptsCodexDirectRouteAlias(t *testing.T) {
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "codex-direct-alias", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "codex-direct-alias", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocketAtPath(t, env.engine, "test-api-key", "/backend-api/codex/responses")
 
@@ -468,7 +469,7 @@ func TestResponsesWebsocketRequiresAPIAuthentication(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "codex-http", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "codex-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	appServer := httptest.NewServer(env.engine)
 	defer appServer.Close()
@@ -496,7 +497,7 @@ func TestResponsesWebsocketRejectsUnknownPreviousResponseOnNewSession(t *testing
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "unknown-previous", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "unknown-previous", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -539,7 +540,7 @@ func TestResponsesWebsocketRejectsStalePreviousResponse(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "stale-previous", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "stale-previous", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -629,11 +630,11 @@ func TestResponsesWebsocketIdleConnectionsDoNotConsumeTokenConcurrency(t *testin
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 
 	tokenHash := model.HashToken("test-api-key")
@@ -653,7 +654,7 @@ func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "connection-limit", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "connection-limit", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	appServer := httptest.NewServer(env.engine)
 	defer appServer.Close()
@@ -691,7 +692,7 @@ func TestResponsesWebsocketGlobalConnectionLimitRejectsIdleUpgrades(t *testing.T
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "global-connection-limit", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "global-connection-limit", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.responsesWebsocketConnections = newResponsesWebsocketConnectionLimiter(1, 1)
 	injectAPIToken(env.server.authService, "second-api-key", 0, 2)
@@ -729,7 +730,7 @@ func TestResponsesWebsocketRevokedTokenClosesBeforeNextTurn(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "revoked-token", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "revoked-token", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 
@@ -762,7 +763,7 @@ func TestResponsesWebsocketExpiredTokenClosesWhileIdle(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "expired-token", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "expired-token", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -787,11 +788,11 @@ func TestResponsesWebsocketClosesWhenServerShutsDown(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -819,7 +820,7 @@ func TestResponsesWebsocketServerPingKeepsLongTurnAlive(t *testing.T) {
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "long-http", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "long-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.responsesWebsocketIdleTimeoutOverride = 70 * time.Millisecond
 	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
@@ -850,11 +851,11 @@ func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
 		}
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 
@@ -907,8 +908,8 @@ func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "primary-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
-		{name: "fallback-http", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "primary-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-http", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 
@@ -976,11 +977,11 @@ func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1054,11 +1055,11 @@ func TestResponsesWebsocketExpandsIncrementalTurnForHTTPUpstream(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1114,11 +1115,11 @@ func TestResponsesWebsocketBoundsAccumulatedTranscript(t *testing.T) {
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-limit","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"`+strings.Repeat("B", 180)+`"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-http",
-		channelType: "codex",
-		models:      "gpt-test",
-		apiKey:      "sk-upstream",
-		priority:    100,
+		name:             "codex-http",
+		upstreamProtocol: "codex",
+		models:           "gpt-test",
+		apiKey:           "sk-upstream",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	setMaxBodyBytesForTest(t, env.server, 600)
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -1175,7 +1176,7 @@ func TestResponsesWebsocketCompactionReplacesStaleTranscript(t *testing.T) {
 		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-compact-%d\",\"output\":[{\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"stale answer\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", id)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "compact-http", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "compact-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1228,7 +1229,7 @@ func TestResponsesCompactEndpointStaysOnHTTP(t *testing.T) {
 		_, _ = io.WriteString(w, `{"id":"cmp-1","object":"response.compaction","output":[{"type":"compaction","encrypted_content":"opaque"}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "compact-endpoint", channelType: "codex", websockets: true,
+		name: "compact-endpoint", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	response := doProxyRequest(t, env.engine, "/v1/responses/compact", map[string]any{
@@ -1299,7 +1300,7 @@ func TestResponsesWebsocketCarriesCompletedToolCallIntoNextTurn(t *testing.T) {
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-after-tool","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\ndata: [DONE]\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "codex-http", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "codex-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1372,7 +1373,7 @@ func TestResponsesWebsocketDropsIncompleteCollectedToolCall(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "incomplete-tool-call", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "incomplete-tool-call", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1421,7 +1422,7 @@ func TestResponsesWebsocketReconcilesCompletedToolCallBeforeReplay(t *testing.T)
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "reconcile-tool-call", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "reconcile-tool-call", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1467,7 +1468,7 @@ func TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest(t *testin
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "orphan-tool-output-initial", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "orphan-tool-output-initial", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1514,7 +1515,7 @@ func TestResponsesWebsocketRejectsOrphanToolCallOutputOnIncrementalTurn(t *testi
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-plain","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\ndata: [DONE]\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "orphan-tool-output-incremental", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "orphan-tool-output-incremental", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -1613,7 +1614,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "native-codex", channelType: "codex", websockets: true,
+		name: "native-codex", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -1697,7 +1698,7 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "resumable-native", channelType: "codex", websockets: true,
+		name: "resumable-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "resume-me")
@@ -1769,7 +1770,7 @@ func TestNativeCodexWebsocketRebuildsWhenHandshakeHeadersChange(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "header-fingerprint", channelType: "codex", websockets: true,
+		name: "header-fingerprint", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	first := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
@@ -1848,7 +1849,7 @@ func TestResponsesWebsocketCacheHintsDoNotShareTranscript(t *testing.T) {
 			defer upstream.Close()
 
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: "independent-websockets", channelType: "codex", models: "gpt-test", priority: 100,
+				name: "independent-websockets", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 			}}, map[int]string{0: upstream.URL})
 			env.server.client = upstream.Client()
 
@@ -1898,7 +1899,7 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-expire\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "expiring-session", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "expiring-session", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
@@ -1990,7 +1991,7 @@ func TestResponsesWebsocketClosesDetachedUpstreamButKeepsTranscript(t *testing.T
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "detached-transport", channelType: "codex", websockets: true,
+		name: "detached-transport", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "detached-transport")
@@ -2038,7 +2039,7 @@ func TestResponsesWebsocketExecutionSessionIsolatedByAuthSubject(t *testing.T) {
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-private\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "isolated-session", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "isolated-session", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	injectAPIToken(env.server.authService, "other-api-key", 0, 2)
 	first := dialResponsesWebsocketWithTokenAndSessionID(t, env.engine, "test-api-key", "shared-name")
@@ -2096,7 +2097,7 @@ func TestResponsesWebsocketThreadIsolationPreservesParentContinuation(t *testing
 		)
 	}))
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "thread-isolation", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "thread-isolation", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 
 	parentHeaders := http.Header{
@@ -2173,7 +2174,7 @@ func TestHTTPResponsesWithoutExistingUpstreamWebsocketUsesHTTP(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "http-native", channelType: "codex", websockets: true,
+		name: "http-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -2238,7 +2239,7 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 			defer upstream.Close()
 
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: "parallel-http", channelType: "codex", models: "gpt-test", priority: 100,
+				name: "parallel-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 			}}, map[int]string{0: upstream.URL})
 			env.server.client = upstream.Client()
 
@@ -2332,7 +2333,7 @@ func TestHTTPResponsesReportsActiveUpstreamLifecycle(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "active-upstream", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "active-upstream", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
 
@@ -2429,7 +2430,7 @@ func TestResponsesExecutionSessionSwitchesFromDownstreamWebsocketToHTTP(t *testi
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "cross-transport", channelType: "codex", websockets: true,
+		name: "cross-transport", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstreamWS := dialResponsesWebsocketWithSessionID(t, env.engine, "cross-mode")
@@ -2477,7 +2478,7 @@ func TestHTTPResponsesUnknownPreviousIDStaysOnHTTP(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "unknown-previous", channelType: "codex", websockets: true,
+		name: "unknown-previous", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -2516,7 +2517,7 @@ func TestHTTPResponsesWithoutPreviousIDReplacesSessionTranscript(t *testing.T) {
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "replacement-native", channelType: "codex", websockets: true,
+		name: "replacement-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -2584,7 +2585,7 @@ func TestResponsesWebsocketClosesNativeConnectionWhenTransportSwitchesToHTTP(t *
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "transport-switch", channelType: "codex", websockets: true,
+		name: "transport-switch", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -2659,7 +2660,7 @@ func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "pinned-native", channelType: "codex", websockets: true,
+		name: "pinned-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", apiKey: "sk-pin-0", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
@@ -2732,7 +2733,7 @@ func TestNativeCodexWebsocketRetainsAffinityAfterPhysicalDisconnect(t *testing.T
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "disconnect-affinity", channelType: "codex", websockets: true,
+		name: "disconnect-affinity", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", apiKey: "sk-affinity-0", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
@@ -2838,7 +2839,7 @@ func TestNativeCodexWebsocketProcessesPingBetweenTurns(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "ping-native", channelType: "codex", websockets: true,
+		name: "ping-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -2899,7 +2900,7 @@ func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "active-ping-native", channelType: "codex", websockets: true,
+		name: "active-ping-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.responsesWebsocketPingIntervalOverride = 20 * time.Millisecond
@@ -2980,7 +2981,7 @@ func TestNativeCodexWebsocketBackpressuresFullReadQueue(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "queue-overflow-native", channelType: "codex", websockets: true,
+		name: "queue-overflow-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -3040,7 +3041,7 @@ func TestNativeCodexWebsocketCancelUnblocksFullReadQueue(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "queue-cancel-native", channelType: "codex", websockets: true,
+		name: "queue-cancel-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -3140,7 +3141,7 @@ func TestNativeCodexWebsocketAcceptsAllSuccessfulTerminalEvents(t *testing.T) {
 			defer upstream.Close()
 
 			env := setupProxyTestEnv(t, []testChannel{{
-				name: "terminal-native", channelType: "codex", websockets: true,
+				name: "terminal-native", upstreamProtocol: "codex", websockets: true,
 				models: "gpt-test", priority: 100,
 			}}, map[int]string{0: upstream.URL})
 			downstream := dialResponsesWebsocket(t, env.engine)
@@ -3175,7 +3176,7 @@ func TestResponsesWebsocketHandlesHTTPPrewarmLocally(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "http-prewarm", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "http-prewarm", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -3220,7 +3221,7 @@ func TestResponsesWebsocketOnlyHandlesInitialHTTPPrewarmLocally(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "initial-prewarm-only", channelType: "codex", models: "gpt-test", priority: 100,
+		name: "initial-prewarm-only", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -3279,7 +3280,7 @@ func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "failed-event-native", channelType: "codex", websockets: true,
+		name: "failed-event-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -3384,8 +3385,8 @@ func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "primary-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
-		{name: "fallback-http", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "primary-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-http", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
@@ -3423,6 +3424,166 @@ func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
 	}
 	if handshakes.Load() != 2 || fallbackCalls.Load() != 0 {
 		t.Fatalf("handshakes=%d fallback calls=%d, want 2/0", handshakes.Load(), fallbackCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketMaxAgeReconnectsWithTranscriptReplay(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	firstConnectionClosed := make(chan struct{}, 1)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade max-age websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		connection := handshakes.Add(1)
+		var request map[string]any
+		if err = conn.ReadJSON(&request); err != nil {
+			t.Errorf("read max-age request: %v", err)
+			return
+		}
+		requests <- request
+		responseID := "resp-max-age-2"
+		outputText := "two"
+		if connection == 1 {
+			responseID = "resp-max-age-1"
+			outputText = "one"
+		}
+		if err = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": responseID,
+				"output": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": outputText}},
+				}},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write max-age completion: %v", err)
+			return
+		}
+		if connection == 1 {
+			if _, _, err = conn.ReadMessage(); err == nil {
+				t.Error("max-age upstream connection accepted another message instead of closing")
+			}
+			firstConnectionClosed <- struct{}{}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "max-age-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"upstream_connection_reuse_limit_seconds": "1",
+	})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set max-age downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	select {
+	case <-firstConnectionClosed:
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("idle native websocket was not closed after max age")
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-max-age-1",
+		"input": []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write second max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	firstRequest := <-requests
+	secondRequest := <-requests
+	if _, exists := secondRequest["previous_response_id"]; exists {
+		t.Fatalf("max-age reconnect leaked stale previous_response_id: %#v", secondRequest)
+	}
+	input, ok := secondRequest["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("max-age replay input=%#v, want user+assistant+user; first=%#v", secondRequest["input"], firstRequest)
+	}
+	if handshakes.Load() != 2 {
+		t.Fatalf("max-age handshakes=%d, want 2", handshakes.Load())
+	}
+}
+
+func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
+	turnStarted := make(chan struct{}, 1)
+	releaseTurn := make(chan struct{})
+	connectionClosed := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade active max-age websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			t.Errorf("read active max-age request: %v", err)
+			return
+		}
+		if err = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "still-running"}); err != nil {
+			t.Errorf("write active max-age delta: %v", err)
+			return
+		}
+		turnStarted <- struct{}{}
+		<-releaseTurn
+		if err = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-active-max-age", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("active max-age turn was interrupted: %v", err)
+			return
+		}
+		if _, _, err = conn.ReadMessage(); err == nil {
+			t.Error("expired websocket remained open after active turn completed")
+		}
+		connectionClosed <- struct{}{}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "active-max-age-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"upstream_connection_reuse_limit_seconds": "1",
+	})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set active max-age deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "long turn"}},
+	}); err != nil {
+		t.Fatalf("write active max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.output_text.delta")
+	<-turnStarted
+	<-time.After(1200 * time.Millisecond)
+	close(releaseTurn)
+	readWebsocketUntilType(t, downstream, "response.completed")
+	select {
+	case <-connectionClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired websocket did not close after active turn drained")
 	}
 }
 
@@ -3487,7 +3648,7 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "previous-response-replay", channelType: "codex", websockets: true,
+		name: "previous-response-replay", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -3572,8 +3733,8 @@ func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(
 	defer fallback.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "failing-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
-		{name: "fallback-native", channelType: "codex", websockets: true, models: "gpt-test", priority: 90},
+		{name: "failing-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
@@ -3614,8 +3775,8 @@ func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "primary", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
-		{name: "fallback", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "primary", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "fallback", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
 	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
@@ -3686,9 +3847,9 @@ func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *te
 	defer fallback.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "http-primary", channelType: "codex", models: "gpt-test", priority: 100},
-		{name: "http-secondary", channelType: "codex", models: "gpt-test", priority: 90},
-		{name: "native-fallback", channelType: "codex", websockets: true, models: "gpt-test", priority: 1},
+		{name: "http-primary", upstreamProtocol: "codex", models: "gpt-test", priority: 100},
+		{name: "http-secondary", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
+		{name: "native-fallback", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 1},
 	}, map[int]string{0: primary.URL, 1: secondary.URL, 2: fallback.URL})
 	env.server.client = primary.Client()
 
@@ -3816,7 +3977,7 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "same-channel-fallback", channelType: "codex", websockets: true,
+		name: "same-channel-fallback", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -3867,7 +4028,7 @@ func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "eof-handshake-fallback", channelType: "codex", websockets: true,
+		name: "eof-handshake-fallback", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -3933,7 +4094,7 @@ func TestNativeCodexWebsocketReconnectRejectionFallsBackToSameChannelHTTP(t *tes
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "reconnect-http-fallback", channelType: "codex", websockets: true,
+		name: "reconnect-http-fallback", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -3994,8 +4155,8 @@ func TestNativeCodexWebsocketMessageTooBigDoesNotFailOver(t *testing.T) {
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "message-too-big-primary", channelType: "codex", websockets: true, models: "gpt-test", priority: 100},
-		{name: "message-too-big-fallback", channelType: "codex", models: "gpt-test", priority: 90},
+		{name: "message-too-big-primary", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "message-too-big-fallback", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
@@ -4048,7 +4209,7 @@ func TestNativeCodexWebsocketMessageTooBigAfterOutputClosesDownstream(t *testing
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "committed-message-too-big", channelType: "codex", websockets: true,
+		name: "committed-message-too-big", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
@@ -4134,7 +4295,7 @@ func TestNativeCodexWebsocketUsesChannelHTTPProxy(t *testing.T) {
 	defer proxy.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "proxied-native", channelType: "codex", websockets: true,
+		name: "proxied-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
@@ -4177,8 +4338,8 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	defer fallback.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "primary", channelType: "codex", models: "gpt-test", priority: 100},
-		{name: "fallback", channelType: "codex", websockets: true, models: "gpt-test", priority: 90},
+		{name: "primary", upstreamProtocol: "codex", models: "gpt-test", priority: 100},
+		{name: "fallback", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 90},
 	}, map[int]string{0: primary.URL, 1: fallback.URL})
 	env.server.client = primary.Client()
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -4243,12 +4404,12 @@ func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "codex-native-ws",
-		channelType: "codex",
-		websockets:  true,
-		models:      "gpt-4o-mini",
-		apiKey:      "sk-upstream-secret",
-		priority:    100,
+		name:             "codex-native-ws",
+		upstreamProtocol: "codex",
+		websockets:       true,
+		models:           "gpt-4o-mini",
+		apiKey:           "sk-upstream-secret",
+		priority:         100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.configService.mu.Lock()
 	env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
@@ -4345,7 +4506,7 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "active-native-ws", channelType: "codex", websockets: true,
+		name: "active-native-ws", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
@@ -4413,7 +4574,7 @@ func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T
 	}))
 	defer upstream.Close()
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "failed-cost-native", channelType: "codex", websockets: true,
+		name: "failed-cost-native", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-4o-mini", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	conn := dialResponsesWebsocket(t, env.engine)
@@ -4448,30 +4609,35 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	requestSeen := make(chan struct {
 		path string
 		body []byte
-	}, 1)
+	}, 4)
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		requestSeen <- struct {
 			path string
 			body []byte
 		}{path: r.URL.Path, body: body}
+		if r.URL.Path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/responses)"}}`)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"candidates\":[{\"content\":{\"parts\":[{\"text\":\"Hello from Gemini\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":3,\"totalTokenCount\":8}}\n\n")
 		_, _ = io.WriteString(w, "data: [DONE]\n\n")
 	}))
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name:        "gemini-http",
-		channelType: "gemini",
-		models:      "gemini-2.5-pro",
-		priority:    100,
+		name:                  "gemini-http",
+		upstreamProtocol:      "gemini",
+		protocolTransformMode: model.ProtocolTransformModeAuto,
+		models:                "gemini-2.5-pro",
+		priority:              100,
 	}}, map[int]string{0: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("list test channel: configs=%d err=%v", len(configs), err)
 	}
-	configs[0].ProtocolTransformMode = model.ProtocolTransformModeLocal
-	configs[0].ProtocolTransforms = []string{"codex"}
 	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
 		t.Fatalf("enable codex transform: %v", err)
 	}
@@ -4493,8 +4659,23 @@ func TestResponsesWebsocketBridgesToGeminiHTTPChannel(t *testing.T) {
 	}
 	readWebsocketUntilType(t, conn, "response.completed")
 
-	seen := <-requestSeen
-	if seen.path != "/v1beta/models/gemini-2.5-pro:streamGenerateContent" || !bytes.Contains(seen.body, []byte(`"contents"`)) {
-		t.Fatalf("unexpected Gemini bridge request path=%q body=%s", seen.path, seen.body)
+	attempts := make([]struct {
+		path string
+		body []byte
+	}, 4)
+	for idx := range attempts {
+		attempts[idx] = <-requestSeen
+	}
+	paths := []string{attempts[0].path, attempts[1].path, attempts[2].path, attempts[3].path}
+	if !slices.Equal(paths, []string{
+		"/v1/responses",
+		"/v1/messages",
+		"/v1/chat/completions",
+		"/v1beta/models/gemini-2.5-pro:streamGenerateContent",
+	}) {
+		t.Fatalf("protocol attempts=%v, want native Codex then fallback order", paths)
+	}
+	if !bytes.Contains(attempts[3].body, []byte(`"contents"`)) {
+		t.Fatalf("unexpected Gemini bridge request body=%s", attempts[3].body)
 	}
 }

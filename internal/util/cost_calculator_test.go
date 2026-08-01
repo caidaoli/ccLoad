@@ -354,8 +354,10 @@ func TestCalculateCost_OpenAIModels(t *testing.T) {
 		// 2025-12更新: OpenAI缓存改为90%折扣（0.1倍，不是50%折扣）
 		{"gpt-5.6", 1000, 1000, 0, 0.035},                   // GPT-5.6裸模型名按Sol价格兜底
 		{"gpt-5.6-sol", 1000, 1000, 0, 0.035},               // $5.00/1M input, $30/1M output
-		{"gpt-5.6-terra", 1000, 1000, 0, 0.0175},            // $2.50/1M input, $15/1M output
-		{"gpt-5.6-luna", 1000, 1000, 0, 0.007},              // $1.00/1M input, $6/1M output
+		{"gpt-5.6-terra", 1000, 1000, 0, 0.014},             // $2.00/1M input, $12/1M output
+		{"gpt-5.6-terra", 1000, 1000, 1000, 0.0142},         // 缓存读取 $0.20/1M
+		{"gpt-5.6-luna", 1000, 1000, 0, 0.0014},             // $0.20/1M input, $1.20/1M output
+		{"gpt-5.6-luna", 1000, 1000, 1000, 0.00142},         // 缓存读取 $0.02/1M
 		{"gpt-5.6-sol-2026-06-26", 1000, 1000, 0, 0.035},    // 模糊匹配到gpt-5.6-sol
 		{"gpt-5.6-sol", 1000, 1000, 1000, 0.0355},           // 缓存读取90%折扣：1000×($5×0.1)/1M
 		{"gpt-5.5", 1000, 1000, 0, 0.035},                   // $5.00/1M input, $30/1M output (<=272K); 2× gpt-5.4
@@ -420,13 +422,13 @@ func TestCalculateCost_GPT56TieredPricing(t *testing.T) {
 	}{
 		{name: "sol boundary", model: "gpt-5.6-sol", inputTokens: 272_000, outputTokens: 1_000, expected: 1.39},
 		{name: "sol above boundary", model: "gpt-5.6", inputTokens: 272_001, outputTokens: 1_000, expected: 2.76501},
-		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.695},
-		{name: "terra above boundary", model: "gpt-5.6-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 1.382505},
-		{name: "luna boundary", model: "gpt-5.6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.278},
-		{name: "luna above boundary", model: "gpt-5.6-luna", inputTokens: 272_001, outputTokens: 1_000, expected: 0.553002},
+		{name: "terra boundary", model: "gpt-5.6-terra", inputTokens: 272_000, outputTokens: 1_000, expected: 0.556},
+		{name: "terra above boundary", model: "gpt-5.6-terra", inputTokens: 272_001, outputTokens: 1_000, expected: 1.106004},
+		{name: "luna boundary", model: "gpt-5.6-luna", inputTokens: 272_000, outputTokens: 1_000, expected: 0.0556},
+		{name: "luna above boundary", model: "gpt-5.6-luna", inputTokens: 272_001, outputTokens: 1_000, expected: 0.1106004},
 		{name: "sol cache crosses boundary", model: "gpt-5.6-sol", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 1.245},
-		{name: "terra cache crosses boundary", model: "gpt-5.6-terra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 0.6225},
-		{name: "luna cache crosses boundary and write uses high tier", model: "gpt-5.6-luna", inputTokens: 100_000, cacheRead: 200_000, cacheWrite: 1_000, expected: 0.2425},
+		{name: "terra cache crosses boundary", model: "gpt-5.6-terra", inputTokens: 100_000, outputTokens: 1_000, cacheRead: 200_000, expected: 0.498},
+		{name: "luna cache crosses boundary and write uses high tier", model: "gpt-5.6-luna", inputTokens: 100_000, cacheRead: 200_000, cacheWrite: 1_000, expected: 0.0485},
 	}
 
 	for _, tc := range testCases {
@@ -441,7 +443,7 @@ func TestCalculateCost_GPT56TieredPricing(t *testing.T) {
 
 func TestCalculateCost_GPT56CacheWrite(t *testing.T) {
 	cost := CalculateCostDetailed("gpt-5.6-luna", 0, 0, 0, 1000, 0)
-	expected := 1000 * 1.00 * cacheWrite5mMultiplier / 1_000_000
+	expected := 1000 * 0.20 * cacheWrite5mMultiplier / 1_000_000
 	if !floatEquals(cost, expected, 0.000001) {
 		t.Errorf("gpt-5.6-luna 缓存写入成本 = %.6f, 期望 %.6f", cost, expected)
 	}

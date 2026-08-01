@@ -6,134 +6,76 @@ function setChannelModalTitle(i18nKey) {
   titleEl.textContent = window.t(i18nKey);
 }
 
-if (!window.ChannelProtocolConfig) {
-  throw new Error('ChannelProtocolConfig helper is required before channels-modals.js');
+function normalizeProtocolTransformMode(value) {
+  const mode = String(value || '').trim().toLowerCase();
+  return ['auto', 'upstream', 'local'].includes(mode) ? mode : 'auto';
 }
 
-function protocolTransformLabel(protocol) {
-  const labels = {
-    anthropic: 'channels.protocolTransformAnthropic',
-    codex: 'channels.protocolTransformCodex',
-    openai: 'channels.protocolTransformOpenAI',
-    gemini: 'channels.protocolTransformGemini'
+let protocolTransformModeCombobox = null;
+
+function getProtocolTransformModeOptions() {
+  return [
+    { value: 'auto', label: window.t('channels.modal.protocolTransformModeAuto') },
+    { value: 'upstream', label: window.t('channels.modal.protocolTransformModeUpstream') },
+    { value: 'local', label: window.t('channels.modal.protocolTransformModeLocal') }
+  ];
+}
+
+function getProtocolTransformModeLabel(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  return getProtocolTransformModeOptions().find(option => option.value === mode)?.label || mode;
+}
+
+function getProtocolTransformModeHelp(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  const keys = {
+    auto: 'channels.modal.protocolTransformModeAutoHelp',
+    upstream: 'channels.modal.protocolTransformModeUpstreamHelp',
+    local: 'channels.modal.protocolTransformModeLocalHelp'
   };
-  const key = labels[protocol] || protocol;
-  return window.t ? window.t(key) : key;
+  return window.t(keys[mode]);
 }
 
-function protocolTransformModeLabel(mode) {
-  const labels = {
-    local: 'channels.protocolTransformModeLocal',
-    upstream: 'channels.protocolTransformModeUpstream'
-  };
-  const key = labels[mode] || mode;
-  return window.t ? window.t(key) : key;
+function setProtocolTransformMode(value) {
+  const mode = normalizeProtocolTransformMode(value);
+  const hiddenInput = document.getElementById('protocolTransformModeValue');
+  if (hiddenInput) hiddenInput.value = mode;
+  protocolTransformModeCombobox?.setValue(mode, getProtocolTransformModeLabel(mode));
+  const visibleInput = protocolTransformModeCombobox?.getInput();
+  if (visibleInput) visibleInput.title = getProtocolTransformModeHelp(mode);
 }
 
-function hasExactURLMarker(url) {
-  return String(url || '').trim().endsWith('#');
+function getProtocolTransformMode() {
+  const hiddenInput = document.getElementById('protocolTransformModeValue');
+  return normalizeProtocolTransformMode(hiddenInput?.value || protocolTransformModeCombobox?.getValue());
 }
 
-function hasExactURLInEditor() {
-  if (typeof getValidInlineURLs === 'function') {
-    return getValidInlineURLs().some(hasExactURLMarker);
+async function ensureProtocolTransformModeCombobox(transformMode) {
+  if (!protocolTransformModeCombobox) {
+    protocolTransformModeCombobox = createSearchableCombobox({
+      container: 'protocolTransformModeSelectContainer',
+      inputId: 'protocolTransformModeInput',
+      dropdownId: 'protocolTransformModeDropdown',
+      minWidth: 0,
+      getOptions: getProtocolTransformModeOptions,
+      initialValue: 'auto',
+      initialLabel: getProtocolTransformModeLabel('auto'),
+      onSelect: (value) => {
+        setProtocolTransformMode(value);
+        markChannelFormDirty();
+      }
+    });
   }
-  return Array.isArray(inlineURLTableData) && inlineURLTableData.some(hasExactURLMarker);
+
+  setProtocolTransformMode(transformMode ?? getProtocolTransformMode());
+  protocolTransformModeCombobox?.refresh();
 }
 
-function protocolTransformHintMarkup(protocol) {
-  if (protocol !== 'gemini') return '';
-
-  return `
-          <span class="channel-editor-radio-hint" data-i18n="channels.modal.protocolTransformsHint">
-            ${window.i18nText('channels.modal.protocolTransformsHint', '除主协议外，额外支持的协议')}
-          </span>
-        `;
-}
-
-function normalizeProtocolTransformSelection(channelType, selectedValues) {
-  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, selectedValues);
-}
-
-function renderProtocolTransformOptions(channelType, selectedValues = []) {
-  const container = document.getElementById('protocolTransformsContainer');
-  if (!container) return;
-
-  const currentType = window.ChannelProtocolConfig.normalizeProtocol(channelType) || 'anthropic';
-  const selected = new Set(normalizeProtocolTransformSelection(currentType, selectedValues));
-  const options = window.ChannelProtocolConfig.getProtocolTransformRenderOptions(currentType);
-  container.innerHTML = options.map((protocol) => {
-    const disabled = protocol === currentType;
-    const checked = !disabled && selected.has(protocol);
-    const copyClass = protocol === 'gemini'
-      ? 'channel-editor-radio-option-copy channel-editor-radio-option-copy--with-hint'
-      : 'channel-editor-radio-option-copy';
-    return `
-      <label class="channel-editor-radio-option">
-        <input type="checkbox"
-               name="protocolTransform"
-               value="${protocol}"
-               ${checked ? 'checked' : ''}
-               ${disabled ? 'disabled' : ''}
-        >
-        <span class="${copyClass}">
-          <span class="channel-editor-radio-option-text">${protocolTransformLabel(protocol)}${disabled ? ` (${window.i18nText('channels.protocolTransformNative', '原生')})` : ''}</span>
-          ${protocolTransformHintMarkup(protocol)}
-        </span>
-      </label>
-    `;
-  }).join('');
-}
-
-function getSelectedProtocolTransforms(channelType) {
-  const selectedValues = Array.from(document.querySelectorAll('input[name="protocolTransform"]:checked'))
-    .map((input) => input.value);
-  return normalizeProtocolTransformSelection(channelType, selectedValues);
-}
-
-function renderProtocolTransformModeOptions(selectedValue = 'upstream') {
-  const container = document.getElementById('protocolTransformModeContainer');
-  if (!container) return;
-
-  const exactURL = hasExactURLInEditor();
-  const selectedMode = exactURL
-    ? 'local'
-    : window.ChannelProtocolConfig.normalizeProtocolTransformMode(selectedValue);
-  container.innerHTML = window.ChannelProtocolConfig.PROTOCOL_TRANSFORM_MODES.map((mode) => `
-      <label class="channel-editor-radio-option">
-        <input type="radio"
-               name="protocolTransformMode"
-               value="${mode}"
-               ${exactURL && mode === 'upstream' ? 'disabled' : ''}
-               ${mode === selectedMode ? 'checked' : ''}
-        >
-        <span>${protocolTransformModeLabel(mode)}</span>
-      </label>
-    `).join('');
-}
-
-function syncProtocolTransformModeForURLs() {
-  const exactURL = hasExactURLInEditor();
-  const localInput = document.querySelector('input[name="protocolTransformMode"][value="local"]');
-  const upstreamInput = document.querySelector('input[name="protocolTransformMode"][value="upstream"]');
-
-  if (upstreamInput) {
-    upstreamInput.disabled = exactURL;
-  }
-  if (exactURL && upstreamInput && upstreamInput.checked) {
-    upstreamInput.checked = false;
-  }
-  if (exactURL && localInput) {
-    localInput.checked = true;
-  }
-}
-
-function getSelectedProtocolTransformMode() {
-  if (hasExactURLInEditor()) {
-    return 'local';
-  }
-  const selected = document.querySelector('input[name="protocolTransformMode"]:checked')?.value;
-  return window.ChannelProtocolConfig.normalizeProtocolTransformMode(selected);
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('localechange', () => {
+    setProtocolTransformMode(getProtocolTransformMode());
+    protocolTransformModeCombobox?.refresh();
+  });
 }
 
 async function syncScheduledCheckVisibility() {
@@ -169,7 +111,8 @@ let scheduledCheckModelCombobox = null;
 
 function getScheduledCheckModelNames() {
   return redirectTableData
-    .map(entry => (entry && entry.model ? entry.model.trim() : ''))
+    .filter(entry => entry && !entry.disabled)
+    .map(entry => (entry.model ? entry.model.trim() : ''))
     .filter(Boolean);
 }
 
@@ -237,25 +180,6 @@ function syncScheduledCheckModelState() {
   input.disabled = wrapper.hidden || !checkbox.checked;
 }
 
-function channelSupportsNativeWebsocket() {
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  return channelType === 'codex';
-}
-
-function handleChannelWebsocketClick(event) {
-  if (channelSupportsNativeWebsocket()) return true;
-
-  event.preventDefault();
-  event.currentTarget.checked = false;
-  const message = window.t('channels.websocketsCodexOnly');
-  if (window.showWarning) {
-    window.showWarning(message);
-  } else {
-    alert(message);
-  }
-  return false;
-}
-
 function setChannelWebsocketChecked(checkbox, checked) {
   if (checkbox.checked === checked) return;
   checkbox.checked = checked;
@@ -265,9 +189,12 @@ function setChannelWebsocketChecked(checkbox, checked) {
 }
 
 function getEnabledChannelWebsocketURLs() {
-  if (typeof getValidInlineURLs !== 'function') return [];
+  if (typeof getValidInlineURLConfigs !== 'function' || typeof runtimeInlineURL !== 'function') return [];
   const stats = typeof urlStatsMap !== 'undefined' && urlStatsMap ? urlStatsMap : {};
-  return getValidInlineURLs().filter(url => !stats[url]?.disabled);
+  return getValidInlineURLConfigs()
+    .filter(entry => entry.protocols.length === 0 || entry.protocols.includes('codex'))
+    .map(runtimeInlineURL)
+    .filter(url => url && !stats[url]?.disabled);
 }
 
 function getEnabledChannelWebsocketKeys() {
@@ -290,13 +217,6 @@ function getEnabledChannelWebsocketKeys() {
 async function detectChannelWebsocketSupport(button) {
   const checkbox = document.getElementById('channelWebsockets');
   if (!checkbox) return false;
-  if (!channelSupportsNativeWebsocket()) {
-    setChannelWebsocketChecked(checkbox, false);
-    const message = window.t('channels.websocketsCodexOnly');
-    if (window.showWarning) window.showWarning(message);
-    else alert(message);
-    return false;
-  }
 
   const baseURLs = getEnabledChannelWebsocketURLs();
   if (baseURLs.length === 0) {
@@ -356,21 +276,6 @@ async function detectChannelWebsocketSupport(button) {
   }
 }
 
-function syncChannelWebsocketState() {
-  const checkbox = document.getElementById('channelWebsockets');
-  if (!checkbox) return;
-  const supported = channelSupportsNativeWebsocket();
-  checkbox.disabled = false;
-  checkbox.setAttribute('aria-disabled', supported ? 'false' : 'true');
-  checkbox.closest('.channel-editor-checkbox-label')?.classList.toggle('is-disabled', !supported);
-  const probeButton = document.getElementById('channelWebsocketProbeBtn');
-  if (probeButton) {
-    probeButton.setAttribute('aria-disabled', supported ? 'false' : 'true');
-    probeButton.classList.toggle('is-disabled', !supported);
-  }
-  if (!supported) checkbox.checked = false;
-}
-
 async function resolveEditableChannel(id) {
   const cachedChannel = Array.isArray(channels) ? channels.find(c => c.id === id) : null;
   try {
@@ -381,37 +286,25 @@ async function resolveEditableChannel(id) {
   }
 }
 
-async function handleChannelSaveSuccess({ isNewChannel, newChannelType, savedChannelId, response }) {
+async function handleChannelSaveSuccess({ isNewChannel, savedChannelId, response }) {
   if (window.ChannelModalHooks && typeof window.ChannelModalHooks.afterSave === 'function') {
     await window.ChannelModalHooks.afterSave({
       isNewChannel,
-      newChannelType,
       savedChannelId,
       response
     });
     return;
   }
 
-  const hasFilters = typeof filters !== 'undefined' && filters;
-  const currentType = hasFilters ? filters.channelType : 'all';
-  let nextType = currentType || 'all';
-
-  // 新增渠道时，如果类型与当前筛选器不匹配，切换到新渠道的类型
-  if (isNewChannel && hasFilters && currentType !== 'all' && currentType !== newChannelType) {
-    filters.channelType = newChannelType;
-    nextType = newChannelType;
-    const typeFilter = document.getElementById('channelTypeFilter');
-    if (typeFilter) typeFilter.value = newChannelType;
-  }
   if (isNewChannel) {
     channelsCurrentPage = 1;
   }
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
 
   if (typeof reloadChannelsList === 'function') {
-    await reloadChannelsList(nextType, filters.status);
+    await reloadChannelsList();
   } else if (typeof loadChannels === 'function') {
-    await loadChannels(nextType);
+    await loadChannels();
   }
 }
 
@@ -437,7 +330,9 @@ function initChannelEditorActions() {
         'open-key-export-modal': () => invokeChannelEditorAction('openKeyExportModal'),
         'toggle-inline-key-visibility': () => invokeChannelEditorAction('toggleInlineKeyVisibility'),
         'batch-delete-keys': () => invokeChannelEditorAction('batchDeleteSelectedKeys'),
-        'add-common-models': () => invokeChannelEditorAction('addCommonModels'),
+        'add-common-models': (actionTarget) => openCommonModelsModal(actionTarget),
+        'close-common-models-modal': () => closeCommonModelsModal(),
+        'confirm-common-models': () => confirmCommonModelsSelection(),
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
@@ -493,24 +388,7 @@ function initChannelEditorActions() {
     scheduledCheckCheckbox.dataset.bound = '1';
   }
 
-  const websocketCheckbox = document.getElementById('channelWebsockets');
-  if (websocketCheckbox && !websocketCheckbox.dataset.websocketBound) {
-    websocketCheckbox.addEventListener('click', handleChannelWebsocketClick);
-    websocketCheckbox.dataset.websocketBound = '1';
-  }
-
-  const channelTypeRadios = document.getElementById('channelTypeRadios');
-  if (channelTypeRadios && !channelTypeRadios.dataset.protocolTransformsBound) {
-    channelTypeRadios.addEventListener('change', (event) => {
-      if (event.target && event.target.name === 'channelType') {
-        renderProtocolTransformOptions(event.target.value, getSelectedProtocolTransforms(''));
-        syncChannelWebsocketState();
-        scheduleChannelDuplicateHintCheck();
-      }
-    });
-    channelTypeRadios.dataset.protocolTransformsBound = '1';
-  }
-
+  initCommonModelsModalEvents();
   ensureScheduledCheckModelCombobox();
 }
 
@@ -526,10 +404,7 @@ async function showAddModal() {
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
-  document.querySelector('input[name="channelType"][value="anthropic"]').checked = true;
-  syncChannelWebsocketState();
-  renderProtocolTransformOptions('anthropic', []);
-  renderProtocolTransformModeOptions('upstream');
+	await ensureProtocolTransformModeCombobox('auto');
   document.querySelector('input[name="keyStrategy"][value="sequential"]').checked = true;
 
   redirectTableData = [];
@@ -540,7 +415,7 @@ async function showAddModal() {
   renderRedirectTable();
   syncScheduledCheckModelState();
 
-  inlineURLTableData = [''];
+  inlineURLTableData = [emptyInlineURLConfig()];
   selectedURLIndices.clear();
   urlStatsMap = {};
   renderInlineURLTable();
@@ -567,25 +442,23 @@ async function editChannel(id) {
   const scheduledVisibilityPromise = syncScheduledCheckVisibility();
   const apiKeysPromise = fetchEditableChannelKeys(id);
   const modelStatsPromise = fetchEditableChannelModelStats(id);
-  const channelType = channel.channel_type || 'anthropic';
-  const channelTypeRenderPromise = window.ChannelTypeManager.renderChannelTypeRadios('channelTypeRadios', channelType);
+  const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
   document.getElementById('channelName').value = channel.name;
-  setInlineURLTableData(channel.url);
+  setInlineURLTableData(channel.urls);
 
-  // 多URL时加载实时状态，确保检测前已拿到禁用标记
-  const urlCount = getValidInlineURLs().length;
-  const urlStatsPromise = urlCount > 1 ? fetchURLStats(id) : Promise.resolve();
+  // 所有已保存 URL 都有独立统计；单 URL 也必须加载。
+  const urlStatsPromise = fetchURLStats(id);
 
   const [apiKeys, modelStats] = await Promise.all([
     apiKeysPromise,
     modelStatsPromise,
     scheduledVisibilityPromise,
-    channelTypeRenderPromise,
+    protocolModeRenderPromise,
     urlStatsPromise
   ]);
 
@@ -610,8 +483,6 @@ async function editChannel(id) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
-  renderProtocolTransformOptions(channelType, channel.protocol_transforms || []);
-  renderProtocolTransformModeOptions(channel.protocol_transform_mode || 'upstream');
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
   if (strategyRadio) {
@@ -625,7 +496,6 @@ async function editChannel(id) {
   document.getElementById('channelEnabled').checked = channel.enabled;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
-  syncChannelWebsocketState();
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
@@ -642,6 +512,7 @@ async function editChannel(id) {
     return {
       model: modelName,
       redirect_model: redirectModel,
+      disabled: !!m.disabled,
       cooldown_until: cooldown?.cooldown_until || '',
       cooldown_remaining_ms: cooldown?.cooldown_remaining_ms || 0,
       model_stats: stats || null,
@@ -705,12 +576,12 @@ function closeModal() {
 let channelDuplicateHintTimer = null;
 let channelDuplicateHintRequestSeq = 0;
 
-async function checkChannelDuplicate(channelType, urls, options = {}) {
+async function checkChannelDuplicate(urls, options = {}) {
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/check-duplicate', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ channel_type: channelType, urls })
+      body: JSON.stringify({ urls })
     });
     if (!resp.success) return [];
     return Array.isArray(resp.data?.duplicates) ? resp.data.duplicates : [];
@@ -764,15 +635,14 @@ async function refreshChannelDuplicateHint() {
     return;
   }
 
-  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
-  if (validURLs.length === 0) {
+  const validURLConfigs = typeof getValidInlineURLConfigs === 'function' ? getValidInlineURLConfigs() : [];
+  if (validURLConfigs.length === 0) {
     clearChannelDuplicateHint();
     return;
   }
 
   const requestSeq = ++channelDuplicateHintRequestSeq;
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  const dupes = await checkChannelDuplicate(channelType, validURLs, { silent: true });
+  const dupes = await checkChannelDuplicate(validURLConfigs, { silent: true });
   if (requestSeq !== channelDuplicateHintRequestSeq) return;
   if (dupes.length > 0) {
     renderChannelDuplicateHint(dupes);
@@ -798,8 +668,8 @@ function scheduleChannelDuplicateHintCheck() {
     return;
   }
 
-  const validURLs = typeof getValidInlineURLs === 'function' ? getValidInlineURLs() : [];
-  if (validURLs.length === 0) {
+  const validURLConfigs = typeof getValidInlineURLConfigs === 'function' ? getValidInlineURLConfigs() : [];
+  if (validURLConfigs.length === 0) {
     clearChannelDuplicateHint();
     return;
   }
@@ -817,8 +687,10 @@ function scheduleChannelDuplicateHintCheck() {
 
 function confirmDuplicateChannel(dupes) {
   const list = dupes.map(d => {
-    const urls = d.url.split('\n').filter(u => u.trim());
-    return `• ${d.name}（${d.channel_type}）\n  ${urls.join('\n  ')}`;
+    const urls = (Array.isArray(d.urls) ? d.urls : [])
+      .map(runtimeInlineURL)
+      .filter(Boolean);
+    return `• ${d.name}\n  ${urls.join('\n  ')}`;
   }).join('\n\n');
   return confirm(window.t('channels.duplicateChannelFound', { list }));
 }
@@ -827,6 +699,16 @@ function setChannelSavePending(pending) {
   const saveBtn = document.getElementById('channelSaveBtn');
   if (!saveBtn) return;
   saveBtn.disabled = Boolean(pending);
+}
+
+function collectModelsForSubmit(rows) {
+  return (rows || [])
+    .filter(r => r.model && r.model.trim())
+    .map(r => ({
+      model: r.model.trim(),
+      redirect_model: (r.redirect_model || '').trim(),
+      disabled: !!r.disabled
+    }));
 }
 
 async function saveChannel(event) {
@@ -843,8 +725,8 @@ async function saveChannel(event) {
     return;
   }
 
-  const validURLs = getValidInlineURLs();
-  if (validURLs.length === 0) {
+  const validURLConfigs = getValidInlineURLConfigs();
+  if (validURLConfigs.length === 0) {
     alert(window.t('channels.fillApiUrlFirst'));
     return;
   }
@@ -856,16 +738,10 @@ async function saveChannel(event) {
     return;
   }
 
-  document.getElementById('channelUrl').value = validURLs.join('\n');
   document.getElementById('channelApiKey').value = validKeys.join(',');
 
   // 构建模型配置（新格式：models 数组）
-  const models = redirectTableData
-    .filter(r => r.model && r.model.trim())
-    .map(r => ({
-      model: r.model.trim(),
-      redirect_model: (r.redirect_model || '').trim()
-    }));
+  const models = collectModelsForSubmit(redirectTableData);
   const seenModels = new Set();
   const duplicateModels = [];
   for (const entry of models) {
@@ -887,17 +763,14 @@ async function saveChannel(event) {
     return;
   }
 
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
   const keyStrategy = document.querySelector('input[name="keyStrategy"]:checked')?.value || 'sequential';
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
-    url: validURLs.join('\n'),
+    urls: validURLConfigs,
     api_key: validKeys.join(','),
-    api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
-    channel_type: channelType,
-    protocol_transform_mode: getSelectedProtocolTransformMode(),
-    protocol_transforms: getSelectedProtocolTransforms(channelType),
+		api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
+		protocol_transform_mode: getProtocolTransformMode(),
     key_strategy: keyStrategy,
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
@@ -917,7 +790,7 @@ async function saveChannel(event) {
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim()
   };
 
-  if (!formData.name || !formData.url || !formData.api_key || formData.models.length === 0) {
+  if (!formData.name || formData.urls.length === 0 || !formData.api_key || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
   }
@@ -925,7 +798,7 @@ async function saveChannel(event) {
   setChannelSavePending(true);
   try {
     if (!editingChannelId) {
-      const dupes = await checkChannelDuplicate(channelType, validURLs);
+      const dupes = await checkChannelDuplicate(validURLConfigs);
       if (dupes.length > 0 && !confirmDuplicateChannel(dupes)) return;
     }
 
@@ -944,12 +817,11 @@ async function saveChannel(event) {
     if (!resp.success) throw new Error(resp.error || window.t('channels.msg.saveFailed'));
 
     const isNewChannel = !editingChannelId;
-    const newChannelType = formData.channel_type;
     const savedChannelId = editingChannelId;
 
     resetChannelFormDirty(); // 保存成功，重置dirty状态（避免closeModal弹确认框）
     closeModal();
-    await handleChannelSaveSuccess({ isNewChannel, newChannelType, savedChannelId, response: resp });
+    await handleChannelSaveSuccess({ isNewChannel, savedChannelId, response: resp });
     if (window.showSuccess) window.showSuccess(isNewChannel ? window.t('channels.channelAdded') : window.t('channels.channelUpdated'));
   } catch (e) {
     console.error('Save channel failed', e);
@@ -1565,7 +1437,7 @@ async function copyChannel(id, name) {
   currentChannelKeyCooldowns = [];
   setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
-  setInlineURLTableData(channel.url);
+  setInlineURLTableData(channel.urls);
 
   let apiKeys = [];
   try {
@@ -1581,11 +1453,7 @@ async function copyChannel(id, name) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
 
-  const channelType = channel.channel_type || 'anthropic';
-  const radioButton = document.querySelector(`input[name="channelType"][value="${channelType}"]`);
-  if (radioButton) {
-    radioButton.checked = true;
-  }
+  await ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
   scheduleChannelDuplicateHintCheck();
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -1600,14 +1468,14 @@ async function copyChannel(id, name) {
   document.getElementById('channelEnabled').checked = true;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
-  syncChannelWebsocketState();
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({
     model: m.model || '',
-    redirect_model: m.redirect_model || ''
+    redirect_model: m.redirect_model || '',
+    disabled: !!m.disabled
   }));
   selectedModelIndices.clear();
   currentModelFilter = '';
@@ -1644,48 +1512,8 @@ function generateCopyName(originalName) {
   return proposedName;
 }
 
-// 拆分模型映射，支持 model:redirect / model->redirect / model
-function splitModelMapping(entry) {
-  const arrowIndex = entry.indexOf('->');
-  if (arrowIndex >= 0) {
-    return [entry.slice(0, arrowIndex), entry.slice(arrowIndex + 2)];
-  }
-
-  const colonIndex = entry.indexOf(':');
-  if (colonIndex >= 0) {
-    return [entry.slice(0, colonIndex), entry.slice(colonIndex + 1)];
-  }
-
-  return [entry, ''];
-}
-
-// 解析模型输入，支持逗号和换行分隔
-// 支持格式：model 或 model:redirect 或 model->redirect
-// 返回 [{model, redirect_model}] 数组
 function parseModels(input) {
-  const entries = input
-    .split(/[,\n]/)
-    .map(m => m.trim())
-    .filter(m => m);
-
-  const seen = new Set();
-  const result = [];
-
-  for (const entry of entries) {
-    const [modelRaw, redirectRaw] = splitModelMapping(entry);
-    const model = modelRaw.trim();
-    if (!model) continue;
-
-    const redirect = redirectRaw.trim() || model;
-    const modelKey = model.toLowerCase();
-
-    if (!seen.has(modelKey)) {
-      seen.add(modelKey);
-      result.push({ model, redirect_model: redirect });
-    }
-  }
-
-  return result;
+  return window.ModelEntryParser.parseModelEntries(input);
 }
 
 function addRedirectRow() {
@@ -1819,9 +1647,70 @@ function updateRedirectRow(index, field, value) {
       if (statusCell) {
         renderRedirectModelStatus(statusCell, redirectTableData[index]);
       }
+      configureRedirectModelActions(row, redirectTableData[index], index);
     }
 
     markChannelFormDirty();
+  }
+}
+
+function toggleModelDisabledState(rows, index) {
+  const row = rows?.[index];
+  if (!row) return false;
+  row.disabled = !row.disabled;
+  return true;
+}
+
+function toggleRedirectModelDisabled(index) {
+  if (!toggleModelDisabledState(redirectTableData, index)) return;
+  renderRedirectTable();
+  document.querySelector(`#redirectTableBody .redirect-model-toggle-btn[data-index="${index}"]`)?.focus();
+  markChannelFormDirty();
+}
+
+async function testRedirectModel(index, button) {
+  const redirect = redirectTableData[index];
+  const modelName = String(redirect?.model || '').trim();
+  if (!redirect || !modelName) {
+    if (window.showWarning) window.showWarning(window.t('channels.modelNameRequiredForTest'));
+    return false;
+  }
+  if (!editingChannelId || channelFormDirty) {
+    if (window.showWarning) window.showWarning(window.t('channels.saveBeforeModelTest'));
+    return false;
+  }
+  if (redirect.disabled) {
+    if (window.showWarning) window.showWarning(window.t('channels.enableBeforeModelTest'));
+    return false;
+  }
+
+  const channel = channels.find(item => item.id === editingChannelId);
+  if (!channel) {
+    if (window.showError) window.showError(window.t('channels.test.channelNotFound'));
+    return false;
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  try {
+    const opened = await testChannel(channel.id, channel.name, modelName);
+    if (!opened) return false;
+    await runChannelTest();
+    return true;
+  } catch (error) {
+    console.error('Model test failed', error);
+    if (window.showError) {
+      window.showError(window.t('channels.test.requestFailed') + error.message);
+    }
+    return false;
+  } finally {
+    if (button?.isConnected) {
+      const currentRedirect = redirectTableData[index];
+      button.disabled = Boolean(currentRedirect?.disabled) || !String(currentRedirect?.model || '').trim();
+      button.removeAttribute('aria-busy');
+    }
   }
 }
 
@@ -1860,12 +1749,49 @@ function createRedirectRow(redirect, index) {
   if (statusCell) {
     renderRedirectModelStatus(statusCell, redirect);
   }
+  configureRedirectModelActions(row, redirect, index);
 
   return row;
 }
 
 function renderRedirectModelStatus(statusCell, redirect) {
   statusCell.replaceChildren();
+
+  if (redirect.disabled) {
+    appendRedirectModelStatus(statusCell, 'disabled', [window.t('channels.modelStatusDisabled')]);
+  } else {
+    renderActiveRedirectModelStatus(statusCell, redirect);
+  }
+}
+
+function configureRedirectModelActions(row, redirect, index) {
+  const toggleButton = row.querySelector('.redirect-model-toggle-btn');
+  if (!toggleButton) return;
+  toggleButton.dataset.index = String(index);
+  const toggleTitle = redirect.disabled
+    ? window.t('channels.enableThisModel')
+    : window.t('channels.disableThisModel');
+  toggleButton.title = toggleTitle;
+  toggleButton.setAttribute('aria-label', toggleTitle);
+  toggleButton.innerHTML = redirect.disabled
+    ? '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+    : '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+
+  const testButton = row.querySelector('.redirect-model-test-btn');
+  if (!testButton) return;
+  const modelName = String(redirect.model || '').trim();
+  const testTitle = redirect.disabled
+    ? window.t('channels.enableBeforeModelTest')
+    : modelName
+      ? window.t('channels.testThisModel')
+      : window.t('channels.modelNameRequiredForTest');
+  testButton.dataset.index = String(index);
+  testButton.title = testTitle;
+  testButton.setAttribute('aria-label', testTitle);
+  testButton.disabled = redirect.disabled || !modelName;
+}
+
+function renderActiveRedirectModelStatus(statusCell, redirect) {
   const cooldownUntilMS = Date.parse(redirect.cooldown_until || '');
   const responseRemainingMS = Number(redirect.cooldown_remaining_ms || 0);
   const cooldownRemainingMS = Number.isFinite(cooldownUntilMS)
@@ -2012,8 +1938,22 @@ function initRedirectTableEventDelegation() {
     }
   });
 
-  // 处理删除按钮和转小写按钮点击
+  // 处理模型操作按钮点击
   tbody.addEventListener('click', (e) => {
+    const toggleBtn = e.target.closest('.redirect-model-toggle-btn');
+    if (toggleBtn) {
+      const index = parseInt(toggleBtn.dataset.index, 10);
+      toggleRedirectModelDisabled(index);
+      return;
+    }
+
+    const testBtn = e.target.closest('.redirect-model-test-btn');
+    if (testBtn) {
+      const index = parseInt(testBtn.dataset.index, 10);
+      void testRedirectModel(index, testBtn);
+      return;
+    }
+
     const deleteBtn = e.target.closest('.redirect-delete-btn');
     if (deleteBtn) {
       const index = parseInt(deleteBtn.dataset.index, 10);
@@ -2303,7 +2243,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
     existingModelKeys.add(modelKey);
     rows.push({
       model,
-      redirect_model: (row?.redirect_model || '').trim()
+      redirect_model: (row?.redirect_model || '').trim(),
+      disabled: !!row?.disabled
     });
   });
 
@@ -2321,7 +2262,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
       : modelName;
     rows.push({
       model: modelName,
-      redirect_model: fetchedRedirect
+      redirect_model: fetchedRedirect,
+      disabled: false
     });
     added++;
   }
@@ -2334,13 +2276,14 @@ function areModelRowsEqual(left, right) {
   return (left || []).every((row, index) => {
     const other = right[index] || {};
     return (row.model || '') === (other.model || '') &&
-      (row.redirect_model || '') === (other.redirect_model || '');
+      (row.redirect_model || '') === (other.redirect_model || '') &&
+      !!row.disabled === !!other.disabled;
   });
 }
 
 async function fetchModelsFromAPI() {
-  const channelUrl = getValidInlineURLs()[0] || '';
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
+  const urls = getValidInlineURLConfigs();
+  const channelUrl = urls[0]?.url || '';
   const firstValidKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
 
   if (!channelUrl) {
@@ -2366,8 +2309,7 @@ async function fetchModelsFromAPI() {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      channel_type: channelType,
-      url: channelUrl,
+      urls,
       api_key: firstValidKey
     })
   };
@@ -2383,7 +2325,8 @@ async function fetchModelsFromAPI() {
 
     const previousRows = redirectTableData.map(row => ({
       model: row.model || '',
-      redirect_model: row.redirect_model || ''
+      redirect_model: row.redirect_model || '',
+      disabled: !!row.disabled
     }));
     const replacement = mergeModelRowsWithFetchedModels(redirectTableData, data.models);
     if (replacement.rows.length === 0) {
@@ -2439,45 +2382,159 @@ const COMMON_MODELS = {
   ]
 };
 
-function addCommonModels() {
-  const channelType = document.querySelector('input[name="channelType"]:checked')?.value || 'anthropic';
-  const commonModels = COMMON_MODELS[channelType];
+let commonModelsTrigger = null;
 
-  if (!commonModels || commonModels.length === 0) {
-    if (window.showWarning) {
-      window.showWarning(window.t('channels.noPresetModels', { type: channelType }));
-    } else {
-      alert(window.t('channels.noPresetModels', { type: channelType }));
-    }
-    return;
+function getCommonModelsModalCheckboxes() {
+  return Array.from(document.querySelectorAll('#commonModelsModal input[name="commonModelType"]'));
+}
+
+function openCommonModelsModal(trigger) {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal) return false;
+
+  commonModelsTrigger = trigger || document.activeElement;
+  const configuredProtocols = new Set(
+    getValidInlineURLConfigs().flatMap(entry => Array.isArray(entry.protocols) ? entry.protocols : [])
+  );
+  const checkboxes = getCommonModelsModalCheckboxes();
+  checkboxes.forEach(checkbox => {
+    checkbox.checked = configuredProtocols.size > 0
+      ? configuredProtocols.has(checkbox.value)
+      : checkbox.value === 'anthropic';
+  });
+
+  document.getElementById('channelModal')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  (checkboxes.find(checkbox => checkbox.checked) || checkboxes[0])?.focus();
+  return true;
+}
+
+function closeCommonModelsModal() {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal) return;
+
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('channelModal')?.removeAttribute('inert');
+  if (commonModelsTrigger && typeof commonModelsTrigger.focus === 'function') {
+    commonModelsTrigger.focus();
   }
+  commonModelsTrigger = null;
+}
 
-  // 获取现有模型名称集合
+function getSelectedCommonModelTypes() {
+  return getCommonModelsModalCheckboxes()
+    .filter(checkbox => checkbox.checked)
+    .map(checkbox => checkbox.value);
+}
+
+function initCommonModelsModalEvents() {
+  const modal = document.getElementById('commonModelsModal');
+  if (!modal || modal.dataset.bound) return;
+
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeCommonModelsModal();
+  });
+  document.addEventListener('keydown', event => {
+    if (!modal.classList.contains('show')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeCommonModelsModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled])'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, true);
+  modal.dataset.bound = '1';
+}
+
+function addCommonModelsToRows(rows, protocols) {
+  const selectedProtocols = Array.from(new Set(
+    (Array.isArray(protocols) ? protocols : [])
+      .map(protocol => String(protocol || '').trim().toLowerCase())
+      .filter(protocol => COMMON_MODELS[protocol])
+  ));
+  const commonModels = selectedProtocols.flatMap(protocol => COMMON_MODELS[protocol]);
+  if (commonModels.length === 0) return { addedCount: 0, hasSupportedTypes: false };
+
   const existingModels = new Set(
-    redirectTableData
+    rows
       .map(r => (r.model || '').trim().toLowerCase())
       .filter(Boolean)
   );
 
-  // 添加常用模型（不重复）
   let addedCount = 0;
   for (const modelName of commonModels) {
     const modelKey = modelName.toLowerCase();
     if (!existingModels.has(modelKey)) {
-      redirectTableData.push({ model: modelName, redirect_model: '' });
+      rows.push({ model: modelName, redirect_model: '' });
       existingModels.add(modelKey);
       addedCount++;
     }
   }
+  return { addedCount, hasSupportedTypes: true };
+}
+
+function addCommonModels(protocols) {
+  const result = addCommonModelsToRows(redirectTableData, protocols);
+  if (!result.hasSupportedTypes) {
+    if (window.showWarning) {
+      window.showWarning(window.t('channels.selectCommonModelType'));
+    } else {
+      alert(window.t('channels.selectCommonModelType'));
+    }
+    return 0;
+  }
 
   renderRedirectTable();
-  if (addedCount > 0) markChannelFormDirty();
+  if (result.addedCount > 0) markChannelFormDirty();
 
   if (window.showSuccess) {
-    window.showSuccess(window.t('channels.addedCommonModels', { count: addedCount }));
+    window.showSuccess(window.t('channels.addedCommonModels', { count: result.addedCount }));
   }
+  return result.addedCount;
+}
+
+function confirmCommonModelsSelection() {
+  const selectedTypes = getSelectedCommonModelTypes();
+  if (selectedTypes.length === 0) {
+    if (window.showWarning) {
+      window.showWarning(window.t('channels.selectCommonModelType'));
+    } else {
+      alert(window.t('channels.selectCommonModelType'));
+    }
+    getCommonModelsModalCheckboxes()[0]?.focus();
+    return false;
+  }
+
+  addCommonModels(selectedTypes);
+  closeCommonModelsModal();
+  return true;
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { addCommonModels, detectChannelWebsocketSupport, fetchModelsFromAPI, handleChannelWebsocketClick };
+  module.exports = {
+    addCommonModels,
+    addCommonModelsToRows,
+    collectModelsForSubmit,
+    detectChannelWebsocketSupport,
+    editChannel,
+    fetchModelsFromAPI,
+    mergeModelRowsWithFetchedModels,
+    testRedirectModel,
+    toggleModelDisabledState
+  };
 }

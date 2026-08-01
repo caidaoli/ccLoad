@@ -48,7 +48,7 @@ func TestConfig_SupportsModel(t *testing.T) {
 
 	cfg := &Config{
 		ModelEntries: []ModelEntry{
-			{Model: "m1"},
+			{Model: "m1", RedirectModel: "upstream-m1", Disabled: true},
 			{Model: "m2"},
 		},
 	}
@@ -58,6 +58,45 @@ func TestConfig_SupportsModel(t *testing.T) {
 	}
 	if cfg.SupportsModel("none") {
 		t.Fatal("expected SupportsModel(none)=false")
+	}
+	if cfg.SupportsModel("m1") {
+		t.Fatal("disabled model must not be supported")
+	}
+	if redirect, ok := cfg.GetRedirectModel("m1"); ok || redirect != "" {
+		t.Fatalf("disabled model redirect must not resolve, got (%q, %v)", redirect, ok)
+	}
+	if models := cfg.GetModels(); len(models) != 1 || models[0] != "m2" {
+		t.Fatalf("GetModels()=%v, want only enabled model m2", models)
+	}
+}
+
+func TestConfig_ProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		mode     string
+		wantMode string
+	}{
+		{name: "default auto", wantMode: ProtocolTransformModeAuto},
+		{name: "explicit auto", mode: "AUTO", wantMode: ProtocolTransformModeAuto},
+		{name: "upstream", mode: ProtocolTransformModeUpstream, wantMode: ProtocolTransformModeUpstream},
+		{name: "local", mode: ProtocolTransformModeLocal, wantMode: ProtocolTransformModeLocal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{ProtocolTransformMode: tt.mode}
+			if got := cfg.GetProtocolTransformMode(); got != tt.wantMode {
+				t.Fatalf("GetProtocolTransformMode()=%q, want %q", got, tt.wantMode)
+			}
+			if got := cfg.Clone().GetProtocolTransformMode(); got != tt.wantMode {
+				t.Fatalf("Clone mode=%q, want %q", got, tt.wantMode)
+			}
+		})
+	}
+
+	if got := NormalizeProtocolTransformMode("invalid"); got != "" {
+		t.Fatalf("NormalizeProtocolTransformMode(invalid)=%q, want empty", got)
 	}
 }
 
@@ -126,64 +165,53 @@ func TestDefaultHealthScoreConfig(t *testing.T) {
 	}
 }
 
-func TestGetURLs_SingleURL(t *testing.T) {
-	c := &Config{URL: "https://api.openai.com"}
-	urls := c.GetURLs()
-	if len(urls) != 1 || urls[0] != "https://api.openai.com" {
-		t.Errorf("expected [https://api.openai.com], got %v", urls)
+func TestConfig_ChannelURLs(t *testing.T) {
+	t.Parallel()
+
+	c := &Config{URLs: ChannelURLs{
+		{URL: "https://api.openai.com", Protocols: []string{"CODEX", "openai", "codex"}},
+		{URL: "https://api.example.com/v1/messages", Exact: true},
+	}}
+	if err := c.URLs.Normalize(); err != nil {
+		t.Fatalf("Normalize() unexpected error: %v", err)
+	}
+
+	if got := c.URLs[0].Protocols; len(got) != 2 || got[0] != "codex" || got[1] != "openai" {
+		t.Fatalf("normalized protocols = %v, want configured order [codex openai]", got)
+	}
+	if got := c.GetURLs(); len(got) != 2 || got[0] != "https://api.openai.com" || got[1] != "https://api.example.com/v1/messages#" {
+		t.Fatalf("GetURLs() = %v", got)
+	}
+	if !c.URLs[0].SupportsProtocol("openai") || c.URLs[0].SupportsProtocol("anthropic") {
+		t.Fatalf("explicit protocol capability not enforced: %+v", c.URLs[0])
+	}
+	if !c.URLs[1].SupportsProtocol("anthropic") || !c.URLs[1].UsesAutomaticProtocolDetection() {
+		t.Fatalf("empty protocols must mean automatic detection: %+v", c.URLs[1])
+	}
+
+	clone := c.Clone()
+	clone.URLs[0].Protocols[0] = "anthropic"
+	if c.URLs[0].Protocols[0] != "codex" {
+		t.Fatal("Clone() shares URL protocol storage")
 	}
 }
 
-func TestGetURLs_MultipleURLs(t *testing.T) {
-	c := &Config{URL: "https://us.api.openai.com\nhttps://eu.api.openai.com"}
-	urls := c.GetURLs()
-	if len(urls) != 2 {
-		t.Fatalf("expected 2 urls, got %d", len(urls))
-	}
-	if urls[0] != "https://us.api.openai.com" || urls[1] != "https://eu.api.openai.com" {
-		t.Errorf("unexpected urls: %v", urls)
-	}
-}
+func TestChannelURLs_NormalizeRejectsInvalidData(t *testing.T) {
+	t.Parallel()
 
-func TestGetURLs_EmptyLinesIgnored(t *testing.T) {
-	c := &Config{URL: "https://a.com\n\n  \nhttps://b.com\n"}
-	urls := c.GetURLs()
-	if len(urls) != 2 {
-		t.Fatalf("expected 2 urls (skip blanks), got %d: %v", len(urls), urls)
-	}
-}
-
-func TestGetURLs_DuplicateURLsDeduped(t *testing.T) {
-	c := &Config{URL: "https://a.com\nhttps://b.com\nhttps://a.com\nhttps://b.com"}
-	urls := c.GetURLs()
-	if len(urls) != 2 {
-		t.Fatalf("expected 2 unique urls, got %d: %v", len(urls), urls)
-	}
-	if urls[0] != "https://a.com" || urls[1] != "https://b.com" {
-		t.Fatalf("unexpected urls order/content: %v", urls)
-	}
-}
-
-func TestGetURLs_TrailingSlashPreserved(t *testing.T) {
-	c := &Config{URL: "https://api.openai.com/v1/"}
-	urls := c.GetURLs()
-	if urls[0] != "https://api.openai.com/v1/" {
-		t.Errorf("trailing slash should be preserved, got %q", urls[0])
-	}
-}
-
-func TestGetURLs_SingleURLTrimmed(t *testing.T) {
-	c := &Config{URL: "  https://api.openai.com/v1  "}
-	urls := c.GetURLs()
-	if len(urls) != 1 || urls[0] != "https://api.openai.com/v1" {
-		t.Fatalf("expected trimmed single url, got %v", urls)
-	}
-}
-
-func TestGetURLs_WhitespaceOnlyReturnsEmpty(t *testing.T) {
-	c := &Config{URL: "\n \n\t\n"}
-	urls := c.GetURLs()
-	if len(urls) != 0 {
-		t.Fatalf("expected empty urls for whitespace-only input, got %v", urls)
+	for _, tc := range []struct {
+		name string
+		urls ChannelURLs
+	}{
+		{name: "empty URL set", urls: ChannelURLs{}},
+		{name: "empty URL", urls: ChannelURLs{{URL: "  "}}},
+		{name: "unsupported protocol", urls: ChannelURLs{{URL: "https://api.example.com", Protocols: []string{"grpc"}}}},
+		{name: "duplicate runtime URL", urls: ChannelURLs{{URL: "https://api.example.com"}, {URL: " https://api.example.com "}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.urls.Normalize(); err == nil {
+				t.Fatal("Normalize() expected error")
+			}
+		})
 	}
 }

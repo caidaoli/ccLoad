@@ -18,7 +18,7 @@ func TestHandleCooldownDetectionTestEvaluatesDraftWithoutPersistingCooldown(t *t
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		ID:           1,
 		Name:         "cooldown-detection-test",
-		URL:          "https://api.example.com",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
 		Enabled:      true,
@@ -304,7 +304,7 @@ func TestHandleSetChannelCooldown(t *testing.T) {
 				cfg := &model.Config{
 					ID:           1,
 					Name:         "test-channel",
-					URL:          "http://test.example.com",
+					URLs:         model.ChannelURLs{{URL: "http://test.example.com"}},
 					Priority:     1,
 					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 					Enabled:      true,
@@ -415,7 +415,7 @@ func TestHandleSetKeyCooldown(t *testing.T) {
 				cfg := &model.Config{
 					ID:           1,
 					Name:         "test-channel",
-					URL:          "http://test.example.com",
+					URLs:         model.ChannelURLs{{URL: "http://test.example.com"}},
 					Priority:     1,
 					ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 					Enabled:      true,
@@ -469,7 +469,7 @@ func TestSetChannelCooldown_Integration(t *testing.T) {
 	cfg := &model.Config{
 		ID:           1,
 		Name:         "test-channel",
-		URL:          "http://test.example.com",
+		URLs:         model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:      true,
@@ -519,7 +519,7 @@ func TestSetKeyCooldown_Integration(t *testing.T) {
 	cfg := &model.Config{
 		ID:           1,
 		Name:         "test-channel",
-		URL:          "http://test.example.com",
+		URLs:         model.ChannelURLs{{URL: "http://test.example.com"}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "test-model", RedirectModel: ""}},
 		Enabled:      true,

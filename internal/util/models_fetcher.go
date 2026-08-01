@@ -11,22 +11,22 @@ import (
 )
 
 // ModelsFetcher 模型列表获取器接口
-// 不同渠道类型有不同的API实现
+// 不同上游协议有不同的 API 实现。
 type ModelsFetcher interface {
 	FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error)
 }
 
-// NewModelsFetcher 根据渠道类型创建对应的Fetcher
+// NewModelsFetcher 根据上游协议创建对应的 Fetcher。
 // [FIX] P2-9: 删除口号式注释，代码已经够清晰
-func NewModelsFetcher(channelType string) ModelsFetcher {
-	switch NormalizeChannelType(channelType) {
-	case ChannelTypeAnthropic:
+func NewModelsFetcher(upstreamProtocol string) ModelsFetcher {
+	switch NormalizeProtocol(upstreamProtocol) {
+	case ProtocolAnthropic:
 		return &AnthropicModelsFetcher{}
-	case ChannelTypeOpenAI:
+	case ProtocolOpenAI:
 		return &OpenAIModelsFetcher{}
-	case ChannelTypeGemini:
+	case ProtocolGemini:
 		return &GeminiModelsFetcher{}
-	case ChannelTypeCodex:
+	case ProtocolCodex:
 		return &CodexModelsFetcher{}
 	default:
 		return &AnthropicModelsFetcher{} // 默认使用Anthropic格式
@@ -252,7 +252,7 @@ func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, ap
 // ============================================================
 
 var predefinedModelSets = map[string][]string{
-	ChannelTypeAnthropic: {
+	ProtocolAnthropic: {
 		"claude-3-5-sonnet-20241022",
 		"claude-3-5-sonnet-latest",
 		"claude-3-5-haiku-20241022",
@@ -267,7 +267,7 @@ var predefinedModelSets = map[string][]string{
 		"claude-2.0",
 		"claude-instant-1.2",
 	},
-	ChannelTypeCodex: {
+	ProtocolCodex: {
 		"gpt-4.1",
 		"gpt-4.1-mini",
 		"gpt-4.1-preview",
@@ -280,9 +280,9 @@ var predefinedModelSets = map[string][]string{
 	},
 }
 
-// PredefinedModels 返回给定渠道类型的预设模型列表
-func PredefinedModels(channelType string) []string {
-	ct := NormalizeChannelType(channelType)
+// PredefinedModels 返回给定协议的预设模型列表。
+func PredefinedModels(upstreamProtocol string) []string {
+	ct := NormalizeProtocol(upstreamProtocol)
 	models, ok := predefinedModelSets[ct]
 	if !ok {
 		return nil

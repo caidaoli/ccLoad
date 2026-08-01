@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"ccLoad/internal/model"
 )
 
 func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
@@ -18,11 +16,11 @@ func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
 	var gotBody []byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-ch", upstreamProtocol: "openai", models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		Transport: automaticFallbackToPath("/v1/chat/completions", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			gotBody, _ = io.ReadAll(r.Body)
 			return &http.Response{
@@ -32,7 +30,7 @@ func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
 					`{"id":"chatcmpl_1","object":"chat.completion","created":0,"model":"gpt-4o","choices":[{"index":0,"message":{"role":"assistant","content":"hello from openai"},"finish_reason":"stop"}],"usage":{"prompt_tokens":7,"completion_tokens":4,"total_tokens":11}}`,
 				))),
 			}, nil
-		}),
+		})),
 	}
 
 	configs, err := env.store.ListConfigs(context.Background())
@@ -40,8 +38,6 @@ func TestProxy_Success_NonStreaming_GeminiToOpenAITransform(t *testing.T) {
 		t.Fatalf("ListConfigs failed: %v", err)
 	}
 	cfg := configs[0]
-	cfg.ProtocolTransforms = []string{"gemini"}
-	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -74,11 +70,11 @@ func TestProxy_Success_Streaming_GeminiToOpenAITransform(t *testing.T) {
 	var gotPath string
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "openai-ch", channelType: "openai", models: "gpt-4o", apiKey: "sk-oai"},
+		{name: "openai-ch", upstreamProtocol: "openai", models: "gpt-4o", apiKey: "sk-oai"},
 	}, map[int]string{0: "https://openai-upstream.example.com"})
 
 	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		Transport: automaticFallbackToPath("/v1/chat/completions", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			body := bytes.NewBufferString("data: {\"id\":\"chatcmpl_1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Hello\"},\"finish_reason\":null}]}\n\ndata: [DONE]\n\n")
 			return &http.Response{
@@ -86,7 +82,7 @@ func TestProxy_Success_Streaming_GeminiToOpenAITransform(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 				Body:       io.NopCloser(body),
 			}, nil
-		}),
+		})),
 	}
 
 	configs, err := env.store.ListConfigs(context.Background())
@@ -94,8 +90,6 @@ func TestProxy_Success_Streaming_GeminiToOpenAITransform(t *testing.T) {
 		t.Fatalf("ListConfigs failed: %v", err)
 	}
 	cfg := configs[0]
-	cfg.ProtocolTransforms = []string{"gemini"}
-	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}

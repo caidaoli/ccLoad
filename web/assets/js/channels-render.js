@@ -177,10 +177,6 @@ async function copyChannelLastRequestFailure(btn) {
     if (window.showError) window.showError(window.t('channels.keyCopyFailed'));
   }
 }
-if (!window.ChannelProtocolConfig) {
-  throw new Error('ChannelProtocolConfig helper is required before channels-render.js');
-}
-
 function buildEffectivePriorityHtml(channel) {
   const basePriority = channel.priority;
   const priorityLabel = window.t('channels.table.priority');
@@ -347,42 +343,6 @@ function inlineCooldownBadge(c) {
   return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.68rem; font-weight: 600; line-height: 1; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
 }
 
-/**
- * 获取渠道类型配置信息
- * @param {string} channelType - 渠道类型
- * @returns {Object} 类型配置
- */
-function getChannelTypeConfig(channelType) {
-  const configs = {
-    'anthropic': {
-      text: 'Claude',
-      color: '#8b5cf6',
-      bgColor: '#f3e8ff',
-      borderColor: '#c4b5fd'
-    },
-    'codex': {
-      text: 'Codex',
-      color: '#059669',
-      bgColor: '#d1fae5',
-      borderColor: '#6ee7b7'
-    },
-    'openai': {
-      text: 'OpenAI',
-      color: '#10b981',
-      bgColor: '#d1fae5',
-      borderColor: '#6ee7b7'
-    },
-    'gemini': {
-      text: 'Gemini',
-      color: '#2563eb',
-      bgColor: '#dbeafe',
-      borderColor: '#93c5fd'
-    }
-  };
-  const type = (channelType || '').toLowerCase();
-  return configs[type] || configs['anthropic'];
-}
-
 function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle = 'solid' }) {
   return [
     'display: inline-flex',
@@ -396,62 +356,6 @@ function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle
     `border: 1px ${borderStyle} ${borderColor}`,
     'line-height: 1'
   ].join('; ');
-}
-
-/**
- * 生成渠道类型徽章HTML
- * @param {string} channelType - 渠道类型
- * @returns {string} 徽章HTML
- */
-function buildChannelTypeBadge(channelType) {
-  const config = getChannelTypeConfig(channelType);
-  const badgeStyle = buildInlineNameBadgeStyle({
-    background: config.bgColor,
-    color: config.color,
-    borderColor: config.borderColor
-  });
-  return `<span style="${badgeStyle}">${config.text}</span>`;
-}
-
-function getProtocolTransformBadgeLabel(protocol) {
-  const labels = {
-    anthropic: ['channels.protocolBadgeAnthropic', 'Claude'],
-    codex: ['channels.protocolTransformCodex', 'Codex'],
-    openai: ['channels.protocolTransformOpenAI', 'OpenAI'],
-    gemini: ['channels.protocolTransformGemini', 'Gemini']
-  };
-  const [translationKey, fallback] = labels[protocol] || [];
-  if (!translationKey) return protocol;
-  if (window.t) {
-    const translated = window.t(translationKey);
-    if (translated && translated !== translationKey) {
-      return translated;
-    }
-  }
-  return fallback;
-}
-
-function normalizeProtocolTransformsForDisplay(channelType, protocolTransforms) {
-  return window.ChannelProtocolConfig.normalizeProtocolTransformsForChannel(channelType, protocolTransforms);
-}
-
-function buildProtocolTransformBadges(channelType, protocolTransforms) {
-  const transforms = normalizeProtocolTransformsForDisplay(channelType, protocolTransforms);
-  if (transforms.length === 0) return '';
-
-  const translatedPrefix = window.t ? window.t('channels.modal.protocolTransforms') : '';
-  const titlePrefix = translatedPrefix && translatedPrefix !== 'channels.modal.protocolTransforms'
-    ? translatedPrefix
-    : 'Additional Protocols';
-
-  const protocolBadgeStyle = buildInlineNameBadgeStyle({
-    background: '#fff7ed',
-    color: '#9a3412',
-    borderColor: '#fdba74',
-    borderStyle: 'dashed'
-  });
-
-  return `<span style="display: inline-flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-left: 6px; vertical-align: middle;">${transforms.map((protocol) => `<span title="${titlePrefix}: ${getProtocolTransformBadgeLabel(protocol)}" style="${protocolBadgeStyle}">${getProtocolTransformBadgeLabel(protocol)}</span>`).join('')}</span>`;
 }
 
 /**
@@ -605,7 +509,13 @@ function buildChannelLastRequestFailureHtml(stats) {
  */
 function createChannelCard(channel) {
   const isCooldown = channel.cooldown_remaining_ms > 0;
-  const channelTypeRaw = (channel.channel_type || '').toLowerCase();
+  const configuredProtocols = new Set(
+    (Array.isArray(channel.urls) ? channel.urls : [])
+      .flatMap(entry => Array.isArray(entry?.protocols) ? entry.protocols : [])
+      .map(protocol => String(protocol || '').trim().toLowerCase())
+  );
+  const hasAutoProtocolURL = (Array.isArray(channel.urls) ? channel.urls : [])
+    .some(entry => !Array.isArray(entry?.protocols) || entry.protocols.length === 0);
   const stats = channelStatsById[channel.id] || null;
   const batchRefreshResult = getBatchRefreshResult(channel.id);
 
@@ -633,7 +543,7 @@ function createChannelCard(channel) {
     const parts = [];
     parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.input')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.inputTokensText}</span></div>`);
     parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.output')}</span><span class="ch-usage-value" style="color: var(--warning-500);">${statsCache.outputTokensText}</span></div>`);
-    const supportsCaching = channelTypeRaw === 'anthropic' || channelTypeRaw === 'codex';
+    const supportsCaching = hasAutoProtocolURL || configuredProtocols.has('anthropic') || configuredProtocols.has('codex');
     if (supportsCaching) {
       parts.push(`<div class="ch-usage-row"><span class="ch-usage-label">${window.t('channels.stats.cacheRead')}</span><span class="ch-usage-value" style="color: var(--success-500);">${statsCache.cacheReadText}</span></div>`);
       if (statsCache.cacheCreationTokens > 0) {
@@ -665,14 +575,19 @@ function createChannelCard(channel) {
   }
 
   // 准备模板数据
+  const configuredURLs = (Array.isArray(channel.urls) ? channel.urls : [])
+    .map(entry => {
+      const url = String(entry?.url || '').trim();
+      return url && entry?.exact ? `${url}#` : url;
+    })
+    .filter(Boolean);
+
   const cardData = {
     rowClasses: rowClasses.join(' '),
     id: channel.id,
-    name: channel.name,
-    nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
-    typeBadge: buildChannelTypeBadge(channelTypeRaw),
-    protocolTransformBadges: buildProtocolTransformBadges(channelTypeRaw, channel.protocol_transforms),
-    url: channel.url,
+		name: channel.name,
+		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
+    url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,
     priority: channel.priority,

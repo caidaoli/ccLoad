@@ -16,7 +16,6 @@ var (
 )
 
 type tokenLogChannelMetadata struct {
-	ChannelType  string
 	APIKeys      []string
 	APIKeyHashes map[string]struct{}
 }
@@ -26,7 +25,8 @@ type tokenLogEntry struct {
 	Time                     model.JSONTime              `json:"time"`
 	ChannelID                int64                       `json:"channel_id"`
 	ChannelName              string                      `json:"channel_name"`
-	ChannelType              string                      `json:"channel_type"`
+	ClientProtocol           string                      `json:"client_protocol,omitempty"`
+	UpstreamProtocol         string                      `json:"upstream_protocol,omitempty"`
 	LogSource                string                      `json:"log_source"`
 	Model                    string                      `json:"model"`
 	ActualModel              string                      `json:"actual_model,omitempty"`
@@ -116,7 +116,8 @@ func projectTokenLogs(logs []*model.LogEntry, channels map[int64]tokenLogChannel
 			Time:                     entry.Time,
 			ChannelID:                entry.ChannelID,
 			ChannelName:              entry.ChannelName,
-			ChannelType:              channel.ChannelType,
+			ClientProtocol:           entry.ClientProtocol,
+			UpstreamProtocol:         entry.UpstreamProtocol,
 			LogSource:                entry.LogSource,
 			Model:                    entry.Model,
 			ActualModel:              entry.ActualModel,

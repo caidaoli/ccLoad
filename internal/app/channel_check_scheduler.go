@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 )
 
@@ -129,10 +130,10 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context) error {
 		}
 
 		req := &testutil.TestChannelRequest{
-			Model:       modelName,
-			ChannelType: cfg.GetChannelType(),
-			Content:     content,
-			Stream:      false,
+			Model:          modelName,
+			ClientProtocol: string(protocol.Anthropic),
+			Content:        content,
+			Stream:         false,
 		}
 		requestedModel := req.Model
 		result := s.executeChannelTest(ctx, cfg, keyIndex, apiKey, req)

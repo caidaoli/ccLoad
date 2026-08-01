@@ -182,13 +182,8 @@ func ConvertGeminiRequestToOpenAI(modelName string, inputRawJSON []byte, stream 
 
 	if contents := root.Get("contents"); contents.Exists() && contents.IsArray() {
 		contents.ForEach(func(_, content gjson.Result) bool {
-			role := content.Get("role").String()
+			role := translatorcommon.GeminiMessageRole(content.Get("role").String())
 			parts := content.Get("parts")
-
-			// Convert role: model -> assistant
-			if role == "model" {
-				role = "assistant"
-			}
 
 			msg := []byte(`{"role":"","content":""}`)
 			msg, _ = sjson.SetBytes(msg, "role", role)

@@ -1,141 +1,99 @@
 package app
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
 	"ccLoad/internal/model"
 )
 
-func TestChannelRequestValidate_RejectsUnsupportedProtocolTransforms(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		channelType string
-		transforms  []string
-		wantErr     string
-	}{
-		{
-			name:        "gemini upstream rejects self transform",
-			channelType: "gemini",
-			transforms:  []string{"gemini"},
-			wantErr:     `duplicates channel_type "gemini"`,
-		},
-		{
-			name:        "anthropic upstream rejects duplicate transform",
-			channelType: "anthropic",
-			transforms:  []string{"openai", "openai"},
-			wantErr:     `duplicate protocol "openai"`,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := ChannelRequest{
-				Name:               "test",
-				APIKey:             "sk-test",
-				URL:                "https://example.com",
-				ChannelType:        tt.channelType,
-				ProtocolTransforms: tt.transforms,
-				Models: []model.ModelEntry{
-					{Model: "test-model"},
-				},
-			}
-
-			err := req.Validate()
-			if err == nil {
-				t.Fatal("expected validation error")
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error containing %q, got %v", tt.wantErr, err)
-			}
-		})
-	}
-}
-
-func TestChannelRequestValidate_AllowsDocumentedProtocolTransforms(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		channelType string
-		transforms  []string
-		want        []string
-	}{
-		{
-			name:        "gemini upstream supports three client protocols",
-			channelType: "gemini",
-			transforms:  []string{"codex", "openai", "anthropic"},
-			want:        []string{"anthropic", "codex", "openai"},
-		},
-		{
-			name:        "anthropic upstream supports all other client protocols",
-			channelType: "anthropic",
-			transforms:  []string{"codex", "openai", "gemini"},
-			want:        []string{"codex", "gemini", "openai"},
-		},
-		{
-			name:        "openai upstream supports anthropic and codex",
-			channelType: "openai",
-			transforms:  []string{"codex", "anthropic"},
-			want:        []string{"anthropic", "codex"},
-		},
-		{
-			name:        "codex upstream supports anthropic and openai",
-			channelType: "codex",
-			transforms:  []string{"openai", "anthropic"},
-			want:        []string{"anthropic", "openai"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := ChannelRequest{
-				Name:               "test",
-				APIKey:             "sk-test",
-				URL:                "https://example.com",
-				ChannelType:        tt.channelType,
-				ProtocolTransforms: tt.transforms,
-				Models: []model.ModelEntry{
-					{Model: "test-model"},
-				},
-			}
-
-			if err := req.Validate(); err != nil {
-				t.Fatalf("Validate() error = %v", err)
-			}
-			if len(req.ProtocolTransforms) != len(tt.want) {
-				t.Fatalf("expected %d transforms, got %#v", len(tt.want), req.ProtocolTransforms)
-			}
-			for i, want := range tt.want {
-				if req.ProtocolTransforms[i] != want {
-					t.Fatalf("expected transforms %#v, got %#v", tt.want, req.ProtocolTransforms)
-				}
-			}
-		})
-	}
-}
-
-func TestChannelRequestValidate_DefaultsProtocolTransformModeToUpstream(t *testing.T) {
+func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 	t.Parallel()
 
 	req := ChannelRequest{
-		Name:               "test",
-		APIKey:             "sk-test",
-		URL:                "https://example.com",
-		ChannelType:        "anthropic",
-		ProtocolTransforms: []string{"openai"},
-		Models: []model.ModelEntry{
-			{Model: "test-model"},
+		Name:   "test",
+		APIKey: "sk-test",
+		URLs: model.ChannelURLs{
+			{URL: " https://api.example.com/ ", Protocols: []string{"CODEX", "openai", "codex"}},
+			{URL: "https://api.example.com/v1/responses", Exact: true, Protocols: []string{"codex"}},
 		},
+		Models: []model.ModelEntry{{Model: "test-model"}},
 	}
-
 	if err := req.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
-	if req.ProtocolTransformMode != model.ProtocolTransformModeUpstream {
-		t.Fatalf("expected protocol transform mode %q, got %q", model.ProtocolTransformModeUpstream, req.ProtocolTransformMode)
+	if got := req.URLs[0]; got.URL != "https://api.example.com" || got.Exact ||
+		len(got.Protocols) != 2 || got.Protocols[0] != "codex" || got.Protocols[1] != "openai" {
+		t.Fatalf("normalized first URL=%+v", got)
+	}
+	if got := req.ToConfig().URLs[1]; got.URL != "https://api.example.com/v1/responses" || !got.Exact {
+		t.Fatalf("ToConfig exact URL=%+v", got)
+	}
+
+	payload, err := json.Marshal(req.ToConfig())
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	var object map[string]any
+	if err := json.Unmarshal(payload, &object); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if _, ok := object["url"]; ok {
+		t.Fatalf("legacy url field leaked into JSON: %s", payload)
+	}
+	if urls, ok := object["urls"].([]any); !ok || len(urls) != 2 {
+		t.Fatalf("structured urls missing from JSON: %s", payload)
+	}
+}
+
+func TestChannelRequestValidate_NormalizesProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "default", want: model.ProtocolTransformModeAuto},
+		{name: "auto", mode: " AUTO ", want: model.ProtocolTransformModeAuto},
+		{name: "upstream", mode: "upstream", want: model.ProtocolTransformModeUpstream},
+		{name: "local", mode: "local", want: model.ProtocolTransformModeLocal},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := ChannelRequest{
+				Name:                  "test",
+				APIKey:                "sk-test",
+				URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
+				ProtocolTransformMode: tt.mode,
+				Models:                []model.ModelEntry{{Model: "test-model"}},
+			}
+			if err := req.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v", err)
+			}
+			if req.ProtocolTransformMode != tt.want {
+				t.Fatalf("protocol_transform_mode=%q, want %q", req.ProtocolTransformMode, tt.want)
+			}
+			if got := req.ToConfig().GetProtocolTransformMode(); got != tt.want {
+				t.Fatalf("ToConfig mode=%q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:                  "test",
+		APIKey:                "sk-test",
+		URLs:                  model.ChannelURLs{{URL: "https://example.com"}},
+		ProtocolTransformMode: "remote",
+		Models:                []model.ModelEntry{{Model: "test-model"}},
+	}
+	err := req.Validate()
+	if err == nil || !strings.Contains(err.Error(), "protocol_transform_mode") {
+		t.Fatalf("Validate() error=%v, want protocol_transform_mode validation error", err)
 	}
 }
 
@@ -182,29 +140,5 @@ func TestValidateChannelBaseURLAllowsPublicHost(t *testing.T) {
 	}
 	if got != "https://api.example.com/openai" {
 		t.Fatalf("normalized URL = %q, want public host with trimmed path", got)
-	}
-}
-
-func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T) {
-	t.Parallel()
-
-	req := ChannelRequest{
-		Name:                  "test",
-		APIKey:                "sk-test",
-		URL:                   "https://example.com",
-		ChannelType:           "anthropic",
-		ProtocolTransformMode: "remote",
-		ProtocolTransforms:    []string{"openai"},
-		Models: []model.ModelEntry{
-			{Model: "test-model"},
-		},
-	}
-
-	err := req.Validate()
-	if err == nil {
-		t.Fatal("expected validation error")
-	}
-	if !strings.Contains(err.Error(), `invalid protocol_transform_mode`) {
-		t.Fatalf("expected invalid mode error, got %v", err)
 	}
 }

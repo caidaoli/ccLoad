@@ -17,6 +17,7 @@
   <script defer src="/web/assets/js/date-range-selector.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/service-health.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/index.js?v=__VERSION__"></script>
 </head>
 <body class="page-index">
@@ -25,25 +26,6 @@
     <!-- 主内容区域 -->
     <main class="main-content index-main-content">
       <div class="content-area">
-        <!-- 页面标题 -->
-        <header class="mb-6">
-          <div class="hero-header animate-slide-up">
-            <div class="hero-icon">
-              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M13 2L3 14h9l-1 8 10-12h-9l1-8z"/>
-              </svg>
-            </div>
-            <div>
-              <h1 class="hero-title" data-i18n="index.heroTitle">
-                Claude Code & Codex API 代理服务
-              </h1>
-              <p class="hero-subtitle" data-i18n="index.heroSubtitle">
-                智能路由 · 故障切换 · 统计分析
-              </p>
-            </div>
-          </div>
-        </header>
-
         <!-- 时间范围选择器 -->
         <section class="mb-4">
           <div class="time-range-container">
@@ -51,7 +33,7 @@
           </div>
         </section>
 
-        <!-- 按渠道类型统计 -->
+        <!-- 按客户端入口协议统计 -->
         <section class="mb-6">
           <div class="grid grid-cols-2 animate-slide-up animate-delay-1 gap-space-3">
             <!-- Claude Code -->
@@ -271,72 +253,45 @@
             </div>
           </div>
         </section>
-        <!-- 实时状态栏 - 总览 -->
+        <!-- 服务健康监测 -->
         <section class="mb-6">
-          <div class="flex index-summary-grid animate-slide-up animate-delay-2 gap-space-3 flex-nowrap">
-            <div class="summary-card summary-card-success">
-              <div class="summary-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M20 6L9 17l-5-5"/>
-                </svg>
-              </div>
-              <div class="summary-content">
-                <div class="summary-value"><span class="metric-success" id="success-requests">--</span>/<span class="metric-error" id="error-requests">--</span> <span class="summary-value-note">(<span id="success-rate">--</span>)</span></div>
-                <div class="summary-label" data-i18n="index.metrics.successFailed">成功/失败 (成功率)</div>
+          <div class="glass-card service-health-card animate-slide-up animate-delay-2" aria-labelledby="service-health-title">
+            <div class="service-health-header">
+              <h2 id="service-health-title" class="service-health-title" data-i18n="index.health.title">服务健康监测</h2>
+              <div class="service-health-summary">
+                <span id="service-health-period" class="service-health-period">本日</span>
+                <span id="service-health-rate" class="service-health-rate" data-state="unknown" aria-live="polite">--</span>
               </div>
             </div>
-            <div class="summary-card summary-card-primary" title="每分钟请求数">
-              <div class="summary-icon">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <circle cx="12" cy="12" r="10"/>
-                  <path d="M12 6v6l4 2"/>
-                </svg>
+            <div class="service-health-plot">
+              <div
+                id="service-health-grid"
+                class="service-health-grid"
+                role="img"
+                aria-busy="true"
+                data-i18n-aria-label="index.health.loading"
+                aria-label="正在加载服务健康数据"
+              ></div>
+              <div id="service-health-tooltip" class="service-health-tooltip" role="tooltip" hidden>
+                <div id="service-health-tooltip-time" class="service-health-tooltip-time"></div>
+                <div class="service-health-tooltip-stats">
+                  <span class="service-health-tooltip-success">✓ <strong id="service-health-tooltip-success">0</strong></span>
+                  <span class="service-health-tooltip-error">× <strong id="service-health-tooltip-error">0</strong></span>
+                  <span id="service-health-tooltip-rate" class="service-health-tooltip-rate">--</span>
+                </div>
               </div>
-              <div class="summary-content">
-                <div class="summary-value" id="total-rpm">--</div>
-                <div class="summary-label" data-i18n="index.metrics.rpm">RPM(峰值 平均 最近)</div>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <!-- API 接口 -->
-        <section class="mb-8">
-          <div class="glass-card animate-slide-up animate-delay-3">
-            <h3 class="text-xl font-semibold mb-6">
-              <svg class="inline-block w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2-2v16z"/>
-              </svg>
-              <span data-i18n="index.apiSection">API 接口</span>
-            </h3>
-            <div class="index-api-list">
-              <div class="index-api-entry">
-                <div class="index-api-method index-api-method--post">POST</div>
-                <div class="index-api-path">/v1/messages</div>
-                <div class="index-api-desc" data-i18n="index.apiClaudeDesc">Claude API 透明代理</div>
-              </div>
-              <div class="index-api-entry">
-                <div class="index-api-method index-api-method--post">POST</div>
-                <div class="index-api-path">/v1/responses</div>
-                <div class="index-api-desc" data-i18n="index.apiCodexDesc">Codex API 透明代理</div>
-              </div>
-              <div class="index-api-entry">
-                <div class="index-api-method index-api-method--post">POST</div>
-                <div class="index-api-path">/v1beta</div>
-                <div class="index-api-desc" data-i18n="index.apiGeminiDesc">Gemini 透明代理</div>
-              </div>
-              <div class="index-api-entry">
-                <div class="index-api-method index-api-method--get">GET</div>
-                <div class="index-api-path">/public/summary</div>
-                <div class="index-api-desc" data-i18n="index.apiSummaryDesc">公开统计数据</div>
+              <div class="service-health-footer">
+                <span id="service-health-earlier" class="service-health-edge">--</span>
+                <div class="service-health-legend" data-i18n-aria-label="index.health.legendLabel" aria-label="健康状态图例">
+                  <span class="service-health-legend-item"><i class="service-health-swatch unknown" aria-hidden="true"></i><span data-i18n="index.health.noRequests">无请求</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch critical" aria-hidden="true"></i><span data-i18n="index.health.critical">异常</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch warning" aria-hidden="true"></i><span data-i18n="index.health.warning">波动</span></span>
+                  <span class="service-health-legend-item"><i class="service-health-swatch healthy" aria-hidden="true"></i><span data-i18n="index.health.healthy">健康</span></span>
+                </div>
+                <span id="service-health-latest" class="service-health-edge">--</span>
               </div>
             </div>
-            <div class="index-api-tip">
-              <div class="index-api-tip-title" data-i18n="common.info">提示</div>
-              <div class="index-api-tip-body" data-i18n="index.apiTip">
-                管理功能需要登录访问，代理服务公开使用
-              </div>
-            </div>
+            <p id="service-health-message" class="service-health-message" role="status" hidden></p>
           </div>
         </section>
 

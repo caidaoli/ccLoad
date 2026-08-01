@@ -21,6 +21,23 @@ const (
 	Gemini Protocol = "gemini"
 )
 
+// AllProtocols returns every supported protocol in canonical display order.
+// This is the single enumeration source: adding a protocol means updating
+// this list (plus the transform table below) and nothing else.
+func AllProtocols() []Protocol {
+	return []Protocol{Anthropic, Codex, OpenAI, Gemini}
+}
+
+// IsValid reports whether p is one of the supported protocols.
+func IsValid(p Protocol) bool {
+	switch p {
+	case Anthropic, Codex, OpenAI, Gemini:
+		return true
+	default:
+		return false
+	}
+}
+
 // RequestFamily identifies the client request surface that is being transformed.
 type RequestFamily string
 

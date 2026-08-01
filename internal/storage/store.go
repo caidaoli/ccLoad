@@ -23,9 +23,6 @@ type Store interface {
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
-	GetEnabledChannelsByModelAndProtocol(ctx context.Context, modelName, protocol string) ([]*model.Config, error)
-	GetEnabledChannelsByType(ctx context.Context, channelType string) ([]*model.Config, error)
-	GetEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
 		ID       int64
 		Priority int
@@ -87,11 +84,12 @@ type Store interface {
 
 	// === Metrics & Statistics ===
 	AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error)
-	GetDistinctModels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]string, error)
-	GetDistinctStatusCodes(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]int, error)
-	GetDistinctChannels(ctx context.Context, since, until time.Time, channelType string, filter *model.LogFilter) ([]model.ChannelNameID, error)
+	GetDistinctModels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]string, error)
+	GetDistinctStatusCodes(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]int, error)
+	GetDistinctChannels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]model.ChannelNameID, error)
 	GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error)
 	GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) // 轻量版：跳过RPM计算和渠道名填充
+	GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error)
 	GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error)
 	GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error)
 	GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error)

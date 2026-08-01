@@ -69,18 +69,8 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
 	}
 
-	// 模型重定向
 	originalModel := testReq.Model
-	if redirectModel, ok := cfg.GetRedirectModel(testReq.Model); ok && redirectModel != "" {
-		testReq.Model = redirectModel
-	}
-
-	clientProtocol := resolveClientProtocol(cfg, &testReq)
-	upstreamProto := resolveTestUpstreamProtocol(cfg, clientProtocol)
-	if !supportsRuntimeTestProtocol(clientProtocol, upstreamProto) {
-		writeChatErrorEvent(c, fmt.Sprintf("不支持协议转换 %s -> %s", clientProtocol, upstreamProto))
-		return
-	}
+	clientProtocol := resolveClientProtocol(&testReq)
 
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
@@ -93,6 +83,9 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		selector = s.urlSelector
 	}
 	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeLocal {
+		orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
+	}
 
 	// 设置 SSE 响应头
 	c.Header("Content-Type", "text/event-stream")
@@ -103,18 +96,42 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	var lastResult map[string]any
 	for idx, entry := range orderedURLs {
-		attempt := s.streamChatWithURL(c, cfg, keySelection.apiKey, &testReq, clientProtocol, entry.url, originalModel)
-		if attempt.handled {
-			// Write chat log from stream result
-			s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
-			return
+		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
+			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
+		)
+		if len(upstreamProtocols) == 0 {
+			lastResult = map[string]any{
+				"success":  false,
+				"error":    fmt.Sprintf("URL 不支持当前协议 %s", clientProtocol),
+				"base_url": entry.url,
+			}
+			continue
 		}
-		lastResult = attempt.result
+
+		capabilityExhausted := false
+		for protocolIdx, upstreamProtocol := range upstreamProtocols {
+			attempt := s.streamChatWithURLForProtocol(
+				c, cfg, keySelection.apiKey, &testReq, clientProtocol, upstreamProtocol, entry.url, originalModel,
+			)
+			if attempt.handled {
+				// Write chat log from stream result
+				s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
+				return
+			}
+			lastResult = attempt.result
+			if !isChannelTestProtocolEndpointMissing(lastResult) {
+				break
+			}
+			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
+		}
 		if idx == len(orderedURLs)-1 {
 			break
 		}
+		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+			continue
+		}
 
-		continueFallback, shouldCooldown := shouldFallbackToNextURL(attempt.result)
+		continueFallback, shouldCooldown := shouldFallbackToNextURL(lastResult)
 		if shouldCooldown && selector != nil {
 			selector.CooldownURL(cfg.ID, entry.url)
 		}
@@ -125,7 +142,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -143,7 +160,8 @@ type chatStreamResult struct {
 	firstContentTime time.Time
 	usageParser      *sseUsageParser
 	model            string
-	channelType      string
+	clientProtocol   string
+	upstreamProtocol string
 	statusCode       int
 	requestThinking  string
 	errorResult      map[string]any
@@ -199,18 +217,37 @@ func chatSummaryEventChunk(sr *chatStreamResult, testReq *testutil.TestChannelRe
 	return []byte("data: " + string(jsonBytes) + "\n\n")
 }
 
-// streamChatWithURL 对单个 URL 发起对话请求并写入前端 SSE。
-// handled=true 表示已经写入最终响应；handled=false 时 result 交给调用方决定是否 fallback。
-func (s *Server) streamChatWithURL(
+func (s *Server) streamChatWithURLForProtocol(
 	c *gin.Context,
 	cfg *model.Config,
 	apiKey string,
 	testReq *testutil.TestChannelRequest,
-	clientProtocol, selectedURL string,
+	clientProtocol, upstreamProtocol, selectedURL string,
 	originalModel string,
-) chatURLAttemptResult {
-	req, requestPlan, cancel, err := s.buildTestUpstreamRequest(c.Request.Context(), cfg, apiKey, testReq, clientProtocol, selectedURL)
+) (out chatURLAttemptResult) {
+	attemptReq := *testReq
+	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, originalModel, upstreamProtocol)
+	testReq = &attemptReq
+	defer func() {
+		if out.result == nil {
+			return
+		}
+		out.result["client_protocol"] = clientProtocol
+		out.result["upstream_protocol"] = upstreamProtocol
+		out.result["actual_model"] = attemptReq.Model
+	}()
+
+	req, requestPlan, cancel, err := s.buildTestUpstreamRequestForProtocol(
+		c.Request.Context(), cfg, apiKey, testReq, clientProtocol, upstreamProtocol, selectedURL,
+	)
 	if err != nil {
+		if isAutomaticProtocolTranslationFailure(cfg, err) {
+			return chatURLAttemptResult{result: map[string]any{
+				"success":                     false,
+				"error":                       err.Error(),
+				"protocol_capability_missing": true,
+			}}
+		}
 		writeChatErrorEvent(c, err.Error())
 		return chatURLAttemptResult{handled: true}
 	}
@@ -259,12 +296,13 @@ func (s *Server) streamChatWithURL(
 	}
 
 	sr := &chatStreamResult{
-		start:           start,
-		usageParser:     newSSEUsageParser(cfg.GetChannelType()),
-		model:           testReq.Model,
-		channelType:     cfg.GetChannelType(),
-		statusCode:      resp.StatusCode,
-		requestThinking: requestThinking,
+		start:            start,
+		usageParser:      newSSEUsageParser(requestPlan.upstreamProtocol),
+		model:            testReq.Model,
+		clientProtocol:   requestPlan.clientProtocol,
+		upstreamProtocol: requestPlan.upstreamProtocol,
+		statusCode:       resp.StatusCode,
+		requestThinking:  requestThinking,
 	}
 
 	firstContentMarked := false
@@ -395,9 +433,11 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 
 	result := map[string]any{
-		"success":      resp.StatusCode >= 200 && resp.StatusCode < 300,
-		"status_code":  resp.StatusCode,
-		"is_streaming": false,
+		"success":           resp.StatusCode >= 200 && resp.StatusCode < 300,
+		"status_code":       resp.StatusCode,
+		"is_streaming":      false,
+		"client_protocol":   requestPlan.clientProtocol,
+		"upstream_protocol": requestPlan.upstreamProtocol,
 	}
 	if requestThinking != "" {
 		result["thinking_effort"] = requestThinking
@@ -492,11 +532,13 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 		return
 	}
 	result := map[string]any{
-		"success":      true,
-		"status_code":  sr.statusCode,
-		"is_streaming": true,
-		"duration_ms":  time.Since(sr.start).Milliseconds(),
-		"message":      "ok",
+		"success":           true,
+		"status_code":       sr.statusCode,
+		"is_streaming":      true,
+		"duration_ms":       time.Since(sr.start).Milliseconds(),
+		"message":           "ok",
+		"client_protocol":   sr.clientProtocol,
+		"upstream_protocol": sr.upstreamProtocol,
 	}
 	if sr.errorResult != nil {
 		result = sr.errorResult
@@ -505,6 +547,8 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 			result["status_code"] = sr.statusCode
 		}
 	}
+	result["client_protocol"] = sr.clientProtocol
+	result["upstream_protocol"] = sr.upstreamProtocol
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
 	}

@@ -93,7 +93,7 @@ func (s *Server) buildProxyRequest(
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
 
 	// 1.5 anyrouter Anthropic thinking 兜底归一
-	body = normalizeAnyrouterAdaptiveThinking(cfg, requestPath, body)
+	body = normalizeAnyrouterAdaptiveThinking(cfg, runtimeUpstreamProtocol(reqCtx, cfg), requestPath, body)
 
 	// 1.6 自定义请求体规则（仅对 JSON body 生效）
 	body = applyBodyRules(hdr.Get("Content-Type"), body, cfg.BodyRules())
@@ -121,7 +121,7 @@ func (s *Server) buildProxyRequest(
 	injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 
 	// 5. anyrouter渠道：确保anthropic-beta包含context-1m
-	if cfg.GetChannelType() == util.ChannelTypeAnthropic &&
+	if runtimeUpstreamProtocol(reqCtx, cfg) == util.ProtocolAnthropic &&
 		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
 		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
@@ -158,10 +158,7 @@ func runtimeUpstreamProtocol(reqCtx *requestContext, cfg *model.Config) string {
 			return string(reqCtx.upstreamProtocol)
 		}
 	}
-	if cfg == nil {
-		return ""
-	}
-	return cfg.GetChannelType()
+	return ""
 }
 
 // ============================================================================
@@ -264,7 +261,7 @@ func streamAndParseResponse(
 	body io.ReadCloser,
 	w http.ResponseWriter,
 	contentType string,
-	channelType string,
+	upstreamProtocol string,
 	isStreaming bool,
 	beforeWrite func(usageParser) error,
 ) (usageParser, error) {
@@ -281,7 +278,7 @@ func streamAndParseResponse(
 	}
 	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
 		feed := makeFeed(parser)
-		if channelType != util.ChannelTypeCodex {
+		if upstreamProtocol != util.ProtocolCodex {
 			return streamCopySSE(ctx, stream, w, feed)
 		}
 		return streamCopySSE(ctx, stream, w, func(data []byte) error {
@@ -305,7 +302,7 @@ func streamAndParseResponse(
 
 	// SSE流式响应
 	if strings.Contains(contentType, "text/event-stream") {
-		parser := newSSEUsageParser(channelType)
+		parser := newSSEUsageParser(upstreamProtocol)
 		streamErr := copySSE(body, parser)
 		return parser, streamErr
 	}
@@ -317,17 +314,17 @@ func streamAndParseResponse(
 		streamBody := readerWithCloser{Reader: reader, Closer: body}
 
 		if isSSE {
-			parser := newSSEUsageParser(channelType)
+			parser := newSSEUsageParser(upstreamProtocol)
 			sseErr := copySSE(streamBody, parser)
 			return parser, sseErr
 		}
-		parser := newJSONUsageParser(channelType)
+		parser := newJSONUsageParser(upstreamProtocol)
 		copyErr := streamCopy(ctx, streamBody, w, makeFeed(parser))
 		return parser, copyErr
 	}
 
 	// 非SSE响应：边转发边缓存
-	parser := newJSONUsageParser(channelType)
+	parser := newJSONUsageParser(upstreamProtocol)
 	copyErr := streamCopy(ctx, body, w, makeFeed(parser))
 	return parser, copyErr
 }
@@ -353,7 +350,7 @@ func isClientDisconnectError(err error) bool {
 // buildStreamDiagnostics 生成流诊断消息
 // 触发条件：流传输错误且未检测到流完成语义（原始结束标志或已转译终态）
 // streamComplete: 是否已确认流完成（比 hasUsage 更可靠，因为不是所有请求都有 usage）
-func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, channelType string, contentType string) string {
+func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamComplete bool, upstreamProtocol string, contentType string) string {
 	if readStats == nil {
 		return ""
 	}
@@ -369,7 +366,7 @@ func buildStreamDiagnostics(streamErr error, readStats *streamReadStats, streamC
 			return "" // 不触发冷却，数据已完整
 		}
 		return fmt.Sprintf("[WARN] 流传输中断: 错误=%v | 已读取=%d字节(分%d次) | 流结束标志=%v | 渠道=%s | Content-Type=%s",
-			streamErr, bytesRead, readCount, streamComplete, channelType, contentType)
+			streamErr, bytesRead, readCount, streamComplete, upstreamProtocol, contentType)
 	}
 
 	return ""
@@ -696,14 +693,14 @@ func (s *Server) handleSuccessResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	w http.ResponseWriter,
-	channelType string,
+	upstreamProtocol string,
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
 	if reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
-			channelType = string(detectedProtocol)
+			upstreamProtocol = string(detectedProtocol)
 		}
 		if err != nil {
 			return &fwResult{
@@ -722,7 +719,7 @@ func (s *Server) handleSuccessResponse(
 	if !reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicNonStreamTransform(reqCtx, resp)
 		if detectedProtocol != "" {
-			channelType = string(detectedProtocol)
+			upstreamProtocol = string(detectedProtocol)
 		}
 		if err != nil {
 			return &fwResult{
@@ -743,13 +740,13 @@ func (s *Server) handleSuccessResponse(
 		reqCtx.transformPlan.NeedsTransform &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
-		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
+		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
 	}
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
 		reqCtx.transformPlan.NeedsTransform {
-		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats)
+		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
 	// [FIX] 流式请求：禁用 WriteTimeout，避免长时间流被服务器自己切断
@@ -774,7 +771,7 @@ func (s *Server) handleSuccessResponse(
 	// 流式传输并解析usage
 	contentType := resp.Header.Get("Content-Type")
 	parser, streamErr := streamAndParseResponse(
-		reqCtx.ctx, resp.Body, streamWriter, contentType, channelType, reqCtx.isStreaming,
+		reqCtx.ctx, resp.Body, streamWriter, contentType, upstreamProtocol, reqCtx.isStreaming,
 		func(parser usageParser) error {
 			if deferredWriter == nil || deferredWriter.Committed() {
 				return nil
@@ -834,7 +831,7 @@ func (s *Server) handleSuccessResponse(
 	if reqCtx.isStreaming {
 		// [VALIDATE] 诊断增强: 传递contentType帮助定位问题(区分SSE/JSON/其他)
 		// 使用 streamComplete 而非 hasUsage，因为不是所有请求都有 usage 信息
-		if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, contentType); diagMsg != "" {
+		if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, contentType); diagMsg != "" {
 			result.StreamDiagMsg = diagMsg
 			log.Print(diagMsg)
 		} else if streamComplete && streamErr != nil {
@@ -861,7 +858,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	w http.ResponseWriter,
-	channelType string,
+	upstreamProtocol string,
 	readStats *streamReadStats,
 ) (*fwResult, float64, error) {
 	rawBody, err := io.ReadAll(resp.Body)
@@ -880,7 +877,7 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		readStats.readCount = 1
 	}
 
-	parser := newJSONUsageParser(channelType)
+	parser := newJSONUsageParser(upstreamProtocol)
 	if err := parser.Feed(rawBody); err != nil {
 		return &fwResult{
 			Status:         resp.StatusCode,
@@ -944,7 +941,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	w http.ResponseWriter,
-	channelType string,
+	upstreamProtocol string,
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
@@ -954,7 +951,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	filterAndWriteResponseHeaders(deferredWriter, resp.Header)
 	deferredWriter.WriteHeader(resp.StatusCode)
 
-	parser := newSSEUsageParser(channelType)
+	parser := newSSEUsageParser(upstreamProtocol)
 	var translatedComplete bool
 	var state any
 	streamErr := streamTransformSSEEventsUntil(
@@ -1032,7 +1029,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 	streamComplete := parser.IsStreamComplete() || translatedComplete
 
-	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, channelType, resp.Header.Get("Content-Type")); diagMsg != "" {
+	if diagMsg := buildStreamDiagnostics(streamErr, readStats, streamComplete, upstreamProtocol, resp.Header.Get("Content-Type")); diagMsg != "" {
 		result.StreamDiagMsg = diagMsg
 		log.Print(diagMsg)
 	} else if streamComplete && streamErr != nil {
@@ -1145,11 +1142,11 @@ func markFirstStreamResponse(reqCtx *requestContext, readStats *streamReadStats,
 	}
 }
 
-func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, channelType string) bool {
+func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamProtocol string) bool {
 	if resp.StatusCode != http.StatusOK || reqCtx.isStreaming {
 		return false
 	}
-	if !shouldCheckSoftErrorForChannelType(channelType) {
+	if !shouldCheckSoftErrorForUpstreamProtocol(upstreamProtocol) {
 		return false
 	}
 	ct := resp.Header.Get("Content-Type")
@@ -1255,10 +1252,10 @@ func (s *Server) probeSoftErrorResponse(
 	resp *http.Response,
 	hdrClone http.Header,
 	cfg *model.Config,
-	channelType string,
+	upstreamProtocol string,
 	readStats *streamReadStats,
 ) (handled bool, res *fwResult, duration float64, err error) {
-	if !shouldProbeSoftError(reqCtx, resp, channelType) {
+	if !shouldProbeSoftError(reqCtx, resp, upstreamProtocol) {
 		return false, nil, 0, nil
 	}
 
@@ -1368,14 +1365,14 @@ func invalidHTMLSuccessResponseResult(
 
 // handleResponse 处理 HTTP 响应（错误或成功）
 // 从proxy.go提取，遵循SRP原则
-// channelType: 渠道类型,用于精确识别usage格式
+// upstreamProtocol 用于精确识别上游 usage 格式。
 // cfg: 渠道配置,用于提取渠道ID
 // apiKey: 使用的API Key,用于日志记录
 func (s *Server) handleResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	w http.ResponseWriter,
-	channelType string,
+	upstreamProtocol string,
 	cfg *model.Config,
 	_ string,
 	observer *ForwardObserver,
@@ -1401,11 +1398,11 @@ func (s *Server) handleResponse(
 		return res, duration, err
 	}
 
-	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, channelType, readStats); handled {
+	if handled, res, duration, err := s.probeSoftErrorResponse(reqCtx, resp, hdrClone, cfg, upstreamProtocol, readStats); handled {
 		return res, duration, err
 	}
 
-	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, channelType, readStats, observer)
+	return s.handleSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
 }
 
 // ============================================================================
@@ -1441,7 +1438,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	native *nativeCodexWebsocketAttempt,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
-	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(cfg, plan))
+	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(plan))
 	reqCtx.transformPlan = plan
 	reqCtx.clientProtocol = plan.ClientProtocol
 	reqCtx.upstreamProtocol = plan.UpstreamProtocol
@@ -1603,7 +1600,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		return errRes, errDur, errErr
 	}
 
-	// 4. 处理响应(传递channelType用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
+	// 4. 处理响应(传递upstreamProtocol用于精确识别usage格式,传递渠道信息用于日志记录,传递观测回调)
 	var res *fwResult
 	var duration float64
 	responseWriter := w
@@ -1786,9 +1783,7 @@ func (s *Server) forwardAttempt(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string, // [INFO] 重定向后的实际模型名称
-	bodyToSend []byte,
-	requestPath string, // [FIX] 2026-01: 可能经过模型名替换的请求路径
+	upstreamProtocol protocol.Protocol,
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
@@ -1796,10 +1791,12 @@ func (s *Server) forwardAttempt(
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
 	reqCtx.baseURL = baseURL
+	reqCtx.upstreamProtocol = upstreamProtocol
+	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx, upstreamProtocol)
+	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
 
 	// 转发请求（传递实际的API Key字符串和观测回调）
 	// [FIX] 2026-01: 使用传入的 requestPath（可能已替换模型名）而非 reqCtx.requestPath
-	upstreamProtocol := protocol.Protocol(cfg.ResolveUpstreamProtocol(string(reqCtx.clientProtocol)))
 	bodyToSend = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, bodyToSend)
 	plan, err := protocol.BuildTransformPlan(
 		reqCtx.clientProtocol,
@@ -1889,6 +1886,16 @@ func (s *Server) forwardAttempt(
 	if err != nil {
 		var translationErr *protocol.RequestTranslationError
 		if errors.As(err, &translationErr) {
+			if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto {
+				return &proxyResult{
+					status:                    http.StatusBadRequest,
+					body:                      []byte(err.Error()),
+					channelID:                 &cfg.ID,
+					succeeded:                 false,
+					nextAction:                cooldown.ActionRetryChannel,
+					protocolCapabilityMissing: true,
+				}, cooldown.ActionRetryChannel, nil
+			}
 			return &proxyResult{
 				status:     http.StatusBadRequest,
 				body:       []byte(err.Error()),
@@ -1925,6 +1932,20 @@ func (s *Server) forwardAttempt(
 
 		result, action := s.handleProxySuccess(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
 		return result, action, nil
+	}
+
+	if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream &&
+		isProtocolEndpointMissing(res) {
+		return &proxyResult{
+			status:                    res.Status,
+			header:                    res.Header,
+			body:                      res.Body,
+			channelID:                 &cfg.ID,
+			duration:                  duration,
+			succeeded:                 false,
+			nextAction:                cooldown.ActionRetryChannel,
+			protocolCapabilityMissing: true,
+		}, cooldown.ActionRetryChannel, nil
 	}
 
 	// 处理错误响应
@@ -2403,10 +2424,10 @@ func selectPinnedCodexWebsocketKey(
 	return 0, "", false
 }
 
-// recordSuccessTTFBToSelector 在多URL场景的2xx响应里把TTFB回报给URLSelector，
-// 单URL/非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
-func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlsCount int, urlStr string, result *proxyResult) {
-	if urlsCount <= 1 || selector == nil || result == nil {
+// recordSuccessTTFBToSelector 在2xx响应里把TTFB回报给URLSelector。
+// 非2xx/无延迟数据直接跳过。优先用 firstByteTime，缺失时回退到 duration。
+func recordSuccessTTFBToSelector(selector *URLSelector, channelID int64, urlStr string, result *proxyResult) {
+	if selector == nil || result == nil {
 		return
 	}
 	if result.status < 200 || result.status >= 300 {
@@ -2435,16 +2456,20 @@ func (s *Server) attemptKeyAcrossURLs(
 	keyIndex int,
 	selectedKey string,
 	reqCtx *proxyRequestContext,
-	actualModel string,
-	bodyToSend []byte,
-	requestPath string,
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	if target, ok := reqCtx.nativeCodexWS.affinitySnapshot(); ok &&
 		target.channelID == cfg.ID && target.keyHash == codexWebsocketKeyHash(selectedKey) {
-		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, requestPath, reqCtx.rawQuery)
+		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, reqCtx.requestPath, reqCtx.rawQuery)
 	}
+	clientProtocol := reqCtx.clientProtocol
+	transformMode := cfg.GetProtocolTransformMode()
+	if transformMode == model.ProtocolTransformModeLocal {
+		sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, cfg.URLs)
+	}
+	localProtocolOrder := localUpstreamProtocolOrder(cfg.URLs)
+	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
 	urlsCount := len(urls)
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -2452,39 +2477,89 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		reqCtx.activeReqID = s.activeRequests.BeginAttempt(reqCtx.activeReqID, activeRequestAttempt{
-			StartTime:      time.Now(),
-			Model:          reqCtx.originalModel,
-			ClientIP:       reqCtx.clientIP,
-			Streaming:      reqCtx.isStreaming,
-			ChannelID:      cfg.ID,
-			ChannelName:    cfg.Name,
-			ChannelType:    cfg.GetChannelType(),
-			APIKey:         selectedKey,
-			TokenID:        reqCtx.tokenID,
-			BaseURL:        urlEntry.url,
-			CostMultiplier: cfg.CostMultiplier,
-			ThinkingEffort: reqCtx.thinkingEffort,
+			StartTime:        time.Now(),
+			Model:            reqCtx.originalModel,
+			ClientIP:         reqCtx.clientIP,
+			Streaming:        reqCtx.isStreaming,
+			ChannelID:        cfg.ID,
+			ChannelName:      cfg.Name,
+			UpstreamProtocol: "",
+			APIKey:           selectedKey,
+			TokenID:          reqCtx.tokenID,
+			BaseURL:          urlEntry.url,
+			CostMultiplier:   cfg.CostMultiplier,
+			ThinkingEffort:   reqCtx.thinkingEffort,
 		})
 
 		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
-		result, nextAction, attemptErr := s.forwardAttempt(
-			ctx, cfg, keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, urlEntry.url, w, shouldDeferChannelCooldown)
-		if attemptErr != nil {
-			return nil, nil, attemptErr
+		capabilityKey := protocolCapabilityKey{
+			channelID: cfg.ID, baseURL: urlEntry.url,
+			clientProtocol: clientProtocol, requestFamily: requestFamily,
+		}
+		if urlEntry.idx < 0 || urlEntry.idx >= len(cfg.URLs) {
+			return nil, nil, fmt.Errorf("invalid URL selector index %d for channel %d", urlEntry.idx, cfg.ID)
+		}
+		protocolCandidates, declared := protocolCandidatesForURL(
+			cfg.URLs[urlEntry.idx], transformMode, clientProtocol, requestFamily, localProtocolOrder,
+		)
+		learnCapability := transformMode == model.ProtocolTransformModeAuto && !declared
+		if learnCapability {
+			if cachedProtocol, known := s.protocolCapabilities.get(capabilityKey); known {
+				if cachedProtocol == protocolUnsupported {
+					protocolCandidates = nil
+				} else {
+					protocolCandidates = prioritizeProtocolCandidate(protocolCandidates, cachedProtocol)
+				}
+			}
+		}
+		if len(protocolCandidates) == 0 {
+			urlLastFailure = &proxyResult{
+				status:                    http.StatusNotFound,
+				body:                      []byte(`{"error":"upstream endpoint unsupported"}`),
+				channelID:                 &cfg.ID,
+				succeeded:                 false,
+				nextAction:                cooldown.ActionRetryChannel,
+				protocolCapabilityMissing: true,
+			}
+			continue
+		}
+
+		var result *proxyResult
+		var nextAction cooldown.Action
+		for protocolIdx, upstreamProtocol := range protocolCandidates {
+			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
+			var attemptErr error
+			result, nextAction, attemptErr = s.forwardAttempt(
+				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w, shouldDeferChannelCooldown)
+			if attemptErr != nil {
+				return nil, nil, attemptErr
+			}
+			if result == nil || !result.protocolCapabilityMissing {
+				if learnCapability {
+					s.protocolCapabilities.set(capabilityKey, upstreamProtocol)
+				}
+				break
+			}
+			if protocolIdx < len(protocolCandidates)-1 {
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				continue
+			}
+			if learnCapability {
+				s.protocolCapabilities.set(capabilityKey, protocolUnsupported)
+			}
 		}
 
 		if result != nil && result.succeeded {
-			// 成功：记录TTFB到URLSelector（仅多URL场景）
-			recordSuccessTTFBToSelector(selector, cfg.ID, urlsCount, urlEntry.url, result)
+			// 成功：记录TTFB到URLSelector，供单URL和多URL统一展示实时统计。
+			recordSuccessTTFBToSelector(selector, cfg.ID, urlEntry.url, result)
 			return result, nil, nil
 		}
 
 		if result != nil {
 			urlLastFailure = result
 		}
-		if result != nil && result.alphaSearchUnsupported {
-			// 能力缺失不是 URL 健康故障，不进入通用 URL 冷却。
-			s.markAlphaSearchUnsupported(cfg.ID, urlEntry.url)
+		if result != nil && result.protocolCapabilityMissing {
+			// 能力协商不是 URL 健康故障，不进入通用 URL 冷却。
 			continue
 		}
 
@@ -2570,15 +2645,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 
 	var lastFailure *proxyResult
 
-	// 准备请求体（处理模型重定向）
-	// [INFO] 修复：保存重定向后的模型名称，用于日志记录和调试
-	actualModel, bodyToSend := s.prepareRequestBody(cfg, reqCtx)
-
-	// [FIX] 2026-01: 模型名变更时同步替换 URL 路径
-	// 场景：Gemini API 的模型名在 URL 路径中（如 /v1beta/models/gemini-3-flash:streamGenerateContent）
-	// 如果模糊匹配将 gemini-3-flash 改为 gemini-3-flash-preview，URL 路径也需要同步更新
-	requestPath := replaceModelInPath(reqCtx.requestPath, reqCtx.originalModel, actualModel)
-
 	// 获取渠道URL列表（单URL时退化为单元素切片）
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
@@ -2617,7 +2683,7 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		// URL循环（单URL时退化为单次迭代）
 		immediate, urlLastFailure, attemptErr := s.attemptKeyAcrossURLs(
 			ctx, cfg, urls, selector,
-			keyIndex, selectedKey, reqCtx, actualModel, bodyToSend, requestPath, w)
+			keyIndex, selectedKey, reqCtx, w)
 		if attemptErr != nil {
 			return nil, attemptErr
 		}
@@ -2652,9 +2718,9 @@ func isModelScopedHTTPFailure(result *proxyResult) bool {
 	return util.IsModelScopedHTTPStatus(result.status)
 }
 
-func shouldCheckSoftErrorForChannelType(channelType string) bool {
-	switch util.NormalizeChannelType(channelType) {
-	case util.ChannelTypeAnthropic, util.ChannelTypeCodex:
+func shouldCheckSoftErrorForUpstreamProtocol(upstreamProtocol string) bool {
+	switch util.NormalizeProtocol(upstreamProtocol) {
+	case util.ProtocolAnthropic, util.ProtocolCodex:
 		return true
 	default:
 		return false

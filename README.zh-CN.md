@@ -46,7 +46,7 @@ ccLoad 直接处理这些问题：
 - 🔀 **自动故障切换**：按错误作用域跳过故障 Key、模型、渠道或 URL。
 - ⏰ **模型感知冷却**：结构化 `model_cooldown`、上游 HTTP 5xx、Key 级 429 限流和模型不可用 404 都先只冷却当前实际模型，同渠道其他模型仍可用；只有所有配置模型或所有启用 Key 都在冷却时才升级为渠道冷却。
 - 🌐 **多 URL 调度**：一个渠道可配置多个上游 URL，按延迟和健康度分配流量。
-- 🔄 **多协议处理**：每个渠道配置一个主协议和多个额外支持协议，可选择上游直通或 ccLoad转换（实验性）。
+- 🔄 **逐 URL 协议路由**：每个 URL 可声明实际支持的线协议；显式声明直接选路，留空则原生协议优先探测并缓存成功协议。
 - 🔌 **Responses WebSocket 桥接**：认证后的 Codex 客户端可保持下游 WebSocket，各候选渠道按配置使用原生 Codex WebSocket 或现有 HTTP/SSE 传输。
 - 📊 **实时监控**：活跃请求、日志、Token、TTFB、费用和上游详情在后台直接可见。
 - 🔍 **软错误检测**：HTTP 200 伪装成功也会触发故障切换。已覆盖：
@@ -81,7 +81,7 @@ ccLoad 直接处理这些问题：
 | 💵 **service_tier定价** | OpenAI priority/flex/default层级 | 费用倍率精准计算 |
 | 🖼️ **图像工具计费** | Responses image_generation/gpt-image-2 | 图像生成成本不漏算 |
 | 📉 **分层定价** | GPT-5.4/Qwen-Plus/Gemini长上下文 | 超量token自动降档计费 |
-| 🔄 **多协议处理** | 主协议 + 额外支持协议，四协议全部 12 个本地转换组合 | 默认上游直通，需要时由 ccLoad 转换请求、流式与非流式响应 |
+| 🔄 **逐 URL 协议路由** | 每个 URL 显式声明 Anthropic/OpenAI/Codex/Gemini 能力 | 显式配置直接选路，留空时自动探测并缓存能力 |
 | 💬 **对话式模型测试** | 按渠道/按模型/对话三种模式 | 支持图片上传、思考等级、内置搜索与对话导出 |
 | 🔍 **调试日志** | 上游请求/响应原始数据捕获 | 敏感头脱敏，排障利器 |
 | 🕐 **定时检测** | 渠道可用性后台定时探测 | 自动发现故障渠道 |
@@ -91,7 +91,7 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-请求依次经过认证/路由、渠道选择、协议 Registry、URL 选择和上游服务。每个渠道包含一个主协议和零个或多个额外支持协议；`upstream`（上游直通）模式按客户端协议原样转发，`local`（ccLoad转换（实验性））模式在 Registry 边界把额外协议转换为主协议。日志、指标、成本控制和三种数据库实现不侵入协议核心。
+每个渠道默认接受四种客户端协议。实际上游协议由 `protocol_transform_mode` 和每个结构化 URL 的 `protocols` 声明共同决定：`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，仅在响应未提交的能力错误后探测其他协议；`local` 优先使用显式声明协议的 URL，并保持每个 URL 的声明顺序。只有全部 URL 都未声明协议时，`local` 才按 Anthropic → Codex → OpenAI → Gemini 尝试。不兼容 URL 不发请求、不冷却；自动探测成功结果按 URL 和请求族缓存 10 分钟。
 
 ```mermaid
 graph TB
@@ -584,12 +584,11 @@ curl -X POST http://localhost:8080/v1/chat/completions \
 
 下游 WebSocket 和上游 WebSocket 是两个独立开关：认证后的客户端始终可以升级 `GET /v1/responses`，也可以使用 Codex 直连别名 `GET /backend-api/codex/responses`；渠道的 `websockets` 只决定 ccLoad 是否尝试连接原生 Codex 上游 WebSocket。未启用该字段的渠道仍可通过 HTTP/SSE 桥接参与候选和故障切换。
 
-在 `/web/channels.html` 中选择 Codex 渠道，勾选“原生 WebSocket”并点击“检测”即可启用。使用 Admin API 时对应的关键字段如下；`url` 仍填写 `http://` 或 `https://` 地址，ccLoad 会在原生 WS 请求时转换为 `ws://` 或 `wss://`：
+在 `/web/channels.html` 中选择包含 Codex 能力 URL 的渠道，勾选“原生 WebSocket”并点击“检测”即可启用。使用 Admin API 时对应的关键字段如下；URL 仍填写 `http://` 或 `https://` 地址，ccLoad 会在原生 WS 请求时转换为 `ws://` 或 `wss://`：
 
 ```json
 {
-  "channel_type": "codex",
-  "url": "https://upstream.example.com",
+  "urls": [{"url": "https://upstream.example.com", "protocols": ["codex"]}],
   "websockets": true
 }
 ```
@@ -633,7 +632,7 @@ Transcript 预算是新工作准入阈值，不是严格分配上限：已经准
 
 **Codex Alpha Search（仅原生透传）**：
 
-`POST /v1/alpha/search` 接收 Codex 原生搜索请求，`model` 字段可省略。该端点只会转发到“实际上游协议为 Codex”的渠道，不参与本地跨协议转换。
+`POST /v1/alpha/search` 接收 Codex 原生搜索请求，`model` 字段可省略。该请求族没有本地转换路径：ccLoad 会在所有模型兼容渠道上尝试 Codex 原生端点，按 URL 缓存端点缺失结果，然后切换到下一个 URL 或渠道。
 
 ```bash
 curl -X POST http://localhost:8080/v1/alpha/search \
@@ -644,7 +643,7 @@ curl -X POST http://localhost:8080/v1/alpha/search \
   }'
 ```
 
-普通渠道 URL 会自动追加 `/v1/alpha/search`。如果渠道使用以 `#` 结尾的精确 URL，则配置值必须已指向该端点，例如 `https://upstream.example.com/v1/alpha/search#`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
+普通渠道 URL 会自动追加 `/v1/alpha/search`。精确 URL 需要设置 `exact: true`，且 `url` 已指向完整端点，例如 `{"url":"https://upstream.example.com/v1/alpha/search","exact":true,"protocols":["codex"]}`。转发前会移除 Responses 专用字段 `prompt_cache_key` 和 `prompt_cache_retention`。
 
 ### 本地 Token 计数
 
@@ -681,27 +680,28 @@ curl -X POST http://localhost:8080/v1/messages/count_tokens \
 通过 Web 界面 `/web/channels.html` 或 API 管理渠道：
 
 ```bash
-# 添加渠道（支持多URL，逗号分隔）
+# 添加渠道，并逐 URL 声明协议能力
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
     "api_key": "sk-ant-api03-xxx",
-    "url": "https://api.anthropic.com,https://api2.anthropic.com",
-    "channel_type": "anthropic",
-    "protocol_transforms": [],
-    "protocol_transform_mode": "upstream",
+    "urls": [
+      {"url": "https://api.anthropic.com", "protocols": ["anthropic"]},
+      {"url": "https://api2.anthropic.com"}
+    ],
+    "protocol_transform_mode": "auto",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
-    "models": ["claude-sonnet-4-6", "claude-opus-4-6"],
+    "models": [{"model": "claude-sonnet-4-6"}, {"model": "claude-opus-4-6"}],
     "enabled": true
   }'
 ```
 
-> **多协议配置说明**：Web 界面的“主协议”对应 `channel_type`，用于模型列表拉取、定时检测和未指定客户端协议时的默认行为；“额外支持”对应 `protocol_transforms`。`protocol_transform_mode=upstream`（默认“上游直通”）会按客户端实际协议原样转发，适合同一 URL/Key 原生支持多个协议的上游；`local`（“ccLoad转换（实验性）”）会把额外协议转换成主协议。协议不是 Key 或模型名的唯一属性，因此配置保持显式，不做运行时猜测。
+> **协议行为说明**：每个 `urls` 条目可通过 `protocols` 声明 `anthropic`、`codex`、`openai`、`gemini` 能力，非空列表是权威配置。`upstream` 只直通客户端协议；`auto` 从客户端协议开始自动探测；`local` 优先显式声明的 URL 和配置顺序。`local` 下仅当全部 URL 都未声明时，才按 Anthropic → Codex → OpenAI → Gemini 尝试。
 
-> **多URL说明**：`url` 字段支持逗号分隔的多个URL。系统会按延迟加权随机选择最优URL，故障URL自动冷却，实现同渠道内的URL级负载均衡与故障切换。
+> **多URL说明**：`urls` 是有序的 `{url, exact, protocols}` 对象数组。`exact: true` 表示该地址已经是完整上游请求 URL。系统按延迟加权选择 URL，并对故障 URL 独立冷却；local 模式会先把显式声明协议的 URL 稳定排到自动 URL 前面，各组内部顺序不变。
 
 > **RPM限制说明**：`rpm_limit` 是渠道级请求数上限，按滚动 60 秒窗口统计；`0` 表示不限制。代理转发、手动测试、单 URL 测试和定时检测都会计入，达到上限后该渠道会被跳过；多 URL 故障重试按实际发出的上游 HTTP 请求计数。计数保存在当前进程内，服务重启会清空，多实例部署时各实例独立统计。
 
@@ -771,9 +771,9 @@ curl -X POST -H "Authorization: Bearer your_token" \
 
 **CSV格式示例**:
 ```csv
-name,api_key,url,priority,models,enabled
-Claude-API-1,sk-ant-xxx,https://api.anthropic.com,10,"[\"claude-sonnet-4-6\"]",true
-Claude-API-2,sk-ant-yyy,https://api.anthropic.com,5,"[\"claude-opus-4-6\"]",true
+name,api_key,urls,priority,models,enabled
+Claude-API-1,sk-ant-xxx,"[{""url"":""https://api.anthropic.com"",""protocols"":[""anthropic""]}]",10,claude-sonnet-4-6,true
+Claude-API-2,sk-ant-yyy,"[{""url"":""https://api.anthropic.com""}]",5,claude-opus-4-6,true
 ```
 
 **特性**:
@@ -852,7 +852,7 @@ ccLoad 使用的核心技术栈：
   - `admin_auth_tokens.go`：API访问令牌CRUD（支持Token统计、费用限额、模型/渠道限制、并发限制）
   - `admin_settings.go`：系统设置管理
   - `admin_models.go`：模型列表管理
-  - `admin_testing.go`：渠道测试功能（支持协议转换测试）
+  - `admin_testing.go`：渠道测试功能（显式选择客户端请求协议）
   - `admin_debug_log.go`：调试日志API（敏感头脱敏+base64二进制编码）
   - `channel_check_scheduler.go`：渠道定时检测调度器
   - `detection_log.go`：检测日志构建（定时检测结果→LogEntry）
@@ -864,9 +864,9 @@ ccLoad 使用的核心技术栈：
   - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 转换核心快照；来源和同步规则见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
   - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
-  - 两种协议处理方式：`upstream`（默认，上游直通）/ `local`（ccLoad转换（实验性））
-  - 渠道配置：`ChannelType`（主协议）+ `ProtocolTransforms`（额外支持协议）+ `ProtocolTransformMode`（协议处理方式）
-  - Codex `/v1/alpha/search` 仅支持原生透传，不进入本地协议转换
+  - 每个渠道默认接受 Anthropic、Codex、OpenAI、Gemini 客户端；实际上游协议能力属于结构化 URL
+  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；自动模式先试客户端协议，local 模式仅在全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 回落
+  - 自动检测仅在未提交响应的非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理
@@ -1160,7 +1160,7 @@ storage/
 - 主库 DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → 混合模式
 
 **核心表结构**（SQLite / MySQL / PostgreSQL 共用）:
-- `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含多协议处理配置、定时检测配置、RPM/并发限制配置）
+- `channels` - 渠道配置（渠道级冷却内联，UNIQUE 约束 name，含上游协议、定时检测配置、RPM/并发限制配置）
 - `api_keys` - API 密钥（Key 级冷却内联，支持多 Key 策略）
 - `channel_model_cooldowns` - 模型级运行时冷却，主键为渠道和实际上游模型
 - `logs` - 请求日志（含base_url上游URL追踪）
@@ -1185,7 +1185,7 @@ storage/
 - ✅ **Responses 图像工具成本计量**：`image_generation` 工具调用费用并入日志、统计和限额口径
 - ✅ **分层定价引擎**：GPT-5.4/Qwen-Plus/Gemini 长上下文阶梯计价
 - ✅ **日志体验优化**：成本格式化精度提升（3位小数/空值空串），IP列悬停显示完整地址
-- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex四协议互转，upstream/local两种模式
+- ✅ **协议转换系统**：Anthropic/OpenAI/Gemini/Codex 四协议互转，支持 auto/upstream/local 三种模式
 - ✅ **调试日志**：上游请求/响应原始数据捕获，敏感头脱敏，独立清理策略
 - ✅ **渠道定时检测**：后台定时探测渠道可用性，支持指定检测模型
 - ✅ **渠道RPM限制**：每渠道滚动60秒请求数上限，`0` 表示无限制，超限自动跳过该渠道

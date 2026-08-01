@@ -18,7 +18,7 @@ func newValidChannelRequest() *ChannelRequest {
 	return &ChannelRequest{
 		Name:   "test-channel",
 		APIKey: "test-key",
-		URL:    "https://example.com",
+		URLs:   model.ChannelURLs{{URL: "https://example.com"}},
 		Models: []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
 	}
 }
@@ -89,88 +89,6 @@ func runChannelRequestNonNegativeLimitValidation(t *testing.T, fieldName string,
 			t.Fatalf("expected %s error, got %v", fieldName, err)
 		}
 	})
-}
-
-// TestChannelRequestValidation_ChannelType 测试 channel_type 白名单校验
-func TestChannelRequestValidation_ChannelType(t *testing.T) {
-	tests := []channelRequestFieldCase{
-		{
-			name:           "空值应该通过（使用默认值）",
-			input:          "",
-			wantErr:        false,
-			wantNormalized: "",
-		},
-		{
-			name:           "anthropic 小写应该通过",
-			input:          "anthropic",
-			wantErr:        false,
-			wantNormalized: "anthropic",
-		},
-		{
-			name:           "Anthropic 大写应该标准化为小写",
-			input:          "Anthropic",
-			wantErr:        false,
-			wantNormalized: "anthropic",
-		},
-		{
-			name:           "openai 应该通过",
-			input:          "openai",
-			wantErr:        false,
-			wantNormalized: "openai",
-		},
-		{
-			name:           "gemini 应该通过",
-			input:          "gemini",
-			wantErr:        false,
-			wantNormalized: "gemini",
-		},
-		{
-			name:           "codex 应该通过",
-			input:          "codex",
-			wantErr:        false,
-			wantNormalized: "codex",
-		},
-		{
-			name:           "带空格的 anthropic 应该 trim 并通过",
-			input:          "  anthropic  ",
-			wantErr:        false,
-			wantNormalized: "anthropic",
-		},
-		{
-			name:    "非法值应该拒绝",
-			input:   "invalid_type",
-			wantErr: true,
-		},
-		{
-			name:    "垃圾值应该拒绝",
-			input:   "xyz123",
-			wantErr: true,
-		},
-	}
-
-	runChannelRequestFieldValidation(
-		t,
-		tests,
-		func(req *ChannelRequest, v string) { req.ChannelType = v },
-		func(req *ChannelRequest) string { return req.ChannelType },
-		"invalid channel_type",
-	)
-}
-
-func TestChannelRequestValidation_WebsocketsRequiresCodex(t *testing.T) {
-	req := newValidChannelRequest()
-	req.ChannelType = "openai"
-	req.Websockets = true
-
-	err := req.Validate()
-	if err == nil || !strings.Contains(err.Error(), "websockets") {
-		t.Fatalf("Validate() error = %v, want websockets/codex validation error", err)
-	}
-
-	req.ChannelType = "codex"
-	if err := req.Validate(); err != nil {
-		t.Fatalf("Validate() rejected codex websockets channel: %v", err)
-	}
 }
 
 // TestChannelRequestValidation_KeyStrategy 测试 key_strategy 白名单校验
@@ -246,51 +164,23 @@ func TestChannelRequestValidation_Combined(t *testing.T) {
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				ChannelType: "anthropic",
 				KeyStrategy: "round_robin",
 			},
 			wantErr: false,
-		},
-		{
-			name: "非法 channel_type 应该在第一个被拦截",
-			req: ChannelRequest{
-				Name:        "test-channel",
-				APIKey:      "test-key",
-				URL:         "https://example.com",
-				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				ChannelType: "invalid",
-				KeyStrategy: "sequential",
-			},
-			wantErr:     true,
-			errContains: "invalid channel_type",
 		},
 		{
 			name: "非法 key_strategy 应该被拦截",
 			req: ChannelRequest{
 				Name:        "test-channel",
 				APIKey:      "test-key",
-				URL:         "https://example.com",
+				URLs:        model.ChannelURLs{{URL: "https://example.com"}},
 				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				ChannelType: "anthropic",
 				KeyStrategy: "invalid",
 			},
 			wantErr:     true,
 			errContains: "invalid key_strategy",
-		},
-		{
-			name: "同时非法应该报第一个错误（channel_type 在前）",
-			req: ChannelRequest{
-				Name:        "test-channel",
-				APIKey:      "test-key",
-				URL:         "https://example.com",
-				Models:      []model.ModelEntry{{Model: "model-1", RedirectModel: ""}},
-				ChannelType: "invalid_type",
-				KeyStrategy: "invalid_strategy",
-			},
-			wantErr:     true,
-			errContains: "invalid channel_type", // channel_type 校验在前
 		},
 	}
 
@@ -415,16 +305,16 @@ func TestChannelRequestValidation_DuplicateModels(t *testing.T) {
 	}
 }
 
-func TestChannelRequestValidation_URLDeduplication(t *testing.T) {
+func TestChannelRequestValidation_RejectsDuplicateURLs(t *testing.T) {
 	req := newValidChannelRequest()
-	req.URL = " https://a.example.com/\nhttps://b.example.com\nhttps://a.example.com \nhttps://b.example.com/ "
-
-	if err := req.Validate(); err != nil {
-		t.Fatalf("Validate() failed: %v", err)
+	req.URLs = model.ChannelURLs{
+		{URL: " https://a.example.com/"},
+		{URL: "https://b.example.com"},
+		{URL: "https://a.example.com "},
 	}
 
-	if req.URL != "https://a.example.com\nhttps://b.example.com" {
-		t.Fatalf("URL dedupe/normalize failed, got %q", req.URL)
+	if err := req.Validate(); err == nil || !strings.Contains(err.Error(), "duplicates") {
+		t.Fatalf("Validate() error=%v, want duplicate URL error", err)
 	}
 }
 

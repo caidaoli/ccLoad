@@ -25,7 +25,7 @@ func TestCleanupOrphanedURLStates(t *testing.T) {
 	channel := &model.Config{
 		ID:        1,
 		Name:      "test-channel",
-		URL:       "https://api1.example.com,https://api2.example.com,https://api3.example.com",
+		URLs:      model.ChannelURLs{{URL: "https://api1.example.com,https://api2.example.com,https://api3.example.com"}},
 		Enabled:   true,
 		CreatedAt: model.JSONTime{Time: now},
 		UpdatedAt: model.JSONTime{Time: now},

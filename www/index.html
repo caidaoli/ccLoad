@@ -97,7 +97,7 @@
           <span class="www-feature-icon">🔌</span>
           <h3 class="www-feature-title" data-i18n="www.home.features.multiapi.title">Multi-API Support</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.multiapi.desc">
-            Configure one primary protocol plus additional protocols, with upstream passthrough or local translation
+            Configure one channel target; ccLoad tries the client wire protocol first and caches the working fallback per URL
           </p>
         </div>
 
@@ -110,12 +110,12 @@
           </p>
         </div>
 
-        <!-- Protocol transform -->
+        <!-- Automatic protocol fallback -->
         <div class="www-feature-card">
           <span class="www-feature-icon">🔀</span>
-          <h3 class="www-feature-title" data-i18n="www.home.features.protocol.title">Protocol Transform</h3>
+          <h3 class="www-feature-title" data-i18n="www.home.features.protocol.title">Automatic Protocol Fallback</h3>
           <p class="www-feature-desc" data-i18n="www.home.features.protocol.desc">
-            Transform between Anthropic, OpenAI, Gemini and Codex while preserving sampling, thinking and built-in search intent
+            Try the client protocol first, then fall back through Anthropic, OpenAI, Codex and Gemini without retrying it
           </p>
         </div>
 

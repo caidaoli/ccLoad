@@ -26,7 +26,7 @@ type ActiveRequest struct {
 	Streaming           bool    `json:"is_streaming"`
 	ChannelID           int64   `json:"channel_id,omitempty"`
 	ChannelName         string  `json:"channel_name,omitempty"`
-	ChannelType         string  `json:"channel_type,omitempty"`           // 渠道类型（用于前端筛选）
+	UpstreamProtocol    string  `json:"upstream_protocol,omitempty"`      // 当前尝试的实际上游协议
 	APIKeyUsed          string  `json:"api_key_used,omitempty"`           // 脱敏后的key
 	TokenID             int64   `json:"token_id,omitempty"`               // 令牌ID（用于前端筛选，0表示无令牌）
 	BaseURL             string  `json:"base_url,omitempty"`               // 当前使用的上游URL
@@ -40,17 +40,17 @@ type ActiveRequest struct {
 }
 
 type activeRequest struct {
-	ID          int64
-	Model       string
-	ClientIP    string
-	StartTime   int64 // Unix毫秒
-	Streaming   bool
-	ChannelID   int64
-	ChannelName string
-	ChannelType string
-	APIKeyUsed  string
-	TokenID     int64
-	BaseURL     string
+	ID               int64
+	Model            string
+	ClientIP         string
+	StartTime        int64 // Unix毫秒
+	Streaming        bool
+	ChannelID        int64
+	ChannelName      string
+	UpstreamProtocol string
+	APIKeyUsed       string
+	TokenID          int64
+	BaseURL          string
 
 	CostMultiplier    float64 // 渠道成本倍率
 	UpstreamWebsocket bool
@@ -63,18 +63,18 @@ type activeRequest struct {
 }
 
 type activeRequestAttempt struct {
-	StartTime      time.Time
-	Model          string
-	ClientIP       string
-	Streaming      bool
-	ChannelID      int64
-	ChannelName    string
-	ChannelType    string
-	APIKey         string
-	TokenID        int64
-	BaseURL        string
-	CostMultiplier float64
-	ThinkingEffort string
+	StartTime        time.Time
+	Model            string
+	ClientIP         string
+	Streaming        bool
+	ChannelID        int64
+	ChannelName      string
+	UpstreamProtocol string
+	APIKey           string
+	TokenID          int64
+	BaseURL          string
+	CostMultiplier   float64
+	ThinkingEffort   string
 }
 
 // activeRequestManager 管理进行中的请求（内存状态，不持久化）
@@ -111,7 +111,7 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	req.Streaming = attempt.Streaming
 	req.ChannelID = attempt.ChannelID
 	req.ChannelName = attempt.ChannelName
-	req.ChannelType = attempt.ChannelType
+	req.UpstreamProtocol = attempt.UpstreamProtocol
 	req.APIKeyUsed = util.MaskAPIKey(attempt.APIKey)
 	req.TokenID = attempt.TokenID
 	req.BaseURL = attempt.BaseURL
@@ -122,6 +122,14 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	req.clientFirstByteTimeUsec.Store(0)
 	req.bytesCounter.Store(0)
 	return id
+}
+
+func (m *activeRequestManager) SetUpstreamProtocol(id int64, upstreamProtocol string) {
+	m.mu.Lock()
+	if req := m.requests[id]; req != nil {
+		req.UpstreamProtocol = upstreamProtocol
+	}
+	m.mu.Unlock()
 }
 
 // Retry 标记同一渠道、Key 和 URL 上的内部重试。
@@ -234,7 +242,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			Streaming:         req.Streaming,
 			ChannelID:         req.ChannelID,
 			ChannelName:       req.ChannelName,
-			ChannelType:       req.ChannelType,
+			UpstreamProtocol:  req.UpstreamProtocol,
 			APIKeyUsed:        req.APIKeyUsed,
 			TokenID:           req.TokenID,
 			BaseURL:           req.BaseURL,

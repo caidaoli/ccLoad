@@ -37,11 +37,10 @@ func TestHybridStore_BasicOperations(t *testing.T) {
 
 	// 测试 CreateConfig - 应该先写 MySQL，再同步到 SQLite
 	cfg := &model.Config{
-		Name:        "test-channel",
-		ChannelType: "openai",
-		URL:         "https://api.openai.com",
-		Priority:    100,
-		Enabled:     true,
+		Name:     "test-channel",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+		Priority: 100,
+		Enabled:  true,
 	}
 
 	created, err := hybrid.CreateConfig(ctx, cfg)
@@ -177,11 +176,10 @@ func TestHybridStore_ImportChannelBatch(t *testing.T) {
 	channels := []*model.ChannelWithKeys{
 		{
 			Config: &model.Config{
-				Name:        "import-chan",
-				ChannelType: "codex",
-				URL:         "https://example.com",
-				Priority:    10,
-				Enabled:     true,
+				Name:     "import-chan",
+				URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+				Priority: 10,
+				Enabled:  true,
 				ModelEntries: []model.ModelEntry{
 					{Model: "gpt-4.1"},
 				},
@@ -368,7 +366,7 @@ func TestHybridStore_BatchAddLogs_DoesNotDuplicateSurvivingLogsAfterDeletedChann
 	ctx := context.Background()
 	created, err := hybrid.CreateConfig(ctx, &model.Config{
 		Name:    "deleted-channel",
-		URL:     "https://api.example.com",
+		URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
 		Enabled: true,
 	})
 	if err != nil {
@@ -466,11 +464,10 @@ func TestHybridStore_SQLiteCacheFailureDoesNotBlockWrite(t *testing.T) {
 
 	// 创建一个配置
 	cfg := &model.Config{
-		Name:        "test-channel",
-		ChannelType: "openai",
-		URL:         "https://api.openai.com",
-		Priority:    100,
-		Enabled:     true,
+		Name:     "test-channel",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+		Priority: 100,
+		Enabled:  true,
 	}
 
 	created, err := hybrid.CreateConfig(ctx, cfg)

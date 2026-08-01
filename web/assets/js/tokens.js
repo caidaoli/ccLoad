@@ -12,8 +12,8 @@
     let selectedAllowedModelIndices = new Set(); // 已选中的模型索引（批量删除用）
     let allChannels = [];                    // 渠道数据缓存
     let availableModelsCache = [];           // 可用模型缓存
-    let channelTypeDisplayNameMap = new Map(); // 渠道类型显示名缓存
-    let channelTypeDisplayNamesPromise = null; // 渠道类型显示名加载中的 Promise
+    let protocolDisplayNameMap = new Map(); // 协议显示名缓存
+    let protocolDisplayNamesPromise = null; // 协议显示名加载中的 Promise
     let selectedModelsForAdd = new Set();    // 模型选择对话框中已选的模型
     let currentVisibleModels = [];            // 当前可见的模型列表（用于全选功能）
     let editAllowedChannelIDs = [];           // 编辑模态框中当前的渠道限制列表
@@ -80,7 +80,7 @@
 
       // 预加载渠道数据（用于模型选择）
       loadChannelsData();
-      ensureChannelTypeDisplayNameMap();
+      ensureProtocolDisplayNameMap();
 
       initPageActionDelegation();
 
@@ -152,7 +152,6 @@
             updateChannelRestrictionModeUI();
           },
           'toggle-select-all-channels': (actionTarget) => toggleSelectAllChannels(actionTarget.checked),
-          'filter-available-channel-type': () => filterAvailableChannels(document.getElementById('channelSearchInput')?.value || ''),
           'toggle-select-all-allowed-models': (actionTarget) => toggleSelectAllAllowedModels(actionTarget.checked),
           'toggle-select-all-models': (actionTarget) => toggleSelectAllModels(actionTarget.checked),
           'toggle-allowed-channel': (actionTarget) => {
@@ -934,9 +933,13 @@
       return `${channel.name || t('common.unknown')} #${channel.id}`;
     }
 
-    function getChannelTypeText(channelID) {
+    function getChannelProtocolText(channelID) {
       const channel = getChannelByID(channelID);
-      return channel ? (channel.channel_type || '-') : '-';
+      if (!channel) return '-';
+      const protocols = getChannelProtocols(channel);
+      return protocols.length > 0
+        ? protocols.map(getProtocolLabel).join(', ')
+        : t('channels.urlProtocolAuto');
     }
 
     function sortAllowedChannelIDs() {
@@ -954,7 +957,7 @@
       const countSpan = document.getElementById('editAllowedChannelsCount');
       const selectAllCheckbox = document.getElementById('selectAllAllowedChannels');
       const mobileLabelChannelName = t('tokens.channelName');
-      const mobileLabelChannelType = t('tokens.channelType');
+      const mobileLabelProtocol = t('tokens.protocol');
       const mobileLabelActions = t('tokens.table.actions');
 
       if (!tbody) return;
@@ -987,7 +990,7 @@
             >
           </td>
           <td class="allowed-channel-col-name" data-mobile-label="${mobileLabelChannelName}">${escapeHtml(getChannelDisplayName(channelID))}</td>
-          <td class="allowed-channel-col-type" data-mobile-label="${mobileLabelChannelType}">${escapeHtml(getChannelTypeText(channelID))}</td>
+          <td class="allowed-channel-col-type" data-mobile-label="${mobileLabelProtocol}">${escapeHtml(getChannelProtocolText(channelID))}</td>
           <td class="allowed-channel-col-actions" data-mobile-label="${mobileLabelActions}">
             <button type="button" class="allowed-channel-remove-btn btn btn-secondary btn-sm" data-action="remove-allowed-channel" data-channel-id="${channelID}">${t('common.delete')}</button>
           </td>
@@ -1047,11 +1050,9 @@
       if (allChannels.length === 0) {
         await loadChannelsData();
       }
-      await ensureChannelTypeDisplayNameMap();
+      await ensureProtocolDisplayNameMap();
       selectedChannelsForAdd.clear();
       document.getElementById('channelSearchInput').value = '';
-      const channelTypeFilter = document.getElementById('channelTypeFilterSelect');
-      if (channelTypeFilter) channelTypeFilter.value = '';
       renderAvailableChannels('');
       document.getElementById('channelSelectModal').style.display = 'block';
       pushModal(closeChannelSelectModal);
@@ -1067,116 +1068,73 @@
       renderAvailableChannels(searchText);
     }
 
-    function normalizeChannelTypeValue(value) {
-      const type = String(value || '').trim().toLowerCase();
-      return type || 'anthropic';
+    function normalizeProtocolValue(value) {
+      return String(value || '').trim().toLowerCase();
     }
 
-    function buildChannelTypeDisplayNameMap(types) {
+    function buildProtocolDisplayNameMap(protocols) {
       const map = new Map();
-      (Array.isArray(types) ? types : []).forEach((type) => {
-        const typeKey = normalizeChannelTypeValue(type && type.value);
-        const displayName = String(type && type.display_name || '').trim();
+      (Array.isArray(protocols) ? protocols : []).forEach((protocol) => {
+        const protocolKey = normalizeProtocolValue(protocol && protocol.value);
+        const displayName = String(protocol && protocol.display_name || '').trim();
         if (!displayName) return;
-        map.set(typeKey, displayName);
+        map.set(protocolKey, displayName);
       });
       return map;
     }
 
-    async function ensureChannelTypeDisplayNameMap() {
-      if (channelTypeDisplayNameMap.size > 0) {
-        return channelTypeDisplayNameMap;
+    async function ensureProtocolDisplayNameMap() {
+      if (protocolDisplayNameMap.size > 0) {
+        return protocolDisplayNameMap;
       }
-      if (channelTypeDisplayNamesPromise) {
-        return channelTypeDisplayNamesPromise;
+      if (protocolDisplayNamesPromise) {
+        return protocolDisplayNamesPromise;
       }
 
-      channelTypeDisplayNamesPromise = (async () => {
+      protocolDisplayNamesPromise = (async () => {
         try {
-          if (window.ChannelTypeManager && typeof window.ChannelTypeManager.getChannelTypes === 'function') {
-            const types = await window.ChannelTypeManager.getChannelTypes();
-            channelTypeDisplayNameMap = buildChannelTypeDisplayNameMap(types);
+          if (window.ProtocolManager && typeof window.ProtocolManager.getProtocols === 'function') {
+            const protocols = await window.ProtocolManager.getProtocols();
+            protocolDisplayNameMap = buildProtocolDisplayNameMap(protocols);
           }
         } catch (error) {
-          console.error('Failed to load channel type display names:', error);
+          console.error('Failed to load protocol display names:', error);
         } finally {
-          channelTypeDisplayNamesPromise = null;
+          protocolDisplayNamesPromise = null;
         }
-        return channelTypeDisplayNameMap;
+        return protocolDisplayNameMap;
       })();
 
-      return channelTypeDisplayNamesPromise;
+      return protocolDisplayNamesPromise;
     }
 
-    function getChannelTypeGroupKey(channel) {
-      return normalizeChannelTypeValue(channel?.channel_type);
+    function getChannelProtocols(channel) {
+      return Array.from(new Set(
+        (Array.isArray(channel?.urls) ? channel.urls : [])
+          .flatMap(entry => Array.isArray(entry?.protocols) ? entry.protocols : [])
+          .map(normalizeProtocolValue)
+          .filter(Boolean)
+      ));
     }
 
-    function getChannelTypeGroupLabel(typeKey) {
-      const normalizedTypeKey = normalizeChannelTypeValue(typeKey);
-      return channelTypeDisplayNameMap.get(normalizedTypeKey) || normalizedTypeKey || t('tokens.channelTypeOther');
+    function getProtocolLabel(protocol) {
+      const normalizedProtocol = normalizeProtocolValue(protocol);
+      return protocolDisplayNameMap.get(normalizedProtocol) || normalizedProtocol;
     }
 
     function matchesChannelSearchText(channel, searchText) {
       const search = String(searchText || '').trim().toLowerCase();
       if (!search) return true;
 
-      const normalizedTypeKey = getChannelTypeGroupKey(channel);
-      const displayTypeName = getChannelTypeGroupLabel(normalizedTypeKey).toLowerCase();
+      const protocols = getChannelProtocols(channel);
+      const protocolText = protocols.map(getProtocolLabel).join(' ').toLowerCase();
       const name = String(channel?.name || '').toLowerCase();
-      const rawType = String(channel?.channel_type || '').trim().toLowerCase();
       const id = String(channel?.id || '');
 
       return name.includes(search) ||
-        rawType.includes(search) ||
-        normalizedTypeKey.includes(search) ||
-        displayTypeName.includes(search) ||
+        protocols.some(protocol => protocol.includes(search)) ||
+        protocolText.includes(search) ||
         id.includes(search);
-    }
-
-    function sortChannelTypeGroups(groups) {
-      const order = ['anthropic', 'codex', 'openai', 'gemini'];
-      return groups.sort((a, b) => {
-        const indexA = order.includes(a.typeKey) ? order.indexOf(a.typeKey) : order.length;
-        const indexB = order.includes(b.typeKey) ? order.indexOf(b.typeKey) : order.length;
-        if (indexA !== indexB) return indexA - indexB;
-        return a.label.localeCompare(b.label);
-      });
-    }
-
-    function groupChannelsByType(channels) {
-      const groupMap = new Map();
-      channels.forEach((channel) => {
-        const typeKey = getChannelTypeGroupKey(channel);
-        if (!groupMap.has(typeKey)) {
-          groupMap.set(typeKey, {
-            typeKey,
-            label: getChannelTypeGroupLabel(typeKey),
-            channels: []
-          });
-        }
-        groupMap.get(typeKey).channels.push(channel);
-      });
-      return sortChannelTypeGroups(Array.from(groupMap.values()));
-    }
-
-    function updateChannelTypeFilterOptions(channels) {
-      const select = document.getElementById('channelTypeFilterSelect');
-      if (!select) return '';
-
-      const currentValue = select.value;
-      const channelGroups = groupChannelsByType(channels);
-      select.innerHTML = [
-        `<option value="">${escapeHtml(t('tokens.channelTypeAll'))}</option>`,
-        ...channelGroups.map(group => `<option value="${escapeHtml(group.typeKey)}">${escapeHtml(group.label)}</option>`)
-      ].join('');
-
-      if (channelGroups.some(group => group.typeKey === currentValue)) {
-        select.value = currentValue;
-      } else {
-        select.value = '';
-      }
-      return select.value;
     }
 
     function renderAvailableChannels(searchText) {
@@ -1189,21 +1147,17 @@
 
       const existingChannelIDs = new Set(editAllowedChannelIDs);
       const availableChannels = allChannels.filter(ch => !existingChannelIDs.has(normalizeChannelID(ch.id)));
-      const selectedTypeKey = updateChannelTypeFilterOptions(availableChannels);
       let channels = availableChannels;
 
       if (searchText) {
         channels = channels.filter(ch => matchesChannelSearchText(ch, searchText));
-      }
-      if (selectedTypeKey) {
-        channels = channels.filter(ch => getChannelTypeGroupKey(ch) === selectedTypeKey);
       }
 
       currentVisibleChannels = channels;
       if (countSpan) countSpan.textContent = selectedChannelsForAdd.size;
 
       if (channels.length === 0) {
-        const hasFilter = Boolean(searchText || selectedTypeKey);
+        const hasFilter = Boolean(searchText);
         const message = hasFilter
           ? t('tokens.noMatchingChannel')
           : allChannels.length === 0
@@ -1231,30 +1185,21 @@
         visibleChannelsCount.textContent = t('tokens.visibleChannelsCount', { count: channels.length });
       }
 
-      const channelGroups = groupChannelsByType(channels);
-      container.innerHTML = channelGroups.map(group => `
-        <section class="channel-type-group" data-channel-type-key="${escapeHtml(group.typeKey)}">
-          <div class="channel-type-group-header">
-            <div class="channel-type-group-title">
-              <span class="channel-type-group-name">${escapeHtml(group.label)}</span>
-              <span class="channel-type-group-count">${t('tokens.visibleChannelsCount', { count: group.channels.length })}</span>
-            </div>
-          </div>
-          <div class="channel-type-group-list">
-            ${group.channels.map(ch => {
-              const channelID = normalizeChannelID(ch.id);
-              return `
-                <label class="channel-option-item" data-channel-id="${channelID}">
-                  <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
-                    ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
-                  <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
-                  <span class="channel-option-meta">#${channelID} · ${escapeHtml(ch.channel_type || '-')}</span>
-                </label>
-              `;
-            }).join('')}
-          </div>
-        </section>
-      `).join('');
+      container.innerHTML = `<div class="channel-option-list">${channels.map(ch => {
+        const channelID = normalizeChannelID(ch.id);
+        const protocols = getChannelProtocols(ch);
+        const protocolText = protocols.length > 0
+          ? protocols.map(getProtocolLabel).join(', ')
+          : t('channels.urlProtocolAuto');
+        return `
+          <label class="channel-option-item" data-channel-id="${channelID}">
+            <input type="checkbox" class="channel-option-checkbox" data-channel-id="${channelID}"
+              ${selectedChannelsForAdd.has(channelID) ? 'checked' : ''}>
+            <span class="channel-option-label">${escapeHtml(ch.name || t('common.unknown'))}</span>
+            <span class="channel-option-meta">#${channelID} · ${escapeHtml(protocolText)}</span>
+          </label>
+        `;
+      }).join('')}</div>`;
 
       if (!container.dataset.delegated) {
         container.addEventListener('change', (e) => {

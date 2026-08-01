@@ -63,9 +63,8 @@ func TestStatsCache_HashFilter(t *testing.T) {
 	// 带字段的 filter
 	channelID := int64(123)
 	filter := &model.LogFilter{
-		ChannelID:   &channelID,
-		ChannelType: "openai",
-		Model:       "gpt-4",
+		ChannelID: &channelID,
+		Model:     "gpt-4",
 	}
 	hash2 := hashFilter(filter)
 	if len(hash2) != 16 {
