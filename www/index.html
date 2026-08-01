@@ -16,8 +16,8 @@
   <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
 
   <!-- Locale bundles + i18n -->
-  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
-  <script defer src="assets/locales/en.js?v=20260725-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
+  <script defer src="assets/locales/en.js?v=20260801-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
 
   <!-- Scripts -->
@@ -92,12 +92,12 @@
           </p>
         </div>
 
-        <!-- Multi-API compatibility -->
+        <!-- Per-model controls -->
         <div class="www-feature-card">
-          <span class="www-feature-icon">🔌</span>
-          <h3 class="www-feature-title" data-i18n="www.home.features.multiapi.title">Multi-API Support</h3>
-          <p class="www-feature-desc" data-i18n="www.home.features.multiapi.desc">
-            Configure one channel target; ccLoad tries the client wire protocol first and caches the working fallback per URL
+          <span class="www-feature-icon">🎛️</span>
+          <h3 class="www-feature-title" data-i18n="www.home.features.models.title">Per-Model Controls</h3>
+          <p class="www-feature-desc" data-i18n="www.home.features.models.desc">
+            Pause individual channel models without deleting their redirects, statistics or configuration
           </p>
         </div>
 
@@ -179,7 +179,7 @@
           <ul class="www-check-list">
             <li data-i18n="www.home.admin.item1">Track requests, tokens, cost and latency system-wide as an administrator or within one API token's scope.</li>
             <li data-i18n="www.home.admin.item2">Run chat-style tests or compare statistical model fingerprints against saved baselines.</li>
-            <li data-i18n="www.home.admin.item3">Configure multiple URLs, multiple keys, RPM limits, concurrency limits and daily cost limits per channel.</li>
+            <li data-i18n="www.home.admin.item3">Configure multiple URLs and keys, pause individual models, and enforce RPM, concurrency and daily cost limits per channel.</li>
             <li data-i18n="www.home.admin.item4">Export conversations as Markdown or HTML, then inspect masked upstream requests and responses when tracking protocol transform issues.</li>
           </ul>
           <div class="www-card-actions">
