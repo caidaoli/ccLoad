@@ -41,6 +41,23 @@ func TestConvertClaudeRequestToGemini_ToolChoice_SpecificTool(t *testing.T) {
 	}
 }
 
+func TestConvertClaudeRequestToGemini_StringSystemInstruction(t *testing.T) {
+	inputJSON := []byte(`{
+		"model": "gemini-3-flash-preview",
+		"system": "Be concise",
+		"messages": [{"role": "user", "content": "Hello"}]
+	}`)
+
+	output := ConvertClaudeRequestToGemini("gemini-3-flash-preview", inputJSON, false)
+
+	if got := gjson.GetBytes(output, "systemInstruction.parts.0.text").String(); got != "Be concise" {
+		t.Fatalf("Expected systemInstruction text %q, got %q", "Be concise", got)
+	}
+	if gjson.GetBytes(output, "system_instruction").Exists() {
+		t.Fatalf("Legacy system_instruction field should not be emitted: %s", output)
+	}
+}
+
 func TestConvertClaudeRequestToGemini_ImageContent(t *testing.T) {
 	inputJSON := []byte(`{
 		"model": "gemini-3-flash-preview",

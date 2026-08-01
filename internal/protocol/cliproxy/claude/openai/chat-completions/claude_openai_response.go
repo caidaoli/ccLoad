@@ -78,12 +78,13 @@ func (u *claudeUsageTokens) Merge(usage gjson.Result) {
 	}
 }
 
-func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalTokens, cachedTokens int64) {
+func (u claudeUsageTokens) OpenAIUsage() (promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens int64) {
 	cachedTokens = u.CacheReadInputTokens
-	promptTokens = u.InputTokens + u.CacheCreationInputTokens + cachedTokens
+	cachedCreationTokens = u.CacheCreationInputTokens
+	promptTokens = u.InputTokens + cachedCreationTokens + cachedTokens
 	completionTokens = u.OutputTokens
 	totalTokens = promptTokens + completionTokens
-	return promptTokens, completionTokens, totalTokens, cachedTokens
+	return promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens
 }
 
 // ConvertClaudeResponseToOpenAI converts Claude Code streaming response format to OpenAI Chat Completions format.
@@ -297,11 +298,12 @@ func ConvertClaudeResponseToOpenAI(_ context.Context, modelName string, original
 		// Handle usage information for token counts
 		if usage := root.Get("usage"); usage.Exists() {
 			(*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.Merge(usage)
-			promptTokens, completionTokens, totalTokens, cachedTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.OpenAIUsage()
+			promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.OpenAIUsage()
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens", promptTokens)
 			template, _ = sjson.SetBytes(template, "usage.completion_tokens", completionTokens)
 			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokens)
 			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
+			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
 			if cacheCreationTokens := (*param).(*ConvertAnthropicResponseToOpenAIParams).Usage.CacheCreationInputTokens; cacheCreationTokens > 0 {
 				template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokens)
 			}
@@ -440,13 +442,14 @@ func ConvertClaudeResponseToOpenAINonStream(_ context.Context, modelName string,
 	usage := claudeUsageTokens{}
 	usage.Merge(root.Get("usage"))
 	if usage.HasUsage {
-		promptTokens, completionTokens, totalTokens, cachedTokens := usage.OpenAIUsage()
+		promptTokens, completionTokens, totalTokens, cachedTokens, cachedCreationTokens := usage.OpenAIUsage()
 		out, _ = sjson.SetBytes(out, "usage.prompt_tokens", promptTokens)
 		out, _ = sjson.SetBytes(out, "usage.completion_tokens", completionTokens)
 		out, _ = sjson.SetBytes(out, "usage.total_tokens", totalTokens)
 		if cachedTokens > 0 {
 			out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_tokens", cachedTokens)
 		}
+		out, _ = sjson.SetBytes(out, "usage.prompt_tokens_details.cached_creation_tokens", cachedCreationTokens)
 		if usage.CacheCreationInputTokens > 0 {
 			out, _ = sjson.SetBytes(out, "usage.cache_creation_input_tokens", usage.CacheCreationInputTokens)
 		}
