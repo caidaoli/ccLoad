@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"strings"
 	"testing"
-
-	"ccLoad/internal/model"
 )
 
 func assertGeminiFunctionCallStream(t *testing.T, body, name, query string) {
@@ -48,11 +46,11 @@ func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 	var gotBody []byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "anthropic-ch", channelType: "anthropic", models: "claude-3-5-sonnet", apiKey: "sk-ant"},
+		{name: "anthropic-ch", upstreamProtocol: "anthropic", models: "claude-3-5-sonnet", apiKey: "sk-ant"},
 	}, map[int]string{0: "https://anthropic-upstream.example.com"})
 
 	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		Transport: automaticFallbackToPath("/v1/messages", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			gotBody, _ = io.ReadAll(r.Body)
 			body := bytes.NewBufferString(
@@ -68,7 +66,7 @@ func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 				Body:       io.NopCloser(body),
 			}, nil
-		}),
+		})),
 	}
 
 	configs, err := env.store.ListConfigs(context.Background())
@@ -76,8 +74,6 @@ func TestProxy_Success_Streaming_GeminiToAnthropicTransform(t *testing.T) {
 		t.Fatalf("ListConfigs failed: %v", err)
 	}
 	cfg := configs[0]
-	cfg.ProtocolTransforms = []string{"gemini"}
-	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}
@@ -113,11 +109,11 @@ func TestProxy_Success_Streaming_GeminiToCodexTransform(t *testing.T) {
 	var gotBody []byte
 
 	env := setupProxyTestEnv(t, []testChannel{
-		{name: "codex-ch", channelType: "codex", models: "gpt-5-codex", apiKey: "sk-cdx"},
+		{name: "codex-ch", upstreamProtocol: "codex", models: "gpt-5-codex", apiKey: "sk-cdx"},
 	}, map[int]string{0: "https://codex-upstream.example.com"})
 
 	env.server.client = &http.Client{
-		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		Transport: automaticFallbackToPath("/v1/responses", roundTripperFunc(func(r *http.Request) (*http.Response, error) {
 			gotPath = r.URL.Path
 			gotBody, _ = io.ReadAll(r.Body)
 			body := bytes.NewBufferString(
@@ -129,7 +125,7 @@ func TestProxy_Success_Streaming_GeminiToCodexTransform(t *testing.T) {
 				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
 				Body:       io.NopCloser(body),
 			}, nil
-		}),
+		})),
 	}
 
 	configs, err := env.store.ListConfigs(context.Background())
@@ -137,8 +133,6 @@ func TestProxy_Success_Streaming_GeminiToCodexTransform(t *testing.T) {
 		t.Fatalf("ListConfigs failed: %v", err)
 	}
 	cfg := configs[0]
-	cfg.ProtocolTransforms = []string{"gemini"}
-	cfg.ProtocolTransformMode = model.ProtocolTransformModeLocal
 	if _, err := env.store.UpdateConfig(context.Background(), cfg.ID, cfg); err != nil {
 		t.Fatalf("UpdateConfig failed: %v", err)
 	}

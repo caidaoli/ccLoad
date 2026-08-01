@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -24,10 +25,42 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+func channelURLsForTest(rawValues ...string) model.ChannelURLs {
+	urls := make(model.ChannelURLs, 0, len(rawValues))
+	for _, raw := range rawValues {
+		for line := range strings.SplitSeq(raw, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			urls = append(urls, model.ChannelURL{
+				URL:   model.StripExactUpstreamURLMarker(line),
+				Exact: model.HasExactUpstreamURLMarker(line),
+			})
+		}
+	}
+	return urls
+}
+
 type roundTripperFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
+}
+
+func automaticFallbackToPath(wantPath string, next http.RoundTripper) http.RoundTripper {
+	return roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == wantPath {
+			return next.RoundTrip(req)
+		}
+		body := fmt.Sprintf(`{"error":{"message":"Invalid URL (%s %s)"}}`, req.Method, req.URL.Path)
+		return &http.Response{
+			StatusCode: http.StatusNotFound,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})
 }
 
 type testHTTPServer struct {

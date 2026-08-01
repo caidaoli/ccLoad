@@ -54,11 +54,10 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 
 	// 在 MySQL 中创建测试数据
 	cfg := &model.Config{
-		Name:        "test-channel",
-		ChannelType: "openai",
-		URL:         "https://api.openai.com",
-		Priority:    100,
-		Enabled:     true,
+		Name:     "test-channel",
+		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
+		Priority: 100,
+		Enabled:  true,
 	}
 	created, err := mysql.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -141,52 +140,6 @@ func TestSyncManager_RestoreOnStartup_RestoresFingerprintData(t *testing.T) {
 	}
 	if len(restoredRecords) != 1 || restoredRecords[0].ID != record.ID {
 		t.Fatalf("restored records=%#v, want id=%d", restoredRecords, record.ID)
-	}
-}
-
-func TestSyncManager_RestoreOnStartup_RestoresProtocolTransforms(t *testing.T) {
-	mysql := createTestStoreForSync(t, "mysql_protocol_transforms")
-	sqlite := createTestStoreForSync(t, "sqlite_protocol_transforms")
-	defer func() {
-		_ = mysql.Close()
-		_ = sqlite.Close()
-	}()
-
-	ctx := context.Background()
-	cfg := &model.Config{
-		Name:                  "protocol-transform-channel",
-		ChannelType:           "anthropic",
-		URL:                   "https://api.example.com",
-		Priority:              100,
-		Enabled:               true,
-		ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		ProtocolTransforms:    []string{"openai", "gemini"},
-	}
-	created, err := mysql.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建测试渠道失败: %v", err)
-	}
-
-	sm := NewSyncManager(mysql, sqlite)
-	restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	if err := sm.RestoreOnStartup(restoreCtx, 0); err != nil {
-		t.Fatalf("RestoreOnStartup 失败: %v", err)
-	}
-
-	restored, err := sqlite.GetConfig(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("恢复后获取配置失败: %v", err)
-	}
-	got := restored.ProtocolTransforms
-	want := []string{"gemini", "openai"}
-	if len(got) != len(want) {
-		t.Fatalf("protocol transforms 数量不匹配: got %#v, want %#v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("protocol transforms 不匹配: got %#v, want %#v", got, want)
-		}
 	}
 }
 

@@ -734,6 +734,7 @@ async function testSingleKey(keyIndex, testButton) {
 
   // 从 redirectTableData 获取模型列表（定义在 channels-state.js）
   const models = redirectTableData
+    .filter(r => r && !r.disabled)
     .map(r => r.model)
     .filter(m => m && m.trim());
   if (models.length === 0) {
@@ -749,15 +750,6 @@ async function testSingleKey(keyIndex, testButton) {
     return;
   }
 
-  const channelTypeRadios = document.querySelectorAll('input[name="channelType"]');
-  let channelType = 'anthropic';
-  for (const radio of channelTypeRadios) {
-    if (radio.checked) {
-      channelType = radio.value.toLowerCase();
-      break;
-    }
-  }
-
   if (!testButton) return;
   const originalHTML = testButton.innerHTML;
   testButton.disabled = true;
@@ -771,7 +763,7 @@ async function testSingleKey(keyIndex, testButton) {
         model: firstModel,
         stream: true,
         content: 'test',
-        channel_type: channelType,
+        client_protocol: 'anthropic',
         key_index: keyIndex,
         api_key: apiKey.trim()
       })

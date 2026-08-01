@@ -18,9 +18,8 @@ func TestHandleChannelURLStats_NilSelectorReturnsEmpty(t *testing.T) {
 
 	cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
 		Name:         "url-stats-nil-selector",
-		URL:          "https://a.example\nhttps://b.example",
+		URLs:         channelURLsForTest("https://a.example", "https://b.example"),
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
 		Enabled:      true,
 	})
@@ -48,6 +47,43 @@ func TestHandleChannelURLStats_NilSelectorReturnsEmpty(t *testing.T) {
 	}
 }
 
+func TestHandleChannelURLStats_SingleURLReturnsStats(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name:         "single-url-stats",
+		URLs:         channelURLsForTest("https://single.example"),
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	srv.urlSelector.RecordLatency(cfg.ID, "https://single.example", 125*time.Millisecond)
+
+	target := fmt.Sprintf("/admin/channels/%d/url-stats", cfg.ID)
+	c, w := newTestContext(t, newRequest(http.MethodGet, target, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+
+	srv.HandleChannelURLStats(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[[]URLStat](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("expected success=true, resp=%+v", resp)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("expected one URL stat, got %+v", resp.Data)
+	}
+	stat := resp.Data[0]
+	if stat.URL != "https://single.example" || stat.LatencyMs != 125 || stat.Requests != 1 {
+		t.Fatalf("unexpected single URL stat: %+v", stat)
+	}
+}
+
 func TestNewServer_LoadsTodayURLStatsFromLogsOnStartup(t *testing.T) {
 	store, err := storage.CreateSQLiteStore(":memory:")
 	if err != nil {
@@ -56,9 +92,8 @@ func TestNewServer_LoadsTodayURLStatsFromLogsOnStartup(t *testing.T) {
 
 	cfg, err := store.CreateConfig(context.Background(), &model.Config{
 		Name:         "url-stats-from-logs",
-		URL:          "https://a.example\nhttps://b.example",
+		URLs:         channelURLsForTest("https://a.example", "https://b.example"),
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-20250514"}},
 		Enabled:      true,
 	})

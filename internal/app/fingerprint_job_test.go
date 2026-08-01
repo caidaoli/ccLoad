@@ -32,17 +32,24 @@ func openAIReply(content string) []byte {
 	))
 }
 
+func codexReply(content string) []byte {
+	return []byte(fmt.Sprintf(
+		`{"id":"resp-test","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":%q}]}],"usage":{"input_tokens":5,"output_tokens":2}}`,
+		content,
+	))
+}
+
 // createFingerprintChannel creates a channel + key in the test server store and returns the channel ID.
 func createFingerprintChannel(t *testing.T, srv *Server, upstreamURL string) int64 {
 	t.Helper()
 	ctx := context.Background()
 	cfg := &model.Config{
-		Name:         "fp-test-channel",
-		URL:          upstreamURL,
-		Priority:     1,
-		ChannelType:  "openai",
-		ModelEntries: []model.ModelEntry{{Model: "fp-model"}},
-		Enabled:      true,
+		Name:                  "fp-test-channel",
+		URLs:                  model.ChannelURLs{{URL: upstreamURL}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "fp-model"}},
+		Enabled:               true,
 	}
 	created, err := srv.store.CreateConfig(ctx, cfg)
 	if err != nil {
@@ -92,11 +99,15 @@ func pollJob(t *testing.T, mgr *FingerprintJobManager, jobID string) *Fingerprin
 func TestFingerprintCalibrateAndTest(t *testing.T) {
 	// Upstream returns numbers cycling through 1..50 to produce a valid (>= 40 valid samples) distribution.
 	var counter atomic.Int32
+	var wrongPaths atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			wrongPaths.Add(1)
+		}
 		n := int(counter.Add(1)%50) + 1
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(openAIReply(fmt.Sprintf("%d", n)))
+		_, _ = w.Write(codexReply(fmt.Sprintf("%d", n)))
 	}))
 	defer upstream.Close()
 
@@ -107,12 +118,13 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 
 	// ---- Calibrate ----
 	jobID, err := mgr.StartCalibrate(srv, calibrateReq{
-		Name:        "test-baseline",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50, // minimum valid
-		Concurrency: 5,
-		KeyIndex:    0,
+		Name:           "test-baseline",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "codex",
+		Iterations:     50, // minimum valid
+		Concurrency:    5,
+		KeyIndex:       0,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -147,12 +159,13 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 
 	// ---- Test against baseline (same upstream ⇒ high score) ----
 	jobID2, err := mgr.StartTest(srv, testFingerprintReq{
-		ChannelID:     channelID,
-		Model:         "fp-model",
-		FingerprintID: &fp.ID,
-		Iterations:    50,
-		Concurrency:   5,
-		KeyIndex:      0,
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "codex",
+		FingerprintID:  &fp.ID,
+		Iterations:     50,
+		Concurrency:    5,
+		KeyIndex:       0,
 	})
 	if err != nil {
 		t.Fatalf("StartTest: %v", err)
@@ -182,6 +195,9 @@ func TestFingerprintCalibrateAndTest(t *testing.T) {
 	if len(logs) != 100 {
 		t.Fatalf("expected one log per fingerprint sampling call, got %d", len(logs))
 	}
+	if got := wrongPaths.Load(); got != 0 {
+		t.Fatalf("fingerprint sent %d requests to a non-Codex endpoint", got)
+	}
 	for _, entry := range logs {
 		if entry.ChannelID != channelID {
 			t.Fatalf("log channel_id=%d, want %d", entry.ChannelID, channelID)
@@ -209,11 +225,12 @@ func TestFingerprintJobInsufficientSamples(t *testing.T) {
 	mgr := srv.fingerprintJobs
 
 	jobID, err := mgr.StartCalibrate(srv, calibrateReq{
-		Name:        "should-fail",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 2,
+		Name:           "should-fail",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    2,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -260,11 +277,12 @@ func TestFingerprintJobCancel(t *testing.T) {
 	mgr := srv.fingerprintJobs
 
 	jobID, err := mgr.StartCalibrate(srv, calibrateReq{
-		Name:        "cancel-test",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 2,
+		Name:           "cancel-test",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    2,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -315,11 +333,12 @@ func TestFingerprintSamplingWaitsForChannelConcurrency(t *testing.T) {
 	channelID := createFingerprintChannel(t, srv, upstream.URL)
 	setFingerprintChannelLimits(t, srv, channelID, 0, 2)
 	jobID, err := srv.fingerprintJobs.StartCalibrate(srv, calibrateReq{
-		Name:        "concurrency-limited",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 10,
+		Name:           "concurrency-limited",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    10,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -347,7 +366,7 @@ func TestFingerprintCapacityWaitDoesNotConsumeRequestTimeout(t *testing.T) {
 
 	srv := newInMemoryServer(t)
 	srv.nonStreamTimeout = 20 * time.Millisecond
-	srv.channelTypeTimeouts["openai"] = channelTypeTimeoutConfig{NonStreamTimeout: 20 * time.Millisecond}
+	srv.protocolTimeouts["openai"] = protocolTimeoutConfig{NonStreamTimeout: 20 * time.Millisecond}
 	channelID := createFingerprintChannel(t, srv, upstream.URL)
 	setFingerprintChannelLimits(t, srv, channelID, 0, 1)
 
@@ -374,11 +393,12 @@ func TestFingerprintCapacityWaitDoesNotConsumeRequestTimeout(t *testing.T) {
 	defer func() { _ = occupiedResp.Body.Close() }()
 
 	jobID, err := srv.fingerprintJobs.StartCalibrate(srv, calibrateReq{
-		Name:        "capacity-wait-timeout",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 1,
+		Name:           "capacity-wait-timeout",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    1,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -416,11 +436,12 @@ func TestFingerprintSamplingWaitsForChannelRPMAndCancels(t *testing.T) {
 	channelID := createFingerprintChannel(t, srv, upstream.URL)
 	setFingerprintChannelLimits(t, srv, channelID, 1, 0)
 	jobID, err := srv.fingerprintJobs.StartCalibrate(srv, calibrateReq{
-		Name:        "rpm-limited",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 5,
+		Name:           "rpm-limited",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    5,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -462,11 +483,12 @@ func TestFingerprintJobCancelDoesNotPersistEnoughPartialSamples(t *testing.T) {
 	srv := newInMemoryServer(t)
 	channelID := createFingerprintChannel(t, srv, upstream.URL)
 	jobID, err := srv.fingerprintJobs.StartCalibrate(srv, calibrateReq{
-		Name:        "partial-must-not-persist",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 2,
+		Name:           "partial-must-not-persist",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    2,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -516,11 +538,12 @@ func TestFingerprintJobHistoryPersistenceFailureFailsJob(t *testing.T) {
 	srv.store = failingFingerprintTestResultStore{Store: srv.store}
 
 	jobID, err := srv.fingerprintJobs.StartTest(srv, testFingerprintReq{
-		ChannelID:     channelID,
-		Model:         "fp-model",
-		FingerprintID: &baseline.ID,
-		Iterations:    50,
-		Concurrency:   5,
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		FingerprintID:  &baseline.ID,
+		Iterations:     50,
+		Concurrency:    5,
 	})
 	if err != nil {
 		t.Fatalf("StartTest: %v", err)
@@ -549,11 +572,12 @@ func TestFingerprintJobsStopBeforeServerShutdownReturns(t *testing.T) {
 	srv := newInMemoryServer(t)
 	channelID := createFingerprintChannel(t, srv, upstream.URL)
 	jobID, err := srv.fingerprintJobs.StartCalibrate(srv, calibrateReq{
-		Name:        "shutdown",
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 2,
+		Name:           "shutdown",
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    2,
 	})
 	if err != nil {
 		t.Fatalf("StartCalibrate: %v", err)
@@ -605,17 +629,17 @@ func TestFingerprintJobManagerMaxRunning(t *testing.T) {
 	mgr := srv.fingerprintJobs
 
 	// Job 1
-	id1, err := mgr.StartCalibrate(srv, calibrateReq{Name: "j1", ChannelID: channelID, Model: "fp-model", Iterations: 50, Concurrency: 2})
+	id1, err := mgr.StartCalibrate(srv, calibrateReq{Name: "j1", ChannelID: channelID, Model: "fp-model", ClientProtocol: "openai", Iterations: 50, Concurrency: 2})
 	if err != nil {
 		t.Fatalf("job1: %v", err)
 	}
 	// Job 2
-	id2, err := mgr.StartCalibrate(srv, calibrateReq{Name: "j2", ChannelID: channelID, Model: "fp-model", Iterations: 50, Concurrency: 2})
+	id2, err := mgr.StartCalibrate(srv, calibrateReq{Name: "j2", ChannelID: channelID, Model: "fp-model", ClientProtocol: "openai", Iterations: 50, Concurrency: 2})
 	if err != nil {
 		t.Fatalf("job2: %v", err)
 	}
 	// Job 3 should be rejected
-	_, err = mgr.StartCalibrate(srv, calibrateReq{Name: "j3", ChannelID: channelID, Model: "fp-model", Iterations: 50, Concurrency: 2})
+	_, err = mgr.StartCalibrate(srv, calibrateReq{Name: "j3", ChannelID: channelID, Model: "fp-model", ClientProtocol: "openai", Iterations: 50, Concurrency: 2})
 	if err == nil {
 		t.Fatalf("expected error for 3rd concurrent job")
 	}
@@ -641,10 +665,11 @@ func TestFingerprintTestNoBaselines(t *testing.T) {
 	mgr := srv.fingerprintJobs
 
 	jobID, err := mgr.StartTest(srv, testFingerprintReq{
-		ChannelID:   channelID,
-		Model:       "fp-model",
-		Iterations:  50,
-		Concurrency: 5,
+		ChannelID:      channelID,
+		Model:          "fp-model",
+		ClientProtocol: "openai",
+		Iterations:     50,
+		Concurrency:    5,
 	})
 	if err != nil {
 		t.Fatalf("StartTest: %v", err)

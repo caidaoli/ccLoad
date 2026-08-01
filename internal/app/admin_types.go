@@ -4,13 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	neturl "net/url"
-	"slices"
 	"strings"
 	"time"
 
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
-	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 )
 
@@ -22,12 +20,10 @@ type ChannelRequest struct {
 	Name                   string                        `json:"name" binding:"required"`
 	APIKey                 string                        `json:"api_key"`
 	APIKeys                []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
-	ChannelType            string                        `json:"channel_type,omitempty"` // 渠道类型:anthropic, codex, gemini
 	Websockets             bool                          `json:"websockets,omitempty"`
 	ProtocolTransformMode  string                        `json:"protocol_transform_mode,omitempty"`
-	ProtocolTransforms     []string                      `json:"protocol_transforms,omitempty"`
 	KeyStrategy            string                        `json:"key_strategy,omitempty"` // Key使用策略:sequential, round_robin
-	URL                    string                        `json:"url" binding:"required"`
+	URLs                   model.ChannelURLs             `json:"urls" binding:"required,min=1"`
 	Priority               int                           `json:"priority"`
 	RPMLimit               int                           `json:"rpm_limit"`                       // 每分钟请求数限制，0表示无限制
 	MaxConcurrency         int                           `json:"max_concurrency"`                 // 最大并发请求数，0表示无限制
@@ -141,33 +137,30 @@ func normalizeChannelProxyURL(raw string) (string, error) {
 	}
 }
 
-// validateChannelURLs 校验换行分隔的多URL字段，逐个验证并标准化
-func validateChannelURLs(raw string) (string, error) {
-	if !strings.Contains(raw, "\n") {
-		return validateChannelBaseURL(raw)
+func validateChannelURLConfigs(urls model.ChannelURLs) (model.ChannelURLs, error) {
+	urls = urls.Clone()
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("urls cannot be empty")
 	}
-	lines := strings.Split(raw, "\n")
-	var normalized []string
-	seen := make(map[string]struct{}, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	if err := urls.Normalize(); err != nil {
+		return nil, err
+	}
+	for i := range urls {
+		raw := urls[i].URL
+		if urls[i].Exact {
+			raw += model.ExactUpstreamURLMarker
 		}
-		u, err := validateChannelBaseURL(line)
+		normalized, err := validateChannelBaseURL(raw)
 		if err != nil {
-			return "", err
+			return nil, fmt.Errorf("urls[%d]: %w", i, err)
 		}
-		if _, exists := seen[u]; exists {
-			continue
-		}
-		seen[u] = struct{}{}
-		normalized = append(normalized, u)
+		urls[i].Exact = model.HasExactUpstreamURLMarker(normalized)
+		urls[i].URL = model.StripExactUpstreamURLMarker(normalized)
 	}
-	if len(normalized) == 0 {
-		return "", fmt.Errorf("url cannot be empty")
+	if err := urls.Normalize(); err != nil {
+		return nil, err
 	}
-	return strings.Join(normalized, "\n"), nil
+	return urls, nil
 }
 
 // Validate 实现RequestValidator接口
@@ -220,41 +213,18 @@ func (cr *ChannelRequest) Validate() error {
 		}
 	}
 
-	// URL 验证：支持换行分隔的多URL，逐个校验并标准化
-	normalizedURL, err := validateChannelURLs(cr.URL)
+	// URL 能力属于具体端点；先规范化结构，再逐项验证网络地址。
+	var err error
+	cr.URLs, err = validateChannelURLConfigs(cr.URLs)
 	if err != nil {
 		return err
 	}
-	cr.URL = normalizedURL
 
-	// [FIX] channel_type 白名单校验 + 标准化
-	// 设计：空值允许（使用默认值anthropic），非空值必须合法
-	cr.ChannelType = strings.TrimSpace(cr.ChannelType)
-	if cr.ChannelType != "" {
-		// 先标准化（小写化）
-		normalized := util.NormalizeChannelType(cr.ChannelType)
-		// 再白名单校验
-		if !util.IsValidChannelType(normalized) {
-			return fmt.Errorf("invalid channel_type: %q (allowed: anthropic, openai, gemini, codex)", cr.ChannelType)
-		}
-		cr.ChannelType = normalized // 应用标准化结果
-	}
-	if cr.Websockets && util.NormalizeChannelType(cr.ChannelType) != util.ChannelTypeCodex {
-		return fmt.Errorf("websockets is only supported for codex channels")
-	}
 	rawProtocolTransformMode := cr.ProtocolTransformMode
-	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(cr.ProtocolTransformMode)
+	cr.ProtocolTransformMode = model.NormalizeProtocolTransformMode(rawProtocolTransformMode)
 	if cr.ProtocolTransformMode == "" {
-		return fmt.Errorf("invalid protocol_transform_mode: %q (allowed: local, upstream)", rawProtocolTransformMode)
+		return fmt.Errorf("invalid protocol_transform_mode: %q (allowed: auto, upstream, local)", rawProtocolTransformMode)
 	}
-	if model.HasExactUpstreamURLMarker(cr.URL) && cr.ProtocolTransformMode == model.ProtocolTransformModeUpstream {
-		return fmt.Errorf("protocol_transform_mode upstream is not allowed when url uses exact upstream marker #")
-	}
-	if err := validateProtocolTransforms(cr.ChannelType, cr.ProtocolTransformMode, cr.ProtocolTransforms); err != nil {
-		return err
-	}
-	cr.ProtocolTransforms = normalizeProtocolTransforms(cr.ChannelType, cr.ProtocolTransformMode, cr.ProtocolTransforms)
-
 	// [FIX] key_strategy 白名单校验 + 标准化
 	// 设计：空值允许（使用默认值sequential），非空值必须合法
 	cr.KeyStrategy = strings.TrimSpace(cr.KeyStrategy)
@@ -281,10 +251,11 @@ func (cr *ChannelRequest) Validate() error {
 		cr.CooldownDetectionRules = nil
 	}
 
-	cr.ProxyURL, err = normalizeChannelProxyURL(cr.ProxyURL)
+	normalizedProxyURL, err := normalizeChannelProxyURL(cr.ProxyURL)
 	if err != nil {
 		return err
 	}
+	cr.ProxyURL = normalizedProxyURL
 
 	if cr.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be >= 0 (got %d)", cr.RPMLimit)
@@ -317,11 +288,9 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 
 	return &model.Config{
 		Name:                   strings.TrimSpace(cr.Name),
-		ChannelType:            strings.TrimSpace(cr.ChannelType), // 传递渠道类型
 		Websockets:             cr.Websockets,
 		ProtocolTransformMode:  cr.ProtocolTransformMode,
-		ProtocolTransforms:     append([]string(nil), cr.ProtocolTransforms...),
-		URL:                    strings.TrimSpace(cr.URL),
+		URLs:                   cr.URLs.Clone(),
 		Priority:               cr.Priority,
 		RPMLimit:               cr.RPMLimit,
 		MaxConcurrency:         cr.MaxConcurrency,
@@ -437,70 +406,6 @@ func isValidCustomRulePath(p string) bool {
 	return true
 }
 
-func validateProtocolTransforms(channelType string, protocolTransformMode string, transforms []string) error {
-	base := protocol.Protocol(util.NormalizeChannelType(channelType))
-	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
-	if mode == "" {
-		mode = model.ProtocolTransformModeUpstream
-	}
-	seen := make(map[string]int, len(transforms))
-	for i, rawProtocol := range transforms {
-		rawProtocol = strings.TrimSpace(rawProtocol)
-		if rawProtocol == "" {
-			return fmt.Errorf("protocol_transforms[%d]: cannot be empty", i)
-		}
-
-		normalized := util.NormalizeChannelType(rawProtocol)
-		if !util.IsValidChannelType(normalized) {
-			return fmt.Errorf("protocol_transforms[%d]: invalid protocol %q (allowed: anthropic, openai, gemini, codex)", i, rawProtocol)
-		}
-		if normalized == string(base) {
-			return fmt.Errorf("protocol_transforms[%d]: %q duplicates channel_type %q", i, normalized, base)
-		}
-		if mode == model.ProtocolTransformModeLocal && !protocol.SupportsTransform(protocol.Protocol(normalized), base) {
-			return fmt.Errorf("protocol_transforms[%d]: unsupported protocol transform %s -> %s", i, normalized, base)
-		}
-		if firstIdx, exists := seen[normalized]; exists {
-			return fmt.Errorf("protocol_transforms[%d]: duplicate protocol %q (already defined at protocol_transforms[%d])", i, normalized, firstIdx)
-		}
-		seen[normalized] = i
-	}
-	return nil
-}
-
-func normalizeProtocolTransforms(channelType string, protocolTransformMode string, transforms []string) []string {
-	base := protocol.Protocol(util.NormalizeChannelType(channelType))
-	mode := model.NormalizeProtocolTransformMode(protocolTransformMode)
-	if mode == "" {
-		mode = model.ProtocolTransformModeUpstream
-	}
-	seen := make(map[string]struct{}, len(transforms))
-	normalized := make([]string, 0, len(transforms))
-	for _, protocolName := range transforms {
-		protocolName = strings.TrimSpace(protocolName)
-		if protocolName == "" {
-			continue
-		}
-		normalizedProtocol := util.NormalizeChannelType(protocolName)
-		if !util.IsValidChannelType(normalizedProtocol) {
-			continue
-		}
-		if normalizedProtocol == string(base) {
-			continue
-		}
-		if mode == model.ProtocolTransformModeLocal && !protocol.SupportsTransform(protocol.Protocol(normalizedProtocol), base) {
-			continue
-		}
-		if _, ok := seen[normalizedProtocol]; ok {
-			continue
-		}
-		seen[normalizedProtocol] = struct{}{}
-		normalized = append(normalized, normalizedProtocol)
-	}
-	slices.Sort(normalized)
-	return normalized
-}
-
 // KeyCooldownInfo Key级别冷却信息
 type KeyCooldownInfo struct {
 	KeyIndex            int        `json:"key_index"`
@@ -558,19 +463,24 @@ type SettingUpdateRequest struct {
 
 // CheckDuplicateRequest 渠道重复检测请求
 type CheckDuplicateRequest struct {
-	ChannelType string   `json:"channel_type" binding:"required"`
-	URLs        []string `json:"urls"         binding:"required,min=1"`
+	URLs model.ChannelURLs `json:"urls" binding:"required,min=1"`
 }
 
-// Validate 实现 RequestValidator 接口，无额外业务约束
-func (r *CheckDuplicateRequest) Validate() error { return nil }
+// Validate implements RequestValidator.
+func (r *CheckDuplicateRequest) Validate() error {
+	urls, err := validateChannelURLConfigs(r.URLs)
+	if err != nil {
+		return err
+	}
+	r.URLs = urls
+	return nil
+}
 
 // DuplicateChannelInfo 重复渠道信息
 type DuplicateChannelInfo struct {
-	ID          int64  `json:"id"`
-	Name        string `json:"name"`
-	ChannelType string `json:"channel_type"`
-	URL         string `json:"url"`
+	ID   int64             `json:"id"`
+	Name string            `json:"name"`
+	URLs model.ChannelURLs `json:"urls"`
 }
 
 // CheckDuplicateResponse 重复检测响应

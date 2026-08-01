@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
@@ -172,6 +173,60 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("StructuredChannelURLs", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:    "postgres-legacy-urls",
+			URLs:    model.ChannelURLs{{URL: "https://placeholder.example.com"}},
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("创建迁移夹具失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "UPDATE channels SET url = $1 WHERE id = $2", "https://one.example.com\nhttps://two.example.com/v1/messages#", created.ID); err != nil {
+			t.Fatalf("写入旧 URL 格式失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = $1", structuredChannelURLsMigrationVersion); err != nil {
+			t.Fatalf("重置迁移标记失败: %v", err)
+		}
+		if err := migratePostgres(ctx, env.db); err != nil {
+			t.Fatalf("迁移结构化 URL 失败: %v", err)
+		}
+
+		var raw string
+		if err := env.db.QueryRowContext(ctx, "SELECT url FROM channels WHERE id = $1", created.ID).Scan(&raw); err != nil {
+			t.Fatalf("读取迁移结果失败: %v", err)
+		}
+		var urls model.ChannelURLs
+		if err := json.Unmarshal([]byte(raw), &urls); err != nil {
+			t.Fatalf("迁移结果不是 JSON: %v (%q)", err, raw)
+		}
+		if len(urls) != 2 || urls[0].URL != "https://one.example.com" || urls[1].URL != "https://two.example.com/v1/messages" || !urls[1].Exact {
+			t.Fatalf("迁移 URL=%+v", urls)
+		}
+	})
+
+	t.Run("ClientProtocolBackfill", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyClientProtocolBackfill(t, ctx, env.db, DialectPostgres, func(ctx context.Context, db *sql.DB) error {
+			return migratePostgres(ctx, db)
+		})
+	})
+
 	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
@@ -224,7 +279,7 @@ func TestPostgres(t *testing.T) {
 			t.Logf("列 %s.%s 存在", table, col)
 		}
 
-		for _, col := range []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
+		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
 			checkCol("logs", col)
 		}
 		for _, col := range []string{"allowed_models", "cost_used_microusd", "cost_limit_microusd"} {
@@ -265,11 +320,10 @@ func TestPostgres(t *testing.T) {
 
 		// channels: RETURNING id
 		ch, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "pg-test-channel",
-			URL:         "https://api.example.com",
-			Priority:    10,
-			ChannelType: "openai",
-			Enabled:     true,
+			Name:     "pg-test-channel",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority: 10,
+			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-4o"},
 			},
@@ -374,11 +428,10 @@ func TestPostgres(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		ch, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "pg-dashboard-aggregates",
-			URL:         "https://api.example.com",
-			Priority:    1,
-			ChannelType: "openai",
-			Enabled:     true,
+			Name:     "pg-dashboard-aggregates",
+			URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority: 1,
+			Enabled:  true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-4o"},
 			},
@@ -396,7 +449,8 @@ func TestPostgres(t *testing.T) {
 			t.Fatalf("CreateAuthToken: %v", err)
 		}
 
-		now := time.Now().UTC().Truncate(time.Second)
+		// 固定在分钟中点，避免并行执行或容器启动耗时使两条夹具数据跨越分钟桶。
+		now := time.Now().UTC().Truncate(time.Minute).Add(30 * time.Second)
 		for _, entry := range []*model.LogEntry{
 			{
 				Time:          model.JSONTime{Time: now.Add(-20 * time.Second)},
@@ -499,7 +553,7 @@ func TestPostgres(t *testing.T) {
 		})
 
 		t.Run("RemainingMetricQueries", func(t *testing.T) {
-			models, err := store.GetDistinctModels(ctx, start, end, "openai", filter)
+			models, err := store.GetDistinctModels(ctx, start, end, filter)
 			if err != nil {
 				t.Fatalf("GetDistinctModels: %v", err)
 			}
@@ -507,7 +561,7 @@ func TestPostgres(t *testing.T) {
 				t.Fatalf("models=%v want=[gpt-4o]", models)
 			}
 
-			channels, err := store.GetDistinctChannels(ctx, start, end, "openai", filter)
+			channels, err := store.GetDistinctChannels(ctx, start, end, filter)
 			if err != nil {
 				t.Fatalf("GetDistinctChannels: %v", err)
 			}
@@ -580,14 +634,10 @@ func TestPostgres(t *testing.T) {
 		t.Run("ChannelsAndAPIKeys", func(t *testing.T) {
 			store := newPostgresQueryStore(t, env)
 			ch, err := store.CreateConfig(ctx, &model.Config{
-				Name:        "pg-query-channel",
-				URL:         "https://api.example.com",
-				Priority:    10,
-				ChannelType: "openai",
-				Enabled:     true,
-				ProtocolTransforms: []string{
-					"anthropic",
-				},
+				Name:     "pg-query-channel",
+				URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+				Priority: 10,
+				Enabled:  true,
 				ModelEntries: []model.ModelEntry{
 					{Model: "gpt-4o"},
 				},
@@ -611,15 +661,6 @@ func TestPostgres(t *testing.T) {
 			}
 			if channels, err := store.GetEnabledChannelsByModel(ctx, "gpt-4o"); err != nil || len(channels) != 1 {
 				t.Fatalf("GetEnabledChannelsByModel: channels=%v err=%v", channels, err)
-			}
-			if channels, err := store.GetEnabledChannelsByModelAndProtocol(ctx, "gpt-4o", "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByModelAndProtocol: channels=%v err=%v", channels, err)
-			}
-			if channels, err := store.GetEnabledChannelsByType(ctx, "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByType: channels=%v err=%v", channels, err)
-			}
-			if channels, err := store.GetEnabledChannelsByExposedProtocol(ctx, "openai"); err != nil || len(channels) != 1 {
-				t.Fatalf("GetEnabledChannelsByExposedProtocol: channels=%v err=%v", channels, err)
 			}
 
 			ch.Name = "pg-query-channel-updated"
@@ -695,7 +736,7 @@ func TestPostgres(t *testing.T) {
 		t.Run("Cooldowns", func(t *testing.T) {
 			store := newPostgresQueryStore(t, env)
 			ch, err := store.CreateConfig(ctx, &model.Config{
-				Name: "pg-query-cooldowns", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+				Name: "pg-query-cooldowns", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
 			})
 			if err != nil {
 				t.Fatalf("CreateConfig: %v", err)
@@ -760,7 +801,7 @@ func TestPostgres(t *testing.T) {
 		t.Run("LogsAndDebugLogs", func(t *testing.T) {
 			store := newPostgresQueryStore(t, env)
 			ch, err := store.CreateConfig(ctx, &model.Config{
-				Name: "pg-query-logs", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+				Name: "pg-query-logs", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
 			})
 			if err != nil {
 				t.Fatalf("CreateConfig: %v", err)
@@ -952,7 +993,7 @@ func TestPostgres(t *testing.T) {
 		t.Run("Fingerprints", func(t *testing.T) {
 			store := newPostgresQueryStore(t, env)
 			ch, err := store.CreateConfig(ctx, &model.Config{
-				Name: "pg-query-fingerprint", URL: "https://api.example.com", ChannelType: "openai", Enabled: true,
+				Name: "pg-query-fingerprint", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
 			})
 			if err != nil {
 				t.Fatalf("CreateConfig: %v", err)
@@ -960,7 +1001,7 @@ func TestPostgres(t *testing.T) {
 			channelID := ch.ID
 			fingerprint, err := store.CreateModelFingerprint(ctx, &model.ModelFingerprint{
 				Name: "pg-query-fingerprint", ChannelID: &channelID, ChannelName: ch.Name,
-				Model: "gpt-4o", ChannelType: "openai", SampleCount: 3,
+				Model: "gpt-4o", SampleCount: 3,
 				Distribution: []float64{0.5, 0.25, 0.25},
 				Stats: model.FingerprintStats{
 					Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1,
@@ -1009,11 +1050,10 @@ func TestPostgres(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		ch, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "pg-url-state",
-			URL:         "https://a.example.com,https://b.example.com",
-			Priority:    1,
-			ChannelType: "anthropic",
-			Enabled:     true,
+			Name:     "pg-url-state",
+			URLs:     model.ChannelURLs{{URL: "https://a.example.com,https://b.example.com"}},
+			Priority: 1,
+			Enabled:  true,
 		})
 		if err != nil {
 			t.Fatalf("CreateConfig: %v", err)
@@ -1080,19 +1120,17 @@ func TestPostgres(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		mixedAutomatic := &model.Config{
-			Name:        "pg-import-automatic-id",
-			URL:         "https://import-auto.example.com",
-			ChannelType: "gemini",
-			Enabled:     true,
+			Name:    "pg-import-automatic-id",
+			URLs:    model.ChannelURLs{{URL: "https://import-auto.example.com"}},
+			Enabled: true,
 		}
 		created, updated, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{
-					ID:          1,
-					Name:        "pg-import-explicit-id",
-					URL:         "https://import.example.com",
-					ChannelType: "openai",
-					Enabled:     true,
+					ID:      1,
+					Name:    "pg-import-explicit-id",
+					URLs:    model.ChannelURLs{{URL: "https://import.example.com"}},
+					Enabled: true,
 				},
 			},
 			{Config: mixedAutomatic},
@@ -1108,20 +1146,18 @@ func TestPostgres(t *testing.T) {
 		}
 
 		if _, err := store.CreateConfig(ctx, &model.Config{
-			ID:          3,
-			Name:        "pg-create-explicit-id",
-			URL:         "https://explicit.example.com",
-			ChannelType: "anthropic",
-			Enabled:     true,
+			ID:      3,
+			Name:    "pg-create-explicit-id",
+			URLs:    model.ChannelURLs{{URL: "https://explicit.example.com"}},
+			Enabled: true,
 		}); err != nil {
 			t.Fatalf("CreateConfig explicit id: %v", err)
 		}
 
 		automatic, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "pg-create-automatic-id",
-			URL:         "https://automatic.example.com",
-			ChannelType: "gemini",
-			Enabled:     true,
+			Name:    "pg-create-automatic-id",
+			URLs:    model.ChannelURLs{{URL: "https://automatic.example.com"}},
+			Enabled: true,
 		})
 		if err != nil {
 			t.Fatalf("CreateConfig automatic id after explicit ids: %v", err)
@@ -1172,7 +1208,6 @@ func TestPostgres(t *testing.T) {
 				name VARCHAR(191) NOT NULL UNIQUE,
 				url TEXT NOT NULL,
 				priority INT NOT NULL DEFAULT 0,
-				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
 				enabled SMALLINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
 				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -1205,13 +1240,16 @@ func TestPostgres(t *testing.T) {
 			}
 		}
 
-		if _, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "pg-after-legacy-migration",
-			URL:         "https://legacy.example.com",
-			ChannelType: "openai",
-			Enabled:     true,
-		}); err != nil {
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:    "pg-after-legacy-migration",
+			URLs:    model.ChannelURLs{{URL: "https://legacy.example.com"}},
+			Enabled: true,
+		})
+		if err != nil {
 			t.Fatalf("CreateConfig after legacy migration: %v", err)
+		}
+		if created.GetProtocolTransformMode() != model.ProtocolTransformModeAuto {
+			t.Fatalf("protocol_transform_mode=%q, want auto", created.GetProtocolTransformMode())
 		}
 	})
 }

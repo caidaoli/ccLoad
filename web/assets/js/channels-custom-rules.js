@@ -246,9 +246,14 @@
     const hint = document.getElementById('customRulesAnyrouterHint');
     if (!hint) return;
     const name = (document.getElementById('channelName')?.value || '').toLowerCase();
-    const url = (document.getElementById('channelUrl')?.value || '').toLowerCase();
-    const type = document.querySelector('input[name="channelType"]:checked')?.value || '';
-    hint.hidden = !(type === 'anthropic' && (name.includes('anyrouter') || url.includes('anyrouter')));
+    const url = typeof getValidInlineURLs === 'function'
+      ? getValidInlineURLs().join('\n').toLowerCase()
+      : '';
+    const urlConfigs = typeof getValidInlineURLConfigs === 'function' ? getValidInlineURLConfigs() : [];
+    const supportsAnthropic = urlConfigs.some(entry =>
+      !Array.isArray(entry.protocols) || entry.protocols.length === 0 || entry.protocols.includes('anthropic')
+    );
+    hint.hidden = !(supportsAnthropic && (name.includes('anyrouter') || url.includes('anyrouter')));
   }
 
   function closeCustomRulesModal() {

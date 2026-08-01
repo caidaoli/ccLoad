@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
 
 	"github.com/gin-gonic/gin"
@@ -23,31 +24,31 @@ var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 
 // FetchModelsRequest 获取模型列表请求参数
 type FetchModelsRequest struct {
-	ChannelType string `json:"channel_type" binding:"required"`
-	URL         string `json:"url" binding:"required"`
-	APIKey      string `json:"api_key" binding:"required"`
+	URLs     model.ChannelURLs `json:"urls" binding:"required,min=1"`
+	Protocol string            `json:"protocol,omitempty"`
+	APIKey   string            `json:"api_key" binding:"required"`
 }
 
 // FetchModelsResponse 获取模型列表响应
 type FetchModelsResponse struct {
-	Models      []model.ModelEntry `json:"models"`          // 模型列表（包含redirect_model便于编辑）
-	ChannelType string             `json:"channel_type"`    // 渠道类型
-	Source      string             `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
-	Debug       *FetchModelsDebug  `json:"debug,omitempty"` // 调试信息（仅开发环境）
+	Models   []model.ModelEntry `json:"models"`          // 模型列表（包含redirect_model便于编辑）
+	Protocol string             `json:"protocol"`        // 成功请求使用的实际上游协议
+	Source   string             `json:"source"`          // 数据来源: "api"(从API获取) 或 "predefined"(预定义)
+	Debug    *FetchModelsDebug  `json:"debug,omitempty"` // 调试信息（仅开发环境）
 }
 
 // FetchModelsDebug 调试信息结构
 type FetchModelsDebug struct {
-	NormalizedType string `json:"normalized_type"` // 规范化后的渠道类型
-	FetcherType    string `json:"fetcher_type"`    // 使用的Fetcher类型
-	ChannelURL     string `json:"channel_url"`     // 渠道URL（脱敏）
+	NormalizedProtocol string `json:"normalized_protocol"` // 规范化后的上游协议
+	Fetcher            string `json:"fetcher"`             // 使用的 Fetcher 实现
+	ChannelURL         string `json:"channel_url"`         // 渠道URL（脱敏）
 }
 
 // BatchRefreshModelsRequest 批量刷新模型请求
 type BatchRefreshModelsRequest struct {
 	ChannelIDs             []int64 `json:"channel_ids"`
 	Mode                   string  `json:"mode"`                                // merge(增量,默认) / replace(覆盖)
-	ChannelType            string  `json:"channel_type,omitempty"`              // 可选：覆盖渠道类型
+	Protocol               string  `json:"protocol,omitempty"`                  // 可选：限制模型发现使用的上游协议
 	LowercaseModels        bool    `json:"lowercase_models,omitempty"`          // 客户端模型别名转小写，保留原始上游模型名
 	StripModelSourcePrefix bool    `json:"strip_model_source_prefix,omitempty"` // 客户端模型别名仅保留最后一段，保留原始上游模型名
 }
@@ -67,7 +68,7 @@ type BatchRefreshModelsItem struct {
 // HandleFetchModels 获取指定渠道的可用模型列表
 // 路由: GET /admin/channels/:id/models/fetch
 // 功能:
-//   - 根据渠道类型调用对应的Models API
+//   - 根据 URL 声明的协议调用对应的 Models API
 //   - Anthropic/Codex/OpenAI/Gemini: 调用官方/v1/models接口
 //   - 其它渠道: 返回预定义列表
 //
@@ -99,12 +100,7 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 		return
 	}
 
-	// 4. 根据渠道配置执行模型抓取（支持query参数覆盖渠道类型）
-	channelType := c.Query("channel_type")
-	if channelType == "" {
-		channelType = channel.ChannelType
-	}
-	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), channel.ID, channel.GetURLs(), channelType, apiKey)
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), channel.ID, channel.URLs, c.Query("protocol"), apiKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -123,22 +119,21 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	req.ChannelType = strings.TrimSpace(req.ChannelType)
-	req.URL = strings.TrimSpace(req.URL)
+	req.Protocol = strings.TrimSpace(req.Protocol)
 	req.APIKey = strings.TrimSpace(req.APIKey)
-	if req.ChannelType == "" || req.URL == "" || req.APIKey == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "channel_type、url、api_key为必填字段")
+	if req.APIKey == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "urls、api_key为必填字段")
 		return
 	}
 
-	normalizedURL, err := validateChannelURLs(req.URL)
+	var err error
+	req.URLs, err = validateChannelURLConfigs(req.URLs)
 	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "url无效: "+err.Error())
+		RespondErrorMsg(c, http.StatusBadRequest, "urls无效: "+err.Error())
 		return
 	}
 
-	tmpCfg := &model.Config{URL: normalizedURL}
-	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, tmpCfg.GetURLs(), req.ChannelType, req.APIKey)
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKey)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -171,7 +166,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 		return
 	}
 
-	overrideType := strings.TrimSpace(req.ChannelType)
+	overrideProtocol := strings.TrimSpace(req.Protocol)
 	normalization := modelNormalizationOptions{
 		lowercaseModels:        req.LowercaseModels,
 		stripModelSourcePrefix: req.StripModelSourcePrefix,
@@ -215,12 +210,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		channelType := overrideType
-		if channelType == "" {
-			channelType = cfg.ChannelType
-		}
-
-		resp, err := s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.GetURLs(), channelType, apiKey)
+		resp, err := s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKey)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -248,7 +238,7 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 
 		switch mode {
 		case "replace":
-			removed, hasChange := replaceModelEntries(cfg, fetched)
+			removed, hasChange := replaceModelEntries(cfg, fetched, normalization)
 			item.Removed = removed
 			item.Total = len(cfg.ModelEntries)
 			modelEntriesChanged = hasChange
@@ -312,14 +302,15 @@ func firstEnabledAPIKey(keys []*model.APIKey) string {
 func (s *Server) fetchModelsWithURLFallback(
 	ctx context.Context,
 	channelID int64,
-	urls []string,
-	channelType, apiKey string,
+	configuredURLs model.ChannelURLs,
+	overrideProtocol, apiKey string,
 ) (*FetchModelsResponse, error) {
-	if len(urls) == 0 {
+	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
 	}
-	if len(urls) == 1 {
-		return fetchModelsForConfig(ctx, channelType, urls[0], apiKey)
+	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
+	if overrideProtocol != "" && !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+		return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
 	}
 
 	selectorEnabled := s != nil && s.urlSelector != nil && channelID > 0
@@ -327,25 +318,50 @@ func (s *Server) fetchModelsWithURLFallback(
 	if selectorEnabled {
 		selector = s.urlSelector
 	}
-	sortedURLs := orderURLsWithSelector(selector, channelID, urls)
+	runtimeURLs := make([]string, len(configuredURLs))
+	for i := range configuredURLs {
+		runtimeURLs[i] = configuredURLs[i].RuntimeURL()
+	}
+	sortedURLs := orderURLsWithSelector(selector, channelID, runtimeURLs)
+	sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, configuredURLs)
+	localProtocolOrder := localUpstreamProtocolOrder(configuredURLs)
 
 	var lastErr error
-	for _, entry := range sortedURLs {
-		start := time.Now()
-		resp, err := fetchModelsForConfig(ctx, channelType, entry.url, apiKey)
-		if err == nil {
-			if selectorEnabled {
-				latency := time.Since(start)
-				if latency <= 0 {
-					latency = time.Millisecond
-				}
-				s.urlSelector.RecordLatency(channelID, entry.url, latency)
-			}
-			return resp, nil
+	for _, sorted := range sortedURLs {
+		if sorted.idx < 0 || sorted.idx >= len(configuredURLs) {
+			continue
 		}
-		lastErr = err
-		if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
-			s.urlSelector.CooldownURL(channelID, entry.url)
+		entry := configuredURLs[sorted.idx]
+		protocols := entry.Protocols
+		if overrideProtocol != "" {
+			if !entry.SupportsProtocol(overrideProtocol) {
+				continue
+			}
+			protocols = []string{overrideProtocol}
+		} else if len(protocols) == 0 {
+			protocols = make([]string, len(localProtocolOrder))
+			for i, candidate := range localProtocolOrder {
+				protocols[i] = string(candidate)
+			}
+		}
+		for _, upstreamProtocol := range protocols {
+			start := time.Now()
+			resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
+			if err == nil {
+				if selectorEnabled {
+					latency := time.Since(start)
+					if latency <= 0 {
+						latency = time.Millisecond
+					}
+					s.urlSelector.RecordLatency(channelID, sorted.url, latency)
+				}
+				return resp, nil
+			}
+			lastErr = err
+			if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
+				s.urlSelector.CooldownURL(channelID, sorted.url)
+				break
+			}
 		}
 	}
 
@@ -403,9 +419,9 @@ func parseFetchModelsStatus(errMsg string) (statusCode int, body string, ok bool
 	return code, strings.TrimSpace(body), true
 }
 
-func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey string) (*FetchModelsResponse, error) {
-	normalizedType := util.NormalizeChannelType(channelType)
-	source := determineSource(channelType)
+func fetchModelsForConfig(ctx context.Context, upstreamProtocol, channelURL, apiKey string) (*FetchModelsResponse, error) {
+	normalizedProtocol := util.NormalizeProtocol(upstreamProtocol)
+	source := determineSource(upstreamProtocol)
 
 	var (
 		modelNames []string
@@ -413,25 +429,25 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 		err        error
 	)
 
-	// Anthropic/Codex等官方无开放接口的渠道，直接返回预设模型列表
+	// 没有模型发现接口的协议直接返回预设列表。
 	if source == "predefined" {
-		modelNames = util.PredefinedModels(normalizedType)
+		modelNames = util.PredefinedModels(normalizedProtocol)
 		if len(modelNames) == 0 {
-			return nil, fmt.Errorf("渠道类型:%s 暂无预设模型列表", normalizedType)
+			return nil, fmt.Errorf("协议 %s 暂无预设模型列表", normalizedProtocol)
 		}
 		fetcherStr = "predefined"
 	} else {
 		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
 
-		fetcher := util.NewModelsFetcher(channelType)
+		fetcher := util.NewModelsFetcher(upstreamProtocol)
 		fetcherStr = fmt.Sprintf("%T", fetcher)
 
 		modelNames, err = fetcher.FetchModels(ctx, channelURL, apiKey)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"获取模型列表失败(渠道类型:%s, 规范化类型:%s, 数据来源:%s): %w",
-				channelType, normalizedType, source, err,
+				"获取模型列表失败(上游协议:%s, 规范化协议:%s, 数据来源:%s): %w",
+				upstreamProtocol, normalizedProtocol, source, err,
 			)
 		}
 	}
@@ -446,21 +462,21 @@ func fetchModelsForConfig(ctx context.Context, channelType, channelURL, apiKey s
 	}
 
 	return &FetchModelsResponse{
-		Models:      models,
-		ChannelType: channelType,
-		Source:      source,
+		Models:   models,
+		Protocol: upstreamProtocol,
+		Source:   source,
 		Debug: &FetchModelsDebug{
-			NormalizedType: normalizedType,
-			FetcherType:    fetcherStr,
-			ChannelURL:     channelURL,
+			NormalizedProtocol: normalizedProtocol,
+			Fetcher:            fetcherStr,
+			ChannelURL:         channelURL,
 		},
 	}, nil
 }
 
 // determineSource 判断模型列表来源（辅助函数）
-func determineSource(channelType string) string {
-	switch util.NormalizeChannelType(channelType) {
-	case util.ChannelTypeOpenAI, util.ChannelTypeGemini, util.ChannelTypeAnthropic, util.ChannelTypeCodex:
+func determineSource(upstreamProtocol string) string {
+	switch util.NormalizeProtocol(upstreamProtocol) {
+	case util.ProtocolOpenAI, util.ProtocolGemini, util.ProtocolAnthropic, util.ProtocolCodex:
 		return "api" // 从API获取
 	default:
 		return "predefined" // 预定义列表
@@ -604,16 +620,33 @@ func mergeModelEntries(cfg *model.Config, fetched []model.ModelEntry) (added int
 	return added, added > 0
 }
 
-func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry) (removed int, changed bool) {
+func replaceModelEntries(cfg *model.Config, fetched []model.ModelEntry, options modelNormalizationOptions) (removed int, changed bool) {
 	oldEntries := cfg.ModelEntries
 	oldSet := make(map[string]struct{}, len(oldEntries))
+	disabledAliases := make(map[string]struct{}, len(oldEntries))
 	newSet := make(map[string]struct{}, len(fetched))
 
 	for _, entry := range oldEntries {
-		oldSet[strings.ToLower(entry.Model)] = struct{}{}
+		key := strings.ToLower(entry.Model)
+		oldSet[key] = struct{}{}
+		if !entry.Disabled {
+			continue
+		}
+		disabledAliases[key] = struct{}{}
+		normalizedModel, _ := normalizeModelAlias(entry.Model, options)
+		disabledAliases[strings.ToLower(normalizedModel)] = struct{}{}
+		if entry.RedirectModel != "" {
+			disabledAliases[strings.ToLower(entry.RedirectModel)] = struct{}{}
+		}
 	}
-	for _, entry := range fetched {
-		newSet[strings.ToLower(entry.Model)] = struct{}{}
+	for i := range fetched {
+		key := strings.ToLower(fetched[i].Model)
+		newSet[key] = struct{}{}
+		_, disabled := disabledAliases[key]
+		if !disabled && fetched[i].RedirectModel != "" {
+			_, disabled = disabledAliases[strings.ToLower(fetched[i].RedirectModel)]
+		}
+		fetched[i].Disabled = fetched[i].Disabled || disabled
 	}
 	for key := range oldSet {
 		if _, exists := newSet[key]; !exists {

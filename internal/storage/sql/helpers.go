@@ -14,7 +14,6 @@ import (
 type ChannelInfo struct {
 	Name           string
 	Priority       int
-	Type           string
 	CostMultiplier float64
 }
 
@@ -35,7 +34,6 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 			id,
 			name,
 			priority,
-			LOWER(COALESCE(NULLIF(TRIM(channel_type), ''), 'anthropic')),
 			COALESCE(cost_multiplier, 1)
 		FROM channels
 	`)
@@ -50,9 +48,8 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 		var id int64
 		var name string
 		var priority int
-		var channelType string
 		var costMultiplier float64
-		if err := rows.Scan(&id, &name, &priority, &channelType, &costMultiplier); err != nil {
+		if err := rows.Scan(&id, &name, &priority, &costMultiplier); err != nil {
 			log.Printf("[WARN] 扫描渠道信息失败: %v", err)
 			continue // 跳过扫描错误的行
 		}
@@ -61,7 +58,6 @@ func (s *SQLStore) fetchChannelInfoBatch(ctx context.Context, channelIDs map[int
 			channelInfos[id] = ChannelInfo{
 				Name:           name,
 				Priority:       priority,
-				Type:           channelType,
 				CostMultiplier: normalizeCostMultiplier(costMultiplier),
 			}
 		}
@@ -162,44 +158,7 @@ func (s *SQLStore) fetchChannelIDsByNameFilter(ctx context.Context, exact string
 	return ids, nil
 }
 
-// fetchChannelIDsByType 根据暴露协议获取渠道ID集合：原生 channel_type 或 protocol_transforms 均匹配。
-// 目的：避免跨库JOIN，先解析为ID再过滤logs
-func (s *SQLStore) fetchChannelIDsByType(ctx context.Context, channelType string) ([]int64, error) {
-	if channelType == "" {
-		return nil, nil
-	}
-
-	query := `
-		SELECT id
-		FROM channels c
-		WHERE c.channel_type = ?
-		   OR EXISTS (
-		       SELECT 1
-		       FROM channel_protocol_transforms cpt
-		       WHERE cpt.channel_id = c.id AND cpt.protocol = ?
-		   )
-	`
-	rows, err := s.QueryContext(ctx, query, channelType, channelType)
-	if err != nil {
-		return nil, fmt.Errorf("query channel ids by type: %w", err)
-	}
-	defer func() { _ = rows.Close() }()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan channel id: %w", err)
-		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return ids, nil
-}
-
-// applyChannelFilter 应用渠道类型或名称过滤（优先级：ChannelType > ChannelName/Like）
+// applyChannelFilter 将渠道名称过滤解析为渠道 ID。
 // 返回值：是否为空结果、错误
 // 注意：ChannelID 精确匹配不在此处处理，由 QueryBuilder.ApplyFilter 负责
 func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, filter *model.LogFilter) (bool, error) {
@@ -218,21 +177,6 @@ func (s *SQLStore) applyChannelFilter(ctx context.Context, qb *QueryBuilder, fil
 		qb.WhereIn("channel_id", vals)
 	}
 	return false, nil
-}
-
-// intersectIDs 计算两个ID切片的交集
-func intersectIDs(a, b []int64) []int64 {
-	set := make(map[int64]bool, len(a))
-	for _, id := range a {
-		set[id] = true
-	}
-	var result []int64
-	for _, id := range b {
-		if set[id] {
-			result = append(result, id)
-		}
-	}
-	return result
 }
 
 // timeToUnix 将时间转换为Unix时间戳（秒）

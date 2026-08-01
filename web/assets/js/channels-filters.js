@@ -47,11 +47,6 @@ function filterChannels() {
     if (prioB !== prioA) {
       return prioB - prioA;
     }
-    const typeA = (a.channel_type || 'anthropic').toLowerCase();
-    const typeB = (b.channel_type || 'anthropic').toLowerCase();
-    if (typeA !== typeB) {
-      return typeA.localeCompare(typeB);
-    }
     return a.name.localeCompare(b.name);
   });
 
@@ -90,10 +85,7 @@ function setupFilterListeners() {
     filters.status = e.target.value;
     channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    if (typeof loadChannelsFilterOptions === 'function') {
-      loadChannelsFilterOptions(filters.channelType, filters.status);
-    }
-    loadChannels(filters.channelType);
+    loadChannels();
   });
 
   // 模型筛选 combobox
@@ -107,6 +99,7 @@ function setupFilterListeners() {
       initialLabel: modelFilterInputValueFromFilterValue(filters.model),
       allowCustomInput: true,
       commitEmptyAsFirst: true,
+      showAllOptionsOnOpen: true,
       getOptions: () => {
         const allLabel = getModelAllLabel();
         const models = Array.isArray(allAvailableModels) ? allAvailableModels : [];
@@ -120,7 +113,7 @@ function setupFilterListeners() {
         filters.modelExact = isExactChannelModelFilter(value);
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-        loadChannels(filters.channelType);
+        loadChannels();
       }
     });
   }
@@ -137,6 +130,7 @@ function setupFilterListeners() {
       initialLabel: filters.search || allLabel,
       allowCustomInput: true,
       commitEmptyAsFirst: true,
+      showAllOptionsOnOpen: true,
       getOptions: () => {
         // 使用服务端在 search 过滤前冻结的全集，避免选中某渠道名后下拉收敛为单一项
         const names = Array.isArray(allAvailableChannelNames) ? allAvailableChannelNames : [];
@@ -160,7 +154,7 @@ function setupFilterListeners() {
         }
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-        loadChannels(filters.channelType);
+        loadChannels();
       }
     });
   }
@@ -169,7 +163,7 @@ function setupFilterListeners() {
   document.getElementById('btn_filter').addEventListener('click', () => {
     channelsCurrentPage = 1;
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    loadChannels(filters.channelType);
+    loadChannels();
   });
 
   const clearSearchBtn = document.getElementById('clearSearchBtn');
@@ -181,7 +175,6 @@ function setupFilterListeners() {
       filters.status = 'all';
       filters.model = 'all';
       filters.modelExact = false;
-      filters.channelType = 'all';
       channelsCurrentPage = 1;
 
       // 重置渠道名称 combobox
@@ -204,12 +197,8 @@ function setupFilterListeners() {
       const statusFilterEl = document.getElementById('statusFilter');
       if (statusFilterEl) statusFilterEl.value = 'all';
 
-      // 重置渠道类型下拉框
-      const channelTypeFilterEl = document.getElementById('channelTypeFilter');
-      if (channelTypeFilterEl) channelTypeFilterEl.value = 'all';
-
       if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-      loadChannels(filters.channelType);
+      loadChannels();
     });
   }
 }

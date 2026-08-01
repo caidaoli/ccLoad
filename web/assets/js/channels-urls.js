@@ -1,45 +1,61 @@
 // URL 表格管理（与 API Key 表格一致的交互模式）
 const INLINE_EXACT_URL_MARKER = '#';
+const INLINE_URL_PROTOCOLS = ['anthropic', 'codex', 'openai', 'gemini'];
+const inlineURLProtocolComboboxes = new Map();
 
-function isExactInlineURL(url) {
-  return String(url || '').trim().endsWith(INLINE_EXACT_URL_MARKER);
+function getInlineURLProtocolOptions() {
+  return [
+    { value: '', label: window.t('channels.urlProtocolAuto') },
+    { value: 'anthropic', label: 'Anthropic' },
+    { value: 'codex', label: 'Codex' },
+    { value: 'openai', label: 'OpenAI' },
+    { value: 'gemini', label: 'Gemini' }
+  ];
 }
 
-function stripInlineExactURLMarker(url) {
-  const value = String(url || '').trim();
-  if (!value.endsWith(INLINE_EXACT_URL_MARKER)) return value;
-  return value.slice(0, -INLINE_EXACT_URL_MARKER.length).trim();
+function getInlineURLProtocolLabel(value) {
+  return getInlineURLProtocolOptions().find(option => option.value === value)?.label || value;
 }
 
-function withInlineExactURLMarker(url, exact) {
-  const cleanURL = stripInlineExactURLMarker(url);
-  if (!cleanURL) return '';
-  return exact ? `${cleanURL}${INLINE_EXACT_URL_MARKER}` : cleanURL;
+function emptyInlineURLConfig() {
+  return { url: '', exact: false, protocols: [] };
 }
 
-function normalizeInlineURLValue(url) {
-  return withInlineExactURLMarker(url, isExactInlineURL(url));
+function normalizeInlineURLConfig(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  const selectedProtocols = new Set(
+    (Array.isArray(source.protocols) ? source.protocols : [])
+      .map(protocol => String(protocol || '').trim().toLowerCase())
+  );
+  const selectedProtocol = Array.from(selectedProtocols).find(protocol => INLINE_URL_PROTOCOLS.includes(protocol));
+  return {
+    url: String(source.url || '').trim(),
+    exact: Boolean(source.exact),
+    protocols: selectedProtocol ? [selectedProtocol] : []
+  };
 }
 
-function parseChannelURLs(input) {
-  if (!input || !input.trim()) return [];
+function normalizeInlineURLConfigs(values) {
+  if (!Array.isArray(values)) return [];
+  return values
+    .map(normalizeInlineURLConfig)
+    .filter(entry => entry.url);
+}
 
-  return input
-    .split('\n')
-    .map(normalizeInlineURLValue)
-    .filter(Boolean);
+function runtimeInlineURL(value) {
+  const entry = normalizeInlineURLConfig(value);
+  if (!entry.url) return '';
+  return entry.exact ? `${entry.url}${INLINE_EXACT_URL_MARKER}` : entry.url;
+}
+
+function getValidInlineURLConfigs() {
+  return normalizeInlineURLConfigs(inlineURLTableData);
 }
 
 function getValidInlineURLs() {
-  return inlineURLTableData
-    .map(normalizeInlineURLValue)
+  return getValidInlineURLConfigs()
+    .map(runtimeInlineURL)
     .filter(Boolean);
-}
-
-function syncInlineURLInput() {
-  const hiddenInput = document.getElementById('channelUrl');
-  if (!hiddenInput) return;
-  hiddenInput.value = getValidInlineURLs().join('\n');
 }
 
 function updateInlineURLCount() {
@@ -87,18 +103,16 @@ function updateSelectAllURLsCheckbox() {
   checkbox.indeterminate = true;
 }
 
-function shouldShowURLExtras() {
-  return inlineURLTableData.length > 1;
-}
-
 function createURLRow(index) {
-  const rawURL = inlineURLTableData[index] || '';
+  const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+  inlineURLTableData[index] = entry;
   const tplData = {
     index: index,
     displayIndex: index + 1,
-    url: stripInlineExactURLMarker(rawURL),
-    exactURLChecked: isExactInlineURL(rawURL) ? 'checked' : '',
+    url: entry.url,
+    exactURLChecked: entry.exact ? 'checked' : '',
     mobileLabelUrl: window.t('channels.tableApiUrl'),
+    mobileLabelProtocols: window.t('channels.urlProtocols'),
     mobileLabelExactURL: window.t('channels.fullUrl'),
     mobileLabelActions: window.t('common.actions')
   };
@@ -111,53 +125,51 @@ function createURLRow(index) {
     checkbox.checked = true;
   }
 
-  // 多URL已保存渠道：注入统计列和禁用按钮
-  if (shouldShowURLExtras()) {
-    const url = normalizeInlineURLValue(inlineURLTableData[index]);
-    const stat = urlStatsMap[url];
-    const actionsTd = row.querySelectorAll('td');
-    const lastTd = actionsTd[actionsTd.length - 1]; // actions列
+  // 单 URL 与多 URL 使用同一列结构，避免添加/删除 URL 时表格跳变。
+  const url = runtimeInlineURL(entry);
+  const stat = urlStatsMap[url];
+  const actionsTd = row.querySelectorAll('td');
+  const lastTd = actionsTd[actionsTd.length - 1]; // actions列
 
-    const statusTd = document.createElement('td');
-    statusTd.className = 'inline-url-cell-center inline-url-col-status';
-    statusTd.setAttribute('data-mobile-label', window.t('common.status'));
-    statusTd.innerHTML = formatURLStatus(stat);
+  const statusTd = document.createElement('td');
+  statusTd.className = 'inline-url-cell-center inline-url-col-status';
+  statusTd.setAttribute('data-mobile-label', window.t('common.status'));
+  statusTd.innerHTML = formatURLStatus(stat);
 
-    const latencyTd = document.createElement('td');
-    latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
-    latencyTd.setAttribute('data-mobile-label', window.t('stats.latency'));
-    latencyTd.textContent = formatURLLatency(stat);
+  const latencyTd = document.createElement('td');
+  latencyTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-latency';
+  latencyTd.setAttribute('data-mobile-label', window.t('stats.latency'));
+  latencyTd.textContent = formatURLLatency(stat);
 
-    const requestsTd = document.createElement('td');
-    requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
-    requestsTd.setAttribute('data-mobile-label', window.t('channels.urlRequests'));
-    requestsTd.innerHTML = formatURLRequests(stat);
+  const requestsTd = document.createElement('td');
+  requestsTd.className = 'inline-url-cell-center inline-url-cell-metric inline-url-col-requests';
+  requestsTd.setAttribute('data-mobile-label', window.t('channels.urlRequests'));
+  requestsTd.innerHTML = formatURLRequests(stat);
 
-    if (url) {
-      const isDisabled = stat && stat.disabled;
-      const toggleBtn = document.createElement('button');
-      toggleBtn.type = 'button';
-      // 与同行其他按钮（测试/删除）保持中性灰色风格，状态仅由图标形状与 tooltip 表达
-      toggleBtn.className = 'inline-url-toggle-btn';
-      toggleBtn.style.cssText = 'width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;';
-      toggleBtn.title = isDisabled ? window.t('channels.urlEnable') : window.t('channels.urlDisable');
-      toggleBtn.innerHTML = isDisabled
-        ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
-        : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
-      toggleBtn.dataset.url = url;
-      toggleBtn.dataset.disabled = isDisabled ? '1' : '0';
-      toggleBtn.addEventListener('click', () => toggleURLDisabled(toggleBtn));
-      // 合并到 actions 容器内部，作为首个按钮，与 Key 表 actions 容器结构保持一致
-      const actionsContainer = lastTd.querySelector('.inline-url-actions');
-      if (actionsContainer) {
-        actionsContainer.insertBefore(toggleBtn, actionsContainer.firstChild);
-      }
+  if (url) {
+    const isDisabled = stat && stat.disabled;
+    const toggleBtn = document.createElement('button');
+    toggleBtn.type = 'button';
+    // 与同行其他按钮（测试/删除）保持中性灰色风格，状态仅由图标形状与 tooltip 表达
+    toggleBtn.className = 'inline-url-toggle-btn';
+    toggleBtn.style.cssText = 'width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.2s, border-color 0.2s, background-color 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;';
+    toggleBtn.title = isDisabled ? window.t('channels.urlEnable') : window.t('channels.urlDisable');
+    toggleBtn.innerHTML = isDisabled
+      ? '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/></svg>'
+      : '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>';
+    toggleBtn.dataset.url = url;
+    toggleBtn.dataset.disabled = isDisabled ? '1' : '0';
+    toggleBtn.addEventListener('click', () => toggleURLDisabled(toggleBtn));
+    // 合并到 actions 容器内部，作为首个按钮，与 Key 表 actions 容器结构保持一致
+    const actionsContainer = lastTd.querySelector('.inline-url-actions');
+    if (actionsContainer) {
+      actionsContainer.insertBefore(toggleBtn, actionsContainer.firstChild);
     }
-
-    row.insertBefore(statusTd, lastTd);
-    row.insertBefore(latencyTd, lastTd);
-    row.insertBefore(requestsTd, lastTd);
   }
+
+  row.insertBefore(statusTd, lastTd);
+  row.insertBefore(latencyTd, lastTd);
+  row.insertBefore(requestsTd, lastTd);
 
   return row;
 }
@@ -187,7 +199,9 @@ function initInlineURLTableEventDelegation() {
     if (exactCheckbox) {
       const index = parseInt(exactCheckbox.dataset.index, 10);
       updateInlineURLExact(index, exactCheckbox.checked);
+      return;
     }
+
   });
 
   tbody.addEventListener('click', (e) => {
@@ -211,31 +225,32 @@ function renderInlineURLTable() {
   if (!tbody) return;
 
   if (inlineURLTableData.length === 0) {
-    inlineURLTableData = [''];
+    inlineURLTableData = [emptyInlineURLConfig()];
   }
 
   initInlineURLTableEventDelegation();
-  updateInlineURLCount();
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+	updateInlineURLCount();
   updateURLStatsHeader();
 
+  destroyInlineURLProtocolComboboxes();
   tbody.innerHTML = '';
   inlineURLTableData.forEach((_, index) => {
     const row = createURLRow(index);
-    if (row) tbody.appendChild(row);
+    if (!row) return;
+    tbody.appendChild(row);
+    initInlineURLProtocolCombobox(index);
   });
 
   updateSelectAllURLsCheckbox();
   updateURLBatchDeleteButton();
 }
 
-function setInlineURLTableData(rawURL) {
-  inlineURLTableData = parseChannelURLs(rawURL);
+function setInlineURLTableData(urls) {
+  inlineURLTableData = Array.isArray(urls)
+    ? urls.map(normalizeInlineURLConfig)
+    : [];
   if (inlineURLTableData.length === 0) {
-    inlineURLTableData = [''];
+    inlineURLTableData = [emptyInlineURLConfig()];
   }
   selectedURLIndices.clear();
   urlStatsMap = {};
@@ -244,7 +259,7 @@ function setInlineURLTableData(rawURL) {
 
 function addInlineURL() {
   const newIndex = inlineURLTableData.length;
-  inlineURLTableData.push('');
+  inlineURLTableData.push(emptyInlineURLConfig());
   renderInlineURLTable();
   markChannelFormDirty();
 
@@ -255,39 +270,73 @@ function addInlineURL() {
 }
 
 function updateInlineURL(index, value) {
-  const keepExactURL = isExactInlineURL(inlineURLTableData[index]) || isExactInlineURL(value);
-  const nextValue = withInlineExactURLMarker(value, keepExactURL);
-  if (inlineURLTableData[index] === nextValue) return;
+  const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+  const nextURL = String(value || '').trim();
+  if (entry.url === nextURL) return;
 
-  inlineURLTableData[index] = nextValue;
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+  entry.url = nextURL;
+	inlineURLTableData[index] = entry;
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }
   markChannelFormDirty();
-
-  if (isExactInlineURL(value)) {
-    renderInlineURLTable();
-  }
 }
 
 function updateInlineURLExact(index, checked) {
-  const cleanURL = stripInlineExactURLMarker(inlineURLTableData[index]);
-  const nextValue = cleanURL ? withInlineExactURLMarker(cleanURL, checked) : (checked ? INLINE_EXACT_URL_MARKER : '');
-  if (inlineURLTableData[index] === nextValue) return;
+  const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+  if (entry.exact === checked) return;
 
-  inlineURLTableData[index] = nextValue;
-  syncInlineURLInput();
-  if (typeof syncProtocolTransformModeForURLs === 'function') {
-    syncProtocolTransformModeForURLs();
-  }
+  entry.exact = checked;
+	inlineURLTableData[index] = entry;
   if (typeof scheduleChannelDuplicateHintCheck === 'function') {
     scheduleChannelDuplicateHintCheck();
   }
   markChannelFormDirty();
+}
+
+function updateInlineURLProtocol(index, protocol) {
+  const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+  const normalizedProtocol = String(protocol || '').trim().toLowerCase();
+  if (normalizedProtocol && !INLINE_URL_PROTOCOLS.includes(normalizedProtocol)) return;
+
+  const nextProtocols = normalizedProtocol ? [normalizedProtocol] : [];
+  if (entry.protocols.length === nextProtocols.length && entry.protocols.every((value, i) => value === nextProtocols[i])) return;
+
+  entry.protocols = nextProtocols;
+  inlineURLTableData[index] = entry;
+  markChannelFormDirty();
+}
+
+function initInlineURLProtocolCombobox(index) {
+  const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+  const selectedProtocol = entry.protocols[0] || '';
+  const combobox = createSearchableCombobox({
+    container: `inlineURLProtocolSelectContainer-${index}`,
+    inputId: `inlineURLProtocolInput-${index}`,
+    dropdownId: `inlineURLProtocolDropdown-${index}`,
+    minWidth: 0,
+    getOptions: getInlineURLProtocolOptions,
+    initialValue: selectedProtocol,
+    initialLabel: getInlineURLProtocolLabel(selectedProtocol),
+    onSelect: (value) => updateInlineURLProtocol(index, value)
+  });
+  if (combobox) inlineURLProtocolComboboxes.set(index, combobox);
+}
+
+function destroyInlineURLProtocolComboboxes() {
+  inlineURLProtocolComboboxes.forEach(combobox => combobox?.destroy());
+  inlineURLProtocolComboboxes.clear();
+}
+
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('localechange', () => {
+    inlineURLProtocolComboboxes.forEach((combobox, index) => {
+      const entry = normalizeInlineURLConfig(inlineURLTableData[index]);
+      const selectedProtocol = entry.protocols[0] || '';
+      combobox.setValue(selectedProtocol, getInlineURLProtocolLabel(selectedProtocol));
+      combobox.refresh();
+    });
+  });
 }
 
 function toggleURLSelection(index, checked) {
@@ -315,7 +364,7 @@ function deleteInlineURL(index) {
   if (index < 0 || index >= inlineURLTableData.length) return;
 
   if (inlineURLTableData.length === 1) {
-    inlineURLTableData[0] = '';
+    inlineURLTableData[0] = emptyInlineURLConfig();
     selectedURLIndices.clear();
     renderInlineURLTable();
     if (typeof scheduleChannelDuplicateHintCheck === 'function') {
@@ -358,7 +407,7 @@ function batchDeleteSelectedURLs() {
   });
 
   if (inlineURLTableData.length === 0) {
-    inlineURLTableData = [''];
+    inlineURLTableData = [emptyInlineURLConfig()];
   }
 
   selectedURLIndices.clear();
@@ -376,6 +425,7 @@ async function testInlineURL(index, buttonElement) {
   }
 
   const models = redirectTableData
+    .filter(r => r && !r.disabled)
     .map(r => r.model)
     .filter(m => m && m.trim());
   if (models.length === 0) {
@@ -384,7 +434,7 @@ async function testInlineURL(index, buttonElement) {
   }
 
   const firstModel = models[0];
-  const url = normalizeInlineURLValue(inlineURLTableData[index]);
+  const url = runtimeInlineURL(inlineURLTableData[index]);
   if (!url) {
     alert(window.t('channels.fillApiUrlFirst'));
     return;
@@ -394,15 +444,6 @@ async function testInlineURL(index, buttonElement) {
   if (!firstKey) {
     alert(window.t('channels.emptyKeyCannotTest'));
     return;
-  }
-
-  const channelTypeRadios = document.querySelectorAll('input[name="channelType"]');
-  let channelType = 'anthropic';
-  for (const radio of channelTypeRadios) {
-    if (radio.checked) {
-      channelType = radio.value.toLowerCase();
-      break;
-    }
   }
 
   if (!buttonElement) return;
@@ -418,7 +459,7 @@ async function testInlineURL(index, buttonElement) {
         model: firstModel,
         stream: true,
         content: 'test',
-        channel_type: channelType,
+        client_protocol: 'anthropic',
         key_index: 0,
         base_url: url
       })
@@ -443,10 +484,6 @@ async function testInlineURL(index, buttonElement) {
 
 // === URL 实时状态 ===
 
-function hasURLStats() {
-  return Object.keys(urlStatsMap).length > 0;
-}
-
 async function fetchURLStats(channelId) {
   if (!channelId) return;
   try {
@@ -457,9 +494,7 @@ async function fetchURLStats(channelId) {
         urlStatsMap[s.url] = s;
       }
     }
-    if (hasURLStats() || shouldShowURLExtras()) {
-      renderInlineURLTable();
-    }
+    renderInlineURLTable();
   } catch (e) {
     console.error('Failed to fetch URL stats', e);
   }
@@ -513,8 +548,6 @@ function updateURLStatsHeader() {
   // 移除已有的统计列头
   thead.querySelectorAll('.url-stats-th').forEach(el => el.remove());
 
-  if (!shouldShowURLExtras()) return;
-
   const actionsTh = thead.querySelector('th:last-child');
 
   const statusTh = document.createElement('th');
@@ -547,7 +580,7 @@ async function toggleURLDisabled(btn) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ url })
     });
-    // 本地更新状态，避免依赖 fetchURLStats（单URL渠道后端返回空数组）
+    // 先更新本地状态，避免按钮反馈依赖额外网络往返。
     const newDisabled = !isCurrentlyDisabled;
     if (!urlStatsMap[url]) {
       urlStatsMap[url] = { url, latency_ms: -1, cooled_down: false, cooldown_remain_ms: 0, requests: 0, failures: 0, disabled: newDisabled };
@@ -561,4 +594,13 @@ async function toggleURLDisabled(btn) {
   } finally {
     btn.disabled = false;
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = {
+    fetchURLStats,
+    normalizeInlineURLConfig,
+    normalizeInlineURLConfigs,
+    runtimeInlineURL
+  };
 }

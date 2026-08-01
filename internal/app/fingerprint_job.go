@@ -119,22 +119,24 @@ func (j *fpJob) finish(status string, result any, errStr string, now time.Time) 
 
 // calibrateReq POST /fingerprints/calibrate body。
 type calibrateReq struct {
-	Name        string `json:"name" binding:"required"`
-	ChannelID   int64  `json:"channel_id" binding:"required"`
-	Model       string `json:"model" binding:"required"`
-	Iterations  int    `json:"iterations"`
-	Concurrency int    `json:"concurrency"`
-	KeyIndex    int    `json:"key_index"`
+	Name           string `json:"name" binding:"required"`
+	ChannelID      int64  `json:"channel_id" binding:"required"`
+	Model          string `json:"model" binding:"required"`
+	ClientProtocol string `json:"client_protocol"`
+	Iterations     int    `json:"iterations"`
+	Concurrency    int    `json:"concurrency"`
+	KeyIndex       int    `json:"key_index"`
 }
 
 // testFingerprintReq POST /fingerprints/test body。
 type testFingerprintReq struct {
-	ChannelID     int64  `json:"channel_id" binding:"required"`
-	Model         string `json:"model" binding:"required"`
-	FingerprintID *int64 `json:"fingerprint_id"`
-	Iterations    int    `json:"iterations"`
-	Concurrency   int    `json:"concurrency"`
-	KeyIndex      int    `json:"key_index"`
+	ChannelID      int64  `json:"channel_id" binding:"required"`
+	Model          string `json:"model" binding:"required"`
+	ClientProtocol string `json:"client_protocol"`
+	FingerprintID  *int64 `json:"fingerprint_id"`
+	Iterations     int    `json:"iterations"`
+	Concurrency    int    `json:"concurrency"`
+	KeyIndex       int    `json:"key_index"`
 }
 
 // FingerprintJobManager 管理内存 job（最多 2 个同时运行，完成后保留 1h）。
@@ -210,7 +212,7 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		defer m.finishJob()
 		defer j.cancel()
 
-		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
 		if cancelled {
 			j.finish("cancelled", nil, "cancelled", time.Now())
 			return
@@ -229,19 +231,19 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		dist := util.FingerprintDistribution(samples)
 		utilStats := util.CalculateFingerprintStats(samples)
 		fp := &model.ModelFingerprint{
-			Name:          req.Name,
-			ChannelID:     &req.ChannelID,
-			Model:         req.Model,
-			SampleCount:   len(samples),
-			Distribution:  dist,
-			Stats:         statsToModel(utilStats),
-			RawData:       samples,
-			PromptVersion: util.FingerprintPromptVersion,
+			Name:           req.Name,
+			ChannelID:      &req.ChannelID,
+			Model:          req.Model,
+			SampleCount:    len(samples),
+			Distribution:   dist,
+			Stats:          statsToModel(utilStats),
+			RawData:        samples,
+			PromptVersion:  util.FingerprintPromptVersion,
+			ClientProtocol: req.ClientProtocol,
 		}
 		// 尝试获取渠道元信息快照
 		if cfg, err := s.store.GetConfig(ctx, req.ChannelID); err == nil && cfg != nil {
 			fp.ChannelName = cfg.Name
-			fp.ChannelType = cfg.ChannelType
 		}
 
 		if ctx.Err() != nil {
@@ -280,7 +282,7 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		defer m.finishJob()
 		defer j.cancel()
 
-		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
 		if cancelled {
 			j.finish("cancelled", nil, "cancelled", time.Now())
 			return
@@ -500,6 +502,7 @@ func (m *FingerprintJobManager) runSampling(
 	s *Server,
 	channelID int64,
 	modelName string,
+	clientProtocol string,
 	keyIndex int,
 	iterations, concurrency int,
 ) (samples []int, cancelled bool, err error) {
@@ -555,6 +558,7 @@ func (m *FingerprintJobManager) runSampling(
 				}
 				testReq := &testutil.TestChannelRequest{
 					Model:           modelName,
+					ClientProtocol:  clientProtocol,
 					Content:         util.FingerprintPrompt,
 					MaxTokens:       10,
 					Temperature:     &temp,
@@ -568,7 +572,7 @@ func (m *FingerprintJobManager) runSampling(
 					cfg,
 					model.LogSourceManualTest,
 					requestedModel,
-					testReq.Model,
+					channelTestActualModel(result, testReq.Model),
 					apiKey,
 					"",
 					testReq.ThinkingEffort,

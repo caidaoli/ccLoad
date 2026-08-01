@@ -304,8 +304,8 @@ func testBasicInsert(t *testing.T, db *sql.DB, tableName string) {
 	switch tableName {
 	case "channels":
 		// 注意：models 和 model_redirects 字段已迁移到 channel_models 表
-		_, err := db.Exec("INSERT INTO channels (name, url, channel_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-			"test-channel", "http://example.com", "anthropic", 1234567890, 1234567890)
+		_, err := db.Exec("INSERT INTO channels (name, url, created_at, updated_at) VALUES (?, ?, ?, ?)",
+			"test-channel", "http://example.com", 1234567890, 1234567890)
 		if err != nil {
 			t.Logf("Warning: Failed to insert test data into %s: %v", tableName, err)
 		}
@@ -338,8 +338,8 @@ func testTableRelationships(t *testing.T, db *sql.DB) {
 
 		// 1. 插入channel
 		// 注意：models 和 model_redirects 字段已迁移到 channel_models 表
-		result, err := db.Exec("INSERT INTO channels (name, url, channel_type, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
-			"test-channel-rel", "http://example.com", "anthropic", 1234567890, 1234567890)
+		result, err := db.Exec("INSERT INTO channels (name, url, created_at, updated_at) VALUES (?, ?, ?, ?)",
+			"test-channel-rel", "http://example.com", 1234567890, 1234567890)
 		if err != nil {
 			t.Fatalf("Failed to insert test channel: %v", err)
 		}

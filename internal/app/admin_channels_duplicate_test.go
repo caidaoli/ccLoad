@@ -18,8 +18,7 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 
 	_, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "existing-channel",
-		ChannelType:  "anthropic",
-		URL:          "https://api.anthropic.com/v1\nhttps://backup.anthropic.com",
+		URLs:         channelURLsForTest("https://api.anthropic.com/v1#", "https://backup.anthropic.com"),
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "claude-3-5-sonnet"}},
 		Enabled:      true,
@@ -38,10 +37,9 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 		return wrapped.Data
 	}
 
-	t.Run("no duplicate - different type", func(t *testing.T) {
+	t.Run("duplicate - protocol does not change URL identity", func(t *testing.T) {
 		body, _ := json.Marshal(CheckDuplicateRequest{
-			ChannelType: "openai",
-			URLs:        []string{"https://api.anthropic.com/v1"},
+			URLs: model.ChannelURLs{{URL: "https://api.anthropic.com/v1", Exact: true}},
 		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
@@ -49,15 +47,14 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
 		}
 		resp := parseResp(t, w.Body.Bytes())
-		if len(resp.Duplicates) != 0 {
-			t.Fatalf("expected 0 duplicates, got %d", len(resp.Duplicates))
+		if len(resp.Duplicates) != 1 {
+			t.Fatalf("expected 1 duplicate, got %d", len(resp.Duplicates))
 		}
 	})
 
 	t.Run("no duplicate - different url", func(t *testing.T) {
 		body, _ := json.Marshal(CheckDuplicateRequest{
-			ChannelType: "anthropic",
-			URLs:        []string{"https://other.example.com"},
+			URLs: model.ChannelURLs{{URL: "https://other.example.com"}},
 		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
@@ -72,8 +69,7 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 
 	t.Run("duplicate - first url matches", func(t *testing.T) {
 		body, _ := json.Marshal(CheckDuplicateRequest{
-			ChannelType: "anthropic",
-			URLs:        []string{"https://api.anthropic.com/v1"},
+			URLs: model.ChannelURLs{{URL: "https://api.anthropic.com/v1", Exact: true}},
 		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
@@ -91,8 +87,7 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 
 	t.Run("duplicate - second url matches", func(t *testing.T) {
 		body, _ := json.Marshal(CheckDuplicateRequest{
-			ChannelType: "anthropic",
-			URLs:        []string{"https://backup.anthropic.com"},
+			URLs: model.ChannelURLs{{URL: "https://backup.anthropic.com"}},
 		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
@@ -107,8 +102,7 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 
 	t.Run("duplicate - same channel only reported once", func(t *testing.T) {
 		body, _ := json.Marshal(CheckDuplicateRequest{
-			ChannelType: "anthropic",
-			URLs:        []string{"https://api.anthropic.com/v1", "https://backup.anthropic.com"},
+			URLs: model.ChannelURLs{{URL: "https://api.anthropic.com/v1", Exact: true}, {URL: "https://backup.anthropic.com"}},
 		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
@@ -121,12 +115,14 @@ func TestHandleCheckDuplicateChannel(t *testing.T) {
 		}
 	})
 
-	t.Run("bad request - missing channel_type", func(t *testing.T) {
-		body, _ := json.Marshal(map[string]any{"urls": []string{"https://example.com"}})
+	t.Run("bad request - invalid URL", func(t *testing.T) {
+		body, _ := json.Marshal(CheckDuplicateRequest{
+			URLs: model.ChannelURLs{{URL: "ftp://example.com"}},
+		})
 		c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/check-duplicate", bytes.NewReader(body)))
 		server.HandleCheckDuplicateChannel(c)
 		if w.Code != http.StatusBadRequest {
-			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
 		}
 	})
 }

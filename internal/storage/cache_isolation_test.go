@@ -25,7 +25,7 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:     "test-channel",
-		URL:      "https://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 		Priority: 10,
 		// 验证缓存深拷贝不会丢字段：DailyCostLimit 需被正确保留，否则成本限额过滤会失效。
 		DailyCostLimit: 2.0,
@@ -128,198 +128,6 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	t.Logf("✅ 深拷贝隔离性测试通过：调用方修改未污染缓存或数据库")
 }
 
-// TestCacheIsolation_GetEnabledChannelsByType 验证 GetEnabledChannelsByType 返回深拷贝
-func TestCacheIsolation_GetEnabledChannelsByType(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "isolation_type.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("创建 store 失败: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	// 创建测试渠道
-	cfg := &model.Config{
-		Name:           "test-anthropic",
-		ChannelType:    "anthropic",
-		URL:            "https://test.example.com",
-		Priority:       10,
-		DailyCostLimit: 2.0,
-		ModelEntries: []model.ModelEntry{
-			{Model: "claude-3-sonnet", RedirectModel: ""},
-			{Model: "claude", RedirectModel: "claude-3-sonnet"},
-		},
-		Enabled: true,
-	}
-	_, err = store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	cache := storage.NewChannelCache(store, 1*time.Minute)
-
-	// 第一次查询，填充缓存
-	channels1, err := cache.GetEnabledChannelsByType(ctx, "anthropic")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByType 失败: %v", err)
-	}
-	if len(channels1) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
-	}
-
-	// 污染尝试：修改返回的数据
-	channels1[0].ModelEntries = append(channels1[0].ModelEntries, model.ModelEntry{Model: "backdoor-model"})
-
-	// 第二次查询，验证缓存未被污染
-	channels2, err := cache.GetEnabledChannelsByType(ctx, "anthropic")
-	if err != nil {
-		t.Fatalf("第二次 GetEnabledChannelsByType 失败: %v", err)
-	}
-	if len(channels2) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
-	}
-
-	ch2 := channels2[0]
-
-	// 验证：未被污染（顺序无关）
-	if len(ch2.ModelEntries) != 2 {
-		t.Errorf("ModelEntries 长度被污染: 期望 2, 实际 %d", len(ch2.ModelEntries))
-	}
-	if ch2.DailyCostLimit != 2.0 {
-		t.Errorf("DailyCostLimit 丢失/被污染: 期望 2.0, 实际 %v", ch2.DailyCostLimit)
-	}
-	// 验证包含原始模型
-	foundClaude3Sonnet := false
-	foundClaude := false
-	for _, e := range ch2.ModelEntries {
-		if e.Model == "claude-3-sonnet" {
-			foundClaude3Sonnet = true
-		}
-		if e.Model == "claude" {
-			foundClaude = true
-		}
-		if e.Model == "backdoor-model" {
-			t.Errorf("ModelEntries 包含污染数据: 'backdoor-model'")
-		}
-	}
-	if !foundClaude3Sonnet || !foundClaude {
-		t.Errorf("ModelEntries 缺少原始模型: foundClaude3Sonnet=%v, foundClaude=%v", foundClaude3Sonnet, foundClaude)
-	}
-
-	t.Logf("✅ GetEnabledChannelsByType 深拷贝隔离性测试通过")
-}
-
-func TestCacheIsolation_GetEnabledChannelsByExposedProtocol(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "isolation_protocol.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("创建 store 失败: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cfg := &model.Config{
-		Name:               "test-gemini-transform",
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
-		URL:                "https://test.example.com",
-		Priority:           10,
-		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-2.5-pro", RedirectModel: ""},
-		},
-		Enabled: true,
-	}
-	_, err = store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	cache := storage.NewChannelCache(store, 1*time.Minute)
-
-	channels1, err := cache.GetEnabledChannelsByExposedProtocol(ctx, "openai")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByExposedProtocol 失败: %v", err)
-	}
-	if len(channels1) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
-	}
-
-	channels1[0].ProtocolTransforms[0] = "polluted"
-
-	channels2, err := cache.GetEnabledChannelsByExposedProtocol(ctx, "openai")
-	if err != nil {
-		t.Fatalf("第二次 GetEnabledChannelsByExposedProtocol 失败: %v", err)
-	}
-	if len(channels2) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
-	}
-	if len(channels2[0].ProtocolTransforms) != 1 || channels2[0].ProtocolTransforms[0] != "openai" {
-		t.Fatalf("ProtocolTransforms 被污染: %#v", channels2[0].ProtocolTransforms)
-	}
-}
-
-func TestCacheIsolation_GetEnabledChannelsByModelAndProtocol(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "isolation_model_protocol.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("创建 store 失败: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	cfg := &model.Config{
-		Name:               "test-gemini-openai-transform",
-		ChannelType:        "gemini",
-		ProtocolTransforms: []string{"openai"},
-		URL:                "https://test.example.com",
-		Priority:           10,
-		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-2.5-pro", RedirectModel: ""},
-		},
-		Enabled: true,
-	}
-	_, err = store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	cache := storage.NewChannelCache(store, 1*time.Minute)
-
-	channels1, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
-	if err != nil {
-		t.Fatalf("GetEnabledChannelsByModelAndProtocol 失败: %v", err)
-	}
-	if len(channels1) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels1))
-	}
-
-	channels1[0].Name = "polluted"
-	channels1[0].ProtocolTransforms[0] = "polluted"
-	channels1[0].ModelEntries[0].Model = "polluted-model"
-
-	channels2, err := cache.GetEnabledChannelsByModelAndProtocol(ctx, "gemini-2.5-pro", "openai")
-	if err != nil {
-		t.Fatalf("第二次 GetEnabledChannelsByModelAndProtocol 失败: %v", err)
-	}
-	if len(channels2) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels2))
-	}
-	if channels2[0].Name != "test-gemini-openai-transform" {
-		t.Fatalf("Name 被污染: %q", channels2[0].Name)
-	}
-	if got := channels2[0].ProtocolTransforms; len(got) != 1 || got[0] != "openai" {
-		t.Fatalf("ProtocolTransforms 被污染: %#v", got)
-	}
-	if got := channels2[0].ModelEntries; len(got) != 1 || got[0].Model != "gemini-2.5-pro" {
-		t.Fatalf("ModelEntries 被污染: %#v", got)
-	}
-
-}
-
-// TestCacheIsolation_MultipleQueries 验证多次查询的隔离性
 func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	ctx := context.Background()
 	tmpDir := t.TempDir()
@@ -333,7 +141,7 @@ func TestCacheIsolation_MultipleQueries(t *testing.T) {
 	// 创建测试渠道
 	cfg := &model.Config{
 		Name:     "multi-query-test",
-		URL:      "https://test.example.com",
+		URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 		Priority: 10,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-1", RedirectModel: ""},
@@ -397,7 +205,7 @@ func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	for i := 1; i <= 3; i++ {
 		cfg := &model.Config{
 			Name:     "wildcard-test-" + string(rune('A'+i-1)),
-			URL:      "https://test.example.com",
+			URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
 			Priority: i * 10,
 			ModelEntries: []model.ModelEntry{
 				{Model: "model-common", RedirectModel: ""},

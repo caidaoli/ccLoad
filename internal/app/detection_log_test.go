@@ -13,6 +13,8 @@ func TestDetectionLogFromResult_AllowsNilConfig(t *testing.T) {
 		"status_code":            200,
 		"duration_ms":            int64(1500),
 		"first_byte_duration_ms": int64(250),
+		"client_protocol":        "openai",
+		"upstream_protocol":      "anthropic",
 		"cost_usd":               1.25,
 		"message":                "ok",
 	})
@@ -29,14 +31,16 @@ func TestDetectionLogFromResult_AllowsNilConfig(t *testing.T) {
 	if entry.Message != "ok" {
 		t.Fatalf("expected message to be preserved, got %q", entry.Message)
 	}
+	if entry.ClientProtocol != "openai" || entry.UpstreamProtocol != "anthropic" {
+		t.Fatalf("protocols=%s->%s, want openai->anthropic", entry.ClientProtocol, entry.UpstreamProtocol)
+	}
 }
 
 func TestDetectionLogFromResult_NormalizesOpenAIChatMixedUsage(t *testing.T) {
 	t.Parallel()
 
 	cfg := &model.Config{
-		ID:          212,
-		ChannelType: "openai",
+		ID: 212,
 	}
 	entry := detectionLogFromResult(cfg, model.LogSourceManualTest, "mimo-v2.5", "", "sk-test", "", "", map[string]any{
 		"status_code": 200,

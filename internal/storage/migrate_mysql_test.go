@@ -5,6 +5,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -140,7 +141,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -174,6 +175,61 @@ func TestMySQL(t *testing.T) {
 			}
 			t.Logf("表 %s 存在（行数: %d）", table, count)
 		}
+	})
+
+	t.Run("StructuredChannelURLs", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		ctx := context.Background()
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:    "mysql-legacy-urls",
+			URLs:    model.ChannelURLs{{URL: "https://placeholder.example.com"}},
+			Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("创建迁移夹具失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "UPDATE channels SET url = ? WHERE id = ?", "https://one.example.com\nhttps://two.example.com/v1/messages#", created.ID); err != nil {
+			t.Fatalf("写入旧 URL 格式失败: %v", err)
+		}
+		if _, err := env.db.ExecContext(ctx, "DELETE FROM schema_migrations WHERE version = ?", structuredChannelURLsMigrationVersion); err != nil {
+			t.Fatalf("重置迁移标记失败: %v", err)
+		}
+		if err := migrateMySQL(ctx, env.db); err != nil {
+			t.Fatalf("迁移结构化 URL 失败: %v", err)
+		}
+
+		var raw string
+		if err := env.db.QueryRowContext(ctx, "SELECT url FROM channels WHERE id = ?", created.ID).Scan(&raw); err != nil {
+			t.Fatalf("读取迁移结果失败: %v", err)
+		}
+		var urls model.ChannelURLs
+		if err := json.Unmarshal([]byte(raw), &urls); err != nil {
+			t.Fatalf("迁移结果不是 JSON: %v (%q)", err, raw)
+		}
+		if len(urls) != 2 || urls[0].URL != "https://one.example.com" || urls[1].URL != "https://two.example.com/v1/messages" || !urls[1].Exact {
+			t.Fatalf("迁移 URL=%+v", urls)
+		}
+	})
+
+	t.Run("ClientProtocolBackfill", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		verifyClientProtocolBackfill(t, context.Background(), env.db, DialectMySQL, func(ctx context.Context, db *sql.DB) error {
+			return migrateMySQL(ctx, db)
+		})
 	})
 
 	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
@@ -218,7 +274,7 @@ func TestMySQL(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		// 验证 logs 表的新列存在
-		expectedColumns := []string{"auth_token_id", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source"}
+		expectedColumns := []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source"}
 		for _, col := range expectedColumns {
 			var columnName string
 			err := env.db.QueryRow(
@@ -296,7 +352,6 @@ func TestMySQL(t *testing.T) {
 				name VARCHAR(191) NOT NULL UNIQUE,
 				url VARCHAR(191) NOT NULL,
 				priority INT NOT NULL DEFAULT 0,
-				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
 				enabled TINYINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
 				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -305,7 +360,6 @@ func TestMySQL(t *testing.T) {
 				updated_at BIGINT NOT NULL,
 				INDEX idx_channels_enabled (enabled),
 				INDEX idx_channels_priority (priority DESC),
-				INDEX idx_channels_type_enabled (channel_type, enabled),
 				INDEX idx_channels_cooldown (cooldown_until)
 			)
 		`)
@@ -370,15 +424,26 @@ func TestMySQL(t *testing.T) {
 			t.Fatalf("api_keys.api_key 可空性错误: got=%s want=NO", isNullable)
 		}
 
+		var protocolTransformDefault sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT COLUMN_DEFAULT
+			FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'channels' AND COLUMN_NAME = 'protocol_transform_mode'
+		`).Scan(&protocolTransformDefault); err != nil {
+			t.Fatalf("查询 channels.protocol_transform_mode 失败: %v", err)
+		}
+		if !protocolTransformDefault.Valid || protocolTransformDefault.String != "auto" {
+			t.Fatalf("protocol_transform_mode 默认值=%v, want auto", protocolTransformDefault)
+		}
+
 		longKey := "sk-" + strings.Repeat("x", 197) // 长度 200，验证迁移后的 VARCHAR(255) 契约
 		created, updated, err := store.ImportChannelBatch(context.Background(), []*model.ChannelWithKeys{
 			{
 				Config: &model.Config{
-					Name:        "legacy-key-len",
-					URL:         "https://api.example.com",
-					Priority:    1,
-					ChannelType: "openai",
-					Enabled:     true,
+					Name:     "legacy-key-len",
+					URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+					Priority: 1,
+					Enabled:  true,
 					ModelEntries: []model.ModelEntry{
 						{Model: "gpt-4"},
 					},

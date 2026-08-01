@@ -53,7 +53,7 @@
           <div class="www-step">
             <div>
               <h3>Add channels</h3>
-              <p>Open the channel page and configure the primary protocol, any additional protocols, protocol handling, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
+              <p>Open the channel page and configure the upstream protocol, URL, API key, priority, models and limits. Separate multiple URLs with commas.</p>
             </div>
           </div>
           <div class="www-step">
@@ -70,7 +70,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Endpoint Reference</h2>
-          <p>A channel can serve its primary protocol plus any configured additional protocols. Upstream Passthrough forwards the client's protocol natively; ccLoad Translation converts additional protocols into the primary protocol.</p>
+          <p>All four core client protocols can use every model-compatible channel. ccLoad tries the client protocol on each URL first and translates to the channel's upstream protocol only after an endpoint-level 404/405.</p>
         </div>
 
         <div class="www-data-table-wrapper">
@@ -141,7 +141,7 @@
             <h3>Channel and session setup</h3>
             <ul class="www-check-list">
               <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
-              <li>Enable <code>websockets</code> only on channels whose primary protocol is Codex. Other candidates continue through HTTP/SSE.</li>
+              <li>Enable <code>websockets</code> only on channels whose upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
               <li>Keep the API token and <code>Session-Id</code> header stable across reconnects so ccLoad can retain transcript and upstream affinity. Cache-routing hints such as <code>prompt_cache_key</code> and <code>Session_id</code> never identify an execution session.</li>
             </ul>
           </article>

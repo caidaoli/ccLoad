@@ -4,102 +4,27 @@ import (
 	"context"
 	"net/url"
 	"strings"
-	"time"
 
 	modelpkg "ccLoad/internal/model"
 	"ccLoad/internal/protocol"
-	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
 
-const alphaSearchCapabilityRetryInterval = 10 * time.Minute
-
-type alphaSearchEndpointKey struct {
-	channelID int64
-	url       string
-}
-
-func (s *Server) markAlphaSearchUnsupported(channelID int64, rawURL string) {
-	s.alphaSearchUnsupportedURLs.Store(alphaSearchEndpointKey{channelID: channelID, url: rawURL}, time.Now())
-}
-
-func (s *Server) isAlphaSearchUnsupported(channelID int64, rawURL string) bool {
-	key := alphaSearchEndpointKey{channelID: channelID, url: rawURL}
-	value, ok := s.alphaSearchUnsupportedURLs.Load(key)
-	if !ok {
-		return false
-	}
-	detectedAt, ok := value.(time.Time)
-	if !ok || time.Since(detectedAt) >= alphaSearchCapabilityRetryInterval {
-		s.alphaSearchUnsupportedURLs.Delete(key)
-		return false
-	}
-	return true
-}
-
-func normalizeOptionalChannelType(value string) string {
+func normalizeOptionalProtocol(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return ""
 	}
-	return util.NormalizeChannelType(value)
+	return util.NormalizeProtocol(value)
 }
 
-func (s *Server) getEnabledChannelsByExposedProtocol(ctx context.Context, protocol string) ([]*modelpkg.Config, error) {
-	normalizedType := util.NormalizeChannelType(protocol)
-	return readThroughChannelCache(
-		s,
-		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
-			return cache.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
-		},
-		func() ([]*modelpkg.Config, error) {
-			return s.store.GetEnabledChannelsByExposedProtocol(ctx, normalizedType)
-		},
-	)
-}
-
-func (s *Server) getEnabledChannelsByModelAndProtocol(ctx context.Context, model string, protocol string) ([]*modelpkg.Config, error) {
-	normalizedType := normalizeOptionalChannelType(protocol)
-	if normalizedType == "" {
-		return s.GetEnabledChannelsByModel(ctx, model)
-	}
-
-	return readThroughChannelCache(
-		s,
-		func(cache *storage.ChannelCache) ([]*modelpkg.Config, error) {
-			return cache.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
-		},
-		func() ([]*modelpkg.Config, error) {
-			return s.store.GetEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
-		},
-	)
-}
-
-// selectCandidatesByChannelType 根据客户端协议选择候选渠道
-func (s *Server) selectCandidatesByChannelType(ctx context.Context, channelType string) ([]*modelpkg.Config, error) {
-	normalizedType := util.NormalizeChannelType(channelType)
-
-	// 优先走缓存查询
-	channels, err := s.getEnabledChannelsByExposedProtocol(ctx, normalizedType)
+// selectCandidatesByClientProtocol 返回所有启用渠道；clientProtocol 仅用于计算客户端协议对应的模型冷却键。
+func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientProtocol string) ([]*modelpkg.Config, error) {
+	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}
-
-	// 兜底：全量查询（用于“全冷却兜底”场景）
-	if len(channels) == 0 {
-		all, err := s.store.ListConfigs(ctx)
-		if err != nil {
-			return nil, err
-		}
-		channels = make([]*modelpkg.Config, 0, len(all))
-		for _, cfg := range all {
-			if cfg != nil && cfg.Enabled && cfg.SupportsProtocol(normalizedType) {
-				channels = append(channels, cfg)
-			}
-		}
-	}
-
-	return s.filterCooldownChannels(ctx, channels, "*", channelType)
+	return s.filterCooldownChannels(ctx, channels, "*", clientProtocol)
 }
 
 // alphaSearchUpstreamURLs removes exact URLs for other Codex endpoints and
@@ -109,7 +34,11 @@ func (s *Server) alphaSearchUpstreamURLs(cfg *modelpkg.Config) []string {
 	urls := cfg.GetURLs()
 	compatible := make([]string, 0, len(urls))
 	for _, rawURL := range urls {
-		if s.isAlphaSearchUnsupported(cfg.ID, rawURL) {
+		key := protocolCapabilityKey{
+			channelID: cfg.ID, baseURL: rawURL,
+			clientProtocol: protocol.Codex, requestFamily: protocol.RequestFamilyAlphaSearch,
+		}
+		if cached, known := s.protocolCapabilities.get(key); known && cached == protocolUnsupported {
 			continue
 		}
 		if !modelpkg.HasExactUpstreamURLMarker(rawURL) {
@@ -130,14 +59,14 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 	if routeModel == "" {
 		routeModel = "*"
 	}
-	channels, err := s.getEnabledChannelsByModelAndProtocol(ctx, routeModel, string(protocol.Codex))
+	channels, err := s.GetEnabledChannelsByModel(ctx, routeModel)
 	if err != nil {
 		return nil, err
 	}
 
 	compatible := make([]*modelpkg.Config, 0, len(channels))
 	for _, cfg := range channels {
-		if cfg == nil || cfg.ResolveUpstreamProtocol(string(protocol.Codex)) != string(protocol.Codex) {
+		if cfg == nil {
 			continue
 		}
 
@@ -146,8 +75,18 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 			continue
 		}
 		if len(urls) != len(cfg.GetURLs()) {
+			configuredURLs := cfg.URLs
 			cfg = cfg.Clone()
-			cfg.URL = strings.Join(urls, "\n")
+			allowed := make(map[string]struct{}, len(urls))
+			for _, runtimeURL := range urls {
+				allowed[runtimeURL] = struct{}{}
+			}
+			cfg.URLs = cfg.URLs[:0]
+			for _, entry := range configuredURLs {
+				if _, ok := allowed[entry.RuntimeURL()]; ok {
+					cfg.URLs = append(cfg.URLs, entry)
+				}
+			}
 		}
 		compatible = append(compatible, cfg)
 	}
@@ -155,13 +94,11 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 	return s.filterCooldownChannels(ctx, compatible, routeModel, string(protocol.Codex))
 }
 
-// selectCandidatesByModelAndType 根据模型和渠道类型筛选候选渠道
-// 遵循SRP：数据库负责返回满足模型的渠道，本函数仅负责类型过滤
-func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model string, channelType string) ([]*modelpkg.Config, error) {
-	normalizedType := normalizeOptionalChannelType(channelType)
+// selectCandidatesByModelAndClientProtocol 按模型选择候选渠道；clientProtocol 仅表示客户端协议，不过滤上游主协议。
+func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
+	normalizedType := normalizeOptionalProtocol(clientProtocol)
 
-	// 优先走索引查询
-	channels, err := s.getEnabledChannelsByModelAndProtocol(ctx, model, normalizedType)
+	channels, err := s.GetEnabledChannelsByModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
@@ -180,12 +117,9 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
 	var allCandidates []*modelpkg.Config
 	if model != "*" {
-		source := make([]*modelpkg.Config, 0)
-		if normalizedType != "" {
-			source, err = s.getEnabledChannelsByModelAndProtocol(ctx, "*", normalizedType)
-			if err != nil {
-				return nil, err
-			}
+		source, err := s.GetEnabledChannelsByModel(ctx, "*")
+		if err != nil {
+			return nil, err
 		}
 		if len(source) == 0 {
 			source, err = s.store.ListConfigs(ctx)
@@ -197,9 +131,6 @@ func (s *Server) selectCandidatesByModelAndType(ctx context.Context, model strin
 		allCandidates = make([]*modelpkg.Config, 0, len(source))
 		for _, cfg := range source {
 			if cfg == nil || !cfg.Enabled {
-				continue
-			}
-			if channelType != "" && !cfg.SupportsProtocol(normalizedType) {
 				continue
 			}
 			if s.configSupportsModelWithFuzzyMatch(cfg, model) {

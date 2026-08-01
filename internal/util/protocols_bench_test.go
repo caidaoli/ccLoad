@@ -2,8 +2,8 @@ package util
 
 import "testing"
 
-// BenchmarkNormalizeChannelType 测试渠道类型规范化性能
-func BenchmarkNormalizeChannelType(b *testing.B) {
+// BenchmarkNormalizeProtocol 测试协议规范化性能
+func BenchmarkNormalizeProtocol(b *testing.B) {
 	testCases := []struct {
 		name  string
 		value string
@@ -19,7 +19,7 @@ func BenchmarkNormalizeChannelType(b *testing.B) {
 		b.Run(tc.name, func(b *testing.B) {
 			b.ReportAllocs()
 			for i := 0; i < b.N; i++ {
-				_ = NormalizeChannelType(tc.value)
+				_ = NormalizeProtocol(tc.value)
 			}
 		})
 	}

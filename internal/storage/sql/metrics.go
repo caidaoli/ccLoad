@@ -158,7 +158,6 @@ func (s *SQLStore) GetStats(ctx context.Context, startTime, endTime time.Time, f
 				if info, ok := channelInfos[int64(*stats[i].ChannelID)]; ok {
 					stats[i].ChannelName = info.Name
 					stats[i].ChannelPriority = &info.Priority
-					stats[i].ChannelType = info.Type
 					if info.CostMultiplier != 1 {
 						costMultiplier := info.CostMultiplier
 						stats[i].CostMultiplier = &costMultiplier
@@ -609,6 +608,67 @@ func (s *SQLStore) GetStatsLite(ctx context.Context, startTime, endTime time.Tim
 	return stats, err
 }
 
+// GetClientProtocolStats 按客户端入口协议聚合首页统计。
+func (s *SQLStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
+	baseQuery := `
+		SELECT
+			COALESCE(client_protocol, '') AS client_protocol,
+			SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success,
+			SUM(CASE WHEN (status_code < 200 OR status_code >= 300) AND status_code != 499 THEN 1 ELSE 0 END) AS error,
+			SUM(COALESCE(input_tokens, 0)) AS total_input_tokens,
+			SUM(COALESCE(output_tokens, 0)) AS total_output_tokens,
+			SUM(COALESCE(cache_read_input_tokens, 0)) AS total_cache_read_tokens,
+			SUM(COALESCE(cache_creation_input_tokens, 0)) AS total_cache_creation_tokens,
+			SUM(COALESCE(cost, 0.0)) AS total_cost,
+			SUM(COALESCE(cost, 0.0) * COALESCE(cost_multiplier, 1)) AS effective_cost
+		FROM logs`
+
+	qb := NewQueryBuilder(baseQuery).
+		Where("time >= ?", startTime.UnixMilli()).
+		Where("time <= ?", endTime.UnixMilli()).
+		Where("channel_id > 0")
+
+	isEmpty, err := s.applyChannelFilter(ctx, qb, filter)
+	if err != nil {
+		return nil, err
+	}
+	if isEmpty {
+		return []model.ClientProtocolStats{}, nil
+	}
+	qb.ApplyFilter(filter)
+
+	query, args := qb.BuildWithSuffix("GROUP BY client_protocol ORDER BY client_protocol ASC")
+	rows, err := s.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+
+	stats := make([]model.ClientProtocolStats, 0)
+	for rows.Next() {
+		var entry model.ClientProtocolStats
+		if err := rows.Scan(
+			&entry.ClientProtocol,
+			&entry.SuccessRequests,
+			&entry.ErrorRequests,
+			&entry.TotalInputTokens,
+			&entry.TotalOutputTokens,
+			&entry.TotalCacheReadTokens,
+			&entry.TotalCacheCreationTokens,
+			&entry.TotalCost,
+			&entry.EffectiveCost,
+		); err != nil {
+			return nil, err
+		}
+		entry.TotalRequests = entry.SuccessRequests + entry.ErrorRequests
+		stats = append(stats, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return stats, nil
+}
+
 // GetRPMStats 获取RPM/QPS统计数据（峰值、平均、最近一分钟）
 // isToday参数控制是否计算最近一分钟数据（仅本日有意义）
 // [FIX] 2025-12: 排除499（客户端取消）避免污染RPM统计
@@ -632,7 +692,7 @@ func (s *SQLStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time
 		Where("channel_id > 0").
 		Where("status_code != 499")
 
-	// 应用渠道类型或名称过滤
+	// 应用渠道和上游协议过滤。
 	isEmpty, err := s.applyChannelFilter(ctx, combinedQB, filter)
 	if err != nil {
 		return nil, fmt.Errorf("apply channel filter: %w", err)

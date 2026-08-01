@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -277,9 +278,8 @@ func TestHandleChannelChatWritesOnlyUpstreamEvents(t *testing.T) {
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-handler-stream-upstream-only",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -292,9 +292,10 @@ func TestHandleChannelChatWritesOnlyUpstreamEvents(t *testing.T) {
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":          "gpt-4o-mini",
-		"stream":         true,
-		"builtin_search": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
+		"builtin_search":  true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -375,9 +376,8 @@ func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *te
 	ctx := context.Background()
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-log-stream-debug",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -391,8 +391,9 @@ func TestHandleChannelChatPersistsDetectionLogWithStreamStatusAndDebugData(t *te
 	started := time.Now()
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -470,10 +471,9 @@ func TestHandleChannelChatLogsThinkingEffortFromUpstreamRequestBody(t *testing.T
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:        "chat-thinking-from-upstream-request",
-		URL:         upstream.URL,
-		Priority:    1,
-		ChannelType: "openai",
+		Name:     "chat-thinking-from-upstream-request",
+		URLs:     model.ChannelURLs{{URL: upstream.URL}},
+		Priority: 1,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o-mini"},
 		},
@@ -494,8 +494,9 @@ func TestHandleChannelChatLogsThinkingEffortFromUpstreamRequestBody(t *testing.T
 	started := time.Now()
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -558,9 +559,8 @@ func TestHandleChannelChatStreamsUpstreamDeltaThroughZstdMiddleware(t *testing.T
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-handler-zstd-stream",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -578,8 +578,9 @@ func TestHandleChannelChatStreamsUpstreamDeltaThroughZstdMiddleware(t *testing.T
 	defer app.Close()
 
 	payload, err := sonic.Marshal(map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -663,23 +664,22 @@ func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing
 	cfg := &model.Config{
 		ID:           1,
 		Name:         "openai-non-stream",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
-		ChannelType:  "openai",
 		Enabled:      true,
 	}
 	testReq := &testutil.TestChannelRequest{
-		Model:       "gpt-4o-mini",
-		Stream:      false,
-		ChannelType: "openai",
+		Model:          "gpt-4o-mini",
+		ClientProtocol: "openai",
+		Stream:         false,
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "hi"},
 		},
 	}
 
 	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
-	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
+	attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
 	if !attempt.handled {
 		t.Fatal("expected non-stream chat response to be handled without URL fallback")
 	}
@@ -709,9 +709,8 @@ func TestHandleChannelChatWritesErrorWhenAllURLsFailBeforeResponse(t *testing.T)
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-network-error",
-		URL:          "http://missing-chat-upstream.invalid",
+		URLs:         model.ChannelURLs{{URL: "http://missing-chat-upstream.invalid"}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -724,8 +723,9 @@ func TestHandleChannelChatWritesErrorWhenAllURLsFailBeforeResponse(t *testing.T)
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -758,9 +758,8 @@ func TestHandleChannelChatPersistsLogOnHTTPError(t *testing.T) {
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-http-error-log",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -774,8 +773,9 @@ func TestHandleChannelChatPersistsLogOnHTTPError(t *testing.T) {
 	started := time.Now()
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -836,9 +836,8 @@ func TestHandleChannelChatDoesNotFallbackAfterModelScopedHTTPError(t *testing.T)
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-http-fallback",
-		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		URLs:         channelURLsForTest(failUpstream.URL, okUpstream.URL),
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	})
@@ -854,8 +853,9 @@ func TestHandleChannelChatDoesNotFallbackAfterModelScopedHTTPError(t *testing.T)
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -877,6 +877,52 @@ func TestHandleChannelChatDoesNotFallbackAfterModelScopedHTTPError(t *testing.T)
 	}
 }
 
+func TestHandleChannelChatAutoFallsBackToChannelProtocolOnMissingEndpoint(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"resp_1","object":"response","status":"completed","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"fallback answer"}]}],"usage":{"input_tokens":1,"output_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "chat-auto", URLs: model.ChannelURLs{{URL: upstream.URL}}, ProtocolTransformMode: model.ProtocolTransformModeAuto,
+		ModelEntries: []model.ModelEntry{{Model: "test-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "test-model", "client_protocol": "anthropic", "stream": false,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if !slices.Equal(paths, []string{"/v1/messages", "/v1/chat/completions", "/v1/responses"}) {
+		t.Fatalf("paths=%v, want Anthropic, OpenAI, then Codex", paths)
+	}
+	if !strings.Contains(w.Body.String(), `"delta":"fallback answer"`) || !strings.Contains(w.Body.String(), "data: [DONE]") {
+		t.Fatalf("unexpected frontend SSE: %s", w.Body.String())
+	}
+}
+
 func TestHandleChannelChatDisablesServerWriteTimeoutForDelayedStreamBody(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -895,12 +941,12 @@ func TestHandleChannelChatDisablesServerWriteTimeoutForDelayedStreamBody(t *test
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "chat-write-timeout",
-		URL:          upstream.URL,
-		Priority:     1,
-		ChannelType:  "openai",
-		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
-		Enabled:      true,
+		Name:                  "chat-write-timeout",
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -917,8 +963,9 @@ func TestHandleChannelChatDisablesServerWriteTimeoutForDelayedStreamBody(t *test
 	defer app.Close()
 
 	payload, err := sonic.Marshal(map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -973,16 +1020,15 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 	cfg := &model.Config{
 		ID:           77,
 		Name:         "chat-first-content-timeout",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	}
 	testReq := &testutil.TestChannelRequest{
-		Model:       "gpt-4o-mini",
-		Stream:      true,
-		ChannelType: "openai",
+		Model:          "gpt-4o-mini",
+		ClientProtocol: "openai",
+		Stream:         true,
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "hi"},
 		},
@@ -994,7 +1040,7 @@ func TestStreamChatWithURLKeepsFirstContentTimeoutUntilValidSSEEvent(t *testing.
 
 	done := make(chan chatURLAttemptResult, 1)
 	go func() {
-		done <- srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
+		done <- srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
 	}()
 
 	select {
@@ -1028,23 +1074,22 @@ func TestStreamChatWithURLDoesNotTreatDoneEventAsFirstContent(t *testing.T) {
 	cfg := &model.Config{
 		ID:           78,
 		Name:         "chat-done-is-not-content",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	}
 	testReq := &testutil.TestChannelRequest{
-		Model:       "gpt-4o-mini",
-		Stream:      true,
-		ChannelType: "openai",
+		Model:          "gpt-4o-mini",
+		ClientProtocol: "openai",
+		Stream:         true,
 		Messages: []testutil.ChatMessage{
 			{Role: "user", Content: "hi"},
 		},
 	}
 
 	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/78/chat", nil))
-	attempt := srv.streamChatWithURL(c, cfg, "sk-test", testReq, "openai", upstream.URL, testReq.Model)
+	attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
 	if !attempt.handled {
 		t.Fatal("expected stream attempt to be handled")
 	}
@@ -1078,12 +1123,12 @@ func TestHandleChannelChatDoesNotWriteSyntheticOneMillisecondURLLatency(t *testi
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "chat-selector-latency",
-		URL:          upstream.URL + "\n" + unusedUpstream.URL,
-		Priority:     1,
-		ChannelType:  "openai",
-		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
-		Enabled:      true,
+		Name:                  "chat-selector-latency",
+		URLs:                  channelURLsForTest(upstream.URL, unusedUpstream.URL),
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -1097,8 +1142,9 @@ func TestHandleChannelChatDoesNotWriteSyntheticOneMillisecondURLLatency(t *testi
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": true,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -1205,12 +1251,12 @@ func TestHandleChannelChatRespectsNonStreamFlag(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
-		Name:         "chat-handler-non-stream",
-		URL:          upstream.URL,
-		Priority:     1,
-		ChannelType:  "openai",
-		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
-		Enabled:      true,
+		Name:                  "chat-handler-non-stream",
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-4o-mini"}},
+		Enabled:               true,
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig failed: %v", err)
@@ -1221,8 +1267,9 @@ func TestHandleChannelChatRespectsNonStreamFlag(t *testing.T) {
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-4o-mini",
-		"stream": false,
+		"model":           "gpt-4o-mini",
+		"client_protocol": "openai",
+		"stream":          false,
 		"messages": []map[string]string{
 			{"role": "user", "content": "hi"},
 		},
@@ -1267,9 +1314,8 @@ data: {"type":"response.completed"}
 
 	created, err := srv.store.CreateConfig(ctx, &model.Config{
 		Name:         "chat-handler-codex",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "codex",
 		ModelEntries: []model.ModelEntry{{Model: "gpt-5.5"}},
 		Enabled:      true,
 	})
@@ -1282,8 +1328,9 @@ data: {"type":"response.completed"}
 
 	channelID := fmt.Sprintf("%d", created.ID)
 	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
-		"model":  "gpt-5.5",
-		"stream": true,
+		"model":           "gpt-5.5",
+		"client_protocol": "codex",
+		"stream":          true,
 		"messages": []map[string]string{
 			{"role": "user", "content": "macbook m5有几款"},
 			{"role": "assistant", "content": "Test received. How can I help?"},
@@ -1355,18 +1402,17 @@ func TestTestChannelAPI_StreamIncludesUsageAndCost(t *testing.T) {
 	cfg := &model.Config{
 		ID:           1,
 		Name:         "test-channel",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "claude-3-haiku", RedirectModel: ""}},
-		ChannelType:  "anthropic",
 		Enabled:      true,
 	}
 
 	req := &testutil.TestChannelRequest{
-		Model:       "claude-3-haiku",
-		Stream:      true,
-		Content:     "hi",
-		ChannelType: "anthropic",
+		Model:          "claude-3-haiku",
+		ClientProtocol: "anthropic",
+		Stream:         true,
+		Content:        "hi",
 	}
 
 	result := srv.testChannelAPI(context.Background(), cfg, "sk-test", req)
@@ -1439,18 +1485,17 @@ func TestTestChannelAPI_GeminiStreamIncludesTTFBAndText(t *testing.T) {
 	cfg := &model.Config{
 		ID:           1,
 		Name:         "gemini-channel",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
 		ModelEntries: []model.ModelEntry{{Model: "gemini-2.5-flash-lite"}},
-		ChannelType:  "gemini",
 		Enabled:      true,
 	}
 
 	req := &testutil.TestChannelRequest{
-		Model:       "gemini-2.5-flash-lite",
-		Stream:      true,
-		Content:     "hi",
-		ChannelType: "gemini",
+		Model:          "gemini-2.5-flash-lite",
+		ClientProtocol: "gemini",
+		Stream:         true,
+		Content:        "hi",
 	}
 
 	result := srv.testChannelAPI(context.Background(), cfg, "test-key", req)

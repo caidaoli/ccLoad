@@ -61,6 +61,9 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "duration_ok_10", key: "any_duration", valueType: "duration", value: "10", wantErr: false},
 		{name: "duration_reject_negative", key: "any_duration", valueType: "duration", value: "-1", wantErr: true},
 		{name: "duration_reject_non_int", key: "any_duration", valueType: "duration", value: "1.5", wantErr: true},
+		{name: "duration_upstream_connection_reuse_limit_ok_disabled", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "0", wantErr: false},
+		{name: "duration_upstream_connection_reuse_limit_ok_positive", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "540", wantErr: false},
+		{name: "duration_upstream_connection_reuse_limit_reject_negative", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "-1", wantErr: true},
 
 		{name: "string_accepts_any", key: "any_string", valueType: "string", value: "", wantErr: false},
 

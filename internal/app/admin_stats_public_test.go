@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
 	"ccLoad/internal/version"
 )
 
@@ -18,9 +19,8 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 
 	anth, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "anth",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
-		ChannelType:  "anthropic",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -29,9 +29,8 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 	}
 	oai, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "oai",
-		URL:          "https://example.com",
+		URLs:         model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -45,6 +44,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			Time:                     model.JSONTime{Time: now},
 			Model:                    "m1",
 			ChannelID:                anth.ID,
+			ClientProtocol:           "anthropic",
 			LogSource:                model.LogSourceProxy,
 			StatusCode:               200,
 			Message:                  "ok",
@@ -63,6 +63,7 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			Time:                 model.JSONTime{Time: now},
 			Model:                "m1",
 			ChannelID:            oai.ID,
+			ClientProtocol:       "openai",
 			LogSource:            model.LogSourceProxy,
 			StatusCode:           500,
 			Message:              "fail",
@@ -74,59 +75,35 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			Cost:                 0.02,
 		},
 		{
-			Time:         model.JSONTime{Time: now},
-			Model:        "m1",
-			ChannelID:    anth.ID,
-			LogSource:    model.LogSourceScheduledCheck,
-			StatusCode:   200,
-			Message:      "scheduled ok",
-			Duration:     0.05,
-			InputTokens:  50,
-			OutputTokens: 60,
-			Cost:         0.5,
+			Time:           model.JSONTime{Time: now},
+			Model:          "m1",
+			ChannelID:      anth.ID,
+			ClientProtocol: "codex",
+			LogSource:      model.LogSourceScheduledCheck,
+			StatusCode:     200,
+			Message:        "scheduled ok",
+			Duration:       0.05,
+			InputTokens:    50,
+			OutputTokens:   60,
+			Cost:           0.5,
+		},
+		{
+			Time:           model.JSONTime{Time: now},
+			Model:          "m1",
+			ChannelID:      anth.ID,
+			LogSource:      model.LogSourceProxy,
+			ClientProtocol: "",
+			StatusCode:     201,
+			Message:        "legacy protocol unknown",
+			Duration:       0.05,
+			InputTokens:    5,
+			OutputTokens:   6,
+			Cost:           0.005,
 		},
 	}
 	if err := store.BatchAddLogs(ctx, logs); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
-
-	t.Run("getChannelTypesMapCached respects TTL", func(t *testing.T) {
-		m1, err := server.getChannelTypesMapCached(ctx)
-		if err != nil {
-			t.Fatalf("getChannelTypesMapCached failed: %v", err)
-		}
-		if m1[anth.ID] != "anthropic" || m1[oai.ID] != "openai" {
-			t.Fatalf("unexpected types: %#v", m1)
-		}
-
-		cfg, err := store.GetConfig(ctx, anth.ID)
-		if err != nil {
-			t.Fatalf("GetConfig failed: %v", err)
-		}
-		cfg.ChannelType = "codex"
-		if _, err := store.UpdateConfig(ctx, anth.ID, cfg); err != nil {
-			t.Fatalf("UpdateConfig failed: %v", err)
-		}
-
-		// TTL 未过期，应该返回旧值（缓存命中）
-		m2, err := server.getChannelTypesMapCached(ctx)
-		if err != nil {
-			t.Fatalf("getChannelTypesMapCached failed: %v", err)
-		}
-		if m2[anth.ID] != "anthropic" {
-			t.Fatalf("expected cached type anthropic, got %q", m2[anth.ID])
-		}
-
-		// 手动让缓存过期，强制刷新
-		server.channelTypesCacheTime = time.Now().Add(-2 * channelTypesCacheTTL)
-		m3, err := server.getChannelTypesMapCached(ctx)
-		if err != nil {
-			t.Fatalf("getChannelTypesMapCached failed: %v", err)
-		}
-		if m3[anth.ID] != "codex" {
-			t.Fatalf("expected refreshed type codex, got %q", m3[anth.ID])
-		}
-	})
 
 	t.Run("HandlePublicSummary", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/summary?range=today", nil))
@@ -139,27 +116,23 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		var resp struct {
 			Success bool `json:"success"`
 			Data    struct {
-				TotalRequests   int                    `json:"total_requests"`
-				SuccessRequests int                    `json:"success_requests"`
-				ErrorRequests   int                    `json:"error_requests"`
-				ByType          map[string]TypeSummary `json:"by_type"`
+				TotalRequests    int                                  `json:"total_requests"`
+				SuccessRequests  int                                  `json:"success_requests"`
+				ErrorRequests    int                                  `json:"error_requests"`
+				ByClientProtocol map[string]model.ClientProtocolStats `json:"by_client_protocol"`
 			} `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 		if !resp.Success {
 			t.Fatalf("expected success=true, body=%s", w.Body.String())
 		}
-		if resp.Data.TotalRequests != 2 || resp.Data.SuccessRequests != 1 || resp.Data.ErrorRequests != 1 {
+		if resp.Data.TotalRequests != 3 || resp.Data.SuccessRequests != 2 || resp.Data.ErrorRequests != 1 {
 			t.Fatalf("unexpected totals: %+v", resp.Data)
 		}
 
-		typKey := "anthropic"
-		if _, ok := resp.Data.ByType["codex"]; ok {
-			typKey = "codex"
-		}
-		anthTS, ok := resp.Data.ByType[typKey]
+		anthTS, ok := resp.Data.ByClientProtocol["anthropic"]
 		if !ok {
-			t.Fatalf("expected %s in by_type: %#v", typKey, resp.Data.ByType)
+			t.Fatalf("expected anthropic in by_client_protocol: %#v", resp.Data.ByClientProtocol)
 		}
 		if anthTS.TotalRequests != 1 || anthTS.SuccessRequests != 1 || anthTS.ErrorRequests != 0 {
 			t.Fatalf("unexpected anthropic summary: %+v", anthTS)
@@ -171,9 +144,9 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 			t.Fatalf("unexpected anthropic cache: %+v", anthTS)
 		}
 
-		oaiTS, ok := resp.Data.ByType["openai"]
+		oaiTS, ok := resp.Data.ByClientProtocol["openai"]
 		if !ok {
-			t.Fatalf("expected openai in by_type: %#v", resp.Data.ByType)
+			t.Fatalf("expected openai in by_client_protocol: %#v", resp.Data.ByClientProtocol)
 		}
 		if oaiTS.TotalRequests != 1 || oaiTS.SuccessRequests != 0 || oaiTS.ErrorRequests != 1 {
 			t.Fatalf("unexpected openai summary: %+v", oaiTS)
@@ -181,15 +154,21 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		if oaiTS.TotalInputTokens != 7 || oaiTS.TotalOutputTokens != 8 {
 			t.Fatalf("unexpected openai tokens: %+v", oaiTS)
 		}
-		if oaiTS.TotalCacheReadTokens != 0 {
-			t.Fatalf("expected openai cache tokens excluded, got %+v", oaiTS)
+		if oaiTS.TotalCacheReadTokens != 99 {
+			t.Fatalf("expected normalized openai cache tokens, got %+v", oaiTS)
+		}
+		if _, ok := resp.Data.ByClientProtocol[""]; ok {
+			t.Fatalf("historical unknown protocol must not be exposed as a card: %#v", resp.Data.ByClientProtocol)
+		}
+		if _, ok := resp.Data.ByClientProtocol["codex"]; ok {
+			t.Fatalf("scheduled checks must not enter client protocol cards: %#v", resp.Data.ByClientProtocol)
 		}
 	})
 
-	t.Run("HandleGetChannelTypes", func(t *testing.T) {
-		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/channel-types", nil))
+	t.Run("HandleGetProtocols", func(t *testing.T) {
+		c, w := newTestContext(t, newRequest(http.MethodGet, "/public/protocols", nil))
 
-		server.HandleGetChannelTypes(c)
+		server.HandleGetProtocols(c)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
 		}
@@ -200,25 +179,20 @@ func TestAdminStats_PublicAndCooldownEndpoints(t *testing.T) {
 		}
 
 		var resp struct {
-			Success bool             `json:"success"`
-			Data    []map[string]any `json:"data"`
+			Success bool                `json:"success"`
+			Data    []protocol.Protocol `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if !resp.Success || len(resp.Data) == 0 {
-			t.Fatalf("unexpected channel types resp: %+v", resp)
+		if !resp.Success {
+			t.Fatalf("unexpected protocols resp: %+v", resp)
 		}
-		for _, channelType := range resp.Data {
-			for _, field := range []string{"value", "display_name", "description"} {
-				value, ok := channelType[field].(string)
-				if !ok || value == "" {
-					t.Fatalf("channel type missing %s: %#v", field, channelType)
-				}
-			}
-			if _, ok := channelType["path_patterns"]; ok {
-				t.Fatalf("channel type leaked legacy path_patterns: %#v", channelType)
-			}
-			if _, ok := channelType["match_type"]; ok {
-				t.Fatalf("channel type leaked legacy match_type: %#v", channelType)
+		want := protocol.AllProtocols()
+		if len(resp.Data) != len(want) {
+			t.Fatalf("protocols=%v, want %v", resp.Data, want)
+		}
+		for i, p := range want {
+			if resp.Data[i] != p {
+				t.Fatalf("protocols[%d]=%q, want %q", i, resp.Data[i], p)
 			}
 		}
 	})

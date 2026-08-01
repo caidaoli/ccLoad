@@ -21,6 +21,6 @@ func TestPredefinedModels_CopyAndNormalize(t *testing.T) {
 
 func TestPredefinedModels_UnknownReturnsNil(t *testing.T) {
 	if got := PredefinedModels("unknown"); got != nil {
-		t.Fatalf("expected nil for unknown channel type, got %#v", got)
+		t.Fatalf("expected nil for unknown protocol, got %#v", got)
 	}
 }

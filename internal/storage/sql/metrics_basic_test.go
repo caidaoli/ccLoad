@@ -19,10 +19,9 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// 两个渠道：用于覆盖 type/name 过滤与交集逻辑
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:           "openai-main",
-		URL:            "https://example.com",
+		URLs:           model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:       10,
 		Enabled:        true,
-		ChannelType:    "openai",
 		CostMultiplier: 0.85,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
@@ -32,11 +31,10 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		t.Fatalf("CreateConfig openai failed: %v", err)
 	}
 	anthCfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "anthropic-1",
-		URL:         "https://example.com",
-		Priority:    20,
-		Enabled:     true,
-		ChannelType: "anthropic",
+		Name:     "anthropic-1",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 20,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "claude-3-5-sonnet-latest"},
 		},
@@ -52,39 +50,39 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// openai: success + error + cancelled(499)
 	// anthropic: success
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", UpstreamProtocol: "anthropic", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
 		{Time: model.JSONTime{Time: now}, ChannelID: 0, StatusCode: 502, Message: "exhausted backends", LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
 
-	// GetDistinctModels：无过滤 + 按渠道类型过滤（覆盖 fetchChannelIDsByType）
-	modelsAll, err := store.GetDistinctModels(ctx, start, end, "", nil)
+	// GetDistinctModels：无过滤 + 按实际上游协议过滤。
+	modelsAll, err := store.GetDistinctModels(ctx, start, end, nil)
 	if err != nil {
 		t.Fatalf("GetDistinctModels(all) failed: %v", err)
 	}
 	if len(modelsAll) < 2 {
 		t.Fatalf("GetDistinctModels(all) got %v, want >=2", modelsAll)
 	}
-	modelsOpenAI, err := store.GetDistinctModels(ctx, start, end, "openai", nil)
+	modelsOpenAI, err := store.GetDistinctModels(ctx, start, end, &model.LogFilter{UpstreamProtocol: "openai"})
 	if err != nil {
 		t.Fatalf("GetDistinctModels(openai) failed: %v", err)
 	}
 	if len(modelsOpenAI) != 1 || modelsOpenAI[0] != "gpt-4o" {
 		t.Fatalf("GetDistinctModels(openai) got %v, want [gpt-4o]", modelsOpenAI)
 	}
-	statusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
+	statusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, &model.LogFilter{UpstreamProtocol: "openai", LogSource: model.LogSourceProxy})
 	if err != nil {
 		t.Fatalf("GetDistinctStatusCodes(openai) failed: %v", err)
 	}
 	if got, want := statusCodes, []int{200, 499, 500}; !slices.Equal(got, want) {
 		t.Fatalf("GetDistinctStatusCodes(openai) got %v, want %v", got, want)
 	}
-	allStatusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, "", &model.LogFilter{LogSource: model.LogSourceProxy})
+	allStatusCodes, err := store.GetDistinctStatusCodes(ctx, start, end, &model.LogFilter{LogSource: model.LogSourceProxy})
 	if err != nil {
 		t.Fatalf("GetDistinctStatusCodes(all) failed: %v", err)
 	}
@@ -132,9 +130,6 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 			if err := json.Unmarshal(encoded, &payload); err != nil {
 				t.Fatalf("unmarshal stats entry failed: %v", err)
 			}
-			if got, ok := payload["channel_type"].(string); !ok || got != "openai" {
-				t.Fatalf("expected channel_type=openai in stats payload, got %+v", payload)
-			}
 			if got, ok := payload["cost_multiplier"].(float64); !ok || got != 0.85 {
 				t.Fatalf("expected cost_multiplier=0.85 in stats payload, got %+v", payload)
 			}
@@ -160,7 +155,6 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 
 	// AggregateRangeWithFilter：覆盖 resolveChannelFilter(type+nameLike 交集)
 	pts, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{
-		ChannelType:     "openai",
 		ChannelNameLike: "openai",
 	})
 	if err != nil {
@@ -181,9 +175,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 
 	// 空结果：触发 buildEmptyMetricPoints 路径
-	emptyPts, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{
-		ChannelType: "does-not-exist",
-	})
+	emptyPts, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{})
 	if err != nil {
 		t.Fatalf("AggregateRangeWithFilter(empty) failed: %v", err)
 	}
@@ -193,7 +185,6 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 
 	// 触发 QueryBuilder.WhereIn：GetStats 带 type+name 过滤走 applyChannelFilter
 	filteredStats, err := store.GetStats(ctx, start, end, &model.LogFilter{
-		ChannelType:     "openai",
 		ChannelNameLike: "openai",
 	}, false)
 	if err != nil {
@@ -258,16 +249,15 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	}
 }
 
-func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
-	store := newTestStore(t, "metrics_protocol_transforms.db")
+func TestMetrics_UpstreamProtocolFilterUsesPersistedAttemptProtocol(t *testing.T) {
+	store := newTestStore(t, "metrics_upstream_protocol.db")
 	ctx := context.Background()
 
 	nativeOpenAI, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "native-openai",
-		URL:         "https://openai.example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "native-openai",
+		URLs:     model.ChannelURLs{{URL: "https://openai.example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "native-model"},
 		},
@@ -275,26 +265,23 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConfig native-openai failed: %v", err)
 	}
-	anthropicOpenAI, err := store.CreateConfig(ctx, &model.Config{
-		Name:               "anthropic-openai-transform",
-		URL:                "https://anthropic.example.com",
-		Priority:           20,
-		Enabled:            true,
-		ChannelType:        "anthropic",
-		ProtocolTransforms: []string{"openai"},
+	anthropic, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "anthropic",
+		URLs:     model.ChannelURLs{{URL: "https://anthropic.example.com"}},
+		Priority: 20,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "bridge-model"},
 		},
 	})
 	if err != nil {
-		t.Fatalf("CreateConfig anthropic-openai-transform failed: %v", err)
+		t.Fatalf("CreateConfig anthropic failed: %v", err)
 	}
 	geminiOnly, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "gemini-only",
-		URL:         "https://gemini.example.com",
-		Priority:    30,
-		Enabled:     true,
-		ChannelType: "gemini",
+		Name:     "gemini-only",
+		URLs:     model.ChannelURLs{{URL: "https://gemini.example.com"}},
+		Priority: 30,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "skip-model"},
 		},
@@ -307,16 +294,16 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	start := now.Add(-time.Minute)
 	end := now.Add(time.Minute)
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
-		{Time: model.JSONTime{Time: now}, ChannelID: nativeOpenAI.ID, Model: "native-model", StatusCode: 200, Duration: 0.1, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthropicOpenAI.ID, Model: "bridge-model", StatusCode: 200, Duration: 0.2, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: geminiOnly.ID, Model: "skip-model", StatusCode: 200, Duration: 0.3, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: nativeOpenAI.ID, Model: "native-model", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.1, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthropic.ID, Model: "bridge-model", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.2, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: geminiOnly.ID, Model: "skip-model", UpstreamProtocol: "gemini", StatusCode: 200, Duration: 0.3, LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
 
 	stats, err := store.GetStats(ctx, start, end, &model.LogFilter{
-		ChannelType: "openai",
-		LogSource:   model.LogSourceProxy,
+		UpstreamProtocol: "openai",
+		LogSource:        model.LogSourceProxy,
 	}, false)
 	if err != nil {
 		t.Fatalf("GetStats(openai) failed: %v", err)
@@ -325,11 +312,11 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	for _, entry := range stats {
 		gotStatsNames[entry.ChannelName] = true
 	}
-	if !gotStatsNames["native-openai"] || !gotStatsNames["anthropic-openai-transform"] || gotStatsNames["gemini-only"] {
-		t.Fatalf("GetStats(openai) channel names=%v, want native and transformed openai only", gotStatsNames)
+	if len(gotStatsNames) != 2 || !gotStatsNames["native-openai"] || !gotStatsNames["anthropic"] {
+		t.Fatalf("GetStats(openai) channel names=%v, want both attempts that actually used openai", gotStatsNames)
 	}
 
-	channels, err := store.GetDistinctChannels(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
+	channels, err := store.GetDistinctChannels(ctx, start, end, &model.LogFilter{UpstreamProtocol: "openai", LogSource: model.LogSourceProxy})
 	if err != nil {
 		t.Fatalf("GetDistinctChannels(openai) failed: %v", err)
 	}
@@ -337,15 +324,15 @@ func TestMetrics_ChannelTypeFilterIncludesProtocolTransforms(t *testing.T) {
 	for _, channel := range channels {
 		gotChannelNames = append(gotChannelNames, channel.Name)
 	}
-	if len(gotChannelNames) != 2 || gotChannelNames[0] != "anthropic-openai-transform" || gotChannelNames[1] != "native-openai" {
-		t.Fatalf("GetDistinctChannels(openai)=%v, want [anthropic-openai-transform native-openai]", gotChannelNames)
+	if len(gotChannelNames) != 2 || !slices.Contains(gotChannelNames, "native-openai") || !slices.Contains(gotChannelNames, "anthropic") {
+		t.Fatalf("GetDistinctChannels(openai)=%v, want both openai attempts", gotChannelNames)
 	}
 
-	models, err := store.GetDistinctModels(ctx, start, end, "openai", &model.LogFilter{LogSource: model.LogSourceProxy})
+	models, err := store.GetDistinctModels(ctx, start, end, &model.LogFilter{UpstreamProtocol: "openai", LogSource: model.LogSourceProxy})
 	if err != nil {
 		t.Fatalf("GetDistinctModels(openai) failed: %v", err)
 	}
-	if len(models) != 2 || models[0] != "bridge-model" || models[1] != "native-model" {
+	if len(models) != 2 || !slices.Contains(models, "native-model") || !slices.Contains(models, "bridge-model") {
 		t.Fatalf("GetDistinctModels(openai)=%v, want [bridge-model native-model]", models)
 	}
 }
@@ -355,11 +342,10 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 	ctx := context.Background()
 
 	openaiCfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "openai-main",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "openai-main",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 			{Model: "gpt-4.1"},
@@ -369,11 +355,10 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 		t.Fatalf("CreateConfig openai failed: %v", err)
 	}
 	anthCfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "anthropic-main",
-		URL:         "https://example.com",
-		Priority:    20,
-		Enabled:     true,
-		ChannelType: "anthropic",
+		Name:     "anthropic-main",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 20,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "claude-3-5-sonnet"},
 		},
@@ -386,11 +371,11 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 	authTokenID := int64(77)
 	otherAuthTokenID := int64(88)
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4.1", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: otherAuthTokenID, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceManualTest},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4.1", UpstreamProtocol: "openai", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, AuthTokenID: otherAuthTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "gpt-4o", UpstreamProtocol: "anthropic", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, AuthTokenID: authTokenID, LogSource: model.LogSourceManualTest},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
@@ -401,11 +386,11 @@ func TestGetHealthTimeline_AppliesFullStatsFilter(t *testing.T) {
 		UntilMs:  now.Add(time.Minute).UnixMilli(),
 		BucketMs: 60_000,
 		Filter: &model.LogFilter{
-			ChannelType:     "openai",
-			ChannelNameLike: "main",
-			ModelLike:       "gpt-4",
-			AuthTokenID:     &authTokenID,
-			LogSource:       model.LogSourceProxy,
+			UpstreamProtocol: "openai",
+			ChannelNameLike:  "main",
+			ModelLike:        "gpt-4",
+			AuthTokenID:      &authTokenID,
+			LogSource:        model.LogSourceProxy,
 		},
 	})
 	if err != nil {
@@ -433,11 +418,10 @@ func TestMetrics_LastSuccessAndLastFailedRequest(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "last-success-channel",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "last-success-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -499,11 +483,10 @@ func TestMetrics_ChannelLevelLastRequestIDsExposeTieBreakForFrontEndAggregation(
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "multi-model-channel",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "multi-model-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 			{Model: "gpt-4.1"},
@@ -556,11 +539,10 @@ func TestMetrics_LastSuccessAtIgnoresCurrentRange(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "history-success-channel",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "history-success-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -606,11 +588,10 @@ func TestMetrics_LastRequestAtIgnoresCurrentRange(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "history-request-channel",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "history-request-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -662,11 +643,10 @@ func TestMetrics_LastStateIsChannelLevelWithoutModelFilter(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "channel-level-state",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "channel-level-state",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-a"},
 			{Model: "model-b"},
@@ -719,11 +699,10 @@ func TestMetrics_LastStateRespectsModelFilter(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "model-filter-state",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "model-filter-state",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "model-a"},
 			{Model: "model-b"},
@@ -776,11 +755,10 @@ func TestMetrics_LastStateIgnoresStatusCodeFilter(t *testing.T) {
 	ctx := context.Background()
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
-		Name:        "status-filter-channel",
-		URL:         "https://example.com",
-		Priority:    10,
-		Enabled:     true,
-		ChannelType: "openai",
+		Name:     "status-filter-channel",
+		URLs:     model.ChannelURLs{{URL: "https://example.com"}},
+		Priority: 10,
+		Enabled:  true,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-4o"},
 		},
@@ -842,10 +820,9 @@ func TestGetStats_PreservesZeroCostMultiplierForFreeChannels(t *testing.T) {
 
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:           "free-channel",
-		URL:            "https://example.com",
+		URLs:           model.ChannelURLs{{URL: "https://example.com"}},
 		Priority:       1,
 		Enabled:        true,
-		ChannelType:    "openai",
 		CostMultiplier: 0,
 		ModelEntries: []model.ModelEntry{
 			{Model: "gpt-5.4"},

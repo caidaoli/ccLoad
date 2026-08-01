@@ -374,7 +374,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 		}
 	}
 
-	candidates, err := s.selectCandidatesByModelAndType(ctx, modelName, string(protocol.Codex))
+	candidates, err := s.selectCandidatesByModelAndClientProtocol(ctx, modelName, string(protocol.Codex))
 	if err != nil {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("select upstream candidates: %w", err)
 	}
@@ -503,7 +503,7 @@ func responsesWebsocketGenerateDisabled(payload []byte) bool {
 
 func isNativeCodexWebsocketCandidate(candidate *model.Config) bool {
 	return candidate != nil && candidate.Websockets &&
-		protocol.Protocol(candidate.ResolveUpstreamProtocol(string(protocol.Codex))) == protocol.Codex
+		configCanUseUpstreamProtocol(candidate, protocol.Codex)
 }
 
 func isResponsesWebsocketClientRetryAction(action cooldown.Action) bool {

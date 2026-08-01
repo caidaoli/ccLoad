@@ -11,16 +11,16 @@ import (
 // sqliteMigratableTables 允许增量迁移的SQLite表名白名单
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
-	"logs":                        true,
-	"auth_tokens":                 true,
-	"channel_models":              true,
-	"channel_model_cooldowns":     true,
-	"channel_protocol_transforms": true,
-	"api_keys":                    true,
-	"channels":                    true,
-	"debug_logs":                  true,
-	"fingerprint_test_results":    true,
-	"schema_migrations":           true,
+	"logs":                     true,
+	"auth_tokens":              true,
+	"channel_models":           true,
+	"channel_model_cooldowns":  true,
+	"api_keys":                 true,
+	"channels":                 true,
+	"debug_logs":               true,
+	"fingerprint_test_results": true,
+	"model_fingerprints":       true,
+	"schema_migrations":        true,
 }
 
 type sqliteColumnDef struct {
@@ -481,6 +481,25 @@ func ensureLogsUpstreamWebsocket(ctx context.Context, db *sql.DB, dialect Dialec
 		"INTEGER NOT NULL DEFAULT 0")
 }
 
+// ensureLogsClientProtocol ensures protocol statistics use the immutable client request protocol.
+func ensureLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "logs", "client_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureLogsUpstreamProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "logs", "upstream_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureModelFingerprintsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "model_fingerprints", "client_protocol",
+		"VARCHAR(32) NOT NULL DEFAULT ''",
+		"TEXT NOT NULL DEFAULT ''")
+}
+
 // ensureAuthTokensCacheFields 确保auth_tokens表有缓存token字段(2025-12新增,支持MySQL和SQLite)
 func ensureAuthTokensCacheFields(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	switch dialect {
@@ -572,12 +591,6 @@ func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dia
 	}
 }
 
-func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "channels", "protocol_transform_mode",
-		"VARCHAR(32) NOT NULL DEFAULT 'local'",
-		"TEXT NOT NULL DEFAULT 'local'")
-}
-
 // ensureChannelsDailyCostLimit 确保channels表有daily_cost_limit字段
 func ensureChannelsDailyCostLimit(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "daily_cost_limit",
@@ -637,6 +650,12 @@ func ensureChannelsWebsockets(ctx context.Context, db *sql.DB, dialect Dialect) 
 	return ensureColumn(ctx, db, dialect, "channels", "websockets",
 		"TINYINT NOT NULL DEFAULT 0",
 		"INTEGER NOT NULL DEFAULT 0")
+}
+
+func ensureChannelsProtocolTransformMode(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channels", "protocol_transform_mode",
+		"VARCHAR(32) NOT NULL DEFAULT 'auto'",
+		"TEXT NOT NULL DEFAULT 'auto'")
 }
 
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
@@ -721,6 +740,12 @@ func ensureChannelModelsRedirectField(ctx context.Context, db *sql.DB, dialect D
 	return ensureColumn(ctx, db, dialect, "channel_models", "redirect_model",
 		"VARCHAR(191) NOT NULL DEFAULT '' COMMENT '重定向目标模型(空表示不重定向)'",
 		"TEXT NOT NULL DEFAULT ''")
+}
+
+func ensureChannelModelsDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	return ensureColumn(ctx, db, dialect, "channel_models", "disabled",
+		"TINYINT NOT NULL DEFAULT 0",
+		"INTEGER NOT NULL DEFAULT 0")
 }
 
 func ensureAPIKeysDisabled(ctx context.Context, db *sql.DB, dialect Dialect) error {

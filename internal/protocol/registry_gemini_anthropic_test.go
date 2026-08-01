@@ -9,6 +9,8 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
@@ -55,6 +57,35 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
 	}
 	if req.ToolChoice["type"] != "tool" || req.ToolChoice["name"] != "lookup" {
 		t.Fatalf("unexpected anthropic tool choice: %+v", req.ToolChoice)
+	}
+}
+
+func TestRegistry_TranslateRequest_Gemini_DefaultsMissingRoleToUser(t *testing.T) {
+	t.Parallel()
+
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`)
+	tests := []struct {
+		name     string
+		target   protocol.Protocol
+		rolePath string
+	}{
+		{name: "Anthropic", target: protocol.Anthropic, rolePath: "messages.0.role"},
+		{name: "OpenAI", target: protocol.OpenAI, rolePath: "messages.0.role"},
+		{name: "Codex", target: protocol.Codex, rolePath: "input.0.role"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := reg.TranslateRequest(protocol.Gemini, tt.target, "test-model", raw, false)
+			if err != nil {
+				t.Fatalf("TranslateRequest failed: %v", err)
+			}
+			if role := gjson.GetBytes(got, tt.rolePath).String(); role != "user" {
+				t.Fatalf("missing Gemini role translated to %s role %q, want user: %s", tt.target, role, got)
+			}
+		})
 	}
 }
 

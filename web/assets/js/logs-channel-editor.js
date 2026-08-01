@@ -1,6 +1,7 @@
 (function () {
   const CHANNEL_MODAL_IDS = [
     'channelModal',
+    'commonModelsModal',
     'keyImportModal',
     'keyExportModal',
     'modelImportModal',
@@ -23,7 +24,6 @@
     '/web/assets/js/channels-state.js',
     '/web/assets/js/channels-keys.js',
     '/web/assets/js/channels-urls.js',
-    '/web/assets/js/channels-protocols.js',
     '/web/assets/js/channels-custom-rules.js',
     '/web/assets/js/channels-cooldown-detection.js',
     '/web/assets/js/channels-modals.js'

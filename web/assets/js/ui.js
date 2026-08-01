@@ -937,80 +937,71 @@ window.WebAuth = window.WebAuth || {
 })();
 
 // ============================================================
-// 渠道类型管理模块（动态加载配置，单一数据源）
+// 协议配置管理模块（动态加载配置，单一数据源）
 // ============================================================
 (function () {
-  let channelTypesCache = null;
+  let protocolsCache = null;
 
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
 
-  /**
-   * 获取渠道类型配置（带缓存）
-   */
-  async function getChannelTypes() {
-    if (channelTypesCache) {
-      return channelTypesCache;
-    }
+  // 协议显示名由 locales 提供（与 model-test.js / model-fingerprint.js 共用词条）
+  const PROTOCOL_LABEL_KEYS = {
+    anthropic: 'modelTest.clientProtocolAnthropic',
+    codex: 'modelTest.clientProtocolCodex',
+    openai: 'modelTest.clientProtocolOpenAI',
+    gemini: 'modelTest.clientProtocolGemini'
+  };
 
-    const types = await fetchData('/public/channel-types');
-    channelTypesCache = types || [];
-    return channelTypesCache;
+  function protocolDisplayName(value) {
+    const key = PROTOCOL_LABEL_KEYS[value];
+    const label = key && typeof window.t === 'function' ? window.t(key) : '';
+    return label && label !== key ? label : value;
   }
 
   /**
-   * 渲染渠道类型单选按钮组（用于编辑渠道界面）
-   * @param {string} containerId - 容器元素ID
-   * @param {string} selectedValue - 选中的值（默认'anthropic'）
+   * 获取协议列表（带缓存）。后端返回协议名数组，显示名由前端 locales 补齐。
+   * @returns {Promise<Array<{value: string, display_name: string}>>}
    */
-  async function renderChannelTypeRadios(containerId, selectedValue = 'anthropic') {
-    const container = document.getElementById(containerId);
-    if (!container) {
-      console.error('Container element not found:', containerId);
-      return;
+  async function getProtocols() {
+    if (protocolsCache) {
+      return protocolsCache;
     }
 
-    const types = await getChannelTypes();
-
-    container.innerHTML = types.map(type => `
-      <label class="channel-editor-radio-option">
-        <input type="radio"
-               name="channelType"
-               value="${escapeHtml(type.value)}"
-               ${type.value === selectedValue ? 'checked' : ''}>
-        <span title="${escapeHtml(type.description)}">${escapeHtml(type.display_name)}</span>
-      </label>
-    `).join('');
+    const values = await fetchData('/public/protocols');
+    protocolsCache = (Array.isArray(values) ? values : []).map(value => ({
+      value,
+      display_name: protocolDisplayName(value)
+    }));
+    return protocolsCache;
   }
 
   /**
-   * 渲染渠道类型下拉选择框（用于测试渠道界面）
+   * 渲染协议下拉选择框
    * @param {string} selectId - select元素ID
    * @param {string} selectedValue - 选中的值（默认'anthropic'）
    */
-  async function renderChannelTypeSelect(selectId, selectedValue = 'anthropic') {
+  async function renderProtocolSelect(selectId, selectedValue = 'anthropic') {
     const select = document.getElementById(selectId);
     if (!select) {
       console.error('select element not found:', selectId);
       return;
     }
 
-    const types = await getChannelTypes();
+    const protocols = await getProtocols();
 
-    select.innerHTML = types.map(type => `
-      <option value="${escapeHtml(type.value)}"
-              ${type.value === selectedValue ? 'selected' : ''}
-              title="${escapeHtml(type.description)}">
-        ${escapeHtml(type.display_name)}
+    select.innerHTML = protocols.map(protocol => `
+      <option value="${escapeHtml(protocol.value)}"
+              ${protocol.value === selectedValue ? 'selected' : ''}>
+        ${escapeHtml(protocol.display_name)}
       </option>
     `).join('');
   }
 
   // 导出到全局作用域
-  window.ChannelTypeManager = {
-    getChannelTypes,
-    renderChannelTypeRadios,
-    renderChannelTypeSelect
+  window.ProtocolManager = {
+    getProtocols,
+    renderProtocolSelect
   };
 })();
 
@@ -1638,6 +1629,7 @@ window.WebAuth = window.WebAuth || {
    * @param {boolean} [config.attachMode] - 附着模式，使用已存在的 HTML 元素
    * @param {boolean} [config.allowCustomInput] - 允许提交非下拉选项的自定义输入
    * @param {boolean} [config.commitEmptyAsFirst] - 输入为空回车/失焦时提交第一项（通常为“全部”），覆盖默认的取消/恢复行为
+   * @param {boolean} [config.showAllOptionsOnOpen] - 打开时先展示完整选项，开始输入后再按关键字过滤
    * @returns {Object} 组件实例
    */
   function createSearchableCombobox(config) {
@@ -1654,7 +1646,8 @@ window.WebAuth = window.WebAuth || {
       minWidth = 150,
       attachMode = false,
       allowCustomInput = false,
-      commitEmptyAsFirst = false
+      commitEmptyAsFirst = false,
+      showAllOptionsOnOpen = false
     } = config;
 
     let input, dropdown, wrapper, dropdownHome, container = null;
@@ -1702,6 +1695,13 @@ window.WebAuth = window.WebAuth || {
       dropdownHome = dropdown.parentElement;
     }
 
+    input.setAttribute('role', 'combobox');
+    input.setAttribute('aria-autocomplete', 'list');
+    input.setAttribute('aria-haspopup', 'listbox');
+    input.setAttribute('aria-controls', dropdown.id);
+    input.setAttribute('aria-expanded', 'false');
+    dropdown.setAttribute('role', 'listbox');
+
     let activeIndex = -1;
     let outsideHandler = null;
     let repositionHandler = null;
@@ -1723,6 +1723,8 @@ window.WebAuth = window.WebAuth || {
     function closeDropdown() {
       dropdown.style.display = 'none';
       dropdown.dataset.open = '0';
+      input.setAttribute('aria-expanded', 'false');
+      input.removeAttribute('aria-activedescendant');
       activeIndex = -1;
       clearOutsideHandler();
       clearRepositionHandler();
@@ -1736,6 +1738,7 @@ window.WebAuth = window.WebAuth || {
       input.dataset.pickActive = '1';
       input.dataset.prevInputValue = input.value;
       input.dataset.prevValue = currentValue;
+      delete input.dataset.pickEdited;
       // 非自定义输入模式始终清空；自定义输入模式下：
       // - 当前值为空（全量态）→ 清空，避免把“所有渠道”这类占位标签当成过滤关键字
       // - 当前值精确命中下拉选项（用户已从下拉选中而非输入自定义词）→ 清空，便于再次浏览全部选项
@@ -1776,6 +1779,7 @@ window.WebAuth = window.WebAuth || {
       delete input.dataset.pickActive;
       delete input.dataset.prevInputValue;
       delete input.dataset.prevValue;
+      delete input.dataset.pickEdited;
 
       closeDropdown();
       if (onCancel) onCancel();
@@ -1788,6 +1792,7 @@ window.WebAuth = window.WebAuth || {
       delete input.dataset.pickActive;
       delete input.dataset.prevInputValue;
       delete input.dataset.prevValue;
+      delete input.dataset.pickEdited;
 
       closeDropdown();
       if (onSelect) onSelect(value, label);
@@ -1842,8 +1847,11 @@ window.WebAuth = window.WebAuth || {
     }
 
     function getDropdownItems() {
-      const keyword = input.value.trim().toLowerCase();
       const allOptions = getOptions();
+      if (showAllOptionsOnOpen && input.dataset.pickActive === '1' && input.dataset.pickEdited !== '1') {
+        return allOptions;
+      }
+      const keyword = input.value.trim().toLowerCase();
       if (!keyword) return allOptions;
       return allOptions.filter(opt =>
         String(opt.label).toLowerCase().includes(keyword) ||
@@ -1864,6 +1872,7 @@ window.WebAuth = window.WebAuth || {
         const row = document.createElement('div');
         row.className = 'filter-dropdown-item';
         row.setAttribute('role', 'option');
+        row.id = `${dropdown.id}-option-${idx}`;
         row.dataset.value = item.value;
         row.dataset.index = String(idx);
         row.textContent = item.label;
@@ -1871,7 +1880,9 @@ window.WebAuth = window.WebAuth || {
           row.classList.add(...String(item.className).split(/\s+/).filter(Boolean));
         }
 
-        if (item.value === currentValue) row.classList.add('selected');
+        const selected = item.value === currentValue;
+        row.setAttribute('aria-selected', selected ? 'true' : 'false');
+        if (selected) row.classList.add('selected');
         if (idx === activeIndex) row.classList.add('active');
 
         row.addEventListener('mousedown', (e) => {
@@ -1882,6 +1893,12 @@ window.WebAuth = window.WebAuth || {
 
         dropdown.appendChild(row);
       });
+
+      if (activeIndex >= 0 && activeIndex < items.length) {
+        input.setAttribute('aria-activedescendant', `${dropdown.id}-option-${activeIndex}`);
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
     }
 
     function positionDropdown() {
@@ -1906,6 +1923,7 @@ window.WebAuth = window.WebAuth || {
       }
       dropdown.style.display = 'block';
       dropdown.dataset.open = '1';
+      input.setAttribute('aria-expanded', 'true');
       renderDropdown();
       positionDropdown();
 
@@ -1941,8 +1959,12 @@ window.WebAuth = window.WebAuth || {
     });
 
     input.addEventListener('input', () => {
-      if (dropdown.dataset.open !== '1') {
+      const wasClosed = dropdown.dataset.open !== '1';
+      if (wasClosed) {
         beginPick();
+      }
+      input.dataset.pickEdited = '1';
+      if (wasClosed) {
         openDropdown();
       }
       activeIndex = -1;
@@ -2367,29 +2389,6 @@ window.WebAuth = window.WebAuth || {
     });
   }
 
-  /**
-   * 初始化渠道类型筛选下拉框
-   * @param {string} selectId - select 元素 ID
-   * @param {string} initialType - 初始选中的类型
-   * @param {function(string)} onChange - 选中值变更回调
-   */
-  async function initChannelTypeFilter(selectId, initialType, onChange) {
-    const select = document.getElementById(selectId);
-    if (!select) return;
-
-    const types = await window.ChannelTypeManager.getChannelTypes();
-    select.innerHTML = `<option value="all">${window.t('common.all')}</option>`;
-    types.forEach(type => {
-      const option = document.createElement('option');
-      option.value = type.value;
-      option.textContent = type.display_name;
-      if (type.value === initialType) option.selected = true;
-      select.appendChild(option);
-    });
-
-    select.addEventListener('change', (e) => onChange(e.target.value));
-  }
-
   async function loadAuthTokensIntoSelect(selectId, opts) {
     const o = opts || {};
 	if (window.isAPITokenRole()) return [];
@@ -2499,7 +2498,6 @@ window.WebAuth = window.WebAuth || {
   window.copyToClipboard = copyToClipboard;
   window.renderUpstreamCodeBlock = renderUpstreamCodeBlock;
   window.setHighlightedCodeContent = setHighlightedCodeContent;
-  window.initChannelTypeFilter = initChannelTypeFilter;
   window.loadAuthTokensIntoSelect = loadAuthTokensIntoSelect;
   window.initTimeRangeSelector = initTimeRangeSelector;
   window.bindTimeRangeSelector = bindTimeRangeSelector;

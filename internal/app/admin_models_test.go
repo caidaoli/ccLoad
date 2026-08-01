@@ -41,9 +41,9 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		payload := map[string]any{
-			"channel_type": " openai ",
-			"url":          upstream.URL,
-			"api_key":      "sk-test",
+			"protocol": " openai ",
+			"urls":     []map[string]any{{"url": upstream.URL}},
+			"api_key":  "sk-test",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
 
@@ -68,52 +68,6 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
-	t.Run("multi url fallback", func(t *testing.T) {
-		failCalls := 0
-		okCalls := 0
-
-		failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			failCalls++
-			http.Error(w, "boom", http.StatusBadGateway)
-		}))
-		t.Cleanup(failUpstream.Close)
-
-		okUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			okCalls++
-			time.Sleep(15 * time.Millisecond)
-			if r.URL.Path != "/v1/models" {
-				http.NotFound(w, r)
-				return
-			}
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-4.1-mini"}]}`))
-		}))
-		t.Cleanup(okUpstream.Close)
-
-		payload := map[string]any{
-			"channel_type": "openai",
-			"url":          failUpstream.URL + "\n" + okUpstream.URL,
-			"api_key":      "sk-test",
-		}
-		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
-
-		server.HandleFetchModelsPreview(c)
-		if w.Code != http.StatusOK {
-			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
-		}
-
-		var resp struct {
-			Success bool                `json:"success"`
-			Data    FetchModelsResponse `json:"data"`
-		}
-		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
-		if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-4.1-mini" {
-			t.Fatalf("unexpected resp: %+v", resp)
-		}
-		if failCalls < 1 || okCalls < 1 {
-			t.Fatalf("expected fallback attempts, failCalls=%d okCalls=%d", failCalls, okCalls)
-		}
-	})
 }
 
 func TestAdminModels_HandleFetchModels(t *testing.T) {
@@ -145,9 +99,8 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "c1",
-		URL:          upstream.URL,
+		URLs:         model.ChannelURLs{{URL: upstream.URL}},
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -230,9 +183,8 @@ func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "multi-url-channel",
-		URL:          failUpstream.URL + "\n" + okUpstream.URL,
+		URLs:         channelURLsForTest(failUpstream.URL, okUpstream.URL),
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -308,9 +260,8 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 	ctx := context.Background()
 	cfg, err := store.CreateConfig(ctx, &model.Config{
 		Name:         "multi-url-key-error",
-		URL:          keyErrUpstream.URL + "\n" + okUpstream.URL,
+		URLs:         channelURLsForTest(keyErrUpstream.URL, okUpstream.URL),
 		Priority:     1,
-		ChannelType:  "openai",
 		ModelEntries: []model.ModelEntry{{Model: "m1"}},
 		Enabled:      true,
 	})
@@ -381,9 +332,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		c1, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c1",
-			URL:          upstream1.URL,
+			URLs:         model.ChannelURLs{{URL: upstream1.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "m1"}},
 			Enabled:      true,
 		})
@@ -392,9 +342,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		c2, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c2",
-			URL:          upstream2.URL,
+			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "x1"}},
 			Enabled:      true,
 		})
@@ -403,9 +352,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		}
 		c3, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c3-no-key",
-			URL:          upstream2.URL,
+			URLs:         model.ChannelURLs{{URL: upstream2.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "y1"}},
 			Enabled:      true,
 		})
@@ -482,12 +430,11 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
-			Name:        "replace-channel",
-			URL:         upstream.URL,
-			Priority:    1,
-			ChannelType: "openai",
+			Name:     "replace-channel",
+			URLs:     model.ChannelURLs{{URL: upstream.URL}},
+			Priority: 1,
 			ModelEntries: []model.ModelEntry{
-				{Model: "old-1"},
+				{Model: "new-1", Disabled: true},
 				{Model: "old-2"},
 			},
 			Enabled: true,
@@ -514,7 +461,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
-		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" {
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "new-1" || !got.ModelEntries[0].Disabled {
 			t.Fatalf("unexpected models after replace: %#v", got.ModelEntries)
 		}
 	})
@@ -536,9 +483,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "lowercase-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "CamelCase-Model"}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "CamelCase-Model",
@@ -592,10 +538,9 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "strip-prefix-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
-			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5"}},
+			ModelEntries:          []model.ModelEntry{{Model: "cloudcompile/Grok-4.5", Disabled: true}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "cloudcompile/Grok-4.5",
 			Enabled:               true,
@@ -625,7 +570,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 			t.Fatalf("GetConfig failed: %v", err)
 		}
 		wantModels := []model.ModelEntry{
-			{Model: "grok-4.5"},
+			{Model: "grok-4.5", Disabled: true},
 			{Model: "other-model", RedirectModel: "a-source/Other-Model"},
 		}
 		if !reflect.DeepEqual(got.ModelEntries, wantModels) {
@@ -649,9 +594,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:                  "lowercase-merge-channel",
-			URL:                   upstream.URL,
+			URLs:                  model.ChannelURLs{{URL: upstream.URL}},
 			Priority:              1,
-			ChannelType:           "openai",
 			ModelEntries:          []model.ModelEntry{{Model: "legacy/ExistingModel"}},
 			ScheduledCheckEnabled: true,
 			ScheduledCheckModel:   "legacy/ExistingModel",
@@ -706,9 +650,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		cfg, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "empty-list-channel",
-			URL:          upstream.URL,
+			URLs:         model.ChannelURLs{{URL: upstream.URL}},
 			Priority:     1,
-			ChannelType:  "openai",
 			ModelEntries: []model.ModelEntry{{Model: "keep-me"}},
 			Enabled:      true,
 		})

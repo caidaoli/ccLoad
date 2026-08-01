@@ -333,9 +333,8 @@ func BuildLogFilter(c *gin.Context) model.LogFilter {
 		}
 	}
 
-	// 渠道类型过滤（anthropic/openai/gemini/codex）
-	if ct := strings.TrimSpace(c.Query("channel_type")); ct != "" {
-		lf.ChannelType = ct
+	if upstreamProtocol := strings.ToLower(strings.TrimSpace(c.Query("upstream_protocol"))); upstreamProtocol != "" && upstreamProtocol != "all" {
+		lf.UpstreamProtocol = upstreamProtocol
 	}
 
 	// API令牌ID过滤

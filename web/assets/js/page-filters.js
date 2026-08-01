@@ -42,11 +42,6 @@
               ${filterButtonControl}
             </div>`;
     return {
-      channelType: buildFilterGroup(
-        `${buildFilterLabel('f_channel_type', 'stats.channelType', '渠道类型')}
-        ${buildSelect('f_channel_type', '\n                <!-- 动态加载渠道类型选项 -->\n              ', 'filter-control--compact')}`,
-        groupClass
-      ),
       timeRange: buildFilterGroup(
         `${buildFilterLabel('f_hours', 'stats.timeRange', '时间范围')}
         <div id="f_hours_custom_range_host" class="filter-custom-range-host">
@@ -139,7 +134,7 @@
       checkboxGroupClass: 'stats-filter-group stats-filter-group--checkbox',
       infoClass: 'filter-info stats-filter-info',
       actionsClass: 'stats-filter-actions',
-      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelCombobox', 'authToken', 'statsSummary']
+      items: ['timeRange', 'channelNameCombobox', 'modelCombobox', 'authToken', 'statsSummary']
     },
     logs: {
       barClass: 'filter-bar logs-filter-bar mt-2',
@@ -151,7 +146,7 @@
       authTokenControlClass: 'logs-filter-control--token',
       infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
-      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelCombobox', 'logSource', 'status', 'authToken', 'logsSummary']
+      items: ['timeRange', 'channelNameCombobox', 'modelCombobox', 'logSource', 'status', 'authToken', 'logsSummary']
     },
     trend: {
       barClass: 'filter-bar mt-2',
@@ -159,7 +154,7 @@
       groupClass: '',
       infoClass: 'filter-info',
       actionsClass: '',
-      items: ['channelType', 'timeRange', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
+      items: ['timeRange', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
     }
   };
 

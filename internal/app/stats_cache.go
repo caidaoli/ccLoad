@@ -164,6 +164,29 @@ func (sc *StatsCache) GetStatsLite(ctx context.Context, startTime, endTime time.
 	return result, nil
 }
 
+// GetClientProtocolStats 获取按客户端入口协议聚合的首页统计（带缓存）。
+func (sc *StatsCache) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
+	key := buildCacheKey("client_protocol_stats", startTime, endTime, filter)
+
+	if cached, ok := sc.cache.Load(key); ok {
+		cs := cached.(*cachedStats)
+		if time.Now().Before(cs.expiry) {
+			return cs.data.([]model.ClientProtocolStats), nil
+		}
+	}
+
+	result, err := sc.store.GetClientProtocolStats(ctx, startTime, endTime, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	sc.storeCache(key, &cachedStats{
+		data:   result,
+		expiry: time.Now().Add(calculateTTL(endTime)),
+	})
+	return result, nil
+}
+
 // GetRPMStats 获取 RPM 统计（带缓存）
 func (sc *StatsCache) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
 	key := buildCacheKey("rpm", startTime, endTime, filter)
@@ -224,8 +247,8 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.ChannelID != nil {
 		parts = append(parts, fmt.Sprintf("ch:%d", *filter.ChannelID))
 	}
-	if filter.ChannelType != "" {
-		parts = append(parts, fmt.Sprintf("type:%s", filter.ChannelType))
+	if filter.UpstreamProtocol != "" {
+		parts = append(parts, fmt.Sprintf("upstream_protocol:%s", filter.UpstreamProtocol))
 	}
 	if filter.ChannelName != "" {
 		parts = append(parts, fmt.Sprintf("name_exact:%s", filter.ChannelName))

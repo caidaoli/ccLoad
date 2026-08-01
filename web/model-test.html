@@ -25,6 +25,7 @@
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-chat-channel-state.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-fingerprint.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
@@ -47,7 +48,7 @@
           </header>
           <div class="token-model-test-grid">
             <label class="model-test-control">
-              <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
+              <span class="model-test-control__label" data-i18n="modelTest.clientProtocol">请求协议</span>
               <select id="tokenModelTestProtocol" class="filter-select">
                 <option value="openai">OpenAI</option>
                 <option value="anthropic">Anthropic</option>
@@ -166,10 +167,6 @@
                 <span class="model-test-control__label" data-i18n="modelTest.channel">渠道</span>
                 <div id="testChannelSelectContainer"></div>
               </label>
-              <label id="modelTypeLabel" class="model-test-control model-test-control--type hidden">
-                <span class="model-test-control__label" data-i18n="common.type">类型</span>
-                <select id="testModelType" class="filter-select model-test-inline-select" aria-label="类型"></select>
-              </label>
               <label id="modelSelectorLabel" class="model-test-control model-test-control--model hidden">
                 <span class="model-test-control__label" data-i18n="common.model">模型</span>
                 <div class="filter-combobox-wrapper model-test-model-combobox">
@@ -185,9 +182,24 @@
                   <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
                 </div>
               </label>
-              <div id="protocolTransformContainer" class="model-test-control model-test-control--protocol">
-                <span class="model-test-control__label" data-i18n="modelTest.protocolTransform">协议</span>
-                <div id="protocolTransformOptions" class="channel-editor-radio-group" role="radiogroup" aria-label="协议"></div>
+              <div id="clientProtocolContainer" class="model-test-control model-test-control--protocol">
+                <label class="model-test-control__label" for="clientProtocolSelect" data-i18n="modelTest.clientProtocol">请求协议</label>
+                <div class="filter-combobox-wrapper model-test-protocol-combobox">
+                  <input
+                    id="clientProtocolSelect"
+                    class="filter-select filter-combobox"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                  <div
+                    id="clientProtocolSelectDropdown"
+                    class="filter-dropdown"
+                    role="listbox"
+                    data-i18n-aria-label="modelTest.clientProtocol"
+                    aria-label="请求协议"
+                  ></div>
+                </div>
               </div>
               <div class="model-test-control model-test-control--content">
                 <label class="model-test-control__label" for="modelTestContent" data-i18n="modelTest.content">内容</label>
@@ -386,6 +398,11 @@
                   <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpCalibrateChannel">
                 </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
+                  <div id="fpCalibrateClientProtocolContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpCalibrateClientProtocol" value="anthropic">
+                </div>
                 <div class="fp-form-row fp-form-row--pair">
                   <label class="fp-pair-item">
                     <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
@@ -400,8 +417,6 @@
                   <div class="fp-form-actions">
                     <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
                       data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
-                    <button id="fpCalibrateCancelBtn" type="button" class="btn btn-secondary hidden"
-                      data-i18n="common.cancel">取消</button>
                   </div>
                 </div>
               </div>
@@ -420,6 +435,11 @@
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
                   <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpTestChannel">
+                </div>
+                <div class="fp-form-row">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
+                  <div id="fpTestClientProtocolContainer" class="fp-combobox-container"></div>
+                  <input type="hidden" id="fpTestClientProtocol" value="anthropic">
                 </div>
                 <label class="fp-form-row">
                   <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>
@@ -624,13 +644,13 @@
         <button id="addModelsCloseBtn" class="close-btn" aria-label="Close">&times;</button>
       </div>
       <label class="model-test-add-field">
-        <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型名称（支持逗号或换行分隔）</span>
+        <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型（逗号或换行分隔）</span>
         <textarea
           id="addModelsTextarea"
           class="model-test-batch-textarea"
           spellcheck="false"
           data-i18n-placeholder="modelTest.addModelsPlaceholder"
-          placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"
+          placeholder="gpt-4o|gpt-4.1&#10;gpt-4o-mini&#10;claude-3-5-sonnet-20241022"
         ></textarea>
       </label>
       <div class="model-test-add-help">
@@ -639,9 +659,9 @@
           <strong data-i18n="modelTest.addModelsHelpTitle">使用说明：</strong>
         </div>
         <ul>
-          <li><span data-i18n="modelTest.addModelsHelpComma">支持逗号分隔：</span> <code>model1,model2,model3</code></li>
-          <li data-i18n="modelTest.addModelsHelpLine">支持换行分隔：每行一个模型</li>
-          <li data-i18n="modelTest.addModelsHelpDedupe">自动去除空格、空行和重复模型</li>
+          <li><span data-i18n="modelTest.addModelsHelpComma">重定向格式：</span> <code>request-model|redirect-model</code></li>
+          <li data-i18n="modelTest.addModelsHelpLine">无需重定向时只填写请求模型</li>
+          <li data-i18n="modelTest.addModelsHelpDedupe">自动去除空格、空项和重复请求模型</li>
         </ul>
       </div>
       <div class="confirm-actions confirm-actions--end">
