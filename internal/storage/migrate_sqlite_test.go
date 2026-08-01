@@ -1191,6 +1191,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"log_retention_days",
 		"max_key_retries",
 		"upstream_first_byte_timeout",
+		"upstream_connection_reuse_limit_seconds",
 		"stream_timeout",
 		"non_stream_timeout",
 		"anthropic_first_byte_timeout",
@@ -1234,6 +1235,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 			t.Errorf("setting %q default = %q, want 12", key, val)
 		}
 		if key == "stream_timeout" && val != "0" {
+			t.Errorf("setting %q default = %q, want 0", key, val)
+		}
+		if key == "upstream_connection_reuse_limit_seconds" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
 		if key == "responses_ws_max_connections" && val != "64" {

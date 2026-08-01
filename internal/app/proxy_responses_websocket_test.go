@@ -345,7 +345,7 @@ func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testin
 	}))
 	defer upstream.Close()
 
-	session := newCodexUpstreamWebsocketSession(0)
+	session := newCodexUpstreamWebsocketSession(0, 0)
 	defer session.Close()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/v1/responses", nil)
 	if err != nil {
@@ -3424,6 +3424,166 @@ func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
 	}
 	if handshakes.Load() != 2 || fallbackCalls.Load() != 0 {
 		t.Fatalf("handshakes=%d fallback calls=%d, want 2/0", handshakes.Load(), fallbackCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketMaxAgeReconnectsWithTranscriptReplay(t *testing.T) {
+	requests := make(chan map[string]any, 2)
+	firstConnectionClosed := make(chan struct{}, 1)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade max-age websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		connection := handshakes.Add(1)
+		var request map[string]any
+		if err = conn.ReadJSON(&request); err != nil {
+			t.Errorf("read max-age request: %v", err)
+			return
+		}
+		requests <- request
+		responseID := "resp-max-age-2"
+		outputText := "two"
+		if connection == 1 {
+			responseID = "resp-max-age-1"
+			outputText = "one"
+		}
+		if err = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": responseID,
+				"output": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": outputText}},
+				}},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("write max-age completion: %v", err)
+			return
+		}
+		if connection == 1 {
+			if _, _, err = conn.ReadMessage(); err == nil {
+				t.Error("max-age upstream connection accepted another message instead of closing")
+			}
+			firstConnectionClosed <- struct{}{}
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "max-age-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"upstream_connection_reuse_limit_seconds": "1",
+	})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set max-age downstream deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "one"}},
+	}); err != nil {
+		t.Fatalf("write first max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+	select {
+	case <-firstConnectionClosed:
+	case <-time.After(2500 * time.Millisecond):
+		t.Fatal("idle native websocket was not closed after max age")
+	}
+
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "previous_response_id": "resp-max-age-1",
+		"input": []any{map[string]any{"role": "user", "content": "two"}},
+	}); err != nil {
+		t.Fatalf("write second max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.completed")
+
+	firstRequest := <-requests
+	secondRequest := <-requests
+	if _, exists := secondRequest["previous_response_id"]; exists {
+		t.Fatalf("max-age reconnect leaked stale previous_response_id: %#v", secondRequest)
+	}
+	input, ok := secondRequest["input"].([]any)
+	if !ok || len(input) != 3 {
+		t.Fatalf("max-age replay input=%#v, want user+assistant+user; first=%#v", secondRequest["input"], firstRequest)
+	}
+	if handshakes.Load() != 2 {
+		t.Fatalf("max-age handshakes=%d, want 2", handshakes.Load())
+	}
+}
+
+func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
+	turnStarted := make(chan struct{}, 1)
+	releaseTurn := make(chan struct{})
+	connectionClosed := make(chan struct{}, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade active max-age websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		if _, _, err = conn.ReadMessage(); err != nil {
+			t.Errorf("read active max-age request: %v", err)
+			return
+		}
+		if err = conn.WriteJSON(map[string]any{"type": "response.output_text.delta", "delta": "still-running"}); err != nil {
+			t.Errorf("write active max-age delta: %v", err)
+			return
+		}
+		turnStarted <- struct{}{}
+		<-releaseTurn
+		if err = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-active-max-age", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		}); err != nil {
+			t.Errorf("active max-age turn was interrupted: %v", err)
+			return
+		}
+		if _, _, err = conn.ReadMessage(); err == nil {
+			t.Error("expired websocket remained open after active turn completed")
+		}
+		connectionClosed <- struct{}{}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "active-max-age-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		"upstream_connection_reuse_limit_seconds": "1",
+	})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("set active max-age deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "long turn"}},
+	}); err != nil {
+		t.Fatalf("write active max-age turn: %v", err)
+	}
+	readWebsocketUntilType(t, downstream, "response.output_text.delta")
+	<-turnStarted
+	<-time.After(1200 * time.Millisecond)
+	close(releaseTurn)
+	readWebsocketUntilType(t, downstream, "response.completed")
+	select {
+	case <-connectionClosed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("expired websocket did not close after active turn drained")
 	}
 }
 
