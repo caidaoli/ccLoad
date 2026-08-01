@@ -12,8 +12,8 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
-  <script defer src="assets/locales/en.js?v=20260725-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
+  <script defer src="assets/locales/en.js?v=20260801-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260729-1"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -70,7 +70,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Endpoint Reference</h2>
-          <p>All four core client protocols can use every model-compatible channel. ccLoad tries the client protocol on each URL first and translates to the channel's upstream protocol only after an endpoint-level 404/405.</p>
+          <p>All four core client protocols can use every model-compatible channel. In automatic mode, ccLoad tries the client protocol first and probes alternatives only when the request has not produced output and the endpoint reports a capability mismatch, or when the request cannot be represented in that protocol.</p>
         </div>
 
         <div class="www-data-table-wrapper">
@@ -142,7 +142,8 @@
             <ul class="www-check-list">
               <li>Upgrade <code>GET /v1/responses</code> or <code>GET /backend-api/codex/responses</code> with a ccLoad access token.</li>
               <li>Enable <code>websockets</code> only on channels whose upstream protocol is Codex. Other candidates continue through HTTP/SSE.</li>
-              <li>Keep the API token and <code>Session-Id</code> header stable across reconnects so ccLoad can retain transcript and upstream affinity. Cache-routing hints such as <code>prompt_cache_key</code> and <code>Session_id</code> never identify an execution session.</li>
+              <li>Keep the API token and <code>Session-Id</code> header stable across reconnects. When <code>Thread-Id</code> is present, ccLoad combines it with <code>Session-Id</code> so concurrent agent transcripts and turn locks stay isolated. Request-body cache hints never identify an execution session.</li>
+              <li><code>upstream_connection_reuse_limit_seconds</code> can rotate old upstream HTTP and WebSocket connections. Active turns drain first; a new native WebSocket reconnects on demand and replays the retained transcript.</li>
             </ul>
           </article>
 
@@ -377,10 +378,11 @@
               <p>The console is not decorative; it is the runtime control plane for channel configuration, token limits, log tracing, trend statistics and debug logs.</p>
             </div>
             <ul class="www-check-list">
-              <li>Channels: create, edit, delete and test upstream channels; detect native WebSocket support; configure provider-specific cooldown rules; import or export CSV.</li>
+              <li>Channels: create, edit, delete and test upstream channels; pause individual models without deleting their configuration; detect native WebSocket support; configure provider-specific cooldown rules; import or export CSV.</li>
               <li>Tokens: assign client tokens with model, channel allowlist or denylist, cost and concurrency restrictions.</li>
               <li>Logs: filter requests by status code, channel, model and token to locate failures.</li>
-              <li>Stats: inspect requests, tokens, cost, first-byte latency and health.</li>
+              <li>Overview: compare traffic by client protocol and inspect seven-day service health.</li>
+              <li>Stats: inspect requests, tokens, cost, first-byte latency and channel health.</li>
               <li>Trends: observe RPM, cost and latency by time range.</li>
               <li>Model test: run chat-style requests, calibrate statistical fingerprints and compare claimed models against saved baselines. Fingerprint sampling sends real upstream requests and incurs real cost.</li>
             </ul>
@@ -414,11 +416,16 @@
   -H "Content-Type: application/json" \
   -d '{
     "name": "Claude-API",
-    "type": "anthropic",
-    "url": "https://api.anthropic.com",
+    "urls": [
+      {"url": "https://api.anthropic.com", "protocols": ["anthropic"]}
+    ],
+    "protocol_transform_mode": "auto",
     "api_key": "sk-ant-xxx",
     "priority": 10,
-    "models": ["claude-sonnet-4-6"],
+    "models": [
+      {"model": "claude-sonnet-4-6"},
+      {"model": "claude-opus-4-6", "disabled": true}
+    ],
     "enabled": true
   }'</code></pre>
               </div>

@@ -12,8 +12,8 @@
   <script src="assets/js/theme-init.js?v=20260615-13"></script>
   <link rel="stylesheet" href="assets/css/www.css?v=20260729-1">
 
-  <script defer src="assets/locales/zh-CN.js?v=20260725-1"></script>
-  <script defer src="assets/locales/en.js?v=20260725-1"></script>
+  <script defer src="assets/locales/zh-CN.js?v=20260801-1"></script>
+  <script defer src="assets/locales/en.js?v=20260801-1"></script>
   <script defer src="assets/js/i18n.js?v=20260615-13"></script>
   <script defer src="assets/js/nav.js?v=20260729-1"></script>
   <script defer src="assets/js/www.js?v=20260615-13"></script>
@@ -195,6 +195,7 @@
               <li><code>protocol_transform_mode</code>: <code>auto</code> starts with the client protocol and detects alternatives; <code>upstream</code> is client-protocol passthrough-only; <code>local</code> translates to URL-declared protocols.</li>
               <li><code>urls</code>: an ordered list of URLs with optional <code>protocols</code>. Local mode prioritizes declared URLs; if all are undeclared it tries Anthropic → Codex → OpenAI → Gemini. <code>exact: true</code> disables automatic path joining.</li>
               <li><code>api_key</code>: supports one or multiple keys. ccLoad performs key-level retries inside the channel.</li>
+              <li><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
               <li><code>websockets</code>: for channels with a Codex-capable URL. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
@@ -250,6 +251,11 @@
             <p><code>upstream_first_byte_timeout</code> limits time to the first valid streaming content, <code>stream_timeout</code> limits total stream duration, and <code>non_stream_timeout</code> defaults to 120 seconds. A zero value disables each global limit. Anthropic, Codex, OpenAI and Gemini can override first-byte and non-stream limits; zero on an override inherits the global value.</p>
           </article>
           <article class="www-doc-card">
+            <span class="www-doc-icon">🔌</span>
+            <h3>Upstream connection lifetime</h3>
+            <p><code>upstream_connection_reuse_limit_seconds</code> limits how long HTTP/1.1, HTTP/2 and WebSocket connections may be reused. <code>0</code> keeps the existing unlimited behavior. At the limit, idle connections close immediately; active connections stop accepting work and close after draining, while new requests reconnect on demand.</p>
+          </article>
+          <article class="www-doc-card">
             <span class="www-doc-icon">📈</span>
             <h3>Health-based sorting</h3>
             <p>When enabled, ccLoad subtracts a confidence-weighted failure penalty from priority. Optional TTFB scoring also penalizes channels slower than the current candidate median without applying full weight to small samples.</p>
@@ -277,7 +283,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">🔗</span>
             <h3>WebSocket sessions</h3>
-            <p><code>responses_ws_max_sessions</code> caps process-wide execution sessions; <code>0</code> uses the default of 32. <code>responses_ws_session_ttl_minutes</code> controls idle transcript retention and must be at least one minute. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
+            <p><code>responses_ws_max_sessions</code> caps process-wide execution sessions; <code>0</code> uses the default of 32. <code>responses_ws_session_ttl_minutes</code> controls idle transcript retention. A stable <code>Session-Id</code>, combined with <code>Thread-Id</code> when present, isolates transcripts and turn locks. Runtime usage is exposed by <code>GET /admin/runtime-metrics</code>.</p>
           </article>
           <article class="www-doc-card">
             <span class="www-doc-icon">📚</span>
