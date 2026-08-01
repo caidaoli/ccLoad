@@ -1,6 +1,6 @@
 ---
 name: sync-cliproxy-core
-description: Synchronize or audit ccLoad's in-tree CLIProxyAPI/cliproxy protocol conversion snapshot from an immutable upstream commit. Invoking without a target automatically resolves and synchronizes the latest stable upstream version. Use when asked to 同步、更新或升级 CLIProxyAPI、cliproxy、translator core、internal/protocol/cliproxy，刷新上游 commit，或审查一次协议核心同步。
+description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、cliproxy、translator core、internal/protocol/cliproxy 协议转换快照，刷新上游 commit，或审查一次协议核心同步的结果。
 ---
 
 # 同步 CLIProxy 转换核心
@@ -73,6 +73,16 @@ git diff --check
 ```
 
 只在并发相关代码受影响时运行 `make race-fast` 或 `make race`。根据最终差异排查是否需要同步更新 `CLAUDE.md`、`README.md` 和 `README.zh-CN.md`。
+
+## 红线自查
+
+出现以下任一念头，停下并回到对应章节，不要继续：
+
+- 「编译缺依赖，把上游那个包也搬进来」→ 在转换核心或适配边界消除依赖（比较范围）
+- 「找不到稳定 tag，就用分支 HEAD / 最新提交」→ 停止并说明原因（固定目标）
+- 「上游行为和本地测试冲突，改测试跟上游对齐」→ Registry 边界测试是权威，保留本地契约（权威边界）
+- 「审计脚本报新目录，往允许列表里加个跳过」→ 先确认目录确属纯转换核心，再更新允许列表（比较范围）
+- 「先更新 UPSTREAM.md 占位，测试晚点补」→ 源码与测试都集成完成后才更新来源记录（更新来源记录）
 
 ## 完成报告
 

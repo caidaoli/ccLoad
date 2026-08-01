@@ -166,11 +166,11 @@ func ConvertGeminiResponseToOpenAIResponses(_ context.Context, modelName string,
 	}
 
 	rawJSON = bytes.TrimSpace(rawJSON)
-	if len(rawJSON) == 0 {
+	if len(rawJSON) == 0 || st.Completed {
 		return [][]byte{}
 	}
 	if bytes.Equal(rawJSON, []byte("[DONE]")) {
-		if st.Completed || !st.Started {
+		if !st.Started {
 			return [][]byte{}
 		}
 		rawJSON = []byte(`{"candidates":[{"finishReason":"STOP"}]}`)

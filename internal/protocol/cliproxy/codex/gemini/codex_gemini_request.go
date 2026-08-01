@@ -318,6 +318,9 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		// No thinking config, set default effort
 		out, _ = sjson.SetBytes(out, "reasoning.effort", "medium")
 	}
+	// OpenAI documents reasoning summaries as explicit opt-in output. ccLoad
+	// excludes upstream's runtime summary applier, so the converter itself
+	// keeps requesting summaries to preserve visible reasoning downstream.
 	out, _ = sjson.SetBytes(out, "reasoning.summary", "auto")
 	out, _ = sjson.SetBytes(out, "stream", stream)
 	out, _ = sjson.SetBytes(out, "store", false)
