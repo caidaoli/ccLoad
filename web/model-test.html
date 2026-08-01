@@ -25,6 +25,7 @@
   <script defer src="/web/assets/js/upstream-detail-modal.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-chat-channel-state.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-fingerprint.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
@@ -643,13 +644,13 @@
         <button id="addModelsCloseBtn" class="close-btn" aria-label="Close">&times;</button>
       </div>
       <label class="model-test-add-field">
-        <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型名称（支持逗号或换行分隔）</span>
+        <span class="model-test-add-label" data-i18n="modelTest.addModelsInputLabel">输入模型（逗号或换行分隔）</span>
         <textarea
           id="addModelsTextarea"
           class="model-test-batch-textarea"
           spellcheck="false"
           data-i18n-placeholder="modelTest.addModelsPlaceholder"
-          placeholder="gpt-4o,gpt-4o-mini&#10;claude-3-5-sonnet-20241022&#10;claude-3-5-haiku-latest"
+          placeholder="gpt-4o|gpt-4.1&#10;gpt-4o-mini&#10;claude-3-5-sonnet-20241022"
         ></textarea>
       </label>
       <div class="model-test-add-help">
@@ -658,9 +659,9 @@
           <strong data-i18n="modelTest.addModelsHelpTitle">使用说明：</strong>
         </div>
         <ul>
-          <li><span data-i18n="modelTest.addModelsHelpComma">支持逗号分隔：</span> <code>model1,model2,model3</code></li>
-          <li data-i18n="modelTest.addModelsHelpLine">支持换行分隔：每行一个模型</li>
-          <li data-i18n="modelTest.addModelsHelpDedupe">自动去除空格、空行和重复模型</li>
+          <li><span data-i18n="modelTest.addModelsHelpComma">重定向格式：</span> <code>request-model|redirect-model</code></li>
+          <li data-i18n="modelTest.addModelsHelpLine">无需重定向时只填写请求模型</li>
+          <li data-i18n="modelTest.addModelsHelpDedupe">自动去除空格、空项和重复请求模型</li>
         </ul>
       </div>
       <div class="confirm-actions confirm-actions--end">

@@ -2534,19 +2534,16 @@
       font-weight: 500;
     }
 
-    .redirect-model-status-cell {
-      display: flex;
+    .redirect-row-actions {
+      display: inline-flex;
+      flex: 0 0 auto;
       align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      min-width: 0;
+      gap: 4px;
     }
 
-    .redirect-model-status-content {
-      min-width: 0;
-    }
-
-    .redirect-model-toggle-btn {
+    .redirect-model-toggle-btn,
+    .redirect-model-test-btn,
+    .redirect-delete-btn {
       display: inline-flex;
       flex: 0 0 auto;
       align-items: center;
@@ -2563,18 +2560,28 @@
       transition: color 0.2s, border-color 0.2s, background-color 0.2s;
     }
 
-    .redirect-model-toggle-btn:focus-visible {
+    .redirect-model-toggle-btn:focus-visible,
+    .redirect-model-test-btn:focus-visible,
+    .redirect-delete-btn:focus-visible {
       outline-offset: 2px;
     }
 
-    .redirect-model-toggle-btn:hover {
+    .redirect-model-toggle-btn:hover,
+    .redirect-model-test-btn:hover {
       color: var(--primary-600);
       background: var(--primary-50);
       border-color: var(--primary-300);
     }
 
-    .redirect-lowercase-btn,
-    .redirect-delete-btn {
+    .redirect-model-test-btn:disabled {
+      color: var(--neutral-400);
+      background: var(--surface-bg);
+      border-color: var(--neutral-200);
+      cursor: not-allowed;
+      opacity: 0.65;
+    }
+
+    .redirect-lowercase-btn {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -2582,16 +2589,12 @@
       color: var(--neutral-500);
       background: var(--surface-bg);
       cursor: pointer;
-      transition: all 0.2s;
+      transition: color 0.2s, border-color 0.2s, background-color 0.2s;
     }
 
     .redirect-target-field .redirect-to-input {
       flex: 1 1 auto;
       min-width: 0;
-    }
-
-    .redirect-target-field .redirect-delete-btn {
-      flex: 0 0 auto;
     }
 
     .redirect-lowercase-btn {
@@ -2600,13 +2603,6 @@
       flex-shrink: 0;
       border: 1px solid var(--neutral-300);
       border-radius: 4px;
-    }
-
-    .redirect-delete-btn {
-      width: 24px;
-      height: 24px;
-      border: 1px solid var(--neutral-200);
-      border-radius: 6px;
     }
 
     .redirect-lowercase-btn:hover {

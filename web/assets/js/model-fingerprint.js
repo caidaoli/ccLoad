@@ -78,6 +78,25 @@
     } catch (_) { /* ignore */ }
   }
 
+  function inferClientProtocolForModel(modelName) {
+    const normalized = String(modelName || '').trim().toLowerCase();
+    if (normalized.startsWith('gpt-5')) return 'codex';
+    if (normalized.startsWith('claude-')) return 'anthropic';
+    if (normalized.startsWith('gemini-')) return 'gemini';
+    return 'openai';
+  }
+
+  function selectClientProtocolForModel(scope, modelName) {
+    const field = CLIENT_PROTOCOL_FIELDS[scope];
+    if (!field) return;
+
+    const protocol = inferClientProtocolForModel(modelName);
+    const hidden = el(field.hiddenId);
+    if (hidden) hidden.value = protocol;
+    clientProtocolCombos[scope]?.setValue(protocol, getClientProtocolLabel(protocol));
+    saveClientProtocol(scope, protocol);
+  }
+
   // ─── i18n 辅助 ──────────────────────────────────────────────────────────
   function t(key, fallback) {
     return (typeof window.i18nText === 'function')
@@ -279,6 +298,7 @@
 
   // ─── 标定：模型→渠道联动 ──────────────────────────────────────────────
   function onCalModelChange(modelName) {
+    selectClientProtocolForModel('calibrate', modelName);
     if (calChannelCombo) calChannelCombo.destroy();
     const hidden = el('fpCalibrateChannel');
     if (hidden) hidden.value = '';
@@ -287,6 +307,7 @@
 
   // ─── 对比：模型→渠道联动 + 基准自动选择 ────────────────────────────────
   function onTstModelChange(modelName) {
+    selectClientProtocolForModel('test', modelName);
     // 重建渠道 combobox（按模型过滤）
     if (tstChannelCombo) tstChannelCombo.destroy();
     const hidden = el('fpTestChannel');
@@ -1216,4 +1237,7 @@
 
   // ─── 导出 ───────────────────────────────────────────────────────────────
   window.ModelFingerprint = { init, stopPoll };
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = { inferClientProtocolForModel };
+  }
 })();

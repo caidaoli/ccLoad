@@ -1,26 +1,34 @@
-async function testChannel(id, name) {
+async function testChannel(id, name, initialModel = '') {
   const channel = channels.find(c => c.id === id);
-  if (!channel) return;
+  if (!channel) return false;
+
+  const modelNames = (channel.models || [])
+    .map(entry => typeof entry === 'string' ? entry : entry.model)
+    .map(model => String(model || '').trim())
+    .filter(Boolean);
+  if (modelNames.length === 0) {
+    if (window.showError) window.showError(window.t('channels.test.noModels') || 'No models configured for this channel');
+    return false;
+  }
+
+  const requestedModel = String(initialModel || '').trim();
+  if (requestedModel && !modelNames.includes(requestedModel)) {
+    if (window.showError) window.showError(window.t('channels.test.modelNotFound'));
+    return false;
+  }
 
   testingChannelId = id;
   document.getElementById('testChannelName').textContent = name;
 
-  const models = channel.models || [];
-  if (models.length === 0) {
-    if (window.showError) window.showError(window.t('channels.test.noModels') || 'No models configured for this channel');
-    return;
-  }
-
   const modelSelect = document.getElementById('testModelSelect');
   modelSelect.innerHTML = '';
-  models.forEach(entry => {
-    // models 是 ModelEntry 数组: {model: string, redirect_model?: string}
-    const modelName = typeof entry === 'string' ? entry : entry.model;
+  modelNames.forEach(modelName => {
     const option = document.createElement('option');
     option.value = modelName;
     option.textContent = modelName;
     modelSelect.appendChild(option);
   });
+  if (requestedModel) modelSelect.value = requestedModel;
 
   let apiKeys = [];
   try {
@@ -63,6 +71,7 @@ async function testChannel(id, name) {
   await window.ProtocolManager.renderProtocolSelect('testClientProtocolSelect', testingClientProtocol);
 
   document.getElementById('testModal').classList.add('show');
+  return true;
 }
 
 function closeTestModal() {
@@ -387,4 +396,8 @@ function displayTestResult(result) {
     responseBody: result.upstream_response_body || result.raw_response
   } : null;
   upstreamDetailBtn?.classList.toggle('hidden', !window._lastTestUpstreamData);
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { testChannel };
 }
