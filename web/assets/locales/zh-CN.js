@@ -333,7 +333,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.modal.protocolTransformModeAuto': '自动(原生优先)',
   'channels.modal.protocolTransformModeUpstream': '上游直通(透传)',
   'channels.modal.protocolTransformModeLocal': 'ccLoad 转换',
-  'channels.modal.protocolTransformModeAutoHelp': '先尝试客户端原生协议，再自动探测可用协议',
+  'channels.modal.protocolTransformModeAutoHelp': '先尝试客户端协议，再按 OpenAI、Anthropic、Codex、Gemini 探测并跳过已试协议',
   'channels.modal.protocolTransformModeUpstreamHelp': '始终按客户端协议请求上游，不做本地转换',
   'channels.modal.protocolTransformModeLocalHelp': '由 ccLoad 转换为 URL 声明的协议；全部未声明时按 Anthropic、Codex、OpenAI、Gemini 顺序尝试',
   'channels.modal.keyStrategy': 'Key策略',

@@ -429,21 +429,23 @@ test('common models require at least one supported type', () => {
   }
 });
 
-test('fetched models preserve existing disabled state and enable new rows', () => {
+test('fetched models sort by model name while preserving existing state', () => {
   const { mergeModelRowsWithFetchedModels } = loadChannelsModals();
   const result = mergeModelRowsWithFetchedModels([
-    { model: 'existing-model', redirect_model: 'upstream-model', disabled: true }
+    { model: 'z-existing-model', redirect_model: 'upstream-model', disabled: true }
   ], [
-    { model: 'existing-model', redirect_model: 'ignored-replacement' },
-    { model: 'new-model', redirect_model: 'new-upstream' }
+    { model: 'z-existing-model', redirect_model: 'ignored-replacement' },
+    { model: 'm-new-model', redirect_model: 'new-upstream' },
+    { model: 'a-new-model', redirect_model: 'another-upstream' }
   ]);
 
   assert.deepEqual(result, {
     rows: [
-      { model: 'existing-model', redirect_model: 'upstream-model', disabled: true },
-      { model: 'new-model', redirect_model: 'new-upstream', disabled: false }
+      { model: 'a-new-model', redirect_model: 'another-upstream', disabled: false },
+      { model: 'm-new-model', redirect_model: 'new-upstream', disabled: false },
+      { model: 'z-existing-model', redirect_model: 'upstream-model', disabled: true }
     ],
-    added: 1,
+    added: 2,
     removed: 0
   });
 });

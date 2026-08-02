@@ -8,15 +8,15 @@ import (
 	"ccLoad/internal/protocol"
 )
 
-const protocolCapabilityTTL = 10 * time.Minute
+const unsupportedProtocolCapabilityTTL = 10 * time.Minute
 
 // protocolUnsupported 是能力缓存的哨兵值：已探测且确认该 URL 不支持当前请求族。
 // 与「无缓存条目」（尚未探测，get 返回 known=false）区分开。
 const protocolUnsupported protocol.Protocol = ""
 
 var automaticFallbackProtocolOrder = [...]protocol.Protocol{
-	protocol.Anthropic,
 	protocol.OpenAI,
+	protocol.Anthropic,
 	protocol.Codex,
 	protocol.Gemini,
 }
@@ -150,8 +150,8 @@ type protocolCapabilityKey struct {
 }
 
 type protocolCapabilityEntry struct {
-	upstream  protocol.Protocol
-	expiresAt time.Time
+	upstream   protocol.Protocol
+	retryAfter time.Time
 }
 
 type protocolCapabilityCache struct {
@@ -159,8 +159,8 @@ type protocolCapabilityCache struct {
 	entries map[protocolCapabilityKey]protocolCapabilityEntry
 }
 
-// get 返回已学习的上游协议。known=false 表示未探测（无条目或已过期）；
-// known=true 且 upstream==protocolUnsupported 表示已确认不支持。
+// get 返回已学习的上游协议。成功条目不过期；known=false 表示未探测，或“不支持”
+// 条目已到重试时间；known=true 且 upstream==protocolUnsupported 表示暂时确认不支持。
 func (c *protocolCapabilityCache) get(key protocolCapabilityKey) (upstream protocol.Protocol, known bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -169,7 +169,7 @@ func (c *protocolCapabilityCache) get(key protocolCapabilityKey) (upstream proto
 	if !ok {
 		return protocolUnsupported, false
 	}
-	if !time.Now().Before(entry.expiresAt) {
+	if entry.upstream == protocolUnsupported && !time.Now().Before(entry.retryAfter) {
 		delete(c.entries, key)
 		return protocolUnsupported, false
 	}
@@ -183,14 +183,18 @@ func (c *protocolCapabilityCache) set(key protocolCapabilityKey, upstream protoc
 	if c.entries == nil {
 		c.entries = make(map[protocolCapabilityKey]protocolCapabilityEntry)
 	}
-	// 条目只在此处新增，顺手清掉过期项即可保证 map 不随渠道/URL 变更无界增长
-	// （get 只惰性删除被再次查询的 key）。规模是渠道×URL×协议组合，全扫成本可忽略。
+	// 成功能力属于稳定的 URL 配置，保留到进程重启或渠道配置变更；只有“不支持”
+	// 哨兵需要定期重试。顺手清掉过期哨兵，避免未再次查询的 key 长期残留。
 	for k, entry := range c.entries {
-		if !entry.expiresAt.After(now) {
+		if entry.upstream == protocolUnsupported && !entry.retryAfter.After(now) {
 			delete(c.entries, k)
 		}
 	}
-	c.entries[key] = protocolCapabilityEntry{upstream: upstream, expiresAt: now.Add(protocolCapabilityTTL)}
+	entry := protocolCapabilityEntry{upstream: upstream}
+	if upstream == protocolUnsupported {
+		entry.retryAfter = now.Add(unsupportedProtocolCapabilityTTL)
+	}
+	c.entries[key] = entry
 }
 
 func (c *protocolCapabilityCache) clear() {

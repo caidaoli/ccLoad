@@ -2268,6 +2268,8 @@ function mergeModelRowsWithFetchedModels(currentRows, fetchedModels) {
     added++;
   }
 
+  rows.sort((a, b) => a.model.localeCompare(b.model));
+
   return { rows, added, removed: 0 };
 }
 

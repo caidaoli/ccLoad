@@ -1041,6 +1041,36 @@ func TestShouldFallbackProtocol(t *testing.T) {
 			statusCode: http.StatusForbidden,
 			body:       `{"error":{"message":"forbidden"}}`,
 		},
+		{
+			name:       "unsupported anthropic beta",
+			statusCode: http.StatusBadRequest,
+			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"尚未验证或不支持的 anthropic-beta：claude-code-20250219"}}`,
+			want:       true,
+		},
+		{
+			name:       "responses model not supported",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"当前模型不支持 Responses API：deepseek-v4-flash","type":"invalid_request_error","param":null,"code":"RESPONSES_MODEL_NOT_SUPPORTED"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary responses validation error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":{"message":"input is required","type":"invalid_request_error","code":"invalid_request_error"}}`,
+			want:       true,
+		},
+		{
+			name:       "ordinary anthropic beta validation error",
+			statusCode: http.StatusBadRequest,
+			body:       `{"type":"error","error":{"type":"invalid_request_error","message":"anthropic-beta must be a string"}}`,
+			want:       true,
+		},
+		{
+			name:       "malformed bad request",
+			statusCode: http.StatusBadRequest,
+			body:       `{"error":`,
+			want:       true,
+		},
 	}
 
 	for _, tt := range tests {

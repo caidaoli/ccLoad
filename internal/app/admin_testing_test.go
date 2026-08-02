@@ -1383,11 +1383,11 @@ func TestHandleChannelTest_AutoFallsBackOnNonModelDeployment404(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotPaths, []string{
 		"/v1/responses",
-		"/v1/messages",
 		"/v1/chat/completions",
+		"/v1/messages",
 		"/v1beta/models/claude-4.5-haiku:streamGenerateContent",
 	}) {
-		t.Fatalf("paths=%v, want native Codex then Anthropic, OpenAI, Gemini", gotPaths)
+		t.Fatalf("paths=%v, want native Codex then OpenAI, Anthropic, Gemini", gotPaths)
 	}
 	if len(gotBodies) != 4 {
 		t.Fatalf("request count=%d, want 4", len(gotBodies))
@@ -1420,6 +1420,11 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
 			return
+		case r.URL.Path == "/v1/chat/completions":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
 		case r.URL.Path == "/v1/messages":
 			w.Header().Set("Content-Type", "text/html; charset=UTF-8")
 			w.Header().Set("Server", "cloudflare")
@@ -1429,7 +1434,7 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"test-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","status":"completed","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 	}))
 	defer upstream.Close()
 
@@ -1466,22 +1471,84 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotPaths, []string{
 		"/v1beta/models/test-model:streamGenerateContent",
-		"/v1/messages",
 		"/v1/chat/completions",
+		"/v1/messages",
+		"/v1/responses",
 	}) {
-		t.Fatalf("paths=%v, want native Gemini then Anthropic and OpenAI", gotPaths)
+		t.Fatalf("paths=%v, want native Gemini then OpenAI, Anthropic, Codex", gotPaths)
 	}
 	if !gjson.GetBytes(gotBodies[0], "contents").IsArray() {
 		t.Fatalf("native Gemini request must use contents: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
-		t.Fatalf("Anthropic request must use messages: %s", gotBodies[1])
-	}
-	if got := gjson.GetBytes(gotBodies[1], "messages.0.role").String(); got != "user" {
-		t.Fatalf("Anthropic request role=%q, want user: %s", got, gotBodies[1])
+		t.Fatalf("OpenAI request must use messages: %s", gotBodies[1])
 	}
 	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
-		t.Fatalf("OpenAI fallback request must use messages: %s", gotBodies[2])
+		t.Fatalf("Anthropic request must use messages: %s", gotBodies[2])
+	}
+	if got := gjson.GetBytes(gotBodies[2], "messages.0.role").String(); got != "user" {
+		t.Fatalf("Anthropic request role=%q, want user: %s", got, gotBodies[2])
+	}
+	if !gjson.GetBytes(gotBodies[3], "input").IsArray() {
+		t.Fatalf("Codex request must use input: %s", gotBodies[3])
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !success {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if got, _ := resp.Data["upstream_protocol"].(string); got != "codex" {
+		t.Fatalf("upstream_protocol=%q, want codex, data=%+v", got, resp.Data)
+	}
+}
+
+func TestHandleChannelTest_AutoFallsBackOnUnsupportedAnthropicBeta(t *testing.T) {
+	var gotPaths []string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/messages" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"尚未验证或不支持的 anthropic-beta：claude-code-20250219"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:                  "auto-unsupported-anthropic-beta",
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeAuto,
+		ModelEntries:          []model.ModelEntry{{Model: "deepseek-v4-flash"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":           "deepseek-v4-flash",
+		"client_protocol": "anthropic",
+		"content":         "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !reflect.DeepEqual(gotPaths, []string{"/v1/messages", "/v1/chat/completions"}) {
+		t.Fatalf("paths=%v, want native Anthropic then OpenAI", gotPaths)
 	}
 
 	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
@@ -1491,9 +1558,74 @@ func TestHandleChannelTest_AutoFallsBackOnCloudflareBlockPage(t *testing.T) {
 	if got, _ := resp.Data["upstream_protocol"].(string); got != "openai" {
 		t.Fatalf("upstream_protocol=%q, want openai, data=%+v", got, resp.Data)
 	}
+	if _, exists := resp.Data["cooldown_action"]; exists {
+		t.Fatalf("capability fallback must not apply cooldown, data=%+v", resp.Data)
+	}
 }
 
-func TestHandleChannelTest_AutoTriesNativeThenFallbackProtocols(t *testing.T) {
+func TestHandleChannelTest_AutoFallsBackOnResponsesModelNotSupported(t *testing.T) {
+	var gotPaths []string
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPaths = append(gotPaths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/responses" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"当前模型不支持 Responses API：deepseek-v4-flash","type":"invalid_request_error","param":null,"code":"RESPONSES_MODEL_NOT_SUPPORTED"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:                  "auto-responses-model-not-supported",
+		URLs:                  model.ChannelURLs{{URL: upstream.URL}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeAuto,
+		ModelEntries:          []model.ModelEntry{{Model: "deepseek-v4-flash"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key"}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":           "deepseek-v4-flash",
+		"client_protocol": "codex",
+		"content":         "hello",
+		"stream":          true,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if !reflect.DeepEqual(gotPaths, []string{"/v1/responses", "/v1/chat/completions"}) {
+		t.Fatalf("paths=%v, want client Codex then OpenAI", gotPaths)
+	}
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !success {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if got, _ := resp.Data["upstream_protocol"].(string); got != "openai" {
+		t.Fatalf("upstream_protocol=%q, want openai, data=%+v", got, resp.Data)
+	}
+	if _, exists := resp.Data["cooldown_action"]; exists {
+		t.Fatalf("capability fallback must not apply cooldown, data=%+v", resp.Data)
+	}
+}
+
+func TestHandleChannelTest_AutoTriesClientThenFallbackProtocols(t *testing.T) {
 	var gotPaths []string
 	var gotBodies [][]byte
 
@@ -1546,20 +1678,20 @@ func TestHandleChannelTest_AutoTriesNativeThenFallbackProtocols(t *testing.T) {
 	}
 	if !reflect.DeepEqual(gotPaths, []string{
 		"/v1beta/models/test-model:generateContent",
-		"/v1/messages",
 		"/v1/chat/completions",
+		"/v1/messages",
 		"/v1/responses",
 	}) {
-		t.Fatalf("paths=%v, want native Gemini then Anthropic, OpenAI, Codex", gotPaths)
+		t.Fatalf("paths=%v, want client Gemini then OpenAI, Anthropic, Codex", gotPaths)
 	}
 	if !gjson.GetBytes(gotBodies[0], "contents").IsArray() {
 		t.Fatalf("native Gemini request must contain contents: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
-		t.Fatalf("Anthropic request must contain messages: %s", gotBodies[1])
+		t.Fatalf("OpenAI request must contain messages: %s", gotBodies[1])
 	}
 	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
-		t.Fatalf("OpenAI request must contain messages: %s", gotBodies[2])
+		t.Fatalf("Anthropic request must contain messages: %s", gotBodies[2])
 	}
 	if !gjson.GetBytes(gotBodies[3], "input").IsArray() {
 		t.Fatalf("Codex request must contain input: %s", gotBodies[3])
@@ -1587,7 +1719,7 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 		gotBodies = append(gotBodies, body)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/v1/responses":
+		case "/v1/chat/completions":
 			w.WriteHeader(http.StatusNotFound)
 			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
 			return
@@ -1596,7 +1728,7 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 			_, _ = io.WriteString(w, `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"claude-4.5-haiku","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","status":"completed","model":"claude-4.5-haiku","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 	}))
 	defer upstream.Close()
 
@@ -1620,7 +1752,7 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
 		"model":           "claude-4.5-haiku",
-		"client_protocol": "codex",
+		"client_protocol": "openai",
 		"content":         "hello",
 		"stream":          true,
 	}))
@@ -1635,23 +1767,23 @@ func TestHandleChannelTest_AutoFallsBackOnConvertRequestNotImplemented(t *testin
 	if success, _ := resp.Data["success"].(bool); !success {
 		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
 	}
-	if !reflect.DeepEqual(gotPaths, []string{"/v1/responses", "/v1/messages", "/v1/chat/completions"}) {
-		t.Fatalf("paths=%v, want native Codex then Anthropic and OpenAI", gotPaths)
+	if !reflect.DeepEqual(gotPaths, []string{"/v1/chat/completions", "/v1/messages", "/v1/responses"}) {
+		t.Fatalf("paths=%v, want client OpenAI then Anthropic and Codex", gotPaths)
 	}
 	if len(gotBodies) != 3 {
 		t.Fatalf("request count=%d, want 3", len(gotBodies))
 	}
-	if !gjson.GetBytes(gotBodies[0], "input").IsArray() {
-		t.Fatalf("native Codex request must use input: %s", gotBodies[0])
+	if !gjson.GetBytes(gotBodies[0], "messages").IsArray() {
+		t.Fatalf("client OpenAI request must use messages: %s", gotBodies[0])
 	}
 	if !gjson.GetBytes(gotBodies[1], "messages").IsArray() {
 		t.Fatalf("Anthropic request must use messages: %s", gotBodies[1])
 	}
-	if !gjson.GetBytes(gotBodies[2], "messages").IsArray() {
-		t.Fatalf("OpenAI fallback request must use messages: %s", gotBodies[2])
+	if !gjson.GetBytes(gotBodies[2], "input").IsArray() {
+		t.Fatalf("Codex fallback request must use input: %s", gotBodies[2])
 	}
-	if got, _ := resp.Data["upstream_protocol"].(string); got != "openai" {
-		t.Fatalf("upstream_protocol=%q, want openai, data=%+v", got, resp.Data)
+	if got, _ := resp.Data["upstream_protocol"].(string); got != "codex" {
+		t.Fatalf("upstream_protocol=%q, want codex, data=%+v", got, resp.Data)
 	}
 }
 
