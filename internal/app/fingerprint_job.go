@@ -23,6 +23,9 @@ var ErrFingerprintJobsBusy = errors.New("too many running fingerprint jobs")
 // ErrFingerprintJobsClosed is returned after the manager begins shutdown.
 var ErrFingerprintJobsClosed = errors.New("fingerprint jobs are shutting down")
 
+// ErrFingerprintNameConflict is returned when a calibration name is already in use.
+var ErrFingerprintNameConflict = errors.New("fingerprint baseline name already exists")
+
 // FingerprintJobType 区分标定 vs 测试任务。
 type FingerprintJobType string
 
@@ -144,11 +147,12 @@ type FingerprintJobManager struct {
 	maxRunning int
 	parentCtx  context.Context
 
-	mu      sync.Mutex
-	jobs    map[string]*fpJob
-	running int
-	closing bool
-	wg      sync.WaitGroup
+	mu               sync.Mutex
+	jobs             map[string]*fpJob
+	calibratingNames map[string]struct{}
+	running          int
+	closing          bool
+	wg               sync.WaitGroup
 }
 
 // NewFingerprintJobManager 构造，maxRunning ≤ 0 归 2。
@@ -160,9 +164,10 @@ func NewFingerprintJobManager(parentCtx context.Context, maxRunning int) *Finger
 		maxRunning = 2
 	}
 	return &FingerprintJobManager{
-		maxRunning: maxRunning,
-		parentCtx:  parentCtx,
-		jobs:       make(map[string]*fpJob),
+		maxRunning:       maxRunning,
+		parentCtx:        parentCtx,
+		jobs:             make(map[string]*fpJob),
+		calibratingNames: make(map[string]struct{}),
 	}
 }
 
@@ -203,13 +208,13 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		return "", fmt.Errorf("invalid params: %s", errMsg)
 	}
 
-	ctx, j, err := m.startJob(FingerprintJobCalibrate, iters)
+	ctx, j, err := m.startJob(FingerprintJobCalibrate, iters, req.Name)
 	if err != nil {
 		return "", err
 	}
 
 	go func() {
-		defer m.finishJob()
+		defer m.finishJob(req.Name)
 		defer j.cancel()
 
 		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
@@ -273,13 +278,13 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		return "", fmt.Errorf("invalid params: %s", errMsg)
 	}
 
-	ctx, j, err := m.startJob(FingerprintJobTest, iters)
+	ctx, j, err := m.startJob(FingerprintJobTest, iters, "")
 	if err != nil {
 		return "", err
 	}
 
 	go func() {
-		defer m.finishJob()
+		defer m.finishJob("")
 		defer j.cancel()
 
 		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
@@ -415,11 +420,16 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 }
 
 // startJob reserves a slot and registers a job atomically with manager shutdown.
-func (m *FingerprintJobManager) startJob(jobType FingerprintJobType, iters int) (context.Context, *fpJob, error) {
+func (m *FingerprintJobManager) startJob(jobType FingerprintJobType, iters int, calibrationName string) (context.Context, *fpJob, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closing {
 		return nil, nil, ErrFingerprintJobsClosed
+	}
+	if calibrationName != "" {
+		if _, exists := m.calibratingNames[calibrationName]; exists {
+			return nil, nil, fmt.Errorf("%w: %q", ErrFingerprintNameConflict, calibrationName)
+		}
 	}
 	if m.running >= m.maxRunning {
 		return nil, nil, fmt.Errorf("%w (%d/%d)", ErrFingerprintJobsBusy, m.running, m.maxRunning)
@@ -439,13 +449,17 @@ func (m *FingerprintJobManager) startJob(jobType FingerprintJobType, iters int) 
 	}
 	m.evictExpired()
 	m.jobs[id] = j
+	if calibrationName != "" {
+		m.calibratingNames[calibrationName] = struct{}{}
+	}
 	m.running++
 	m.wg.Add(1)
 	return ctx, j, nil
 }
 
-func (m *FingerprintJobManager) finishJob() {
+func (m *FingerprintJobManager) finishJob(calibrationName string) {
 	m.mu.Lock()
+	delete(m.calibratingNames, calibrationName)
 	m.running--
 	m.mu.Unlock()
 	m.wg.Done()

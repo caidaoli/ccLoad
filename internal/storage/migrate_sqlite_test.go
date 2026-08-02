@@ -6,6 +6,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +136,198 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	}
 	if val != "{}" || valueType != "json" || defaultValue != "{}" {
 		t.Fatalf("global_cooldown_detection_rules=%q/%q/%q, want {}/json/{}", val, valueType, defaultValue)
+	}
+}
+
+func TestMigrate_SQLite_RenamesDuplicateModelFingerprintNames(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE model_fingerprints (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL,
+			channel_id INTEGER,
+			channel_name TEXT NOT NULL DEFAULT '',
+			model TEXT NOT NULL,
+			actual_model TEXT NOT NULL DEFAULT '',
+			channel_type TEXT NOT NULL DEFAULT '',
+			client_protocol TEXT NOT NULL DEFAULT '',
+			sample_count INTEGER NOT NULL DEFAULT 0,
+			distribution TEXT NOT NULL,
+			stats TEXT NOT NULL,
+			raw_data TEXT NOT NULL,
+			prompt_version TEXT NOT NULL DEFAULT 'v1',
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("create legacy fingerprints table: %v", err)
+	}
+
+	longName := strings.Repeat("界", 191)
+	records := []struct {
+		name        string
+		model       string
+		sampleCount int
+		createdAt   int64
+	}{
+		{name: "duplicate-baseline", model: "model-a", sampleCount: 11, createdAt: 30},
+		{name: "duplicate-baseline", model: "model-b", sampleCount: 12, createdAt: 10},
+		{name: "duplicate-baseline", model: "model-c", sampleCount: 13, createdAt: 20},
+		{name: "collision", model: "collision-original", sampleCount: 21, createdAt: 1},
+		{name: "collision-1", model: "collision-suffix", sampleCount: 22, createdAt: 2},
+		{name: "collision", model: "collision-duplicate", sampleCount: 23, createdAt: 3},
+		{name: longName, model: "long-original", sampleCount: 31, createdAt: 1},
+		{name: longName, model: "long-duplicate", sampleCount: 32, createdAt: 2},
+	}
+	for _, record := range records {
+		if _, err := db.ExecContext(ctx, `
+			INSERT INTO model_fingerprints
+				(name, model, sample_count, distribution, stats, raw_data, created_at, updated_at)
+			VALUES (?, ?, ?, '[]', '{}', '[]', ?, ?)
+		`, record.name, record.model, record.sampleCount, record.createdAt, record.createdAt); err != nil {
+			t.Fatalf("insert legacy fingerprint %s: %v", record.model, err)
+		}
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate duplicate fingerprints: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migration must be idempotent: %v", err)
+	}
+
+	want := map[string]struct {
+		name        string
+		sampleCount int
+	}{
+		"model-a":             {name: "duplicate-baseline-2", sampleCount: 11},
+		"model-b":             {name: "duplicate-baseline", sampleCount: 12},
+		"model-c":             {name: "duplicate-baseline-1", sampleCount: 13},
+		"collision-original":  {name: "collision", sampleCount: 21},
+		"collision-suffix":    {name: "collision-1", sampleCount: 22},
+		"collision-duplicate": {name: "collision-2", sampleCount: 23},
+		"long-original":       {name: longName, sampleCount: 31},
+		"long-duplicate":      {name: strings.Repeat("界", 189) + "-1", sampleCount: 32},
+	}
+	rows, err := db.QueryContext(ctx, `SELECT model, name, sample_count FROM model_fingerprints`)
+	if err != nil {
+		t.Fatalf("query migrated fingerprints: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	seen := 0
+	for rows.Next() {
+		var modelName, name string
+		var sampleCount int
+		if err := rows.Scan(&modelName, &name, &sampleCount); err != nil {
+			t.Fatalf("scan migrated fingerprint: %v", err)
+		}
+		expected, ok := want[modelName]
+		if !ok {
+			t.Fatalf("unexpected migrated model %q", modelName)
+		}
+		if name != expected.name || sampleCount != expected.sampleCount {
+			t.Errorf("model=%q got (name=%q,samples=%d), want (name=%q,samples=%d)",
+				modelName, name, sampleCount, expected.name, expected.sampleCount)
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate migrated fingerprints: %v", err)
+	}
+	if seen != len(want) {
+		t.Fatalf("migrated row count=%d, want %d", seen, len(want))
+	}
+}
+
+func TestMigrate_SQLite_RollsBackFingerprintRenamesOnFailure(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, schema.DefineModelFingerprintsTable().BuildSQLite()); err != nil {
+		t.Fatalf("create fingerprints table: %v", err)
+	}
+	insert := `
+		INSERT INTO model_fingerprints
+			(name, model, distribution, stats, raw_data, created_at, updated_at)
+		VALUES (?, ?, '[]', '{}', '[]', ?, ?)
+	`
+	for _, record := range []struct {
+		name      string
+		model     string
+		createdAt int64
+	}{
+		{name: "alpha", model: "alpha-original", createdAt: 1},
+		{name: "alpha", model: "alpha-duplicate", createdAt: 2},
+		{name: "zeta", model: "zeta-original", createdAt: 3},
+		{name: "zeta", model: "zeta-fail", createdAt: 4},
+	} {
+		if _, err := db.ExecContext(ctx, insert, record.name, record.model, record.createdAt, record.createdAt); err != nil {
+			t.Fatalf("insert fingerprint %s: %v", record.model, err)
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+		CREATE TRIGGER fail_fingerprint_rename
+		BEFORE UPDATE OF name ON model_fingerprints
+		WHEN OLD.model = 'zeta-fail'
+		BEGIN
+			SELECT RAISE(ABORT, 'forced fingerprint rename failure');
+		END
+	`); err != nil {
+		t.Fatalf("create failure trigger: %v", err)
+	}
+
+	err := migrate(ctx, db, DialectSQLite)
+	if err == nil || !strings.Contains(err.Error(), "forced fingerprint rename failure") {
+		t.Fatalf("migrate error=%v, want forced rename failure", err)
+	}
+
+	rows, err := db.QueryContext(ctx, `SELECT name FROM model_fingerprints ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query fingerprints after rollback: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var names []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			t.Fatalf("scan fingerprint after rollback: %v", err)
+		}
+		names = append(names, name)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate fingerprints after rollback: %v", err)
+	}
+	want := []string{"alpha", "alpha", "zeta", "zeta"}
+	if !reflect.DeepEqual(names, want) {
+		t.Fatalf("names after rollback=%v, want %v", names, want)
+	}
+}
+
+func TestMigrate_SQLite_EnforcesUniqueModelFingerprintNames(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	insert := `
+		INSERT INTO model_fingerprints
+			(name, model, distribution, stats, raw_data, created_at, updated_at)
+		VALUES (?, ?, '[]', '{}', '[]', 1, 1)
+	`
+	if _, err := db.ExecContext(ctx, insert, "unique-baseline", "model-a"); err != nil {
+		t.Fatalf("insert first fingerprint: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, insert, "unique-baseline", "model-b"); err == nil {
+		t.Fatal("database must reject a duplicate fingerprint name")
+	}
+
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_fingerprints`).Scan(&count); err != nil {
+		t.Fatalf("count fingerprints: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("fingerprints count=%d, want 1", count)
 	}
 }
 

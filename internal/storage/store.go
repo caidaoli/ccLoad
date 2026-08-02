@@ -127,6 +127,7 @@ type Store interface {
 	// === Model Fingerprint Management ===
 	ListModelFingerprints(ctx context.Context) ([]*model.ModelFingerprint, error)
 	GetModelFingerprint(ctx context.Context, id int64) (*model.ModelFingerprint, error)
+	ModelFingerprintNameExists(ctx context.Context, name string) (bool, error)
 	CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error)
 	DeleteModelFingerprint(ctx context.Context, id int64) error
 	ClearFingerprintChannelID(ctx context.Context, channelID int64) error

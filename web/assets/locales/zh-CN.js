@@ -1042,6 +1042,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.fingerprint.concurrency': '并发',
   'modelTest.fingerprint.namePlaceholder': '基准名称',
   'modelTest.fingerprint.needName': '请输入基准名称',
+  'modelTest.fingerprint.duplicateName': '已存在同名基准，请使用其他名称',
   'modelTest.fingerprint.needChannel': '请选择渠道',
   'modelTest.fingerprint.needModel': '请选择模型',
   'modelTest.fingerprint.running': '运行中…',

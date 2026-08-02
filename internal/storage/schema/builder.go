@@ -47,6 +47,15 @@ func (b *TableBuilder) Index(name, columns string) *TableBuilder {
 	return b
 }
 
+// UniqueIndex 添加唯一索引定义。
+func (b *TableBuilder) UniqueIndex(name, columns string) *TableBuilder {
+	b.indexes = append(b.indexes, IndexDef{
+		Name: name,
+		SQL:  fmt.Sprintf("CREATE UNIQUE INDEX %s ON %s(%s)", name, b.name, columns),
+	})
+	return b
+}
+
 // BuildMySQL 生成MySQL DDL
 func (b *TableBuilder) BuildMySQL() string {
 	sql := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s (\n\t%s\n) ;",
@@ -148,7 +157,7 @@ func (b *TableBuilder) GetIndexesPostgres() []IndexDef {
 	for i, idx := range b.indexes {
 		indexes[i] = IndexDef{
 			Name: idx.Name,
-			SQL:  strings.Replace(idx.SQL, "CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1),
+			SQL:  addIndexIfNotExists(idx.SQL),
 		}
 	}
 	return indexes
@@ -183,8 +192,12 @@ func (b *TableBuilder) GetIndexesSQLite() []IndexDef {
 	for i, idx := range b.indexes {
 		indexes[i] = IndexDef{
 			Name: idx.Name,
-			SQL:  strings.Replace(idx.SQL, "CREATE INDEX", "CREATE INDEX IF NOT EXISTS", 1),
+			SQL:  addIndexIfNotExists(idx.SQL),
 		}
 	}
 	return indexes
+}
+
+func addIndexIfNotExists(sql string) string {
+	return strings.Replace(sql, " INDEX ", " INDEX IF NOT EXISTS ", 1)
 }

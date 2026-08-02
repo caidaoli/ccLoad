@@ -869,6 +869,10 @@ func (h *HybridStore) GetModelFingerprint(ctx context.Context, id int64) (*model
 	return h.sqlite.GetModelFingerprint(ctx, id)
 }
 
+func (h *HybridStore) ModelFingerprintNameExists(ctx context.Context, name string) (bool, error) {
+	return h.mysql.ModelFingerprintNameExists(ctx, name)
+}
+
 func (h *HybridStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
 	result, err := h.mysql.CreateModelFingerprint(ctx, fp)
 	if err != nil {

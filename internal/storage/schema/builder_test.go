@@ -11,7 +11,8 @@ func TestTableBuilder_NameAndDDL(t *testing.T) {
 		Column("name VARCHAR(32) NOT NULL").
 		Column("cooldown_until BIGINT NOT NULL DEFAULT 0").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").
-		Index("idx_t1_enabled", "enabled")
+		Index("idx_t1_enabled", "enabled").
+		UniqueIndex("uk_t1_name", "name")
 
 	if tb.Name() != "t1" {
 		t.Fatalf("Name=%q, want %q", tb.Name(), "t1")
@@ -36,11 +37,14 @@ func TestTableBuilder_NameAndDDL(t *testing.T) {
 	}
 
 	idx := tb.GetIndexesSQLite()
-	if len(idx) != 1 {
-		t.Fatalf("GetIndexesSQLite len=%d, want 1", len(idx))
+	if len(idx) != 2 {
+		t.Fatalf("GetIndexesSQLite len=%d, want 2", len(idx))
 	}
 	if !strings.Contains(idx[0].SQL, "IF NOT EXISTS") {
 		t.Fatalf("expected SQLite index to include IF NOT EXISTS, got %q", idx[0].SQL)
+	}
+	if !strings.Contains(idx[1].SQL, "CREATE UNIQUE INDEX IF NOT EXISTS") {
+		t.Fatalf("expected SQLite unique index to include IF NOT EXISTS, got %q", idx[1].SQL)
 	}
 
 	pgDDL := tb.BuildPostgres()
@@ -53,7 +57,8 @@ func TestTableBuilder_NameAndDDL(t *testing.T) {
 		}
 	}
 	pgIdx := tb.GetIndexesPostgres()
-	if len(pgIdx) != 1 || !strings.Contains(pgIdx[0].SQL, "IF NOT EXISTS") {
+	if len(pgIdx) != 2 || !strings.Contains(pgIdx[0].SQL, "IF NOT EXISTS") ||
+		!strings.Contains(pgIdx[1].SQL, "CREATE UNIQUE INDEX IF NOT EXISTS") {
 		t.Fatalf("GetIndexesPostgres unexpected: %+v", pgIdx)
 	}
 }

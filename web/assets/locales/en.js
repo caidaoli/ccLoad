@@ -1043,6 +1043,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.fingerprint.concurrency': 'Concurrency',
   'modelTest.fingerprint.namePlaceholder': 'Baseline name',
   'modelTest.fingerprint.needName': 'Please enter a baseline name',
+  'modelTest.fingerprint.duplicateName': 'A baseline with this name already exists. Choose a different name.',
   'modelTest.fingerprint.needChannel': 'Please select a channel',
   'modelTest.fingerprint.needModel': 'Please select a model',
   'modelTest.fingerprint.running': 'Running…',
