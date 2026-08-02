@@ -1068,6 +1068,10 @@
     const concurrency = parseInt(el('fpCalibrateConcurrency')?.value || DEFAULT_CONCURRENCY, 10);
 
     if (!name)      { alert(t('modelTest.fingerprint.needName', '请输入基准名称')); return; }
+    if (fingerprints.some(fp => String(fp.name || '').trim() === name)) {
+      alert(t('modelTest.fingerprint.duplicateName', '已存在同名基准，请使用其他名称'));
+      return;
+    }
     if (!channelId) { alert(t('modelTest.fingerprint.needChannel', '请选择渠道')); return; }
     if (!model)     { alert(t('modelTest.fingerprint.needModel', '请选择模型')); return; }
     if (!clientProtocol) { alert(t('modelTest.fingerprint.needProtocol', '请选择请求协议')); return; }

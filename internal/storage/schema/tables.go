@@ -218,6 +218,7 @@ func DefineModelFingerprintsTable() *TableBuilder {
 		Column("prompt_version VARCHAR(32) NOT NULL DEFAULT 'v1'").
 		Column("created_at BIGINT NOT NULL").
 		Column("updated_at BIGINT NOT NULL").
+		UniqueIndex("uk_model_fingerprints_name", "name").
 		Index("idx_model_fingerprints_model", "model").
 		Index("idx_model_fingerprints_channel", "channel_id").
 		Index("idx_model_fingerprints_created", "created_at DESC")

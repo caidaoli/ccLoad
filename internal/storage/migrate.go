@@ -14,6 +14,7 @@ const (
 	channelModelsOrderRepairVersion        = "v2_channel_models_created_at_order"
 	structuredChannelURLsMigrationVersion  = "v4_structured_channel_urls"
 	clientProtocolBackfillMigrationVersion = "v5_logs_client_protocol_backfill"
+	modelFingerprintNameMaxRunes           = 191
 )
 
 // Dialect 数据库方言
@@ -255,6 +256,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureModelFingerprintsClientProtocol(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate model_fingerprints client_protocol: %w", err)
 			}
+			if err := deduplicateModelFingerprintNames(ctx, db, dialect); err != nil {
+				return fmt.Errorf("deduplicate model fingerprint names: %w", err)
+			}
 		}
 
 		// 创建索引
@@ -296,6 +300,115 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	}
 
 	return nil
+}
+
+func deduplicateModelFingerprintNames(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	type fingerprintNameRecord struct {
+		id        int64
+		name      string
+		createdAt int64
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, name, created_at
+		FROM model_fingerprints
+		ORDER BY created_at, id
+	`)
+	if err != nil {
+		return fmt.Errorf("query fingerprints: %w", err)
+	}
+	var records []fingerprintNameRecord
+	for rows.Next() {
+		var record fingerprintNameRecord
+		if err := rows.Scan(&record.id, &record.name, &record.createdAt); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan fingerprint name: %w", err)
+		}
+		records = append(records, record)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate fingerprint names: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close fingerprint names: %w", err)
+	}
+
+	earlierNameCountSQL := rebindIfPostgres(dialect, `
+		SELECT COUNT(*)
+		FROM model_fingerprints
+		WHERE name = ? AND (created_at < ? OR (created_at = ? AND id < ?))
+	`)
+	nameCountSQL := rebindIfPostgres(dialect, `SELECT COUNT(*) FROM model_fingerprints WHERE name = ?`)
+	updateNameSQL := rebindIfPostgres(dialect, `UPDATE model_fingerprints SET name = ? WHERE id = ?`)
+	for _, record := range records {
+		var earlierCount int64
+		if err := tx.QueryRowContext(ctx, earlierNameCountSQL,
+			record.name, record.createdAt, record.createdAt, record.id,
+		).Scan(&earlierCount); err != nil {
+			return fmt.Errorf("check earlier fingerprint name for id=%d: %w", record.id, err)
+		}
+		if earlierCount == 0 {
+			continue
+		}
+
+		for suffix := 1; ; suffix++ {
+			candidate := fingerprintNameWithSuffix(record.name, suffix)
+			var candidateCount int64
+			if err := tx.QueryRowContext(ctx, nameCountSQL, candidate).Scan(&candidateCount); err != nil {
+				return fmt.Errorf("check fingerprint name candidate for id=%d: %w", record.id, err)
+			}
+			if candidateCount != 0 {
+				continue
+			}
+
+			result, err := tx.ExecContext(ctx, updateNameSQL, candidate, record.id)
+			if err != nil {
+				return fmt.Errorf("rename fingerprint id=%d: %w", record.id, err)
+			}
+			affected, err := result.RowsAffected()
+			if err != nil {
+				return fmt.Errorf("count renamed fingerprint id=%d: %w", record.id, err)
+			}
+			if affected != 1 {
+				return fmt.Errorf("rename fingerprint id=%d affected %d rows, want 1", record.id, affected)
+			}
+			break
+		}
+	}
+
+	var rowCount, uniqueNameCount int64
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COUNT(*), COUNT(DISTINCT name)
+		FROM model_fingerprints
+	`).Scan(&rowCount, &uniqueNameCount); err != nil {
+		return fmt.Errorf("validate renamed fingerprints: %w", err)
+	}
+	if rowCount != int64(len(records)) {
+		return fmt.Errorf("fingerprint row count changed from %d to %d", len(records), rowCount)
+	}
+	if uniqueNameCount != rowCount {
+		return fmt.Errorf("fingerprint names remain duplicated: rows=%d unique_names=%d", rowCount, uniqueNameCount)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit transaction: %w", err)
+	}
+	return nil
+}
+
+func fingerprintNameWithSuffix(name string, suffix int) string {
+	suffixText := fmt.Sprintf("-%d", suffix)
+	nameRunes := []rune(name)
+	maxBaseRunes := modelFingerprintNameMaxRunes - len([]rune(suffixText))
+	if len(nameRunes) > maxBaseRunes {
+		nameRunes = nameRunes[:maxBaseRunes]
+	}
+	return string(nameRunes) + suffixText
 }
 
 func cleanupRemovedSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {

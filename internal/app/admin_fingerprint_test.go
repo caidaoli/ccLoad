@@ -262,6 +262,70 @@ func TestFingerprintAPI_CalibrateValidation(t *testing.T) {
 	}
 }
 
+func TestFingerprintAPI_CalibrateRejectsPersistedDuplicateName(t *testing.T) {
+	srv := newInMemoryServer(t)
+	upstream := cyclicUpstreamFP(t)
+	defer upstream.Close()
+	channelID := createFPChannel(t, srv, upstream.URL, "fp-model")
+
+	if _, err := srv.store.CreateModelFingerprint(context.Background(), &model.ModelFingerprint{
+		Name:          "existing-baseline",
+		Model:         "fp-model",
+		Distribution:  []float64{},
+		PromptVersion: util.FingerprintPromptVersion,
+	}); err != nil {
+		t.Fatalf("CreateModelFingerprint: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/fingerprints/calibrate", map[string]any{
+		"name":            " existing-baseline ",
+		"channel_id":      channelID,
+		"model":           "fp-model",
+		"client_protocol": "openai",
+	}))
+	srv.HandleCalibrateFingerprint(c)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("want 409 got %d — %s", w.Code, w.Body.String())
+	}
+	var resp APIResponse[any]
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if resp.Error != `baseline name "existing-baseline" already exists or is being calibrated; choose a different name` {
+		t.Fatalf("error=%q", resp.Error)
+	}
+}
+
+func TestFingerprintAPI_CalibrateRejectsRunningDuplicateName(t *testing.T) {
+	srv := newInMemoryServer(t)
+	blocked := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-blocked
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer func() {
+		close(blocked)
+		upstream.Close()
+	}()
+	channelID := createFPChannel(t, srv, upstream.URL, "fp-model")
+	body := map[string]any{
+		"name":            "running-baseline",
+		"channel_id":      channelID,
+		"model":           "fp-model",
+		"client_protocol": "openai",
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/fingerprints/calibrate", body))
+	srv.HandleCalibrateFingerprint(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first calibrate: want 200 got %d — %s", w.Code, w.Body.String())
+	}
+
+	c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/fingerprints/calibrate", body))
+	srv.HandleCalibrateFingerprint(c)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate calibrate: want 409 got %d — %s", w.Code, w.Body.String())
+	}
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // TestFingerprintAPI_TestValidation_NoBaseline
 

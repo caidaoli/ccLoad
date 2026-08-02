@@ -56,8 +56,25 @@ func (s *SQLStore) GetModelFingerprint(ctx context.Context, id int64) (*model.Mo
 	return fp, nil
 }
 
+// ModelFingerprintNameExists 判断基准名称是否已被占用。
+func (s *SQLStore) ModelFingerprintNameExists(ctx context.Context, name string) (bool, error) {
+	var count int
+	if err := s.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_fingerprints WHERE name = ?`, name).Scan(&count); err != nil {
+		return false, fmt.Errorf("query model_fingerprints by name: %w", err)
+	}
+	return count > 0, nil
+}
+
 // CreateModelFingerprint 插入新指纹基线，返回含 ID 的完整记录。
 func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
+	exists, err := s.ModelFingerprintNameExists(ctx, fp.Name)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, fmt.Errorf("model fingerprint name %q already exists", fp.Name)
+	}
+
 	createdAt := time.Now()
 	if !fp.CreatedAt.IsZero() {
 		createdAt = fp.CreatedAt.Time
@@ -109,7 +126,7 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 			return s.syncPostgresIDSequence(ctx, tx, "model_fingerprints")
 		})
 		if err != nil {
-			return nil, fmt.Errorf("insert model_fingerprints with id=%d: %w", fp.ID, err)
+			return nil, fmt.Errorf("insert model_fingerprints with id=%d: %w", fp.ID, s.modelFingerprintInsertError(ctx, fp.Name, err))
 		}
 		return s.GetModelFingerprint(ctx, fp.ID)
 	}
@@ -125,7 +142,7 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 		`, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ClientProtocol,
 			fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, createdAtUnix, updatedAtUnix).Scan(&newID)
 		if err != nil {
-			return nil, fmt.Errorf("insert model_fingerprints: %w", err)
+			return nil, fmt.Errorf("insert model_fingerprints: %w", s.modelFingerprintInsertError(ctx, fp.Name, err))
 		}
 		return s.GetModelFingerprint(ctx, newID)
 	}
@@ -138,13 +155,21 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 	`, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ClientProtocol,
 		fp.SampleCount, distJSON, statsJSON, rawJSON, promptVer, createdAtUnix, updatedAtUnix)
 	if err != nil {
-		return nil, fmt.Errorf("insert model_fingerprints: %w", err)
+		return nil, fmt.Errorf("insert model_fingerprints: %w", s.modelFingerprintInsertError(ctx, fp.Name, err))
 	}
 	newID, err := res.LastInsertId()
 	if err != nil {
 		return nil, fmt.Errorf("get last insert id for model_fingerprints: %w", err)
 	}
 	return s.GetModelFingerprint(ctx, newID)
+}
+
+func (s *SQLStore) modelFingerprintInsertError(ctx context.Context, name string, insertErr error) error {
+	exists, err := s.ModelFingerprintNameExists(ctx, name)
+	if err == nil && exists {
+		return fmt.Errorf("model fingerprint name %q already exists", name)
+	}
+	return insertErr
 }
 
 // DeleteModelFingerprint 删除指定指纹基线。

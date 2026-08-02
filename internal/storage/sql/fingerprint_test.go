@@ -48,6 +48,32 @@ func TestModelFingerprintCreatePreservesExplicitIDAndTimestamps(t *testing.T) {
 	}
 }
 
+func TestModelFingerprintNameMustBeUnique(t *testing.T) {
+	t.Parallel()
+
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "fp-unique-name.db"))
+	if err != nil {
+		t.Fatalf("create sqlite store: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+
+	ctx := context.Background()
+	if _, err := store.CreateModelFingerprint(ctx, newFingerprintForStorageTest(0)); err != nil {
+		t.Fatalf("create first fingerprint: %v", err)
+	}
+	if _, err := store.CreateModelFingerprint(ctx, newFingerprintForStorageTest(0)); err == nil {
+		t.Fatal("creating a second fingerprint with the same name must fail")
+	}
+
+	fingerprints, err := store.ListModelFingerprints(ctx)
+	if err != nil {
+		t.Fatalf("list fingerprints: %v", err)
+	}
+	if len(fingerprints) != 1 {
+		t.Fatalf("fingerprints len=%d, want 1", len(fingerprints))
+	}
+}
+
 func TestFingerprintTestResultCreateSetsAndPreservesID(t *testing.T) {
 	t.Parallel()
 
