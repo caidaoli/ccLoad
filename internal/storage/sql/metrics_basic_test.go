@@ -55,6 +55,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", UpstreamProtocol: "anthropic", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
 		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.05, LogSource: model.LogSourceScheduledCheck},
 		{Time: model.JSONTime{Time: now}, ChannelID: 0, StatusCode: 502, Message: "exhausted backends", LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
@@ -153,9 +154,10 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 		t.Fatalf("unexpected rpm stats: %+v", rpm)
 	}
 
-	// AggregateRangeWithFilter：覆盖 resolveChannelFilter(type+nameLike 交集)
+	// AggregateRangeWithFilter：覆盖渠道解析，并确保健康指标只统计代理请求。
 	pts, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{
 		ChannelNameLike: "openai",
+		LogSource:       model.LogSourceProxy,
 	})
 	if err != nil {
 		t.Fatalf("AggregateRangeWithFilter failed: %v", err)
@@ -163,15 +165,14 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	if len(pts) == 0 {
 		t.Fatalf("AggregateRangeWithFilter returned empty points")
 	}
-	nonEmpty := false
+	metricSuccess := 0
+	metricError := 0
 	for _, p := range pts {
-		if p.Success > 0 || p.Error > 0 {
-			nonEmpty = true
-			break
-		}
+		metricSuccess += p.Success
+		metricError += p.Error
 	}
-	if !nonEmpty {
-		t.Fatalf("expected at least one non-empty metric point")
+	if metricSuccess != 1 || metricError != 1 {
+		t.Fatalf("proxy metrics success=%d error=%d, want 1/1; manual and scheduled checks must be excluded", metricSuccess, metricError)
 	}
 
 	// 空结果：触发 buildEmptyMetricPoints 路径

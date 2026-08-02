@@ -3,7 +3,6 @@ package sql
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"ccLoad/internal/model"
@@ -22,7 +21,7 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 
 	// 使用 minute_bucket 索引优化
 	// 排除499：客户端取消不应计入成功/失败/RPM统计
-	query := `
+	qb := NewQueryBuilder(`
 		SELECT
 			FLOOR(logs.minute_bucket / ?) * ? * 60 AS bucket_ts,
 			logs.channel_id,
@@ -39,12 +38,13 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			SUM(COALESCE(logs.cache_read_input_tokens, 0)) as cache_read_tokens,
 			SUM(COALESCE(logs.cache_creation_input_tokens, 0)) as cache_creation_tokens
 		FROM logs
-		WHERE logs.minute_bucket >= ? AND logs.minute_bucket <= ? AND logs.status_code != 499 AND logs.channel_id > 0
-	`
+	`).
+		Where("logs.minute_bucket >= ?", sinceBucket).
+		Where("logs.minute_bucket <= ?", untilBucket).
+		Where("logs.status_code != 499").
+		Where("logs.channel_id > 0")
 
-	args := []any{bucketMinutes, bucketMinutes, sinceBucket, untilBucket}
-
-	// 应用渠道筛选（channel_id、channel_name、channel_name_like）及实际上游协议筛选。
+	// 渠道名称先解析为 ID；其余条件统一交给 LogFilter，避免不同统计端点口径漂移。
 	if filter != nil {
 		channelIDs, isEmpty, err := s.resolveChannelFilter(ctx, filter)
 		if err != nil {
@@ -54,31 +54,22 @@ func (s *SQLStore) AggregateRangeWithFilter(ctx context.Context, since, until ti
 			return buildEmptyMetricPoints(since, until, bucket), nil
 		}
 		if len(channelIDs) > 0 {
-			placeholders := make([]string, len(channelIDs))
-			for i := range channelIDs {
-				placeholders[i] = "?"
-				args = append(args, channelIDs[i])
+			values := make([]any, len(channelIDs))
+			for i, channelID := range channelIDs {
+				values[i] = channelID
 			}
-			query += fmt.Sprintf(" AND logs.channel_id IN (%s)", strings.Join(placeholders, ","))
-		}
-
-		// 添加模型过滤
-		if filter.Model != "" {
-			query += " AND logs.model = ?"
-			args = append(args, filter.Model)
-		}
-
-		// 添加 auth_token_id 过滤
-		if filter.AuthTokenID != nil && *filter.AuthTokenID > 0 {
-			query += " AND logs.auth_token_id = ?"
-			args = append(args, *filter.AuthTokenID)
+			qb.WhereIn("logs.channel_id", values)
 		}
 	}
 
-	query += `
+	if filter != nil {
+		qb.ApplyFilter(filter)
+	}
+	query, args := qb.BuildWithSuffix(`
 		GROUP BY bucket_ts, logs.channel_id
 		ORDER BY bucket_ts ASC
-	`
+	`)
+	args = append([]any{bucketMinutes, bucketMinutes}, args...)
 
 	rows, err := s.QueryContext(ctx, query, args...)
 	if err != nil {
