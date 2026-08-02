@@ -11,8 +11,12 @@ import (
 const (
 	githubLatestReleaseURL      = "https://github.com/caidaoli/ccLoad/releases/latest"
 	githubDownloadBaseURL       = "https://github.com/caidaoli/ccLoad/releases/download"
-	ghproxyLatestReleaseURL     = "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/latest"
-	ghproxyDownloadBaseURL      = "https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/download"
+	monlorLatestReleaseURL      = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest"
+	monlorDownloadBaseURL       = "https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/download"
+	fastgitLatestReleaseURL     = "https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/latest"
+	fastgitDownloadBaseURL      = "https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/download"
+	ghfastLatestReleaseURL      = "https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/latest"
+	ghfastDownloadBaseURL       = "https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/download"
 	releaseLatestDownloadSuffix = "/releases/latest/download"
 	releaseTagPathMarker        = "/releases/tag/"
 )
@@ -29,9 +33,19 @@ func releaseSources(customBaseURL string) ([]ReleaseSource, error) {
 	if customBaseURL == "" {
 		return []ReleaseSource{
 			{
-				Name:            "ghproxy.net",
-				LatestURL:       ghproxyLatestReleaseURL,
-				DownloadBaseURL: ghproxyDownloadBaseURL,
+				Name:            "gh.monlor.com",
+				LatestURL:       monlorLatestReleaseURL,
+				DownloadBaseURL: monlorDownloadBaseURL,
+			},
+			{
+				Name:            "fastgit.cc",
+				LatestURL:       fastgitLatestReleaseURL,
+				DownloadBaseURL: fastgitDownloadBaseURL,
+			},
+			{
+				Name:            "ghfast.top",
+				LatestURL:       ghfastLatestReleaseURL,
+				DownloadBaseURL: ghfastDownloadBaseURL,
 			},
 			{
 				Name:            "github.com",

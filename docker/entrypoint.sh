@@ -28,7 +28,10 @@ download() {
   url=$1
   output=$2
 
-  curl -fsSL \
+  log "download URL: $url"
+  curl --fail \
+    --location \
+    --progress-bar \
     --connect-timeout 15 \
     --max-time 300 \
     --retry 3 \
@@ -94,9 +97,13 @@ install_latest_release() {
     return
   fi
 
-  ghproxy_base="https://ghproxy.net/https://github.com/$CCLOAD_REPO/releases/latest/download"
+  ghproxy_v4_base="https://v4.gh-proxy.org/https://github.com/$CCLOAD_REPO/releases/latest/download"
+  ghproxy_com_base="https://gh-proxy.com/https://github.com/$CCLOAD_REPO/releases/latest/download"
+  keleyaa_base="https://ghp.keleyaa.com/https://github.com/$CCLOAD_REPO/releases/latest/download"
   github_base="https://github.com/$CCLOAD_REPO/releases/latest/download"
-  install_from_source "$ghproxy_base" "$asset" "ghproxy.net" ||
+  install_from_source "$ghproxy_v4_base" "$asset" "v4.gh-proxy.org" ||
+    install_from_source "$ghproxy_com_base" "$asset" "gh-proxy.com" ||
+    install_from_source "$keleyaa_base" "$asset" "ghp.keleyaa.com" ||
     install_from_source "$github_base" "$asset" "github.com"
 }
 

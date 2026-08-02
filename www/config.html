@@ -76,7 +76,7 @@
                 <td><code>CCLOAD_RELEASE_BASE_URL</code></td>
                 <td>None</td>
                 <td>Complete <code>.../releases/latest/download</code> base URL used for release detection and downloads.</td>
-                <td>Leave unset to try <code>ghproxy.net</code> first and GitHub directly on failure. Set it only to force a private mirror.</td>
+                <td>Leave unset to use the built-in fallback chains: the container entrypoint tries <code>v4.gh-proxy.org</code>, <code>gh-proxy.com</code>, and <code>ghp.keleyaa.com</code>; the in-process updater uses mirrors that support release-tag detection. Set it only to force a private mirror.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
@@ -293,7 +293,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">⬆️</span>
             <h3>Auto updates</h3>
-            <p>ccLoad checks releases every 12 hours by default, trying <code>ghproxy.net</code> first and GitHub directly on failure. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror.</p>
+            <p>ccLoad checks releases every 12 hours by default, trying <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before falling back to GitHub directly. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror.</p>
           </article>
         </div>
 

@@ -26,6 +26,7 @@ set -eu
 
 output=
 url=
+progress_bar=false
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o)
@@ -34,6 +35,10 @@ while [ "$#" -gt 0 ]; do
       ;;
     --connect-timeout|--max-time|--retry|--retry-delay)
       shift 2
+      ;;
+    --progress-bar)
+      progress_bar=true
+      shift
       ;;
     -*)
       shift
@@ -48,9 +53,14 @@ done
 [ -n "$output" ] || exit 2
 [ -n "$url" ] || exit 2
 printf '%s\n' "$url" >> "$FAKE_CURL_LOG"
+if [ "$progress_bar" = true ]; then
+  printf 'fake curl progress: 100%%\n' >&2
+fi
 
 case "$url" in
-  https://ghproxy.net/*) source=ghproxy ;;
+  https://v4.gh-proxy.org/*) source=ghproxy_v4 ;;
+  https://gh-proxy.com/*) source=ghproxy_com ;;
+  https://ghp.keleyaa.com/*) source=keleyaa ;;
   https://github.com/*) source=github ;;
   https://mirror.example/*) source=custom ;;
   *) source=unknown ;;
@@ -61,7 +71,15 @@ case "$url" in
   *) kind=asset ;;
 esac
 
-if [ "${FAKE_FAIL_SOURCE:-}" = "$source" ] && [ "${FAKE_FAIL_KIND:-}" = "$kind" ]; then
+fail_source=false
+if [ "${FAKE_FAIL_SOURCE:-}" = "$source" ]; then
+  fail_source=true
+elif [ "${FAKE_FAIL_SOURCE:-}" = "all-mirrors" ]; then
+  case "$source" in
+    ghproxy_v4|ghproxy_com|keleyaa) fail_source=true ;;
+  esac
+fi
+if [ "$fail_source" = true ] && [ "${FAKE_FAIL_KIND:-}" = "$kind" ]; then
   exit 22
 fi
 
@@ -119,23 +137,25 @@ run_entrypoint() {
   sh "$entrypoint"
 }
 
-test_default_falls_back_to_github() {
+test_default_tries_three_mirrors_then_github() {
   case_dir="$test_root/default-fallback"
   make_fake_tools "$case_dir"
   make_fixture_asset "$case_dir/release-asset"
-  export FAKE_FAIL_SOURCE=ghproxy
+  export FAKE_FAIL_SOURCE=all-mirrors
   export FAKE_FAIL_KIND=asset
   unset FAKE_BAD_CHECKSUM_SOURCE || true
 
   run_entrypoint "$case_dir"
 
-  first_url=$(sed -n '1p' "$case_dir/curl.log")
-  case "$first_url" in
-    https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/latest/download/*) ;;
-    *) fail "first default request did not use ghproxy: $first_url" ;;
-  esac
-  grep -q '^https://github.com/caidaoli/ccLoad/releases/latest/download/' "$case_dir/curl.log" ||
-    fail "GitHub fallback was not requested"
+  asset_path="https://github.com/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64"
+  [ "$(sed -n '1p' "$case_dir/curl.log")" = "https://v4.gh-proxy.org/$asset_path" ] ||
+    fail "first default request did not use v4.gh-proxy.org"
+  [ "$(sed -n '2p' "$case_dir/curl.log")" = "https://gh-proxy.com/$asset_path" ] ||
+    fail "second default request did not use gh-proxy.com"
+  [ "$(sed -n '3p' "$case_dir/curl.log")" = "https://ghp.keleyaa.com/$asset_path" ] ||
+    fail "third default request did not use ghp.keleyaa.com"
+  [ "$(sed -n '4p' "$case_dir/curl.log")" = "$asset_path" ] ||
+    fail "GitHub was not the final fallback"
   [ "$(cat "$case_dir/exec.log")" = "downloaded" ] || fail "fallback binary was not executed"
 }
 
@@ -150,7 +170,12 @@ test_custom_source_does_not_fallback() {
 
   run_entrypoint "$case_dir" "https://mirror.example/caidaoli/ccLoad/releases/latest/download"
 
-  if grep -q -e '^https://ghproxy.net/' -e '^https://github.com/' "$case_dir/curl.log"; then
+  if grep -q \
+    -e '^https://v4.gh-proxy.org/' \
+    -e '^https://gh-proxy.com/' \
+    -e '^https://ghp.keleyaa.com/' \
+    -e '^https://github.com/' \
+    "$case_dir/curl.log"; then
     fail "custom source unexpectedly fell back to a built-in source"
   fi
   [ "$(cat "$case_dir/exec.log")" = "old" ] || fail "existing binary was not preserved after custom source failure"
@@ -167,8 +192,10 @@ test_bad_checksums_never_replace_existing_binary() {
   run_entrypoint "$case_dir"
 
   [ "$(cat "$case_dir/exec.log")" = "old" ] || fail "bad checksum replaced the existing binary"
-  grep -q '^https://ghproxy.net/' "$case_dir/curl.log" || fail "ghproxy was not attempted"
-  grep -q '^https://github.com/' "$case_dir/curl.log" || fail "GitHub was not attempted after ghproxy checksum failure"
+  grep -q '^https://v4.gh-proxy.org/' "$case_dir/curl.log" || fail "v4.gh-proxy.org was not attempted"
+  grep -q '^https://gh-proxy.com/' "$case_dir/curl.log" || fail "gh-proxy.com was not attempted"
+  grep -q '^https://ghp.keleyaa.com/' "$case_dir/curl.log" || fail "ghp.keleyaa.com was not attempted"
+  grep -q '^https://github.com/' "$case_dir/curl.log" || fail "GitHub was not attempted after mirror checksum failures"
 }
 
 test_invalid_custom_source_fails_fast() {
@@ -184,8 +211,25 @@ test_invalid_custom_source_fails_fast() {
   [ ! -e "$case_dir/exec.log" ] || fail "invalid custom source executed the existing binary"
 }
 
-test_default_falls_back_to_github
+test_download_reports_full_url_and_progress() {
+  case_dir="$test_root/download-output"
+  make_fake_tools "$case_dir"
+  make_fixture_asset "$case_dir/release-asset"
+  unset FAKE_FAIL_SOURCE FAKE_FAIL_KIND FAKE_BAD_CHECKSUM_SOURCE || true
+
+  run_entrypoint "$case_dir" "https://mirror.example/caidaoli/ccLoad/releases/latest/download" \
+    2> "$case_dir/stderr.log"
+
+  asset_url="https://mirror.example/caidaoli/ccLoad/releases/latest/download/ccload-linux-amd64"
+  grep -Fq "download URL: $asset_url" "$case_dir/stderr.log" ||
+    fail "full asset download URL was not reported"
+  grep -Fq 'fake curl progress: 100%' "$case_dir/stderr.log" ||
+    fail "curl progress was not visible"
+}
+
+test_default_tries_three_mirrors_then_github
 test_custom_source_does_not_fallback
 test_bad_checksums_never_replace_existing_binary
 test_invalid_custom_source_fails_fast
+test_download_reports_full_url_and_progress
 printf 'PASS: docker entrypoint release source behavior\n'

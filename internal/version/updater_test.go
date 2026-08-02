@@ -74,10 +74,12 @@ func TestAutoUpdaterReleaseSourceConfiguration(t *testing.T) {
 	t.Cleanup(func() { Version = origVersion })
 	Version = "v1.0.0"
 
-	t.Run("defaults prefer ghproxy then GitHub", func(t *testing.T) {
+	t.Run("defaults try three mirrors then GitHub", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
 		assertAutoUpdaterLatestRequests(t, []string{
-			"https://ghproxy.net/https://github.com/caidaoli/ccLoad/releases/latest",
+			"https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest",
+			"https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/latest",
+			"https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/latest",
 			"https://github.com/caidaoli/ccLoad/releases/latest",
 		})
 	})
