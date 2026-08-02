@@ -769,6 +769,19 @@
       gap: 6px;
     }
 
+    .channel-editor-rate-input {
+      min-width: 0;
+    }
+
+    .channel-editor-rate-input .form-input {
+      flex: 1 1 64px;
+    }
+
+    .channel-editor-rate-fetch-btn {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
+
     .channel-editor-footer-actions {
       margin-left: auto;
       display: flex;
@@ -3081,8 +3094,8 @@
     .channel-batch-float__content {
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 14px 24px;
+      gap: 8px;
+      padding: 10px 14px;
       border: 1.5px solid var(--neutral-200);
       border-radius: var(--radius-xl);
       background: var(--surface-bg-strong);
@@ -3143,8 +3156,19 @@
     .channel-batch-actions {
       display: inline-flex;
       align-items: center;
-      gap: 10px;
+      gap: 8px;
       min-width: 0;
+    }
+
+    .channel-batch-action-group {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 3px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      background: var(--neutral-50);
+      flex-shrink: 0;
     }
 
     .channel-batch-action {
@@ -3154,15 +3178,17 @@
       color: var(--neutral-700);
       font-size: var(--text-sm);
       font-weight: 600;
-      padding: 0 14px;
-      min-height: 34px;
+      padding: 0 10px;
+      min-height: 32px;
       display: inline-flex;
       align-items: center;
       justify-content: center;
       gap: 6px;
       flex-shrink: 0;
       box-shadow: none;
-      transition: all var(--duration-fast);
+      transition-property: background-color, border-color, color, box-shadow, opacity;
+      transition-duration: var(--duration-fast);
+      transition-timing-function: ease-out;
     }
 
     .channel-batch-action__icon {
@@ -3222,13 +3248,95 @@
 
     .channel-batch-action--refresh {
       color: var(--neutral-700);
-      background: var(--white);
-      border-color: var(--neutral-200);
+      background: transparent;
+      border-color: transparent;
+    }
+
+    .channel-batch-action--apply {
+      color: var(--primary-700);
+      background: var(--primary-50);
+      border-color: transparent;
+    }
+
+    .channel-batch-action--apply:hover {
+      color: var(--primary-800);
+      background: var(--primary-100);
+      border-color: transparent;
+    }
+
+    .channel-batch-select {
+      min-height: 32px;
+      max-width: 132px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-base);
+      padding-block: 0;
+      padding-inline: 8px 26px;
+      background: var(--surface-bg);
+      color: var(--neutral-800);
+      font: inherit;
+      font-size: var(--text-sm);
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .channel-batch-select:hover {
+      border-color: var(--neutral-300);
+    }
+
+    .channel-batch-select:focus-visible,
+    .channel-batch-refresh-options > summary:focus-visible,
+    .channel-batch-close:focus-visible {
+      outline-offset: 2px;
+    }
+
+    .channel-batch-select:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .channel-batch-refresh-options {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .channel-batch-refresh-options > summary {
+      min-height: 32px;
+      padding: 0 8px;
+      border-radius: var(--radius-base);
+      color: var(--neutral-700);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: var(--text-sm);
+      font-weight: 600;
+      white-space: nowrap;
+      cursor: pointer;
+      list-style-position: inside;
+    }
+
+    .channel-batch-refresh-options > summary:hover,
+    .channel-batch-refresh-options[open] > summary {
+      background: var(--neutral-100);
+    }
+
+    .channel-batch-refresh-options__panel {
+      position: absolute;
+      inset-inline-end: 0;
+      bottom: calc(100% + 8px);
+      min-width: 190px;
+      padding: 8px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      background: var(--surface-bg-strong);
+      box-shadow: var(--shadow-lg);
+      display: grid;
+      gap: 4px;
+      z-index: 2;
     }
 
     .channel-batch-option {
-      min-height: 34px;
-      padding: 0 4px;
+      min-height: 36px;
+      padding: 0 8px;
       display: inline-flex;
       align-items: center;
       gap: 6px;
@@ -3239,6 +3347,11 @@
       cursor: pointer;
     }
 
+    .channel-batch-option:hover {
+      border-radius: var(--radius-base);
+      background: var(--neutral-100);
+    }
+
     .channel-batch-option input {
       width: 16px;
       height: 16px;
@@ -3247,7 +3360,7 @@
     }
 
     .channel-batch-close {
-      margin-left: 2px;
+      margin-inline-start: 2px;
       width: 28px;
       height: 28px;
       border-radius: var(--radius-sm);
@@ -4470,7 +4583,7 @@
       .channel-batch-float__header {
         width: 100%;
         min-width: 0;
-        padding-right: 34px;
+        padding-inline-end: 34px;
       }
 
       .channel-batch-selection {
@@ -4500,6 +4613,33 @@
         gap: 8px;
       }
 
+      .channel-batch-action-group {
+        min-width: 0;
+      }
+
+      .channel-batch-action-group--state {
+        grid-column: 1;
+        grid-row: 1;
+      }
+
+      .channel-batch-action-group--protocol,
+      .channel-batch-action-group--refresh {
+        grid-column: 1 / -1;
+      }
+
+      .channel-batch-action-group--protocol {
+        grid-row: 2;
+      }
+
+      .channel-batch-action-group--refresh {
+        grid-row: 3;
+      }
+
+      #batchDeleteChannelsBtn {
+        grid-column: 2;
+        grid-row: 1;
+      }
+
       .channel-batch-action {
         width: 100%;
         min-width: 0;
@@ -4511,19 +4651,42 @@
         line-height: 1.2;
       }
 
-      .channel-batch-option {
-        grid-column: 1 / -1;
-        min-height: 32px;
+      .channel-batch-action-group .channel-batch-action {
+        flex: 1 1 0;
+      }
+
+      .channel-batch-action-group--protocol .channel-batch-select {
+        flex: 1 1 auto;
+        max-width: none;
+      }
+
+      .channel-batch-refresh-options {
+        position: static;
+        flex: 1 1 auto;
+      }
+
+      .channel-batch-refresh-options > summary {
+        min-height: 40px;
         justify-content: center;
-        padding: 0 6px;
+      }
+
+      .channel-batch-refresh-options__panel {
+        inset-inline: 0;
+        min-width: 0;
+      }
+
+      .channel-batch-option {
+        min-height: 40px;
+        justify-content: flex-start;
+        padding: 0 10px;
         font-size: 0.75rem;
       }
 
       .channel-batch-close {
         position: absolute;
         top: 10px;
-        right: 10px;
-        margin-left: 0;
+        inset-inline-end: 10px;
+        margin-inline-start: 0;
         width: 26px;
         height: 26px;
       }

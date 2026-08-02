@@ -346,6 +346,42 @@ func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled b
 	return config, nil
 }
 
+// BatchUpdateProtocolTransformMode updates the protocol policy without rewriting
+// channel models, keys, URLs, or unrelated configuration.
+func (s *SQLStore) BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error) {
+	if len(channelIDs) == 0 {
+		return 0, nil
+	}
+
+	mode = strings.TrimSpace(mode)
+	normalizedMode := model.NormalizeProtocolTransformMode(mode)
+	if mode == "" || normalizedMode == "" {
+		return 0, fmt.Errorf("invalid protocol transform mode %q", mode)
+	}
+
+	placeholders := make([]string, len(channelIDs))
+	args := make([]any, 0, len(channelIDs)+2)
+	args = append(args, normalizedMode, timeToUnix(time.Now()))
+	for i, channelID := range channelIDs {
+		placeholders[i] = "?"
+		args = append(args, channelID)
+	}
+
+	//nolint:gosec // placeholders are generated internally and contain only "?".
+	query := `UPDATE channels
+		SET protocol_transform_mode = ?, updated_at = ?
+		WHERE id IN (` + strings.Join(placeholders, ",") + `)`
+	result, err := s.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("batch update protocol transform mode: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("get batch protocol transform mode rows affected: %w", err)
+	}
+	return rowsAffected, nil
+}
+
 // DeleteConfig 删除渠道配置
 func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	// 检查记录是否存在，但不存在也继续清理残留子数据。

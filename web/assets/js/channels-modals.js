@@ -338,6 +338,7 @@ function initChannelEditorActions() {
         'close-common-models-modal': () => closeCommonModelsModal(),
         'confirm-common-models': () => confirmCommonModelsSelection(),
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
+        'fetch-sub2api-rate': () => invokeChannelEditorAction('fetchSub2APIRate'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
         'batch-delete-models': () => invokeChannelEditorAction('batchDeleteSelectedModels'),
@@ -1060,6 +1061,11 @@ function updateBatchChannelSelectionUI() {
     const visible = selectedCount > 0;
     floatingMenu.classList.toggle('is-visible', visible);
     floatingMenu.setAttribute('aria-hidden', visible ? 'false' : 'true');
+    floatingMenu.inert = !visible;
+    if (!visible) {
+      const refreshOptions = document.getElementById('batchRefreshOptions');
+      if (refreshOptions) refreshOptions.open = false;
+    }
   }
 
   const summary = document.getElementById('selectedChannelsSummary');
@@ -1103,12 +1109,16 @@ function updateBatchChannelSelectionUI() {
     'batchDisableChannelsBtn',
     'batchDeleteChannelsBtn',
     'batchRefreshMergeBtn',
-    'batchRefreshReplaceBtn'
+    'batchRefreshReplaceBtn',
+    'batchApplyProtocolBtn'
   ];
   actionBtnIDs.forEach((id) => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = selectedCount === 0;
   });
+
+  const protocolMode = document.getElementById('batchProtocolTransformMode');
+  if (protocolMode) protocolMode.disabled = selectedCount === 0;
 }
 
 function selectAllVisibleChannels() {
@@ -1202,6 +1212,56 @@ async function batchSetSelectedChannelsEnabled(enabled) {
   }
 }
 
+async function batchSetSelectedChannelsProtocolMode() {
+  const channelIDs = getSelectedChannelIDs();
+  if (channelIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+
+  const modeSelect = document.getElementById('batchProtocolTransformMode');
+  const mode = String(modeSelect?.value || '').trim();
+  if (!['auto', 'upstream', 'local'].includes(mode)) {
+    if (window.showError) window.showError(window.t('channels.batchProtocolModeInvalid'));
+    return;
+  }
+
+  const applyButton = document.getElementById('batchApplyProtocolBtn');
+  if (applyButton) applyButton.disabled = true;
+  if (modeSelect) modeSelect.disabled = true;
+
+  try {
+    const resp = await fetchAPIWithAuth('/admin/channels/batch-protocol-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel_ids: channelIDs,
+        protocol_transform_mode: mode
+      })
+    });
+    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+
+    const data = resp.data || {};
+    selectedChannelIds.clear();
+    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+    await reloadChannelsList();
+
+    if (window.showSuccess) {
+      window.showSuccess(window.t('channels.batchProtocolModeSummary', {
+        mode: window.t(`channels.batchProtocolModeValue.${mode}`),
+        updated: data.updated || 0,
+        unchanged: data.unchanged || 0,
+        notFound: data.not_found_count || 0
+      }));
+    }
+  } catch (e) {
+    console.error('Batch set protocol transform mode failed', e);
+    if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
+  } finally {
+    updateBatchChannelSelectionUI();
+  }
+}
+
 function batchDeleteSelectedChannels() {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
@@ -1273,6 +1333,69 @@ function setBatchRefreshRowResult(channelID, result) {
   }
 }
 
+const BATCH_REFRESH_OPTIONS_STORAGE_KEY = 'channels.batchRefreshOptions';
+
+function getBatchRefreshOptionInputs() {
+  return {
+    lowercaseModels: document.getElementById('batchRefreshLowercaseModels'),
+    stripModelSourcePrefix: document.getElementById('batchRefreshStripModelSourcePrefix')
+  };
+}
+
+function resolveBatchRefreshOptionsStorage(storage) {
+  if (storage) return storage;
+  try {
+    return window.localStorage;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readBatchRefreshOptions(storage) {
+  const fallback = { lowercase_models: false, strip_model_source_prefix: false };
+  const target = resolveBatchRefreshOptionsStorage(storage);
+  if (!target) return fallback;
+
+  try {
+    const saved = JSON.parse(target.getItem(BATCH_REFRESH_OPTIONS_STORAGE_KEY));
+    return {
+      lowercase_models: saved?.lowercase_models === true,
+      strip_model_source_prefix: saved?.strip_model_source_prefix === true
+    };
+  } catch (_) {
+    return fallback;
+  }
+}
+
+function saveBatchRefreshOptions(storage) {
+  const inputs = getBatchRefreshOptionInputs();
+  const options = {
+    lowercase_models: inputs.lowercaseModels?.checked === true,
+    strip_model_source_prefix: inputs.stripModelSourcePrefix?.checked === true
+  };
+  const target = resolveBatchRefreshOptionsStorage(storage);
+  if (!target) return options;
+
+  try {
+    target.setItem(BATCH_REFRESH_OPTIONS_STORAGE_KEY, JSON.stringify(options));
+  } catch (_) { /* 浏览器禁用本地存储时保留当前页面状态 */ }
+  return options;
+}
+
+function initBatchRefreshOptions(storage) {
+  const inputs = getBatchRefreshOptionInputs();
+  const options = readBatchRefreshOptions(storage);
+  if (inputs.lowercaseModels) inputs.lowercaseModels.checked = options.lowercase_models;
+  if (inputs.stripModelSourcePrefix) inputs.stripModelSourcePrefix.checked = options.strip_model_source_prefix;
+
+  for (const input of [inputs.lowercaseModels, inputs.stripModelSourcePrefix]) {
+    if (!input || input.dataset.batchRefreshOptionsBound === '1') continue;
+    input.addEventListener('change', () => saveBatchRefreshOptions(storage));
+    input.dataset.batchRefreshOptionsBound = '1';
+  }
+  return options;
+}
+
 async function batchRefreshSelectedChannels(mode) {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
@@ -1292,8 +1415,10 @@ async function batchRefreshSelectedChannels(mode) {
   }
 
   // 禁用批量操作按钮
-  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn'];
+  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn', 'batchApplyProtocolBtn'];
   actionBtnIDs.forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = true; });
+  const protocolModeSelect = document.getElementById('batchProtocolTransformMode');
+  if (protocolModeSelect) protocolModeSelect.disabled = true;
 
   const total = channelIDs.length;
   const modeLabel = mode === 'replace' ? window.t('channels.batchModeReplace') : window.t('channels.batchModeMerge');
@@ -2689,11 +2814,91 @@ async function fetchModelsFromAPI() {
   }
 }
 
+function setFetchSub2APIRatePending(pending) {
+  const button = document.getElementById('fetchSub2APIRateBtn');
+  const label = document.getElementById('fetchSub2APIRateLabel');
+  if (button) {
+    button.disabled = pending;
+    if (pending) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  }
+  if (label) {
+    label.textContent = window.t(pending ? 'channels.fetchRateLoading' : 'channels.fetchRate');
+  }
+}
+
+function showSub2APIRateError(code) {
+  const knownCodes = new Set([
+    'authentication_error',
+    'permission_error',
+    'not_supported',
+    'timeout',
+    'invalid_response'
+  ]);
+  const errorCode = knownCodes.has(code) ? code : 'default';
+  const message = window.t(`channels.fetchRateError.${errorCode}`);
+  if (window.showError) window.showError(message);
+  else alert(message);
+}
+
+async function fetchSub2APIRate() {
+  const baseURL = getValidInlineURLConfigs()[0]?.url || '';
+  const apiKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
+
+  if (!baseURL) {
+    if (window.showError) window.showError(window.t('channels.fillApiUrlFirst'));
+    else alert(window.t('channels.fillApiUrlFirst'));
+    return;
+  }
+  if (!apiKey) {
+    if (window.showError) window.showError(window.t('channels.addAtLeastOneEnabledKey'));
+    else alert(window.t('channels.addAtLeastOneEnabledKey'));
+    return;
+  }
+
+  setFetchSub2APIRatePending(true);
+  try {
+    const response = await fetchAPIWithAuth('/admin/channels/billing/fetch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ base_url: baseURL, api_key: apiKey })
+    });
+    if (!response.success) {
+      showSub2APIRateError(response.data?.code);
+      return;
+    }
+
+    const rate = response.data?.effective_rate_multiplier;
+    if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0) {
+      showSub2APIRateError('invalid_response');
+      return;
+    }
+
+    const input = document.getElementById('channelCostMultiplier');
+    if (!input) return;
+    const rateText = String(rate);
+    const currentRate = Number.parseFloat(input.value);
+    input.value = rateText;
+    if (!Number.isFinite(currentRate) || currentRate !== rate) markChannelFormDirty();
+
+    const message = window.t('channels.fetchRateSuccess', { rate: rateText });
+    if (window.showSuccess) window.showSuccess(message);
+    else alert(message);
+  } catch (error) {
+    console.error('Fetch Sub2API rate failed', error);
+    showSub2APIRateError('default');
+  } finally {
+    setFetchSub2APIRatePending(false);
+  }
+}
+
 // 常用模型配置
 const COMMON_MODELS = {
   anthropic: [
     'claude-haiku-4-5-20251001',
     'claude-opus-4-8',
+    'claude-opus-5',
+    'claude-fable-5',
     'claude-sonnet-5',
     'claude-sonnet-4-6',
   ],
@@ -2706,6 +2911,7 @@ const COMMON_MODELS = {
     'gpt-5.6-terra'
   ],
   gemini: [
+    'gemini-3.6-flash',
     'gemini-3.5-flash',
     'gemini-2.5-pro',
     'gemini-3.1-flash-lite',
@@ -2861,11 +3067,14 @@ if (typeof module !== 'undefined' && module.exports) {
     addCommonModels,
     addCommonModelsToRows,
     applyQuickAddChannelSetup,
+    batchSetSelectedChannelsProtocolMode,
     collectModelsForSubmit,
     detectChannelWebsocketSupport,
     discoverQuickAddChannelSetup,
     editChannel,
     fetchModelsFromAPI,
+    fetchSub2APIRate,
+    initBatchRefreshOptions,
     mergeModelRowsWithFetchedModels,
     parseQuickAddChannelInfo,
     testRedirectModel,

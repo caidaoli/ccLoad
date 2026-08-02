@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -68,6 +69,216 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+}
+
+func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {
+	var gotAuth string
+	var gotAccept string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/sub2api/billing" {
+			http.NotFound(w, r)
+			return
+		}
+		gotAuth = r.Header.Get("Authorization")
+		gotAccept = r.Header.Get("Accept")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object":"sub2api.key_billing",
+			"schema_version":1,
+			"billing_scope":"token",
+			"group_rate_multiplier":1.2,
+			"user_rate_multiplier":0.8,
+			"resolved_rate_multiplier":0.8,
+			"peak_rate_enabled":true,
+			"effective_rate_multiplier":1.2,
+			"observed_at":"2026-08-02T10:00:00Z"
+		}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	for _, baseURL := range []string{upstream.URL, upstream.URL + "/v1/"} {
+		payload := map[string]any{
+			"base_url": baseURL,
+			"api_key":  "sk-billing-test",
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+		server.HandleFetchSub2APIBilling(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("baseURL=%q status=%d, want %d, body=%s", baseURL, w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Success bool                        `json:"success"`
+			Data    fetchSub2APIBillingResponse `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success || resp.Data.EffectiveRateMultiplier != 1.2 {
+			t.Fatalf("baseURL=%q unexpected resp: %+v", baseURL, resp)
+		}
+	}
+
+	if gotAuth != "Bearer sk-billing-test" {
+		t.Fatalf("Authorization=%q, want %q", gotAuth, "Bearer sk-billing-test")
+	}
+	if gotAccept != "application/json" {
+		t.Fatalf("Accept=%q, want application/json", gotAccept)
+	}
+}
+
+func TestAdminModels_FetchSub2APIBillingRejectsUntrustedResponses(t *testing.T) {
+	tests := []struct {
+		name     string
+		status   int
+		body     string
+		wantCode string
+	}{
+		{
+			name:     "invalid key",
+			status:   http.StatusUnauthorized,
+			body:     `{"error":{"message":"sk-upstream-secret"}}`,
+			wantCode: sub2APIBillingErrorAuthentication,
+		},
+		{
+			name:     "unsupported upstream",
+			status:   http.StatusNotFound,
+			body:     `not a Sub2API server`,
+			wantCode: sub2APIBillingErrorUnsupported,
+		},
+		{
+			name:     "key without billing group",
+			status:   http.StatusForbidden,
+			body:     `{"error":{"type":"permission_error"}}`,
+			wantCode: sub2APIBillingErrorPermission,
+		},
+		{
+			name:     "method unsupported",
+			status:   http.StatusMethodNotAllowed,
+			body:     `method not allowed`,
+			wantCode: sub2APIBillingErrorUnsupported,
+		},
+		{
+			name:   "inconsistent resolved rate",
+			status: http.StatusOK,
+			body: `{
+				"object":"sub2api.key_billing",
+				"schema_version":1,
+				"billing_scope":"token",
+				"group_rate_multiplier":0.5,
+				"resolved_rate_multiplier":0.8,
+				"effective_rate_multiplier":0.8,
+				"observed_at":"2026-08-02T10:00:00Z"
+			}`,
+			wantCode: sub2APIBillingErrorInvalid,
+		},
+		{
+			name:   "negative effective rate",
+			status: http.StatusOK,
+			body: `{
+				"object":"sub2api.key_billing",
+				"schema_version":1,
+				"billing_scope":"token",
+				"group_rate_multiplier":0.5,
+				"resolved_rate_multiplier":0.5,
+				"effective_rate_multiplier":-1,
+				"observed_at":"2026-08-02T10:00:00Z"
+			}`,
+			wantCode: sub2APIBillingErrorInvalid,
+		},
+		{
+			name:   "invalid observation time",
+			status: http.StatusOK,
+			body: `{
+				"object":"sub2api.key_billing",
+				"schema_version":1,
+				"billing_scope":"token",
+				"group_rate_multiplier":0.5,
+				"resolved_rate_multiplier":0.5,
+				"effective_rate_multiplier":0.5,
+				"observed_at":"yesterday"
+			}`,
+			wantCode: sub2APIBillingErrorInvalid,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			t.Cleanup(upstream.Close)
+
+			server, _, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			payload := map[string]any{"base_url": upstream.URL, "api_key": "sk-request-secret"}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+			server.HandleFetchSub2APIBilling(c)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			var resp struct {
+				Success bool `json:"success"`
+				Data    struct {
+					Code string `json:"code"`
+				} `json:"data"`
+			}
+			mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+			if resp.Success || resp.Data.Code != tt.wantCode {
+				t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "sk-upstream-secret") || strings.Contains(w.Body.String(), "sk-request-secret") {
+				t.Fatalf("response leaked a secret: %s", w.Body.String())
+			}
+		})
+	}
+}
+
+func TestAdminModels_FetchSub2APIBillingDoesNotFollowRedirects(t *testing.T) {
+	redirectTargetCalled := false
+	redirectTarget := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		redirectTargetCalled = true
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"object":"sub2api.key_billing",
+			"schema_version":1,
+			"billing_scope":"token",
+			"group_rate_multiplier":0.5,
+			"resolved_rate_multiplier":0.5,
+			"effective_rate_multiplier":0.5,
+			"observed_at":"2026-08-02T10:00:00Z"
+		}`))
+	}))
+	t.Cleanup(redirectTarget.Close)
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, redirectTarget.URL+"/v1/sub2api/billing", http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	payload := map[string]any{"base_url": upstream.URL, "api_key": "sk-redirect-secret"}
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/billing/fetch", payload))
+
+	server.HandleFetchSub2APIBilling(c)
+	var resp struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Code string `json:"code"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if resp.Success || resp.Data.Code != sub2APIBillingErrorAPI {
+		t.Fatalf("unexpected resp: %+v, body=%s", resp, w.Body.String())
+	}
+	if redirectTargetCalled {
+		t.Fatal("billing probe followed an upstream redirect")
+	}
 }
 
 func TestAdminModels_HandleFetchModels(t *testing.T) {

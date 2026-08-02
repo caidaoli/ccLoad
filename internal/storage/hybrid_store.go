@@ -255,6 +255,20 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 	return result, nil
 }
 
+func (h *HybridStore) BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error) {
+	affected, err := h.mysql.BatchUpdateProtocolTransformMode(ctx, channelIDs, mode)
+	if err != nil {
+		return 0, err
+	}
+
+	h.syncToSQLite("BatchUpdateProtocolTransformMode", func() error {
+		_, err := h.sqlite.BatchUpdateProtocolTransformMode(ctx, channelIDs, mode)
+		return err
+	})
+
+	return affected, nil
+}
+
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err
