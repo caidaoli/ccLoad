@@ -39,7 +39,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.features.token.title': 'Local Token Count',
   'www.home.features.token.desc': '<5ms response, 93%+ accuracy, count tokens without API calls',
   'www.home.features.protocol.title': 'Automatic Protocol Fallback',
-  'www.home.features.protocol.desc': 'Try the client protocol first, then fall back through Anthropic, OpenAI, Codex and Gemini without retrying it',
+  'www.home.features.protocol.desc': 'Try the client protocol first, then fall back through OpenAI, Anthropic, Codex and Gemini without retrying it',
   'www.home.features.detection.title': 'Soft Error Detection',
   'www.home.features.detection.desc': 'Detect errors disguised as HTTP 200, identify rate-limit markers in SSE streams',
   'www.home.features.proxy.title': 'Per-channel Proxy',

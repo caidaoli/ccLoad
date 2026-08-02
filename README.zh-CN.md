@@ -91,7 +91,7 @@ ccLoad 直接处理这些问题：
 
 ## 🏗️ 架构概览
 
-每个渠道默认接受四种客户端协议。实际上游协议由 `protocol_transform_mode` 和每个结构化 URL 的 `protocols` 声明共同决定：`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，仅在响应未提交的能力错误后探测其他协议；`local` 优先使用显式声明协议的 URL，并保持每个 URL 的声明顺序。只有全部 URL 都未声明协议时，`local` 才按 Anthropic → Codex → OpenAI → Gemini 尝试。不兼容 URL 不发请求、不冷却；自动探测成功结果按 URL 和请求族缓存 10 分钟。
+每个渠道默认接受四种客户端协议。实际上游协议由 `protocol_transform_mode` 和每个结构化 URL 的 `protocols` 声明共同决定：`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 探测并跳过已试协议，仅在响应未提交的能力错误后继续；`local` 优先使用显式声明协议的 URL，并保持每个 URL 的声明顺序。只有全部 URL 都未声明协议时，`local` 才按 Anthropic → Codex → OpenAI → Gemini 尝试。不兼容 URL 不发请求、不冷却；自动探测成功结果按 URL 和请求族缓存到进程重启或渠道配置变更，全部协议不支持时 10 分钟后重新探测。
 
 ```mermaid
 graph TB
@@ -699,7 +699,7 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-> **协议行为说明**：每个 `urls` 条目可通过 `protocols` 声明 `anthropic`、`codex`、`openai`、`gemini` 能力，非空列表是权威配置。`upstream` 只直通客户端协议；`auto` 从客户端协议开始自动探测；`local` 优先显式声明的 URL 和配置顺序。`local` 下仅当全部 URL 都未声明时，才按 Anthropic → Codex → OpenAI → Gemini 尝试。
+> **协议行为说明**：每个 `urls` 条目可通过 `protocols` 声明 `anthropic`、`codex`、`openai`、`gemini` 能力，非空列表是权威配置。`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 自动探测并跳过已试协议；`local` 优先显式声明的 URL 和配置顺序。`local` 下仅当全部 URL 都未声明时，才按 Anthropic → Codex → OpenAI → Gemini 尝试。
 
 > **多URL说明**：`urls` 是有序的 `{url, exact, protocols}` 对象数组。`exact: true` 表示该地址已经是完整上游请求 URL。系统按延迟加权选择 URL，并对故障 URL 独立冷却；local 模式会先把显式声明协议的 URL 稳定排到自动 URL 前面，各组内部顺序不变。
 
@@ -867,8 +867,8 @@ ccLoad 使用的核心技术栈：
   - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
   - 每个渠道默认接受 Anthropic、Codex、OpenAI、Gemini 客户端；实际上游协议能力属于结构化 URL
-  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；自动模式先试客户端协议，local 模式仅在全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 回落
-  - 自动检测仅在未提交响应的非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
+  - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；自动模式先试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 回落并跳过已试协议；local 模式仅在全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 回落
+  - 自动检测仅在未提交响应的 HTTP 400、非模型 404/405、结构化 `convert_request_failed` + `not implemented` 500，或请求到达 API 前的 Cloudflare 403 拦截页后本地转换；未声明协议的 Exact URL 跨协议直接转换
 - **冷却管理器**（DRY原则）：
   - `cooldown/manager.go`：统一冷却决策引擎
   - 消除重复代码，冷却逻辑统一管理

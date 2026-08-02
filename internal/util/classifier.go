@@ -921,11 +921,13 @@ func isModelUnavailable404(responseBody []byte) bool {
 // from cooldown classification: a non-model 404 can be a broken base URL or
 // deployment and still means the native protocol probe did not succeed. Some
 // compatible gateways report an unsupported native request shape as a
-// structured 500 instead of an endpoint status. A Cloudflare block page is
-// also safe to replay through the configured protocol because the request was
-// rejected before it reached the API origin.
+// structured 500 instead of an endpoint status. An uncommitted 400 or a
+// Cloudflare block page is also safe to replay through another protocol because
+// the request was rejected before model execution.
 func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	switch statusCode {
+	case http.StatusBadRequest:
+		return true
 	case http.StatusForbidden:
 		return isCloudflareBlockPage(responseBody)
 	case 405:

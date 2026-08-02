@@ -70,7 +70,7 @@
       <div class="www-container">
         <div class="www-section-header">
           <h2>Endpoint Reference</h2>
-          <p>All four core client protocols can use every model-compatible channel. In automatic mode, ccLoad tries the client protocol first and probes alternatives only when the request has not produced output and the endpoint reports a capability mismatch, or when the request cannot be represented in that protocol.</p>
+          <p>All four core client protocols can use every model-compatible channel. In automatic mode, ccLoad tries the client protocol first, then probes OpenAI, Anthropic, Codex, and Gemini without retrying the client protocol. It advances only when the request has not produced output and the endpoint reports a capability mismatch, or when the request cannot be represented in that protocol.</p>
         </div>
 
         <div class="www-data-table-wrapper">

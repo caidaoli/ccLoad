@@ -91,7 +91,7 @@ ccLoad handles those cases with:
 
 ## 🏗️ Architecture Overview
 
-Every channel accepts all four client protocols. Upstream protocol selection is controlled by `protocol_transform_mode` and each structured URL's `protocols` declaration. `upstream` is strict client-protocol passthrough. `auto` tries the client protocol first and probes alternatives only after an uncommitted capability error. `local` prioritizes URLs with explicit declarations and follows each URL's declared order; only when every URL is undeclared does it try Anthropic → Codex → OpenAI → Gemini. Incompatible URLs are skipped without a request or cooldown. Successful automatic detection is cached for 10 minutes per URL and request family.
+Every channel accepts all four client protocols. Upstream protocol selection is controlled by `protocol_transform_mode` and each structured URL's `protocols` declaration. `upstream` is strict client-protocol passthrough. `auto` tries the client protocol first, then probes OpenAI → Anthropic → Codex → Gemini while skipping the protocol already attempted, and advances only after an uncommitted capability error. `local` prioritizes URLs with explicit declarations and follows each URL's declared order; only when every URL is undeclared does it try Anthropic → Codex → OpenAI → Gemini. Incompatible URLs are skipped without a request or cooldown. Successful automatic detection is cached per URL and request family until restart or channel configuration changes; an all-unsupported result is probed again after 10 minutes.
 
 ```mermaid
 graph TB
@@ -682,7 +682,7 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
-> **Protocol behavior**: Each `urls` entry may list `protocols` (`anthropic`, `codex`, `openai`, `gemini`). A non-empty list is authoritative. `upstream` only passes through the client protocol; `auto` starts with the client protocol and detects alternatives; `local` prefers declared URLs and their configured protocol order. If every URL is undeclared in `local` mode, ccLoad tries Anthropic → Codex → OpenAI → Gemini.
+> **Protocol behavior**: Each `urls` entry may list `protocols` (`anthropic`, `codex`, `openai`, `gemini`). A non-empty list is authoritative. `upstream` only passes through the client protocol; `auto` starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying the client protocol; `local` prefers declared URLs and their configured protocol order. If every URL is undeclared in `local` mode, ccLoad tries Anthropic → Codex → OpenAI → Gemini.
 
 > **Multi-URL Note**: `urls` is an ordered array of `{url, exact, protocols}` objects. `exact: true` means the URL is already the complete upstream request URL. The system uses latency-weighted selection and independent URL cooldown; local mode first partitions explicitly declared URLs ahead of automatic ones while preserving order inside each group.
 
@@ -848,8 +848,8 @@ Check out the awesome admin dashboard 👇
   - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
   - Every channel accepts Anthropic, Codex, OpenAI, and Gemini clients; upstream protocol capability belongs to each structured URL
-  - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; automatic mode starts with the client protocol, while local mode falls back through Anthropic → Codex → OpenAI → Gemini only when all URLs are undeclared
-  - Automatic detection translates only after an uncommitted non-model 404/405, a structured `convert_request_failed` + `not implemented` 500, or a Cloudflare 403 block page returned before the API origin; exact URLs without declarations translate directly across protocols
+  - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; automatic mode starts with the client protocol, then falls back through OpenAI → Anthropic → Codex → Gemini without retrying it, while local mode falls back through Anthropic → Codex → OpenAI → Gemini only when all URLs are undeclared
+  - Automatic detection translates only after an uncommitted HTTP 400, a non-model 404/405, a structured `convert_request_failed` + `not implemented` 500, or a Cloudflare 403 block page returned before the API origin; exact URLs without declarations translate directly across protocols
 - **Cooldown Manager** (DRY):
   - `cooldown/manager.go`: Unified cooldown decision engine
   - Eliminates duplicate code, unified cooldown logic
@@ -1160,7 +1160,7 @@ storage/
 - ✅ **Responses image tool cost tracking**: `image_generation` tool costs are included in logs, stats, and cost limit accounting
 - ✅ **Tiered pricing engine**: GPT-5.4/Qwen-Plus/Gemini long-context step billing
 - ✅ **Log UX improvements**: Cost column formats to 3 decimal places (empty for zero), IP column shows full address on hover
-- ✅ **Automatic protocol fallback**: client-native routing first, then Anthropic → OpenAI → Codex → Gemini fallback with the native protocol skipped and family-aware capability caching
+- ✅ **Automatic protocol fallback**: client-native routing first, then OpenAI → Anthropic → Codex → Gemini fallback with the native protocol skipped and family-aware capability caching
 - ✅ **Debug logs**: Upstream request/response raw data capture, sensitive header masking, independent cleanup policy
 - ✅ **Scheduled channel checks**: Background periodic channel availability probing, configurable check model per channel
 - ✅ **Channel RPM limits**: Per-channel rolling 60-second request caps, `0` means unlimited, over-limit channels are skipped

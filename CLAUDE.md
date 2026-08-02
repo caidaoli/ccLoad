@@ -54,7 +54,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - Key 级(401/403)→ 冷却当前 Key,重试同渠道其他 Key;所有启用 Key 均冷却时自动升级渠道冷却
 - 模型级(`model_cooldown`,上游 HTTP 400/499/5xx/520/524/429,597 服务类 SSE 错误,598/599 流故障,连接重置/HTTP2 流关闭/空响应/网络超时,404 模型不可用)→ 写入 `(channel_id, 实际上游模型)` 冷却;直接切渠道,不再尝试同渠道其他 Key/URL,不影响其他模型;所有配置模型均冷却时自动升级渠道冷却
 - 渠道级(DNS/连接拒绝/网络或路由不可达)→ 切渠道
-- 原生协议能力不支持(响应未提交的非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;auto 模式可转换时同渠道/Key/URL 探测其他协议,不可转换时切 URL/渠道
+- 原生协议能力不支持(响应未提交的 HTTP 400、非模型 404/405,或结构化 500 明确返回 `convert_request_failed` + `not implemented`)→ 能力协商事件,不记失败日志、不冷却 Key/模型/渠道/URL;auto 模式可转换时同渠道/Key/URL 探测其他协议,不可转换时切 URL/渠道
 - 客户端错误(406/413,404 非模型 `does not exist`)→ 直接返回,不重试
 - 成本限额达到 → 跳过该渠道
 - Key/模型/渠道共用指数退避策略:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),随后翻倍并在 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
@@ -75,7 +75,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - **选择**:先冷却过滤(正确性优先),再二选一排序——`enable_health_score` 默认 **false** 走渠道平滑加权轮询(按有效 Key 数),开启才走健康度排序(`calculateEffectivePriority`:`P_eff = Priority - 失败惩罚 - TTFB惩罚`,两种惩罚各自按样本量打置信度折扣,TTFB 部分还要 `enable_ttfb_score` 单独开)。成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;`ChannelURL.Exact` 派生运行时 `#` 标记实现精确转发,持久化 URL 本身不含标记
 - **模型停用**(`ModelEntry.Disabled`):`disabled=true` 的模型对外完全不存在——`GetModels`/`modelIndex`/`FuzzyMatchModel`/`channelModelCooldownKeys` 一律跳过。刷新模型列表的 `replace` 模式会按原名、归一化别名、重定向目标三种键把停用标记传播回新拉取的条目,避免刷新一次就把停用状态洗掉
 - **渠道级限流**(`channel_rpm_limiter.go`+`channel_concurrency_limiter.go`):`rpm_limit`/`max_concurrency` 都是 0=无限。注意 `max_concurrency` 这个名字在系统设置(全局信号量)、Auth Token、渠道三处各有一份,互不相干,改代码前先认准层级
-- **多协议处理**:每个渠道默认接受四种客户端协议,`protocol_transform_mode` 选择策略:`auto`(默认)、`upstream`(只直通客户端协议)、`local`(只本地转换)。实际上游能力只由 `ChannelURL.Protocols` 声明:非空声明是权威配置,不兼容 URL 无请求、无冷却地跳过。local 优先有声明的 URL 并保持声明顺序;仅当全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 请求。auto 先试客户端协议,再按 Anthropic → OpenAI → Codex → Gemini 自动探测;未提交响应的非模型 404/405、明确未实现 500、请求到达 API 前的 Cloudflare 403 拦截页或当前转换无法表示请求时才继续下一协议,成功协议按 URL+请求族缓存 10 分钟
+- **多协议处理**:每个渠道默认接受四种客户端协议,`protocol_transform_mode` 选择策略:`auto`(默认)、`upstream`(只直通客户端协议)、`local`(只本地转换)。实际上游能力只由 `ChannelURL.Protocols` 声明:非空声明是权威配置,不兼容 URL 无请求、无冷却地跳过。local 优先有声明的 URL 并保持声明顺序;仅当全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 请求。auto 先试客户端协议,再按 OpenAI → Anthropic → Codex → Gemini 自动探测并跳过已试协议;未提交响应的 HTTP 400、非模型 404/405、明确未实现 500、请求到达 API 前的 Cloudflare 403 拦截页或当前转换无法表示请求时才继续下一协议。成功协议按 URL+请求族缓存到进程重启或渠道配置变更;全部协议不支持时 10 分钟后重新探测
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **系统设置无热重载**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读一次进内存,运行期只读;单改/重置/批量三个写入口都是写库后 `go triggerRestart()`,2 秒后重启进程生效。别在 `AdminUpdateSetting` 里加"顺手刷新缓存"——重启才是生效机制
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置

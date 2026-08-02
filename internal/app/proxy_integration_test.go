@@ -2086,13 +2086,13 @@ func TestProxy_AutomaticProtocolFallback_AllClientProtocolsCacheLearnedPath(t *t
 				"type": "message", "role": "user", "content": []map[string]string{{"type": "input_text", "text": "hi"}},
 			}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			wantPaths:    "/v1/responses,/v1/messages,/v1/chat/completions,/v1/chat/completions",
+			wantPaths:    "/v1/responses,/v1/chat/completions,/v1/chat/completions",
 		},
 		{
 			name: "Gemini", clientPath: "/v1beta/models/shared-model:generateContent", upstreamProtocol: "openai", localPath: "/v1/chat/completions",
 			requestBody:  map[string]any{"contents": []map[string]any{{"role": "user", "parts": []map[string]string{{"text": "hi"}}}}},
 			upstreamBody: `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
-			wantPaths:    "/v1beta/models/shared-model:generateContent,/v1/messages,/v1/chat/completions,/v1/chat/completions",
+			wantPaths:    "/v1beta/models/shared-model:generateContent,/v1/chat/completions,/v1/chat/completions",
 		},
 	}
 
@@ -2473,7 +2473,6 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 		body       string
 		wantStatus int
 	}{
-		{name: "bad request", status: http.StatusBadRequest, body: `{"error":{"message":"invalid request"}}`, wantStatus: http.StatusBadRequest},
 		{name: "model 404", status: http.StatusNotFound, body: `{"error":{"message":"model claude-3-5-sonnet not found","type":"invalid_request_error","code":"model_not_found"}}`, wantStatus: http.StatusNotFound},
 		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":{"message":"unauthorized"}}`, wantStatus: http.StatusUnauthorized},
 		{name: "forbidden", status: http.StatusForbidden, body: `{"error":{"message":"forbidden"}}`, wantStatus: http.StatusForbidden},
@@ -2508,22 +2507,115 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 	}
 }
 
+func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/messages" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"invalid_request_error","message":"尚未验证或不支持的 anthropic-beta：claude-code-20250219"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "unsupported-anthropic-beta", protocolTransformMode: model.ProtocolTransformModeAuto, models: "deepseek-v4-flash",
+	}}, map[int]string{0: upstream.URL})
+
+	request := func() {
+		t.Helper()
+		w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model":      "deepseek-v4-flash",
+			"max_tokens": 128,
+			"messages":   []map[string]string{{"role": "user", "content": "hi"}},
+		}, map[string]string{
+			"anthropic-version": "2023-06-01",
+			"anthropic-beta":    "claude-code-20250219",
+		})
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if got := gjson.GetBytes(w.Body.Bytes(), "content.0.text").String(); got != "ok" {
+			t.Fatalf("translated Anthropic response text=%q body=%s", got, w.Body.String())
+		}
+	}
+
+	request()
+	request()
+
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want native Anthropic then cached OpenAI", got)
+	}
+
+	env.server.InvalidateChannelListCache()
+	request()
+	if got := strings.Join(paths, ","); got != "/v1/messages,/v1/chat/completions,/v1/chat/completions,/v1/messages,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want channel cache invalidation to probe Anthropic again", got)
+	}
+}
+
+func TestProxy_AutomaticProtocolFallback_ResponsesModelNotSupported(t *testing.T) {
+	var paths []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/responses" {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"message":"当前模型不支持 Responses API：deepseek-v4-flash","type":"invalid_request_error","param":null,"code":"RESPONSES_MODEL_NOT_SUPPORTED"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"deepseek-v4-flash","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-model-not-supported", protocolTransformMode: model.ProtocolTransformModeAuto, models: "deepseek-v4-flash",
+	}}, map[int]string{0: upstream.URL})
+
+	request := func() {
+		t.Helper()
+		w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "deepseek-v4-flash",
+			"input": []map[string]any{{
+				"type": "message", "role": "user",
+				"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+			}},
+		}, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		if got := gjson.GetBytes(w.Body.Bytes(), "output.0.content.0.text").String(); got != "ok" {
+			t.Fatalf("translated Codex response text=%q body=%s", got, w.Body.String())
+		}
+	}
+
+	request()
+	request()
+
+	if got := strings.Join(paths, ","); got != "/v1/responses,/v1/chat/completions,/v1/chat/completions" {
+		t.Fatalf("upstream paths=%s, want client Codex then cached OpenAI", got)
+	}
+}
+
 func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing.T) {
 	var paths []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		paths = append(paths, r.URL.Path)
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
-		case "/v1/responses":
+		case "/v1/chat/completions":
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/responses)"}}`)
+			_, _ = io.WriteString(w, `{"error":{"message":"Invalid URL (POST /v1/chat/completions)"}}`)
 			return
 		case "/v1/messages":
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = io.WriteString(w, `{"error":{"message":"not implemented (request id: req_test)","type":"new_api_error","param":"","code":"convert_request_failed"}}`)
 			return
 		}
-		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"claude-4.5-haiku","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+		_, _ = io.WriteString(w, `{"id":"resp_test","object":"response","status":"completed","model":"claude-4.5-haiku","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
 	}))
 	defer upstream.Close()
 
@@ -2534,12 +2626,9 @@ func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing
 
 	request := func() {
 		t.Helper()
-		w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
-			"model": "claude-4.5-haiku",
-			"input": []map[string]any{{
-				"type": "message", "role": "user",
-				"content": []map[string]string{{"type": "input_text", "text": "hi"}},
-			}},
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model":    "claude-4.5-haiku",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
 		}, nil)
 		if w.Code != http.StatusOK {
 			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
@@ -2549,8 +2638,8 @@ func TestProxy_AutomaticProtocolFallback_ConvertRequestNotImplemented(t *testing
 	request()
 	request()
 
-	if got := strings.Join(paths, ","); got != "/v1/responses,/v1/messages,/v1/chat/completions,/v1/chat/completions" {
-		t.Fatalf("upstream paths=%s, want native Codex failure, Anthropic failure, then cached OpenAI", got)
+	if got := strings.Join(paths, ","); got != "/v1/chat/completions,/v1/messages,/v1/responses,/v1/responses" {
+		t.Fatalf("upstream paths=%s, want client OpenAI failure, Anthropic failure, then cached Codex", got)
 	}
 }
 
