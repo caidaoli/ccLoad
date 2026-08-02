@@ -86,7 +86,7 @@ func TestFingerprintSamplingAnthropicMatchesModelTestRequestContract(t *testing.
 	job := &fpJob{progress: FingerprintProgress{Total: 1}}
 
 	samples, cancelled, err := srv.fingerprintJobs.runSampling(
-		context.Background(), job, srv, channelID, "fp-model", "anthropic", 0, 1, 1,
+		context.Background(), job, srv, channelID, "fp-model", "anthropic", 0, false, 1, 1,
 	)
 	if err != nil {
 		t.Fatalf("runSampling: %v", err)

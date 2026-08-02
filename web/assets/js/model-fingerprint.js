@@ -14,6 +14,11 @@
   // ─── 常量 ───────────────────────────────────────────────────────────────
   const DEFAULT_ITERATIONS  = 100;
   const DEFAULT_CONCURRENCY = 5;
+  const STREAM_FIELD_IDS = { calibrate: 'fpCalibrateStream', test: 'fpTestStream' };
+  const STREAM_STORAGE_KEYS = {
+    calibrate: 'ccload_model_fingerprint_calibrate_stream',
+    test: 'ccload_model_fingerprint_test_stream'
+  };
   const CLIENT_PROTOCOLS = new Set(['anthropic', 'codex', 'openai', 'gemini']);
   const CLIENT_PROTOCOL_FIELDS = Object.freeze({
     calibrate: {
@@ -85,6 +90,37 @@
     if (normalized.startsWith('gemini-')) return 'gemini';
     return 'openai';
   }
+
+  // ─── 流式开关状态 ────────────────────────────────────────────────────────
+  function restoreStream(scope) {
+    const checkbox = el(STREAM_FIELD_IDS[scope]);
+    if (!checkbox) return;
+    let checked = false;
+    try {
+      checked = localStorage.getItem(STREAM_STORAGE_KEYS[scope]) === '1';
+    } catch (_) { /* ignore */ }
+    checkbox.checked = checked;
+  }
+
+  function getStream(scope) {
+    return Boolean(el(STREAM_FIELD_IDS[scope])?.checked);
+  }
+
+  function bindStream(scope) {
+    const checkbox = el(STREAM_FIELD_IDS[scope]);
+    if (!checkbox) return;
+    checkbox.addEventListener('change', () => {
+      try {
+        localStorage.setItem(STREAM_STORAGE_KEYS[scope], checkbox.checked ? '1' : '0');
+      } catch (_) { /* ignore */ }
+    });
+  }
+
+  function setStreamDisabled(scope, disabled) {
+    const checkbox = el(STREAM_FIELD_IDS[scope]);
+    if (checkbox) checkbox.disabled = disabled;
+  }
+
 
   function selectClientProtocolForModel(scope, modelName) {
     const field = CLIENT_PROTOCOL_FIELDS[scope];
@@ -797,6 +833,7 @@
       const protocolInput = clientProtocolCombos[scope]?.getInput();
       if (protocolInput) protocolInput.disabled = running;
     });
+    Object.keys(STREAM_FIELD_IDS).forEach(scope => setStreamDisabled(scope, running));
     if (calibrateBtn) {
       const calibrating = running && jobType === 'calibrate';
       const textKey = calibrating ? 'common.cancel' : 'modelTest.fingerprint.calibrate';
@@ -1064,6 +1101,7 @@
     const channelId   = parseInt(el('fpCalibrateChannel')?.value || '0', 10);
     const model       = (el('fpCalibrateModel')?.value || '').trim();
     const clientProtocol = getClientProtocol('calibrate');
+    const stream      = getStream('calibrate');
     const iterations  = parseInt(el('fpCalibrateIterations')?.value || DEFAULT_ITERATIONS, 10);
     const concurrency = parseInt(el('fpCalibrateConcurrency')?.value || DEFAULT_CONCURRENCY, 10);
 
@@ -1089,7 +1127,7 @@
       const data = await apiData('/admin/fingerprints/calibrate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name, channel_id: channelId, model, client_protocol: clientProtocol, iterations, concurrency })
+        body: JSON.stringify({ name, channel_id: channelId, model, client_protocol: clientProtocol, stream, iterations, concurrency })
       });
       const jobId = data && data.job_id;
       if (!jobId) throw new Error(t('modelTest.fingerprint.startFailed', '启动失败: ') + 'empty job_id');
@@ -1110,6 +1148,7 @@
     const channelId    = parseInt(el('fpTestChannel')?.value || '0', 10);
     const model        = (el('fpTestModel')?.value || '').trim();
     const clientProtocol = getClientProtocol('test');
+    const stream      = getStream('test');
     const fingerprintId = el('fpTestBaselineSelect')?.value || '';
     const iterations   = parseInt(el('fpTestIterations')?.value || DEFAULT_ITERATIONS, 10);
     const concurrency  = parseInt(el('fpTestConcurrency')?.value || DEFAULT_CONCURRENCY, 10);
@@ -1127,7 +1166,7 @@
     const resultsDiv = el('fpResults');
     if (resultsDiv) resultsDiv.innerHTML = '';
 
-    const body = { channel_id: channelId, model, client_protocol: clientProtocol, iterations, concurrency };
+    const body = { channel_id: channelId, model, client_protocol: clientProtocol, stream, iterations, concurrency };
     if (fingerprintId) body.fingerprint_id = parseInt(fingerprintId, 10);
 
     try {
@@ -1155,6 +1194,10 @@
     if (!initialized) {
       initialized = true;
       Object.keys(CLIENT_PROTOCOL_FIELDS).forEach(restoreClientProtocol);
+      Object.keys(STREAM_FIELD_IDS).forEach(scope => {
+        restoreStream(scope);
+        bindStream(scope);
+      });
       _bindEvents();
     }
     _initComboboxes();

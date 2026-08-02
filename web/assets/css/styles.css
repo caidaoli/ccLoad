@@ -7825,6 +7825,19 @@ body.web-role-api-token .filter-group--auth-token {
   align-items: flex-end;
 }
 
+/* 流式开关：紧凑横排，不撑满行宽 */
+.fp-stream-toggle {
+  flex: 0 0 auto;
+  align-self: stretch;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+.fp-stream-toggle .control-checkbox {
+  margin: 0;
+}
+
 .fp-pair-item {
   display: flex;
   flex-direction: column;

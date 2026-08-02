@@ -432,10 +432,38 @@ func TestFingerprintAPI_TooManyJobs(t *testing.T) {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// TestFingerprintAPI_CalibrateAndTest (integration: calibrate → poll → test → poll → delete)
+// TestFingerprintAPI_StreamCalibrateAndTestMergesBeforeValidation exercises the public
+// calibrate/test APIs and proves that stream deltas are merged before range validation.
 
-func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
-	upstream := cyclicUpstreamFP(t)
+func TestFingerprintAPI_StreamCalibrateAndTestMergesBeforeValidation(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	var nonStreamingRequests atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if stream, _ := payload["stream"].(bool); !stream {
+			nonStreamingRequests.Add(1)
+		}
+
+		call := upstreamCalls.Add(1)
+		chunks := []string{"1", "23"}
+		if call > 40 && call <= 50 {
+			// Both chunks are valid numbers in isolation, but the merged value 356 is out of range.
+			chunks = []string{"3", "56"}
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		for _, chunk := range chunks {
+			_, _ = fmt.Fprintf(w, "data: {\"choices\":[{\"delta\":{\"content\":%q}}]}\n\n", chunk)
+		}
+		_, _ = fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n")
+		_, _ = fmt.Fprint(w, "data: [DONE]\n\n")
+	}))
 	defer upstream.Close()
 
 	srv := newInMemoryServer(t)
@@ -447,6 +475,7 @@ func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
 		"channel_id":      channelID,
 		"model":           "fp-model",
 		"client_protocol": "openai",
+		"stream":          true,
 		"iterations":      50,
 		"concurrency":     5,
 	}))
@@ -469,6 +498,9 @@ func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
 	if jobView.Status != "succeeded" {
 		t.Fatalf("calibrate job status want succeeded got %s (err=%s)", jobView.Status, jobView.Error)
 	}
+	if jobView.Progress.Success != 40 || jobView.Progress.Failed != 10 {
+		t.Fatalf("calibrate progress=%+v, want 40 merged-valid and 10 merged-invalid samples", jobView.Progress)
+	}
 
 	// ── List fingerprints — should contain our new baseline ─────────────────
 	c, w = newTestContext(t, newRequest(http.MethodGet, "/admin/fingerprints", nil))
@@ -481,13 +513,23 @@ func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
 	if len(listResp.Data) == 0 {
 		t.Fatal("list: expected ≥1 fingerprint after calibrate")
 	}
-	fpID := listResp.Data[0].ID
+	fingerprint := listResp.Data[0]
+	if fingerprint.SampleCount != 40 || len(fingerprint.RawData) != 40 {
+		t.Fatalf("calibrate samples=%d raw=%d, want 40", fingerprint.SampleCount, len(fingerprint.RawData))
+	}
+	for _, sample := range fingerprint.RawData {
+		if sample != 123 {
+			t.Fatalf("calibrate sample=%d, want merged stream value 123", sample)
+		}
+	}
+	fpID := fingerprint.ID
 
 	// ── Test ───────────────────────────────────────────────────────────────
 	c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/fingerprints/test", map[string]any{
 		"channel_id":      channelID,
 		"model":           "fp-model",
 		"client_protocol": "openai",
+		"stream":          true,
 		"fingerprint_id":  fpID,
 		"iterations":      50,
 		"concurrency":     5,
@@ -508,6 +550,9 @@ func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
 	if testView.Status != "succeeded" {
 		t.Fatalf("test job status want succeeded got %s (err=%s)", testView.Status, testView.Error)
 	}
+	if testView.Progress.Success != 50 || testView.Progress.Failed != 0 {
+		t.Fatalf("test progress=%+v, want 50 merged-valid samples", testView.Progress)
+	}
 
 	// result should have non-zero score
 	resultBytes, _ := json.Marshal(testView.Result)
@@ -518,6 +563,20 @@ func TestFingerprintAPI_CalibrateAndTest(t *testing.T) {
 	}
 	if result.Matches[0].Score <= 0 {
 		t.Fatalf("test: expected positive score, got %f", result.Matches[0].Score)
+	}
+	if len(result.RawData) != 50 {
+		t.Fatalf("test raw samples=%d, want 50", len(result.RawData))
+	}
+	for _, sample := range result.RawData {
+		if sample != 123 {
+			t.Fatalf("test sample=%d, want merged stream value 123", sample)
+		}
+	}
+	if got := upstreamCalls.Load(); got != 100 {
+		t.Fatalf("upstream calls=%d, want 100", got)
+	}
+	if got := nonStreamingRequests.Load(); got != 0 {
+		t.Fatalf("non-streaming upstream requests=%d, want 0", got)
 	}
 
 	// ── Delete fingerprint ──────────────────────────────────────────────────

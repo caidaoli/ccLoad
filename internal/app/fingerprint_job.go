@@ -129,6 +129,7 @@ type calibrateReq struct {
 	Iterations     int    `json:"iterations"`
 	Concurrency    int    `json:"concurrency"`
 	KeyIndex       int    `json:"key_index"`
+	Stream         bool   `json:"stream"`
 }
 
 // testFingerprintReq POST /fingerprints/test body。
@@ -140,6 +141,7 @@ type testFingerprintReq struct {
 	Iterations     int    `json:"iterations"`
 	Concurrency    int    `json:"concurrency"`
 	KeyIndex       int    `json:"key_index"`
+	Stream         bool   `json:"stream"`
 }
 
 // FingerprintJobManager 管理内存 job（最多 2 个同时运行，完成后保留 1h）。
@@ -217,7 +219,7 @@ func (m *FingerprintJobManager) StartCalibrate(s *Server, req calibrateReq) (str
 		defer m.finishJob(req.Name)
 		defer j.cancel()
 
-		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, req.Stream, iters, conc)
 		if cancelled {
 			j.finish("cancelled", nil, "cancelled", time.Now())
 			return
@@ -287,7 +289,7 @@ func (m *FingerprintJobManager) StartTest(s *Server, req testFingerprintReq) (st
 		defer m.finishJob("")
 		defer j.cancel()
 
-		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, iters, conc)
+		samples, cancelled, sampleErr := m.runSampling(ctx, j, s, req.ChannelID, req.Model, req.ClientProtocol, req.KeyIndex, req.Stream, iters, conc)
 		if cancelled {
 			j.finish("cancelled", nil, "cancelled", time.Now())
 			return
@@ -518,6 +520,7 @@ func (m *FingerprintJobManager) runSampling(
 	modelName string,
 	clientProtocol string,
 	keyIndex int,
+	stream bool,
 	iterations, concurrency int,
 ) (samples []int, cancelled bool, err error) {
 	cfg, err := s.store.GetConfig(ctx, channelID)
@@ -575,7 +578,7 @@ func (m *FingerprintJobManager) runSampling(
 					ClientProtocol:  clientProtocol,
 					Content:         util.FingerprintPrompt,
 					Temperature:     &temp,
-					Stream:          false,
+					Stream:          stream,
 					KeyIndex:        keyIndex,
 					WaitForCapacity: true,
 				}
