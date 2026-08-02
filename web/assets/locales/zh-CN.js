@@ -1028,6 +1028,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'modelTest.fingerprint.calibrate': '标定基准',
   'modelTest.fingerprint.test': '开始对比',
   'modelTest.fingerprint.requestProtocol': '请求协议',
+  'modelTest.fingerprint.stream': '流式',
   'modelTest.fingerprint.stopTest': '停止对比',
   'modelTest.fingerprint.costConfirm': '将向渠道发起约 {n} 次请求，产生实际上游费用。是否继续？',
   'modelTest.fingerprint.baselines': '已有基准',

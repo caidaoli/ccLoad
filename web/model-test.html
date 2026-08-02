@@ -422,6 +422,10 @@
                   <div id="fpCalibrateClientProtocolContainer" class="fp-combobox-container"></div>
                   <input type="hidden" id="fpCalibrateClientProtocol" value="anthropic">
                 </div>
+                <label class="fp-form-row fp-stream-toggle">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.stream">流式</span>
+                  <input type="checkbox" id="fpCalibrateStream" class="control-checkbox">
+                </label>
                 <div class="fp-form-row fp-form-row--pair">
                   <label class="fp-pair-item">
                     <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
@@ -465,6 +469,10 @@
                   <select id="fpTestBaselineSelect" class="filter-select fp-select">
                     <option value="" data-i18n="modelTest.fingerprint.baselineAny">任意（全量对比）</option>
                   </select>
+                </label>
+                <label class="fp-form-row fp-stream-toggle">
+                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.stream">流式</span>
+                  <input type="checkbox" id="fpTestStream" class="control-checkbox">
                 </label>
                 <div class="fp-form-row fp-form-row--pair">
                   <label class="fp-pair-item">

@@ -1029,6 +1029,7 @@ window.I18N_LOCALES['en'] = {
   'modelTest.fingerprint.calibrate': 'Calibrate Baseline',
   'modelTest.fingerprint.test': 'Start Compare',
   'modelTest.fingerprint.requestProtocol': 'Request Protocol',
+  'modelTest.fingerprint.stream': 'Streaming',
   'modelTest.fingerprint.stopTest': 'Stop Compare',
   'modelTest.fingerprint.costConfirm': 'This will send ~{n} requests to the channel, incurring real upstream costs. Continue?',
   'modelTest.fingerprint.baselines': 'Saved Baselines',
