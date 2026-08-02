@@ -549,6 +549,7 @@ test('fetched models sort by model name while preserving existing state', () => 
     { model: 'z-existing-model', redirect_model: 'upstream-model', disabled: true }
   ], [
     { model: 'z-existing-model', redirect_model: 'ignored-replacement' },
+    { model: 'UPSTREAM-MODEL', redirect_model: 'UPSTREAM-MODEL' },
     { model: 'm-new-model', redirect_model: 'new-upstream' },
     { model: 'a-new-model', redirect_model: 'another-upstream' }
   ]);

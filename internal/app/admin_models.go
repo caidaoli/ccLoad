@@ -602,18 +602,27 @@ func reconcileScheduledCheckModel(cfg *model.Config, options modelNormalizationO
 }
 
 func mergeModelEntries(cfg *model.Config, fetched []model.ModelEntry) (added int, changed bool) {
-	existing := make(map[string]struct{}, len(cfg.ModelEntries))
+	occupied := make(map[string]struct{}, len(cfg.ModelEntries)*2)
 	for _, entry := range cfg.ModelEntries {
-		existing[strings.ToLower(entry.Model)] = struct{}{}
+		occupied[strings.ToLower(entry.Model)] = struct{}{}
+		if entry.RedirectModel != "" {
+			occupied[strings.ToLower(entry.RedirectModel)] = struct{}{}
+		}
 	}
 
 	for _, entry := range fetched {
-		key := strings.ToLower(entry.Model)
-		if _, exists := existing[key]; exists {
+		modelKey := strings.ToLower(entry.Model)
+		_, modelExists := occupied[modelKey]
+		redirectKey := strings.ToLower(entry.RedirectModel)
+		_, redirectExists := occupied[redirectKey]
+		if modelExists || (entry.RedirectModel != "" && redirectExists) {
 			continue
 		}
 		cfg.ModelEntries = append(cfg.ModelEntries, entry)
-		existing[key] = struct{}{}
+		occupied[modelKey] = struct{}{}
+		if entry.RedirectModel != "" {
+			occupied[redirectKey] = struct{}{}
+		}
 		added++
 	}
 
