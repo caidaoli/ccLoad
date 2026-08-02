@@ -12,6 +12,8 @@ function normalizeProtocolTransformMode(value) {
 }
 
 let protocolTransformModeCombobox = null;
+let quickAddChannelTrigger = null;
+let quickAddChannelRequestVersion = 0;
 
 function getProtocolTransformModeOptions() {
   return [
@@ -324,6 +326,8 @@ function initChannelEditorActions() {
       boundKey: 'channelEditorActionsBound',
       click: {
         'close-channel-modal': () => invokeChannelEditorAction('closeModal'),
+        'open-quick-add-channel': (actionTarget) => openQuickAddChannelModal(actionTarget),
+        'close-quick-add-channel': () => closeQuickAddChannelModal(),
         'add-inline-url': () => invokeChannelEditorAction('addInlineURL'),
         'batch-delete-urls': () => invokeChannelEditorAction('batchDeleteSelectedURLs'),
         'open-key-import-modal': () => invokeChannelEditorAction('openKeyImportModal'),
@@ -389,12 +393,19 @@ function initChannelEditorActions() {
   }
 
   initCommonModelsModalEvents();
+  initQuickAddChannelModalEvents();
   ensureScheduledCheckModelCombobox();
+}
+
+function setQuickAddChannelButtonVisible(visible) {
+  const button = document.getElementById('quickAddChannelBtn');
+  if (button) button.hidden = !visible;
 }
 
 async function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
+  setQuickAddChannelButtonVisible(true);
   await syncScheduledCheckVisibility();
 
   setChannelModalTitle('channels.addChannel');
@@ -445,6 +456,7 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
+  setQuickAddChannelButtonVisible(false);
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
@@ -2283,6 +2295,323 @@ function areModelRowsEqual(left, right) {
   });
 }
 
+function quickAddFieldKind(name) {
+  const normalized = String(name || '').trim().toLowerCase();
+  const compact = normalized.replace(/[^a-z0-9密钥]/g, '');
+  if (compact.includes('url') || compact.includes('endpoint') || compact.endsWith('apibase')) {
+    return 'url';
+  }
+  if (compact.includes('apikey') || compact === 'key' || compact.endsWith('key') ||
+      compact.includes('token') || compact.includes('secret') || compact.includes('密钥')) {
+    return 'apiKey';
+  }
+  return '';
+}
+
+function cleanQuickAddValue(value) {
+  let cleaned = String(value || '').trim();
+  cleaned = cleaned.replace(/^[`'\"]+/, '').replace(/[`'\";,]+$/, '').trim();
+  return cleaned;
+}
+
+function collectQuickAddJSONFields(value, fields) {
+  if (!value || typeof value !== 'object') return;
+  for (const [name, child] of Object.entries(value)) {
+    const kind = quickAddFieldKind(name);
+    if (kind && (typeof child === 'string' || typeof child === 'number')) {
+      const cleaned = cleanQuickAddValue(child);
+      if (cleaned) fields[kind].push(cleaned);
+    }
+    if (child && typeof child === 'object') collectQuickAddJSONFields(child, fields);
+  }
+}
+
+function normalizeQuickAddURL(value) {
+  const candidate = cleanQuickAddValue(value);
+  let parsed;
+  try {
+    parsed = new URL(candidate);
+  } catch (_error) {
+    const error = new Error('invalid URL');
+    error.code = 'url_invalid';
+    throw error;
+  }
+
+  if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.host ||
+      parsed.username || parsed.password || parsed.search || parsed.hash) {
+    const error = new Error('invalid URL');
+    error.code = 'url_invalid';
+    throw error;
+  }
+
+  let path = parsed.pathname.replace(/\/+$/, '');
+  const versionPathIndex = path.toLowerCase().indexOf('/v1');
+  if (versionPathIndex >= 0) path = path.slice(0, versionPathIndex);
+  return `${parsed.protocol}//${parsed.host}${path}`;
+}
+
+function parseQuickAddChannelInfo(input) {
+  const text = String(input || '').trim();
+  if (!text) {
+    const error = new Error('connection info is required');
+    error.code = 'input_required';
+    throw error;
+  }
+
+  const fields = { url: [], apiKey: [] };
+  try {
+    collectQuickAddJSONFields(JSON.parse(text), fields);
+  } catch (_error) {
+    // 普通文本不是 JSON；继续按环境变量、标签文本解析。
+  }
+
+  for (const line of text.split(/\r?\n/)) {
+    const assignment = line.match(/^\s*(?:export\s+|set\s+)?([^:=]+?)\s*[:=]\s*(.+?)\s*$/i);
+    if (!assignment) continue;
+    const kind = quickAddFieldKind(assignment[1]);
+    if (!kind) continue;
+    const value = cleanQuickAddValue(assignment[2]);
+    if (value) fields[kind].push(value);
+  }
+
+  const urlMatch = text.match(/https?:\/\/[^\s\"'`<>\uff0c\uff1b]+/i);
+  if (urlMatch) fields.url.unshift(cleanQuickAddValue(urlMatch[0].replace(/[).]+$/, '')));
+
+  if (fields.apiKey.length === 0) {
+    const labeledKey = text.match(/(?:api[\s_-]*key|token|secret|\u5bc6\u94a5)\s*[:=]\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s,;\]}]+))/i);
+    const bearerKey = text.match(/\bbearer\s+([^\s\"',;]+)/i);
+    const key = labeledKey
+      ? (labeledKey[1] || labeledKey[2] || labeledKey[3])
+      : bearerKey?.[1];
+    if (key) fields.apiKey.push(cleanQuickAddValue(key));
+  }
+
+  if (fields.apiKey.length === 0) {
+    const bareCandidates = text.split(/\r?\n/)
+      .map(cleanQuickAddValue)
+      .filter(value => value && !value.includes('://') && !/\s/.test(value) && value.length >= 8);
+    if (bareCandidates.length === 1) fields.apiKey.push(bareCandidates[0]);
+  }
+
+  if (fields.url.length === 0) {
+    const error = new Error('URL not found');
+    error.code = 'url_missing';
+    throw error;
+  }
+  if (fields.apiKey.length === 0) {
+    const error = new Error('API key not found');
+    error.code = 'key_missing';
+    throw error;
+  }
+
+  return {
+    url: normalizeQuickAddURL(fields.url[0]),
+    apiKey: fields.apiKey[0]
+  };
+}
+
+async function discoverQuickAddChannelSetup(input, request = fetchAPIWithAuth) {
+  const parsed = parseQuickAddChannelInfo(input);
+  const failures = [];
+  let response;
+  for (const protocol of ['openai', 'anthropic']) {
+    try {
+      const candidate = await request('/admin/channels/models/fetch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          urls: [{ url: parsed.url, exact: false, protocols: [] }],
+          protocol,
+          api_key: parsed.apiKey
+        })
+      });
+      if (candidate?.success) {
+        response = candidate;
+        break;
+      }
+      failures.push(`${protocol}: ${candidate?.error || 'model discovery failed'}`);
+    } catch (error) {
+      failures.push(`${protocol}: ${error?.message || 'model discovery failed'}`);
+    }
+  }
+  if (!response) throw new Error(failures.join('; '));
+
+  const replacement = mergeModelRowsWithFetchedModels([], response.data?.models || []);
+  if (replacement.rows.length === 0) {
+    const error = new Error('model list is empty');
+    error.code = 'models_missing';
+    throw error;
+  }
+
+  return {
+    // Models API 成功不能证明聊天请求协议；保持自动能力探测。
+    url: { url: parsed.url, exact: false, protocols: [] },
+    key: { api_key: parsed.apiKey, note: '' },
+    models: replacement.rows
+  };
+}
+
+function applyQuickAddChannelSetup(setup) {
+  const channelNameInput = document.getElementById('channelName');
+  if (channelNameInput && !channelNameInput.value.trim()) {
+    channelNameInput.value = new URL(setup.url.url).host;
+  }
+
+  setInlineURLTableData([setup.url]);
+  setInlineKeyTableDataFromAPI([setup.key]);
+  currentChannelKeyCooldowns = [];
+  selectedKeyIndices.clear();
+  renderInlineKeyTable();
+
+  redirectTableData = setup.models.map(row => ({
+    model: row.model || '',
+    redirect_model: row.redirect_model || '',
+    disabled: !!row.disabled
+  }));
+  selectedModelIndices.clear();
+  updateModelBatchDeleteButton();
+  renderRedirectTable();
+  syncScheduledCheckModelState();
+  markChannelFormDirty();
+  scheduleChannelEditorTableSizingSync();
+}
+
+function setQuickAddChannelError(message = '') {
+  const input = document.getElementById('quickAddChannelInput');
+  const error = document.getElementById('quickAddChannelError');
+  if (!input || !error) return;
+
+  const hasError = Boolean(message);
+  input.setAttribute('aria-invalid', hasError ? 'true' : 'false');
+  error.textContent = message;
+  error.hidden = !hasError;
+}
+
+function setQuickAddChannelBusy(busy) {
+  const input = document.getElementById('quickAddChannelInput');
+  const button = document.getElementById('quickAddChannelConfirmBtn');
+  const status = document.getElementById('quickAddChannelStatus');
+  if (input) input.disabled = busy;
+  if (button) {
+    button.disabled = busy;
+    if (busy) button.setAttribute('aria-busy', 'true');
+    else button.removeAttribute('aria-busy');
+  }
+  if (status) status.textContent = busy ? window.t('channels.quickAdd.checking') : '';
+}
+
+function quickAddChannelErrorMessage(error) {
+  const keys = {
+    input_required: 'channels.quickAdd.inputRequired',
+    url_missing: 'channels.quickAdd.urlMissing',
+    key_missing: 'channels.quickAdd.keyMissing',
+    url_invalid: 'channels.quickAdd.urlInvalid',
+    models_missing: 'channels.quickAdd.modelsMissing'
+  };
+  if (error?.code && keys[error.code]) return window.t(keys[error.code]);
+  return window.t('channels.quickAdd.failed', { error: error?.message || window.t('common.unknown') });
+}
+
+function openQuickAddChannelModal(trigger) {
+  if (editingChannelId !== null) return false;
+  const modal = document.getElementById('quickAddChannelModal');
+  const input = document.getElementById('quickAddChannelInput');
+  if (!modal || !input) return false;
+
+  quickAddChannelRequestVersion++;
+  quickAddChannelTrigger = trigger || document.activeElement;
+  input.value = '';
+  setQuickAddChannelError();
+  setQuickAddChannelBusy(false);
+  document.getElementById('channelModal')?.setAttribute('inert', '');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
+  input.focus();
+  return true;
+}
+
+function closeQuickAddChannelModal() {
+  const modal = document.getElementById('quickAddChannelModal');
+  if (!modal) return;
+
+  quickAddChannelRequestVersion++;
+  setQuickAddChannelBusy(false);
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('channelModal')?.removeAttribute('inert');
+  quickAddChannelTrigger?.focus?.();
+  quickAddChannelTrigger = null;
+}
+
+async function confirmQuickAddChannel() {
+  const input = document.getElementById('quickAddChannelInput');
+  if (!input || input.disabled) return false;
+
+  const requestVersion = ++quickAddChannelRequestVersion;
+  setQuickAddChannelError();
+  setQuickAddChannelBusy(true);
+  try {
+    const setup = await discoverQuickAddChannelSetup(input.value);
+    if (requestVersion !== quickAddChannelRequestVersion) return false;
+
+    applyQuickAddChannelSetup(setup);
+    const modelCount = setup.models.length;
+    closeQuickAddChannelModal();
+    if (window.showSuccess) {
+      window.showSuccess(window.t('channels.quickAdd.success', { count: modelCount }));
+    }
+    return true;
+  } catch (error) {
+    if (requestVersion !== quickAddChannelRequestVersion) return false;
+    setQuickAddChannelBusy(false);
+    setQuickAddChannelError(quickAddChannelErrorMessage(error));
+    input.focus();
+    return false;
+  }
+}
+
+function initQuickAddChannelModalEvents() {
+  const modal = document.getElementById('quickAddChannelModal');
+  const form = document.getElementById('quickAddChannelForm');
+  if (!modal || !form || modal.dataset.bound) return;
+
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeQuickAddChannelModal();
+  });
+  form.addEventListener('submit', event => {
+    event.preventDefault();
+    confirmQuickAddChannel();
+  });
+  document.addEventListener('keydown', event => {
+    if (!modal.classList.contains('show')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeQuickAddChannelModal();
+      return;
+    }
+    if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+      event.preventDefault();
+      confirmQuickAddChannel();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), textarea:not([disabled])'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, true);
+  modal.dataset.bound = '1';
+}
+
 async function fetchModelsFromAPI() {
   const urls = getValidInlineURLConfigs();
   const channelUrl = urls[0]?.url || '';
@@ -2531,11 +2860,14 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     addCommonModels,
     addCommonModelsToRows,
+    applyQuickAddChannelSetup,
     collectModelsForSubmit,
     detectChannelWebsocketSupport,
+    discoverQuickAddChannelSetup,
     editChannel,
     fetchModelsFromAPI,
     mergeModelRowsWithFetchedModels,
+    parseQuickAddChannelInfo,
     testRedirectModel,
     toggleModelDisabledState
   };

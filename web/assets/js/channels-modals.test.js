@@ -125,6 +125,7 @@ function installEditChannelGlobals(channel) {
   }
   return {
     requests,
+    getElement,
     restore() {
       for (const [name, descriptor] of previous) {
         if (descriptor) Object.defineProperty(global, name, descriptor);
@@ -340,6 +341,7 @@ test('editing a single-URL channel loads its URL statistics', async () => {
     const { editChannel } = loadChannelsModals();
     await editChannel(channel.id);
     assert.ok(fixture.requests.includes(`/admin/channels/${channel.id}/url-stats`));
+    assert.equal(fixture.getElement('quickAddChannelBtn').hidden, true);
   } finally {
     fixture.restore();
   }
@@ -549,4 +551,176 @@ test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async (
 
   assert.equal(fetchCalled, false);
   assert.equal(shownError, 'channels.addAtLeastOneEnabledKey');
+});
+
+test('quick add parses connection text and only returns setup after model discovery succeeds', async () => {
+  const { discoverQuickAddChannelSetup } = loadChannelsModals();
+  let request;
+
+  const setup = await discoverQuickAddChannelSetup(`
+    export OPENAI_BASE_URL="https://gateway.example.com/api/"
+    export OPENAI_API_KEY="sk-test-secret"
+  `, async (url, options) => {
+    request = { url, body: JSON.parse(options.body) };
+    return {
+      success: true,
+      data: {
+        protocol: 'openai',
+        models: [
+          { model: 'z-model', redirect_model: 'z-upstream' },
+          { model: 'a-model', redirect_model: 'a-upstream' }
+        ]
+      }
+    };
+  });
+
+  assert.deepEqual(request, {
+    url: '/admin/channels/models/fetch',
+    body: {
+      urls: [{ url: 'https://gateway.example.com/api', exact: false, protocols: [] }],
+      protocol: 'openai',
+      api_key: 'sk-test-secret'
+    }
+  });
+  assert.deepEqual(setup, {
+    url: { url: 'https://gateway.example.com/api', exact: false, protocols: [] },
+    key: { api_key: 'sk-test-secret', note: '' },
+    models: [
+      { model: 'a-model', redirect_model: 'a-upstream', disabled: false },
+      { model: 'z-model', redirect_model: 'z-upstream', disabled: false }
+    ]
+  });
+});
+
+test('quick add falls back from OpenAI to Anthropic model discovery', async () => {
+  const { discoverQuickAddChannelSetup } = loadChannelsModals();
+  const attemptedProtocols = [];
+
+  const setup = await discoverQuickAddChannelSetup(
+    'URL=https://gateway.example.com\nAPI_KEY=sk-fallback',
+    async (_url, options) => {
+      const body = JSON.parse(options.body);
+      attemptedProtocols.push(body.protocol);
+      if (body.protocol === 'openai') {
+        return { success: false, error: 'OpenAI models endpoint is unsupported' };
+      }
+      return {
+        success: true,
+        data: {
+          protocol: 'anthropic',
+          models: [{ model: 'claude-test', redirect_model: 'claude-test' }]
+        }
+      };
+    }
+  );
+
+  assert.deepEqual(attemptedProtocols, ['openai', 'anthropic']);
+  assert.deepEqual(setup.models, [
+    { model: 'claude-test', redirect_model: 'claude-test', disabled: false }
+  ]);
+});
+
+test('quick add rejects invalid discovery without producing partial setup', async () => {
+  const { discoverQuickAddChannelSetup } = loadChannelsModals();
+
+  await assert.rejects(
+    discoverQuickAddChannelSetup(
+      '{"base_url":"https://gateway.example.com","api_key":"sk-invalid"}',
+      async () => ({ success: false, error: 'unauthorized' })
+    ),
+    /unauthorized/
+  );
+});
+
+test('quick add parses URL and key labels on one line', () => {
+  const { parseQuickAddChannelInfo } = loadChannelsModals();
+  assert.deepEqual(
+    parseQuickAddChannelInfo('URL: https://gateway.example.com/api  API Key: sk-one-line'),
+    { url: 'https://gateway.example.com/api', apiKey: 'sk-one-line' }
+  );
+});
+
+test('quick add normalizes a versioned API endpoint to the channel base URL', () => {
+  const { parseQuickAddChannelInfo } = loadChannelsModals();
+  assert.deepEqual(
+    parseQuickAddChannelInfo('OPENAI_BASE_URL=https://gateway.example.com/openai/v1\nOPENAI_API_KEY=sk-versioned'),
+    { url: 'https://gateway.example.com/openai', apiKey: 'sk-versioned' }
+  );
+});
+
+test('quick add derives an empty channel name and applies the setup atomically', () => {
+  const previous = new Map();
+  const redirectBody = {
+    dataset: {},
+    innerHTML: '',
+    addEventListener() {},
+    appendChild() {}
+  };
+  const redirectCount = { textContent: '' };
+  const channelNameInput = { value: '   ' };
+  const globals = {
+    window: { t: key => key },
+    document: {
+      getElementById: id => ({
+        redirectTableBody: redirectBody,
+        redirectCount,
+        channelName: channelNameInput
+      })[id] || null,
+      createDocumentFragment: () => ({ appendChild() {} })
+    },
+    TemplateEngine: { render: () => ({ querySelector: () => null }) },
+    inlineURLTableData: [{ url: '', exact: false, protocols: [] }],
+    inlineKeyTableData: [{ api_key: '', note: '' }],
+    redirectTableData: [{ model: 'stale-model', redirect_model: '', disabled: false }],
+    currentModelFilter: '',
+    currentChannelKeyCooldowns: [{ key_index: 0, disabled: true }],
+    selectedKeyIndices: new Set([0]),
+    selectedModelIndices: new Set([0]),
+    selectedURLIndices: new Set([0]),
+    setInlineURLTableData: urls => { global.inlineURLTableData = urls; },
+    setInlineKeyTableDataFromAPI: keys => { global.inlineKeyTableData = keys; },
+    renderInlineKeyTable() {},
+    syncChannelEditorTableSizing() {},
+    scheduleChannelEditorTableSizingSync() {},
+    markChannelFormDirty: () => { global.quickAddFormDirty = true; },
+    quickAddFormDirty: false
+  };
+  for (const [name, value] of Object.entries(globals)) {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  }
+
+  try {
+    const { applyQuickAddChannelSetup } = loadChannelsModals();
+    const setup = {
+      url: { url: 'https://gateway.example.com', exact: false, protocols: [] },
+      key: { api_key: 'sk-valid', note: '' },
+      models: [{ model: 'gpt-test', redirect_model: 'gpt-test', disabled: false }]
+    };
+    applyQuickAddChannelSetup(setup);
+
+    assert.deepEqual(global.inlineURLTableData, [
+      { url: 'https://gateway.example.com', exact: false, protocols: [] }
+    ]);
+    assert.deepEqual(global.inlineKeyTableData, [{ api_key: 'sk-valid', note: '' }]);
+    assert.deepEqual(global.redirectTableData, [
+      { model: 'gpt-test', redirect_model: 'gpt-test', disabled: false }
+    ]);
+    assert.equal(channelNameInput.value, 'gateway.example.com');
+    assert.deepEqual(global.currentChannelKeyCooldowns, []);
+    assert.equal(global.selectedModelIndices.size, 0);
+    assert.equal(global.quickAddFormDirty, true);
+
+    channelNameInput.value = '保留现有名称';
+    applyQuickAddChannelSetup({
+      ...setup,
+      url: { url: 'https://other.example.com', exact: false, protocols: [] }
+    });
+    assert.equal(channelNameInput.value, '保留现有名称');
+  } finally {
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
 });
