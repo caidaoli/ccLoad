@@ -117,6 +117,9 @@ function initChannelsPageActions() {
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
   }
+  if (typeof initBatchRefreshOptions === 'function') {
+    initBatchRefreshOptions();
+  }
 
   if (typeof window.initDelegatedActions === 'function') {
     window.initDelegatedActions({
@@ -132,6 +135,7 @@ function initChannelsPageActions() {
         'batch-delete-channels': () => batchDeleteSelectedChannels(),
         'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
+        'batch-set-protocol-mode': () => batchSetSelectedChannelsProtocolMode(),
         'clear-selected-channels': () => clearSelectedChannels(),
         'close-test-modal': () => closeTestModal(),
         'run-channel-test': () => runChannelTest(),

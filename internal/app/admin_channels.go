@@ -1192,6 +1192,75 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 	})
 }
 
+// HandleBatchSetProtocolTransformMode updates protocol handling for selected channels.
+// POST /admin/channels/batch-protocol-mode
+func (s *Server) HandleBatchSetProtocolTransformMode(c *gin.Context) {
+	var req struct {
+		ChannelIDs            []int64 `json:"channel_ids"`
+		ProtocolTransformMode string  `json:"protocol_transform_mode"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	rawMode := strings.TrimSpace(req.ProtocolTransformMode)
+	mode := model.NormalizeProtocolTransformMode(rawMode)
+	if rawMode == "" || mode == "" {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("invalid protocol_transform_mode: %q (allowed: auto, upstream, local)", req.ProtocolTransformMode))
+		return
+	}
+
+	channelIDs := normalizeBatchChannelIDs(req.ChannelIDs)
+	if len(channelIDs) == 0 {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("channel_ids cannot be empty"))
+		return
+	}
+
+	ctx := c.Request.Context()
+	changedIDs := make([]int64, 0, len(channelIDs))
+	notFound := make([]int64, 0)
+	unchanged := 0
+	for _, channelID := range channelIDs {
+		cfg, err := s.store.GetConfig(ctx, channelID)
+		if err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				notFound = append(notFound, channelID)
+				continue
+			}
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		if cfg.GetProtocolTransformMode() == mode {
+			unchanged++
+			continue
+		}
+		changedIDs = append(changedIDs, channelID)
+	}
+
+	updated := int64(0)
+	if len(changedIDs) > 0 {
+		var err error
+		updated, err = s.store.BatchUpdateProtocolTransformMode(ctx, changedIDs, mode)
+		if err != nil {
+			log.Printf("批量更新协议处理失败: %v", err)
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		s.InvalidateChannelListCache()
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"protocol_transform_mode": mode,
+		"total":                   len(channelIDs),
+		"updated":                 updated,
+		"unchanged":               unchanged,
+		"not_found":               notFound,
+		"not_found_count":         len(notFound),
+	})
+}
+
 // HandleBatchDeleteChannels 批量删除渠道
 func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 	var req struct {

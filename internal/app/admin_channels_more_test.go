@@ -397,6 +397,118 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 	})
 }
 
+func TestHandleBatchSetProtocolTransformMode(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	createChannel := func(name, mode string) *model.Config {
+		t.Helper()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:                  name,
+			URLs:                  model.ChannelURLs{{URL: "https://" + name + ".example.com"}},
+			ProtocolTransformMode: mode,
+			ModelEntries:          []model.ModelEntry{{Model: "m"}},
+			Enabled:               true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig %s failed: %v", name, err)
+		}
+		return cfg
+	}
+	c1 := createChannel("protocol-auto", model.ProtocolTransformModeAuto)
+	c2 := createChannel("protocol-local", model.ProtocolTransformModeLocal)
+	c3 := createChannel("protocol-upstream", model.ProtocolTransformModeUpstream)
+
+	t.Run("invalid json", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/channels/batch-protocol-mode", []byte(`{`)))
+
+		server.HandleBatchSetProtocolTransformMode(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("missing mode", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-protocol-mode", map[string]any{
+			"channel_ids": []int64{c1.ID},
+		}))
+
+		server.HandleBatchSetProtocolTransformMode(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("invalid mode", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-protocol-mode", map[string]any{
+			"channel_ids":             []int64{c1.ID},
+			"protocol_transform_mode": "invalid",
+		}))
+
+		server.HandleBatchSetProtocolTransformMode(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("empty channel ids", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-protocol-mode", map[string]any{
+			"channel_ids":             []int64{},
+			"protocol_transform_mode": model.ProtocolTransformModeUpstream,
+		}))
+
+		server.HandleBatchSetProtocolTransformMode(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("updates selected channels", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-protocol-mode", map[string]any{
+			"channel_ids":             []int64{c1.ID, c2.ID, c3.ID, c2.ID, 99999},
+			"protocol_transform_mode": model.ProtocolTransformModeUpstream,
+		}))
+
+		server.HandleBatchSetProtocolTransformMode(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Success bool `json:"success"`
+			Data    struct {
+				Mode          string  `json:"protocol_transform_mode"`
+				Total         int     `json:"total"`
+				Updated       int64   `json:"updated"`
+				Unchanged     int     `json:"unchanged"`
+				NotFound      []int64 `json:"not_found"`
+				NotFoundCount int     `json:"not_found_count"`
+			} `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		if !resp.Success || resp.Data.Mode != model.ProtocolTransformModeUpstream {
+			t.Fatalf("unexpected response: %+v", resp)
+		}
+		if resp.Data.Total != 4 || resp.Data.Updated != 2 || resp.Data.Unchanged != 1 || resp.Data.NotFoundCount != 1 {
+			t.Fatalf("unexpected summary: %+v", resp.Data)
+		}
+		if len(resp.Data.NotFound) != 1 || resp.Data.NotFound[0] != 99999 {
+			t.Fatalf("unexpected not_found: %#v", resp.Data.NotFound)
+		}
+
+		for _, channelID := range []int64{c1.ID, c2.ID, c3.ID} {
+			cfg, err := store.GetConfig(ctx, channelID)
+			if err != nil {
+				t.Fatalf("GetConfig(%d) failed: %v", channelID, err)
+			}
+			if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
+				t.Fatalf("channel %d mode=%q, want %q", channelID, cfg.GetProtocolTransformMode(), model.ProtocolTransformModeUpstream)
+			}
+		}
+	})
+}
+
 func TestHandleBatchDeleteChannels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

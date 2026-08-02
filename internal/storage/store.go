@@ -21,6 +21,7 @@ type Store interface {
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
+	BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {
