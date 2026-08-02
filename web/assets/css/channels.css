@@ -391,6 +391,40 @@
       min-width: 0;
     }
 
+    .channel-quick-add-button {
+      flex: 0 0 30px;
+      width: 30px;
+      min-width: 30px;
+      height: 30px;
+      min-height: 30px;
+      padding: 0;
+      touch-action: manipulation;
+    }
+
+    .channel-quick-add-button[hidden] {
+      display: none !important;
+    }
+
+    .channel-quick-add-emoji {
+      display: block;
+      font-family: "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+      font-size: 15px;
+      line-height: 1;
+    }
+
+    html[data-theme="light"] .channel-quick-add-emoji,
+    html[data-theme="system"][data-resolved-theme="light"] .channel-quick-add-emoji {
+      filter: saturate(1.35) contrast(1.15) brightness(0.88);
+    }
+
+    .channel-quick-add-button:active {
+      transform: scale(0.96);
+    }
+
+    .channel-quick-add-button:focus-visible {
+      outline-offset: 2px;
+    }
+
     .channel-editor-inline-label {
       display: inline-flex;
       align-items: center;
@@ -569,6 +603,89 @@
     .common-models-modal-content {
       width: calc(100% - 32px);
       max-width: 460px;
+    }
+
+    .quick-add-channel-modal-content {
+      width: calc(100% - 32px);
+      max-width: 560px;
+      overscroll-behavior: contain;
+    }
+
+    .quick-add-channel-form {
+      display: grid;
+      gap: 10px;
+    }
+
+    .quick-add-channel-description,
+    .quick-add-channel-hint,
+    .quick-add-channel-error {
+      margin: 0;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    .quick-add-channel-description,
+    .quick-add-channel-hint {
+      color: var(--neutral-600);
+    }
+
+    .quick-add-channel-input {
+      min-height: 160px;
+      resize: vertical;
+      font-family: var(--font-mono, ui-monospace, SFMono-Regular, Consolas, monospace);
+      line-height: 1.5;
+    }
+
+    .quick-add-channel-input[aria-invalid="true"] {
+      border-color: var(--error-500);
+    }
+
+    .quick-add-channel-error {
+      color: var(--error-600);
+    }
+
+    .quick-add-channel-status {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+      border: 0;
+    }
+
+    .quick-add-channel-actions {
+      margin-top: 8px;
+    }
+
+    .quick-add-channel-confirm {
+      gap: 8px;
+    }
+
+    .quick-add-channel-confirm .loading-spinner {
+      display: none;
+      width: 14px;
+      height: 14px;
+      border-width: 2px;
+      border-color: rgba(255, 255, 255, 0.45);
+      border-top-color: currentColor;
+    }
+
+    .quick-add-channel-confirm[aria-busy="true"] .loading-spinner {
+      display: inline-block;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .quick-add-channel-confirm .loading-spinner {
+        animation: none;
+      }
+
+      .channel-quick-add-button:active {
+        transform: none;
+      }
     }
 
     .common-models-description {

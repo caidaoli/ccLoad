@@ -305,6 +305,12 @@
               <label class="form-label channel-editor-inline-label" data-i18n="channels.channelName">渠道名称
                 *</label>
               <input type="text" id="channelName" class="form-input channel-editor-input" required>
+              <button type="button" id="quickAddChannelBtn" class="btn btn-secondary channel-quick-add-button"
+                data-action="open-quick-add-channel" data-i18n-title="channels.quickAdd.button"
+                data-i18n-aria-label="channels.quickAdd.button" title="一键填充渠道配置"
+                aria-label="一键填充渠道配置" hidden>
+                <span class="channel-quick-add-emoji" aria-hidden="true">✨</span>
+              </button>
             </div>
 
             <div class="channel-editor-primary-field channel-editor-primary-field--type">
@@ -646,6 +652,45 @@
               </button>
             </div>
           </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- 一键填充渠道配置模态框 -->
+  <div id="quickAddChannelModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="quickAddChannelTitle" aria-describedby="quickAddChannelDescription" aria-hidden="true">
+    <div class="modal-content modal-content--sm quick-add-channel-modal-content">
+      <div class="modal-header">
+        <h2 id="quickAddChannelTitle" class="modal-title" data-i18n="channels.quickAdd.title">一键填充渠道配置</h2>
+        <button type="button" class="close-btn" data-action="close-quick-add-channel"
+          data-i18n-aria-label="common.close" aria-label="关闭">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true" focusable="false">
+            <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round" />
+          </svg>
+        </button>
+      </div>
+      <form id="quickAddChannelForm" class="quick-add-channel-form">
+        <p id="quickAddChannelDescription" class="quick-add-channel-description"
+          data-i18n="channels.quickAdd.description">粘贴包含 API URL 和密钥的文本。系统会解析配置并获取模型，全部成功后再回填表单。</p>
+        <label class="form-label" for="quickAddChannelInput" data-i18n="channels.quickAdd.inputLabel">连接信息</label>
+        <textarea id="quickAddChannelInput" class="form-input quick-add-channel-input" rows="7"
+          autocomplete="off" spellcheck="false" aria-invalid="false"
+          aria-describedby="quickAddChannelDescription quickAddChannelHint quickAddChannelError"
+          data-i18n-placeholder="channels.quickAdd.placeholder"
+          placeholder="OPENAI_BASE_URL=https://api.example.com&#10;OPENAI_API_KEY=sk-..."></textarea>
+        <p id="quickAddChannelHint" class="quick-add-channel-hint" data-i18n="channels.quickAdd.hint">支持 JSON、环境变量、URL/Key 标签文本。密钥仅用于本次模型探测，不会在确认前保存。</p>
+        <p id="quickAddChannelError" class="quick-add-channel-error" role="alert" hidden></p>
+        <div id="quickAddChannelStatus" class="quick-add-channel-status" role="status"></div>
+        <div class="form-actions quick-add-channel-actions">
+          <button type="button" class="btn btn-secondary" data-action="close-quick-add-channel"
+            data-i18n="common.cancel">取消</button>
+          <button type="submit" id="quickAddChannelConfirmBtn" class="btn btn-primary quick-add-channel-confirm">
+            <span class="loading-spinner" aria-hidden="true"></span>
+            <span data-i18n="channels.quickAdd.confirm">检查并填充</span>
+          </button>
         </div>
       </form>
     </div>
