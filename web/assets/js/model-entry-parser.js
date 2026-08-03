@@ -33,6 +33,95 @@
     return result;
   }
 
+  function modelEntryParseError(code, index) {
+    const error = new Error(code);
+    error.code = code;
+    if (Number.isInteger(index)) error.index = index;
+    return error;
+  }
+
+  function parseJSONModelEntries(value) {
+    let entries;
+    try {
+      entries = JSON.parse(String(value || ''));
+    } catch (_) {
+      throw modelEntryParseError('invalid_json');
+    }
+
+    if (!Array.isArray(entries)) {
+      if (entries !== null && typeof entries === 'object' && Array.isArray(entries.data)) {
+        entries = entries.data;
+      } else {
+        throw modelEntryParseError('array_required');
+      }
+    }
+
+    const seen = new Set();
+    const result = [];
+    entries.forEach((item, index) => {
+      const isString = typeof item === 'string';
+      const isObject = item !== null && typeof item === 'object' && !Array.isArray(item);
+      if (!isString && !isObject) {
+        throw modelEntryParseError('invalid_entry', index);
+      }
+
+      const isGatewayEntry = isObject && (
+        item.MODEL_SERIES_ID !== undefined || item.MODEL_ID !== undefined
+      );
+      if (
+        isGatewayEntry &&
+        (typeof item.MODEL_SERIES_ID !== 'string' || !item.MODEL_SERIES_ID.trim())
+      ) {
+        throw modelEntryParseError('gateway_series_required', index);
+      }
+      if (
+        isGatewayEntry &&
+        (typeof item.MODEL_ID !== 'string' || !item.MODEL_ID.trim())
+      ) {
+        throw modelEntryParseError('gateway_model_required', index);
+      }
+      if (isObject && !isGatewayEntry && typeof item.model !== 'string') {
+        throw modelEntryParseError('model_required', index);
+      }
+      if (isObject && !isGatewayEntry && item.redirect_model !== undefined && typeof item.redirect_model !== 'string') {
+        throw modelEntryParseError('invalid_redirect_model', index);
+      }
+      if (isObject && !isGatewayEntry && item.disabled !== undefined && typeof item.disabled !== 'boolean') {
+        throw modelEntryParseError('invalid_disabled', index);
+      }
+
+      const model = String(
+        isString ? item : (isGatewayEntry ? item.MODEL_SERIES_ID : item.model)
+      ).trim();
+      if (!model) {
+        throw modelEntryParseError('model_required', index);
+      }
+      if (/\x00|[\r\n]/.test(model)) {
+        throw modelEntryParseError('invalid_model', index);
+      }
+
+      let redirectModel = isObject
+        ? String(isGatewayEntry ? item.MODEL_ID : (item.redirect_model || '')).trim()
+        : '';
+      if (/\x00|[\r\n]/.test(redirectModel)) {
+        throw modelEntryParseError('invalid_redirect_model', index);
+      }
+      if (isGatewayEntry && redirectModel === model) redirectModel = '';
+
+      const key = model.toLowerCase();
+      if (seen.has(key)) return;
+
+      seen.add(key);
+      result.push({
+        model,
+        redirect_model: redirectModel,
+        disabled: isObject && !isGatewayEntry && item.disabled === true
+      });
+    });
+
+    return result;
+  }
+
   function normalizedModelCandidate(entry, options = {}) {
     const model = String(entry?.model || '').trim();
     if (!model) return null;
@@ -101,5 +190,10 @@
     return result;
   }
 
-  return { normalizeModelEntries, normalizeModelEntry, parseModelEntries };
+  return {
+    normalizeModelEntries,
+    normalizeModelEntry,
+    parseJSONModelEntries,
+    parseModelEntries
+  };
 });
