@@ -781,7 +781,7 @@ test('batch protocol mode keeps the selection when the request fails', async () 
   }
 });
 
-test('batch refresh options persist and restore across page initialization', () => {
+test('model normalization options synchronize across workflows and persist', () => {
   const storageData = new Map();
   const storage = {
     getItem: key => storageData.get(key) ?? null,
@@ -796,10 +796,20 @@ test('batch refresh options persist and restore across page initialization', () 
       dispatchChange() { listeners.get('change')?.(); }
     };
   };
-  let inputs = {
-    batchRefreshLowercaseModels: createCheckbox(),
-    batchRefreshStripModelSourcePrefix: createCheckbox()
-  };
+  const lowercaseIDs = [
+    'batchRefreshLowercaseModels',
+    'quickAddLowercaseModels',
+    'modelImportLowercaseModels'
+  ];
+  const stripPrefixIDs = [
+    'batchRefreshStripModelSourcePrefix',
+    'quickAddStripModelSourcePrefix',
+    'modelImportStripModelSourcePrefix'
+  ];
+  const createInputs = () => Object.fromEntries(
+    [...lowercaseIDs, ...stripPrefixIDs].map(id => [id, createCheckbox()])
+  );
+  let inputs = createInputs();
   const previousDocument = Object.getOwnPropertyDescriptor(global, 'document');
   Object.defineProperty(global, 'document', {
     configurable: true,
@@ -808,36 +818,33 @@ test('batch refresh options persist and restore across page initialization', () 
   });
 
   try {
-    const { initBatchRefreshOptions } = loadChannelsModals();
-    initBatchRefreshOptions(storage);
-    assert.equal(inputs.batchRefreshLowercaseModels.checked, false);
-    assert.equal(inputs.batchRefreshStripModelSourcePrefix.checked, false);
+    const { initModelNormalizationOptions } = loadChannelsModals();
+    initModelNormalizationOptions(storage);
+    assert.equal(lowercaseIDs.every(id => inputs[id].checked === false), true);
+    assert.equal(stripPrefixIDs.every(id => inputs[id].checked === false), true);
 
-    inputs.batchRefreshLowercaseModels.checked = true;
-    inputs.batchRefreshLowercaseModels.dispatchChange();
-    inputs.batchRefreshStripModelSourcePrefix.checked = true;
-    inputs.batchRefreshStripModelSourcePrefix.dispatchChange();
-    assert.deepEqual(JSON.parse(storageData.get('channels.batchRefreshOptions')), {
+    inputs.quickAddLowercaseModels.checked = true;
+    inputs.quickAddLowercaseModels.dispatchChange();
+    assert.equal(lowercaseIDs.every(id => inputs[id].checked === true), true);
+
+    inputs.modelImportStripModelSourcePrefix.checked = true;
+    inputs.modelImportStripModelSourcePrefix.dispatchChange();
+    assert.equal(stripPrefixIDs.every(id => inputs[id].checked === true), true);
+    assert.deepEqual(JSON.parse(storageData.get('channels.modelNormalizationOptions')), {
       lowercase_models: true,
       strip_model_source_prefix: true
     });
 
-    inputs = {
-      batchRefreshLowercaseModels: createCheckbox(),
-      batchRefreshStripModelSourcePrefix: createCheckbox()
-    };
-    initBatchRefreshOptions(storage);
-    assert.equal(inputs.batchRefreshLowercaseModels.checked, true);
-    assert.equal(inputs.batchRefreshStripModelSourcePrefix.checked, true);
+    inputs = createInputs();
+    initModelNormalizationOptions(storage);
+    assert.equal(lowercaseIDs.every(id => inputs[id].checked === true), true);
+    assert.equal(stripPrefixIDs.every(id => inputs[id].checked === true), true);
 
-    storageData.set('channels.batchRefreshOptions', '{');
-    inputs = {
-      batchRefreshLowercaseModels: createCheckbox(),
-      batchRefreshStripModelSourcePrefix: createCheckbox()
-    };
-    initBatchRefreshOptions(storage);
-    assert.equal(inputs.batchRefreshLowercaseModels.checked, false);
-    assert.equal(inputs.batchRefreshStripModelSourcePrefix.checked, false);
+    storageData.set('channels.modelNormalizationOptions', '{');
+    inputs = createInputs();
+    initModelNormalizationOptions(storage);
+    assert.equal(lowercaseIDs.every(id => inputs[id].checked === false), true);
+    assert.equal(stripPrefixIDs.every(id => inputs[id].checked === false), true);
   } finally {
     if (previousDocument) Object.defineProperty(global, 'document', previousDocument);
     else delete global.document;
@@ -863,6 +870,9 @@ test('quick add parses connection text and only returns setup after model discov
         ]
       }
     };
+  }, {
+    lowercaseModels: true,
+    stripModelSourcePrefix: true
   });
 
   assert.deepEqual(request, {
@@ -870,7 +880,9 @@ test('quick add parses connection text and only returns setup after model discov
     body: {
       urls: [{ url: 'https://gateway.example.com/api', exact: false, protocols: [] }],
       protocol: 'openai',
-      api_key: 'sk-test-secret'
+      api_key: 'sk-test-secret',
+      lowercase_models: true,
+      strip_model_source_prefix: true
     }
   });
   assert.deepEqual(setup, {

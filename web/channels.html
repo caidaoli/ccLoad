@@ -543,6 +543,17 @@
                 </svg>
                 <span data-i18n="channels.lowercaseSelected">转小写</span>
               </button>
+              <button type="button" id="batchStripModelSourcePrefixBtn"
+                data-action="batch-strip-model-source-prefix" disabled
+                data-i18n-title="channels.batchStripModelSourcePrefixTitle" title="批量去除选中模型的来源前缀"
+                class="btn btn-secondary btn-sm" style="opacity: 0.5;">
+                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+                  aria-hidden="true" focusable="false">
+                  <path d="M2.5 4H7.5M6.5 10H11.5M4 11L10 3" stroke="currentColor" stroke-width="1.3"
+                    stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+                <span data-i18n="channels.stripSourcePrefixSelected">去来源</span>
+              </button>
               <button type="button" id="batchDeleteModelsBtn" data-action="batch-delete-models" disabled
                 data-i18n-title="channels.batchDeleteModelsTitle" title="批量删除选中的模型" class="btn btn-secondary btn-sm"
                 style="opacity: 0.5;">
@@ -689,6 +700,19 @@
           aria-describedby="quickAddChannelDescription quickAddChannelHint quickAddChannelError"
           data-i18n-placeholder="channels.quickAdd.placeholder"
           placeholder="OPENAI_BASE_URL=https://api.example.com&#10;OPENAI_API_KEY=sk-..."></textarea>
+        <fieldset class="model-normalization-options">
+          <legend class="model-normalization-options__legend" data-i18n="channels.modelNormalizationOptions">模型处理</legend>
+          <div class="model-normalization-options__list">
+            <label class="model-normalization-option" for="quickAddLowercaseModels">
+              <input id="quickAddLowercaseModels" type="checkbox">
+              <span data-i18n="channels.batchRefreshLowercaseModels">模型转小写</span>
+            </label>
+            <label class="model-normalization-option" for="quickAddStripModelSourcePrefix">
+              <input id="quickAddStripModelSourcePrefix" type="checkbox">
+              <span data-i18n="channels.batchRefreshStripModelSourcePrefix">去来源前缀</span>
+            </label>
+          </div>
+        </fieldset>
         <p id="quickAddChannelHint" class="quick-add-channel-hint" data-i18n="channels.quickAdd.hint">支持 JSON、环境变量、URL/Key 标签文本。密钥仅用于本次模型探测，不会在确认前保存。</p>
         <p id="quickAddChannelError" class="quick-add-channel-error" role="alert" hidden></p>
         <div id="quickAddChannelStatus" class="quick-add-channel-status" role="status"></div>
@@ -1089,13 +1113,15 @@
   </div>
 
   <!-- 模型导入模态框 -->
-  <div id="modelImportModal" class="modal">
+  <div id="modelImportModal" class="modal" role="dialog" aria-modal="true"
+    aria-labelledby="modelImportTitle" aria-hidden="true">
     <div class="modal-content modal-content--md">
       <div class="modal-header">
-        <h2 class="modal-title" data-i18n="channels.importModelsTitle">批量添加模型</h2>
+        <h2 id="modelImportTitle" class="modal-title" data-i18n="channels.importModelsTitle">批量添加模型</h2>
         <button type="button" class="close-btn channel-modal-close-btn channel-hover-modal-close-btn"
-          data-action="close-model-import-modal">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+          data-action="close-model-import-modal" data-i18n-aria-label="common.close" aria-label="关闭">
+          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg"
+            aria-hidden="true" focusable="false">
             <path d="M10.5 3.5L3.5 10.5M3.5 3.5L10.5 10.5" stroke="currentColor" stroke-width="1.5"
               stroke-linecap="round" stroke-linejoin="round" />
           </svg>
@@ -1110,6 +1136,19 @@
             data-i18n-placeholder="channels.modelImportPlaceholder"
             placeholder="gpt-4o|gpt-4.1&#10;gpt-4o-mini&#10;claude-3-5-sonnet-20241022"></textarea>
         </div>
+        <fieldset class="model-normalization-options model-normalization-options--import">
+          <legend class="model-normalization-options__legend" data-i18n="channels.modelNormalizationOptions">模型处理</legend>
+          <div class="model-normalization-options__list">
+            <label class="model-normalization-option" for="modelImportLowercaseModels">
+              <input id="modelImportLowercaseModels" type="checkbox">
+              <span data-i18n="channels.batchRefreshLowercaseModels">模型转小写</span>
+            </label>
+            <label class="model-normalization-option" for="modelImportStripModelSourcePrefix">
+              <input id="modelImportStripModelSourcePrefix" type="checkbox">
+              <span data-i18n="channels.batchRefreshStripModelSourcePrefix">去来源前缀</span>
+            </label>
+          </div>
+        </fieldset>
         <div class="channel-import-info">
           <div class="channel-import-info-row">
             <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"

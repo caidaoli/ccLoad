@@ -640,6 +640,54 @@
       border-color: var(--error-500);
     }
 
+    .model-normalization-options {
+      min-width: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .model-normalization-options--import {
+      margin-block: 12px;
+    }
+
+    .model-normalization-options__legend {
+      margin-bottom: 4px;
+      padding: 0;
+      color: var(--neutral-700);
+      font-size: 13px;
+      font-weight: 600;
+    }
+
+    .model-normalization-options__list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 20px;
+    }
+
+    .model-normalization-option {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--neutral-700);
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .model-normalization-option input {
+      width: 16px;
+      height: 16px;
+      margin: 0;
+      accent-color: var(--primary-500);
+    }
+
+    .model-normalization-option:has(input:disabled) {
+      cursor: default;
+      opacity: 0.6;
+    }
+
     .quick-add-channel-error {
       color: var(--error-600);
     }
