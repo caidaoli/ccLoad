@@ -2371,6 +2371,79 @@
       padding: 5px;
     }
 
+    .model-import-modal-content {
+      overscroll-behavior: contain;
+    }
+
+    .model-import-format {
+      min-width: 0;
+      margin: 0 0 12px;
+      padding: 0;
+      border: 0;
+    }
+
+    .model-import-format .form-label {
+      padding: 0;
+    }
+
+    .model-import-format-options {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .model-import-format-option {
+      min-height: 32px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 12px;
+      color: var(--neutral-700);
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--neutral-50);
+      border: 1px solid var(--neutral-300);
+      border-radius: 6px;
+      cursor: pointer;
+    }
+
+    .model-import-format-option:has(input:checked) {
+      color: var(--primary-700);
+      background: var(--primary-50);
+      border-color: var(--primary-500);
+    }
+
+    .model-import-error,
+    .model-import-json-hint {
+      margin: 6px 0 0;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    .model-import-error {
+      color: var(--error-600);
+    }
+
+    .channel-import-textarea[aria-invalid="true"] {
+      border-color: var(--error-500);
+    }
+
+    .model-import-json-example {
+      max-width: 100%;
+      margin: 6px 0 0;
+      overflow-x: auto;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+
+    .model-import-json-example code {
+      font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+    }
+
+    .model-import-json-hint {
+      color: var(--neutral-600);
+    }
+
     .channel-export-modal-body {
       padding: 15px;
     }

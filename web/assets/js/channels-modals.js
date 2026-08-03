@@ -14,6 +14,7 @@ function normalizeProtocolTransformMode(value) {
 let protocolTransformModeCombobox = null;
 let quickAddChannelTrigger = null;
 let quickAddChannelRequestVersion = 0;
+let modelImportTrigger = null;
 
 function getProtocolTransformModeOptions() {
   return [
@@ -370,6 +371,7 @@ function initChannelEditorActions() {
         'toggle-select-all-keys': (actionTarget) => invokeChannelEditorAction('toggleSelectAllKeys', actionTarget.checked),
         'filter-keys-by-status': (actionTarget) => invokeChannelEditorAction('filterKeysByStatus', actionTarget.value),
         'toggle-select-all-models': (actionTarget) => invokeChannelEditorAction('toggleSelectAllModels', actionTarget.checked),
+        'switch-model-import-format': (actionTarget) => invokeChannelEditorAction('switchModelImportFormat', actionTarget.value),
         'update-export-preview': () => invokeChannelEditorAction('updateExportPreview')
       },
       input: {
@@ -1683,11 +1685,82 @@ function generateCopyName(originalName) {
   return proposedName;
 }
 
-function parseModels(input) {
-  const entries = window.ModelEntryParser.parseModelEntries(input);
+function getModelImportFormat() {
+  return document.querySelector('input[name="modelImportFormat"]:checked')?.value === 'json'
+    ? 'json'
+    : 'text';
+}
+
+function parseModels(input, format = getModelImportFormat()) {
+  const entries = format === 'json'
+    ? window.ModelEntryParser.parseJSONModelEntries(input)
+    : window.ModelEntryParser.parseModelEntries(input);
   const options = readModelNormalizationOptions();
   if (!options.lowercase_models && !options.strip_model_source_prefix) return entries;
   return window.ModelEntryParser.normalizeModelEntries(entries, options);
+}
+
+function setModelImportError(message = '') {
+  const textarea = document.getElementById('modelImportTextarea');
+  const error = document.getElementById('modelImportError');
+  const hasError = Boolean(message);
+  if (textarea) textarea.setAttribute('aria-invalid', hasError ? 'true' : 'false');
+  if (!error) return;
+  error.textContent = message;
+  error.hidden = !hasError;
+}
+
+function modelImportErrorMessage(error) {
+  const item = Number.isInteger(error?.index) ? error.index + 1 : 0;
+  const keys = {
+    invalid_json: 'channels.modelImportJsonInvalid',
+    array_required: 'channels.modelImportJsonArrayRequired',
+    invalid_entry: 'channels.modelImportJsonEntryInvalid',
+    model_required: 'channels.modelImportJsonModelRequired',
+    gateway_series_required: 'channels.modelImportJsonGatewaySeriesRequired',
+    gateway_model_required: 'channels.modelImportJsonGatewayModelRequired',
+    invalid_model: 'channels.modelImportJsonModelInvalid',
+    invalid_redirect_model: 'channels.modelImportJsonRedirectInvalid',
+    invalid_disabled: 'channels.modelImportJsonDisabledInvalid'
+  };
+  const key = keys[error?.code];
+  return key
+    ? window.t(key, { item })
+    : window.t('channels.modelImportJsonInvalid');
+}
+
+function switchModelImportFormat(format) {
+  const normalizedFormat = format === 'json' ? 'json' : 'text';
+  const textarea = document.getElementById('modelImportTextarea');
+  const label = document.getElementById('modelImportInputLabel');
+  const hint = document.getElementById('modelImportInputHint');
+  const textHelp = document.getElementById('modelImportTextHelp');
+  const jsonHelp = document.getElementById('modelImportJSONHelp');
+  const formatInput = document.querySelector(`input[name="modelImportFormat"][value="${normalizedFormat}"]`);
+
+  if (formatInput) formatInput.checked = true;
+  if (label) {
+    const key = normalizedFormat === 'json' ? 'channels.inputModelJSON' : 'channels.inputModelNames';
+    label.setAttribute('data-i18n', key);
+    label.textContent = window.t(key);
+  }
+  if (hint) {
+    const key = normalizedFormat === 'json' ? 'channels.modelJSONHint' : 'channels.modelSeparatorHint';
+    hint.setAttribute('data-i18n', key);
+    hint.textContent = window.t(key);
+  }
+  if (textarea) {
+    const key = normalizedFormat === 'json'
+      ? 'channels.modelImportJSONPlaceholder'
+      : 'channels.modelImportPlaceholder';
+    textarea.setAttribute('data-i18n-placeholder', key);
+    textarea.placeholder = window.t(key);
+  }
+  if (textHelp) textHelp.hidden = normalizedFormat === 'json';
+  if (jsonHelp) jsonHelp.hidden = normalizedFormat !== 'json';
+
+  setModelImportError();
+  updateModelImportPreview();
 }
 
 function addRedirectRow() {
@@ -1695,10 +1768,13 @@ function addRedirectRow() {
 }
 
 function openModelImportModal() {
+  modelImportTrigger = document.activeElement;
   syncModelNormalizationOptions();
   document.getElementById('modelImportTextarea').value = '';
   document.getElementById('modelImportPreviewContent').classList.add('hidden');
+  switchModelImportFormat('text');
   const modal = document.getElementById('modelImportModal');
+  document.getElementById('channelModal')?.setAttribute('inert', '');
   modal.classList.add('show');
   modal.setAttribute('aria-hidden', 'false');
   setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
@@ -1708,6 +1784,9 @@ function closeModelImportModal() {
   const modal = document.getElementById('modelImportModal');
   modal.classList.remove('show');
   modal.setAttribute('aria-hidden', 'true');
+  document.getElementById('channelModal')?.removeAttribute('inert');
+  modelImportTrigger?.focus?.();
+  modelImportTrigger = null;
 }
 
 function updateModelImportPreview() {
@@ -1718,12 +1797,17 @@ function updateModelImportPreview() {
   const previewContent = document.getElementById('modelImportPreviewContent');
   const countSpan = document.getElementById('modelImportCount');
 
+  setModelImportError();
   if (input) {
-    const models = parseModels(input);
-    if (models.length > 0) {
-      countSpan.textContent = models.length;
-      previewContent.classList.remove('hidden');
-    } else {
+    try {
+      const models = parseModels(input);
+      if (models.length > 0) {
+        countSpan.textContent = models.length;
+        previewContent.classList.remove('hidden');
+      } else {
+        previewContent.classList.add('hidden');
+      }
+    } catch (_) {
       previewContent.classList.add('hidden');
     }
   } else {
@@ -1737,6 +1821,37 @@ function setupModelImportPreview() {
 
   textarea.addEventListener('input', updateModelImportPreview);
   textarea.dataset.modelImportPreviewBound = '1';
+
+  const modal = document.getElementById('modelImportModal');
+  if (!modal || modal.dataset.modelImportEventsBound === '1') return;
+  modal.addEventListener('click', event => {
+    if (event.target === modal) closeModelImportModal();
+  });
+  document.addEventListener('keydown', event => {
+    if (!modal.classList.contains('show')) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      closeModelImportModal();
+      return;
+    }
+    if (event.key !== 'Tab') return;
+
+    const focusable = Array.from(modal.querySelectorAll(
+      'button:not([disabled]), input:not([disabled]), textarea:not([disabled])'
+    )).filter(element => !element.closest('[hidden]'));
+    if (focusable.length === 0) return;
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }, true);
+  modal.dataset.modelImportEventsBound = '1';
 }
 
 function confirmModelImport() {
@@ -1744,13 +1859,23 @@ function confirmModelImport() {
   const input = textarea.value.trim();
 
   if (!input) {
-    window.showNotification(window.t('channels.enterModelName'), 'warning');
+    setModelImportError(window.t('channels.modelImportInputRequired'));
+    textarea.focus();
     return;
   }
 
-  const newModels = parseModels(input);
+  let newModels;
+  try {
+    newModels = parseModels(input);
+    setModelImportError();
+  } catch (error) {
+    setModelImportError(modelImportErrorMessage(error));
+    textarea.focus();
+    return;
+  }
   if (newModels.length === 0) {
-    window.showNotification(window.t('channels.noValidModelParsed'), 'warning');
+    setModelImportError(window.t('channels.noValidModelParsed'));
+    textarea.focus();
     return;
   }
 
@@ -1765,7 +1890,11 @@ function confirmModelImport() {
   newModels.forEach(entry => {
     const modelKey = entry.model.toLowerCase();
     if (!existingModels.has(modelKey)) {
-      redirectTableData.push({ model: entry.model, redirect_model: entry.redirect_model });
+      redirectTableData.push({
+        model: entry.model,
+        redirect_model: entry.redirect_model,
+        disabled: !!entry.disabled
+      });
       existingModels.add(modelKey);
       addedCount++;
     }
