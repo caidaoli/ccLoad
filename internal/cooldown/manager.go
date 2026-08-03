@@ -242,7 +242,7 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 func (m *Manager) HandleErrorWithKeyFallback(ctx context.Context, in ErrorInput) Action {
 	decision := m.classifyDecision(in)
 	if canFallbackToOtherKey(in, decision) {
-		return m.handleKeyFallback(ctx, in)
+		return m.handleKeyFallback(ctx, in, decision)
 	}
 	return m.handleErrorDecision(ctx, in, decision)
 }
@@ -368,8 +368,16 @@ func (m *Manager) handleErrorDecision(ctx context.Context, in ErrorInput, decisi
 	}
 }
 
-func (m *Manager) handleKeyFallback(ctx context.Context, in ErrorInput) Action {
-	if _, err := m.store.BumpKeyCooldown(ctx, in.ChannelID, in.KeyIndex, time.Now(), in.StatusCode); err != nil {
+func (m *Manager) handleKeyFallback(ctx context.Context, in ErrorInput, decision cooldownDecision) Action {
+	if decision.hasModelCooldownUntil {
+		if err := m.store.SetKeyCooldown(ctx, in.ChannelID, in.KeyIndex, decision.modelCooldownUntil); err != nil {
+			log.Printf("[WARN] 渠道故障换Key时按模型重置时间设置 Key 冷却失败 (channel=%d, key=%d, until=%v): %v",
+				in.ChannelID, in.KeyIndex, decision.modelCooldownUntil, err)
+		} else {
+			log.Printf("[COOLDOWN] 渠道故障优先换Key: 渠道=%d Key=%d 禁用至 %s",
+				in.ChannelID, in.KeyIndex, decision.modelCooldownUntil.Format("2006-01-02 15:04:05"))
+		}
+	} else if _, err := m.store.BumpKeyCooldown(ctx, in.ChannelID, in.KeyIndex, time.Now(), in.StatusCode); err != nil {
 		log.Printf("[WARN] 渠道故障换Key时更新 Key 冷却失败 (channel=%d, key=%d): %v", in.ChannelID, in.KeyIndex, err)
 	} else {
 		log.Printf("[COOLDOWN] 渠道故障优先换Key: 渠道=%d Key=%d", in.ChannelID, in.KeyIndex)

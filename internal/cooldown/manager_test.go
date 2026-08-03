@@ -551,13 +551,14 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 	ctx := context.Background()
 
 	tests := []struct {
-		name              string
-		input             ErrorInput
-		wantAction        Action
-		wantKeyCooldown   bool
-		wantChannelCool   bool
-		wantModelCooldown bool
-		wantKeyFallback   bool
+		name               string
+		input              ErrorInput
+		wantAction         Action
+		wantKeyCooldown    bool
+		wantKeyCooldownFor time.Duration
+		wantChannelCool    bool
+		wantModelCooldown  bool
+		wantKeyFallback    bool
 	}{
 		{
 			name: "http 5xx retries another key",
@@ -579,6 +580,25 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 				Model: "test-model", KeyIndex: 0, StatusCode: 502, IsNetworkError: true,
 			},
 			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyFallback: true,
+		},
+		{
+			name: "model cooldown reset retries another key until reset",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 429,
+				ErrorBody: []byte(`{"error":{"code":"model_cooldown","message":"model is cooling down","model":"test-model","reset_seconds":600}}`),
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 10 * time.Minute, wantKeyFallback: true,
+		},
+		{
+			name: "configured model cooldown retries another key until rule deadline",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 502,
+				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "model relay maintenance", Priority: 0, StatusCodes: []int{502},
+					Scope: model.CooldownScopeModel, Mode: model.CooldownModeFixed, CooldownSeconds: 420,
+				}}},
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 7 * time.Minute, wantKeyFallback: true,
 		},
 		{
 			name: "websocket connection limit remains channel scoped",
@@ -620,7 +640,9 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 			if got := manager.CanFallbackToOtherKey(input); got != tt.wantKeyFallback {
 				t.Fatalf("CanFallbackToOtherKey()=%v, want %v", got, tt.wantKeyFallback)
 			}
+			before := time.Now()
 			action := manager.HandleErrorWithKeyFallback(ctx, input)
+			after := time.Now()
 			if action != tt.wantAction {
 				t.Fatalf("action=%v, want %v", action, tt.wantAction)
 			}
@@ -632,6 +654,20 @@ func TestHandleErrorWithKeyFallback(t *testing.T) {
 			keyCooled := time.Unix(key.CooldownUntil, 0).After(time.Now())
 			if keyCooled != tt.wantKeyCooldown {
 				t.Fatalf("key cooled=%v, want %v (key=%+v)", keyCooled, tt.wantKeyCooldown, key)
+			}
+			if tt.wantKeyCooldownFor > 0 {
+				until := time.Unix(key.CooldownUntil, 0)
+				if !cooldownWithinDuration(until, before, after, tt.wantKeyCooldownFor) {
+					t.Fatalf("key cooldownUntil=%s, want duration %s", until.Format(time.RFC3339), tt.wantKeyCooldownFor)
+				}
+			}
+
+			otherKey, err := store.GetAPIKey(ctx, cfg.ID, 1)
+			if err != nil {
+				t.Fatalf("GetAPIKey(1): %v", err)
+			}
+			if time.Unix(otherKey.CooldownUntil, 0).After(time.Now()) {
+				t.Fatalf("fallback must leave the other key available (key=%+v)", otherKey)
 			}
 
 			updated, err := store.GetConfig(ctx, cfg.ID)
