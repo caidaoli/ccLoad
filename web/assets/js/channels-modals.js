@@ -1717,7 +1717,6 @@ function modelImportErrorMessage(error) {
     array_required: 'channels.modelImportJsonArrayRequired',
     invalid_entry: 'channels.modelImportJsonEntryInvalid',
     model_required: 'channels.modelImportJsonModelRequired',
-    gateway_series_required: 'channels.modelImportJsonGatewaySeriesRequired',
     gateway_model_required: 'channels.modelImportJsonGatewayModelRequired',
     invalid_model: 'channels.modelImportJsonModelInvalid',
     invalid_redirect_model: 'channels.modelImportJsonRedirectInvalid',

@@ -45,32 +45,50 @@ test('JSON 批量模型输入接受模型名和完整模型条目', () => {
   );
 });
 
-test('JSON 批量模型输入接受模型网关 API 响应', () => {
+test('JSON 批量模型输入按 MODEL_ID 导入模型网关 API 响应', () => {
+  const parsed = parseJSONModelEntries(JSON.stringify({
+    success: true,
+    data: [
+      {
+        MODEL_PROVIDER: 'openai',
+        MODEL_ID: 'minimax/MiniMax-M3',
+        MODEL_SERIES_ID: 'minimax-m3'
+      },
+      {
+        MODEL_PROVIDER: 'openai',
+        MODEL_ID: 'gpt-5.6-sol',
+        MODEL_SERIES_ID: 'gpt-pro'
+      },
+      {
+        MODEL_PROVIDER: 'openai',
+        MODEL_ID: 'gpt-5.6-sol',
+        MODEL_SERIES_ID: 'gpt-5.6-sol'
+      },
+      {
+        MODEL_PROVIDER: 'anthropic',
+        MODEL_ID: 'claude-sonnet-5',
+        MODEL_SERIES_ID: 'claude-sonnet'
+      }
+    ]
+  }));
+
   assert.deepEqual(
-    parseJSONModelEntries(JSON.stringify({
-      success: true,
-      data: [
-        {
-          MODEL_PROVIDER: 'openai',
-          MODEL_ID: 'minimax/MiniMax-M3',
-          MODEL_SERIES_ID: 'minimax-m3'
-        },
-        {
-          MODEL_PROVIDER: 'openai',
-          MODEL_ID: 'gpt-5.6-sol',
-          MODEL_SERIES_ID: 'gpt-pro'
-        },
-        {
-          MODEL_PROVIDER: 'openai',
-          MODEL_ID: 'gpt-5.6-sol',
-          MODEL_SERIES_ID: 'gpt-5.6-sol'
-        }
-      ]
-    })),
+    parsed,
+    [
+      { model: 'minimax/MiniMax-M3', redirect_model: '', disabled: false },
+      { model: 'gpt-5.6-sol', redirect_model: '', disabled: false },
+      { model: 'claude-sonnet-5', redirect_model: '', disabled: false }
+    ]
+  );
+  assert.deepEqual(
+    normalizeModelEntries(parsed, {
+      lowercase_models: true,
+      strip_model_source_prefix: true
+    }),
     [
       { model: 'minimax-m3', redirect_model: 'minimax/MiniMax-M3', disabled: false },
-      { model: 'gpt-pro', redirect_model: 'gpt-5.6-sol', disabled: false },
-      { model: 'gpt-5.6-sol', redirect_model: '', disabled: false }
+      { model: 'gpt-5.6-sol', redirect_model: '', disabled: false },
+      { model: 'claude-sonnet-5', redirect_model: '', disabled: false }
     ]
   );
 });
@@ -92,17 +110,13 @@ test('JSON 批量模型输入拒绝无效 JSON 和错误条目结构', () => {
     () => parseJSONModelEntries('[{"model":"gpt-4o","disabled":"yes"}]'),
     error => error.code === 'invalid_disabled' && error.index === 0
   );
-  assert.throws(
-    () => parseJSONModelEntries('{"data":[{"MODEL_ID":"gpt-5.6-sol"}]}'),
-    error => error.code === 'gateway_series_required' && error.index === 0
+  assert.deepEqual(
+    parseJSONModelEntries('{"data":[{"MODEL_ID":"gpt-5.6-sol"}]}'),
+    [{ model: 'gpt-5.6-sol', redirect_model: '', disabled: false }]
   );
   assert.throws(
     () => parseJSONModelEntries('{"data":[{"MODEL_SERIES_ID":"gpt-pro"}]}'),
     error => error.code === 'gateway_model_required' && error.index === 0
-  );
-  assert.throws(
-    () => parseJSONModelEntries('{"data":[{"MODEL_SERIES_ID":"   ","MODEL_ID":"gpt-5.6-sol"}]}'),
-    error => error.code === 'gateway_series_required' && error.index === 0
   );
   assert.throws(
     () => parseJSONModelEntries('{"data":[{"MODEL_SERIES_ID":"gpt-pro","MODEL_ID":"   "}]}'),
