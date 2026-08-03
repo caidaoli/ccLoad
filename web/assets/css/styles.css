@@ -3057,16 +3057,12 @@ body {
   width: min(280px, 100%);
 }
 
-.settings-input-with-unit {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+.settings-input--select {
+  width: auto;
 }
 
-.settings-input-unit {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  font-weight: 600;
+.settings-input--wide {
+  width: 100%;
 }
 
 .settings-bool-option {
@@ -3971,11 +3967,84 @@ body {
   text-align: right;
 }
 
+@media (min-width: 769px) {
+  .settings-table {
+    table-layout: fixed;
+  }
+
+  .settings-table col.settings-col-description {
+    width: 60%;
+  }
+
+  .settings-table col.settings-col-actions {
+    width: 64px;
+  }
+}
+
 .setting-group-cell {
   background: var(--neutral-100);
   color: var(--neutral-700);
   font-weight: 700;
   letter-spacing: 0.2px;
+}
+
+.setting-group-title {
+  display: block;
+}
+
+.settings-availability-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(245, 158, 11, 0.35);
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.1);
+  color: var(--neutral-700);
+  font-size: 13px;
+  font-weight: 400;
+  letter-spacing: normal;
+  line-height: 1.5;
+}
+
+.settings-availability-notice__icon {
+  flex: 0 0 auto;
+  margin-top: 1px;
+  color: var(--warning-600);
+}
+
+.settings-availability-notice strong,
+.settings-availability-notice span {
+  display: block;
+}
+
+.settings-availability-notice strong {
+  margin-bottom: 2px;
+  color: var(--neutral-900);
+  font-weight: 600;
+}
+
+.settings-availability-notice code {
+  white-space: nowrap;
+  color: inherit;
+}
+
+.settings-input:disabled,
+.settings-bool-option input:disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
+.btn-icon:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.btn-icon:disabled:hover {
+  border-color: var(--neutral-300);
+  background: var(--surface-bg);
+  color: var(--neutral-600);
 }
 
 /* ===== 渠道管理专用样式 ===== */
@@ -3992,7 +4061,7 @@ body {
   border-radius: 6px;
   cursor: pointer;
   font-size: 0.875rem;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s, opacity 0.2s;
 }
 
 .btn-icon:hover {
@@ -7111,8 +7180,8 @@ body.web-role-api-token .filter-group--auth-token {
     display: none !important;
   }
 
-  .settings-table .setting-data-row {
-    grid-template-columns: minmax(0, 1fr) auto;
+  .settings-table.mobile-card-table tbody .setting-data-row {
+    grid-template-columns: minmax(0, 1fr) 56px;
   }
 
   .settings-table.mobile-card-table td.setting-col-description {
@@ -7130,7 +7199,7 @@ body.web-role-api-token .filter-group--auth-token {
     display: flex;
     align-items: center;
     gap: 8px;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     min-width: 0;
   }
 
@@ -7151,6 +7220,7 @@ body.web-role-api-token .filter-group--auth-token {
     padding-top: 0;
     border-top: none;
     min-width: 56px;
+    align-self: center;
   }
 
   .settings-table.mobile-card-table td.setting-col-actions::before {
@@ -7171,6 +7241,17 @@ body.web-role-api-token .filter-group--auth-token {
   .settings-table.mobile-card-table td.setting-col-value textarea {
     flex-basis: 100%;
     width: 100%;
+  }
+
+  .settings-table.mobile-card-table td.setting-col-value .settings-input--select {
+    width: auto;
+    flex: 0 1 auto;
+    max-width: 100%;
+  }
+
+  .settings-table.mobile-card-table td.setting-col-value .settings-input--wide {
+    width: auto;
+    flex: 1 1 0;
   }
 
   .settings-table.mobile-card-table td.setting-col-value .settings-input--number {

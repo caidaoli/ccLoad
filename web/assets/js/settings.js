@@ -7,6 +7,14 @@ let runtimeMetricsPreviousFocus = null;
 let globalCooldownRulesPreviousFocus = null;
 
 const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
+const updateAvailabilityDescriptionId = 'settings-update-availability';
+const containerSelfUpdateDisabledReason = 'container_self_update_disabled';
+const advancedSettingKeys = new Set([
+  globalCooldownRulesSettingKey,
+  'auto_refresh_interval_seconds',
+  'model_catalog_sync_interval_hours',
+  'model_fuzzy_match'
+]);
 
 const byteSettingKeys = new Set([
   'max_body_bytes',
@@ -14,6 +22,26 @@ const byteSettingKeys = new Set([
   'responses_ws_max_transcript_bytes'
 ]);
 const bytesPerM = 1024 * 1024;
+
+const selectSettingOptions = new Map([
+  ['auto_update_channel', [
+    { value: 'stable', labelKey: 'settings.updateChannel.stable' },
+    { value: 'preview', labelKey: 'settings.updateChannel.preview' }
+  ]],
+  ['channel_stats_range', [
+    { value: 'today', labelKey: 'index.timeRange.today' },
+    { value: 'yesterday', labelKey: 'index.timeRange.yesterday' },
+    { value: 'day_before_yesterday', labelKey: 'index.timeRange.dayBeforeYesterday' },
+    { value: 'this_week', labelKey: 'index.timeRange.thisWeek' },
+    { value: 'last_week', labelKey: 'index.timeRange.lastWeek' },
+    { value: 'this_month', labelKey: 'index.timeRange.thisMonth' },
+    { value: 'last_month', labelKey: 'index.timeRange.lastMonth' }
+  ]],
+  ['log_channel_click_action', [
+    { value: 'edit', labelKey: 'settings.logChannelClickAction.edit' },
+    { value: 'navigate', labelKey: 'settings.logChannelClickAction.navigate' }
+  ]]
+]);
 
 function settingValueForDisplay(key, value) {
   const normalizedValue = String(value ?? '');
@@ -430,6 +458,7 @@ function getSettingGroupInfo(key) {
   const k = String(key || '').toLowerCase();
 
   const defs = [
+    { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
     { id: 'model', nameKey: 'settings.group.model', order: 15, match: () => k.startsWith('model_') },
     { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' },
@@ -441,7 +470,7 @@ function getSettingGroupInfo(key) {
     { id: 'cooldown', nameKey: 'settings.group.cooldown', order: 40, match: () => k.startsWith('cooldown_') },
     { id: 'log', nameKey: 'settings.group.log', order: 50, match: () => k.startsWith('log_') || k.startsWith('debug_') },
     { id: 'access', nameKey: 'settings.group.access', order: 60, match: () => k.includes('auth_') },
-    { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => k === globalCooldownRulesSettingKey },
+    { id: 'update', nameKey: 'settings.group.update', order: 65, match: () => k.startsWith('auto_update_') },
   ];
 
   for (const d of defs) {
@@ -505,6 +534,23 @@ function groupSettings(settings) {
   return groups;
 }
 
+function renderSettingGroupNotice(group) {
+  const disabledReason = group.settings.find((setting) => setting.editable === false)?.disabled_reason;
+  if (group.id !== 'update' || disabledReason !== containerSelfUpdateDisabledReason) return '';
+
+  return `
+    <div id="${updateAvailabilityDescriptionId}" class="settings-availability-notice">
+      <svg class="settings-availability-notice__icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <path d="M12 8h.01M11 12h1v4h1"></path>
+      </svg>
+      <div>
+        <strong>${escapeHtml(t('settings.updateAvailability.containerDisabledTitle'))}</strong>
+        <span>${escapeHtml(t('settings.updateAvailability.containerDisabledDescription'))} <code>CCLOAD_ALLOW_SELF_UPDATE=1</code></span>
+      </div>
+    </div>`;
+}
+
 function renderGroupNav(groups) {
   const nav = document.getElementById('settings-group-nav');
   const navSection = document.getElementById('settings-group-nav-section');
@@ -557,7 +603,8 @@ function renderSettings(settings) {
   for (const g of groups) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
-      groupName: g.name
+      groupName: g.name,
+      groupNoticeHtml: renderSettingGroupNotice(g)
     });
     if (groupRow) tbody.appendChild(groupRow);
 
@@ -572,6 +619,7 @@ function renderSettings(settings) {
         key: s.key,
         description: description,
         inputHtml: renderInput({ ...s, value: displayValue }),
+        resetDisabledAttributes: settingDisabledAttributes(s),
         mobileLabelDescription: t('settings.configItem'),
         mobileLabelValue: t('settings.currentValue'),
         mobileLabelActions: t('common.actions')
@@ -579,6 +627,14 @@ function renderSettings(settings) {
       if (row) tbody.appendChild(row);
     }
   }
+}
+
+function settingDisabledAttributes(setting) {
+  if (setting.editable !== false) return '';
+  const describedBy = setting.disabled_reason === containerSelfUpdateDisabledReason
+    ? ` aria-describedby="${updateAvailabilityDescriptionId}"`
+    : '';
+  return `disabled${describedBy}`;
 }
 
 // 初始化事件委托（替代 inline onclick）
@@ -610,13 +666,14 @@ function initSettingsEventDelegation() {
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
+  const disabledAttributes = settingDisabledAttributes(setting);
 
   if (setting.key === globalCooldownRulesSettingKey) {
     const count = globalCooldownRuleCount(setting.value);
     return `
       <div class="global-cooldown-rules-control">
         <input type="hidden" id="${safeKey}" value="${safeValue}">
-        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules">
+        <button type="button" class="btn btn-secondary" data-action="edit-global-cooldown-rules" ${disabledAttributes}>
           ${escapeHtml(t('settings.globalCooldownRules.edit'))}
         </button>
         <span id="global-cooldown-rules-summary" class="global-cooldown-rules-summary">
@@ -625,20 +682,19 @@ function renderInput(setting) {
       </div>`;
   }
 
-  if (setting.key === 'auto_update_channel') {
+  const selectOptions = selectSettingOptions.get(setting.key);
+  if (selectOptions) {
+    const optionsHtml = selectOptions.map(({ value, labelKey }) => (
+      `<option value="${value}" ${setting.value === value ? 'selected' : ''}>${escapeHtml(t(labelKey))}</option>`
+    )).join('');
     return `
-      <select id="${safeKey}" class="settings-input settings-input--text">
-        <option value="stable" ${setting.value === 'stable' ? 'selected' : ''}>${escapeHtml(t('settings.updateChannel.stable'))}</option>
-        <option value="preview" ${setting.value === 'preview' ? 'selected' : ''}>${escapeHtml(t('settings.updateChannel.preview'))}</option>
+      <select id="${safeKey}" class="settings-input settings-input--select" ${disabledAttributes}>
+        ${optionsHtml}
       </select>`;
   }
 
   if (byteSettingKeys.has(setting.key)) {
-    return `
-      <span class="settings-input-with-unit">
-        <input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">
-        <span class="settings-input-unit">M</span>
-      </span>`;
+    return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
   }
 
   switch (setting.value_type) {
@@ -647,19 +703,19 @@ function renderInput(setting) {
       return `
         <div class="settings-bool-group">
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''}> ${t('common.enable')}
+            <input type="radio" name="${safeKey}" value="true" ${isTrue ? 'checked' : ''} ${disabledAttributes}> ${t('common.enable')}
           </label>
           <label class="settings-bool-option">
-            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''}> ${t('common.disable')}
+            <input type="radio" name="${safeKey}" value="false" ${!isTrue ? 'checked' : ''} ${disabledAttributes}> ${t('common.disable')}
           </label>
         </div>`;
     case 'int':
     case 'duration':
-      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
     case 'float':
-      return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number">`;
+      return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
     default:
-      return `<input type="text" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--text">`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--text${setting.key === 'channel_test_content' ? ' settings-input--wide' : ''}" ${disabledAttributes}>`;
   }
 }
 
