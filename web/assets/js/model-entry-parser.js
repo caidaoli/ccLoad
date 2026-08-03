@@ -70,12 +70,6 @@
       );
       if (
         isGatewayEntry &&
-        (typeof item.MODEL_SERIES_ID !== 'string' || !item.MODEL_SERIES_ID.trim())
-      ) {
-        throw modelEntryParseError('gateway_series_required', index);
-      }
-      if (
-        isGatewayEntry &&
         (typeof item.MODEL_ID !== 'string' || !item.MODEL_ID.trim())
       ) {
         throw modelEntryParseError('gateway_model_required', index);
@@ -91,7 +85,7 @@
       }
 
       const model = String(
-        isString ? item : (isGatewayEntry ? item.MODEL_SERIES_ID : item.model)
+        isString ? item : (isGatewayEntry ? item.MODEL_ID : item.model)
       ).trim();
       if (!model) {
         throw modelEntryParseError('model_required', index);
@@ -100,13 +94,12 @@
         throw modelEntryParseError('invalid_model', index);
       }
 
-      let redirectModel = isObject
-        ? String(isGatewayEntry ? item.MODEL_ID : (item.redirect_model || '')).trim()
+      const redirectModel = isObject && !isGatewayEntry
+        ? String(item.redirect_model || '').trim()
         : '';
       if (/\x00|[\r\n]/.test(redirectModel)) {
         throw modelEntryParseError('invalid_redirect_model', index);
       }
-      if (isGatewayEntry && redirectModel === model) redirectModel = '';
 
       const key = model.toLowerCase();
       if (seen.has(key)) return;
