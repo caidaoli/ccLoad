@@ -398,15 +398,9 @@ function initChannelEditorActions() {
   ensureScheduledCheckModelCombobox();
 }
 
-function setQuickAddChannelButtonVisible(visible) {
-  const button = document.getElementById('quickAddChannelBtn');
-  if (button) button.hidden = !visible;
-}
-
 async function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
-  setQuickAddChannelButtonVisible(true);
   await syncScheduledCheckVisibility();
 
   setChannelModalTitle('channels.addChannel');
@@ -457,7 +451,6 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
-  setQuickAddChannelButtonVisible(false);
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
@@ -2643,7 +2636,6 @@ function quickAddChannelErrorMessage(error) {
 }
 
 function openQuickAddChannelModal(trigger) {
-  if (editingChannelId !== null) return false;
   const modal = document.getElementById('quickAddChannelModal');
   const input = document.getElementById('quickAddChannelInput');
   if (!modal || !input) return false;
