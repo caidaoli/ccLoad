@@ -69,6 +69,45 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+	t.Run("normalization options preserve upstream model names", func(t *testing.T) {
+		normalizationUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/models" {
+				http.NotFound(w, r)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"source/OpenAI/GPT-4O"},{"id":"vendor/Claude-SONNET"}]}`))
+		}))
+		t.Cleanup(normalizationUpstream.Close)
+
+		payload := map[string]any{
+			"protocol":                  "openai",
+			"urls":                      []map[string]any{{"url": normalizationUpstream.URL}},
+			"api_key":                   "sk-test",
+			"lowercase_models":          true,
+			"strip_model_source_prefix": true,
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+
+		server.HandleFetchModelsPreview(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+
+		var resp struct {
+			Success bool                `json:"success"`
+			Data    FetchModelsResponse `json:"data"`
+		}
+		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+		want := []model.ModelEntry{
+			{Model: "gpt-4o", RedirectModel: "source/OpenAI/GPT-4O"},
+			{Model: "claude-sonnet", RedirectModel: "vendor/Claude-SONNET"},
+		}
+		if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) {
+			t.Fatalf("models=%#v, want %#v, body=%s", resp.Data.Models, want, w.Body.String())
+		}
+	})
+
 }
 
 func TestAdminModels_FetchSub2APIBillingPreview(t *testing.T) {

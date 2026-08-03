@@ -24,9 +24,11 @@ var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 
 // FetchModelsRequest 获取模型列表请求参数
 type FetchModelsRequest struct {
-	URLs     model.ChannelURLs `json:"urls" binding:"required,min=1"`
-	Protocol string            `json:"protocol,omitempty"`
-	APIKey   string            `json:"api_key" binding:"required"`
+	URLs                   model.ChannelURLs `json:"urls" binding:"required,min=1"`
+	Protocol               string            `json:"protocol,omitempty"`
+	APIKey                 string            `json:"api_key" binding:"required"`
+	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
+	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
 }
 
 // FetchModelsResponse 获取模型列表响应
@@ -138,6 +140,12 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
 		return
+	}
+	if req.LowercaseModels || req.StripModelSourcePrefix {
+		response.Models = normalizeModelEntriesForSave(response.Models, modelNormalizationOptions{
+			lowercaseModels:        req.LowercaseModels,
+			stripModelSourcePrefix: req.StripModelSourcePrefix,
+		})
 	}
 	RespondJSON(c, http.StatusOK, response)
 }

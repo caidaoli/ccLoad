@@ -341,6 +341,7 @@ function initChannelEditorActions() {
         'fetch-sub2api-rate': () => invokeChannelEditorAction('fetchSub2APIRate'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
         'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
+        'batch-strip-model-source-prefix': () => invokeChannelEditorAction('batchStripSelectedModelSourcePrefixes'),
         'batch-delete-models': () => invokeChannelEditorAction('batchDeleteSelectedModels'),
         'close-delete-modal': () => invokeChannelEditorAction('closeDeleteModal'),
         'confirm-delete-channel': () => invokeChannelEditorAction('confirmDelete'),
@@ -395,6 +396,7 @@ function initChannelEditorActions() {
 
   initCommonModelsModalEvents();
   initQuickAddChannelModalEvents();
+  initModelNormalizationOptions();
   ensureScheduledCheckModelCombobox();
 }
 
@@ -1326,16 +1328,30 @@ function setBatchRefreshRowResult(channelID, result) {
   }
 }
 
-const BATCH_REFRESH_OPTIONS_STORAGE_KEY = 'channels.batchRefreshOptions';
+const MODEL_NORMALIZATION_OPTIONS_STORAGE_KEY = 'channels.modelNormalizationOptions';
+const MODEL_NORMALIZATION_OPTION_INPUT_IDS = {
+  lowercase_models: [
+    'batchRefreshLowercaseModels',
+    'quickAddLowercaseModels',
+    'modelImportLowercaseModels'
+  ],
+  strip_model_source_prefix: [
+    'batchRefreshStripModelSourcePrefix',
+    'quickAddStripModelSourcePrefix',
+    'modelImportStripModelSourcePrefix'
+  ]
+};
 
-function getBatchRefreshOptionInputs() {
-  return {
-    lowercaseModels: document.getElementById('batchRefreshLowercaseModels'),
-    stripModelSourcePrefix: document.getElementById('batchRefreshStripModelSourcePrefix')
-  };
+function getModelNormalizationOptionInputs() {
+  return Object.fromEntries(
+    Object.entries(MODEL_NORMALIZATION_OPTION_INPUT_IDS).map(([option, ids]) => [
+      option,
+      ids.map(id => document.getElementById(id)).filter(Boolean)
+    ])
+  );
 }
 
-function resolveBatchRefreshOptionsStorage(storage) {
+function resolveModelNormalizationOptionsStorage(storage) {
   if (storage) return storage;
   try {
     return window.localStorage;
@@ -1344,13 +1360,13 @@ function resolveBatchRefreshOptionsStorage(storage) {
   }
 }
 
-function readBatchRefreshOptions(storage) {
+function readModelNormalizationOptions(storage) {
   const fallback = { lowercase_models: false, strip_model_source_prefix: false };
-  const target = resolveBatchRefreshOptionsStorage(storage);
+  const target = resolveModelNormalizationOptionsStorage(storage);
   if (!target) return fallback;
 
   try {
-    const saved = JSON.parse(target.getItem(BATCH_REFRESH_OPTIONS_STORAGE_KEY));
+    const saved = JSON.parse(target.getItem(MODEL_NORMALIZATION_OPTIONS_STORAGE_KEY));
     return {
       lowercase_models: saved?.lowercase_models === true,
       strip_model_source_prefix: saved?.strip_model_source_prefix === true
@@ -1360,33 +1376,57 @@ function readBatchRefreshOptions(storage) {
   }
 }
 
-function saveBatchRefreshOptions(storage) {
-  const inputs = getBatchRefreshOptionInputs();
-  const options = {
-    lowercase_models: inputs.lowercaseModels?.checked === true,
-    strip_model_source_prefix: inputs.stripModelSourcePrefix?.checked === true
-  };
-  const target = resolveBatchRefreshOptionsStorage(storage);
-  if (!target) return options;
-
-  try {
-    target.setItem(BATCH_REFRESH_OPTIONS_STORAGE_KEY, JSON.stringify(options));
-  } catch (_) { /* 浏览器禁用本地存储时保留当前页面状态 */ }
+function applyModelNormalizationOptions(options) {
+  const inputs = getModelNormalizationOptionInputs();
+  Object.entries(inputs).forEach(([option, optionInputs]) => {
+    optionInputs.forEach(input => { input.checked = options[option] === true; });
+  });
   return options;
 }
 
-function initBatchRefreshOptions(storage) {
-  const inputs = getBatchRefreshOptionInputs();
-  const options = readBatchRefreshOptions(storage);
-  if (inputs.lowercaseModels) inputs.lowercaseModels.checked = options.lowercase_models;
-  if (inputs.stripModelSourcePrefix) inputs.stripModelSourcePrefix.checked = options.strip_model_source_prefix;
+function saveModelNormalizationOptions(options, storage) {
+  const normalized = {
+    lowercase_models: options?.lowercase_models === true,
+    strip_model_source_prefix: options?.strip_model_source_prefix === true
+  };
+  const target = resolveModelNormalizationOptionsStorage(storage);
+  if (!target) return normalized;
 
-  for (const input of [inputs.lowercaseModels, inputs.stripModelSourcePrefix]) {
-    if (!input || input.dataset.batchRefreshOptionsBound === '1') continue;
-    input.addEventListener('change', () => saveBatchRefreshOptions(storage));
-    input.dataset.batchRefreshOptionsBound = '1';
-  }
+  try {
+    target.setItem(MODEL_NORMALIZATION_OPTIONS_STORAGE_KEY, JSON.stringify(normalized));
+  } catch (_) { /* 浏览器禁用本地存储时保留当前页面状态 */ }
+  return normalized;
+}
+
+function syncModelNormalizationOptions(storage) {
+  return applyModelNormalizationOptions(readModelNormalizationOptions(storage));
+}
+
+function initModelNormalizationOptions(storage) {
+  const options = syncModelNormalizationOptions(storage);
+  const inputs = getModelNormalizationOptionInputs();
+
+  Object.entries(inputs).forEach(([option, optionInputs]) => {
+    optionInputs.forEach(input => {
+      if (input.dataset.modelNormalizationOptionsBound === '1') return;
+      input.addEventListener('change', () => {
+        const next = readModelNormalizationOptions(storage);
+        next[option] = input.checked === true;
+        applyModelNormalizationOptions(saveModelNormalizationOptions(next, storage));
+        updateModelImportPreview();
+      });
+      input.dataset.modelNormalizationOptionsBound = '1';
+    });
+  });
   return options;
+}
+
+function modelNormalizationOptionsForRequest(storage) {
+  const options = readModelNormalizationOptions(storage);
+  return {
+    lowercaseModels: options.lowercase_models,
+    stripModelSourcePrefix: options.strip_model_source_prefix
+  };
 }
 
 async function batchRefreshSelectedChannels(mode) {
@@ -1400,8 +1440,9 @@ async function batchRefreshSelectedChannels(mode) {
     return;
   }
 
-  const lowercaseModels = document.getElementById('batchRefreshLowercaseModels')?.checked === true;
-  const stripModelSourcePrefix = document.getElementById('batchRefreshStripModelSourcePrefix')?.checked === true;
+  const normalizationOptions = readModelNormalizationOptions();
+  const lowercaseModels = normalizationOptions.lowercase_models;
+  const stripModelSourcePrefix = normalizationOptions.strip_model_source_prefix;
 
   if (typeof clearAllBatchRefreshResults === 'function') {
     clearAllBatchRefreshResults();
@@ -1643,7 +1684,10 @@ function generateCopyName(originalName) {
 }
 
 function parseModels(input) {
-  return window.ModelEntryParser.parseModelEntries(input);
+  const entries = window.ModelEntryParser.parseModelEntries(input);
+  const options = readModelNormalizationOptions();
+  if (!options.lowercase_models && !options.strip_model_source_prefix) return entries;
+  return window.ModelEntryParser.normalizeModelEntries(entries, options);
 }
 
 function addRedirectRow() {
@@ -1651,37 +1695,48 @@ function addRedirectRow() {
 }
 
 function openModelImportModal() {
+  syncModelNormalizationOptions();
   document.getElementById('modelImportTextarea').value = '';
   document.getElementById('modelImportPreviewContent').classList.add('hidden');
-  document.getElementById('modelImportModal').classList.add('show');
+  const modal = document.getElementById('modelImportModal');
+  modal.classList.add('show');
+  modal.setAttribute('aria-hidden', 'false');
   setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
 }
 
 function closeModelImportModal() {
-  document.getElementById('modelImportModal').classList.remove('show');
+  const modal = document.getElementById('modelImportModal');
+  modal.classList.remove('show');
+  modal.setAttribute('aria-hidden', 'true');
+}
+
+function updateModelImportPreview() {
+  const textarea = document.getElementById('modelImportTextarea');
+  if (!textarea) return;
+
+  const input = textarea.value.trim();
+  const previewContent = document.getElementById('modelImportPreviewContent');
+  const countSpan = document.getElementById('modelImportCount');
+
+  if (input) {
+    const models = parseModels(input);
+    if (models.length > 0) {
+      countSpan.textContent = models.length;
+      previewContent.classList.remove('hidden');
+    } else {
+      previewContent.classList.add('hidden');
+    }
+  } else {
+    previewContent.classList.add('hidden');
+  }
 }
 
 function setupModelImportPreview() {
   const textarea = document.getElementById('modelImportTextarea');
-  if (!textarea) return;
+  if (!textarea || textarea.dataset.modelImportPreviewBound === '1') return;
 
-  textarea.addEventListener('input', () => {
-    const input = textarea.value.trim();
-    const previewContent = document.getElementById('modelImportPreviewContent');
-    const countSpan = document.getElementById('modelImportCount');
-
-    if (input) {
-      const models = parseModels(input);
-      if (models.length > 0) {
-        countSpan.textContent = models.length;
-        previewContent.classList.remove('hidden');
-      } else {
-        previewContent.classList.add('hidden');
-      }
-    } else {
-      previewContent.classList.add('hidden');
-    }
-  });
+  textarea.addEventListener('input', updateModelImportPreview);
+  textarea.dataset.modelImportPreviewBound = '1';
 }
 
 function confirmModelImport() {
@@ -2227,6 +2282,7 @@ function toggleSelectAllModels(checked) {
 function updateModelBatchDeleteButton() {
   const deleteBtn = document.getElementById('batchDeleteModelsBtn');
   const lowercaseBtn = document.getElementById('batchLowercaseModelsBtn');
+  const stripPrefixBtn = document.getElementById('batchStripModelSourcePrefixBtn');
   const count = selectedModelIndices.size;
 
   // 更新删除按钮
@@ -2251,55 +2307,51 @@ function updateModelBatchDeleteButton() {
     }
   }
 
-  // 更新转小写按钮
-  if (lowercaseBtn) {
-    const textSpan = lowercaseBtn.querySelector('span');
-    if (count > 0) {
-      lowercaseBtn.disabled = false;
-      if (textSpan) textSpan.textContent = window.t('channels.lowercaseSelectedCount', { count });
-      lowercaseBtn.style.cursor = 'pointer';
-      lowercaseBtn.style.opacity = '1';
-      lowercaseBtn.style.background = 'linear-gradient(135deg, #eff6ff 0%, #bfdbfe 100%)';
-      lowercaseBtn.style.borderColor = '#93c5fd';
-      lowercaseBtn.style.color = '#2563eb';
-    } else {
-      lowercaseBtn.disabled = true;
-      if (textSpan) textSpan.textContent = window.t('channels.lowercaseSelected');
-      lowercaseBtn.style.cursor = '';
-      lowercaseBtn.style.opacity = '0.5';
-      lowercaseBtn.style.background = '';
-      lowercaseBtn.style.borderColor = '';
-      lowercaseBtn.style.color = '';
+  [
+    [lowercaseBtn, 'channels.lowercaseSelected', 'channels.lowercaseSelectedCount'],
+    [stripPrefixBtn, 'channels.stripSourcePrefixSelected', 'channels.stripSourcePrefixSelectedCount']
+  ].forEach(([button, emptyLabel, countLabel]) => {
+    if (!button) return;
+    const textSpan = button.querySelector('span');
+    button.disabled = count === 0;
+    if (textSpan) {
+      textSpan.textContent = count > 0 ? window.t(countLabel, { count }) : window.t(emptyLabel);
     }
-  }
+    button.style.cursor = count > 0 ? 'pointer' : '';
+    button.style.opacity = count > 0 ? '1' : '0.5';
+    button.style.background = count > 0 ? 'linear-gradient(135deg, #eff6ff 0%, #bfdbfe 100%)' : '';
+    button.style.borderColor = count > 0 ? '#93c5fd' : '';
+    button.style.color = count > 0 ? '#2563eb' : '';
+  });
 }
 
-/**
- * 批量转换选中模型为小写
- */
-function batchLowercaseSelectedModels() {
+function normalizeSelectedModels(options) {
   const count = selectedModelIndices.size;
   if (count === 0) return;
 
   let changedCount = 0;
-
-  // 转换选中的模型为小写
   selectedModelIndices.forEach(index => {
-    if (redirectTableData[index]) {
-      const current = redirectTableData[index].model || '';
-      const lowercased = current.toLowerCase();
-      if (current !== lowercased) {
-        redirectTableData[index].model = lowercased;
-        changedCount++;
-      }
-    }
+    const current = redirectTableData[index];
+    if (!current) return;
+    const normalized = window.ModelEntryParser.normalizeModelEntry(current, options);
+    if (!normalized) return;
+    if (current.model === normalized.model && current.redirect_model === normalized.redirect_model) return;
+    redirectTableData[index] = normalized;
+    changedCount++;
   });
 
-  // 清除选择并刷新表格
   selectedModelIndices.clear();
   updateModelBatchDeleteButton();
   renderRedirectTable();
   if (changedCount > 0) markChannelFormDirty();
+}
+
+function batchLowercaseSelectedModels() {
+  normalizeSelectedModels({ lowercase_models: true });
+}
+
+function batchStripSelectedModelSourcePrefixes() {
+  normalizeSelectedModels({ strip_model_source_prefix: true });
 }
 
 /**
@@ -2533,8 +2585,10 @@ function parseQuickAddChannelInfo(input) {
   };
 }
 
-async function discoverQuickAddChannelSetup(input, request = fetchAPIWithAuth) {
+async function discoverQuickAddChannelSetup(input, request = fetchAPIWithAuth, options = {}) {
   const parsed = parseQuickAddChannelInfo(input);
+  const lowercaseModels = options?.lowercaseModels === true;
+  const stripModelSourcePrefix = options?.stripModelSourcePrefix === true;
   const failures = [];
   let response;
   for (const protocol of ['openai', 'anthropic']) {
@@ -2545,7 +2599,9 @@ async function discoverQuickAddChannelSetup(input, request = fetchAPIWithAuth) {
         body: JSON.stringify({
           urls: [{ url: parsed.url, exact: false, protocols: [] }],
           protocol,
-          api_key: parsed.apiKey
+          api_key: parsed.apiKey,
+          lowercase_models: lowercaseModels,
+          strip_model_source_prefix: stripModelSourcePrefix
         })
       });
       if (candidate?.success) {
@@ -2612,9 +2668,13 @@ function setQuickAddChannelError(message = '') {
 
 function setQuickAddChannelBusy(busy) {
   const input = document.getElementById('quickAddChannelInput');
+  const lowercaseModels = document.getElementById('quickAddLowercaseModels');
+  const stripModelSourcePrefix = document.getElementById('quickAddStripModelSourcePrefix');
   const button = document.getElementById('quickAddChannelConfirmBtn');
   const status = document.getElementById('quickAddChannelStatus');
   if (input) input.disabled = busy;
+  if (lowercaseModels) lowercaseModels.disabled = busy;
+  if (stripModelSourcePrefix) stripModelSourcePrefix.disabled = busy;
   if (button) {
     button.disabled = busy;
     if (busy) button.setAttribute('aria-busy', 'true');
@@ -2642,6 +2702,7 @@ function openQuickAddChannelModal(trigger) {
 
   quickAddChannelRequestVersion++;
   quickAddChannelTrigger = trigger || document.activeElement;
+  syncModelNormalizationOptions();
   input.value = '';
   setQuickAddChannelError();
   setQuickAddChannelBusy(false);
@@ -2673,7 +2734,11 @@ async function confirmQuickAddChannel() {
   setQuickAddChannelError();
   setQuickAddChannelBusy(true);
   try {
-    const setup = await discoverQuickAddChannelSetup(input.value);
+    const setup = await discoverQuickAddChannelSetup(
+      input.value,
+      fetchAPIWithAuth,
+      modelNormalizationOptionsForRequest()
+    );
     if (requestVersion !== quickAddChannelRequestVersion) return false;
 
     applyQuickAddChannelSetup(setup);
@@ -2719,7 +2784,7 @@ function initQuickAddChannelModalEvents() {
     }
     if (event.key !== 'Tab') return;
 
-    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), textarea:not([disabled])'));
+    const focusable = Array.from(modal.querySelectorAll('button:not([disabled]), input:not([disabled]), textarea:not([disabled])'));
     if (focusable.length === 0) return;
     const first = focusable[0];
     const last = focusable[focusable.length - 1];
@@ -3071,7 +3136,7 @@ if (typeof module !== 'undefined' && module.exports) {
     editChannel,
     fetchModelsFromAPI,
     fetchSub2APIRate,
-    initBatchRefreshOptions,
+    initModelNormalizationOptions,
     mergeModelRowsWithFetchedModels,
     parseQuickAddChannelInfo,
     testRedirectModel,
