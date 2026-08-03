@@ -9,6 +9,7 @@ import (
 	"strconv"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -283,6 +284,9 @@ func validateSettingValue(key, valueType, value string) error {
 			if value != "edit" && value != "navigate" {
 				return fmt.Errorf("log_channel_click_action must be edit or navigate")
 			}
+		case "auto_update_channel":
+			_, err := version.ParseReleaseChannel(value)
+			return err
 		}
 
 	default:

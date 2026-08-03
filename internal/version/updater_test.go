@@ -25,7 +25,11 @@ func TestCompareSemanticVersions(t *testing.T) {
 	}{
 		{a: "v2.43.10", b: "v2.43.9", want: 1},
 		{a: "2.43.9", b: "v2.43.10", want: -1},
-		{a: "v2.43.0", b: "2.43", want: 0},
+		{a: "v2.43.0", b: "2.43.0", want: 0},
+		{a: "v4.6.0-beta.2", b: "v4.6.0-beta.1", want: 1},
+		{a: "v4.6.0", b: "v4.6.0-beta.2", want: 1},
+		{a: "v4.7.0-beta.1", b: "v4.6.9", want: 1},
+		{a: "v4.6.0-12-gabcdef", b: "v4.6.0", want: 0},
 		{a: "dev", b: "v2.43.0", want: -1},
 		{a: "v2.43.0", b: "dev", want: 1},
 	}
@@ -101,6 +105,114 @@ func TestAutoUpdaterReleaseSourceConfiguration(t *testing.T) {
 			t.Fatal("NewAutoUpdater must reject an invalid custom release base")
 		}
 	})
+}
+
+func TestParseReleaseChannel(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		input string
+		want  ReleaseChannel
+	}{
+		{input: "stable", want: ReleaseChannelStable},
+		{input: " preview ", want: ReleaseChannelPreview},
+		{input: "PREVIEW", want: ReleaseChannelPreview},
+	} {
+		got, err := ParseReleaseChannel(tt.input)
+		if err != nil {
+			t.Fatalf("ParseReleaseChannel(%q): %v", tt.input, err)
+		}
+		if got != tt.want {
+			t.Fatalf("ParseReleaseChannel(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+
+	for _, input := range []string{"", "beta", "latest", "unknown"} {
+		if _, err := ParseReleaseChannel(input); err == nil {
+			t.Fatalf("ParseReleaseChannel(%q) must fail", input)
+		}
+	}
+}
+
+func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	binary := []byte("preview binary")
+	sum := sha256.Sum256(binary)
+	checksum := hex.EncodeToString(sum[:]) + "  ccload-linux-amd64\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[
+                {"tag_name":"v9.0.0-beta.1","html_url":"https://example.test/v9.0.0-beta.1","draft":true,"prerelease":true},
+                {"tag_name":"not-semver","html_url":"https://example.test/not-semver","draft":false,"prerelease":true},
+                {"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/v1.1.0-beta.1","draft":false,"prerelease":true},
+                {"tag_name":"v1.1.0-beta.2","html_url":"https://example.test/v1.1.0-beta.2","draft":false,"prerelease":true},
+                {"tag_name":"v1.0.5","html_url":"https://example.test/v1.0.5","draft":false,"prerelease":false}
+            ]`)
+		case "/download/v1.1.0-beta.2/checksums.txt":
+			_, _ = fmt.Fprint(w, checksum)
+		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
+			_, _ = w.Write(binary)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	exePath := filepath.Join(t.TempDir(), "ccload")
+	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write old executable: %v", err)
+	}
+
+	updater, err := NewAutoUpdater(AutoUpdateOptions{
+		Interval: time.Hour,
+		Channel:  ReleaseChannelPreview,
+		ReleaseSources: []ReleaseSource{{
+			Name:            "test",
+			ReleasesURL:     server.URL + "/releases",
+			DownloadBaseURL: server.URL + "/download",
+		}},
+		ExecutablePath: exePath,
+		Client:         server.Client(),
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		ActiveRequests: func() int { return 1 },
+		Restart:        func() { t.Fatal("restart must wait for idle requests") },
+	})
+	if err != nil {
+		t.Fatalf("NewAutoUpdater: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		updater.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for updater.State().PendingVersion != "v1.1.0-beta.2" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	state := updater.State()
+	if state.PendingVersion != "v1.1.0-beta.2" || !state.PendingRestart || state.LastError != "" {
+		t.Fatalf("preview state = %+v", state)
+	}
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read executable: %v", err)
+	}
+	if string(got) != string(binary) {
+		t.Fatalf("executable content = %q, want preview binary", got)
+	}
 }
 
 func assertAutoUpdaterLatestRequests(t *testing.T, want []string) {
@@ -403,11 +515,22 @@ func TestAutoUpdaterFallsBackToNextReleaseSource(t *testing.T) {
 			mu.Lock()
 			requestLog := strings.Join(requests, "\n")
 			mu.Unlock()
-			for _, path := range []string{
-				"/github/latest",
-				"/github/releases/download/v1.0.1/checksums.txt",
-				"/github/releases/download/v1.0.1/ccload-linux-amd64",
-			} {
+			wantPaths := []string{"/proxy/latest", "/proxy/releases/download/v1.0.1/checksums.txt"}
+			if failStage == "latest" {
+				wantPaths = append(wantPaths,
+					"/github/latest",
+					"/proxy/releases/download/v1.0.1/ccload-linux-amd64",
+				)
+			} else {
+				if failStage == "asset" {
+					wantPaths = append(wantPaths, "/proxy/releases/download/v1.0.1/ccload-linux-amd64")
+				}
+				wantPaths = append(wantPaths,
+					"/github/releases/download/v1.0.1/checksums.txt",
+					"/github/releases/download/v1.0.1/ccload-linux-amd64",
+				)
+			}
+			for _, path := range wantPaths {
 				if !strings.Contains(requestLog, path) {
 					t.Fatalf("fallback did not request %s; requests:\n%s", path, requestLog)
 				}

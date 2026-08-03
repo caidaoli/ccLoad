@@ -85,7 +85,7 @@ ccLoad handles those cases with:
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
-- 🔄 **Auto Updates** - Checks for new releases every 12 hours by default, configurable from the admin settings page
+- 🔄 **Release Channels** - Stable updates by default, with an opt-in preview channel; check interval is configurable from the admin settings page
 - 🧩 **Custom Request Rules** - Per-channel HTTP header & JSON body rewriting (remove/override/append), with auth header protection, CRLF guard, and capacity caps
 - 🎛️ **Log Column Customization** - Show/hide table columns per preference, settings persist in browser localStorage
 
@@ -1000,6 +1000,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `channel_check_interval_hours` | `5` | Scheduled channel check interval (hours, supports decimals, 0=disabled) |
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
 | `auto_update_interval_hours` | `12` | Auto-update check interval (hours, 0=disabled, minimum enabled value is 1) |
+| `auto_update_channel` | `stable` | Update channel: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
 | `responses_ws_max_connections` | `64` | Max concurrent downstream Responses WebSocket connections across the process |
 | `responses_ws_max_connections_per_token` | `16` | Max concurrent downstream Responses WebSocket connections per auth token |
@@ -1010,9 +1011,13 @@ Per-protocol timeouts apply to the runtime upstream protocol: if a transformed r
 
 #### Auto Updates
 
-ccLoad supports in-process auto updates. It checks releases every 12 hours by default, trying `gh.monlor.com`, `fastgit.cc`, and `ghfast.top` in order before falling back to GitHub directly. A source is accepted only when release detection, binary download, checksum download, and SHA256 verification all succeed. The interval can be changed from the Web admin settings page via `auto_update_interval_hours`; set it to `0` to disable automatic update checks.
+ccLoad supports in-process auto updates for binary and source deployments. It checks every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers both stable and prerelease versions and selects the highest valid SemVer, without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable in-process updates.
 
-To use only a private mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables the built-in fallback sources. This setting affects release downloads only; it does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
+Stable metadata is resolved through the configured release sources. Preview discovery uses the GitHub Releases API so drafts and invalid tags can be excluded and prereleases can be ordered correctly. After resolving an exact Tag, ccLoad downloads that Tag's binary and checksum from the configured download sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub; SHA256 must match before replacement.
+
+Official containers do not replace their binary at runtime by default. Each stable image contains the exact binary produced by the matching GitHub Release, so the normal update path remains pulling a newer stable image and recreating the container. To pull an image once and then let ccLoad follow Beta releases, set `CCLOAD_ALLOW_SELF_UPDATE=1` in `.env` and change `auto_update_channel` to `preview` in the Web admin. Recreating the container restores the stable version baked into the image; ccLoad checks for updates again after startup.
+
+To use a private release mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables built-in fallback sources for stable metadata and all asset downloads. Preview metadata still comes from the GitHub Releases API. This setting does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
 
 #### Dynamic Channel Sorting
 
@@ -1084,7 +1089,7 @@ Project supports multi-arch Docker images:
   - `latest` - Latest stable version
   - `v2.44.1` - Specific release tag, matching the GitHub Release tag
 
-The official GHCR runtime image is Alpine-based. On container startup, it downloads and verifies the latest Linux release binary, trying `v4.gh-proxy.org`, `gh-proxy.com`, and `ghp.keleyaa.com` in order before falling back to GitHub directly. The in-process updater uses the separate source order documented above because it must resolve a release tag through `/releases/latest`. Set `CCLOAD_RELEASE_BASE_URL` to a complete `.../releases/latest/download` URL to use only a custom mirror. The default in-process check interval is 12 hours and can be changed with `auto_update_interval_hours` in the Web admin settings.
+The official GHCR runtime image is Alpine-based and immutable: a stable release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Beta releases never publish container images. Containers set `CCLOAD_CONTAINER=1`, which disables in-process binary replacement by default. Set `CCLOAD_ALLOW_SELF_UPDATE=1` explicitly to let ccLoad update the program in the container's writable layer. Recreating the container restores the image-baked version; the default update path remains pulling a newer version Tag or `latest` and recreating the container.
 
 ### Image Tag Guide
 

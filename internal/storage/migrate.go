@@ -553,6 +553,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
 		{"model_catalog_sync_interval_hours", "6", "float", "模型目录同步间隔(小时,支持小数,0=关闭网络同步)", "6"},
 		{"auto_update_interval_hours", "12", "int", "自动更新检测间隔(小时整数,0=关闭,启用时最低1小时)", "12"},
+		{"auto_update_channel", "stable", "string", "自动更新渠道(stable=稳定版,preview=稳定版和测试版)", "stable"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名行为(edit=打开编辑器,navigate=跳转到渠道管理定位)", "edit"},
 		{"channel_stats_range", "today", "string", "渠道管理费用统计范围", "today"},
 		// 健康度排序配置

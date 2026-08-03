@@ -87,7 +87,8 @@ EXPOSE 8080
 
 ENV PORT=8080 \
     SQLITE_PATH=/app/data/ccload.db \
-    GIN_MODE=release
+    GIN_MODE=release \
+    CCLOAD_CONTAINER=1
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
     CMD wget --no-verbose --tries=1 --spider http://localhost:8080/health || exit 1

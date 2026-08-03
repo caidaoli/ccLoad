@@ -3,8 +3,6 @@ package version
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -22,8 +20,9 @@ const (
 
 // GitHubRelease describes the release resolved from GitHub's latest redirect.
 type GitHubRelease struct {
-	TagName string
-	HTMLURL string
+	TagName    string
+	HTMLURL    string
+	Prerelease bool
 }
 
 // Checker 版本检测器
@@ -35,6 +34,7 @@ type Checker struct {
 	lastCheck     time.Time
 	client        *http.Client
 	sources       []ReleaseSource
+	channel       ReleaseChannel
 }
 
 // 全局检测器实例
@@ -42,23 +42,42 @@ var checker = &Checker{
 	client: &http.Client{Timeout: requestTimeout},
 }
 
-// StartChecker 启动版本检测服务
-func StartChecker() {
-	// 启动时立即检测一次
-	go func() {
-		checker.check()
-		// 定时检测
-		ticker := time.NewTicker(checkInterval)
-		defer ticker.Stop()
-		for range ticker.C {
-			checker.check()
+// RunChecker runs version checks until ctx is canceled.
+func RunChecker(ctx context.Context, channel ReleaseChannel) error {
+	parsedChannel, err := ParseReleaseChannel(string(channel))
+	if err != nil {
+		return err
+	}
+
+	checker.mu.Lock()
+	checker.channel = parsedChannel
+	checker.mu.Unlock()
+
+	checker.checkContext(ctx)
+	ticker := time.NewTicker(checkInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			checker.checkContext(ctx)
 		}
-	}()
+	}
 }
 
 // check 执行版本检测
 func (c *Checker) check() {
+	c.checkContext(context.Background())
+}
+
+func (c *Checker) checkContext(ctx context.Context) {
+	c.mu.RLock()
 	sources := c.sources
+	client := c.client
+	channel := c.channel
+	c.mu.RUnlock()
+
 	if len(sources) == 0 {
 		var err error
 		sources, err = releaseSources(os.Getenv("CCLOAD_RELEASE_BASE_URL"))
@@ -68,18 +87,8 @@ func (c *Checker) check() {
 		}
 	}
 
-	var release GitHubRelease
-	var sourceErrors []error
-	for _, source := range sources {
-		var err error
-		release, err = fetchLatestRelease(context.Background(), c.client, source.LatestURL)
-		if err == nil {
-			break
-		}
-		sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-	}
-	if release.TagName == "" {
-		err := errors.Join(sourceErrors...)
+	release, err := resolveLatestRelease(ctx, client, sources, channel)
+	if err != nil {
 		log.Printf("[VersionChecker] 请求发布源失败: %v", err)
 		return
 	}

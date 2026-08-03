@@ -84,9 +84,6 @@ func main() {
 	// 打印启动 Banner
 	version.PrintBanner()
 
-	// 启动后台版本检测（每4小时检查GitHub releases）
-	version.StartChecker()
-
 	// 优先读取.env文件
 	if err := godotenv.Load(); err != nil {
 		log.Printf("未找到 .env 文件: %v", err)
@@ -110,6 +107,7 @@ func main() {
 
 	srv := app.NewServer(store)
 	srv.StartModelCatalogSync()
+	srv.StartVersionChecker()
 
 	// 注入重启函数（避免循环依赖）
 	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。

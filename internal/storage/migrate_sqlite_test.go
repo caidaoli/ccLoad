@@ -1400,6 +1400,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"channel_test_content",
 		"channel_check_interval_hours",
 		"auto_update_interval_hours",
+		"auto_update_channel",
 		"channel_stats_range",
 		"enable_health_score",
 		"success_rate_penalty_weight",
@@ -1428,6 +1429,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "auto_update_interval_hours" && val != "12" {
 			t.Errorf("setting %q default = %q, want 12", key, val)
 		}
+		if key == "auto_update_channel" && val != "stable" {
+			t.Errorf("setting %q default = %q, want stable", key, val)
+		}
 		if key == "stream_timeout" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
@@ -1455,6 +1459,14 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 	}
 	if valueType != "int" {
 		t.Fatalf("auto_update_interval_hours value_type = %q, want int", valueType)
+	}
+	if err := db.QueryRowContext(ctx,
+		"SELECT value_type FROM system_settings WHERE key='auto_update_channel'",
+	).Scan(&valueType); err != nil {
+		t.Fatalf("query auto_update_channel value_type: %v", err)
+	}
+	if valueType != "string" {
+		t.Fatalf("auto_update_channel value_type = %q, want string", valueType)
 	}
 
 	// 验证 idempotent：再次 init 不应报错

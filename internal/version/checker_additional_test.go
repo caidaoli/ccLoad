@@ -2,6 +2,7 @@ package version
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -156,7 +157,7 @@ func TestChecker_Check_ErrorsAndSuccess(t *testing.T) {
 	})
 }
 
-func TestStartChecker_RunsCheckOnce(t *testing.T) {
+func TestRunChecker_RunsCheckOnceAndStopsWithContext(t *testing.T) {
 	origVersion := Version
 	origClient := checker.client
 	t.Cleanup(func() {
@@ -186,7 +187,11 @@ func TestStartChecker_RunsCheckOnce(t *testing.T) {
 		}),
 	}
 
-	StartChecker()
+	ctx, cancel := context.WithCancel(context.Background())
+	stopped := make(chan error, 1)
+	go func() {
+		stopped <- RunChecker(ctx, ReleaseChannelStable)
+	}()
 
 	select {
 	case <-done:
@@ -202,6 +207,16 @@ func TestStartChecker_RunsCheckOnce(t *testing.T) {
 	checker.mu.RUnlock()
 	if lastCheck.IsZero() {
 		t.Fatalf("expected lastCheck to be set")
+	}
+
+	cancel()
+	select {
+	case err := <-stopped:
+		if err != nil {
+			t.Fatalf("RunChecker returned an error: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("expected RunChecker to stop after context cancellation")
 	}
 }
 
