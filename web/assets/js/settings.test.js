@@ -46,6 +46,7 @@ async function loadSettingsPage(t, settings, inputValues) {
   const prompts = [];
   const notifications = [];
   const requests = [];
+  const renderCalls = [];
 
   global.window = {
     t(key) {
@@ -69,7 +70,12 @@ async function loadSettingsPage(t, settings, inputValues) {
       return [];
     }
   };
-  global.TemplateEngine = { render: () => null };
+  global.TemplateEngine = {
+    render(template, data) {
+      renderCalls.push({ template, data });
+      return null;
+    }
+  };
   global.escapeHtml = (value) => String(value);
   global.showError = (error) => {
     throw error;
@@ -110,6 +116,7 @@ async function loadSettingsPage(t, settings, inputValues) {
     inputs,
     notifications,
     prompts,
+    renderCalls,
     requests,
     saveButton,
     setAllowSave(value) {
@@ -147,7 +154,7 @@ test('保存设置须经用户确认', async (t) => {
   assert.equal(saveRequests(page).length, 1);
 });
 
-test('字节型设置以 M 编辑并以字节保存', async (t) => {
+test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
   const transcriptKey = 'responses_ws_max_transcript_bytes';
   const bodyKey = 'max_body_bytes';
   const imageBodyKey = 'max_image_body_bytes';
@@ -187,6 +194,22 @@ test('字节型设置以 M 编辑并以字节保存', async (t) => {
   assert.equal(page.inputs[imageBodyKey].value, '24');
 });
 
+test('固定选项设置使用原生下拉框', async (t) => {
+  const page = await loadSettingsPage(t, [
+    { key: 'channel_stats_range', value: 'this_week', value_type: 'string', description: '' },
+    { key: 'log_channel_click_action', value: 'navigate', value_type: 'string', description: '' }
+  ], {});
+
+  const rows = new Map(page.renderCalls
+    .filter(({ template }) => template === 'tpl-setting-row')
+    .map(({ data }) => [data.key, data.inputHtml]));
+
+  assert.match(rows.get('channel_stats_range'), /<select\b[^>]*id="channel_stats_range"/);
+  assert.match(rows.get('channel_stats_range'), /<option value="this_week" selected>/);
+  assert.match(rows.get('log_channel_click_action'), /<select\b[^>]*id="log_channel_click_action"/);
+  assert.match(rows.get('log_channel_click_action'), /<option value="navigate" selected>/);
+});
+
 test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   const key = 'global_cooldown_detection_rules';
   const rules = '{"rules":[{"enabled":true,"name":"Maintenance","priority":0,"status_codes":[503],"scope":"channel","mode":"fixed","cooldown_seconds":60}]}';
@@ -206,4 +229,42 @@ test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   const requests = saveRequests(page);
   assert.equal(requests.length, 1);
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
+});
+
+test('容器禁止自更新时更新设置不可编辑并说明更新方式', async (t) => {
+  const reason = 'container_self_update_disabled';
+  const page = await loadSettingsPage(t, [
+    {
+      key: 'auto_update_channel',
+      value: 'stable',
+      value_type: 'string',
+      description: '',
+      editable: false,
+      disabled_reason: reason
+    },
+    {
+      key: 'auto_update_interval_hours',
+      value: '12',
+      value_type: 'int',
+      description: '',
+      editable: false,
+      disabled_reason: reason
+    }
+  ], {});
+
+  const updateGroup = page.renderCalls.find(({ template, data }) => (
+    template === 'tpl-setting-group-row' && data.groupId === 'update'
+  ));
+  assert.ok(updateGroup, '应将自动更新设置放入独立分组');
+  assert.match(updateGroup.data.groupNoticeHtml, /settings\.updateAvailability\.containerDisabledTitle/);
+  assert.match(updateGroup.data.groupNoticeHtml, /CCLOAD_ALLOW_SELF_UPDATE=1/);
+
+  const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
+  assert.equal(settingRows.length, 2);
+  for (const { data } of settingRows) {
+    assert.match(data.inputHtml, /\bdisabled\b/);
+    assert.match(data.inputHtml, /aria-describedby="settings-update-availability"/);
+    assert.match(data.resetDisabledAttributes, /\bdisabled\b/);
+    assert.match(data.resetDisabledAttributes, /aria-describedby="settings-update-availability"/);
+  }
 });

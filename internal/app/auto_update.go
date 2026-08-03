@@ -9,9 +9,20 @@ import (
 )
 
 const (
-	defaultAutoUpdateIntervalHours = 12
-	defaultAutoUpdateChannel       = version.ReleaseChannelStable
+	defaultAutoUpdateIntervalHours    = 12
+	defaultAutoUpdateChannel          = version.ReleaseChannelStable
+	autoUpdateIntervalSettingKey      = "auto_update_interval_hours"
+	autoUpdateChannelSettingKey       = "auto_update_channel"
+	autoUpdateDisabledReasonContainer = "container_self_update_disabled"
 )
+
+func selfUpdateDisabledByContainer() bool {
+	return os.Getenv("CCLOAD_CONTAINER") == "1" && os.Getenv("CCLOAD_ALLOW_SELF_UPDATE") != "1"
+}
+
+func isAutoUpdateSetting(key string) bool {
+	return key == autoUpdateIntervalSettingKey || key == autoUpdateChannelSettingKey
+}
 
 func normalizeAutoUpdateIntervalHours(hours int) int {
 	if hours < 0 {
@@ -24,7 +35,7 @@ func normalizeAutoUpdateIntervalHours(hours int) int {
 // StartAutoUpdateLoop starts the configured auto-update loop after RestartFunc is injected.
 func (s *Server) StartAutoUpdateLoop() {
 	inContainer := os.Getenv("CCLOAD_CONTAINER") == "1"
-	if inContainer && os.Getenv("CCLOAD_ALLOW_SELF_UPDATE") != "1" {
+	if selfUpdateDisabledByContainer() {
 		log.Print("[INFO] 容器镜像禁用进程内自动更新；请拉取新的稳定版镜像")
 		return
 	}
@@ -32,7 +43,7 @@ func (s *Server) StartAutoUpdateLoop() {
 		log.Print("[WARN] 已通过 CCLOAD_ALLOW_SELF_UPDATE=1 启用容器进程内自动更新")
 	}
 	autoUpdateIntervalHours := normalizeAutoUpdateIntervalHours(
-		s.configService.GetInt("auto_update_interval_hours", defaultAutoUpdateIntervalHours),
+		s.configService.GetInt(autoUpdateIntervalSettingKey, defaultAutoUpdateIntervalHours),
 	)
 	s.startAutoUpdateLoop(
 		time.Duration(autoUpdateIntervalHours)*time.Hour,
@@ -53,7 +64,7 @@ func (s *Server) StartVersionChecker() {
 }
 
 func (s *Server) configuredReleaseChannel() version.ReleaseChannel {
-	value := s.configService.GetString("auto_update_channel", string(defaultAutoUpdateChannel))
+	value := s.configService.GetString(autoUpdateChannelSettingKey, string(defaultAutoUpdateChannel))
 	channel, err := version.ParseReleaseChannel(value)
 	if err != nil {
 		log.Printf("[WARN] 无效的 auto_update_channel=%q，使用 stable: %v", value, err)
