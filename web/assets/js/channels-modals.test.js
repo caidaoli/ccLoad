@@ -437,7 +437,7 @@ test('WebSocket probe skips disabled URLs and keys and checks every enabled URL'
   }
 });
 
-test('editing a single-URL channel loads its URL statistics', async () => {
+test('editing a single-URL channel loads its URL statistics and keeps quick import available', async () => {
   const channel = {
     id: 73,
     name: 'single-url',
@@ -453,7 +453,7 @@ test('editing a single-URL channel loads its URL statistics', async () => {
     const { editChannel } = loadChannelsModals();
     await editChannel(channel.id);
     assert.ok(fixture.requests.includes(`/admin/channels/${channel.id}/url-stats`));
-    assert.equal(fixture.getElement('quickAddChannelBtn').hidden, true);
+    assert.equal(fixture.getElement('quickAddChannelBtn').hidden, false);
   } finally {
     fixture.restore();
   }

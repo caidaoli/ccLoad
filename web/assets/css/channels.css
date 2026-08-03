@@ -963,9 +963,8 @@
     }
 
     .ch-col-models {
-      width: 160px;
+      width: auto;
       min-width: 160px;
-      max-width: 160px;
     }
 
     @media (min-width: 769px) and (max-width: 1360px) {
@@ -1687,6 +1686,20 @@
     /* 健康指示器 - 表格内微调 */
     .channel-table .health-indicator {
       margin-top: 2px;
+      max-width: 100%;
+      overflow: hidden;
+    }
+
+    .channel-table .health-track {
+      grid-template-columns: repeat(48, minmax(0, 1fr));
+      width: auto;
+      min-width: 0;
+      max-width: none;
+      flex: 1 1 auto;
+    }
+
+    .channel-table .health-rate {
+      flex: 0 0 auto;
     }
 
     .channel-card-top-row {
@@ -2932,6 +2945,12 @@
       white-space: nowrap;
     }
 
+    .inline-url-col-exact.inline-url-cell-center,
+    .inline-url-col-status.inline-url-cell-center {
+      font-size: 0;
+      line-height: 0;
+    }
+
     .inline-url-cell-metric {
       font-family: Monaco, Menlo, monospace;
       font-size: 12px;
@@ -2947,6 +2966,7 @@
     .inline-url-status-placeholder {
       color: var(--neutral-400);
       font-size: 12px;
+      line-height: 1.2;
     }
 
     .inline-url-status-badge {
@@ -4494,17 +4514,6 @@
         width: 32px;
         height: 32px;
         padding: 0;
-      }
-
-      .channel-table .health-indicator {
-        max-width: 100%;
-        overflow: hidden;
-      }
-
-      .channel-table .health-track {
-        width: min(100%, 335px);
-        min-width: 0;
-        flex: 1 1 auto;
       }
 
       .channel-filter-summary {
