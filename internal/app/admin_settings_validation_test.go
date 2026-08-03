@@ -66,6 +66,10 @@ func TestValidateSettingValue(t *testing.T) {
 		{name: "duration_upstream_connection_reuse_limit_reject_negative", key: "upstream_connection_reuse_limit_seconds", valueType: "duration", value: "-1", wantErr: true},
 
 		{name: "string_accepts_any", key: "any_string", valueType: "string", value: "", wantErr: false},
+		{name: "string_auto_update_channel_stable", key: "auto_update_channel", valueType: "string", value: "stable", wantErr: false},
+		{name: "string_auto_update_channel_preview", key: "auto_update_channel", valueType: "string", value: "preview", wantErr: false},
+		{name: "string_auto_update_channel_reject_beta", key: "auto_update_channel", valueType: "string", value: "beta", wantErr: true},
+		{name: "string_auto_update_channel_reject_empty", key: "auto_update_channel", valueType: "string", value: "", wantErr: true},
 
 		{name: "unknown_type_reject", key: "k", valueType: "wtf", value: "x", wantErr: true},
 	}

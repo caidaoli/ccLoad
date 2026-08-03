@@ -12,17 +12,21 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"golang.org/x/mod/semver"
 )
 
 const (
 	updateDownloadTimeout      = 5 * time.Minute
 	defaultRestartPollInterval = 10 * time.Second
 )
+
+var gitDescribeVersionPattern = regexp.MustCompile(`^(v?[0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-fA-F]+)$`)
 
 // UpdateState exposes the current auto-update state.
 type UpdateState struct {
@@ -36,6 +40,7 @@ type UpdateState struct {
 // AutoUpdateOptions configures an AutoUpdater.
 type AutoUpdateOptions struct {
 	Interval            time.Duration
+	Channel             ReleaseChannel
 	RestartPollInterval time.Duration
 	ReleaseSources      []ReleaseSource
 	ExecutablePath      string
@@ -49,6 +54,7 @@ type AutoUpdateOptions struct {
 // AutoUpdater downloads verified release binaries and restarts when idle.
 type AutoUpdater struct {
 	interval            time.Duration
+	channel             ReleaseChannel
 	restartPollInterval time.Duration
 	releaseSources      []ReleaseSource
 	executablePath      string
@@ -70,6 +76,14 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 	if opts.Interval <= 0 {
 		return nil, fmt.Errorf("auto update interval must be positive")
 	}
+	if opts.Channel == "" {
+		opts.Channel = ReleaseChannelStable
+	}
+	channel, err := ParseReleaseChannel(string(opts.Channel))
+	if err != nil {
+		return nil, err
+	}
+	opts.Channel = channel
 	if opts.Restart == nil {
 		return nil, fmt.Errorf("restart callback is required")
 	}
@@ -105,6 +119,7 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 
 	return &AutoUpdater{
 		interval:            opts.Interval,
+		channel:             opts.Channel,
 		restartPollInterval: opts.RestartPollInterval,
 		releaseSources:      append([]ReleaseSource(nil), opts.ReleaseSources...),
 		executablePath:      opts.ExecutablePath,
@@ -167,23 +182,22 @@ func (u *AutoUpdater) updateOnce(ctx context.Context) error {
 		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
 	}
 
+	release, err := resolveLatestRelease(ctx, u.client, u.releaseSources, u.channel)
+	if err != nil {
+		return err
+	}
+
+	u.mu.Lock()
+	u.state.LastCheck = time.Now()
+	u.state.LastError = ""
+	u.mu.Unlock()
+
+	if compareSemanticVersions(release.TagName, baseline) <= 0 {
+		return nil
+	}
+
 	var sourceErrors []error
 	for _, source := range u.releaseSources {
-		release, err := fetchLatestRelease(ctx, u.client, source.LatestURL)
-		if err != nil {
-			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
-			continue
-		}
-
-		u.mu.Lock()
-		u.state.LastCheck = time.Now()
-		u.state.LastError = ""
-		u.mu.Unlock()
-
-		if compareSemanticVersions(release.TagName, baseline) <= 0 {
-			return nil
-		}
-
 		assetURL, err := releaseDownloadURL(source, release.TagName, assetName)
 		if err != nil {
 			sourceErrors = append(sourceErrors, fmt.Errorf("%s: %w", source.Name, err))
@@ -206,7 +220,7 @@ func (u *AutoUpdater) updateOnce(ctx context.Context) error {
 		u.ensureRestartWaiter(ctx)
 		return nil
 	}
-	return fmt.Errorf("all release sources failed: %w", errors.Join(sourceErrors...))
+	return fmt.Errorf("download release %s from all sources: %w", release.TagName, errors.Join(sourceErrors...))
 }
 
 func (u *AutoUpdater) downloadVerifyAndReplace(ctx context.Context, tag, assetName, assetURL, checksumURL string) error {
@@ -461,8 +475,8 @@ func verifyFileChecksum(path, assetName string, checksums map[string]string) err
 }
 
 func compareSemanticVersions(a, b string) int {
-	av, aok := parseSemanticVersion(a)
-	bv, bok := parseSemanticVersion(b)
+	av, aok := normalizeSemanticVersion(a)
+	bv, bok := normalizeSemanticVersion(b)
 	if !aok && !bok {
 		return 0
 	}
@@ -472,40 +486,21 @@ func compareSemanticVersions(a, b string) int {
 	if !bok {
 		return 1
 	}
-	for i := 0; i < len(av) || i < len(bv); i++ {
-		var ai, bi int
-		if i < len(av) {
-			ai = av[i]
-		}
-		if i < len(bv) {
-			bi = bv[i]
-		}
-		if ai > bi {
-			return 1
-		}
-		if ai < bi {
-			return -1
-		}
-	}
-	return 0
+	return semver.Compare(av, bv)
 }
 
-func parseSemanticVersion(v string) ([]int, bool) {
-	v = normalizeVersion(v)
-	if idx := strings.IndexAny(v, "-+"); idx >= 0 {
-		v = v[:idx]
+func normalizeSemanticVersion(v string) (string, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return "", false
 	}
-	parts := strings.Split(v, ".")
-	out := make([]int, 0, len(parts))
-	for _, part := range parts {
-		if part == "" {
-			return nil, false
-		}
-		n, err := strconv.Atoi(part)
-		if err != nil || n < 0 {
-			return nil, false
-		}
-		out = append(out, n)
+	// A source build uses git describe (vX.Y.Z-N-gSHA). Treat the distance and
+	// commit as build metadata so the matching stable tag cannot downgrade it.
+	if match := gitDescribeVersionPattern.FindStringSubmatch(v); match != nil {
+		v = match[1] + "+" + match[2] + ".g" + match[3]
 	}
-	return out, len(out) > 0
+	if v[0] != 'v' {
+		v = "v" + v
+	}
+	return v, semver.IsValid(v)
 }

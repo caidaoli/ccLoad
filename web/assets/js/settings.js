@@ -602,7 +602,7 @@ function initSettingsEventDelegation() {
 
   // 输入变更
   tbody.addEventListener('change', (e) => {
-    const input = e.target.closest('input');
+    const input = e.target.closest('input, select');
     if (input) markChanged(input);
   });
 }
@@ -623,6 +623,14 @@ function renderInput(setting) {
           ${escapeHtml(t('settings.globalCooldownRules.ruleCount', { count }))}
         </span>
       </div>`;
+  }
+
+  if (setting.key === 'auto_update_channel') {
+    return `
+      <select id="${safeKey}" class="settings-input settings-input--text">
+        <option value="stable" ${setting.value === 'stable' ? 'selected' : ''}>${escapeHtml(t('settings.updateChannel.stable'))}</option>
+        <option value="preview" ${setting.value === 'preview' ? 'selected' : ''}>${escapeHtml(t('settings.updateChannel.preview'))}</option>
+      </select>`;
   }
 
   if (byteSettingKeys.has(setting.key)) {
