@@ -290,6 +290,61 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("ChannelModelDisabledRoundTrip", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:    "pg-model-disabled-round-trip",
+			URLs:    model.ChannelURLs{{URL: "https://api.example.com"}},
+			Enabled: true,
+			ModelEntries: []model.ModelEntry{
+				{Model: "enabled-model"},
+				{Model: "disabled-model", Disabled: true},
+			},
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig: %v", err)
+		}
+		assertDisabled := func(entries []model.ModelEntry, want map[string]bool) {
+			t.Helper()
+			if len(entries) != len(want) {
+				t.Fatalf("ModelEntries len=%d want=%d: %+v", len(entries), len(want), entries)
+			}
+			for _, entry := range entries {
+				disabled, ok := want[entry.Model]
+				if !ok {
+					t.Fatalf("unexpected model %q", entry.Model)
+				}
+				if entry.Disabled != disabled {
+					t.Fatalf("model %q Disabled=%v want=%v", entry.Model, entry.Disabled, disabled)
+				}
+			}
+		}
+		assertDisabled(created.ModelEntries, map[string]bool{
+			"enabled-model":  false,
+			"disabled-model": true,
+		})
+
+		created.ModelEntries = []model.ModelEntry{
+			{Model: "enabled-model", Disabled: true},
+			{Model: "disabled-model"},
+		}
+		updated, err := store.UpdateConfig(ctx, created.ID, created)
+		if err != nil {
+			t.Fatalf("UpdateConfig: %v", err)
+		}
+		assertDisabled(updated.ModelEntries, map[string]bool{
+			"enabled-model":  true,
+			"disabled-model": false,
+		})
+	})
+
 	t.Run("CRUD_Settings_Channel_Token_Log", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 

@@ -247,7 +247,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.CreatedAt.UnixMilli(),
 			expiresAt,
 			lastUsedAt,
-			boolToInt(token.IsActive),
+			token.IsActive,
 			token.SuccessCount,
 			token.FailureCount,
 			token.StreamAvgTTFB,
@@ -321,7 +321,7 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		token.CreatedAt.UnixMilli(),
 		expiresAt,
 		lastUsedAt,
-		boolToInt(token.IsActive),
+		token.IsActive,
 		token.SuccessCount,
 		token.FailureCount,
 		token.StreamAvgTTFB,
@@ -404,7 +404,7 @@ func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
 
 	return []any{
 		token.Token, token.Description, token.CreatedAt.UnixMilli(),
-		expiresAt, lastUsedAt, boolToInt(token.IsActive),
+		expiresAt, lastUsedAt, token.IsActive,
 		allowedModelsJSON, allowedChannelIDsJSON,
 		channelRestrictionMode,
 		token.CostLimitMicroUSD, token.MaxConcurrency,
@@ -703,7 +703,7 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    channel_restriction_mode = ?,
 		    max_concurrency = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, boolToInt(token.IsActive), token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, token.IsActive, token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)
@@ -786,10 +786,10 @@ func (s *SQLStore) UpdateTokenStats(
 ) error {
 	// 单条 UPDATE 保证原子性：避免每次请求都做 BEGIN+SELECT+UPDATE+COMMIT
 	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
-	successFlag := boolToInt(isSuccess)
-	failureFlag := boolToInt(!isSuccess)
-	streamUpdateFlag := boolToInt(isStreaming && firstByteTime > 0)
-	nonStreamUpdateFlag := boolToInt(!isStreaming)
+	successFlag := isSuccess
+	failureFlag := !isSuccess
+	streamUpdateFlag := isStreaming && firstByteTime > 0
+	nonStreamUpdateFlag := !isStreaming
 	nowMs := time.Now().UnixMilli()
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
 
