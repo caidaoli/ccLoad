@@ -336,13 +336,6 @@ function flushInlineChannelPrioritySave(input) {
   return saveInlineChannelPriority(input);
 }
 
-function inlineCooldownBadge(c) {
-  const ms = c.cooldown_remaining_ms || 0;
-  if (!ms || ms <= 0) return '';
-  const text = humanizeMS(ms);
-  return `<span style="display: inline-flex; align-items: center; color: #dc2626; font-size: 0.68rem; font-weight: 600; line-height: 1; background: linear-gradient(135deg, #fee2e2 0%, #fecaca 100%); padding: 1px 6px; border-radius: 4px; border: 1px solid #fca5a5; vertical-align: middle;">${window.t('channels.cooldownBadge', { time: text })}</span>`;
-}
-
 function buildInlineNameBadgeStyle({ background, color, borderColor, borderStyle = 'solid' }) {
   return [
     'display: inline-flex',
@@ -502,6 +495,57 @@ function buildChannelLastRequestFailureHtml(stats) {
   </div>`;
 }
 
+function formatCooldownRecoveryTime(remainingMS) {
+  const ms = Math.max(0, Number(remainingMS) || 0);
+  if (ms <= 5 * 60 * 1000) {
+    return window.t('channels.status.secondsUntilRecovery', { count: Math.ceil(ms / 1000) });
+  }
+  return window.t('channels.status.minutesUntilRecovery', { count: Math.ceil(ms / 60000) });
+}
+
+function buildChannelRuntimeStatusHtml(channel, stats) {
+  const statuses = [];
+  const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
+  if (channelCooldownMS > 0) {
+    const text = window.t('channels.status.channelCooldown', { time: formatCooldownRecoveryTime(channelCooldownMS) });
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--channel">${escapeChannelRefreshText(text)}</div>`);
+  }
+
+  const coolingKeys = (Array.isArray(channel.key_cooldowns) ? channel.key_cooldowns : [])
+    .map(key => Number(key?.cooldown_remaining_ms || 0))
+    .filter(remainingMS => remainingMS > 0);
+  if (coolingKeys.length > 0) {
+    const nextRecoveryMS = Math.min(...coolingKeys);
+    const text = window.t('channels.status.keyCooldowns', {
+      count: coolingKeys.length,
+      time: formatCooldownRecoveryTime(nextRecoveryMS)
+    });
+    const label = window.t('channels.status.viewKeyCooldowns', { count: coolingKeys.length });
+    statuses.push(`<button type="button" class="ch-runtime-status ch-runtime-status--keys channel-action-btn" data-action="edit-cooling-keys" data-channel-id="${channel.id}" aria-label="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(text)}</button>`);
+  }
+
+  const coolingModels = (Array.isArray(channel.model_cooldowns) ? channel.model_cooldowns : [])
+    .map(model => Number(model?.cooldown_remaining_ms || 0))
+    .filter(remainingMS => remainingMS > 0);
+  if (coolingModels.length > 0) {
+    const nextRecoveryMS = Math.min(...coolingModels);
+    const text = window.t('channels.status.modelCooldowns', {
+      count: coolingModels.length,
+      time: formatCooldownRecoveryTime(nextRecoveryMS)
+    });
+    statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
+  }
+
+  if (statuses.length === 0) {
+    const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
+    if (lastSuccessHtml) statuses.push(lastSuccessHtml);
+  }
+
+  return statuses.length > 0
+    ? `<div class="ch-runtime-status-list">${statuses.join('')}</div>`
+    : '';
+}
+
 /**
  * 使用模板引擎创建渠道表格行
  * @param {Object} channel - 渠道数据
@@ -535,7 +579,8 @@ function createChannelCard(channel) {
     : '';
 
   const durationHtml = buildChannelTimingHtml(stats);
-  const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
+  const runtimeStatusHtml = buildChannelRuntimeStatusHtml(channel, stats);
+  const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
 
   // 消耗HTML：仅保留 token 相关消耗项
   let usageHtml = '';
@@ -569,7 +614,6 @@ function createChannelCard(channel) {
   // 行class
   const rowClasses = ['channel-table-row'];
   if (isCooldown) rowClasses.push('channel-card-cooldown');
-  const lastRequestFailureHtml = buildChannelLastRequestFailureHtml(stats);
   if (batchRefreshResult && batchRefreshResult.status) {
     rowClasses.push(`channel-row-refresh-${batchRefreshResult.status}`);
   }
@@ -592,11 +636,10 @@ function createChannelCard(channel) {
     modelsText: modelsText,
     priority: channel.priority,
     effectivePriorityHtml: buildEffectivePriorityHtml(channel),
-    cooldownBadge: inlineCooldownBadge(channel),
     durationHtml: durationHtml,
     usageHtml: usageHtml,
     costHtml: costHtml,
-    lastSuccessHtml: lastSuccessHtml,
+    runtimeStatusHtml: runtimeStatusHtml,
     lastRequestFailureHtml: lastRequestFailureHtml,
     healthHtml: healthHtml,
     enabled: channel.enabled,
@@ -605,19 +648,28 @@ function createChannelCard(channel) {
     durationCellClass: durationHtml ? '' : 'ch-mobile-empty',
     usageCellClass: usageHtml ? '' : 'ch-mobile-empty',
     costCellClass: costHtml ? '' : 'ch-mobile-empty',
-    lastSuccessCellClass: lastSuccessHtml ? '' : 'ch-mobile-empty',
+    lastSuccessCellClass: runtimeStatusHtml ? '' : 'ch-mobile-empty',
     mobileLabelModels: window.t('channels.table.models'),
     mobileLabelPriority: window.t('channels.table.priority'),
     mobileLabelDuration: window.t('channels.table.duration'),
     mobileLabelUsage: window.t('channels.table.usage'),
     mobileLabelCost: window.t('channels.stats.cost'),
-    mobileLabelLastSuccess: window.t('channels.table.lastSuccess'),
+    mobileLabelLastSuccess: window.t('channels.table.statusAndLastSuccess'),
     mobileLabelEnabled: window.t('channels.table.enabled'),
     mobileLabelActions: window.t('channels.table.actions')
   };
 
   const card = TemplateEngine.render('tpl-channel-card', cardData);
   return card;
+}
+
+async function editChannelCoolingKeys(channelId) {
+  await editChannel(channelId);
+  if (editingChannelId !== channelId) return;
+
+  const filter = document.getElementById('keyStatusFilter');
+  if (filter) filter.value = 'cooldown';
+  filterKeysByStatus('cooldown');
 }
 
 /**
@@ -703,7 +755,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -713,6 +765,9 @@ function initChannelEventDelegation() {
     switch (action) {
       case 'edit':
         editChannel(channelId);
+        break;
+      case 'edit-cooling-keys':
+        editChannelCoolingKeys(channelId);
         break;
       case 'test':
         testChannel(channelId, channelName);
@@ -764,7 +819,7 @@ function renderChannels(channelsToRender = channels) {
       <th class="ch-col-duration">${window.t('channels.table.duration')}</th>
       <th class="ch-col-usage">${window.t('channels.table.usage')}</th>
       <th class="ch-col-cost">${window.t('channels.stats.cost')}</th>
-      <th class="ch-col-last-success">${window.t('channels.table.lastSuccess')}</th>
+      <th class="ch-col-last-success">${window.t('channels.table.statusAndLastSuccess')}</th>
       <th class="ch-col-enabled">${window.t('channels.table.enabled')}</th>
       <th class="ch-col-actions">${window.t('channels.table.actions')}</th>
     </tr>

@@ -104,6 +104,13 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		allKeyCooldowns = make(map[int64]map[int]time.Time)
 	}
 
+	// 批量查询所有模型冷却状态（缓存优先）
+	allModelCooldowns, err := s.getAllModelCooldowns(c.Request.Context())
+	if err != nil {
+		log.Printf("[WARN] 批量查询模型冷却状态失败: %v", err)
+		allModelCooldowns = make(map[int64]map[string]time.Time)
+	}
+
 	// 批量查询所有API Keys（一次查询替代 N 次）
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
 	if err != nil {
@@ -131,6 +138,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		successRateMap:      successRateMap,
 		channelCooldownsMap: allChannelCooldowns,
 		keyCooldownsMap:     allKeyCooldowns,
+		modelCooldownsMap:   allModelCooldowns,
 		apiKeysMap:          allAPIKeys,
 	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
@@ -288,11 +296,12 @@ type channelEnrichmentContext struct {
 	successRateMap      map[int64]float64
 	channelCooldownsMap map[int64]time.Time
 	keyCooldownsMap     map[int64]map[int]time.Time
+	modelCooldownsMap   map[int64]map[string]time.Time
 	apiKeysMap          map[int64][]*model.APIKey
 }
 
 // enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
-// 渠道冷却剩余时间、健康度模式下的有效优先级与成功率、Key 策略与各 Key 冷却详情。
+// 渠道冷却剩余时间、健康度模式下的有效优先级与成功率、Key 策略、Key 与模型冷却详情。
 func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWithCooldown {
 	oc := ChannelWithCooldown{Config: cfg}
 
@@ -329,6 +338,7 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 		keyCooldowns = append(keyCooldowns, keyInfo)
 	}
 	oc.KeyCooldowns = keyCooldowns
+	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
 	return oc
 }
 

@@ -90,7 +90,7 @@ func (s *Server) buildProxyRequest(
 	baseURL string,
 ) (*http.Request, error) {
 	// 1. 构建完整 URL
-	upstreamURL := buildUpstreamURL(baseURL, requestPath, rawQuery)
+	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQueryForAttempt(reqCtx, rawQuery))
 
 	// 1.5 anyrouter Anthropic thinking 兜底归一
 	body = normalizeAnyrouterAdaptiveThinking(cfg, runtimeUpstreamProtocol(reqCtx, cfg), requestPath, body)
@@ -147,6 +147,25 @@ func (s *Server) buildProxyRequest(
 	}
 
 	return req, nil
+}
+
+func upstreamQueryForAttempt(reqCtx *requestContext, rawQuery string) string {
+	if reqCtx == nil {
+		return rawQuery
+	}
+
+	clientProtocol := reqCtx.transformPlan.ClientProtocol
+	if clientProtocol == "" {
+		clientProtocol = reqCtx.clientProtocol
+	}
+	upstreamProtocol := reqCtx.transformPlan.UpstreamProtocol
+	if upstreamProtocol == "" {
+		upstreamProtocol = reqCtx.upstreamProtocol
+	}
+	if clientProtocol != "" && upstreamProtocol != "" && clientProtocol != upstreamProtocol {
+		return ""
+	}
+	return rawQuery
 }
 
 func runtimeUpstreamProtocol(reqCtx *requestContext, cfg *model.Config) string {

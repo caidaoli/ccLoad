@@ -1406,7 +1406,7 @@
           <div class="ch-url-line" title="{{url}}">{{url}}</div>
           <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>
           {{{healthHtml}}}
-          <div class="ch-last-request-slot ch-last-request-slot--desktop">{{{lastRequestFailureHtml}}}</div>
+          <div class="ch-last-request-slot">{{{lastRequestFailureHtml}}}</div>
         </div>
       </td>
       <td class="ch-col-models" data-mobile-label="{{mobileLabelModels}}">
@@ -1418,7 +1418,7 @@
       <td class="ch-col-duration {{durationCellClass}}" data-mobile-label="{{mobileLabelDuration}}">{{{durationHtml}}}</td>
       <td class="ch-col-usage {{usageCellClass}}" data-mobile-label="{{mobileLabelUsage}}">{{{usageHtml}}}</td>
       <td class="ch-col-cost {{costCellClass}}" data-mobile-label="{{mobileLabelCost}}">{{{costHtml}}}</td>
-      <td class="ch-col-last-success {{lastSuccessCellClass}}" data-mobile-label="{{mobileLabelLastSuccess}}">{{{lastSuccessHtml}}}<div class="ch-last-request-slot ch-last-request-slot--mobile">{{{lastRequestFailureHtml}}}</div></td>
+      <td class="ch-col-last-success {{lastSuccessCellClass}}" data-mobile-label="{{mobileLabelLastSuccess}}">{{{runtimeStatusHtml}}}</td>
       <td class="ch-col-enabled" data-mobile-label="{{mobileLabelEnabled}}">
         <button class="channel-enable-switch channel-action-btn {{toggleSwitchClass}}" data-action="toggle"
           data-channel-id="{{id}}" data-enabled="{{enabled}}" role="switch" aria-checked="{{enabled}}"
@@ -1428,7 +1428,6 @@
       </td>
       <td class="ch-col-actions" data-mobile-label="{{mobileLabelActions}}">
         <div class="ch-actions-stack">
-          <div class="ch-action-statuses">{{{cooldownBadge}}}</div>
           <div class="ch-action-group">
             <button class="btn-icon channel-action-btn" data-action="edit" data-channel-id="{{id}}"
               data-i18n-title="common.edit" title="编辑" aria-label="编辑">

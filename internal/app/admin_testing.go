@@ -1683,7 +1683,7 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	}
 
 	statusCode, errorBody, headers := buildTestFailureClassificationInput(result)
-	if util.IsModelScopedHTTPStatus(statusCode) {
+	if util.IsModelScopedHTTPStatus(statusCode) || util.IsModelScopedStreamFailure(statusCode) {
 		return false, false
 	}
 
