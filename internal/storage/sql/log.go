@@ -290,7 +290,7 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
 				e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
-				e.DebugData.RespHeaders, e.DebugData.RespBody, boolToInt(e.DebugData.ProtocolTransformed),
+				e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.ProtocolTransformed,
 				e.DebugData.OriginalReqURL, e.DebugData.OriginalReqHeaders, e.DebugData.OriginalReqBody,
 				e.DebugData.TranslatedRespStatus, e.DebugData.TranslatedRespHeaders, e.DebugData.TranslatedRespBody,
 			); err != nil {
@@ -319,7 +319,7 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
 			e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
-			e.DebugData.RespHeaders, e.DebugData.RespBody, boolToInt(e.DebugData.ProtocolTransformed),
+			e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.ProtocolTransformed,
 			e.DebugData.OriginalReqURL, e.DebugData.OriginalReqHeaders, e.DebugData.OriginalReqBody,
 			e.DebugData.TranslatedRespStatus, e.DebugData.TranslatedRespHeaders, e.DebugData.TranslatedRespBody,
 		); err != nil {
@@ -348,7 +348,7 @@ func logRowArgs(e *model.LogEntry) []any {
 		timeMs, minuteBucket, e.Model, e.ActualModel,
 		model.NormalizeStoredLogSource(e.LogSource),
 		e.ChannelID, e.StatusCode, e.Message, e.Duration,
-		boolToInt(e.IsStreaming), boolToInt(e.UpstreamWebsocket), e.FirstByteTime, maskedKey, apiKeyHash,
+		e.IsStreaming, e.UpstreamWebsocket, e.FirstByteTime, maskedKey, apiKeyHash,
 		e.AuthTokenID, e.ClientProtocol, e.UpstreamProtocol, e.ClientIP, e.BaseURL, e.ServiceTier, e.ThinkingEffort,
 		e.InputTokens, e.OutputTokens, e.ReasoningTokens, e.CacheReadInputTokens, e.CacheCreationInputTokens,
 		e.Cache5mInputTokens, e.Cache1hInputTokens, e.Cost,

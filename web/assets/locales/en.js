@@ -284,6 +284,8 @@ window.I18N_LOCALES['en'] = {
   'channels.fetchRateLoading': 'Fetching...',
   'channels.proxyURL': 'Proxy',
   'channels.proxyURLPlaceholder': 'http:// | socks5://',
+  'channels.retryOtherKeysOnFailure': 'Try another key on failure',
+  'channels.retryOtherKeysOnFailureHelp': 'On a channel- or model-level upstream failure, cool the current key and try another key in this channel first. Use this when keys route to independent providers behind one relay.',
 
   // Delete Confirmation (flattened keys)
   'channels.confirmDeleteTitle': 'Confirm Delete',

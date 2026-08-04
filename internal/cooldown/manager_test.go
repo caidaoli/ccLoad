@@ -547,6 +547,150 @@ func TestHandleError_StreamFailuresCoolOnlyCurrentModel(t *testing.T) {
 	}
 }
 
+func TestHandleErrorWithKeyFallback(t *testing.T) {
+	ctx := context.Background()
+
+	tests := []struct {
+		name               string
+		input              ErrorInput
+		wantAction         Action
+		wantKeyCooldown    bool
+		wantKeyCooldownFor time.Duration
+		wantChannelCool    bool
+		wantModelCooldown  bool
+		wantKeyFallback    bool
+	}{
+		{
+			name: "http 5xx retries another key",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 502,
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyFallback: true,
+		},
+		{
+			name: "first byte timeout retries another key",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: util.StatusFirstByteTimeout, IsNetworkError: true,
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyFallback: true,
+		},
+		{
+			name: "connection failure retries another key",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 502, IsNetworkError: true,
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyFallback: true,
+		},
+		{
+			name: "model cooldown reset retries another key until reset",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 429,
+				ErrorBody: []byte(`{"error":{"code":"model_cooldown","message":"model is cooling down","model":"test-model","reset_seconds":600}}`),
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 10 * time.Minute, wantKeyFallback: true,
+		},
+		{
+			name: "configured model cooldown retries another key until rule deadline",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 502,
+				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "model relay maintenance", Priority: 0, StatusCodes: []int{502},
+					Scope: model.CooldownScopeModel, Mode: model.CooldownModeFixed, CooldownSeconds: 420,
+				}}},
+			},
+			wantAction: ActionRetryKey, wantKeyCooldown: true, wantKeyCooldownFor: 7 * time.Minute, wantKeyFallback: true,
+		},
+		{
+			name: "websocket connection limit remains channel scoped",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 429,
+				ErrorBody: []byte(`{"type":"error","error":{"code":"websocket_connection_limit_reached"}}`),
+			},
+			wantAction: ActionRetryChannel, wantChannelCool: true,
+		},
+		{
+			name: "configured channel cooldown remains channel scoped",
+			input: ErrorInput{
+				Model: "test-model", KeyIndex: 0, StatusCode: 502,
+				CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+					Enabled: true, Name: "planned relay maintenance", Priority: 0, StatusCodes: []int{502},
+					Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 120,
+				}}},
+			},
+			wantAction: ActionRetryChannel, wantChannelCool: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store, cleanup := setupTestStore(t)
+			defer cleanup()
+
+			cfg := createTestChannel(t, store, "key-fallback-"+tt.name)
+			if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+				{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "key-a", KeyStrategy: model.KeyStrategySequential},
+				{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "key-b", KeyStrategy: model.KeyStrategySequential},
+			}); err != nil {
+				t.Fatalf("CreateAPIKeysBatch: %v", err)
+			}
+
+			input := tt.input
+			input.ChannelID = cfg.ID
+			manager := NewManager(store, nil)
+			if got := manager.CanFallbackToOtherKey(input); got != tt.wantKeyFallback {
+				t.Fatalf("CanFallbackToOtherKey()=%v, want %v", got, tt.wantKeyFallback)
+			}
+			before := time.Now()
+			action := manager.HandleErrorWithKeyFallback(ctx, input)
+			after := time.Now()
+			if action != tt.wantAction {
+				t.Fatalf("action=%v, want %v", action, tt.wantAction)
+			}
+
+			key, err := store.GetAPIKey(ctx, cfg.ID, 0)
+			if err != nil {
+				t.Fatalf("GetAPIKey: %v", err)
+			}
+			keyCooled := time.Unix(key.CooldownUntil, 0).After(time.Now())
+			if keyCooled != tt.wantKeyCooldown {
+				t.Fatalf("key cooled=%v, want %v (key=%+v)", keyCooled, tt.wantKeyCooldown, key)
+			}
+			if tt.wantKeyCooldownFor > 0 {
+				until := time.Unix(key.CooldownUntil, 0)
+				if !cooldownWithinDuration(until, before, after, tt.wantKeyCooldownFor) {
+					t.Fatalf("key cooldownUntil=%s, want duration %s", until.Format(time.RFC3339), tt.wantKeyCooldownFor)
+				}
+			}
+
+			otherKey, err := store.GetAPIKey(ctx, cfg.ID, 1)
+			if err != nil {
+				t.Fatalf("GetAPIKey(1): %v", err)
+			}
+			if time.Unix(otherKey.CooldownUntil, 0).After(time.Now()) {
+				t.Fatalf("fallback must leave the other key available (key=%+v)", otherKey)
+			}
+
+			updated, err := store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				t.Fatalf("GetConfig: %v", err)
+			}
+			channelCooled := updated.IsCoolingDown(time.Now())
+			if channelCooled != tt.wantChannelCool {
+				t.Fatalf("channel cooled=%v, want %v", channelCooled, tt.wantChannelCool)
+			}
+
+			cooldowns, err := store.GetAllModelCooldowns(ctx)
+			if err != nil {
+				t.Fatalf("GetAllModelCooldowns: %v", err)
+			}
+			_, modelCooled := cooldowns[cfg.ID]["test-model"]
+			if modelCooled != tt.wantModelCooldown {
+				t.Fatalf("model cooled=%v, want %v", modelCooled, tt.wantModelCooldown)
+			}
+		})
+	}
+}
+
 func TestHandleError_HTTP5xxCoolsOnlyCurrentModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

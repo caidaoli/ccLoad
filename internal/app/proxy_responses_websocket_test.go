@@ -133,6 +133,53 @@ func waitForResponsesWebsocketAttachments(
 	}
 }
 
+func TestResponsesExecutionSessionPreferredChannelLifecycle(t *testing.T) {
+	store := newResponsesExecutionSessionStore(nil, 1024, 0)
+	defer store.close()
+
+	parentID := responsesExecutionSessionID(http.Header{
+		"Session-Id": {"shared"},
+		"Thread-Id":  {"parent"},
+	})
+	childID := responsesExecutionSessionID(http.Header{
+		"Session-Id": {"shared"},
+		"Thread-Id":  {"child"},
+	})
+	if parentID == "" || childID == "" || parentID == childID || responsesExecutionSessionID(http.Header{}) != "" {
+		t.Fatalf("unexpected execution identities parent=%q child=%q", parentID, childID)
+	}
+
+	parent, releaseParent, err := store.acquire("subject", parentID)
+	if err != nil {
+		t.Fatalf("acquire parent session: %v", err)
+	}
+	parent.rememberPreferredChannel(11)
+	parent.rememberPreferredChannel(22)
+	if channelID, ok := parent.preferredChannelSnapshot(); !ok || channelID != 11 {
+		t.Fatalf("preferred channel=%d ok=%v, want first successful channel 11", channelID, ok)
+	}
+
+	child, releaseChild, err := store.acquire("subject", childID)
+	if err != nil {
+		t.Fatalf("acquire child session: %v", err)
+	}
+	if channelID, ok := child.preferredChannelSnapshot(); ok || channelID != 0 {
+		t.Fatalf("child inherited parent preferred channel=%d ok=%v", channelID, ok)
+	}
+	releaseChild()
+	releaseParent()
+
+	store.cleanup(time.Now().Add(defaultResponsesExecutionSessionTTL*time.Minute + time.Second))
+	reopened, releaseReopened, err := store.acquire("subject", parentID)
+	if err != nil {
+		t.Fatalf("reacquire expired parent session: %v", err)
+	}
+	defer releaseReopened()
+	if channelID, ok := reopened.preferredChannelSnapshot(); ok || channelID != 0 {
+		t.Fatalf("expired session retained preferred channel=%d ok=%v", channelID, ok)
+	}
+}
+
 func readResponsesWebsocketRateLimit(t testing.TB, conn *websocket.Conn) {
 	t.Helper()
 	var event struct {
@@ -2778,12 +2825,14 @@ func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "pinned-native", upstreamProtocol: "codex", websockets: true,
-		models: "gpt-test", apiKey: "sk-pin-0", priority: 100,
-	}}, map[int]string{0: upstream.URL})
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "pinned-native", upstreamProtocol: "codex", websockets: true,
+			models: "gpt-test", apiKey: "sk-pin-0", priority: 100},
+		{name: "globally-preferred-native", upstreamProtocol: "codex", websockets: true,
+			models: "gpt-test", apiKey: "sk-other", priority: 90},
+	}, map[int]string{0: upstream.URL, 1: upstream.URL})
 	configs, err := env.store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 1 {
+	if err != nil || len(configs) != 2 {
 		t.Fatalf("list pinned config: configs=%d err=%v", len(configs), err)
 	}
 	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
@@ -2812,6 +2861,13 @@ func TestNativeCodexWebsocketPinsChannelKeyAndURLAcrossTurns(t *testing.T) {
 			t.Fatalf("write pinned turn %d: %v", turn, err)
 		}
 		readWebsocketUntilType(t, downstream, "response.completed")
+		if turn == 1 {
+			configs[1].Priority = 200
+			if _, err := env.store.UpdateConfig(context.Background(), configs[1].ID, configs[1]); err != nil {
+				t.Fatalf("raise competing channel priority: %v", err)
+			}
+			env.server.InvalidateChannelListCache()
+		}
 	}
 
 	if handshakes.Load() != 1 {
@@ -3703,6 +3759,141 @@ func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
 	case <-connectionClosed:
 	case <-time.After(2 * time.Second):
 		t.Fatal("expired websocket did not close after active turn drained")
+	}
+}
+
+func TestNativeCodexWebsocketSequentialKeyFailbackReplaysBetweenTurns(t *testing.T) {
+	var phase atomic.Int32
+	var keyAHandshakes, keyBHandshakes atomic.Int32
+	keyAReplay := make(chan map[string]any, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authorization := r.Header.Get("Authorization")
+		if !websocket.IsWebSocketUpgrade(r) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, `{"error":{"message":"key A unavailable"}}`)
+			return
+		}
+
+		if authorization == "Bearer sk-ws-a" && phase.Load() == 0 {
+			keyAHandshakes.Add(1)
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade keyed upstream websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+
+		switch authorization {
+		case "Bearer sk-ws-a":
+			keyAHandshakes.Add(1)
+			var replay map[string]any
+			if err := conn.ReadJSON(&replay); err != nil {
+				t.Errorf("read key A replay: %v", err)
+				return
+			}
+			keyAReplay <- replay
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.completed",
+				"response": map[string]any{
+					"id": "resp-a-3", "output": []any{map[string]any{
+						"type": "message", "role": "assistant", "content": "answer three",
+					}},
+					"usage": map[string]any{"input_tokens": 5, "output_tokens": 1, "total_tokens": 6},
+				},
+			})
+		case "Bearer sk-ws-b":
+			keyBHandshakes.Add(1)
+			for responseNumber := 1; responseNumber <= 2; responseNumber++ {
+				var request map[string]any
+				if err := conn.ReadJSON(&request); err != nil {
+					if responseNumber == 2 {
+						return
+					}
+					t.Errorf("read key B request: %v", err)
+					return
+				}
+				_ = conn.WriteJSON(map[string]any{
+					"type": "response.completed",
+					"response": map[string]any{
+						"id": fmt.Sprintf("resp-b-%d", responseNumber), "output": []any{map[string]any{
+							"type": "message", "role": "assistant", "content": fmt.Sprintf("answer %d", responseNumber),
+						}},
+						"usage": map[string]any{"input_tokens": responseNumber, "output_tokens": 1, "total_tokens": responseNumber + 1},
+					},
+				})
+			}
+		default:
+			t.Errorf("unexpected upstream authorization %q", authorization)
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "keyed-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", apiKey: "sk-ws-a", priority: 100, retryOtherKeysOnFailure: true,
+	}}, map[int]string{0: upstream.URL})
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-ws-b", KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("create websocket fallback key: %v", err)
+	}
+	env.server.maxKeyRetries = 1
+
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set keyed websocket deadline: %v", err)
+	}
+	writeTurn := func(input, previousResponseID string) {
+		t.Helper()
+		request := map[string]any{
+			"type": "response.create", "model": "gpt-test",
+			"input": []any{map[string]any{"role": "user", "content": input}},
+		}
+		if previousResponseID != "" {
+			request["previous_response_id"] = previousResponseID
+		}
+		if err := downstream.WriteJSON(request); err != nil {
+			t.Fatalf("write keyed websocket turn: %v", err)
+		}
+		readWebsocketUntilType(t, downstream, "response.completed")
+	}
+
+	writeTurn("one", "")
+	if keyAHandshakes.Load() != 1 || keyBHandshakes.Load() != 1 {
+		t.Fatalf("first turn A/B handshakes=%d/%d, want 1/1",
+			keyAHandshakes.Load(), keyBHandshakes.Load())
+	}
+
+	phase.Store(1)
+	writeTurn("two", "resp-b-1")
+	if keyAHandshakes.Load() != 1 || keyBHandshakes.Load() != 1 {
+		t.Fatalf("cooled A must keep B socket: A/B handshakes=%d/%d, want 1/1",
+			keyAHandshakes.Load(), keyBHandshakes.Load())
+	}
+
+	if err := env.store.ResetKeyCooldown(context.Background(), 1, 0); err != nil {
+		t.Fatalf("recover websocket key A: %v", err)
+	}
+	env.server.invalidateChannelRelatedCache(1)
+	writeTurn("three", "resp-b-2")
+
+	replay := <-keyAReplay
+	if _, exists := replay["previous_response_id"]; exists {
+		t.Fatalf("new Key websocket received stale previous_response_id: %#v", replay)
+	}
+	input, ok := replay["input"].([]any)
+	if !ok || len(input) != 5 {
+		t.Fatalf("new Key replay input=%#v, want full five-item transcript", replay["input"])
+	}
+	if keyAHandshakes.Load() != 2 || keyBHandshakes.Load() != 1 {
+		t.Fatalf("recovered A must replace idle B socket: A/B handshakes=%d/%d, want 2/1",
+			keyAHandshakes.Load(), keyBHandshakes.Load())
 	}
 }
 

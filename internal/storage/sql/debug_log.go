@@ -19,7 +19,7 @@ func (s *SQLStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) erro
 				translated_resp_status, translated_resp_headers, translated_resp_body)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		e.LogID, e.CreatedAt, e.ReqMethod, e.ReqURL, e.ReqHeaders, e.ReqBody, e.RespStatus, e.RespHeaders, e.RespBody,
-		boolToInt(e.ProtocolTransformed), e.OriginalReqURL, e.OriginalReqHeaders, e.OriginalReqBody,
+		e.ProtocolTransformed, e.OriginalReqURL, e.OriginalReqHeaders, e.OriginalReqBody,
 		e.TranslatedRespStatus, e.TranslatedRespHeaders, e.TranslatedRespBody,
 	)
 	return err

@@ -325,6 +325,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}
 
 	var executionSession *responsesExecutionSession
+	var routingSession *responsesExecutionSession
 	var executionSessionRequestBody []byte
 	var nativeRequestBody []byte
 	if clientProtocol == protocol.Codex && isStreaming && requestMethod == http.MethodPost &&
@@ -346,6 +347,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 				return
 			}
 			defer executionSession.releaseTurn()
+			routingSession = executionSession
 			replayBody, incrementalBody, localContinuation, errNormalize :=
 				executionSession.transcript.normalizeHTTPRequests(all)
 			if errNormalize != nil {
@@ -409,9 +411,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 			}
 		}
 	}
-	if executionSession != nil {
-		if pinnedTarget, ok := executionSession.upstream.affinitySnapshot(); ok {
-			cands = prioritizePinnedCodexChannel(cands, pinnedTarget.channelID)
+	if routingSession != nil {
+		if channelID, ok := routingSession.routeChannelSnapshot(); ok {
+			cands = prioritizePinnedCodexChannel(cands, channelID)
 		}
 	}
 
@@ -430,6 +432,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		clientIP:       c.ClientIP(),
 		startTime:      startTime,
 		thinkingEffort: thinkingEffort,
+	}
+	if routingSession != nil {
+		reqCtx.routingSession = routingSession
 	}
 	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream

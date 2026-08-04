@@ -2640,6 +2640,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	}
 
 	maxKeyRetries := min(s.maxKeyRetries, actualKeyCount)
+	if cfg.RetryOtherKeysOnFailure {
+		maxKeyRetries = actualKeyCount
+	}
 
 	triedKeys := make(map[int]bool) // 本次请求内已尝试过的Key
 
@@ -2668,7 +2671,10 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 		}
 
 		// 选择可用的API Key（直接传入apiKeys，避免重复查询）
-		keyIndex, selectedKey, pinned := selectPinnedCodexWebsocketKey(cfg, apiKeys, triedKeys, reqCtx.nativeCodexWS)
+		keyIndex, selectedKey, pinned := 0, "", false
+		if !cfg.RetryOtherKeysOnFailure {
+			keyIndex, selectedKey, pinned = selectPinnedCodexWebsocketKey(cfg, apiKeys, triedKeys, reqCtx.nativeCodexWS)
+		}
 		var selectErr error
 		if !pinned {
 			keyIndex, selectedKey, selectErr = s.selectKeyWithFallback(cfg, apiKeys, triedKeys)
