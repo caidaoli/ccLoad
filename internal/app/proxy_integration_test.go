@@ -762,6 +762,41 @@ func TestProxy_ModelCooldownUsesCustomRuleFinalModelKey(t *testing.T) {
 	}
 }
 
+func TestProxy_CrossProtocolTranslationDropsClientQuery(t *testing.T) {
+	var upstreamPath string
+	var upstreamQuery string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		upstreamQuery = r.URL.RawQuery
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_1","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "drop-cross-protocol-query", upstreamProtocol: util.ProtocolOpenAI, models: "shared-model",
+	}}, map[int]string{0: upstream.URL})
+
+	w := doProxyRequest(t, env.engine, "/v1/messages?beta=true&prompt_cache_key=client-cache", map[string]any{
+		"model":      "shared-model",
+		"max_tokens": 16,
+		"messages": []map[string]any{{
+			"role":    "user",
+			"content": []map[string]string{{"type": "text", "text": "hi"}},
+		}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200: %s", w.Code, w.Body.String())
+	}
+	if upstreamPath != "/v1/chat/completions" {
+		t.Fatalf("upstream path=%q, want /v1/chat/completions", upstreamPath)
+	}
+	if upstreamQuery != "" {
+		t.Fatalf("cross-protocol upstream query=%q, want empty", upstreamQuery)
+	}
+}
+
 func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
 	var upstreamHits atomic.Int64
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

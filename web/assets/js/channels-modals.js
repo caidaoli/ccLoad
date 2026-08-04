@@ -412,9 +412,16 @@ function initChannelEditorActions() {
   ensureScheduledCheckModelCombobox();
 }
 
+function resetModalKeyStatusFilter() {
+  if (typeof currentKeyStatusFilter !== 'undefined') currentKeyStatusFilter = 'all';
+  const filter = document.getElementById('keyStatusFilter');
+  if (filter) filter.value = 'all';
+}
+
 async function showAddModal() {
   editingChannelId = null;
   currentChannelKeyCooldowns = [];
+  resetModalKeyStatusFilter();
   await syncScheduledCheckVisibility();
 
   setChannelModalTitle('channels.addChannel');
@@ -460,6 +467,8 @@ async function showAddModal() {
 async function editChannel(id) {
   const channel = await resolveEditableChannel(id);
   if (!channel) return;
+
+  resetModalKeyStatusFilter();
 
   const scheduledVisibilityPromise = syncScheduledCheckVisibility();
   const apiKeysPromise = fetchEditableChannelKeys(id);
@@ -1623,6 +1632,7 @@ async function copyChannel(id, name) {
   editingChannelId = null;
   clearChannelDuplicateHint();
   currentChannelKeyCooldowns = [];
+  resetModalKeyStatusFilter();
   setChannelModalTitle('channels.copyChannel');
   document.getElementById('channelName').value = copiedName;
   setInlineURLTableData(channel.urls);

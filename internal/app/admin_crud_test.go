@@ -102,6 +102,64 @@ func TestHandleListChannels(t *testing.T) {
 	}
 }
 
+func TestHandleListChannelsIncludesActiveModelCooldowns(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "model-cooldown-list",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority:     100,
+		ModelEntries: []model.ModelEntry{{Model: "external-model", RedirectModel: "upstream-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建测试渠道失败: %v", err)
+	}
+
+	until := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	if err := store.SetModelCooldown(ctx, created.ID, "upstream-model", until); err != nil {
+		t.Fatalf("设置模型冷却失败: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.handleListChannels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var resp struct {
+		Success bool `json:"success"`
+		Data    []struct {
+			ID             int64               `json:"id"`
+			ModelCooldowns []ModelCooldownInfo `json:"model_cooldowns"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应失败: %v", err)
+	}
+	if !resp.Success || len(resp.Data) != 1 {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	if resp.Data[0].ID != created.ID {
+		t.Fatalf("id=%d, want %d", resp.Data[0].ID, created.ID)
+	}
+	if len(resp.Data[0].ModelCooldowns) != 1 {
+		t.Fatalf("model_cooldowns=%v, want one active cooldown", resp.Data[0].ModelCooldowns)
+	}
+	got := resp.Data[0].ModelCooldowns[0]
+	if got.Model != "upstream-model" {
+		t.Fatalf("model=%q, want upstream-model", got.Model)
+	}
+	if got.CooldownUntil == nil || !got.CooldownUntil.Equal(until) {
+		t.Fatalf("cooldown_until=%v, want %v", got.CooldownUntil, until)
+	}
+	if got.CooldownRemainingMS <= 0 {
+		t.Fatalf("cooldown_remaining_ms=%d, want > 0", got.CooldownRemainingMS)
+	}
+}
+
 func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

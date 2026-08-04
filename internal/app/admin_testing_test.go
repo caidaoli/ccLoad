@@ -422,6 +422,111 @@ func TestTestChannelAPI_MultiURL5xxDoesNotFallbackOrCooldownURL(t *testing.T) {
 	}
 }
 
+func TestTestChannelAPI_MultiURLStreamFailureDoesNotFallbackOrCooldownURL(t *testing.T) {
+	tests := []struct {
+		name             string
+		wantStatus       int
+		configureTimeout func(*Server)
+		serveFailure     func(http.ResponseWriter, *http.Request)
+	}{
+		{
+			name:       "first_valid_content_timeout",
+			wantStatus: util.StatusFirstByteTimeout,
+			configureTimeout: func(srv *Server) {
+				srv.firstByteTimeout = 25 * time.Millisecond
+			},
+			serveFailure: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				flusher, _ := w.(http.Flusher)
+				ticker := time.NewTicker(5 * time.Millisecond)
+				defer ticker.Stop()
+				for {
+					select {
+					case <-r.Context().Done():
+						return
+					case <-ticker.C:
+						_, _ = io.WriteString(w, ": keep-alive\n\n")
+						flusher.Flush()
+					}
+				}
+			},
+		},
+		{
+			name:       "stream_incomplete",
+			wantStatus: util.StatusStreamIncomplete,
+			configureTimeout: func(srv *Server) {
+				srv.firstByteTimeout = time.Second
+				srv.streamTimeout = 25 * time.Millisecond
+			},
+			serveFailure: func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n")
+				if flusher, ok := w.(http.Flusher); ok {
+					flusher.Flush()
+				}
+				<-r.Context().Done()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var failureCalls atomic.Int32
+			var fallbackCalls atomic.Int32
+
+			failureUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				failureCalls.Add(1)
+				tt.serveFailure(w, r)
+			}))
+			defer failureUpstream.Close()
+
+			fallbackUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackCalls.Add(1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"fallback\"}}]}\n\n")
+				_, _ = io.WriteString(w, "data: [DONE]\n\n")
+			}))
+			defer fallbackUpstream.Close()
+
+			srv := newInMemoryServer(t)
+			tt.configureTimeout(srv)
+			cfg := &model.Config{
+				ID:           9528,
+				Name:         "multi-url-stream-failure-test",
+				URLs:         channelURLsForTest(failureUpstream.URL, fallbackUpstream.URL),
+				Priority:     1,
+				ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
+				Enabled:      true,
+			}
+
+			// 强制第一跳命中流故障 URL。模型级流故障不应改打同渠道的第二个 URL。
+			srv.urlSelector.CooldownURL(cfg.ID, fallbackUpstream.URL)
+			result := srv.testChannelAPI(context.Background(), cfg, "sk-test", &testutil.TestChannelRequest{
+				Model:          "gpt-4o-mini",
+				ClientProtocol: "openai",
+				Content:        "hello",
+				Stream:         true,
+			})
+
+			if statusCode, _ := getResultInt(result["status_code"]); statusCode != tt.wantStatus {
+				t.Fatalf("status_code=%d, want %d, result=%+v", statusCode, tt.wantStatus, result)
+			}
+			if got := failureCalls.Load(); got != 1 {
+				t.Fatalf("failure URL calls=%d, want 1", got)
+			}
+			if got := fallbackCalls.Load(); got != 0 {
+				t.Fatalf("model-scoped stream failure retried another URL: calls=%d", got)
+			}
+			if srv.urlSelector.IsCooledDown(cfg.ID, failureUpstream.URL) {
+				t.Fatalf("model-scoped stream failure must not cool URL, status=%d url=%s", tt.wantStatus, failureUpstream.URL)
+			}
+		})
+	}
+}
+
 func TestExecuteChannelTestWithCooldown_RespectsRPMLimitWithoutCooldown(t *testing.T) {
 	hits := 0
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
