@@ -219,8 +219,7 @@ func (m *Manager) DecideAction(ctx context.Context, in ErrorInput) Action {
 	return m.classifyDecision(in).action
 }
 
-// HandleError 统一错误处理与冷却决策
-// 将proxy_error.go中的handleProxyError逻辑提取到专用模块
+// HandleError 统一错误处理与冷却决策。
 //
 // 输入:
 //   - ChannelID / KeyIndex: 目标渠道与Key（KeyIndex=NoKeyIndex 表示与特定Key无关）
@@ -231,6 +230,37 @@ func (m *Manager) DecideAction(ctx context.Context, in ErrorInput) Action {
 //   - Action: 建议采取的行动
 func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 	decision := m.classifyDecision(in)
+	return m.handleErrorDecision(ctx, in, decision)
+}
+
+// HandleErrorWithKeyFallback applies the optional independent-key relay
+// fallback. Ordinary model- and channel-level failures are recorded against
+// the selected Key so that another Key can be tried first. Errors with an
+// explicit channel cooldown (for example, WebSocket connection-slot
+// exhaustion) retain their channel-wide semantics: another Key cannot resolve
+// them and must not be penalized.
+func (m *Manager) HandleErrorWithKeyFallback(ctx context.Context, in ErrorInput) Action {
+	decision := m.classifyDecision(in)
+	if canFallbackToOtherKey(in, decision) {
+		return m.handleKeyFallback(ctx, in, decision)
+	}
+	return m.handleErrorDecision(ctx, in, decision)
+}
+
+// CanFallbackToOtherKey reports whether independent-key relay fallback applies
+// to this failure. It has no side effects and is used by the multi-URL path to
+// preserve normal URL failover for explicitly channel-scoped failures.
+func (m *Manager) CanFallbackToOtherKey(in ErrorInput) bool {
+	return canFallbackToOtherKey(in, m.classifyDecision(in))
+}
+
+func canFallbackToOtherKey(in ErrorInput, decision cooldownDecision) bool {
+	return in.KeyIndex != NoKeyIndex &&
+		(decision.action == ActionRetryModel || decision.action == ActionRetryChannel) &&
+		!decision.hasChannelCooldownUntil
+}
+
+func (m *Manager) handleErrorDecision(ctx context.Context, in ErrorInput, decision cooldownDecision) Action {
 	channelID := in.ChannelID
 	keyIndex := in.KeyIndex
 	statusCode := in.StatusCode
@@ -336,6 +366,27 @@ func (m *Manager) HandleError(ctx context.Context, in ErrorInput) Action {
 		// 未知错误级别:保守策略,直接返回
 		return ActionReturnClient
 	}
+}
+
+func (m *Manager) handleKeyFallback(ctx context.Context, in ErrorInput, decision cooldownDecision) Action {
+	if decision.hasModelCooldownUntil {
+		if err := m.store.SetKeyCooldown(ctx, in.ChannelID, in.KeyIndex, decision.modelCooldownUntil); err != nil {
+			log.Printf("[WARN] 渠道故障换Key时按模型重置时间设置 Key 冷却失败 (channel=%d, key=%d, until=%v): %v",
+				in.ChannelID, in.KeyIndex, decision.modelCooldownUntil, err)
+		} else {
+			log.Printf("[COOLDOWN] 渠道故障优先换Key: 渠道=%d Key=%d 禁用至 %s",
+				in.ChannelID, in.KeyIndex, decision.modelCooldownUntil.Format("2006-01-02 15:04:05"))
+		}
+	} else if _, err := m.store.BumpKeyCooldown(ctx, in.ChannelID, in.KeyIndex, time.Now(), in.StatusCode); err != nil {
+		log.Printf("[WARN] 渠道故障换Key时更新 Key 冷却失败 (channel=%d, key=%d): %v", in.ChannelID, in.KeyIndex, err)
+	} else {
+		log.Printf("[COOLDOWN] 渠道故障优先换Key: 渠道=%d Key=%d", in.ChannelID, in.KeyIndex)
+	}
+
+	if m.promoteExhaustedResources(ctx, in) {
+		return ActionRetryChannel
+	}
+	return ActionRetryKey
 }
 
 func (m *Manager) promoteExhaustedResources(ctx context.Context, in ErrorInput) bool {
