@@ -257,17 +257,17 @@ func (s *SQLStore) runSQLiteIncrementalVacuum(ctx context.Context, deletedRows i
 
 // QueryContext 执行查询语句
 func (s *SQLStore) QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return s.db.QueryContext(ctx, s.q(query), args...)
+	return s.db.QueryContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // QueryRowContext 执行查询单行
 func (s *SQLStore) QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row {
-	return s.db.QueryRowContext(ctx, s.q(query), args...)
+	return s.db.QueryRowContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // ExecContext 执行非查询语句
 func (s *SQLStore) ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	return s.db.ExecContext(ctx, s.q(query), args...)
+	return s.db.ExecContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // BeginTx 开启事务
@@ -277,17 +277,47 @@ func (s *SQLStore) BeginTx(ctx context.Context, opts *sql.TxOptions) (*sql.Tx, e
 
 // execTx 在事务中执行（自动 rebind）
 func (s *SQLStore) execTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (sql.Result, error) {
-	return tx.ExecContext(ctx, s.q(query), args...)
+	return tx.ExecContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // queryRowTx 在事务中查单行（自动 rebind）
 func (s *SQLStore) queryRowTx(ctx context.Context, tx *sql.Tx, query string, args ...any) *sql.Row {
-	return tx.QueryRowContext(ctx, s.q(query), args...)
+	return tx.QueryRowContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // prepareTx 在事务中预处理（自动 rebind）
-func (s *SQLStore) prepareTx(ctx context.Context, tx *sql.Tx, query string) (*sql.Stmt, error) {
-	return tx.PrepareContext(ctx, s.q(query))
+func (s *SQLStore) prepareTx(ctx context.Context, tx *sql.Tx, query string) (*normalizedStmt, error) {
+	stmt, err := tx.PrepareContext(ctx, s.q(query))
+	if err != nil {
+		return nil, err
+	}
+	return &normalizedStmt{Stmt: stmt}, nil
+}
+
+// normalizedStmt keeps prepared statements on the same argument boundary as
+// direct and transactional SQL execution.
+type normalizedStmt struct {
+	*sql.Stmt
+}
+
+func (s *normalizedStmt) ExecContext(ctx context.Context, args ...any) (sql.Result, error) {
+	return s.Stmt.ExecContext(ctx, normalizeSQLArgs(args)...)
+}
+
+func (s *normalizedStmt) QueryContext(ctx context.Context, args ...any) (*sql.Rows, error) {
+	return s.Stmt.QueryContext(ctx, normalizeSQLArgs(args)...)
+}
+
+func (s *normalizedStmt) QueryRowContext(ctx context.Context, args ...any) *sql.Row {
+	return s.Stmt.QueryRowContext(ctx, normalizeSQLArgs(args)...)
+}
+
+type sqlExecutor interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
+}
+
+func (s *SQLStore) execWith(ctx context.Context, exec sqlExecutor, query string, args ...any) (sql.Result, error) {
+	return exec.ExecContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
 // lockPostgresExplicitIDTable serializes explicit-ID writes with normal INSERTs.

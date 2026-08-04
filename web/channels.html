@@ -890,6 +890,13 @@
 
       <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">
         <div class="advanced-settings-other-fields">
+          <label class="form-label channel-editor-checkbox-label" for="channelRetryOtherKeysOnFailure"
+            title="渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。"
+            data-i18n-title="channels.retryOtherKeysOnFailureHelp">
+            <input type="checkbox" id="channelRetryOtherKeysOnFailure">
+            <span data-i18n="channels.retryOtherKeysOnFailure">渠道故障优先换 Key</span>
+          </label>
+          <span class="models-hint" data-i18n="channels.retryOtherKeysOnFailureHelp">渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。</span>
           <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
             <input type="checkbox" id="channelScheduledCheckEnabled">
             <span data-i18n="channels.enableScheduledCheck">定时检测</span>

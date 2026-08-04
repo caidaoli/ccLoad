@@ -31,15 +31,16 @@ import (
 
 // testChannel 测试用渠道定义
 type testChannel struct {
-	name                   string
-	upstreamProtocol       string
-	protocolTransformMode  string
-	websockets             bool
-	customRequestRules     *model.CustomRequestRules
-	cooldownDetectionRules *model.CooldownDetectionRules
-	models                 string // 逗号分隔的模型列表
-	apiKey                 string
-	priority               int
+	name                    string
+	upstreamProtocol        string
+	protocolTransformMode   string
+	websockets              bool
+	customRequestRules      *model.CustomRequestRules
+	cooldownDetectionRules  *model.CooldownDetectionRules
+	retryOtherKeysOnFailure bool
+	models                  string // 逗号分隔的模型列表
+	apiKey                  string
+	priority                int
 }
 
 // proxyTestEnv 集成测试环境
@@ -159,15 +160,16 @@ func setupProxyTestEnvWithSettings(
 			}
 		}
 		cfg := &model.Config{
-			Name:                   ch.name,
-			URLs:                   urls,
-			ProtocolTransformMode:  transformMode,
-			Websockets:             ch.websockets,
-			CustomRequestRules:     ch.customRequestRules,
-			CooldownDetectionRules: ch.cooldownDetectionRules,
-			Priority:               priority,
-			Enabled:                true,
-			ModelEntries:           modelEntries,
+			Name:                    ch.name,
+			URLs:                    urls,
+			Websockets:              ch.websockets,
+			ProtocolTransformMode:   transformMode,
+			CustomRequestRules:      ch.customRequestRules,
+			CooldownDetectionRules:  ch.cooldownDetectionRules,
+			RetryOtherKeysOnFailure: ch.retryOtherKeysOnFailure,
+			Priority:                priority,
+			Enabled:                 true,
+			ModelEntries:            modelEntries,
 		}
 		created, err := store.CreateConfig(ctx, cfg)
 		if err != nil {
@@ -198,6 +200,244 @@ func setupProxyTestEnvWithSettings(
 		store:  store,
 		engine: engine,
 	}
+}
+
+func TestProxy_RetryOtherKeysOnFailure(t *testing.T) {
+	for _, tt := range []struct {
+		name                    string
+		retryOtherKeysOnFailure bool
+		wantPrimaryAttempts     int64
+		wantFallbackAttempts    int64
+	}{
+		{
+			name:                 "disabled keeps channel failover behavior",
+			wantPrimaryAttempts:  1,
+			wantFallbackAttempts: 1,
+		},
+		{
+			name:                    "enabled tries another key before another channel",
+			retryOtherKeysOnFailure: true,
+			wantPrimaryAttempts:     2,
+			wantFallbackAttempts:    0,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var primaryAttempts atomic.Int64
+			var fallbackAttempts atomic.Int64
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				primaryAttempts.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				if r.Header.Get("Authorization") == "Bearer sk-provider-a" {
+					w.WriteHeader(http.StatusBadGateway)
+					_, _ = w.Write([]byte(`{"error":{"message":"provider A unavailable"}}`))
+					return
+				}
+				if r.Header.Get("Authorization") != "Bearer sk-provider-b" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				_, _ = w.Write([]byte(`{"id":"provider-b","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer upstream.Close()
+			fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackAttempts.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"fallback","choices":[{"message":{"content":"fallback"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+			}))
+			defer fallback.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{
+				{name: "relay", models: "gpt-test", apiKey: "sk-provider-a", priority: 100, retryOtherKeysOnFailure: tt.retryOtherKeysOnFailure},
+				{name: "fallback", models: "gpt-test", priority: 50},
+			}, map[int]string{0: upstream.URL, 1: fallback.URL})
+			if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+				ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", KeyStrategy: model.KeyStrategySequential,
+			}}); err != nil {
+				t.Fatalf("create secondary key: %v", err)
+			}
+
+			response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+				"model": "gpt-test", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if got := primaryAttempts.Load(); got != tt.wantPrimaryAttempts {
+				t.Fatalf("primary attempts=%d, want %d", got, tt.wantPrimaryAttempts)
+			}
+			if got := fallbackAttempts.Load(); got != tt.wantFallbackAttempts {
+				t.Fatalf("fallback attempts=%d, want %d", got, tt.wantFallbackAttempts)
+			}
+
+			if tt.retryOtherKeysOnFailure {
+				keys, err := env.store.GetAPIKeys(context.Background(), 1)
+				if err != nil {
+					t.Fatalf("get relay keys: %v", err)
+				}
+				if len(keys) != 2 || keys[0].CooldownUntil <= time.Now().Unix() {
+					t.Fatalf("failed provider key should be cooled, keys=%+v", keys)
+				}
+				cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+				if err != nil {
+					t.Fatalf("get model cooldowns: %v", err)
+				}
+				if len(cooldowns[1]) != 0 {
+					t.Fatalf("key-fallback mode must not cool the model, got %+v", cooldowns[1])
+				}
+			}
+		})
+	}
+}
+
+func TestProxy_RetryOtherKeysSessionAffinity(t *testing.T) {
+	var phase atomic.Int32
+	var keyACalls, keyBCalls, fallbackCalls atomic.Int64
+
+	primary := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var calls *atomic.Int64
+		switch r.Header.Get("Authorization") {
+		case "Bearer sk-provider-a":
+			calls = &keyACalls
+		case "Bearer sk-provider-b":
+			calls = &keyBCalls
+		default:
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		calls.Add(1)
+
+		currentPhase := phase.Load()
+		failed := currentPhase == 4 ||
+			(currentPhase == 0 || currentPhase == 3) && r.Header.Get("Authorization") == "Bearer sk-provider-a"
+		if failed {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = w.Write([]byte(`{"error":{"message":"provider unavailable"}}`))
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-primary","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"id":"resp-fallback","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{
+			name: "relay", upstreamProtocol: "codex", models: "gpt-test",
+			apiKey: "sk-provider-a", priority: 100, retryOtherKeysOnFailure: true,
+		},
+		{
+			name: "fallback", upstreamProtocol: "codex", models: "gpt-test",
+			priority: 50, retryOtherKeysOnFailure: true,
+		},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: 1, KeyIndex: 1, APIKey: "sk-provider-b", KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("create relay keys: %v", err)
+	}
+	env.server.maxKeyRetries = 1
+
+	request := func(input string) *httptest.ResponseRecorder {
+		return doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": true, "input": input,
+		}, map[string]string{"Session-Id": "sticky-key-session"})
+	}
+	resetRelay := func() {
+		for keyIndex := range 2 {
+			if err := env.store.ResetKeyCooldown(context.Background(), 1, keyIndex); err != nil {
+				t.Fatalf("reset relay key %d: %v", keyIndex, err)
+			}
+		}
+		if err := env.store.ResetChannelCooldown(context.Background(), 1); err != nil {
+			t.Fatalf("reset relay channel: %v", err)
+		}
+		env.server.invalidateChannelRelatedCache(1)
+	}
+	assertCalls := func(wantA, wantB, wantFallback int64) {
+		t.Helper()
+		if keyACalls.Load() != wantA || keyBCalls.Load() != wantB || fallbackCalls.Load() != wantFallback {
+			t.Fatalf("calls a/b/fallback=%d/%d/%d, want %d/%d/%d",
+				keyACalls.Load(), keyBCalls.Load(), fallbackCalls.Load(), wantA, wantB, wantFallback)
+		}
+	}
+
+	if response := request("one"); response.Code != http.StatusOK {
+		t.Fatalf("first response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(1, 1, 0)
+
+	// Make the fallback globally preferable. Session affinity must still keep the
+	// established relay first while it has an available Key.
+	fallbackCfg, err := env.store.GetConfig(context.Background(), 2)
+	if err != nil {
+		t.Fatalf("get fallback config: %v", err)
+	}
+	fallbackCfg.Priority = 200
+	if _, err := env.store.UpdateConfig(context.Background(), fallbackCfg.ID, fallbackCfg); err != nil {
+		t.Fatalf("raise fallback priority: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	phase.Store(1)
+	if response := request("two"); response.Code != http.StatusOK {
+		t.Fatalf("cooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(1, 2, 0)
+
+	// Once A recovers, sequential selection must fail back to it instead of
+	// pinning the last successful Key B.
+	if err := env.store.ResetKeyCooldown(context.Background(), 1, 0); err != nil {
+		t.Fatalf("recover relay key A: %v", err)
+	}
+	env.server.invalidateChannelRelatedCache(1)
+
+	phase.Store(2)
+	if response := request("three"); response.Code != http.StatusOK {
+		t.Fatalf("recovered-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(2, 2, 0)
+
+	phase.Store(3)
+	if response := request("four"); response.Code != http.StatusOK {
+		t.Fatalf("recooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(3, 3, 0)
+
+	phase.Store(1)
+	if response := request("five"); response.Code != http.StatusOK {
+		t.Fatalf("second cooled-key response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(3, 4, 0)
+
+	resetRelay()
+	phase.Store(4)
+	if response := request("six"); response.Code != http.StatusOK {
+		t.Fatalf("channel fallback response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(4, 5, 1)
+
+	// The preferred relay is now fully cooled, so the next turn must stay on the
+	// fallback without probing relay Keys early.
+	if response := request("seven"); response.Code != http.StatusOK {
+		t.Fatalf("cooled-channel response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(4, 5, 2)
+
+	// A successful fallback must not replace the first successful channel. Once
+	// the relay recovers it wins again despite the fallback's higher priority.
+	resetRelay()
+	phase.Store(5)
+	if response := request("eight"); response.Code != http.StatusOK {
+		t.Fatalf("recovered-channel response status=%d body=%s", response.Code, response.Body.String())
+	}
+	assertCalls(5, 5, 2)
 }
 
 func TestProxy_GlobalCooldownDetectionRulesFallbackAndChannelOverride(t *testing.T) {

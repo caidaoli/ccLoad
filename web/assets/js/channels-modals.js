@@ -399,6 +399,16 @@ function initChannelEditorActions() {
   initCommonModelsModalEvents();
   initQuickAddChannelModalEvents();
   initModelNormalizationOptions();
+
+  const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
+  if (retryOtherKeysCheckbox && !retryOtherKeysCheckbox.dataset.bound) {
+    retryOtherKeysCheckbox.addEventListener('change', () => {
+      if (typeof markChannelFormDirty === 'function') {
+        markChannelFormDirty();
+      }
+    });
+    retryOtherKeysCheckbox.dataset.bound = '1';
+  }
   ensureScheduledCheckModelCombobox();
 }
 
@@ -411,6 +421,8 @@ async function showAddModal() {
   document.getElementById('channelForm').reset();
   document.getElementById('channelEnabled').checked = true;
   document.getElementById('channelScheduledCheckEnabled').checked = false;
+  const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
+  if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = false;
   const websocketCheckbox = document.getElementById('channelWebsockets');
   if (websocketCheckbox) websocketCheckbox.checked = false;
   document.getElementById('channelScheduledCheckModel').value = '';
@@ -508,6 +520,8 @@ async function editChannel(id) {
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
+  const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
+  if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   const modelCooldowns = new Map(
@@ -797,7 +811,8 @@ async function saveChannel(event) {
     scheduled_check_model: document.getElementById('channelScheduledCheckModel').value.trim(),
     custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
     cooldown_detection_rules: invokeChannelEditorAction('collectCooldownDetectionRulesForSubmit') || null,
-    proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim()
+    proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
+    retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
 
   if (!formData.name || formData.urls.length === 0 || !formData.api_key || formData.models.length === 0) {
@@ -1643,6 +1658,8 @@ async function copyChannel(id, name) {
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
+  const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
+  if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
 
   // 加载模型配置（新格式：models是 {model, redirect_model} 数组）
   redirectTableData = (channel.models || []).map(m => ({

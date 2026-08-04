@@ -1,0 +1,50 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  postgres:
+    name: PostgreSQL integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: ccload
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: ccload_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ccload -d ccload_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: Run PostgreSQL integration tests
+        env:
+          CCLOAD_TEST_POSTGRES_DSN: postgres://ccload:testpass@127.0.0.1:5432/ccload_test?sslmode=disable
+        run: go test -tags "sonic postgres_integration" ./internal/storage -run '^TestPostgres$' -count=1
