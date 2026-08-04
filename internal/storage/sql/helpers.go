@@ -190,13 +190,29 @@ func unixToTime(ts int64) time.Time {
 	return time.Unix(ts, 0)
 }
 
-// boolToInt 将布尔值转换为整数
-// SQLite和MySQL都使用 1=true, 0=false
-func boolToInt(b bool) int {
-	if b {
-		return 1
+// normalizeSQLArgs 将领域布尔值转换为三种数据库统一使用的整数布尔值。
+// 仅在遇到 bool 时复制参数，避免修改调用方复用的切片。
+func normalizeSQLArgs(args []any) []any {
+	for i, arg := range args {
+		if _, ok := arg.(bool); !ok {
+			continue
+		}
+
+		normalized := append([]any(nil), args...)
+		for j := i; j < len(normalized); j++ {
+			value, ok := normalized[j].(bool)
+			if !ok {
+				continue
+			}
+			if value {
+				normalized[j] = 1
+			} else {
+				normalized[j] = 0
+			}
+		}
+		return normalized
 	}
-	return 0
+	return args
 }
 
 // normalizeCostMultiplier 规范化成本倍率：负数退化为 1；0 表示免费渠道，保持不变

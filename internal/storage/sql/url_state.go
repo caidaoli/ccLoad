@@ -41,10 +41,6 @@ func (s *SQLStore) LoadDisabledURLs(ctx context.Context) (map[int64][]string, er
 // SetURLDisabled 持久化指定渠道URL的禁用状态
 func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error {
 	now := timeToUnix(time.Now())
-	disabledInt := 0
-	if disabled {
-		disabledInt = 1
-	}
 	hash := urlHash(url)
 
 	var query string
@@ -68,7 +64,7 @@ func (s *SQLStore) SetURLDisabled(ctx context.Context, channelID int64, url stri
 		`
 	}
 
-	if _, err := s.ExecContext(ctx, query, channelID, hash, url, disabledInt, now); err != nil {
+	if _, err := s.ExecContext(ctx, query, channelID, hash, url, disabled, now); err != nil {
 		return fmt.Errorf("upsert channel_url_states: %w", err)
 	}
 	return nil

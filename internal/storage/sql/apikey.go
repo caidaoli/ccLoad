@@ -150,7 +150,7 @@ func (s *SQLStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey)
 				strategy = model.KeyStrategySequential
 			}
 			args = append(args, key.ChannelID, key.KeyIndex, key.APIKey, key.Note, strategy,
-				key.CooldownUntil, key.CooldownDurationMs, boolToInt(key.Disabled), nowUnix, nowUnix)
+				key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 		}
 
 		if _, err := s.execTx(ctx, tx, sb.String(), args...); err != nil {
@@ -431,7 +431,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				channelID = config.ID
 				_, err := channelStmtWithID.ExecContext(ctx,
 					config.ID, config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, protocolTransformMode, boolToInt(config.Enabled), boolToInt(config.ScheduledCheckEnabled), config.ScheduledCheckModel, cooldownDetectionRules, boolToInt(config.RetryOtherKeysOnFailure), nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -441,7 +441,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 			} else {
 				_, err := channelStmtByName.ExecContext(ctx,
 					config.Name, config.URLs, config.Priority,
-					config.RPMLimit, config.MaxConcurrency, protocolTransformMode, boolToInt(config.Enabled), boolToInt(config.ScheduledCheckEnabled), config.ScheduledCheckModel, cooldownDetectionRules, boolToInt(config.RetryOtherKeysOnFailure), nowUnix, nowUnix)
+					config.RPMLimit, config.MaxConcurrency, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("import channel %s: %w", config.Name, err)
 				}
@@ -472,7 +472,7 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 				key := cwk.APIKeys[i]
 				_, err := keyStmt.ExecContext(ctx,
 					channelID, key.KeyIndex, key.APIKey, key.Note, key.KeyStrategy,
-					key.CooldownUntil, key.CooldownDurationMs, boolToInt(key.Disabled), nowUnix, nowUnix)
+					key.CooldownUntil, key.CooldownDurationMs, key.Disabled, nowUnix, nowUnix)
 				if err != nil {
 					return fmt.Errorf("insert api key %d for channel %d: %w", key.KeyIndex, channelID, err)
 				}
@@ -564,7 +564,7 @@ func (s *SQLStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIn
 	_, err := s.ExecContext(ctx, `
 		UPDATE api_keys SET disabled = ?, updated_at = ?
 		WHERE channel_id = ? AND key_index = ?
-	`, boolToInt(disabled), updatedAtUnix, channelID, keyIndex)
+	`, disabled, updatedAtUnix, channelID, keyIndex)
 	if err != nil {
 		return fmt.Errorf("set api key disabled: %w", err)
 	}
