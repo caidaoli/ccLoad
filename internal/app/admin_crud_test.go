@@ -246,6 +246,85 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	}
 }
 
+func TestChannelCooldownFilterIncludesChannelKeyAndModelCooldowns(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	channelIDs := make(map[string]int64)
+	for _, fixture := range []struct {
+		name  string
+		model string
+	}{
+		{name: "channel-cooldown", model: "channel-model"},
+		{name: "key-cooldown", model: "key-model"},
+		{name: "model-cooldown", model: "model-target"},
+		{name: "healthy", model: "healthy-model"},
+	} {
+		created, err := store.CreateConfig(ctx, &model.Config{
+			Name:         fixture.name,
+			URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+			Priority:     1,
+			ModelEntries: []model.ModelEntry{{Model: fixture.model}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.name, err)
+		}
+		channelIDs[fixture.name] = created.ID
+	}
+
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   channelIDs["key-cooldown"],
+		KeyIndex:    0,
+		APIKey:      "sk-key-cooldown",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	until := time.Now().Add(10 * time.Minute)
+	if err := store.SetChannelCooldown(ctx, channelIDs["channel-cooldown"], until); err != nil {
+		t.Fatalf("SetChannelCooldown failed: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, channelIDs["key-cooldown"], 0, until); err != nil {
+		t.Fatalf("SetKeyCooldown failed: %v", err)
+	}
+	if err := store.SetModelCooldown(ctx, channelIDs["model-cooldown"], "model-target", until); err != nil {
+		t.Fatalf("SetModelCooldown failed: %v", err)
+	}
+
+	wantNames := []string{"channel-cooldown", "key-cooldown", "model-cooldown"}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels?status=cooldown&limit=20&offset=0", nil))
+	server.handleListChannels(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+	gotNames := make([]string, 0, len(resp.Data))
+	for _, item := range resp.Data {
+		gotNames = append(gotNames, item.Name)
+	}
+	sort.Strings(gotNames)
+	if resp.Count != len(wantNames) || !slices.Equal(gotNames, wantNames) {
+		t.Fatalf("cooldown list count=%d names=%v, want count=%d names=%v", resp.Count, gotNames, len(wantNames), wantNames)
+	}
+
+	optionsContext, optionsWriter := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/filter-options?status=cooldown", nil))
+	server.HandleChannelsFilterOptions(optionsContext)
+	if optionsWriter.Code != http.StatusOK {
+		t.Fatalf("filter options status=%d, want %d body=%s", optionsWriter.Code, http.StatusOK, optionsWriter.Body.String())
+	}
+	var options struct {
+		ChannelNames []string `json:"channel_names"`
+	}
+	mustUnmarshalAPIResponseData(t, optionsWriter.Body.Bytes(), &options)
+	if !slices.Equal(options.ChannelNames, wantNames) {
+		t.Fatalf("cooldown filter option names=%v, want %v", options.ChannelNames, wantNames)
+	}
+}
+
 func TestHandleListChannelsTypeFilterUsesUpstreamProtocolOnly(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

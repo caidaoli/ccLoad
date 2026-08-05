@@ -72,6 +72,51 @@ func configHasURLProtocol(cfg *model.Config, configuredProtocol string) bool {
 	return false
 }
 
+type channelCooldownSnapshot struct {
+	channels map[int64]time.Time
+	keys     map[int64]map[int]time.Time
+	models   map[int64]map[string]time.Time
+}
+
+func (s *Server) loadChannelCooldownSnapshot(ctx context.Context) channelCooldownSnapshot {
+	snapshot := channelCooldownSnapshot{}
+	var err error
+
+	snapshot.channels, err = s.getAllChannelCooldowns(ctx)
+	if err != nil {
+		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
+		snapshot.channels = make(map[int64]time.Time)
+	}
+	snapshot.keys, err = s.getAllKeyCooldowns(ctx)
+	if err != nil {
+		log.Printf("[WARN] 批量查询Key冷却状态失败: %v", err)
+		snapshot.keys = make(map[int64]map[int]time.Time)
+	}
+	snapshot.models, err = s.getAllModelCooldowns(ctx)
+	if err != nil {
+		log.Printf("[WARN] 批量查询模型冷却状态失败: %v", err)
+		snapshot.models = make(map[int64]map[string]time.Time)
+	}
+	return snapshot
+}
+
+func (snapshot channelCooldownSnapshot) hasActiveCooldown(channelID int64, now time.Time) bool {
+	if until, ok := snapshot.channels[channelID]; ok && until.After(now) {
+		return true
+	}
+	for _, until := range snapshot.keys[channelID] {
+		if until.After(now) {
+			return true
+		}
+	}
+	for _, until := range snapshot.models[channelID] {
+		if until.After(now) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) handleListChannels(c *gin.Context) {
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
@@ -81,35 +126,15 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 	now := time.Now()
 
-	// 批量获取冷却状态（缓存优先）
-	allChannelCooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
-	if err != nil {
-		// 渠道冷却查询失败不影响主流程，仅记录错误
-		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
-		allChannelCooldowns = make(map[int64]time.Time)
-	}
+	// 三类冷却必须使用同一份快照，否则筛选结果和列表状态会互相矛盾。
+	cooldowns := s.loadChannelCooldownSnapshot(c.Request.Context())
 
 	// 应用所有列表过滤（type / channel_name|search / status / model|model_like）
 	// 注意：筛选下拉的全集走独立接口 /admin/channels/filter-options，
 	// 这里只负责按所有筛选条件返回当前页，避免列表数据与下拉选项耦合。
-	cfgs = applyChannelListFilters(cfgs, c, allChannelCooldowns, now)
+	cfgs = applyChannelListFilters(cfgs, c, cooldowns, now)
 
 	hasPagination := c.Query("limit") != "" || c.Query("offset") != ""
-
-	// 批量查询所有Key冷却状态（缓存优先）
-	allKeyCooldowns, err := s.getAllKeyCooldowns(c.Request.Context())
-	if err != nil {
-		// Key冷却查询失败不影响主流程，仅记录错误
-		log.Printf("[WARN] 批量查询Key冷却状态失败: %v", err)
-		allKeyCooldowns = make(map[int64]map[int]time.Time)
-	}
-
-	// 批量查询所有模型冷却状态（缓存优先）
-	allModelCooldowns, err := s.getAllModelCooldowns(c.Request.Context())
-	if err != nil {
-		log.Printf("[WARN] 批量查询模型冷却状态失败: %v", err)
-		allModelCooldowns = make(map[int64]map[string]time.Time)
-	}
 
 	// 批量查询所有API Keys（一次查询替代 N 次）
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
@@ -136,9 +161,9 @@ func (s *Server) handleListChannels(c *gin.Context) {
 		healthEnabled:       healthEnabled,
 		priorityMap:         priorityMap,
 		successRateMap:      successRateMap,
-		channelCooldownsMap: allChannelCooldowns,
-		keyCooldownsMap:     allKeyCooldowns,
-		modelCooldownsMap:   allModelCooldowns,
+		channelCooldownsMap: cooldowns.channels,
+		keyCooldownsMap:     cooldowns.keys,
+		modelCooldownsMap:   cooldowns.models,
 		apiKeysMap:          allAPIKeys,
 	}
 	out := make([]ChannelWithCooldown, 0, len(cfgs))
@@ -165,11 +190,11 @@ func (s *Server) handleListChannels(c *gin.Context) {
 // applyChannelListFilters 串联应用所有列表过滤条件：
 //   - protocol: URL 显式声明的协议，或 auto（存在未声明协议的 URL）
 //   - channel_name | search: 名称精确/模糊（互斥，channel_name 优先）
-//   - status: enabled / disabled / cooldown（cooldown 依赖 channelCooldownsMap）
+//   - status: enabled / disabled / cooldown（cooldown 包含渠道、Key、模型任一有效冷却）
 //   - model | model_like: 模型精确/模糊（互斥，model 优先）
 //
 // 空字符串或 "all" 视为不过滤。
-func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, channelCooldownsMap map[int64]time.Time, now time.Time) []*model.Config {
+func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, cooldowns channelCooldownSnapshot, now time.Time) []*model.Config {
 	if configuredProtocol := strings.TrimSpace(c.Query("protocol")); configuredProtocol != "" && configuredProtocol != "all" {
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			return configHasURLProtocol(cfg, configuredProtocol)
@@ -197,8 +222,7 @@ func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, channelCooldo
 			case "disabled":
 				return !cfg.Enabled
 			case "cooldown":
-				until, cooled := channelCooldownsMap[cfg.ID]
-				return cooled && until.After(now)
+				return cooldowns.hasActiveCooldown(cfg.ID, now)
 			}
 			return false
 		})
@@ -371,15 +395,15 @@ func (s *Server) HandleChannelsFilterOptions(c *gin.Context) {
 		return
 	}
 
-	cooldowns, err := s.getAllChannelCooldowns(c.Request.Context())
-	if err != nil {
-		log.Printf("[WARN] 批量查询渠道冷却状态失败: %v", err)
-		cooldowns = make(map[int64]time.Time)
+	status := strings.TrimSpace(c.Query("status"))
+	var cooldowns channelCooldownSnapshot
+	if status == "cooldown" {
+		cooldowns = s.loadChannelCooldownSnapshot(c.Request.Context())
 	}
 	cfgs = filterChannelOptionConfigs(
 		cfgs,
 		strings.TrimSpace(c.Query("protocol")),
-		strings.TrimSpace(c.Query("status")),
+		status,
 		cooldowns,
 		time.Now(),
 	)
