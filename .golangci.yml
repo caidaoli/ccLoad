@@ -35,8 +35,3 @@ formatters:
     goimports:
       local-prefixes:
         - ccLoad
-
-issues:
-  exclude-dirs:
-    - vendor
-    - testdata
