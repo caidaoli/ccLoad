@@ -11,7 +11,7 @@
 make build          # 构建(注入版本号+strip)
 make dev            # 开发运行
 bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests # 协议快照审计+定向测试
-bash .agents/skills/release-ccload/scripts/release.sh --self-test # 发布脚本自检
+bash .agents/skills/ccload-release/scripts/release.sh --self-test # 发布脚本自检
 go test -tags sonic ./internal/...
 make race-fast      # 高价值 race 子集
 make race           # 全量 race(可用 RACE_P/RACE_PARALLEL 调并行度)
@@ -88,7 +88,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 发布与更新
 
-- 发布必须使用仓库 Skill：Codex 调 `$release-ccload`，Claude Code 调 `/release-ccload`；唯一源码在 `.agents/skills/release-ccload/`，`.claude/skills/release-ccload` 只是软链接
+- 发布必须使用仓库 Skill：Codex 调 `$ccload-release`，Claude Code 调 `/ccload-release`；唯一源码在 `.agents/skills/ccload-release/`，`.claude/skills/ccload-release` 只是软链接
 - 无参数默认 Beta；只有显式 `stable` 才发稳定版。Tag 只允许 `vX.Y.Z-beta.N` / `vX.Y.Z`
 - `.github/workflows/release.yml` 是唯一发布入口：Tag 先跑 `internal/...`、Web 验证、构建、lint，再生成多平台 Release；Beta=`prerelease=true` 且不改 latest、不发 Docker；稳定版更新 latest 并发布 GHCR 精确版本 Tag+latest
 - 官方容器直接打包同一 Release 的 Linux 二进制；`CCLOAD_CONTAINER=1` 默认禁用程序内替换，只有显式设置 `CCLOAD_ALLOW_SELF_UPDATE=1` 才放行；不要恢复启动时下载 latest 的 entrypoint

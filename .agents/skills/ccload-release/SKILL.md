@@ -1,5 +1,5 @@
 ---
-name: release-ccload
+name: ccload-release
 description: 用于发布 ccLoad 新版本、计算下一个语义版本、创建并推送发布 Tag、等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。默认发布 Beta；只有用户明确传入 stable 时才发布稳定版。
 ---
 
@@ -9,8 +9,8 @@ description: 用于发布 ccLoad 新版本、计算下一个语义版本、创�
 
 ## 参数契约
 
-- `$release-ccload`、`/release-ccload`、`release-ccload beta`、`release-ccload preview`：发布下一个 Beta。
-- `release-ccload stable`：发布稳定版。必须有显式 `stable` 参数；禁止根据语气猜测。
+- `$ccload-release`、`/ccload-release`、`ccload-release beta`、`ccload-release preview`：发布下一个 Beta。
+- `ccload-release stable`：发布稳定版。必须有显式 `stable` 参数；禁止根据语气猜测。
 - 其他参数：停止并报告只支持 `beta`、`preview`、`stable`。
 
 Tag 形状固定：
@@ -23,13 +23,13 @@ Tag 形状固定：
 1. 从仓库根目录运行预览。默认渠道是 `beta`：
 
    ```bash
-   bash .agents/skills/release-ccload/scripts/release.sh beta --dry-run
+   bash .agents/skills/ccload-release/scripts/release.sh beta --dry-run
    ```
 
    稳定版改为：
 
    ```bash
-   bash .agents/skills/release-ccload/scripts/release.sh stable --dry-run
+   bash .agents/skills/ccload-release/scripts/release.sh stable --dry-run
    ```
 
 2. 核对脚本输出的上一稳定版、语义版本增量和目标 Tag。用户调用本 Skill 已经是发布授权；目标符合参数契约时直接继续，不重复询问。
@@ -37,7 +37,7 @@ Tag 形状固定：
 3. 执行发布：
 
    ```bash
-   bash .agents/skills/release-ccload/scripts/release.sh beta --publish
+   bash .agents/skills/ccload-release/scripts/release.sh beta --publish
    ```
 
    稳定版使用 `stable --publish`。
@@ -59,5 +59,5 @@ Tag 形状固定：
 修改发布脚本后运行：
 
 ```bash
-bash .agents/skills/release-ccload/scripts/release.sh --self-test
+bash .agents/skills/ccload-release/scripts/release.sh --self-test
 ```

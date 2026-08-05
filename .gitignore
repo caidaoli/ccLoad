@@ -51,7 +51,7 @@ Thumbs.db
 !.claude/skills/
 .claude/skills/*
 !.claude/skills/sync-cliproxy-core
-!.claude/skills/release-ccload
+!.claude/skills/ccload-release
 com.ccload.service.plist
 .dataX
 .serena
