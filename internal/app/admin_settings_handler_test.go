@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
@@ -23,7 +22,7 @@ func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[s
 	return nil
 }
 
-func TestAdminAutoUpdateSettingsLockedInContainer(t *testing.T) {
+func TestAdminAutoUpdateSettingsEditableInContainer(t *testing.T) {
 	t.Setenv("CCLOAD_CONTAINER", "1")
 	t.Setenv("CCLOAD_ALLOW_SELF_UPDATE", "")
 
@@ -34,7 +33,7 @@ func TestAdminAutoUpdateSettingsLockedInContainer(t *testing.T) {
 		t.Fatalf("LoadDefaults failed: %v", err)
 	}
 
-	t.Run("list exposes read-only reason", func(t *testing.T) {
+	t.Run("list remains editable in check-only mode", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
 		server.AdminListSettings(c)
 
@@ -45,111 +44,14 @@ func TestAdminAutoUpdateSettingsLockedInContainer(t *testing.T) {
 		resp := mustParseAPIResponse[[]map[string]any](t, w.Body.Bytes())
 		for _, key := range []string{autoUpdateIntervalSettingKey, autoUpdateChannelSettingKey} {
 			setting := findAdminSetting(t, resp.Data, key)
-			if editable, ok := setting["editable"].(bool); !ok || editable {
-				t.Fatalf("setting %q editable=%v, want false", key, setting["editable"])
+			if editable, ok := setting["editable"].(bool); !ok || !editable {
+				t.Fatalf("setting %q editable=%v, want true", key, setting["editable"])
 			}
-			if reason := setting["disabled_reason"]; reason != autoUpdateDisabledReasonContainer {
-				t.Fatalf("setting %q disabled_reason=%v, want %q", key, reason, autoUpdateDisabledReasonContainer)
+			if reason, ok := setting["disabled_reason"]; ok {
+				t.Fatalf("setting %q disabled_reason=%v, want omitted", key, reason)
 			}
 		}
 	})
-
-	tests := []struct {
-		name         string
-		method       string
-		path         string
-		key          string
-		persistedKey string
-		body         any
-		call         func(*gin.Context)
-	}{
-		{
-			name:         "single update",
-			method:       http.MethodPut,
-			path:         "/admin/settings/" + autoUpdateChannelSettingKey,
-			key:          autoUpdateChannelSettingKey,
-			persistedKey: autoUpdateChannelSettingKey,
-			body:         map[string]string{"value": "preview"},
-			call:         server.AdminUpdateSetting,
-		},
-		{
-			name:         "reset",
-			method:       http.MethodPost,
-			path:         "/admin/settings/" + autoUpdateChannelSettingKey + "/reset",
-			key:          autoUpdateChannelSettingKey,
-			persistedKey: autoUpdateChannelSettingKey,
-			call:         server.AdminResetSetting,
-		},
-		{
-			name:         "batch update",
-			method:       http.MethodPost,
-			path:         "/admin/settings/batch",
-			persistedKey: autoUpdateIntervalSettingKey,
-			body:         map[string]string{autoUpdateIntervalSettingKey: "1"},
-			call:         server.AdminBatchUpdateSettings,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			before, err := store.GetSetting(context.Background(), tt.persistedKey)
-			if err != nil {
-				t.Fatalf("GetSetting before request failed: %v", err)
-			}
-
-			var reqBody []byte
-			if tt.body != nil {
-				reqBody, err = json.Marshal(tt.body)
-				if err != nil {
-					t.Fatalf("marshal request: %v", err)
-				}
-			}
-			c, w := newTestContext(t, newJSONRequestBytes(tt.method, tt.path, reqBody))
-			if tt.key != "" {
-				c.Params = gin.Params{{Key: "key", Value: tt.key}}
-			}
-			tt.call(c)
-
-			if w.Code != http.StatusConflict {
-				t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusConflict, w.Body.String())
-			}
-
-			after, err := store.GetSetting(context.Background(), tt.persistedKey)
-			if err != nil {
-				t.Fatalf("GetSetting after request failed: %v", err)
-			}
-			if after.Value != before.Value {
-				t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
-			}
-		})
-	}
-}
-
-func TestAdminAutoUpdateSettingsEditableWithContainerOptIn(t *testing.T) {
-	t.Setenv("CCLOAD_CONTAINER", "1")
-	t.Setenv("CCLOAD_ALLOW_SELF_UPDATE", "1")
-
-	server, store, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	server.configService = NewConfigService(store)
-
-	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings", nil))
-	server.AdminListSettings(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
-	}
-
-	resp := mustParseAPIResponse[[]map[string]any](t, w.Body.Bytes())
-	for _, key := range []string{autoUpdateIntervalSettingKey, autoUpdateChannelSettingKey} {
-		setting := findAdminSetting(t, resp.Data, key)
-		if editable, ok := setting["editable"].(bool); !ok || !editable {
-			t.Fatalf("setting %q editable=%v, want true", key, setting["editable"])
-		}
-		if reason, ok := setting["disabled_reason"]; ok {
-			t.Fatalf("setting %q disabled_reason=%v, want omitted", key, reason)
-		}
-	}
 }
 
 func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {

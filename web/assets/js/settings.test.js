@@ -231,24 +231,21 @@ test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
 });
 
-test('容器禁止自更新时更新设置不可编辑并说明更新方式', async (t) => {
-  const reason = 'container_self_update_disabled';
+test('容器检查模式下更新设置保持可编辑', async (t) => {
   const page = await loadSettingsPage(t, [
     {
       key: 'auto_update_channel',
       value: 'stable',
       value_type: 'string',
       description: '',
-      editable: false,
-      disabled_reason: reason
+      editable: true
     },
     {
       key: 'auto_update_interval_hours',
       value: '12',
       value_type: 'int',
       description: '',
-      editable: false,
-      disabled_reason: reason
+      editable: true
     }
   ], {});
 
@@ -256,15 +253,12 @@ test('容器禁止自更新时更新设置不可编辑并说明更新方式', as
     template === 'tpl-setting-group-row' && data.groupId === 'update'
   ));
   assert.ok(updateGroup, '应将自动更新设置放入独立分组');
-  assert.match(updateGroup.data.groupNoticeHtml, /settings\.updateAvailability\.containerDisabledTitle/);
-  assert.match(updateGroup.data.groupNoticeHtml, /CCLOAD_ALLOW_SELF_UPDATE=1/);
+  assert.equal(updateGroup.data.groupNoticeHtml, '');
 
   const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
   assert.equal(settingRows.length, 2);
   for (const { data } of settingRows) {
-    assert.match(data.inputHtml, /\bdisabled\b/);
-    assert.match(data.inputHtml, /aria-describedby="settings-update-availability"/);
-    assert.match(data.resetDisabledAttributes, /\bdisabled\b/);
-    assert.match(data.resetDisabledAttributes, /aria-describedby="settings-update-availability"/);
+    assert.doesNotMatch(data.inputHtml, /\bdisabled\b/);
+    assert.equal(data.resetDisabledAttributes, '');
   }
 });

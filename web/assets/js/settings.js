@@ -7,8 +7,6 @@ let runtimeMetricsPreviousFocus = null;
 let globalCooldownRulesPreviousFocus = null;
 
 const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
-const updateAvailabilityDescriptionId = 'settings-update-availability';
-const containerSelfUpdateDisabledReason = 'container_self_update_disabled';
 const advancedSettingKeys = new Set([
   globalCooldownRulesSettingKey,
   'auto_refresh_interval_seconds',
@@ -534,23 +532,6 @@ function groupSettings(settings) {
   return groups;
 }
 
-function renderSettingGroupNotice(group) {
-  const disabledReason = group.settings.find((setting) => setting.editable === false)?.disabled_reason;
-  if (group.id !== 'update' || disabledReason !== containerSelfUpdateDisabledReason) return '';
-
-  return `
-    <div id="${updateAvailabilityDescriptionId}" class="settings-availability-notice">
-      <svg class="settings-availability-notice__icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <circle cx="12" cy="12" r="9"></circle>
-        <path d="M12 8h.01M11 12h1v4h1"></path>
-      </svg>
-      <div>
-        <strong>${escapeHtml(t('settings.updateAvailability.containerDisabledTitle'))}</strong>
-        <span>${escapeHtml(t('settings.updateAvailability.containerDisabledDescription'))} <code>CCLOAD_ALLOW_SELF_UPDATE=1</code></span>
-      </div>
-    </div>`;
-}
-
 function renderGroupNav(groups) {
   const nav = document.getElementById('settings-group-nav');
   const navSection = document.getElementById('settings-group-nav-section');
@@ -604,7 +585,7 @@ function renderSettings(settings) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
       groupName: g.name,
-      groupNoticeHtml: renderSettingGroupNotice(g)
+      groupNoticeHtml: ''
     });
     if (groupRow) tbody.appendChild(groupRow);
 
@@ -630,11 +611,7 @@ function renderSettings(settings) {
 }
 
 function settingDisabledAttributes(setting) {
-  if (setting.editable !== false) return '';
-  const describedBy = setting.disabled_reason === containerSelfUpdateDisabledReason
-    ? ` aria-describedby="${updateAvailabilityDescriptionId}"`
-    : '';
-  return `disabled${describedBy}`;
+  return setting.editable === false ? 'disabled' : '';
 }
 
 // 初始化事件委托（替代 inline onclick）

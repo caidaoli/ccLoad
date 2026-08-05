@@ -555,8 +555,8 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
 		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
-		{"auto_update_interval_hours", "12", "int", "自动更新检测间隔(小时整数,0=关闭,启用时最低1小时)", "12"},
-		{"auto_update_channel", "stable", "string", "自动更新渠道(stable=稳定版,preview=稳定版和测试版)", "stable"},
+		{"auto_update_interval_hours", "12", "int", "版本检查间隔（整数小时；0=关闭检查；启用时最低1小时）", "12"},
+		{"auto_update_channel", "stable", "string", "版本检查和自动更新渠道（stable=稳定版，preview=稳定版和测试版）", "stable"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名后的操作", "edit"},
 		{"channel_stats_range", "today", "string", "渠道管理页费用统计的时间范围", "today"},
 		// 健康度排序配置

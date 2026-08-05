@@ -22,14 +22,18 @@ import (
 )
 
 const (
+	requestTimeout             = 10 * time.Second
 	updateDownloadTimeout      = 5 * time.Minute
 	defaultRestartPollInterval = 10 * time.Second
 )
 
 var gitDescribeVersionPattern = regexp.MustCompile(`^(v?[0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-fA-F]+)$`)
 
-// UpdateState exposes the current auto-update state.
+// UpdateState exposes release discovery and application state.
 type UpdateState struct {
+	HasUpdate      bool
+	LatestVersion  string
+	ReleaseURL     string
 	PendingRestart bool
 	PendingVersion string
 	Updating       bool
@@ -37,10 +41,11 @@ type UpdateState struct {
 	LastError      string
 }
 
-// AutoUpdateOptions configures an AutoUpdater.
-type AutoUpdateOptions struct {
+// UpdateManagerOptions configures an UpdateManager.
+type UpdateManagerOptions struct {
 	Interval            time.Duration
 	Channel             ReleaseChannel
+	ApplyUpdates        bool
 	RestartPollInterval time.Duration
 	ReleaseSources      []ReleaseSource
 	ExecutablePath      string
@@ -51,10 +56,11 @@ type AutoUpdateOptions struct {
 	Restart             func()
 }
 
-// AutoUpdater downloads verified release binaries and restarts when idle.
-type AutoUpdater struct {
+// UpdateManager owns release checks and optionally applies verified updates.
+type UpdateManager struct {
 	interval            time.Duration
 	channel             ReleaseChannel
+	applyUpdates        bool
 	restartPollInterval time.Duration
 	releaseSources      []ReleaseSource
 	executablePath      string
@@ -71,8 +77,8 @@ type AutoUpdater struct {
 	wg             sync.WaitGroup
 }
 
-// NewAutoUpdater creates an updater with conservative defaults.
-func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
+// NewUpdateManager creates a release manager with explicit application policy.
+func NewUpdateManager(opts UpdateManagerOptions) (*UpdateManager, error) {
 	if opts.Interval <= 0 {
 		return nil, fmt.Errorf("auto update interval must be positive")
 	}
@@ -84,7 +90,7 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 		return nil, err
 	}
 	opts.Channel = channel
-	if opts.Restart == nil {
+	if opts.ApplyUpdates && opts.Restart == nil {
 		return nil, fmt.Errorf("restart callback is required")
 	}
 	if opts.ActiveRequests == nil {
@@ -100,26 +106,29 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 			return nil, err
 		}
 	}
-	if opts.GOOS == "" {
-		opts.GOOS = runtime.GOOS
-	}
-	if opts.GOARCH == "" {
-		opts.GOARCH = runtime.GOARCH
-	}
 	if opts.Client == nil {
 		opts.Client = &http.Client{}
 	}
-	if opts.ExecutablePath == "" {
-		exe, err := os.Executable()
-		if err != nil {
-			return nil, fmt.Errorf("resolve executable path: %w", err)
+	if opts.ApplyUpdates {
+		if opts.GOOS == "" {
+			opts.GOOS = runtime.GOOS
 		}
-		opts.ExecutablePath = exe
+		if opts.GOARCH == "" {
+			opts.GOARCH = runtime.GOARCH
+		}
+		if opts.ExecutablePath == "" {
+			exe, err := os.Executable()
+			if err != nil {
+				return nil, fmt.Errorf("resolve executable path: %w", err)
+			}
+			opts.ExecutablePath = exe
+		}
 	}
 
-	return &AutoUpdater{
+	return &UpdateManager{
 		interval:            opts.Interval,
 		channel:             opts.Channel,
+		applyUpdates:        opts.ApplyUpdates,
 		restartPollInterval: opts.RestartPollInterval,
 		releaseSources:      append([]ReleaseSource(nil), opts.ReleaseSources...),
 		executablePath:      opts.ExecutablePath,
@@ -132,16 +141,18 @@ func NewAutoUpdater(opts AutoUpdateOptions) (*AutoUpdater, error) {
 }
 
 // Run checks immediately, then at the configured interval, until ctx is canceled.
-func (u *AutoUpdater) Run(ctx context.Context) {
+func (u *UpdateManager) Run(ctx context.Context) {
 	defer u.wg.Wait()
 
 	if strings.EqualFold(strings.TrimSpace(Version), "dev") || strings.TrimSpace(Version) == "" {
-		log.Printf("[AutoUpdater] disabled for development version %q", Version)
+		log.Printf("[UpdateManager] disabled for development version %q", Version)
 		return
 	}
-	if _, ok := releaseAssetName(u.goos, u.goarch); !ok {
-		log.Printf("[AutoUpdater] unsupported platform: %s/%s", u.goos, u.goarch)
-		return
+	if u.applyUpdates {
+		if _, ok := releaseAssetName(u.goos, u.goarch); !ok {
+			u.applyUpdates = false
+			log.Printf("[UpdateManager] unsupported update platform %s/%s; continuing in check-only mode", u.goos, u.goarch)
+		}
 	}
 
 	u.runCheck(ctx)
@@ -158,42 +169,47 @@ func (u *AutoUpdater) Run(ctx context.Context) {
 	}
 }
 
-// State returns a snapshot of the updater state.
-func (u *AutoUpdater) State() UpdateState {
+// State returns a snapshot of the manager state.
+func (u *UpdateManager) State() UpdateState {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	return u.state
 }
 
-func (u *AutoUpdater) runCheck(ctx context.Context) {
+func (u *UpdateManager) runCheck(ctx context.Context) {
 	if err := u.updateOnce(ctx); err != nil {
 		u.mu.Lock()
 		u.state.LastError = err.Error()
 		u.state.LastCheck = time.Now()
 		u.mu.Unlock()
-		log.Printf("[AutoUpdater] update check failed: %v", err)
+		log.Printf("[UpdateManager] update check failed: %v", err)
 	}
 }
 
-func (u *AutoUpdater) updateOnce(ctx context.Context) error {
-	baseline := u.baselineVersion()
-	assetName, ok := releaseAssetName(u.goos, u.goarch)
-	if !ok {
-		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
-	}
-
+func (u *UpdateManager) updateOnce(ctx context.Context) error {
 	release, err := resolveLatestRelease(ctx, u.client, u.releaseSources, u.channel)
 	if err != nil {
 		return err
 	}
 
 	u.mu.Lock()
+	previousLatest := u.state.LatestVersion
+	u.state.HasUpdate = compareSemanticVersions(release.TagName, Version) > 0
+	u.state.LatestVersion = release.TagName
+	u.state.ReleaseURL = release.HTMLURL
 	u.state.LastCheck = time.Now()
 	u.state.LastError = ""
 	u.mu.Unlock()
 
-	if compareSemanticVersions(release.TagName, baseline) <= 0 {
+	if compareSemanticVersions(release.TagName, Version) > 0 && previousLatest != release.TagName {
+		log.Printf("[UpdateManager] new version available: %s -> %s", Version, release.TagName)
+	}
+	if !u.applyUpdates || compareSemanticVersions(release.TagName, u.baselineVersion()) <= 0 {
 		return nil
+	}
+	assetName, ok := releaseAssetName(u.goos, u.goarch)
+	if !ok {
+		return fmt.Errorf("unsupported platform: %s/%s", u.goos, u.goarch)
 	}
 
 	var sourceErrors []error
@@ -223,7 +239,7 @@ func (u *AutoUpdater) updateOnce(ctx context.Context) error {
 	return fmt.Errorf("download release %s from all sources: %w", release.TagName, errors.Join(sourceErrors...))
 }
 
-func (u *AutoUpdater) downloadVerifyAndReplace(ctx context.Context, tag, assetName, assetURL, checksumURL string) error {
+func (u *UpdateManager) downloadVerifyAndReplace(ctx context.Context, tag, assetName, assetURL, checksumURL string) error {
 	if strings.TrimSpace(assetURL) == "" || strings.TrimSpace(checksumURL) == "" {
 		return fmt.Errorf("release %s has empty download URL", tag)
 	}
@@ -267,11 +283,11 @@ func (u *AutoUpdater) downloadVerifyAndReplace(ctx context.Context, tag, assetNa
 	if err := os.Rename(tmpPath, u.executablePath); err != nil {
 		return fmt.Errorf("replace executable: %w", err)
 	}
-	log.Printf("[AutoUpdater] prepared %s; restart pending", tag)
+	log.Printf("[UpdateManager] prepared %s; restart pending", tag)
 	return nil
 }
 
-func (u *AutoUpdater) downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
+func (u *UpdateManager) downloadBytes(ctx context.Context, rawURL string) ([]byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 
@@ -293,7 +309,7 @@ func (u *AutoUpdater) downloadBytes(ctx context.Context, rawURL string) ([]byte,
 	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 }
 
-func (u *AutoUpdater) downloadToFile(ctx context.Context, rawURL string, dst *os.File) error {
+func (u *UpdateManager) downloadToFile(ctx context.Context, rawURL string, dst *os.File) error {
 	reqCtx, cancel := context.WithTimeout(ctx, updateDownloadTimeout)
 	defer cancel()
 
@@ -316,7 +332,7 @@ func (u *AutoUpdater) downloadToFile(ctx context.Context, rawURL string, dst *os
 	return err
 }
 
-func (u *AutoUpdater) baselineVersion() string {
+func (u *UpdateManager) baselineVersion() string {
 	u.mu.Lock()
 	pending := u.state.PendingVersion
 	u.mu.Unlock()
@@ -327,20 +343,20 @@ func (u *AutoUpdater) baselineVersion() string {
 	return Version
 }
 
-func (u *AutoUpdater) setUpdating(updating bool) {
+func (u *UpdateManager) setUpdating(updating bool) {
 	u.mu.Lock()
 	u.state.Updating = updating
 	u.mu.Unlock()
 }
 
-func (u *AutoUpdater) markPending(version string) {
+func (u *UpdateManager) markPending(version string) {
 	u.mu.Lock()
 	u.state.PendingRestart = true
 	u.state.PendingVersion = version
 	u.mu.Unlock()
 }
 
-func (u *AutoUpdater) ensureRestartWaiter(ctx context.Context) {
+func (u *UpdateManager) ensureRestartWaiter(ctx context.Context) {
 	u.mu.Lock()
 	if u.waitingRestart {
 		u.mu.Unlock()
@@ -356,7 +372,7 @@ func (u *AutoUpdater) ensureRestartWaiter(ctx context.Context) {
 	}()
 }
 
-func (u *AutoUpdater) waitForIdleAndRestart(ctx context.Context) {
+func (u *UpdateManager) waitForIdleAndRestart(ctx context.Context) {
 	ticker := time.NewTicker(u.restartPollInterval)
 	defer ticker.Stop()
 
@@ -374,7 +390,7 @@ func (u *AutoUpdater) waitForIdleAndRestart(ctx context.Context) {
 	}
 }
 
-func (u *AutoUpdater) readyToRestart() bool {
+func (u *UpdateManager) readyToRestart() bool {
 	u.mu.Lock()
 	state := u.state
 	restartCalled := u.restartCalled
@@ -385,13 +401,13 @@ func (u *AutoUpdater) readyToRestart() bool {
 	}
 	active := u.activeRequests()
 	if active > 0 {
-		log.Printf("[AutoUpdater] restart delayed: %d active request(s)", active)
+		log.Printf("[UpdateManager] restart delayed: %d active request(s)", active)
 		return false
 	}
 	return true
 }
 
-func (u *AutoUpdater) callRestartOnce() {
+func (u *UpdateManager) callRestartOnce() {
 	u.mu.Lock()
 	if u.restartCalled {
 		u.mu.Unlock()
@@ -401,7 +417,7 @@ func (u *AutoUpdater) callRestartOnce() {
 	version := u.state.PendingVersion
 	u.mu.Unlock()
 
-	log.Printf("[AutoUpdater] restarting into %s", version)
+	log.Printf("[UpdateManager] restarting into %s", version)
 	u.restart()
 }
 

@@ -253,15 +253,18 @@ func (s *Server) HandleGetProtocols(c *gin.Context) {
 
 // HandlePublicVersion 获取当前版本信息(公开端点,前端显示版本)
 // GET /public/version
-// 版本信息变化频率极低（后台每4小时检查一次），缓存5分钟
+// 版本信息变化频率极低，缓存5分钟。
 func (s *Server) HandlePublicVersion(c *gin.Context) {
 	c.Header("Cache-Control", "public, max-age=300")
-	hasUpdate, latestVersion, releaseURL := version.GetUpdateInfo()
+	state := version.UpdateState{}
+	if s.updateManager != nil {
+		state = s.updateManager.State()
+	}
 	RespondJSON(c, http.StatusOK, gin.H{
 		"version":        version.Version,
-		"has_update":     hasUpdate,
-		"latest_version": latestVersion,
-		"release_url":    releaseURL,
+		"has_update":     state.HasUpdate,
+		"latest_version": state.LatestVersion,
+		"release_url":    state.ReleaseURL,
 	})
 }
 

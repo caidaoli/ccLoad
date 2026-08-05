@@ -3992,44 +3992,6 @@ body {
   display: block;
 }
 
-.settings-availability-notice {
-  display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  margin-top: 10px;
-  padding: 10px 12px;
-  border: 1px solid rgba(245, 158, 11, 0.35);
-  border-radius: 8px;
-  background: rgba(245, 158, 11, 0.1);
-  color: var(--neutral-700);
-  font-size: 13px;
-  font-weight: 400;
-  letter-spacing: normal;
-  line-height: 1.5;
-}
-
-.settings-availability-notice__icon {
-  flex: 0 0 auto;
-  margin-top: 1px;
-  color: var(--warning-600);
-}
-
-.settings-availability-notice strong,
-.settings-availability-notice span {
-  display: block;
-}
-
-.settings-availability-notice strong {
-  margin-bottom: 2px;
-  color: var(--neutral-900);
-  font-weight: 600;
-}
-
-.settings-availability-notice code {
-  white-space: nowrap;
-  color: inherit;
-}
-
 .settings-input:disabled,
 .settings-bool-option input:disabled {
   cursor: not-allowed;

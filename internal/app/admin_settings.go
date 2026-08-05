@@ -28,23 +28,10 @@ type adminSystemSetting struct {
 }
 
 func systemSettingForAdmin(setting *model.SystemSetting) adminSystemSetting {
-	view := adminSystemSetting{
+	return adminSystemSetting{
 		SystemSetting: setting,
 		Editable:      true,
 	}
-	if setting != nil && selfUpdateDisabledByContainer() && isAutoUpdateSetting(setting.Key) {
-		view.Editable = false
-		view.DisabledReason = autoUpdateDisabledReasonContainer
-	}
-	return view
-}
-
-func rejectDisabledAutoUpdateSetting(c *gin.Context, key string) bool {
-	if !selfUpdateDisabledByContainer() || !isAutoUpdateSetting(key) {
-		return false
-	}
-	RespondErrorMsg(c, http.StatusConflict, "container self-update is disabled; pull a new image and recreate the container, or set CCLOAD_ALLOW_SELF_UPDATE=1")
-	return true
 }
 
 // AdminListSettings 获取所有配置项
@@ -101,10 +88,6 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
 		return
 	}
-	if rejectDisabledAutoUpdateSetting(c, key) {
-		return
-	}
-
 	var req SettingUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
@@ -151,10 +134,6 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
 		return
 	}
-	if rejectDisabledAutoUpdateSetting(c, key) {
-		return
-	}
-
 	// 获取默认值
 	setting := s.configService.GetSetting(key)
 	if setting == nil {
@@ -197,9 +176,6 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 	// 验证所有配置
 	for key, value := range req {
-		if rejectDisabledAutoUpdateSetting(c, key) {
-			return
-		}
 		setting := s.configService.GetSetting(key)
 		if setting == nil {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("unknown setting: %s", key))
