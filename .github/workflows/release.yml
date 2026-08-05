@@ -153,6 +153,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
       - name: Download binaries
         uses: actions/download-artifact@v8
         with:
@@ -167,6 +172,12 @@ jobs:
           sha256sum ccload-* | sort -k2 > checksums.txt
           cat checksums.txt
 
+      - name: Generate release notes
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        run: bash .github/scripts/generate-release-notes.sh "$RELEASE_TAG" "$RUNNER_TEMP/release-notes.md"
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3
         with:
@@ -175,7 +186,7 @@ jobs:
           draft: false
           prerelease: ${{ needs.metadata.outputs.prerelease }}
           make_latest: ${{ needs.metadata.outputs.make_latest }}
-          generate_release_notes: true
+          body_path: ${{ runner.temp }}/release-notes.md
           fail_on_unmatched_files: true
           files: |
             dist/ccload-*
