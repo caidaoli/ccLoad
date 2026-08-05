@@ -198,6 +198,108 @@ func TestDebugLog_AddPersistsProtocolMetadata(t *testing.T) {
 	}
 }
 
+func TestDebugLog_CleanupBatchDeletesOldestRowsUpToLimit(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "cleanup_debug_log_batch.db")
+	ctx := t.Context()
+	cutoff := time.Now()
+
+	for i, createdAt := range []time.Time{
+		cutoff.Add(-5 * time.Minute),
+		cutoff.Add(-4 * time.Minute),
+		cutoff.Add(-3 * time.Minute),
+		cutoff.Add(-2 * time.Minute),
+		cutoff.Add(time.Minute),
+	} {
+		if err := store.AddDebugLog(ctx, &model.DebugLogEntry{
+			LogID:       int64(i + 1),
+			CreatedAt:   createdAt.Unix(),
+			ReqURL:      "https://upstream.example.com",
+			ReqHeaders:  "{}",
+			ReqBody:     []byte("request"),
+			RespHeaders: "{}",
+		}); err != nil {
+			t.Fatalf("AddDebugLog(%d): %v", i+1, err)
+		}
+	}
+
+	deleted, err := store.CleanupDebugLogsBatch(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("CleanupDebugLogsBatch: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("deleted=%d, want 2", deleted)
+	}
+
+	for _, logID := range []int64{1, 2} {
+		entry, err := store.GetDebugLogByLogID(ctx, logID)
+		if err != nil {
+			t.Fatalf("GetDebugLogByLogID(%d): %v", logID, err)
+		}
+		if entry != nil {
+			t.Fatalf("debug log %d still exists after cleanup", logID)
+		}
+	}
+	for _, logID := range []int64{3, 4, 5} {
+		entry, err := store.GetDebugLogByLogID(ctx, logID)
+		if err != nil {
+			t.Fatalf("GetDebugLogByLogID(%d): %v", logID, err)
+		}
+		if entry == nil {
+			t.Fatalf("debug log %d was deleted unexpectedly", logID)
+		}
+	}
+
+	deleted, err = store.CleanupDebugLogsBatch(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("second CleanupDebugLogsBatch: %v", err)
+	}
+	if deleted != 2 {
+		t.Fatalf("second deleted=%d, want 2", deleted)
+	}
+	deleted, err = store.CleanupDebugLogsBatch(ctx, cutoff, 2)
+	if err != nil {
+		t.Fatalf("third CleanupDebugLogsBatch: %v", err)
+	}
+	if deleted != 0 {
+		t.Fatalf("third deleted=%d, want 0", deleted)
+	}
+	if entry, err := store.GetDebugLogByLogID(ctx, 5); err != nil || entry == nil {
+		t.Fatalf("recent debug log was not preserved: entry=%v err=%v", entry, err)
+	}
+}
+
+func TestDebugLog_TruncateKeepsTableUsable(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "truncate_debug_logs.db")
+	entry := &model.DebugLogEntry{
+		LogID:       1,
+		ReqURL:      "https://upstream.example.com",
+		ReqHeaders:  "{}",
+		ReqBody:     []byte("request"),
+		RespHeaders: "{}",
+	}
+	if err := store.AddDebugLog(t.Context(), entry); err != nil {
+		t.Fatalf("AddDebugLog: %v", err)
+	}
+	if err := store.TruncateDebugLogs(t.Context()); err != nil {
+		t.Fatalf("TruncateDebugLogs: %v", err)
+	}
+	if got, err := store.GetDebugLogByLogID(t.Context(), entry.LogID); err != nil || got != nil {
+		t.Fatalf("debug log still exists after truncate: entry=%v err=%v", got, err)
+	}
+
+	entry.LogID = 2
+	if err := store.AddDebugLog(t.Context(), entry); err != nil {
+		t.Fatalf("AddDebugLog after truncate: %v", err)
+	}
+	if got, err := store.GetDebugLogByLogID(t.Context(), entry.LogID); err != nil || got == nil {
+		t.Fatalf("debug log table is unusable after truncate: entry=%v err=%v", got, err)
+	}
+}
+
 func TestLog_BatchAdd(t *testing.T) {
 	t.Parallel()
 

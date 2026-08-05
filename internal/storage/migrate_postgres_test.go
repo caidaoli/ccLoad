@@ -940,8 +940,8 @@ func TestPostgres(t *testing.T) {
 			}); err != nil {
 				t.Fatalf("AddDebugLog: %v", err)
 			}
-			if err := store.CleanupDebugLogsBefore(ctx, now.Add(-time.Hour)); err != nil {
-				t.Fatalf("CleanupDebugLogsBefore: %v", err)
+			if deleted, err := store.CleanupDebugLogsBatch(ctx, now.Add(time.Hour), 1); err != nil || deleted != 1 {
+				t.Fatalf("CleanupDebugLogsBatch: deleted=%d err=%v", deleted, err)
 			}
 			if err := store.TruncateDebugLogs(ctx); err != nil {
 				t.Fatalf("TruncateDebugLogs: %v", err)

@@ -80,7 +80,7 @@ type Store interface {
 	// === Debug Log Management ===
 	AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error
 	GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error)
-	CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error
+	CleanupDebugLogsBatch(ctx context.Context, cutoff time.Time, limit int) (int64, error)
 	TruncateDebugLogs(ctx context.Context) error
 
 	// === Metrics & Statistics ===

@@ -13,6 +13,8 @@ import (
 	"ccLoad/internal/storage"
 )
 
+const debugLogCleanupBatchSize = 200
+
 // LogService 日志管理服务
 //
 // 职责：处理所有日志相关的业务逻辑
@@ -227,55 +229,29 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 // 每小时检查一次，删除3天前的日志
 // 支持优雅关闭
 func (s *LogService) StartCleanupLoop() {
-	// 启动时立即清理调试日志：未启用则清空，已启用则删除过期条目
-	s.cleanupDebugLogsOnStartup()
-
 	s.wg.Add(1)
 	go s.cleanupOldLogsLoop()
-}
-
-// cleanupDebugLogsOnStartup 启动时清理调试日志
-func (s *LogService) cleanupDebugLogsOnStartup() {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	debugEnabled := false
-	if setting, err := s.store.GetSetting(ctx, "debug_log_enabled"); err == nil && setting != nil {
-		debugEnabled = setting.Value == "true"
-	}
-
-	if !debugEnabled {
-		if err := s.store.TruncateDebugLogs(ctx); err != nil {
-			log.Printf("[WARN] 启动时清空调试日志失败: %v", err)
-		} else {
-			log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
-		}
-		return
-	}
-
-	debugRetentionMinutes := 5
-	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err == nil && setting != nil {
-		if v, err := strconv.Atoi(setting.Value); err == nil && v > 0 {
-			debugRetentionMinutes = v
-		}
-	}
-	cutoff := time.Now().Add(-time.Duration(debugRetentionMinutes) * time.Minute)
-	if err := s.store.CleanupDebugLogsBefore(ctx, cutoff); err != nil {
-		log.Printf("[WARN] 启动时清理过期调试日志失败: %v", err)
-	} else {
-		log.Printf("[INFO] 已清理 %d 分钟前的过期调试日志", debugRetentionMinutes)
-	}
 }
 
 // cleanupOldLogsLoop 日志清理后台协程（私有方法）
 func (s *LogService) cleanupOldLogsLoop() {
 	defer s.wg.Done()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.shutdownCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
 
 	logTicker := time.NewTicker(config.LogCleanupInterval)
 	defer logTicker.Stop()
 
 	debugTicker := time.NewTicker(config.DebugLogCleanupInterval)
 	defer debugTicker.Stop()
+	debugCleanupDone := s.cleanupDebugLogs(ctx)
 
 	for {
 		select {
@@ -293,25 +269,63 @@ func (s *LogService) cleanupOldLogsLoop() {
 			}
 
 		case <-debugTicker.C:
-			func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer cancel()
-
-				debugRetentionMinutes := 5
-				if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err == nil && setting != nil {
-					if v, err := strconv.Atoi(setting.Value); err == nil && v > 0 {
-						debugRetentionMinutes = v
-					}
-				}
-				// 清理周期跟随保留时长动态调整
-				debugTicker.Reset(time.Duration(debugRetentionMinutes) * time.Minute)
-
-				debugCutoff := time.Now().Add(-time.Duration(debugRetentionMinutes) * time.Minute)
-				_ = s.store.CleanupDebugLogsBefore(ctx, debugCutoff)
-			}()
+			if !debugCleanupDone {
+				debugCleanupDone = s.cleanupDebugLogs(ctx)
+			}
 
 		case <-s.shutdownCh:
 			return
+		}
+	}
+}
+
+// cleanupDebugLogs 清理一次调试日志。返回 true 表示 Debug 已关闭且表已清空。
+func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
+	setting, err := s.store.GetSetting(ctx, "debug_log_enabled")
+	if err != nil {
+		log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
+		return false
+	}
+	if setting == nil || setting.Value != "true" {
+		if err := s.store.TruncateDebugLogs(ctx); err != nil {
+			log.Printf("[WARN] 清空调试日志失败: %v", err)
+			return false
+		}
+		log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
+		return true
+	}
+
+	retentionMinutes := 5
+	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
+		log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
+		return false
+	} else if setting != nil {
+		if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
+			retentionMinutes = value
+		}
+	}
+
+	cutoff := time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
+	limit := debugLogCleanupBatchSize
+	for {
+		deleted, err := s.store.CleanupDebugLogsBatch(ctx, cutoff, limit)
+		if err != nil {
+			if ctx.Err() != nil {
+				return false
+			}
+			if limit == 1 {
+				log.Printf("[WARN] 清理过期调试日志失败 (batch_size=1): %v", err)
+				return false
+			}
+			limit = max(1, limit/2)
+			log.Printf("[WARN] 清理过期调试日志失败，缩小批量后重试 (batch_size=%d): %v", limit, err)
+			continue
+		}
+		if deleted < int64(limit) {
+			return false
+		}
+		if ctx.Err() != nil {
+			return false
 		}
 	}
 }
