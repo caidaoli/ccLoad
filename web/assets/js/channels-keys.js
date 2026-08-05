@@ -48,18 +48,23 @@ function getValidInlineKeyRows() {
   return getInlineKeyRows().filter(row => row.api_key);
 }
 
-function selectFirstEnabledInlineKey(rows, states) {
-  const disabledIndices = new Set(
+function selectAvailableInlineKeys(rows, states) {
+  const unavailableIndices = new Set(
     (Array.isArray(states) ? states : [])
-      .filter(state => state && state.disabled)
+      .filter(state => state && (state.disabled || Number(state.cooldown_remaining_ms || 0) > 0))
       .map(state => Number(state.key_index))
   );
 
+  const keys = [];
   for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
     const apiKey = normalizeInlineKeyRow(row).api_key;
-    if (apiKey && !disabledIndices.has(index)) return apiKey;
+    if (apiKey && !unavailableIndices.has(index)) keys.push(apiKey);
   }
-  return '';
+  return [...new Set(keys)];
+}
+
+function selectFirstEnabledInlineKey(rows, states) {
+  return selectAvailableInlineKeys(rows, states)[0] || '';
 }
 
 function updateInlineKeyHiddenInput() {
@@ -1209,5 +1214,5 @@ async function toggleKeyDisabled(index) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { selectFirstEnabledInlineKey };
+  module.exports = { selectAvailableInlineKeys, selectFirstEnabledInlineKey };
 }

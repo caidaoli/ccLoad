@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectFirstEnabledInlineKey } = require('./channels-keys.js');
+const { selectAvailableInlineKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }) {
@@ -15,6 +15,7 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }
     getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }],
     getInlineKeyRows: () => rows,
     currentChannelKeyCooldowns: states,
+    selectAvailableInlineKeys,
     selectFirstEnabledInlineKey,
     fetchAPIWithAuth: onFetch,
     alert: onError,
@@ -656,13 +657,20 @@ test('model submit payload includes disabled state', () => {
   ]);
 });
 
-test('fetchModelsFromAPI sends the first enabled API key', async () => {
+test('fetchModelsFromAPI sends every available API key', async () => {
   let requestBody;
   const restore = installFetchModelsGlobals({
-    rows: [{ api_key: 'disabled-key' }, { api_key: 'enabled-key' }],
+    rows: [
+      { api_key: 'disabled-key' },
+      { api_key: 'cooling-key' },
+      { api_key: 'enabled-key-1' },
+      { api_key: 'enabled-key-2' }
+    ],
     states: [
       { key_index: 0, disabled: true },
-      { key_index: 1, disabled: false }
+      { key_index: 1, disabled: false, cooldown_remaining_ms: 60_000 },
+      { key_index: 2, disabled: false },
+      { key_index: 3, disabled: false }
     ],
     onFetch: async (_url, options) => {
       requestBody = JSON.parse(options.body);
@@ -677,7 +685,8 @@ test('fetchModelsFromAPI sends the first enabled API key', async () => {
     restore();
   }
 
-  assert.equal(requestBody.api_key, 'enabled-key');
+  assert.deepEqual(requestBody.api_keys, ['enabled-key-1', 'enabled-key-2']);
+  assert.equal(requestBody.api_key, undefined);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
 });
 
@@ -918,7 +927,7 @@ test('quick add parses connection text and only returns setup after model discov
     body: {
       urls: [{ url: 'https://gateway.example.com/api', exact: false, protocols: [] }],
       protocol: 'openai',
-      api_key: 'sk-test-secret',
+      api_keys: ['sk-test-secret'],
       lowercase_models: true,
       strip_model_source_prefix: true
     }

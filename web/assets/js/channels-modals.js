@@ -2745,7 +2745,7 @@ async function discoverQuickAddChannelSetup(input, request = fetchAPIWithAuth, o
         body: JSON.stringify({
           urls: [{ url: parsed.url, exact: false, protocols: [] }],
           protocol,
-          api_key: parsed.apiKey,
+          api_keys: [parsed.apiKey],
           lowercase_models: lowercaseModels,
           strip_model_source_prefix: stripModelSourcePrefix
         })
@@ -2948,7 +2948,7 @@ function initQuickAddChannelModalEvents() {
 async function fetchModelsFromAPI() {
   const urls = getValidInlineURLConfigs();
   const channelUrl = urls[0]?.url || '';
-  const firstValidKey = selectFirstEnabledInlineKey(getInlineKeyRows(), currentChannelKeyCooldowns);
+  const availableKeys = selectAvailableInlineKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
 
   if (!channelUrl) {
     if (window.showError) {
@@ -2959,7 +2959,7 @@ async function fetchModelsFromAPI() {
     return;
   }
 
-  if (!firstValidKey) {
+  if (availableKeys.length === 0) {
     if (window.showError) {
       window.showError(window.t('channels.addAtLeastOneEnabledKey'));
     } else {
@@ -2974,7 +2974,7 @@ async function fetchModelsFromAPI() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       urls,
-      api_key: firstValidKey
+      api_keys: availableKeys
     })
   };
 

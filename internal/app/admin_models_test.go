@@ -44,7 +44,7 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		payload := map[string]any{
 			"protocol": " openai ",
 			"urls":     []map[string]any{{"url": upstream.URL}},
-			"api_key":  "sk-test",
+			"api_keys": []string{"sk-test"},
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
 
@@ -69,6 +69,41 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		}
 	})
 
+	t.Run("multiple keys fall back after key error", func(t *testing.T) {
+		var authSequence []string
+		multiKeyUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			auth := r.Header.Get("Authorization")
+			authSequence = append(authSequence, auth)
+			if auth == "Bearer sk-bad" {
+				http.Error(w, "rate limit", http.StatusTooManyRequests)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4"}]}`))
+		}))
+		t.Cleanup(multiKeyUpstream.Close)
+
+		payload := map[string]any{
+			"protocol": "openai",
+			"urls":     []map[string]any{{"url": multiKeyUpstream.URL, "protocols": []string{"openai"}}},
+			"api_keys": []string{"sk-bad", "sk-good"},
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/fetch", payload))
+		server.HandleFetchModelsPreview(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+		if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-5.4" {
+			t.Fatalf("unexpected response: %s", w.Body.String())
+		}
+		wantAuth := []string{"Bearer sk-bad", "Bearer sk-good"}
+		if !reflect.DeepEqual(authSequence, wantAuth) {
+			t.Fatalf("Authorization sequence=%v, want %v", authSequence, wantAuth)
+		}
+	})
+
 	t.Run("normalization options preserve upstream model names", func(t *testing.T) {
 		normalizationUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
@@ -83,7 +118,7 @@ func TestAdminModels_FetchModelsPreview(t *testing.T) {
 		payload := map[string]any{
 			"protocol":                  "openai",
 			"urls":                      []map[string]any{{"url": normalizationUpstream.URL}},
-			"api_key":                   "sk-test",
+			"api_keys":                  []string{"sk-test"},
 			"lowercase_models":          true,
 			"strip_model_source_prefix": true,
 		}
@@ -404,6 +439,71 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 	})
 }
 
+func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
+	var gotAuth []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		auth := r.Header.Get("Authorization")
+		gotAuth = append(gotAuth, auth)
+		if auth == "Bearer sk-bad" {
+			http.Error(w, "invalid api key", http.StatusUnauthorized)
+			return
+		}
+		if auth != "Bearer sk-good" {
+			http.Error(w, "unexpected api key", http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "multi-key-channel",
+		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "existing-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-cooling", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-bad", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-good", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatalf("SetKeyCooldown failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/models/fetch", nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-5.4" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	wantAuth := []string{"Bearer sk-bad", "Bearer sk-good"}
+	if !reflect.DeepEqual(gotAuth, wantAuth) {
+		t.Fatalf("Authorization sequence=%v, want %v", gotAuth, wantAuth)
+	}
+}
+
 func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	failCalls := 0
 	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -553,13 +653,18 @@ func TestAdminModels_HandleFetchModels_MultiURL_KeyErrorDoesNotCooldownURL(t *te
 func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 	t.Run("merge mode partial success", func(t *testing.T) {
 		// channel1: 返回 m1,m2（新增1个）
-		var upstream1Auth string
+		var upstream1Auth []string
 		upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.URL.Path != "/v1/models" {
 				http.NotFound(w, r)
 				return
 			}
-			upstream1Auth = r.Header.Get("Authorization")
+			auth := r.Header.Get("Authorization")
+			upstream1Auth = append(upstream1Auth, auth)
+			if auth == "Bearer bad-k1" {
+				http.Error(w, "invalid api key", http.StatusUnauthorized)
+				return
+			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"data":[{"id":"m1"},{"id":"m2"}]}`))
 		}))
@@ -582,7 +687,7 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		ctx := context.Background()
 		c1, err := store.CreateConfig(ctx, &model.Config{
 			Name:         "c1",
-			URLs:         model.ChannelURLs{{URL: upstream1.URL}},
+			URLs:         model.ChannelURLs{{URL: upstream1.URL, Protocols: []string{"openai"}}},
 			Priority:     1,
 			ModelEntries: []model.ModelEntry{{Model: "m1"}},
 			Enabled:      true,
@@ -613,7 +718,8 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 
 		if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
 			{ChannelID: c1.ID, KeyIndex: 0, APIKey: "disabled-k1", KeyStrategy: model.KeyStrategySequential, Disabled: true},
-			{ChannelID: c1.ID, KeyIndex: 1, APIKey: "k1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: c1.ID, KeyIndex: 1, APIKey: "bad-k1", KeyStrategy: model.KeyStrategySequential},
+			{ChannelID: c1.ID, KeyIndex: 2, APIKey: "k1", KeyStrategy: model.KeyStrategySequential},
 			{ChannelID: c2.ID, KeyIndex: 0, APIKey: "k2", KeyStrategy: model.KeyStrategySequential},
 		}); err != nil {
 			t.Fatalf("CreateAPIKeysBatch failed: %v", err)
@@ -644,8 +750,9 @@ func TestAdminModels_HandleBatchRefreshModels(t *testing.T) {
 		if resp.Data.Updated != 1 || resp.Data.Unchanged != 1 || resp.Data.Failed != 1 {
 			t.Fatalf("unexpected summary: %+v", resp.Data)
 		}
-		if upstream1Auth != "Bearer k1" {
-			t.Fatalf("Authorization=%q, want %q", upstream1Auth, "Bearer k1")
+		wantAuth := []string{"Bearer bad-k1", "Bearer k1"}
+		if !reflect.DeepEqual(upstream1Auth, wantAuth) {
+			t.Fatalf("Authorization sequence=%v, want %v", upstream1Auth, wantAuth)
 		}
 
 		got1, err := store.GetConfig(ctx, c1.ID)

@@ -26,7 +26,7 @@ var fetchModelsHTTPStatusPattern = regexp.MustCompile(`HTTP\s+(\d{3})`)
 type FetchModelsRequest struct {
 	URLs                   model.ChannelURLs `json:"urls" binding:"required,min=1"`
 	Protocol               string            `json:"protocol,omitempty"`
-	APIKey                 string            `json:"api_key" binding:"required"`
+	APIKeys                []string          `json:"api_keys" binding:"required,min=1"`
 	LowercaseModels        bool              `json:"lowercase_models,omitempty"`
 	StripModelSourcePrefix bool              `json:"strip_model_source_prefix,omitempty"`
 }
@@ -90,19 +90,19 @@ func (s *Server) HandleFetchModels(c *gin.Context) {
 		return
 	}
 
-	// 3. 获取第一个已启用的 API Key（用于调用 Models API）
+	// 3. 获取全部可用 API Key；模型发现遇到 Key 级错误时自动轮换。
 	keys, err := s.store.GetAPIKeys(c.Request.Context(), channelID)
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "该渠道没有可用的API Key")
 		return
 	}
-	apiKey := firstEnabledAPIKey(keys)
-	if apiKey == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "该渠道没有已启用的API Key")
+	apiKeys := availableModelFetchKeys(keys, time.Now())
+	if len(apiKeys) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "该渠道没有可用的API Key")
 		return
 	}
 
-	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), channel.ID, channel.URLs, c.Query("protocol"), apiKey)
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), channel.ID, channel.URLs, c.Query("protocol"), apiKeys)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -122,9 +122,9 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 	}
 
 	req.Protocol = strings.TrimSpace(req.Protocol)
-	req.APIKey = strings.TrimSpace(req.APIKey)
-	if req.APIKey == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "urls、api_key为必填字段")
+	req.APIKeys = normalizeModelFetchKeys(req.APIKeys)
+	if len(req.APIKeys) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "urls、api_keys为必填字段")
 		return
 	}
 
@@ -135,7 +135,7 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 		return
 	}
 
-	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKey)
+	response, err := s.fetchModelsWithURLFallback(c.Request.Context(), 0, req.URLs, req.Protocol, req.APIKeys)
 	if err != nil {
 		// [INFO] 修复：统一返回200，通过success字段区分成功/失败（上游错误是预期内的）
 		RespondErrorMsg(c, http.StatusOK, err.Error())
@@ -209,16 +209,16 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 			continue
 		}
 
-		apiKey := firstEnabledAPIKey(keys)
-		if apiKey == "" {
+		apiKeys := availableModelFetchKeys(keys, time.Now())
+		if len(apiKeys) == 0 {
 			item.Status = "failed"
-			item.Error = "该渠道没有已启用的API Key"
+			item.Error = "该渠道没有可用的API Key"
 			failed++
 			results = append(results, item)
 			continue
 		}
 
-		resp, err := s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKey)
+		resp, err := s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
 		if err != nil {
 			item.Status = "failed"
 			item.Error = err.Error()
@@ -293,16 +293,32 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 	})
 }
 
-func firstEnabledAPIKey(keys []*model.APIKey) string {
+func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
+	apiKeys := make([]string, 0, len(keys))
 	for _, key := range keys {
-		if key == nil || key.Disabled {
+		if key == nil || key.Disabled || key.IsCoolingDown(now) {
 			continue
 		}
-		if apiKey := strings.TrimSpace(key.APIKey); apiKey != "" {
-			return apiKey
-		}
+		apiKeys = append(apiKeys, key.APIKey)
 	}
-	return ""
+	return normalizeModelFetchKeys(apiKeys)
+}
+
+func normalizeModelFetchKeys(apiKeys []string) []string {
+	seen := make(map[string]struct{}, len(apiKeys))
+	normalized := make([]string, 0, len(apiKeys))
+	for _, apiKey := range apiKeys {
+		apiKey = strings.TrimSpace(apiKey)
+		if apiKey == "" {
+			continue
+		}
+		if _, exists := seen[apiKey]; exists {
+			continue
+		}
+		seen[apiKey] = struct{}{}
+		normalized = append(normalized, apiKey)
+	}
+	return normalized
 }
 
 // fetchModelsWithURLFallback 按URL排序顺序抓取模型列表。
@@ -311,10 +327,15 @@ func (s *Server) fetchModelsWithURLFallback(
 	ctx context.Context,
 	channelID int64,
 	configuredURLs model.ChannelURLs,
-	overrideProtocol, apiKey string,
+	overrideProtocol string,
+	apiKeys []string,
 ) (*FetchModelsResponse, error) {
 	if len(configuredURLs) == 0 {
 		return nil, fmt.Errorf("渠道URL为空")
+	}
+	apiKeys = normalizeModelFetchKeys(apiKeys)
+	if len(apiKeys) == 0 {
+		return nil, fmt.Errorf("API Key为空")
 	}
 	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
 	if overrideProtocol != "" && !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
@@ -352,22 +373,32 @@ func (s *Server) fetchModelsWithURLFallback(
 				protocols[i] = string(candidate)
 			}
 		}
+		urlFailed := false
 		for _, upstreamProtocol := range protocols {
-			start := time.Now()
-			resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
-			if err == nil {
-				if selectorEnabled {
-					latency := time.Since(start)
-					if latency <= 0 {
-						latency = time.Millisecond
+			for _, apiKey := range apiKeys {
+				start := time.Now()
+				resp, err := fetchModelsForConfig(ctx, upstreamProtocol, sorted.url, apiKey)
+				if err == nil {
+					if selectorEnabled {
+						latency := time.Since(start)
+						if latency <= 0 {
+							latency = time.Millisecond
+						}
+						s.urlSelector.RecordLatency(channelID, sorted.url, latency)
 					}
-					s.urlSelector.RecordLatency(channelID, sorted.url, latency)
+					return resp, nil
 				}
-				return resp, nil
+				lastErr = err
+				if shouldTryNextKeyOnFetchModelsError(err) {
+					continue
+				}
+				if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
+					s.urlSelector.CooldownURL(channelID, sorted.url)
+					urlFailed = true
+				}
+				break
 			}
-			lastErr = err
-			if selectorEnabled && shouldCooldownURLOnFetchModelsError(err) {
-				s.urlSelector.CooldownURL(channelID, sorted.url)
+			if urlFailed {
 				break
 			}
 		}
@@ -377,6 +408,18 @@ func (s *Server) fetchModelsWithURLFallback(
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("获取模型列表失败: 未找到可用URL")
+}
+
+func shouldTryNextKeyOnFetchModelsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	statusCode, body, ok := parseFetchModelsStatus(err.Error())
+	if !ok {
+		return false
+	}
+	classification := util.ClassifyHTTPResponseWithMeta(statusCode, nil, []byte(body))
+	return classification.Level == util.ErrorLevelKey
 }
 
 func shouldCooldownURLOnFetchModelsError(err error) bool {
