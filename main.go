@@ -107,7 +107,6 @@ func main() {
 
 	srv := app.NewServer(store)
 	srv.StartModelCatalogSync()
-	srv.StartVersionChecker()
 
 	// 注入重启函数（避免循环依赖）
 	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。
@@ -124,7 +123,7 @@ func main() {
 		}
 	}
 
-	srv.StartAutoUpdateLoop()
+	srv.StartUpdateManager()
 
 	// 创建Gin引擎
 	r := gin.New()

@@ -12,9 +12,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func TestCompareSemanticVersions(t *testing.T) {
 	t.Parallel()
@@ -73,14 +78,14 @@ func TestReleaseAssetNameAndDownloadURL(t *testing.T) {
 	}
 }
 
-func TestAutoUpdaterReleaseSourceConfiguration(t *testing.T) {
+func TestUpdateManagerReleaseSourceConfiguration(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })
 	Version = "v1.0.0"
 
 	t.Run("defaults try three mirrors then GitHub", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
-		assertAutoUpdaterLatestRequests(t, []string{
+		assertUpdateManagerReleaseRequests(t, ReleaseChannelStable, []string{
 			"https://gh.monlor.com/https://github.com/caidaoli/ccLoad/releases/latest",
 			"https://fastgit.cc/https://github.com/caidaoli/ccLoad/releases/latest",
 			"https://ghfast.top/https://github.com/caidaoli/ccLoad/releases/latest",
@@ -88,21 +93,27 @@ func TestAutoUpdaterReleaseSourceConfiguration(t *testing.T) {
 		})
 	})
 
+	t.Run("preview reads the GitHub releases feed", func(t *testing.T) {
+		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
+		assertUpdateManagerReleaseRequests(t, ReleaseChannelPreview, []string{
+			"https://github.com/caidaoli/ccLoad/releases.atom",
+		})
+	})
+
 	t.Run("custom base disables built-in fallback", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "https://mirror.example/https://github.com/caidaoli/ccLoad/releases/latest/download/")
-		assertAutoUpdaterLatestRequests(t, []string{
+		assertUpdateManagerReleaseRequests(t, ReleaseChannelStable, []string{
 			"https://mirror.example/https://github.com/caidaoli/ccLoad/releases/latest",
 		})
 	})
 
 	t.Run("invalid custom base fails", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "https://mirror.example/releases/download")
-		_, err := NewAutoUpdater(AutoUpdateOptions{
+		_, err := NewUpdateManager(UpdateManagerOptions{
 			Interval: time.Hour,
-			Restart:  func() {},
 		})
 		if err == nil {
-			t.Fatal("NewAutoUpdater must reject an invalid custom release base")
+			t.Fatal("NewUpdateManager must reject an invalid custom release base")
 		}
 	})
 }
@@ -134,7 +145,62 @@ func TestParseReleaseChannel(t *testing.T) {
 	}
 }
 
-func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
+func TestUpdateManagerCheckOnlyPublishesReleaseStateWithoutDownload(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	var downloadRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest":
+			http.Redirect(w, r, "/caidaoli/ccLoad/releases/tag/v2.0.0", http.StatusFound)
+		case "/caidaoli/ccLoad/releases/tag/v2.0.0":
+			_, _ = fmt.Fprint(w, "<html></html>")
+		default:
+			downloadRequests.Add(1)
+			http.Error(w, "download must not run", http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+
+	manager, err := NewUpdateManager(UpdateManagerOptions{
+		Interval: time.Hour,
+		ReleaseSources: []ReleaseSource{{
+			Name:            "test",
+			LatestURL:       server.URL + "/latest",
+			DownloadBaseURL: server.URL + "/caidaoli/ccLoad/releases/download",
+		}},
+		Client: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewUpdateManager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		manager.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for manager.State().LatestVersion == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	state := manager.State()
+	if !state.HasUpdate || state.LatestVersion != "v2.0.0" || state.ReleaseURL != server.URL+"/caidaoli/ccLoad/releases/tag/v2.0.0" {
+		t.Fatalf("update state=%+v", state)
+	}
+	if state.PendingRestart || downloadRequests.Load() != 0 {
+		t.Fatalf("check-only mode pending_restart=%v download_requests=%d", state.PendingRestart, downloadRequests.Load())
+	}
+}
+
+func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })
 	Version = "v1.0.0"
@@ -145,15 +211,15 @@ func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/releases":
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = fmt.Fprint(w, `[
-                {"tag_name":"v9.0.0-beta.1","html_url":"https://example.test/v9.0.0-beta.1","draft":true,"prerelease":true},
-                {"tag_name":"not-semver","html_url":"https://example.test/not-semver","draft":false,"prerelease":true},
-                {"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/v1.1.0-beta.1","draft":false,"prerelease":true},
-                {"tag_name":"v1.1.0-beta.2","html_url":"https://example.test/v1.1.0-beta.2","draft":false,"prerelease":true},
-                {"tag_name":"v1.0.5","html_url":"https://example.test/v1.0.5","draft":false,"prerelease":false}
-            ]`)
+		case "/releases.atom":
+			w.Header().Set("Content-Type", "application/atom+xml")
+			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <entry><link rel="alternate" href="https://example.test/releases/tag/not-semver"/><title>Release not-semver</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.1"/><title>Release v1.1.0-beta.1</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.2"/><title>Release v1.1.0-beta.2</title></entry>
+  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.0.5"/><title>Release v1.0.5</title></entry>
+</feed>`)
 		case "/download/v1.1.0-beta.2/checksums.txt":
 			_, _ = fmt.Fprint(w, checksum)
 		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
@@ -169,12 +235,13 @@ func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 		t.Fatalf("write old executable: %v", err)
 	}
 
-	updater, err := NewAutoUpdater(AutoUpdateOptions{
-		Interval: time.Hour,
-		Channel:  ReleaseChannelPreview,
+	updater, err := NewUpdateManager(UpdateManagerOptions{
+		Interval:     time.Hour,
+		Channel:      ReleaseChannelPreview,
+		ApplyUpdates: true,
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
-			ReleasesURL:     server.URL + "/releases",
+			ReleasesURL:     server.URL + "/releases.atom",
 			DownloadBaseURL: server.URL + "/download",
 		}},
 		ExecutablePath: exePath,
@@ -185,7 +252,7 @@ func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 		Restart:        func() { t.Fatal("restart must wait for idle requests") },
 	})
 	if err != nil {
-		t.Fatalf("NewAutoUpdater: %v", err)
+		t.Fatalf("NewUpdateManager: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -215,7 +282,7 @@ func TestAutoUpdaterPreviewChannelSelectsHighestPublishedRelease(t *testing.T) {
 	}
 }
 
-func assertAutoUpdaterLatestRequests(t *testing.T, want []string) {
+func assertUpdateManagerReleaseRequests(t *testing.T, channel ReleaseChannel, want []string) {
 	t.Helper()
 
 	requests := make(chan string, len(want)+1)
@@ -225,8 +292,9 @@ func assertAutoUpdaterLatestRequests(t *testing.T, want []string) {
 			return nil, errors.New("unavailable")
 		}),
 	}
-	updater, err := NewAutoUpdater(AutoUpdateOptions{
+	updater, err := NewUpdateManager(UpdateManagerOptions{
 		Interval:       time.Hour,
+		Channel:        channel,
 		ExecutablePath: filepath.Join(t.TempDir(), "ccload"),
 		Client:         client,
 		GOOS:           "linux",
@@ -234,7 +302,7 @@ func assertAutoUpdaterLatestRequests(t *testing.T, want []string) {
 		Restart:        func() {},
 	})
 	if err != nil {
-		t.Fatalf("NewAutoUpdater: %v", err)
+		t.Fatalf("NewUpdateManager: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -368,8 +436,9 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 	}
 
 	ctx, cancel := contextWithCleanup(t)
-	updater, err := NewAutoUpdater(AutoUpdateOptions{
+	updater, err := NewUpdateManager(UpdateManagerOptions{
 		Interval:            time.Hour,
+		ApplyUpdates:        true,
 		RestartPollInterval: time.Millisecond,
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
@@ -384,7 +453,7 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 		Restart:        func() { t.Fatalf("restart must wait for idle requests") },
 	})
 	if err != nil {
-		t.Fatalf("NewAutoUpdater: %v", err)
+		t.Fatalf("NewUpdateManager: %v", err)
 	}
 	defer func() {
 		cancel()
@@ -414,7 +483,7 @@ func TestUpdateOnceReplacesPendingVersionWithNewerDownloadedRelease(t *testing.T
 	}
 }
 
-func TestAutoUpdaterFallsBackToNextReleaseSource(t *testing.T) {
+func TestUpdateManagerFallsBackToNextReleaseSource(t *testing.T) {
 	origVersion := Version
 	t.Cleanup(func() { Version = origVersion })
 	Version = "v1.0.0"
@@ -468,8 +537,9 @@ func TestAutoUpdaterFallsBackToNextReleaseSource(t *testing.T) {
 				t.Fatalf("write old executable: %v", err)
 			}
 
-			updater, err := NewAutoUpdater(AutoUpdateOptions{
+			updater, err := NewUpdateManager(UpdateManagerOptions{
 				Interval:            time.Hour,
+				ApplyUpdates:        true,
 				RestartPollInterval: time.Millisecond,
 				ReleaseSources: []ReleaseSource{
 					{Name: "proxy", LatestURL: server.URL + "/proxy/latest", DownloadBaseURL: server.URL + "/proxy/releases/download"},
@@ -483,7 +553,7 @@ func TestAutoUpdaterFallsBackToNextReleaseSource(t *testing.T) {
 				Restart:        func() {},
 			})
 			if err != nil {
-				t.Fatalf("NewAutoUpdater: %v", err)
+				t.Fatalf("NewUpdateManager: %v", err)
 			}
 
 			ctx, cancel := context.WithCancel(context.Background())

@@ -9,58 +9,55 @@ import (
 )
 
 const (
-	defaultAutoUpdateIntervalHours    = 12
-	defaultAutoUpdateChannel          = version.ReleaseChannelStable
-	autoUpdateIntervalSettingKey      = "auto_update_interval_hours"
-	autoUpdateChannelSettingKey       = "auto_update_channel"
-	autoUpdateDisabledReasonContainer = "container_self_update_disabled"
+	defaultAutoUpdateIntervalHours = 12
+	defaultAutoUpdateChannel       = version.ReleaseChannelStable
+	autoUpdateIntervalSettingKey   = "auto_update_interval_hours"
+	autoUpdateChannelSettingKey    = "auto_update_channel"
 )
 
 func selfUpdateDisabledByContainer() bool {
 	return os.Getenv("CCLOAD_CONTAINER") == "1" && os.Getenv("CCLOAD_ALLOW_SELF_UPDATE") != "1"
 }
 
-func isAutoUpdateSetting(key string) bool {
-	return key == autoUpdateIntervalSettingKey || key == autoUpdateChannelSettingKey
-}
-
 func normalizeAutoUpdateIntervalHours(hours int) int {
 	if hours < 0 {
-		log.Printf("[WARN] 无效的 auto_update_interval_hours=%v（必须 >= 0），已设为 0（禁用自动更新）", hours)
+		log.Printf("[WARN] 无效的 auto_update_interval_hours=%v（必须 >= 0），已设为 0（禁用版本检查和自动更新）", hours)
 		return 0
 	}
 	return hours
 }
 
-// StartAutoUpdateLoop starts the configured auto-update loop after RestartFunc is injected.
-func (s *Server) StartAutoUpdateLoop() {
-	inContainer := os.Getenv("CCLOAD_CONTAINER") == "1"
-	if selfUpdateDisabledByContainer() {
-		log.Print("[INFO] 容器镜像禁用进程内自动更新；请拉取新的稳定版镜像")
-		return
-	}
-	if inContainer {
-		log.Print("[WARN] 已通过 CCLOAD_ALLOW_SELF_UPDATE=1 启用容器进程内自动更新")
-	}
+// StartUpdateManager starts the single release check loop and optional update application.
+func (s *Server) StartUpdateManager() {
 	autoUpdateIntervalHours := normalizeAutoUpdateIntervalHours(
 		s.configService.GetInt(autoUpdateIntervalSettingKey, defaultAutoUpdateIntervalHours),
 	)
-	s.startAutoUpdateLoop(
+	if autoUpdateIntervalHours == 0 {
+		log.Print("[INFO] 版本检查和自动更新未启用（auto_update_interval_hours=0）")
+		return
+	}
+
+	inContainer := os.Getenv("CCLOAD_CONTAINER") == "1"
+	applyUpdates := true
+	if selfUpdateDisabledByContainer() {
+		applyUpdates = false
+		log.Print("[INFO] 容器镜像启用版本检查，但禁用进程内自动更新")
+	}
+	if inContainer {
+		if applyUpdates {
+			log.Print("[WARN] 已通过 CCLOAD_ALLOW_SELF_UPDATE=1 启用容器进程内自动更新")
+		}
+	}
+	if applyUpdates && RestartFunc == nil {
+		applyUpdates = false
+		log.Print("[WARN] RestartFunc 为空，仅启动版本检查")
+	}
+
+	s.startUpdateManager(
 		time.Duration(autoUpdateIntervalHours)*time.Hour,
 		s.configuredReleaseChannel(),
+		applyUpdates,
 	)
-}
-
-// StartVersionChecker starts update notifications using the configured release channel.
-func (s *Server) StartVersionChecker() {
-	channel := s.configuredReleaseChannel()
-	s.wg.Add(1)
-	go func() {
-		defer s.wg.Done()
-		if err := version.RunChecker(s.baseCtx, channel); err != nil {
-			log.Printf("[WARN] 版本检测未启动: %v", err)
-		}
-	}()
 }
 
 func (s *Server) configuredReleaseChannel() version.ReleaseChannel {
@@ -73,33 +70,26 @@ func (s *Server) configuredReleaseChannel() version.ReleaseChannel {
 	return channel
 }
 
-func (s *Server) startAutoUpdateLoop(interval time.Duration, channel version.ReleaseChannel) {
-	if interval <= 0 {
-		log.Print("[INFO] 自动更新未启用（auto_update_interval_hours=0）")
-		return
-	}
-	if RestartFunc == nil {
-		log.Print("[WARN] 自动更新未启动：RestartFunc 为空")
-		return
-	}
-
-	updater, err := version.NewAutoUpdater(version.AutoUpdateOptions{
+func (s *Server) startUpdateManager(interval time.Duration, channel version.ReleaseChannel, applyUpdates bool) {
+	manager, err := version.NewUpdateManager(version.UpdateManagerOptions{
 		Interval:       interval,
 		Channel:        channel,
+		ApplyUpdates:   applyUpdates,
 		ActiveRequests: s.activeRequestCount,
 		Restart:        RestartFunc,
 	})
 	if err != nil {
-		log.Printf("[WARN] 自动更新未启动: %v", err)
+		log.Printf("[WARN] 更新管理器未启动: %v", err)
 		return
 	}
+	s.updateManager = manager
 
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
-		updater.Run(s.baseCtx)
+		manager.Run(s.baseCtx)
 	}()
-	log.Printf("[INFO] 自动更新已启用，渠道: %s，检测间隔: %v", channel, interval)
+	log.Printf("[INFO] 更新管理器已启用，渠道: %s，检测间隔: %v，自动应用: %t", channel, interval, applyUpdates)
 }
 
 func (s *Server) activeRequestCount() int {

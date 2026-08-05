@@ -22,6 +22,7 @@ import (
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
+	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -47,6 +48,7 @@ type Server struct {
 	channelRPMLimiter             *channelRPMLimiter         // 渠道RPM限制器（内存滑动窗口）
 	channelConcurrencyLimiter     *channelConcurrencyLimiter // 渠道并发限制器（内存计数）
 	statsCache                    *StatsCache                // 统计结果缓存层
+	updateManager                 *version.UpdateManager     // 版本检查与可选自动应用的唯一状态源
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
