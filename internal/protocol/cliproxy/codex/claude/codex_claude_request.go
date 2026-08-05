@@ -27,7 +27,7 @@ import (
 // The function performs the following transformations:
 // 1. Sets up a template with the model name and empty instructions field
 // 2. Processes system messages and converts them to developer input content
-// 3. Transforms message contents (text, image, tool_use, tool_result) to appropriate formats
+// 3. Transforms message contents (text, image, document, tool_use, tool_result) to appropriate formats
 // 4. Converts tools declarations to the expected format
 // 5. Adds additional configuration parameters for the Codex API
 // 6. Maps Claude thinking configuration to Codex reasoning settings
@@ -221,6 +221,13 @@ func ConvertClaudeRequestToCodex(modelName string, inputRawJSON []byte, _ bool) 
 							filename := messageContentResult.Get("title").String()
 							if filename == "" {
 								filename = sourceResult.Get("filename").String()
+							}
+							mediaType := strings.TrimSpace(sourceResult.Get("media_type").String())
+							if sourceResult.Get("type").String() == "base64" && strings.EqualFold(mediaType, "application/pdf") && fileData != "" {
+								fileData = fmt.Sprintf("data:%s;base64,%s", mediaType, fileData)
+								if filename == "" {
+									filename = "document.pdf"
+								}
 							}
 							appendFileContent(sourceResult.Get("file_id").String(), fileData, filename)
 						}
