@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2584,6 +2585,67 @@ func TestProxy_LocalModePrioritizesDeclaredURLs(t *testing.T) {
 	}
 	if automaticHits.Load() != 0 || declaredHits.Load() != 1 {
 		t.Fatalf("hits automatic=%d declared=%d, want 0/1", automaticHits.Load(), declaredHits.Load())
+	}
+}
+
+func TestProxy_AutoModePrioritizesAutomaticURLBeforeDeclaredConversion(t *testing.T) {
+	var automaticPathsMu sync.Mutex
+	var automaticPaths []string
+	automatic := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		automaticPathsMu.Lock()
+		automaticPaths = append(automaticPaths, r.URL.Path)
+		automaticPathsMu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/chat/completions" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"chatcmpl_auto","object":"chat.completion","model":"shared-model","choices":[{"index":0,"message":{"role":"assistant","content":"direct"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
+	}))
+	defer automatic.Close()
+
+	var declaredHits atomic.Int64
+	declared := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		declaredHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"converted"}],"model":"shared-model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer declared.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "auto-original-protocol-first", upstreamProtocol: util.ProtocolAnthropic,
+		protocolTransformMode: model.ProtocolTransformModeAuto, models: "shared-model",
+	}}, map[int]string{0: automatic.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	configs[0].URLs = model.ChannelURLs{
+		{URL: declared.URL, Protocols: []string{"anthropic"}},
+		{URL: automatic.URL},
+	}
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+	// 固定配置顺序，证明 auto 模式会主动把自动检测 URL 提到转换 URL 之前。
+	env.server.urlSelector = nil
+
+	w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "shared-model", "messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	automaticPathsMu.Lock()
+	gotAutomaticPaths := append([]string(nil), automaticPaths...)
+	automaticPathsMu.Unlock()
+	if !slices.Equal(gotAutomaticPaths, []string{"/v1/chat/completions"}) {
+		t.Fatalf("automatic paths=%v, want original client protocol first", gotAutomaticPaths)
+	}
+	if got := declaredHits.Load(); got != 0 {
+		t.Fatalf("declared conversion URL hits=%d, want 0 when automatic URL accepts original protocol", got)
 	}
 }
 

@@ -1438,6 +1438,75 @@ func TestHandleChannelTest_UsesSelectedProtocolEndpoint(t *testing.T) {
 	}
 }
 
+func TestHandleChannelTest_AutoModePrioritizesAutomaticURLBeforeDeclaredConversion(t *testing.T) {
+	var automaticHits atomic.Int64
+	automatic := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		automaticHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path != "/v1/responses" {
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, `{"error":{"message":"endpoint not found"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"resp_auto","object":"response","status":"completed","model":"shared-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"direct"}]}],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}`)
+	}))
+	defer automatic.Close()
+
+	var declaredHits atomic.Int64
+	declared := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		declaredHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"converted"}],"model":"shared-model","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+	}))
+	defer declared.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = automatic.Client()
+	srv.urlSelector = nil
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "channel-test-auto-original-first",
+		URLs: model.ChannelURLs{
+			{URL: declared.URL, Protocols: []string{"anthropic"}},
+			{URL: automatic.URL},
+		},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeAuto,
+		ModelEntries:          []model.ModelEntry{{Model: "shared-model"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-test-key",
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/test", created.ID), map[string]any{
+		"model":           "shared-model",
+		"client_protocol": "codex",
+		"content":         "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !success {
+		t.Fatalf("expected data.success=true, data=%+v", resp.Data)
+	}
+	if got := automaticHits.Load(); got != 1 {
+		t.Fatalf("automatic URL hits=%d, want one native Codex request", got)
+	}
+	if got := declaredHits.Load(); got != 0 {
+		t.Fatalf("declared conversion URL hits=%d, want 0 when automatic URL accepts Codex", got)
+	}
+}
+
 func TestHandleChannelTest_AutoFallsBackOnNonModelDeployment404(t *testing.T) {
 	var gotPaths []string
 	var gotBodies [][]byte

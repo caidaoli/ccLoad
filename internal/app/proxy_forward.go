@@ -2478,12 +2478,16 @@ func (s *Server) attemptKeyAcrossURLs(
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	clientProtocol := reqCtx.clientProtocol
+	transformMode := cfg.GetProtocolTransformMode()
+	if transformMode == model.ProtocolTransformModeAuto {
+		// auto 模式先让未声明协议的 URL 用客户端原协议探测；只有原协议不支持时才进入转换候选。
+		sortedURLs = prioritizeAutomaticProtocolURLs(sortedURLs, cfg.URLs)
+	}
 	if target, ok := reqCtx.nativeCodexWS.affinitySnapshot(); ok &&
 		target.channelID == cfg.ID && target.keyHash == codexWebsocketKeyHash(selectedKey) {
 		sortedURLs = prioritizePinnedCodexWebsocketURL(sortedURLs, target.url, reqCtx.requestPath, reqCtx.rawQuery)
 	}
-	clientProtocol := reqCtx.clientProtocol
-	transformMode := cfg.GetProtocolTransformMode()
 	if transformMode == model.ProtocolTransformModeLocal {
 		sortedURLs = prioritizeDeclaredProtocolURLs(sortedURLs, cfg.URLs)
 	}

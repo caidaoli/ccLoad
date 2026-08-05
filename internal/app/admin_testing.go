@@ -750,7 +750,10 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 		selector = s.urlSelector
 	}
 	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
-	if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeLocal {
+	switch cfg.GetProtocolTransformMode() {
+	case model.ProtocolTransformModeAuto:
+		orderedURLs = prioritizeAutomaticProtocolURLs(orderedURLs, cfg.URLs)
+	case model.ProtocolTransformModeLocal:
 		orderedURLs = prioritizeDeclaredProtocolURLs(orderedURLs, cfg.URLs)
 	}
 
