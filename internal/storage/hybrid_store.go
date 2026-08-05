@@ -978,8 +978,8 @@ func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*mod
 	return h.sqlite.GetDebugLogByLogID(ctx, logID)
 }
 
-func (h *HybridStore) CleanupDebugLogsBefore(ctx context.Context, cutoff time.Time) error {
-	return h.sqlite.CleanupDebugLogsBefore(ctx, cutoff)
+func (h *HybridStore) CleanupDebugLogsBatch(ctx context.Context, cutoff time.Time, limit int) (int64, error) {
+	return h.sqlite.CleanupDebugLogsBatch(ctx, cutoff, limit)
 }
 
 func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {

@@ -141,7 +141,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"fingerprint_test_results", "model_fingerprints", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -174,6 +174,42 @@ func TestMySQL(t *testing.T) {
 				t.Fatalf("表 %s 查询失败: %v", table, err)
 			}
 			t.Logf("表 %s 存在（行数: %d）", table, count)
+		}
+	})
+
+	t.Run("DebugLogCleanup", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("CreateMySQLStore: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		ctx := t.Context()
+		cutoff := time.Now()
+		for i := 1; i <= 3; i++ {
+			if err := store.AddDebugLog(ctx, &model.DebugLogEntry{
+				LogID:       int64(i),
+				CreatedAt:   cutoff.Add(-time.Duration(i) * time.Minute).Unix(),
+				ReqURL:      "https://upstream.example.com",
+				ReqHeaders:  "{}",
+				ReqBody:     []byte("request"),
+				RespHeaders: "{}",
+			}); err != nil {
+				t.Fatalf("AddDebugLog(%d): %v", i, err)
+			}
+		}
+		if deleted, err := store.CleanupDebugLogsBatch(ctx, cutoff, 1); err != nil || deleted != 1 {
+			t.Fatalf("CleanupDebugLogsBatch: deleted=%d err=%v", deleted, err)
+		}
+		if err := store.TruncateDebugLogs(ctx); err != nil {
+			t.Fatalf("TruncateDebugLogs: %v", err)
+		}
+		for i := 1; i <= 3; i++ {
+			if entry, err := store.GetDebugLogByLogID(ctx, int64(i)); err != nil || entry != nil {
+				t.Fatalf("debug log %d after truncate: entry=%v err=%v", i, entry, err)
+			}
 		}
 	})
 
