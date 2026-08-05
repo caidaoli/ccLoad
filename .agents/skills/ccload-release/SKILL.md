@@ -1,6 +1,6 @@
 ---
 name: ccload-release
-description: 用于发布 ccLoad 新版本、计算下一个语义版本、创建并推送发布 Tag、等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。默认发布 Beta；只有用户明确传入 stable 时才发布稳定版。
+description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，计算下一个语义版本，创建并推送发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。默认发布 Beta；只有用户明确传入 stable 时才发布稳定版。
 ---
 
 # 发布 ccLoad
@@ -20,38 +20,49 @@ Tag 形状固定：
 
 ## 发布流程
 
-1. 从仓库根目录运行预览。默认渠道是 `beta`：
+1. 检查 `git status` 和完整 diff。工作区有改动时，根据实际改动推导一个单行 Conventional Commit subject；必须准确反映最高语义版本影响，禁止使用掩盖功能变更的通用 `chore`。不要为提交或推送重复询问用户。
+
+2. 从仓库根目录运行预览。默认渠道是 `beta`。工作区干净时运行：
 
    ```bash
    bash .agents/skills/ccload-release/scripts/release.sh beta --dry-run
    ```
 
-   稳定版改为：
+   工作区有改动时传入推导出的提交 subject：
 
    ```bash
-   bash .agents/skills/ccload-release/scripts/release.sh stable --dry-run
+   bash .agents/skills/ccload-release/scripts/release.sh beta --dry-run --commit-message 'feat(scope): summary'
    ```
 
-2. 核对脚本输出的上一稳定版、语义版本增量和目标 Tag。用户调用本 Skill 已经是发布授权；目标符合参数契约时直接继续，不重复询问。
+   稳定版把 `beta` 改为 `stable`。
 
-3. 执行发布：
+3. 核对脚本输出的上一稳定版、语义版本增量、目标 Tag、工作区动作和分支动作。用户调用本 Skill 已经授权自动提交、非强制推送 `master` 和发布；目标符合参数契约时直接继续。
+
+4. 执行发布。工作区干净时运行：
 
    ```bash
    bash .agents/skills/ccload-release/scripts/release.sh beta --publish
    ```
 
-   稳定版使用 `stable --publish`。
+   工作区有改动时必须复用 dry-run 的同一个 subject：
 
-4. 报告目标 Tag、GitHub Release URL、Actions 结果。稳定版还要报告 `ghcr.io/caidaoli/ccload:<tag>` 和 `ghcr.io/caidaoli/ccload:latest`；Beta 明确说明未发布容器。
+   ```bash
+   bash .agents/skills/ccload-release/scripts/release.sh beta --publish --commit-message 'feat(scope): summary'
+   ```
+
+   稳定版把 `beta` 改为 `stable`。脚本会自动 `git add -A`、创建提交、运行全部发布门禁、非强制推送 `master`，确认远端精确一致后再创建并推送 annotated Tag。本地已有未推送提交时不创建额外提交，验证通过后直接推送。
+
+5. 报告自动创建的提交（如有）、推送的 `master` 修订、目标 Tag、GitHub Release URL 和 Actions 结果。稳定版还要报告 `ghcr.io/caidaoli/ccload:<tag>` 和 `ghcr.io/caidaoli/ccload:latest`；Beta 明确说明未发布容器。
 
 ## 强制规则
 
-- 工作区必须干净，当前分支必须是 `master`，本地 `HEAD` 必须等于 `origin/master`。
-- 脚本只创建和推送 annotated Tag；不提交、不推送分支、不修改版本文件。
-- 发布前必须通过后端测试、Web 验证、构建和 lint。任一失败都不得创建 Tag。
+- 当前分支必须是 `master`。本地 `master` 可与 `origin/master` 相等或领先；远端领先或双方分叉时停止，禁止自动 pull、merge、rebase 或 force-push。
+- dry-run 不提交、不推送、不打 Tag。publish 自动提交全部当前工作区改动；禁止 amend、拆改已有提交或修改版本文件。
+- 发布前必须通过后端测试、Web 验证、构建和 lint。任一失败都不得推送 `master` 或创建 Tag；自动创建的本地提交和验证产生的现场必须保留。
+- 分支推送只能是普通 fast-forward push。推送后必须重新 fetch 并确认本地 `HEAD` 等于 `origin/master`，才能创建 Tag。
 - Beta Release 必须是 prerelease 且不得成为 latest；稳定版 Release 必须成为 latest。
 - 只有稳定版发布 GHCR，并且镜像必须打精确版本 Tag 和 `latest`。
-- 发布失败后保留现场并报告失败的 Tag/Actions URL。不要自动删 Tag、Release 或镜像；回滚必须由用户另行明确授权。
+- 分支或发布失败后保留现场并报告本地提交、失败的 Tag/Actions URL。不要自动删提交、Tag、Release 或镜像；回滚必须由用户另行明确授权。
 - 不绕过 `.github/workflows/release.yml` 的 Tag 校验，也不创建 `beta`、`latest` 这类浮动发布 Tag。
 
 ## 脚本自检
