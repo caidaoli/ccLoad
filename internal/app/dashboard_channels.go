@@ -72,7 +72,7 @@ func (s *Server) HandleDashboardChannels(c *gin.Context) {
 	}
 
 	now := time.Now()
-	configs = applyChannelListFilters(configs, c, cooldowns, now)
+	configs = applyChannelListFilters(configs, c, channelCooldownSnapshot{channels: cooldowns}, now)
 	total := len(configs)
 	configs = paginateChannels(configs, c)
 	out := make([]dashboardChannelView, 0, len(configs))
@@ -106,7 +106,7 @@ func (s *Server) HandleDashboardChannelFilterOptions(c *gin.Context) {
 		configs,
 		strings.TrimSpace(c.Query("protocol")),
 		strings.TrimSpace(c.Query("status")),
-		cooldowns,
+		channelCooldownSnapshot{channels: cooldowns},
 		time.Now(),
 	)
 	RespondJSON(c, http.StatusOK, buildChannelFilterOptions(configs))
@@ -116,7 +116,7 @@ func filterChannelOptionConfigs(
 	cfgs []*model.Config,
 	configuredProtocol string,
 	status string,
-	cooldowns map[int64]time.Time,
+	cooldowns channelCooldownSnapshot,
 	now time.Time,
 ) []*model.Config {
 	if configuredProtocol != "" && configuredProtocol != "all" {
@@ -135,8 +135,7 @@ func filterChannelOptionConfigs(
 		case "disabled":
 			return !cfg.Enabled
 		case "cooldown":
-			until, cooled := cooldowns[cfg.ID]
-			return cooled && until.After(now)
+			return cooldowns.hasActiveCooldown(cfg.ID, now)
 		default:
 			return false
 		}
