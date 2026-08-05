@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `d0326e0038a02254f82d18ddbc48addbb2e6c9af` (`fork/v8.57.0`)
-- Synchronized at: `2026-08-01`
+- Last synchronized commit: `2b9a9d23d2226efdea25d9710f217208cb52ff8b` (`fork/v8.61.0`)
+- Synchronized at: `2026-08-05`
 
 This directory contains the four-protocol conversion core only. Authentication,
 configuration, routing, caches, plugins, dynamic registries, network refreshers,
@@ -12,7 +12,7 @@ adaptation lives in `internal/protocol/builtin`, not in this directory.
 
 ## Synchronized tests
 
-The snapshot includes 43 upstream `_test.go` files from the same commit as the
+The snapshot includes 44 upstream `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -22,7 +22,7 @@ production sources:
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 3
+- `common`: 4
 - `gemini/claude`: 2
 - `gemini/openai/chat-completions`: 4
 - `gemini/openai/responses`: 3
@@ -42,7 +42,10 @@ the public conversion contract. The `thinking` package keeps only the pure
 conversion sources (`convert.go`, `suffix.go`, `text.go`, `types.go`); upstream's
 runtime thinking application (`apply.go`, `strip.go`, `summary.go`,
 `validate.go`, `errors.go`, `provider/`) and its tests stay excluded, as does
-the upstream SDK translator Registry and its summary test.
+the upstream SDK translator Registry and its summary test. The OpenAI-to-OpenAI
+Chat Completions no-op converter and its post-`[DONE]` tests are excluded because
+ccLoad's Registry defines same-protocol traffic as byte-for-byte passthrough and
+never registers same-protocol converters.
 
 ## Local contract fixes
 
@@ -59,13 +62,24 @@ documented adaptations:
 - the excluded upstream SDK Registry helper calls the exported core stream
   converter directly;
 - assertions follow ccLoad's public wire contract for native non-stream JSON,
-  Gemini camelCase fields, Codex top-level `instructions`, terminal `[DONE]`,
-  top-level cache-creation usage, and unsigned Anthropic thinking preserved as
-  OpenAI reasoning.
+  Gemini camelCase fields, Codex top-level `instructions`, system-only prompts
+  preserved as the sole user content, terminal `[DONE]`, top-level
+  cache-creation usage, and unsigned Anthropic thinking preserved as OpenAI
+  reasoning.
 - Codex-to-OpenAI keeps the top-level `usage.cache_creation_input_tokens`
   field alongside upstream's `prompt_tokens_details.cached_creation_tokens`.
 - Codex-to-Gemini requests keep the caller's `stream` flag and do not force
   `reasoning.summary`.
+- OpenAI Chat Completions-to-Responses streaming synthesizes a terminal choice
+  when `[DONE]` arrives without `finish_reason`, so item-level done events are
+  emitted before `response.completed`; upstream `fork/v8.61.0` emits only the
+  completed response in that case.
+- Claude-to-Codex keeps top-level system text in `instructions`, supports the
+  broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
+  `input` array for instructions-only requests.
+- Claude Responses native non-stream JSON keeps ccLoad request-field echoing,
+  cache-creation and reasoning usage details, and the same marked
+  redacted-thinking carrier used by the synchronized SSE path.
 - Gemini Responses `[DONE]` finalization is upstream behavior as of
   `fork/v8.57.0`; the previously documented local divergence was adopted
   upstream.

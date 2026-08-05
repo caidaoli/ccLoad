@@ -28,13 +28,14 @@ var (
 // ConvertOpenAIResponsesRequestToClaude transforms an OpenAI Responses API request
 // into a Claude Messages API request using only gjson/sjson for JSON handling.
 // It supports:
-// - instructions -> system message
-// - input[].type==message with input_text/output_text -> user/assistant messages
-// - function_call -> assistant tool_use
-// - function_call_output -> user tool_result
-// - tools[].parameters -> tools[].input_schema
-// - max_output_tokens -> max_tokens
-// - stream passthrough via parameter
+//   - instructions, input[].role==system and input[].role==developer -> separate
+//     top-level system blocks, in source order
+//   - input[].type==message with input_text/output_text -> user/assistant messages
+//   - function_call -> assistant tool_use
+//   - function_call_output -> user tool_result
+//   - tools[].parameters -> tools[].input_schema
+//   - max_output_tokens -> max_tokens
+//   - stream passthrough via parameter
 func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte, stream bool) []byte {
 	rawJSON := inputRawJSON
 
@@ -128,73 +129,60 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	// Stream
 	out, _ = sjson.SetBytes(out, "stream", stream)
 
+	// System-level inputs become canonical top-level Claude system blocks in
+	// source order: instructions first, then every input item whose role is
+	// system or developer. Each source block stays a separate Claude block and
+	// keeps operator authority; the Claude executor decides the final placement
+	// (mid-conversation role=system messages, or system reminders on legacy
+	// models), so this layer must not merge, trim or downgrade them to user text.
 	messageCapacity := root.Get("input.#").Int()
-	if instructions := root.Get("instructions"); instructions.Type == gjson.String && instructions.String() != "" {
-		messageCapacity++
-	}
 	messageBlocks := common.NewRawArrayItems(messageCapacity)
-
-	hasConversationInput := false
-	if input := root.Get("input"); input.Exists() && input.IsArray() {
-		input.ForEach(func(_, item gjson.Result) bool {
-			if !strings.EqualFold(item.Get("role").String(), "system") {
-				hasConversationInput = true
-				return false
-			}
-			return true
-		})
-	}
-	setInstructions := func(text string) {
+	systemBlocks := make([][]byte, 0, 4)
+	appendSystemText := func(text string, cacheSource gjson.Result) {
 		if text == "" {
 			return
 		}
-		if hasConversationInput {
-			system := []byte(`[{"type":"text","text":""}]`)
-			system, _ = sjson.SetBytes(system, "0.text", text)
-			out, _ = sjson.SetRawBytes(out, "system", system)
-			return
+		block := []byte(`{"type":"text","text":""}`)
+		block, _ = sjson.SetBytes(block, "text", text)
+		if cacheSource.Exists() {
+			block = common.AttachCacheControl(block, cacheSource)
 		}
-		message := []byte(`{"role":"user","content":""}`)
-		message, _ = sjson.SetBytes(message, "content", text)
-		messageBlocks = append(messageBlocks, message)
+		systemBlocks = append(systemBlocks, block)
 	}
-
-	// instructions -> Anthropic system field when a conversation exists;
-	// instructions-only requests become the sole user prompt.
-	instructionsText := ""
-	extractedFromSystem := false
-	if instr := root.Get("instructions"); instr.Exists() && instr.Type == gjson.String {
-		instructionsText = instr.String()
-		setInstructions(instructionsText)
+	if instr := root.Get("instructions"); instr.Type == gjson.String {
+		appendSystemText(instr.String(), gjson.Result{})
 	}
-
-	if instructionsText == "" {
-		if input := root.Get("input"); input.Exists() && input.IsArray() {
-			input.ForEach(func(_, item gjson.Result) bool {
-				if strings.EqualFold(item.Get("role").String(), "system") {
-					var builder strings.Builder
-					if parts := item.Get("content"); parts.Exists() && parts.IsArray() {
-						parts.ForEach(func(_, part gjson.Result) bool {
-							textResult := part.Get("text")
-							text := textResult.String()
-							if builder.Len() > 0 && text != "" {
-								builder.WriteByte('\n')
-							}
-							builder.WriteString(text)
-							return true
-						})
-					} else if parts.Type == gjson.String {
-						builder.WriteString(parts.String())
+	if input := root.Get("input"); input.IsArray() {
+		input.ForEach(func(_, item gjson.Result) bool {
+			if !isResponsesSystemLevelRole(item.Get("role").String()) {
+				return true
+			}
+			startIdx := len(systemBlocks)
+			content := item.Get("content")
+			if content.Type == gjson.String {
+				appendSystemText(content.String(), gjson.Result{})
+			} else if content.IsArray() {
+				content.ForEach(func(_, part gjson.Result) bool {
+					switch part.Get("type").String() {
+					case "input_text", "output_text", "text":
+						appendSystemText(part.Get("text").String(), part)
+					default:
+						if block := responsesSystemUnsupportedBlock(part); len(block) > 0 {
+							systemBlocks = append(systemBlocks, block)
+						}
 					}
-					instructionsText = builder.String()
-					if instructionsText != "" {
-						setInstructions(instructionsText)
-						extractedFromSystem = true
-					}
+					return true
+				})
+			}
+			// Item-level cache_control applies to the last block this item produced.
+			if item.Get("cache_control").Exists() && len(systemBlocks) > startIdx {
+				lastIdx := len(systemBlocks) - 1
+				if !gjson.GetBytes(systemBlocks[lastIdx], "cache_control").Exists() {
+					systemBlocks[lastIdx] = common.AttachCacheControl(systemBlocks[lastIdx], item)
 				}
-				return instructionsText == ""
-			})
-		}
+			}
+			return true
+		})
 	}
 
 	// input array processing
@@ -238,7 +226,8 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 
 	if input := root.Get("input"); input.Exists() && input.IsArray() {
 		input.ForEach(func(_, item gjson.Result) bool {
-			if extractedFromSystem && strings.EqualFold(item.Get("role").String(), "system") {
+			// System-level items already became top-level system blocks.
+			if isResponsesSystemLevelRole(item.Get("role").String()) {
 				return true
 			}
 			typ := item.Get("type").String()
@@ -343,7 +332,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 				if role == "" {
 					r := item.Get("role").String()
 					switch r {
-					case "user", "assistant", "system":
+					case "user", "assistant":
 						role = r
 					default:
 						role = "user"
@@ -383,7 +372,7 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 					}
 					msg = common.AttachMessageCacheControl(msg, item)
 					appendMessage(msg)
-				} else if textAggregate.Len() > 0 || role == "system" {
+				} else if textAggregate.Len() > 0 {
 					msg := []byte(`{"role":"","content":""}`)
 					msg, _ = sjson.SetBytes(msg, "role", role)
 					msg, _ = sjson.SetBytes(msg, "content", textAggregate.String())
@@ -445,7 +434,18 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	}
 	flushPendingReasoning()
 	flushPendingToolUses()
+	// ccLoad's wire contract represents system-only input as the sole user turn;
+	// otherwise the request has instructions but no actual prompt.
+	if len(messageBlocks) == 0 && len(systemBlocks) > 0 {
+		message := []byte(`{"role":"user","content":[]}`)
+		message, _ = sjson.SetRawBytes(message, "content", common.JoinRawArray(systemBlocks))
+		messageBlocks = append(messageBlocks, message)
+		systemBlocks = nil
+	}
 	out = common.SetRawArrayItems(out, "messages", messageBlocks)
+	if len(systemBlocks) > 0 {
+		out, _ = sjson.SetRawBytes(out, "system", common.JoinRawArray(systemBlocks))
+	}
 
 	includedToolNames := map[string]struct{}{}
 	toolNameMap := map[string]string{}
@@ -506,31 +506,103 @@ func ConvertOpenAIResponsesRequestToClaude(modelName string, inputRawJSON []byte
 	return out
 }
 
+// isResponsesSystemLevelRole reports whether an input item carries system-level
+// authority. The Responses API ranks developer and system instructions above
+// user content, so both map to Claude's system slot rather than a user turn.
+func isResponsesSystemLevelRole(role string) bool {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "system", "developer":
+		return true
+	default:
+		return false
+	}
+}
+
+// responsesSystemUnsupportedBlock represents a system-level content part that
+// Claude cannot carry. Anthropic accepts text only in the top-level system field
+// ("system.<i>.type: Input should be 'text'") and text, tool_addition and
+// tool_removal in a role=system message, so images, files and unknown part types
+// have no lossless mapping. The part is preserved as a typed marker instead of
+// being dropped: silently discarding operator instructions is worse than a
+// rejected request, and the marker lets the Claude executor fail the request with
+// the offending type named. The original payload is not copied because the
+// request can never succeed.
+func responsesSystemUnsupportedBlock(part gjson.Result) []byte {
+	partType := strings.TrimSpace(part.Get("type").String())
+	if partType == "" {
+		return nil
+	}
+	block := []byte(`{"type":""}`)
+	block, _ = sjson.SetBytes(block, "type", partType)
+	return block
+}
+
+// convertResponsesReasoningToClaudeThinking rebuilds one Claude thinking block
+// from a Responses reasoning item so a replayed conversation keeps its chain of
+// thought. Anthropic requires a signature on every thinking block and rejects an
+// absent or empty one, so an item whose encrypted_content is missing or belongs
+// to another provider is dropped rather than replayed as an unsigned block.
+// Anthropic does not verify the text against the signature, which is what makes
+// the summarized text safe to restore alongside it.
 func convertResponsesReasoningToClaudeThinking(item gjson.Result) []byte {
-	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, item.Get("encrypted_content").String())
+	encrypted := item.Get("encrypted_content").String()
+	if data, isRedacted := responsesRedactedThinkingData(encrypted); isRedacted {
+		if data == "" {
+			return nil
+		}
+		redactedPart := []byte(`{"type":"redacted_thinking","data":""}`)
+		redactedPart, _ = sjson.SetBytes(redactedPart, "data", data)
+		return redactedPart
+	}
+
+	signature, ok := sigcompat.CompatibleSignatureForProvider(sigcompat.SignatureProviderClaude, encrypted)
 	if !ok {
 		return nil
 	}
 
-	thinkingText := responsesReasoningSummaryText(item)
+	thinkingText := responsesReasoningText(item)
 	thinkingPart := []byte(`{"type":"thinking","thinking":"","signature":""}`)
 	thinkingPart, _ = sjson.SetBytes(thinkingPart, "thinking", thinkingText)
 	thinkingPart, _ = sjson.SetBytes(thinkingPart, "signature", signature)
 	return thinkingPart
 }
 
-func responsesReasoningSummaryText(item gjson.Result) string {
-	var builder strings.Builder
-	if summary := item.Get("summary"); summary.Exists() && summary.IsArray() {
-		summary.ForEach(func(_, part gjson.Result) bool {
-			if text := part.Get("text"); text.Exists() {
-				builder.WriteString(text.String())
-			} else if part.Type == gjson.String {
-				builder.WriteString(part.String())
-			}
-			return true
-		})
+// responsesRedactedThinkingData reports whether encrypted_content carries an
+// Anthropic redacted_thinking payload and returns that payload.
+func responsesRedactedThinkingData(encryptedContent string) (string, bool) {
+	trimmed := strings.TrimSpace(encryptedContent)
+	if !strings.HasPrefix(trimmed, ClaudeResponsesRedactedThinkingPrefix) {
+		return "", false
 	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, ClaudeResponsesRedactedThinkingPrefix)), true
+}
+
+// responsesReasoningText collects the reasoning text of a Responses item. OpenAI
+// splits it across summary[] parts of type summary_text and content[] parts of
+// type reasoning_text. Claude only ever produces summaries, but callers echo the
+// item back through whichever array their SDK models, so both are read. content[]
+// is only consulted when summary[] carried nothing, otherwise a client that
+// mirrors the text into both arrays would replay it twice.
+func responsesReasoningText(item gjson.Result) string {
+	if text := responsesReasoningPartsText(item.Get("summary")); text != "" {
+		return text
+	}
+	return responsesReasoningPartsText(item.Get("content"))
+}
+
+func responsesReasoningPartsText(parts gjson.Result) string {
+	if !parts.Exists() || !parts.IsArray() {
+		return ""
+	}
+	var builder strings.Builder
+	parts.ForEach(func(_, part gjson.Result) bool {
+		if text := part.Get("text"); text.Exists() {
+			builder.WriteString(text.String())
+		} else if part.Type == gjson.String {
+			builder.WriteString(part.String())
+		}
+		return true
+	})
 	return builder.String()
 }
 
