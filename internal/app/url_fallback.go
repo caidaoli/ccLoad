@@ -17,18 +17,26 @@ func configuredURLFrom(configured model.ChannelURLs, index int, runtimeURL strin
 	}
 }
 
-func prioritizeDeclaredProtocolURLs(sorted []sortedURL, configured model.ChannelURLs) []sortedURL {
-	declared := make([]sortedURL, 0, len(sorted))
-	automatic := make([]sortedURL, 0, len(sorted))
+func prioritizeProtocolURLs(sorted []sortedURL, configured model.ChannelURLs, automaticFirst bool) []sortedURL {
+	preferred := make([]sortedURL, 0, len(sorted))
+	fallback := make([]sortedURL, 0, len(sorted))
 	for _, candidate := range sorted {
 		entry := configuredURLFrom(configured, candidate.idx, candidate.url)
-		if !entry.UsesAutomaticProtocolDetection() {
-			declared = append(declared, candidate)
+		if entry.UsesAutomaticProtocolDetection() == automaticFirst {
+			preferred = append(preferred, candidate)
 			continue
 		}
-		automatic = append(automatic, candidate)
+		fallback = append(fallback, candidate)
 	}
-	return append(declared, automatic...)
+	return append(preferred, fallback...)
+}
+
+func prioritizeAutomaticProtocolURLs(sorted []sortedURL, configured model.ChannelURLs) []sortedURL {
+	return prioritizeProtocolURLs(sorted, configured, true)
+}
+
+func prioritizeDeclaredProtocolURLs(sorted []sortedURL, configured model.ChannelURLs) []sortedURL {
+	return prioritizeProtocolURLs(sorted, configured, false)
 }
 
 // orderURLsWithSelector 返回用于故障切换的URL尝试顺序。
