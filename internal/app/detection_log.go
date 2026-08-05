@@ -87,7 +87,9 @@ func (s *Server) persistDetectionLog(ctx context.Context, entry *model.LogEntry)
 	}
 	if err := s.store.AddLog(ctx, entry); err != nil {
 		log.Printf("[WARN] 检测日志写入失败: %v", err)
+		return
 	}
+	s.recordURLRequestFromLog(entry)
 }
 
 func populateDetectionUsage(entry *model.LogEntry, result map[string]any, upstreamProtocol string) {

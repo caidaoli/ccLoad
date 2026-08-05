@@ -989,6 +989,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/:id", s.HandleChannelByID)
 		admin.PUT("/channels/:id", s.HandleChannelByID)
 		admin.DELETE("/channels/:id", s.HandleChannelByID)
+		admin.GET("/channels/:id/editor", s.HandleChannelEditor)
 		admin.GET("/channels/:id/keys", s.HandleChannelKeys)
 		admin.GET("/channels/:id/model-stats", s.HandleChannelModelStats)
 		admin.GET("/channels/:id/url-stats", s.HandleChannelURLStats)
@@ -1156,6 +1157,14 @@ func (s *Server) AddLogAsync(entry *model.LogEntry) {
 
 	// 委托给 LogService 处理日志写入
 	s.logService.AddLogAsync(entry)
+	s.recordURLRequestFromLog(entry)
+}
+
+func (s *Server) recordURLRequestFromLog(entry *model.LogEntry) {
+	if s == nil || s.urlSelector == nil || entry == nil {
+		return
+	}
+	s.urlSelector.RecordRequestResult(entry.ChannelID, entry.BaseURL, entry.StatusCode)
 }
 
 // getAllEnabledModels 获取所有启用渠道的去重模型列表。

@@ -234,6 +234,37 @@ func TestURLSelector_RecordLatencyClearsCooldownWindow(t *testing.T) {
 	}
 }
 
+func TestURLSelector_HealthSignalsDoNotCountRequests(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(1)
+	url := "https://a.example"
+
+	sel.RecordLatency(channelID, url, 20*time.Millisecond)
+	sel.CooldownURL(channelID, url)
+
+	stats := sel.GetURLStats(channelID, []string{url})
+	if len(stats) != 1 || stats[0].Requests != 0 || stats[0].Failures != 0 {
+		t.Fatalf("延迟和冷却是健康信号，不应伪造调用次数: %+v", stats)
+	}
+}
+
+func TestURLSelector_RecordRequestResultMatchesLogAggregation(t *testing.T) {
+	sel := NewURLSelector()
+	channelID := int64(1)
+	url := "https://a.example"
+
+	sel.RecordRequestResult(channelID, url, 200)
+	sel.RecordRequestResult(channelID, url, 204)
+	sel.RecordRequestResult(channelID, url, 0)
+	sel.RecordRequestResult(channelID, url, 401)
+	sel.RecordRequestResult(channelID, url, StatusClientClosedRequest)
+
+	stats := sel.GetURLStats(channelID, []string{url})
+	if len(stats) != 1 || stats[0].Requests != 2 || stats[0].Failures != 2 {
+		t.Fatalf("URL 调用统计必须与日志聚合口径一致: %+v", stats)
+	}
+}
+
 func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 	sel := NewURLSelector()
 	now := time.Now()

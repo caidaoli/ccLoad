@@ -840,6 +840,87 @@ func TestHandleChannelModelStatsReturnsTodayStatsForRequestedChannel(t *testing.
 	}
 }
 
+func TestHandleChannelEditorAggregatesInitialState(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	server.urlSelector = NewURLSelector()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(ctx); err != nil {
+		t.Fatalf("加载系统设置失败: %v", err)
+	}
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "channel-editor-bootstrap",
+		URLs:         model.ChannelURLs{{URL: "https://api.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "external-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建渠道失败: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: created.ID,
+		KeyIndex:  0,
+		APIKey:    "sk-editor-test",
+		Note:      "primary",
+	}}); err != nil {
+		t.Fatalf("创建 API Key 失败: %v", err)
+	}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:       model.JSONTime{Time: time.Now()},
+		ChannelID:  created.ID,
+		Model:      "external-model",
+		StatusCode: http.StatusOK,
+		BaseURL:    "https://api.example.com",
+	}); err != nil {
+		t.Fatalf("写入模型统计日志失败: %v", err)
+	}
+	server.urlSelector.RecordLatency(created.ID, "https://api.example.com", 50*time.Millisecond)
+	server.urlSelector.RecordRequestResult(created.ID, "https://api.example.com", http.StatusOK)
+
+	path := "/admin/channels/" + strconv.FormatInt(created.ID, 10) + "/editor"
+	c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(created.ID, 10)}}
+	server.HandleChannelEditor(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	resp := mustParseAPIResponse[struct {
+		Channel    ChannelWithCooldown `json:"channel"`
+		Keys       []*model.APIKey     `json:"keys"`
+		ModelStats struct {
+			Available bool                `json:"available"`
+			Items     []ChannelModelStats `json:"items"`
+		} `json:"model_stats"`
+		URLStats struct {
+			Available bool      `json:"available"`
+			Items     []URLStat `json:"items"`
+		} `json:"url_stats"`
+		Features struct {
+			ScheduledCheckEnabled bool `json:"scheduled_check_enabled"`
+		} `json:"features"`
+	}](t, w.Body.Bytes())
+
+	if resp.Data.Channel.ID != created.ID || resp.Data.Channel.Name != created.Name {
+		t.Fatalf("channel=%+v, want id=%d name=%q", resp.Data.Channel, created.ID, created.Name)
+	}
+	if len(resp.Data.Keys) != 1 || resp.Data.Keys[0].APIKey != "sk-editor-test" {
+		t.Fatalf("keys=%+v, want configured key", resp.Data.Keys)
+	}
+	if !resp.Data.ModelStats.Available || len(resp.Data.ModelStats.Items) != 1 {
+		t.Fatalf("model_stats=%+v, want available stats", resp.Data.ModelStats)
+	}
+	if !resp.Data.URLStats.Available || len(resp.Data.URLStats.Items) != 1 || resp.Data.URLStats.Items[0].Requests != 1 {
+		t.Fatalf("url_stats=%+v, want available runtime stats", resp.Data.URLStats)
+	}
+	if !resp.Data.Features.ScheduledCheckEnabled {
+		t.Fatalf("features=%+v, want scheduled check enabled", resp.Data.Features)
+	}
+}
+
 // TestHandleUpdateChannel 测试更新渠道
 func TestHandleUpdateChannel(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)

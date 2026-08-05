@@ -484,17 +484,21 @@ async function testInlineURL(index, buttonElement) {
 
 // === URL 实时状态 ===
 
+function applyURLStats(stats) {
+  urlStatsMap = {};
+  if (Array.isArray(stats)) {
+    for (const stat of stats) {
+      urlStatsMap[stat.url] = stat;
+    }
+  }
+  renderInlineURLTable();
+}
+
 async function fetchURLStats(channelId) {
   if (!channelId) return;
   try {
     const stats = await fetchDataWithAuth(`/admin/channels/${channelId}/url-stats`);
-    urlStatsMap = {};
-    if (Array.isArray(stats)) {
-      for (const s of stats) {
-        urlStatsMap[s.url] = s;
-      }
-    }
-    renderInlineURLTable();
+    applyURLStats(stats);
   } catch (e) {
     console.error('Failed to fetch URL stats', e);
   }
@@ -598,6 +602,7 @@ async function toggleURLDisabled(btn) {
 
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
+    applyURLStats,
     fetchURLStats,
     normalizeInlineURLConfig,
     normalizeInlineURLConfigs,

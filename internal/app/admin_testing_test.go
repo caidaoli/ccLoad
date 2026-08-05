@@ -2076,6 +2076,11 @@ func TestHandleChannelTest_SuccessfulAPI(t *testing.T) {
 	if !dataSuccess {
 		t.Fatalf("data.success 应为 true（API 调用成功）, data=%+v", resp.Data)
 	}
+
+	stats := srv.urlSelector.GetURLStats(created.ID, created.GetURLs())
+	if len(stats) != 1 || stats[0].Requests != 1 || stats[0].Failures != 0 {
+		t.Fatalf("模型测试成功应计入 URL 调用统计: %+v", stats)
+	}
 }
 
 func TestHandleChannelTest_OpenAIRequestIncludesSessionID(t *testing.T) {
@@ -2212,6 +2217,11 @@ func TestHandleChannelTest_FailedAPI(t *testing.T) {
 			t.Fatal("失败时应有冷却决策记录")
 		}
 		t.Logf("冷却决策: %s", action)
+	}
+
+	stats := srv.urlSelector.GetURLStats(created.ID, created.GetURLs())
+	if len(stats) != 1 || stats[0].Requests != 0 || stats[0].Failures != 1 {
+		t.Fatalf("模型测试失败应计入 URL 调用统计: %+v", stats)
 	}
 }
 
