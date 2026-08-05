@@ -72,9 +72,6 @@ jobs:
       - name: Verify web assets
         run: make verify-web
 
-      - name: Build
-        run: make build
-
       - name: Lint
         uses: golangci/golangci-lint-action@v9
         with:
@@ -83,7 +80,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.output }}
-    needs: [metadata, verify]
+    needs: metadata
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -148,7 +145,7 @@ jobs:
 
   release:
     name: Publish ${{ needs.metadata.outputs.channel }} release
-    needs: [metadata, build]
+    needs: [metadata, verify, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write
