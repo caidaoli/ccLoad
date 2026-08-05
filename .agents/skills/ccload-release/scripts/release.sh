@@ -77,7 +77,9 @@ branch_relation() {
 derive_release_plan() {
   local pending_message=$1
   local pending_subject=${pending_message%%$'\n'*}
-  local candidate escaped_core candidate_number latest_beta_tag
+  local candidate candidate_commit candidate_major candidate_minor candidate_patch candidate_number
+  local release_base_tag stable_major stable_minor stable_patch target_patch target_beta_number
+  local large_beta_change=false
 
   latest_stable_tag=
   while IFS= read -r candidate; do
@@ -89,9 +91,51 @@ derive_release_plan() {
 
   if [[ -n "$latest_stable_tag" ]]; then
     base_version=${latest_stable_tag#v}
-    commit_range="$latest_stable_tag..HEAD"
   else
     base_version=0.0.0
+  fi
+  IFS=. read -r stable_major stable_minor stable_patch <<EOF
+$base_version
+EOF
+
+  latest_beta_tag=
+  latest_beta_patch=-1
+  latest_beta_number=0
+  if [[ "$channel" == beta ]] && [[ -n "$latest_stable_tag" ]]; then
+    while IFS= read -r candidate; do
+      if [[ ! "$candidate" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]*)$ ]]; then
+        continue
+      fi
+      candidate_major=${BASH_REMATCH[1]}
+      candidate_minor=${BASH_REMATCH[2]}
+      candidate_patch=${BASH_REMATCH[3]}
+      candidate_number=${BASH_REMATCH[4]}
+      candidate_commit=$(git rev-list -n 1 "$candidate")
+      git merge-base --is-ancestor "$latest_stable_tag" "$candidate_commit" || continue
+      if (( candidate_major != stable_major || candidate_minor != stable_minor )); then
+        fail "invalid Beta tag after $latest_stable_tag: $candidate changes the stable major/minor lane"
+      fi
+      git merge-base --is-ancestor "$candidate_commit" HEAD || continue
+      if (( candidate_patch <= stable_patch )); then
+        continue
+      fi
+      if (( candidate_patch > latest_beta_patch )) || \
+         (( candidate_patch == latest_beta_patch && candidate_number > latest_beta_number )); then
+        latest_beta_tag=$candidate
+        latest_beta_patch=$candidate_patch
+        latest_beta_number=$candidate_number
+      fi
+    done < <(git tag --list 'v*-beta.*')
+  fi
+
+  if [[ "$channel" == stable ]]; then
+    release_base_tag=$latest_stable_tag
+  else
+    release_base_tag=${latest_beta_tag:-$latest_stable_tag}
+  fi
+  if [[ -n "$release_base_tag" ]]; then
+    commit_range="$release_base_tag..HEAD"
+  else
     commit_range=HEAD
   fi
 
@@ -103,19 +147,27 @@ derive_release_plan() {
     subjects=$(printf '%s\n%s' "$pending_subject" "$subjects")
     messages=$(printf '%s\n%s' "$pending_message" "$messages")
   fi
-  [[ "$commit_count" -gt 0 ]] || fail "no commits exist after ${latest_stable_tag:-repository start}"
+  [[ "$commit_count" -gt 0 ]] || fail "no commits exist after ${release_base_tag:-repository start}"
 
   if printf '%s\n' "$messages" | grep -Eq '(^|[[:space:]])BREAKING([ -]CHANGE)?:' || \
      printf '%s\n' "$subjects" | grep -Eq '^[[:alnum:]_-]+(\([^)]*\))?!:'; then
-    bump='major'
+    if [[ "$channel" == stable ]]; then
+      bump='major'
+    else
+      large_beta_change=true
+    fi
   elif printf '%s\n' "$subjects" | grep -Eq '^feat(\([^)]*\))?!?:'; then
-    bump='minor'
+    if [[ "$channel" == stable ]]; then
+      bump='minor'
+    else
+      large_beta_change=true
+    fi
   else
     bump='patch'
   fi
 
-  next_core=$(next_core_version "$base_version" "$bump")
   if [[ "$channel" == stable ]]; then
+    next_core=$(next_core_version "$base_version" "$bump")
     release_tag="v$next_core"
     if git rev-parse -q --verify "refs/tags/$release_tag" >/dev/null; then
       fail "tag already exists: $release_tag"
@@ -123,24 +175,23 @@ derive_release_plan() {
     return 0
   fi
 
-  escaped_core=${next_core//./\.}
-  beta_number=0
-  latest_beta_tag=
-  while IFS= read -r candidate; do
-    if [[ "$candidate" =~ ^v${escaped_core}-beta\.([1-9][0-9]*)$ ]]; then
-      candidate_number=${BASH_REMATCH[1]}
-      if (( candidate_number > beta_number )); then
-        beta_number=$candidate_number
-        latest_beta_tag=$candidate
-      fi
-    fi
-  done < <(git tag --list "v$next_core-beta.*")
-  head_sha=$(git rev-parse HEAD)
-  if [[ -z "$pending_message" ]] && [[ -n "$latest_beta_tag" ]] && \
-     [[ "$(git rev-list -n 1 "$latest_beta_tag")" == "$head_sha" ]]; then
-    fail "HEAD is already published as $latest_beta_tag"
+  if [[ -z "$latest_beta_tag" ]]; then
+    target_patch=$((stable_patch + 1))
+    target_beta_number=1
+    bump='beta-patch'
+  elif [[ "$large_beta_change" == true ]]; then
+    target_patch=$((latest_beta_patch + 1))
+    target_beta_number=1
+    bump='beta-patch'
+  else
+    target_patch=$latest_beta_patch
+    target_beta_number=$((latest_beta_number + 1))
+    bump='beta-sequence'
   fi
-  release_tag="v$next_core-beta.$((beta_number + 1))"
+  release_tag="v${stable_major}.${stable_minor}.${target_patch}-beta.${target_beta_number}"
+  if git rev-parse -q --verify "refs/tags/$release_tag" >/dev/null; then
+    fail "tag already exists: $release_tag"
+  fi
 }
 
 self_test() {
@@ -155,6 +206,8 @@ self_test() {
 
   local script_path remote_dir work_dir other_dir stub_dir stub_path before_head before_remote
   local dry_run_output publish_output published_head published_tag_target remote_ahead_error
+  local small_beta_output large_beta_output stable_output invalid_beta_error
+  local stable_commit stable_tree invalid_beta_commit
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   self_test_root=$(mktemp -d)
   trap 'rm -rf -- "$self_test_root"' EXIT
@@ -215,17 +268,47 @@ EOF
   assert_equal "$before_head" "$(git -C "$work_dir" rev-parse HEAD)" 'dry-run local HEAD'
   assert_equal "$before_remote" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" 'dry-run remote master'
   [[ -n "$(git -C "$work_dir" status --porcelain)" ]] || fail "dry-run unexpectedly cleaned the worktree"
-  [[ "$dry_run_output" == *'target tag:      v1.1.0-beta.1'* ]] || fail "dry-run derived the wrong Beta Tag"
+  [[ "$dry_run_output" == *'target tag:      v1.0.1-beta.1'* ]] || fail "dry-run derived the wrong first Beta Tag"
 
   publish_output=$(cd "$work_dir" && PATH="$stub_dir:$PATH" "$script_path" beta --publish \
     --commit-message 'feat(release): prepare revision')
   published_head=$(git -C "$work_dir" rev-parse HEAD)
-  published_tag_target=$(git --git-dir="$remote_dir" rev-parse 'refs/tags/v1.1.0-beta.1^{}')
+  published_tag_target=$(git --git-dir="$remote_dir" rev-parse 'refs/tags/v1.0.1-beta.1^{}')
   assert_equal 'feat(release): prepare revision' "$(git -C "$work_dir" log -1 --format=%s)" 'automatic commit subject'
   assert_equal "$published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" 'pushed master'
   assert_equal "$published_head" "$published_tag_target" 'published Tag target'
   assert_equal '' "$(git -C "$work_dir" status --porcelain)" 'published worktree'
   [[ "$publish_output" == *'Container: skipped for Beta'* ]] || fail "publish did not report the Beta container policy"
+
+  printf 'next change\n' >>"$work_dir/release-test.txt"
+  small_beta_output=$(cd "$work_dir" && "$script_path" beta --dry-run \
+    --commit-message 'fix: small Beta change')
+  [[ "$small_beta_output" == *'target tag:      v1.0.1-beta.2'* ]] || \
+    fail "small change did not increment only the Beta sequence"
+  large_beta_output=$(cd "$work_dir" && "$script_path" beta --dry-run \
+    --commit-message 'feat: large Beta change')
+  [[ "$large_beta_output" == *'target tag:      v1.0.2-beta.1'* ]] || \
+    fail "large change did not increment only the Beta patch"
+  stable_output=$(cd "$work_dir" && "$script_path" stable --dry-run \
+    --commit-message 'feat: stable minor change')
+  [[ "$stable_output" == *'target tag:      v1.1.0'* ]] || \
+    fail "stable release did not apply the minor increment"
+
+  stable_commit=$(git -C "$work_dir" rev-list -n 1 v1.0.0)
+  stable_tree=$(git -C "$work_dir" rev-parse 'v1.0.0^{tree}')
+  invalid_beta_commit=$(printf 'invalid cross-minor Beta\n' | \
+    git -C "$work_dir" commit-tree "$stable_tree" -p "$stable_commit")
+  git -C "$work_dir" tag -a v1.1.0-beta.1 "$invalid_beta_commit" -m 'Invalid cross-minor Beta'
+  if git -C "$work_dir" merge-base --is-ancestor "$invalid_beta_commit" HEAD; then
+    fail "invalid Beta fixture unexpectedly belongs to the current HEAD history"
+  fi
+  if invalid_beta_error=$(cd "$work_dir" && "$script_path" beta --dry-run \
+    --commit-message 'fix: invalid lane check' 2>&1); then
+    fail "dry-run accepted a Beta Tag that changed the stable minor lane"
+  fi
+  [[ "$invalid_beta_error" == *'changes the stable major/minor lane'* ]] || \
+    fail "dry-run reported the wrong invalid Beta lane error"
+  git -C "$work_dir" tag -d v1.1.0-beta.1 >/dev/null
 
   other_dir="$self_test_root/other"
   git clone "$remote_dir" "$other_dir" >/dev/null 2>&1
@@ -356,6 +439,7 @@ cat <<EOF
 Release plan
   channel:         $channel
   previous stable: ${latest_stable_tag:-none}
+  previous beta:   ${latest_beta_tag:-none}
   commits:         $commit_count
   bump:            $bump
   target tag:      $release_tag

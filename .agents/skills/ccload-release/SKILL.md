@@ -1,6 +1,6 @@
 ---
 name: ccload-release
-description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，计算下一个语义版本，创建并推送发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。默认发布 Beta；只有用户明确传入 stable 时才发布稳定版。
+description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，按固定版本通道计算并发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。Beta 固定沿用最近稳定版的主版本和次版本；只有显式 stable 发布才允许修改次版本。
 ---
 
 # 发布 ccLoad
@@ -17,6 +17,16 @@ Tag 形状固定：
 
 - Beta：`vX.Y.Z-beta.N`
 - 稳定版：`vX.Y.Z`
+
+## 版本规则
+
+- Beta 必须锁定最近稳定版 `vX.Y.S` 的主版本 `X` 和次版本 `Y`，禁止因 `feat` 或 breaking change 生成 `vX.(Y+1).0-beta.N` 或 `v(X+1).0.0-beta.N`。
+- 最近稳定版之后没有有效 Beta 时，发布 `vX.Y.(S+1)-beta.1`。
+- 已有 `vX.Y.P-beta.N` 时，只检查该 Beta Tag 之后的新提交：
+  - 小修改（没有 `feat`、`!` 或 `BREAKING CHANGE`）保持 `X.Y.P`，发布 `vX.Y.P-beta.(N+1)`。
+  - 大修改（存在 `feat`、`!` 或 `BREAKING CHANGE`）只把 patch 加一并重置序号，发布 `vX.Y.(P+1)-beta.1`。
+- 只有显式 `stable` 发布才从最近稳定版后的全部提交计算标准 SemVer：breaking change 增加主版本，`feat` 增加次版本，其余增加 patch。Beta 永远不修改主版本或次版本。
+- 最近稳定版之后如果已存在修改主版本或次版本的可达 Beta Tag，立即停止发布并报告非法 Tag；禁止继续制造互相冲突的预览版本。
 
 ## 发布流程
 
@@ -36,7 +46,7 @@ Tag 形状固定：
 
    稳定版把 `beta` 改为 `stable`。
 
-3. 核对脚本输出的上一稳定版、语义版本增量、目标 Tag、工作区动作和分支动作。用户调用本 Skill 已经授权自动提交、非强制推送 `master` 和发布；目标符合参数契约时直接继续。
+3. 核对脚本输出的上一稳定版、上一有效 Beta、版本动作、目标 Tag、工作区动作和分支动作。用户调用本 Skill 已经授权自动提交、非强制推送 `master` 和发布；目标符合参数契约时直接继续。
 
 4. 执行发布。工作区干净时运行：
 
@@ -57,6 +67,7 @@ Tag 形状固定：
 ## 强制规则
 
 - 当前分支必须是 `master`。本地 `master` 可与 `origin/master` 相等或领先；远端领先或双方分叉时停止，禁止自动 pull、merge、rebase 或 force-push。
+- Beta 的目标 Tag 必须遵守“固定最近稳定版主版本和次版本”的版本规则；脚本输出出现 minor/major Beta 增量时必须停止。
 - dry-run 不提交、不推送、不打 Tag。publish 自动提交全部当前工作区改动；禁止 amend、拆改已有提交或修改版本文件。
 - 发布前必须通过后端测试、Web 验证、构建和 lint。任一失败都不得推送 `master` 或创建 Tag；自动创建的本地提交和验证产生的现场必须保留。
 - 分支推送只能是普通 fast-forward push。推送后必须重新 fetch 并确认本地 `HEAD` 等于 `origin/master`，才能创建 Tag。
