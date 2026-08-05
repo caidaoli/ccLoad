@@ -2,7 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { selectFirstEnabledInlineKey } = require('./channels-keys.js');
-const { fetchURLStats } = require('./channels-urls.js');
+const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }) {
 	const globals = {
@@ -155,22 +155,30 @@ function installFetchSub2APIRateGlobals({ response, rows, states }) {
   };
 }
 
-function installEditChannelGlobals(channel) {
+function installEditChannelGlobals(channel, { editorError = null } = {}) {
   const requests = [];
+  const errors = [];
   const elements = new Map();
-  const makeElement = () => ({
-    value: '',
-    checked: false,
-    disabled: false,
-    hidden: false,
-    style: {},
-    dataset: {},
-    classList: { add() {}, remove() {}, contains() { return false; } },
-    setAttribute() {},
-    addEventListener() {},
-    appendChild() {},
-    querySelector: () => null
-  });
+  const makeElement = () => {
+    const classes = new Set();
+    return {
+      value: '',
+      checked: false,
+      disabled: false,
+      hidden: false,
+      style: {},
+      dataset: {},
+      classList: {
+        add: (...names) => names.forEach(name => classes.add(name)),
+        remove: (...names) => names.forEach(name => classes.delete(name)),
+        contains: name => classes.has(name)
+      },
+      setAttribute() {},
+      addEventListener() {},
+      appendChild() {},
+      querySelector: () => null
+    };
+  };
   const getElement = id => {
     if (id === 'channelScheduledCheckEnabledWrapper' || id === 'channelScheduledCheckModelWrapper') {
       return null;
@@ -181,6 +189,7 @@ function installEditChannelGlobals(channel) {
   const globals = {
     window: {
       t: key => key,
+      showError: message => errors.push(message),
       addEventListener() {}
     },
     document: {
@@ -203,11 +212,18 @@ function installEditChannelGlobals(channel) {
     currentModelFilter: '',
     fetchDataWithAuth: async url => {
       requests.push(url);
-      if (url === `/admin/channels/${channel.id}`) return channel;
-      if (url === `/admin/channels/${channel.id}/keys`) return [];
-      if (url === `/admin/channels/${channel.id}/model-stats`) return [];
-      if (url === `/admin/channels/${channel.id}/url-stats`) {
-        return [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }];
+      if (url === `/admin/channels/${channel.id}/editor`) {
+        if (editorError) throw editorError;
+        return {
+          channel,
+          keys: [],
+          model_stats: { available: true, items: [] },
+          url_stats: {
+            available: true,
+            items: [{ url: channel.urls[0].url, latency_ms: 125, requests: 1, failures: 0 }]
+          },
+          features: { scheduled_check_enabled: true }
+        };
       }
       throw new Error(`unexpected fetch: ${url}`);
     },
@@ -220,6 +236,7 @@ function installEditChannelGlobals(channel) {
     TemplateEngine: { render: () => null },
     clearChannelDuplicateHint() {},
     setInlineURLTableData() {},
+    applyURLStats,
     fetchURLStats,
     urlStatsMap: {},
     renderInlineURLTable() {},
@@ -228,7 +245,8 @@ function installEditChannelGlobals(channel) {
     renderRedirectTable() {},
     resetChannelFormDirty() {},
     syncChannelEditorTableSizing() {},
-    scheduleChannelEditorTableSizingSync() {}
+    scheduleChannelEditorTableSizingSync() {},
+    console: { ...console, error() {} }
   };
   const previous = new Map();
   for (const [name, value] of Object.entries(globals)) {
@@ -236,6 +254,7 @@ function installEditChannelGlobals(channel) {
     Object.defineProperty(global, name, { configurable: true, writable: true, value });
   }
   return {
+    errors,
     requests,
     getElement,
     restore() {
@@ -437,7 +456,7 @@ test('WebSocket probe skips disabled URLs and keys and checks every enabled URL'
   }
 });
 
-test('editing a single-URL channel loads its URL statistics and keeps quick import available', async () => {
+test('editing a channel loads the complete editor state with one request', async () => {
   const channel = {
     id: 73,
     name: 'single-url',
@@ -452,8 +471,27 @@ test('editing a single-URL channel loads its URL statistics and keeps quick impo
   try {
     const { editChannel } = loadChannelsModals();
     await editChannel(channel.id);
-    assert.ok(fixture.requests.includes(`/admin/channels/${channel.id}/url-stats`));
+    assert.deepEqual(fixture.requests, [`/admin/channels/${channel.id}/editor`]);
     assert.equal(fixture.getElement('quickAddChannelBtn').hidden, false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('editing a channel does not open a partial editor when bootstrap fails', async () => {
+  const channel = {
+    id: 74,
+    urls: [{ url: 'https://failed-bootstrap.test', exact: false, protocols: [] }]
+  };
+  const fixture = installEditChannelGlobals(channel, { editorError: new Error('database unavailable') });
+
+  try {
+    const { editChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+
+    assert.deepEqual(fixture.requests, [`/admin/channels/${channel.id}/editor`]);
+    assert.deepEqual(fixture.errors, ['channels.loadChannelsFailed']);
+    assert.equal(fixture.getElement('channelModal').classList.contains('show'), false);
   } finally {
     fixture.restore();
   }

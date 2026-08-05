@@ -61,6 +61,7 @@ func TestHandleChannelURLStats_SingleURLReturnsStats(t *testing.T) {
 		t.Fatalf("CreateConfig failed: %v", err)
 	}
 	srv.urlSelector.RecordLatency(cfg.ID, "https://single.example", 125*time.Millisecond)
+	srv.urlSelector.RecordRequestResult(cfg.ID, "https://single.example", http.StatusOK)
 
 	target := fmt.Sprintf("/admin/channels/%d/url-stats", cfg.ID)
 	c, w := newTestContext(t, newRequest(http.MethodGet, target, nil))
