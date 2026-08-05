@@ -110,7 +110,6 @@ function createURLRow(index) {
     index: index,
     displayIndex: index + 1,
     url: entry.url,
-    exactURLChecked: entry.exact ? 'checked' : '',
     mobileLabelUrl: window.t('channels.tableApiUrl'),
     mobileLabelProtocols: window.t('channels.urlProtocols'),
     mobileLabelExactURL: window.t('channels.fullUrl'),
@@ -123,6 +122,11 @@ function createURLRow(index) {
   const checkbox = row.querySelector('.url-checkbox');
   if (checkbox && selectedURLIndices.has(index)) {
     checkbox.checked = true;
+  }
+
+  const exactCheckbox = row.querySelector('.inline-url-exact-checkbox');
+  if (exactCheckbox) {
+    exactCheckbox.checked = entry.exact;
   }
 
   // 单 URL 与多 URL 使用同一列结构，避免添加/删除 URL 时表格跳变。
@@ -603,6 +607,7 @@ async function toggleURLDisabled(btn) {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     applyURLStats,
+    createURLRow,
     fetchURLStats,
     normalizeInlineURLConfig,
     normalizeInlineURLConfigs,
