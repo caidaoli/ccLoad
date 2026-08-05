@@ -75,8 +75,8 @@
               <tr>
                 <td><code>CCLOAD_RELEASE_BASE_URL</code></td>
                 <td>None</td>
-                <td>Complete <code>.../releases/latest/download</code> base URL used for release detection and downloads.</td>
-                <td>Leave unset to use the built-in fallback chains: the container entrypoint tries <code>v4.gh-proxy.org</code>, <code>gh-proxy.com</code>, and <code>ghp.keleyaa.com</code>; the in-process updater uses mirrors that support release-tag detection. Set it only to force a private mirror.</td>
+                <td>Complete <code>.../releases/latest/download</code> base URL used for stable release detection and all release asset downloads.</td>
+                <td>Leave unset to let the update manager try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, <code>ghfast.top</code>, then GitHub. Preview metadata always comes from GitHub's Releases feed. Set this only to force one private mirror for stable metadata and all release asset downloads.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_MYSQL</code></td>
@@ -293,7 +293,7 @@
           <article class="www-doc-card">
             <span class="www-doc-icon">⬆️</span>
             <h3>Auto updates</h3>
-            <p>One update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and downloads.</p>
+            <p>One update manager checks releases at startup and every 12 hours by default. Stable checks try <code>gh.monlor.com</code>, <code>fastgit.cc</code>, and <code>ghfast.top</code> before GitHub; preview checks use GitHub's Releases feed. Set <code>auto_update_interval_hours</code> to <code>0</code> to disable all checks, or use <code>CCLOAD_RELEASE_BASE_URL</code> to force one private mirror for stable metadata and all release asset downloads.</p>
           </article>
         </div>
 
