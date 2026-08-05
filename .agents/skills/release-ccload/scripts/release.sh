@@ -203,6 +203,7 @@ gh auth status >/dev/null
 go test -tags sonic ./internal/...
 make verify-web
 make build
+golangci-lint config verify
 golangci-lint run ./...
 git diff --check
 
