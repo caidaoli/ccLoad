@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - 'v*'
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing release tag to publish (vX.Y.Z or vX.Y.Z-beta.N)
+        required: true
+        type: string
 
 env:
   REGISTRY: ghcr.io
@@ -12,17 +18,25 @@ jobs:
   metadata:
     name: Validate release tag
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.release.outputs.tag }}
       channel: ${{ steps.release.outputs.channel }}
       prerelease: ${{ steps.release.outputs.prerelease }}
       make_latest: ${{ steps.release.outputs.make_latest }}
     steps:
+      - name: Checkout release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
+          fetch-depth: 0
+
       - name: Classify release
         id: release
         shell: bash
         env:
-          RELEASE_TAG: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
           set -euo pipefail
           if [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
@@ -36,6 +50,17 @@ jobs:
           else
             echo "Unsupported release tag: $RELEASE_TAG" >&2
             echo "Expected vX.Y.Z or vX.Y.Z-beta.N" >&2
+            exit 1
+          fi
+          tag_ref="refs/tags/$RELEASE_TAG"
+          if ! git show-ref --verify --quiet "$tag_ref"; then
+            echo "Release tag does not exist: $RELEASE_TAG" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-list -n 1 "$tag_ref")
+          checkout_commit=$(git rev-parse HEAD)
+          if [[ "$checkout_commit" != "$tag_commit" ]]; then
+            echo "Checked out commit $checkout_commit does not match $RELEASE_TAG ($tag_commit)" >&2
             exit 1
           fi
           {
@@ -54,6 +79,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -106,6 +133,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
           fetch-depth: 0
 
       - name: Set up Go
@@ -153,6 +181,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6
         with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
           fetch-depth: 0
 
       - name: Download binaries
@@ -200,6 +229,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: refs/tags/${{ needs.metadata.outputs.tag }}
 
       - name: Download binaries
         uses: actions/download-artifact@v8
