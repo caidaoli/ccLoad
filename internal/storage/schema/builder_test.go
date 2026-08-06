@@ -72,3 +72,13 @@ func TestDefineSchemaMigrationsTable(t *testing.T) {
 		t.Fatalf("BuildSQLite returned empty")
 	}
 }
+
+func TestDefineChannelsTable_MySQLCodexCredentialHasNoDefault(t *testing.T) {
+	ddl := DefineChannelsTable().BuildMySQL()
+	if !strings.Contains(ddl, "codex_credential TEXT NOT NULL") {
+		t.Fatalf("BuildMySQL missing non-null Codex credential column, got:\n%s", ddl)
+	}
+	if strings.Contains(ddl, "codex_credential TEXT NOT NULL DEFAULT") {
+		t.Fatalf("BuildMySQL assigns an unsupported default to a TEXT column, got:\n%s", ddl)
+	}
+}
