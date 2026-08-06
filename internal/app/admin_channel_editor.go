@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
@@ -29,8 +30,8 @@ type channelEditorFeatures struct {
 type channelEditorData struct {
 	Channel             ChannelWithCooldown     `json:"channel"`
 	Keys                []*model.APIKey         `json:"keys"`
-	CodexCredential     json.RawMessage         `json:"codex_credential,omitempty"`
-	CodexCredentialInfo *codexauth.IDTokenInfo  `json:"codex_credential_info,omitempty"`
+	OAuthCredential     json.RawMessage         `json:"oauth_credential,omitempty"`
+	OAuthCredentialInfo *codexauth.IDTokenInfo  `json:"oauth_credential_info,omitempty"`
 	ModelStats          channelEditorModelStats `json:"model_stats"`
 	URLStats            channelEditorURLStats   `json:"url_stats"`
 	Features            channelEditorFeatures   `json:"features"`
@@ -55,10 +56,10 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	var codexCredential json.RawMessage
-	var codexCredentialInfo *codexauth.IDTokenInfo
+	var oauthCredential json.RawMessage
+	var oauthCredentialInfo *codexauth.IDTokenInfo
 	if cfg.UsesCodexOAuth() {
-		credential, parseErr := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+		credential, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
@@ -70,8 +71,22 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			Note:        "Codex OAuth AT",
 			KeyStrategy: model.KeyStrategySequential,
 		}}
-		codexCredential = append(json.RawMessage(nil), cfg.CodexCredential...)
-		codexCredentialInfo = credential.DecodedIDToken()
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+		oauthCredentialInfo = credential.DecodedIDToken()
+	} else if cfg.UsesAntigravityOAuth() {
+		credential, parseErr := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		apiKeys = []*model.APIKey{{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      credential.AccessToken,
+			Note:        "Antigravity OAuth AT",
+			KeyStrategy: model.KeyStrategySequential,
+		}}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}
@@ -96,8 +111,8 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, channelEditorData{
 		Channel:             detail,
 		Keys:                apiKeys,
-		CodexCredential:     codexCredential,
-		CodexCredentialInfo: codexCredentialInfo,
+		OAuthCredential:     oauthCredential,
+		OAuthCredentialInfo: oauthCredentialInfo,
 		ModelStats:          modelStats,
 		URLStats:            urlStats,
 		Features: channelEditorFeatures{

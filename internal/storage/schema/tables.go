@@ -11,7 +11,7 @@ func DefineChannelsTable() *TableBuilder {
 		Column("max_concurrency INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
 		Column("auth_type VARCHAR(32) NOT NULL DEFAULT 'api_key'").
-		Column("codex_credential TEXT").
+		Column("oauth_credential TEXT").
 		Column("websockets TINYINT NOT NULL DEFAULT 0").
 		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").

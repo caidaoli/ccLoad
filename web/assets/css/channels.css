@@ -145,7 +145,7 @@
       color: var(--error-600);
     }
 
-    .codex-oauth-dialog {
+    .oauth-dialog {
       position: fixed;
       inset: 0;
       width: min(760px, calc(100vw - 32px));
@@ -161,12 +161,16 @@
       box-shadow: 0 24px 64px rgba(15, 23, 42, 0.24);
     }
 
-    .codex-oauth-dialog::backdrop {
+    .oauth-dialog--compact {
+      width: min(560px, calc(100vw - 32px));
+    }
+
+    .oauth-dialog::backdrop {
       background: rgba(15, 23, 42, 0.5);
       backdrop-filter: blur(3px);
     }
 
-    .codex-oauth-dialog-header {
+    .oauth-dialog-header {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
@@ -175,12 +179,12 @@
       border-bottom: 1px solid var(--surface-border);
     }
 
-    .codex-oauth-dialog-header h2,
-    .codex-oauth-dialog-eyebrow {
+    .oauth-dialog-header h2,
+    .oauth-dialog-eyebrow {
       margin: 0;
     }
 
-    .codex-oauth-dialog-eyebrow {
+    .oauth-dialog-eyebrow {
       margin-bottom: var(--space-1);
       color: var(--primary-500);
       font-size: 0.75rem;
@@ -189,75 +193,85 @@
       text-transform: uppercase;
     }
 
-    .codex-oauth-dialog-body {
+    .oauth-dialog-body,
+    .oauth-session-fields,
+    .oauth-dialog-section {
       display: grid;
       gap: var(--space-5);
+      margin: 0;
+    }
+
+    .oauth-dialog-body {
       padding: var(--space-6);
     }
 
-    .codex-oauth-dialog-description,
-    .codex-oauth-field-hint,
-    .codex-oauth-dialog-status {
+    .oauth-session-fields[hidden] {
+      display: none;
+    }
+
+    .oauth-dialog-description,
+    .oauth-field-hint,
+    .oauth-dialog-status {
       margin: 0;
       color: var(--neutral-600);
     }
 
-    .codex-oauth-field {
+    .oauth-field {
       display: grid;
       gap: var(--space-2);
       margin: 0;
     }
 
-    .codex-oauth-field label {
+    .oauth-field label {
       color: var(--neutral-900);
       font-weight: 600;
     }
 
-    .codex-oauth-url {
+    .oauth-url {
       min-height: auto;
       resize: vertical;
       overflow-wrap: anywhere;
       font: 0.8125rem/1.5 'Monaco', 'Menlo', 'Courier New', monospace;
     }
 
-    .codex-oauth-url[readonly] {
+    .oauth-url[readonly] {
       background: var(--surface-bg-muted);
       cursor: text;
     }
 
-    .codex-oauth-url[aria-invalid="true"] {
+    .oauth-url[aria-invalid="true"] {
       border-color: var(--error-400);
     }
 
-    .codex-oauth-field-hint {
+    .oauth-field-hint {
       font-size: 0.8125rem;
     }
 
-    .codex-oauth-actions {
+    .oauth-actions {
       display: flex;
       flex-wrap: wrap;
       gap: var(--space-2);
     }
 
-    .codex-oauth-dialog-status[data-kind="success"] {
+    .oauth-dialog-status[data-kind="success"] {
       color: var(--success-600);
     }
 
-    .codex-oauth-dialog-status[data-kind="error"] {
+    .oauth-dialog-status[data-kind="error"] {
       color: var(--error-600);
     }
 
-    .codex-oauth-dialog-status[hidden] {
+    .oauth-dialog-status[hidden] {
       display: none;
     }
 
     @media (max-width: 600px) {
-      .codex-oauth-dialog-header,
-      .codex-oauth-dialog-body {
+      .oauth-dialog-header,
+      .oauth-dialog-body {
         padding: var(--space-4);
       }
 
-      .codex-oauth-actions .btn {
+      .oauth-actions .btn {
         flex: 1 1 auto;
       }
     }
@@ -669,7 +683,7 @@
     }
 
     .channel-codex-plan-badge,
-    .ch-codex-plan-badge {
+    .ch-oauth-plan-badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -694,7 +708,7 @@
     }
 
     .channel-codex-plan-badge[hidden],
-    .ch-codex-plan-badge[hidden] {
+    .ch-oauth-plan-badge[hidden] {
       display: none !important;
     }
 
@@ -1580,19 +1594,19 @@
       align-items: center;
     }
 
-    .ch-codex-usage {
+    .ch-oauth-usage {
       display: grid;
       gap: 5px;
       width: 100%;
       min-width: 0;
     }
 
-    .ch-codex-usage__toolbar {
+    .ch-oauth-usage__toolbar {
       display: flex;
       justify-content: flex-end;
     }
 
-    .ch-codex-usage__refresh {
+    .ch-oauth-usage__refresh {
       appearance: none;
       justify-self: center;
       padding: 2px 5px;
@@ -1610,32 +1624,32 @@
       transition-timing-function: ease-out;
     }
 
-    .ch-codex-usage__refresh:hover:not(:disabled) {
+    .ch-oauth-usage__refresh:hover:not(:disabled) {
       background: var(--primary-50);
       color: var(--primary-700);
     }
 
-    .ch-codex-usage__refresh:active:not(:disabled) {
+    .ch-oauth-usage__refresh:active:not(:disabled) {
       transform: scale(0.96);
     }
 
-    .ch-codex-usage__refresh:focus-visible {
+    .ch-oauth-usage__refresh:focus-visible {
       outline: 2px solid var(--primary-500);
       outline-offset: 2px;
     }
 
-    .ch-codex-usage__refresh:disabled {
+    .ch-oauth-usage__refresh:disabled {
       cursor: wait;
       opacity: 0.6;
     }
 
-    .ch-codex-usage__window {
+    .ch-oauth-usage__window {
       display: grid;
       gap: 3px;
       min-width: 0;
     }
 
-    .ch-codex-usage__meta {
+    .ch-oauth-usage__meta {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto auto;
       align-items: baseline;
@@ -1645,7 +1659,7 @@
       line-height: 1.2;
     }
 
-    .ch-codex-usage__label {
+    .ch-oauth-usage__label {
       overflow: hidden;
       color: var(--neutral-800);
       font-weight: 700;
@@ -1653,26 +1667,26 @@
       white-space: nowrap;
     }
 
-    .ch-codex-usage__percent {
+    .ch-oauth-usage__percent {
       color: var(--neutral-900);
       font-variant-numeric: tabular-nums;
       font-weight: 800;
     }
 
-    .ch-codex-usage__reset {
+    .ch-oauth-usage__reset {
       color: var(--neutral-500);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
 
-    .ch-codex-usage__track {
+    .ch-oauth-usage__track {
       height: 5px;
       overflow: hidden;
       border-radius: 999px;
       background: var(--neutral-200);
     }
 
-    .ch-codex-usage__fill {
+    .ch-oauth-usage__fill {
       display: block;
       height: 100%;
       border-radius: inherit;
@@ -1681,20 +1695,20 @@
       transition-timing-function: ease-out;
     }
 
-    .ch-codex-usage__fill--high {
+    .ch-oauth-usage__fill--high {
       background: var(--success-500);
     }
 
-    .ch-codex-usage__fill--medium {
+    .ch-oauth-usage__fill--medium {
       background: var(--warning-400);
     }
 
-    .ch-codex-usage__fill--low,
-    .ch-codex-usage__fill--empty {
+    .ch-oauth-usage__fill--low,
+    .ch-oauth-usage__fill--empty {
       background: var(--error-500);
     }
 
-    .ch-codex-usage__error {
+    .ch-oauth-usage__error {
       overflow: hidden;
       color: var(--error-600);
       font-size: 9px;
@@ -1912,7 +1926,7 @@
       flex: 1 1 auto;
     }
 
-    .ch-codex-plan-badge {
+    .ch-oauth-plan-badge {
       flex: 0 0 auto;
       align-self: flex-start;
       margin-left: auto;

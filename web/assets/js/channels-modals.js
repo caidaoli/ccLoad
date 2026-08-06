@@ -496,7 +496,9 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
-  editingChannelAuthType = channel.auth_type === 'codex_oauth' ? 'codex_oauth' : 'api_key';
+  editingChannelAuthType = ['codex_oauth', 'antigravity_oauth'].includes(channel.auth_type)
+    ? channel.auth_type
+    : 'api_key';
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
@@ -532,9 +534,9 @@ async function editChannel(id) {
   if (typeof applyChannelAuthEditorMode === 'function') {
     applyChannelAuthEditorMode(
       editingChannelAuthType,
-      editorData.codex_credential || null,
+      editorData.oauth_credential || null,
       channel,
-      editorData.codex_credential_info || null
+      editorData.oauth_credential_info || null
     );
   }
 
@@ -766,10 +768,10 @@ async function saveChannel(event) {
     return;
   }
 
-  const isCodexOAuth = editingChannelAuthType === 'codex_oauth';
-  const validKeyRows = isCodexOAuth ? [] : getValidInlineKeyRows();
+  const isOAuth = ['codex_oauth', 'antigravity_oauth'].includes(editingChannelAuthType);
+  const validKeyRows = isOAuth ? [] : getValidInlineKeyRows();
   const validKeys = validKeyRows.map(row => row.api_key);
-  if (!isCodexOAuth && validKeyRows.length === 0) {
+  if (!isOAuth && validKeyRows.length === 0) {
     alert(window.t('channels.atLeastOneKey'));
     return;
   }
@@ -803,7 +805,7 @@ async function saveChannel(event) {
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
-    auth_type: isCodexOAuth ? 'codex_oauth' : 'api_key',
+    auth_type: isOAuth ? editingChannelAuthType : 'api_key',
     urls: validURLConfigs,
     api_key: validKeys.join(','),
     api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
@@ -826,9 +828,9 @@ async function saveChannel(event) {
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
-  if (!isCodexOAuth) formData.key_strategy = keyStrategy;
+  if (!isOAuth) formData.key_strategy = keyStrategy;
 
-  if (!formData.name || formData.urls.length === 0 || (!isCodexOAuth && !formData.api_key) || formData.models.length === 0) {
+  if (!formData.name || formData.urls.length === 0 || (!isOAuth && !formData.api_key) || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
   }

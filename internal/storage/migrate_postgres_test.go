@@ -1263,6 +1263,7 @@ func TestPostgres(t *testing.T) {
 				name VARCHAR(191) NOT NULL UNIQUE,
 				url TEXT NOT NULL,
 				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+				codex_credential TEXT,
 				priority INT NOT NULL DEFAULT 0,
 				enabled SMALLINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
@@ -1306,7 +1307,7 @@ func TestPostgres(t *testing.T) {
 		var channelType, authType string
 		var credential sql.NullString
 		if err := env.db.QueryRow(`
-			SELECT id, channel_type, auth_type, codex_credential
+			SELECT id, channel_type, auth_type, oauth_credential
 			FROM channels WHERE name = 'legacy-codex-column'
 		`).Scan(&channelID, &channelType, &authType, &credential); err != nil {
 			t.Fatalf("read migrated legacy channel: %v", err)
@@ -1320,19 +1321,29 @@ func TestPostgres(t *testing.T) {
 		if err := env.db.QueryRow(`
 			SELECT is_nullable, column_default
 			FROM information_schema.columns
-			WHERE table_schema=current_schema() AND table_name='channels' AND column_name='codex_credential'
+			WHERE table_schema=current_schema() AND table_name='channels' AND column_name='oauth_credential'
 		`).Scan(&credentialNullable, &credentialDefault); err != nil {
-			t.Fatalf("read codex_credential definition: %v", err)
+			t.Fatalf("read oauth_credential definition: %v", err)
 		}
 		if credentialNullable != "YES" || credentialDefault.Valid {
-			t.Fatalf("codex_credential nullable=%q default=%v, want nullable without default", credentialNullable, credentialDefault)
+			t.Fatalf("oauth_credential nullable=%q default=%v, want nullable without default", credentialNullable, credentialDefault)
+		}
+		var legacyColumnCount int
+		if err := env.db.QueryRow(`
+			SELECT COUNT(*) FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='channels' AND column_name='codex_credential'
+		`).Scan(&legacyColumnCount); err != nil {
+			t.Fatalf("check legacy credential column: %v", err)
+		}
+		if legacyColumnCount != 0 {
+			t.Fatalf("codex_credential column still exists")
 		}
 		loaded, err := store.GetConfig(ctx, channelID)
 		if err != nil {
 			t.Fatalf("load migrated channel through store: %v", err)
 		}
-		if loaded.CodexCredential != "" {
-			t.Fatalf("store CodexCredential=%q, want empty", loaded.CodexCredential)
+		if loaded.OAuthCredential != "" {
+			t.Fatalf("store OAuthCredential=%q, want empty", loaded.OAuthCredential)
 		}
 		if err := migratePostgres(ctx, env.db); err != nil {
 			t.Fatalf("second legacy channels migration: %v", err)

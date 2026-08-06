@@ -142,6 +142,7 @@ type channelTestRequestPlan struct {
 	clientBody        []byte
 	timeout           *channelTestTimeout
 	debugCapture      *debugCapture
+	antigravityOAuth  bool
 }
 
 type channelTestTimeout struct {
@@ -392,6 +393,7 @@ func (s *Server) buildChannelTestRequestPlan(
 		headers:          headers,
 		requestBody:      body,
 		clientBody:       body,
+		antigravityOAuth: cfgForBuild.UsesAntigravityOAuth(),
 	}
 
 	if clientProtocol == upstreamProtocol {
@@ -608,6 +610,19 @@ func (s *Server) prepareChannelTestAuth(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.CodexAccessToken = credential.AccessToken
 		runtimeCfg.CodexAccountID = credential.AccountID
+		return runtimeCfg, channelTestKeySelection{
+			keyIndex:                cooldown.NoKeyIndex,
+			updatePersistedCooldown: true,
+		}, nil
+	}
+	if cfg != nil && cfg.UsesAntigravityOAuth() {
+		credential, err := s.antigravityCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Antigravity OAuth 凭证失败: %w", err)
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.AntigravityAccessToken = credential.AccessToken
+		runtimeCfg.AntigravityProjectID = credential.ProjectID
 		return runtimeCfg, channelTestKeySelection{
 			keyIndex:                cooldown.NoKeyIndex,
 			updatePersistedCooldown: true,
@@ -1051,7 +1066,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 
 	if isEventStream {
-		if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
+		if requestPlan.clientProtocol != requestPlan.upstreamProtocol || requestPlan.antigravityOAuth {
 			return attachTestDebugData(requestPlan, resp, s.parseTestTranslatedSSEResponse(ctx, requestPlan, testReq, resp, start, result))
 		}
 		return attachTestDebugData(requestPlan, resp, s.parseTestNativeSSEResponse(ctx, requestPlan, testReq, resp, contentType, start, result))
@@ -1117,15 +1132,34 @@ func (s *Server) parseTestNonStreamResponse(
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		parseBody := bodyBytes
-		if requestPlan.clientProtocol != requestPlan.upstreamProtocol && len(bodyBytes) > 0 {
+		upstreamBody := bodyBytes
+		translatedRequestBody := requestPlan.requestBody
+		if requestPlan.antigravityOAuth && len(bodyBytes) > 0 {
+			var unwrapErr error
+			upstreamBody, unwrapErr = unwrapAntigravityResponse(bodyBytes)
+			if unwrapErr != nil {
+				result["success"] = false
+				result["error"] = "解包 Antigravity 测试响应失败: " + unwrapErr.Error()
+				result["raw_response"] = string(bodyBytes)
+				return result
+			}
+			translatedRequestBody, unwrapErr = unwrapAntigravityRequest(requestPlan.requestBody)
+			if unwrapErr != nil {
+				result["success"] = false
+				result["error"] = "解包 Antigravity 测试请求失败: " + unwrapErr.Error()
+				return result
+			}
+			parseBody = upstreamBody
+		}
+		if (requestPlan.clientProtocol != requestPlan.upstreamProtocol || requestPlan.antigravityOAuth) && len(bodyBytes) > 0 {
 			translatedBody, translateErr := s.protocolRegistry.TranslateResponseNonStream(
 				ctx,
 				protocol.Protocol(requestPlan.upstreamProtocol),
 				protocol.Protocol(requestPlan.clientProtocol),
 				testReq.Model,
 				requestPlan.clientBody,
-				requestPlan.requestBody,
-				bodyBytes,
+				translatedRequestBody,
+				upstreamBody,
 			)
 			if translateErr != nil {
 				result["success"] = false
@@ -1159,7 +1193,7 @@ func (s *Server) parseTestNonStreamResponse(
 		}
 
 		usageParser := newJSONUsageParser(requestPlan.upstreamProtocol)
-		_ = usageParser.Feed(bodyBytes)
+		_ = usageParser.Feed(upstreamBody)
 		populateTestNormalizedUsageAndCost(result, testReq, usageParser)
 
 		result["upstream_response_body"] = string(bodyBytes)
@@ -1208,15 +1242,27 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPath = parsed.Path
 	}
 	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
-	requestPlan.requestBody = prepareTranslatedUpstreamBody(
+	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
+	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.headers,
 	)
+	if err != nil {
+		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
+	}
+	if cfgForBuild.UsesAntigravityOAuth() {
+		requestPlan.upstreamStreaming = requestedStreaming
+		requestPlan.fullURL, err = antigravityUpstreamURL(selectedURL, requestedStreaming)
+		if err != nil {
+			return nil, nil, err
+		}
+	} else {
+		requestPlan.upstreamStreaming = isStreamingRequest(requestPath, requestPlan.requestBody)
+	}
 	if upstreamProtocolValue == protocol.Codex {
 		sessionID := testReq.ResolveSessionID()
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
 		ensureCodexSessionHeader(requestPlan.headers, sessionID)
 	}
-	requestPlan.upstreamStreaming = isStreamingRequest(requestPath, requestPlan.requestBody)
 	return cfgForBuild, requestPlan, nil
 }
 
@@ -1247,6 +1293,8 @@ func (s *Server) newTestUpstreamRequest(
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	if cfgForBuild.UsesCodexOAuth() {
 		injectCodexOAuthHeaders(req, cfgForBuild, requestPlan.upstreamStreaming)
+	} else if cfgForBuild.UsesAntigravityOAuth() {
+		injectAntigravityOAuthHeaders(req, cfgForBuild)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
@@ -1318,7 +1366,15 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			if len(rawEvent) == 0 {
 				return nil
 			}
-			if err := upstreamParser.Feed(rawEvent); err != nil {
+			parserEvent := rawEvent
+			if requestPlan.antigravityOAuth {
+				var err error
+				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return err
+				}
+			}
+			if err := upstreamParser.Feed(parserEvent); err != nil {
 				log.Printf("[WARN] SSE 内容解析失败: %v", err)
 			}
 			if !firstContentCaptured && testStreamParserHasFirstContent(upstreamParser) {
@@ -1328,13 +1384,25 @@ func (s *Server) parseTestTranslatedSSEResponse(
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
+			translatedRequestBody := requestPlan.requestBody
+			if requestPlan.antigravityOAuth {
+				var err error
+				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return nil, err
+				}
+				translatedRequestBody, err = unwrapAntigravityRequest(requestPlan.requestBody)
+				if err != nil {
+					return nil, err
+				}
+			}
 			chunks, err := s.protocolRegistry.TranslateResponseStream(
 				ctx,
 				protocol.Protocol(requestPlan.upstreamProtocol),
 				protocol.Protocol(requestPlan.clientProtocol),
 				testReq.Model,
 				requestPlan.clientBody,
-				requestPlan.requestBody,
+				translatedRequestBody,
 				rawEvent,
 				&state,
 			)

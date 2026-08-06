@@ -111,7 +111,7 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 }
 
-func TestConfig_CodexCredentialRoundTripAndPrivateJSON(t *testing.T) {
+func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	t.Parallel()
 	store := newTestStore(t, "codex-credential.db")
 	ctx := context.Background()
@@ -119,13 +119,13 @@ func TestConfig_CodexCredentialRoundTripAndPrivateJSON(t *testing.T) {
 
 	created, err := store.CreateConfig(ctx, &model.Config{
 		Name: "codex-user@example.com", AuthType: model.AuthTypeCodexOAuth,
-		CodexCredential: credential, URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex", Protocols: []string{"codex"}}},
+		OAuthCredential: credential, URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex", Protocols: []string{"codex"}}},
 		Websockets: true, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig() error = %v", err)
 	}
-	if created.GetAuthType() != model.AuthTypeCodexOAuth || created.CodexCredential != credential || !created.Websockets {
+	if created.GetAuthType() != model.AuthTypeCodexOAuth || created.OAuthCredential != credential || !created.Websockets {
 		t.Fatalf("created Codex channel = %#v", created)
 	}
 	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "forbidden"}}); err == nil || !strings.Contains(err.Error(), "read-only") {
@@ -135,20 +135,20 @@ func TestConfig_CodexCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Marshal() error = %v", err)
 	}
-	if strings.Contains(string(raw), "at-secret") || strings.Contains(string(raw), "rt-secret") || strings.Contains(string(raw), "codex_credential") {
+	if strings.Contains(string(raw), "at-secret") || strings.Contains(string(raw), "rt-secret") || strings.Contains(string(raw), "oauth_credential") {
 		t.Fatalf("admin JSON leaked credential: %s", raw)
 	}
 
 	updatedCredential := `{"type":"codex","access_token":"new-at","refresh_token":"new-rt","expired":"2031-01-01T00:00:00Z"}`
-	if err := store.UpdateCodexCredential(ctx, created.ID, updatedCredential); err != nil {
-		t.Fatalf("UpdateCodexCredential() error = %v", err)
+	if err := store.UpdateOAuthCredential(ctx, created.ID, updatedCredential); err != nil {
+		t.Fatalf("UpdateOAuthCredential() error = %v", err)
 	}
 	got, err := store.GetConfig(ctx, created.ID)
 	if err != nil {
 		t.Fatalf("GetConfig() error = %v", err)
 	}
-	if got.CodexCredential != updatedCredential {
-		t.Fatalf("credential=%q, want updated payload", got.CodexCredential)
+	if got.OAuthCredential != updatedCredential {
+		t.Fatalf("credential=%q, want updated payload", got.OAuthCredential)
 	}
 }
 

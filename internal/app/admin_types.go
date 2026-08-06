@@ -181,8 +181,8 @@ func (cr *ChannelRequest) Validate() error {
 	if authType == model.AuthTypeAPIKey && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
 	}
-	if authType == model.AuthTypeCodexOAuth && len(apiKeys) != 0 {
-		return fmt.Errorf("codex_oauth channel cannot contain API keys")
+	if authType != model.AuthTypeAPIKey && len(apiKeys) != 0 {
+		return fmt.Errorf("OAuth channel cannot contain API keys")
 	}
 	for i, key := range apiKeys {
 		if strings.ContainsAny(key.APIKey, "\x00\r\n") {
@@ -447,6 +447,7 @@ type ChannelWithCooldown struct {
 	*model.Config
 	CodexPlanType                string              `json:"codex_plan_type,omitempty"`
 	CodexSubscriptionActiveUntil *time.Time          `json:"codex_subscription_active_until,omitempty"`
+	AntigravityPaidTier          string              `json:"antigravity_paid_tier,omitempty"`
 	KeyStrategy                  string              `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil                *time.Time          `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS          int64               `json:"cooldown_remaining_ms,omitempty"`

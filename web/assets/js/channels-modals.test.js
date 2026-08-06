@@ -226,8 +226,8 @@ function installEditChannelGlobals(channel, {
         return {
           channel,
           keys: editorKeys,
-          codex_credential: codexCredential,
-          codex_credential_info: codexCredentialInfo,
+          oauth_credential: codexCredential,
+          oauth_credential_info: codexCredentialInfo,
           model_stats: { available: true, items: [] },
           url_stats: {
             available: true,

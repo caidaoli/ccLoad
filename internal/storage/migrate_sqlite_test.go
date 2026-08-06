@@ -62,7 +62,7 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if !columns["protocol_transform_mode"] {
 		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
 	}
-	if !columns["auth_type"] || !columns["codex_credential"] {
+	if !columns["auth_type"] || !columns["oauth_credential"] {
 		t.Fatalf("channels missing Codex auth columns: %v", columns)
 	}
 	var mode string
@@ -75,7 +75,7 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	var channelID int64
 	var legacyChannelType, authType string
 	var credential sql.NullString
-	if err := db.QueryRowContext(ctx, "SELECT id, channel_type, auth_type, codex_credential FROM channels WHERE name='legacy'").Scan(&channelID, &legacyChannelType, &authType, &credential); err != nil {
+	if err := db.QueryRowContext(ctx, "SELECT id, channel_type, auth_type, oauth_credential FROM channels WHERE name='legacy'").Scan(&channelID, &legacyChannelType, &authType, &credential); err != nil {
 		t.Fatalf("read migrated auth fields: %v", err)
 	}
 	if legacyChannelType != "codex" {
@@ -89,8 +89,8 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if err != nil {
 		t.Fatalf("load migrated channel through store: %v", err)
 	}
-	if loaded.CodexCredential != "" {
-		t.Fatalf("store CodexCredential=%q, want empty", loaded.CodexCredential)
+	if loaded.OAuthCredential != "" {
+		t.Fatalf("store OAuthCredential=%q, want empty", loaded.OAuthCredential)
 	}
 	var rawURLs string
 	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {
@@ -106,6 +106,55 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	}
 	if err := migrate(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("second migrate must be idempotent: %v", err)
+	}
+}
+
+func TestMigrate_SQLite_RenamesLegacyCodexCredentialToOAuthCredential(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			url TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			channel_type TEXT NOT NULL DEFAULT 'anthropic',
+			auth_type TEXT NOT NULL DEFAULT 'api_key',
+			codex_credential TEXT NOT NULL DEFAULT '',
+			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		);
+		INSERT INTO channels(name, url, auth_type, codex_credential, created_at, updated_at)
+		VALUES('codex-user', 'https://example.com', 'codex_oauth', '{"access_token":"at-secret"}', 1, 1)
+	`); err != nil {
+		t.Fatalf("create legacy Codex channel: %v", err)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy Codex channel: %v", err)
+	}
+	var authType, credential string
+	if err := db.QueryRowContext(ctx,
+		"SELECT auth_type, oauth_credential FROM channels WHERE name='codex-user'",
+	).Scan(&authType, &credential); err != nil {
+		t.Fatalf("read migrated OAuth credential: %v", err)
+	}
+	if authType != model.AuthTypeCodexOAuth || credential != `{"access_token":"at-secret"}` {
+		t.Fatalf("migrated auth=(%q, %q)", authType, credential)
+	}
+	columns, err := sqliteExistingColumns(ctx, db, "channels")
+	if err != nil {
+		t.Fatalf("list migrated channel columns: %v", err)
+	}
+	if columns["codex_credential"] || !columns["oauth_credential"] {
+		t.Fatalf("credential column was not renamed: %v", columns)
+	}
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("second migrate: %v", err)
 	}
 }
 
@@ -162,6 +211,71 @@ func TestMigrate_SQLite_FullFlow(t *testing.T) {
 	if val != "{}" || valueType != "json" || defaultValue != "{}" {
 		t.Fatalf("global_cooldown_detection_rules=%q/%q/%q, want {}/json/{}", val, valueType, defaultValue)
 	}
+}
+
+func TestMigrate_SQLite_AntigravitySensitiveWordsDefault(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	const wantDefault = `["API","proxy","Claude","Anthropic"]`
+
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate new database: %v", err)
+	}
+
+	assertSetting := func(wantValue, wantDefaultValue string) {
+		t.Helper()
+		var value, defaultValue string
+		if err := db.QueryRowContext(ctx, `
+			SELECT value, default_value
+			FROM system_settings
+			WHERE key = 'antigravity_sensitive_words'
+		`).Scan(&value, &defaultValue); err != nil {
+			t.Fatalf("query antigravity_sensitive_words: %v", err)
+		}
+		if value != wantValue || defaultValue != wantDefaultValue {
+			t.Fatalf("antigravity_sensitive_words value/default=%q/%q, want %q/%q", value, defaultValue, wantValue, wantDefaultValue)
+		}
+	}
+
+	assertSetting(wantDefault, wantDefault)
+
+	if _, err := db.ExecContext(ctx, `
+		UPDATE system_settings
+		SET value = '[]', default_value = '[]'
+		WHERE key = 'antigravity_sensitive_words'
+	`); err != nil {
+		t.Fatalf("restore legacy default: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate legacy default: %v", err)
+	}
+	assertSetting(wantDefault, wantDefault)
+
+	const previousDefault = `["API","proxy"]`
+	if _, err := db.ExecContext(ctx, `
+		UPDATE system_settings
+		SET value = ?, default_value = ?
+		WHERE key = 'antigravity_sensitive_words'
+	`, previousDefault, previousDefault); err != nil {
+		t.Fatalf("restore previous default: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate previous default: %v", err)
+	}
+	assertSetting(wantDefault, wantDefault)
+
+	const customValue = `["custom"]`
+	if _, err := db.ExecContext(ctx, `
+		UPDATE system_settings
+		SET value = ?, default_value = ?
+		WHERE key = 'antigravity_sensitive_words'
+	`, customValue, previousDefault); err != nil {
+		t.Fatalf("set custom value: %v", err)
+	}
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("refresh custom value metadata: %v", err)
+	}
+	assertSetting(customValue, wantDefault)
 }
 
 func TestMigrate_SQLite_RenamesDuplicateModelFingerprintNames(t *testing.T) {
@@ -520,7 +634,7 @@ func TestMigrate_SQLite_AddsModelCooldownDuration(t *testing.T) {
 		t.Fatalf("create legacy model cooldown table: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO channels (name, url, codex_credential, created_at, updated_at)
+		INSERT INTO channels (name, url, oauth_credential, created_at, updated_at)
 		VALUES ('legacy-model-cooldown', 'https://api.example.com', '', 700, 700)
 	`); err != nil {
 		t.Fatalf("create legacy cooldown channel: %v", err)
@@ -1216,7 +1330,7 @@ func TestMigrateModelRedirectsData_WithLegacyData(t *testing.T) {
 
 	// 插入带旧格式数据的渠道
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (name, url, priority, enabled, codex_credential, models, model_redirects, created_at, updated_at)
+		INSERT INTO channels (name, url, priority, enabled, oauth_credential, models, model_redirects, created_at, updated_at)
 		VALUES ('test-ch', 'https://api.example.com', 10, 1, '', '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
 	`)
 	if err != nil {
@@ -1317,7 +1431,7 @@ func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (id, name, url, priority, enabled, codex_credential, models, model_redirects, created_at, updated_at)
+		INSERT INTO channels (id, name, url, priority, enabled, oauth_credential, models, model_redirects, created_at, updated_at)
 		VALUES (1, 'repair-order', 'https://api.example.com', 10, 1, '', '["z-model","a-model"]', '{}', 100, 100)
 	`)
 	if err != nil {

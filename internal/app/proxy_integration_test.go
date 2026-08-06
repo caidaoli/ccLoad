@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -43,7 +44,7 @@ type testChannel struct {
 	models                  string // 逗号分隔的模型列表
 	apiKey                  string
 	authType                string
-	codexCredential         string
+	oauthCredential         string
 	priority                int
 }
 
@@ -166,7 +167,7 @@ func setupProxyTestEnvWithSettings(
 		cfg := &model.Config{
 			Name:                    ch.name,
 			AuthType:                ch.authType,
-			CodexCredential:         ch.codexCredential,
+			OAuthCredential:         ch.oauthCredential,
 			URLs:                    urls,
 			Websockets:              ch.websockets,
 			ProtocolTransformMode:   transformMode,
@@ -182,7 +183,7 @@ func setupProxyTestEnvWithSettings(
 			t.Fatalf("CreateConfig for %s: %v", ch.name, err)
 		}
 
-		if created.UsesCodexOAuth() {
+		if created.UsesOAuth() {
 			continue
 		}
 
@@ -223,6 +224,263 @@ func codexProxyTestCredential(t testing.TB, accessToken, refreshToken, accountID
 		t.Fatalf("Codex credential JSON: %v", err)
 	}
 	return payload
+}
+
+func antigravityProxyTestCredential(t testing.TB, accessToken string) string {
+	t.Helper()
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-antigravity",
+		Expired: time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+		Email:   "gravity@example.com", ProjectID: "gravity-project",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("Antigravity credential JSON: %v", err)
+	}
+	return payload
+}
+
+func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
+			t.Errorf("Antigravity URL = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-antigravity" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("User-Agent"); got != antigravityauth.DefaultUserAgent {
+			t.Errorf("User-Agent = %q", got)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		for _, name := range []string{
+			"Accept", "Accept-Language", "HTTP-Referer", "Sec-CH-UA", "Sec-CH-UA-Mobile",
+			"Sec-CH-UA-Platform", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "X-Title",
+		} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("unrelated Antigravity header %s = %q", name, got)
+			}
+		}
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity wire body: %v", err)
+		}
+		var envelope struct {
+			Project     string `json:"project"`
+			Model       string `json:"model"`
+			UserAgent   string `json:"userAgent"`
+			RequestType string `json:"requestType"`
+			Request     struct {
+				SystemInstruction struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"systemInstruction"`
+				Contents []struct {
+					Parts []struct {
+						Text string `json:"text"`
+					} `json:"parts"`
+				} `json:"contents"`
+			} `json:"request"`
+		}
+		if err := json.Unmarshal(wireBody, &envelope); err != nil {
+			t.Fatalf("decode Antigravity envelope: %v body=%s", err, wireBody)
+		}
+		if envelope.Project != "gravity-project" || envelope.Model != "gemini-3-flash" || envelope.UserAgent != "antigravity" || envelope.RequestType != "agent" {
+			t.Errorf("unexpected Antigravity envelope: %+v", envelope)
+		}
+		if got := envelope.Request.SystemInstruction.Parts[0].Text; got != "You are A\u200BPI p\u200Broxy C\u200Blaude A\u200Bnthropic assistant" {
+			t.Errorf("system prompt = %q", got)
+		}
+		if got := envelope.Request.Contents[0].Parts[0].Text; got != "mention API proxy Claude Anthropic unchanged" {
+			t.Errorf("user content was modified: %q", got)
+		}
+		if gjson.GetBytes(wireBody, "request.tools.0.functionDeclarations.0.parameters.type").String() != "object" ||
+			gjson.GetBytes(wireBody, "request.tools.0.functionDeclarations.0.parametersJsonSchema").Exists() {
+			t.Errorf("Antigravity tool schema was not finalized: %s", wireBody)
+		}
+		if gjson.GetBytes(wireBody, "request.generationConfig.maxOutputTokens").Exists() {
+			t.Errorf("Gemini Antigravity request retained maxOutputTokens: %s", wireBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "antigravity-openai", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-antigravity"),
+	}}, map[int]string{0: upstream.URL}, nil)
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gemini-3-flash", "max_tokens": 100,
+		"messages": []map[string]string{
+			{"role": "system", "content": "You are API proxy Claude Anthropic assistant"},
+			{"role": "user", "content": "mention API proxy Claude Anthropic unchanged"},
+		},
+		"tools": []any{map[string]any{
+			"type": "function",
+			"function": map[string]any{
+				"name": "lookup", "description": "lookup data",
+				"parameters": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}},
+			},
+		}},
+	}, map[string]string{
+		"Accept":             "text/event-stream",
+		"Accept-Language":    "zh-CN",
+		"HTTP-Referer":       "https://cherry-ai.com",
+		"Sec-CH-UA":          `"Chromium";v="146"`,
+		"Sec-CH-UA-Mobile":   "?0",
+		"Sec-CH-UA-Platform": `"macOS"`,
+		"Sec-Fetch-Dest":     "empty",
+		"Sec-Fetch-Mode":     "cors",
+		"Sec-Fetch-Site":     "cross-site",
+		"X-Title":            "Cherry Studio",
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "choices.0.message.content").String(); got != "gravity ok" {
+		t.Fatalf("OpenAI response content=%q body=%s", got, response.Body.String())
+	}
+}
+
+func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity wire body: %v", err)
+		}
+		if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "low" {
+			t.Errorf("Antigravity thinkingLevel=%q, want low; body=%s", got, wireBody)
+		}
+		if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
+			t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity thinking ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-anthropic-thinking", upstreamProtocol: "gemini", models: "gemini-3.1-pro-low", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-thinking"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "gemini-3.1-pro-low", "max_tokens": 100,
+		"messages":      []any{map[string]any{"role": "user", "content": "think"}},
+		"thinking":      map[string]any{"type": "adaptive"},
+		"output_config": map[string]any{"effort": "minimal"},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "content.0.text").String(); got != "gravity thinking ok" {
+		t.Fatalf("Anthropic response content=%q body=%s", got, response.Body.String())
+	}
+}
+
+func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
+			t.Errorf("Antigravity stream URL = %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+		if got := r.Header.Get("Accept"); got != "" {
+			t.Errorf("Accept = %q", got)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"stream ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":2,"totalTokenCount":3}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-gemini-stream", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-stream"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:streamGenerateContent?alt=sse", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"text":"stream ok"`) || strings.Contains(response.Body.String(), `"response"`) {
+		t.Fatalf("unexpected Gemini SSE body: %s", response.Body.String())
+	}
+}
+
+func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
+	var upstreamAttempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := upstreamAttempts.Add(1)
+		if attempt == 1 {
+			if got := r.Header.Get("Authorization"); got != "Bearer at-old" {
+				t.Errorf("first Authorization = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"code":401,"message":"expired"}}`)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-new" {
+			t.Errorf("refreshed Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"refreshed"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	var refreshes atomic.Int32
+	var paidTierRefreshes atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1internal:loadCodeAssist" {
+			paidTierRefreshes.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer at-new" {
+				t.Errorf("loadCodeAssist Authorization = %q", got)
+			}
+			_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+			return
+		}
+		refreshes.Add(1)
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "rt-antigravity" {
+			t.Errorf("refresh form = %v", r.Form)
+		}
+		_, _ = io.WriteString(w, `{"access_token":"at-new","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-refresh", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-old"),
+	}}, map[int]string{0: upstream.URL})
+	service := antigravityauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	service.DailyAPIBaseURL = tokenServer.URL
+	env.server.antigravityCredentials.service = service
+	env.server.antigravityCredentials.clientFor = func(*model.Config) *http.Client { return tokenServer.Client() }
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "refreshed" {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 || paidTierRefreshes.Load() != 1 {
+		t.Fatalf("upstream attempts=%d refreshes=%d paid tier refreshes=%d", upstreamAttempts.Load(), refreshes.Load(), paidTierRefreshes.Load())
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].OAuthCredential, `"access_token":"at-new"`) {
+		t.Fatalf("persisted channel=%#v err=%v", configs, err)
+	}
+	persistedCredential, err := antigravityauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PaidTier == nil || persistedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
+	}
 }
 
 func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T) {
@@ -268,7 +526,7 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "codex-oauth-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 		authType:        model.AuthTypeCodexOAuth,
-		codexCredential: codexProxyTestCredential(t, "at-old", "rt-old", "account-proxy"),
+		oauthCredential: codexProxyTestCredential(t, "at-old", "rt-old", "account-proxy"),
 	}}, map[int]string{0: upstream.URL})
 	service := codexauth.NewService(tokenServer.Client())
 	service.TokenURL = tokenServer.URL
@@ -288,7 +546,7 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 		t.Fatalf("upstream attempts=%d refreshes=%d", upstreamAttempts.Load(), refreshes.Load())
 	}
 	configs, err := env.store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].CodexCredential, `"access_token":"at-new"`) {
+	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].OAuthCredential, `"access_token":"at-new"`) {
 		t.Fatalf("persisted refreshed channel=%#v err=%v", configs, err)
 	}
 }
@@ -315,7 +573,7 @@ func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *tes
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "codex-oauth-openai-client", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
 		authType:        model.AuthTypeCodexOAuth,
-		codexCredential: codexProxyTestCredential(t, "at-openai", "rt-openai", "account-openai"),
+		oauthCredential: codexProxyTestCredential(t, "at-openai", "rt-openai", "account-openai"),
 	}}, map[int]string{0: upstream.URL})
 
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
@@ -347,7 +605,7 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "codex-oauth-usage-limit", upstreamProtocol: "codex", models: "gpt-5.4-mini,gpt-5.4", priority: 100,
 		authType:        model.AuthTypeCodexOAuth,
-		codexCredential: codexProxyTestCredential(t, "at-usage-limit", "rt-usage-limit", "account-usage-limit"),
+		oauthCredential: codexProxyTestCredential(t, "at-usage-limit", "rt-usage-limit", "account-usage-limit"),
 	}}, map[int]string{0: upstream.URL})
 
 	before := time.Now()
