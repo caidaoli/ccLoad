@@ -312,7 +312,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 			t.Fatalf("import response leaked %q: %s", secret, response.Body.String())
 		}
 	}
-	result := mustParseAPIResponse[codexCredentialImportSummary](t, response.Body.Bytes())
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
 	if result.Data.Created != 1 || result.Data.Skipped != 1 || result.Data.Failed != 1 || len(result.Data.Results) != 3 {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
@@ -336,6 +336,182 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	}
 	if persisted.OAuthCredential != existingPayload {
 		t.Fatalf("same-name import overwrote existing credential")
+	}
+}
+
+func TestHandleImportOAuthCredentialsAutoDetectsTypeAndIncrementsCreatedPriorities(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("provider", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("priority_increment", "20"); err != nil {
+		t.Fatal(err)
+	}
+	files := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "codex-explicit.json",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-codex-explicit","refresh_token":"rt-codex-explicit","account_id":"account-explicit","email":"codex-explicit@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "antigravity-explicit.json",
+			body: fmt.Sprintf(
+				`{"type":"antigravity","access_token":"at-gravity-explicit","refresh_token":"rt-gravity-explicit","email":"gravity-explicit@example.com","project_id":"project-explicit","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "codex-inferred.json",
+			body: fmt.Sprintf(
+				`{"access_token":"at-codex-inferred","refresh_token":"rt-codex-inferred","account_id":"account-inferred","email":"codex-inferred@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "antigravity-inferred.json",
+			body: fmt.Sprintf(
+				`{"access_token":"at-gravity-inferred","refresh_token":"rt-gravity-inferred","email":"gravity-inferred@example.com","project_id":"project-inferred","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "ambiguous.json",
+			body: fmt.Sprintf(
+				`{"access_token":"at-ambiguous","refresh_token":"rt-ambiguous","email":"ambiguous@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "unsupported.json",
+			body: fmt.Sprintf(
+				`{"type":"other","access_token":"at-unsupported","refresh_token":"rt-unsupported","account_id":"account-unsupported","expired":%q}`,
+				expiresAt,
+			),
+		},
+	}
+	for _, file := range files {
+		part, err := writer.CreateFormFile("files", file.name)
+		if err != nil {
+			t.Fatalf("CreateFormFile(%q): %v", file.name, err)
+		}
+		if _, err := part.Write([]byte(file.body)); err != nil {
+			t.Fatalf("write %q: %v", file.name, err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{
+		"at-codex-explicit", "rt-codex-explicit", "at-gravity-explicit", "rt-gravity-explicit",
+		"at-codex-inferred", "rt-codex-inferred", "at-gravity-inferred", "rt-gravity-inferred",
+		"at-ambiguous", "rt-ambiguous", "at-unsupported", "rt-unsupported",
+	} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("import response leaked %q: %s", secret, response.Body.String())
+		}
+	}
+
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 4 || result.Data.Skipped != 2 || result.Data.Failed != 0 || len(result.Data.Results) != len(files) {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	if result.Data.Results[4].Status != "skipped" || result.Data.Results[5].Status != "skipped" {
+		t.Fatalf("unrecognized credentials were not skipped: %#v", result.Data.Results)
+	}
+
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 4 {
+		t.Fatalf("channels = (%#v, %v)", channels, err)
+	}
+	want := map[string]struct {
+		authType string
+		priority int
+	}{
+		"Codex-codex-explicit@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 0},
+		"Antigravity-gravity-explicit@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 20},
+		"Codex-codex-inferred@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 40},
+		"Antigravity-gravity-inferred@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 60},
+	}
+	for _, channel := range channels {
+		expected, ok := want[channel.Name]
+		if !ok {
+			t.Fatalf("unexpected channel %#v", channel)
+		}
+		if channel.GetAuthType() != expected.authType || channel.Priority != expected.priority {
+			t.Fatalf("channel %q auth_type=%q priority=%d, want %q/%d", channel.Name, channel.GetAuthType(), channel.Priority, expected.authType, expected.priority)
+		}
+	}
+}
+
+func TestHandleImportOAuthCredentialsRejectsInvalidOptions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	tests := []struct {
+		name              string
+		provider          string
+		priorityIncrement string
+	}{
+		{name: "provider", provider: "unknown", priorityIncrement: "0"},
+		{name: "priority increment", provider: "auto", priorityIncrement: "30"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			if err := writer.WriteField("provider", tt.provider); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.WriteField("priority_increment", tt.priorityIncrement); err != nil {
+				t.Fatal(err)
+			}
+			part, err := writer.CreateFormFile("files", "credential.json")
+			if err != nil {
+				t.Fatal(err)
+			}
+			credential := fmt.Sprintf(
+				`{"type":"codex","access_token":"at","refresh_token":"rt","account_id":"account","expired":%q}`,
+				expiresAt,
+			)
+			if _, err := part.Write([]byte(credential)); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			requestContext, response := newTestContext(t, request)
+			server.HandleImportOAuthCredentials(requestContext)
+			if response.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 0 {
+		t.Fatalf("invalid import persisted channels: (%#v, %v)", channels, err)
 	}
 }
 

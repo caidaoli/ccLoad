@@ -170,13 +170,23 @@
           <form id="oauthCredentialImportForm" class="oauth-dialog-body">
             <p id="oauthCredentialImportDialogDescription" class="oauth-dialog-description"
               data-i18n="channels.oauth.importDialogDescription">
-              选择凭证类型，然后选择对应的 JSON 凭证文件。
+              系统会自动判断凭证类型；无法判断的文件将跳过。
             </p>
             <div class="oauth-field">
               <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">凭证类型</label>
               <select id="oauthImportProviderSelect" name="oauth_import_provider" class="form-input">
+                <option value="auto" data-i18n="channels.oauth.providerAuto">自动判断</option>
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+              </select>
+            </div>
+            <div class="oauth-field">
+              <label for="oauthImportPriorityIncrement" data-i18n="channels.oauth.priority">优先级</label>
+              <select id="oauthImportPriorityIncrement" name="oauth_import_priority_increment" class="form-input">
+                <option value="0" data-i18n="channels.oauth.priorityNoIncrement">优先级不递增</option>
+                <option value="10" data-i18n="channels.oauth.priorityIncrement10" selected>优先级递增10</option>
+                <option value="20" data-i18n="channels.oauth.priorityIncrement20">优先级递增20</option>
+                <option value="50" data-i18n="channels.oauth.priorityIncrement50">优先级递增50</option>
               </select>
             </div>
             <div class="oauth-field">
