@@ -484,25 +484,51 @@ func TestImportedCodexCredentialModelsFollowPlanType(t *testing.T) {
 	}
 }
 
-func TestHandleImportCodexCredentialCreatesChannelWithoutLeakingTokens(t *testing.T) {
+func TestHandleImportCodexCredentialCreatesSkipsAndReportsFilesWithoutLeakingTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	server := &Server{store: store}
 	engine := gin.New()
 	engine.POST("/codex/credentials/import", server.HandleImportCodexCredential)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	existing, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
+		Type: "codex", AccessToken: "at-existing", RefreshToken: "rt-existing", Expired: expiresAt,
+		AccountID: "account-existing", Email: "duplicate@example.com",
+	})
+	if err != nil {
+		t.Fatalf("create existing Codex channel: %v", err)
+	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
-	part, err := writer.CreateFormFile("file", "codex.json")
-	if err != nil {
-		t.Fatalf("CreateFormFile() error = %v", err)
+	files := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "duplicate.json",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-must-not-overwrite","refresh_token":"rt-must-not-overwrite","account_id":"account-existing","email":"duplicate@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "new.json",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-import-secret","refresh_token":"rt-import-secret","account_id":"account-import","email":"new@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{name: "broken.json", body: `{"type":"codex"`},
 	}
-	credential := fmt.Sprintf(
-		`{"type":"codex","access_token":"at-import-secret","refresh_token":"rt-import-secret","account_id":"account-import","expired":%q}`,
-		time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
-	)
-	if _, err := part.Write([]byte(credential)); err != nil {
-		t.Fatalf("write multipart credential: %v", err)
+	for _, file := range files {
+		part, partErr := writer.CreateFormFile("files", file.name)
+		if partErr != nil {
+			t.Fatalf("CreateFormFile(%q) error = %v", file.name, partErr)
+		}
+		if _, writeErr := part.Write([]byte(file.body)); writeErr != nil {
+			t.Fatalf("write multipart credential %q: %v", file.name, writeErr)
+		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close multipart writer: %v", err)
@@ -515,27 +541,51 @@ func TestHandleImportCodexCredentialCreatesChannelWithoutLeakingTokens(t *testin
 	if response.Code != http.StatusOK {
 		t.Fatalf("import status=%d body=%s", response.Code, response.Body.String())
 	}
-	if strings.Contains(response.Body.String(), "at-import-secret") || strings.Contains(response.Body.String(), "rt-import-secret") {
+	if strings.Contains(response.Body.String(), "at-import-secret") || strings.Contains(response.Body.String(), "rt-import-secret") ||
+		strings.Contains(response.Body.String(), "at-must-not-overwrite") || strings.Contains(response.Body.String(), "rt-must-not-overwrite") {
 		t.Fatalf("import response leaked credential: %s", response.Body.String())
 	}
 	var payload struct {
 		Success bool `json:"success"`
 		Data    struct {
-			Created bool `json:"created"`
-			Channel struct {
-				AuthType string `json:"auth_type"`
-			} `json:"channel"`
+			Created int `json:"created"`
+			Skipped int `json:"skipped"`
+			Failed  int `json:"failed"`
+			Results []struct {
+				FileName    string `json:"file_name"`
+				ChannelName string `json:"channel_name,omitempty"`
+				Status      string `json:"status"`
+				Error       string `json:"error,omitempty"`
+			} `json:"results"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("decode import response: %v", err)
 	}
-	if !payload.Success || !payload.Data.Created || payload.Data.Channel.AuthType != "codex_oauth" {
+	if !payload.Success || payload.Data.Created != 1 || payload.Data.Skipped != 1 || payload.Data.Failed != 1 || len(payload.Data.Results) != 3 {
 		t.Fatalf("import response = %#v", payload)
 	}
 	channels, err := store.ListConfigs(context.Background())
-	if err != nil || len(channels) != 1 || !channels[0].UsesCodexOAuth() {
+	if err != nil || len(channels) != 2 {
 		t.Fatalf("persisted channels = (%#v, %v)", channels, err)
+	}
+	persistedExisting, err := store.GetConfig(context.Background(), existing.ID)
+	if err != nil {
+		t.Fatalf("get existing channel: %v", err)
+	}
+	if !strings.Contains(persistedExisting.CodexCredential, `"access_token":"at-existing"`) ||
+		strings.Contains(persistedExisting.CodexCredential, "must-not-overwrite") {
+		t.Fatalf("duplicate import overwrote existing channel")
+	}
+	var created *model.Config
+	for _, channel := range channels {
+		if channel.Name == "Codex - new@example.com" {
+			created = channel
+			break
+		}
+	}
+	if created == nil || !created.UsesCodexOAuth() {
+		t.Fatalf("new Codex channel was not created: %#v", channels)
 	}
 }
 

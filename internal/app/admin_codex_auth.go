@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"html"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -478,17 +479,21 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 	}
 
 	name := uniqueCodexChannelName(configs, credential)
-	created, err := store.CreateConfig(ctx, &model.Config{
-		Name: name, AuthType: model.AuthTypeCodexOAuth, CodexCredential: credentialJSON,
-		URLs:       model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
-		Websockets: true, ProtocolTransformMode: model.ProtocolTransformModeLocal,
-		Priority: 0, Enabled: true, CostMultiplier: 1,
-		ModelEntries: codexOAuthModelEntries(credential.PlanType),
-	})
+	created, err := store.CreateConfig(ctx, newCodexOAuthChannel(name, credentialJSON, credential.PlanType))
 	if err != nil {
 		return nil, false, fmt.Errorf("create Codex channel: %w", err)
 	}
 	return created, true, nil
+}
+
+func newCodexOAuthChannel(name, credentialJSON, planType string) *model.Config {
+	return &model.Config{
+		Name: name, AuthType: model.AuthTypeCodexOAuth, CodexCredential: credentialJSON,
+		URLs:       model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
+		Websockets: true, ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		Priority: 0, Enabled: true, CostMultiplier: 1,
+		ModelEntries: codexOAuthModelEntries(planType),
+	}
 }
 
 func codexOAuthPlanTier(planType string) string {
@@ -583,18 +588,11 @@ func sameCodexIdentity(a, b *codexauth.Credential) bool {
 }
 
 func uniqueCodexChannelName(configs []*model.Config, credential *codexauth.Credential) string {
-	identity := strings.TrimSpace(credential.Email)
-	if identity == "" {
-		identity = strings.TrimSpace(credential.AccountID)
-	}
-	if identity == "" {
-		identity = "OAuth"
-	}
-	base := "Codex - " + identity
+	base := codexChannelBaseName(credential)
 	used := make(map[string]struct{}, len(configs))
 	for _, cfg := range configs {
 		if cfg != nil {
-			used[strings.ToLower(cfg.Name)] = struct{}{}
+			used[strings.ToLower(strings.TrimSpace(cfg.Name))] = struct{}{}
 		}
 	}
 	if _, exists := used[strings.ToLower(base)]; !exists {
@@ -606,6 +604,17 @@ func uniqueCodexChannelName(configs []*model.Config, credential *codexauth.Crede
 			return candidate
 		}
 	}
+}
+
+func codexChannelBaseName(credential *codexauth.Credential) string {
+	identity := strings.TrimSpace(credential.Email)
+	if identity == "" {
+		identity = strings.TrimSpace(credential.AccountID)
+	}
+	if identity == "" {
+		identity = "OAuth"
+	}
+	return "Codex - " + identity
 }
 
 // HandleStartCodexOAuth starts the local callback listener and returns the browser URL.
@@ -666,44 +675,107 @@ func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-// HandleImportCodexCredential imports one CLIProxy-compatible JSON credential
-// directly into a channel. No authentication file is created.
-func (s *Server) HandleImportCodexCredential(c *gin.Context) {
-	file, err := c.FormFile("file")
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential file is required")
-		return
-	}
-	if file.Size <= 0 || file.Size > maxCodexImportBytes {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential file size is invalid")
-		return
+type codexCredentialImportResult struct {
+	FileName    string `json:"file_name"`
+	ChannelName string `json:"channel_name,omitempty"`
+	Status      string `json:"status"`
+	Error       string `json:"error,omitempty"`
+}
+
+type codexCredentialImportSummary struct {
+	Created int                           `json:"created"`
+	Skipped int                           `json:"skipped"`
+	Failed  int                           `json:"failed"`
+	Results []codexCredentialImportResult `json:"results"`
+}
+
+func readCodexCredentialFile(file *multipart.FileHeader) (*codexauth.Credential, error) {
+	if file == nil || file.Size <= 0 || file.Size > maxCodexImportBytes {
+		return nil, errors.New("credential file size is invalid")
 	}
 	opened, err := file.Open()
 	if err != nil {
-		RespondError(c, http.StatusBadRequest, err)
-		return
+		return nil, fmt.Errorf("open credential file: %w", err)
 	}
-	defer func() { _ = opened.Close() }()
-	raw, err := io.ReadAll(io.LimitReader(opened, maxCodexImportBytes+1))
-	if err != nil || len(raw) > maxCodexImportBytes {
-		RespondErrorMsg(c, http.StatusBadRequest, "failed to read credential")
-		return
+	raw, readErr := io.ReadAll(io.LimitReader(opened, maxCodexImportBytes+1))
+	closeErr := opened.Close()
+	if readErr != nil || len(raw) > maxCodexImportBytes {
+		return nil, errors.New("failed to read credential")
 	}
-	credential, err := codexauth.ParseCredential(raw)
+	if closeErr != nil {
+		return nil, fmt.Errorf("close credential file: %w", closeErr)
+	}
+	return codexauth.ParseCredential(raw)
+}
+
+func createImportedCodexChannel(ctx context.Context, store storage.Store, credential *codexauth.Credential) (string, bool, error) {
+	credentialJSON, err := credential.JSON()
 	if err != nil {
-		RespondError(c, http.StatusBadRequest, err)
-		return
+		return "", false, err
 	}
-	channel, created, err := createOrUpdateCodexChannel(c.Request.Context(), s.store, credential)
+	configs, err := store.ListConfigs(ctx)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+		return "", false, fmt.Errorf("list channels for Codex credential: %w", err)
+	}
+	name := codexChannelBaseName(credential)
+	for _, cfg := range configs {
+		if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Name), name) {
+			return cfg.Name, false, nil
+		}
+	}
+	created, err := store.CreateConfig(ctx, newCodexOAuthChannel(name, credentialJSON, credential.PlanType))
+	if err != nil {
+		return "", false, fmt.Errorf("create Codex channel: %w", err)
+	}
+	return created.Name, true, nil
+}
+
+// HandleImportCodexCredential imports CLIProxy-compatible JSON credentials
+// directly into new channels. Existing channel names are skipped unchanged.
+func (s *Server) HandleImportCodexCredential(c *gin.Context) {
+	form, err := c.MultipartForm()
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
 		return
 	}
-	s.InvalidateChannelListCache()
-	if s.codexCredentials != nil {
-		s.codexCredentials.invalidate(channel.ID)
+	files := form.File["files"]
+	if len(files) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
+		return
 	}
-	RespondJSON(c, http.StatusOK, gin.H{"channel": channel, "created": created})
+
+	summary := codexCredentialImportSummary{Results: make([]codexCredentialImportResult, 0, len(files))}
+	for _, file := range files {
+		result := codexCredentialImportResult{FileName: file.Filename}
+		credential, parseErr := readCodexCredentialFile(file)
+		if parseErr != nil {
+			result.Status = "failed"
+			result.Error = parseErr.Error()
+			summary.Failed++
+			summary.Results = append(summary.Results, result)
+			continue
+		}
+
+		channelName, created, createErr := createImportedCodexChannel(c.Request.Context(), s.store, credential)
+		if createErr != nil {
+			result.Status = "failed"
+			result.Error = createErr.Error()
+			summary.Failed++
+		} else if created {
+			result.Status = "created"
+			result.ChannelName = channelName
+			summary.Created++
+		} else {
+			result.Status = "skipped"
+			result.ChannelName = channelName
+			summary.Skipped++
+		}
+		summary.Results = append(summary.Results, result)
+	}
+	if summary.Created > 0 {
+		s.InvalidateChannelListCache()
+	}
+	RespondJSON(c, http.StatusOK, summary)
 }
 
 // HandleRefreshCodexCredential forces one Codex OAuth refresh through the same
