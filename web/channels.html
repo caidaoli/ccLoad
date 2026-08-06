@@ -368,7 +368,10 @@
             <div class="channel-editor-primary-field channel-editor-primary-field--name">
               <label class="form-label channel-editor-inline-label" data-i18n="channels.channelName">渠道名称
                 *</label>
-              <input type="text" id="channelName" class="form-input channel-editor-input" required>
+              <div class="channel-editor-name-input-wrap">
+                <input type="text" id="channelName" class="form-input channel-editor-input" required>
+                <span id="channelCodexPlanBadge" class="channel-codex-plan-badge" hidden></span>
+              </div>
               <button type="button" id="quickAddChannelBtn" class="btn btn-secondary channel-quick-add-button"
                 data-action="open-quick-add-channel" data-i18n-title="channels.quickAdd.button"
                 data-i18n-aria-label="channels.quickAdd.button" title="一键填充渠道配置"
@@ -452,10 +455,6 @@
         </div>
 
         <div id="channelKeyEditorGroup" class="form-group channel-editor-group channel-editor-group--keys">
-          <div id="codexCredentialReadOnlyNotice" class="channel-codex-credential-notice" role="status" hidden>
-            <strong data-i18n="channels.codex.credentialTitle">Codex OAuth 凭证</strong>
-            <span data-i18n="channels.codex.credentialReadOnly">AT 作为只读 Key 显示；完整凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
-          </div>
           <!-- API Key标签行：包含标签、Key计数和操作按钮 -->
           <div id="channelAPIKeyHeader" class="channel-editor-section-header">
             <div class="form-label channel-editor-section-title channel-editor-section-title--key">
@@ -477,6 +476,8 @@
                   </label>
                 </div>
                 <span class="models-hint" data-i18n="channels.keyDragSortHint">拖动API Key可排序</span>
+                <span id="codexCredentialReadOnlyNotice" class="models-hint channel-codex-key-hint" role="status"
+                  data-i18n="channels.codex.credentialReadOnly" hidden>AT 作为只读 Key 显示；完整凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
               </div>
             </div>
             <div class="channel-editor-section-actions channel-editor-section-actions--keys">
@@ -1489,6 +1490,7 @@
         <div class="ch-name-cell">
           <div class="ch-name-line">
             <div class="ch-name-main"><strong>{{name}}</strong>{{{nameMultiplierBadge}}}</div>
+            {{{codexPlanBadge}}}
           </div>
           <div class="ch-url-line" title="{{url}}">{{url}}</div>
           <div class="ch-refresh-result-slot">{{{batchRefreshStatusHtml}}}</div>

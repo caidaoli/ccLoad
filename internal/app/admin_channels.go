@@ -328,7 +328,12 @@ type channelEnrichmentContext struct {
 // enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
 // 渠道冷却剩余时间、健康度模式下的有效优先级与成功率、Key 策略、Key 与模型冷却详情。
 func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWithCooldown {
-	oc := ChannelWithCooldown{Config: cfg}
+	metadata := channelCodexMetadataFromCredential(cfg)
+	oc := ChannelWithCooldown{
+		Config:                       cfg,
+		CodexPlanType:                metadata.planType,
+		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+	}
 
 	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
 	if until, cooled := ectx.channelCooldownsMap[cfg.ID]; cooled && until.After(ectx.now) {
@@ -365,6 +370,26 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	oc.KeyCooldowns = keyCooldowns
 	oc.ModelCooldowns = activeModelCooldownInfos(ectx.modelCooldownsMap[cfg.ID], ectx.now)
 	return oc
+}
+
+type channelCodexMetadata struct {
+	planType                string
+	subscriptionActiveUntil *time.Time
+}
+
+func channelCodexMetadataFromCredential(cfg *model.Config) channelCodexMetadata {
+	if cfg == nil || !cfg.UsesCodexOAuth() || cfg.CodexCredential == "" {
+		return channelCodexMetadata{}
+	}
+	credential, err := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+	if err != nil {
+		return channelCodexMetadata{}
+	}
+	metadata := channelCodexMetadata{planType: credential.PlanType}
+	if until, ok := credential.SubscriptionActiveUntil(); ok {
+		metadata.subscriptionActiveUntil = &until
+	}
+	return metadata
 }
 
 func activeModelCooldownInfos(cooldowns map[string]time.Time, now time.Time) []ModelCooldownInfo {
@@ -561,10 +586,13 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		allModelCooldowns = make(map[int64]map[string]time.Time)
 	}
 
+	metadata := channelCodexMetadataFromCredential(cfg)
 	return ChannelWithCooldown{
-		Config:         cfg,
-		KeyStrategy:    channelKeyStrategy(apiKeys),
-		ModelCooldowns: activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
+		Config:                       cfg,
+		CodexPlanType:                metadata.planType,
+		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		KeyStrategy:                  channelKeyStrategy(apiKeys),
+		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
 	}, apiKeys, nil
 }
 

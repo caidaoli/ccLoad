@@ -24,6 +24,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const codexTestSubscriptionActiveUntil = "2030-02-03T04:05:06Z"
+
 func codexTestIDToken(t *testing.T, email, accountID string) string {
 	return codexTestIDTokenForPlan(t, email, accountID, "plus")
 }
@@ -33,8 +35,9 @@ func codexTestIDTokenForPlan(t *testing.T, email, accountID, planType string) st
 	claims, err := json.Marshal(map[string]any{
 		"email": email,
 		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_account_id": accountID,
-			"chatgpt_plan_type":  planType,
+			"chatgpt_account_id":                accountID,
+			"chatgpt_plan_type":                 planType,
+			"chatgpt_subscription_active_until": codexTestSubscriptionActiveUntil,
 		},
 	})
 	if err != nil {
@@ -538,11 +541,13 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type:         "codex",
+		IDToken:      codexTestIDTokenForPlan(t, "editor@example.com", "account-editor", "plus"),
 		AccessToken:  "at-editor-secret",
 		RefreshToken: "rt-editor-secret",
 		Expired:      time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
 		AccountID:    "account-editor",
 		Email:        "editor@example.com",
+		PlanType:     "plus",
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
 	if err != nil {
@@ -560,6 +565,10 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 	resp := mustParseAPIResponse[struct {
 		Keys            []*model.APIKey `json:"keys"`
 		CodexCredential json.RawMessage `json:"codex_credential"`
+		Channel         struct {
+			CodexPlanType                string     `json:"codex_plan_type"`
+			CodexSubscriptionActiveUntil *time.Time `json:"codex_subscription_active_until"`
+		} `json:"channel"`
 	}](t, w.Body.Bytes())
 	if len(resp.Data.Keys) != 1 || resp.Data.Keys[0].APIKey != "at-editor-secret" {
 		t.Fatalf("editor keys = %#v, want read-only AT", resp.Data.Keys)
@@ -570,6 +579,31 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 	}
 	if exposed.AccessToken != credential.AccessToken || exposed.RefreshToken != credential.RefreshToken || exposed.AccountID != credential.AccountID {
 		t.Fatalf("editor credential = %#v", exposed)
+	}
+	if resp.Data.Channel.CodexPlanType != "plus" {
+		t.Fatalf("editor channel plan type = %q, want plus", resp.Data.Channel.CodexPlanType)
+	}
+	wantUntil, err := time.Parse(time.RFC3339, codexTestSubscriptionActiveUntil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Data.Channel.CodexSubscriptionActiveUntil == nil ||
+		!resp.Data.Channel.CodexSubscriptionActiveUntil.Equal(wantUntil) {
+		t.Fatalf("editor subscription until = %v, want %v", resp.Data.Channel.CodexSubscriptionActiveUntil, wantUntil)
+	}
+
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].CodexPlanType != "plus" {
+		t.Fatalf("channel list plan type = %#v, want plus", list.Data)
+	}
+	if list.Data[0].CodexSubscriptionActiveUntil == nil ||
+		!list.Data[0].CodexSubscriptionActiveUntil.Equal(wantUntil) {
+		t.Fatalf("channel list subscription until = %v, want %v", list.Data[0].CodexSubscriptionActiveUntil, wantUntil)
+	}
+	if strings.Contains(listResponse.Body.String(), "at-editor-secret") || strings.Contains(listResponse.Body.String(), "rt-editor-secret") {
+		t.Fatalf("channel list leaked Codex credential: %s", listResponse.Body.String())
 	}
 
 	detailPath := fmt.Sprintf("/admin/channels/%d", channel.ID)
@@ -714,9 +748,13 @@ func TestCodexCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetConfig() error = %v", err)
 	}
-	if !strings.Contains(persisted.CodexCredential, `"access_token":"at-new"`) ||
-		!strings.Contains(persisted.CodexCredential, `"refresh_token":"rt-new"`) {
-		t.Fatalf("persisted credential = %s", persisted.CodexCredential)
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.CodexCredential))
+	if err != nil {
+		t.Fatalf("ParseCredential() persisted refresh error = %v", err)
+	}
+	if persistedCredential.AccessToken != "at-new" || persistedCredential.RefreshToken != "rt-new" ||
+		persistedCredential.IDToken != freeIDToken {
+		t.Fatalf("persisted refreshed credential = %#v", persistedCredential)
 	}
 	if persisted.SupportsModel("gpt-5.6-sol") || persisted.SupportsModel("gpt-5.4") || persisted.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("refreshed free channel kept unsupported models: %v", persisted.GetModels())

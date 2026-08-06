@@ -8,8 +8,15 @@ const {
   copyCodexOAuthLink,
   copyCodexCredential,
   cancelCodexOAuth,
+  formatCodexPlanBadgeText,
   submitCodexOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('Codex plan badge appends the subscription calendar date', () => {
+  assert.equal(formatCodexPlanBadgeText('plus', '2030-02-03T04:05:06Z'), 'plus · 2030-02-03');
+  assert.equal(formatCodexPlanBadgeText('free', ''), 'free');
+  assert.equal(formatCodexPlanBadgeText('', '2030-02-03T04:05:06Z'), '');
+});
 
 test('Codex OAuth status polling waits for completion and encodes state', async () => {
   const requests = [];
@@ -98,7 +105,8 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     'batchDeleteKeysBtn',
     'selectAllKeys',
     'codexCredentialTab',
-    'codexCredentialContent'
+    'codexCredentialContent',
+    'channelCodexPlanBadge'
   ]) {
     elements.set(id, { hidden: false, required: true, value: 'must-not-remain' });
   }
@@ -119,9 +127,11 @@ test('Codex editor shows AT in the normal key area and the full credential read-
       '#inlineKeyTableBody .inline-key-row': [row]
     })[selector] || []
   };
-  try {
-    const credential = { type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret' };
-    applyChannelAuthEditorMode('codex_oauth', credential);
+	try {
+		const credential = { type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus' };
+		applyChannelAuthEditorMode('codex_oauth', credential, {
+		  codex_subscription_active_until: '2030-02-03T04:05:06Z'
+		});
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);
     assert.equal(elements.get('channelAPIKeyTable').hidden, false);
@@ -131,6 +141,8 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(elements.get('batchDeleteKeysBtn').disabled, true);
     assert.equal(elements.get('selectAllKeys').disabled, true);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
+		assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(credential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
     assert.equal(rowKeyInput.readOnly, true);
@@ -153,6 +165,8 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(elements.get('importKeysBtn').disabled, false);
     assert.equal(elements.get('selectAllKeys').disabled, false);
     assert.equal(elements.get('codexCredentialTab').hidden, true);
+    assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
+    assert.equal(elements.get('channelCodexPlanBadge').textContent, '');
     assert.equal(elements.get('codexCredentialContent').textContent, '');
     assert.ok(strategyInputs.every(input => !input.disabled));
     assert.equal(rowKeyInput.readOnly, false);

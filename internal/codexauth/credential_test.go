@@ -12,8 +12,9 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	claims, err := json.Marshal(map[string]any{
 		"email": "user@example.com",
 		"https://api.openai.com/auth": map[string]any{
-			"chatgpt_account_id": "account-1",
-			"chatgpt_plan_type":  "plus",
+			"chatgpt_account_id":                "account-1",
+			"chatgpt_plan_type":                 "plus",
+			"chatgpt_subscription_active_until": "2030-02-03T04:05:06Z",
 		},
 	})
 	if err != nil {
@@ -40,6 +41,11 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	}
 	if credential.AccountID != "account-1" || credential.Email != "user@example.com" || credential.PlanType != "plus" {
 		t.Fatalf("ID token metadata was not populated: %#v", credential)
+	}
+	until, ok := credential.SubscriptionActiveUntil()
+	wantUntil := time.Date(2030, 2, 3, 4, 5, 6, 0, time.UTC)
+	if !ok || !until.Equal(wantUntil) {
+		t.Fatalf("SubscriptionActiveUntil() = (%v, %v), want (%v, true)", until, ok, wantUntil)
 	}
 	encoded, err := credential.JSON()
 	if err != nil {

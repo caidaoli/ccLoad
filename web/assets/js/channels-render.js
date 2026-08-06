@@ -29,6 +29,16 @@ function escapeChannelRefreshText(value) {
   }[c]));
 }
 
+function buildCodexPlanBadge(channel) {
+  if (channel?.auth_type !== 'codex_oauth') return '';
+  const planType = String(channel.codex_plan_type || '').trim();
+  if (!planType) return '';
+  const label = typeof formatCodexPlanBadgeText === 'function'
+    ? formatCodexPlanBadgeText(planType, channel.codex_subscription_active_until)
+    : planType;
+  return `<span class="ch-codex-plan-badge">${escapeChannelRefreshText(label)}</span>`;
+}
+
 function normalizeBatchRefreshChannelID(channelID) {
   if (typeof normalizeSelectedChannelID === 'function') {
     return normalizeSelectedChannelID(channelID);
@@ -638,6 +648,7 @@ function createChannelCard(channel) {
     id: channel.id,
 		name: channel.name,
 		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
+    codexPlanBadge: buildCodexPlanBadge(channel),
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,

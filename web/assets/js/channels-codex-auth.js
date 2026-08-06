@@ -4,6 +4,13 @@ let activeCodexOAuthFlow = null;
 let codexOAuthStopPromise = null;
 let currentCodexCredentialJSON = '';
 
+function formatCodexPlanBadgeText(planType, subscriptionActiveUntil) {
+  const plan = String(planType || '').trim();
+  if (!plan) return '';
+  const date = String(subscriptionActiveUntil || '').trim().match(/^(\d{4}-\d{2}-\d{2})/);
+  return date ? `${plan} · ${date[1]}` : plan;
+}
+
 function renderCodexCredential(credential) {
   const content = document.getElementById('codexCredentialContent');
   currentCodexCredentialJSON = credential ? JSON.stringify(credential, null, 2) : '';
@@ -28,7 +35,7 @@ async function copyCodexCredential(copier = window.copyToClipboard) {
   await copier(currentCodexCredentialJSON);
 }
 
-function applyChannelAuthEditorMode(authType, credential = null) {
+function applyChannelAuthEditorMode(authType, credential = null, channel = null) {
   const codexOAuth = authType === 'codex_oauth';
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -38,7 +45,16 @@ function applyChannelAuthEditorMode(authType, credential = null) {
   const batchDeleteButton = document.getElementById('batchDeleteKeysBtn');
   const selectAll = document.getElementById('selectAllKeys');
   const credentialTab = document.getElementById('codexCredentialTab');
+  const planBadge = document.getElementById('channelCodexPlanBadge');
+  const planType = codexOAuth ? String(credential?.plan_type || channel?.codex_plan_type || '').trim() : '';
+  const planBadgeText = codexOAuth
+    ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
+    : '';
   if (notice) notice.hidden = !codexOAuth;
+  if (planBadge) {
+    planBadge.textContent = planBadgeText;
+    planBadge.hidden = !planBadgeText;
+  }
   if (keyHeader) keyHeader.hidden = false;
   if (keyTable) keyTable.hidden = false;
   if (hiddenKey) {
@@ -395,6 +411,7 @@ if (typeof module !== 'undefined' && module.exports) {
     cancelCodexOAuth,
     copyCodexCredential,
     copyCodexOAuthLink,
+    formatCodexPlanBadgeText,
     importCodexCredential,
     pollCodexOAuthStatus,
     showCodexOAuthSession,
