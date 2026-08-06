@@ -61,8 +61,11 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if !columns["protocol_transform_mode"] {
 		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
 	}
-	if !columns["auth_type"] || !columns["codex_credential"] {
-		t.Fatalf("channels missing Codex auth columns: %v", columns)
+	if !columns["auth_type"] {
+		t.Fatalf("channels missing auth_type: %v", columns)
+	}
+	if columns["codex_credential"] {
+		t.Fatalf("legacy channels unexpectedly migrated codex_credential: %v", columns)
 	}
 	var mode string
 	if err := db.QueryRowContext(ctx, "SELECT protocol_transform_mode FROM channels WHERE name='legacy'").Scan(&mode); err != nil {
@@ -71,15 +74,15 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if mode != "auto" {
 		t.Fatalf("migrated mode=%q, want auto", mode)
 	}
-	var legacyChannelType, authType, credential string
-	if err := db.QueryRowContext(ctx, "SELECT channel_type, auth_type, codex_credential FROM channels WHERE name='legacy'").Scan(&legacyChannelType, &authType, &credential); err != nil {
+	var legacyChannelType, authType string
+	if err := db.QueryRowContext(ctx, "SELECT channel_type, auth_type FROM channels WHERE name='legacy'").Scan(&legacyChannelType, &authType); err != nil {
 		t.Fatalf("read migrated auth fields: %v", err)
 	}
 	if legacyChannelType != "codex" {
 		t.Fatalf("migration changed historical channel_type=%q, want codex", legacyChannelType)
 	}
-	if authType != model.AuthTypeAPIKey || credential != "" {
-		t.Fatalf("migrated auth fields=(%q, %q), want (%q, empty)", authType, credential, model.AuthTypeAPIKey)
+	if authType != model.AuthTypeAPIKey {
+		t.Fatalf("migrated auth_type=%q, want %q", authType, model.AuthTypeAPIKey)
 	}
 	var rawURLs string
 	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {
@@ -509,8 +512,8 @@ func TestMigrate_SQLite_AddsModelCooldownDuration(t *testing.T) {
 		t.Fatalf("create legacy model cooldown table: %v", err)
 	}
 	if _, err := db.ExecContext(ctx, `
-		INSERT INTO channels (name, url, created_at, updated_at)
-		VALUES ('legacy-model-cooldown', 'https://api.example.com', 700, 700)
+		INSERT INTO channels (name, url, codex_credential, created_at, updated_at)
+		VALUES ('legacy-model-cooldown', 'https://api.example.com', '', 700, 700)
 	`); err != nil {
 		t.Fatalf("create legacy cooldown channel: %v", err)
 	}
@@ -1205,8 +1208,8 @@ func TestMigrateModelRedirectsData_WithLegacyData(t *testing.T) {
 
 	// 插入带旧格式数据的渠道
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (name, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES ('test-ch', 'https://api.example.com', 10, 1, '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
+		INSERT INTO channels (name, url, priority, enabled, codex_credential, models, model_redirects, created_at, updated_at)
+		VALUES ('test-ch', 'https://api.example.com', 10, 1, '', '["gpt-4o","gpt-3.5-turbo"]', '{"gpt-3.5-turbo":"gpt-4o-mini"}', unixepoch(), unixepoch())
 	`)
 	if err != nil {
 		t.Fatalf("insert channel: %v", err)
@@ -1306,8 +1309,8 @@ func TestRepairLegacyChannelModelOrder_SQLite(t *testing.T) {
 	}
 
 	_, err = db.ExecContext(ctx, `
-		INSERT INTO channels (id, name, url, priority, enabled, models, model_redirects, created_at, updated_at)
-		VALUES (1, 'repair-order', 'https://api.example.com', 10, 1, '["z-model","a-model"]', '{}', 100, 100)
+		INSERT INTO channels (id, name, url, priority, enabled, codex_credential, models, model_redirects, created_at, updated_at)
+		VALUES (1, 'repair-order', 'https://api.example.com', 10, 1, '', '["z-model","a-model"]', '{}', 100, 100)
 	`)
 	if err != nil {
 		t.Fatalf("insert legacy channel: %v", err)

@@ -672,12 +672,6 @@ func ensureChannelsAuthType(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"TEXT NOT NULL DEFAULT 'api_key'")
 }
 
-func ensureChannelsCodexCredential(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "channels", "codex_credential",
-		"TEXT NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
-}
-
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT
 // 支持多URL存储（换行分隔）
 func migrateChannelsURLToText(ctx context.Context, db *sql.DB, dialect Dialect) error {
