@@ -533,9 +533,11 @@ function formatCodexUsageResetAt(resetAt) {
 
 function formatCodexUsageWindowDuration(seconds) {
   const duration = Math.max(0, Number(seconds) || 0);
-  if (duration === 7 * 24 * 60 * 60) return window.t('channels.codex.usageWeekly');
-  if (duration > 0 && duration % (24 * 60 * 60) === 0) {
-    return window.t('channels.codex.usageDays', { count: duration / (24 * 60 * 60) });
+  const day = 24 * 60 * 60;
+  if (duration >= 28 * day && duration <= 31 * day) return window.t('channels.codex.usageMonthly');
+  if (duration === 7 * day) return window.t('channels.codex.usageWeekly');
+  if (duration > 0 && duration % day === 0) {
+    return window.t('channels.codex.usageDays', { count: duration / day });
   }
   if (duration > 0 && duration % (60 * 60) === 0) {
     return window.t('channels.codex.usageHours', { count: duration / (60 * 60) });

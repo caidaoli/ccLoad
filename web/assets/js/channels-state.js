@@ -42,6 +42,7 @@ let filters = {
   search: '',
   searchExact: false,
   status: 'all',
+  authType: 'all',
   model: 'all',
   modelExact: false
 };

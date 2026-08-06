@@ -6,6 +6,9 @@ function buildChannelsListParams() {
   if (filters.status && filters.status !== 'all') {
     params.set('status', filters.status);
   }
+  if (filters.authType && filters.authType !== 'all') {
+    params.set('auth_type', filters.authType);
+  }
   if (filters.model && filters.model !== 'all') {
     params.set(filters.modelExact ? 'model' : 'model_like', filters.model);
   }

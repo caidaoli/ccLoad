@@ -4078,12 +4078,16 @@
       }
 
       .channels-filter-controls .channel-search-filter-group {
-        order: 3;
+        order: 4;
         grid-column: auto;
       }
 
+      .channels-filter-controls .channel-auth-filter-group {
+        order: 2;
+      }
+
       .channels-filter-controls .channel-model-filter-group {
-        order: 4;
+        order: 3;
       }
 
       .channel-search-control {

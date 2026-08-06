@@ -33,6 +33,7 @@ function saveChannelsFilters() {
   try {
     localStorage.setItem(CHANNELS_FILTER_KEY, JSON.stringify({
       status: filters.status,
+      authType: filters.authType,
       model: filters.model,
       modelExact: filters.modelExact,
       search: filters.search,
@@ -220,12 +221,19 @@ window.initPageBootstrap({
     const urlChannelId = new URLSearchParams(location.search).get('id');
     if (urlChannelId) {
       filters.status = 'all';
+      filters.authType = 'all';
       filters.model = 'all';
       filters.modelExact = false;
       filters.search = targetChannel?.name || '';
       filters.searchExact = Boolean(filters.search);
       channelsCurrentPage = 1;
       document.getElementById('statusFilter').value = 'all';
+      if (typeof channelAuthTypeFilterCombobox !== 'undefined' && channelAuthTypeFilterCombobox) {
+        channelAuthTypeFilterCombobox.setValue('all', channelAuthTypeFilterLabel('all'));
+      } else {
+        const authTypeFilterEl = document.getElementById('channelAuthTypeFilter');
+        if (authTypeFilterEl) authTypeFilterEl.value = channelAuthTypeFilterLabel('all');
+      }
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
         modelFilterCombobox.setValue('all', modelFilterInputValueFromFilterValue('all'));
       } else {
@@ -239,11 +247,18 @@ window.initPageBootstrap({
       }
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
+      filters.authType = ['api_key', 'codex_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
       filters.model = savedFilters.model || 'all';
       filters.modelExact = filters.model !== 'all' && savedFilters.modelExact !== false;
       filters.search = savedFilters.search || '';
       filters.searchExact = savedFilters.searchExact === true;
       document.getElementById('statusFilter').value = filters.status;
+      if (typeof channelAuthTypeFilterCombobox !== 'undefined' && channelAuthTypeFilterCombobox) {
+        channelAuthTypeFilterCombobox.setValue(filters.authType, channelAuthTypeFilterLabel(filters.authType));
+      } else {
+        const authTypeFilterEl = document.getElementById('channelAuthTypeFilter');
+        if (authTypeFilterEl) authTypeFilterEl.value = channelAuthTypeFilterLabel(filters.authType);
+      }
       if (typeof modelFilterCombobox !== 'undefined' && modelFilterCombobox) {
         modelFilterCombobox.setValue(filters.model, modelFilterInputValueFromFilterValue(filters.model));
       } else {
@@ -276,6 +291,7 @@ window.initPageBootstrap({
 
     window.i18n.onLocaleChange(() => {
       renderChannels();
+      updateChannelAuthTypeOptions();
       updateModelOptions();
       updateChannelsPagination();
     });
