@@ -156,6 +156,12 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 		record := make([]any, len(commonCols))
 		for i, idx := range mysqlColIndices {
 			val := scanVals[idx]
+			// NULL 和空字符串均表示无 Codex 凭证；恢复时统一为空字符串，
+			// 同时兼容已存在的 NOT NULL SQLite 副本。
+			if commonCols[i] == "codex_credential" && val == nil {
+				record[i] = ""
+				continue
+			}
 			// 将 []byte 转为 string（MySQL VARCHAR -> Go string）
 			if b, ok := val.([]byte); ok {
 				record[i] = string(b)
