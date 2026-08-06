@@ -262,19 +262,6 @@
       }
     }
 
-    .channel-codex-credential-notice {
-      padding: var(--space-4);
-      border: 1px solid var(--surface-border-strong);
-      border-radius: 10px;
-      background: var(--surface-bg-strong);
-      color: var(--neutral-700);
-    }
-
-    .channel-codex-credential-notice strong,
-    .channel-codex-credential-notice span {
-      display: block;
-    }
-
     #codexCredentialTab[hidden] {
       display: none !important;
     }
@@ -343,11 +330,6 @@
       color: var(--neutral-400) !important;
       background: var(--surface-bg-muted) !important;
       border-color: var(--surface-border) !important;
-    }
-
-    .channel-codex-credential-notice span {
-      margin-top: var(--space-1);
-      font-size: 0.875rem;
     }
 
     #codexAuthStatus[hidden],
@@ -643,9 +625,44 @@
 		min-height: 38px;
 	}
 
-    .channel-editor-primary-field--name .channel-editor-input {
+    .channel-editor-name-input-wrap {
       flex: 1 1 auto;
       min-width: 0;
+      position: relative;
+    }
+
+    .channel-editor-primary-field--name .channel-editor-input {
+      width: 100%;
+    }
+
+    .channel-codex-plan-badge,
+    .ch-codex-plan-badge {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 18px;
+      padding: 1px 7px;
+      border: 1px solid color-mix(in srgb, var(--primary-500) 35%, transparent);
+      border-radius: 999px;
+      background: color-mix(in srgb, var(--primary-500) 10%, var(--surface-bg));
+      color: var(--primary-600);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1;
+      letter-spacing: 0.02em;
+      white-space: nowrap;
+    }
+
+    .channel-codex-plan-badge {
+      position: absolute;
+      top: -8px;
+      inset-inline-end: 8px;
+      pointer-events: none;
+    }
+
+    .channel-codex-plan-badge[hidden],
+    .ch-codex-plan-badge[hidden] {
+      display: none !important;
     }
 
     .channel-quick-add-button {
@@ -796,6 +813,11 @@
       gap: 8px;
       min-width: 0;
       flex: 0 0 auto;
+    }
+
+    .channel-codex-key-hint::before {
+      content: "·";
+      margin-inline-end: 4px;
     }
 
     .channel-editor-section-actions {
@@ -1732,6 +1754,12 @@
       gap: 4px;
       min-width: 0;
       flex: 1 1 auto;
+    }
+
+    .ch-codex-plan-badge {
+      flex: 0 0 auto;
+      align-self: flex-start;
+      margin-left: auto;
     }
 
     .ch-name-main .cell-multiplier-badge {

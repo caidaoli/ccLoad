@@ -155,7 +155,6 @@ window.I18N_LOCALES['en'] = {
   'channels.codex.oauthTitle': 'Create a Codex channel with OpenAI OAuth',
   'channels.codex.import': 'Import Codex credential',
   'channels.codex.importTitle': 'Import a CLIProxyAPI-compatible Codex credential JSON',
-  'channels.codex.credentialTitle': 'Codex OAuth credential',
   'channels.codex.credentialReadOnly': 'The AT is shown as a read-only key. The full credential is available under Advanced settings; ccLoad stores and refreshes both.',
   'channels.codex.credentialFullDescription': 'The complete Codex OAuth credential stored in the database. Read-only and visible to administrators only.',
   'channels.codex.oauthStarting': 'Starting Codex sign-in…',

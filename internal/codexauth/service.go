@@ -219,8 +219,9 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 type idTokenClaims struct {
 	Email string `json:"email"`
 	Auth  struct {
-		ChatGPTAccountID string `json:"chatgpt_account_id"`
-		ChatGPTPlanType  string `json:"chatgpt_plan_type"`
+		ChatGPTAccountID               string `json:"chatgpt_account_id"`
+		ChatGPTPlanType                string `json:"chatgpt_plan_type"`
+		ChatGPTSubscriptionActiveUntil any    `json:"chatgpt_subscription_active_until"`
 	} `json:"https://api.openai.com/auth"`
 }
 

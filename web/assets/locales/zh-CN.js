@@ -155,7 +155,6 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.codex.oauthTitle': '使用 OpenAI OAuth 创建 Codex 渠道',
   'channels.codex.import': '导入 Codex 凭证',
   'channels.codex.importTitle': '导入 CLIProxyAPI 兼容的 Codex 凭证 JSON',
-  'channels.codex.credentialTitle': 'Codex OAuth 凭证',
   'channels.codex.credentialReadOnly': 'AT 作为只读 Key 显示；完整凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。',
   'channels.codex.credentialFullDescription': '数据库中保存的完整 Codex OAuth 凭证，仅供管理员只读查看。',
   'channels.codex.oauthStarting': '正在启动 Codex 登录…',

@@ -247,8 +247,8 @@ function installEditChannelGlobals(channel, { editorError = null, editorKeys = [
     renderInlineURLTable() {},
     setInlineKeyTableDataFromAPI(keys) { loadedKeys = keys; },
     renderInlineKeyTable() {},
-    applyChannelAuthEditorMode(authType, credential) {
-      authEditorCalls.push({ authType, credential });
+    applyChannelAuthEditorMode(authType, credential, channel) {
+      authEditorCalls.push({ authType, credential, channel });
     },
     renderRedirectTable() {},
     resetChannelFormDirty() {},
@@ -511,7 +511,8 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
     assert.deepEqual(fixture.loadedKeys, keys);
     assert.deepEqual(fixture.authEditorCalls.at(-1), {
       authType: 'codex_oauth',
-      credential
+      credential,
+      channel
     });
   } finally {
     fixture.restore();

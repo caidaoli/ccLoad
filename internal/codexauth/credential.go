@@ -109,6 +109,28 @@ func (c *Credential) Expiry() (time.Time, error) {
 	return expiresAt, nil
 }
 
+// SubscriptionActiveUntil returns the Codex subscription end time embedded in
+// the ID token. It is intentionally derived from the persisted token instead of
+// duplicating OAuth identity metadata in the channel record.
+func (c *Credential) SubscriptionActiveUntil() (time.Time, bool) {
+	if c == nil || strings.TrimSpace(c.IDToken) == "" {
+		return time.Time{}, false
+	}
+	claims, err := parseIDToken(c.IDToken)
+	if err != nil {
+		return time.Time{}, false
+	}
+	raw, ok := claims.Auth.ChatGPTSubscriptionActiveUntil.(string)
+	if !ok {
+		return time.Time{}, false
+	}
+	until, err := time.Parse(time.RFC3339, strings.TrimSpace(raw))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return until.UTC(), true
+}
+
 // NeedsRefresh reports whether the access token is inside the refresh window.
 func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, error) {
 	expiresAt, err := c.Expiry()

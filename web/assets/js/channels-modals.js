@@ -530,7 +530,7 @@ async function editChannel(id) {
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
   if (typeof applyChannelAuthEditorMode === 'function') {
-    applyChannelAuthEditorMode(editingChannelAuthType, editorData.codex_credential || null);
+    applyChannelAuthEditorMode(editingChannelAuthType, editorData.codex_credential || null, channel);
   }
 
   const keyStrategy = channel.key_strategy || 'sequential';
