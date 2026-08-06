@@ -22,6 +22,7 @@
 
   const CHANNEL_EDITOR_SCRIPTS = [
     '/web/assets/js/channels-state.js',
+    '/web/assets/js/channels-codex-auth.js',
     '/web/assets/js/channels-keys.js',
     '/web/assets/js/channels-urls.js',
     '/web/assets/js/channels-custom-rules.js',

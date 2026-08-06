@@ -655,8 +655,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 	}
 
-	// 清理已废弃的配置项
-
 	// 迁移 channel_check_interval_hours 类型：int → float（支持分钟级小数间隔）
 	{
 		keyCol := quoteKeyIdent(dialect)
@@ -665,13 +663,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, typeSQL)); err != nil {
 			return fmt.Errorf("migrate channel_check_interval_hours type: %w", err)
 		}
-	}
-
-	obsoleteKeys := []string{
-		"88code_free_only", // 2026-01移除：88code免费订阅限制功能已删除
-	}
-	for _, key := range obsoleteKeys {
-		_ = deleteSystemSetting(ctx, db, dialect, key)
 	}
 
 	// 迁移旧 migration marker 从 system_settings 到 schema_migrations
