@@ -1580,6 +1580,129 @@
       align-items: center;
     }
 
+    .ch-codex-usage {
+      display: grid;
+      gap: 5px;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .ch-codex-usage__toolbar {
+      display: flex;
+      justify-content: flex-end;
+    }
+
+    .ch-codex-usage__refresh {
+      appearance: none;
+      justify-self: center;
+      padding: 2px 5px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      color: var(--primary-600);
+      font: inherit;
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.25;
+      cursor: pointer;
+      transition-property: color, background-color, transform;
+      transition-duration: 120ms;
+      transition-timing-function: ease-out;
+    }
+
+    .ch-codex-usage__refresh:hover:not(:disabled) {
+      background: var(--primary-50);
+      color: var(--primary-700);
+    }
+
+    .ch-codex-usage__refresh:active:not(:disabled) {
+      transform: scale(0.96);
+    }
+
+    .ch-codex-usage__refresh:focus-visible {
+      outline: 2px solid var(--primary-500);
+      outline-offset: 2px;
+    }
+
+    .ch-codex-usage__refresh:disabled {
+      cursor: wait;
+      opacity: 0.6;
+    }
+
+    .ch-codex-usage__window {
+      display: grid;
+      gap: 3px;
+      min-width: 0;
+    }
+
+    .ch-codex-usage__meta {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      align-items: baseline;
+      gap: 4px;
+      min-width: 0;
+      font-size: 9px;
+      line-height: 1.2;
+    }
+
+    .ch-codex-usage__label {
+      overflow: hidden;
+      color: var(--neutral-800);
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .ch-codex-usage__percent {
+      color: var(--neutral-900);
+      font-variant-numeric: tabular-nums;
+      font-weight: 800;
+    }
+
+    .ch-codex-usage__reset {
+      color: var(--neutral-500);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .ch-codex-usage__track {
+      height: 5px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: var(--neutral-200);
+    }
+
+    .ch-codex-usage__fill {
+      display: block;
+      height: 100%;
+      border-radius: inherit;
+      transition-property: width, background-color;
+      transition-duration: 150ms;
+      transition-timing-function: ease-out;
+    }
+
+    .ch-codex-usage__fill--high {
+      background: var(--success-500);
+    }
+
+    .ch-codex-usage__fill--medium {
+      background: var(--warning-400);
+    }
+
+    .ch-codex-usage__fill--low,
+    .ch-codex-usage__fill--empty {
+      background: var(--error-500);
+    }
+
+    .ch-codex-usage__error {
+      overflow: hidden;
+      color: var(--error-600);
+      font-size: 9px;
+      font-weight: 600;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
     .ch-last-status {
       display: flex;
       flex-direction: column;

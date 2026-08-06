@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -28,6 +29,12 @@ const (
 	codexTestSubscriptionActiveStart = "2030-01-03T04:05:06Z"
 	codexTestSubscriptionActiveUntil = "2030-02-03T04:05:06Z"
 )
+
+type codexUsageRoundTripper func(*http.Request) (*http.Response, error)
+
+func (f codexUsageRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 func codexTestIDToken(t *testing.T, email, accountID string) string {
 	return codexTestIDTokenForPlan(t, email, accountID, "plus")
@@ -886,5 +893,115 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.CodexCredential))
 	if err != nil || persistedCredential.AccessToken != "at-manual-new" || persistedCredential.IDToken != idToken {
 		t.Fatalf("persisted credential = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-quota-secret", RefreshToken: "rt-quota-secret",
+		Expired:   time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
+		AccountID: "account-quota", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
+	}
+
+	server.client = &http.Client{Transport: codexUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.String() != codexUsageURL {
+			t.Errorf("usage request = %s %s", request.Method, request.URL)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer at-quota-secret" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := request.Header.Get("Chatgpt-Account-Id"); got != "account-quota" {
+			t.Errorf("Chatgpt-Account-Id = %q", got)
+		}
+		if got := request.Header.Get("User-Agent"); got != codexUsageUserAgent {
+			t.Errorf("User-Agent = %q", got)
+		}
+		body := `{
+			"plan_type":"pro",
+			"rate_limit":{"primary_window":{"used_percent":29,"limit_window_seconds":604800,"reset_at":1786163635}},
+			"additional_rate_limits":[{
+				"limit_name":"codex-spark",
+				"rate_limit":{
+					"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_at":1786000000},
+					"secondary_window":{"used_percent":100,"limit_window_seconds":604800,"reset_at":1786500000}
+				}
+			}]
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	path := fmt.Sprintf("/admin/channels/%d/codex-usage", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleCodexUsage(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "at-quota-secret") || strings.Contains(w.Body.String(), "rt-quota-secret") {
+		t.Fatalf("usage response leaked credential: %s", w.Body.String())
+	}
+	response := mustParseAPIResponse[codexUsageSummary](t, w.Body.Bytes())
+	if response.Data.PlanType != "pro" || len(response.Data.Windows) != 3 {
+		t.Fatalf("usage summary = %#v", response.Data)
+	}
+	windows := response.Data.Windows
+	if windows[0].LimitName != "codex" || windows[0].Kind != "primary" || windows[0].UsedPercent != 29 || windows[0].RemainingPercent != 71 {
+		t.Fatalf("primary window = %#v", windows[0])
+	}
+	if windows[1].LimitName != "codex-spark" || windows[1].Kind != "primary" || windows[1].RemainingPercent != 90 {
+		t.Fatalf("additional primary window = %#v", windows[1])
+	}
+	if windows[2].LimitName != "codex-spark" || windows[2].Kind != "secondary" || windows[2].RemainingPercent != 0 {
+		t.Fatalf("additional secondary window = %#v", windows[2])
+	}
+}
+
+func TestHandleCodexUsageHidesUpstreamErrorBody(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
+		Type: "codex", AccessToken: "at-safe", RefreshToken: "rt-safe",
+		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-safe",
+	})
+	if err != nil {
+		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
+	}
+	server.client = &http.Client{Transport: codexUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Body:       io.NopCloser(strings.NewReader(`{"access_token":"upstream-secret","error":"expired"}`)),
+			Request:    request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/1/codex-usage", nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleCodexUsage(c)
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "upstream-secret") || strings.Contains(w.Body.String(), "at-safe") {
+		t.Fatalf("usage error leaked sensitive content: %s", w.Body.String())
 	}
 }

@@ -10,6 +10,8 @@ const {
   cancelCodexOAuth,
   formatCodexPlanBadgeText,
   importCodexCredentials,
+  getCodexUsageState,
+  refreshCodexUsage,
   refreshCodexCredential,
   setCodexCredentialView,
   submitCodexOAuthCallback
@@ -150,6 +152,47 @@ test('manual Codex credential refresh targets the saved channel', async () => {
     options: { method: 'POST' }
   });
   await assert.rejects(() => refreshCodexCredential(0, async () => response), /saved Codex channel/);
+});
+
+test('Codex usage refresh stores one safe per-channel quota summary', async () => {
+  const previousFilterChannels = global.filterChannels;
+  let renders = 0;
+  let captured;
+  global.filterChannels = () => { renders++; };
+  try {
+    const result = await refreshCodexUsage(42, async (url, options) => {
+      captured = { url, options };
+      return {
+        plan_type: 'pro',
+        windows: [{
+          limit_name: 'codex', kind: 'primary', used_percent: 29,
+          remaining_percent: 71, limit_window_seconds: 604800, reset_at: 1786163635
+        }]
+      };
+    });
+
+    assert.equal(captured.url, '/admin/channels/42/codex-usage');
+    assert.equal(captured.options.method, 'POST');
+    assert.equal(result.windows[0].remaining_percent, 71);
+    assert.deepEqual(getCodexUsageState(42), { status: 'ready', data: result });
+    assert.equal(renders, 2);
+  } finally {
+    global.filterChannels = previousFilterChannels;
+  }
+});
+
+test('failed Codex usage refresh remains retryable', async () => {
+  const previousFilterChannels = global.filterChannels;
+  global.filterChannels = () => {};
+  try {
+    await assert.rejects(
+      refreshCodexUsage(43, async () => { throw new Error('quota unavailable'); }),
+      /quota unavailable/
+    );
+    assert.deepEqual(getCodexUsageState(43), { status: 'error', error: 'quota unavailable' });
+  } finally {
+    global.filterChannels = previousFilterChannels;
+  }
 });
 
 test('Codex editor shows AT in the normal key area and the full credential read-only', async () => {
