@@ -33,10 +33,7 @@ function buildCodexPlanBadge(channel) {
   if (channel?.auth_type !== 'codex_oauth') return '';
   const planType = String(channel.codex_plan_type || '').trim();
   if (!planType) return '';
-  const label = typeof formatCodexPlanBadgeText === 'function'
-    ? formatCodexPlanBadgeText(planType, channel.codex_subscription_active_until)
-    : planType;
-  return `<span class="ch-codex-plan-badge">${escapeChannelRefreshText(label)}</span>`;
+  return `<span class="ch-codex-plan-badge">${escapeChannelRefreshText(planType)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {
