@@ -136,12 +136,16 @@ func (s *Server) buildProxyRequest(
 		return nil, err
 	}
 
-	// 3. 复制请求头
-	copyRequestHeaders(req, hdr)
+	// 3. Codex 使用专用白名单；其他上游继续执行通用反代复制。
+	if upstreamProtocol == protocol.Codex {
+		copyCodexHTTPHeaders(req.Header, hdr)
+	} else {
+		copyRequestHeaders(req, hdr)
+	}
 
-	// 4. 注入普通渠道的静态认证头。Codex OAuth 的动态认证必须在
-	// 自定义 Header 规则之后覆盖，否则规则可以篡改渠道身份。
-	if !cfg.UsesOAuth() {
+	// 4. 注入普通渠道的静态认证头。Codex 的认证与官方客户端身份必须在
+	// 自定义 Header 规则之后重建，否则规则可以篡改渠道身份。
+	if !cfg.UsesOAuth() && upstreamProtocol != protocol.Codex {
 		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 	}
 
@@ -160,11 +164,11 @@ func (s *Server) buildProxyRequest(
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
-	if cfg.UsesCodexOAuth() {
+	if upstreamProtocol == protocol.Codex {
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
 		}
-		injectCodexOAuthHeaders(req, cfg, upstreamStreaming)
+		injectCodexHeaders(req, cfg, apiKey, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfg)
 	}
@@ -1591,6 +1595,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if err != nil {
 		return nil, 0, err
 	}
+	httpReq := req
 	replayBody := bytes.Clone(reqCtx.transformPlan.TranslatedBody)
 
 	// 2.5 发送请求。原生 Codex WS 会在持锁后决定发送增量请求还是完整回放请求。
@@ -1598,6 +1603,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	var sentBody []byte
 	usedNativeWebsocket := false
 	if native != nil && native.session != nil {
+		replayReq := cloneRequestWithBody(httpReq, replayBody)
+		copyCodexWebsocketInputHeaders(replayReq.Header, hdr)
 		incrementalBody := bytes.Clone(native.incrementalBody)
 		incrementalReq, errBuild := s.buildProxyRequest(
 			reqCtx, cfg, apiKey, method, incrementalBody, hdr, rawQuery,
@@ -1606,17 +1613,18 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if errBuild != nil {
 			return nil, 0, errBuild
 		}
+		copyCodexWebsocketInputHeaders(incrementalReq.Header, hdr)
 		// buildProxyRequest applies body rules and prompt_cache_key; send the
 		// resulting wire body, not the pre-normalized caller input.
 		incrementalBody = bytes.Clone(reqCtx.transformPlan.TranslatedBody)
 		resp, req, sentBody, err = s.doCodexWebsocketRequest(
 			reqCtx.ctx, cfg, native.session,
-			req, replayBody, incrementalReq, incrementalBody,
+			replayReq, replayBody, incrementalReq, incrementalBody,
 		)
 		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
 			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
-			req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
+			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
 		} else {
 			usedNativeWebsocket = err == nil && resp != nil && resp.StatusCode >= 200 && resp.StatusCode < 300
@@ -1627,7 +1635,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 			_ = resp.Body.Close()
 			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
-			req = cloneRequestWithBody(req.WithContext(reqCtx.ctx), sentBody)
+			req = cloneRequestWithBody(httpReq.WithContext(reqCtx.ctx), sentBody)
 			resp, err = s.doUpstreamRequest(cfg, req)
 			usedNativeWebsocket = false
 		}

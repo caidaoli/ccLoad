@@ -38,6 +38,20 @@ const (
 
 const codexInputItemIDLimit = 64
 
+var codexWebsocketForwardHeaders = []string{
+	"X-Codex-Beta-Features",
+	"X-Codex-Turn-State",
+	"X-Codex-Turn-Metadata",
+	"X-Client-Request-Id",
+	"X-ResponsesAPI-Include-Timing-Metrics",
+	"Version",
+	"User-Agent",
+	"OpenAI-Beta",
+	"Session_id",
+	"Session-Id",
+	"Originator",
+}
+
 type codexWebsocketTimeouts struct {
 	idle time.Duration
 	ping time.Duration
@@ -766,20 +780,55 @@ func shortenCodexInputItemID(id string, attempt int) string {
 	return string(runes[:codexInputItemIDLimit-len(suffix)]) + suffix
 }
 
+func copyCodexWebsocketInputHeaders(target, source http.Header) {
+	if target == nil {
+		return
+	}
+	for _, name := range codexWebsocketForwardHeaders {
+		if target.Get(name) != "" {
+			continue
+		}
+		if value := strings.TrimSpace(source.Get(name)); value != "" {
+			target.Set(name, value)
+		}
+	}
+}
+
 func codexWebsocketHeaders(source http.Header) http.Header {
 	header := source.Clone()
 	for key := range header {
 		lower := strings.ToLower(key)
-		if lower == "connection" || lower == "upgrade" || lower == "content-length" ||
+		if lower == "accept" || lower == "connection" || lower == "content-length" ||
+			lower == "content-type" || lower == "upgrade" ||
 			strings.HasPrefix(lower, "sec-websocket-") {
 			header.Del(key)
 		}
 	}
-	if !strings.Contains(header.Get("OpenAI-Beta"), "responses_websockets=") {
-		if existing := strings.TrimSpace(header.Get("OpenAI-Beta")); existing != "" {
-			header.Set("OpenAI-Beta", existing+","+codexResponsesWebsocketBeta)
-		} else {
-			header.Set("OpenAI-Beta", codexResponsesWebsocketBeta)
+	betaHeader := strings.TrimSpace(header.Get("OpenAI-Beta"))
+	if betaHeader == "" || !strings.Contains(betaHeader, "responses_websockets=") {
+		betaHeader = codexResponsesWebsocketBeta
+	}
+	header.Set("OpenAI-Beta", betaHeader)
+
+	sessionID := ""
+	for key, values := range header {
+		normalized := strings.ToLower(strings.TrimSpace(key))
+		if normalized != "session_id" && normalized != "session-id" {
+			continue
+		}
+		if sessionID == "" {
+			for _, value := range values {
+				if sessionID = strings.TrimSpace(value); sessionID != "" {
+					break
+				}
+			}
+		}
+		delete(header, key)
+	}
+	if sessionID != "" {
+		header.Set("Session_id", sessionID)
+		if strings.TrimSpace(header.Get("Conversation_id")) == "" {
+			header.Set("Conversation_id", sessionID)
 		}
 	}
 	return header

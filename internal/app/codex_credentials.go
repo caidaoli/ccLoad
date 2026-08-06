@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,8 +19,19 @@ import (
 
 const (
 	codexCredentialRefreshLead = 5 * 24 * time.Hour
-	codexOAuthUserAgent        = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
+	codexUserAgent             = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
 )
+
+var codexHTTPForwardHeaders = []string{
+	"X-Codex-Beta-Features",
+	"Version",
+	"X-Codex-Turn-Metadata",
+	"X-Client-Request-Id",
+	"User-Agent",
+	"Session_id",
+	"Session-Id",
+	"Originator",
+}
 
 type codexCredentialManager struct {
 	mu               sync.RWMutex
@@ -159,13 +171,28 @@ func cloneCodexCredential(credential *codexauth.Credential) *codexauth.Credentia
 	return &clone
 }
 
-func injectCodexOAuthHeaders(req *http.Request, cfg *model.Config, streaming bool) {
-	if req == nil || cfg == nil || !cfg.UsesCodexOAuth() {
+func copyCodexHTTPHeaders(dst, src http.Header) {
+	if dst == nil {
 		return
+	}
+	for _, name := range codexHTTPForwardHeaders {
+		if value := strings.TrimSpace(src.Get(name)); value != "" {
+			dst.Set(name, value)
+		}
+	}
+}
+
+func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, streaming bool) {
+	if req == nil || cfg == nil {
+		return
+	}
+	token := apiKey
+	if cfg.UsesCodexOAuth() {
+		token = cfg.CodexAccessToken
 	}
 	req.Header.Del("X-Api-Key")
 	req.Header.Del("x-goog-api-key")
-	req.Header.Set("Authorization", "Bearer "+cfg.CodexAccessToken)
+	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Content-Type", "application/json")
 	if streaming {
 		req.Header.Set("Accept", "text/event-stream")
@@ -173,12 +200,12 @@ func injectCodexOAuthHeaders(req *http.Request, cfg *model.Config, streaming boo
 		req.Header.Set("Accept", "application/json")
 	}
 	req.Header.Set("Connection", "Keep-Alive")
-	req.Header.Set("User-Agent", codexOAuthUserAgent)
+	req.Header.Set("User-Agent", codexUserAgent)
 	req.Header.Set("Originator", "codex-tui")
-	if req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
+	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session_id", util.NewUUIDv4())
 	}
-	if cfg.CodexAccountID != "" {
+	if cfg.UsesCodexOAuth() && cfg.CodexAccountID != "" {
 		req.Header.Set("ChatGPT-Account-ID", cfg.CodexAccountID)
 	} else {
 		req.Header.Del("ChatGPT-Account-ID")

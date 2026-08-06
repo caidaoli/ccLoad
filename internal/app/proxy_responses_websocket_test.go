@@ -1736,8 +1736,33 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 		if r.Header.Get("Authorization") != "Bearer sk-upstream" {
 			t.Errorf("native upstream authorization=%q", r.Header.Get("Authorization"))
 		}
-		if !strings.Contains(r.Header.Get("OpenAI-Beta"), "responses_websockets=") {
-			t.Errorf("native upstream beta header=%q", r.Header.Get("OpenAI-Beta"))
+		if r.Header.Get("X-Api-Key") != "" {
+			t.Errorf("native upstream X-Api-Key=%q, want empty", r.Header.Get("X-Api-Key"))
+		}
+		if got := r.Header.Get("OpenAI-Beta"); got != codexResponsesWebsocketBeta {
+			t.Errorf("native upstream beta header=%q, want %q", got, codexResponsesWebsocketBeta)
+		}
+		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
+			t.Errorf("native upstream identity headers=%v", r.Header)
+		}
+		for name, want := range map[string]string{
+			"Conversation_id":                       "ws-session",
+			"Session_id":                            "ws-session",
+			"Version":                               "1.2.3",
+			"X-Client-Request-Id":                   "request-1",
+			"X-Codex-Beta-Features":                 "feature-1",
+			"X-Codex-Turn-Metadata":                 `{"turn_id":"turn-1"}`,
+			"X-Codex-Turn-State":                    "turn-state-1",
+			"X-Responsesapi-Include-Timing-Metrics": "true",
+		} {
+			if got := r.Header.Get(name); got != want {
+				t.Errorf("native upstream %s=%q, want %q; headers=%v", name, got, want, r.Header)
+			}
+		}
+		for _, name := range []string{"Accept", "Content-Type", "X-Arbitrary-Client", "X-Forwarded-For"} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("native upstream unexpected %s=%q; headers=%v", name, got, r.Header)
+			}
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
@@ -1783,7 +1808,26 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 		name: "native-codex", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", apiKey: "sk-upstream", priority: 100,
 	}}, map[int]string{0: upstream.URL})
-	downstream := dialResponsesWebsocket(t, env.engine)
+	downstream := dialResponsesWebsocketWithTokenAndHeaders(
+		t,
+		env.engine,
+		"test-api-key",
+		http.Header{
+			"Content-Type":                          []string{"text/plain"},
+			"OpenAI-Beta":                           []string{"other-feature"},
+			"Originator":                            []string{"client-attacker"},
+			"Session-Id":                            []string{"ws-session"},
+			"User-Agent":                            []string{"client-attacker"},
+			"Version":                               []string{"1.2.3"},
+			"X-Arbitrary-Client":                    []string{"drop-me"},
+			"X-Client-Request-Id":                   []string{"request-1"},
+			"X-Codex-Beta-Features":                 []string{"feature-1"},
+			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
+			"X-Codex-Turn-State":                    []string{"turn-state-1"},
+			"X-Forwarded-For":                       []string{"203.0.113.10"},
+			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
+		},
+	)
 	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set downstream read deadline: %v", err)
 	}
@@ -1836,7 +1880,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-ws" {
 			t.Errorf("ChatGPT-Account-ID = %q", got)
 		}
-		if r.Header.Get("User-Agent") != codexOAuthUserAgent || r.Header.Get("Originator") != "codex-tui" {
+		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
 			t.Errorf("Codex identity headers = %v", r.Header)
 		}
 		if r.Header.Get("Session_id") == "" {
@@ -1971,7 +2015,7 @@ func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T
 	}
 }
 
-func TestNativeCodexWebsocketRebuildsWhenHandshakeHeadersChange(t *testing.T) {
+func TestNativeCodexWebsocketIgnoresUnapprovedHandshakeHeaderChanges(t *testing.T) {
 	organizations := make(chan string, 2)
 	var handshakes atomic.Int32
 	var responses atomic.Int32
@@ -2018,8 +2062,8 @@ func TestNativeCodexWebsocketRebuildsWhenHandshakeHeadersChange(t *testing.T) {
 		t.Fatalf("write first header-fingerprint request: %v", err)
 	}
 	readWebsocketUntilType(t, first, "response.completed")
-	if organization := <-organizations; organization != "org-a" {
-		t.Fatalf("first handshake organization=%q, want org-a", organization)
+	if organization := <-organizations; organization != "" {
+		t.Fatalf("first handshake organization=%q, want dropped", organization)
 	}
 	_ = first.Close()
 
@@ -2035,16 +2079,13 @@ func TestNativeCodexWebsocketRebuildsWhenHandshakeHeadersChange(t *testing.T) {
 	}
 	readWebsocketUntilType(t, second, "response.completed")
 
+	if handshakes.Load() != 1 {
+		t.Fatalf("unapproved handshake header split upstream sessions: handshakes=%d", handshakes.Load())
+	}
 	select {
 	case organization := <-organizations:
-		if organization != "org-b" {
-			t.Fatalf("second handshake organization=%q, want org-b", organization)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("changed handshake headers reused the old upstream websocket")
-	}
-	if handshakes.Load() != 2 {
-		t.Fatalf("handshakes=%d, want 2 after handshake header change", handshakes.Load())
+		t.Fatalf("unapproved header forced a second handshake with organization=%q", organization)
+	default:
 	}
 }
 
@@ -4332,12 +4373,20 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
 			websocketCalls.Add(1)
+			if r.Header.Get("X-Codex-Turn-State") != "turn-state" || r.Header.Get("X-ResponsesAPI-Include-Timing-Metrics") != "true" {
+				t.Errorf("websocket-only headers missing from handshake: %v", r.Header)
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUpgradeRequired)
 			_, _ = io.WriteString(w, `{"error":{"message":"websocket disabled"}}`)
 			return
 		}
 		httpCalls.Add(1)
+		for _, name := range []string{"OpenAI-Beta", "X-Codex-Turn-State", "X-ResponsesAPI-Include-Timing-Metrics"} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("websocket-only header leaked into HTTP fallback: %s=%q; headers=%v", name, got, r.Header)
+			}
+		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil || !json.Valid(body) {
 			t.Errorf("same-channel HTTP replay body=%q err=%v", body, err)
@@ -4359,7 +4408,16 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		models: "gpt-test", priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
-	downstream := dialResponsesWebsocket(t, env.engine)
+	downstream := dialResponsesWebsocketWithTokenAndHeaders(
+		t,
+		env.engine,
+		"test-api-key",
+		http.Header{
+			"OpenAI-Beta":                           []string{"other-feature"},
+			"X-Codex-Turn-State":                    []string{"turn-state"},
+			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
+		},
+	)
 	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatalf("set same-channel fallback deadline: %v", err)
 	}

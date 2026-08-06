@@ -224,6 +224,24 @@ func TestChannelTestCodexUsesNativeWebsocketWhenEnabled(t *testing.T) {
 		if !websocket.IsWebSocketUpgrade(r) {
 			t.Fatalf("WebSocket 渠道测试错误地走了 HTTP: %s %s", r.Method, r.URL.Path)
 		}
+		if got := r.Header.Get("Authorization"); got != "Bearer sk-test" {
+			t.Errorf("Authorization=%q, want bearer test key", got)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "" {
+			t.Errorf("X-Api-Key must be removed, got %q", got)
+		}
+		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
+			t.Errorf("Codex identity headers=%v", r.Header)
+		}
+		if got := r.Header.Get("X-Codex-Turn-State"); got != "turn-state" {
+			t.Errorf("X-Codex-Turn-State=%q, want allowed websocket header", got)
+		}
+		if r.Header.Get("X-Arbitrary-Client") != "" || r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "" {
+			t.Errorf("unapproved HTTP headers leaked into websocket handshake: %v", r.Header)
+		}
+		if r.Header.Get("Session_id") == "" || r.Header.Get("Conversation_id") == "" {
+			t.Errorf("Codex websocket session headers are incomplete: %v", r.Header)
+		}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("升级 WebSocket: %v", err)
@@ -278,6 +296,10 @@ func TestChannelTestCodexUsesNativeWebsocketWhenEnabled(t *testing.T) {
 		ClientProtocol: "codex",
 		Stream:         true,
 		Content:        "hello",
+		Headers: map[string]string{
+			"X-Codex-Turn-State": "turn-state",
+			"X-Arbitrary-Client": "must-not-leak",
+		},
 	})
 
 	if success, _ := result["success"].(bool); !success {
@@ -351,6 +373,18 @@ func TestHandleChannelWebsocketProbeDetectsSupportedUpstream(t *testing.T) {
 		}
 		if got := r.Header.Get("Authorization"); got != "Bearer sk-probe" {
 			t.Errorf("Authorization=%q, want bearer probe key", got)
+		}
+		if got := r.Header.Get("X-Api-Key"); got != "" {
+			t.Errorf("X-Api-Key must be removed, got %q", got)
+		}
+		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
+			t.Errorf("Codex identity headers=%v", r.Header)
+		}
+		if r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "" {
+			t.Errorf("HTTP-only headers leaked into websocket probe: %v", r.Header)
+		}
+		if r.Header.Get("Session_id") == "" || r.Header.Get("Conversation_id") == "" {
+			t.Errorf("Codex websocket session headers are incomplete: %v", r.Header)
 		}
 		if beta := r.Header.Get("OpenAI-Beta"); !strings.Contains(beta, "responses_websockets=") {
 			t.Errorf("OpenAI-Beta=%q, want responses_websockets feature", beta)
@@ -1111,7 +1145,7 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 		if r.Header.Get("X-Api-Key") != "" {
 			t.Errorf("X-Api-Key must be removed: %q", r.Header.Get("X-Api-Key"))
 		}
-		if r.Header.Get("User-Agent") != codexOAuthUserAgent || r.Header.Get("Originator") != "codex-tui" ||
+		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" ||
 			(r.Header.Get("Session_id") == "" && r.Header.Get("Session-Id") == "") {
 			t.Errorf("incomplete Codex OAuth headers: %v", r.Header)
 		}
@@ -1550,6 +1584,7 @@ func TestHandleChannelTest_UsesSelectedOpenAIProtocol(t *testing.T) {
 func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testing.T) {
 	var gotPath string
 	var gotBody string
+	var gotHeaders http.Header
 
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -1558,6 +1593,7 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 		}
 		gotPath = r.URL.Path
 		gotBody = string(body)
+		gotHeaders = r.Header.Clone()
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -1595,6 +1631,11 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 		"model":           "claude-3-5-sonnet",
 		"client_protocol": "codex",
 		"content":         "hello",
+		"headers": map[string]string{
+			"X-Client-Request-Id": "admin-test-request",
+			"X-Codex-Turn-State":  "must-not-leak-over-http",
+			"X-Arbitrary-Client":  "must-not-leak",
+		},
 	}))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
 
@@ -1611,6 +1652,21 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 	}
 	if gotPath != "/anthropic/v1/responses" {
 		t.Fatalf("path=%q, want %q", gotPath, "/anthropic/v1/responses")
+	}
+	if got := gotHeaders.Get("Authorization"); got != "Bearer sk-test-key" {
+		t.Fatalf("Authorization=%q, want bearer channel key", got)
+	}
+	if gotHeaders.Get("X-Api-Key") != "" || gotHeaders.Get("X-Arbitrary-Client") != "" || gotHeaders.Get("X-Codex-Turn-State") != "" {
+		t.Fatalf("unapproved Codex HTTP headers leaked upstream: %v", gotHeaders)
+	}
+	if gotHeaders.Get("User-Agent") != codexUserAgent || gotHeaders.Get("Originator") != "codex-tui" {
+		t.Fatalf("Codex identity headers=%v", gotHeaders)
+	}
+	if got := gotHeaders.Get("X-Client-Request-Id"); got != "admin-test-request" {
+		t.Fatalf("X-Client-Request-Id=%q, want allowed downstream value", got)
+	}
+	if gotHeaders.Get("Content-Type") != "application/json" || gotHeaders.Get("Accept") != "application/json" || gotHeaders.Get("Connection") != "Keep-Alive" {
+		t.Fatalf("Codex HTTP transport headers=%v", gotHeaders)
 	}
 	if !strings.Contains(gotBody, `"input"`) {
 		t.Fatalf("expected codex request body, body=%s", gotBody)
