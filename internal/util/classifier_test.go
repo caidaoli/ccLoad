@@ -967,6 +967,60 @@ func TestClassifyHTTPResponse400IsModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPResponseContextLengthExceededIsClientError(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "error_code_context_length_exceeded",
+			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`),
+		},
+		{
+			name: "response_failed_code_context_too_large",
+			body: []byte(`{"type":"response.failed","response":{"error":{"code":"context_too_large","message":"Your input exceeds the context window of this model."}}}`),
+		},
+		{
+			name: "invalid_request_message_fallback",
+			body: []byte(`{"error":{"type":"invalid_request_error","message":"Maximum context length exceeded."}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusBadRequest, nil, tt.body)
+			if classification.Level != ErrorLevelClient || classification.ModelScoped {
+				t.Fatalf("classification=%+v, want client-level without model scope", classification)
+			}
+		})
+	}
+}
+
+func TestClassifyHTTPResponseContextLengthMessageDoesNotHideServerError(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "nested_server_error",
+			body: []byte(`{"error":{"type":"server_error","code":"billing_config_error","message":"Documentation mentions too many tokens, but billing configuration failed."}}`),
+		},
+		{
+			name: "top_level_explicit_non_context_code",
+			body: []byte(`{"type":"error","code":"billing_config_error","message":"Documentation mentions too many tokens, but billing configuration failed."}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			classification := ClassifyHTTPResponseWithMeta(http.StatusBadRequest, nil, tt.body)
+			if classification.Level == ErrorLevelClient || !classification.ModelScoped {
+				t.Fatalf("classification=%+v, want existing model-scoped handling", classification)
+			}
+		})
+	}
+}
+
 func TestClassifyHTTPResponseStreamFailuresAreModelScoped(t *testing.T) {
 	for _, status := range []int{StatusFirstByteTimeout, StatusStreamIncomplete} {
 		t.Run(strconv.Itoa(status), func(t *testing.T) {

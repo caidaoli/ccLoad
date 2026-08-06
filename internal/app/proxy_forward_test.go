@@ -264,6 +264,30 @@ func TestClassifySSEErrorStatus_RateLimits(t *testing.T) {
 	}
 }
 
+func TestClassifySSEErrorStatus_ContextLengthExceeded(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+	}{
+		{
+			name: "error_event",
+			body: []byte(`{"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}`),
+		},
+		{
+			name: "response_failed",
+			body: []byte(`{"type":"response.failed","response":{"error":{"code":"context_too_large","message":"Your input exceeds the context window of this model."}}}`),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classifySSEErrorStatus(tt.body); got != http.StatusBadRequest {
+				t.Fatalf("classifySSEErrorStatus()=%d, want %d", got, http.StatusBadRequest)
+			}
+		})
+	}
+}
+
 // TestHandleSuccessResponse_StreamDiagMsg_NormalEOF 测试正常EOF时不触发诊断
 // 新逻辑：只有当 streamErr != nil 且未检测到流结束标志时才触发诊断
 // 正常EOF（streamErr == nil）不触发诊断，即使没有流结束标志

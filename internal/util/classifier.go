@@ -121,12 +121,19 @@ type HTTPResponseClassification struct {
 // sseErrorResponse SSE error事件的通用JSON结构（兼容 error.type / error.code）
 // [FIX] 提取为公共结构体，消除 classifySSEError 和 ParseResetTimeFrom1308Error 的重复定义
 type sseErrorResponse struct {
-	Type  string `json:"type"`
-	Error struct {
-		Type    string `json:"type"` // Anthropic使用
-		Code    string `json:"code"` // 其他渠道使用
-		Message string `json:"message"`
-	} `json:"error"`
+	Type     string         `json:"type"`
+	Code     string         `json:"code"`
+	Message  string         `json:"message"`
+	Error    sseErrorDetail `json:"error"`
+	Response struct {
+		Error sseErrorDetail `json:"error"`
+	} `json:"response"`
+}
+
+type sseErrorDetail struct {
+	Type    string `json:"type"`
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 type structuredQuotaErrorResponse struct {
@@ -170,6 +177,48 @@ func (r *sseErrorResponse) ErrorType() string {
 		return r.Error.Type
 	}
 	return r.Error.Code
+}
+
+// IsContextLengthExceededError reports whether an upstream error says that the
+// current request exceeds the model context window. Codex can emit the error as
+// error, response.error, or a top-level streaming error object.
+func IsContextLengthExceededError(responseBody []byte) bool {
+	if len(responseBody) == 0 {
+		return false
+	}
+
+	var payload sseErrorResponse
+	if err := json.Unmarshal(responseBody, &payload); err != nil {
+		return false
+	}
+
+	details := [...]sseErrorDetail{
+		payload.Error,
+		payload.Response.Error,
+		{Type: payload.Type, Code: payload.Code, Message: payload.Message},
+	}
+	for _, detail := range details {
+		code := strings.ToLower(strings.TrimSpace(detail.Code))
+		if code == "context_length_exceeded" || code == "context_too_large" {
+			return true
+		}
+		if code != "" && code != "invalid_request_error" && code != "bad_request_error" {
+			continue
+		}
+
+		errorType := strings.ToLower(strings.TrimSpace(detail.Type))
+		if errorType != "" && errorType != "error" && errorType != "invalid_request_error" && errorType != "bad_request_error" {
+			continue
+		}
+		message := strings.ToLower(strings.TrimSpace(detail.Message))
+		if strings.Contains(message, "context window") ||
+			strings.Contains(message, "context length") ||
+			strings.Contains(message, "maximum context") ||
+			strings.Contains(message, "too many tokens") {
+			return true
+		}
+	}
+	return false
 }
 
 // statusCodeMetaMap 状态码元数据映射表
@@ -358,6 +407,13 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 			classification.KeyCooldownReason = reason
 		}
 		return classification
+	}
+
+	// 上下文超限由当前请求体决定，切换 Key、模型或渠道都不会改变结果。
+	// SSE 路径使用 597 承载 HTTP 200 中的错误事件；普通 Codex 错误使用 400/413。
+	if (statusCode == StatusSSEError || statusCode == http.StatusBadRequest || statusCode == http.StatusRequestEntityTooLarge) &&
+		IsContextLengthExceededError(responseBody) {
+		return HTTPResponseClassification{Level: ErrorLevelClient}
 	}
 
 	// [INFO] 597 SSE error事件：解析实际错误类型动态判断级别
