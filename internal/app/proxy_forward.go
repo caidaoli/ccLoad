@@ -546,9 +546,10 @@ func maybePrepareDynamicStreamTransform(reqCtx *requestContext, resp *http.Respo
 	if !reqCtx.isStreaming {
 		return "", false, nil
 	}
-	if !strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "text/event-stream") {
+	if !responseIsSSE(resp, true) {
 		return "", false, nil
 	}
+	resp.Header.Set("Content-Type", "text/event-stream")
 
 	prefix, err := readSSEPrefixThroughFirstEvent(resp.Body)
 	if len(prefix) > 0 {

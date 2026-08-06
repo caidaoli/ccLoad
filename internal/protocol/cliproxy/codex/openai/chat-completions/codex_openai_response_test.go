@@ -528,18 +528,19 @@ func assertUsageMapping(t *testing.T, payload []byte, wantCachedCreation int64, 
 		t.Fatalf("expected reasoning_tokens=5, got %d; payload=%s", got, string(payload))
 	}
 
-	gotCachedCreation := gjson.GetBytes(payload, "usage.cache_creation_input_tokens")
+	gotCachedCreation := gjson.GetBytes(payload, "usage.prompt_tokens_details.cached_creation_tokens")
 	if expectCachedCreation {
 		if !gotCachedCreation.Exists() {
-			t.Fatalf("expected cache_creation_input_tokens to exist, payload=%s", string(payload))
+			t.Fatalf("expected cached_creation_tokens to exist, payload=%s", string(payload))
 		}
 		if gotCachedCreation.Int() != wantCachedCreation {
-			t.Fatalf("expected cache_creation_input_tokens=%d, got %d; payload=%s", wantCachedCreation, gotCachedCreation.Int(), string(payload))
+			t.Fatalf("expected cached_creation_tokens=%d, got %d; payload=%s", wantCachedCreation, gotCachedCreation.Int(), string(payload))
 		}
-		return
+	} else if gotCachedCreation.Exists() {
+		t.Fatalf("expected cached_creation_tokens to be omitted, payload=%s", string(payload))
 	}
-	if gotCachedCreation.Exists() {
-		t.Fatalf("expected cache_creation_input_tokens to be omitted, payload=%s", string(payload))
+	if legacy := gjson.GetBytes(payload, "usage.cache_creation_input_tokens"); legacy.Exists() {
+		t.Fatalf("expected legacy cache_creation_input_tokens to be omitted, payload=%s", string(payload))
 	}
 }
 
