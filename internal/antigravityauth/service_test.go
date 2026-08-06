@@ -111,34 +111,48 @@ func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
 }
 
 func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
+	var refreshCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/daily/v1internal:loadCodeAssist" {
+		switch r.URL.Path {
+		case "/token":
+			refreshCalls++
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm: %v", err)
+			}
+			if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "rt-expired" {
+				t.Fatalf("refresh form = %v", r.Form)
+			}
+			_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt-rotated","expires_in":3600}`))
+		case "/daily/v1internal:loadCodeAssist":
+			assertBearer(t, r, "at-refreshed")
+			if got := r.Header.Get("User-Agent"); got != DefaultUserAgent {
+				t.Errorf("User-Agent = %q", got)
+			}
+			var body map[string]map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatalf("decode loadCodeAssist: %v", err)
+			}
+			if body["metadata"]["ideType"] != "ANTIGRAVITY" {
+				t.Fatalf("loadCodeAssist body = %#v", body)
+			}
+			_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","description":"not persisted"}}`))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		assertBearer(t, r, "at")
-		if got := r.Header.Get("User-Agent"); got != DefaultUserAgent {
-			t.Errorf("User-Agent = %q", got)
-		}
-		var body map[string]map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode loadCodeAssist: %v", err)
-		}
-		if body["metadata"]["ideType"] != "ANTIGRAVITY" {
-			t.Fatalf("loadCodeAssist body = %#v", body)
-		}
-		_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","description":"not persisted"}}`))
 	}))
 	defer server.Close()
 
 	service := testService(server)
 	service.DailyAPIBaseURL = server.URL + "/daily"
 	credential, err := service.CompleteCredential(context.Background(), &Credential{
-		Type: ChannelType, AccessToken: "at", RefreshToken: "rt",
-		Expired: "2030-01-01T00:00:00Z", Email: "user@example.com", ProjectID: "project-1",
+		Type: ChannelType, AccessToken: "at-expired", RefreshToken: "rt-expired",
+		Expired: "2000-01-01T00:00:00Z", Email: "user@example.com", ProjectID: "project-1",
 	})
 	if err != nil {
 		t.Fatalf("CompleteCredential: %v", err)
+	}
+	if refreshCalls != 1 || credential.AccessToken != "at-refreshed" || credential.RefreshToken != "rt-rotated" {
+		t.Fatalf("refreshed credential = %#v, refresh calls = %d", credential, refreshCalls)
 	}
 	if credential.PaidTier == nil || credential.PaidTier.ID != "g1-pro-tier" ||
 		credential.PaidTier.DisplayName() != "Google AI Pro" {

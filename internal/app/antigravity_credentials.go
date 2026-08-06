@@ -15,8 +15,6 @@ import (
 	"golang.org/x/sync/singleflight"
 )
 
-const antigravityCredentialRefreshLead = 5 * time.Minute
-
 type antigravityCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*antigravityauth.Credential
@@ -61,7 +59,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 	if err != nil {
 		return nil, err
 	}
-	needsRefresh, err := credential.NeedsRefresh(m.now(), antigravityCredentialRefreshLead)
+	needsRefresh, err := credential.NeedsRefresh(m.now(), antigravityauth.CredentialRefreshLead)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +72,7 @@ func (m *antigravityCredentialManager) resolveCredential(
 		if currentErr != nil {
 			return nil, currentErr
 		}
-		refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), antigravityCredentialRefreshLead)
+		refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), antigravityauth.CredentialRefreshLead)
 		if refreshErr != nil {
 			return nil, refreshErr
 		}

@@ -137,12 +137,27 @@ func (s *Service) Refresh(ctx context.Context, refreshToken string) (*Credential
 	})
 }
 
-// CompleteCredential resolves missing public identity metadata without changing tokens.
+// CompleteCredential refreshes a stale access token and resolves public identity metadata.
 func (s *Service) CompleteCredential(ctx context.Context, credential *Credential) (*Credential, error) {
 	if credential == nil {
 		return nil, errors.New("credential: Antigravity data is nil")
 	}
 	completed := *credential
+	needsRefresh, err := completed.NeedsRefresh(time.Now(), CredentialRefreshLead)
+	if err != nil {
+		return nil, err
+	}
+	if needsRefresh {
+		refreshed, err := s.Refresh(ctx, completed.RefreshToken)
+		if err != nil {
+			return nil, fmt.Errorf("refresh Antigravity credential: %w", err)
+		}
+		merged, err := completed.MergeRefresh(refreshed)
+		if err != nil {
+			return nil, err
+		}
+		completed = *merged
+	}
 	if completed.Email == "" {
 		email, err := s.FetchUserInfo(ctx, completed.AccessToken)
 		if err != nil {

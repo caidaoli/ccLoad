@@ -71,14 +71,24 @@ func newCodexAuthTestStore(t *testing.T) storage.Store {
 func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:loadCodeAssist" {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm: %v", err)
+			}
+			if r.Form.Get("grant_type") != "refresh_token" {
+				t.Fatalf("token grant = %q", r.Form.Get("grant_type"))
+			}
+			_, _ = io.WriteString(w, `{"access_token":"at-refreshed-secret","refresh_token":"rt-rotated-secret","expires_in":3600}`)
+		case "/v1internal:loadCodeAssist":
+			_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
 	}))
 	t.Cleanup(server.Close)
 	service := antigravityauth.NewService(server.Client())
+	service.TokenURL = server.URL + "/token"
 	service.DailyAPIBaseURL = server.URL
 	return service
 }
@@ -302,12 +312,13 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	expiredAt := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
 	files := []struct {
 		name string
 		body string
 	}{
 		{name: "duplicate.json", body: fmt.Sprintf(`{"type":"antigravity","access_token":"at-must-not-overwrite","refresh_token":"rt-must-not-overwrite","expired":%q,"email":"duplicate@example.com","project_id":"project-other"}`, expiresAt)},
-		{name: "new.json", body: fmt.Sprintf(`{"type":"antigravity","access_token":"at-import-secret","refresh_token":"rt-import-secret","expired":%q,"email":"new@example.com","project_id":"project-new"}`, expiresAt)},
+		{name: "new.json", body: fmt.Sprintf(`{"type":"antigravity","access_token":"at-import-secret","refresh_token":"rt-import-secret","expired":%q,"email":"new@example.com","project_id":"project-new"}`, expiredAt)},
 		{name: "broken.json", body: `{"type":"antigravity"`},
 	}
 	for _, file := range files {
@@ -330,7 +341,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	for _, secret := range []string{"at-import-secret", "rt-import-secret", "at-must-not-overwrite", "rt-must-not-overwrite"} {
+	for _, secret := range []string{"at-import-secret", "rt-import-secret", "at-refreshed-secret", "rt-rotated-secret", "at-must-not-overwrite", "rt-must-not-overwrite"} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatalf("import response leaked %q: %s", secret, response.Body.String())
 		}
@@ -354,7 +365,8 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 		t.Fatalf("new Antigravity channel was not created with canonical name: %#v", channels)
 	}
 	importedCredential, err := antigravityauth.ParseCredential([]byte(imported.OAuthCredential))
-	if err != nil || importedCredential.PaidTier == nil || importedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+	if err != nil || importedCredential.AccessToken != "at-refreshed-secret" || importedCredential.RefreshToken != "rt-rotated-secret" ||
+		importedCredential.PaidTier == nil || importedCredential.PaidTier.DisplayName() != "Google AI Pro" {
 		t.Fatalf("imported paid tier = (%#v, %v)", importedCredential, err)
 	}
 	persisted, err := store.GetConfig(context.Background(), existing.ID)
