@@ -24,7 +24,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const codexTestSubscriptionActiveUntil = "2030-02-03T04:05:06Z"
+const (
+	codexTestSubscriptionActiveStart = "2030-01-03T04:05:06Z"
+	codexTestSubscriptionActiveUntil = "2030-02-03T04:05:06Z"
+)
 
 func codexTestIDToken(t *testing.T, email, accountID string) string {
 	return codexTestIDTokenForPlan(t, email, accountID, "plus")
@@ -37,6 +40,7 @@ func codexTestIDTokenForPlan(t *testing.T, email, accountID, planType string) st
 		"https://api.openai.com/auth": map[string]any{
 			"chatgpt_account_id":                accountID,
 			"chatgpt_plan_type":                 planType,
+			"chatgpt_subscription_active_start": codexTestSubscriptionActiveStart,
 			"chatgpt_subscription_active_until": codexTestSubscriptionActiveUntil,
 		},
 	})
@@ -563,9 +567,10 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 		t.Fatalf("editor status=%d body=%s", w.Code, w.Body.String())
 	}
 	resp := mustParseAPIResponse[struct {
-		Keys            []*model.APIKey `json:"keys"`
-		CodexCredential json.RawMessage `json:"codex_credential"`
-		Channel         struct {
+		Keys                []*model.APIKey        `json:"keys"`
+		CodexCredential     json.RawMessage        `json:"codex_credential"`
+		CodexCredentialInfo *codexauth.IDTokenInfo `json:"codex_credential_info"`
+		Channel             struct {
 			CodexPlanType                string     `json:"codex_plan_type"`
 			CodexSubscriptionActiveUntil *time.Time `json:"codex_subscription_active_until"`
 		} `json:"channel"`
@@ -579,6 +584,12 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 	}
 	if exposed.AccessToken != credential.AccessToken || exposed.RefreshToken != credential.RefreshToken || exposed.AccountID != credential.AccountID {
 		t.Fatalf("editor credential = %#v", exposed)
+	}
+	if resp.Data.CodexCredentialInfo == nil || resp.Data.CodexCredentialInfo.ChatGPTAccountID != "account-editor" ||
+		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
+		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
+		resp.Data.CodexCredentialInfo.PlanType != "plus" {
+		t.Fatalf("editor decoded credential info = %#v", resp.Data.CodexCredentialInfo)
 	}
 	if resp.Data.Channel.CodexPlanType != "plus" {
 		t.Fatalf("editor channel plan type = %q, want plus", resp.Data.Channel.CodexPlanType)
@@ -758,5 +769,72 @@ func TestCodexCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	}
 	if persisted.SupportsModel("gpt-5.6-sol") || persisted.SupportsModel("gpt-5.4") || persisted.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("refreshed free channel kept unsupported models: %v", persisted.GetModels())
+	}
+}
+
+func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-old", RefreshToken: "rt-old",
+		Expired:   time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339),
+		AccountID: "account-manual-refresh", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
+	}
+
+	idToken := codexTestIDTokenForPlan(t, "manual-refresh@example.com", "account-manual-refresh", "team")
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			t.Errorf("ParseForm() error = %v", err)
+		}
+		if r.Form.Get("grant_type") != "refresh_token" || r.Form.Get("refresh_token") != "rt-old" {
+			t.Errorf("refresh form = %v", r.Form)
+		}
+		_, _ = fmt.Fprintf(w, `{"access_token":"at-manual-new","refresh_token":"rt-manual-new","id_token":%q,"expires_in":604800}`, idToken)
+	}))
+	defer tokenServer.Close()
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	server.codexCredentials = newCodexCredentialManager(
+		service,
+		store,
+		func(*model.Config) *http.Client { return tokenServer.Client() },
+		nil,
+	)
+
+	path := fmt.Sprintf("/admin/channels/%d/codex-credential/refresh", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleRefreshCodexCredential(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[struct {
+		CodexCredential     codexauth.Credential   `json:"codex_credential"`
+		CodexCredentialInfo *codexauth.IDTokenInfo `json:"codex_credential_info"`
+		CodexPlanType       string                 `json:"codex_plan_type"`
+	}](t, w.Body.Bytes())
+	if resp.Data.CodexCredential.AccessToken != "at-manual-new" ||
+		resp.Data.CodexCredential.RefreshToken != "rt-manual-new" ||
+		resp.Data.CodexCredential.IDToken != idToken || resp.Data.CodexPlanType != "team" {
+		t.Fatalf("refresh response credential = %#v", resp.Data)
+	}
+	if resp.Data.CodexCredentialInfo == nil || resp.Data.CodexCredentialInfo.ChatGPTAccountID != "account-manual-refresh" ||
+		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
+		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
+		resp.Data.CodexCredentialInfo.PlanType != "team" {
+		t.Fatalf("refresh response decoded info = %#v", resp.Data.CodexCredentialInfo)
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.CodexCredential))
+	if err != nil || persistedCredential.AccessToken != "at-manual-new" || persistedCredential.IDToken != idToken {
+		t.Fatalf("persisted credential = (%#v, %v)", persistedCredential, err)
 	}
 }

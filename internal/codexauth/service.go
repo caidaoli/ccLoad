@@ -221,6 +221,7 @@ type idTokenClaims struct {
 	Auth  struct {
 		ChatGPTAccountID               string `json:"chatgpt_account_id"`
 		ChatGPTPlanType                string `json:"chatgpt_plan_type"`
+		ChatGPTSubscriptionActiveStart any    `json:"chatgpt_subscription_active_start"`
 		ChatGPTSubscriptionActiveUntil any    `json:"chatgpt_subscription_active_until"`
 	} `json:"https://api.openai.com/auth"`
 }

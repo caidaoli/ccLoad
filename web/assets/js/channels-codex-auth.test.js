@@ -9,6 +9,8 @@ const {
   copyCodexCredential,
   cancelCodexOAuth,
   formatCodexPlanBadgeText,
+  refreshCodexCredential,
+  setCodexCredentialView,
   submitCodexOAuthCallback
 } = require('./channels-codex-auth.js');
 
@@ -94,6 +96,22 @@ test('Codex OAuth cancellation submits the active state as JSON', async () => {
   assert.deepEqual(JSON.parse(captured.options.body), { state: 'state-1' });
 });
 
+test('manual Codex credential refresh targets the saved channel', async () => {
+  let captured;
+  const response = { codex_credential: { access_token: 'at-new' } };
+  const result = await refreshCodexCredential(42, async (url, options) => {
+    captured = { url, options };
+    return response;
+  });
+
+  assert.equal(result, response);
+  assert.deepEqual(captured, {
+    url: '/admin/channels/42/codex-credential/refresh',
+    options: { method: 'POST' }
+  });
+  await assert.rejects(() => refreshCodexCredential(0, async () => response), /saved Codex channel/);
+});
+
 test('Codex editor shows AT in the normal key area and the full credential read-only', async () => {
   const elements = new Map();
   for (const id of [
@@ -116,6 +134,11 @@ test('Codex editor shows AT in the normal key area and the full credential read-
   const rowDeleteButton = { hidden: false, disabled: false };
   const rowToggleButton = { hidden: false, disabled: false };
   const row = { draggable: true };
+  const viewButtons = ['decoded', 'raw'].map(view => ({
+    dataset: { codexCredentialView: view },
+    classList: { toggle() {} },
+    setAttribute() {}
+  }));
   const previousDocument = global.document;
   global.document = {
     getElementById: id => elements.get(id) || null,
@@ -124,14 +147,21 @@ test('Codex editor shows AT in the normal key area and the full credential read-
       '#inlineKeyTableBody .inline-key-input': [rowKeyInput],
       '#inlineKeyTableBody .inline-key-note-input': [rowNoteInput],
       '#inlineKeyTableBody [data-action="delete"], #inlineKeyTableBody [data-action="toggle-disabled"]': [rowDeleteButton, rowToggleButton],
-      '#inlineKeyTableBody .inline-key-row': [row]
+      '#inlineKeyTableBody .inline-key-row': [row],
+      '[data-codex-credential-view]': viewButtons
     })[selector] || []
   };
-	try {
-		const credential = { type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus' };
-		applyChannelAuthEditorMode('codex_oauth', credential, {
-		  codex_subscription_active_until: '2030-02-03T04:05:06Z'
-		});
+  try {
+    const credential = { type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus' };
+    const credentialInfo = {
+      chatgpt_account_id: 'account-1',
+      chatgpt_subscription_active_start: '2030-01-03T04:05:06Z',
+      chatgpt_subscription_active_until: '2030-02-03T04:05:06Z',
+      plan_type: 'plus'
+    };
+    applyChannelAuthEditorMode('codex_oauth', credential, {
+      codex_subscription_active_until: '2030-02-03T04:05:06Z'
+    }, credentialInfo);
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);
     assert.equal(elements.get('channelAPIKeyTable').hidden, false);
@@ -142,8 +172,9 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(elements.get('selectAllKeys').disabled, true);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
-		assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
-    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(credential, null, 2));
+    assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
+    const decodedCredential = { ...credential, id_token: credentialInfo };
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(decodedCredential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
     assert.equal(rowKeyInput.readOnly, true);
     assert.equal(rowNoteInput.readOnly, true);
@@ -155,7 +186,10 @@ test('Codex editor shows AT in the normal key area and the full credential read-
 
     let copiedCredential = '';
     await copyCodexCredential(async text => { copiedCredential = text; });
-    assert.equal(copiedCredential, JSON.stringify(credential, null, 2));
+    assert.equal(copiedCredential, JSON.stringify(decodedCredential, null, 2));
+
+    setCodexCredentialView('raw');
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(credential, null, 2));
 
     applyChannelAuthEditorMode('api_key');
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, true);
