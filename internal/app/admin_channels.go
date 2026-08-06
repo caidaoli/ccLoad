@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
@@ -336,11 +337,12 @@ type channelEnrichmentContext struct {
 // enrichChannel 把单个 cfg 拼装为 ChannelWithCooldown：
 // 渠道冷却剩余时间、健康度模式下的有效优先级与成功率、Key 策略、Key 与模型冷却详情。
 func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWithCooldown {
-	metadata := channelCodexMetadataFromCredential(cfg)
+	metadata := channelOAuthMetadataFromCredential(cfg)
 	oc := ChannelWithCooldown{
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		AntigravityPaidTier:          metadata.antigravityPaidTier,
 	}
 
 	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
@@ -380,20 +382,31 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 	return oc
 }
 
-type channelCodexMetadata struct {
+type channelOAuthMetadata struct {
 	planType                string
 	subscriptionActiveUntil *time.Time
+	antigravityPaidTier     string
 }
 
-func channelCodexMetadataFromCredential(cfg *model.Config) channelCodexMetadata {
-	if cfg == nil || !cfg.UsesCodexOAuth() || cfg.OAuthCredential == "" {
-		return channelCodexMetadata{}
+func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
+	if cfg == nil || cfg.OAuthCredential == "" {
+		return channelOAuthMetadata{}
+	}
+	if cfg.UsesAntigravityOAuth() {
+		credential, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		return channelOAuthMetadata{antigravityPaidTier: credential.PaidTier.DisplayName()}
+	}
+	if !cfg.UsesCodexOAuth() {
+		return channelOAuthMetadata{}
 	}
 	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
-		return channelCodexMetadata{}
+		return channelOAuthMetadata{}
 	}
-	metadata := channelCodexMetadata{planType: credential.PlanType}
+	metadata := channelOAuthMetadata{planType: credential.PlanType}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until
 	}
@@ -594,11 +607,12 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		allModelCooldowns = make(map[int64]map[string]time.Time)
 	}
 
-	metadata := channelCodexMetadataFromCredential(cfg)
+	metadata := channelOAuthMetadataFromCredential(cfg)
 	return ChannelWithCooldown{
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
 		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
 	}, apiKeys, nil

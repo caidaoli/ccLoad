@@ -15,17 +15,39 @@ const (
 	maxCredentialSize = 1 << 20
 )
 
+// PaidTier is the minimal non-secret subscription metadata persisted with an
+// Antigravity credential.
+type PaidTier struct {
+	ID   string `json:"id,omitempty"`
+	Name string `json:"name,omitempty"`
+}
+
+// DisplayName returns the human-readable tier name, falling back to its ID.
+func (t *PaidTier) DisplayName() string {
+	if t == nil {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(t.ID), "free-tier") {
+		return "Antigravity Free"
+	}
+	if name := strings.TrimSpace(t.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(t.ID)
+}
+
 // Credential is the CLIProxyAPI-compatible Antigravity OAuth payload stored in
 // the private OAuth channel column.
 type Credential struct {
-	Type         string `json:"type"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in,omitempty"`
-	Timestamp    int64  `json:"timestamp,omitempty"`
-	Expired      string `json:"expired"`
-	Email        string `json:"email,omitempty"`
-	ProjectID    string `json:"project_id,omitempty"`
+	Type         string    `json:"type"`
+	AccessToken  string    `json:"access_token"`
+	RefreshToken string    `json:"refresh_token"`
+	ExpiresIn    int64     `json:"expires_in,omitempty"`
+	Timestamp    int64     `json:"timestamp,omitempty"`
+	Expired      string    `json:"expired"`
+	Email        string    `json:"email,omitempty"`
+	ProjectID    string    `json:"project_id,omitempty"`
+	PaidTier     *PaidTier `json:"paid_tier,omitempty"`
 }
 
 // ParseCredential validates imported CLIProxyAPI JSON and returns its canonical form.
@@ -61,6 +83,13 @@ func (c *Credential) Normalize() error {
 	c.Expired = strings.TrimSpace(c.Expired)
 	c.Email = strings.TrimSpace(c.Email)
 	c.ProjectID = strings.TrimSpace(c.ProjectID)
+	if c.PaidTier != nil {
+		c.PaidTier.ID = strings.TrimSpace(c.PaidTier.ID)
+		c.PaidTier.Name = strings.TrimSpace(c.PaidTier.Name)
+		if c.PaidTier.ID == "" && c.PaidTier.Name == "" {
+			c.PaidTier = nil
+		}
+	}
 	if c.Type == "" {
 		c.Type = ChannelType
 	}
@@ -117,6 +146,10 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	}
 	if merged.ProjectID == "" {
 		merged.ProjectID = c.ProjectID
+	}
+	if merged.PaidTier == nil && c.PaidTier != nil {
+		paidTier := *c.PaidTier
+		merged.PaidTier = &paidTier
 	}
 	if err := merged.Normalize(); err != nil {
 		return nil, err

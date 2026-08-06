@@ -164,9 +164,33 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		RespondError(c, http.StatusBadRequest, err)
 		return
 	}
+	nextPriorityByProvider := map[string]int{
+		codexauth.ChannelType:       0,
+		antigravityauth.ChannelType: 0,
+	}
+	if priorityIncrement > 0 {
+		configs, listErr := s.store.ListConfigs(c.Request.Context())
+		if listErr != nil {
+			RespondError(c, http.StatusInternalServerError, fmt.Errorf("list channels for OAuth credential priorities: %w", listErr))
+			return
+		}
+		for _, cfg := range configs {
+			if cfg == nil {
+				continue
+			}
+			switch {
+			case cfg.UsesCodexOAuth() && cfg.Priority > nextPriorityByProvider[codexauth.ChannelType]:
+				nextPriorityByProvider[codexauth.ChannelType] = cfg.Priority
+			case cfg.UsesAntigravityOAuth() && cfg.Priority > nextPriorityByProvider[antigravityauth.ChannelType]:
+				nextPriorityByProvider[antigravityauth.ChannelType] = cfg.Priority
+			}
+		}
+		for credentialProvider := range nextPriorityByProvider {
+			nextPriorityByProvider[credentialProvider] += priorityIncrement
+		}
+	}
 
 	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(files))}
-	nextPriority := 0
 	for _, file := range files {
 		fileName := ""
 		if file != nil {
@@ -198,7 +222,7 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 			}
 		}
 
-		channelName, created, importErr := s.importOAuthCredential(c, credentialProvider, raw, nextPriority)
+		channelName, created, importErr := s.importOAuthCredential(c, credentialProvider, raw, nextPriorityByProvider[credentialProvider])
 		switch {
 		case importErr != nil:
 			result.Status, result.Error = "failed", importErr.Error()
@@ -206,7 +230,7 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		case created:
 			result.Status, result.ChannelName = "created", channelName
 			summary.Created++
-			nextPriority += priorityIncrement
+			nextPriorityByProvider[credentialProvider] += priorityIncrement
 		default:
 			result.Status, result.ChannelName = "skipped", channelName
 			summary.Skipped++
@@ -253,7 +277,7 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 		return createImportedCodexChannel(c.Request.Context(), s.store, credential, priority)
 	case antigravityauth.ChannelType:
 		credential, err := antigravityauth.ParseCredential(raw)
-		if err == nil && (credential.Email == "" || credential.ProjectID == "") {
+		if err == nil {
 			if s.antigravityService == nil {
 				return "", false, errors.New("antigravity credential completion is unavailable")
 			}

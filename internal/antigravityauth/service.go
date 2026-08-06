@@ -24,7 +24,7 @@ const (
 	DefaultClientID         = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	DefaultClientSecret     = "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"
 	DefaultRedirectURI      = "http://localhost:51121/oauth-callback"
-	DefaultUserAgent        = "antigravity/hub/2.2.1 darwin/arm64"
+	DefaultUserAgent        = "antigravity/hub/2.5.0 darwin/arm64"
 	defaultRequestTimeout   = 30 * time.Second
 	maxResponseBytes        = 1 << 20
 	apiVersion              = "v1internal"
@@ -160,10 +160,40 @@ func (s *Service) CompleteCredential(ctx context.Context, credential *Credential
 	if completed.ProjectID == "" {
 		return nil, errors.New("project discovery: Antigravity returned an empty project_id")
 	}
+	paidTier, err := s.FetchPaidTier(ctx, completed.AccessToken)
+	if err != nil {
+		return nil, err
+	}
+	completed.PaidTier = paidTier
 	if err := completed.Normalize(); err != nil {
 		return nil, err
 	}
 	return &completed, nil
+}
+
+// FetchPaidTier returns the current paid subscription tier from the daily
+// loadCodeAssist endpoint. A missing paidTier means the account has no paid tier.
+func (s *Service) FetchPaidTier(ctx context.Context, accessToken string) (*PaidTier, error) {
+	request := map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}}
+	body, err := s.doJSON(ctx, http.MethodPost, strings.TrimRight(s.DailyAPIBaseURL, "/")+"/"+apiVersion+":loadCodeAssist", accessToken, request, false)
+	if err != nil {
+		return nil, fmt.Errorf("load Antigravity paid tier: %w", err)
+	}
+	var response struct {
+		PaidTier *PaidTier `json:"paidTier"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("decode Antigravity paid tier: %w", err)
+	}
+	if response.PaidTier == nil {
+		return nil, nil
+	}
+	response.PaidTier.ID = strings.TrimSpace(response.PaidTier.ID)
+	response.PaidTier.Name = strings.TrimSpace(response.PaidTier.Name)
+	if response.PaidTier.ID == "" && response.PaidTier.Name == "" {
+		return nil, nil
+	}
+	return response.PaidTier, nil
 }
 
 // FetchUserInfo returns the Google account email.

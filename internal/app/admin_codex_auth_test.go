@@ -68,6 +68,21 @@ func newCodexAuthTestStore(t *testing.T) storage.Store {
 	return store
 }
 
+func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:loadCodeAssist" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+	}))
+	t.Cleanup(server.Close)
+	service := antigravityauth.NewService(server.Client())
+	service.DailyAPIBaseURL = server.URL
+	return service
+}
+
 func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	idToken := codexTestIDToken(t, "user@example.com", "account-1")
@@ -156,7 +171,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 		case "/userinfo":
 			_, _ = io.WriteString(w, `{"email":"gravity@example.com"}`)
 		case "/v1internal:loadCodeAssist":
-			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"gravity-project"}`)
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"gravity-project","paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -168,6 +183,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	service.TokenURL = oauthServer.URL + "/token"
 	service.UserInfoURL = oauthServer.URL + "/userinfo"
 	service.APIBaseURL = oauthServer.URL
+	service.DailyAPIBaseURL = oauthServer.URL
 	manager := newAntigravityOAuthManager(service, store, nil)
 	manager.listenAddr = "127.0.0.1:0"
 	manager.timeout = 2 * time.Second
@@ -217,7 +233,9 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	if channel.Name != "Antigravity-gravity@example.com" || !channel.UsesAntigravityOAuth() || channel.KeyCount != 0 || channel.Websockets || channel.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
 		t.Fatalf("created Antigravity channel = %#v", channel)
 	}
-	if len(channel.URLs) != 2 || !channel.SupportsModel("gemini-3-flash") || !strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) {
+	if len(channel.URLs) != 2 || !channel.SupportsModel("gemini-3-flash") ||
+		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
+		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("created Antigravity channel contract = %#v", channel)
 	}
 }
@@ -228,6 +246,7 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 	credential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "gravity-editor-at", RefreshToken: "gravity-editor-rt",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "editor@example.com", ProjectID: "editor-project",
+		PaidTier: &antigravityauth.PaidTier{ID: "free-tier", Name: "Antigravity Starter Quota"},
 	}
 	payload, err := credential.JSON()
 	if err != nil {
@@ -254,6 +273,10 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 
 	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
 	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].AntigravityPaidTier != "Antigravity Free" {
+		t.Fatalf("channel list paid tier = %#v", list.Data)
+	}
 	if strings.Contains(listResponse.Body.String(), "gravity-editor-at") || strings.Contains(listResponse.Body.String(), "gravity-editor-rt") {
 		t.Fatalf("channel list leaked Antigravity credential: %s", listResponse.Body.String())
 	}
@@ -262,7 +285,7 @@ func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
 func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store}
+	server := &Server{store: store, antigravityService: newAntigravityPaidTierTestService(t)}
 	existingCredential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-existing", RefreshToken: "rt-existing",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "duplicate@example.com", ProjectID: "project-existing",
@@ -330,6 +353,10 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	if imported == nil || !imported.UsesAntigravityOAuth() {
 		t.Fatalf("new Antigravity channel was not created with canonical name: %#v", channels)
 	}
+	importedCredential, err := antigravityauth.ParseCredential([]byte(imported.OAuthCredential))
+	if err != nil || importedCredential.PaidTier == nil || importedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+		t.Fatalf("imported paid tier = (%#v, %v)", importedCredential, err)
+	}
 	persisted, err := store.GetConfig(context.Background(), existing.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +369,16 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
-	server := &Server{store: store}
+	server := &Server{store: store, antigravityService: newAntigravityPaidTierTestService(t)}
+	existingAntigravity := newAntigravityOAuthChannel("Antigravity-existing", `{}`)
+	existingAntigravity.Priority = 40
+	existingCodex := newCodexOAuthChannel("Codex-existing", `{}`, "plus")
+	existingCodex.Priority = 100
+	for _, channel := range []*model.Config{existingAntigravity, existingCodex} {
+		if _, err := store.CreateConfig(context.Background(), channel); err != nil {
+			t.Fatal(err)
+		}
+	}
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 
 	var body bytes.Buffer
@@ -350,7 +386,7 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 	if err := writer.WriteField("provider", "auto"); err != nil {
 		t.Fatal(err)
 	}
-	if err := writer.WriteField("priority_increment", "20"); err != nil {
+	if err := writer.WriteField("priority_increment", "10"); err != nil {
 		t.Fatal(err)
 	}
 	files := []struct {
@@ -443,17 +479,19 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 	}
 
 	channels, err := store.ListConfigs(context.Background())
-	if err != nil || len(channels) != 4 {
+	if err != nil || len(channels) != 6 {
 		t.Fatalf("channels = (%#v, %v)", channels, err)
 	}
 	want := map[string]struct {
 		authType string
 		priority int
 	}{
-		"Antigravity-gravity-explicit@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 0},
-		"Antigravity-gravity-inferred@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 20},
-		"Codex-codex-explicit@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 40},
-		"Codex-codex-inferred@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 60},
+		"Antigravity-existing":                     {authType: model.AuthTypeAntigravityOAuth, priority: 40},
+		"Antigravity-gravity-explicit@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 50},
+		"Antigravity-gravity-inferred@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 60},
+		"Codex-existing":                           {authType: model.AuthTypeCodexOAuth, priority: 100},
+		"Codex-codex-explicit@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 110},
+		"Codex-codex-inferred@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 120},
 	}
 	for _, channel := range channels {
 		expected, ok := want[channel.Name]
@@ -1356,7 +1394,8 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	defer cleanup()
 	credential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-gravity-quota-secret", RefreshToken: "rt-gravity-quota-secret",
-		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), ProjectID: "forward-bonus-fjkxm",
+		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), Email: "quota@example.com", ProjectID: "forward-bonus-fjkxm",
+		PaidTier: &antigravityauth.PaidTier{ID: "old-tier", Name: "Old Tier"},
 	}
 	payload, err := credential.JSON()
 	if err != nil {
@@ -1367,9 +1406,11 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 		t.Fatalf("create Antigravity channel: %v", err)
 	}
 
+	var requestURLs []string
 	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		if request.Method != http.MethodPost || request.URL.String() != antigravityUsageURL {
-			t.Errorf("usage request = %s %s", request.Method, request.URL)
+		requestURLs = append(requestURLs, request.URL.String())
+		if request.Method != http.MethodPost {
+			t.Errorf("usage request method = %s", request.Method)
 		}
 		if got := request.Header.Get("Authorization"); got != "Bearer at-gravity-quota-secret" {
 			t.Errorf("Authorization = %q", got)
@@ -1377,19 +1418,27 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 		if got := request.Header.Get("Content-Type"); got != "application/json" {
 			t.Errorf("Content-Type = %q", got)
 		}
-		if got := request.Header.Get("User-Agent"); got != antigravityUsageUserAgent {
-			t.Errorf("User-Agent = %q", got)
-		}
-		var body struct {
-			Project string `json:"project"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-			t.Fatalf("decode Antigravity usage request: %v", err)
-		}
-		if body.Project != "forward-bonus-fjkxm" {
-			t.Errorf("project = %q", body.Project)
-		}
-		responseBody := `{
+		responseBody := ""
+		switch request.URL.String() {
+		case antigravityauth.DefaultDailyAPIBaseURL + "/v1internal:loadCodeAssist":
+			if got := request.Header.Get("User-Agent"); got != antigravityauth.DefaultUserAgent {
+				t.Errorf("loadCodeAssist User-Agent = %q", got)
+			}
+			responseBody = `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`
+		case antigravityUsageURL:
+			if got := request.Header.Get("User-Agent"); got != antigravityUsageUserAgent {
+				t.Errorf("quota User-Agent = %q", got)
+			}
+			var body struct {
+				Project string `json:"project"`
+			}
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode Antigravity usage request: %v", err)
+			}
+			if body.Project != "forward-bonus-fjkxm" {
+				t.Errorf("project = %q", body.Project)
+			}
+			responseBody = `{
 			"groups":[
 				{"displayName":"Gemini Models","buckets":[
 					{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-08-13T08:24:21Z","remainingFraction":1},
@@ -1400,6 +1449,9 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 				]}
 			]
 		}`
+		default:
+			t.Errorf("usage request URL = %s", request.URL)
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},
@@ -1427,6 +1479,17 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
 	if response.Data.Provider != antigravityauth.ChannelType || response.Data.PlanType != "" || len(response.Data.Windows) != 3 {
 		t.Fatalf("usage summary = %#v", response.Data)
+	}
+	if len(requestURLs) != 2 || requestURLs[0] != antigravityauth.DefaultDailyAPIBaseURL+"/v1internal:loadCodeAssist" || requestURLs[1] != antigravityUsageURL {
+		t.Fatalf("Antigravity usage request order = %v", requestURLs)
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PaidTier == nil || persistedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
 	}
 	windows := response.Data.Windows
 	if windows[0].LimitName != "Gemini Models" || windows[0].Kind != "gemini-weekly" || windows[0].RemainingPercent != 100 || windows[0].UsedPercent != 0 || windows[0].LimitWindowSeconds != weeklyUsageWindowSeconds || windows[0].ResetAt != 1786609461 {
