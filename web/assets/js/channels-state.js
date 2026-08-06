@@ -2,6 +2,7 @@
 let channels = [];
 let channelStatsById = {};
 let editingChannelId = null;
+let editingChannelAuthType = 'api_key';
 let deletingChannelRequest = null;
 let testingChannelId = null;
 let testingClientProtocol = 'anthropic';

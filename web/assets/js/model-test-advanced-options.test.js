@@ -84,7 +84,7 @@ test('buildChatRequestPayload applies sampling options and limits recent message
   const payload = buildChatRequestPayload({
     model: 'gpt-test',
     stream: true,
-    thinking_effort: 'medium',
+    thinking_effort: 'max',
     builtin_search: false
   }, messages, {
     systemPrompt: 'answer tersely',
@@ -97,7 +97,7 @@ test('buildChatRequestPayload applies sampling options and limits recent message
   assert.deepEqual(payload, {
     model: 'gpt-test',
     stream: true,
-    thinking_effort: 'medium',
+    thinking_effort: 'max',
     builtin_search: false,
     messages: [
       { role: 'assistant', content: 'two' },

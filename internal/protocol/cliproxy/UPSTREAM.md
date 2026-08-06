@@ -74,6 +74,8 @@ documented adaptations:
   when `[DONE]` arrives without `finish_reason`, so item-level done events are
   emitted before `response.completed`; upstream `fork/v8.61.0` emits only the
   completed response in that case.
+- OpenAI Chat Completions-to-Codex maps `web_search_options` to a Responses
+  `web_search` tool while preserving its search context and user location.
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
   broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
   `input` array for instructions-only requests.

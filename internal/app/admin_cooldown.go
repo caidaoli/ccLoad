@@ -52,6 +52,9 @@ func (s *Server) HandleSetKeyCooldown(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid key index")
 		return
 	}
+	if !s.requireMutableAPIKeys(c, id) {
+		return
+	}
 
 	var req CooldownRequest
 	if err := c.ShouldBindJSON(&req); err != nil {

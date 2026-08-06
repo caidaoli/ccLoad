@@ -11,7 +11,11 @@ import (
 	"time"
 )
 
+// Channel authentication mechanisms and protocol transformation modes.
 const (
+	AuthTypeAPIKey     = "api_key"
+	AuthTypeCodexOAuth = "codex_oauth"
+
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
 	ProtocolTransformModeAuto = "auto"
@@ -22,6 +26,19 @@ const (
 	// ExactUpstreamURLMarker marks a configured channel URL as the exact upstream request URL.
 	ExactUpstreamURLMarker = "#"
 )
+
+// NormalizeAuthType normalizes the channel credential mechanism. Empty is the
+// database migration default for every pre-existing channel.
+func NormalizeAuthType(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", AuthTypeAPIKey:
+		return AuthTypeAPIKey
+	case AuthTypeCodexOAuth:
+		return AuthTypeCodexOAuth
+	default:
+		return ""
+	}
+}
 
 // NormalizeProtocolTransformMode normalizes persisted/admin values.
 // Empty means the current default policy: automatic negotiation.
@@ -331,6 +348,7 @@ func (r *CooldownDetectionRules) Clone() *CooldownDetectionRules {
 type Config struct {
 	ID                    int64       `json:"id"`
 	Name                  string      `json:"name"`
+	AuthType              string      `json:"auth_type"`
 	Websockets            bool        `json:"websockets,omitempty"`
 	ProtocolTransformMode string      `json:"protocol_transform_mode"`
 	URLs                  ChannelURLs `json:"urls"`
@@ -367,6 +385,12 @@ type Config struct {
 	// 用于一个中转站下的 Key 实际对应不同上游服务商的场景；默认关闭，保持原有渠道/模型级切换语义。
 	RetryOtherKeysOnFailure bool `json:"retry_other_keys_on_failure"`
 
+	// CodexCredential is the private CLIProxy-compatible OAuth JSON stored in
+	// the channels table. It must never be serialized by an API response.
+	CodexCredential  string `json:"-"`
+	CodexAccessToken string `json:"-"`
+	CodexAccountID   string `json:"-"`
+
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 
@@ -391,6 +415,7 @@ func (c *Config) Clone() *Config {
 	dst := &Config{
 		ID:                      c.ID,
 		Name:                    c.Name,
+		AuthType:                c.AuthType,
 		Websockets:              c.Websockets,
 		ProtocolTransformMode:   c.ProtocolTransformMode,
 		URLs:                    c.URLs.Clone(),
@@ -408,6 +433,9 @@ func (c *Config) Clone() *Config {
 		CooldownDetectionRules:  c.CooldownDetectionRules.Clone(),
 		ProxyURL:                c.ProxyURL,
 		RetryOtherKeysOnFailure: c.RetryOtherKeysOnFailure,
+		CodexCredential:         c.CodexCredential,
+		CodexAccessToken:        c.CodexAccessToken,
+		CodexAccountID:          c.CodexAccountID,
 		CreatedAt:               c.CreatedAt,
 		UpdatedAt:               c.UpdatedAt,
 		KeyCount:                c.KeyCount,
@@ -418,6 +446,23 @@ func (c *Config) Clone() *Config {
 		copy(dst.ModelEntries, c.ModelEntries)
 	}
 	return dst
+}
+
+// GetAuthType returns the normalized credential mechanism.
+func (c *Config) GetAuthType() string {
+	if c == nil {
+		return AuthTypeAPIKey
+	}
+	authType := NormalizeAuthType(c.AuthType)
+	if authType == "" {
+		return AuthTypeAPIKey
+	}
+	return authType
+}
+
+// UsesCodexOAuth reports whether this channel is backed by a dynamic Codex credential.
+func (c *Config) UsesCodexOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeCodexOAuth
 }
 
 // GetModels 获取所有已启用的模型名称列表
@@ -494,8 +539,11 @@ func (c *Config) SupportsModel(model string) bool {
 	c.buildIndexIfNeeded()
 	c.indexMu.RLock()
 	defer c.indexMu.RUnlock()
-	_, exists := c.modelIndex[model]
-	return exists
+	if _, exists := c.modelIndex[model]; exists {
+		return true
+	}
+	_, wildcard := c.modelIndex["*"]
+	return wildcard
 }
 
 // IsCoolingDown 检查渠道是否处于冷却状态

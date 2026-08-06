@@ -1370,6 +1370,34 @@ func TestRegistry_TranslateRequest_OpenAIToCodex_BuiltinWebSearch(t *testing.T) 
 	}
 }
 
+func TestRegistry_TranslateRequest_OpenAIToCodex_WebSearchOptions(t *testing.T) {
+	reg := protocol.NewRegistry()
+	builtin.Register(reg)
+
+	raw := []byte(`{"model":"gpt-5.4-mini","web_search_options":{"search_context_size":"high","user_location":{"type":"approximate","country":"US"}},"messages":[{"role":"user","content":"hello"}]}`)
+	got, err := reg.TranslateRequest(protocol.OpenAI, protocol.Codex, "gpt-5.4-mini", raw, true)
+	if err != nil {
+		t.Fatalf("TranslateRequest failed: %v", err)
+	}
+	var req struct {
+		Tools            []map[string]any `json:"tools"`
+		WebSearchOptions map[string]any   `json:"web_search_options"`
+	}
+	if err := json.Unmarshal(got, &req); err != nil {
+		t.Fatalf("unmarshal translated request: %v", err)
+	}
+	if len(req.Tools) != 1 || req.Tools[0]["type"] != "web_search" || req.Tools[0]["search_context_size"] != "high" {
+		t.Fatalf("unexpected web search tool: %+v", req.Tools)
+	}
+	location, _ := req.Tools[0]["user_location"].(map[string]any)
+	if location["country"] != "US" {
+		t.Fatalf("unexpected web search location: %+v", location)
+	}
+	if req.WebSearchOptions != nil {
+		t.Fatalf("web_search_options leaked into Codex request: %+v", req.WebSearchOptions)
+	}
+}
+
 func TestRegistry_TranslateResponseNonStream_CodexToOpenAI(t *testing.T) {
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)

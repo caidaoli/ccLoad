@@ -2,7 +2,7 @@
 package testutil
 
 import (
-	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net/http"
@@ -24,7 +24,7 @@ func patchMessagesInBody(body []byte, key string, messages any) ([]byte, error) 
 		return nil, err
 	}
 	obj[key] = messages
-	return sonic.Marshal(obj)
+	return sonic.ConfigStd.Marshal(obj)
 }
 
 func parseDataURLImage(dataURL string) (mimeType, data string, ok bool) {
@@ -281,7 +281,7 @@ func patchBodyObject(body []byte, mutate func(map[string]any)) ([]byte, error) {
 		return nil, err
 	}
 	mutate(obj)
-	return sonic.Marshal(obj)
+	return sonic.ConfigStd.Marshal(obj)
 }
 
 func hasTestSamplingOptions(req *TestChannelRequest) bool {
@@ -699,7 +699,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 	if strings.TrimSpace(testContent) == "" && len(req.Messages) == 0 {
 		testContent = "test"
 	}
-	sessionID := newTestSessionID()
+	sessionID := req.ResolveSessionID()
 	turnID := newTestSessionID()
 	windowID := sessionID + ":0"
 	turnMetadata, err := newCodexTurnMetadata(sessionID, turnID, windowID)
@@ -712,7 +712,7 @@ func (t *CodexTester) Build(cfg *model.Config, apiKey string, req *TestChannelRe
 		"STREAM":          req.Stream,
 		"CONTENT":         testContent,
 		"SESSION_ID":      sessionID,
-		"INSTALLATION_ID": newTestSessionID(),
+		"INSTALLATION_ID": util.NewUUIDv5(util.NameSpaceOID, "ccload:admin-test-installation:"+sessionID),
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -762,7 +762,7 @@ func newCodexTurnMetadata(sessionID, turnID, windowID string) (string, error) {
 		"request_kind":            "turn",
 		"window_id":               windowID,
 	}
-	data, err := sonic.Marshal(payload)
+	data, err := sonic.ConfigStd.Marshal(payload)
 	if err != nil {
 		return "", fmt.Errorf("marshal codex turn metadata: %w", err)
 	}
@@ -819,7 +819,7 @@ func (t *OpenAITester) Build(cfg *model.Config, apiKey string, req *TestChannelR
 	if strings.TrimSpace(testContent) == "" && len(req.Messages) == 0 {
 		testContent = "test"
 	}
-	sessionID := newTestSessionID()
+	sessionID := req.ResolveSessionID()
 
 	body, err := buildRequestFromTemplate("openai", map[string]any{
 		"MODEL":      req.Model,
@@ -970,15 +970,14 @@ func newTestSessionID() string {
 type AnthropicTester struct{}
 
 // newClaudeCLIUserID 生成 Claude CLI 用户ID
-func newClaudeCLIUserID() string {
+func newClaudeCLIUserID(sessionID string) string {
 	// Claude Code 真实格式：metadata.user_id 是一个 JSON 字符串
 	// 例如：{"device_id":"76efe6...","account_uuid":"","session_id":"ce6c5d34-..."}
-	deviceID := make([]byte, 32)
-	if _, err := rand.Read(deviceID); err != nil {
-		return `{"device_id":"0000000000000000000000000000000000000000000000000000000000000000","account_uuid":"","session_id":"00000000-0000-0000-0000-000000000000"}`
+	if strings.TrimSpace(sessionID) == "" {
+		sessionID = newTestSessionID()
 	}
-
-	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID), newTestSessionID())
+	deviceID := sha256.Sum256([]byte("ccload:admin-test-device:" + sessionID))
+	return fmt.Sprintf(`{"device_id":"%s","account_uuid":"","session_id":"%s"}`, hex.EncodeToString(deviceID[:]), sessionID)
 }
 
 // Build 构建 Anthropic 格式的 API 请求
@@ -988,13 +987,14 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 		maxTokens = 32000
 	}
 	testContent := req.Content
+	sessionID := req.ResolveSessionID()
 
 	body, err := buildRequestFromTemplate("anthropic", map[string]any{
 		"MODEL":      req.Model,
 		"STREAM":     req.Stream,
 		"CONTENT":    testContent,
 		"MAX_TOKENS": maxTokens,
-		"USER_ID":    newClaudeCLIUserID(),
+		"USER_ID":    newClaudeCLIUserID(sessionID),
 	})
 	if err != nil {
 		return "", nil, nil, err
@@ -1026,7 +1026,7 @@ func (t *AnthropicTester) Build(cfg *model.Config, apiKey string, req *TestChann
 	h.Set("x-stainless-runtime", "node")
 	h.Set("x-stainless-runtime-version", "v24.3.0")
 	h.Set("x-stainless-timeout", "300")
-	h.Set("X-Claude-Code-Session-Id", newTestSessionID())
+	h.Set("X-Claude-Code-Session-Id", sessionID)
 	if req.Stream {
 		h.Set("x-stainless-helper-method", "stream")
 	}

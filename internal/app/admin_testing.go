@@ -130,17 +130,18 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 }
 
 type channelTestRequestPlan struct {
-	clientProtocol   string
-	upstreamProtocol string
-	clientTester     testutil.ChannelTester
-	clientURL        string
-	clientHeaders    http.Header
-	fullURL          string
-	headers          http.Header
-	requestBody      []byte
-	clientBody       []byte
-	timeout          *channelTestTimeout
-	debugCapture     *debugCapture
+	clientProtocol    string
+	upstreamProtocol  string
+	upstreamStreaming bool
+	clientTester      testutil.ChannelTester
+	clientURL         string
+	clientHeaders     http.Header
+	fullURL           string
+	headers           http.Header
+	requestBody       []byte
+	clientBody        []byte
+	timeout           *channelTestTimeout
+	debugCapture      *debugCapture
 }
 
 type channelTestTimeout struct {
@@ -324,15 +325,23 @@ func markTestFirstStreamContent(requestPlan *channelTestRequestPlan, result map[
 	requestPlan.timeout.markFirstStreamContent()
 }
 
-// patchUpstreamSystemPrompt 将协议转换后的请求体中的 system prompt
-// 替换为上游协议模板定义的 system prompt，确保发送内容匹配上游 API 预期。
-func patchUpstreamSystemPrompt(translatedBody, upstreamBody []byte, upstreamProtocol string) []byte {
-	var key string
+// patchUpstreamTestFields 将上游测试器拥有的顶层字段覆盖到协议转换结果。
+// upstreamBody 已应用 TestChannelRequest，因此显式请求选项必须优先于转换器默认值。
+func patchUpstreamTestFields(translatedBody, upstreamBody []byte, upstreamProtocol string) []byte {
+	var keys []string
 	switch upstreamProtocol {
 	case "anthropic":
-		key = "system"
+		keys = []string{"system"}
 	case "codex":
-		key = "instructions"
+		keys = []string{
+			"instructions",
+			"reasoning",
+			"include",
+			"text",
+			"tool_choice",
+			"client_metadata",
+			"prompt_cache_key",
+		}
 	default:
 		return translatedBody
 	}
@@ -345,13 +354,15 @@ func patchUpstreamSystemPrompt(translatedBody, upstreamBody []byte, upstreamProt
 		return translatedBody
 	}
 
-	if val, ok := upstream[key]; ok {
-		translated[key] = val
-	} else {
-		delete(translated, key)
+	for _, key := range keys {
+		if val, ok := upstream[key]; ok {
+			translated[key] = val
+		} else {
+			delete(translated, key)
+		}
 	}
 
-	result, err := sonic.Marshal(translated)
+	result, err := sonic.ConfigStd.Marshal(translated)
 	if err != nil {
 		return translatedBody
 	}
@@ -399,7 +410,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	transformPlan, err := protocol.BuildTransformPlan(
 		protocol.Protocol(clientProtocol),
 		protocol.Protocol(upstreamProtocol),
-		extractRequestPath(fullURL),
+		channelTestClientRequestPath(clientProtocol, testReq),
 		extractRequestPath(upstreamURL),
 		body,
 		body,
@@ -422,14 +433,32 @@ func (s *Server) buildChannelTestRequestPlan(
 		return nil, err
 	}
 
-	// system prompt 用上游协议模板的版本替换：
-	// 协议转换验证的是消息/工具的格式变换，system prompt 需匹配上游 API 预期。
-	translatedBody = patchUpstreamSystemPrompt(translatedBody, upstreamBody, upstreamProtocol)
+	// 协议转换负责消息和工具的格式变换；上游测试器负责系统提示、请求选项和协议默认值。
+	translatedBody = patchUpstreamTestFields(translatedBody, upstreamBody, upstreamProtocol)
 
 	plan.fullURL = upstreamURL
 	plan.headers = cloneHeaders(upstreamHeaders)
 	plan.requestBody = translatedBody
 	return plan, nil
+}
+
+func channelTestClientRequestPath(protocolName string, testReq *testutil.TestChannelRequest) string {
+	switch protocol.Protocol(protocolName) {
+	case protocol.OpenAI:
+		return "/v1/chat/completions"
+	case protocol.Anthropic:
+		return "/v1/messages"
+	case protocol.Codex:
+		return "/v1/responses"
+	case protocol.Gemini:
+		action := ":generateContent"
+		if testReq != nil && testReq.Stream {
+			action = ":streamGenerateContent"
+		}
+		return "/v1beta/models/test" + action
+	default:
+		return ""
+	}
 }
 
 func parseTestStreamResponseBytes(
@@ -520,16 +549,9 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	requestAPIKey := strings.TrimSpace(testReq.APIKey)
-	if len(apiKeys) == 0 && requestAPIKey == "" {
-		RespondJSON(c, http.StatusOK, gin.H{
-			"success": false,
-			"error":   "渠道未配置有效的 API Key",
-		})
-		return
-	}
-
-	keySelection, err := s.selectChannelTestKey(apiKeys, testReq.KeyIndex, requestAPIKey)
+	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
+		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+	)
 	if err != nil {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":    false,
@@ -550,7 +572,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
-	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), cfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
+	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), runtimeCfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
@@ -569,6 +591,34 @@ type channelTestKeySelection struct {
 	keyIndex                int
 	apiKey                  string
 	updatePersistedCooldown bool
+}
+
+func (s *Server) prepareChannelTestAuth(
+	ctx context.Context,
+	cfg *model.Config,
+	apiKeys []*model.APIKey,
+	requestedKeyIndex int,
+	requestAPIKey string,
+) (*model.Config, channelTestKeySelection, error) {
+	if cfg != nil && cfg.UsesCodexOAuth() {
+		credential, err := s.codexCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.CodexAccessToken = credential.AccessToken
+		runtimeCfg.CodexAccountID = credential.AccountID
+		return runtimeCfg, channelTestKeySelection{
+			keyIndex:                cooldown.NoKeyIndex,
+			updatePersistedCooldown: true,
+		}, nil
+	}
+
+	if len(apiKeys) == 0 && requestAPIKey == "" {
+		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
+	}
+	selection, err := s.selectChannelTestKey(apiKeys, requestedKeyIndex, requestAPIKey)
+	return cfg, selection, err
 }
 
 func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {
@@ -613,8 +663,10 @@ func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.
 	actualModel := channelTestActualModel(result, testReq.Model)
 	if success, ok := result["success"].(bool); ok && success {
 		if updatePersistedCooldown {
-			if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
-				log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
+			if keyIndex != cooldown.NoKeyIndex {
+				if err := s.store.ResetKeyCooldown(ctx, cfg.ID, keyIndex); err != nil {
+					log.Printf("[WARN] 清除Key #%d冷却状态失败: %v", keyIndex, err)
+				}
 			}
 			if err := s.store.ResetChannelCooldown(ctx, cfg.ID); err != nil {
 				log.Printf("[WARN] 清除渠道冷却状态失败: %v", err)
@@ -967,7 +1019,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 
 	// 判断是否为SSE响应，以及是否请求了流式
 	contentType := resp.Header.Get("Content-Type")
-	isEventStream := strings.Contains(strings.ToLower(contentType), "text/event-stream")
+	isEventStream := responseIsSSE(resp, requestPlan.upstreamStreaming)
 
 	// 通用结果初始化
 	result = map[string]any{
@@ -1140,28 +1192,31 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	testReq *testutil.TestChannelRequest,
 	clientProtocol, upstreamProtocol, selectedURL string,
 ) (*model.Config, *channelTestRequestPlan, error) {
-	cfgForBuild := &model.Config{
-		ID:                 cfg.ID,
-		Name:               cfg.Name,
-		URLs:               model.ChannelURLs{{URL: model.StripExactUpstreamURLMarker(selectedURL), Exact: model.HasExactUpstreamURLMarker(selectedURL)}},
-		ModelEntries:       append([]model.ModelEntry(nil), cfg.ModelEntries...),
-		CustomRequestRules: cfg.CustomRequestRules,
-	}
+	cfgForBuild := cfg.Clone()
+	cfgForBuild.URLs = model.ChannelURLs{{
+		URL:   model.StripExactUpstreamURLMarker(selectedURL),
+		Exact: model.HasExactUpstreamURLMarker(selectedURL),
+	}}
 
 	requestPlan, err := s.buildChannelTestRequestPlan(cfgForBuild, apiKey, testReq, clientProtocol, upstreamProtocol)
 	if err != nil {
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
 
-	// anyrouter Anthropic thinking 兜底归一（与代理链路保持一致）
-	if requestPlan.upstreamProtocol == "anthropic" {
-		if parsed, perr := neturl.Parse(requestPlan.fullURL); perr == nil && strings.HasSuffix(parsed.Path, "/v1/messages") {
-			requestPlan.requestBody = normalizeAnyrouterAdaptiveThinking(cfgForBuild, requestPlan.upstreamProtocol, "/v1/messages", requestPlan.requestBody)
-		}
+	requestPath := extractRequestPath(requestPlan.fullURL)
+	if parsed, parseErr := neturl.Parse(requestPlan.fullURL); parseErr == nil {
+		requestPath = parsed.Path
 	}
-
-	// 渠道级自定义请求体规则（与代理链路一致，仅对 JSON body 生效）
-	requestPlan.requestBody = applyBodyRules(requestPlan.headers.Get("Content-Type"), requestPlan.requestBody, cfgForBuild.BodyRules())
+	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
+	requestPlan.requestBody = prepareTranslatedUpstreamBody(
+		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.headers,
+	)
+	if upstreamProtocolValue == protocol.Codex {
+		sessionID := testReq.ResolveSessionID()
+		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
+		ensureCodexSessionHeader(requestPlan.headers, sessionID)
+	}
+	requestPlan.upstreamStreaming = isStreamingRequest(requestPath, requestPlan.requestBody)
 	return cfgForBuild, requestPlan, nil
 }
 
@@ -1190,6 +1245,9 @@ func (s *Server) newTestUpstreamRequest(
 		req.Header.Set(key, value)
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+	if cfgForBuild.UsesCodexOAuth() {
+		injectCodexOAuthHeaders(req, cfgForBuild, requestPlan.upstreamStreaming)
+	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)

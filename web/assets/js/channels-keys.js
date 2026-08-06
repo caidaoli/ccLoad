@@ -10,6 +10,10 @@ function parseKeys(input) {
   return [...new Set(keys)];
 }
 
+function isChannelKeyEditorReadOnly() {
+  return typeof editingChannelAuthType !== 'undefined' && editingChannelAuthType === 'codex_oauth';
+}
+
 function normalizeInlineKeyRow(row) {
   if (row && typeof row === 'object') {
     return {
@@ -286,7 +290,7 @@ function buildActionsHtml(index) {
   // 状态语义仅由图标形状（🚫/✓）和 tooltip 表达
   const toggleBtn = `<button type="button" class="key-action-btn" data-action="toggle-disabled" data-index="${index}"
     title="${toggleTitle}"
-    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
+    style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.15s, background-color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">${toggleIcon}</button>`;
 
   const tpl = document.getElementById('tpl-key-actions');
   if (tpl) {
@@ -331,6 +335,20 @@ function createKeyRow(index) {
   if (keyCooldown && keyCooldown.disabled) {
     const input = row.querySelector('.inline-key-input');
     if (input) input.readOnly = true;
+  }
+
+  if (isChannelKeyEditorReadOnly()) {
+    row.draggable = false;
+    const keyInput = row.querySelector('.inline-key-input');
+    const noteInput = row.querySelector('.inline-key-note-input');
+    const checkbox = row.querySelector('.key-checkbox');
+    if (keyInput) keyInput.readOnly = true;
+    if (noteInput) noteInput.readOnly = true;
+    if (checkbox) checkbox.disabled = true;
+    row.querySelectorAll('[data-action="delete"], [data-action="toggle-disabled"]').forEach(button => {
+      button.hidden = false;
+      button.disabled = true;
+    });
   }
 
   // 设置选中状态
@@ -415,6 +433,7 @@ function initKeyTableEventDelegation() {
 
   // Drag and drop listeners
   tbody.addEventListener('dragstart', (e) => {
+    if (isChannelKeyEditorReadOnly()) return;
     // Prevent dragging when interacting with inputs or buttons
     if (['INPUT', 'BUTTON', 'A'].includes(e.target.tagName)) return;
 
@@ -457,6 +476,7 @@ function initKeyTableEventDelegation() {
   tbody.addEventListener('drop', (e) => {
     e.stopPropagation();
     e.preventDefault();
+    if (isChannelKeyEditorReadOnly()) return;
 
     const targetRow = e.target.closest('tr');
     if (!targetRow || !targetRow.classList.contains('draggable-key-row')) return;
@@ -524,6 +544,7 @@ function initKeyTableEventDelegation() {
 
   // 处理输入框变更
   tbody.addEventListener('change', (e) => {
+    if (isChannelKeyEditorReadOnly()) return;
     const input = e.target.closest('.inline-key-input');
     if (input) {
       const index = parseInt(input.dataset.index);
@@ -711,6 +732,7 @@ function toggleInlineKeyVisibility() {
 }
 
 function updateInlineKey(index, value) {
+  if (isChannelKeyEditorReadOnly()) return;
   const nextValue = value.trim();
   const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
   if (row.api_key === nextValue) return;
@@ -722,6 +744,7 @@ function updateInlineKey(index, value) {
 }
 
 function updateInlineKeyNote(index, value) {
+  if (isChannelKeyEditorReadOnly()) return;
   const nextValue = value.trim();
   const row = normalizeInlineKeyRow(inlineKeyTableData[index]);
   if (row.note === nextValue) return;
@@ -858,6 +881,7 @@ function copyKeyToClipboard(index) {
 }
 
 function deleteInlineKey(index) {
+  if (isChannelKeyEditorReadOnly()) return;
   if (inlineKeyTableData.length === 1) {
     alert(window.t('channels.keepOneKey'));
     return;
@@ -888,6 +912,7 @@ function deleteInlineKey(index) {
 }
 
 function toggleKeySelection(index, checked) {
+  if (isChannelKeyEditorReadOnly()) return;
   if (checked) {
     selectedKeyIndices.add(index);
   } else {
@@ -898,6 +923,7 @@ function toggleKeySelection(index, checked) {
 }
 
 function toggleSelectAllKeys(checked) {
+  if (isChannelKeyEditorReadOnly()) return;
   selectedKeyIndices.clear();
 
   if (checked) {
@@ -915,6 +941,14 @@ function updateBatchDeleteButton() {
 
   const count = selectedKeyIndices.size;
   const textSpan = btn.querySelector('span');
+
+  if (isChannelKeyEditorReadOnly()) {
+    btn.disabled = true;
+    btn.style.cursor = 'not-allowed';
+    btn.style.opacity = '0.5';
+    updateExportButton(0);
+    return;
+  }
 
   if (count > 0) {
     btn.disabled = false;
@@ -952,6 +986,7 @@ function updateSelectAllCheckbox() {
 }
 
 function batchDeleteSelectedKeys() {
+  if (isChannelKeyEditorReadOnly()) return;
   const count = selectedKeyIndices.size;
   if (count === 0) return;
 
@@ -1022,6 +1057,7 @@ function getVisibleKeyIndices() {
 }
 
 function confirmInlineKeyImport() {
+  if (isChannelKeyEditorReadOnly()) return;
   const textarea = document.getElementById('keyImportTextarea');
   const input = textarea.value.trim();
 
@@ -1060,6 +1096,7 @@ function confirmInlineKeyImport() {
 }
 
 function openKeyImportModal() {
+  if (isChannelKeyEditorReadOnly()) return;
   document.getElementById('keyImportTextarea').value = '';
   document.getElementById('keyImportPreviewContent').classList.add('hidden');
   document.getElementById('keyImportModal').classList.add('show');
@@ -1186,6 +1223,7 @@ function downloadExportKeys() {
 }
 
 async function toggleKeyDisabled(index) {
+  if (isChannelKeyEditorReadOnly()) return;
   if (!editingChannelId) return;
   if (channelFormDirty) {
     window.showNotification(window.t('channels.saveBeforeToggleKeyDisabled'), 'error');

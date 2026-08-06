@@ -1,10 +1,12 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -25,11 +27,12 @@ type channelEditorFeatures struct {
 }
 
 type channelEditorData struct {
-	Channel    ChannelWithCooldown     `json:"channel"`
-	Keys       []*model.APIKey         `json:"keys"`
-	ModelStats channelEditorModelStats `json:"model_stats"`
-	URLStats   channelEditorURLStats   `json:"url_stats"`
-	Features   channelEditorFeatures   `json:"features"`
+	Channel         ChannelWithCooldown     `json:"channel"`
+	Keys            []*model.APIKey         `json:"keys"`
+	CodexCredential json.RawMessage         `json:"codex_credential,omitempty"`
+	ModelStats      channelEditorModelStats `json:"model_stats"`
+	URLStats        channelEditorURLStats   `json:"url_stats"`
+	Features        channelEditorFeatures   `json:"features"`
 }
 
 // HandleChannelEditor 聚合编辑器首次打开所需的数据，避免前端拼装多个快照。
@@ -50,6 +53,22 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
+	}
+	var codexCredential json.RawMessage
+	if cfg.UsesCodexOAuth() {
+		credential, parseErr := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		apiKeys = []*model.APIKey{{
+			ChannelID:   cfg.ID,
+			KeyIndex:    0,
+			APIKey:      credential.AccessToken,
+			Note:        "Codex OAuth AT",
+			KeyStrategy: model.KeyStrategySequential,
+		}}
+		codexCredential = append(json.RawMessage(nil), cfg.CodexCredential...)
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}
@@ -72,10 +91,11 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, channelEditorData{
-		Channel:    detail,
-		Keys:       apiKeys,
-		ModelStats: modelStats,
-		URLStats:   urlStats,
+		Channel:         detail,
+		Keys:            apiKeys,
+		CodexCredential: codexCredential,
+		ModelStats:      modelStats,
+		URLStats:        urlStats,
 		Features: channelEditorFeatures{
 			ScheduledCheckEnabled: scheduledCheckEnabled,
 		},

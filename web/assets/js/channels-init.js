@@ -117,6 +117,9 @@ function initChannelsPageActions() {
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
   }
+  if (typeof setupCodexAuthActions === 'function') {
+    setupCodexAuthActions();
+  }
 
   if (typeof window.initDelegatedActions === 'function') {
     window.initDelegatedActions({
@@ -182,7 +185,7 @@ function initChannelsPageActions() {
 function applyChannelsAccessMode() {
   const readOnly = isTokenChannelsReadOnly();
   document.body.classList.toggle('channels-readonly', readOnly);
-  for (const id of ['addChannelBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+  for (const id of ['addChannelBtn', 'codexOAuthBtn', 'importCodexCredentialBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
     const el = document.getElementById(id);
     if (el) el.hidden = readOnly;
   }

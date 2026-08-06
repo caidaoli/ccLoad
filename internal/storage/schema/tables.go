@@ -10,6 +10,8 @@ func DefineChannelsTable() *TableBuilder {
 		Column("rpm_limit INT NOT NULL DEFAULT 0").
 		Column("max_concurrency INT NOT NULL DEFAULT 0").
 		Column("channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic'").
+		Column("auth_type VARCHAR(32) NOT NULL DEFAULT 'api_key'").
+		Column("codex_credential TEXT NOT NULL DEFAULT ''").
 		Column("websockets TINYINT NOT NULL DEFAULT 0").
 		Column("protocol_transform_mode VARCHAR(32) NOT NULL DEFAULT 'auto'").
 		Column("enabled TINYINT NOT NULL DEFAULT 1").

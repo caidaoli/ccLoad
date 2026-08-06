@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
 	"github.com/bytedance/sonic"
@@ -419,7 +420,6 @@ func (s *Server) HandleCheckDuplicateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-
 	// 构建新渠道 URL 集合（去除空行）
 	newURLSet := make(map[string]struct{}, len(req.URLs))
 	for _, entry := range req.URLs {
@@ -458,6 +458,10 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 	var req ChannelRequest
 	if err := BindAndValidate(c, &req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	if req.AuthType == model.AuthTypeCodexOAuth {
+		RespondErrorMsg(c, http.StatusBadRequest, "Codex OAuth channels must be created by login or credential import")
 		return
 	}
 
@@ -739,6 +743,9 @@ func (s *Server) handleAPIKeyToggle(c *gin.Context, disable bool) {
 		return
 	}
 	keyIndex := *req.KeyIndex
+	if !s.requireMutableAPIKeys(c, id) {
+		return
+	}
 
 	if _, err := s.store.GetAPIKey(c.Request.Context(), id, keyIndex); err != nil {
 		RespondErrorMsg(c, http.StatusNotFound, "api key not found")
@@ -788,6 +795,12 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		}
 	}
 
+	existing, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+
 	// 处理完整更新：重新序列化为ChannelRequest
 	reqBytes, err := sonic.Marshal(rawReq)
 	if err != nil {
@@ -800,6 +813,29 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request format")
 		return
 	}
+	if strings.TrimSpace(req.AuthType) == "" {
+		req.AuthType = existing.GetAuthType()
+	}
+	if existing.UsesCodexOAuth() {
+		if req.AuthType != model.AuthTypeCodexOAuth {
+			RespondErrorMsg(c, http.StatusConflict, "Codex channel auth_type is read-only")
+			return
+		}
+		if len(req.normalizeAPIKeys()) != 0 {
+			RespondErrorMsg(c, http.StatusConflict, "Codex channel API keys are read-only")
+			return
+		}
+		if _, submitted := rawReq["key_strategy"]; submitted {
+			RespondErrorMsg(c, http.StatusConflict, "Codex channel key strategy is read-only")
+			return
+		}
+		credential, parseErr := codexauth.ParseCredential([]byte(existing.CodexCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		req.Models = filterCodexOAuthModelEntries(req.Models, credential.PlanType)
+	}
 
 	if err := req.Validate(); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, err.Error())
@@ -811,6 +847,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if err != nil {
 		log.Printf("[WARN] 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
+	}
+	if existing.UsesCodexOAuth() {
+		oldKeys = nil
 	}
 
 	newKeys := req.normalizeAPIKeys()
@@ -858,7 +897,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// Key或策略变化时更新API Keys
-	if keyChanged {
+	if existing.UsesCodexOAuth() {
+		// Codex OAuth 凭证只由登录、导入和刷新链路维护。
+	} else if keyChanged {
 		disabledByAPIKey := make(map[string]bool, len(oldKeys))
 		for _, oldKey := range oldKeys {
 			if oldKey.Disabled {
@@ -958,6 +999,19 @@ func (s *Server) cleanupOrphanedURLStates(ctx context.Context, channelID int64, 
 	}
 }
 
+func (s *Server) requireMutableAPIKeys(c *gin.Context, channelID int64) bool {
+	cfg, err := s.store.GetConfig(c.Request.Context(), channelID)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, err)
+		return false
+	}
+	if cfg.UsesCodexOAuth() {
+		RespondErrorMsg(c, http.StatusConflict, "Codex channel API keys are read-only")
+		return false
+	}
+	return true
+}
+
 // HandleDeleteAPIKey 删除渠道下的单个Key，并保持key_index连续
 func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	// 解析渠道ID
@@ -976,6 +1030,9 @@ func (s *Server) HandleDeleteAPIKey(c *gin.Context) {
 	}
 
 	ctx := c.Request.Context()
+	if !s.requireMutableAPIKeys(c, channelID) {
+		return
+	}
 
 	// 获取当前Keys，确认目标存在并计算剩余数量
 	apiKeys, err := s.store.GetAPIKeys(ctx, channelID)
@@ -1406,6 +1463,9 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	}
 	if s.channelRPMLimiter != nil {
 		s.channelRPMLimiter.RemoveChannel(id)
+	}
+	if s.codexCredentials != nil {
+		s.codexCredentials.invalidate(id)
 	}
 	return true, nil
 }

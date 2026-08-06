@@ -272,6 +272,7 @@
     const panels = {
       'custom-rules': document.getElementById('advancedSettingsPanelCustomRules'),
       'cooldown-detection': document.getElementById('advancedSettingsPanelCooldownDetection'),
+      credential: document.getElementById('advancedSettingsPanelCredential'),
       other: document.getElementById('advancedSettingsPanelOther')
     };
     if (!Object.prototype.hasOwnProperty.call(panels, tab)) return;

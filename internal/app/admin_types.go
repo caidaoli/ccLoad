@@ -18,6 +18,7 @@ import (
 // ChannelRequest 渠道创建/更新请求结构
 type ChannelRequest struct {
 	Name                    string                        `json:"name" binding:"required"`
+	AuthType                string                        `json:"auth_type,omitempty"`
 	APIKey                  string                        `json:"api_key"`
 	APIKeys                 []ChannelAPIKeyRequest        `json:"api_keys,omitempty"`
 	Websockets              bool                          `json:"websockets,omitempty"`
@@ -171,9 +172,17 @@ func (cr *ChannelRequest) Validate() error {
 	if strings.TrimSpace(cr.Name) == "" {
 		return fmt.Errorf("name cannot be empty")
 	}
+	authType := model.NormalizeAuthType(cr.AuthType)
+	if authType == "" {
+		return fmt.Errorf("invalid auth_type %q", cr.AuthType)
+	}
+	cr.AuthType = authType
 	apiKeys := cr.normalizeAPIKeys()
-	if len(apiKeys) == 0 {
+	if authType == model.AuthTypeAPIKey && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
+	}
+	if authType == model.AuthTypeCodexOAuth && len(apiKeys) != 0 {
+		return fmt.Errorf("codex_oauth channel cannot contain API keys")
 	}
 	for i, key := range apiKeys {
 		if strings.ContainsAny(key.APIKey, "\x00\r\n") {
@@ -289,6 +298,7 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 
 	return &model.Config{
 		Name:                    strings.TrimSpace(cr.Name),
+		AuthType:                cr.AuthType,
 		Websockets:              cr.Websockets,
 		ProtocolTransformMode:   cr.ProtocolTransformMode,
 		URLs:                    cr.URLs.Clone(),

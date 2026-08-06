@@ -1854,6 +1854,62 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 	}
 }
 
+func TestHandleError_UsageLimitReachedWithoutKeyCoolsModel(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-usage-limit-without-key",
+		URLs:     model.ChannelURLs{{URL: "https://api.example.com"}},
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gpt-5.4-mini"},
+			{Model: "gpt-5.4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:      cfg.ID,
+		Model:          "gpt-5.4-mini",
+		ChannelModels:  []string{"gpt-5.4-mini", "gpt-5.4"},
+		KeyIndex:       NoKeyIndex,
+		StatusCode:     429,
+		ErrorBody:      []byte(`{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":7260}}`),
+		IsNetworkError: false,
+	})
+
+	if action != ActionRetryModel {
+		t.Fatalf("expected ActionRetryModel, got %v", action)
+	}
+
+	cooldownUntil, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.4-mini")
+	if !exists {
+		t.Fatal("expected model cooldown")
+	}
+	duration := cooldownUntil.Sub(before)
+	if duration < 7250*time.Second || duration > 7270*time.Second {
+		t.Fatalf("model cooldown duration=%v, want about 7260s", duration)
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gpt-5.4"); exists {
+		t.Fatal("unaffected model must not be cooled")
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("keyless usage limit must not cool the whole channel while another model is available")
+	}
+}
+
 func TestHandleError_UsageLimitReachedSingleKeyCoolsChannel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()

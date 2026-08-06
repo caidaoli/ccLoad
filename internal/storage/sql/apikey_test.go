@@ -2,6 +2,7 @@ package sql_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"ccLoad/internal/model"
@@ -380,6 +381,44 @@ func TestAPIKey_ImportChannelBatch(t *testing.T) {
 	}
 	if len(keys2) != 1 {
 		t.Fatalf("expected 1 key for imported-channel-2, got %d", len(keys2))
+	}
+}
+
+func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T) {
+	store := newTestStore(t, "import-codex-auth-immutable.db")
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"at-secret","refresh_token":"rt-secret","expired":"2030-01-01T00:00:00Z"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-immutable", AuthType: model.AuthTypeCodexOAuth, CodexCredential: credential,
+		URLs:    model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
+		Enabled: true, Websockets: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig() error = %v", err)
+	}
+
+	_, _, err = store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{
+		Config: &model.Config{
+			Name: created.Name, AuthType: model.AuthTypeAPIKey,
+			URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+		},
+		APIKeys: []model.APIKey{{KeyIndex: 0, APIKey: "must-not-replace-oauth"}},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "auth_type cannot be changed") {
+		t.Fatalf("ImportChannelBatch() error = %v, want immutable auth_type rejection", err)
+	}
+
+	persisted, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if !persisted.UsesCodexOAuth() || persisted.CodexCredential != credential {
+		t.Fatalf("Codex channel changed after rejected import: %#v", persisted)
+	}
+	keys, err := store.GetAPIKeys(ctx, created.ID)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("Codex keys after rejected import = (%#v, %v)", keys, err)
 	}
 }
 

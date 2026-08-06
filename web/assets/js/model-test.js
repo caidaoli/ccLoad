@@ -29,6 +29,7 @@ let isTestingModels = false;
 // Chat 模式状态
 let chatMessages = [];
 let chatMessageSummaries = [];
+const chatSessionState = window.ModelTestChatSession.createSessionState(() => crypto.randomUUID());
 let chatChannel = null;
 let chatChannelSelection = null;
 let chatModel = '';
@@ -3232,6 +3233,7 @@ function saveChatAdvancedOptionsFromModal() {
 function saveChatMessagesToStorage() {
   try {
     const data = JSON.stringify({
+      session_id: chatSessionState.current(),
       messages: chatMessages,
       summaries: chatMessageSummaries.slice(0, chatMessages.length)
     });
@@ -3249,10 +3251,6 @@ function loadChatMessagesFromStorage() {
   } catch (_) {
     return null;
   }
-}
-
-function clearChatMessagesFromStorage() {
-  localStorage.removeItem(STORAGE_KEY_CHAT_MESSAGES);
 }
 
 function cloneChatSummary(summary) {
@@ -3294,7 +3292,8 @@ function getChatThinkingOptions() {
     { value: 'low', label: i18nText('modelTest.chat.thinkingLow', '低') },
     { value: 'medium', label: i18nText('modelTest.chat.thinkingMedium', '中') },
     { value: 'high', label: i18nText('modelTest.chat.thinkingHigh', '高') },
-    { value: 'xhigh', label: i18nText('modelTest.chat.thinkingXHighMax', '最高 (xhigh/max)') }
+    { value: 'xhigh', label: i18nText('modelTest.chat.thinkingXHigh', '超高 (xhigh)') },
+    { value: 'max', label: i18nText('modelTest.chat.thinkingMax', '最高 (max)') }
   ];
 }
 
@@ -3436,9 +3435,11 @@ function initChatPanel() {
 
   // Restore persisted chat messages
   const savedChat = loadChatMessagesFromStorage();
+  chatSessionState.restore(savedChat?.session_id);
   if (savedChat && savedChat.messages.length > 0) {
     chatMessages = savedChat.messages;
     chatMessageSummaries = normalizeChatMessageSummaries(savedChat.summaries, chatMessages.length);
+    saveChatMessagesToStorage();
     renderChatMessages();
   }
 }
@@ -3775,6 +3776,7 @@ async function sendChatMessage() {
     const basePayload = {
       model: chatModel,
       client_protocol: selectedProtocol,
+      session_id: chatSessionState.current(),
       stream: chatStreamEnabled,
       thinking_effort: chatThinkingEffort,
       builtin_search: chatBuiltinSearch
@@ -4077,7 +4079,8 @@ function clearChat() {
   chatMessages = [];
   chatMessageSummaries = [];
   chatPendingImages = [];
-  clearChatMessagesFromStorage();
+  chatSessionState.rotate();
+  saveChatMessagesToStorage();
   const messagesEl = document.getElementById('chatMessages');
   if (messagesEl) messagesEl.innerHTML = '';
   renderChatImagePreviews();

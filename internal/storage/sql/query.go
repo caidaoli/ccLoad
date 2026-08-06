@@ -134,13 +134,14 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	// 扫描key_count字段（从JOIN查询获取）
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URLs, &c.Priority,
-		&c.RPMLimit, &c.MaxConcurrency, &websocketsInt, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
+		&c.RPMLimit, &c.MaxConcurrency, &c.AuthType, &c.CodexCredential, &websocketsInt, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
 		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &cooldownDetectionRules, &c.ProxyURL, &retryOtherKeysOnFailureInt, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
 
 	c.Enabled = enabledInt != 0
+	c.AuthType = c.GetAuthType()
 	c.Websockets = websocketsInt != 0
 	c.ProtocolTransformMode = c.GetProtocolTransformMode()
 	c.ScheduledCheckEnabled = scheduledCheckEnabledInt != 0

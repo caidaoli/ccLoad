@@ -70,6 +70,36 @@ func TestConfig_SupportsModel(t *testing.T) {
 	}
 }
 
+func TestConfig_WildcardModelSupportsAnyModelWithoutRedirect(t *testing.T) {
+	t.Parallel()
+	cfg := &Config{ModelEntries: []ModelEntry{{Model: "*"}}}
+	if !cfg.SupportsModel("gpt-5.4") || !cfg.SupportsModel("future-codex-model") {
+		t.Fatal("wildcard channel must support arbitrary models")
+	}
+	if redirect, ok := cfg.GetRedirectModel("gpt-5.4"); ok || redirect != "" {
+		t.Fatalf("wildcard must not rewrite model, got (%q, %v)", redirect, ok)
+	}
+}
+
+func TestConfig_AuthTypeIsIndependentFromProtocol(t *testing.T) {
+	t.Parallel()
+	legacy := &Config{}
+	if got := legacy.GetAuthType(); got != AuthTypeAPIKey {
+		t.Fatalf("legacy GetAuthType()=%q, want %q", got, AuthTypeAPIKey)
+	}
+	codex := &Config{AuthType: " CODEX_OAUTH ", CodexCredential: "secret"}
+	if !codex.UsesCodexOAuth() {
+		t.Fatal("expected Codex OAuth auth type")
+	}
+	clone := codex.Clone()
+	if clone.AuthType != codex.AuthType || clone.CodexCredential != "secret" {
+		t.Fatalf("Clone() lost private auth state: %#v", clone)
+	}
+	if got := NormalizeAuthType("codex"); got != "" {
+		t.Fatalf("historical protocol value normalized as auth type: %q", got)
+	}
+}
+
 func TestConfig_ProtocolTransformMode(t *testing.T) {
 	t.Parallel()
 
