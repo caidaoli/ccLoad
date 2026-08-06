@@ -11,8 +11,10 @@ import (
 
 const (
 	// ChannelType is the CLIProxyAPI provider type stored in Antigravity credentials.
-	ChannelType       = "antigravity"
-	maxCredentialSize = 1 << 20
+	ChannelType = "antigravity"
+	// CredentialRefreshLead is the window in which an access token is treated as stale.
+	CredentialRefreshLead = 5 * time.Minute
+	maxCredentialSize     = 1 << 20
 )
 
 // PaidTier is the minimal non-secret subscription metadata persisted with an
