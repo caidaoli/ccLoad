@@ -517,6 +517,97 @@ function formatCooldownRecoveryTime(remainingMS) {
   });
 }
 
+function formatCodexUsagePercent(value) {
+  const percent = Math.min(100, Math.max(0, Number(value) || 0));
+  return Number.isInteger(percent) ? String(percent) : percent.toFixed(1).replace(/\.0$/, '');
+}
+
+function formatCodexUsageResetAt(resetAt) {
+  const timestamp = Number(resetAt);
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function formatCodexUsageWindowDuration(seconds) {
+  const duration = Math.max(0, Number(seconds) || 0);
+  if (duration === 7 * 24 * 60 * 60) return window.t('channels.codex.usageWeekly');
+  if (duration > 0 && duration % (24 * 60 * 60) === 0) {
+    return window.t('channels.codex.usageDays', { count: duration / (24 * 60 * 60) });
+  }
+  if (duration > 0 && duration % (60 * 60) === 0) {
+    return window.t('channels.codex.usageHours', { count: duration / (60 * 60) });
+  }
+  return window.t('channels.codex.usageQuota');
+}
+
+function formatCodexUsageLimitName(limitName) {
+  const normalized = String(limitName || '').trim().toLowerCase();
+  if (!normalized || normalized === 'codex') return '';
+  if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
+  return String(limitName).trim();
+}
+
+function codexUsageLevel(remainingPercent) {
+  if (remainingPercent >= 70) return 'high';
+  if (remainingPercent >= 30) return 'medium';
+  if (remainingPercent > 0) return 'low';
+  return 'empty';
+}
+
+function buildCodexUsageRefreshButton(channelID, loading = false) {
+  const text = loading
+    ? window.t('channels.codex.usageRefreshing')
+    : window.t('channels.codex.usageRefresh');
+  return `<button type="button" class="ch-codex-usage__refresh channel-action-btn" data-action="refresh-codex-usage" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+}
+
+function buildCodexUsageStatusHtml(channel) {
+  if (channel?.auth_type !== 'codex_oauth' || (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
+    return '';
+  }
+  const state = typeof getCodexUsageState === 'function' ? getCodexUsageState(channel.id) : null;
+  if (!state) {
+    return `<div class="ch-codex-usage">${buildCodexUsageRefreshButton(channel.id)}</div>`;
+  }
+  if (state.status === 'loading') {
+    return `<div class="ch-codex-usage">${buildCodexUsageRefreshButton(channel.id, true)}</div>`;
+  }
+  if (state.status === 'error') {
+    return `<div class="ch-codex-usage">
+      ${buildCodexUsageRefreshButton(channel.id)}
+      <div class="ch-codex-usage__error" title="${escapeChannelRefreshText(state.error)}">${escapeChannelRefreshText(window.t('channels.codex.usageFailed'))}</div>
+    </div>`;
+  }
+
+  const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
+  const rows = windows.map(windowInfo => {
+    const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
+    const percent = formatCodexUsagePercent(remaining);
+    const duration = formatCodexUsageWindowDuration(windowInfo?.limit_window_seconds);
+    const limitName = formatCodexUsageLimitName(windowInfo?.limit_name);
+    const label = limitName ? `${limitName} · ${duration}` : duration;
+    const resetAt = formatCodexUsageResetAt(windowInfo?.reset_at);
+    const ariaLabel = window.t('channels.codex.usageRemaining', { label, percent });
+    return `<div class="ch-codex-usage__window">
+      <div class="ch-codex-usage__meta">
+        <span class="ch-codex-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+        <span class="ch-codex-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+        ${resetAt ? `<span class="ch-codex-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+      </div>
+      <div class="ch-codex-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
+        <span class="ch-codex-usage__fill ch-codex-usage__fill--${codexUsageLevel(remaining)}" style="width:${remaining}%"></span>
+      </div>
+    </div>`;
+  }).join('');
+  return `<div class="ch-codex-usage">
+    <div class="ch-codex-usage__toolbar">${buildCodexUsageRefreshButton(channel.id)}</div>
+    ${rows}
+  </div>`;
+}
+
 function buildChannelRuntimeStatusHtml(channel, stats) {
   const statuses = [];
   const channelCooldownMS = Number(channel.cooldown_remaining_ms || 0);
@@ -554,6 +645,9 @@ function buildChannelRuntimeStatusHtml(channel, stats) {
     const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
     if (lastSuccessHtml) statuses.push(lastSuccessHtml);
   }
+
+  const codexUsageHtml = buildCodexUsageStatusHtml(channel);
+  if (codexUsageHtml) statuses.push(codexUsageHtml);
 
   return statuses.length > 0
     ? `<div class="ch-runtime-status-list">${statuses.join('')}</div>`
@@ -770,7 +864,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-codex-usage', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -783,6 +877,13 @@ function initChannelEventDelegation() {
         break;
       case 'edit-cooling-keys':
         editChannelCoolingKeys(channelId);
+        break;
+      case 'refresh-codex-usage':
+        if (typeof refreshCodexUsage === 'function') {
+          refreshCodexUsage(channelId).catch(error => {
+            if (window.showError) window.showError(error?.message || window.t('channels.codex.usageFailed'));
+          });
+        }
         break;
       case 'test':
         testChannel(channelId, channelName);

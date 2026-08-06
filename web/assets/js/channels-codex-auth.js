@@ -6,6 +6,7 @@ let currentCodexCredentialJSON = '';
 let currentCodexCredential = null;
 let currentCodexCredentialInfo = null;
 let currentCodexCredentialView = 'decoded';
+const codexUsageStateByChannelID = new Map();
 
 function formatCodexPlanBadgeText(planType, subscriptionActiveUntil) {
   const plan = String(planType || '').trim();
@@ -371,6 +372,39 @@ async function refreshCodexCredential(channelID, fetcher = fetchDataWithAuth) {
   return fetcher(`/admin/channels/${numericID}/codex-credential/refresh`, { method: 'POST' });
 }
 
+function getCodexUsageState(channelID) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) return null;
+  return codexUsageStateByChannelID.get(numericID) || null;
+}
+
+function rerenderCodexUsage() {
+  if (typeof filterChannels === 'function') filterChannels();
+}
+
+async function refreshCodexUsage(channelID, fetcher = fetchDataWithAuth) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved Codex channel is required');
+  }
+  codexUsageStateByChannelID.set(numericID, { status: 'loading' });
+  rerenderCodexUsage();
+  try {
+    const result = await fetcher(`/admin/channels/${numericID}/codex-usage`, { method: 'POST' });
+    if (!result || !Array.isArray(result.windows)) {
+      throw new Error(window.t('channels.codex.usageInvalid'));
+    }
+    codexUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
+    rerenderCodexUsage();
+    return result;
+  } catch (error) {
+    const message = error?.message || window.t('channels.codex.usageFailed');
+    codexUsageStateByChannelID.set(numericID, { status: 'error', error: message });
+    rerenderCodexUsage();
+    throw error;
+  }
+}
+
 function setupCodexAuthActions() {
   const oauthButton = document.getElementById('codexOAuthBtn');
   const importButton = document.getElementById('importCodexCredentialBtn');
@@ -507,9 +541,11 @@ if (typeof module !== 'undefined' && module.exports) {
     copyCodexCredential,
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
+    getCodexUsageState,
     importCodexCredentials,
     pollCodexOAuthStatus,
     refreshCodexCredential,
+    refreshCodexUsage,
     renderCodexCredential,
     setCodexCredentialView,
     showCodexOAuthSession,
