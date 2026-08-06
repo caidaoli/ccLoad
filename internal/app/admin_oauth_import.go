@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -147,6 +148,7 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
 		return
 	}
+	sortOAuthCredentialFiles(files)
 
 	providerValue := forcedProvider
 	if providerValue == "" {
@@ -215,6 +217,23 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		s.InvalidateChannelListCache()
 	}
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+func sortOAuthCredentialFiles(files []*multipart.FileHeader) {
+	slices.SortStableFunc(files, func(a, b *multipart.FileHeader) int {
+		aName, bName := oauthCredentialFileName(a), oauthCredentialFileName(b)
+		if order := strings.Compare(strings.ToLower(aName), strings.ToLower(bName)); order != 0 {
+			return order
+		}
+		return strings.Compare(aName, bName)
+	})
+}
+
+func oauthCredentialFileName(file *multipart.FileHeader) string {
+	if file == nil {
+		return ""
+	}
+	return file.Filename
 }
 
 func firstMultipartValue(values []string) string {

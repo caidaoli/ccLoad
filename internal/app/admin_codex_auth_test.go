@@ -339,7 +339,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	}
 }
 
-func TestHandleImportOAuthCredentialsAutoDetectsTypeAndIncrementsCreatedPriorities(t *testing.T) {
+func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	server := &Server{store: store}
@@ -434,7 +434,11 @@ func TestHandleImportOAuthCredentialsAutoDetectsTypeAndIncrementsCreatedPrioriti
 	if result.Data.Created != 4 || result.Data.Skipped != 2 || result.Data.Failed != 0 || len(result.Data.Results) != len(files) {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
-	if result.Data.Results[4].Status != "skipped" || result.Data.Results[5].Status != "skipped" {
+	resultStatusByFile := make(map[string]string, len(result.Data.Results))
+	for _, importResult := range result.Data.Results {
+		resultStatusByFile[importResult.FileName] = importResult.Status
+	}
+	if resultStatusByFile["ambiguous.json"] != "skipped" || resultStatusByFile["unsupported.json"] != "skipped" {
 		t.Fatalf("unrecognized credentials were not skipped: %#v", result.Data.Results)
 	}
 
@@ -446,10 +450,10 @@ func TestHandleImportOAuthCredentialsAutoDetectsTypeAndIncrementsCreatedPrioriti
 		authType string
 		priority int
 	}{
-		"Codex-codex-explicit@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 0},
-		"Antigravity-gravity-explicit@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 20},
-		"Codex-codex-inferred@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 40},
-		"Antigravity-gravity-inferred@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 60},
+		"Antigravity-gravity-explicit@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 0},
+		"Antigravity-gravity-inferred@example.com": {authType: model.AuthTypeAntigravityOAuth, priority: 20},
+		"Codex-codex-explicit@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 40},
+		"Codex-codex-inferred@example.com":         {authType: model.AuthTypeCodexOAuth, priority: 60},
 	}
 	for _, channel := range channels {
 		expected, ok := want[channel.Name]
