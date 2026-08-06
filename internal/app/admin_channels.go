@@ -386,10 +386,10 @@ type channelCodexMetadata struct {
 }
 
 func channelCodexMetadataFromCredential(cfg *model.Config) channelCodexMetadata {
-	if cfg == nil || !cfg.UsesCodexOAuth() || cfg.CodexCredential == "" {
+	if cfg == nil || !cfg.UsesCodexOAuth() || cfg.OAuthCredential == "" {
 		return channelCodexMetadata{}
 	}
-	credential, err := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return channelCodexMetadata{}
 	}
@@ -493,8 +493,8 @@ func (s *Server) handleCreateChannel(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
 		return
 	}
-	if req.AuthType == model.AuthTypeCodexOAuth {
-		RespondErrorMsg(c, http.StatusBadRequest, "Codex OAuth channels must be created by login or credential import")
+	if req.AuthType != model.AuthTypeAPIKey {
+		RespondErrorMsg(c, http.StatusBadRequest, "OAuth channels must be created by login or credential import")
 		return
 	}
 
@@ -852,20 +852,22 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if strings.TrimSpace(req.AuthType) == "" {
 		req.AuthType = existing.GetAuthType()
 	}
-	if existing.UsesCodexOAuth() {
-		if req.AuthType != model.AuthTypeCodexOAuth {
-			RespondErrorMsg(c, http.StatusConflict, "Codex channel auth_type is read-only")
+	if existing.UsesOAuth() {
+		if req.AuthType != existing.GetAuthType() {
+			RespondErrorMsg(c, http.StatusConflict, "OAuth channel auth_type is read-only")
 			return
 		}
 		if len(req.normalizeAPIKeys()) != 0 {
-			RespondErrorMsg(c, http.StatusConflict, "Codex channel API keys are read-only")
+			RespondErrorMsg(c, http.StatusConflict, "OAuth channel API keys are read-only")
 			return
 		}
 		if _, submitted := rawReq["key_strategy"]; submitted {
-			RespondErrorMsg(c, http.StatusConflict, "Codex channel key strategy is read-only")
+			RespondErrorMsg(c, http.StatusConflict, "OAuth channel key strategy is read-only")
 			return
 		}
-		credential, parseErr := codexauth.ParseCredential([]byte(existing.CodexCredential))
+	}
+	if existing.UsesCodexOAuth() {
+		credential, parseErr := codexauth.ParseCredential([]byte(existing.OAuthCredential))
 		if parseErr != nil {
 			RespondError(c, http.StatusInternalServerError, parseErr)
 			return
@@ -884,7 +886,7 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		log.Printf("[WARN] 查询旧API Keys失败: %v", err)
 		oldKeys = []*model.APIKey{}
 	}
-	if existing.UsesCodexOAuth() {
+	if existing.UsesOAuth() {
 		oldKeys = nil
 	}
 
@@ -933,8 +935,8 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	}
 
 	// Key或策略变化时更新API Keys
-	if existing.UsesCodexOAuth() {
-		// Codex OAuth 凭证只由登录、导入和刷新链路维护。
+	if existing.UsesOAuth() {
+		// OAuth 凭证只由登录、导入和刷新链路维护。
 	} else if keyChanged {
 		disabledByAPIKey := make(map[string]bool, len(oldKeys))
 		for _, oldKey := range oldKeys {
@@ -1041,8 +1043,8 @@ func (s *Server) requireMutableAPIKeys(c *gin.Context, channelID int64) bool {
 		RespondError(c, http.StatusNotFound, err)
 		return false
 	}
-	if cfg.UsesCodexOAuth() {
-		RespondErrorMsg(c, http.StatusConflict, "Codex channel API keys are read-only")
+	if cfg.UsesOAuth() {
+		RespondErrorMsg(c, http.StatusConflict, "OAuth channel API keys are read-only")
 		return false
 	}
 	return true
@@ -1502,6 +1504,9 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	}
 	if s.codexCredentials != nil {
 		s.codexCredentials.invalidate(id)
+	}
+	if s.antigravityCredentials != nil {
+		s.antigravityCredentials.invalidate(id)
 	}
 	return true, nil
 }

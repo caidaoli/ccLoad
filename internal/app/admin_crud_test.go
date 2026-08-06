@@ -258,7 +258,11 @@ func TestHandleListChannelsFiltersByAuthenticationType(t *testing.T) {
 		},
 		{
 			Name: "codex-auth", URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses"}},
-			AuthType: model.AuthTypeCodexOAuth, CodexCredential: `{}`, Enabled: true,
+			AuthType: model.AuthTypeCodexOAuth, OAuthCredential: `{}`, Enabled: true,
+		},
+		{
+			Name: "antigravity-auth", URLs: model.ChannelURLs{{URL: "https://cloudcode-pa.googleapis.com"}},
+			AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: `{}`, Enabled: true,
 		},
 	}
 	for _, fixture := range fixtures {
@@ -273,6 +277,7 @@ func TestHandleListChannelsFiltersByAuthenticationType(t *testing.T) {
 	}{
 		{authType: model.AuthTypeAPIKey, wantName: "api-auth"},
 		{authType: model.AuthTypeCodexOAuth, wantName: "codex-auth"},
+		{authType: model.AuthTypeAntigravityOAuth, wantName: "antigravity-auth"},
 	} {
 		t.Run(tt.authType, func(t *testing.T) {
 			path := "/admin/channels?auth_type=" + tt.authType + "&limit=20&offset=0"

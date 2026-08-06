@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -132,11 +133,209 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 		t.Fatalf("ListConfigs() = (%d, %v), want one channel", len(channels), err)
 	}
 	channel := channels[0]
-	if !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 || !channel.SupportsModel("gpt-5.4") {
+	if channel.Name != "Codex-user@example.com" || !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 || !channel.SupportsModel("gpt-5.4") {
 		t.Fatalf("created channel = %#v", channel)
 	}
-	if len(channel.URLs) != 1 || channel.URLs[0].URL != codexUpstreamURL || !channel.URLs[0].Exact || strings.Contains(channel.CodexCredential, "code-1") {
+	if len(channel.URLs) != 1 || channel.URLs[0].URL != codexUpstreamURL || !channel.URLs[0].Exact || strings.Contains(channel.OAuthCredential, "code-1") {
 		t.Fatalf("created channel URL/credential = %#v", channel)
+	}
+}
+
+func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	oauthServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			if err := r.ParseForm(); err != nil {
+				t.Fatalf("ParseForm: %v", err)
+			}
+			if r.Form.Get("grant_type") != "authorization_code" || r.Form.Get("code") != "gravity-code" || r.Form.Get("code_verifier") != "" {
+				t.Errorf("token form = %v", r.Form)
+			}
+			_, _ = io.WriteString(w, `{"access_token":"gravity-at","refresh_token":"gravity-rt","expires_in":3600}`)
+		case "/userinfo":
+			_, _ = io.WriteString(w, `{"email":"gravity@example.com"}`)
+		case "/v1internal:loadCodeAssist":
+			_, _ = io.WriteString(w, `{"cloudaicompanionProject":"gravity-project"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer oauthServer.Close()
+
+	service := antigravityauth.NewService(oauthServer.Client())
+	service.AuthorizationURL = "https://accounts.example.test/authorize"
+	service.TokenURL = oauthServer.URL + "/token"
+	service.UserInfoURL = oauthServer.URL + "/userinfo"
+	service.APIBaseURL = oauthServer.URL
+	manager := newAntigravityOAuthManager(service, store, nil)
+	manager.listenAddr = "127.0.0.1:0"
+	manager.timeout = 2 * time.Second
+	defer manager.close()
+
+	authURL, state, err := manager.start()
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	redirectURI := parsed.Query().Get("redirect_uri")
+	if parsed.Query().Get("state") != state || !strings.HasSuffix(redirectURI, "/oauth-callback") || parsed.Query().Get("code_challenge") != "" {
+		t.Fatalf("Antigravity auth URL query = %v", parsed.Query())
+	}
+	response, err := http.Get(redirectURI + "?code=gravity-code&state=" + url.QueryEscape(state)) //nolint:gosec // local callback listener
+	if err != nil {
+		t.Fatalf("callback: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("callback status = %d", response.StatusCode)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		status, ok := manager.status(state)
+		if ok && status.Status == "complete" {
+			break
+		}
+		if ok && status.Status == "error" {
+			t.Fatalf("OAuth status error = %s", status.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Antigravity OAuth channel creation timed out")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 1 {
+		t.Fatalf("ListConfigs = (%d, %v)", len(channels), err)
+	}
+	channel := channels[0]
+	if channel.Name != "Antigravity-gravity@example.com" || !channel.UsesAntigravityOAuth() || channel.KeyCount != 0 || channel.Websockets || channel.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+		t.Fatalf("created Antigravity channel = %#v", channel)
+	}
+	if len(channel.URLs) != 2 || !channel.SupportsModel("gemini-3-flash") || !strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) {
+		t.Fatalf("created Antigravity channel contract = %#v", channel)
+	}
+}
+
+func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "gravity-editor-at", RefreshToken: "gravity-editor-rt",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "editor@example.com", ProjectID: "editor-project",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity editor", payload))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	requestContext, response := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/editor", channel.ID), nil))
+	requestContext.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleChannelEditor(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("editor status=%d body=%s", response.Code, response.Body.String())
+	}
+	editor := mustParseAPIResponse[struct {
+		Keys            []*model.APIKey `json:"keys"`
+		OAuthCredential json.RawMessage `json:"oauth_credential"`
+	}](t, response.Body.Bytes())
+	if len(editor.Data.Keys) != 1 || editor.Data.Keys[0].APIKey != "gravity-editor-at" || !strings.Contains(string(editor.Data.OAuthCredential), `"project_id":"editor-project"`) {
+		t.Fatalf("editor data=%#v", editor.Data)
+	}
+
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	if strings.Contains(listResponse.Body.String(), "gravity-editor-at") || strings.Contains(listResponse.Body.String(), "gravity-editor-rt") {
+		t.Fatalf("channel list leaked Antigravity credential: %s", listResponse.Body.String())
+	}
+}
+
+func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store}
+	existingCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-existing", RefreshToken: "rt-existing",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "duplicate@example.com", ProjectID: "project-existing",
+	}
+	existingPayload, err := existingCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	existing, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity-duplicate@example.com", existingPayload))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	files := []struct {
+		name string
+		body string
+	}{
+		{name: "duplicate.json", body: fmt.Sprintf(`{"type":"antigravity","access_token":"at-must-not-overwrite","refresh_token":"rt-must-not-overwrite","expired":%q,"email":"duplicate@example.com","project_id":"project-other"}`, expiresAt)},
+		{name: "new.json", body: fmt.Sprintf(`{"type":"antigravity","access_token":"at-import-secret","refresh_token":"rt-import-secret","expired":%q,"email":"new@example.com","project_id":"project-new"}`, expiresAt)},
+		{name: "broken.json", body: `{"type":"antigravity"`},
+	}
+	for _, file := range files {
+		part, createErr := writer.CreateFormFile("files", file.name)
+		if createErr != nil {
+			t.Fatalf("CreateFormFile(%q): %v", file.name, createErr)
+		}
+		if _, writeErr := part.Write([]byte(file.body)); writeErr != nil {
+			t.Fatalf("write %q: %v", file.name, writeErr)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/antigravity/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportAntigravityCredential(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{"at-import-secret", "rt-import-secret", "at-must-not-overwrite", "rt-must-not-overwrite"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("import response leaked %q: %s", secret, response.Body.String())
+		}
+	}
+	result := mustParseAPIResponse[codexCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 1 || result.Data.Skipped != 1 || result.Data.Failed != 1 || len(result.Data.Results) != 3 {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 2 {
+		t.Fatalf("channels = (%#v, %v)", channels, err)
+	}
+	var imported *model.Config
+	for _, channel := range channels {
+		if channel.Name == "Antigravity-new@example.com" {
+			imported = channel
+			break
+		}
+	}
+	if imported == nil || !imported.UsesAntigravityOAuth() {
+		t.Fatalf("new Antigravity channel was not created with canonical name: %#v", channels)
+	}
+	persisted, err := store.GetConfig(context.Background(), existing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.OAuthCredential != existingPayload {
+		t.Fatalf("same-name import overwrote existing credential")
 	}
 }
 
@@ -364,7 +563,7 @@ func TestCodexOAuthCancelInterruptsTokenExchangeWithoutCreatingChannel(t *testin
 	}
 }
 
-func TestImportedCodexCredentialUpsertsSameAccount(t *testing.T) {
+func TestImportedOAuthCredentialUpsertsSameAccount(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	now := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	first := &codexauth.Credential{
@@ -401,7 +600,7 @@ func TestImportedCodexCredentialUpsertsSameAccount(t *testing.T) {
 	if err != nil || wasCreated {
 		t.Fatalf("second import = (%#v, %v, %v)", updated, wasCreated, err)
 	}
-	if updated.ID != created.ID || !strings.Contains(updated.CodexCredential, `"access_token":"at-2"`) {
+	if updated.ID != created.ID || !strings.Contains(updated.OAuthCredential, `"access_token":"at-2"`) {
 		t.Fatalf("updated channel = %#v", updated)
 	}
 	if got := updated.GetModels(); !slices.Equal(got, wantModels) {
@@ -413,7 +612,7 @@ func TestImportedCodexCredentialUpsertsSameAccount(t *testing.T) {
 	}
 }
 
-func TestImportedCodexCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
+func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	plus := &codexauth.Credential{
@@ -448,7 +647,7 @@ func TestImportedCodexCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	}
 }
 
-func TestImportedCodexCredentialModelsFollowPlanType(t *testing.T) {
+func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
 		"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review",
@@ -580,13 +779,13 @@ func TestHandleImportCodexCredentialCreatesSkipsAndReportsFilesWithoutLeakingTok
 	if err != nil {
 		t.Fatalf("get existing channel: %v", err)
 	}
-	if !strings.Contains(persistedExisting.CodexCredential, `"access_token":"at-existing"`) ||
-		strings.Contains(persistedExisting.CodexCredential, "must-not-overwrite") {
+	if !strings.Contains(persistedExisting.OAuthCredential, `"access_token":"at-existing"`) ||
+		strings.Contains(persistedExisting.OAuthCredential, "must-not-overwrite") {
 		t.Fatalf("duplicate import overwrote existing channel")
 	}
 	var created *model.Config
 	for _, channel := range channels {
-		if channel.Name == "Codex - new@example.com" {
+		if channel.Name == "Codex-new@example.com" {
 			created = channel
 			break
 		}
@@ -596,7 +795,7 @@ func TestHandleImportCodexCredentialCreatesSkipsAndReportsFilesWithoutLeakingTok
 	}
 }
 
-func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T) {
+func TestHandleChannelEditorExposesOAuthCredentialOnlyInEditorData(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -625,8 +824,8 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 	}
 	resp := mustParseAPIResponse[struct {
 		Keys                []*model.APIKey        `json:"keys"`
-		CodexCredential     json.RawMessage        `json:"codex_credential"`
-		CodexCredentialInfo *codexauth.IDTokenInfo `json:"codex_credential_info"`
+		OAuthCredential     json.RawMessage        `json:"oauth_credential"`
+		OAuthCredentialInfo *codexauth.IDTokenInfo `json:"oauth_credential_info"`
 		Channel             struct {
 			CodexPlanType                string     `json:"codex_plan_type"`
 			CodexSubscriptionActiveUntil *time.Time `json:"codex_subscription_active_until"`
@@ -636,17 +835,17 @@ func TestHandleChannelEditorExposesCodexCredentialOnlyInEditorData(t *testing.T)
 		t.Fatalf("editor keys = %#v, want read-only AT", resp.Data.Keys)
 	}
 	var exposed codexauth.Credential
-	if err := json.Unmarshal(resp.Data.CodexCredential, &exposed); err != nil {
-		t.Fatalf("decode editor credential: %v; raw=%s", err, resp.Data.CodexCredential)
+	if err := json.Unmarshal(resp.Data.OAuthCredential, &exposed); err != nil {
+		t.Fatalf("decode editor credential: %v; raw=%s", err, resp.Data.OAuthCredential)
 	}
 	if exposed.AccessToken != credential.AccessToken || exposed.RefreshToken != credential.RefreshToken || exposed.AccountID != credential.AccountID {
 		t.Fatalf("editor credential = %#v", exposed)
 	}
-	if resp.Data.CodexCredentialInfo == nil || resp.Data.CodexCredentialInfo.ChatGPTAccountID != "account-editor" ||
-		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
-		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
-		resp.Data.CodexCredentialInfo.PlanType != "plus" {
-		t.Fatalf("editor decoded credential info = %#v", resp.Data.CodexCredentialInfo)
+	if resp.Data.OAuthCredentialInfo == nil || resp.Data.OAuthCredentialInfo.ChatGPTAccountID != "account-editor" ||
+		resp.Data.OAuthCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
+		resp.Data.OAuthCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
+		resp.Data.OAuthCredentialInfo.PlanType != "plus" {
+		t.Fatalf("editor decoded credential info = %#v", resp.Data.OAuthCredentialInfo)
 	}
 	if resp.Data.Channel.CodexPlanType != "plus" {
 		t.Fatalf("editor channel plan type = %q, want plus", resp.Data.Channel.CodexPlanType)
@@ -741,7 +940,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetConfig() after allowed update error = %v", err)
 	}
-	if persisted.Name != "codex-renamed" || persisted.CodexCredential != channel.CodexCredential {
+	if persisted.Name != "codex-renamed" || persisted.OAuthCredential != channel.OAuthCredential {
 		t.Fatalf("allowed update changed credential or missed name: %#v", persisted)
 	}
 	if persisted.SupportsModel("gpt-5.4") {
@@ -753,7 +952,7 @@ func TestCodexChannelKeyMutationEndpointsAreReadOnly(t *testing.T) {
 	}
 }
 
-func TestCodexCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T) {
+func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-old", RefreshToken: "rt-old",
@@ -816,7 +1015,7 @@ func TestCodexCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetConfig() error = %v", err)
 	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.CodexCredential))
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil {
 		t.Fatalf("ParseCredential() persisted refresh error = %v", err)
 	}
@@ -871,26 +1070,26 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 		t.Fatalf("refresh status=%d body=%s", w.Code, w.Body.String())
 	}
 	resp := mustParseAPIResponse[struct {
-		CodexCredential     codexauth.Credential   `json:"codex_credential"`
-		CodexCredentialInfo *codexauth.IDTokenInfo `json:"codex_credential_info"`
+		OAuthCredential     codexauth.Credential   `json:"oauth_credential"`
+		OAuthCredentialInfo *codexauth.IDTokenInfo `json:"oauth_credential_info"`
 		CodexPlanType       string                 `json:"codex_plan_type"`
 	}](t, w.Body.Bytes())
-	if resp.Data.CodexCredential.AccessToken != "at-manual-new" ||
-		resp.Data.CodexCredential.RefreshToken != "rt-manual-new" ||
-		resp.Data.CodexCredential.IDToken != idToken || resp.Data.CodexPlanType != "team" {
+	if resp.Data.OAuthCredential.AccessToken != "at-manual-new" ||
+		resp.Data.OAuthCredential.RefreshToken != "rt-manual-new" ||
+		resp.Data.OAuthCredential.IDToken != idToken || resp.Data.CodexPlanType != "team" {
 		t.Fatalf("refresh response credential = %#v", resp.Data)
 	}
-	if resp.Data.CodexCredentialInfo == nil || resp.Data.CodexCredentialInfo.ChatGPTAccountID != "account-manual-refresh" ||
-		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
-		resp.Data.CodexCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
-		resp.Data.CodexCredentialInfo.PlanType != "team" {
-		t.Fatalf("refresh response decoded info = %#v", resp.Data.CodexCredentialInfo)
+	if resp.Data.OAuthCredentialInfo == nil || resp.Data.OAuthCredentialInfo.ChatGPTAccountID != "account-manual-refresh" ||
+		resp.Data.OAuthCredentialInfo.ChatGPTSubscriptionActiveStart != codexTestSubscriptionActiveStart ||
+		resp.Data.OAuthCredentialInfo.ChatGPTSubscriptionActiveUntil != codexTestSubscriptionActiveUntil ||
+		resp.Data.OAuthCredentialInfo.PlanType != "team" {
+		t.Fatalf("refresh response decoded info = %#v", resp.Data.OAuthCredentialInfo)
 	}
 	persisted, err := store.GetConfig(context.Background(), channel.ID)
 	if err != nil {
 		t.Fatalf("GetConfig() error = %v", err)
 	}
-	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.CodexCredential))
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil || persistedCredential.AccessToken != "at-manual-new" || persistedCredential.IDToken != idToken {
 		t.Fatalf("persisted credential = (%#v, %v)", persistedCredential, err)
 	}

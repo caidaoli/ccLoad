@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
@@ -40,7 +41,7 @@ func createCodexOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL 
 	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
 		Name:                  "codex-oauth-admin-test",
 		AuthType:              model.AuthTypeCodexOAuth,
-		CodexCredential:       payload,
+		OAuthCredential:       payload,
 		URLs:                  model.ChannelURLs{{URL: upstreamURL, Exact: true, Protocols: []string{util.ProtocolCodex}}},
 		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
 		ModelEntries:          []model.ModelEntry{{Model: "gpt-5.6-sol"}},
@@ -48,6 +49,29 @@ func createCodexOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL 
 	})
 	if err != nil {
 		t.Fatalf("CreateConfig Codex OAuth channel: %v", err)
+	}
+	return created
+}
+
+func createAntigravityOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
+	t.Helper()
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-gravity-admin", RefreshToken: "rt-gravity-admin",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339),
+		Email:   "gravity-admin@example.com", ProjectID: "gravity-admin-project",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "antigravity-oauth-admin-test", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: payload,
+		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolGemini}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "gemini-3-flash"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
 	return created
 }
@@ -1121,6 +1145,46 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if got, _ := resp.Data["tested_key_index"].(float64); got != -1 {
 		t.Fatalf("tested_key_index=%v, want -1", resp.Data["tested_key_index"])
+	}
+}
+
+func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
+	var upstreamBody []byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1internal:generateContent" || r.Header.Get("Authorization") != "Bearer at-gravity-admin" {
+			t.Errorf("unexpected Antigravity request: %s %v", r.URL.String(), r.Header)
+		}
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity test answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "openai", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !resp.Success || !success {
+		t.Fatalf("Antigravity OAuth channel test failed: %+v", resp)
+	}
+	if got, _ := resp.Data["response_text"].(string); got != "gravity test answer" {
+		t.Fatalf("response_text=%q data=%+v", got, resp.Data)
+	}
+	if gjson.GetBytes(upstreamBody, "project").String() != "gravity-admin-project" || gjson.GetBytes(upstreamBody, "request.contents").Array() == nil {
+		t.Fatalf("invalid Antigravity request envelope: %s", upstreamBody)
+	}
+	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
+		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])
 	}
 }
 

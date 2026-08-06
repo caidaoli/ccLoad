@@ -1870,7 +1870,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "native-codex-oauth", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", authType: model.AuthTypeCodexOAuth,
-		codexCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws"), priority: 100,
+		oauthCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws"), priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 	if err := downstream.WriteJSON(map[string]any{

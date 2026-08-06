@@ -672,10 +672,53 @@ func ensureChannelsAuthType(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"TEXT NOT NULL DEFAULT 'api_key'")
 }
 
-func ensureChannelsCodexCredential(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "channels", "codex_credential",
+func ensureChannelsOAuthCredential(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "channels", "oauth_credential",
 		"TEXT NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
+		"TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+
+	legacyExists, err := migrationColumnExists(ctx, db, dialect, "channels", "codex_credential")
+	if err != nil {
+		return err
+	}
+	if !legacyExists {
+		return nil
+	}
+	if _, err := db.ExecContext(ctx, `
+		UPDATE channels
+		SET oauth_credential = codex_credential
+		WHERE oauth_credential = '' AND codex_credential <> ''
+	`); err != nil {
+		return fmt.Errorf("backfill oauth credential: %w", err)
+	}
+	return nil
+}
+
+func migrationColumnExists(ctx context.Context, db *sql.DB, dialect Dialect, table, column string) (bool, error) {
+	switch dialect {
+	case DialectMySQL:
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?",
+			table, column,
+		).Scan(&count)
+		return count > 0, err
+	case DialectPostgres:
+		var count int
+		err := db.QueryRowContext(ctx,
+			rebindIfPostgres(DialectPostgres, "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?"),
+			table, column,
+		).Scan(&count)
+		return count > 0, err
+	default:
+		columns, err := sqliteExistingColumns(ctx, db, table)
+		if err != nil {
+			return false, err
+		}
+		return columns[column], nil
+	}
 }
 
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT

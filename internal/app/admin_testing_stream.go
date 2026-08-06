@@ -316,7 +316,7 @@ func (s *Server) streamChatWithURLForProtocol(
 	}
 
 	var streamErr error
-	if clientProtocol == requestPlan.upstreamProtocol {
+	if clientProtocol == requestPlan.upstreamProtocol && !requestPlan.antigravityOAuth {
 		// 原生协议：直接透传 SSE，提取 delta 文本
 		streamErr = streamChatNativeWithFirstContent(c, resp.Body, markFirstContent, sr)
 	} else {
@@ -607,19 +607,39 @@ func streamChatTranslated(c *gin.Context, resp *http.Response, requestPlan *chan
 	src := readerWithCloser{Reader: resp.Body, Closer: resp.Body}
 	return streamTransformSSEEvents(ctx, src, c.Writer,
 		func(rawEvent []byte) error {
+			parserEvent := rawEvent
+			if requestPlan.antigravityOAuth {
+				var err error
+				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return err
+				}
+			}
 			if sr != nil && sr.usageParser != nil {
-				_ = sr.usageParser.Feed(rawEvent)
+				_ = sr.usageParser.Feed(parserEvent)
 			}
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
+			translatedRequestBody := requestPlan.requestBody
+			if requestPlan.antigravityOAuth {
+				var err error
+				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return nil, err
+				}
+				translatedRequestBody, err = unwrapAntigravityRequest(requestPlan.requestBody)
+				if err != nil {
+					return nil, err
+				}
+			}
 			translated, err := s.protocolRegistry.TranslateResponseStream(
 				ctx,
 				protocol.Protocol(requestPlan.upstreamProtocol),
 				protocol.Protocol(requestPlan.clientProtocol),
 				testReq.Model,
 				requestPlan.clientBody,
-				requestPlan.requestBody,
+				translatedRequestBody,
 				rawEvent,
 				&state,
 			)

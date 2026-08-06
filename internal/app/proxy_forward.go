@@ -109,10 +109,20 @@ func (s *Server) buildProxyRequest(
 	baseURL string,
 ) (*http.Request, error) {
 	// 1. 构建完整 URL
-	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQueryForAttempt(reqCtx, rawQuery))
-
 	upstreamProtocol := protocol.Protocol(runtimeUpstreamProtocol(reqCtx, cfg))
-	body = prepareTranslatedUpstreamBody(cfg, upstreamProtocol, requestPath, body, hdr)
+	upstreamStreaming := reqCtx != nil && reqCtx.isStreaming
+	body, err := s.prepareTranslatedUpstreamBody(cfg, upstreamProtocol, requestPath, body, hdr)
+	if err != nil {
+		return nil, err
+	}
+
+	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQueryForAttempt(reqCtx, rawQuery))
+	if cfg.UsesAntigravityOAuth() {
+		upstreamURL, err = antigravityUpstreamURL(baseURL, upstreamStreaming)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
 	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
@@ -131,7 +141,7 @@ func (s *Server) buildProxyRequest(
 
 	// 4. 注入普通渠道的静态认证头。Codex OAuth 的动态认证必须在
 	// 自定义 Header 规则之后覆盖，否则规则可以篡改渠道身份。
-	if !cfg.UsesCodexOAuth() {
+	if !cfg.UsesOAuth() {
 		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 	}
 
@@ -151,11 +161,12 @@ func (s *Server) buildProxyRequest(
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
 	if cfg.UsesCodexOAuth() {
-		upstreamStreaming := reqCtx != nil && reqCtx.isStreaming
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
 		}
 		injectCodexOAuthHeaders(req, cfg, upstreamStreaming)
+	} else if cfg.UsesAntigravityOAuth() {
+		injectAntigravityOAuthHeaders(req, cfg, upstreamStreaming)
 	}
 
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
@@ -171,17 +182,21 @@ func (s *Server) buildProxyRequest(
 
 // prepareTranslatedUpstreamBody 是协议转换后的统一 body 最终化入口。
 // 正常代理和管理测试必须共用它，否则同一转换器会产生两套实际上游契约。
-func prepareTranslatedUpstreamBody(
+func (s *Server) prepareTranslatedUpstreamBody(
 	cfg *model.Config,
 	upstreamProtocol protocol.Protocol,
 	requestPath string,
 	body []byte,
 	headers http.Header,
-) []byte {
+) ([]byte, error) {
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
 	body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
 	body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
-	return prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
+	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
+	if cfg != nil && cfg.UsesAntigravityOAuth() {
+		return prepareAntigravityRequestBody(cfg, extractModelFromPath(requestPath), body, headers, s.antigravityPromptMatcher)
+	}
+	return body, nil
 }
 
 func ensureCodexSessionHeader(headers http.Header, sessionID string) {
@@ -801,7 +816,7 @@ func (s *Server) handleSuccessResponse(
 
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		reqCtx.transformPlan.NeedsTransform &&
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
 		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
@@ -809,7 +824,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		reqCtx.transformPlan.NeedsTransform {
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -940,9 +955,21 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	if len(rawBody) > 0 {
 		readStats.readCount = 1
 	}
+	responseBody := rawBody
+	translatedRequestBody := reqCtx.transformPlan.TranslatedBody
+	if reqCtx.antigravityOAuth {
+		responseBody, err = unwrapAntigravityResponse(rawBody)
+		if err != nil {
+			return nil, reqCtx.Duration().Seconds(), err
+		}
+		translatedRequestBody, err = unwrapAntigravityRequest(reqCtx.transformPlan.TranslatedBody)
+		if err != nil {
+			return nil, reqCtx.Duration().Seconds(), err
+		}
+	}
 
 	parser := newJSONUsageParser(upstreamProtocol)
-	if err := parser.Feed(rawBody); err != nil {
+	if err := parser.Feed(responseBody); err != nil {
 		return &fwResult{
 			Status:         resp.StatusCode,
 			UpstreamStatus: resp.StatusCode,
@@ -958,8 +985,8 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		reqCtx.transformPlan.ClientProtocol,
 		reqCtx.transformPlan.ResponseModel(),
 		reqCtx.transformPlan.OriginalBody,
-		reqCtx.transformPlan.TranslatedBody,
-		rawBody,
+		translatedRequestBody,
+		responseBody,
 	)
 	if err != nil {
 		return &fwResult{
@@ -1024,7 +1051,15 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		resp.Body,
 		deferredWriter,
 		func(rawEvent []byte) error {
-			if err := parser.Feed(rawEvent); err != nil {
+			parserEvent := rawEvent
+			if reqCtx.antigravityOAuth {
+				var err error
+				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return err
+				}
+			}
+			if err := parser.Feed(parserEvent); err != nil {
 				return err
 			}
 			if parser.GetLastError() != nil || parser.HasStreamOutput() || parser.IsStreamComplete() {
@@ -1039,13 +1074,25 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
+			translatedRequestBody := reqCtx.transformPlan.TranslatedBody
+			if reqCtx.antigravityOAuth {
+				var err error
+				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				if err != nil {
+					return nil, err
+				}
+				translatedRequestBody, err = unwrapAntigravityRequest(reqCtx.transformPlan.TranslatedBody)
+				if err != nil {
+					return nil, err
+				}
+			}
 			chunks, err := s.protocolRegistry.TranslateResponseStream(
 				reqCtx.ctx,
 				reqCtx.transformPlan.UpstreamProtocol,
 				reqCtx.transformPlan.ClientProtocol,
 				reqCtx.transformPlan.ResponseModel(),
 				reqCtx.transformPlan.OriginalBody,
-				reqCtx.transformPlan.TranslatedBody,
+				translatedRequestBody,
 				rawEvent,
 				&state,
 			)
@@ -1510,6 +1557,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.originalBody = plan.OriginalBody
 	reqCtx.translatedBody = plan.TranslatedBody
 	reqCtx.originalModel = plan.ResponseModel()
+	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
 	if s.protocolRegistry != nil && plan.NeedsTransform {
@@ -1613,7 +1661,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
-	if reqCtx.transformPlan.NeedsTransform {
+	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth {
 		originalReqURL := reqCtx.transformPlan.OriginalPath
 		if rawQuery != "" {
 			separator := "?"
@@ -1671,7 +1719,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	var res *fwResult
 	var duration float64
 	responseWriter := w
-	if reqCtx.transformPlan.NeedsTransform && resp.StatusCode >= 200 && resp.StatusCode < 300 {
+	if (reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) && resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		responseWriter = dc.wrapTranslatedResponseWriter(w)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
@@ -2701,6 +2749,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesCodexOAuth() {
 		return s.tryCodexOAuthChannel(ctx, cfg, reqCtx, w)
 	}
+	if cfg.UsesAntigravityOAuth() {
+		return s.tryAntigravityOAuthChannel(ctx, cfg, reqCtx, w)
+	}
 
 	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
 	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)
@@ -2851,6 +2902,71 @@ func codexCredentialUnavailableResult(cfg *model.Config) *proxyResult {
 	return &proxyResult{
 		status:     http.StatusServiceUnavailable,
 		body:       []byte(`{"error":{"message":"Codex channel credential is unavailable","type":"upstream_auth_error"}}`),
+		channelID:  &channelID,
+		succeeded:  false,
+		nextAction: cooldown.ActionRetryChannel,
+	}
+}
+
+func (s *Server) tryAntigravityOAuthChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	urls := cfg.GetURLs()
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
+	}
+	selector := s.urlSelector
+	if len(urls) > 1 && selector != nil {
+		urlsSnapshot := append([]string(nil), urls...)
+		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		credential, err := s.antigravityCredentials.credential(ctx, cfg, attempt == 1)
+		if err != nil {
+			log.Printf("[WARN] Antigravity OAuth 凭证不可用: channel_id=%d err=%v", cfg.ID, err)
+			return antigravityCredentialUnavailableResult(cfg), nil
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.AntigravityAccessToken = credential.AccessToken
+		runtimeCfg.AntigravityProjectID = credential.ProjectID
+
+		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
+			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result := immediate
+		if result == nil {
+			result = lastFailure
+		}
+		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
+			s.activeRequests.Retry(reqCtx.activeReqID)
+			continue
+		}
+		if result != nil && result.nextAction == cooldown.ActionRetryKey {
+			result.nextAction = cooldown.ActionRetryChannel
+		}
+		if immediate != nil {
+			return immediate, nil
+		}
+		if lastFailure != nil {
+			return lastFailure, nil
+		}
+		break
+	}
+	return nil, ErrAllKeysExhausted
+}
+
+func antigravityCredentialUnavailableResult(cfg *model.Config) *proxyResult {
+	channelID := cfg.ID
+	return &proxyResult{
+		status:     http.StatusServiceUnavailable,
+		body:       []byte(`{"error":{"message":"Antigravity channel credential is unavailable","type":"upstream_auth_error"}}`),
 		channelID:  &channelID,
 		succeeded:  false,
 		nextAction: cooldown.ActionRetryChannel,
