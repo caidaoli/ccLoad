@@ -9,6 +9,8 @@ import (
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
 
 func TestRegistry_TranslateRequest_OpenAIToGemini(t *testing.T) {
@@ -1424,11 +1426,22 @@ func TestRegistry_TranslateResponseNonStream_CodexToOpenAI_ReasoningAndUsageDeta
 	if err != nil {
 		t.Fatalf("TranslateResponseNonStream failed: %v", err)
 	}
-	body := string(got)
-	if !strings.Contains(body, `"reasoning_content":"step by step"`) || !strings.Contains(body, `"encrypted_content":"enc_1"`) {
+	if reasoning := gjson.GetBytes(got, "choices.0.message.reasoning_content"); reasoning.String() != "step by step" {
 		t.Fatalf("unexpected reasoning translation: %s", got)
 	}
-	if !strings.Contains(body, `"cached_tokens":7`) || !strings.Contains(body, `"cache_creation_input_tokens":11`) || !strings.Contains(body, `"reasoning_tokens":13`) {
+	if encrypted := gjson.GetBytes(got, "choices.0.message.reasoning"); encrypted.Exists() {
+		t.Fatalf("Codex encrypted reasoning leaked into OpenAI response: %s", got)
+	}
+	if cached := gjson.GetBytes(got, "usage.prompt_tokens_details.cached_tokens"); cached.Int() != 7 {
+		t.Fatalf("unexpected cached token translation: %s", got)
+	}
+	if created := gjson.GetBytes(got, "usage.prompt_tokens_details.cached_creation_tokens"); created.Int() != 11 {
+		t.Fatalf("unexpected cache creation token translation: %s", got)
+	}
+	if legacy := gjson.GetBytes(got, "usage.cache_creation_input_tokens"); legacy.Exists() {
+		t.Fatalf("legacy cache creation field leaked into OpenAI response: %s", got)
+	}
+	if reasoningTokens := gjson.GetBytes(got, "usage.completion_tokens_details.reasoning_tokens"); reasoningTokens.Int() != 13 {
 		t.Fatalf("unexpected usage translation: %s", got)
 	}
 }

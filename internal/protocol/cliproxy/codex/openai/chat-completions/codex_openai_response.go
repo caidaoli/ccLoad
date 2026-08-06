@@ -100,30 +100,7 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	// Extract and set the response ID.
 	template, _ = sjson.SetBytes(template, "id", (*param).(*ConvertCliToOpenAIParams).ResponseID)
 
-	// Extract and set usage metadata (token counts).
-	if usageResult := gjson.GetBytes(rawJSON, "response.usage"); usageResult.Exists() {
-		if outputTokensResult := usageResult.Get("output_tokens"); outputTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.completion_tokens", outputTokensResult.Int())
-		}
-		if totalTokensResult := usageResult.Get("total_tokens"); totalTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokensResult.Int())
-		}
-		if inputTokensResult := usageResult.Get("input_tokens"); inputTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.prompt_tokens", inputTokensResult.Int())
-		}
-		if cachedTokensResult := usageResult.Get("input_tokens_details.cached_tokens"); cachedTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokensResult.Int())
-		}
-		if cacheWriteTokensResult := usageResult.Get("input_tokens_details.cache_write_tokens"); cacheWriteTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheWriteTokensResult.Int())
-		}
-		if cacheCreationTokensResult := usageResult.Get("cache_creation_input_tokens"); cacheCreationTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokensResult.Int())
-		}
-		if reasoningTokensResult := usageResult.Get("output_tokens_details.reasoning_tokens"); reasoningTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", reasoningTokensResult.Int())
-		}
-	}
+	template = setOpenAIUsage(template, gjson.GetBytes(rawJSON, "response.usage"))
 
 	switch dataType {
 	case "response.reasoning_summary_text.delta":
@@ -371,6 +348,34 @@ func ConvertCodexResponseToOpenAI(_ context.Context, modelName string, originalR
 	return [][]byte{template}
 }
 
+func setOpenAIUsage(template []byte, usageResult gjson.Result) []byte {
+	if !usageResult.Exists() {
+		return template
+	}
+	if outputTokensResult := usageResult.Get("output_tokens"); outputTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.completion_tokens", outputTokensResult.Int())
+	}
+	if totalTokensResult := usageResult.Get("total_tokens"); totalTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokensResult.Int())
+	}
+	if inputTokensResult := usageResult.Get("input_tokens"); inputTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.prompt_tokens", inputTokensResult.Int())
+	}
+	if cachedTokensResult := usageResult.Get("input_tokens_details.cached_tokens"); cachedTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokensResult.Int())
+	}
+	if cacheWriteTokensResult := usageResult.Get("input_tokens_details.cache_write_tokens"); cacheWriteTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", cacheWriteTokensResult.Int())
+	}
+	if cacheCreationTokensResult := usageResult.Get("cache_creation_input_tokens"); cacheCreationTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_creation_tokens", cacheCreationTokensResult.Int())
+	}
+	if reasoningTokensResult := usageResult.Get("output_tokens_details.reasoning_tokens"); reasoningTokensResult.Exists() {
+		template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", reasoningTokensResult.Int())
+	}
+	return template
+}
+
 // ConvertCodexResponseToOpenAINonStream converts a non-streaming Codex response to a non-streaming OpenAI response.
 // This function processes the complete Codex response and transforms it into a single OpenAI-compatible
 // JSON response. It handles message content, tool calls, reasoning content, and usage metadata, combining all
@@ -415,30 +420,7 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		template, _ = sjson.SetBytes(template, "id", idResult.String())
 	}
 
-	// Extract and set usage metadata (token counts).
-	if usageResult := responseResult.Get("usage"); usageResult.Exists() {
-		if outputTokensResult := usageResult.Get("output_tokens"); outputTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.completion_tokens", outputTokensResult.Int())
-		}
-		if totalTokensResult := usageResult.Get("total_tokens"); totalTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.total_tokens", totalTokensResult.Int())
-		}
-		if inputTokensResult := usageResult.Get("input_tokens"); inputTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.prompt_tokens", inputTokensResult.Int())
-		}
-		if cachedTokensResult := usageResult.Get("input_tokens_details.cached_tokens"); cachedTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.prompt_tokens_details.cached_tokens", cachedTokensResult.Int())
-		}
-		if cacheWriteTokensResult := usageResult.Get("input_tokens_details.cache_write_tokens"); cacheWriteTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheWriteTokensResult.Int())
-		}
-		if cacheCreationTokensResult := usageResult.Get("cache_creation_input_tokens"); cacheCreationTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.cache_creation_input_tokens", cacheCreationTokensResult.Int())
-		}
-		if reasoningTokensResult := usageResult.Get("output_tokens_details.reasoning_tokens"); reasoningTokensResult.Exists() {
-			template, _ = sjson.SetBytes(template, "usage.completion_tokens_details.reasoning_tokens", reasoningTokensResult.Int())
-		}
-	}
+	template = setOpenAIUsage(template, responseResult.Get("usage"))
 
 	// Process the output array for content and function calls
 	var toolCalls [][]byte
@@ -448,7 +430,6 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 		outputArray := outputResult.Array()
 		var contentText string
 		var reasoningText string
-		reasoningItems := []byte(`{"items":[]}`)
 
 		for _, outputItem := range outputArray {
 			outputType := outputItem.Get("type").String()
@@ -473,12 +454,6 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 					}
 				}
 				reasoningText += itemText.String()
-				reasoningItem := []byte(`{"type":"reasoning","text":""}`)
-				reasoningItem, _ = sjson.SetBytes(reasoningItem, "text", itemText.String())
-				if encrypted := outputItem.Get("encrypted_content"); encrypted.Exists() && encrypted.String() != "" {
-					reasoningItem, _ = sjson.SetBytes(reasoningItem, "encrypted_content", encrypted.String())
-				}
-				reasoningItems, _ = sjson.SetRawBytes(reasoningItems, "items.-1", reasoningItem)
 			case "message":
 				// Extract message content
 				if contentResult := outputItem.Get("content"); contentResult.IsArray() {
@@ -535,9 +510,6 @@ func ConvertCodexResponseToOpenAINonStream(_ context.Context, _ string, original
 
 		if reasoningText != "" {
 			template, _ = sjson.SetBytes(template, "choices.0.message.reasoning_content", reasoningText)
-		}
-		if items := gjson.GetBytes(reasoningItems, "items"); items.IsArray() && len(items.Array()) > 0 {
-			template, _ = sjson.SetRawBytes(template, "choices.0.message.reasoning", []byte(items.Raw))
 		}
 
 		// Add tool calls if any

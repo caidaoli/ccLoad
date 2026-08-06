@@ -63,11 +63,13 @@ documented adaptations:
   converter directly;
 - assertions follow ccLoad's public wire contract for native non-stream JSON,
   Gemini camelCase fields, Codex top-level `instructions`, system-only prompts
-  preserved as the sole user content, terminal `[DONE]`, top-level
+  preserved as the sole user content, terminal `[DONE]`, protocol-specific
   cache-creation usage, and unsigned Anthropic thinking preserved as OpenAI
   reasoning.
-- Codex-to-OpenAI keeps the top-level `usage.cache_creation_input_tokens`
-  field alongside upstream's `prompt_tokens_details.cached_creation_tokens`.
+- Codex-to-OpenAI Chat Completions maps cache-write usage to
+  `prompt_tokens_details.cached_creation_tokens` in both streaming and
+  non-streaming responses, and does not expose Codex encrypted reasoning
+  carriers; readable reasoning summaries remain available as `reasoning_content`.
 - Codex-to-Gemini requests keep the caller's `stream` flag and do not force
   `reasoning.summary`.
 - OpenAI Chat Completions-to-Responses streaming synthesizes a terminal choice

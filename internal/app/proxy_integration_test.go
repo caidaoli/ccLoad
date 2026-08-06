@@ -4083,7 +4083,7 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 				StatusCode: http.StatusOK,
 				Header:     http.Header{"Content-Type": []string{"application/json"}},
 				Body: io.NopCloser(bytes.NewReader([]byte(
-					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}]}],"usage":{"input_tokens":7,"output_tokens":4,"total_tokens":11}}`,
+					`{"id":"resp_1","object":"response","status":"completed","model":"gpt-5-codex","output":[{"type":"reasoning","content":[],"encrypted_content":"internal-codex-payload"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello from codex"}]}],"usage":{"input_tokens":7,"input_tokens_details":{"cached_tokens":0,"cache_write_tokens":0},"output_tokens":4,"output_tokens_details":{"reasoning_tokens":2},"total_tokens":11}}`,
 				))),
 			}, nil
 		})),
@@ -4126,6 +4126,16 @@ func TestProxy_Success_NonStreaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello from codex" {
 		t.Fatalf("unexpected translated response: %s", w.Body.String())
+	}
+	if reasoning := gjson.GetBytes(w.Body.Bytes(), "choices.0.message.reasoning"); reasoning.Exists() {
+		t.Fatalf("Codex encrypted reasoning leaked into OpenAI response: %s", w.Body.String())
+	}
+	cachedCreation := gjson.GetBytes(w.Body.Bytes(), "usage.prompt_tokens_details.cached_creation_tokens")
+	if !cachedCreation.Exists() || cachedCreation.Int() != 0 {
+		t.Fatalf("cached_creation_tokens = %s, want explicit 0: %s", cachedCreation.Raw, w.Body.String())
+	}
+	if legacy := gjson.GetBytes(w.Body.Bytes(), "usage.cache_creation_input_tokens"); legacy.Exists() {
+		t.Fatalf("legacy cache_creation_input_tokens leaked into OpenAI response: %s", w.Body.String())
 	}
 }
 
@@ -4547,7 +4557,7 @@ func TestProxy_CodexInvalidEncryptedContentRetryFailureReturnsUpstreamError(t *t
 	}
 }
 
-func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
+func TestProxy_Success_Streaming_OpenAIToCodexTransformWithoutContentType(t *testing.T) {
 	var gotPath string
 	upstreamBody := newDataThenBlockReadCloser([]byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\nevent: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n"), 7)
 	defer func() { _ = upstreamBody.Close() }()
@@ -4560,7 +4570,7 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 			gotPath = r.URL.Path
 			return &http.Response{
 				StatusCode: http.StatusOK,
-				Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+				Header:     http.Header{},
 				Body:       upstreamBody,
 			}, nil
 		})),
@@ -4599,6 +4609,9 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransform(t *testing.T) {
 	}
 	if gotPath != "/v1/responses" {
 		t.Fatalf("expected codex responses path, got %s", gotPath)
+	}
+	if got := w.Header().Get("Content-Type"); got != "text/event-stream" {
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
 	}
 	body := w.Body.String()
 	if !strings.Contains(body, `"chat.completion.chunk"`) || !strings.Contains(body, `"content":"Hello"`) || !strings.Contains(body, "data: [DONE]") {
