@@ -118,7 +118,7 @@ type HTTPResponseClassification struct {
 	ChannelCooldownReason   string
 }
 
-// sseErrorResponse SSE error事件的JSON结构（Anthropic API / 88code API）
+// sseErrorResponse SSE error事件的通用JSON结构（兼容 error.type / error.code）
 // [FIX] 提取为公共结构体，消除 classifySSEError 和 ParseResetTimeFrom1308Error 的重复定义
 type sseErrorResponse struct {
 	Type  string `json:"type"`

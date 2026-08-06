@@ -23,6 +23,109 @@ test('Codex plan badge appends the subscription calendar date', () => {
   assert.equal(formatCodexPlanBadgeText('', '2030-02-03T04:05:06Z'), '');
 });
 
+test('logs channel editor loads Codex auth before opening a Codex channel', async () => {
+  const requiredMarkupIDs = new Set([
+    'channelModal',
+    'commonModelsModal',
+    'keyImportModal',
+    'keyExportModal',
+    'modelImportModal',
+    'customRulesModal',
+    'tpl-key-row',
+    'tpl-key-empty',
+    'tpl-cooldown-badge',
+    'tpl-key-normal-status',
+    'tpl-key-actions',
+    'tpl-url-row',
+    'tpl-url-empty',
+    'tpl-redirect-row',
+    'tpl-redirect-empty'
+  ]);
+  const elements = new Map();
+  for (const id of [
+    'codexCredentialReadOnlyNotice',
+    'channelAPIKeyHeader',
+    'channelAPIKeyTable',
+    'channelApiKey',
+    'importKeysBtn',
+    'batchDeleteKeysBtn',
+    'selectAllKeys',
+    'codexCredentialTab',
+    'channelCodexPlanBadge'
+  ]) {
+    elements.set(id, { hidden: true, required: true, value: '' });
+  }
+  elements.set('codexCredentialContent', {
+    textContent: '',
+    removeAttribute() {},
+    classList: { add() {}, remove() {} }
+  });
+
+  const scripts = [{ src: 'http://localhost/web/assets/js/logs-channel-editor.js?v=test' }];
+  let openedChannelID = null;
+  const previous = new Map();
+  const installGlobal = (name, value) => {
+    previous.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+
+  installGlobal('window', {
+    location: { origin: 'http://localhost' },
+    t: key => key,
+    showError() {}
+  });
+  installGlobal('document', {
+    scripts,
+    head: {
+      appendChild(script) {
+        scripts.push(script);
+        const path = new URL(script.src, global.window.location.origin).pathname;
+        if (path === '/web/assets/js/channels-codex-auth.js') {
+          global.applyChannelAuthEditorMode = applyChannelAuthEditorMode;
+        }
+        if (path === '/web/assets/js/channels-modals.js') {
+          global.editChannel = async id => {
+            openedChannelID = id;
+            if (typeof global.applyChannelAuthEditorMode === 'function') {
+              global.applyChannelAuthEditorMode(
+                'codex_oauth',
+                { access_token: 'at-from-log-editor', refresh_token: 'rt-secret' },
+                { codex_plan_type: 'plus' }
+              );
+            }
+          };
+        }
+        script.onload();
+      }
+    },
+    createElement: () => ({}),
+    getElementById: id => elements.get(id) || (requiredMarkupIDs.has(id) ? {} : null),
+    querySelectorAll: () => [],
+    addEventListener() {}
+  });
+  previous.set('applyChannelAuthEditorMode', Object.getOwnPropertyDescriptor(global, 'applyChannelAuthEditorMode'));
+  previous.set('editChannel', Object.getOwnPropertyDescriptor(global, 'editChannel'));
+  delete global.applyChannelAuthEditorMode;
+  delete global.editChannel;
+
+  const modulePath = require.resolve('./logs-channel-editor.js');
+  delete require.cache[modulePath];
+  try {
+    require(modulePath);
+    await global.window.openLogChannelEditor(42);
+
+    assert.equal(openedChannelID, 42);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.match(elements.get('codexCredentialContent').textContent, /at-from-log-editor/);
+  } finally {
+    delete require.cache[modulePath];
+    for (const [name, descriptor] of previous) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
+  }
+});
+
 test('Codex OAuth status polling waits for completion and encodes state', async () => {
   const requests = [];
   const statuses = [
