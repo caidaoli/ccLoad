@@ -246,6 +246,50 @@ func TestHandleListChannelsExactAndFuzzyFilters(t *testing.T) {
 	}
 }
 
+func TestHandleListChannelsFiltersByAuthenticationType(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	fixtures := []*model.Config{
+		{
+			Name: "api-auth", URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+			AuthType: model.AuthTypeAPIKey, Enabled: true,
+		},
+		{
+			Name: "codex-auth", URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses"}},
+			AuthType: model.AuthTypeCodexOAuth, CodexCredential: `{}`, Enabled: true,
+		},
+	}
+	for _, fixture := range fixtures {
+		if _, err := store.CreateConfig(ctx, fixture); err != nil {
+			t.Fatalf("CreateConfig(%s) failed: %v", fixture.Name, err)
+		}
+	}
+
+	for _, tt := range []struct {
+		authType string
+		wantName string
+	}{
+		{authType: model.AuthTypeAPIKey, wantName: "api-auth"},
+		{authType: model.AuthTypeCodexOAuth, wantName: "codex-auth"},
+	} {
+		t.Run(tt.authType, func(t *testing.T) {
+			path := "/admin/channels?auth_type=" + tt.authType + "&limit=20&offset=0"
+			c, w := newTestContext(t, newRequest(http.MethodGet, path, nil))
+			server.handleListChannels(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+			}
+			resp := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+			if resp.Count != 1 || len(resp.Data) != 1 || resp.Data[0].Name != tt.wantName {
+				t.Fatalf("response=%s, want only %q", w.Body.String(), tt.wantName)
+			}
+		})
+	}
+}
+
 func TestChannelCooldownFilterIncludesChannelKeyAndModelCooldowns(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

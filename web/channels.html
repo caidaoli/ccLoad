@@ -56,7 +56,7 @@
               <div class="channel-page-actions">
                 <button id="codexOAuthBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.codex.oauthTitle" title="使用 OpenAI OAuth 创建 Codex 渠道">
-                  <span data-i18n="channels.codex.oauth">登录 Codex</span>
+                  <span data-i18n="channels.codex.oauth">Codex OAuth</span>
                 </button>
                 <button id="importCodexCredentialBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.codex.importTitle" title="导入 CLIProxyAPI 兼容的 Codex 凭证 JSON">
@@ -147,6 +147,16 @@
                 <option value="disabled" data-i18n="channels.statusDisabled">已禁用</option>
                 <option value="cooldown" data-i18n="channels.statusCooldown">冷却中</option>
               </select>
+            </div>
+
+            <div class="filter-group channel-auth-filter-group">
+              <label class="filter-label" data-i18n="channels.filterAuthType">认证类型</label>
+              <div class="filter-combobox-wrapper filter-control--compact">
+                <input id="channelAuthTypeFilter" class="filter-select filter-combobox" type="text"
+                  autocomplete="off" spellcheck="false" />
+                <div id="channelAuthTypeFilterDropdown" class="filter-dropdown" role="listbox"
+                  aria-label="认证类型"></div>
+              </div>
             </div>
 
             <div class="filter-group channel-model-filter-group">

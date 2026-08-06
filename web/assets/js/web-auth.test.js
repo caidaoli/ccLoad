@@ -20,7 +20,10 @@ async function captureChannelReadURLs(role) {
   const globals = {
     window: { WebAuth, t: key => key, showError: () => {} },
     localStorage: storage,
-    filters: { search: 'any', searchExact: false, status: 'enabled', model: 'claude-opus-5', modelExact: true },
+    filters: {
+      search: 'any', searchExact: false, status: 'enabled', authType: 'codex_oauth',
+      model: 'claude-opus-5', modelExact: true
+    },
     channelsReadURL: (adminPath, dashboardPath) => (
       WebAuth.isAPITokenRole(storage) ? dashboardPath : adminPath
     ),
@@ -138,6 +141,10 @@ test('channel data uses endpoints allowed for the current web role', async () =>
     assert.equal(params.has('search'), false);
     assert.equal(params.has('status'), false);
     assert.equal(params.has('model'), false);
+    assert.equal(params.has('auth_type'), false);
+  }
+  for (const url of [...apiTokenURLs, ...adminURLs].filter(value => /\/channels\?/.test(value))) {
+    assert.equal(new URL(url, 'http://localhost').searchParams.get('auth_type'), 'codex_oauth');
   }
   assert.deepEqual(adminResult.channelNames, ['anyrouter', 'luoqianyi', 'other-channel']);
   assert.deepEqual(adminResult.models, ['claude-opus-5', 'gpt-5.4']);

@@ -1,7 +1,22 @@
 // Filter channels based on current filters
 let filteredChannels = []; // 存储筛选后的渠道列表
+let channelAuthTypeFilterCombobox = null; // 认证类型筛选组合框实例
 let modelFilterCombobox = null; // 通用组件实例
 let channelNameCombobox = null; // 渠道名筛选组合框实例
+
+function getChannelAuthTypeOptions() {
+  return [
+    { value: 'all', label: window.t('channels.authTypeAll') },
+    { value: 'api_key', label: window.t('channels.authTypeAPI') },
+    { value: 'codex_oauth', label: window.t('channels.authTypeCodex') }
+  ];
+}
+
+function channelAuthTypeFilterLabel(value) {
+  const options = getChannelAuthTypeOptions();
+  const option = options.find(item => item.value === value);
+  return option ? option.label : options[0].label;
+}
 
 function getModelAllLabel() {
   return (window.t && window.t('channels.modelAll')) || '所有模型';
@@ -74,6 +89,12 @@ function updateModelOptions() {
   }
 }
 
+function updateChannelAuthTypeOptions() {
+  if (!channelAuthTypeFilterCombobox) return;
+  channelAuthTypeFilterCombobox.setValue(filters.authType, channelAuthTypeFilterLabel(filters.authType));
+  channelAuthTypeFilterCombobox.refresh();
+}
+
 // 刷新渠道名称下拉显示（选项由 getOptions 从 allAvailableChannelNames 动态读取）
 function updateChannelNameOptions() {
   if (channelNameCombobox) channelNameCombobox.refresh();
@@ -87,6 +108,28 @@ function setupFilterListeners() {
     if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
     loadChannels();
   });
+
+  const authTypeFilterInput = document.getElementById('channelAuthTypeFilter');
+  if (authTypeFilterInput) {
+    channelAuthTypeFilterCombobox = createSearchableCombobox({
+      attachMode: true,
+      inputId: 'channelAuthTypeFilter',
+      dropdownId: 'channelAuthTypeFilterDropdown',
+      initialValue: filters.authType,
+      initialLabel: channelAuthTypeFilterLabel(filters.authType),
+      allowCustomInput: false,
+      commitEmptyAsFirst: true,
+      showAllOptionsOnOpen: true,
+      getOptions: getChannelAuthTypeOptions,
+      onSelect: (value) => {
+        const validValues = new Set(['all', 'api_key', 'codex_oauth']);
+        filters.authType = validValues.has(value) ? value : 'all';
+        channelsCurrentPage = 1;
+        if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+        loadChannels();
+      }
+    });
+  }
 
   // 模型筛选 combobox
   const modelFilterInput = document.getElementById('modelFilter');
@@ -173,6 +216,7 @@ function setupFilterListeners() {
       filters.search = '';
       filters.searchExact = false;
       filters.status = 'all';
+      filters.authType = 'all';
       filters.model = 'all';
       filters.modelExact = false;
       channelsCurrentPage = 1;
@@ -191,6 +235,13 @@ function setupFilterListeners() {
       } else {
         const modelFilterEl = document.getElementById('modelFilter');
         if (modelFilterEl) modelFilterEl.value = getModelAllLabel();
+      }
+
+      if (channelAuthTypeFilterCombobox) {
+        channelAuthTypeFilterCombobox.setValue('all', channelAuthTypeFilterLabel('all'));
+      } else {
+        const authTypeFilterEl = document.getElementById('channelAuthTypeFilter');
+        if (authTypeFilterEl) authTypeFilterEl.value = channelAuthTypeFilterLabel('all');
       }
 
       // 重置状态下拉框

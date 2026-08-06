@@ -190,6 +190,7 @@ func (s *Server) handleListChannels(c *gin.Context) {
 
 // applyChannelListFilters 串联应用所有列表过滤条件：
 //   - protocol: URL 显式声明的协议，或 auto（存在未声明协议的 URL）
+//   - auth_type: api_key / codex_oauth（认证机制，不复用历史 channel_type）
 //   - channel_name | search: 名称精确/模糊（互斥，channel_name 优先）
 //   - status: enabled / disabled / cooldown（cooldown 包含渠道、Key、模型任一有效冷却）
 //   - model | model_like: 模型精确/模糊（互斥，model 优先）
@@ -199,6 +200,13 @@ func applyChannelListFilters(cfgs []*model.Config, c *gin.Context, cooldowns cha
 	if configuredProtocol := strings.TrimSpace(c.Query("protocol")); configuredProtocol != "" && configuredProtocol != "all" {
 		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
 			return configHasURLProtocol(cfg, configuredProtocol)
+		})
+	}
+
+	if authType := strings.TrimSpace(c.Query("auth_type")); authType != "" && authType != "all" {
+		normalizedAuthType := model.NormalizeAuthType(authType)
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			return normalizedAuthType != "" && cfg.GetAuthType() == normalizedAuthType
 		})
 	}
 

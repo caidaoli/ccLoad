@@ -10,6 +10,7 @@ test('returning via reload or bfcache restores channel name search with the othe
 
   const savedState = {
     status: 'enabled',
+    authType: 'codex_oauth',
     model: 'claude-opus-5',
     modelExact: true,
     search: 'any',
@@ -19,6 +20,7 @@ test('returning via reload or bfcache restores channel name search with the othe
   const storage = new Map([['channels.filters', JSON.stringify(savedState)]]);
   const elements = {
     statusFilter: { value: 'all' },
+    channelAuthTypeFilter: { value: '' },
     modelFilter: { value: '' },
     searchInput: { value: '' }
   };
@@ -46,6 +48,7 @@ test('returning via reload or bfcache restores channel name search with the othe
     search: '',
     searchExact: false,
     status: 'all',
+    authType: 'all',
     model: 'all',
     modelExact: false
   });
@@ -66,6 +69,7 @@ test('returning via reload or bfcache restores channel name search with the othe
   });
   setGlobal('loadChannelStats', async () => {});
   setGlobal('modelFilterInputValueFromFilterValue', (value) => value);
+  setGlobal('channelAuthTypeFilterLabel', (value) => value);
 
   try {
     delete require.cache[require.resolve('./channels-init.js')];
@@ -76,12 +80,15 @@ test('returning via reload or bfcache restores channel name search with the othe
       search: 'any',
       searchExact: false,
       status: 'enabled',
+      authType: 'codex_oauth',
       model: 'claude-opus-5',
       modelExact: true
     });
     assert.equal(elements.searchInput.value, 'any');
+    assert.equal(elements.channelAuthTypeFilter.value, 'codex_oauth');
     assert.deepEqual(JSON.parse(storage.get('channels.filters')), {
       status: 'enabled',
+      authType: 'codex_oauth',
       model: 'claude-opus-5',
       modelExact: true,
       search: 'any',
