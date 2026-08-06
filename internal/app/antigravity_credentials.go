@@ -41,6 +41,19 @@ func newAntigravityCredentialManager(
 }
 
 func (m *antigravityCredentialManager) credential(ctx context.Context, cfg *model.Config, forceRefresh bool) (*antigravityauth.Credential, error) {
+	return m.resolveCredential(ctx, cfg, forceRefresh, false)
+}
+
+func (m *antigravityCredentialManager) credentialWithMetadata(ctx context.Context, cfg *model.Config) (*antigravityauth.Credential, error) {
+	return m.resolveCredential(ctx, cfg, false, true)
+}
+
+func (m *antigravityCredentialManager) resolveCredential(
+	ctx context.Context,
+	cfg *model.Config,
+	forceRefresh bool,
+	refreshMetadata bool,
+) (*antigravityauth.Credential, error) {
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return nil, errors.New("credential manager: Antigravity is unavailable")
 	}
@@ -52,7 +65,7 @@ func (m *antigravityCredentialManager) credential(ctx context.Context, cfg *mode
 	if err != nil {
 		return nil, err
 	}
-	if !forceRefresh && !needsRefresh && credential.ProjectID != "" {
+	if !forceRefresh && !needsRefresh && !refreshMetadata && credential.ProjectID != "" && credential.Email != "" {
 		return cloneAntigravityCredential(credential), nil
 	}
 
@@ -75,7 +88,8 @@ func (m *antigravityCredentialManager) credential(ctx context.Context, cfg *mode
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		merged := current
-		if forceRefresh || refreshNeeded {
+		tokenRefreshed := forceRefresh || refreshNeeded
+		if tokenRefreshed {
 			refreshed, err := service.Refresh(refreshCtx, current.RefreshToken)
 			if err != nil {
 				return nil, fmt.Errorf("refresh Antigravity credential for channel %d: %w", cfg.ID, err)
@@ -85,7 +99,7 @@ func (m *antigravityCredentialManager) credential(ctx context.Context, cfg *mode
 				return nil, err
 			}
 		}
-		if merged.ProjectID == "" || merged.Email == "" {
+		if refreshMetadata || tokenRefreshed || merged.ProjectID == "" || merged.Email == "" {
 			completed, err := service.CompleteCredential(refreshCtx, merged)
 			if err != nil {
 				return nil, fmt.Errorf("complete Antigravity credential for channel %d: %w", cfg.ID, err)
@@ -148,5 +162,9 @@ func cloneAntigravityCredential(credential *antigravityauth.Credential) *antigra
 		return nil
 	}
 	clone := *credential
+	if credential.PaidTier != nil {
+		paidTier := *credential.PaidTier
+		clone.PaidTier = &paidTier
+	}
 	return &clone
 }

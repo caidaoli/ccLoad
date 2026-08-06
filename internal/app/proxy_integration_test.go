@@ -251,6 +251,17 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 		if got := r.Header.Get("User-Agent"); got != antigravityauth.DefaultUserAgent {
 			t.Errorf("User-Agent = %q", got)
 		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		for _, name := range []string{
+			"Accept", "Accept-Language", "HTTP-Referer", "Sec-CH-UA", "Sec-CH-UA-Mobile",
+			"Sec-CH-UA-Platform", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "X-Title",
+		} {
+			if got := r.Header.Get(name); got != "" {
+				t.Errorf("unrelated Antigravity header %s = %q", name, got)
+			}
+		}
 		wireBody, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatalf("read Antigravity wire body: %v", err)
@@ -315,7 +326,18 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 				"parameters": map[string]any{"type": "object", "properties": map[string]any{"query": map[string]any{"type": "string"}}, "required": []string{"query"}},
 			},
 		}},
-	}, nil)
+	}, map[string]string{
+		"Accept":             "text/event-stream",
+		"Accept-Language":    "zh-CN",
+		"HTTP-Referer":       "https://cherry-ai.com",
+		"Sec-CH-UA":          `"Chromium";v="146"`,
+		"Sec-CH-UA-Mobile":   "?0",
+		"Sec-CH-UA-Platform": `"macOS"`,
+		"Sec-Fetch-Dest":     "empty",
+		"Sec-Fetch-Mode":     "cors",
+		"Sec-Fetch-Site":     "cross-site",
+		"X-Title":            "Cherry Studio",
+	})
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
@@ -365,7 +387,7 @@ func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
 			t.Errorf("Antigravity stream URL = %s?%s", r.URL.Path, r.URL.RawQuery)
 		}
-		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+		if got := r.Header.Get("Accept"); got != "" {
 			t.Errorf("Accept = %q", got)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -411,7 +433,16 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	defer upstream.Close()
 
 	var refreshes atomic.Int32
+	var paidTierRefreshes atomic.Int32
 	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1internal:loadCodeAssist" {
+			paidTierRefreshes.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer at-new" {
+				t.Errorf("loadCodeAssist Authorization = %q", got)
+			}
+			_, _ = io.WriteString(w, `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`)
+			return
+		}
 		refreshes.Add(1)
 		if err := r.ParseForm(); err != nil {
 			t.Fatal(err)
@@ -429,6 +460,7 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	}}, map[int]string{0: upstream.URL})
 	service := antigravityauth.NewService(tokenServer.Client())
 	service.TokenURL = tokenServer.URL
+	service.DailyAPIBaseURL = tokenServer.URL
 	env.server.antigravityCredentials.service = service
 	env.server.antigravityCredentials.clientFor = func(*model.Config) *http.Client { return tokenServer.Client() }
 
@@ -438,12 +470,16 @@ func TestProxy_AntigravityOAuthRefreshesAfterUnauthorized(t *testing.T) {
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "refreshed" {
 		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 	}
-	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 {
-		t.Fatalf("upstream attempts=%d refreshes=%d", upstreamAttempts.Load(), refreshes.Load())
+	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 || paidTierRefreshes.Load() != 1 {
+		t.Fatalf("upstream attempts=%d refreshes=%d paid tier refreshes=%d", upstreamAttempts.Load(), refreshes.Load(), paidTierRefreshes.Load())
 	}
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].OAuthCredential, `"access_token":"at-new"`) {
 		t.Fatalf("persisted channel=%#v err=%v", configs, err)
+	}
+	persistedCredential, err := antigravityauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PaidTier == nil || persistedCredential.PaidTier.DisplayName() != "Google AI Pro" {
+		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
 	}
 }
 

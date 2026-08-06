@@ -1294,7 +1294,7 @@ func (s *Server) newTestUpstreamRequest(
 	if cfgForBuild.UsesCodexOAuth() {
 		injectCodexOAuthHeaders(req, cfgForBuild, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
-		injectAntigravityOAuthHeaders(req, cfgForBuild, requestPlan.upstreamStreaming)
+		injectAntigravityOAuthHeaders(req, cfgForBuild)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {

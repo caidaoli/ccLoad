@@ -29,11 +29,15 @@ function escapeChannelRefreshText(value) {
   }[c]));
 }
 
-function buildCodexPlanBadge(channel) {
-  if (channel?.auth_type !== 'codex_oauth') return '';
-  const planType = String(channel.codex_plan_type || '').trim();
+function buildOAuthPlanBadge(channel) {
+  let planType = '';
+  if (channel?.auth_type === 'codex_oauth') {
+    planType = String(channel.codex_plan_type || '').trim();
+  } else if (channel?.auth_type === 'antigravity_oauth') {
+    planType = String(channel.antigravity_paid_tier || '').trim();
+  }
   if (!planType) return '';
-  return `<span class="ch-codex-plan-badge">${escapeChannelRefreshText(planType)}</span>`;
+  return `<span class="ch-oauth-plan-badge">${escapeChannelRefreshText(planType)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {
@@ -644,7 +648,8 @@ function buildChannelRuntimeStatusHtml(channel, stats) {
     statuses.push(`<div class="ch-runtime-status ch-runtime-status--models">${escapeChannelRefreshText(text)}</div>`);
   }
 
-  if (statuses.length === 0) {
+  const oauthUsageState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
+  if (statuses.length === 0 && oauthUsageState?.status !== 'ready') {
     const lastSuccessHtml = buildChannelLastSuccessHtml(stats);
     if (lastSuccessHtml) statuses.push(lastSuccessHtml);
   }
@@ -742,7 +747,7 @@ function createChannelCard(channel) {
     id: channel.id,
 		name: channel.name,
 		nameMultiplierBadge: buildCornerMultiplierBadge(channel.cost_multiplier),
-    codexPlanBadge: buildCodexPlanBadge(channel),
+    oauthPlanBadge: buildOAuthPlanBadge(channel),
     url: configuredURLs.join('\n'),
     batchRefreshStatusHtml: buildBatchRefreshStatusHtml(batchRefreshResult),
     modelsText: modelsText,
@@ -969,5 +974,5 @@ function renderChannels(channelsToRender = channels) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { buildOAuthUsageStatusHtml, formatCooldownRecoveryTime };
+  module.exports = { buildChannelRuntimeStatusHtml, buildOAuthPlanBadge, buildOAuthUsageStatusHtml, formatCooldownRecoveryTime };
 }

@@ -683,7 +683,7 @@
     }
 
     .channel-codex-plan-badge,
-    .ch-codex-plan-badge {
+    .ch-oauth-plan-badge {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -708,7 +708,7 @@
     }
 
     .channel-codex-plan-badge[hidden],
-    .ch-codex-plan-badge[hidden] {
+    .ch-oauth-plan-badge[hidden] {
       display: none !important;
     }
 
@@ -1926,7 +1926,7 @@
       flex: 1 1 auto;
     }
 
-    .ch-codex-plan-badge {
+    .ch-oauth-plan-badge {
       flex: 0 0 auto;
       align-self: flex-start;
       margin-left: auto;

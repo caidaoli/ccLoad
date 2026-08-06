@@ -10,11 +10,12 @@ import (
 func TestParseCredentialAndRefreshMerge(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	credential, err := ParseCredential([]byte(`{"type":"antigravity","access_token":" at ","refresh_token":" rt ","expires_in":3600,"timestamp":` +
-		fmtInt(now.UnixMilli()) + `,"email":" user@example.com ","project_id":" project-1 "}`))
+		fmtInt(now.UnixMilli()) + `,"email":" user@example.com ","project_id":" project-1 ","paid_tier":{"id":" g1-pro-tier ","name":" Google AI Pro "}}`))
 	if err != nil {
 		t.Fatalf("ParseCredential: %v", err)
 	}
-	if credential.AccessToken != "at" || credential.RefreshToken != "rt" || credential.ProjectID != "project-1" {
+	if credential.AccessToken != "at" || credential.RefreshToken != "rt" || credential.ProjectID != "project-1" ||
+		credential.PaidTier == nil || credential.PaidTier.ID != "g1-pro-tier" || credential.PaidTier.Name != "Google AI Pro" {
 		t.Fatalf("credential = %#v", credential)
 	}
 	needsRefresh, err := credential.NeedsRefresh(now, 2*time.Hour)
@@ -26,12 +27,23 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeRefresh: %v", err)
 	}
-	if merged.RefreshToken != "rt" || merged.Email != "user@example.com" || merged.ProjectID != "project-1" {
+	if merged.RefreshToken != "rt" || merged.Email != "user@example.com" || merged.ProjectID != "project-1" ||
+		merged.PaidTier == nil || merged.PaidTier.DisplayName() != "Google AI Pro" {
 		t.Fatalf("merged = %#v", merged)
 	}
 	raw, err := merged.JSON()
-	if err != nil || !strings.Contains(raw, `"project_id":"project-1"`) {
+	if err != nil || !strings.Contains(raw, `"project_id":"project-1"`) ||
+		!strings.Contains(raw, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("JSON = (%s, %v)", raw, err)
+	}
+}
+
+func TestPaidTierDisplayNameNormalizesFreeTier(t *testing.T) {
+	if got := (&PaidTier{ID: "free-tier", Name: "Antigravity Starter Quota"}).DisplayName(); got != "Antigravity Free" {
+		t.Fatalf("free tier display name = %q", got)
+	}
+	if got := (&PaidTier{ID: "g1-pro-tier", Name: "Google AI Pro"}).DisplayName(); got != "Google AI Pro" {
+		t.Fatalf("paid tier display name = %q", got)
 	}
 }
 

@@ -447,6 +447,7 @@ type ChannelWithCooldown struct {
 	*model.Config
 	CodexPlanType                string              `json:"codex_plan_type,omitempty"`
 	CodexSubscriptionActiveUntil *time.Time          `json:"codex_subscription_active_until,omitempty"`
+	AntigravityPaidTier          string              `json:"antigravity_paid_tier,omitempty"`
 	KeyStrategy                  string              `json:"key_strategy,omitempty"` // [INFO] 修复 (2025-10-11): 添加key_strategy字段
 	CooldownUntil                *time.Time          `json:"cooldown_until,omitempty"`
 	CooldownRemainingMS          int64               `json:"cooldown_remaining_ms,omitempty"`

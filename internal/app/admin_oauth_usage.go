@@ -336,7 +336,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		if s.antigravityCredentials == nil {
 			return nil, errAntigravityManagerUnavailable
 		}
-		credential, err := s.antigravityCredentials.credential(ctx, cfg, false)
+		credential, err := s.antigravityCredentials.credentialWithMetadata(ctx, cfg)
 		if err != nil {
 			return nil, errors.New("usage: Antigravity credential refresh failed")
 		}

@@ -110,6 +110,42 @@ func TestServiceOnboardsWhenProjectIsMissing(t *testing.T) {
 	}
 }
 
+func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/daily/v1internal:loadCodeAssist" {
+			http.NotFound(w, r)
+			return
+		}
+		assertBearer(t, r, "at")
+		if got := r.Header.Get("User-Agent"); got != DefaultUserAgent {
+			t.Errorf("User-Agent = %q", got)
+		}
+		var body map[string]map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode loadCodeAssist: %v", err)
+		}
+		if body["metadata"]["ideType"] != "ANTIGRAVITY" {
+			t.Fatalf("loadCodeAssist body = %#v", body)
+		}
+		_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro","description":"not persisted"}}`))
+	}))
+	defer server.Close()
+
+	service := testService(server)
+	service.DailyAPIBaseURL = server.URL + "/daily"
+	credential, err := service.CompleteCredential(context.Background(), &Credential{
+		Type: ChannelType, AccessToken: "at", RefreshToken: "rt",
+		Expired: "2030-01-01T00:00:00Z", Email: "user@example.com", ProjectID: "project-1",
+	})
+	if err != nil {
+		t.Fatalf("CompleteCredential: %v", err)
+	}
+	if credential.PaidTier == nil || credential.PaidTier.ID != "g1-pro-tier" ||
+		credential.PaidTier.DisplayName() != "Google AI Pro" {
+		t.Fatalf("paid tier = %#v", credential.PaidTier)
+	}
+}
+
 func testService(server *httptest.Server) *Service {
 	service := NewService(server.Client())
 	service.AuthorizationURL = "https://accounts.example.test/authorize"

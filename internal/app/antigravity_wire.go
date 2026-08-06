@@ -309,21 +309,14 @@ func antigravityUpstreamURL(baseURL string, streaming bool) (string, error) {
 	return parsed.String(), nil
 }
 
-func injectAntigravityOAuthHeaders(req *http.Request, cfg *model.Config, streaming bool) {
+func injectAntigravityOAuthHeaders(req *http.Request, cfg *model.Config) {
 	if req == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return
 	}
-	for _, name := range []string{"X-Api-Key", "x-goog-api-key", "api-key"} {
-		req.Header.Del(name)
-	}
+	req.Header = make(http.Header, 3)
 	req.Header.Set("Authorization", "Bearer "+cfg.AntigravityAccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", antigravityauth.DefaultUserAgent)
-	if streaming {
-		req.Header.Set("Accept", "text/event-stream")
-	} else {
-		req.Header.Set("Accept", "application/json")
-	}
 }
 
 func unwrapAntigravityResponse(raw []byte) ([]byte, error) {

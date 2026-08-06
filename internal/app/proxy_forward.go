@@ -166,7 +166,7 @@ func (s *Server) buildProxyRequest(
 		}
 		injectCodexOAuthHeaders(req, cfg, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
-		injectAntigravityOAuthHeaders(req, cfg, upstreamStreaming)
+		injectAntigravityOAuthHeaders(req, cfg)
 	}
 
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）

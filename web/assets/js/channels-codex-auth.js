@@ -534,7 +534,11 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth) {
       throw new Error(window.t('channels.oauth.usageInvalid'));
     }
     oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
-    rerenderOAuthUsage();
+    if (typeof loadChannels === 'function') {
+      await loadChannels();
+    } else {
+      rerenderOAuthUsage();
+    }
     return result;
   } catch (error) {
     const message = error?.message || window.t('channels.oauth.usageFailed');
