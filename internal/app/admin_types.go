@@ -181,8 +181,8 @@ func (cr *ChannelRequest) Validate() error {
 	if authType == model.AuthTypeAPIKey && len(apiKeys) == 0 {
 		return fmt.Errorf("api_key cannot be empty")
 	}
-	if authType == model.AuthTypeCodexOAuth && len(apiKeys) != 0 {
-		return fmt.Errorf("codex_oauth channel cannot contain API keys")
+	if authType != model.AuthTypeAPIKey && len(apiKeys) != 0 {
+		return fmt.Errorf("OAuth channel cannot contain API keys")
 	}
 	for i, key := range apiKeys {
 		if strings.ContainsAny(key.APIKey, "\x00\r\n") {

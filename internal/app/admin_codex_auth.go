@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -23,15 +24,16 @@ import (
 )
 
 const (
-	codexOAuthCallbackAddr = "127.0.0.1:1455"
-	codexOAuthTimeout      = 5 * time.Minute
-	codexOAuthStatusTTL    = 10 * time.Minute
-	codexUpstreamURL       = "https://chatgpt.com/backend-api/codex/responses"
-	codexUsageURL          = "https://chatgpt.com/backend-api/wham/usage"
-	codexUsageUserAgent    = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
-	codexUsageTimeout      = 30 * time.Second
-	maxCodexImportBytes    = 1 << 20
-	maxCodexUsageBytes     = 1 << 20
+	codexOAuthCallbackAddr       = "127.0.0.1:1455"
+	antigravityOAuthCallbackAddr = "127.0.0.1:51121"
+	codexOAuthTimeout            = 5 * time.Minute
+	codexOAuthStatusTTL          = 10 * time.Minute
+	codexUpstreamURL             = "https://chatgpt.com/backend-api/codex/responses"
+	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
+	codexUsageUserAgent          = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
+	codexUsageTimeout            = 30 * time.Second
+	maxCodexImportBytes          = 1 << 20
+	maxCodexUsageBytes           = 1 << 20
 )
 
 var codexOAuthDefaultModels = []string{
@@ -64,7 +66,8 @@ type codexOAuthResult struct {
 
 type codexOAuthSession struct {
 	state            string
-	pkce             codexauth.PKCE
+	exchange         func(context.Context, string) (any, error)
+	commit           func(context.Context, any) (int64, error)
 	ctx              context.Context
 	cancelContext    context.CancelFunc
 	status           string
@@ -107,29 +110,102 @@ func (r *codexOAuthCancelRequest) Validate() error {
 }
 
 type codexOAuthManager struct {
-	startMu    sync.Mutex
-	mu         sync.Mutex
-	service    *codexauth.Service
-	store      storage.Store
-	listenAddr string
-	timeout    time.Duration
-	now        func() time.Time
-	sessions   map[string]*codexOAuthSession
-	active     *codexOAuthSession
-	invalidate func(int64)
+	startMu      sync.Mutex
+	mu           sync.Mutex
+	provider     string
+	callbackPath string
+	prepare      func(string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error)
+	listenAddr   string
+	timeout      time.Duration
+	now          func() time.Time
+	sessions     map[string]*codexOAuthSession
+	active       *codexOAuthSession
+	invalidate   func(int64)
 }
 
 func newCodexOAuthManager(service *codexauth.Service, store storage.Store, invalidate func(int64)) *codexOAuthManager {
 	return &codexOAuthManager{
-		service: service, store: store, listenAddr: codexOAuthCallbackAddr,
+		provider: "Codex", callbackPath: "/auth/callback", listenAddr: codexOAuthCallbackAddr,
 		timeout: codexOAuthTimeout, now: time.Now,
 		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
+		prepare: func(redirectURI string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+			if service == nil || store == nil {
+				return "", "", nil, nil, errors.New("oauth: Codex is unavailable")
+			}
+			state, err := codexauth.GenerateState()
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			pkce, err := codexauth.GeneratePKCE()
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			flowService := *service
+			flowService.RedirectURI = redirectURI
+			authURL, err := flowService.AuthorizationLink(state, pkce)
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			exchange := func(ctx context.Context, code string) (any, error) {
+				return flowService.ExchangeCode(ctx, code, pkce)
+			}
+			commit := func(ctx context.Context, raw any) (int64, error) {
+				credential, ok := raw.(*codexauth.Credential)
+				if !ok || credential == nil {
+					return 0, errors.New("oauth: Codex exchange returned an invalid credential")
+				}
+				channel, _, err := createOrUpdateCodexChannel(ctx, store, credential)
+				if err != nil {
+					return 0, err
+				}
+				return channel.ID, nil
+			}
+			return state, authURL, exchange, commit, nil
+		},
+	}
+}
+
+func newAntigravityOAuthManager(service *antigravityauth.Service, store storage.Store, invalidate func(int64)) *codexOAuthManager {
+	return &codexOAuthManager{
+		provider: "Antigravity", callbackPath: "/oauth-callback", listenAddr: antigravityOAuthCallbackAddr,
+		timeout: codexOAuthTimeout, now: time.Now,
+		sessions: make(map[string]*codexOAuthSession), invalidate: invalidate,
+		prepare: func(redirectURI string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error) {
+			if service == nil || store == nil {
+				return "", "", nil, nil, errors.New("oauth: Antigravity is unavailable")
+			}
+			state, err := antigravityauth.GenerateState()
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			flowService := *service
+			flowService.RedirectURI = redirectURI
+			authURL, err := flowService.AuthorizationLink(state)
+			if err != nil {
+				return "", "", nil, nil, err
+			}
+			exchange := func(ctx context.Context, code string) (any, error) {
+				return flowService.ExchangeCode(ctx, code)
+			}
+			commit := func(ctx context.Context, raw any) (int64, error) {
+				credential, ok := raw.(*antigravityauth.Credential)
+				if !ok || credential == nil {
+					return 0, errors.New("oauth: Antigravity exchange returned an invalid credential")
+				}
+				channel, err := createAntigravityChannel(ctx, store, credential)
+				if err != nil {
+					return 0, err
+				}
+				return channel.ID, nil
+			}
+			return state, authURL, exchange, commit, nil
+		},
 	}
 }
 
 func (m *codexOAuthManager) start() (string, string, error) {
-	if m == nil || m.service == nil || m.store == nil {
-		return "", "", errors.New("codex OAuth is unavailable")
+	if m == nil || m.prepare == nil {
+		return "", "", errors.New("oauth is unavailable")
 	}
 	m.startMu.Lock()
 	defer m.startMu.Unlock()
@@ -139,36 +215,29 @@ func (m *codexOAuthManager) start() (string, string, error) {
 	m.mu.Unlock()
 	if active != nil {
 		if err := m.cancelSession(active.state, false); err != nil {
-			return "", "", fmt.Errorf("replace existing Codex OAuth login: %w", err)
+			return "", "", fmt.Errorf("replace existing %s OAuth login: %w", m.provider, err)
 		}
-	}
-
-	state, err := codexauth.GenerateState()
-	if err != nil {
-		return "", "", err
-	}
-	pkce, err := codexauth.GeneratePKCE()
-	if err != nil {
-		return "", "", err
 	}
 
 	m.mu.Lock()
 	m.pruneLocked()
 	if m.active != nil {
 		m.mu.Unlock()
-		return "", "", errors.New("a Codex OAuth login is already pending")
+		return "", "", fmt.Errorf("a %s OAuth login is already pending", m.provider)
 	}
 	listener, err := net.Listen("tcp", m.listenAddr)
 	if err != nil {
 		m.mu.Unlock()
-		return "", "", fmt.Errorf("listen for Codex OAuth callback on %s: %w", m.listenAddr, err)
+		return "", "", fmt.Errorf("listen for %s OAuth callback on %s: %w", m.provider, m.listenAddr, err)
 	}
-
-	service := *m.service
-	if _, port, splitErr := net.SplitHostPort(m.listenAddr); splitErr == nil && port == "0" {
-		service.RedirectURI = "http://" + listener.Addr().String() + "/auth/callback"
+	_, port, splitErr := net.SplitHostPort(listener.Addr().String())
+	if splitErr != nil {
+		_ = listener.Close()
+		m.mu.Unlock()
+		return "", "", fmt.Errorf("resolve %s OAuth callback port: %w", m.provider, splitErr)
 	}
-	authURL, err := service.AuthorizationLink(state, pkce)
+	redirectURI := "http://localhost:" + port + m.callbackPath
+	state, authURL, exchange, commit, err := m.prepare(redirectURI)
 	if err != nil {
 		_ = listener.Close()
 		m.mu.Unlock()
@@ -177,11 +246,11 @@ func (m *codexOAuthManager) start() (string, string, error) {
 
 	sessionCtx, cancelSession := context.WithCancel(context.Background())
 	session := &codexOAuthSession{
-		state: state, pkce: pkce, status: "pending", createdAt: m.now(),
+		state: state, exchange: exchange, commit: commit, status: "pending", createdAt: m.now(),
 		ctx: sessionCtx, cancelContext: cancelSession, result: make(chan codexOAuthResult, 1),
 	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/auth/callback", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc(m.callbackPath, func(w http.ResponseWriter, r *http.Request) {
 		m.handleCallback(session, w, r)
 	})
 	session.server = &http.Server{
@@ -196,7 +265,7 @@ func (m *codexOAuthManager) start() (string, string, error) {
 			_ = m.deliverCallback(session, codexOAuthResult{state: state, errorMsg: serveErr.Error()})
 		}
 	}()
-	go m.complete(session, &service)
+	go m.complete(session)
 	return authURL, state, nil
 }
 
@@ -223,20 +292,20 @@ func (m *codexOAuthManager) handleCallback(session *codexOAuthSession, w http.Re
 	}
 	if result.errorMsg != "" {
 		w.WriteHeader(http.StatusBadRequest)
-		_, _ = fmt.Fprintf(w, "<h1>Codex 登录失败</h1><p>%s</p>", html.EscapeString(result.errorMsg))
+		_, _ = fmt.Fprintf(w, "<h1>%s 登录失败</h1><p>%s</p>", html.EscapeString(m.provider), html.EscapeString(result.errorMsg))
 		return
 	}
-	_, _ = io.WriteString(w, "<h1>Codex 授权已收到</h1><p>ccLoad 正在创建渠道，可以关闭此窗口。</p>")
+	_, _ = fmt.Fprintf(w, "<h1>%s 授权已收到</h1><p>ccLoad 正在创建渠道，可以关闭此窗口。</p>", html.EscapeString(m.provider))
 }
 
 func (m *codexOAuthManager) deliverCallback(session *codexOAuthSession, result codexOAuthResult) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if session == nil || session.status != "pending" || m.sessions[session.state] != session {
-		return errors.New("codex OAuth session is not pending")
+		return fmt.Errorf("%s OAuth session is not pending", m.provider)
 	}
 	if session.callbackReceived {
-		return errors.New("OAuth callback was already consumed")
+		return errors.New("oauth callback was already consumed")
 	}
 	session.callbackReceived = true
 	select {
@@ -249,7 +318,7 @@ func (m *codexOAuthManager) deliverCallback(session *codexOAuthSession, result c
 }
 
 func (m *codexOAuthManager) submitCallbackURL(rawURL string) (string, error) {
-	result, err := parseCodexOAuthCallbackURL(rawURL)
+	result, err := parseOAuthCallbackURL(rawURL, m.callbackPath, m.provider)
 	if err != nil {
 		return "", err
 	}
@@ -258,7 +327,7 @@ func (m *codexOAuthManager) submitCallbackURL(rawURL string) (string, error) {
 	session := m.sessions[result.state]
 	m.mu.Unlock()
 	if session == nil {
-		return "", errors.New("codex OAuth session not found")
+		return "", fmt.Errorf("%s OAuth session not found", m.provider)
 	}
 	if err := m.deliverCallback(session, result); err != nil {
 		return "", err
@@ -277,7 +346,7 @@ func (m *codexOAuthManager) cancelSession(state string, force bool) error {
 	session := m.sessions[state]
 	if session == nil {
 		m.mu.Unlock()
-		return errors.New("codex OAuth session not found")
+		return fmt.Errorf("%s OAuth session not found", m.provider)
 	}
 	if session.status == "cancelled" {
 		m.mu.Unlock()
@@ -285,7 +354,7 @@ func (m *codexOAuthManager) cancelSession(state string, force bool) error {
 	}
 	if !force && session.status != "pending" {
 		m.mu.Unlock()
-		return fmt.Errorf("codex OAuth session cannot be cancelled while %s", session.status)
+		return fmt.Errorf("%s OAuth session cannot be cancelled while %s", m.provider, session.status)
 	}
 	session.status = "cancelled"
 	session.errorMsg = ""
@@ -306,19 +375,19 @@ func (m *codexOAuthManager) cancelSession(state string, force bool) error {
 		err := callbackServer.Shutdown(shutdownCtx)
 		cancelShutdown()
 		if err != nil {
-			return fmt.Errorf("stop Codex OAuth callback listener: %w", err)
+			return fmt.Errorf("stop %s OAuth callback listener: %w", m.provider, err)
 		}
 	}
 	return nil
 }
 
-func parseCodexOAuthCallbackURL(rawURL string) (codexOAuthResult, error) {
+func parseOAuthCallbackURL(rawURL, callbackPath, provider string) (codexOAuthResult, error) {
 	callbackURL, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || !callbackURL.IsAbs() || callbackURL.Host == "" {
-		return codexOAuthResult{}, errors.New("invalid Codex OAuth callback URL")
+		return codexOAuthResult{}, fmt.Errorf("invalid %s OAuth callback URL", provider)
 	}
-	if !strings.EqualFold(callbackURL.Scheme, "http") || callbackURL.Path != "/auth/callback" {
-		return codexOAuthResult{}, errors.New("invalid Codex OAuth callback URL")
+	if !strings.EqualFold(callbackURL.Scheme, "http") || callbackURL.Path != callbackPath {
+		return codexOAuthResult{}, fmt.Errorf("invalid %s OAuth callback URL", provider)
 	}
 	host := callbackURL.Hostname()
 	isLoopback := strings.EqualFold(host, "localhost")
@@ -327,7 +396,7 @@ func parseCodexOAuthCallbackURL(rawURL string) (codexOAuthResult, error) {
 		isLoopback = ip != nil && ip.IsLoopback()
 	}
 	if !isLoopback {
-		return codexOAuthResult{}, errors.New("codex OAuth callback URL must use a loopback host")
+		return codexOAuthResult{}, fmt.Errorf("%s OAuth callback URL must use a loopback host", provider)
 	}
 
 	query := callbackURL.Query()
@@ -337,10 +406,10 @@ func parseCodexOAuthCallbackURL(rawURL string) (codexOAuthResult, error) {
 		errorMsg: strings.TrimSpace(query.Get("error")),
 	}
 	if result.state == "" {
-		return codexOAuthResult{}, errors.New("codex OAuth callback state is required")
+		return codexOAuthResult{}, fmt.Errorf("%s OAuth callback state is required", provider)
 	}
 	if result.errorMsg == "" && result.code == "" {
-		return codexOAuthResult{}, errors.New("codex OAuth callback code is required")
+		return codexOAuthResult{}, fmt.Errorf("%s OAuth callback code is required", provider)
 	}
 	if description := strings.TrimSpace(query.Get("error_description")); result.errorMsg != "" && description != "" {
 		result.errorMsg += ": " + description
@@ -348,7 +417,7 @@ func parseCodexOAuthCallbackURL(rawURL string) (codexOAuthResult, error) {
 	return result, nil
 }
 
-func (m *codexOAuthManager) complete(session *codexOAuthSession, service *codexauth.Service) {
+func (m *codexOAuthManager) complete(session *codexOAuthSession) {
 	defer session.cancelContext()
 	timer := time.NewTimer(m.timeout)
 	defer timer.Stop()
@@ -356,9 +425,9 @@ func (m *codexOAuthManager) complete(session *codexOAuthSession, service *codexa
 	select {
 	case result = <-session.result:
 	case <-session.ctx.Done():
-		result = codexOAuthResult{state: session.state, errorMsg: "Codex OAuth login cancelled"}
+		result = codexOAuthResult{state: session.state, errorMsg: m.provider + " OAuth login cancelled"}
 	case <-timer.C:
-		result = codexOAuthResult{state: session.state, errorMsg: "Codex OAuth login timed out"}
+		result = codexOAuthResult{state: session.state, errorMsg: m.provider + " OAuth login timed out"}
 	}
 
 	var channelID int64
@@ -366,24 +435,28 @@ func (m *codexOAuthManager) complete(session *codexOAuthSession, service *codexa
 		if result.state != session.state {
 			result.errorMsg = "invalid OAuth state"
 		} else {
-			credential, err := service.ExchangeCode(session.ctx, result.code, session.pkce)
-			if err != nil {
-				result.errorMsg = err.Error()
+			if session.exchange == nil || session.commit == nil {
+				result.errorMsg = m.provider + " OAuth exchange is unavailable"
 			} else {
-				m.mu.Lock()
-				cancelled := session.status == "cancelled"
-				if !cancelled {
-					session.status = "committing"
-				}
-				m.mu.Unlock()
-				if cancelled {
-					result.errorMsg = "Codex OAuth login cancelled"
+				credential, exchangeErr := session.exchange(session.ctx, result.code)
+				if exchangeErr != nil {
+					result.errorMsg = exchangeErr.Error()
 				} else {
-					channel, _, createErr := createOrUpdateCodexChannel(session.ctx, m.store, credential)
-					if createErr != nil {
-						result.errorMsg = createErr.Error()
+					m.mu.Lock()
+					cancelled := session.status == "cancelled"
+					if !cancelled {
+						session.status = "committing"
+					}
+					m.mu.Unlock()
+					if cancelled {
+						result.errorMsg = m.provider + " OAuth login cancelled"
 					} else {
-						channelID = channel.ID
+						createdChannelID, commitErr := session.commit(session.ctx, credential)
+						if commitErr != nil {
+							result.errorMsg = commitErr.Error()
+						} else {
+							channelID = createdChannelID
+						}
 					}
 				}
 			}
@@ -459,15 +532,15 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 		return nil, false, fmt.Errorf("list channels for Codex credential: %w", err)
 	}
 	for _, cfg := range configs {
-		if cfg == nil || !cfg.UsesCodexOAuth() || cfg.CodexCredential == "" {
+		if cfg == nil || !cfg.UsesCodexOAuth() || cfg.OAuthCredential == "" {
 			continue
 		}
-		existing, parseErr := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+		existing, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if parseErr != nil || !sameCodexIdentity(existing, credential) {
 			continue
 		}
 		models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, existing.PlanType, credential.PlanType)
-		if err := store.UpdateCodexCredential(ctx, cfg.ID, credentialJSON); err != nil {
+		if err := store.UpdateOAuthCredential(ctx, cfg.ID, credentialJSON); err != nil {
 			return nil, false, err
 		}
 		if !modelEntriesEqual(cfg.ModelEntries, models) {
@@ -493,7 +566,7 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 
 func newCodexOAuthChannel(name, credentialJSON, planType string) *model.Config {
 	return &model.Config{
-		Name: name, AuthType: model.AuthTypeCodexOAuth, CodexCredential: credentialJSON,
+		Name: name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
 		URLs:       model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
 		Websockets: true, ProtocolTransformMode: model.ProtocolTransformModeLocal,
 		Priority: 0, Enabled: true, CostMultiplier: 1,
@@ -619,7 +692,7 @@ func codexChannelBaseName(credential *codexauth.Credential) string {
 	if identity == "" {
 		identity = "OAuth"
 	}
-	return "Codex - " + identity
+	return "Codex-" + identity
 }
 
 // HandleStartCodexOAuth starts the local callback listener and returns the browser URL.
@@ -817,8 +890,8 @@ func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
 		subscriptionActiveUntil = &until
 	}
 	RespondJSON(c, http.StatusOK, gin.H{
-		"codex_credential":                credential,
-		"codex_credential_info":           credential.DecodedIDToken(),
+		"oauth_credential":                credential,
+		"oauth_credential_info":           credential.DecodedIDToken(),
 		"codex_plan_type":                 credential.PlanType,
 		"codex_subscription_active_until": subscriptionActiveUntil,
 	})
@@ -880,7 +953,7 @@ func appendCodexUsageWindow(windows []codexUsageWindow, limitName, kind string, 
 
 func normalizeCodexUsage(payload *codexUsagePayload, fallbackPlanType string) (*codexUsageSummary, error) {
 	if payload == nil {
-		return nil, errors.New("codex usage response is invalid")
+		return nil, errors.New("usage: Codex response is invalid")
 	}
 	summary := &codexUsageSummary{
 		PlanType: strings.TrimSpace(payload.PlanType),
@@ -914,18 +987,18 @@ func normalizeCodexUsage(payload *codexUsagePayload, fallbackPlanType string) (*
 		summary.Windows = appendCodexUsageWindow(summary.Windows, limitName, "secondary", secondary)
 	}
 	if len(summary.Windows) == 0 {
-		return nil, errors.New("codex usage response has no rate limit windows")
+		return nil, errors.New("usage: Codex response has no rate limit windows")
 	}
 	return summary, nil
 }
 
 func requestCodexUsage(ctx context.Context, client *http.Client, credential *codexauth.Credential) (*codexUsageSummary, error) {
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
-		return nil, errors.New("codex usage request is unavailable")
+		return nil, errors.New("usage: Codex request is unavailable")
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
 	if err != nil {
-		return nil, errors.New("codex usage request is unavailable")
+		return nil, errors.New("usage: Codex request is unavailable")
 	}
 	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
 	req.Header.Set("Accept", "application/json")
@@ -944,20 +1017,20 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 	}
 	resp, err := usageClient.Do(req)
 	if err != nil {
-		return nil, errors.New("codex usage request failed")
+		return nil, errors.New("usage: Codex request failed")
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCodexUsageBytes))
-		return nil, fmt.Errorf("codex usage request returned HTTP %d", resp.StatusCode)
+		return nil, fmt.Errorf("usage: Codex request returned HTTP %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexUsageBytes+1))
 	if err != nil || len(body) > maxCodexUsageBytes {
-		return nil, errors.New("codex usage response is invalid")
+		return nil, errors.New("usage: Codex response is invalid")
 	}
 	var payload codexUsagePayload
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, errors.New("codex usage response is invalid")
+		return nil, errors.New("usage: Codex response is invalid")
 	}
 	return normalizeCodexUsage(&payload, credential.PlanType)
 }

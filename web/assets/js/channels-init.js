@@ -118,8 +118,8 @@ function initChannelsPageActions() {
   if (typeof initChannelEditorActions === 'function') {
     initChannelEditorActions();
   }
-  if (typeof setupCodexAuthActions === 'function') {
-    setupCodexAuthActions();
+  if (typeof setupOAuthActions === 'function') {
+    setupOAuthActions();
   }
 
   if (typeof window.initDelegatedActions === 'function') {
@@ -186,7 +186,7 @@ function initChannelsPageActions() {
 function applyChannelsAccessMode() {
   const readOnly = isTokenChannelsReadOnly();
   document.body.classList.toggle('channels-readonly', readOnly);
-  for (const id of ['addChannelBtn', 'codexOAuthBtn', 'importCodexCredentialBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
     const el = document.getElementById(id);
     if (el) el.hidden = readOnly;
   }
@@ -247,7 +247,7 @@ window.initPageBootstrap({
       }
     } else if (savedFilters) {
       filters.status = savedFilters.status || 'all';
-      filters.authType = ['api_key', 'codex_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
+      filters.authType = ['api_key', 'codex_oauth', 'antigravity_oauth'].includes(savedFilters.authType) ? savedFilters.authType : 'all';
       filters.model = savedFilters.model || 'all';
       filters.modelExact = filters.model !== 'all' && savedFilters.modelExact !== false;
       filters.search = savedFilters.search || '';

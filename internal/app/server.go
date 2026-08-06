@@ -3,18 +3,21 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	neturl "net/url"
 	"os"
+	"regexp"
 	"sort"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
@@ -62,6 +65,10 @@ type Server struct {
 	responsesWebsocketConnections *responsesWebsocketConnectionLimiter
 	codexOAuth                    *codexOAuthManager
 	codexCredentials              *codexCredentialManager
+	antigravityOAuth              *codexOAuthManager
+	antigravityCredentials        *antigravityCredentialManager
+	antigravityService            *antigravityauth.Service
+	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -226,6 +233,15 @@ func NewServer(store storage.Store) *Server {
 		s.codexCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
 	})
+	s.antigravityService = antigravityauth.NewService(s.client)
+	s.antigravityPromptMatcher = loadAntigravityPromptMatcher(configService)
+	s.antigravityCredentials = newAntigravityCredentialManager(s.antigravityService, store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.antigravityOAuth = newAntigravityOAuthManager(s.antigravityService, store, func(channelID int64) {
+		s.antigravityCredentials.invalidate(channelID)
+		s.InvalidateChannelListCache()
+	})
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -301,6 +317,18 @@ func NewServer(store storage.Store) *Server {
 
 	return s
 
+}
+
+func loadAntigravityPromptMatcher(configService *ConfigService) *regexp.Regexp {
+	if configService == nil {
+		return nil
+	}
+	var words []string
+	if err := json.Unmarshal([]byte(configService.GetString("antigravity_sensitive_words", `["API","proxy","Claude","Anthropic"]`)), &words); err != nil {
+		log.Printf("[WARN] 无效的 antigravity_sensitive_words，已禁用提示词替换: %v", err)
+		return nil
+	}
+	return buildAntigravitySensitiveWordMatcher(words)
 }
 
 // StartModelCatalogSync 加载本地快照，并在启用时同步官方模型目录。
@@ -1000,6 +1028,12 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/codex/credentials/import", s.HandleImportCodexCredential)
 		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
 		admin.POST("/channels/:id/codex-usage", s.HandleCodexUsage)
+		admin.POST("/antigravity/oauth/start", s.HandleStartAntigravityOAuth)
+		admin.GET("/antigravity/oauth/status", s.HandleAntigravityOAuthStatus)
+		admin.POST("/antigravity/oauth/cancel", s.HandleCancelAntigravityOAuth)
+		admin.POST("/antigravity/oauth/callback", s.HandleSubmitAntigravityOAuthCallback)
+		admin.POST("/antigravity/credentials/import", s.HandleImportAntigravityCredential)
+		admin.POST("/channels/:id/antigravity-credential/refresh", s.HandleRefreshAntigravityCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1244,6 +1278,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.baseCancel()
 	if s.codexOAuth != nil {
 		s.codexOAuth.close()
+	}
+	if s.antigravityOAuth != nil {
+		s.antigravityOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

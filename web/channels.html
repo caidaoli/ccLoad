@@ -54,13 +54,13 @@
               <p class="page-subtitle" style="margin: 0;" data-i18n="channels.description">
                 配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级按Key数量加权随机</b>）</p>
               <div class="channel-page-actions">
-                <button id="codexOAuthBtn" type="button" class="btn btn-secondary channel-page-action-btn"
-                  data-i18n-title="channels.codex.oauthTitle" title="使用 OpenAI OAuth 创建 Codex 渠道">
-                  <span data-i18n="channels.codex.oauth">Codex OAuth</span>
+                <button id="oauthLoginBtn" type="button" class="btn btn-secondary channel-page-action-btn"
+                  data-i18n-title="channels.oauth.loginTitle" title="登录 OAuth 账号并创建渠道">
+                  <span data-i18n="channels.oauth.login">OAuth 登录</span>
                 </button>
-                <button id="importCodexCredentialBtn" type="button" class="btn btn-secondary channel-page-action-btn"
-                  data-i18n-title="channels.codex.importTitle" title="导入 CLIProxyAPI 兼容的 Codex 凭证 JSON">
-                  <span data-i18n="channels.codex.import">导入 Codex 凭证</span>
+                <button id="oauthCredentialImportBtn" type="button" class="btn btn-secondary channel-page-action-btn"
+                  data-i18n-title="channels.oauth.importTitle" title="导入 OAuth 凭证 JSON">
+                  <span data-i18n="channels.oauth.import">导入凭证</span>
                 </button>
                 <button id="exportCsvBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.exportCsvTitle"
@@ -77,63 +77,124 @@
                   <span data-i18n="channels.addChannel">+ 添加渠道</span>
                 </button>
                 <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
-                <input type="file" id="importCodexCredentialInput" accept=".json,application/json" multiple hidden />
               </div>
               <p id="codexAuthStatus" class="channel-codex-auth-status" role="status" aria-live="polite" hidden></p>
             </div>
           </div>
         </header>
 
-        <dialog id="codexOAuthDialog" class="codex-oauth-dialog"
-          aria-labelledby="codexOAuthDialogTitle" aria-describedby="codexOAuthDialogDescription">
-          <div class="codex-oauth-dialog-header">
+        <dialog id="oauthLoginDialog" class="oauth-dialog"
+          aria-labelledby="oauthLoginDialogTitle" aria-describedby="oauthLoginDialogDescription">
+          <div class="oauth-dialog-header">
             <div>
-              <p class="codex-oauth-dialog-eyebrow">Codex OAuth</p>
-              <h2 id="codexOAuthDialogTitle" data-i18n="channels.codex.oauthDialogTitle">Codex OAuth 登录</h2>
+              <p class="oauth-dialog-eyebrow">OAuth</p>
+              <h2 id="oauthLoginDialogTitle" data-i18n="channels.oauth.loginDialogTitle">OAuth 登录</h2>
             </div>
-            <button type="button" class="close-btn" data-action="close-codex-oauth"
+            <button type="button" class="close-btn" data-action="close-oauth-login"
               data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
           </div>
-          <div class="codex-oauth-dialog-body">
-            <p id="codexOAuthDialogDescription" class="codex-oauth-dialog-description"
-              data-i18n="channels.codex.oauthDialogDescription">
-              打开授权链接完成登录。如果浏览器最终跳转到无法访问的 localhost 页面，请复制地址栏中的完整 URL 并粘贴到下方。
+          <div class="oauth-dialog-body">
+            <p id="oauthLoginDialogDescription" class="oauth-dialog-description"
+              data-i18n="channels.oauth.loginDialogDescription">
+              选择凭证类型，然后生成授权链接。
             </p>
 
-            <div class="codex-oauth-field">
-              <label for="codexOAuthAuthorizationURL" data-i18n="channels.codex.oauthAuthorizationURL">授权链接</label>
-              <textarea id="codexOAuthAuthorizationURL" class="form-input codex-oauth-url" rows="4"
-                readonly spellcheck="false"></textarea>
-              <div class="codex-oauth-actions">
-                <button id="codexOAuthCopyLink" type="button" class="btn btn-secondary"
-                  data-i18n="channels.codex.oauthCopyLink">复制链接</button>
-                <a id="codexOAuthOpenLink" class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
-                  data-i18n="channels.codex.oauthOpenLink">打开链接</a>
-                <button id="codexOAuthRestart" type="button" class="btn btn-secondary"
-                  data-i18n="channels.codex.oauthRestart">重新授权</button>
+            <form id="oauthLoginForm" class="oauth-dialog-section">
+              <div class="oauth-field">
+                <label for="oauthProviderSelect" data-i18n="channels.oauth.credentialType">凭证类型</label>
+                <select id="oauthProviderSelect" name="oauth_provider" class="form-input">
+                  <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
+                  <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+                </select>
               </div>
-            </div>
-
-            <form id="codexOAuthCallbackForm" class="codex-oauth-field">
-              <label for="codexOAuthCallbackURL" data-i18n="channels.codex.oauthCallbackURL">回调 URL</label>
-              <textarea id="codexOAuthCallbackURL" class="form-input codex-oauth-url" rows="3"
-                autocomplete="off" spellcheck="false" aria-describedby="codexOAuthCallbackHint codexOAuthDialogStatus"
-                data-i18n-placeholder="channels.codex.oauthCallbackPlaceholder"
-                placeholder="http://localhost:1455/auth/callback?code=...&amp;state=..."></textarea>
-              <p id="codexOAuthCallbackHint" class="codex-oauth-field-hint"
-                data-i18n="channels.codex.oauthCallbackHint">
-                localhost 页面打不开是正常的；复制浏览器地址栏中的完整 URL，粘贴后提交即可。
-              </p>
-              <div class="codex-oauth-actions">
-                <button id="codexOAuthSubmitCallback" type="submit" class="btn btn-primary"
-                  data-i18n="channels.codex.oauthSubmitCallback">提交回调 URL</button>
-                <button type="button" class="btn btn-secondary" data-action="close-codex-oauth"
+              <div class="oauth-actions">
+                <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
+                  data-i18n="channels.oauth.startAuthorization">开始授权</button>
+                <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
                   data-i18n="common.close">关闭</button>
               </div>
             </form>
-            <p id="codexOAuthDialogStatus" class="codex-oauth-dialog-status" role="status"
+
+            <div id="oauthSessionFields" class="oauth-session-fields" hidden>
+              <p id="oauthSessionDescription" class="oauth-dialog-description">
+                打开授权链接完成登录。如果浏览器最终跳转到无法访问的 localhost 页面，请复制地址栏中的完整 URL 并粘贴到下方。
+              </p>
+
+              <div class="oauth-field">
+                <label for="oauthAuthorizationURL" data-i18n="channels.oauth.authorizationURL">授权链接</label>
+                <textarea id="oauthAuthorizationURL" class="form-input oauth-url" rows="4"
+                  readonly spellcheck="false"></textarea>
+                <div class="oauth-actions">
+                  <button id="oauthCopyLink" type="button" class="btn btn-secondary"
+                    data-i18n="channels.oauth.copyLink">复制链接</button>
+                  <a id="oauthOpenLink" class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+                    data-i18n="channels.oauth.openLink">打开链接</a>
+                  <button id="oauthRestart" type="button" class="btn btn-secondary"
+                    data-i18n="channels.oauth.restart">重新授权</button>
+                </div>
+              </div>
+
+              <form id="oauthCallbackForm" class="oauth-field">
+                <label for="oauthCallbackURL" data-i18n="channels.oauth.callbackURL">回调 URL</label>
+                <textarea id="oauthCallbackURL" class="form-input oauth-url" rows="3"
+                  autocomplete="off" spellcheck="false" aria-describedby="oauthCallbackHint oauthLoginDialogStatus"
+                  data-i18n-placeholder="channels.oauth.callbackPlaceholder"
+                  placeholder="http://localhost:1455/auth/callback?code=...&amp;state=..."></textarea>
+                <p id="oauthCallbackHint" class="oauth-field-hint"
+                  data-i18n="channels.oauth.callbackHint">
+                  localhost 页面打不开是正常的；复制浏览器地址栏中的完整 URL，粘贴后提交即可。
+                </p>
+                <div class="oauth-actions">
+                  <button id="oauthSubmitCallback" type="submit" class="btn btn-primary"
+                    data-i18n="channels.oauth.submitCallback">提交回调 URL</button>
+                  <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
+                    data-i18n="common.close">关闭</button>
+                </div>
+              </form>
+            </div>
+            <p id="oauthLoginDialogStatus" class="oauth-dialog-status" role="status"
               aria-live="polite" hidden></p>
           </div>
+        </dialog>
+
+        <dialog id="oauthCredentialImportDialog" class="oauth-dialog oauth-dialog--compact"
+          aria-labelledby="oauthCredentialImportDialogTitle" aria-describedby="oauthCredentialImportDialogDescription">
+          <div class="oauth-dialog-header">
+            <div>
+              <p class="oauth-dialog-eyebrow">OAuth</p>
+              <h2 id="oauthCredentialImportDialogTitle" data-i18n="channels.oauth.importDialogTitle">导入 OAuth 凭证</h2>
+            </div>
+            <button type="button" class="close-btn" data-action="close-oauth-import"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <form id="oauthCredentialImportForm" class="oauth-dialog-body">
+            <p id="oauthCredentialImportDialogDescription" class="oauth-dialog-description"
+              data-i18n="channels.oauth.importDialogDescription">
+              选择凭证类型，然后选择对应的 JSON 凭证文件。
+            </p>
+            <div class="oauth-field">
+              <label for="oauthImportProviderSelect" data-i18n="channels.oauth.credentialType">凭证类型</label>
+              <select id="oauthImportProviderSelect" name="oauth_import_provider" class="form-input">
+                <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
+                <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+              </select>
+            </div>
+            <div class="oauth-field">
+              <label for="oauthCredentialImportInput" data-i18n="channels.oauth.credentialFiles">凭证文件</label>
+              <input id="oauthCredentialImportInput" name="credential_files" type="file" class="form-input"
+                accept=".json,application/json" multiple required aria-describedby="oauthCredentialImportHint oauthCredentialImportStatus" />
+              <p id="oauthCredentialImportHint" class="oauth-field-hint"
+                data-i18n="channels.oauth.credentialFilesHint">支持同时选择多个 JSON 文件。</p>
+            </div>
+            <div class="oauth-actions">
+              <button id="oauthCredentialImportSubmit" type="submit" class="btn btn-primary"
+                data-i18n="channels.oauth.importCredentials">导入凭证</button>
+              <button type="button" class="btn btn-secondary" data-action="close-oauth-import"
+                data-i18n="common.close">关闭</button>
+            </div>
+            <p id="oauthCredentialImportStatus" class="oauth-dialog-status" role="status"
+              aria-live="polite" hidden></p>
+          </form>
         </dialog>
 
         <!-- Filter Bar -->
@@ -487,7 +548,7 @@
                 </div>
                 <span class="models-hint" data-i18n="channels.keyDragSortHint">拖动API Key可排序</span>
                 <span id="codexCredentialReadOnlyNotice" class="models-hint channel-codex-key-hint" role="status"
-                  data-i18n="channels.codex.credentialReadOnly" hidden>AT 作为只读 Key 显示；完整凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
+                  data-i18n="channels.oauthCredentialReadOnly" hidden>AT 作为只读 Key 显示；完整 OAuth 凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
               </div>
             </div>
             <div class="channel-editor-section-actions channel-editor-section-actions--keys">
@@ -879,7 +940,7 @@
         </button>
         <button type="button" id="codexCredentialTab" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
           data-advanced-settings-tab="credential" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelCredential" hidden>
-          <span data-i18n="channels.advancedSettings.tabCredential">Codex 凭证</span>
+          <span data-i18n="channels.advancedSettings.tabCredential">OAuth 凭证</span>
         </button>
         <button type="button" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
           data-advanced-settings-tab="other" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelOther">
@@ -972,7 +1033,7 @@
 
       <section id="advancedSettingsPanelCredential" class="advanced-settings-panel hidden" role="tabpanel">
         <div class="codex-credential-toolbar">
-          <p class="codex-credential-description" data-i18n="channels.codex.credentialFullDescription">默认显示解码视图；如需备份或复制用于重新导入，请切换到原始视图。</p>
+          <p class="codex-credential-description" data-i18n="channels.oauthCredentialFullDescription">默认显示解码视图；如需备份或复制用于重新导入，请切换到原始视图。</p>
           <div class="codex-credential-toolbar-actions">
             <div class="codex-credential-view-switch" role="group" data-i18n-aria-label="channels.codex.credentialViewLabel" aria-label="凭证视图">
               <button type="button" class="btn btn-secondary btn-sm active" data-codex-credential-view="decoded" aria-pressed="true"
@@ -997,8 +1058,8 @@
             </button>
           </div>
         </div>
-        <pre class="codex-credential-json" tabindex="0" data-i18n-aria-label="channels.codex.credentialJSONLabel"
-          aria-label="Codex OAuth 凭证 JSON"><code id="codexCredentialContent" class="language-json"></code></pre>
+        <pre class="codex-credential-json" tabindex="0" data-i18n-aria-label="channels.oauthCredentialJSONLabel"
+          aria-label="OAuth 凭证 JSON"><code id="codexCredentialContent" class="language-json"></code></pre>
       </section>
 
       <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">
