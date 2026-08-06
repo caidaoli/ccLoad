@@ -52,6 +52,7 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
 			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
 			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
+			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "kept"},
 		}},
 	}
 	body := []byte(`{"model":"gpt-5.4-mini","stream":false,"input":[{"role":"system","content":"rules"}],"reasoning":{"effort":"minimal"},"max_output_tokens":12,"temperature":0.2,"truncation":"auto","context_management":{"type":"compaction"},"user":"u","previous_response_id":"resp-old","generate":true,"tools":[{"type":"web_search_preview"}]}`)
@@ -63,11 +64,14 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		reqCtx, cfg, "must-not-be-used", http.MethodPost, body,
 		http.Header{
 			"Content-Type":                          []string{"application/json"},
+			"OpenAI-Beta":                           []string{"http-must-drop"},
 			"X-Codex-Beta-Features":                 []string{"feature-1"},
 			"Version":                               []string{"1.2.3"},
 			"X-Codex-Turn-State":                    []string{"turn-state-1"},
 			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
 			"X-Client-Request-Id":                   []string{"request-1"},
+			"X-Forwarded-For":                       []string{"203.0.113.10"},
+			"X-Arbitrary-Client":                    []string{"drop-me"},
 			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
 		},
 		"", "/v1/responses", cfg.GetURLs()[0],
@@ -81,7 +85,7 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	if got := req.Header.Get("ChatGPT-Account-ID"); got != "account-1" {
 		t.Fatalf("ChatGPT-Account-ID = %q", got)
 	}
-	if req.Header.Get("User-Agent") != codexOAuthUserAgent || req.Header.Get("Originator") != "codex-tui" {
+	if req.Header.Get("User-Agent") != codexUserAgent || req.Header.Get("Originator") != "codex-tui" {
 		t.Fatalf("Codex identity headers = %v", req.Header)
 	}
 	if req.Header.Get("Session_id") == "" {
@@ -94,11 +98,18 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		t.Fatalf("static key headers leaked: %v", req.Header)
 	}
 	for _, name := range []string{
-		"X-Codex-Beta-Features", "Version", "X-Codex-Turn-State", "X-Codex-Turn-Metadata",
-		"X-Client-Request-Id", "X-ResponsesAPI-Include-Timing-Metrics",
+		"X-Codex-Beta-Features", "Version", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Configured",
 	} {
 		if req.Header.Get(name) == "" {
 			t.Fatalf("missing passthrough header %s: %v", name, req.Header)
+		}
+	}
+	for _, name := range []string{
+		"OpenAI-Beta", "X-Codex-Turn-State", "X-Forwarded-For", "X-Arbitrary-Client",
+		"X-ResponsesAPI-Include-Timing-Metrics",
+	} {
+		if got := req.Header.Get(name); got != "" {
+			t.Fatalf("unexpected HTTP header %s=%q: %v", name, got, req.Header)
 		}
 	}
 	wireBody := reqCtx.translatedBody

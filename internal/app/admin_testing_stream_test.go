@@ -1573,11 +1573,14 @@ func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T
 	if thirdKey == "" || thirdKey == firstKey {
 		t.Fatalf("different conversation prompt_cache_key = %q, want different from %q", thirdKey, firstKey)
 	}
-	if captured[0].sessionID == "" || captured[0].sessionID != captured[1].sessionID || captured[0].threadID != captured[1].threadID {
+	if captured[0].sessionID == "" || captured[0].sessionID != captured[1].sessionID {
 		t.Fatalf("same conversation headers changed: first=%+v second=%+v", captured[0], captured[1])
 	}
-	if captured[2].sessionID == captured[0].sessionID || captured[2].threadID == captured[0].threadID {
+	if captured[2].sessionID == captured[0].sessionID {
 		t.Fatalf("different conversation reused headers: first=%+v third=%+v", captured[0], captured[2])
+	}
+	if captured[0].threadID != "" || captured[1].threadID != "" || captured[2].threadID != "" {
+		t.Fatalf("Thread-Id is not part of the Codex upstream HTTP contract: %+v", captured)
 	}
 	firstInstallationID := gjson.GetBytes(captured[0].body, "client_metadata.x-codex-installation-id").String()
 	secondInstallationID := gjson.GetBytes(captured[1].body, "client_metadata.x-codex-installation-id").String()

@@ -666,6 +666,114 @@ func TestForwardOnceAsync_CodexSessionInjectionUsesFinalBodyForDebug(t *testing.
 	}
 }
 
+func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T) {
+	var gotHeaders http.Header
+	srv := newInMemoryServer(t)
+	srv.client = &http.Client{
+		Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+			gotHeaders = r.Header.Clone()
+			return &http.Response{
+				StatusCode: http.StatusInternalServerError,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`{"error":"boom"}`)),
+			}, nil
+		}),
+	}
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "codex-static",
+		URLs: model.ChannelURLs{{URL: "https://codex-upstream.example.com"}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer configured-attacker"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "configured-attacker"},
+			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "kept"},
+		}},
+	}
+	body := []byte(`{"model":"gpt-5.4","stream":false,"prompt_cache_key":"session-1","input":[]}`)
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Codex,
+		protocol.Codex,
+		"/v1/responses",
+		"/v1/responses",
+		body,
+		body,
+		"gpt-5.4",
+		"gpt-5.4",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan failed: %v", err)
+	}
+
+	_, _, err = srv.forwardOnceAsync(
+		context.Background(),
+		cfg,
+		"sk-static",
+		http.MethodPost,
+		plan,
+		http.Header{
+			"Accept":                                []string{"application/problem+json"},
+			"Authorization":                         []string{"Bearer client-attacker"},
+			"Content-Type":                          []string{"text/plain"},
+			"Originator":                            []string{"client-attacker"},
+			"User-Agent":                            []string{"client-attacker"},
+			"Version":                               []string{"1.2.3"},
+			"X-Api-Key":                             []string{"client-attacker"},
+			"X-Arbitrary-Client":                    []string{"drop-me"},
+			"X-Client-Request-Id":                   []string{"request-1"},
+			"X-Codex-Beta-Features":                 []string{"feature-1"},
+			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
+			"X-Codex-Turn-State":                    []string{"http-must-drop"},
+			"X-Forwarded-For":                       []string{"203.0.113.10"},
+			"X-ResponsesAPI-Include-Timing-Metrics": []string{"http-must-drop"},
+		},
+		"",
+		cfg.GetURLs()[0],
+		newRecorder(),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("forwardOnceAsync failed: %v", err)
+	}
+	if gotHeaders == nil {
+		t.Fatal("upstream request was not captured")
+	}
+
+	wantHeaders := map[string]string{
+		"Accept":                "application/json",
+		"Authorization":         "Bearer sk-static",
+		"Connection":            "Keep-Alive",
+		"Content-Type":          "application/json",
+		"Originator":            "codex-tui",
+		"Session_id":            "session-1",
+		"User-Agent":            codexUserAgent,
+		"Version":               "1.2.3",
+		"X-Client-Request-Id":   "request-1",
+		"X-Codex-Beta-Features": "feature-1",
+		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
+		"X-Configured":          "kept",
+	}
+	for name, want := range wantHeaders {
+		if got := gotHeaders.Get(name); got != want {
+			t.Errorf("%s = %q, want %q; headers=%v", name, got, want, gotHeaders)
+		}
+	}
+	for _, name := range []string{
+		"ChatGPT-Account-ID",
+		"X-Api-Key",
+		"x-goog-api-key",
+		"X-Arbitrary-Client",
+		"X-Codex-Turn-State",
+		"X-Forwarded-For",
+		"X-ResponsesAPI-Include-Timing-Metrics",
+	} {
+		if got := gotHeaders.Get(name); got != "" {
+			t.Errorf("%s leaked upstream with value %q; headers=%v", name, got, gotHeaders)
+		}
+	}
+}
+
 // TestClientCancelClosesUpstream 测试客户端取消时上游连接立即关闭（方案1验证）
 // 验证：客户端499取消 → resp.Body.Close() → 上游Read被中断
 func TestClientCancelClosesUpstream(t *testing.T) {

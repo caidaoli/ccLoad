@@ -90,7 +90,12 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 		RespondError(c, http.StatusBadRequest, fmt.Errorf("build websocket probe: %w", err))
 		return
 	}
-	applyHeaderRules(headers, cfg.HeaderRules())
+	upstreamHeaders := make(http.Header)
+	copyCodexHTTPHeaders(upstreamHeaders, headers)
+	applyHeaderRules(upstreamHeaders, cfg.HeaderRules())
+	probeRequest := &http.Request{Header: upstreamHeaders}
+	injectCodexHeaders(probeRequest, cfg, probe.APIKey, true)
+	copyCodexWebsocketInputHeaders(upstreamHeaders, headers)
 	websocketURL, err := codexWebsocketURL(fullURL)
 	if err != nil {
 		RespondError(c, http.StatusBadRequest, err)
@@ -98,7 +103,7 @@ func (s *Server) HandleChannelWebsocketProbe(c *gin.Context) {
 	}
 
 	conn, resp, dialErr := s.codexWebsocketDialer(cfg).DialContext(
-		c.Request.Context(), websocketURL, codexWebsocketHeaders(headers),
+		c.Request.Context(), websocketURL, codexWebsocketHeaders(upstreamHeaders),
 	)
 	if conn != nil {
 		_ = conn.Close()
@@ -133,11 +138,13 @@ type channelTestRequestPlan struct {
 	clientProtocol    string
 	upstreamProtocol  string
 	upstreamStreaming bool
+	apiKey            string
 	clientTester      testutil.ChannelTester
 	clientURL         string
 	clientHeaders     http.Header
 	fullURL           string
 	headers           http.Header
+	upstreamHeaders   http.Header
 	requestBody       []byte
 	clientBody        []byte
 	timeout           *channelTestTimeout
@@ -386,6 +393,7 @@ func (s *Server) buildChannelTestRequestPlan(
 	plan := &channelTestRequestPlan{
 		clientProtocol:   clientProtocol,
 		upstreamProtocol: upstreamProtocol,
+		apiKey:           apiKey,
 		clientTester:     clientTester,
 		clientURL:        fullURL,
 		clientHeaders:    cloneHeaders(headers),
@@ -945,6 +953,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	useNativeCodexWebsocket := cfg.Websockets && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
 	if useNativeCodexWebsocket {
+		copyCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders)
 		preparedBody, prepareErr := buildCodexWebsocketRequestBody(requestPlan.requestBody)
 		if prepareErr != nil {
 			if capacityRelease != nil {
@@ -1282,17 +1291,24 @@ func (s *Server) newTestUpstreamRequest(
 		return nil, nil, fmt.Errorf("创建HTTP请求失败: %w", err)
 	}
 
-	for k, vs := range requestPlan.headers {
-		for _, v := range vs {
-			req.Header.Add(k, v)
+	sourceHeaders := cloneHeaders(requestPlan.headers)
+	for key, value := range testReq.Headers {
+		sourceHeaders.Set(key, value)
+	}
+	requestPlan.upstreamHeaders = sourceHeaders
+	requestProtocol := protocol.Protocol(requestPlan.upstreamProtocol)
+	if requestProtocol == protocol.Codex {
+		copyCodexHTTPHeaders(req.Header, sourceHeaders)
+	} else {
+		for k, vs := range sourceHeaders {
+			for _, v := range vs {
+				req.Header.Add(k, v)
+			}
 		}
 	}
-	for key, value := range testReq.Headers {
-		req.Header.Set(key, value)
-	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
-	if cfgForBuild.UsesCodexOAuth() {
-		injectCodexOAuthHeaders(req, cfgForBuild, requestPlan.upstreamStreaming)
+	if requestProtocol == protocol.Codex {
+		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfgForBuild)
 	}
