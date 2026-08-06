@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
@@ -59,6 +60,8 @@ type Server struct {
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
 	responsesExecutionSessions    *responsesExecutionSessionStore
 	responsesWebsocketConnections *responsesWebsocketConnectionLimiter
+	codexOAuth                    *codexOAuthManager
+	codexCredentials              *codexCredentialManager
 	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
@@ -215,6 +218,14 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
+	codexOAuthService := codexauth.NewService(s.client)
+	s.codexCredentials = newCodexCredentialManager(codexOAuthService, store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.codexOAuth = newCodexOAuthManager(codexOAuthService, store, func(channelID int64) {
+		s.codexCredentials.invalidate(channelID)
+		s.InvalidateChannelListCache()
+	})
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -982,6 +993,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/filter-options", s.HandleChannelsFilterOptions)
 		admin.GET("/channels/export", s.HandleExportChannelsCSV)
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
+		admin.POST("/codex/oauth/start", s.HandleStartCodexOAuth)
+		admin.GET("/codex/oauth/status", s.HandleCodexOAuthStatus)
+		admin.POST("/codex/oauth/cancel", s.HandleCancelCodexOAuth)
+		admin.POST("/codex/oauth/callback", s.HandleSubmitCodexOAuthCallback)
+		admin.POST("/codex/credentials/import", s.HandleImportCodexCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1224,6 +1240,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 取消server级context，通知所有派生的后台任务退出
 	s.baseCancel()
+	if s.codexOAuth != nil {
+		s.codexOAuth.close()
+	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()
 	}

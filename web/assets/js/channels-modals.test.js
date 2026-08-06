@@ -156,9 +156,11 @@ function installFetchSub2APIRateGlobals({ response, rows, states }) {
   };
 }
 
-function installEditChannelGlobals(channel, { editorError = null } = {}) {
+function installEditChannelGlobals(channel, { editorError = null, editorKeys = [], codexCredential = null } = {}) {
   const requests = [];
   const errors = [];
+  const authEditorCalls = [];
+  let loadedKeys = [];
   const elements = new Map();
   const makeElement = () => {
     const classes = new Set();
@@ -202,6 +204,7 @@ function installEditChannelGlobals(channel, { editorError = null } = {}) {
     },
     channels: [],
     editingChannelId: null,
+    editingChannelAuthType: 'api_key',
     currentChannelKeyCooldowns: [],
     inlineKeyTableData: [{ api_key: '' }],
     inlineKeyVisible: false,
@@ -217,7 +220,8 @@ function installEditChannelGlobals(channel, { editorError = null } = {}) {
         if (editorError) throw editorError;
         return {
           channel,
-          keys: [],
+          keys: editorKeys,
+          codex_credential: codexCredential,
           model_stats: { available: true, items: [] },
           url_stats: {
             available: true,
@@ -241,8 +245,11 @@ function installEditChannelGlobals(channel, { editorError = null } = {}) {
     fetchURLStats,
     urlStatsMap: {},
     renderInlineURLTable() {},
-    setInlineKeyTableDataFromAPI() {},
+    setInlineKeyTableDataFromAPI(keys) { loadedKeys = keys; },
     renderInlineKeyTable() {},
+    applyChannelAuthEditorMode(authType, credential) {
+      authEditorCalls.push({ authType, credential });
+    },
     renderRedirectTable() {},
     resetChannelFormDirty() {},
     syncChannelEditorTableSizing() {},
@@ -257,6 +264,8 @@ function installEditChannelGlobals(channel, { editorError = null } = {}) {
   return {
     errors,
     requests,
+    authEditorCalls,
+    get loadedKeys() { return loadedKeys; },
     getElement,
     restore() {
       for (const [name, descriptor] of previous) {
@@ -319,6 +328,7 @@ function installModelRequestTestGlobals({ dirty = false } = {}) {
     },
     redirectTableData: [{ model: 'requested-model', redirect_model: 'upstream-model', disabled: false }],
     editingChannelId: 7,
+    editingChannelAuthType: 'api_key',
     channelFormDirty: dirty,
     channels: [{ id: 7, name: 'test-channel' }],
     testChannel: async (...args) => {
@@ -479,6 +489,35 @@ test('editing a channel loads the complete editor state with one request', async
   }
 });
 
+test('editing a Codex channel loads its AT row and full credential into read-only mode', async () => {
+  const channel = {
+    id: 75,
+    name: 'codex-oauth',
+    auth_type: 'codex_oauth',
+    urls: [{ url: 'https://chatgpt.com/backend-api/codex/responses', exact: true, protocols: ['codex'] }],
+    models: [],
+    priority: 0,
+    enabled: true,
+    protocol_transform_mode: 'upstream'
+  };
+  const credential = { type: 'codex', access_token: 'at-editor', refresh_token: 'rt-editor' };
+  const keys = [{ key_index: 0, api_key: 'at-editor', note: 'Codex OAuth AT' }];
+  const fixture = installEditChannelGlobals(channel, { editorKeys: keys, codexCredential: credential });
+
+  try {
+    const { editChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+
+    assert.deepEqual(fixture.loadedKeys, keys);
+    assert.deepEqual(fixture.authEditorCalls.at(-1), {
+      authType: 'codex_oauth',
+      credential
+    });
+  } finally {
+    fixture.restore();
+  }
+});
+
 test('editing a channel does not open a partial editor when bootstrap fails', async () => {
   const channel = {
     id: 74,
@@ -554,11 +593,13 @@ test('common models add every selected type and ignore existing names case-insen
     const { addCommonModelsToRows } = loadChannelsModals();
     const result = addCommonModelsToRows(rows, ['anthropic', 'codex', 'anthropic']);
 
-    assert.deepEqual(result, { addedCount: 11, hasSupportedTypes: true });
-    assert.equal(rows.length, 12);
+    assert.deepEqual(result, { addedCount: 13, hasSupportedTypes: true });
+    assert.equal(rows.length, 14);
     assert.equal(rows.filter(row => row.model.toLowerCase() === 'gpt-5.4').length, 1);
     assert.ok(rows.some(row => row.model === 'claude-opus-4-8'));
     assert.ok(rows.some(row => row.model === 'gpt-5.6-terra'));
+    assert.ok(rows.some(row => row.model === 'gpt-5.3-codex-spark'));
+    assert.ok(rows.some(row => row.model === 'codex-auto-review'));
   } finally {
     restore.restore();
   }

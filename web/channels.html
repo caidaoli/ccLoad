@@ -32,6 +32,7 @@
   <script defer src="/web/assets/js/channels-filters.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-data.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-import-export.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/channels-codex-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-keys.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/channels-urls.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
@@ -53,6 +54,14 @@
               <p class="page-subtitle" style="margin: 0;" data-i18n="channels.description">
                 配置API渠道、优先级和模型支持（<b>优先请求高优先级渠道，相同优先级按Key数量加权随机</b>）</p>
               <div class="channel-page-actions">
+                <button id="codexOAuthBtn" type="button" class="btn btn-secondary channel-page-action-btn"
+                  data-i18n-title="channels.codex.oauthTitle" title="使用 OpenAI OAuth 创建 Codex 渠道">
+                  <span data-i18n="channels.codex.oauth">登录 Codex</span>
+                </button>
+                <button id="importCodexCredentialBtn" type="button" class="btn btn-secondary channel-page-action-btn"
+                  data-i18n-title="channels.codex.importTitle" title="导入 CLIProxyAPI 兼容的 Codex 凭证 JSON">
+                  <span data-i18n="channels.codex.import">导入 Codex 凭证</span>
+                </button>
                 <button id="exportCsvBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.exportCsvTitle"
                   title="导出渠道列表为CSV">
@@ -68,10 +77,64 @@
                   <span data-i18n="channels.addChannel">+ 添加渠道</span>
                 </button>
                 <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
+                <input type="file" id="importCodexCredentialInput" accept=".json,application/json" hidden />
               </div>
+              <p id="codexAuthStatus" class="channel-codex-auth-status" role="status" aria-live="polite" hidden></p>
             </div>
           </div>
         </header>
+
+        <dialog id="codexOAuthDialog" class="codex-oauth-dialog"
+          aria-labelledby="codexOAuthDialogTitle" aria-describedby="codexOAuthDialogDescription">
+          <div class="codex-oauth-dialog-header">
+            <div>
+              <p class="codex-oauth-dialog-eyebrow">Codex OAuth</p>
+              <h2 id="codexOAuthDialogTitle" data-i18n="channels.codex.oauthDialogTitle">Codex OAuth 登录</h2>
+            </div>
+            <button type="button" class="close-btn" data-action="close-codex-oauth"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <div class="codex-oauth-dialog-body">
+            <p id="codexOAuthDialogDescription" class="codex-oauth-dialog-description"
+              data-i18n="channels.codex.oauthDialogDescription">
+              打开授权链接完成登录。如果浏览器最终跳转到无法访问的 localhost 页面，请复制地址栏中的完整 URL 并粘贴到下方。
+            </p>
+
+            <div class="codex-oauth-field">
+              <label for="codexOAuthAuthorizationURL" data-i18n="channels.codex.oauthAuthorizationURL">授权链接</label>
+              <textarea id="codexOAuthAuthorizationURL" class="form-input codex-oauth-url" rows="4"
+                readonly spellcheck="false"></textarea>
+              <div class="codex-oauth-actions">
+                <button id="codexOAuthCopyLink" type="button" class="btn btn-secondary"
+                  data-i18n="channels.codex.oauthCopyLink">复制链接</button>
+                <a id="codexOAuthOpenLink" class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+                  data-i18n="channels.codex.oauthOpenLink">打开链接</a>
+                <button id="codexOAuthRestart" type="button" class="btn btn-secondary"
+                  data-i18n="channels.codex.oauthRestart">重新授权</button>
+              </div>
+            </div>
+
+            <form id="codexOAuthCallbackForm" class="codex-oauth-field">
+              <label for="codexOAuthCallbackURL" data-i18n="channels.codex.oauthCallbackURL">回调 URL</label>
+              <textarea id="codexOAuthCallbackURL" class="form-input codex-oauth-url" rows="3"
+                autocomplete="off" spellcheck="false" aria-describedby="codexOAuthCallbackHint codexOAuthDialogStatus"
+                data-i18n-placeholder="channels.codex.oauthCallbackPlaceholder"
+                placeholder="http://localhost:1455/auth/callback?code=...&amp;state=..."></textarea>
+              <p id="codexOAuthCallbackHint" class="codex-oauth-field-hint"
+                data-i18n="channels.codex.oauthCallbackHint">
+                localhost 页面打不开是正常的；复制浏览器地址栏中的完整 URL，粘贴后提交即可。
+              </p>
+              <div class="codex-oauth-actions">
+                <button id="codexOAuthSubmitCallback" type="submit" class="btn btn-primary"
+                  data-i18n="channels.codex.oauthSubmitCallback">提交回调 URL</button>
+                <button type="button" class="btn btn-secondary" data-action="close-codex-oauth"
+                  data-i18n="common.close">关闭</button>
+              </div>
+            </form>
+            <p id="codexOAuthDialogStatus" class="codex-oauth-dialog-status" role="status"
+              aria-live="polite" hidden></p>
+          </div>
+        </dialog>
 
         <!-- Filter Bar -->
         <div class="filter-bar">
@@ -388,9 +451,13 @@
           </div>
         </div>
 
-        <div class="form-group channel-editor-group channel-editor-group--keys">
+        <div id="channelKeyEditorGroup" class="form-group channel-editor-group channel-editor-group--keys">
+          <div id="codexCredentialReadOnlyNotice" class="channel-codex-credential-notice" role="status" hidden>
+            <strong data-i18n="channels.codex.credentialTitle">Codex OAuth 凭证</strong>
+            <span data-i18n="channels.codex.credentialReadOnly">AT 作为只读 Key 显示；完整凭证可在高级设置中查看，均由 ccLoad 在数据库中管理并自动刷新。</span>
+          </div>
           <!-- API Key标签行：包含标签、Key计数和操作按钮 -->
-          <div class="channel-editor-section-header">
+          <div id="channelAPIKeyHeader" class="channel-editor-section-header">
             <div class="form-label channel-editor-section-title channel-editor-section-title--key">
                 <span data-i18n="channels.apiKey">API Key *</span> <span class="models-hint channel-editor-section-meta"><span data-i18n="channels.keyCountPrefix">共</span> <span
                     id="inlineKeyCount">0</span> <span data-i18n="channels.keyCountSuffix">个Key</span> <span
@@ -413,7 +480,7 @@
               </div>
             </div>
             <div class="channel-editor-section-actions channel-editor-section-actions--keys">
-              <button type="button" class="btn btn-secondary btn-sm channel-editor-action-btn" data-action="open-key-import-modal">
+              <button type="button" id="importKeysBtn" class="btn btn-secondary btn-sm channel-editor-action-btn" data-action="open-key-import-modal">
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M8 3.5V12M8 12L5 9M8 12L11 9" stroke="currentColor" stroke-width="1.5"
                     stroke-linecap="round" stroke-linejoin="round" />
@@ -466,7 +533,7 @@
           <input type="hidden" id="channelApiKey" required>
 
           <!-- Key表格容器 -->
-          <div class="inline-table-container mobile-inline-table-container">
+          <div id="channelAPIKeyTable" class="inline-table-container mobile-inline-table-container">
             <table class="inline-table mobile-inline-table inline-key-table">
               <thead>
                 <tr>
@@ -799,6 +866,10 @@
           <span data-i18n="channels.advancedSettings.tabCooldownDetection">冷却探测规则</span>
           <span class="advanced-settings-tab-count" id="cooldownDetectionRulesCount">(0)</span>
         </button>
+        <button type="button" id="codexCredentialTab" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
+          data-advanced-settings-tab="credential" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelCredential" hidden>
+          <span data-i18n="channels.advancedSettings.tabCredential">Codex 凭证</span>
+        </button>
         <button type="button" class="advanced-settings-tab-button" data-action="switch-advanced-settings-tab"
           data-advanced-settings-tab="other" role="tab" aria-selected="false" aria-controls="advancedSettingsPanelOther">
           <span data-i18n="channels.advancedSettings.tabOther">其他</span>
@@ -886,6 +957,22 @@
           <pre id="cooldownDetectionTestResult" class="cooldown-detection-test-result" hidden></pre>
         </section>
         <div id="cooldownDetectionError" class="custom-rules-error" hidden></div>
+      </section>
+
+      <section id="advancedSettingsPanelCredential" class="advanced-settings-panel hidden" role="tabpanel">
+        <div class="codex-credential-toolbar">
+          <p class="codex-credential-description" data-i18n="channels.codex.credentialFullDescription">数据库中保存的完整 Codex OAuth 凭证，仅供管理员只读查看。</p>
+          <button id="codexCredentialCopyButton" type="button" class="btn btn-secondary btn-sm codex-credential-copy-button"
+            data-i18n-title="channels.codex.copyCredential" title="复制完整凭证">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+              <path d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z" stroke="currentColor" stroke-width="1.2"/>
+              <path d="M5.5 4H10.5C11.0523 4 11.5 4.44772 11.5 5V11" stroke="currentColor" stroke-width="1.2"/>
+            </svg>
+            <span data-i18n="common.copy">复制</span>
+          </button>
+        </div>
+        <pre class="codex-credential-json" tabindex="0" data-i18n-aria-label="channels.codex.credentialJSONLabel"
+          aria-label="完整 Codex OAuth 凭证 JSON"><code id="codexCredentialContent" class="language-json"></code></pre>
       </section>
 
       <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">
@@ -1308,7 +1395,7 @@
     <div class="inline-key-actions" style="display: flex; gap: 6px; justify-content: center;">
       <button type="button" class="key-action-btn" data-action="copy" data-index="{{index}}"
         data-i18n-title="channels.copyThisKey" title="复制此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.15s, background-color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path
             d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z"
@@ -1318,14 +1405,14 @@
       </button>
       <button type="button" class="key-action-btn" data-action="test" data-index="{{index}}"
         data-i18n-title="channels.testThisKey" title="测试此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.15s, background-color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path d="M13 2L4 14H11L9 22L20 10H13L13 2Z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
       </button>
       <button type="button" class="key-action-btn" data-action="delete" data-index="{{index}}"
         data-i18n-title="channels.deleteThisKey" title="删除此Key"
-        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: all 0.2s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
+        style="width: 26px; height: 26px; border-radius: 6px; border: 1px solid var(--surface-border-strong); background: var(--surface-bg-strong); color: var(--neutral-500); cursor: pointer; transition: color 0.15s, background-color 0.15s, border-color 0.15s; display: inline-flex; align-items: center; justify-content: center; padding: 0;">
         <svg width="12" height="12" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
           <path
             d="M5.5 2.5V1.5C5.5 1.22386 5.72386 1 6 1H8C8.27614 1 8.5 1.22386 8.5 1.5V2.5M2 3.5H12M3 3.5V11.5C3 12.0523 3.44772 12.5 4 12.5H10C10.5523 12.5 11 12.0523 11 11.5V3.5M5.5 6.5V9.5M8.5 6.5V9.5"

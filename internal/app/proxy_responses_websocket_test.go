@@ -1826,6 +1826,74 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 	}
 }
 
+func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	requestBody := make(chan map[string]any, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer at-ws" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-ws" {
+			t.Errorf("ChatGPT-Account-ID = %q", got)
+		}
+		if r.Header.Get("User-Agent") != codexOAuthUserAgent || r.Header.Get("Originator") != "codex-tui" {
+			t.Errorf("Codex identity headers = %v", r.Header)
+		}
+		if r.Header.Get("Session_id") == "" {
+			t.Errorf("Codex Session_id header is missing: %v", r.Header)
+		}
+		if !strings.Contains(r.Header.Get("OpenAI-Beta"), "responses_websockets=") {
+			t.Errorf("OpenAI-Beta = %q", r.Header.Get("OpenAI-Beta"))
+		}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade upstream websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		var request map[string]any
+		if err := conn.ReadJSON(&request); err != nil {
+			t.Errorf("read upstream request: %v", err)
+			return
+		}
+		requestBody <- request
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-oauth-ws", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-codex-oauth", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", authType: model.AuthTypeCodexOAuth,
+		codexCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws"), priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write downstream request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, downstream, "response.completed")
+	response, _ := completed["response"].(map[string]any)
+	if response["id"] != "resp-oauth-ws" {
+		t.Fatalf("completed response = %#v", completed)
+	}
+	request := <-requestBody
+	if request["stream"] != true || request["store"] != false || request["instructions"] != "" {
+		t.Fatalf("upstream Codex request = %#v", request)
+	}
+	include, _ := request["include"].([]any)
+	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Fatalf("upstream include = %#v", request["include"])
+	}
+}
+
 func TestResponsesWebsocketReconnectResumesExplicitExecutionSession(t *testing.T) {
 	var handshakes atomic.Int32
 	requests := make(chan map[string]any, 2)

@@ -500,7 +500,14 @@ function formatCooldownRecoveryTime(remainingMS) {
   if (ms <= 5 * 60 * 1000) {
     return window.t('channels.status.secondsUntilRecovery', { count: Math.ceil(ms / 1000) });
   }
-  return window.t('channels.status.minutesUntilRecovery', { count: Math.ceil(ms / 60000) });
+  const totalMinutes = Math.ceil(ms / 60000);
+  if (ms < 60 * 60 * 1000) {
+    return window.t('channels.status.minutesUntilRecovery', { count: totalMinutes });
+  }
+  return window.t('channels.status.hoursMinutesUntilRecovery', {
+    hours: Math.floor(totalMinutes / 60),
+    minutes: totalMinutes % 60
+  });
 }
 
 function buildChannelRuntimeStatusHtml(channel, stats) {
@@ -847,4 +854,8 @@ function renderChannels(channelsToRender = channels) {
   if (typeof updateBatchChannelSelectionUI === 'function') {
     updateBatchChannelSelectionUI();
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { formatCooldownRecoveryTime };
 }

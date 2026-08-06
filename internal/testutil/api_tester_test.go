@@ -10,7 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 )
 
-var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
+var uuidPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 
 func TestOpenAITesterBuild_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	cfg := &model.Config{URLs: model.ChannelURLs{{URL: "https://api.example.com/custom/chat#"}}}
@@ -259,8 +259,8 @@ func TestCodexTesterBuild_UsesCurrentCodexClientBodyShape(t *testing.T) {
 	if !ok {
 		t.Fatalf("reasoning missing or invalid; body=%s", body)
 	}
-	if got, _ := reasoning["effort"].(string); got != "low" {
-		t.Fatalf("reasoning.effort = %q, want low; body=%s", got, body)
+	if got, _ := reasoning["effort"].(string); got != "medium" {
+		t.Fatalf("reasoning.effort = %q, want medium; body=%s", got, body)
 	}
 
 	textConfig, ok := payload["text"].(map[string]any)

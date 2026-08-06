@@ -241,6 +241,16 @@ func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 	return result, nil
 }
 
+func (h *HybridStore) UpdateCodexCredential(ctx context.Context, id int64, credential string) error {
+	if err := h.mysql.UpdateCodexCredential(ctx, id, credential); err != nil {
+		return err
+	}
+	h.syncToSQLite("UpdateCodexCredential", func() error {
+		return h.sqlite.UpdateCodexCredential(ctx, id, credential)
+	})
+	return nil
+}
+
 func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
 	result, err := h.mysql.UpdateChannelEnabled(ctx, id, enabled)
 	if err != nil {

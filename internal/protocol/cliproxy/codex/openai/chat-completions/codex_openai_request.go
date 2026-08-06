@@ -33,6 +33,7 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	root := gjson.ParseBytes(rawJSON)
 	tools := root.Get("tools")
 	toolResults := tools.Array()
+	webSearchOptions := root.Get("web_search_options")
 	// Start with empty JSON object
 	out := []byte(`{"instructions":""}`)
 
@@ -456,12 +457,17 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 	}
 
 	// Map tools (flatten function fields)
-	if tools.IsArray() && len(toolResults) > 0 {
-		toolItems := make([][]byte, 0, len(toolResults))
+	hasDeclaredTools := tools.IsArray() && len(toolResults) > 0
+	if hasDeclaredTools || webSearchOptions.IsObject() {
+		toolItems := make([][]byte, 0, len(toolResults)+1)
+		hasWebSearchTool := false
 		arr := toolResults
 		for i := 0; i < len(arr); i++ {
 			t := arr[i]
 			toolType := t.Get("type").String()
+			if strings.HasPrefix(toolType, "web_search") {
+				hasWebSearchTool = true
+			}
 			if toolType == "custom" {
 				item := []byte(t.Raw)
 				name := t.Get("name").String()
@@ -508,6 +514,11 @@ func ConvertOpenAIRequestToCodex(modelName string, inputRawJSON []byte, stream b
 				}
 				toolItems = append(toolItems, item)
 			}
+		}
+		if webSearchOptions.IsObject() && !hasWebSearchTool {
+			item := []byte(webSearchOptions.Raw)
+			item, _ = sjson.SetBytes(item, "type", "web_search")
+			toolItems = append(toolItems, item)
 		}
 		out, _ = sjson.SetRawBytes(out, "tools", translatorcommon.JoinRawArray(toolItems))
 	}

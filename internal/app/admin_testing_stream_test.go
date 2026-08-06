@@ -22,6 +22,7 @@ import (
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
+	"github.com/tidwall/gjson"
 )
 
 type asyncResponseRecorder struct {
@@ -640,20 +641,21 @@ func TestHandleChannelChatStreamsUpstreamDeltaThroughZstdMiddleware(t *testing.T
 	}
 }
 
-func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing.T) {
+func TestStreamChatWithURLHandlesJSONResponseAsFrontendSSE(t *testing.T) {
 	var upstreamBody string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/chat/completions" {
 			http.NotFound(w, r)
 			return
 		}
-		if got := r.Header.Get("Accept"); got != "" {
-			t.Errorf("non-stream chat request must not ask for SSE, Accept=%q", got)
-		}
 		body, _ := io.ReadAll(r.Body)
 		upstreamBody = string(body)
+		if got := r.Header.Get("Accept"); strings.Contains(upstreamBody, `"stream":true`) && got != "text/event-stream" {
+			t.Errorf("stream chat request Accept=%q, want text/event-stream", got)
+		} else if strings.Contains(upstreamBody, `"stream":false`) && got != "" {
+			t.Errorf("non-stream chat request must not ask for SSE, Accept=%q", got)
+		}
 
-		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"plain answer"}}],"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}`)
 	}))
@@ -669,37 +671,35 @@ func TestStreamChatWithURLHandlesNonStreamOpenAIResponseAsFrontendSSE(t *testing
 		ModelEntries: []model.ModelEntry{{Model: "gpt-4o-mini"}},
 		Enabled:      true,
 	}
-	testReq := &testutil.TestChannelRequest{
-		Model:          "gpt-4o-mini",
-		ClientProtocol: "openai",
-		Stream:         false,
-		Messages: []testutil.ChatMessage{
-			{Role: "user", Content: "hi"},
-		},
-	}
+	for _, stream := range []bool{false, true} {
+		t.Run(fmt.Sprintf("stream=%t", stream), func(t *testing.T) {
+			testReq := &testutil.TestChannelRequest{
+				Model:          "gpt-4o-mini",
+				ClientProtocol: "openai",
+				Stream:         stream,
+				Messages: []testutil.ChatMessage{
+					{Role: "user", Content: "hi"},
+				},
+			}
 
-	c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
-	attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
-	if !attempt.handled {
-		t.Fatal("expected non-stream chat response to be handled without URL fallback")
-	}
+			c, w := newTestContext(t, httptest.NewRequest(http.MethodPost, "/admin/channels/1/chat", nil))
+			attempt := srv.streamChatWithURLForProtocol(c, cfg, "sk-test", testReq, "openai", "openai", upstream.URL, testReq.Model)
+			if !attempt.handled {
+				t.Fatal("expected JSON chat response to be handled without URL fallback")
+			}
 
-	if !strings.Contains(upstreamBody, `"stream":false`) {
-		t.Fatalf("expected upstream request stream=false, got:\n%s", upstreamBody)
-	}
-	if strings.Contains(upstreamBody, `"stream":true`) {
-		t.Fatalf("upstream request must not force stream=true, got:\n%s", upstreamBody)
-	}
-
-	body := w.Body.String()
-	if !strings.Contains(body, `"delta":"plain answer"`) {
-		t.Fatalf("expected frontend delta event, got:\n%s", body)
-	}
-	if !strings.Contains(body, "data: [DONE]") {
-		t.Fatalf("expected frontend DONE event, got:\n%s", body)
-	}
-	if strings.Contains(body, `"error"`) {
-		t.Fatalf("non-stream success must not be emitted as error, got:\n%s", body)
+			wantStreamField := fmt.Sprintf(`"stream":%t`, stream)
+			if !strings.Contains(upstreamBody, wantStreamField) {
+				t.Fatalf("expected upstream request %s, got:\n%s", wantStreamField, upstreamBody)
+			}
+			body := w.Body.String()
+			if !strings.Contains(body, `"delta":"plain answer"`) || !strings.Contains(body, "data: [DONE]") {
+				t.Fatalf("expected frontend delta and DONE events, got:\n%s", body)
+			}
+			if strings.Contains(body, `"error"`) {
+				t.Fatalf("JSON success must not be emitted as error, got:\n%s", body)
+			}
+		})
 	}
 }
 
@@ -1366,6 +1366,232 @@ data: {"type":"response.completed"}
 	}
 	if got := w.Body.String(); !strings.Contains(got, `"delta":"real answer"`) || !strings.Contains(got, "data: [DONE]") {
 		t.Fatalf("expected frontend SSE answer and DONE, got:\n%s", got)
+	}
+}
+
+func TestHandleChannelChat_CodexOAuthWithoutAPIKeyOrSSEContentType(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer at-admin-test" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-admin-test" {
+			t.Errorf("ChatGPT-Account-ID = %q", got)
+		}
+		if r.Header.Get("X-Api-Key") != "" || r.Header.Get("Originator") != "codex-tui" ||
+			(r.Header.Get("Session_id") == "" && r.Header.Get("Session-Id") == "") {
+			t.Errorf("incomplete Codex OAuth stream headers: %v", r.Header)
+		}
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.in_progress\ndata: {\"type\":\"response.in_progress\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"oauth answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":           "gpt-5.6-sol",
+		"client_protocol": "codex",
+		"stream":          true,
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if got := w.Body.String(); !strings.Contains(got, `"delta":"oauth answer"`) || !strings.Contains(got, "data: [DONE]") || strings.Contains(got, `"error"`) {
+		t.Fatalf("Codex OAuth chat failed: %s", got)
+	}
+}
+
+func TestHandleChannelChat_CodexOAuthTransformsOpenAIClientProtocol(t *testing.T) {
+	var upstreamBody []byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Errorf("upstream path = %q", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-admin-test" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-admin-test" {
+			t.Errorf("ChatGPT-Account-ID = %q", got)
+		}
+		upstreamBody, _ = io.ReadAll(r.Body)
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"openai to codex answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	updated := created.Clone()
+	updated.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	created, err := srv.store.UpdateConfig(context.Background(), created.ID, updated)
+	if err != nil {
+		t.Fatalf("enable local protocol transform: %v", err)
+	}
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model":           "gpt-5.6-sol",
+		"client_protocol": "openai",
+		"stream":          true,
+		"thinking_effort": "none",
+		"builtin_search":  true,
+		"messages": []map[string]string{
+			{"role": "user", "content": "which header carries the API key?"},
+		},
+	})
+	c, response := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if len(upstreamBody) == 0 {
+		t.Fatalf("OpenAI client request did not reach Codex upstream: %s", response.Body.String())
+	}
+	var payload map[string]any
+	if err := sonic.Unmarshal(upstreamBody, &payload); err != nil {
+		t.Fatalf("decode Codex upstream body: %v; body=%s", err, upstreamBody)
+	}
+	if _, exists := payload["messages"]; exists {
+		t.Fatalf("OpenAI messages leaked to Codex upstream: %s", upstreamBody)
+	}
+	if input, ok := payload["input"].([]any); !ok || len(input) != 1 {
+		t.Fatalf("Codex input = %#v; body=%s", payload["input"], upstreamBody)
+	}
+	if stream, ok := payload["stream"].(bool); !ok || !stream {
+		t.Fatalf("Codex stream = %#v; body=%s", payload["stream"], upstreamBody)
+	}
+	if store, ok := payload["store"].(bool); !ok || store {
+		t.Fatalf("Codex store = %#v; body=%s", payload["store"], upstreamBody)
+	}
+	if reasoning, exists := payload["reasoning"]; exists {
+		t.Fatalf("Codex reasoning = %#v; want request thinking_effort=none to remove template reasoning; body=%s", reasoning, upstreamBody)
+	}
+	textConfig, _ := payload["text"].(map[string]any)
+	if got, _ := textConfig["verbosity"].(string); got != "low" {
+		t.Fatalf("Codex text.verbosity = %q, want low; body=%s", got, upstreamBody)
+	}
+	if got, _ := payload["prompt_cache_key"].(string); got == "" {
+		t.Fatalf("Codex prompt_cache_key is missing; body=%s", upstreamBody)
+	}
+	if got, _ := payload["tool_choice"].(string); got != "auto" {
+		t.Fatalf("Codex tool_choice = %q, want auto; body=%s", got, upstreamBody)
+	}
+	clientMetadata, _ := payload["client_metadata"].(map[string]any)
+	if got, _ := clientMetadata["x-codex-installation-id"].(string); got == "" {
+		t.Fatalf("Codex installation id is missing; body=%s", upstreamBody)
+	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 1 {
+		t.Fatalf("Codex tools = %#v; want web_search; body=%s", tools, upstreamBody)
+	}
+	tool, _ := tools[0].(map[string]any)
+	if tool["type"] != "web_search" {
+		t.Fatalf("Codex tool = %#v; want web_search; body=%s", tool, upstreamBody)
+	}
+	got := response.Body.String()
+	if !strings.Contains(got, `"delta":"openai to codex answer"`) || !strings.Contains(got, "data: [DONE]") || strings.Contains(got, `"error"`) {
+		t.Fatalf("OpenAI to Codex chat response failed: %s", got)
+	}
+}
+
+func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T) {
+	type capturedRequest struct {
+		body      []byte
+		sessionID string
+		threadID  string
+	}
+	var captured []capturedRequest
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream body: %v", err)
+		}
+		captured = append(captured, capturedRequest{
+			body:      body,
+			sessionID: r.Header.Get("Session-Id"),
+			threadID:  r.Header.Get("Thread-Id"),
+		})
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	updated := created.Clone()
+	updated.ProtocolTransformMode = model.ProtocolTransformModeLocal
+	created, err := srv.store.UpdateConfig(context.Background(), created.ID, updated)
+	if err != nil {
+		t.Fatalf("enable local protocol transform: %v", err)
+	}
+	channelID := fmt.Sprintf("%d", created.ID)
+
+	send := func(sessionID string, messages []map[string]string) {
+		t.Helper()
+		req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+			"model":           "gpt-5.6-sol",
+			"client_protocol": "openai",
+			"stream":          true,
+			"session_id":      sessionID,
+			"messages":        messages,
+		})
+		c, response := newTestContext(t, req)
+		c.Params = gin.Params{{Key: "id", Value: channelID}}
+		srv.HandleChannelChat(c)
+		if got := response.Body.String(); !strings.Contains(got, `"delta":"answer"`) || strings.Contains(got, `"error"`) {
+			t.Fatalf("chat response failed: %s", got)
+		}
+	}
+
+	send("browser-conversation", []map[string]string{
+		{"role": "user", "content": "first question"},
+	})
+	send("browser-conversation", []map[string]string{
+		{"role": "user", "content": "first question"},
+		{"role": "assistant", "content": "first answer"},
+		{"role": "user", "content": "second question"},
+	})
+	send("different-conversation", []map[string]string{
+		{"role": "user", "content": "first question"},
+	})
+
+	if len(captured) != 3 {
+		t.Fatalf("captured requests = %d, want 3", len(captured))
+	}
+	firstKey := gjson.GetBytes(captured[0].body, "prompt_cache_key").String()
+	secondKey := gjson.GetBytes(captured[1].body, "prompt_cache_key").String()
+	thirdKey := gjson.GetBytes(captured[2].body, "prompt_cache_key").String()
+	if firstKey == "" || firstKey != secondKey {
+		t.Fatalf("same conversation prompt_cache_key = %q, %q", firstKey, secondKey)
+	}
+	if thirdKey == "" || thirdKey == firstKey {
+		t.Fatalf("different conversation prompt_cache_key = %q, want different from %q", thirdKey, firstKey)
+	}
+	if captured[0].sessionID == "" || captured[0].sessionID != captured[1].sessionID || captured[0].threadID != captured[1].threadID {
+		t.Fatalf("same conversation headers changed: first=%+v second=%+v", captured[0], captured[1])
+	}
+	if captured[2].sessionID == captured[0].sessionID || captured[2].threadID == captured[0].threadID {
+		t.Fatalf("different conversation reused headers: first=%+v third=%+v", captured[0], captured[2])
+	}
+	firstInstallationID := gjson.GetBytes(captured[0].body, "client_metadata.x-codex-installation-id").String()
+	secondInstallationID := gjson.GetBytes(captured[1].body, "client_metadata.x-codex-installation-id").String()
+	thirdInstallationID := gjson.GetBytes(captured[2].body, "client_metadata.x-codex-installation-id").String()
+	if firstInstallationID == "" || firstInstallationID != secondInstallationID {
+		t.Fatalf("same conversation installation id = %q, %q", firstInstallationID, secondInstallationID)
+	}
+	if thirdInstallationID == "" || thirdInstallationID == firstInstallationID {
+		t.Fatalf("different conversation installation id = %q, want different from %q", thirdInstallationID, firstInstallationID)
+	}
+	firstInput := gjson.GetBytes(captured[0].body, "input.0").Raw
+	secondInput := gjson.GetBytes(captured[1].body, "input.0").Raw
+	if firstInput == "" || firstInput != secondInput {
+		t.Fatalf("existing message JSON prefix changed:\nfirst:  %s\nsecond: %s", firstInput, secondInput)
 	}
 }
 

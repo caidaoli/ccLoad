@@ -412,6 +412,7 @@ function resetModalKeyStatusFilter() {
 
 async function showAddModal() {
   editingChannelId = null;
+  editingChannelAuthType = 'api_key';
   currentChannelKeyCooldowns = [];
   resetModalKeyStatusFilter();
   await syncScheduledCheckVisibility();
@@ -447,6 +448,7 @@ async function showAddModal() {
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
+  if (typeof applyChannelAuthEditorMode === 'function') applyChannelAuthEditorMode(editingChannelAuthType, null);
 
   invokeChannelEditorAction('resetCustomRulesState', null);
   invokeChannelEditorAction('resetCooldownDetectionState', null);
@@ -494,6 +496,7 @@ async function editChannel(id) {
   const protocolModeRenderPromise = ensureProtocolTransformModeCombobox(channel.protocol_transform_mode);
 
   editingChannelId = id;
+  editingChannelAuthType = channel.auth_type === 'codex_oauth' ? 'codex_oauth' : 'api_key';
   clearChannelDuplicateHint();
 
   setChannelModalTitle('channels.editChannel');
@@ -526,6 +529,9 @@ async function editChannel(id) {
   document.getElementById('inlineEyeIcon').style.display = 'none';
   document.getElementById('inlineEyeOffIcon').style.display = 'block';
   renderInlineKeyTable();
+  if (typeof applyChannelAuthEditorMode === 'function') {
+    applyChannelAuthEditorMode(editingChannelAuthType, editorData.codex_credential || null);
+  }
 
   const keyStrategy = channel.key_strategy || 'sequential';
   const strategyRadio = document.querySelector(`input[name="keyStrategy"][value="${keyStrategy}"]`);
@@ -755,9 +761,10 @@ async function saveChannel(event) {
     return;
   }
 
-  const validKeyRows = getValidInlineKeyRows();
+  const isCodexOAuth = editingChannelAuthType === 'codex_oauth';
+  const validKeyRows = isCodexOAuth ? [] : getValidInlineKeyRows();
   const validKeys = validKeyRows.map(row => row.api_key);
-  if (validKeyRows.length === 0) {
+  if (!isCodexOAuth && validKeyRows.length === 0) {
     alert(window.t('channels.atLeastOneKey'));
     return;
   }
@@ -791,11 +798,11 @@ async function saveChannel(event) {
 
   const formData = {
     name: document.getElementById('channelName').value.trim(),
+    auth_type: isCodexOAuth ? 'codex_oauth' : 'api_key',
     urls: validURLConfigs,
     api_key: validKeys.join(','),
-		api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
-		protocol_transform_mode: getProtocolTransformMode(),
-    key_strategy: keyStrategy,
+    api_keys: validKeyRows.map(row => ({ api_key: row.api_key, note: row.note || '' })),
+    protocol_transform_mode: getProtocolTransformMode(),
     priority: parseInt(document.getElementById('channelPriority').value) || 0,
     rpm_limit: parseInt(document.getElementById('channelRPMLimit').value) || 0,
     max_concurrency: parseInt(document.getElementById('channelMaxConcurrency').value) || 0,
@@ -814,8 +821,9 @@ async function saveChannel(event) {
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
+  if (!isCodexOAuth) formData.key_strategy = keyStrategy;
 
-  if (!formData.name || formData.urls.length === 0 || !formData.api_key || formData.models.length === 0) {
+  if (!formData.name || formData.urls.length === 0 || (!isCodexOAuth && !formData.api_key) || formData.models.length === 0) {
     if (window.showError) window.showError(window.t('channels.fillAllRequired'));
     return;
   }
@@ -3116,7 +3124,9 @@ const COMMON_MODELS = {
     'gpt-5.5',
     'gpt-5.6-sol',
     'gpt-5.6-luna',
-    'gpt-5.6-terra'
+    'gpt-5.6-terra',
+    'gpt-5.3-codex-spark',
+    'codex-auto-review'
   ],
   gemini: [
     'gemini-3.6-flash',

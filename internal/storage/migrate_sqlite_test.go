@@ -37,15 +37,16 @@ func TestMigrate_SQLite_AddsProtocolTransformModeWithAutoDefault(t *testing.T) {
 			name TEXT NOT NULL UNIQUE,
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
+			channel_type TEXT NOT NULL DEFAULT 'anthropic',
 			enabled INTEGER NOT NULL DEFAULT 1,
 			cooldown_until INTEGER NOT NULL DEFAULT 0,
 			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL,
 			updated_at INTEGER NOT NULL
 		);
-		INSERT INTO channels(name, url, created_at, updated_at)
+		INSERT INTO channels(name, url, channel_type, created_at, updated_at)
 		VALUES('legacy', 'https://example.com
-https://example.com/v1/messages#', 1, 1)
+https://example.com/v1/messages#', 'codex', 1, 1)
 	`); err != nil {
 		t.Fatalf("create legacy channels: %v", err)
 	}
@@ -60,12 +61,25 @@ https://example.com/v1/messages#', 1, 1)
 	if !columns["protocol_transform_mode"] {
 		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
 	}
+	if !columns["auth_type"] || !columns["codex_credential"] {
+		t.Fatalf("channels missing Codex auth columns: %v", columns)
+	}
 	var mode string
 	if err := db.QueryRowContext(ctx, "SELECT protocol_transform_mode FROM channels WHERE name='legacy'").Scan(&mode); err != nil {
 		t.Fatalf("read migrated mode: %v", err)
 	}
 	if mode != "auto" {
 		t.Fatalf("migrated mode=%q, want auto", mode)
+	}
+	var legacyChannelType, authType, credential string
+	if err := db.QueryRowContext(ctx, "SELECT channel_type, auth_type, codex_credential FROM channels WHERE name='legacy'").Scan(&legacyChannelType, &authType, &credential); err != nil {
+		t.Fatalf("read migrated auth fields: %v", err)
+	}
+	if legacyChannelType != "codex" {
+		t.Fatalf("migration changed historical channel_type=%q, want codex", legacyChannelType)
+	}
+	if authType != model.AuthTypeAPIKey || credential != "" {
+		t.Fatalf("migrated auth fields=(%q, %q), want (%q, empty)", authType, credential, model.AuthTypeAPIKey)
 	}
 	var rawURLs string
 	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {

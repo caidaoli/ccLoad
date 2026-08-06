@@ -48,13 +48,10 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		writeChatErrorEvent(c, "failed to load api keys")
 		return
 	}
-	requestAPIKey := strings.TrimSpace(testReq.APIKey)
-	if len(apiKeys) == 0 && requestAPIKey == "" {
-		writeChatErrorEvent(c, "渠道未配置有效的 API Key")
-		return
-	}
-
-	keySelection, err := s.selectChannelTestKey(apiKeys, testReq.KeyIndex, requestAPIKey)
+	persistedCfg := cfg
+	cfg, keySelection, err := s.prepareChannelTestAuth(
+		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+	)
 	if err != nil {
 		writeChatErrorEvent(c, err.Error())
 		return
@@ -118,7 +115,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 			)
 			if attempt.handled {
 				// Write chat log from stream result
-				s.writeChatStreamLog(c, cfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
+				s.writeChatStreamLog(c, persistedCfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
 				return
 			}
 			lastResult = attempt.result
@@ -145,7 +142,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
-		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
+		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(persistedCfg, model.LogSourceManualChat, originalModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
 		return
 	}
 	writeChatErrorEvent(c, "渠道测试失败: 未找到可用URL")
@@ -272,7 +269,7 @@ func (s *Server) streamChatWithURLForProtocol(
 	}
 
 	contentType := resp.Header.Get("Content-Type")
-	isSSE := strings.Contains(strings.ToLower(contentType), "text/event-stream")
+	isSSE := responseIsSSE(resp, requestPlan.upstreamStreaming)
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 8*1024))

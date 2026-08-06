@@ -12,6 +12,8 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+
+	"github.com/tidwall/gjson"
 )
 
 func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, isStreaming bool, upstreamProtocol string) (*fwResult, string) {
@@ -39,6 +41,136 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	}
 
 	return res, rec.Body.String()
+}
+
+func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 1, Name: "codex", AuthType: model.AuthTypeCodexOAuth,
+		URLs:             model.ChannelURLs{{URL: "https://chatgpt.example.test/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
+		CodexAccessToken: "at-secret", CodexAccountID: "account-1",
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
+		}},
+	}
+	body := []byte(`{"model":"gpt-5.4-mini","stream":false,"input":[{"role":"system","content":"rules"}],"reasoning":{"effort":"minimal"},"max_output_tokens":12,"temperature":0.2,"truncation":"auto","context_management":{"type":"compaction"},"user":"u","previous_response_id":"resp-old","generate":true,"tools":[{"type":"web_search_preview"}]}`)
+	reqCtx := &requestContext{
+		ctx: context.Background(), startTime: time.Now(), isStreaming: false,
+		clientProtocol: protocol.Codex, upstreamProtocol: protocol.Codex,
+	}
+	req, err := srv.buildProxyRequest(
+		reqCtx, cfg, "must-not-be-used", http.MethodPost, body,
+		http.Header{
+			"Content-Type":                          []string{"application/json"},
+			"X-Codex-Beta-Features":                 []string{"feature-1"},
+			"Version":                               []string{"1.2.3"},
+			"X-Codex-Turn-State":                    []string{"turn-state-1"},
+			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
+			"X-Client-Request-Id":                   []string{"request-1"},
+			"X-ResponsesAPI-Include-Timing-Metrics": []string{"true"},
+		},
+		"", "/v1/responses", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest() error = %v", err)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer at-secret" {
+		t.Fatalf("Authorization = %q", got)
+	}
+	if got := req.Header.Get("ChatGPT-Account-ID"); got != "account-1" {
+		t.Fatalf("ChatGPT-Account-ID = %q", got)
+	}
+	if req.Header.Get("User-Agent") != codexOAuthUserAgent || req.Header.Get("Originator") != "codex-tui" {
+		t.Fatalf("Codex identity headers = %v", req.Header)
+	}
+	if req.Header.Get("Session_id") == "" {
+		t.Fatalf("Codex Session_id header is missing: %v", req.Header)
+	}
+	if got := req.Header.Get("Accept"); got != "text/event-stream" {
+		t.Fatalf("Accept = %q, want text/event-stream", got)
+	}
+	if req.Header.Get("X-Api-Key") != "" || req.Header.Get("x-goog-api-key") != "" {
+		t.Fatalf("static key headers leaked: %v", req.Header)
+	}
+	for _, name := range []string{
+		"X-Codex-Beta-Features", "Version", "X-Codex-Turn-State", "X-Codex-Turn-Metadata",
+		"X-Client-Request-Id", "X-ResponsesAPI-Include-Timing-Metrics",
+	} {
+		if req.Header.Get(name) == "" {
+			t.Fatalf("missing passthrough header %s: %v", name, req.Header)
+		}
+	}
+	wireBody := reqCtx.translatedBody
+	for _, field := range []string{"max_output_tokens", "temperature", "truncation", "context_management", "user"} {
+		if gjson.GetBytes(wireBody, field).Exists() {
+			t.Fatalf("unsupported field %s leaked: %s", field, wireBody)
+		}
+	}
+	if !gjson.GetBytes(wireBody, "stream").Bool() || gjson.GetBytes(wireBody, "store").Bool() {
+		t.Fatalf("required stream/store values missing: %s", wireBody)
+	}
+	if got := gjson.GetBytes(wireBody, "input.0.role").String(); got != "developer" {
+		t.Fatalf("system role = %q, body=%s", got, wireBody)
+	}
+	if got := gjson.GetBytes(wireBody, "tools.0.type").String(); got != "web_search" {
+		t.Fatalf("tool type = %q, body=%s", got, wireBody)
+	}
+	if got := gjson.GetBytes(wireBody, "reasoning.effort").String(); got != "low" {
+		t.Fatalf("reasoning.effort = %q, want minimal normalized to low; body=%s", got, wireBody)
+	}
+	if !gjson.GetBytes(wireBody, "instructions").Exists() ||
+		gjson.GetBytes(wireBody, "include.0").String() != "reasoning.encrypted_content" {
+		t.Fatalf("Codex required fields missing: %s", wireBody)
+	}
+
+	plan, err := protocol.BuildTransformPlan(
+		protocol.Codex, protocol.Codex, "/v1/responses", "/v1/responses",
+		body, wireBody, "gpt-5.6-sol", "gpt-5.6-sol", false,
+	)
+	if err != nil {
+		t.Fatalf("BuildTransformPlan() error = %v", err)
+	}
+	httpBody := responsesBodyForHTTPTransport(cfg, plan, wireBody)
+	for _, field := range []string{"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+		if gjson.GetBytes(httpBody, field).Exists() {
+			t.Fatalf("HTTP-only unsupported field %s leaked: %s", field, httpBody)
+		}
+	}
+}
+
+func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
+	body := "event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}` + "\n\n"
+	reqCtx := &requestContext{
+		ctx: context.Background(), startTime: time.Now(), codexOAuthNonStream: true,
+	}
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Body:       io.NopCloser(strings.NewReader(body)),
+	}
+	recorder := newRecorder()
+	result, _, err := (&Server{}).handleSuccessResponse(
+		reqCtx, resp, resp.Header.Clone(), recorder, string(protocol.Codex), &streamReadStats{}, nil,
+	)
+	if err != nil {
+		t.Fatalf("handleSuccessResponse() error = %v", err)
+	}
+	if !result.ResponseCommitted || result.InputTokens != 10 || result.OutputTokens != 2 {
+		t.Fatalf("result = %#v", result)
+	}
+	if got := gjson.Get(recorder.Body.String(), "id").String(); got != "resp-1" {
+		t.Fatalf("response id = %q, body=%s", got, recorder.Body.String())
+	}
+	if got := gjson.Get(recorder.Body.String(), "output.0.content.0.text").String(); got != "ok" {
+		t.Fatalf("reassembled output = %q, body=%s", got, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "data:") || strings.Contains(recorder.Body.String(), "response.completed") {
+		t.Fatalf("SSE framing leaked to non-stream client: %s", recorder.Body.String())
+	}
 }
 
 func TestHandleSuccessResponse_ExtractsUsageFromJSON(t *testing.T) {

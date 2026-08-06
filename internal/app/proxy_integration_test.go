@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
@@ -41,6 +42,8 @@ type testChannel struct {
 	retryOtherKeysOnFailure bool
 	models                  string // 逗号分隔的模型列表
 	apiKey                  string
+	authType                string
+	codexCredential         string
 	priority                int
 }
 
@@ -162,6 +165,8 @@ func setupProxyTestEnvWithSettings(
 		}
 		cfg := &model.Config{
 			Name:                    ch.name,
+			AuthType:                ch.authType,
+			CodexCredential:         ch.codexCredential,
 			URLs:                    urls,
 			Websockets:              ch.websockets,
 			ProtocolTransformMode:   transformMode,
@@ -175,6 +180,10 @@ func setupProxyTestEnvWithSettings(
 		created, err := store.CreateConfig(ctx, cfg)
 		if err != nil {
 			t.Fatalf("CreateConfig for %s: %v", ch.name, err)
+		}
+
+		if created.UsesCodexOAuth() {
+			continue
 		}
 
 		// 创建 API Key
@@ -200,6 +209,169 @@ func setupProxyTestEnvWithSettings(
 		server: srv,
 		store:  store,
 		engine: engine,
+	}
+}
+
+func codexProxyTestCredential(t testing.TB, accessToken, refreshToken, accountID string) string {
+	t.Helper()
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: refreshToken,
+		AccountID: accountID, Expired: time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("Codex credential JSON: %v", err)
+	}
+	return payload
+}
+
+func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T) {
+	var upstreamAttempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempt := upstreamAttempts.Add(1)
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read Codex wire body: %v", err)
+		}
+		if !gjson.GetBytes(wireBody, "stream").Bool() {
+			t.Errorf("Codex OAuth wire stream must be true: %s", wireBody)
+		}
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q, want text/event-stream", got)
+		}
+		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-proxy" {
+			t.Errorf("ChatGPT-Account-ID = %q", got)
+		}
+		if attempt == 1 {
+			if got := r.Header.Get("Authorization"); got != "Bearer at-old" {
+				t.Errorf("first Authorization = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-new" {
+			t.Errorf("refreshed Authorization = %q", got)
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-oauth","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	var refreshes atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshes.Add(1)
+		_, _ = io.WriteString(w, `{"access_token":"at-new","refresh_token":"rt-new","expires_in":604800}`)
+	}))
+	defer tokenServer.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-http", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType:        model.AuthTypeCodexOAuth,
+		codexCredential: codexProxyTestCredential(t, "at-old", "rt-old", "account-proxy"),
+	}}, map[int]string{0: upstream.URL})
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	env.server.codexCredentials.service = service
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return tokenServer.Client() }
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": false, "input": "hello",
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "id").String(); got != "resp-oauth" {
+		t.Fatalf("response id=%q body=%s", got, response.Body.String())
+	}
+	if upstreamAttempts.Load() != 2 || refreshes.Load() != 1 {
+		t.Fatalf("upstream attempts=%d refreshes=%d", upstreamAttempts.Load(), refreshes.Load())
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].CodexCredential, `"access_token":"at-new"`) {
+		t.Fatalf("persisted refreshed channel=%#v err=%v", configs, err)
+	}
+}
+
+func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read Codex wire body: %v", err)
+		}
+		if !gjson.GetBytes(wireBody, "stream").Bool() {
+			t.Errorf("Codex OAuth wire stream must be true: %s", wireBody)
+		}
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q, want text/event-stream", got)
+		}
+		_, _ = io.WriteString(w, "event: response.output_item.done\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-openai","status":"completed","role":"assistant","content":[{"type":"output_text","text":"translated non-stream"}]}}`+"\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-openai","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-openai-client", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType:        model.AuthTypeCodexOAuth,
+		codexCredential: codexProxyTestCredential(t, "at-openai", "rt-openai", "account-openai"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+		"model": "gpt-test",
+		"messages": []map[string]string{
+			{"role": "user", "content": "hello"},
+		},
+		"stream": false,
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "choices.0.message.content").String(); got != "translated non-stream" {
+		t.Fatalf("OpenAI response content=%q body=%s", got, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "data:") || strings.Contains(response.Body.String(), "response.completed") {
+		t.Fatalf("Codex SSE leaked to non-stream OpenAI client: %s", response.Body.String())
+	}
+}
+
+func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":7260}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-usage-limit", upstreamProtocol: "codex", models: "gpt-5.4-mini,gpt-5.4", priority: 100,
+		authType:        model.AuthTypeCodexOAuth,
+		codexCredential: codexProxyTestCredential(t, "at-usage-limit", "rt-usage-limit", "account-usage-limit"),
+	}}, map[int]string{0: upstream.URL})
+
+	before := time.Now()
+	_ = doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model":  "gpt-5.4-mini",
+		"input":  "hello",
+		"stream": false,
+	}, nil)
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get model cooldowns: %v", err)
+	}
+	until := cooldowns[configs[0].ID]["gpt-5.4-mini"]
+	duration := until.Sub(before)
+	if duration < 7250*time.Second || duration > 7270*time.Second {
+		t.Fatalf("model cooldown duration=%v, want about 7260s", duration)
+	}
+	if _, exists := cooldowns[configs[0].ID]["gpt-5.4"]; exists {
+		t.Fatal("unaffected Codex model must not be cooled")
 	}
 }
 

@@ -2,8 +2,10 @@ package sql_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -106,6 +108,47 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	_, err = store.GetConfig(ctx, 99999)
 	if err == nil {
 		t.Error("expected error for non-existent config")
+	}
+}
+
+func TestConfig_CodexCredentialRoundTripAndPrivateJSON(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "codex-credential.db")
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"at-secret","refresh_token":"rt-secret","expired":"2030-01-01T00:00:00Z"}`
+
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-user@example.com", AuthType: model.AuthTypeCodexOAuth,
+		CodexCredential: credential, URLs: model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex", Protocols: []string{"codex"}}},
+		Websockets: true, Enabled: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig() error = %v", err)
+	}
+	if created.GetAuthType() != model.AuthTypeCodexOAuth || created.CodexCredential != credential || !created.Websockets {
+		t.Fatalf("created Codex channel = %#v", created)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{ChannelID: created.ID, KeyIndex: 0, APIKey: "forbidden"}}); err == nil || !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("CreateAPIKeysBatch() error = %v, want read-only rejection", err)
+	}
+	raw, err := json.Marshal(created)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if strings.Contains(string(raw), "at-secret") || strings.Contains(string(raw), "rt-secret") || strings.Contains(string(raw), "codex_credential") {
+		t.Fatalf("admin JSON leaked credential: %s", raw)
+	}
+
+	updatedCredential := `{"type":"codex","access_token":"new-at","refresh_token":"new-rt","expired":"2031-01-01T00:00:00Z"}`
+	if err := store.UpdateCodexCredential(ctx, created.ID, updatedCredential); err != nil {
+		t.Fatalf("UpdateCodexCredential() error = %v", err)
+	}
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() error = %v", err)
+	}
+	if got.CodexCredential != updatedCredential {
+		t.Fatalf("credential=%q, want updated payload", got.CodexCredential)
 	}
 }
 

@@ -465,10 +465,12 @@ func (s *Server) handleProxySuccess(
 			log.Printf("[WARN] ClearChannelCooldown 失败 (累计: %d): channel_id=%d err=%v", count, cfg.ID, err)
 		}
 	}
-	if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
-		count := cooldownClearKeyFailCount.Add(1)
-		if count%100 == 1 {
-			log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+	if keyIndex != cooldown.NoKeyIndex {
+		if err := s.cooldownManager.ClearKeyCooldown(cooldownCtx, cfg.ID, keyIndex); err != nil {
+			count := cooldownClearKeyFailCount.Add(1)
+			if count%100 == 1 {
+				log.Printf("[WARN] ClearKeyCooldown 失败 (累计: %d): channel_id=%d key_index=%d err=%v", count, cfg.ID, keyIndex, err)
+			}
 		}
 	}
 	if actualModel != "" && s.hasActiveModelCooldown(ctx, cfg.ID, actualModel) {
