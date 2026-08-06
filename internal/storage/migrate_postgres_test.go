@@ -1262,6 +1262,7 @@ func TestPostgres(t *testing.T) {
 				id BIGSERIAL PRIMARY KEY,
 				name VARCHAR(191) NOT NULL UNIQUE,
 				url TEXT NOT NULL,
+				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
 				priority INT NOT NULL DEFAULT 0,
 				enabled SMALLINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
