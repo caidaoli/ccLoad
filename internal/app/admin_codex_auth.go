@@ -2,11 +2,9 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
-	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,10 +26,6 @@ const (
 	codexOAuthTimeout            = 5 * time.Minute
 	codexOAuthStatusTTL          = 10 * time.Minute
 	codexUpstreamURL             = "https://chatgpt.com/backend-api/codex/responses"
-	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
-	codexUsageUserAgent          = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
-	codexUsageTimeout            = 30 * time.Second
-	maxCodexUsageBytes           = 1 << 20
 )
 
 var codexOAuthDefaultModels = []string{
@@ -820,179 +814,4 @@ func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
 		"codex_plan_type":                 credential.PlanType,
 		"codex_subscription_active_until": subscriptionActiveUntil,
 	})
-}
-
-type codexUsageRawWindow struct {
-	UsedPercent        *float64 `json:"used_percent"`
-	LimitWindowSeconds int64    `json:"limit_window_seconds"`
-	ResetAt            int64    `json:"reset_at"`
-}
-
-type codexUsageRateLimit struct {
-	PrimaryWindow   *codexUsageRawWindow `json:"primary_window"`
-	SecondaryWindow *codexUsageRawWindow `json:"secondary_window"`
-}
-
-type codexAdditionalRateLimit struct {
-	LimitName       string               `json:"limit_name"`
-	MeteredFeature  string               `json:"metered_feature"`
-	RateLimit       *codexUsageRateLimit `json:"rate_limit"`
-	PrimaryWindow   *codexUsageRawWindow `json:"primary_window"`
-	SecondaryWindow *codexUsageRawWindow `json:"secondary_window"`
-}
-
-type codexUsagePayload struct {
-	PlanType             string                     `json:"plan_type"`
-	RateLimit            *codexUsageRateLimit       `json:"rate_limit"`
-	AdditionalRateLimits []codexAdditionalRateLimit `json:"additional_rate_limits"`
-}
-
-type codexUsageWindow struct {
-	LimitName          string  `json:"limit_name"`
-	Kind               string  `json:"kind"`
-	UsedPercent        float64 `json:"used_percent"`
-	RemainingPercent   float64 `json:"remaining_percent"`
-	LimitWindowSeconds int64   `json:"limit_window_seconds"`
-	ResetAt            int64   `json:"reset_at"`
-}
-
-type codexUsageSummary struct {
-	PlanType string             `json:"plan_type"`
-	Windows  []codexUsageWindow `json:"windows"`
-}
-
-func appendCodexUsageWindow(windows []codexUsageWindow, limitName, kind string, raw *codexUsageRawWindow) []codexUsageWindow {
-	if raw == nil || raw.UsedPercent == nil {
-		return windows
-	}
-	usedPercent := min(max(*raw.UsedPercent, 0), 100)
-	return append(windows, codexUsageWindow{
-		LimitName:          limitName,
-		Kind:               kind,
-		UsedPercent:        usedPercent,
-		RemainingPercent:   100 - usedPercent,
-		LimitWindowSeconds: max(raw.LimitWindowSeconds, 0),
-		ResetAt:            max(raw.ResetAt, 0),
-	})
-}
-
-func normalizeCodexUsage(payload *codexUsagePayload, fallbackPlanType string) (*codexUsageSummary, error) {
-	if payload == nil {
-		return nil, errors.New("usage: Codex response is invalid")
-	}
-	summary := &codexUsageSummary{
-		PlanType: strings.TrimSpace(payload.PlanType),
-		Windows:  make([]codexUsageWindow, 0, 2+2*len(payload.AdditionalRateLimits)),
-	}
-	if summary.PlanType == "" {
-		summary.PlanType = strings.TrimSpace(fallbackPlanType)
-	}
-	if payload.RateLimit != nil {
-		summary.Windows = appendCodexUsageWindow(summary.Windows, "codex", "primary", payload.RateLimit.PrimaryWindow)
-		summary.Windows = appendCodexUsageWindow(summary.Windows, "codex", "secondary", payload.RateLimit.SecondaryWindow)
-	}
-	for _, additional := range payload.AdditionalRateLimits {
-		limitName := strings.TrimSpace(additional.LimitName)
-		if limitName == "" {
-			limitName = strings.TrimSpace(additional.MeteredFeature)
-		}
-		if limitName == "" {
-			limitName = "additional"
-		}
-		primary, secondary := additional.PrimaryWindow, additional.SecondaryWindow
-		if additional.RateLimit != nil {
-			if additional.RateLimit.PrimaryWindow != nil {
-				primary = additional.RateLimit.PrimaryWindow
-			}
-			if additional.RateLimit.SecondaryWindow != nil {
-				secondary = additional.RateLimit.SecondaryWindow
-			}
-		}
-		summary.Windows = appendCodexUsageWindow(summary.Windows, limitName, "primary", primary)
-		summary.Windows = appendCodexUsageWindow(summary.Windows, limitName, "secondary", secondary)
-	}
-	if len(summary.Windows) == 0 {
-		return nil, errors.New("usage: Codex response has no rate limit windows")
-	}
-	return summary, nil
-}
-
-func requestCodexUsage(ctx context.Context, client *http.Client, credential *codexauth.Credential) (*codexUsageSummary, error) {
-	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
-		return nil, errors.New("usage: Codex request is unavailable")
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
-	if err != nil {
-		return nil, errors.New("usage: Codex request is unavailable")
-	}
-	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", codexUsageUserAgent)
-	if credential.AccountID != "" {
-		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
-	}
-
-	usageClient := &http.Client{
-		Transport: client.Transport,
-		Timeout:   client.Timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	resp, err := usageClient.Do(req)
-	if err != nil {
-		return nil, errors.New("usage: Codex request failed")
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxCodexUsageBytes))
-		return nil, fmt.Errorf("usage: Codex request returned HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCodexUsageBytes+1))
-	if err != nil || len(body) > maxCodexUsageBytes {
-		return nil, errors.New("usage: Codex response is invalid")
-	}
-	var payload codexUsagePayload
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, errors.New("usage: Codex response is invalid")
-	}
-	return normalizeCodexUsage(&payload, credential.PlanType)
-}
-
-// HandleCodexUsage fetches the current Codex quota without persisting it or
-// exposing the database-backed OAuth credential to the browser.
-func (s *Server) HandleCodexUsage(c *gin.Context) {
-	id, err := ParseInt64Param(c, "id")
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
-		return
-	}
-	cfg, err := s.store.GetConfig(c.Request.Context(), id)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
-		return
-	}
-	if !cfg.UsesCodexOAuth() {
-		RespondErrorMsg(c, http.StatusConflict, "channel does not use Codex OAuth")
-		return
-	}
-	if s.codexCredentials == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex credential manager is unavailable")
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), codexUsageTimeout)
-	defer cancel()
-	credential, err := s.codexCredentials.credential(ctx, cfg, false)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadGateway, "Codex credential refresh failed")
-		return
-	}
-	summary, err := requestCodexUsage(ctx, s.getClientForChannel(cfg), credential)
-	if err != nil {
-		RespondError(c, http.StatusBadGateway, err)
-		return
-	}
-	RespondJSON(c, http.StatusOK, summary)
 }

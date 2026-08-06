@@ -1594,19 +1594,19 @@
       align-items: center;
     }
 
-    .ch-codex-usage {
+    .ch-oauth-usage {
       display: grid;
       gap: 5px;
       width: 100%;
       min-width: 0;
     }
 
-    .ch-codex-usage__toolbar {
+    .ch-oauth-usage__toolbar {
       display: flex;
       justify-content: flex-end;
     }
 
-    .ch-codex-usage__refresh {
+    .ch-oauth-usage__refresh {
       appearance: none;
       justify-self: center;
       padding: 2px 5px;
@@ -1624,32 +1624,32 @@
       transition-timing-function: ease-out;
     }
 
-    .ch-codex-usage__refresh:hover:not(:disabled) {
+    .ch-oauth-usage__refresh:hover:not(:disabled) {
       background: var(--primary-50);
       color: var(--primary-700);
     }
 
-    .ch-codex-usage__refresh:active:not(:disabled) {
+    .ch-oauth-usage__refresh:active:not(:disabled) {
       transform: scale(0.96);
     }
 
-    .ch-codex-usage__refresh:focus-visible {
+    .ch-oauth-usage__refresh:focus-visible {
       outline: 2px solid var(--primary-500);
       outline-offset: 2px;
     }
 
-    .ch-codex-usage__refresh:disabled {
+    .ch-oauth-usage__refresh:disabled {
       cursor: wait;
       opacity: 0.6;
     }
 
-    .ch-codex-usage__window {
+    .ch-oauth-usage__window {
       display: grid;
       gap: 3px;
       min-width: 0;
     }
 
-    .ch-codex-usage__meta {
+    .ch-oauth-usage__meta {
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto auto;
       align-items: baseline;
@@ -1659,7 +1659,7 @@
       line-height: 1.2;
     }
 
-    .ch-codex-usage__label {
+    .ch-oauth-usage__label {
       overflow: hidden;
       color: var(--neutral-800);
       font-weight: 700;
@@ -1667,26 +1667,26 @@
       white-space: nowrap;
     }
 
-    .ch-codex-usage__percent {
+    .ch-oauth-usage__percent {
       color: var(--neutral-900);
       font-variant-numeric: tabular-nums;
       font-weight: 800;
     }
 
-    .ch-codex-usage__reset {
+    .ch-oauth-usage__reset {
       color: var(--neutral-500);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
     }
 
-    .ch-codex-usage__track {
+    .ch-oauth-usage__track {
       height: 5px;
       overflow: hidden;
       border-radius: 999px;
       background: var(--neutral-200);
     }
 
-    .ch-codex-usage__fill {
+    .ch-oauth-usage__fill {
       display: block;
       height: 100%;
       border-radius: inherit;
@@ -1695,20 +1695,20 @@
       transition-timing-function: ease-out;
     }
 
-    .ch-codex-usage__fill--high {
+    .ch-oauth-usage__fill--high {
       background: var(--success-500);
     }
 
-    .ch-codex-usage__fill--medium {
+    .ch-oauth-usage__fill--medium {
       background: var(--warning-400);
     }
 
-    .ch-codex-usage__fill--low,
-    .ch-codex-usage__fill--empty {
+    .ch-oauth-usage__fill--low,
+    .ch-oauth-usage__fill--empty {
       background: var(--error-500);
     }
 
-    .ch-codex-usage__error {
+    .ch-oauth-usage__error {
       overflow: hidden;
       color: var(--error-600);
       font-size: 9px;
