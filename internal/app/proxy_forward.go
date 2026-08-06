@@ -1218,9 +1218,12 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
 	return strings.Contains(ct, "text/plain") || strings.Contains(ct, "application/json")
 }
 
-// classifySSEErrorStatus 根据响应体内容判定 SSE 错误的内部状态码：
-// 1308 配额超限 → 596；明确限流 → 429；其他 → 597。
+// classifySSEErrorStatus 根据响应体内容判定 SSE 错误的状态码：
+// 上下文超限 → 400；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
+	if util.IsContextLengthExceededError(body) {
+		return http.StatusBadRequest
+	}
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
 	}
