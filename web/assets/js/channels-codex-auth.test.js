@@ -9,6 +9,7 @@ const {
   copyCodexCredential,
   cancelCodexOAuth,
   formatCodexPlanBadgeText,
+  importCodexCredentials,
   refreshCodexCredential,
   setCodexCredentialView,
   submitCodexOAuthCallback
@@ -94,6 +95,45 @@ test('Codex OAuth cancellation submits the active state as JSON', async () => {
   assert.equal(captured.url, '/admin/codex/oauth/cancel');
   assert.equal(captured.options.method, 'POST');
   assert.deepEqual(JSON.parse(captured.options.body), { state: 'state-1' });
+});
+
+test('Codex credential import submits every selected file in one request', async () => {
+  const previousFormData = global.FormData;
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const previousReload = global.reloadChannelsList;
+  class FakeFormData {
+    constructor() { this.items = []; }
+    append(name, value) { this.items.push([name, value]); }
+  }
+  global.FormData = FakeFormData;
+  global.document = { getElementById: () => null };
+  global.window = {
+    t: (key, params) => `${key}:${params?.created ?? ''}:${params?.skipped ?? ''}:${params?.failed ?? ''}`,
+    showSuccess() {},
+    showError() {}
+  };
+  let reloads = 0;
+  global.reloadChannelsList = async () => { reloads++; };
+  const files = [{ name: 'one.json' }, { name: 'two.json' }];
+  let captured;
+  try {
+    const result = await importCodexCredentials(files, null, async (url, options) => {
+      captured = { url, options };
+      return { created: 1, skipped: 1, failed: 0, results: [] };
+    });
+
+    assert.equal(result.created, 1);
+    assert.equal(captured.url, '/admin/codex/credentials/import');
+    assert.equal(captured.options.method, 'POST');
+    assert.deepEqual(captured.options.body.items, [['files', files[0]], ['files', files[1]]]);
+    assert.equal(reloads, 1);
+  } finally {
+    global.FormData = previousFormData;
+    global.document = previousDocument;
+    global.window = previousWindow;
+    global.reloadChannelsList = previousReload;
+  }
 });
 
 test('manual Codex credential refresh targets the saved channel', async () => {

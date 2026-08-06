@@ -328,23 +328,30 @@ async function restartCodexOAuth(button) {
   }
 }
 
-async function importCodexCredential(file, button) {
-  if (!file) return null;
+async function importCodexCredentials(files, button, fetcher = fetchDataWithAuth) {
+  const selectedFiles = Array.from(files || []).filter(Boolean);
+  if (selectedFiles.length === 0) return null;
   const formData = new FormData();
-  formData.append('file', file);
+  selectedFiles.forEach(file => formData.append('files', file));
   try {
     if (button) button.disabled = true;
-    setCodexAuthStatus(window.t('channels.codex.importing'));
-    const result = await fetchDataWithAuth('/admin/codex/credentials/import', {
+    setCodexAuthStatus(window.t('channels.codex.importing', { count: selectedFiles.length }));
+    const result = await fetcher('/admin/codex/credentials/import', {
       method: 'POST',
       body: formData
     });
-    const message = result?.created
-      ? window.t('channels.codex.importCreated')
-      : window.t('channels.codex.importUpdated');
-    setCodexAuthStatus(message, 'success');
-    if (window.showSuccess) window.showSuccess(message);
-    await reloadChannelsList();
+    const created = Number(result?.created) || 0;
+    const skipped = Number(result?.skipped) || 0;
+    const failed = Number(result?.failed) || 0;
+    const message = window.t('channels.codex.importSummary', { created, skipped, failed });
+    const kind = failed > 0 ? 'error' : 'success';
+    setCodexAuthStatus(message, kind);
+    if (failed > 0) {
+      if (window.showError) window.showError(message);
+    } else if (window.showSuccess) {
+      window.showSuccess(message);
+    }
+    if (created > 0) await reloadChannelsList();
     return result;
   } catch (error) {
     const message = error?.message || window.t('channels.codex.importFailed');
@@ -437,8 +444,7 @@ function setupCodexAuthActions() {
   if (importButton && importInput && !importButton.dataset.bound) {
     importButton.addEventListener('click', () => importInput.click());
     importInput.addEventListener('change', async () => {
-      const file = importInput.files?.[0];
-      await importCodexCredential(file, importButton);
+      await importCodexCredentials(importInput.files, importButton);
       importInput.value = '';
     });
     importButton.dataset.bound = '1';
@@ -501,7 +507,7 @@ if (typeof module !== 'undefined' && module.exports) {
     copyCodexCredential,
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
-    importCodexCredential,
+    importCodexCredentials,
     pollCodexOAuthStatus,
     refreshCodexCredential,
     renderCodexCredential,
