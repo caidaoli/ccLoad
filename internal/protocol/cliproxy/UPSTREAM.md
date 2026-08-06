@@ -79,6 +79,11 @@ documented adaptations:
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
   broader ccLoad URL/file/redacted-thinking input shapes, and omits an empty
   `input` array for instructions-only requests.
+- Claude-to-Gemini preserves an absent adaptive effort and performs the
+  excluded runtime `ApplyThinking` level normalization inline: exact target
+  levels are retained, unsupported valid levels are clamped to the nearest
+  declared level (lower wins ties), and Antigravity level-suffixed Gemini model
+  names resolve capabilities through their base model.
 - Claude Responses native non-stream JSON keeps ccLoad request-field echoing,
   cache-creation and reasoning usage details, and the same marked
   redacted-thinking carrier used by the synchronized SSE path.

@@ -103,36 +103,76 @@ func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testi
 	reg := protocol.NewRegistry()
 	builtin.Register(reg)
 
-	raw := []byte(`{
-		"model":"gpt-5",
-		"messages":[{"role":"user","content":[{"type":"text","text":"think hard"}]}],
-		"thinking":{"type":"adaptive","display":"summarized"},
-		"output_config":{"effort":"max"}
-	}`)
-	got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, "gemini-3.5-flash", raw, true)
-	if err != nil {
-		t.Fatalf("TranslateRequest failed: %v", err)
+	tests := []struct {
+		name     string
+		model    string
+		adaptive bool
+		effort   string
+		want     string
+	}{
+		{name: "missing stays absent", model: "gemini-3.6-flash-high"},
+		{name: "adaptive without effort stays absent", model: "gemini-3.6-flash-high", adaptive: true},
+		{name: "minimal stays minimal when supported", model: "gemini-3.6-flash-high", effort: "minimal", want: "minimal"},
+		{name: "low stays low", model: "gemini-3.6-flash-high", effort: "low", want: "low"},
+		{name: "medium stays medium", model: "gemini-3.6-flash-high", effort: "medium", want: "medium"},
+		{name: "high stays high", model: "gemini-3.6-flash-high", effort: "high", want: "high"},
+		{name: "xhigh clamps to maximum", model: "gemini-3.6-flash-high", effort: "xhigh", want: "high"},
+		{name: "max clamps to maximum", model: "gemini-3.6-flash-high", effort: "max", want: "high"},
+		{name: "pro minimal clamps to minimum", model: "gemini-3.1-pro-low", effort: "minimal", want: "low"},
+		{name: "missing middle level uses lower on tie", model: "gemini-3-pro", effort: "medium", want: "low"},
 	}
-	var body map[string]any
-	if err := json.Unmarshal(got, &body); err != nil {
-		t.Fatalf("unmarshal translated request failed: %v", err)
-	}
-	generationConfig, ok := body["generationConfig"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected generationConfig, got: %s", got)
-	}
-	thinkingConfig, ok := generationConfig["thinkingConfig"].(map[string]any)
-	if !ok {
-		t.Fatalf("expected thinkingConfig, got: %s", got)
-	}
-	if thinkingConfig["thinkingLevel"] != "high" {
-		t.Fatalf("thinkingLevel=%v, want high; body=%s", thinkingConfig["thinkingLevel"], got)
-	}
-	if _, ok := thinkingConfig["thinkingBudget"]; ok {
-		t.Fatalf("Gemini 3 thinkingConfig must not include thinkingBudget: %s", got)
-	}
-	if thinkingConfig["includeThoughts"] != true {
-		t.Fatalf("expected includeThoughts=true, body=%s", got)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			request := map[string]any{
+				"model": "claude-client-model",
+				"messages": []any{map[string]any{
+					"role": "user", "content": []any{map[string]any{"type": "text", "text": "think hard"}},
+				}},
+			}
+			if tc.adaptive || tc.effort != "" {
+				request["thinking"] = map[string]any{"type": "adaptive", "display": "summarized"}
+			}
+			if tc.effort != "" {
+				request["output_config"] = map[string]any{"effort": tc.effort}
+			}
+			raw, err := json.Marshal(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := reg.TranslateRequest(protocol.Anthropic, protocol.Gemini, tc.model, raw, true)
+			if err != nil {
+				t.Fatalf("TranslateRequest failed: %v", err)
+			}
+			var body struct {
+				GenerationConfig struct {
+					ThinkingConfig *struct {
+						ThinkingLevel   string `json:"thinkingLevel"`
+						ThinkingBudget  *int   `json:"thinkingBudget"`
+						IncludeThoughts bool   `json:"includeThoughts"`
+					} `json:"thinkingConfig"`
+				} `json:"generationConfig"`
+			}
+			if err := json.Unmarshal(got, &body); err != nil {
+				t.Fatalf("unmarshal translated request failed: %v", err)
+			}
+			thinkingConfig := body.GenerationConfig.ThinkingConfig
+			if tc.want == "" {
+				if thinkingConfig != nil {
+					t.Fatalf("thinkingConfig=%+v, want absent; body=%s", thinkingConfig, got)
+				}
+				return
+			}
+			if thinkingConfig == nil || thinkingConfig.ThinkingLevel != tc.want {
+				t.Fatalf("thinkingConfig=%+v, want level %q; body=%s", thinkingConfig, tc.want, got)
+			}
+			if thinkingConfig.ThinkingBudget != nil {
+				t.Fatalf("Gemini 3 thinkingConfig must not include thinkingBudget: %s", got)
+			}
+			if !thinkingConfig.IncludeThoughts {
+				t.Fatalf("expected includeThoughts=true, body=%s", got)
+			}
+		})
 	}
 }
 
