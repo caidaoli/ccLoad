@@ -156,7 +156,12 @@ function installFetchSub2APIRateGlobals({ response, rows, states }) {
   };
 }
 
-function installEditChannelGlobals(channel, { editorError = null, editorKeys = [], codexCredential = null } = {}) {
+function installEditChannelGlobals(channel, {
+  editorError = null,
+  editorKeys = [],
+  codexCredential = null,
+  codexCredentialInfo = null
+} = {}) {
   const requests = [];
   const errors = [];
   const authEditorCalls = [];
@@ -222,6 +227,7 @@ function installEditChannelGlobals(channel, { editorError = null, editorKeys = [
           channel,
           keys: editorKeys,
           codex_credential: codexCredential,
+          codex_credential_info: codexCredentialInfo,
           model_stats: { available: true, items: [] },
           url_stats: {
             available: true,
@@ -247,8 +253,8 @@ function installEditChannelGlobals(channel, { editorError = null, editorKeys = [
     renderInlineURLTable() {},
     setInlineKeyTableDataFromAPI(keys) { loadedKeys = keys; },
     renderInlineKeyTable() {},
-    applyChannelAuthEditorMode(authType, credential, channel) {
-      authEditorCalls.push({ authType, credential, channel });
+    applyChannelAuthEditorMode(authType, credential, channel, credentialInfo) {
+      authEditorCalls.push({ authType, credential, channel, credentialInfo });
     },
     renderRedirectTable() {},
     resetChannelFormDirty() {},
@@ -501,8 +507,13 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
     protocol_transform_mode: 'upstream'
   };
   const credential = { type: 'codex', access_token: 'at-editor', refresh_token: 'rt-editor' };
+  const credentialInfo = { chatgpt_account_id: 'account-editor', plan_type: 'plus' };
   const keys = [{ key_index: 0, api_key: 'at-editor', note: 'Codex OAuth AT' }];
-  const fixture = installEditChannelGlobals(channel, { editorKeys: keys, codexCredential: credential });
+  const fixture = installEditChannelGlobals(channel, {
+    editorKeys: keys,
+    codexCredential: credential,
+    codexCredentialInfo: credentialInfo
+  });
 
   try {
     const { editChannel } = loadChannelsModals();
@@ -512,7 +523,8 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
     assert.deepEqual(fixture.authEditorCalls.at(-1), {
       authType: 'codex_oauth',
       credential,
-      channel
+      channel,
+      credentialInfo
     });
   } finally {
     fixture.restore();

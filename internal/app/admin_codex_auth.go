@@ -705,3 +705,44 @@ func (s *Server) HandleImportCodexCredential(c *gin.Context) {
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"channel": channel, "created": created})
 }
+
+// HandleRefreshCodexCredential forces one Codex OAuth refresh through the same
+// database-backed lifecycle used by proxy requests.
+func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
+	id, err := ParseInt64Param(c, "id")
+	if err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
+		return
+	}
+	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
+		return
+	}
+	if !cfg.UsesCodexOAuth() {
+		RespondErrorMsg(c, http.StatusConflict, "channel does not use Codex OAuth")
+		return
+	}
+	if s.codexCredentials == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex credential refresh is unavailable")
+		return
+	}
+
+	credential, err := s.codexCredentials.credential(c.Request.Context(), cfg, true)
+	if err != nil {
+		RespondError(c, http.StatusBadGateway, err)
+		return
+	}
+	s.InvalidateChannelListCache()
+
+	var subscriptionActiveUntil *time.Time
+	if until, ok := credential.SubscriptionActiveUntil(); ok {
+		subscriptionActiveUntil = &until
+	}
+	RespondJSON(c, http.StatusOK, gin.H{
+		"codex_credential":                credential,
+		"codex_credential_info":           credential.DecodedIDToken(),
+		"codex_plan_type":                 credential.PlanType,
+		"codex_subscription_active_until": subscriptionActiveUntil,
+	})
+}

@@ -281,11 +281,44 @@
       font-size: 0.875rem;
     }
 
-    .codex-credential-copy-button {
+    .codex-credential-toolbar-actions,
+    .codex-credential-view-switch,
+    .codex-credential-toolbar-button {
       flex: 0 0 auto;
       display: inline-flex;
       align-items: center;
       gap: var(--space-2);
+    }
+
+    .codex-credential-toolbar-actions {
+      justify-content: flex-end;
+    }
+
+    .codex-credential-view-switch {
+      gap: 0;
+    }
+
+    .codex-credential-view-switch .btn {
+      border-radius: 0;
+    }
+
+    .codex-credential-view-switch .btn:first-child {
+      border-start-start-radius: var(--radius-md);
+      border-end-start-radius: var(--radius-md);
+    }
+
+    .codex-credential-view-switch .btn:last-child {
+      border-start-end-radius: var(--radius-md);
+      border-end-end-radius: var(--radius-md);
+      margin-inline-start: -1px;
+    }
+
+    .codex-credential-view-switch .btn.active {
+      position: relative;
+      z-index: 1;
+      border-color: var(--primary-500);
+      background: var(--primary-50);
+      color: var(--primary-700);
     }
 
     .codex-credential-json {
@@ -5842,8 +5875,9 @@
         flex-direction: column;
       }
 
-      .codex-credential-copy-button {
+      .codex-credential-toolbar-actions {
         align-self: flex-end;
+        flex-wrap: wrap;
       }
 
       .advanced-settings-tabs {

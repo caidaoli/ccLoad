@@ -998,6 +998,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/codex/oauth/cancel", s.HandleCancelCodexOAuth)
 		admin.POST("/codex/oauth/callback", s.HandleSubmitCodexOAuthCallback)
 		admin.POST("/codex/credentials/import", s.HandleImportCodexCredential)
+		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道

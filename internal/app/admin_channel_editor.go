@@ -27,12 +27,13 @@ type channelEditorFeatures struct {
 }
 
 type channelEditorData struct {
-	Channel         ChannelWithCooldown     `json:"channel"`
-	Keys            []*model.APIKey         `json:"keys"`
-	CodexCredential json.RawMessage         `json:"codex_credential,omitempty"`
-	ModelStats      channelEditorModelStats `json:"model_stats"`
-	URLStats        channelEditorURLStats   `json:"url_stats"`
-	Features        channelEditorFeatures   `json:"features"`
+	Channel             ChannelWithCooldown     `json:"channel"`
+	Keys                []*model.APIKey         `json:"keys"`
+	CodexCredential     json.RawMessage         `json:"codex_credential,omitempty"`
+	CodexCredentialInfo *codexauth.IDTokenInfo  `json:"codex_credential_info,omitempty"`
+	ModelStats          channelEditorModelStats `json:"model_stats"`
+	URLStats            channelEditorURLStats   `json:"url_stats"`
+	Features            channelEditorFeatures   `json:"features"`
 }
 
 // HandleChannelEditor 聚合编辑器首次打开所需的数据，避免前端拼装多个快照。
@@ -55,6 +56,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		return
 	}
 	var codexCredential json.RawMessage
+	var codexCredentialInfo *codexauth.IDTokenInfo
 	if cfg.UsesCodexOAuth() {
 		credential, parseErr := codexauth.ParseCredential([]byte(cfg.CodexCredential))
 		if parseErr != nil {
@@ -69,6 +71,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			KeyStrategy: model.KeyStrategySequential,
 		}}
 		codexCredential = append(json.RawMessage(nil), cfg.CodexCredential...)
+		codexCredentialInfo = credential.DecodedIDToken()
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}
@@ -91,11 +94,12 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 	}
 
 	RespondJSON(c, http.StatusOK, channelEditorData{
-		Channel:         detail,
-		Keys:            apiKeys,
-		CodexCredential: codexCredential,
-		ModelStats:      modelStats,
-		URLStats:        urlStats,
+		Channel:             detail,
+		Keys:                apiKeys,
+		CodexCredential:     codexCredential,
+		CodexCredentialInfo: codexCredentialInfo,
+		ModelStats:          modelStats,
+		URLStats:            urlStats,
 		Features: channelEditorFeatures{
 			ScheduledCheckEnabled: scheduledCheckEnabled,
 		},

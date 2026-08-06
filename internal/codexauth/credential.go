@@ -29,6 +29,15 @@ type Credential struct {
 	PlanType     string `json:"plan_type,omitempty"`
 }
 
+// IDTokenInfo is the readable Codex subscription metadata embedded in an ID
+// token. The persisted credential keeps the original JWT string intact.
+type IDTokenInfo struct {
+	ChatGPTAccountID               string `json:"chatgpt_account_id,omitempty"`
+	ChatGPTSubscriptionActiveStart any    `json:"chatgpt_subscription_active_start,omitempty"`
+	ChatGPTSubscriptionActiveUntil any    `json:"chatgpt_subscription_active_until,omitempty"`
+	PlanType                       string `json:"plan_type,omitempty"`
+}
+
 // ParseCredential validates imported CLIProxyAPI JSON and returns its canonical form.
 func ParseCredential(raw []byte) (*Credential, error) {
 	if len(raw) == 0 {
@@ -109,18 +118,37 @@ func (c *Credential) Expiry() (time.Time, error) {
 	return expiresAt, nil
 }
 
+// DecodedIDToken returns readable metadata without changing the raw credential.
+func (c *Credential) DecodedIDToken() *IDTokenInfo {
+	if c == nil || strings.TrimSpace(c.IDToken) == "" {
+		return nil
+	}
+	claims, err := parseIDToken(c.IDToken)
+	if err != nil {
+		return nil
+	}
+	info := &IDTokenInfo{
+		ChatGPTAccountID:               strings.TrimSpace(claims.Auth.ChatGPTAccountID),
+		ChatGPTSubscriptionActiveStart: claims.Auth.ChatGPTSubscriptionActiveStart,
+		ChatGPTSubscriptionActiveUntil: claims.Auth.ChatGPTSubscriptionActiveUntil,
+		PlanType:                       strings.TrimSpace(claims.Auth.ChatGPTPlanType),
+	}
+	if info.ChatGPTAccountID == "" && info.ChatGPTSubscriptionActiveStart == nil &&
+		info.ChatGPTSubscriptionActiveUntil == nil && info.PlanType == "" {
+		return nil
+	}
+	return info
+}
+
 // SubscriptionActiveUntil returns the Codex subscription end time embedded in
 // the ID token. It is intentionally derived from the persisted token instead of
 // duplicating OAuth identity metadata in the channel record.
 func (c *Credential) SubscriptionActiveUntil() (time.Time, bool) {
-	if c == nil || strings.TrimSpace(c.IDToken) == "" {
+	info := c.DecodedIDToken()
+	if info == nil {
 		return time.Time{}, false
 	}
-	claims, err := parseIDToken(c.IDToken)
-	if err != nil {
-		return time.Time{}, false
-	}
-	raw, ok := claims.Auth.ChatGPTSubscriptionActiveUntil.(string)
+	raw, ok := info.ChatGPTSubscriptionActiveUntil.(string)
 	if !ok {
 		return time.Time{}, false
 	}

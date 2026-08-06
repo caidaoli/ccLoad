@@ -962,18 +962,33 @@
 
       <section id="advancedSettingsPanelCredential" class="advanced-settings-panel hidden" role="tabpanel">
         <div class="codex-credential-toolbar">
-          <p class="codex-credential-description" data-i18n="channels.codex.credentialFullDescription">数据库中保存的完整 Codex OAuth 凭证，仅供管理员只读查看。</p>
-          <button id="codexCredentialCopyButton" type="button" class="btn btn-secondary btn-sm codex-credential-copy-button"
-            data-i18n-title="channels.codex.copyCredential" title="复制完整凭证">
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
-              <path d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z" stroke="currentColor" stroke-width="1.2"/>
-              <path d="M5.5 4H10.5C11.0523 4 11.5 4.44772 11.5 5V11" stroke="currentColor" stroke-width="1.2"/>
-            </svg>
-            <span data-i18n="common.copy">复制</span>
-          </button>
+          <p class="codex-credential-description" data-i18n="channels.codex.credentialFullDescription">默认显示解码视图；如需备份或复制用于重新导入，请切换到原始视图。</p>
+          <div class="codex-credential-toolbar-actions">
+            <div class="codex-credential-view-switch" role="group" data-i18n-aria-label="channels.codex.credentialViewLabel" aria-label="凭证视图">
+              <button type="button" class="btn btn-secondary btn-sm active" data-codex-credential-view="decoded" aria-pressed="true"
+                data-i18n="channels.codex.credentialViewDecoded">解码</button>
+              <button type="button" class="btn btn-secondary btn-sm" data-codex-credential-view="raw" aria-pressed="false"
+                data-i18n="channels.codex.credentialViewRaw">原始</button>
+            </div>
+            <button id="codexCredentialRefreshButton" type="button" class="btn btn-secondary btn-sm codex-credential-toolbar-button"
+              data-i18n-title="channels.codex.refreshCredential" title="刷新凭证">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                <path d="M13 5.5V2.5M13 2.5H10M13 2.5L11.6 3.9A5.5 5.5 0 1 0 13.2 9" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>
+              </svg>
+              <span data-i18n="channels.codex.refreshCredential">刷新凭证</span>
+            </button>
+            <button id="codexCredentialCopyButton" type="button" class="btn btn-secondary btn-sm codex-credential-toolbar-button"
+              data-i18n-title="channels.codex.copyCredential" title="复制当前视图">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true" focusable="false">
+                <path d="M4.5 2H10.5C11.0523 2 11.5 2.44772 11.5 3V4H12.5C13.0523 4 13.5 4.44772 13.5 5V13C13.5 13.5523 13.0523 14 12.5 14H6.5C5.94772 14 5.5 13.5523 5.5 13V12H4.5C3.94772 12 3.5 11.5523 3.5 11V3C3.5 2.44772 3.94772 2 4.5 2Z" stroke="currentColor" stroke-width="1.2"/>
+                <path d="M5.5 4H10.5C11.0523 4 11.5 4.44772 11.5 5V11" stroke="currentColor" stroke-width="1.2"/>
+              </svg>
+              <span data-i18n="common.copy">复制</span>
+            </button>
+          </div>
         </div>
         <pre class="codex-credential-json" tabindex="0" data-i18n-aria-label="channels.codex.credentialJSONLabel"
-          aria-label="完整 Codex OAuth 凭证 JSON"><code id="codexCredentialContent" class="language-json"></code></pre>
+          aria-label="Codex OAuth 凭证 JSON"><code id="codexCredentialContent" class="language-json"></code></pre>
       </section>
 
       <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">

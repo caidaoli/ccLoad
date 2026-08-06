@@ -3,6 +3,9 @@ const CODEX_OAUTH_MAX_POLLS = 300;
 let activeCodexOAuthFlow = null;
 let codexOAuthStopPromise = null;
 let currentCodexCredentialJSON = '';
+let currentCodexCredential = null;
+let currentCodexCredentialInfo = null;
+let currentCodexCredentialView = 'decoded';
 
 function formatCodexPlanBadgeText(planType, subscriptionActiveUntil) {
   const plan = String(planType || '').trim();
@@ -11,9 +14,27 @@ function formatCodexPlanBadgeText(planType, subscriptionActiveUntil) {
   return date ? `${plan} · ${date[1]}` : plan;
 }
 
-function renderCodexCredential(credential) {
+function buildCodexCredentialView() {
+  if (!currentCodexCredential) return null;
+  if (currentCodexCredentialView !== 'decoded' || !currentCodexCredentialInfo) {
+    return currentCodexCredential;
+  }
+  return { ...currentCodexCredential, id_token: currentCodexCredentialInfo };
+}
+
+function updateCodexCredentialViewControls() {
+  document.querySelectorAll('[data-codex-credential-view]').forEach(button => {
+    const active = button.dataset.codexCredentialView === currentCodexCredentialView;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', String(active));
+  });
+}
+
+function renderCurrentCodexCredential() {
   const content = document.getElementById('codexCredentialContent');
-  currentCodexCredentialJSON = credential ? JSON.stringify(credential, null, 2) : '';
+  const displayedCredential = buildCodexCredentialView();
+  currentCodexCredentialJSON = displayedCredential ? JSON.stringify(displayedCredential, null, 2) : '';
+  updateCodexCredentialViewControls();
   if (!content) return;
 
   content.removeAttribute?.('data-highlighted');
@@ -29,13 +50,31 @@ function renderCodexCredential(credential) {
   }
 }
 
+function renderCodexCredential(credential, credentialInfo = null, view = 'decoded') {
+  currentCodexCredential = credential || null;
+  currentCodexCredentialInfo = credentialInfo || null;
+  currentCodexCredentialView = view === 'raw' ? 'raw' : 'decoded';
+  renderCurrentCodexCredential();
+}
+
+function setCodexCredentialView(view) {
+  currentCodexCredentialView = view === 'raw' ? 'raw' : 'decoded';
+  renderCurrentCodexCredential();
+}
+
 async function copyCodexCredential(copier = window.copyToClipboard) {
   if (!currentCodexCredentialJSON) throw new Error('Codex credential is empty');
   if (typeof copier !== 'function') throw new Error('Clipboard is unavailable');
   await copier(currentCodexCredentialJSON);
 }
 
-function applyChannelAuthEditorMode(authType, credential = null, channel = null) {
+function applyChannelAuthEditorMode(
+  authType,
+  credential = null,
+  channel = null,
+  credentialInfo = null,
+  credentialView = 'decoded'
+) {
   const codexOAuth = authType === 'codex_oauth';
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -65,7 +104,11 @@ function applyChannelAuthEditorMode(authType, credential = null, channel = null)
   if (batchDeleteButton && codexOAuth) batchDeleteButton.disabled = true;
   if (selectAll) selectAll.disabled = codexOAuth;
   if (credentialTab) credentialTab.hidden = !codexOAuth;
-  renderCodexCredential(codexOAuth ? credential : null);
+  renderCodexCredential(
+    codexOAuth ? credential : null,
+    codexOAuth ? credentialInfo : null,
+    credentialView
+  );
 
   document.querySelectorAll('input[name="keyStrategy"]').forEach(input => {
     input.disabled = codexOAuth;
@@ -313,6 +356,14 @@ async function importCodexCredential(file, button) {
   }
 }
 
+async function refreshCodexCredential(channelID, fetcher = fetchDataWithAuth) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved Codex channel is required');
+  }
+  return fetcher(`/admin/channels/${numericID}/codex-credential/refresh`, { method: 'POST' });
+}
+
 function setupCodexAuthActions() {
   const oauthButton = document.getElementById('codexOAuthBtn');
   const importButton = document.getElementById('importCodexCredentialBtn');
@@ -325,6 +376,7 @@ function setupCodexAuthActions() {
   const callbackURL = document.getElementById('codexOAuthCallbackURL');
   const callbackButton = document.getElementById('codexOAuthSubmitCallback');
   const credentialCopyButton = document.getElementById('codexCredentialCopyButton');
+  const credentialRefreshButton = document.getElementById('codexCredentialRefreshButton');
   if (oauthButton && !oauthButton.dataset.bound) {
     oauthButton.addEventListener('click', () => startCodexOAuth(oauthButton));
     oauthButton.dataset.bound = '1';
@@ -403,6 +455,43 @@ function setupCodexAuthActions() {
     });
     credentialCopyButton.dataset.bound = '1';
   }
+  document.querySelectorAll('[data-codex-credential-view]').forEach(viewButton => {
+    if (viewButton.dataset.bound) return;
+    viewButton.addEventListener('click', () => setCodexCredentialView(viewButton.dataset.codexCredentialView));
+    viewButton.dataset.bound = '1';
+  });
+  if (credentialRefreshButton && !credentialRefreshButton.dataset.bound) {
+    credentialRefreshButton.addEventListener('click', async () => {
+      const previousView = currentCodexCredentialView;
+      try {
+        credentialRefreshButton.disabled = true;
+        const result = await refreshCodexCredential(editingChannelId);
+        const credential = result?.codex_credential;
+        if (!credential?.access_token) throw new Error(window.t('channels.codex.credentialRefreshInvalid'));
+
+        if (typeof setInlineKeyTableDataFromAPI === 'function' && typeof renderInlineKeyTable === 'function') {
+          setInlineKeyTableDataFromAPI([{
+            channel_id: editingChannelId,
+            key_index: 0,
+            api_key: credential.access_token,
+            note: 'Codex OAuth AT',
+            key_strategy: 'sequential'
+          }]);
+          inlineKeyVisible = true;
+          renderInlineKeyTable();
+        }
+        applyChannelAuthEditorMode('codex_oauth', credential, result, result.codex_credential_info, previousView);
+        await reloadChannelsList();
+        if (window.showSuccess) window.showSuccess(window.t('channels.codex.credentialRefreshed'));
+      } catch (error) {
+        const message = error?.message || window.t('channels.codex.credentialRefreshFailed');
+        if (window.showError) window.showError(message);
+      } finally {
+        credentialRefreshButton.disabled = false;
+      }
+    });
+    credentialRefreshButton.dataset.bound = '1';
+  }
 }
 
 if (typeof module !== 'undefined' && module.exports) {
@@ -414,6 +503,9 @@ if (typeof module !== 'undefined' && module.exports) {
     formatCodexPlanBadgeText,
     importCodexCredential,
     pollCodexOAuthStatus,
+    refreshCodexCredential,
+    renderCodexCredential,
+    setCodexCredentialView,
     showCodexOAuthSession,
     submitCodexOAuthCallback
   };
