@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"testing"
 	"time"
 
@@ -63,6 +64,9 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试数据失败: %v", err)
 	}
+	if _, err := mysql.ExecContext(ctx, "UPDATE channels SET codex_credential = NULL WHERE id = ?", created.ID); err != nil {
+		t.Fatalf("预置旧渠道空凭证失败: %v", err)
+	}
 
 	// 验证 SQLite 中没有数据
 	_, err = sqlite.GetConfig(ctx, created.ID)
@@ -87,6 +91,75 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	}
 	if restored.Name != cfg.Name {
 		t.Errorf("恢复的配置名称不匹配: got %s, want %s", restored.Name, cfg.Name)
+	}
+	if restored.CodexCredential != "" {
+		t.Errorf("恢复的 CodexCredential = %q, want empty", restored.CodexCredential)
+	}
+}
+
+func TestSyncManager_RestoreOnStartup_NormalizesNullCredentialForLegacySQLiteReplica(t *testing.T) {
+	source := createTestStoreForSync(t, "nullable_credential_source")
+	defer func() { _ = source.Close() }()
+
+	targetPath := t.TempDir() + "/legacy_not_null_replica.db"
+	targetDB, err := sql.Open("sqlite", targetPath)
+	if err != nil {
+		t.Fatalf("open legacy SQLite replica: %v", err)
+	}
+	if _, err := targetDB.Exec(`
+		CREATE TABLE channels (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			name TEXT NOT NULL UNIQUE,
+			url TEXT NOT NULL,
+			priority INTEGER NOT NULL DEFAULT 0,
+			codex_credential TEXT NOT NULL,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			cooldown_until INTEGER NOT NULL DEFAULT 0,
+			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
+			created_at INTEGER NOT NULL,
+			updated_at INTEGER NOT NULL
+		)
+	`); err != nil {
+		_ = targetDB.Close()
+		t.Fatalf("create legacy SQLite channels: %v", err)
+	}
+	if err := targetDB.Close(); err != nil {
+		t.Fatalf("close legacy SQLite setup: %v", err)
+	}
+
+	targetStore, err := CreateSQLiteStore(targetPath)
+	if err != nil {
+		t.Fatalf("migrate legacy SQLite replica: %v", err)
+	}
+	target := targetStore.(*sqlstore.SQLStore)
+	defer func() { _ = target.Close() }()
+
+	ctx := context.Background()
+	created, err := source.CreateConfig(ctx, &model.Config{
+		Name:     "nullable-credential",
+		URLs:     model.ChannelURLs{{URL: "https://legacy.example.com"}},
+		Priority: 1,
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("create source channel: %v", err)
+	}
+	if _, err := source.ExecContext(ctx, "UPDATE channels SET codex_credential = NULL WHERE id = ?", created.ID); err != nil {
+		t.Fatalf("set source credential NULL: %v", err)
+	}
+
+	restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := NewSyncManager(source, target).RestoreOnStartup(restoreCtx, 0); err != nil {
+		t.Fatalf("restore into legacy SQLite replica: %v", err)
+	}
+
+	var credential string
+	if err := target.QueryRowContext(ctx, "SELECT codex_credential FROM channels WHERE id = ?", created.ID).Scan(&credential); err != nil {
+		t.Fatalf("read restored credential: %v", err)
+	}
+	if credential != "" {
+		t.Fatalf("restored credential=%q, want empty", credential)
 	}
 }
 

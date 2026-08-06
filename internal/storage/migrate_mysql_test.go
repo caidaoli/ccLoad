@@ -371,6 +371,75 @@ func TestMySQL(t *testing.T) {
 		t.Log("已存在列验证通过：不报错")
 	})
 
+	t.Run("LegacyChannelsCodexCredential", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+
+		if _, err := env.db.Exec(`
+			CREATE TABLE channels (
+				id INT PRIMARY KEY AUTO_INCREMENT,
+				name VARCHAR(191) NOT NULL UNIQUE,
+				url VARCHAR(191) NOT NULL,
+				priority INT NOT NULL DEFAULT 0,
+				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+				enabled TINYINT NOT NULL DEFAULT 1,
+				cooldown_until BIGINT NOT NULL DEFAULT 0,
+				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
+				created_at BIGINT NOT NULL,
+				updated_at BIGINT NOT NULL
+			)
+		`); err != nil {
+			t.Fatalf("创建旧版 channels: %v", err)
+		}
+		if _, err := env.db.Exec(`
+			INSERT INTO channels(name, url, channel_type, created_at, updated_at)
+			VALUES('legacy-codex-column', 'https://legacy.example.com', 'codex', 1, 1)
+		`); err != nil {
+			t.Fatalf("写入旧版渠道: %v", err)
+		}
+
+		store, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("迁移旧版 channels: %v", err)
+		}
+
+		var channelID int64
+		var channelType, authType string
+		var credential sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT id, channel_type, auth_type, codex_credential
+			FROM channels WHERE name = 'legacy-codex-column'
+		`).Scan(&channelID, &channelType, &authType, &credential); err != nil {
+			t.Fatalf("读取迁移后渠道: %v", err)
+		}
+		if channelType != "codex" || authType != model.AuthTypeAPIKey || credential.Valid {
+			t.Fatalf("迁移后认证字段=(%q, %q, %v)", channelType, authType, credential)
+		}
+
+		var isNullable string
+		var defaultValue sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT IS_NULLABLE, COLUMN_DEFAULT
+			FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='codex_credential'
+		`).Scan(&isNullable, &defaultValue); err != nil {
+			t.Fatalf("读取 codex_credential 列定义: %v", err)
+		}
+		if !strings.EqualFold(isNullable, "YES") || defaultValue.Valid {
+			t.Fatalf("codex_credential nullable=%q default=%v, want nullable without default", isNullable, defaultValue)
+		}
+		loaded, err := store.GetConfig(context.Background(), channelID)
+		if err != nil {
+			t.Fatalf("通过存储读取迁移渠道: %v", err)
+		}
+		if loaded.CodexCredential != "" {
+			t.Fatalf("存储读取 CodexCredential=%q, want empty", loaded.CodexCredential)
+		}
+		_ = store.Close()
+		if err := migrateMySQL(context.Background(), env.db); err != nil {
+			t.Fatalf("重复迁移旧版 channels: %v", err)
+		}
+	})
+
 	t.Run("EnsureColumns_APIKeyLengthDrift", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 

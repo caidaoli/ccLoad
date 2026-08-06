@@ -1274,6 +1274,12 @@ func TestPostgres(t *testing.T) {
 		`); err != nil {
 			t.Fatalf("create legacy channels table: %v", err)
 		}
+		if _, err := env.db.Exec(`
+			INSERT INTO channels(name, url, channel_type, models, model_redirects, created_at, updated_at)
+			VALUES('legacy-codex-column', 'https://legacy.example.com', 'codex', '[]', '{}', 1, 1)
+		`); err != nil {
+			t.Fatalf("insert legacy channel: %v", err)
+		}
 
 		store, err := CreatePostgresStoreForTest(env.dsn)
 		if err != nil {
@@ -1293,6 +1299,42 @@ func TestPostgres(t *testing.T) {
 			if nullable != "YES" {
 				t.Fatalf("channels.%s is_nullable=%q, want YES", column, nullable)
 			}
+		}
+
+		var channelID int64
+		var channelType, authType string
+		var credential sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT id, channel_type, auth_type, codex_credential
+			FROM channels WHERE name = 'legacy-codex-column'
+		`).Scan(&channelID, &channelType, &authType, &credential); err != nil {
+			t.Fatalf("read migrated legacy channel: %v", err)
+		}
+		if channelType != "codex" || authType != model.AuthTypeAPIKey || credential.Valid {
+			t.Fatalf("migrated auth fields=(%q, %q, %v)", channelType, authType, credential)
+		}
+
+		var credentialNullable string
+		var credentialDefault sql.NullString
+		if err := env.db.QueryRow(`
+			SELECT is_nullable, column_default
+			FROM information_schema.columns
+			WHERE table_schema=current_schema() AND table_name='channels' AND column_name='codex_credential'
+		`).Scan(&credentialNullable, &credentialDefault); err != nil {
+			t.Fatalf("read codex_credential definition: %v", err)
+		}
+		if credentialNullable != "YES" || credentialDefault.Valid {
+			t.Fatalf("codex_credential nullable=%q default=%v, want nullable without default", credentialNullable, credentialDefault)
+		}
+		loaded, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatalf("load migrated channel through store: %v", err)
+		}
+		if loaded.CodexCredential != "" {
+			t.Fatalf("store CodexCredential=%q, want empty", loaded.CodexCredential)
+		}
+		if err := migratePostgres(ctx, env.db); err != nil {
+			t.Fatalf("second legacy channels migration: %v", err)
 		}
 
 		created, err := store.CreateConfig(ctx, &model.Config{

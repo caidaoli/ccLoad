@@ -19,7 +19,7 @@ func (s *SQLStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	// 使用 LEFT JOIN 支持查询有或无API Key的渠道
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.auth_type, c.codex_credential, c.websockets, c.protocol_transform_mode, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.auth_type, COALESCE(c.codex_credential, ''), c.websockets, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url, c.retry_other_keys_on_failure,
 			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
@@ -54,7 +54,7 @@ func (s *SQLStore) GetConfig(ctx context.Context, id int64) (*model.Config, erro
 	// 使用 LEFT JOIN 以支持创建渠道时（尚无API Key）仍能获取配置
 	// 注意：不再从 channels 表读取 models 和 model_redirects
 	query := `
-			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.auth_type, c.codex_credential, c.websockets, c.protocol_transform_mode, c.enabled,
+			SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency, c.auth_type, COALESCE(c.codex_credential, ''), c.websockets, c.protocol_transform_mode, c.enabled,
 			       c.scheduled_check_enabled, c.scheduled_check_model,
 			       c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url, c.retry_other_keys_on_failure,
 			       SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
@@ -93,7 +93,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 注意：不再从 channels 表读取 models 和 model_redirects
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
-		                   c.auth_type, c.codex_credential, c.websockets, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+		                   c.auth_type, COALESCE(c.codex_credential, ''), c.websockets, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url, c.retry_other_keys_on_failure,
 	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at
@@ -107,7 +107,7 @@ func (s *SQLStore) GetEnabledChannelsByModel(ctx context.Context, modelName stri
 		// 精确匹配：使用 channel_models 索引表
 		query = `
 	            SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
-		                   c.auth_type, c.codex_credential, c.websockets, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
+		                   c.auth_type, COALESCE(c.codex_credential, ''), c.websockets, c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled, c.scheduled_check_model,
 	                   c.cooldown_until, c.cooldown_duration_ms, c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules, c.cooldown_detection_rules, c.proxy_url, c.retry_other_keys_on_failure,
 	                   SUM(CASE WHEN k.id IS NOT NULL AND k.disabled = 0 THEN 1 ELSE 0 END) as key_count,
 	                   c.created_at, c.updated_at

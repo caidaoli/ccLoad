@@ -13,6 +13,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
+	sqlstore "ccLoad/internal/storage/sql"
 
 	_ "modernc.org/sqlite"
 )
@@ -61,11 +62,8 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if !columns["protocol_transform_mode"] {
 		t.Fatalf("channels missing protocol_transform_mode: %v", columns)
 	}
-	if !columns["auth_type"] {
-		t.Fatalf("channels missing auth_type: %v", columns)
-	}
-	if columns["codex_credential"] {
-		t.Fatalf("legacy channels unexpectedly migrated codex_credential: %v", columns)
+	if !columns["auth_type"] || !columns["codex_credential"] {
+		t.Fatalf("channels missing Codex auth columns: %v", columns)
 	}
 	var mode string
 	if err := db.QueryRowContext(ctx, "SELECT protocol_transform_mode FROM channels WHERE name='legacy'").Scan(&mode); err != nil {
@@ -74,15 +72,25 @@ https://example.com/v1/messages#', 'codex', 1, 1)
 	if mode != "auto" {
 		t.Fatalf("migrated mode=%q, want auto", mode)
 	}
+	var channelID int64
 	var legacyChannelType, authType string
-	if err := db.QueryRowContext(ctx, "SELECT channel_type, auth_type FROM channels WHERE name='legacy'").Scan(&legacyChannelType, &authType); err != nil {
+	var credential sql.NullString
+	if err := db.QueryRowContext(ctx, "SELECT id, channel_type, auth_type, codex_credential FROM channels WHERE name='legacy'").Scan(&channelID, &legacyChannelType, &authType, &credential); err != nil {
 		t.Fatalf("read migrated auth fields: %v", err)
 	}
 	if legacyChannelType != "codex" {
 		t.Fatalf("migration changed historical channel_type=%q, want codex", legacyChannelType)
 	}
-	if authType != model.AuthTypeAPIKey {
-		t.Fatalf("migrated auth_type=%q, want %q", authType, model.AuthTypeAPIKey)
+	if authType != model.AuthTypeAPIKey || credential.Valid {
+		t.Fatalf("migrated auth fields=(%q, %v), want (%q, NULL)", authType, credential, model.AuthTypeAPIKey)
+	}
+	store := sqlstore.NewSQLStore(db, "sqlite")
+	loaded, err := store.GetConfig(ctx, channelID)
+	if err != nil {
+		t.Fatalf("load migrated channel through store: %v", err)
+	}
+	if loaded.CodexCredential != "" {
+		t.Fatalf("store CodexCredential=%q, want empty", loaded.CodexCredential)
 	}
 	var rawURLs string
 	if err := db.QueryRowContext(ctx, "SELECT url FROM channels WHERE name='legacy'").Scan(&rawURLs); err != nil {
