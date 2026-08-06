@@ -11,8 +11,8 @@ const {
   formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
-  getCodexUsageState,
-  refreshCodexUsage,
+  getOAuthUsageState,
+  refreshOAuthUsage,
   refreshOAuthCredential,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
@@ -432,13 +432,13 @@ test('manual Antigravity credential refresh targets the saved channel', async ()
   });
 });
 
-test('Codex usage refresh stores one safe per-channel quota summary', async () => {
+test('OAuth usage refresh stores one safe per-channel quota summary', async () => {
   const previousFilterChannels = global.filterChannels;
   let renders = 0;
   let captured;
   global.filterChannels = () => { renders++; };
   try {
-    const result = await refreshCodexUsage(42, async (url, options) => {
+    const result = await refreshOAuthUsage(42, async (url, options) => {
       captured = { url, options };
       return {
         plan_type: 'pro',
@@ -449,25 +449,25 @@ test('Codex usage refresh stores one safe per-channel quota summary', async () =
       };
     });
 
-    assert.equal(captured.url, '/admin/channels/42/codex-usage');
+    assert.equal(captured.url, '/admin/channels/42/oauth-usage');
     assert.equal(captured.options.method, 'POST');
     assert.equal(result.windows[0].remaining_percent, 71);
-    assert.deepEqual(getCodexUsageState(42), { status: 'ready', data: result });
+    assert.deepEqual(getOAuthUsageState(42), { status: 'ready', data: result });
     assert.equal(renders, 2);
   } finally {
     global.filterChannels = previousFilterChannels;
   }
 });
 
-test('failed Codex usage refresh remains retryable', async () => {
+test('failed OAuth usage refresh remains retryable', async () => {
   const previousFilterChannels = global.filterChannels;
   global.filterChannels = () => {};
   try {
     await assert.rejects(
-      refreshCodexUsage(43, async () => { throw new Error('quota unavailable'); }),
+      refreshOAuthUsage(43, async () => { throw new Error('quota unavailable'); }),
       /quota unavailable/
     );
-    assert.deepEqual(getCodexUsageState(43), { status: 'error', error: 'quota unavailable' });
+    assert.deepEqual(getOAuthUsageState(43), { status: 'error', error: 'quota unavailable' });
   } finally {
     global.filterChannels = previousFilterChannels;
   }

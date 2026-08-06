@@ -31,9 +31,9 @@ const (
 	codexTestSubscriptionActiveUntil = "2030-02-03T04:05:06Z"
 )
 
-type codexUsageRoundTripper func(*http.Request) (*http.Response, error)
+type oauthUsageRoundTripper func(*http.Request) (*http.Response, error)
 
-func (f codexUsageRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+func (f oauthUsageRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
 }
 
@@ -1271,7 +1271,7 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 	}
 }
 
-func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testing.T) {
+func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
@@ -1284,7 +1284,7 @@ func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testin
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
 
-	server.client = &http.Client{Transport: codexUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		if request.Method != http.MethodGet || request.URL.String() != codexUsageURL {
 			t.Errorf("usage request = %s %s", request.Method, request.URL)
 		}
@@ -1320,10 +1320,10 @@ func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testin
 		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
 	)
 
-	path := fmt.Sprintf("/admin/channels/%d/codex-usage", channel.ID)
+	path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
 	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
-	server.HandleCodexUsage(c)
+	server.HandleOAuthUsage(c)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
@@ -1331,8 +1331,8 @@ func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testin
 	if strings.Contains(w.Body.String(), "at-quota-secret") || strings.Contains(w.Body.String(), "rt-quota-secret") {
 		t.Fatalf("usage response leaked credential: %s", w.Body.String())
 	}
-	response := mustParseAPIResponse[codexUsageSummary](t, w.Body.Bytes())
-	if response.Data.PlanType != "pro" || len(response.Data.Windows) != 3 {
+	response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
+	if response.Data.Provider != codexauth.ChannelType || response.Data.PlanType != "pro" || len(response.Data.Windows) != 3 {
 		t.Fatalf("usage summary = %#v", response.Data)
 	}
 	windows := response.Data.Windows
@@ -1347,7 +1347,96 @@ func TestHandleCodexUsageReturnsRemainingQuotaWithoutLeakingCredential(t *testin
 	}
 }
 
-func TestHandleCodexUsageHidesUpstreamErrorBody(t *testing.T) {
+func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-gravity-quota-secret", RefreshToken: "rt-gravity-quota-secret",
+		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), ProjectID: "forward-bonus-fjkxm",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("Antigravity credential JSON: %v", err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity quota", payload))
+	if err != nil {
+		t.Fatalf("create Antigravity channel: %v", err)
+	}
+
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodPost || request.URL.String() != antigravityUsageURL {
+			t.Errorf("usage request = %s %s", request.Method, request.URL)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer at-gravity-quota-secret" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := request.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q", got)
+		}
+		if got := request.Header.Get("User-Agent"); got != antigravityUsageUserAgent {
+			t.Errorf("User-Agent = %q", got)
+		}
+		var body struct {
+			Project string `json:"project"`
+		}
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Antigravity usage request: %v", err)
+		}
+		if body.Project != "forward-bonus-fjkxm" {
+			t.Errorf("project = %q", body.Project)
+		}
+		responseBody := `{
+			"groups":[
+				{"displayName":"Gemini Models","buckets":[
+					{"bucketId":"gemini-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-08-13T08:24:21Z","remainingFraction":1},
+					{"bucketId":"gemini-5h","displayName":"Five Hour Limit Remaining","window":"5h","resetTime":"2026-08-06T17:07:55Z","remainingFraction":0.75}
+				]},
+				{"displayName":"Claude and GPT models","buckets":[
+					{"bucketId":"3p-weekly","displayName":"Weekly Limit Remaining","window":"weekly","resetTime":"2026-08-13T08:28:21Z","remainingFraction":0.9}
+				]}
+			]
+		}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+			Request:    request,
+		}, nil
+	})}
+	server.antigravityService = antigravityauth.NewService(server.client)
+	server.antigravityCredentials = newAntigravityCredentialManager(
+		server.antigravityService, store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleOAuthUsage(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "at-gravity-quota-secret") || strings.Contains(w.Body.String(), "rt-gravity-quota-secret") {
+		t.Fatalf("usage response leaked credential: %s", w.Body.String())
+	}
+	response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
+	if response.Data.Provider != antigravityauth.ChannelType || response.Data.PlanType != "" || len(response.Data.Windows) != 3 {
+		t.Fatalf("usage summary = %#v", response.Data)
+	}
+	windows := response.Data.Windows
+	if windows[0].LimitName != "Gemini Models" || windows[0].Kind != "gemini-weekly" || windows[0].RemainingPercent != 100 || windows[0].UsedPercent != 0 || windows[0].LimitWindowSeconds != weeklyUsageWindowSeconds || windows[0].ResetAt != 1786609461 {
+		t.Fatalf("Gemini weekly window = %#v", windows[0])
+	}
+	if windows[1].Kind != "gemini-5h" || windows[1].RemainingPercent != 75 || windows[1].UsedPercent != 25 || windows[1].LimitWindowSeconds != 5*60*60 || windows[1].ResetAt != 1786036075 {
+		t.Fatalf("Gemini five-hour window = %#v", windows[1])
+	}
+	if windows[2].LimitName != "Claude and GPT models" || windows[2].Kind != "3p-weekly" || windows[2].RemainingPercent != 90 {
+		t.Fatalf("third-party weekly window = %#v", windows[2])
+	}
+}
+
+func TestHandleOAuthUsageHidesUpstreamErrorBody(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, &codexauth.Credential{
@@ -1357,7 +1446,7 @@ func TestHandleCodexUsageHidesUpstreamErrorBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("createOrUpdateCodexChannel() error = %v", err)
 	}
-	server.client = &http.Client{Transport: codexUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusUnauthorized,
 			Body:       io.NopCloser(strings.NewReader(`{"access_token":"upstream-secret","error":"expired"}`)),
@@ -1369,14 +1458,34 @@ func TestHandleCodexUsageHidesUpstreamErrorBody(t *testing.T) {
 		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
 	)
 
-	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/1/codex-usage", nil))
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/1/oauth-usage", nil))
 	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
-	server.HandleCodexUsage(c)
+	server.HandleOAuthUsage(c)
 
 	if w.Code != http.StatusBadGateway {
 		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
 	}
 	if strings.Contains(w.Body.String(), "upstream-secret") || strings.Contains(w.Body.String(), "at-safe") {
 		t.Fatalf("usage error leaked sensitive content: %s", w.Body.String())
+	}
+}
+
+func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	channel, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "API key channel", AuthType: model.AuthTypeAPIKey, Enabled: true,
+		URLs: model.ChannelURLs{{URL: "https://api.example.test"}},
+	})
+	if err != nil {
+		t.Fatalf("create API key channel: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodPost, "/admin/channels/1/oauth-usage", nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleOAuthUsage(c)
+
+	if w.Code != http.StatusConflict {
+		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
 	}
 }

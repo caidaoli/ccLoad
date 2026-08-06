@@ -517,12 +517,12 @@ function formatCooldownRecoveryTime(remainingMS) {
   });
 }
 
-function formatCodexUsagePercent(value) {
+function formatOAuthUsagePercent(value) {
   const percent = Math.min(100, Math.max(0, Number(value) || 0));
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(1).replace(/\.0$/, '');
 }
 
-function formatCodexUsageResetAt(resetAt) {
+function formatOAuthUsageResetAt(resetAt) {
   const timestamp = Number(resetAt);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
   const date = new Date(timestamp * 1000);
@@ -531,81 +531,82 @@ function formatCodexUsageResetAt(resetAt) {
   return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function formatCodexUsageWindowDuration(seconds) {
+function formatOAuthUsageWindowDuration(seconds) {
   const duration = Math.max(0, Number(seconds) || 0);
   const day = 24 * 60 * 60;
-  if (duration >= 28 * day && duration <= 31 * day) return window.t('channels.codex.usageMonthly');
-  if (duration === 7 * day) return window.t('channels.codex.usageWeekly');
+  if (duration >= 28 * day && duration <= 31 * day) return window.t('channels.oauth.usageMonthly');
+  if (duration === 7 * day) return window.t('channels.oauth.usageWeekly');
   if (duration > 0 && duration % day === 0) {
-    return window.t('channels.codex.usageDays', { count: duration / day });
+    return window.t('channels.oauth.usageDays', { count: duration / day });
   }
   if (duration > 0 && duration % (60 * 60) === 0) {
-    return window.t('channels.codex.usageHours', { count: duration / (60 * 60) });
+    return window.t('channels.oauth.usageHours', { count: duration / (60 * 60) });
   }
-  return window.t('channels.codex.usageQuota');
+  return window.t('channels.oauth.usageQuota');
 }
 
-function formatCodexUsageLimitName(limitName) {
+function formatOAuthUsageLimitName(limitName) {
   const normalized = String(limitName || '').trim().toLowerCase();
   if (!normalized || normalized === 'codex') return '';
   if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
   return String(limitName).trim();
 }
 
-function codexUsageLevel(remainingPercent) {
+function oauthUsageLevel(remainingPercent) {
   if (remainingPercent >= 70) return 'high';
   if (remainingPercent >= 30) return 'medium';
   if (remainingPercent > 0) return 'low';
   return 'empty';
 }
 
-function buildCodexUsageRefreshButton(channelID, loading = false) {
+function buildOAuthUsageRefreshButton(channelID, loading = false) {
   const text = loading
-    ? window.t('channels.codex.usageRefreshing')
-    : window.t('channels.codex.usageRefresh');
-  return `<button type="button" class="ch-codex-usage__refresh channel-action-btn" data-action="refresh-codex-usage" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+    ? window.t('channels.oauth.usageRefreshing')
+    : window.t('channels.oauth.usageRefresh');
+  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
 }
 
-function buildCodexUsageStatusHtml(channel) {
-  if (channel?.auth_type !== 'codex_oauth' || (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
+function buildOAuthUsageStatusHtml(channel) {
+  if (!['codex_oauth', 'antigravity_oauth'].includes(channel?.auth_type) ||
+      (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
-  const state = typeof getCodexUsageState === 'function' ? getCodexUsageState(channel.id) : null;
+  const state = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
   if (!state) {
-    return `<div class="ch-codex-usage">${buildCodexUsageRefreshButton(channel.id)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id)}</div>`;
   }
   if (state.status === 'loading') {
-    return `<div class="ch-codex-usage">${buildCodexUsageRefreshButton(channel.id, true)}</div>`;
+    return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id, true)}</div>`;
   }
   if (state.status === 'error') {
-    return `<div class="ch-codex-usage">
-      ${buildCodexUsageRefreshButton(channel.id)}
-      <div class="ch-codex-usage__error" title="${escapeChannelRefreshText(state.error)}">${escapeChannelRefreshText(window.t('channels.codex.usageFailed'))}</div>
+    return `<div class="ch-oauth-usage">
+      ${buildOAuthUsageRefreshButton(channel.id)}
+      <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(state.error)}">${escapeChannelRefreshText(window.t('channels.oauth.usageFailed'))}</div>
     </div>`;
   }
 
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
   const rows = windows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
-    const percent = formatCodexUsagePercent(remaining);
-    const duration = formatCodexUsageWindowDuration(windowInfo?.limit_window_seconds);
-    const limitName = formatCodexUsageLimitName(windowInfo?.limit_name);
+    const percent = formatOAuthUsagePercent(remaining);
+    const duration = formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
+    const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
     const label = limitName ? `${limitName} · ${duration}` : duration;
-    const resetAt = formatCodexUsageResetAt(windowInfo?.reset_at);
-    const ariaLabel = window.t('channels.codex.usageRemaining', { label, percent });
-    return `<div class="ch-codex-usage__window">
-      <div class="ch-codex-usage__meta">
-        <span class="ch-codex-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
-        <span class="ch-codex-usage__percent">${escapeChannelRefreshText(percent)}%</span>
-        ${resetAt ? `<span class="ch-codex-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+    const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
+    const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });
+    return `<div class="ch-oauth-usage__window">
+      <div class="ch-oauth-usage__meta">
+        <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+        <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+        ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
       </div>
-      <div class="ch-codex-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
-        <span class="ch-codex-usage__fill ch-codex-usage__fill--${codexUsageLevel(remaining)}" style="width:${remaining}%"></span>
+      <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
+        <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
       </div>
     </div>`;
   }).join('');
-  return `<div class="ch-codex-usage">
-    <div class="ch-codex-usage__toolbar">${buildCodexUsageRefreshButton(channel.id)}</div>
+  return `<div class="ch-oauth-usage">
+    <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id)}</div>
     ${rows}
   </div>`;
 }
@@ -648,8 +649,8 @@ function buildChannelRuntimeStatusHtml(channel, stats) {
     if (lastSuccessHtml) statuses.push(lastSuccessHtml);
   }
 
-  const codexUsageHtml = buildCodexUsageStatusHtml(channel);
-  if (codexUsageHtml) statuses.push(codexUsageHtml);
+  const oauthUsageHtml = buildOAuthUsageStatusHtml(channel);
+  if (oauthUsageHtml) statuses.push(oauthUsageHtml);
 
   return statuses.length > 0
     ? `<div class="ch-runtime-status-list">${statuses.join('')}</div>`
@@ -866,7 +867,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-codex-usage', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -880,10 +881,10 @@ function initChannelEventDelegation() {
       case 'edit-cooling-keys':
         editChannelCoolingKeys(channelId);
         break;
-      case 'refresh-codex-usage':
-        if (typeof refreshCodexUsage === 'function') {
-          refreshCodexUsage(channelId).catch(error => {
-            if (window.showError) window.showError(error?.message || window.t('channels.codex.usageFailed'));
+      case 'refresh-oauth-usage':
+        if (typeof refreshOAuthUsage === 'function') {
+          refreshOAuthUsage(channelId).catch(error => {
+            if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
           });
         }
         break;
@@ -968,5 +969,5 @@ function renderChannels(channelsToRender = channels) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { formatCooldownRecoveryTime };
+  module.exports = { buildOAuthUsageStatusHtml, formatCooldownRecoveryTime };
 }

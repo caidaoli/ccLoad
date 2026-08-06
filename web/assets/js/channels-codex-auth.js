@@ -8,7 +8,7 @@ let currentOAuthCredentialInfo = null;
 let currentOAuthCredentialView = 'decoded';
 let oauthLoginDialogTrigger = null;
 let oauthCredentialImportDialogTrigger = null;
-const codexUsageStateByChannelID = new Map();
+const oauthUsageStateByChannelID = new Map();
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   codex: Object.freeze({
     provider: 'codex', label: 'Codex', i18n: 'channels.codex',
@@ -511,35 +511,35 @@ async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, au
   return fetcher(`/admin/channels/${numericID}/${resource}/refresh`, { method: 'POST' });
 }
 
-function getCodexUsageState(channelID) {
+function getOAuthUsageState(channelID) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) return null;
-  return codexUsageStateByChannelID.get(numericID) || null;
+  return oauthUsageStateByChannelID.get(numericID) || null;
 }
 
-function rerenderCodexUsage() {
+function rerenderOAuthUsage() {
   if (typeof filterChannels === 'function') filterChannels();
 }
 
-async function refreshCodexUsage(channelID, fetcher = fetchDataWithAuth) {
+async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
-    throw new Error('A saved Codex channel is required');
+    throw new Error('A saved OAuth channel is required');
   }
-  codexUsageStateByChannelID.set(numericID, { status: 'loading' });
-  rerenderCodexUsage();
+  oauthUsageStateByChannelID.set(numericID, { status: 'loading' });
+  rerenderOAuthUsage();
   try {
-    const result = await fetcher(`/admin/channels/${numericID}/codex-usage`, { method: 'POST' });
+    const result = await fetcher(`/admin/channels/${numericID}/oauth-usage`, { method: 'POST' });
     if (!result || !Array.isArray(result.windows)) {
-      throw new Error(window.t('channels.codex.usageInvalid'));
+      throw new Error(window.t('channels.oauth.usageInvalid'));
     }
-    codexUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
-    rerenderCodexUsage();
+    oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
+    rerenderOAuthUsage();
     return result;
   } catch (error) {
-    const message = error?.message || window.t('channels.codex.usageFailed');
-    codexUsageStateByChannelID.set(numericID, { status: 'error', error: message });
-    rerenderCodexUsage();
+    const message = error?.message || window.t('channels.oauth.usageFailed');
+    oauthUsageStateByChannelID.set(numericID, { status: 'error', error: message });
+    rerenderOAuthUsage();
     throw error;
   }
 }
@@ -736,14 +736,14 @@ if (typeof module !== 'undefined' && module.exports) {
     copyOAuthCredential,
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
-    getCodexUsageState,
+    getOAuthUsageState,
     importOAuthCredentials,
     openOAuthCredentialImportDialog,
     openOAuthLoginDialog,
     pollAntigravityOAuthStatus,
     pollCodexOAuthStatus,
     refreshOAuthCredential,
-    refreshCodexUsage,
+    refreshOAuthUsage,
     renderOAuthCredential,
     setOAuthCredentialView,
     setupOAuthActions,
