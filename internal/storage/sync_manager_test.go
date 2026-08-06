@@ -64,7 +64,7 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试数据失败: %v", err)
 	}
-	if _, err := mysql.ExecContext(ctx, "UPDATE channels SET codex_credential = NULL WHERE id = ?", created.ID); err != nil {
+	if _, err := mysql.ExecContext(ctx, "UPDATE channels SET oauth_credential = NULL WHERE id = ?", created.ID); err != nil {
 		t.Fatalf("预置旧渠道空凭证失败: %v", err)
 	}
 
@@ -92,8 +92,8 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	if restored.Name != cfg.Name {
 		t.Errorf("恢复的配置名称不匹配: got %s, want %s", restored.Name, cfg.Name)
 	}
-	if restored.CodexCredential != "" {
-		t.Errorf("恢复的 CodexCredential = %q, want empty", restored.CodexCredential)
+	if restored.OAuthCredential != "" {
+		t.Errorf("恢复的 OAuthCredential = %q, want empty", restored.OAuthCredential)
 	}
 }
 
@@ -112,7 +112,7 @@ func TestSyncManager_RestoreOnStartup_NormalizesNullCredentialForLegacySQLiteRep
 			name TEXT NOT NULL UNIQUE,
 			url TEXT NOT NULL,
 			priority INTEGER NOT NULL DEFAULT 0,
-			codex_credential TEXT NOT NULL,
+			oauth_credential TEXT NOT NULL,
 			enabled INTEGER NOT NULL DEFAULT 1,
 			cooldown_until INTEGER NOT NULL DEFAULT 0,
 			cooldown_duration_ms INTEGER NOT NULL DEFAULT 0,
@@ -144,7 +144,7 @@ func TestSyncManager_RestoreOnStartup_NormalizesNullCredentialForLegacySQLiteRep
 	if err != nil {
 		t.Fatalf("create source channel: %v", err)
 	}
-	if _, err := source.ExecContext(ctx, "UPDATE channels SET codex_credential = NULL WHERE id = ?", created.ID); err != nil {
+	if _, err := source.ExecContext(ctx, "UPDATE channels SET oauth_credential = NULL WHERE id = ?", created.ID); err != nil {
 		t.Fatalf("set source credential NULL: %v", err)
 	}
 
@@ -155,7 +155,7 @@ func TestSyncManager_RestoreOnStartup_NormalizesNullCredentialForLegacySQLiteRep
 	}
 
 	var credential string
-	if err := target.QueryRowContext(ctx, "SELECT codex_credential FROM channels WHERE id = ?", created.ID).Scan(&credential); err != nil {
+	if err := target.QueryRowContext(ctx, "SELECT oauth_credential FROM channels WHERE id = ?", created.ID).Scan(&credential); err != nil {
 		t.Fatalf("read restored credential: %v", err)
 	}
 	if credential != "" {

@@ -26,6 +26,7 @@ type requestContext struct {
 	streamTimeout       time.Duration
 	nonStreamTimeout    time.Duration
 	codexOAuthNonStream bool
+	antigravityOAuth    bool
 	firstByteTimer      *time.Timer
 	streamTimer         *time.Timer
 	firstByteTimedOut   atomic.Bool

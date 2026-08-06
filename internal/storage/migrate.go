@@ -15,6 +15,8 @@ const (
 	structuredChannelURLsMigrationVersion  = "v4_structured_channel_urls"
 	clientProtocolBackfillMigrationVersion = "v5_logs_client_protocol_backfill"
 	modelFingerprintNameMaxRunes           = 191
+	defaultAntigravitySensitiveWords       = `["API","proxy","Claude","Anthropic"]`
+	previousAntigravitySensitiveWords      = `["API","proxy"]`
 )
 
 // Dialect 数据库方言
@@ -175,8 +177,8 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureChannelsAuthType(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate channels auth_type: %w", err)
 			}
-			if err := ensureChannelsCodexCredential(ctx, db, dialect); err != nil {
-				return fmt.Errorf("migrate channels codex_credential: %w", err)
+			if err := ensureChannelsOAuthCredential(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate channels oauth_credential: %w", err)
 			}
 			// 增量迁移：将url字段从VARCHAR(191)扩展为TEXT（支持多URL存储）
 			if err := migrateChannelsURLToText(ctx, db, dialect); err != nil {
@@ -545,6 +547,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"cooldown_max_seconds", "1800", "int", "指数退避冷却上限(秒)", "1800"},
 		{"cooldown_min_seconds", "10", "int", "指数退避冷却下限(秒)", "10"},
 		{"global_cooldown_detection_rules", "{}", "json", "未配置渠道专属规则时继承的全局冷却探测规则", "{}"},
+		{"antigravity_sensitive_words", defaultAntigravitySensitiveWords, "json", "Antigravity systemInstruction 中使用零宽字符替换的敏感词", defaultAntigravitySensitiveWords},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"upstream_connection_reuse_limit_seconds", "0", "duration", "上游连接最长复用时间(秒,0=不限制;达到时限后不接收新请求,在途请求完成后关闭)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
@@ -603,6 +606,27 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	for _, s := range settings {
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, query), s.key, s.value, s.valueType, s.desc, s.defaultVal); err != nil {
 			return fmt.Errorf("insert default setting %s: %w", s.key, err)
+		}
+	}
+
+	// 默认词表在 CLIProxyAPI 示例的 ["API","proxy"] 基础上加入 Claude/Anthropic。
+	// 仅迁移仍保持旧默认值的记录；其他值视为用户配置，不覆盖。
+	{
+		keyCol := quoteKeyIdent(dialect)
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		valueSQL := fmt.Sprintf("UPDATE system_settings SET value = ? WHERE %s = ? AND value = default_value AND default_value IN (?, ?)", keyCol)
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, valueSQL),
+			defaultAntigravitySensitiveWords,
+			"antigravity_sensitive_words",
+			"[]",
+			previousAntigravitySensitiveWords,
+		); err != nil {
+			return fmt.Errorf("migrate setting value antigravity_sensitive_words: %w", err)
+		}
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		metaSQL := fmt.Sprintf("UPDATE system_settings SET default_value = ?, value_type = ? WHERE %s = ?", keyCol)
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), defaultAntigravitySensitiveWords, "json", "antigravity_sensitive_words"); err != nil {
+			return fmt.Errorf("refresh setting metadata antigravity_sensitive_words: %w", err)
 		}
 	}
 

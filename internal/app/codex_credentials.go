@@ -93,7 +93,7 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 		if encodeErr != nil {
 			return nil, encodeErr
 		}
-		if updateErr := m.store.UpdateCodexCredential(refreshCtx, cfg.ID, payload); updateErr != nil {
+		if updateErr := m.store.UpdateOAuthCredential(refreshCtx, cfg.ID, payload); updateErr != nil {
 			return nil, updateErr
 		}
 		models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, current.PlanType, merged.PlanType)
@@ -128,7 +128,7 @@ func (m *codexCredentialManager) cachedOrParse(cfg *model.Config) (*codexauth.Cr
 	if credential != nil {
 		return cloneCodexCredential(credential), nil
 	}
-	parsed, err := codexauth.ParseCredential([]byte(cfg.CodexCredential))
+	parsed, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
 	if err != nil {
 		return nil, fmt.Errorf("parse Codex credential for channel %d: %w", cfg.ID, err)
 	}

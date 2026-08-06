@@ -19,6 +19,77 @@ import (
 
 const geminiClaudeThoughtSignature = "skip_thought_signature_validator"
 
+var geminiThinkingLevelOrder = []string{"minimal", "low", "medium", "high", "xhigh", "max"}
+
+func normalizeClaudeEffortForGemini(modelName, effort string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	requestedIndex := geminiThinkingLevelIndex(effort)
+	if requestedIndex < 0 {
+		return effort
+	}
+
+	modelInfo := lookupGeminiThinkingModelInfo(modelName)
+	if modelInfo == nil || modelInfo.Thinking == nil || len(modelInfo.Thinking.Levels) == 0 {
+		if effort == "xhigh" || effort == "max" {
+			return "high"
+		}
+		return effort
+	}
+
+	bestLevel := ""
+	bestIndex := -1
+	bestDistance := len(geminiThinkingLevelOrder) + 1
+	for _, supported := range modelInfo.Thinking.Levels {
+		supported = strings.ToLower(strings.TrimSpace(supported))
+		if supported == effort {
+			return effort
+		}
+		index := geminiThinkingLevelIndex(supported)
+		if index < 0 {
+			continue
+		}
+		distance := requestedIndex - index
+		if distance < 0 {
+			distance = -distance
+		}
+		if distance < bestDistance || (distance == bestDistance && index < bestIndex) {
+			bestLevel = supported
+			bestIndex = index
+			bestDistance = distance
+		}
+	}
+	if bestLevel != "" {
+		return bestLevel
+	}
+	return effort
+}
+
+func lookupGeminiThinkingModelInfo(modelName string) *registry.ModelInfo {
+	modelName = strings.TrimSpace(modelName)
+	if modelInfo := registry.LookupModelInfo(modelName, "gemini"); modelInfo != nil {
+		return modelInfo
+	}
+	for _, suffix := range []string{"-extra-low", "-minimal", "-low", "-medium", "-high", "-xhigh", "-max"} {
+		if !strings.HasSuffix(strings.ToLower(modelName), suffix) {
+			continue
+		}
+		baseModel := modelName[:len(modelName)-len(suffix)]
+		if modelInfo := registry.LookupModelInfo(baseModel, "gemini"); modelInfo != nil {
+			return modelInfo
+		}
+	}
+	return nil
+}
+
+func geminiThinkingLevelIndex(level string) int {
+	for index, candidate := range geminiThinkingLevelOrder {
+		if candidate == level {
+			return index
+		}
+	}
+	return -1
+}
+
 // ConvertClaudeRequestToGemini parses a Claude API request and returns a complete
 // Gemini request body (as JSON bytes) ready to be sent via SendRawMessageStream.
 // All JSON transformations are performed using gjson/sjson.
@@ -331,33 +402,19 @@ func ConvertClaudeRequestToGemini(modelName string, inputRawJSON []byte, _ bool)
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 			}
 		case "adaptive", "auto":
-			// For adaptive thinking:
-			// - If output_config.effort is explicitly present, pass through as thinkingLevel.
-			// - Otherwise, treat it as "enabled with target-model maximum" and emit thinkingBudget=max.
-			// ApplyThinking handles clamping to target model's supported levels.
+			// Claude adaptive thinking only carries an explicit amount through
+			// output_config.effort. Without it, preserve the upstream default.
 			effort := ""
 			if v := gjson.GetBytes(rawJSON, "output_config.effort"); v.Exists() && v.Type == gjson.String {
 				effort = strings.ToLower(strings.TrimSpace(v.String()))
 			}
 			if effort != "" {
-				if effort == "max" || effort == "xhigh" {
-					effort = "high"
-				}
+				effort = normalizeClaudeEffortForGemini(modelName, effort)
 				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.thinkingLevel", effort)
-			} else {
-				maxBudget := 0
-				if mi := registry.LookupModelInfo(modelName, "gemini"); mi != nil && mi.Thinking != nil {
-					maxBudget = mi.Thinking.Max
-				}
-				if maxBudget > 0 {
-					out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.thinkingBudget", maxBudget)
-				} else {
-					out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.thinkingLevel", "high")
-				}
+				// ccLoad excludes upstream's runtime summary applier, so the
+				// converter itself must request visible thoughts.
+				out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 			}
-			// ccLoad excludes upstream's runtime summary applier, so the
-			// converter itself must request visible thoughts.
-			out, _ = sjson.SetBytes(out, "generationConfig.thinkingConfig.includeThoughts", true)
 		}
 	}
 	if v := gjson.GetBytes(rawJSON, "temperature"); v.Exists() && v.Type == gjson.Number {

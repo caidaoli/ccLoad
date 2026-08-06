@@ -73,12 +73,12 @@ func TestDefineSchemaMigrationsTable(t *testing.T) {
 	}
 }
 
-func TestDefineChannelsTable_MySQLCodexCredentialIsNullableWithoutDefault(t *testing.T) {
+func TestDefineChannelsTable_MySQLOAuthCredentialIsNullableWithoutDefault(t *testing.T) {
 	ddl := DefineChannelsTable().BuildMySQL()
-	if !strings.Contains(ddl, "codex_credential TEXT") {
-		t.Fatalf("BuildMySQL missing Codex credential column, got:\n%s", ddl)
+	if !strings.Contains(ddl, "oauth_credential TEXT") {
+		t.Fatalf("BuildMySQL missing OAuth credential column, got:\n%s", ddl)
 	}
-	if strings.Contains(ddl, "codex_credential TEXT NOT NULL") || strings.Contains(ddl, "codex_credential TEXT DEFAULT") {
-		t.Fatalf("BuildMySQL constrains optional Codex credential, got:\n%s", ddl)
+	if strings.Contains(ddl, "oauth_credential TEXT NOT NULL") || strings.Contains(ddl, "oauth_credential TEXT DEFAULT") {
+		t.Fatalf("BuildMySQL constrains optional OAuth credential, got:\n%s", ddl)
 	}
 }

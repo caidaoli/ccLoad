@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -672,9 +673,58 @@ func ensureChannelsAuthType(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"TEXT NOT NULL DEFAULT 'api_key'")
 }
 
-// ensureChannelsCodexCredential adds the optional private OAuth payload.
-func ensureChannelsCodexCredential(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "channels", "codex_credential", "TEXT", "TEXT")
+func ensureChannelsOAuthCredential(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	legacyExists, err := migrationColumnExists(ctx, db, dialect, "channels", "codex_credential")
+	if err != nil {
+		return err
+	}
+	oauthExists, err := migrationColumnExists(ctx, db, dialect, "channels", "oauth_credential")
+	if err != nil {
+		return err
+	}
+	if oauthExists {
+		if legacyExists {
+			return errors.New("channels contains both codex_credential and oauth_credential")
+		}
+		return nil
+	}
+	if !legacyExists {
+		return ensureColumn(ctx, db, dialect, "channels", "oauth_credential", "TEXT", "TEXT")
+	}
+
+	statement := "ALTER TABLE channels RENAME COLUMN codex_credential TO oauth_credential"
+	if dialect == DialectMySQL {
+		statement = "ALTER TABLE channels CHANGE COLUMN codex_credential oauth_credential TEXT NULL"
+	}
+	if _, err := db.ExecContext(ctx, statement); err != nil {
+		return fmt.Errorf("rename channels codex_credential to oauth_credential: %w", err)
+	}
+	return nil
+}
+
+func migrationColumnExists(ctx context.Context, db *sql.DB, dialect Dialect, table, column string) (bool, error) {
+	switch dialect {
+	case DialectMySQL:
+		var count int
+		err := db.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME=? AND COLUMN_NAME=?",
+			table, column,
+		).Scan(&count)
+		return count > 0, err
+	case DialectPostgres:
+		var count int
+		err := db.QueryRowContext(ctx,
+			rebindIfPostgres(DialectPostgres, "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema=current_schema() AND table_name=? AND column_name=?"),
+			table, column,
+		).Scan(&count)
+		return count > 0, err
+	default:
+		columns, err := sqliteExistingColumns(ctx, db, table)
+		if err != nil {
+			return false, err
+		}
+		return columns[column], nil
+	}
 }
 
 // migrateChannelsURLToText 将channels.url从VARCHAR(191)扩展为TEXT

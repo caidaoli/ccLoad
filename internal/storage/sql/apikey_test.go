@@ -389,7 +389,7 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 	ctx := context.Background()
 	credential := `{"type":"codex","access_token":"at-secret","refresh_token":"rt-secret","expired":"2030-01-01T00:00:00Z"}`
 	created, err := store.CreateConfig(ctx, &model.Config{
-		Name: "codex-immutable", AuthType: model.AuthTypeCodexOAuth, CodexCredential: credential,
+		Name: "codex-immutable", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
 		URLs:    model.ChannelURLs{{URL: "https://chatgpt.com/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
 		Enabled: true, Websockets: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
 	})
@@ -413,7 +413,7 @@ func TestAPIKey_ImportChannelBatchCannotReplaceCodexAuthentication(t *testing.T)
 	if err != nil {
 		t.Fatalf("GetConfig() error = %v", err)
 	}
-	if !persisted.UsesCodexOAuth() || persisted.CodexCredential != credential {
+	if !persisted.UsesCodexOAuth() || persisted.OAuthCredential != credential {
 		t.Fatalf("Codex channel changed after rejected import: %#v", persisted)
 	}
 	keys, err := store.GetAPIKeys(ctx, created.ID)

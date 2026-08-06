@@ -13,8 +13,9 @@ import (
 
 // Channel authentication mechanisms and protocol transformation modes.
 const (
-	AuthTypeAPIKey     = "api_key"
-	AuthTypeCodexOAuth = "codex_oauth"
+	AuthTypeAPIKey           = "api_key"
+	AuthTypeCodexOAuth       = "codex_oauth"
+	AuthTypeAntigravityOAuth = "antigravity_oauth"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -35,6 +36,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeAPIKey
 	case AuthTypeCodexOAuth:
 		return AuthTypeCodexOAuth
+	case AuthTypeAntigravityOAuth:
+		return AuthTypeAntigravityOAuth
 	default:
 		return ""
 	}
@@ -385,11 +388,13 @@ type Config struct {
 	// 用于一个中转站下的 Key 实际对应不同上游服务商的场景；默认关闭，保持原有渠道/模型级切换语义。
 	RetryOtherKeysOnFailure bool `json:"retry_other_keys_on_failure"`
 
-	// CodexCredential is the private CLIProxy-compatible OAuth JSON stored in
+	// OAuthCredential is the private CLIProxy-compatible OAuth JSON stored in
 	// the channels table. It must never be serialized by an API response.
-	CodexCredential  string `json:"-"`
-	CodexAccessToken string `json:"-"`
-	CodexAccountID   string `json:"-"`
+	OAuthCredential        string `json:"-"`
+	CodexAccessToken       string `json:"-"`
+	CodexAccountID         string `json:"-"`
+	AntigravityAccessToken string `json:"-"`
+	AntigravityProjectID   string `json:"-"`
 
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
@@ -433,9 +438,11 @@ func (c *Config) Clone() *Config {
 		CooldownDetectionRules:  c.CooldownDetectionRules.Clone(),
 		ProxyURL:                c.ProxyURL,
 		RetryOtherKeysOnFailure: c.RetryOtherKeysOnFailure,
-		CodexCredential:         c.CodexCredential,
+		OAuthCredential:         c.OAuthCredential,
 		CodexAccessToken:        c.CodexAccessToken,
 		CodexAccountID:          c.CodexAccountID,
+		AntigravityAccessToken:  c.AntigravityAccessToken,
+		AntigravityProjectID:    c.AntigravityProjectID,
 		CreatedAt:               c.CreatedAt,
 		UpdatedAt:               c.UpdatedAt,
 		KeyCount:                c.KeyCount,
@@ -463,6 +470,16 @@ func (c *Config) GetAuthType() string {
 // UsesCodexOAuth reports whether this channel is backed by a dynamic Codex credential.
 func (c *Config) UsesCodexOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeCodexOAuth
+}
+
+// UsesAntigravityOAuth reports whether this channel is backed by an Antigravity credential.
+func (c *Config) UsesAntigravityOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeAntigravityOAuth
+}
+
+// UsesOAuth reports whether API keys are replaced by a private OAuth credential.
+func (c *Config) UsesOAuth() bool {
+	return c != nil && c.GetAuthType() != AuthTypeAPIKey
 }
 
 // GetModels 获取所有已启用的模型名称列表

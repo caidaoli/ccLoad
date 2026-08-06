@@ -371,7 +371,7 @@ func TestMySQL(t *testing.T) {
 		t.Log("已存在列验证通过：不报错")
 	})
 
-	t.Run("LegacyChannelsCodexCredential", func(t *testing.T) {
+	t.Run("LegacyChannelsOAuthCredential", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 
 		if _, err := env.db.Exec(`
@@ -381,6 +381,7 @@ func TestMySQL(t *testing.T) {
 				url VARCHAR(191) NOT NULL,
 				priority INT NOT NULL DEFAULT 0,
 				channel_type VARCHAR(64) NOT NULL DEFAULT 'anthropic',
+				codex_credential TEXT NULL,
 				enabled TINYINT NOT NULL DEFAULT 1,
 				cooldown_until BIGINT NOT NULL DEFAULT 0,
 				cooldown_duration_ms BIGINT NOT NULL DEFAULT 0,
@@ -406,7 +407,7 @@ func TestMySQL(t *testing.T) {
 		var channelType, authType string
 		var credential sql.NullString
 		if err := env.db.QueryRow(`
-			SELECT id, channel_type, auth_type, codex_credential
+			SELECT id, channel_type, auth_type, oauth_credential
 			FROM channels WHERE name = 'legacy-codex-column'
 		`).Scan(&channelID, &channelType, &authType, &credential); err != nil {
 			t.Fatalf("读取迁移后渠道: %v", err)
@@ -420,19 +421,29 @@ func TestMySQL(t *testing.T) {
 		if err := env.db.QueryRow(`
 			SELECT IS_NULLABLE, COLUMN_DEFAULT
 			FROM INFORMATION_SCHEMA.COLUMNS
-			WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='codex_credential'
+			WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='oauth_credential'
 		`).Scan(&isNullable, &defaultValue); err != nil {
-			t.Fatalf("读取 codex_credential 列定义: %v", err)
+			t.Fatalf("读取 oauth_credential 列定义: %v", err)
 		}
 		if !strings.EqualFold(isNullable, "YES") || defaultValue.Valid {
-			t.Fatalf("codex_credential nullable=%q default=%v, want nullable without default", isNullable, defaultValue)
+			t.Fatalf("oauth_credential nullable=%q default=%v, want nullable without default", isNullable, defaultValue)
+		}
+		var legacyColumnCount int
+		if err := env.db.QueryRow(`
+			SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS
+			WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='channels' AND COLUMN_NAME='codex_credential'
+		`).Scan(&legacyColumnCount); err != nil {
+			t.Fatalf("检查旧凭证列: %v", err)
+		}
+		if legacyColumnCount != 0 {
+			t.Fatalf("codex_credential column still exists")
 		}
 		loaded, err := store.GetConfig(context.Background(), channelID)
 		if err != nil {
 			t.Fatalf("通过存储读取迁移渠道: %v", err)
 		}
-		if loaded.CodexCredential != "" {
-			t.Fatalf("存储读取 CodexCredential=%q, want empty", loaded.CodexCredential)
+		if loaded.OAuthCredential != "" {
+			t.Fatalf("存储读取 OAuthCredential=%q, want empty", loaded.OAuthCredential)
 		}
 		_ = store.Close()
 		if err := migrateMySQL(context.Background(), env.db); err != nil {

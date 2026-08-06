@@ -87,16 +87,27 @@ func TestConfig_AuthTypeIsIndependentFromProtocol(t *testing.T) {
 	if got := legacy.GetAuthType(); got != AuthTypeAPIKey {
 		t.Fatalf("legacy GetAuthType()=%q, want %q", got, AuthTypeAPIKey)
 	}
-	codex := &Config{AuthType: " CODEX_OAUTH ", CodexCredential: "secret"}
+	codex := &Config{AuthType: " CODEX_OAUTH ", OAuthCredential: "secret"}
 	if !codex.UsesCodexOAuth() {
 		t.Fatal("expected Codex OAuth auth type")
 	}
 	clone := codex.Clone()
-	if clone.AuthType != codex.AuthType || clone.CodexCredential != "secret" {
+	if clone.AuthType != codex.AuthType || clone.OAuthCredential != "secret" {
 		t.Fatalf("Clone() lost private auth state: %#v", clone)
 	}
 	if got := NormalizeAuthType("codex"); got != "" {
 		t.Fatalf("historical protocol value normalized as auth type: %q", got)
+	}
+	antigravity := &Config{
+		AuthType: AuthTypeAntigravityOAuth, OAuthCredential: "gravity-secret",
+		AntigravityAccessToken: "gravity-at", AntigravityProjectID: "gravity-project",
+	}
+	if !antigravity.UsesAntigravityOAuth() || !antigravity.UsesOAuth() {
+		t.Fatal("expected Antigravity OAuth auth type")
+	}
+	gravityClone := antigravity.Clone()
+	if gravityClone.OAuthCredential != "gravity-secret" || gravityClone.AntigravityAccessToken != "gravity-at" || gravityClone.AntigravityProjectID != "gravity-project" {
+		t.Fatalf("Clone() lost Antigravity auth state: %#v", gravityClone)
 	}
 }
 

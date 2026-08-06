@@ -3,17 +3,23 @@ const assert = require('node:assert/strict');
 
 const {
   applyChannelAuthEditorMode,
+  cancelAntigravityOAuth,
   pollCodexOAuthStatus,
-  showCodexOAuthSession,
   copyCodexOAuthLink,
-  copyCodexCredential,
+  copyOAuthCredential,
   cancelCodexOAuth,
   formatCodexPlanBadgeText,
-  importCodexCredentials,
-  getCodexUsageState,
-  refreshCodexUsage,
-  refreshCodexCredential,
-  setCodexCredentialView,
+  importOAuthCredentials,
+  pollAntigravityOAuthStatus,
+  getOAuthUsageState,
+  refreshOAuthUsage,
+  refreshOAuthCredential,
+  openOAuthCredentialImportDialog,
+  openOAuthLoginDialog,
+  setOAuthCredentialView,
+  setupOAuthActions,
+  showOAuthSession,
+  submitAntigravityOAuthCallback,
   submitCodexOAuthCallback
 } = require('./channels-codex-auth.js');
 
@@ -147,25 +153,135 @@ test('Codex OAuth status polling waits for completion and encodes state', async 
   assert.equal(requests[0], '/admin/codex/oauth/status?state=state%20with%20%2F%20symbols');
 });
 
-test('Codex OAuth session exposes the authorization link for copy and manual callback', async () => {
+test('OAuth login dialog requires provider selection before exposing an authorization session', async () => {
   const elements = new Map([
-    ['codexOAuthDialog', { open: false, showModal() { this.open = true; } }],
-    ['codexOAuthAuthorizationURL', { value: '' }],
-    ['codexOAuthOpenLink', { href: '' }],
-    ['codexOAuthCallbackURL', { value: '', setAttribute() {} }]
+    ['oauthLoginDialog', { open: false, showModal() { this.open = true; } }],
+    ['oauthProviderSelect', { value: 'antigravity', disabled: true, focus() { this.focused = true; } }],
+    ['oauthAuthorizeButton', { disabled: true }],
+    ['oauthSessionFields', { hidden: false }],
+    ['oauthAuthorizationURL', { value: 'stale', focus() { this.focused = true; }, select() { this.selected = true; } }],
+    ['oauthOpenLink', { href: 'https://stale.example', removeAttribute(name) { if (name === 'href') this.href = ''; } }],
+    ['oauthCallbackURL', { value: 'stale', removeAttribute() {} }],
+    ['oauthLoginDialogStatus', { textContent: 'stale', hidden: false, dataset: {} }]
   ]);
   const previousDocument = global.document;
   global.document = { getElementById: id => elements.get(id) || null };
   try {
-    assert.equal(showCodexOAuthSession({ url: 'https://auth.example/authorize?state=abc', state: 'abc' }), true);
-    assert.equal(elements.get('codexOAuthDialog').open, true);
-    assert.equal(elements.get('codexOAuthAuthorizationURL').value, 'https://auth.example/authorize?state=abc');
-    assert.equal(elements.get('codexOAuthOpenLink').href, 'https://auth.example/authorize?state=abc');
-    assert.equal(elements.get('codexOAuthCallbackURL').value, '');
+    assert.equal(openOAuthLoginDialog({ focus() {} }), true);
+    assert.equal(elements.get('oauthLoginDialog').open, true);
+    assert.equal(elements.get('oauthProviderSelect').value, 'codex');
+    assert.equal(elements.get('oauthProviderSelect').disabled, false);
+    assert.equal(elements.get('oauthProviderSelect').focused, true);
+    assert.equal(elements.get('oauthAuthorizeButton').disabled, false);
+    assert.equal(elements.get('oauthSessionFields').hidden, true);
+    assert.equal(elements.get('oauthAuthorizationURL').value, '');
+    assert.equal(elements.get('oauthOpenLink').href, '');
+
+    assert.equal(showOAuthSession({ url: 'https://auth.example/authorize?state=abc', state: 'abc' }, 'antigravity'), true);
+    assert.equal(elements.get('oauthProviderSelect').value, 'antigravity');
+    assert.equal(elements.get('oauthProviderSelect').disabled, true);
+    assert.equal(elements.get('oauthSessionFields').hidden, false);
+    assert.equal(elements.get('oauthAuthorizationURL').value, 'https://auth.example/authorize?state=abc');
+    assert.equal(elements.get('oauthOpenLink').href, 'https://auth.example/authorize?state=abc');
+    assert.equal(elements.get('oauthCallbackURL').value, '');
 
     let copied = '';
     await copyCodexOAuthLink('https://auth.example/authorize?state=abc', async text => { copied = text; });
     assert.equal(copied, 'https://auth.example/authorize?state=abc');
+  } finally {
+    global.document = previousDocument;
+  }
+});
+
+test('OAuth login toolbar waits for explicit authorization after provider selection', async () => {
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    ...properties
+  });
+  const loginButton = makeTarget({ focus() { this.focused = true; } });
+  const dialog = makeTarget({
+    open: false,
+    showModal() { this.open = true; },
+    close() { this.open = false; }
+  });
+  const loginForm = makeTarget({});
+  const providerSelect = { value: 'codex', disabled: false, focus() { this.focused = true; } };
+  const authorizeButton = { disabled: false };
+  const sessionFields = { hidden: false };
+  const authorizationURL = { value: '', focus() {}, select() {} };
+  const openLink = { href: '', removeAttribute() { this.href = ''; } };
+  const callbackURL = { value: '', removeAttribute() {} };
+  const elements = new Map([
+    ['oauthLoginBtn', loginButton],
+    ['oauthLoginDialog', dialog],
+    ['oauthLoginForm', loginForm],
+    ['oauthProviderSelect', providerSelect],
+    ['oauthAuthorizeButton', authorizeButton],
+    ['oauthSessionFields', sessionFields],
+    ['oauthAuthorizationURL', authorizationURL],
+    ['oauthOpenLink', openLink],
+    ['oauthCallbackURL', callbackURL]
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  const previousFetch = global.fetchDataWithAuth;
+  const previousReload = global.reloadChannelsList;
+  const requests = [];
+  global.document = {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => []
+  };
+  global.window = { t: key => key, showSuccess() {}, showError() {} };
+  global.fetchDataWithAuth = async (url) => {
+    requests.push(url);
+    if (url.endsWith('/oauth/start')) {
+      return { url: 'https://accounts.example/authorize', state: 'gravity-state' };
+    }
+    return { status: 'complete', channel_id: 9 };
+  };
+  global.reloadChannelsList = async () => {};
+  try {
+    setupOAuthActions();
+    loginButton.listeners.click();
+
+    assert.equal(dialog.open, true);
+    assert.equal(providerSelect.focused, true);
+    assert.equal(sessionFields.hidden, true);
+    assert.deepEqual(requests, []);
+
+    providerSelect.value = 'antigravity';
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.deepEqual(requests, [
+      '/admin/antigravity/oauth/start',
+      '/admin/antigravity/oauth/status?state=gravity-state'
+    ]);
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+    global.fetchDataWithAuth = previousFetch;
+    global.reloadChannelsList = previousReload;
+  }
+});
+
+test('OAuth credential import dialog defaults to automatic detection with priority increments of 10', () => {
+  const elements = new Map([
+    ['oauthCredentialImportDialog', { open: false, showModal() { this.open = true; } }],
+    ['oauthImportProviderSelect', { value: 'antigravity', focus() { this.focused = true; } }],
+    ['oauthImportPriorityIncrement', { value: '50' }],
+    ['oauthCredentialImportInput', { value: 'stale', removeAttribute() {} }],
+    ['oauthCredentialImportStatus', { textContent: 'stale', hidden: false, dataset: {} }]
+  ]);
+  const previousDocument = global.document;
+  global.document = { getElementById: id => elements.get(id) || null };
+  try {
+    assert.equal(openOAuthCredentialImportDialog({ focus() {} }), true);
+    assert.equal(elements.get('oauthCredentialImportDialog').open, true);
+    assert.equal(elements.get('oauthImportProviderSelect').value, 'auto');
+    assert.equal(elements.get('oauthImportProviderSelect').focused, true);
+    assert.equal(elements.get('oauthImportPriorityIncrement').value, '10');
+    assert.equal(elements.get('oauthCredentialImportInput').value, '');
+    assert.equal(elements.get('oauthCredentialImportStatus').hidden, true);
   } finally {
     global.document = previousDocument;
   }
@@ -202,7 +318,36 @@ test('Codex OAuth cancellation submits the active state as JSON', async () => {
   assert.deepEqual(JSON.parse(captured.options.body), { state: 'state-1' });
 });
 
-test('Codex credential import submits every selected file in one request', async () => {
+test('Antigravity OAuth helpers use the Antigravity admin contract', async () => {
+  const requests = [];
+  const status = await pollAntigravityOAuthStatus('gravity/state', {
+    fetchStatus: async url => {
+      requests.push(url);
+      return { status: 'complete', channel_id: 9 };
+    },
+    delay: async () => {},
+    maxPolls: 1
+  });
+  assert.equal(status.channel_id, 9);
+  assert.equal(requests[0], '/admin/antigravity/oauth/status?state=gravity%2Fstate');
+
+  await submitAntigravityOAuthCallback('http://localhost:51121/oauth-callback?code=x&state=y', async (url, options) => {
+    requests.push(url);
+    assert.equal(JSON.parse(options.body).callback_url, 'http://localhost:51121/oauth-callback?code=x&state=y');
+    return { status: 'accepted' };
+  });
+  await cancelAntigravityOAuth('y', async (url, options) => {
+    requests.push(url);
+    assert.deepEqual(JSON.parse(options.body), { state: 'y' });
+    return { status: 'cancelled' };
+  });
+  assert.deepEqual(requests.slice(1), [
+    '/admin/antigravity/oauth/callback',
+    '/admin/antigravity/oauth/cancel'
+  ]);
+});
+
+test('OAuth credential import sends automatic detection and priority increment options', async () => {
   const previousFormData = global.FormData;
   const previousDocument = global.document;
   const previousWindow = global.window;
@@ -221,17 +366,32 @@ test('Codex credential import submits every selected file in one request', async
   let reloads = 0;
   global.reloadChannelsList = async () => { reloads++; };
   const files = [{ name: 'one.json' }, { name: 'two.json' }];
-  let captured;
+  const captured = [];
   try {
-    const result = await importCodexCredentials(files, null, async (url, options) => {
-      captured = { url, options };
+    const result = await importOAuthCredentials(files, null, async (url, options) => {
+      captured.push({ url, options });
       return { created: 1, skipped: 1, failed: 0, results: [] };
     });
 
     assert.equal(result.created, 1);
-    assert.equal(captured.url, '/admin/codex/credentials/import');
-    assert.equal(captured.options.method, 'POST');
-    assert.deepEqual(captured.options.body.items, [['files', files[0]], ['files', files[1]]]);
+    assert.equal(captured[0].url, '/admin/oauth/credentials/import');
+    assert.equal(captured[0].options.method, 'POST');
+    assert.deepEqual(captured[0].options.body.items, [
+      ['files', files[0]],
+      ['files', files[1]],
+      ['provider', 'auto'],
+      ['priority_increment', '10']
+    ]);
+
+    await importOAuthCredentials(files, null, async (url, options) => {
+      captured.push({ url, options });
+      return { created: 0, skipped: 2, failed: 0, results: [] };
+    }, 'antigravity', 20);
+    assert.equal(captured[1].url, '/admin/oauth/credentials/import');
+    assert.deepEqual(captured[1].options.body.items.slice(-2), [
+      ['provider', 'antigravity'],
+      ['priority_increment', '20']
+    ]);
     assert.equal(reloads, 1);
   } finally {
     global.FormData = previousFormData;
@@ -243,8 +403,8 @@ test('Codex credential import submits every selected file in one request', async
 
 test('manual Codex credential refresh targets the saved channel', async () => {
   let captured;
-  const response = { codex_credential: { access_token: 'at-new' } };
-  const result = await refreshCodexCredential(42, async (url, options) => {
+  const response = { oauth_credential: { access_token: 'at-new' } };
+  const result = await refreshOAuthCredential(42, async (url, options) => {
     captured = { url, options };
     return response;
   });
@@ -254,16 +414,31 @@ test('manual Codex credential refresh targets the saved channel', async () => {
     url: '/admin/channels/42/codex-credential/refresh',
     options: { method: 'POST' }
   });
-  await assert.rejects(() => refreshCodexCredential(0, async () => response), /saved Codex channel/);
+  await assert.rejects(() => refreshOAuthCredential(0, async () => response), /saved Codex channel/);
 });
 
-test('Codex usage refresh stores one safe per-channel quota summary', async () => {
+test('manual Antigravity credential refresh targets the saved channel', async () => {
+  let captured;
+  const response = { oauth_credential: { access_token: 'gravity-at' } };
+  const result = await refreshOAuthCredential(42, async (url, options) => {
+    captured = { url, options };
+    return response;
+  }, 'antigravity_oauth');
+
+  assert.equal(result, response);
+  assert.deepEqual(captured, {
+    url: '/admin/channels/42/antigravity-credential/refresh',
+    options: { method: 'POST' }
+  });
+});
+
+test('OAuth usage refresh stores one safe per-channel quota summary', async () => {
   const previousFilterChannels = global.filterChannels;
   let renders = 0;
   let captured;
   global.filterChannels = () => { renders++; };
   try {
-    const result = await refreshCodexUsage(42, async (url, options) => {
+    const result = await refreshOAuthUsage(42, async (url, options) => {
       captured = { url, options };
       return {
         plan_type: 'pro',
@@ -274,25 +449,25 @@ test('Codex usage refresh stores one safe per-channel quota summary', async () =
       };
     });
 
-    assert.equal(captured.url, '/admin/channels/42/codex-usage');
+    assert.equal(captured.url, '/admin/channels/42/oauth-usage');
     assert.equal(captured.options.method, 'POST');
     assert.equal(result.windows[0].remaining_percent, 71);
-    assert.deepEqual(getCodexUsageState(42), { status: 'ready', data: result });
+    assert.deepEqual(getOAuthUsageState(42), { status: 'ready', data: result });
     assert.equal(renders, 2);
   } finally {
     global.filterChannels = previousFilterChannels;
   }
 });
 
-test('failed Codex usage refresh remains retryable', async () => {
+test('failed OAuth usage refresh remains retryable', async () => {
   const previousFilterChannels = global.filterChannels;
   global.filterChannels = () => {};
   try {
     await assert.rejects(
-      refreshCodexUsage(43, async () => { throw new Error('quota unavailable'); }),
+      refreshOAuthUsage(43, async () => { throw new Error('quota unavailable'); }),
       /quota unavailable/
     );
-    assert.deepEqual(getCodexUsageState(43), { status: 'error', error: 'quota unavailable' });
+    assert.deepEqual(getOAuthUsageState(43), { status: 'error', error: 'quota unavailable' });
   } finally {
     global.filterChannels = previousFilterChannels;
   }
@@ -371,11 +546,20 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(row.draggable, false);
 
     let copiedCredential = '';
-    await copyCodexCredential(async text => { copiedCredential = text; });
+    await copyOAuthCredential(async text => { copiedCredential = text; });
     assert.equal(copiedCredential, JSON.stringify(decodedCredential, null, 2));
 
-    setCodexCredentialView('raw');
+    setOAuthCredentialView('raw');
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(credential, null, 2));
+
+    const antigravityCredential = { type: 'antigravity', access_token: 'gravity-at', refresh_token: 'gravity-rt', project_id: 'project-1' };
+    applyChannelAuthEditorMode('antigravity_oauth', antigravityCredential);
+    assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, false);
+    assert.equal(elements.get('channelApiKey').required, false);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(antigravityCredential, null, 2));
+    assert.ok(strategyInputs.every(input => input.disabled));
 
     applyChannelAuthEditorMode('api_key');
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, true);
