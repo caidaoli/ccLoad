@@ -324,6 +324,42 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 	}
 }
 
+func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity wire body: %v", err)
+		}
+		if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "low" {
+			t.Errorf("Antigravity thinkingLevel=%q, want low; body=%s", got, wireBody)
+		}
+		if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
+			t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity thinking ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-anthropic-thinking", upstreamProtocol: "gemini", models: "gemini-3.1-pro-low", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-thinking"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "gemini-3.1-pro-low", "max_tokens": 100,
+		"messages":      []any{map[string]any{"role": "user", "content": "think"}},
+		"thinking":      map[string]any{"type": "adaptive"},
+		"output_config": map[string]any{"effort": "minimal"},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := gjson.Get(response.Body.String(), "content.0.text").String(); got != "gravity thinking ok" {
+		t.Fatalf("Anthropic response content=%q body=%s", got, response.Body.String())
+	}
+}
+
 func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
