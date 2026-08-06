@@ -264,10 +264,11 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   }
 });
 
-test('OAuth credential import dialog opens on provider selection before files are submitted', () => {
+test('OAuth credential import dialog defaults to automatic detection with priority increments of 10', () => {
   const elements = new Map([
     ['oauthCredentialImportDialog', { open: false, showModal() { this.open = true; } }],
     ['oauthImportProviderSelect', { value: 'antigravity', focus() { this.focused = true; } }],
+    ['oauthImportPriorityIncrement', { value: '50' }],
     ['oauthCredentialImportInput', { value: 'stale', removeAttribute() {} }],
     ['oauthCredentialImportStatus', { textContent: 'stale', hidden: false, dataset: {} }]
   ]);
@@ -276,8 +277,9 @@ test('OAuth credential import dialog opens on provider selection before files ar
   try {
     assert.equal(openOAuthCredentialImportDialog({ focus() {} }), true);
     assert.equal(elements.get('oauthCredentialImportDialog').open, true);
-    assert.equal(elements.get('oauthImportProviderSelect').value, 'codex');
+    assert.equal(elements.get('oauthImportProviderSelect').value, 'auto');
     assert.equal(elements.get('oauthImportProviderSelect').focused, true);
+    assert.equal(elements.get('oauthImportPriorityIncrement').value, '10');
     assert.equal(elements.get('oauthCredentialImportInput').value, '');
     assert.equal(elements.get('oauthCredentialImportStatus').hidden, true);
   } finally {
@@ -345,7 +347,7 @@ test('Antigravity OAuth helpers use the Antigravity admin contract', async () =>
   ]);
 });
 
-test('OAuth credential import routes every selected file to the chosen provider', async () => {
+test('OAuth credential import sends automatic detection and priority increment options', async () => {
   const previousFormData = global.FormData;
   const previousDocument = global.document;
   const previousWindow = global.window;
@@ -371,16 +373,25 @@ test('OAuth credential import routes every selected file to the chosen provider'
       return { created: 1, skipped: 1, failed: 0, results: [] };
     });
 
+    assert.equal(result.created, 1);
+    assert.equal(captured[0].url, '/admin/oauth/credentials/import');
+    assert.equal(captured[0].options.method, 'POST');
+    assert.deepEqual(captured[0].options.body.items, [
+      ['files', files[0]],
+      ['files', files[1]],
+      ['provider', 'auto'],
+      ['priority_increment', '10']
+    ]);
+
     await importOAuthCredentials(files, null, async (url, options) => {
       captured.push({ url, options });
       return { created: 0, skipped: 2, failed: 0, results: [] };
-    }, 'antigravity');
-
-    assert.equal(result.created, 1);
-    assert.equal(captured[0].url, '/admin/codex/credentials/import');
-    assert.equal(captured[1].url, '/admin/antigravity/credentials/import');
-    assert.equal(captured[0].options.method, 'POST');
-    assert.deepEqual(captured[0].options.body.items, [['files', files[0]], ['files', files[1]]]);
+    }, 'antigravity', 20);
+    assert.equal(captured[1].url, '/admin/oauth/credentials/import');
+    assert.deepEqual(captured[1].options.body.items.slice(-2), [
+      ['provider', 'antigravity'],
+      ['priority_increment', '20']
+    ]);
     assert.equal(reloads, 1);
   } finally {
     global.FormData = previousFormData;

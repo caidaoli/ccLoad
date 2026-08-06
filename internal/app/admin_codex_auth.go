@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html"
 	"io"
-	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -32,7 +31,6 @@ const (
 	codexUsageURL                = "https://chatgpt.com/backend-api/wham/usage"
 	codexUsageUserAgent          = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
 	codexUsageTimeout            = 30 * time.Second
-	maxCodexImportBytes          = 1 << 20
 	maxCodexUsageBytes           = 1 << 20
 )
 
@@ -753,40 +751,7 @@ func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-type codexCredentialImportResult struct {
-	FileName    string `json:"file_name"`
-	ChannelName string `json:"channel_name,omitempty"`
-	Status      string `json:"status"`
-	Error       string `json:"error,omitempty"`
-}
-
-type codexCredentialImportSummary struct {
-	Created int                           `json:"created"`
-	Skipped int                           `json:"skipped"`
-	Failed  int                           `json:"failed"`
-	Results []codexCredentialImportResult `json:"results"`
-}
-
-func readCodexCredentialFile(file *multipart.FileHeader) (*codexauth.Credential, error) {
-	if file == nil || file.Size <= 0 || file.Size > maxCodexImportBytes {
-		return nil, errors.New("credential file size is invalid")
-	}
-	opened, err := file.Open()
-	if err != nil {
-		return nil, fmt.Errorf("open credential file: %w", err)
-	}
-	raw, readErr := io.ReadAll(io.LimitReader(opened, maxCodexImportBytes+1))
-	closeErr := opened.Close()
-	if readErr != nil || len(raw) > maxCodexImportBytes {
-		return nil, errors.New("failed to read credential")
-	}
-	if closeErr != nil {
-		return nil, fmt.Errorf("close credential file: %w", closeErr)
-	}
-	return codexauth.ParseCredential(raw)
-}
-
-func createImportedCodexChannel(ctx context.Context, store storage.Store, credential *codexauth.Credential) (string, bool, error) {
+func createImportedCodexChannel(ctx context.Context, store storage.Store, credential *codexauth.Credential, priority int) (string, bool, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return "", false, err
@@ -801,7 +766,9 @@ func createImportedCodexChannel(ctx context.Context, store storage.Store, creden
 			return cfg.Name, false, nil
 		}
 	}
-	created, err := store.CreateConfig(ctx, newCodexOAuthChannel(name, credentialJSON, credential.PlanType))
+	config := newCodexOAuthChannel(name, credentialJSON, credential.PlanType)
+	config.Priority = priority
+	created, err := store.CreateConfig(ctx, config)
 	if err != nil {
 		return "", false, fmt.Errorf("create Codex channel: %w", err)
 	}
@@ -811,49 +778,7 @@ func createImportedCodexChannel(ctx context.Context, store storage.Store, creden
 // HandleImportCodexCredential imports CLIProxy-compatible JSON credentials
 // directly into new channels. Existing channel names are skipped unchanged.
 func (s *Server) HandleImportCodexCredential(c *gin.Context) {
-	form, err := c.MultipartForm()
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
-	}
-	files := form.File["files"]
-	if len(files) == 0 {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
-	}
-
-	summary := codexCredentialImportSummary{Results: make([]codexCredentialImportResult, 0, len(files))}
-	for _, file := range files {
-		result := codexCredentialImportResult{FileName: file.Filename}
-		credential, parseErr := readCodexCredentialFile(file)
-		if parseErr != nil {
-			result.Status = "failed"
-			result.Error = parseErr.Error()
-			summary.Failed++
-			summary.Results = append(summary.Results, result)
-			continue
-		}
-
-		channelName, created, createErr := createImportedCodexChannel(c.Request.Context(), s.store, credential)
-		if createErr != nil {
-			result.Status = "failed"
-			result.Error = createErr.Error()
-			summary.Failed++
-		} else if created {
-			result.Status = "created"
-			result.ChannelName = channelName
-			summary.Created++
-		} else {
-			result.Status = "skipped"
-			result.ChannelName = channelName
-			summary.Skipped++
-		}
-		summary.Results = append(summary.Results, result)
-	}
-	if summary.Created > 0 {
-		s.InvalidateChannelListCache()
-	}
-	RespondJSON(c, http.StatusOK, summary)
+	s.handleImportOAuthCredentials(c, codexauth.ChannelType)
 }
 
 // HandleRefreshCodexCredential forces one Codex OAuth refresh through the same

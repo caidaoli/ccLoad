@@ -2,10 +2,7 @@ package app
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"io"
-	"mime/multipart"
 	"net/http"
 	"strings"
 
@@ -17,9 +14,8 @@ import (
 )
 
 const (
-	antigravityDailyBaseURL   = "https://daily-cloudcode-pa.googleapis.com"
-	antigravityProdBaseURL    = "https://cloudcode-pa.googleapis.com"
-	maxAntigravityImportBytes = 1 << 20
+	antigravityDailyBaseURL = "https://daily-cloudcode-pa.googleapis.com"
+	antigravityProdBaseURL  = "https://cloudcode-pa.googleapis.com"
 )
 
 var antigravityOAuthDefaultModels = []string{
@@ -189,26 +185,7 @@ func (s *Server) HandleSubmitAntigravityOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-func readAntigravityCredentialFile(file *multipart.FileHeader) (*antigravityauth.Credential, error) {
-	if file == nil || file.Size <= 0 || file.Size > maxAntigravityImportBytes {
-		return nil, errors.New("credential file size is invalid")
-	}
-	opened, err := file.Open()
-	if err != nil {
-		return nil, errors.New("open credential file failed")
-	}
-	raw, readErr := io.ReadAll(io.LimitReader(opened, maxAntigravityImportBytes+1))
-	closeErr := opened.Close()
-	if readErr != nil || len(raw) > maxAntigravityImportBytes {
-		return nil, errors.New("failed to read credential")
-	}
-	if closeErr != nil {
-		return nil, errors.New("close credential file failed")
-	}
-	return antigravityauth.ParseCredential(raw)
-}
-
-func createImportedAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential) (string, bool, error) {
+func createImportedAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential, priority int) (string, bool, error) {
 	credentialJSON, err := credential.JSON()
 	if err != nil {
 		return "", false, err
@@ -223,7 +200,9 @@ func createImportedAntigravityChannel(ctx context.Context, store storage.Store, 
 			return cfg.Name, false, nil
 		}
 	}
-	created, err := store.CreateConfig(ctx, newAntigravityOAuthChannel(name, credentialJSON))
+	config := newAntigravityOAuthChannel(name, credentialJSON)
+	config.Priority = priority
+	created, err := store.CreateConfig(ctx, config)
 	if err != nil {
 		return "", false, fmt.Errorf("create Antigravity channel: %w", err)
 	}
@@ -232,47 +211,7 @@ func createImportedAntigravityChannel(ctx context.Context, store storage.Store, 
 
 // HandleImportAntigravityCredential imports CLIProxyAPI-compatible credential files.
 func (s *Server) HandleImportAntigravityCredential(c *gin.Context) {
-	form, err := c.MultipartForm()
-	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
-	}
-	files := form.File["files"]
-	if len(files) == 0 {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
-	}
-	summary := codexCredentialImportSummary{Results: make([]codexCredentialImportResult, 0, len(files))}
-	for _, file := range files {
-		result := codexCredentialImportResult{FileName: file.Filename}
-		credential, parseErr := readAntigravityCredentialFile(file)
-		if parseErr == nil && (credential.Email == "" || credential.ProjectID == "") {
-			credential, parseErr = s.antigravityService.CompleteCredential(c.Request.Context(), credential)
-		}
-		if parseErr != nil {
-			result.Status, result.Error = "failed", parseErr.Error()
-			summary.Failed++
-			summary.Results = append(summary.Results, result)
-			continue
-		}
-		channelName, created, createErr := createImportedAntigravityChannel(c.Request.Context(), s.store, credential)
-		switch {
-		case createErr != nil:
-			result.Status, result.Error = "failed", createErr.Error()
-			summary.Failed++
-		case created:
-			result.Status, result.ChannelName = "created", channelName
-			summary.Created++
-		default:
-			result.Status, result.ChannelName = "skipped", channelName
-			summary.Skipped++
-		}
-		summary.Results = append(summary.Results, result)
-	}
-	if summary.Created > 0 {
-		s.InvalidateChannelListCache()
-	}
-	RespondJSON(c, http.StatusOK, summary)
+	s.handleImportOAuthCredentials(c, antigravityauth.ChannelType)
 }
 
 // HandleRefreshAntigravityCredential forces and persists one credential refresh.

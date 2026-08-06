@@ -213,12 +213,15 @@ function closeOAuthLoginDialogElement() {
 function openOAuthCredentialImportDialog(trigger = null) {
   const dialog = document.getElementById('oauthCredentialImportDialog');
   const providerSelect = document.getElementById('oauthImportProviderSelect');
+  const priorityIncrementSelect = document.getElementById('oauthImportPriorityIncrement');
   const input = document.getElementById('oauthCredentialImportInput');
-  if (!dialog || !providerSelect || !input) return false;
+  if (!dialog || !providerSelect || !priorityIncrementSelect || !input) return false;
 
   oauthCredentialImportDialogTrigger = trigger;
-  providerSelect.value = 'codex';
+  providerSelect.value = 'auto';
   providerSelect.disabled = false;
+  priorityIncrementSelect.value = '10';
+  priorityIncrementSelect.disabled = false;
   input.value = '';
   input.removeAttribute?.('aria-invalid');
   setCodexAuthStatus('');
@@ -451,25 +454,32 @@ async function restartOAuth(provider, button) {
   }
 }
 
-async function importOAuthCredentials(files, button, fetcher = fetchDataWithAuth, provider = 'codex') {
-  const config = oauthProviderConfig(provider);
+async function importOAuthCredentials(
+  files,
+  button,
+  fetcher = fetchDataWithAuth,
+  provider = 'auto',
+  priorityIncrement = 10
+) {
   const selectedFiles = Array.from(files || []).filter(Boolean);
   if (selectedFiles.length === 0) return null;
   const formData = new FormData();
   selectedFiles.forEach(file => formData.append('files', file));
+  formData.append('provider', provider);
+  formData.append('priority_increment', String(priorityIncrement));
   try {
     if (button) button.disabled = true;
-    const importingMessage = window.t(`${config.i18n}.importing`, { count: selectedFiles.length });
+    const importingMessage = window.t('channels.oauth.importing', { count: selectedFiles.length });
     setCodexAuthStatus(importingMessage);
     setOAuthCredentialImportStatus(importingMessage);
-    const result = await fetcher(`/admin/${config.provider}/credentials/import`, {
+    const result = await fetcher('/admin/oauth/credentials/import', {
       method: 'POST',
       body: formData
     });
     const created = Number(result?.created) || 0;
     const skipped = Number(result?.skipped) || 0;
     const failed = Number(result?.failed) || 0;
-    const message = window.t(`${config.i18n}.importSummary`, { created, skipped, failed });
+    const message = window.t('channels.oauth.importSummary', { created, skipped, failed });
     const kind = failed > 0 ? 'error' : 'success';
     setCodexAuthStatus(message, kind);
     setOAuthCredentialImportStatus(message, kind);
@@ -481,7 +491,7 @@ async function importOAuthCredentials(files, button, fetcher = fetchDataWithAuth
     if (created > 0) await reloadChannelsList();
     return result;
   } catch (error) {
-    const message = error?.message || window.t(`${config.i18n}.importFailed`);
+    const message = error?.message || window.t('channels.oauth.importFailed');
     setCodexAuthStatus(message, 'error');
     setOAuthCredentialImportStatus(message, 'error');
     if (window.showError) window.showError(message);
@@ -551,6 +561,7 @@ function setupOAuthActions() {
   const importDialog = document.getElementById('oauthCredentialImportDialog');
   const importForm = document.getElementById('oauthCredentialImportForm');
   const importProviderSelect = document.getElementById('oauthImportProviderSelect');
+  const importPriorityIncrementSelect = document.getElementById('oauthImportPriorityIncrement');
   const importInput = document.getElementById('oauthCredentialImportInput');
   const importSubmitButton = document.getElementById('oauthCredentialImportSubmit');
   const credentialCopyButton = document.getElementById('codexCredentialCopyButton');
@@ -632,17 +643,20 @@ function setupOAuthActions() {
     importButton.addEventListener('click', () => openOAuthCredentialImportDialog(importButton));
     importButton.dataset.bound = '1';
   }
-  if (importForm && importProviderSelect && importInput && importSubmitButton && !importForm.dataset.bound) {
+  if (importForm && importProviderSelect && importPriorityIncrementSelect && importInput && importSubmitButton && !importForm.dataset.bound) {
     importForm.addEventListener('submit', async event => {
       event.preventDefault();
       importProviderSelect.disabled = true;
+      importPriorityIncrementSelect.disabled = true;
       const result = await importOAuthCredentials(
         importInput.files,
         importSubmitButton,
         fetchDataWithAuth,
-        oauthProviderConfig(importProviderSelect.value).provider
+        importProviderSelect.value,
+        Number(importPriorityIncrementSelect.value)
       );
       importProviderSelect.disabled = false;
+      importPriorityIncrementSelect.disabled = false;
       if (result) closeOAuthCredentialImportDialog();
     });
     importForm.dataset.bound = '1';
