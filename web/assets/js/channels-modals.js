@@ -3141,7 +3141,7 @@ async function fetchModelsFromAPI() {
   } else {
     const urls = getValidInlineURLConfigs();
     const channelUrl = urls[0]?.url || '';
-    const availableKeys = selectAvailableInlineKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
+    const availableKeys = selectModelFetchKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
 
     if (!channelUrl) {
       if (window.showError) {

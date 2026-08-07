@@ -698,6 +698,87 @@ func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
 	}
 }
 
+func TestAdminModels_HandleFetchModels_AllKeysCoolingUsesEarliestRecovery(t *testing.T) {
+	var gotAuth []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/models" {
+			http.NotFound(w, r)
+			return
+		}
+		gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.4"}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+
+	ctx := context.Background()
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:         "all-keys-cooling-channel",
+		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"openai"}}},
+		Priority:     1,
+		ModelEntries: []model.ModelEntry{{Model: "existing-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: cfg.ID, KeyIndex: 0, APIKey: "sk-late", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 1, APIKey: "sk-soon", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: cfg.ID, KeyIndex: 2, APIKey: "sk-soon-higher-index", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+	lateRecovery := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	soonRecovery := time.Now().Add(2 * time.Minute).Truncate(time.Second)
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 0, lateRecovery); err != nil {
+		t.Fatalf("SetKeyCooldown(0) failed: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 1, soonRecovery); err != nil {
+		t.Fatalf("SetKeyCooldown(1) failed: %v", err)
+	}
+	if err := store.SetKeyCooldown(ctx, cfg.ID, 2, soonRecovery); err != nil {
+		t.Fatalf("SetKeyCooldown(2) failed: %v", err)
+	}
+	before, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys before fetch failed: %v", err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/1/models/fetch", nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if !resp.Success || len(resp.Data.Models) != 1 || resp.Data.Models[0].Model != "gpt-5.4" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	wantAuth := []string{"Bearer sk-soon"}
+	if !reflect.DeepEqual(gotAuth, wantAuth) {
+		t.Fatalf("Authorization sequence=%v, want %v", gotAuth, wantAuth)
+	}
+
+	after, err := store.GetAPIKeys(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("GetAPIKeys after fetch failed: %v", err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("key count changed after model fetch: before=%d after=%d", len(before), len(after))
+	}
+	for i := range before {
+		if after[i].CooldownUntil != before[i].CooldownUntil {
+			t.Fatalf("key %d cooldown changed after model fetch: before=%d after=%d", before[i].KeyIndex, before[i].CooldownUntil, after[i].CooldownUntil)
+		}
+	}
+}
+
 func TestAdminModels_HandleFetchModels_MultiURL(t *testing.T) {
 	failCalls := 0
 	failUpstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

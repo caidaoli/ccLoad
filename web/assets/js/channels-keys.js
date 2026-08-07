@@ -67,6 +67,28 @@ function selectAvailableInlineKeys(rows, states) {
   return [...new Set(keys)];
 }
 
+function selectModelFetchKeys(rows, states) {
+  const availableKeys = selectAvailableInlineKeys(rows, states);
+  if (availableKeys.length > 0) return availableKeys;
+
+  const statesByIndex = new Map(
+    (Array.isArray(states) ? states : [])
+      .filter(Boolean)
+      .map(state => [Number(state.key_index), state])
+  );
+  let fallback = null;
+  for (const [index, row] of (Array.isArray(rows) ? rows : []).entries()) {
+    const apiKey = normalizeInlineKeyRow(row).api_key;
+    const state = statesByIndex.get(index);
+    const cooldownRemaining = Number(state?.cooldown_remaining_ms || 0);
+    if (!apiKey || state?.disabled || cooldownRemaining <= 0) continue;
+    if (!fallback || cooldownRemaining < fallback.cooldownRemaining) {
+      fallback = { apiKey, cooldownRemaining };
+    }
+  }
+  return fallback ? [fallback.apiKey] : [];
+}
+
 function selectFirstEnabledInlineKey(rows, states) {
   return selectAvailableInlineKeys(rows, states)[0] || '';
 }
@@ -1252,5 +1274,5 @@ async function toggleKeyDisabled(index) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { selectAvailableInlineKeys, selectFirstEnabledInlineKey };
+  module.exports = { selectAvailableInlineKeys, selectModelFetchKeys, selectFirstEnabledInlineKey };
 }
