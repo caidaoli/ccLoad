@@ -1022,8 +1022,8 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `ttfb_min_confident_sample` | `10` | 首字置信样本量阈值 |
 | `channel_check_interval_hours` | `5` | 渠道定时检测间隔（小时，支持小数，0=禁用） |
 | `model_catalog_sync_interval_hours` | `6` | 每 6 小时从 models.dev 同步模型目录；`0` 禁用网络同步。启动时使用最近一次成功的缓存，失败时回退内嵌目录；渠道 `cost_multiplier` 仍然适用。 |
-| `auto_update_interval_hours` | `12` | 版本检查间隔（小时，0=禁用，启用时最低 1 小时） |
-| `auto_update_channel` | `stable` | 版本提示和自动更新使用的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者 |
+| `auto_update_interval_hours` | `12` | 非容器部署的版本检查间隔（小时，0=禁用，启用时最低 1 小时）；容器中不可用 |
+| `auto_update_channel` | `stable` | 非容器部署的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者；容器中不可用 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
 | `responses_ws_max_connections` | `64` | 下游 Responses WebSocket 全局最大并发连接数 |
 | `responses_ws_max_connections_per_token` | `16` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数 |
@@ -1034,11 +1034,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 #### 自动更新
 
-单一更新管理器同时负责版本检查、前端版本提示和可选的进程内自动更新。默认启动时检查一次，此后每 12 小时检查一次。`auto_update_channel=stable` 只接收稳定版；`preview` 同时考虑稳定版和测试版，按 SemVer 选择最高有效版本，不会把当前版本或待重启版本降级。两个设置都可以在 Web 管理后台修改；将 `auto_update_interval_hours` 设为 `0` 可关闭全部版本检查。
+非容器部署由单一更新管理器负责版本检查、前端版本提示和可选的进程内自动更新。默认启动时检查一次，此后每 12 小时检查一次。`auto_update_channel=stable` 只接收稳定版；`preview` 同时考虑稳定版和测试版，按 SemVer 选择最高有效版本，不会把当前版本或待重启版本降级。两个设置都可以在 Web 管理后台修改；将 `auto_update_interval_hours` 设为 `0` 可关闭全部版本检查。
 
 稳定版元数据通过配置的发布源解析。测试版发现读取 GitHub Releases Atom feed，其中包含稳定版和测试版，无需使用受速率限制的 REST API。解析出精确 Tag 后，ccLoad 会从配置的下载源获取该 Tag 的二进制及校验文件；默认顺序是 `gh.monlor.com`、`fastgit.cc`、`ghfast.top` 和 GitHub，SHA256 匹配后才替换。
 
-官方容器使用同一检查循环并显示新版本提示，但默认不会在运行时替换自身二进制。每个稳定版和 Beta 镜像都直接包含对应 GitHub Release 生成的同版本二进制。稳定版发布精确版本 Tag 和 `latest`，Beta 发布精确测试版 Tag 和滚动 `beta` 别名。常规更新方式是拉取所需镜像 Tag 并重建容器；只有明确需要进程内替换时才设置 `CCLOAD_ALLOW_SELF_UPDATE=1`。
+官方容器不运行版本检查或进程内更新循环。每个稳定版和 Beta 镜像都直接包含对应 GitHub Release 生成的同版本二进制。稳定版发布精确版本 Tag 和 `latest`，Beta 发布精确测试版 Tag 和滚动 `beta` 别名。修改 Compose 中的镜像标签后，重新拉取并启动容器即可切换版本。
 
 如需使用私有发布镜像，可将 `CCLOAD_RELEASE_BASE_URL` 设置为完整的 latest-download 地址，例如 `https://mirror.example/caidaoli/ccLoad/releases/latest/download`。显式设置后，稳定版元数据和全部发布文件下载都不会追加内置回退源；测试版元数据仍从 GitHub Releases Atom feed 获取。该变量不会设置 `HTTP_PROXY` 或 `HTTPS_PROXY`，因此不会让业务渠道请求经过下载代理。
 
@@ -1126,7 +1126,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
   - `v2.44.1` - 精确稳定版本，和 GitHub Release Tag 保持一致
   - `vX.Y.Z-beta.N` - 精确 Beta 版本，和 GitHub Prerelease Tag 保持一致
 
-官方 GHCR 镜像基于 Alpine，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器仍会检查发布版本，但 `CCLOAD_CONTAINER=1` 默认禁用程序内二进制替换；显式设置 `CCLOAD_ALLOW_SELF_UPDATE=1` 可允许 ccLoad 更新容器可写层中的程序。重建容器会恢复镜像内置版本；默认用法仍是拉取精确版本 Tag 或所需滚动别名后重建。
+官方 GHCR 镜像基于 Alpine，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器不检查发布版本，也不在进程内替换二进制；拉取精确版本 Tag 或所需滚动别名后重建容器即可更新。
 
 ### 镜像标签说明
 
@@ -1139,6 +1139,10 @@ docker pull ghcr.io/caidaoli/ccload:v2.44.1
 
 # 拉取最新 Beta；要锁定版本时将 beta 替换为已发布的 vX.Y.Z-beta.N Tag
 docker pull ghcr.io/caidaoli/ccload:beta
+
+# 使用 Compose 时，将 image 改为 :latest 或 :beta 后应用变更
+docker compose pull
+docker compose up -d
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

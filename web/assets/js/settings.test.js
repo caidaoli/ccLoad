@@ -231,21 +231,23 @@ test('全局冷却规则通过设置批量保存接口持久化', async (t) => {
   assert.deepEqual(JSON.parse(requests[0].options.body), { [key]: rules });
 });
 
-test('容器检查模式下更新设置保持可编辑', async (t) => {
+test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   const page = await loadSettingsPage(t, [
     {
       key: 'auto_update_channel',
       value: 'stable',
       value_type: 'string',
       description: '',
-      editable: true
+      editable: false,
+      disabled_reason: 'container_image_managed'
     },
     {
       key: 'auto_update_interval_hours',
       value: '12',
       value_type: 'int',
       description: '',
-      editable: true
+      editable: false,
+      disabled_reason: 'container_image_managed'
     }
   ], {});
 
@@ -253,12 +255,16 @@ test('容器检查模式下更新设置保持可编辑', async (t) => {
     template === 'tpl-setting-group-row' && data.groupId === 'update'
   ));
   assert.ok(updateGroup, '应将自动更新设置放入独立分组');
-  assert.equal(updateGroup.data.groupNoticeHtml, '');
+  assert.match(updateGroup.data.groupNoticeHtml, /role="note"/);
+  assert.match(updateGroup.data.groupNoticeHtml, /settings\.update\.containerManaged/);
+  assert.match(updateGroup.data.groupNoticeHtml, /ghcr\.io\/caidaoli\/ccload:latest/);
+  assert.match(updateGroup.data.groupNoticeHtml, /ghcr\.io\/caidaoli\/ccload:beta/);
+  assert.match(updateGroup.data.groupNoticeHtml, /docker compose pull/);
 
   const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
   assert.equal(settingRows.length, 2);
   for (const { data } of settingRows) {
-    assert.doesNotMatch(data.inputHtml, /\bdisabled\b/);
-    assert.equal(data.resetDisabledAttributes, '');
+    assert.match(data.inputHtml, /\bdisabled\b/);
+    assert.equal(data.resetDisabledAttributes, 'disabled');
   }
 });

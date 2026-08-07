@@ -1001,8 +1001,8 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `ttfb_min_confident_sample` | `10` | TTFB confidence sample threshold |
 | `channel_check_interval_hours` | `5` | Scheduled channel check interval (hours, supports decimals, 0=disabled) |
 | `model_catalog_sync_interval_hours` | `6` | Syncs the models.dev catalog every 6 hours; `0` disables network sync. At startup, the last-good cache is used, with the embedded catalog as fallback; channel `cost_multiplier` still applies. |
-| `auto_update_interval_hours` | `12` | Release check interval (hours, 0=disabled, minimum enabled value is 1) |
-| `auto_update_channel` | `stable` | Release channel used by notifications and automatic updates: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer |
+| `auto_update_interval_hours` | `12` | Non-container release check interval (hours, 0=disabled, minimum enabled value is 1); unavailable in containers |
+| `auto_update_channel` | `stable` | Non-container release channel: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer; unavailable in containers |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
 | `responses_ws_max_connections` | `64` | Max concurrent downstream Responses WebSocket connections across the process |
 | `responses_ws_max_connections_per_token` | `16` | Max concurrent downstream Responses WebSocket connections per auth token |
@@ -1013,11 +1013,11 @@ Per-protocol timeouts apply to the runtime upstream protocol: if a transformed r
 
 #### Auto Updates
 
-One update manager owns release checks, version notifications, and optional in-process updates. It checks once at startup and every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers stable and prerelease versions and selects the highest valid SemVer without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable all release checks.
+For non-container deployments, one update manager owns release checks, version notifications, and optional in-process updates. It checks once at startup and every 12 hours by default. `auto_update_channel=stable` accepts stable releases only; `preview` considers stable and prerelease versions and selects the highest valid SemVer without downgrading the running or pending version. Change both settings from the Web admin settings page. Set `auto_update_interval_hours=0` to disable all release checks.
 
 Stable metadata is resolved through the configured release sources. Preview discovery reads GitHub's Releases Atom feed, which includes stable and prerelease entries without using the rate-limited REST API. After resolving an exact Tag, ccLoad downloads that Tag's binary and checksum from the configured download sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub; SHA256 must match before replacement.
 
-Official containers use the same check loop and expose new-version notifications, but do not replace their binary by default. Every stable and Beta image contains the exact binary produced by the matching GitHub Release. Stable releases publish an exact version Tag plus `latest`; Beta releases publish an exact prerelease Tag plus the rolling `beta` alias. The normal update path is pulling the desired image Tag and recreating the container. Set `CCLOAD_ALLOW_SELF_UPDATE=1` only when in-process replacement is explicitly required.
+Official containers do not run the release check or in-process update loop. Every stable and Beta image contains the exact binary produced by the matching GitHub Release. Stable releases publish an exact version Tag plus `latest`; Beta releases publish an exact prerelease Tag plus the rolling `beta` alias. Switch the image Tag in Compose, then pull and recreate the container.
 
 To use a private release mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables built-in fallback sources for stable metadata and all asset downloads. Preview metadata still comes from GitHub's Releases Atom feed. This setting does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
 
@@ -1093,7 +1093,7 @@ Project supports multi-arch Docker images:
   - `v2.44.1` - Exact stable version, matching the GitHub Release tag
   - `vX.Y.Z-beta.N` - Exact Beta version, matching the GitHub prerelease tag
 
-The official GHCR runtime image is Alpine-based and immutable: every release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Exact version Tags are immutable release references; `latest` and `beta` are rolling aliases for the newest stable and Beta images. Containers still check for releases, but `CCLOAD_CONTAINER=1` disables in-process binary replacement by default. Set `CCLOAD_ALLOW_SELF_UPDATE=1` explicitly to let ccLoad update the program in the container's writable layer. Recreating the container restores the image-baked version; the default update path remains pulling an exact Tag or the desired rolling alias and recreating the container.
+The official GHCR runtime image is Alpine-based and immutable: every release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Exact version Tags are immutable release references; `latest` and `beta` are rolling aliases for the newest stable and Beta images. Containers do not check for releases or replace their binary in process; pull an exact Tag or the desired rolling alias and recreate the container.
 
 ### Image Tag Guide
 
@@ -1106,6 +1106,10 @@ docker pull ghcr.io/caidaoli/ccload:v2.44.1
 
 # Pull latest Beta; replace beta with a published vX.Y.Z-beta.N Tag to pin it
 docker pull ghcr.io/caidaoli/ccload:beta
+
+# With Compose, set image to :latest or :beta, then apply the change
+docker compose pull
+docker compose up -d
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest

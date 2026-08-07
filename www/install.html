@@ -124,7 +124,7 @@ docker-compose logs -f ccload</code></pre>
         </div>
 
         <div class="www-callout www-mt-4">
-          <strong>The official GHCR image is an Alpine runtime image.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Pull the desired image and recreate the container for normal upgrades. The container checks for releases at startup, but does not replace its binary unless <code>CCLOAD_ALLOW_SELF_UPDATE=1</code>. Adjust <code>auto_update_interval_hours</code> and <code>auto_update_channel</code> in admin settings; <code>0</code> disables all release checks.
+          <strong>The official GHCR image is an Alpine runtime image.</strong> Stable releases publish an exact version Tag plus <code>latest</code>; Beta releases publish an exact prerelease Tag plus <code>beta</code>. Containers do not check for releases or update their binary in process. Set the Compose image Tag to <code>latest</code> or <code>beta</code>, then run <code>docker compose pull &amp;&amp; docker compose up -d</code>.
         </div>
       </div>
     </section>

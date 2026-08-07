@@ -27,11 +27,33 @@ type adminSystemSetting struct {
 	DisabledReason string `json:"disabled_reason,omitempty"`
 }
 
+const containerImageManagedDisabledReason = "container_image_managed"
+
+func isContainerManagedUpdateSetting(key string) bool {
+	if !runningInContainer() {
+		return false
+	}
+	return key == autoUpdateIntervalSettingKey || key == autoUpdateChannelSettingKey
+}
+
 func systemSettingForAdmin(setting *model.SystemSetting) adminSystemSetting {
-	return adminSystemSetting{
+	view := adminSystemSetting{
 		SystemSetting: setting,
 		Editable:      true,
 	}
+	if isContainerManagedUpdateSetting(setting.Key) {
+		view.Editable = false
+		view.DisabledReason = containerImageManagedDisabledReason
+	}
+	return view
+}
+
+func rejectContainerManagedUpdateSetting(c *gin.Context, key string) bool {
+	if !isContainerManagedUpdateSetting(key) {
+		return false
+	}
+	RespondErrorMsg(c, http.StatusConflict, "container image updates are managed by image tags; use latest for stable or beta for preview")
+	return true
 }
 
 // AdminListSettings 获取所有配置项
@@ -88,6 +110,9 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
 		return
 	}
+	if rejectContainerManagedUpdateSetting(c, key) {
+		return
+	}
 	var req SettingUpdateRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("invalid request: %v", err))
@@ -134,6 +159,9 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "missing setting key")
 		return
 	}
+	if rejectContainerManagedUpdateSetting(c, key) {
+		return
+	}
 	// 获取默认值
 	setting := s.configService.GetSetting(key)
 	if setting == nil {
@@ -176,6 +204,9 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 
 	// 验证所有配置
 	for key, value := range req {
+		if rejectContainerManagedUpdateSetting(c, key) {
+			return
+		}
 		setting := s.configService.GetSetting(key)
 		if setting == nil {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("unknown setting: %s", key))
