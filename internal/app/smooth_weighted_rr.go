@@ -1,9 +1,10 @@
 package app
 
 import (
+	"crypto/sha256"
+	"encoding/binary"
+	"slices"
 	"sort"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -14,8 +15,10 @@ import (
 // 算法来源：Nginx upstream smooth weighted round-robin
 type SmoothWeightedRR struct {
 	mu     sync.Mutex
-	states map[string]*rrGroupState // key: 渠道ID组合的签名
+	states map[rrGroupKey]*rrGroupState // key: 渠道ID集合的稳定摘要
 }
+
+type rrGroupKey [sha256.Size]byte
 
 // rrGroupState 单个优先级组的轮询状态
 type rrGroupState struct {
@@ -26,7 +29,7 @@ type rrGroupState struct {
 // NewSmoothWeightedRR 创建平滑加权轮询调度器
 func NewSmoothWeightedRR() *SmoothWeightedRR {
 	rr := &SmoothWeightedRR{
-		states: make(map[string]*rrGroupState),
+		states: make(map[rrGroupKey]*rrGroupState),
 	}
 	return rr
 }
@@ -39,15 +42,20 @@ func (rr *SmoothWeightedRR) Select(
 	channels []*modelpkg.Config,
 	weights []int,
 ) []*modelpkg.Config {
-	n := len(channels)
-	if n == 0 {
-		return channels
-	}
-	if len(weights) != n {
+	if len(weights) != len(channels) {
 		// 参数不匹配时直接返回原列表
 		return channels
 	}
-	if n == 1 {
+	result := slices.Clone(channels)
+	return rr.selectByWeight(result, weights)
+}
+
+func (rr *SmoothWeightedRR) selectByWeight(
+	channels []*modelpkg.Config,
+	weights []int,
+) []*modelpkg.Config {
+	n := len(channels)
+	if n <= 1 {
 		return channels
 	}
 
@@ -67,10 +75,12 @@ func (rr *SmoothWeightedRR) Select(
 	}
 	state.lastAccess = time.Now()
 
-	// 计算总权重
+	// 增加当前权重并计算总权重。
 	totalWeight := 0
-	for _, w := range weights {
+	for i, ch := range channels {
+		w := weights[i]
 		totalWeight += w
+		state.currentWeights[ch.ID] += w
 	}
 	if totalWeight == 0 {
 		return channels
@@ -81,12 +91,7 @@ func (rr *SmoothWeightedRR) Select(
 	// 2. 选择 currentWeight 最大的节点
 	// 3. 被选中节点的 currentWeight -= totalWeight
 
-	// 步骤1: 增加权重
-	for i, ch := range channels {
-		state.currentWeights[ch.ID] += weights[i]
-	}
-
-	// 步骤2: 找到 currentWeight 最大的节点
+	// 找到 currentWeight 最大的节点
 	maxWeight := state.currentWeights[channels[0].ID]
 	selectedIdx := 0
 	for i := 1; i < n; i++ {
@@ -97,21 +102,16 @@ func (rr *SmoothWeightedRR) Select(
 		}
 	}
 
-	// 步骤3: 减去总权重
+	// 被选中节点减去总权重
 	state.currentWeights[channels[selectedIdx].ID] -= totalWeight
 
-	// 构建结果：将选中的渠道放在第一位
-	result := make([]*modelpkg.Config, n)
-	result[0] = channels[selectedIdx]
-	idx := 1
-	for i, ch := range channels {
-		if i != selectedIdx {
-			result[idx] = ch
-			idx++
-		}
+	// 调用方传入请求私有 slice，原地把选中渠道移到首位并保持其余顺序。
+	if selectedIdx > 0 {
+		selected := channels[selectedIdx]
+		copy(channels[1:selectedIdx+1], channels[:selectedIdx])
+		channels[0] = selected
 	}
-
-	return result
+	return channels
 }
 
 // SelectWithCooldown 带冷却感知的平滑加权轮询
@@ -121,32 +121,28 @@ func (rr *SmoothWeightedRR) SelectWithCooldown(
 	keyCooldowns map[int64]map[int]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
-	n := len(channels)
-	if n <= 1 {
+	return rr.selectWithCooldownInPlace(slices.Clone(channels), keyCooldowns, now)
+}
+
+func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
+	if len(channels) <= 1 {
 		return channels
 	}
-
-	// 计算有效权重
-	weights := make([]int, n)
+	weights := make([]int, len(channels))
 	for i, ch := range channels {
 		weights[i] = calcEffectiveKeyCount(ch, keyCooldowns, now)
 	}
-
-	return rr.Select(channels, weights)
+	return rr.selectByWeight(channels, weights)
 }
 
-// generateGroupKey 生成渠道组的唯一标识
-// 使用所有渠道ID拼接，确保不同渠道组合生成不同的key。
-// 规则：
-// - 对 ID 排序，使同一集合不同顺序复用同一状态（避免状态爆炸）
-// - 使用十进制+逗号分隔，保证可读且无歧义
-func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string {
-	n := len(channels)
-	if n == 0 {
-		return ""
-	}
-
-	ids := make([]int64, 0, n)
+// generateGroupKey 对排序后的渠道 ID 做固定宽度摘要。
+// 输入顺序不影响结果；固定宽度编码避免每个 ID 的十进制字符串分配。
+func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) rrGroupKey {
+	ids := make([]int64, 0, len(channels))
 	for _, ch := range channels {
 		if ch == nil {
 			continue
@@ -154,19 +150,19 @@ func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) string
 		ids = append(ids, ch.ID)
 	}
 	if len(ids) == 0 {
-		return ""
+		return sha256.Sum256(nil)
 	}
 	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
 
-	var b strings.Builder
-
-	for i, id := range ids {
-		if i > 0 {
-			b.WriteByte(',')
-		}
-		b.WriteString(strconv.FormatInt(id, 10))
+	hasher := sha256.New()
+	var encoded [8]byte
+	for _, id := range ids {
+		binary.BigEndian.PutUint64(encoded[:], uint64(id))
+		_, _ = hasher.Write(encoded[:])
 	}
-	return b.String()
+	var key rrGroupKey
+	_ = hasher.Sum(key[:0])
+	return key
 }
 
 // Cleanup 清理过期的轮询状态（可选，避免内存泄漏）
@@ -187,7 +183,7 @@ func (rr *SmoothWeightedRR) Cleanup(maxAge time.Duration) {
 func (rr *SmoothWeightedRR) ResetAll() {
 	rr.mu.Lock()
 	defer rr.mu.Unlock()
-	rr.states = make(map[string]*rrGroupState)
+	rr.states = make(map[rrGroupKey]*rrGroupState)
 }
 
 // calcEffectiveKeyCount 计算渠道的有效Key数量（排除冷却中的Key）

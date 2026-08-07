@@ -808,6 +808,20 @@ func (s *Server) GetEnabledChannelsByModel(ctx context.Context, modelName string
 	)
 }
 
+// getEnabledChannelsSnapshotByModel 返回路由热路径使用的只读渠道快照。
+// Config 指针由 ChannelCache 持有，调用方只能过滤或重排外层 slice，不能修改 Config。
+func (s *Server) getEnabledChannelsSnapshotByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	return readThroughChannelCache(
+		s,
+		func(cache *storage.ChannelCache) ([]*model.Config, error) {
+			return cache.GetEnabledChannelsSnapshotByModel(ctx, modelName)
+		},
+		func() ([]*model.Config, error) {
+			return s.store.GetEnabledChannelsByModel(ctx, modelName)
+		},
+	)
+}
+
 func (s *Server) getAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
 	return readThroughChannelCache(
 		s,

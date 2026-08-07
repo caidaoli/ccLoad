@@ -231,7 +231,7 @@ func (s *Server) filterCooledChannels(
 	modelCooldowns map[int64]map[string]time.Time,
 	now time.Time,
 ) []*modelpkg.Config {
-	filtered := make([]*modelpkg.Config, 0, len(channels))
+	filtered := channels[:0]
 	for _, cfg := range channels {
 		// 1. 检查渠道级冷却
 		if cooldownUntil, exists := channelCooldowns[cfg.ID]; exists {
@@ -356,9 +356,19 @@ func (s *Server) filterCostLimitExceededChannels(channels []*modelpkg.Config) []
 	if s.costCache == nil {
 		return channels
 	}
+	hasLimit := false
+	for _, ch := range channels {
+		if ch.DailyCostLimit > 0 {
+			hasLimit = true
+			break
+		}
+	}
+	if !hasLimit {
+		return channels
+	}
 
 	costs := s.costCache.GetAll()
-	filtered := make([]*modelpkg.Config, 0, len(channels))
+	filtered := channels[:0]
 	for _, ch := range channels {
 		// DailyCostLimit <= 0 表示无限制
 		if ch.DailyCostLimit <= 0 {
