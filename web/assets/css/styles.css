@@ -3992,6 +3992,30 @@ body {
   display: block;
 }
 
+.settings-group-notice {
+  display: grid;
+  gap: 6px;
+  margin-top: 8px;
+  color: var(--neutral-700);
+  font-weight: 400;
+  letter-spacing: normal;
+}
+
+.settings-group-notice p,
+.settings-group-notice ul {
+  margin: 0;
+}
+
+.settings-group-notice ul {
+  padding-inline-start: 20px;
+}
+
+.settings-group-notice-command {
+  width: fit-content;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 .settings-input:disabled,
 .settings-bool-option input:disabled {
   cursor: not-allowed;

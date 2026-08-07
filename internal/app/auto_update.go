@@ -15,8 +15,8 @@ const (
 	autoUpdateChannelSettingKey    = "auto_update_channel"
 )
 
-func selfUpdateDisabledByContainer() bool {
-	return os.Getenv("CCLOAD_CONTAINER") == "1" && os.Getenv("CCLOAD_ALLOW_SELF_UPDATE") != "1"
+func runningInContainer() bool {
+	return os.Getenv("CCLOAD_CONTAINER") == "1"
 }
 
 func normalizeAutoUpdateIntervalHours(hours int) int {
@@ -29,6 +29,11 @@ func normalizeAutoUpdateIntervalHours(hours int) int {
 
 // StartUpdateManager starts the single release check loop and optional update application.
 func (s *Server) StartUpdateManager() {
+	if runningInContainer() {
+		log.Print("[INFO] 容器镜像通过镜像标签更新，版本检查和进程内自动更新均已禁用")
+		return
+	}
+
 	autoUpdateIntervalHours := normalizeAutoUpdateIntervalHours(
 		s.configService.GetInt(autoUpdateIntervalSettingKey, defaultAutoUpdateIntervalHours),
 	)
@@ -37,19 +42,8 @@ func (s *Server) StartUpdateManager() {
 		return
 	}
 
-	inContainer := os.Getenv("CCLOAD_CONTAINER") == "1"
-	applyUpdates := true
-	if selfUpdateDisabledByContainer() {
-		applyUpdates = false
-		log.Print("[INFO] 容器镜像启用版本检查，但禁用进程内自动更新")
-	}
-	if inContainer {
-		if applyUpdates {
-			log.Print("[WARN] 已通过 CCLOAD_ALLOW_SELF_UPDATE=1 启用容器进程内自动更新")
-		}
-	}
-	if applyUpdates && RestartFunc == nil {
-		applyUpdates = false
+	applyUpdates := RestartFunc != nil
+	if !applyUpdates {
 		log.Print("[WARN] RestartFunc 为空，仅启动版本检查")
 	}
 

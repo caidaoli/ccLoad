@@ -7,6 +7,7 @@ let runtimeMetricsPreviousFocus = null;
 let globalCooldownRulesPreviousFocus = null;
 
 const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
+const containerImageManagedDisabledReason = 'container_image_managed';
 const advancedSettingKeys = new Set([
   globalCooldownRulesSettingKey,
   'auto_refresh_interval_seconds',
@@ -585,7 +586,7 @@ function renderSettings(settings) {
     const groupRow = TemplateEngine.render('tpl-setting-group-row', {
       groupId: g.id,
       groupName: g.name,
-      groupNoticeHtml: ''
+      groupNoticeHtml: renderSettingGroupNotice(g)
     });
     if (groupRow) tbody.appendChild(groupRow);
 
@@ -608,6 +609,24 @@ function renderSettings(settings) {
       if (row) tbody.appendChild(row);
     }
   }
+}
+
+function renderSettingGroupNotice(group) {
+  const containerManaged = group.id === 'update' && group.settings.some((setting) => (
+    setting.editable === false && setting.disabled_reason === containerImageManagedDisabledReason
+  ));
+  if (!containerManaged) return '';
+
+  return `
+    <div class="settings-group-notice" role="note">
+      <p>${escapeHtml(t('settings.update.containerManaged'))}</p>
+      <ul>
+        <li>${escapeHtml(t('settings.update.stableImage'))}: <code>ghcr.io/caidaoli/ccload:latest</code></li>
+        <li>${escapeHtml(t('settings.update.betaImage'))}: <code>ghcr.io/caidaoli/ccload:beta</code></li>
+      </ul>
+      <p>${escapeHtml(t('settings.update.applyImage'))}</p>
+      <code class="settings-group-notice-command">docker compose pull &amp;&amp; docker compose up -d</code>
+    </div>`;
 }
 
 function settingDisabledAttributes(setting) {
