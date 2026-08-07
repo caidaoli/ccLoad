@@ -25,6 +25,9 @@ const (
 	requestTimeout             = 10 * time.Second
 	updateDownloadTimeout      = 5 * time.Minute
 	defaultRestartPollInterval = 10 * time.Second
+	updateRetryDelay1          = time.Minute
+	updateRetryDelay2          = 2 * time.Minute
+	updateRetryDelay3          = 4 * time.Minute
 )
 
 var gitDescribeVersionPattern = regexp.MustCompile(`^(v?[0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-fA-F]+)$`)
@@ -47,6 +50,7 @@ type UpdateManagerOptions struct {
 	Channel             ReleaseChannel
 	ApplyUpdates        bool
 	RestartPollInterval time.Duration
+	RetryDelays         []time.Duration
 	ReleaseSources      []ReleaseSource
 	ExecutablePath      string
 	GOOS                string
@@ -62,6 +66,7 @@ type UpdateManager struct {
 	channel             ReleaseChannel
 	applyUpdates        bool
 	restartPollInterval time.Duration
+	retryDelays         []time.Duration
 	releaseSources      []ReleaseSource
 	executablePath      string
 	goos                string
@@ -99,6 +104,14 @@ func NewUpdateManager(opts UpdateManagerOptions) (*UpdateManager, error) {
 	if opts.RestartPollInterval <= 0 {
 		opts.RestartPollInterval = defaultRestartPollInterval
 	}
+	if len(opts.RetryDelays) == 0 {
+		opts.RetryDelays = []time.Duration{updateRetryDelay1, updateRetryDelay2, updateRetryDelay3}
+	}
+	for _, delay := range opts.RetryDelays {
+		if delay <= 0 {
+			return nil, fmt.Errorf("update retry delay must be positive")
+		}
+	}
 	if len(opts.ReleaseSources) == 0 {
 		var err error
 		opts.ReleaseSources, err = releaseSources(os.Getenv("CCLOAD_RELEASE_BASE_URL"))
@@ -130,6 +143,7 @@ func NewUpdateManager(opts UpdateManagerOptions) (*UpdateManager, error) {
 		channel:             opts.Channel,
 		applyUpdates:        opts.ApplyUpdates,
 		restartPollInterval: opts.RestartPollInterval,
+		retryDelays:         append([]time.Duration(nil), opts.RetryDelays...),
 		releaseSources:      append([]ReleaseSource(nil), opts.ReleaseSources...),
 		executablePath:      opts.ExecutablePath,
 		goos:                opts.GOOS,
@@ -177,12 +191,88 @@ func (u *UpdateManager) State() UpdateState {
 }
 
 func (u *UpdateManager) runCheck(ctx context.Context) {
-	if err := u.updateOnce(ctx); err != nil {
+	err := u.updateOnce(ctx)
+	for retryIndex, delay := range u.retryDelays {
+		if err == nil {
+			return
+		}
+		u.recordUpdateError(err)
+		if !isRetryableUpdateError(err) || ctx.Err() != nil {
+			log.Printf("[UpdateManager] update check failed: %v", err)
+			return
+		}
+		log.Printf(
+			"[UpdateManager] update check failed: %v; retrying in %v (%d/%d)",
+			err, delay, retryIndex+1, len(u.retryDelays),
+		)
+		if !waitForUpdateRetry(ctx, delay) {
+			return
+		}
+		err = u.updateOnce(ctx)
+	}
+	if err != nil {
+		u.recordUpdateError(err)
+		log.Printf("[UpdateManager] update check failed after %d retries: %v", len(u.retryDelays), err)
+	}
+}
+
+func (u *UpdateManager) recordUpdateError(err error) {
+	if err != nil {
 		u.mu.Lock()
 		u.state.LastError = err.Error()
 		u.state.LastCheck = time.Now()
 		u.mu.Unlock()
-		log.Printf("[UpdateManager] update check failed: %v", err)
+	}
+}
+
+func waitForUpdateRetry(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+type updateHTTPStatusError struct {
+	status int
+}
+
+func (e *updateHTTPStatusError) Error() string {
+	return fmt.Sprintf("status %d", e.status)
+}
+
+type updateTransportError struct {
+	err error
+}
+
+func (e *updateTransportError) Error() string { return e.err.Error() }
+func (e *updateTransportError) Unwrap() error { return e.err }
+
+func isRetryableUpdateError(err error) bool {
+	switch typed := err.(type) {
+	case nil:
+		return false
+	case *updateHTTPStatusError:
+		return typed.status == http.StatusNotFound ||
+			typed.status == http.StatusRequestTimeout ||
+			typed.status == http.StatusTooManyRequests ||
+			typed.status >= http.StatusInternalServerError
+	case *updateTransportError:
+		return !errors.Is(typed.err, context.Canceled)
+	case interface{ Unwrap() []error }:
+		for _, nested := range typed.Unwrap() {
+			if isRetryableUpdateError(nested) {
+				return true
+			}
+		}
+		return false
+	case interface{ Unwrap() error }:
+		return isRetryableUpdateError(typed.Unwrap())
+	default:
+		return false
 	}
 }
 
@@ -299,14 +389,18 @@ func (u *UpdateManager) downloadBytes(ctx context.Context, rawURL string) ([]byt
 
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, &updateTransportError{err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("status %d", resp.StatusCode)
+		return nil, &updateHTTPStatusError{status: resp.StatusCode}
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return nil, &updateTransportError{err: err}
+	}
+	return data, nil
 }
 
 func (u *UpdateManager) downloadToFile(ctx context.Context, rawURL string, dst *os.File) error {
@@ -321,15 +415,17 @@ func (u *UpdateManager) downloadToFile(ctx context.Context, rawURL string, dst *
 
 	resp, err := u.client.Do(req)
 	if err != nil {
-		return err
+		return &updateTransportError{err: err}
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("status %d", resp.StatusCode)
+		return &updateHTTPStatusError{status: resp.StatusCode}
 	}
-	_, err = io.Copy(dst, resp.Body)
-	return err
+	if _, err = io.Copy(dst, resp.Body); err != nil {
+		return &updateTransportError{err: err}
+	}
+	return nil
 }
 
 func (u *UpdateManager) baselineVersion() string {
