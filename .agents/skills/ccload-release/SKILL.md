@@ -1,6 +1,6 @@
 ---
 name: ccload-release
-description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，按固定版本通道计算并发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和稳定版容器镜像。Beta 固定沿用最近稳定版的主版本和次版本；只有显式 stable 发布才允许修改次版本。
+description: 用于发布 ccLoad 新版本，自动提交未提交改动并推送本地领先的 master，按固定版本通道计算并发布 Tag，等待 GitHub Actions，以及验证 GitHub Release 和对应通道的容器镜像。Beta 固定沿用最近稳定版的主版本和次版本；只有显式 stable 发布才允许修改次版本。
 ---
 
 # 发布 ccLoad
@@ -62,7 +62,7 @@ Tag 形状固定：
 
    稳定版把 `beta` 改为 `stable`。脚本会自动 `git add -A`、创建提交、运行全部发布门禁、非强制推送 `master`，确认远端精确一致后再创建并推送 annotated Tag。本地已有未推送提交时不创建额外提交，验证通过后直接推送。
 
-5. 报告自动创建的提交（如有）、推送的 `master` 修订、目标 Tag、GitHub Release URL 和 Actions 结果。稳定版还要报告 `ghcr.io/caidaoli/ccload:<tag>` 和 `ghcr.io/caidaoli/ccload:latest`；Beta 明确说明未发布容器。
+5. 报告自动创建的提交（如有）、推送的 `master` 修订、目标 Tag、GitHub Release URL 和 Actions 结果。稳定版报告 `ghcr.io/caidaoli/ccload:<tag>` 和 `ghcr.io/caidaoli/ccload:latest`；Beta 报告 `ghcr.io/caidaoli/ccload:<tag>` 和 `ghcr.io/caidaoli/ccload:beta`。
 
 ## 强制规则
 
@@ -72,9 +72,9 @@ Tag 形状固定：
 - 发布前必须通过后端测试、Web 验证、构建和 lint。任一失败都不得推送 `master` 或创建 Tag；自动创建的本地提交和验证产生的现场必须保留。
 - 分支推送只能是普通 fast-forward push。推送后必须重新 fetch 并确认本地 `HEAD` 等于 `origin/master`，才能创建 Tag。
 - Beta Release 必须是 prerelease 且不得成为 latest；稳定版 Release 必须成为 latest。
-- 只有稳定版发布 GHCR，并且镜像必须打精确版本 Tag 和 `latest`。
+- 每个 Release 都发布 GHCR 多架构镜像。稳定版必须同时打精确版本 Tag 和 `latest`；Beta 必须同时打精确版本 Tag 和 `beta`；精确标签与对应浮动别名必须指向同一镜像摘要。
 - 分支或发布失败后保留现场并报告本地提交、失败的 Tag/Actions URL。不要自动删提交、Tag、Release 或镜像；回滚必须由用户另行明确授权。
-- 不绕过 `.github/workflows/release.yml` 的 Tag 校验，也不创建 `beta`、`latest` 这类浮动发布 Tag。
+- 不绕过 `.github/workflows/release.yml` 的 Tag 校验，也不创建 `beta`、`latest` 这类浮动 Git Tag；它们只允许作为 GHCR 镜像别名由发布工作流管理。
 
 ## 脚本自检
 

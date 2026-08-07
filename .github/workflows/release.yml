@@ -219,8 +219,7 @@ jobs:
             dist/checksums.txt
 
   docker:
-    name: Publish stable container image
-    if: needs.metadata.outputs.channel == 'stable'
+    name: Publish ${{ needs.metadata.outputs.channel }} container image
     needs: [metadata, build, release]
     runs-on: ubuntu-latest
     permissions:
@@ -263,7 +262,8 @@ jobs:
           images: ${{ steps.image.outputs.name }}
           tags: |
             type=raw,value=${{ needs.metadata.outputs.tag }}
-            type=raw,value=latest
+            type=raw,value=latest,enable=${{ needs.metadata.outputs.channel == 'stable' }}
+            type=raw,value=beta,enable=${{ needs.metadata.outputs.channel == 'beta' }}
 
       - name: Build and push image
         uses: docker/build-push-action@v7
@@ -274,11 +274,26 @@ jobs:
           push: true
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha,scope=stable-release
-          cache-to: type=gha,scope=stable-release,mode=max
+          cache-from: type=gha,scope=release-container
+          cache-to: type=gha,scope=release-container,mode=max
 
-      - name: Inspect published image
+      - name: Verify published image aliases
         env:
           IMAGE: ${{ steps.image.outputs.name }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
-        run: docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG"
+          RELEASE_CHANNEL: ${{ needs.metadata.outputs.channel }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == beta ]]; then
+            alias_tag=beta
+          else
+            alias_tag=latest
+          fi
+          release_digest=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
+          alias_digest=$(docker buildx imagetools inspect "$IMAGE:$alias_tag" --format '{{.Manifest.Digest}}')
+          if [[ -z "$release_digest" || "$release_digest" != "$alias_digest" ]]; then
+            echo "Container tags do not reference the same image: $RELEASE_TAG=$release_digest, $alias_tag=$alias_digest" >&2
+            exit 1
+          fi
+          echo "Published $IMAGE:$RELEASE_TAG and $IMAGE:$alias_tag at $release_digest"

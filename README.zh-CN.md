@@ -1038,7 +1038,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 
 稳定版元数据通过配置的发布源解析。测试版发现读取 GitHub Releases Atom feed，其中包含稳定版和测试版，无需使用受速率限制的 REST API。解析出精确 Tag 后，ccLoad 会从配置的下载源获取该 Tag 的二进制及校验文件；默认顺序是 `gh.monlor.com`、`fastgit.cc`、`ghfast.top` 和 GitHub，SHA256 匹配后才替换。
 
-官方容器使用同一检查循环并显示新版本提示，但默认不会在运行时替换自身二进制。每个稳定版镜像都直接包含同 Tag 的 GitHub Release 二进制，常规更新方式仍是拉取新的稳定版镜像并重建容器。若希望只拉取一次镜像、之后由 ccLoad 自行跟随 Beta，可在 `.env` 中设置 `CCLOAD_ALLOW_SELF_UPDATE=1`，再在 Web 管理后台将 `auto_update_channel` 设为 `preview`。重建容器会恢复镜像内置的稳定版，ccLoad 启动后会重新检查更新。
+官方容器使用同一检查循环并显示新版本提示，但默认不会在运行时替换自身二进制。每个稳定版和 Beta 镜像都直接包含对应 GitHub Release 生成的同版本二进制。稳定版发布精确版本 Tag 和 `latest`，Beta 发布精确测试版 Tag 和滚动 `beta` 别名。常规更新方式是拉取所需镜像 Tag 并重建容器；只有明确需要进程内替换时才设置 `CCLOAD_ALLOW_SELF_UPDATE=1`。
 
 如需使用私有发布镜像，可将 `CCLOAD_RELEASE_BASE_URL` 设置为完整的 latest-download 地址，例如 `https://mirror.example/caidaoli/ccLoad/releases/latest/download`。显式设置后，稳定版元数据和全部发布文件下载都不会追加内置回退源；测试版元数据仍从 GitHub Releases Atom feed 获取。该变量不会设置 `HTTP_PROXY` 或 `HTTPS_PROXY`，因此不会让业务渠道请求经过下载代理。
 
@@ -1122,9 +1122,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 - **镜像仓库**：`ghcr.io/caidaoli/ccload`
 - **可用标签**：
   - `latest` - 最新稳定版本
-  - `v2.44.1` - 具体发布版本，和 GitHub Release Tag 保持一致
+  - `beta` - 最新 Beta 版本
+  - `v2.44.1` - 精确稳定版本，和 GitHub Release Tag 保持一致
+  - `vX.Y.Z-beta.N` - 精确 Beta 版本，和 GitHub Prerelease Tag 保持一致
 
-官方 GHCR 镜像基于 Alpine，并保持不可变：稳定版发布时，将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。Beta 不发布容器镜像。容器仍会检查发布版本，但 `CCLOAD_CONTAINER=1` 默认禁用程序内二进制替换；显式设置 `CCLOAD_ALLOW_SELF_UPDATE=1` 可允许 ccLoad 更新容器可写层中的程序。重建容器会恢复镜像内置版本；默认用法仍是拉取新的版本 Tag 或 `latest` 后重建。
+官方 GHCR 镜像基于 Alpine，并保持不可变：每次发布都将已经通过测试的 `ccload-linux-amd64` 和 `ccload-linux-arm64` GitHub Release 二进制直接打进同版本多架构镜像。精确版本 Tag 是不可变发布引用；`latest` 和 `beta` 分别滚动指向最新稳定版和 Beta。容器仍会检查发布版本，但 `CCLOAD_CONTAINER=1` 默认禁用程序内二进制替换；显式设置 `CCLOAD_ALLOW_SELF_UPDATE=1` 可允许 ccLoad 更新容器可写层中的程序。重建容器会恢复镜像内置版本；默认用法仍是拉取精确版本 Tag 或所需滚动别名后重建。
 
 ### 镜像标签说明
 
@@ -1134,6 +1136,9 @@ docker pull ghcr.io/caidaoli/ccload:latest
 
 # 拉取指定版本
 docker pull ghcr.io/caidaoli/ccload:v2.44.1
+
+# 拉取最新 Beta；要锁定版本时将 beta 替换为已发布的 vX.Y.Z-beta.N Tag
+docker pull ghcr.io/caidaoli/ccload:beta
 
 # 指定架构（Docker 通常自动选择）
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
