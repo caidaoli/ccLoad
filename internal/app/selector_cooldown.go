@@ -222,6 +222,10 @@ func (s *Server) pickBestChannelWhenAllCooled(
 
 // filterCooledChannels 过滤冷却中的渠道
 // 渠道级冷却或所有Key都在冷却时，该渠道被过滤
+//
+// 原地压缩 channels：写入下标恒不大于读取下标，所以不会覆盖尚未读到的元素。
+// 调用方必须传入请求私有的 slice，且只能使用返回值；唯一例外是"返回空"——
+// 此时一次写入都没发生，入参仍然完整，全冷却兜底才能安全复用它。
 func (s *Server) filterCooledChannels(
 	channels []*modelpkg.Config,
 	requestModel string,
@@ -367,8 +371,11 @@ func (s *Server) filterCostLimitExceededChannels(channels []*modelpkg.Config) []
 		return channels
 	}
 
+	// 这里必须新建 slice：调用方在本函数返回后仍可能按原长度复用入参
+	// （selector.go 的模糊匹配回退会对同一 allCandidates 过滤两次），
+	// 原地压缩会让尾部元素重复。hasLimit 预检已保证这条分支很少走到。
 	costs := s.costCache.GetAll()
-	filtered := channels[:0]
+	filtered := make([]*modelpkg.Config, 0, len(channels))
 	for _, ch := range channels {
 		// DailyCostLimit <= 0 表示无限制
 		if ch.DailyCostLimit <= 0 {
