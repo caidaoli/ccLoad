@@ -2036,8 +2036,10 @@ func (s *Server) forwardAttempt(
 			return nil, cooldown.ActionRetryChannel, err
 		}
 		if errors.Is(err, util.ErrUpstreamStreamTimeout) && res != nil {
-			res.Body = []byte(err.Error())
 			res.StreamDiagMsg = err.Error()
+		}
+		if res != nil && res.StreamDiagMsg != "" {
+			markIncompleteStreamForwardResult(res)
 			result, action := s.handleCommittedAwareProxyError(
 				ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown,
 			)
