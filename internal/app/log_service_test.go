@@ -61,7 +61,7 @@ func (s *debugCleanupStore) CleanupDebugLogsBatch(_ context.Context, _ time.Time
 	return result.deleted, result.err
 }
 
-type blockingDisabledDebugCleanupStore struct {
+type blockingDebugTruncateStore struct {
 	storage.Store
 	started chan struct{}
 	release chan struct{}
@@ -69,25 +69,22 @@ type blockingDisabledDebugCleanupStore struct {
 	calls   atomic.Int32
 }
 
-func (s *blockingDisabledDebugCleanupStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
+func (s *blockingDebugTruncateStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
 	if key != "debug_log_enabled" {
 		return nil, fmt.Errorf("unexpected setting: %s", key)
 	}
 	return &model.SystemSetting{Key: key, Value: "false"}, nil
 }
 
-func (s *blockingDisabledDebugCleanupStore) CleanupDebugLogsBatch(ctx context.Context, _ time.Time, limit int) (int64, error) {
-	if limit != debugLogCleanupBatchSize {
-		return 0, fmt.Errorf("cleanup limit=%d, want %d", limit, debugLogCleanupBatchSize)
-	}
+func (s *blockingDebugTruncateStore) TruncateDebugLogs(ctx context.Context) error {
 	s.calls.Add(1)
 	close(s.started)
 	select {
 	case <-s.release:
 		close(s.done)
-		return 0, nil
+		return nil
 	case <-ctx.Done():
-		return 0, ctx.Err()
+		return ctx.Err()
 	}
 }
 
@@ -365,11 +362,11 @@ func TestStartCleanupLoop_WaitsBetweenSuccessfulFullDebugLogBatches(t *testing.T
 	}
 }
 
-func TestStartCleanupLoop_DoesNotBlockWhileCleaningDisabledDebugLogs(t *testing.T) {
+func TestStartCleanupLoop_DoesNotBlockWhileTruncatingDisabledDebugLogs(t *testing.T) {
 	shutdownCh := make(chan struct{})
 	isShuttingDown := &atomic.Bool{}
 	var wg sync.WaitGroup
-	store := &blockingDisabledDebugCleanupStore{
+	store := &blockingDebugTruncateStore{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 		done:    make(chan struct{}),
@@ -389,20 +386,20 @@ func TestStartCleanupLoop_DoesNotBlockWhileCleaningDisabledDebugLogs(t *testing.
 	select {
 	case <-returned:
 	case <-time.After(time.Second):
-		t.Fatal("StartCleanupLoop blocked on disabled debug log cleanup")
+		t.Fatal("StartCleanupLoop blocked on debug log truncation")
 	}
 	select {
 	case <-store.started:
 	case <-time.After(time.Second):
-		t.Fatal("disabled debug log cleanup did not start")
+		t.Fatal("debug log truncation did not start")
 	}
 	close(store.release)
 	select {
 	case <-store.done:
 	case <-time.After(time.Second):
-		t.Fatal("disabled debug log cleanup did not finish")
+		t.Fatal("debug log truncation did not finish")
 	}
 	if calls := store.calls.Load(); calls != 1 {
-		t.Fatalf("cleanup calls=%d, want 1", calls)
+		t.Fatalf("truncate calls=%d, want 1", calls)
 	}
 }
