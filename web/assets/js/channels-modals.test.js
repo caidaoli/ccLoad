@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const { selectAvailableInlineKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 
-function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }) {
+function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key' }) {
 	const globals = {
 		window: {
 			t: key => key,
@@ -15,6 +15,8 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning }
     getValidInlineURLConfigs: () => [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }],
     getInlineKeyRows: () => rows,
     currentChannelKeyCooldowns: states,
+    editingChannelId: channelId,
+    editingChannelAuthType: authType,
     selectAvailableInlineKeys,
     selectFirstEnabledInlineKey,
     fetchAPIWithAuth: onFetch,
@@ -742,6 +744,58 @@ test('fetchModelsFromAPI sends every available API key', async () => {
   assert.deepEqual(requestBody.api_keys, ['enabled-key-1', 'enabled-key-2']);
   assert.equal(requestBody.api_key, undefined);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
+});
+
+test('fetchModelsFromAPI uses the saved Antigravity channel without submitting its OAuth token', async () => {
+  const requests = [];
+  const restore = installFetchModelsGlobals({
+    rows: [{ api_key: 'oauth-access-token-that-must-not-be-submitted' }],
+    states: [{ key_index: 0, disabled: false }],
+    channelId: 42,
+    authType: 'antigravity_oauth',
+    onFetch: async (url, options) => {
+      requests.push({ url, options });
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(requests, [{
+    url: '/admin/channels/42/models/fetch',
+    options: undefined
+  }]);
+});
+
+test('fetchModelsFromAPI uses the saved Codex channel without submitting its OAuth token', async () => {
+  const requests = [];
+  const restore = installFetchModelsGlobals({
+    rows: [{ api_key: 'codex-access-token-that-must-not-be-submitted' }],
+    states: [{ key_index: 0, disabled: false }],
+    channelId: 43,
+    authType: 'codex_oauth',
+    onFetch: async (url, options) => {
+      requests.push({ url, options });
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(requests, [{
+    url: '/admin/channels/43/models/fetch',
+    options: undefined
+  }]);
 });
 
 test('fetchModelsFromAPI rejects a channel whose keys are all disabled', async () => {

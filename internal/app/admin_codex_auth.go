@@ -28,6 +28,7 @@ const (
 	codexUpstreamURL             = "https://chatgpt.com/backend-api/codex/responses"
 )
 
+// 导入凭证和模型获取必须共享这一份 Codex 模型目录，并按订阅计划过滤。
 var codexOAuthDefaultModels = []string{
 	"gpt-5.6-sol",
 	"gpt-5.6-terra",

@@ -229,11 +229,11 @@ func TestGeminiModelsFetcher(t *testing.T) {
 			if r.URL.Path != "/v1beta/models" {
 				t.Fatalf("期望路径 /v1beta/models, 实际 %s", r.URL.Path)
 			}
-			if r.URL.Query().Get("key") != apiKey {
-				t.Fatalf("URL应包含API key参数, 实际 query=%s", r.URL.RawQuery)
+			if r.URL.RawQuery != "" {
+				t.Fatalf("URL不应包含API key, 实际 query=%s", r.URL.RawQuery)
 			}
-			if r.URL.Query().Get("scope") != "" {
-				t.Fatalf("API key 中的 & 不应生成额外 query 参数, 实际 query=%s", r.URL.RawQuery)
+			if got := r.Header.Get("X-Goog-Api-Key"); got != apiKey {
+				t.Fatalf("X-Goog-Api-Key=%q, want %q", got, apiKey)
 			}
 			return newJSONResponse(http.StatusOK, `{
 				"models": [
@@ -271,6 +271,23 @@ func TestGeminiModelsFetcher(t *testing.T) {
 		if containsString(model, "models/") {
 			t.Errorf("模型名称不应包含'models/'前缀: %s", model)
 		}
+	}
+}
+
+func TestGeminiModelsFetcherTransportErrorDoesNotLeakAPIKey(t *testing.T) {
+	const apiKey = "gemini-secret-that-must-not-leak"
+	fetcher := &GeminiModelsFetcher{
+		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
+			return nil, context.DeadlineExceeded
+		}),
+	}
+
+	_, err := fetcher.FetchModels(context.Background(), "https://gemini.test", apiKey)
+	if err == nil {
+		t.Fatal("expected transport error")
+	}
+	if strings.Contains(err.Error(), apiKey) {
+		t.Fatalf("错误信息泄漏 API key: %v", err)
 	}
 }
 
