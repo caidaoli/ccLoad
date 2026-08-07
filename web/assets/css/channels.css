@@ -3931,6 +3931,19 @@
       border-color: transparent;
     }
 
+    .channel-batch-action--import {
+      grid-column: 1 / -1;
+      color: var(--primary-700);
+      background: var(--primary-50);
+      border-color: var(--primary-200);
+    }
+
+    .channel-batch-action--import:hover {
+      color: var(--primary-800);
+      background: var(--primary-100);
+      border-color: var(--primary-300);
+    }
+
     .channel-batch-select {
       min-height: 32px;
       max-width: 132px;
@@ -3952,6 +3965,8 @@
 
     .channel-batch-select:focus-visible,
     .channel-batch-refresh-options > summary:focus-visible,
+    .channel-batch-advanced > summary:focus-visible,
+    .channel-batch-input:focus-visible,
     .channel-batch-close:focus-visible {
       outline-offset: 2px;
     }
@@ -3966,7 +3981,13 @@
       flex-shrink: 0;
     }
 
-    .channel-batch-refresh-options > summary {
+    .channel-batch-advanced {
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    .channel-batch-refresh-options > summary,
+    .channel-batch-advanced > summary {
       min-height: 32px;
       padding: 0 8px;
       border-radius: var(--radius-base);
@@ -3982,7 +4003,9 @@
     }
 
     .channel-batch-refresh-options > summary:hover,
-    .channel-batch-refresh-options[open] > summary {
+    .channel-batch-refresh-options[open] > summary,
+    .channel-batch-advanced > summary:hover,
+    .channel-batch-advanced[open] > summary {
       background: var(--neutral-100);
     }
 
@@ -3999,6 +4022,98 @@
       display: grid;
       gap: 4px;
       z-index: 2;
+    }
+
+    .channel-batch-advanced__panel {
+      position: absolute;
+      inset-inline-end: 0;
+      bottom: calc(100% + 8px);
+      width: min(410px, calc(100vw - 32px));
+      max-height: min(70vh, 520px);
+      overflow-y: auto;
+      padding: 12px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      background: var(--surface-bg-strong);
+      box-shadow: var(--shadow-lg);
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      gap: 14px;
+      z-index: 3;
+    }
+
+    .channel-batch-advanced__field {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .channel-batch-advanced__field > label {
+      color: var(--neutral-700);
+      font-size: var(--text-sm);
+      font-weight: 600;
+    }
+
+    .channel-batch-advanced__control {
+      display: flex;
+      align-items: stretch;
+      gap: 4px;
+      min-width: 0;
+      padding: 3px;
+      border: 1px solid var(--neutral-200);
+      border-radius: var(--radius-lg);
+      background: var(--neutral-50);
+    }
+
+    .channel-batch-advanced__control .channel-batch-action {
+      width: auto;
+      min-width: max-content;
+      flex: 0 0 auto;
+    }
+
+    .channel-batch-advanced__control .channel-batch-select {
+      min-width: 0;
+      max-width: none;
+      flex: 1 1 0;
+    }
+
+    .channel-batch-input {
+      width: 100%;
+      min-width: 0;
+      min-height: 32px;
+      padding: 0 8px;
+      border: 1px solid transparent;
+      border-radius: var(--radius-base);
+      background: var(--surface-bg);
+      color: var(--neutral-800);
+      font: inherit;
+      font-size: var(--text-sm);
+    }
+
+    .channel-batch-input:hover {
+      border-color: var(--neutral-300);
+    }
+
+    .channel-batch-input[aria-invalid="true"] {
+      border-color: var(--error-500);
+    }
+
+    .channel-batch-input:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .channel-batch-advanced__hint {
+      color: var(--neutral-500);
+      font-size: var(--text-xs);
+      line-height: 1.35;
+    }
+
+    .channel-batch-advanced__error {
+      color: var(--error-600);
+      font-size: var(--text-xs);
+      line-height: 1.35;
     }
 
     .channel-batch-option {
@@ -5262,16 +5377,17 @@
         grid-row: 1;
       }
 
-      .channel-batch-action-group--protocol,
       .channel-batch-action-group--refresh {
         grid-column: 1 / -1;
       }
 
-      .channel-batch-action-group--protocol {
+      .channel-batch-action-group--refresh {
         grid-row: 2;
       }
 
-      .channel-batch-action-group--refresh {
+      .channel-batch-advanced {
+        position: static;
+        grid-column: 1 / -1;
         grid-row: 3;
       }
 
@@ -5295,17 +5411,13 @@
         flex: 1 1 0;
       }
 
-      .channel-batch-action-group--protocol .channel-batch-select {
-        flex: 1 1 auto;
-        max-width: none;
-      }
-
       .channel-batch-refresh-options {
         position: static;
         flex: 1 1 auto;
       }
 
-      .channel-batch-refresh-options > summary {
+      .channel-batch-refresh-options > summary,
+      .channel-batch-advanced > summary {
         min-height: 40px;
         justify-content: center;
       }
@@ -5313,6 +5425,11 @@
       .channel-batch-refresh-options__panel {
         inset-inline: 0;
         min-width: 0;
+      }
+
+      .channel-batch-advanced__panel {
+        inset-inline: 12px;
+        width: auto;
       }
 
       .channel-batch-option {

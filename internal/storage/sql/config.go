@@ -393,40 +393,207 @@ func (s *SQLStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled b
 	return config, nil
 }
 
-// BatchUpdateProtocolTransformMode updates the protocol policy without rewriting
-// channel models, keys, URLs, or unrelated configuration.
-func (s *SQLStore) BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error) {
+// BatchPatchConfigs atomically changes only the explicitly requested channel fields.
+func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
+	channelIDs = normalizeBatchPatchChannelIDs(channelIDs)
 	if len(channelIDs) == 0 {
-		return 0, nil
+		return model.BatchConfigPatchResult{}, nil
 	}
 
-	mode = strings.TrimSpace(mode)
-	normalizedMode := model.NormalizeProtocolTransformMode(mode)
-	if mode == "" || normalizedMode == "" {
-		return 0, fmt.Errorf("invalid protocol transform mode %q", mode)
+	patch, err := patch.Normalize()
+	if err != nil {
+		return model.BatchConfigPatchResult{}, err
 	}
 
+	result := model.BatchConfigPatchResult{}
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		states, err := s.loadBatchConfigPatchStates(ctx, tx, channelIDs, patch.ModelImportMode != "")
+		if err != nil {
+			return err
+		}
+
+		for _, channelID := range channelIDs {
+			state, ok := states[channelID]
+			if !ok {
+				result.NotFound = append(result.NotFound, channelID)
+				continue
+			}
+
+			nextCostMultiplier := state.costMultiplier
+			if patch.CostMultiplier != nil {
+				nextCostMultiplier = *patch.CostMultiplier
+			}
+			nextProtocolMode := state.protocolTransformMode
+			if patch.ProtocolTransformMode != nil {
+				nextProtocolMode = *patch.ProtocolTransformMode
+			}
+			nextScheduledCheckModel := state.scheduledCheckModel
+			nextModels := state.modelEntries
+			modelsChanged := false
+			if patch.ModelImportMode != "" {
+				nextModels = importedModelEntries(state.modelEntries, patch.ModelEntries, patch.ModelImportMode)
+				modelsChanged = !modelEntrySlicesEqual(state.modelEntries, nextModels)
+				nextScheduledCheckModel = reconciledScheduledCheckModel(nextScheduledCheckModel, nextModels)
+			}
+
+			changed := state.costMultiplier != nextCostMultiplier ||
+				state.protocolTransformMode != nextProtocolMode ||
+				state.scheduledCheckModel != nextScheduledCheckModel ||
+				modelsChanged
+			if !changed {
+				result.Unchanged++
+				continue
+			}
+
+			if _, err := s.execTx(ctx, tx, `
+				UPDATE channels
+				SET cost_multiplier = ?, protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
+				WHERE id = ?
+			`, nextCostMultiplier, nextProtocolMode, nextScheduledCheckModel, timeToUnix(time.Now()), channelID); err != nil {
+				return fmt.Errorf("patch channel %d: %w", channelID, err)
+			}
+			if modelsChanged {
+				if err := s.saveModelEntriesTx(ctx, tx, channelID, nextModels); err != nil {
+					return fmt.Errorf("patch channel %d models: %w", channelID, err)
+				}
+			}
+			result.Updated++
+		}
+		return nil
+	})
+	if err != nil {
+		return model.BatchConfigPatchResult{}, err
+	}
+	return result, nil
+}
+
+type batchConfigPatchState struct {
+	costMultiplier        float64
+	protocolTransformMode string
+	scheduledCheckModel   string
+	modelEntries          []model.ModelEntry
+}
+
+func normalizeBatchPatchChannelIDs(channelIDs []int64) []int64 {
+	seen := make(map[int64]struct{}, len(channelIDs))
+	result := make([]int64, 0, len(channelIDs))
+	for _, channelID := range channelIDs {
+		if channelID <= 0 {
+			continue
+		}
+		if _, ok := seen[channelID]; ok {
+			continue
+		}
+		seen[channelID] = struct{}{}
+		result = append(result, channelID)
+	}
+	return result
+}
+
+func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, channelIDs []int64, withModels bool) (map[int64]*batchConfigPatchState, error) {
 	placeholders := make([]string, len(channelIDs))
-	args := make([]any, 0, len(channelIDs)+2)
-	args = append(args, normalizedMode, timeToUnix(time.Now()))
+	args := make([]any, len(channelIDs))
 	for i, channelID := range channelIDs {
 		placeholders[i] = "?"
-		args = append(args, channelID)
+		args[i] = channelID
 	}
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
-	query := `UPDATE channels
-		SET protocol_transform_mode = ?, updated_at = ?
-		WHERE id IN (` + strings.Join(placeholders, ",") + `)`
-	result, err := s.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("batch update protocol transform mode: %w", err)
+	query := `SELECT id, cost_multiplier, protocol_transform_mode, scheduled_check_model
+		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
+	if s.supportsRowLock() {
+		query += ` FOR UPDATE`
 	}
-	rowsAffected, err := result.RowsAffected()
+	rows, err := tx.QueryContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 	if err != nil {
-		return 0, fmt.Errorf("get batch protocol transform mode rows affected: %w", err)
+		return nil, fmt.Errorf("query channels for batch patch: %w", err)
 	}
-	return rowsAffected, nil
+	states := make(map[int64]*batchConfigPatchState, len(channelIDs))
+	for rows.Next() {
+		var channelID int64
+		state := &batchConfigPatchState{}
+		if err := rows.Scan(&channelID, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("scan channel for batch patch: %w", err)
+		}
+		states[channelID] = state
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("iterate channels for batch patch: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close channels for batch patch: %w", err)
+	}
+	if !withModels || len(states) == 0 {
+		return states, nil
+	}
+
+	modelRows, err := tx.QueryContext(ctx, s.q(`SELECT channel_id, model, redirect_model, disabled
+		FROM channel_models WHERE channel_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY channel_id, created_at ASC, model ASC`), normalizeSQLArgs(args)...)
+	if err != nil {
+		return nil, fmt.Errorf("query models for batch patch: %w", err)
+	}
+	defer func() { _ = modelRows.Close() }()
+	for modelRows.Next() {
+		var channelID int64
+		var entry model.ModelEntry
+		if err := modelRows.Scan(&channelID, &entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+			return nil, fmt.Errorf("scan model for batch patch: %w", err)
+		}
+		if state := states[channelID]; state != nil {
+			state.modelEntries = append(state.modelEntries, entry)
+		}
+	}
+	if err := modelRows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate models for batch patch: %w", err)
+	}
+	return states, nil
+}
+
+func importedModelEntries(existing, imported []model.ModelEntry, mode string) []model.ModelEntry {
+	if mode == model.ModelImportModeReplace {
+		return append([]model.ModelEntry(nil), imported...)
+	}
+	result := append([]model.ModelEntry(nil), existing...)
+	seen := make(map[string]struct{}, len(existing)+len(imported))
+	for _, entry := range existing {
+		seen[strings.ToLower(entry.Model)] = struct{}{}
+	}
+	for _, entry := range imported {
+		key := strings.ToLower(entry.Model)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, entry)
+	}
+	return result
+}
+
+func modelEntrySlicesEqual(left, right []model.ModelEntry) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func reconciledScheduledCheckModel(current string, entries []model.ModelEntry) string {
+	if current == "" {
+		return ""
+	}
+	for _, entry := range entries {
+		if strings.EqualFold(entry.Model, current) || strings.EqualFold(entry.RedirectModel, current) {
+			return entry.Model
+		}
+	}
+	return ""
 }
 
 // DeleteConfig 删除渠道配置

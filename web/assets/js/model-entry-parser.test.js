@@ -4,7 +4,8 @@ const assert = require('node:assert/strict');
 const {
   normalizeModelEntries,
   parseJSONModelEntries,
-  parseModelEntries
+  parseModelEntries,
+  serializeModelEntries
 } = require('./model-entry-parser.js');
 
 test('批量模型输入支持用竖线分隔请求模型和重定向模型', () => {
@@ -28,6 +29,17 @@ test('批量模型输入同时接受全角竖线', () => {
   assert.deepEqual(
     parseModelEntries('请求模型｜重定向模型'),
     [{ model: '请求模型', redirect_model: '重定向模型' }]
+  );
+});
+
+test('模型导出固定使用 request-model|redirect-model 并按行分隔', () => {
+  assert.equal(
+    serializeModelEntries([
+      { model: ' gpt-4o ', redirect_model: ' gpt-4.1 ' },
+      { model: 'claude-sonnet', redirect_model: '' },
+      { model: '   ', redirect_model: 'ignored' }
+    ]),
+    'gpt-4o|gpt-4.1\nclaude-sonnet|claude-sonnet'
   );
 });
 

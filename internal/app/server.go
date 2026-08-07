@@ -64,6 +64,7 @@ type Server struct {
 	responsesExecutionSessions    *responsesExecutionSessionStore
 	responsesWebsocketConnections *responsesWebsocketConnectionLimiter
 	codexOAuth                    *codexOAuthManager
+	codexService                  *codexauth.Service
 	codexCredentials              *codexCredentialManager
 	antigravityOAuth              *codexOAuthManager
 	antigravityCredentials        *antigravityCredentialManager
@@ -226,6 +227,7 @@ func NewServer(store storage.Store) *Server {
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
 	codexOAuthService := codexauth.NewService(s.client)
+	s.codexService = codexOAuthService
 	s.codexCredentials = newCodexCredentialManager(codexOAuthService, store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
@@ -1038,7 +1040,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
-		admin.POST("/channels/batch-protocol-mode", s.HandleBatchSetProtocolTransformMode)
+		admin.POST("/channels/batch-advanced", s.HandleBatchPatchChannels)
 		admin.POST("/channels/batch-delete", s.HandleBatchDeleteChannels) // 批量删除渠道
 		admin.POST("/channels/cooldown-detection/test", s.HandleCooldownDetectionTest)
 		admin.GET("/channels/:id", s.HandleChannelByID)

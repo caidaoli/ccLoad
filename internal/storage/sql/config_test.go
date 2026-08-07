@@ -896,6 +896,111 @@ func TestConfig_BatchUpdatePriority(t *testing.T) {
 	}
 }
 
+func TestConfig_BatchPatchConfigs(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "batch-patch.db")
+	ctx := context.Background()
+	create := func(name, mode, scheduledModel string, models []model.ModelEntry) *model.Config {
+		t.Helper()
+		cfg, err := store.CreateConfig(ctx, &model.Config{
+			Name:                    name,
+			URLs:                    model.ChannelURLs{{URL: "https://" + name + ".example.com"}},
+			Priority:                7,
+			Enabled:                 true,
+			ProtocolTransformMode:   mode,
+			ScheduledCheckEnabled:   true,
+			ScheduledCheckModel:     scheduledModel,
+			CostMultiplier:          1,
+			ModelEntries:            models,
+			RetryOtherKeysOnFailure: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig(%s): %v", name, err)
+		}
+		return cfg
+	}
+
+	first := create("batch-first", model.ProtocolTransformModeAuto, "upstream-a", []model.ModelEntry{
+		{Model: "alias-a", RedirectModel: "upstream-a", Disabled: true},
+	})
+	second := create("batch-second", model.ProtocolTransformModeLocal, "model-x", []model.ModelEntry{
+		{Model: "model-x"},
+	})
+
+	multiplier := 0.5
+	mode := model.ProtocolTransformModeLocal
+	result, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID, first.ID, 99999}, model.BatchConfigPatch{
+		CostMultiplier:        &multiplier,
+		ProtocolTransformMode: &mode,
+		ModelImportMode:       model.ModelImportModeAppend,
+		ModelEntries: []model.ModelEntry{
+			{Model: "ALIAS-A", RedirectModel: "ignored-duplicate"},
+			{Model: "model-b", RedirectModel: "upstream-b"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs append: %v", err)
+	}
+	if result.Updated != 2 || result.Unchanged != 0 || len(result.NotFound) != 1 || result.NotFound[0] != 99999 {
+		t.Fatalf("unexpected append result: %+v", result)
+	}
+
+	for _, channelID := range []int64{first.ID, second.ID} {
+		got, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatalf("GetConfig(%d): %v", channelID, err)
+		}
+		if got.CostMultiplier != multiplier || got.GetProtocolTransformMode() != mode {
+			t.Fatalf("channel %d advanced fields = (%v, %q)", channelID, got.CostMultiplier, got.GetProtocolTransformMode())
+		}
+		if got.Priority != 7 || !got.RetryOtherKeysOnFailure {
+			t.Fatalf("channel %d unrelated fields changed: %+v", channelID, got)
+		}
+		if channelID == first.ID {
+			if len(got.ModelEntries) != 2 || got.ModelEntries[0].Model != "alias-a" || !got.ModelEntries[0].Disabled || got.ModelEntries[1].Model != "model-b" {
+				t.Fatalf("channel %d models=%+v", channelID, got.ModelEntries)
+			}
+		} else if len(got.ModelEntries) != 3 || got.ModelEntries[1].Model != "ALIAS-A" || got.ModelEntries[2].Model != "model-b" || got.ModelEntries[2].RedirectModel != "upstream-b" {
+			t.Fatalf("channel %d models=%+v", channelID, got.ModelEntries)
+		}
+	}
+
+	replaceResult, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID}, model.BatchConfigPatch{
+		ModelImportMode: model.ModelImportModeReplace,
+		ModelEntries:    []model.ModelEntry{{Model: "replacement"}},
+	})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs replace: %v", err)
+	}
+	if replaceResult.Updated != 2 || replaceResult.Unchanged != 0 {
+		t.Fatalf("unexpected replace result: %+v", replaceResult)
+	}
+	for _, channelID := range []int64{first.ID, second.ID} {
+		got, err := store.GetConfig(ctx, channelID)
+		if err != nil {
+			t.Fatalf("GetConfig(%d) after replace: %v", channelID, err)
+		}
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "replacement" {
+			t.Fatalf("channel %d replacement models=%+v", channelID, got.ModelEntries)
+		}
+		if got.ScheduledCheckModel != "" {
+			t.Fatalf("channel %d scheduled_check_model=%q, want empty", channelID, got.ScheduledCheckModel)
+		}
+	}
+
+	unchanged, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID}, model.BatchConfigPatch{
+		ModelImportMode: model.ModelImportModeReplace,
+		ModelEntries:    []model.ModelEntry{{Model: "replacement"}},
+	})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs unchanged: %v", err)
+	}
+	if unchanged.Updated != 0 || unchanged.Unchanged != 2 {
+		t.Fatalf("unexpected unchanged result: %+v", unchanged)
+	}
+}
+
 func TestConfig_ModelRedirect(t *testing.T) {
 	t.Parallel()
 

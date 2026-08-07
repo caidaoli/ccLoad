@@ -3,6 +3,7 @@ const assert = require('node:assert/strict');
 
 const { selectAvailableInlineKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
+const ModelEntryParser = require('./model-entry-parser.js');
 
 function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, channelId = null, authType = 'api_key' }) {
 	const globals = {
@@ -51,9 +52,41 @@ function installBatchProtocolModeGlobals(response) {
   const notifications = [];
   let filterSaves = 0;
   let reloads = 0;
+  const makeClassList = (initial = []) => {
+    const classes = new Set(initial);
+    return {
+      add: (...names) => names.forEach(name => classes.add(name)),
+      remove: (...names) => names.forEach(name => classes.delete(name)),
+      contains: name => classes.has(name),
+      toggle(name, force) {
+        if (force === undefined ? !classes.has(name) : force) classes.add(name);
+        else classes.delete(name);
+      }
+    };
+  };
+  const appContainer = {
+    inert: false,
+    setAttribute(name) { if (name === 'inert') this.inert = true; },
+    removeAttribute(name) { if (name === 'inert') this.inert = false; }
+  };
+  const modelImportModeAppend = { value: 'append', checked: true };
+  const modelImportModeReplace = { value: 'replace', checked: false };
+  const modelImportFormatText = { value: 'text', checked: true };
   const elements = {
     batchProtocolTransformMode: { value: 'local', disabled: false },
     batchApplyProtocolBtn: { disabled: false },
+    batchCostMultiplier: {
+      value: '0.5',
+      disabled: false,
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, value); },
+      focus() {}
+    },
+    batchApplyCostMultiplierBtn: { disabled: false },
+    batchCostMultiplierError: { textContent: '', hidden: true },
+    batchImportModelsBtn: { disabled: false },
+    batchAdvancedOptions: { open: true },
+    batchRefreshOptions: { open: false },
     batchFloatingMenu: {
       inert: false,
       classList: { toggle() {} },
@@ -61,16 +94,55 @@ function installBatchProtocolModeGlobals(response) {
     },
     selectedChannelsSummary: { textContent: '' },
     selectedChannelsCountBadge: { textContent: '' },
-    batchFloatingMenuCloseBtn: { disabled: false }
+    batchFloatingMenuCloseBtn: { disabled: false },
+    modelImportTextarea: {
+      value: '',
+      disabled: false,
+      dataset: {},
+      placeholder: '',
+      attributes: new Map(),
+      setAttribute(name, value) { this.attributes.set(name, value); },
+      focus() {}
+    },
+    modelImportError: { textContent: '', hidden: true },
+    modelImportPreviewContent: { classList: makeClassList(['hidden']) },
+    modelImportCount: { textContent: '' },
+    modelImportModeFieldset: { hidden: true },
+    modelImportTitle: { textContent: '', setAttribute() {} },
+    modelImportPreviewLabel: { textContent: '', setAttribute() {} },
+    modelImportConfirmBtn: { textContent: '', disabled: false, setAttribute() {} },
+    modelImportInputLabel: { textContent: '', setAttribute() {} },
+    modelImportInputHint: { textContent: '', setAttribute() {} },
+    modelImportTextHelp: { hidden: false },
+    modelImportJSONHelp: { hidden: true },
+    modelImportModal: {
+      classList: makeClassList(),
+      dataset: {},
+      setAttribute() {}
+    },
+    channelModal: { setAttribute() {}, removeAttribute() {} },
+    visibleSelectionCheckbox: { focus() {} }
   };
   const globals = {
     window: {
       t: (key, params) => params ? { key, params } : key,
       showSuccess: message => notifications.push({ type: 'success', message }),
       showError: message => notifications.push({ type: 'error', message }),
-      showWarning: message => notifications.push({ type: 'warning', message })
+      showWarning: message => notifications.push({ type: 'warning', message }),
+      ModelEntryParser,
+      localStorage: { getItem: () => null, setItem() {} }
     },
-    document: { getElementById: id => elements[id] || null },
+    document: {
+      activeElement: elements.batchImportModelsBtn,
+      getElementById: id => elements[id] || null,
+      querySelector: selector => ({
+        '.app-container': appContainer,
+        'input[name="modelImportMode"][value="append"]': modelImportModeAppend,
+        'input[name="modelImportMode"]:checked': modelImportModeReplace.checked ? modelImportModeReplace : modelImportModeAppend,
+        'input[name="modelImportFormat"][value="text"]': modelImportFormatText,
+        'input[name="modelImportFormat"]:checked': modelImportFormatText
+      })[selector] || null
+    },
     selectedChannelIds: new Set(['11', '22']),
     filteredChannels: [],
     channels: [],
@@ -80,6 +152,8 @@ function installBatchProtocolModeGlobals(response) {
     },
     saveChannelsFilters: () => { filterSaves++; },
     reloadChannelsList: async () => { reloads++; },
+    setTimeout: callback => { callback(); return 1; },
+    confirm: () => true,
     console: { ...console, error: () => {} }
   };
   const previous = new Map();
@@ -92,6 +166,9 @@ function installBatchProtocolModeGlobals(response) {
     notifications,
     requests,
     selectedChannelIds: globals.selectedChannelIds,
+    appContainer,
+    modelImportModeAppend,
+    modelImportModeReplace,
     get filterSaves() { return filterSaves; },
     get reloads() { return reloads; },
     restore() {
@@ -886,7 +963,7 @@ test('batch protocol mode submits selected channel IDs and refreshes the list', 
     await batchSetSelectedChannelsProtocolMode();
 
     assert.equal(fixture.requests.length, 1);
-    assert.equal(fixture.requests[0].url, '/admin/channels/batch-protocol-mode');
+    assert.equal(fixture.requests[0].url, '/admin/channels/batch-advanced');
     assert.equal(fixture.requests[0].options.method, 'POST');
     assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
       channel_ids: [11, 22],
@@ -907,6 +984,147 @@ test('batch protocol mode submits selected channel IDs and refreshes the list', 
         }
       }
     }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch cost multiplier submits a numeric patch and refreshes the list', async () => {
+  const fixture = installBatchProtocolModeGlobals({
+    success: true,
+    data: { updated: 2, unchanged: 0, not_found_count: 0 }
+  });
+
+  try {
+    const { batchSetSelectedChannelsCostMultiplier } = loadChannelsModals();
+    await batchSetSelectedChannelsCostMultiplier();
+
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].url, '/admin/channels/batch-advanced');
+    assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+      channel_ids: [11, 22],
+      cost_multiplier: 0.5
+    });
+    assert.equal(fixture.selectedChannelIds.size, 0);
+    assert.equal(fixture.filterSaves, 1);
+    assert.equal(fixture.reloads, 1);
+    assert.deepEqual(fixture.notifications, [{
+      type: 'success',
+      message: {
+        key: 'channels.batchCostMultiplierSummary',
+        params: {
+          multiplier: 0.5,
+          updated: 2,
+          unchanged: 0,
+          notFound: 0
+        }
+      }
+    }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch cost multiplier rejects negative values without sending a request', async () => {
+  const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
+  fixture.elements.batchCostMultiplier.value = '-1';
+
+  try {
+    const { batchSetSelectedChannelsCostMultiplier } = loadChannelsModals();
+    await batchSetSelectedChannelsCostMultiplier();
+
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.selectedChannelIds.size, 2);
+    assert.equal(fixture.elements.batchCostMultiplier.attributes.get('aria-invalid'), 'true');
+    assert.equal(fixture.elements.batchCostMultiplierError.hidden, false);
+    assert.deepEqual(fixture.notifications, []);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch cost multiplier rejects an empty value instead of treating it as zero', async () => {
+  const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
+  fixture.elements.batchCostMultiplier.value = '';
+
+  try {
+    const { batchSetSelectedChannelsCostMultiplier } = loadChannelsModals();
+    await batchSetSelectedChannelsCostMultiplier();
+
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.selectedChannelIds.size, 2);
+    assert.equal(fixture.elements.batchCostMultiplier.attributes.get('aria-invalid'), 'true');
+    assert.equal(fixture.elements.batchCostMultiplierError.hidden, false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch model import parses mappings and submits append mode for selected channels', async () => {
+  const fixture = installBatchProtocolModeGlobals({
+    success: true,
+    data: { updated: 2, unchanged: 0, not_found_count: 0 }
+  });
+
+  try {
+    const { confirmModelImport, openBatchModelImportModal } = loadChannelsModals();
+    openBatchModelImportModal();
+    fixture.elements.modelImportTextarea.value = 'request-a|upstream-a\npassthrough';
+    await confirmModelImport();
+
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].url, '/admin/channels/batch-advanced');
+    assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+      channel_ids: [11, 22],
+      model_import_mode: 'append',
+      models: [
+        { model: 'request-a', redirect_model: 'upstream-a' },
+        { model: 'passthrough', redirect_model: '' }
+      ]
+    });
+    assert.equal(fixture.selectedChannelIds.size, 0);
+    assert.equal(fixture.filterSaves, 1);
+    assert.equal(fixture.reloads, 1);
+    assert.equal(fixture.appContainer.inert, false);
+    assert.equal(fixture.elements.modelImportModal.classList.contains('show'), false);
+    assert.deepEqual(fixture.notifications, [{
+      type: 'success',
+      message: {
+        key: 'channels.batchModelImportSummary',
+        params: {
+          mode: 'channels.batchModelImportModeValue.append',
+          updated: 2,
+          unchanged: 0,
+          notFound: 0
+        }
+      }
+    }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch model import submits replace mode after confirmation', async () => {
+  const fixture = installBatchProtocolModeGlobals({
+    success: true,
+    data: { updated: 2, unchanged: 0, not_found_count: 0 }
+  });
+
+  try {
+    const { confirmModelImport, openBatchModelImportModal } = loadChannelsModals();
+    openBatchModelImportModal();
+    fixture.modelImportModeAppend.checked = false;
+    fixture.modelImportModeReplace.checked = true;
+    fixture.elements.modelImportTextarea.value = 'replacement|replacement-upstream';
+    await confirmModelImport();
+
+    assert.equal(fixture.requests.length, 1);
+    assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+      channel_ids: [11, 22],
+      model_import_mode: 'replace',
+      models: [{ model: 'replacement', redirect_model: 'replacement-upstream' }]
+    });
+    assert.equal(fixture.selectedChannelIds.size, 0);
   } finally {
     fixture.restore();
   }

@@ -137,6 +137,7 @@ function initChannelsPageActions() {
         'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
         'batch-set-protocol-mode': () => batchSetSelectedChannelsProtocolMode(),
+        'batch-set-cost-multiplier': () => batchSetSelectedChannelsCostMultiplier(),
         'clear-selected-channels': () => clearSelectedChannels(),
         'close-test-modal': () => closeTestModal(),
         'run-channel-test': () => runChannelTest(),
