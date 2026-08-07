@@ -2587,10 +2587,8 @@
       font-variant-numeric: tabular-nums;
     }
 
-    .pagination-page-size-control select.logs-jump-input {
-      width: 64px;
-      padding-right: 4px;
-      cursor: pointer;
+    .pagination-page-size-control input.logs-jump-input {
+      width: 72px;
     }
 
     .logs-pagination-card .logs-pagination-controls {
@@ -3989,6 +3987,18 @@
       color: var(--neutral-700);
       background: transparent;
       border-color: transparent;
+    }
+
+    .channel-batch-action--quota {
+      color: var(--primary-700);
+      background: var(--primary-50);
+      border-color: var(--primary-200);
+    }
+
+    .channel-batch-action--quota:hover {
+      color: var(--primary-800);
+      background: var(--primary-100);
+      border-color: var(--primary-300);
     }
 
     .channel-batch-action--apply {
@@ -5454,13 +5464,18 @@
       }
 
       .channel-batch-action-group--refresh {
+        grid-row: 3;
+      }
+
+      #batchRefreshOAuthUsageBtn {
+        grid-column: 1 / -1;
         grid-row: 2;
       }
 
       .channel-batch-advanced {
         position: static;
         grid-column: 1 / -1;
-        grid-row: 3;
+        grid-row: 4;
       }
 
       #batchDeleteChannelsBtn {

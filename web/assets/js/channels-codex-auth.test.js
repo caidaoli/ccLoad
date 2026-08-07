@@ -13,6 +13,8 @@ const {
   pollAntigravityOAuthStatus,
   getOAuthUsageState,
   refreshOAuthUsage,
+  refreshOAuthUsageBatch,
+  batchRefreshSelectedOAuthUsage,
   refreshOAuthCredential,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
@@ -554,6 +556,112 @@ test('failed OAuth usage refresh remains retryable', async () => {
     assert.deepEqual(getOAuthUsageState(43), { status: 'error', error: 'quota unavailable' });
   } finally {
     global.filterChannels = previousFilterChannels;
+  }
+});
+
+test('batch OAuth usage refresh keeps per-channel results and reloads the list once', async () => {
+  const previousFilterChannels = global.filterChannels;
+  const previousLoadChannels = global.loadChannels;
+  const requested = [];
+  let reloads = 0;
+  global.filterChannels = () => {};
+  global.loadChannels = async () => { reloads++; };
+
+  try {
+    const summary = await refreshOAuthUsageBatch([51, 52, 53], async (url) => {
+      requested.push(url);
+      if (url.includes('/52/')) throw new Error('quota unavailable');
+      return { windows: [] };
+    });
+
+    assert.deepEqual(requested, [
+      '/admin/channels/51/oauth-usage',
+      '/admin/channels/52/oauth-usage',
+      '/admin/channels/53/oauth-usage'
+    ]);
+    assert.deepEqual(summary, { total: 3, succeeded: 2, failed: 1 });
+    assert.equal(getOAuthUsageState(51).status, 'ready');
+    assert.deepEqual(getOAuthUsageState(52), { status: 'error', error: 'quota unavailable' });
+    assert.equal(getOAuthUsageState(53).status, 'ready');
+    assert.equal(reloads, 1);
+  } finally {
+    global.filterChannels = previousFilterChannels;
+    if (previousLoadChannels === undefined) delete global.loadChannels;
+    else global.loadChannels = previousLoadChannels;
+  }
+});
+
+test('selected quota refresh skips non-OAuth channels and reports one batch result', async () => {
+  const previousGlobals = new Map();
+  const setGlobal = (name, value) => {
+    previousGlobals.set(name, Object.getOwnPropertyDescriptor(global, name));
+    Object.defineProperty(global, name, { configurable: true, writable: true, value });
+  };
+  const notices = [];
+  const requested = [];
+  const attributes = new Map();
+  const menuAttributes = new Map();
+  const button = {
+    disabled: false,
+    setAttribute: (name, value) => attributes.set(name, String(value)),
+    removeAttribute: name => attributes.delete(name)
+  };
+  const floatingMenu = {
+    setAttribute: (name, value) => menuAttributes.set(name, String(value)),
+    removeAttribute: name => menuAttributes.delete(name)
+  };
+  const label = { textContent: '刷新额度', setAttribute() {} };
+
+  setGlobal('window', {
+    t: (key, params) => params ? { key, params } : key,
+    showSuccess: message => notices.push({ type: 'success', message }),
+    showWarning: message => notices.push({ type: 'warning', message }),
+    showError: message => notices.push({ type: 'error', message })
+  });
+  setGlobal('document', {
+    getElementById: id => ({
+      batchRefreshOAuthUsageBtn: button,
+      batchRefreshOAuthUsageLabel: label,
+      batchFloatingMenu: floatingMenu
+    })[id] || null
+  });
+  setGlobal('channels', [
+    { id: 61, auth_type: 'codex_oauth' },
+    { id: 62, auth_type: 'api_key' },
+    { id: 63, auth_type: 'antigravity_oauth' }
+  ]);
+  setGlobal('getSelectedChannelIDs', () => [61, 62, 63]);
+  setGlobal('filterChannels', () => {});
+  setGlobal('loadChannels', async () => {});
+  setGlobal('updateBatchChannelSelectionUI', () => {});
+
+  try {
+    const summary = await batchRefreshSelectedOAuthUsage(async (url) => {
+      requested.push(url);
+      return { windows: [] };
+    });
+
+    assert.deepEqual(requested, [
+      '/admin/channels/61/oauth-usage',
+      '/admin/channels/63/oauth-usage'
+    ]);
+    assert.deepEqual(summary, { total: 3, succeeded: 2, failed: 0, skipped: 1 });
+    assert.deepEqual(notices, [{
+      type: 'success',
+      message: {
+        key: 'channels.batchOAuthUsageSummary',
+        params: { total: 3, succeeded: 2, failed: 0, skipped: 1 }
+      }
+    }]);
+    assert.equal(button.disabled, false);
+    assert.equal(attributes.has('aria-busy'), false);
+    assert.equal(menuAttributes.has('aria-busy'), false);
+    assert.equal(label.textContent, 'channels.oauth.usageRefresh');
+  } finally {
+    for (const [name, descriptor] of previousGlobals) {
+      if (descriptor) Object.defineProperty(global, name, descriptor);
+      else delete global[name];
+    }
   }
 });
 

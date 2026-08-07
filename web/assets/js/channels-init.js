@@ -134,6 +134,7 @@ function initChannelsPageActions() {
         'batch-enable-channels': () => batchEnableSelectedChannels(),
         'batch-disable-channels': () => batchDisableSelectedChannels(),
         'batch-delete-channels': () => batchDeleteSelectedChannels(),
+        'batch-refresh-oauth-usage': () => batchRefreshSelectedOAuthUsage(),
         'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
         'batch-set-protocol-mode': () => batchSetSelectedChannelsProtocolMode(),
@@ -166,21 +167,30 @@ function initChannelsPageActions() {
     jumpPageInput.dataset.bound = '1';
   }
 
-  // 每页显示数量选择器
-  const pageSizeSelect = document.getElementById('channels_page_size');
-  if (pageSizeSelect && !pageSizeSelect.dataset.bound) {
-    pageSizeSelect.value = String(channelsPageSize);
-    pageSizeSelect.addEventListener('change', (event) => {
-      const newSize = parseInt(event.target.value, 10);
-      if (newSize > 0) {
-        channelsPageSize = newSize;
-        localStorage.setItem('channels.pageSize', String(newSize));
-        channelsCurrentPage = 1;
-        saveChannelsFilters();
-        loadChannels();
+  // 每页显示数量输入框
+  const pageSizeInput = document.getElementById('channels_page_size');
+  if (pageSizeInput && !pageSizeInput.dataset.bound) {
+    const applyPageSize = () => {
+      const newSize = normalizeChannelsPageSize(pageSizeInput.value);
+      pageSizeInput.value = String(newSize);
+      localStorage.setItem('channels.pageSize', String(newSize));
+      if (newSize === channelsPageSize) return;
+
+      channelsPageSize = newSize;
+      channelsCurrentPage = 1;
+      saveChannelsFilters();
+      loadChannels();
+    };
+
+    pageSizeInput.value = String(channelsPageSize);
+    pageSizeInput.addEventListener('change', applyPageSize);
+    pageSizeInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        applyPageSize();
       }
     });
-    pageSizeSelect.dataset.bound = '1';
+    pageSizeInput.dataset.bound = '1';
   }
 }
 

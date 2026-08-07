@@ -1087,6 +1087,7 @@ function updateBatchChannelSelectionUI() {
   });
 
   const floatingMenu = document.getElementById('batchFloatingMenu');
+  const batchBusy = floatingMenu?.getAttribute?.('aria-busy') === 'true';
   if (floatingMenu) {
     const visible = selectedCount > 0;
     floatingMenu.classList.toggle('is-visible', visible);
@@ -1140,6 +1141,7 @@ function updateBatchChannelSelectionUI() {
     'batchEnableChannelsBtn',
     'batchDisableChannelsBtn',
     'batchDeleteChannelsBtn',
+    'batchRefreshOAuthUsageBtn',
     'batchRefreshMergeBtn',
     'batchRefreshReplaceBtn',
     'batchApplyProtocolBtn',
@@ -1148,13 +1150,13 @@ function updateBatchChannelSelectionUI() {
   ];
   actionBtnIDs.forEach((id) => {
     const btn = document.getElementById(id);
-    if (btn) btn.disabled = selectedCount === 0;
+    if (btn) btn.disabled = selectedCount === 0 || batchBusy || btn.getAttribute?.('aria-busy') === 'true';
   });
 
   const protocolMode = document.getElementById('batchProtocolTransformMode');
-  if (protocolMode) protocolMode.disabled = selectedCount === 0;
+  if (protocolMode) protocolMode.disabled = selectedCount === 0 || batchBusy;
   const costMultiplier = document.getElementById('batchCostMultiplier');
-  if (costMultiplier) costMultiplier.disabled = selectedCount === 0;
+  if (costMultiplier) costMultiplier.disabled = selectedCount === 0 || batchBusy;
 }
 
 function selectAllVisibleChannels() {
@@ -1553,7 +1555,7 @@ async function batchRefreshSelectedChannels(mode) {
   }
 
   // 禁用批量操作按钮
-  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn', 'batchApplyProtocolBtn'];
+  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchRefreshOAuthUsageBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn', 'batchApplyProtocolBtn'];
   actionBtnIDs.forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = true; });
   const protocolModeSelect = document.getElementById('batchProtocolTransformMode');
   if (protocolModeSelect) protocolModeSelect.disabled = true;

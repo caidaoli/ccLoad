@@ -14,12 +14,27 @@ let defaultTestContent = 'When was Claude 3.5 Sonnet released?'; // Default test
 let channelStatsRange = 'today'; // 渠道统计时间范围（从设置加载）
 let selectedChannelIds = new Set(); // 选中的渠道ID（字符串，避免数字/字符串混用）
 let channelsCurrentPage = 1;
-let channelsPageSize = parseInt(localStorage.getItem('channels.pageSize'), 10) || 20;
+const DEFAULT_CHANNELS_PAGE_SIZE = 20;
+const MAX_CHANNELS_PAGE_SIZE = 1000;
+
+function normalizeChannelsPageSize(value) {
+  const size = Number(String(value ?? '').trim());
+  if (!Number.isInteger(size) || size < 1 || size > MAX_CHANNELS_PAGE_SIZE) {
+    return DEFAULT_CHANNELS_PAGE_SIZE;
+  }
+  return size;
+}
+
+let channelsPageSize = normalizeChannelsPageSize(localStorage.getItem('channels.pageSize'));
 let channelsTotalPages = 1;
 let channelsTotalCount = 0;
 let allAvailableModels = [];
 let allAvailableChannelNames = [];
 let batchRefreshResultsByChannelId = new Map();
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { normalizeChannelsPageSize };
+}
 
 function isTokenChannelsReadOnly() {
   return Boolean(window.WebAuth && window.WebAuth.isAPITokenRole(localStorage));

@@ -679,7 +679,7 @@ function rerenderOAuthUsage() {
   if (typeof filterChannels === 'function') filterChannels();
 }
 
-async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth) {
+async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options = {}) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) {
     throw new Error('A saved OAuth channel is required');
@@ -692,7 +692,7 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth) {
       throw new Error(window.t('channels.oauth.usageInvalid'));
     }
     oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
-    if (typeof loadChannels === 'function') {
+    if (options.reload !== false && typeof loadChannels === 'function') {
       await loadChannels();
     } else {
       rerenderOAuthUsage();
@@ -703,6 +703,104 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth) {
     oauthUsageStateByChannelID.set(numericID, { status: 'error', error: message });
     rerenderOAuthUsage();
     throw error;
+  }
+}
+
+async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchDataWithAuth) {
+  const ids = Array.from(new Set((channelIDs || [])
+    .map(id => Number(id))
+    .filter(id => Number.isInteger(id) && id > 0)));
+  const summary = { total: ids.length, succeeded: 0, failed: 0 };
+  if (ids.length === 0) return summary;
+
+  for (const id of ids) {
+    try {
+      await refreshOAuthUsage(id, fetcher, { reload: false });
+      summary.succeeded++;
+    } catch {
+      summary.failed++;
+    }
+  }
+
+  if (typeof loadChannels === 'function') {
+    await loadChannels();
+  } else {
+    rerenderOAuthUsage();
+  }
+  return summary;
+}
+
+async function batchRefreshSelectedOAuthUsage(fetcher = fetchDataWithAuth) {
+  const selectedIDs = typeof getSelectedChannelIDs === 'function' ? getSelectedChannelIDs() : [];
+  if (selectedIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return null;
+  }
+
+  const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+  const eligibleIDs = selectedIDs.filter(id => {
+    const channel = channelList.find(item => Number(item.id) === id);
+    return channel && ['codex_oauth', 'antigravity_oauth'].includes(channel.auth_type);
+  });
+  const skipped = selectedIDs.length - eligibleIDs.length;
+  if (eligibleIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchOAuthUsageNoEligible'));
+    return { total: selectedIDs.length, succeeded: 0, failed: 0, skipped };
+  }
+
+  const button = document.getElementById('batchRefreshOAuthUsageBtn');
+  const label = document.getElementById('batchRefreshOAuthUsageLabel');
+  const floatingMenu = document.getElementById('batchFloatingMenu');
+  if (button) {
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+  }
+  if (floatingMenu) floatingMenu.setAttribute('aria-busy', 'true');
+  if (label) {
+    label.setAttribute('data-i18n', 'channels.oauth.usageRefreshing');
+    label.textContent = window.t('channels.oauth.usageRefreshing');
+  }
+  if (typeof updateBatchChannelSelectionUI === 'function') {
+    updateBatchChannelSelectionUI();
+  }
+
+  try {
+    const batch = await refreshOAuthUsageBatch(eligibleIDs, fetcher);
+    const result = {
+      total: selectedIDs.length,
+      succeeded: batch.succeeded,
+      failed: batch.failed,
+      skipped
+    };
+    const message = window.t('channels.batchOAuthUsageSummary', result);
+    if (batch.failed === batch.total) {
+      if (window.showError) window.showError(message);
+    } else if (batch.failed > 0) {
+      if (window.showWarning) window.showWarning(message);
+    } else if (window.showSuccess) {
+      window.showSuccess(message);
+    }
+    return result;
+  } catch (error) {
+    if (window.showError) {
+      window.showError(window.t('channels.batchOAuthUsageFailed', {
+        error: error?.message || window.t('common.failed')
+      }));
+    }
+    return null;
+  } finally {
+    if (button) {
+      button.removeAttribute('aria-busy');
+      button.disabled = false;
+    }
+    if (floatingMenu) floatingMenu.removeAttribute('aria-busy');
+    if (label) {
+      label.setAttribute('data-i18n', 'channels.oauth.usageRefresh');
+      label.textContent = window.t('channels.oauth.usageRefresh');
+    }
+    if (typeof updateBatchChannelSelectionUI === 'function') {
+      updateBatchChannelSelectionUI();
+    }
   }
 }
 
@@ -893,6 +991,7 @@ function setupOAuthActions() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     applyChannelAuthEditorMode,
+    batchRefreshSelectedOAuthUsage,
     cancelAntigravityOAuth,
     cancelCodexOAuth,
     copyOAuthCredential,
@@ -906,6 +1005,7 @@ if (typeof module !== 'undefined' && module.exports) {
     pollCodexOAuthStatus,
     refreshOAuthCredential,
     refreshOAuthUsage,
+    refreshOAuthUsageBatch,
     renderOAuthCredential,
     setOAuthCredentialView,
     setupOAuthActions,
