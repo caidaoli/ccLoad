@@ -180,7 +180,7 @@ func TestHandleError_ChannelLevelError(t *testing.T) {
 	}
 }
 
-func TestHandleError_HTTP404ModelAvailabilityScope(t *testing.T) {
+func TestHandleError_HTTPModelAvailabilityScope(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
@@ -196,6 +196,7 @@ func TestHandleError_HTTP404ModelAvailabilityScope(t *testing.T) {
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-5.6-sol"},
 				{Model: "gpt-5.6"},
+				{Model: "deepseek-ai/deepseek-v4-flash"},
 			},
 		})
 		if err != nil {
@@ -228,6 +229,38 @@ func TestHandleError_HTTP404ModelAvailabilityScope(t *testing.T) {
 		}
 		if channelCfg.IsCoolingDown(time.Now()) {
 			t.Fatal("unsupported model must not cool the whole channel while another model is available")
+		}
+	})
+
+	t.Run("retired model on HTTP 410 cools only that model", func(t *testing.T) {
+		cfg := createChannel(t, "test-http-410-model-eol")
+
+		action := manager.HandleError(ctx, ErrorInput{
+			ChannelID:  cfg.ID,
+			Model:      "deepseek-ai/deepseek-v4-flash",
+			KeyIndex:   0,
+			StatusCode: 410,
+			ErrorBody: []byte(`{
+				"error": {
+					"type": "bad_response_status_code",
+					"message": "The model 'deepseek-ai/deepseek-v4-flash' has reached its end of life and is no longer available."
+				}
+			}`),
+		})
+
+		if action != ActionRetryModel {
+			t.Fatalf("action=%v, want ActionRetryModel", action)
+		}
+		until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "deepseek-ai/deepseek-v4-flash")
+		if !exists || !until.After(time.Now()) {
+			t.Fatalf("retired model should be cooled, until=%v exists=%v", until, exists)
+		}
+		channelCfg, err := store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			t.Fatalf("get config: %v", err)
+		}
+		if channelCfg.IsCoolingDown(time.Now()) {
+			t.Fatal("retired model must not cool the whole channel while another model is available")
 		}
 	})
 

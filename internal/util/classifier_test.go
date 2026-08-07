@@ -272,6 +272,26 @@ func TestClassifyHTTPResponse_Upstream499IsModelScoped(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPResponse_HTTP410ModelEOLIsModelScoped(t *testing.T) {
+	classification := ClassifyHTTPResponseWithMeta(http.StatusGone, nil, []byte(`{
+		"error": {
+			"type": "bad_response_status_code",
+			"message": "The model 'deepseek-ai/deepseek-v4-flash' has reached its end of life and is no longer available."
+		}
+	}`))
+	if classification.Level != ErrorLevelChannel {
+		t.Fatalf("Level=%v, want ErrorLevelChannel", classification.Level)
+	}
+	if !classification.ModelScoped {
+		t.Fatal("HTTP 410 model EOL must be model-scoped")
+	}
+
+	generic := ClassifyHTTPResponseWithMeta(http.StatusGone, nil, []byte(`{"error":"resource is gone"}`))
+	if generic.Level != ErrorLevelClient || generic.ModelScoped {
+		t.Fatalf("generic HTTP 410 classification=%+v, want client-scoped", generic)
+	}
+}
+
 // 测试context.Canceled与HTTP 499的区分
 func TestClassifyError_ContextCanceled(t *testing.T) {
 	tests := []struct {

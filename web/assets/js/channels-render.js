@@ -37,7 +37,13 @@ function buildOAuthPlanBadge(channel) {
     planType = String(channel.antigravity_paid_tier || '').trim();
   }
   if (!planType) return '';
-  return `<span class="ch-oauth-plan-badge">${escapeChannelRefreshText(planType)}</span>`;
+
+  const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+  if (planTokens.includes('free')) return '';
+
+  const planTone = ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
+  const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
+  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(planType)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {
