@@ -13,7 +13,10 @@ import (
 	"ccLoad/internal/storage"
 )
 
-const debugLogCleanupBatchSize = 200
+const (
+	debugLogCleanupBatchSize  = 200
+	debugLogCleanupBatchYield = 100 * time.Millisecond
+)
 
 // LogService 日志管理服务
 //
@@ -225,33 +228,21 @@ func (s *LogService) AddLogAsync(entry *model.LogEntry) {
 // 日志清理
 // ============================================================================
 
-// StartCleanupLoop 启动日志清理后台协程
-// 每小时检查一次，删除3天前的日志
+// StartCleanupLoop 分别启动普通日志和调试日志清理后台协程。
+// 普通日志每小时检查一次，调试日志启动后立即检查并按独立周期运行。
 // 支持优雅关闭
 func (s *LogService) StartCleanupLoop() {
-	s.wg.Add(1)
+	s.wg.Add(2)
 	go s.cleanupOldLogsLoop()
+	go s.cleanupDebugLogsLoop()
 }
 
 // cleanupOldLogsLoop 日志清理后台协程（私有方法）
 func (s *LogService) cleanupOldLogsLoop() {
 	defer s.wg.Done()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() {
-		select {
-		case <-s.shutdownCh:
-			cancel()
-		case <-ctx.Done():
-		}
-	}()
 
 	logTicker := time.NewTicker(config.LogCleanupInterval)
 	defer logTicker.Stop()
-
-	debugTicker := time.NewTicker(config.DebugLogCleanupInterval)
-	defer debugTicker.Stop()
-	debugCleanupDone := s.cleanupDebugLogs(ctx)
 
 	for {
 		select {
@@ -268,64 +259,89 @@ func (s *LogService) cleanupOldLogsLoop() {
 				}()
 			}
 
-		case <-debugTicker.C:
-			if !debugCleanupDone {
-				debugCleanupDone = s.cleanupDebugLogs(ctx)
-			}
-
 		case <-s.shutdownCh:
 			return
 		}
 	}
 }
 
-// cleanupDebugLogs 清理一次调试日志。返回 true 表示 Debug 已关闭且表已清空。
-func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
+// cleanupDebugLogsLoop 使用独立协程清理调试日志，避免阻塞普通日志维护任务。
+func (s *LogService) cleanupDebugLogsLoop() {
+	defer s.wg.Done()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-s.shutdownCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+
+	for ctx.Err() == nil {
+		s.cleanupDebugLogs(ctx)
+
+		timer := time.NewTimer(config.DebugLogCleanupInterval)
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return
+		}
+	}
+}
+
+// cleanupDebugLogs 执行一轮调试日志清理。
+func (s *LogService) cleanupDebugLogs(ctx context.Context) {
 	setting, err := s.store.GetSetting(ctx, "debug_log_enabled")
 	if err != nil {
 		log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
-		return false
+		return
 	}
-	if setting == nil || setting.Value != "true" {
-		if err := s.store.TruncateDebugLogs(ctx); err != nil {
-			log.Printf("[WARN] 清空调试日志失败: %v", err)
-			return false
+	debugEnabled := setting != nil && setting.Value == "true"
+
+	cutoff := time.Unix(1<<62, 0)
+	if debugEnabled {
+		retentionMinutes := 5
+		if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
+			log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
+			return
+		} else if setting != nil {
+			if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
+				retentionMinutes = value
+			}
 		}
-		log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
-		return true
+		cutoff = time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
 	}
 
-	retentionMinutes := 5
-	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
-		log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
-		return false
-	} else if setting != nil {
-		if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
-			retentionMinutes = value
-		}
-	}
-
-	cutoff := time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
-	limit := debugLogCleanupBatchSize
+	var totalDeleted int64
 	for {
-		deleted, err := s.store.CleanupDebugLogsBatch(ctx, cutoff, limit)
+		deleted, err := s.store.CleanupDebugLogsBatch(ctx, cutoff, debugLogCleanupBatchSize)
 		if err != nil {
 			if ctx.Err() != nil {
-				return false
+				return
 			}
-			if limit == 1 {
-				log.Printf("[WARN] 清理过期调试日志失败 (batch_size=1): %v", err)
-				return false
+			log.Printf("[WARN] 清理调试日志失败，本轮停止 (batch_size=%d): %v", debugLogCleanupBatchSize, err)
+			return
+		}
+		totalDeleted += deleted
+		if deleted < int64(debugLogCleanupBatchSize) {
+			if !debugEnabled && totalDeleted > 0 {
+				log.Printf("[INFO] 调试日志未启用，已清空 %d 条历史调试日志", totalDeleted)
 			}
-			limit = max(1, limit/2)
-			log.Printf("[WARN] 清理过期调试日志失败，缩小批量后重试 (batch_size=%d): %v", limit, err)
-			continue
+			return
 		}
-		if deleted < int64(limit) {
-			return false
-		}
-		if ctx.Err() != nil {
-			return false
+
+		select {
+		case <-time.After(debugLogCleanupBatchYield):
+		case <-ctx.Done():
+			return
 		}
 	}
 }
