@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
@@ -4804,6 +4805,65 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	}
 	if fallbackCalls.Load() != 0 {
 		t.Fatalf("fallback called %d times after committed output", fallbackCalls.Load())
+	}
+}
+
+func TestNativeCodexWebsocketAbnormalCloseAfterSemanticOutputLogsStreamIncomplete(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade abnormal-close websocket: %v", err)
+			return
+		}
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read abnormal-close request: %v", err)
+			_ = conn.Close()
+			return
+		}
+		if err := conn.WriteJSON(map[string]any{
+			"type": "response.output_text.delta", "delta": "partial",
+		}); err != nil {
+			t.Errorf("write abnormal-close delta: %v", err)
+			_ = conn.Close()
+			return
+		}
+		_ = conn.UnderlyingConn().Close()
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "abnormal-close-native", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocket(t, env.engine)
+	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set abnormal-close deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "interrupt"}},
+	}); err != nil {
+		t.Fatalf("write abnormal-close request: %v", err)
+	}
+
+	var event map[string]any
+	if err := downstream.ReadJSON(&event); err != nil {
+		t.Fatalf("read partial event: %v", err)
+	}
+	if event["type"] != "response.output_text.delta" {
+		t.Fatalf("first event=%#v, want output delta", event)
+	}
+	if err := downstream.ReadJSON(&event); err != nil {
+		t.Fatalf("read interrupted event: %v", err)
+	}
+	if event["type"] != "error" {
+		t.Fatalf("terminal event=%#v, want error", event)
+	}
+
+	entry := waitForProxyLog(t, env, "gpt-test")
+	if entry.StatusCode != util.StatusStreamIncomplete {
+		t.Fatalf("proxy log status=%d message=%q, want %d", entry.StatusCode, entry.Message, util.StatusStreamIncomplete)
 	}
 }
 
