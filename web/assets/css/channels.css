@@ -28,6 +28,34 @@
       --channel-last-request-copy-hover-bg: #ffffff;
       --channel-last-request-copy-hover-fg: #7f1d1d;
       --channel-last-request-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+      --channel-plan-default-bg: #f3f4f6;
+      --channel-plan-default-border: #d1d5db;
+      --channel-plan-default-fg: #4b5563;
+      --channel-plan-plus-bg: #eff6ff;
+      --channel-plan-plus-border: #bfdbfe;
+      --channel-plan-plus-fg: #1d4ed8;
+      --channel-plan-pro-bg: #faf5ff;
+      --channel-plan-pro-border: #e9d5ff;
+      --channel-plan-pro-fg: #7e22ce;
+      --channel-plan-team-bg: #ecfdf5;
+      --channel-plan-team-border: #a7f3d0;
+      --channel-plan-team-fg: #047857;
+    }
+
+    html[data-theme="dark"],
+    html[data-theme="system"][data-resolved-theme="dark"] {
+      --channel-plan-default-bg: #1f2937;
+      --channel-plan-default-border: #4b5563;
+      --channel-plan-default-fg: #d1d5db;
+      --channel-plan-plus-bg: #172554;
+      --channel-plan-plus-border: #1d4ed8;
+      --channel-plan-plus-fg: #dbeafe;
+      --channel-plan-pro-bg: #3b0764;
+      --channel-plan-pro-border: #7e22ce;
+      --channel-plan-pro-fg: #f3e8ff;
+      --channel-plan-team-bg: #022c22;
+      --channel-plan-team-border: #047857;
+      --channel-plan-team-fg: #d1fae5;
     }
 
     html[data-theme="dark"] {
@@ -2002,6 +2030,27 @@
       flex: 0 0 auto;
       align-self: flex-start;
       margin-left: auto;
+      border-color: var(--channel-plan-default-border);
+      background: var(--channel-plan-default-bg);
+      color: var(--channel-plan-default-fg);
+    }
+
+    .ch-oauth-plan-badge--plus {
+      border-color: var(--channel-plan-plus-border);
+      background: var(--channel-plan-plus-bg);
+      color: var(--channel-plan-plus-fg);
+    }
+
+    .ch-oauth-plan-badge--pro {
+      border-color: var(--channel-plan-pro-border);
+      background: var(--channel-plan-pro-bg);
+      color: var(--channel-plan-pro-fg);
+    }
+
+    .ch-oauth-plan-badge--team {
+      border-color: var(--channel-plan-team-border);
+      background: var(--channel-plan-team-bg);
+      color: var(--channel-plan-team-fg);
     }
 
     .ch-name-main .cell-multiplier-badge {

@@ -259,7 +259,7 @@ var statusCodeMetaMap = map[int]StatusCodeMeta{
 	// 作为渠道级故障处理：触发渠道冷却。
 	405: {ErrorLevelChannel}, // Method Not Allowed
 	406: {ErrorLevelClient},  // Not Acceptable
-	410: {ErrorLevelClient},  // Gone
+	410: {ErrorLevelClient},  // Gone（模型退役由响应语义收窄为模型级故障）
 	413: {ErrorLevelClient},  // Payload Too Large
 	414: {ErrorLevelClient},  // URI Too Long
 	415: {ErrorLevelClient},  // Unsupported Media Type
@@ -454,11 +454,20 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
+	// 410 Gone 通常表示资源已永久移除。只有响应明确指向模型退役时才切换渠道并
+	// 冷却当前实际模型；其他资源的 410 仍由客户端处理，避免盲目重放请求。
+	if statusCode == http.StatusGone && isModelUnavailableResponse(responseBody) {
+		return HTTPResponseClassification{
+			Level:       ErrorLevelChannel,
+			ModelScoped: true,
+		}
+	}
+
 	// 404错误：根据响应体智能分类
 	if statusCode == 404 {
 		return HTTPResponseClassification{
 			Level:       classify404Error(responseBody),
-			ModelScoped: isModelUnavailable404(responseBody),
+			ModelScoped: isModelUnavailableResponse(responseBody),
 		}
 	}
 
@@ -936,7 +945,7 @@ func parseBeijingTomorrowResetTime(message string, now time.Time) (time.Time, bo
 //   - 其他情况（渠道级）：空响应、HTML、异常 JSON 等都应切换渠道
 func classify404Error(responseBody []byte) ErrorLevel {
 	// 仅当明确是"模型不存在"时才视为客户端错误
-	if isModelUnavailable404(responseBody) {
+	if isModelUnavailableResponse(responseBody) {
 		return ErrorLevelClient
 	}
 
@@ -945,9 +954,9 @@ func classify404Error(responseBody []byte) ErrorLevel {
 	return ErrorLevelChannel
 }
 
-// isModelUnavailable404 只识别模型作用域的 404。
-// 普通 endpoint/BaseURL 404 必须继续按渠道故障处理，不能因为请求里带了模型名就误伤模型。
-func isModelUnavailable404(responseBody []byte) bool {
+// isModelUnavailableResponse 只识别明确的模型不可用语义。
+// 普通 endpoint/BaseURL 错误必须继续按资源自身的故障级别处理，不能因为请求里带了模型名就误伤模型。
+func isModelUnavailableResponse(responseBody []byte) bool {
 	if len(responseBody) == 0 {
 		return false
 	}
@@ -960,7 +969,9 @@ func isModelUnavailable404(responseBody []byte) bool {
 			strings.Contains(bodyLower, "不存在") ||
 			strings.Contains(bodyLower, "未找到") ||
 			strings.Contains(bodyLower, "找不到") ||
-			strings.Contains(bodyLower, "不可用")
+			strings.Contains(bodyLower, "不可用") ||
+			strings.Contains(bodyLower, "已下线") ||
+			strings.Contains(bodyLower, "停止服务")
 	}
 	if !strings.Contains(bodyLower, "model") {
 		return false
@@ -969,7 +980,9 @@ func isModelUnavailable404(responseBody []byte) bool {
 		strings.Contains(bodyLower, "not supported") ||
 		strings.Contains(bodyLower, "not found") ||
 		strings.Contains(bodyLower, "does not exist") ||
-		strings.Contains(bodyLower, "not available")
+		strings.Contains(bodyLower, "not available") ||
+		strings.Contains(bodyLower, "no longer available") ||
+		strings.Contains(bodyLower, "end of life")
 }
 
 // ShouldFallbackProtocol reports whether automatic protocol negotiation may
@@ -989,7 +1002,7 @@ func ShouldFallbackProtocol(statusCode int, responseBody []byte) bool {
 	case 405:
 		return true
 	case 404:
-		return !isModelUnavailable404(responseBody)
+		return !isModelUnavailableResponse(responseBody)
 	case 500:
 		return isProtocolConversionNotImplemented(responseBody)
 	default:
