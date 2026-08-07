@@ -4,7 +4,6 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"slices"
-	"sort"
 	"sync"
 	"time"
 
@@ -34,28 +33,16 @@ func NewSmoothWeightedRR() *SmoothWeightedRR {
 	return rr
 }
 
-// Select 从渠道列表中选择下一个渠道（平滑加权轮询）
-// channels: 同优先级的渠道列表（已按优先级分组）
-// weights: 每个渠道的权重（通常是有效Key数量）
-// 返回: 按轮询顺序排列的渠道列表（第一个是本次选中的）
-func (rr *SmoothWeightedRR) Select(
-	channels []*modelpkg.Config,
-	weights []int,
-) []*modelpkg.Config {
-	if len(weights) != len(channels) {
-		// 参数不匹配时直接返回原列表
-		return channels
-	}
-	result := slices.Clone(channels)
-	return rr.selectByWeight(result, weights)
-}
-
+// selectByWeight 从渠道列表中选择下一个渠道（平滑加权轮询）。
+// channels: 同优先级的渠道列表，必须是调用方私有的 slice——本函数原地重排它。
+// weights: 与 channels 等长的权重（通常是有效Key数量）。
+// 返回: 按轮询顺序排列的渠道列表（第一个是本次选中的）。
 func (rr *SmoothWeightedRR) selectByWeight(
 	channels []*modelpkg.Config,
 	weights []int,
 ) []*modelpkg.Config {
 	n := len(channels)
-	if n <= 1 {
+	if n <= 1 || len(weights) != n {
 		return channels
 	}
 
@@ -114,16 +101,8 @@ func (rr *SmoothWeightedRR) selectByWeight(
 	return channels
 }
 
-// SelectWithCooldown 带冷却感知的平滑加权轮询
-// 权重 = 有效Key数量（总Key - 冷却中Key）
-func (rr *SmoothWeightedRR) SelectWithCooldown(
-	channels []*modelpkg.Config,
-	keyCooldowns map[int64]map[int]time.Time,
-	now time.Time,
-) []*modelpkg.Config {
-	return rr.selectWithCooldownInPlace(slices.Clone(channels), keyCooldowns, now)
-}
-
+// selectWithCooldownInPlace 带冷却感知的平滑加权轮询，权重 = 有效Key数量（总Key - 冷却中Key）。
+// 与 selectByWeight 一样原地重排 channels，调用方必须持有私有 slice。
 func (rr *SmoothWeightedRR) selectWithCooldownInPlace(
 	channels []*modelpkg.Config,
 	keyCooldowns map[int64]map[int]time.Time,
@@ -152,7 +131,7 @@ func (rr *SmoothWeightedRR) generateGroupKey(channels []*modelpkg.Config) rrGrou
 	if len(ids) == 0 {
 		return sha256.Sum256(nil)
 	}
-	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	slices.Sort(ids)
 
 	hasher := sha256.New()
 	var encoded [8]byte

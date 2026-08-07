@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -9,6 +10,20 @@ import (
 )
 
 var benchmarkBalancedChannelsSink []*modelpkg.Config
+
+// 生产代码只暴露原地重排的入口；测试需要保留入参顺序，因此在边界显式克隆。
+func rrSelect(rr *SmoothWeightedRR, channels []*modelpkg.Config, weights []int) []*modelpkg.Config {
+	return rr.selectByWeight(slices.Clone(channels), weights)
+}
+
+func rrSelectWithCooldown(
+	rr *SmoothWeightedRR,
+	channels []*modelpkg.Config,
+	keyCooldowns map[int64]map[int]time.Time,
+	now time.Time,
+) []*modelpkg.Config {
+	return rr.selectWithCooldownInPlace(slices.Clone(channels), keyCooldowns, now)
+}
 
 func BenchmarkSmoothWeightedRRSelect3000(b *testing.B) {
 	channels := make([]*modelpkg.Config, 3000)
@@ -22,7 +37,7 @@ func BenchmarkSmoothWeightedRRSelect3000(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		benchmarkBalancedChannelsSink = rr.Select(channels, weights)
+		benchmarkBalancedChannelsSink = rrSelect(rr, channels, weights)
 	}
 }
 
@@ -56,7 +71,7 @@ func TestSmoothWeightedRR_ExactDistribution(t *testing.T) {
 		}
 		weights := []int{3, 1}
 
-		result := rr.Select(channels, weights)
+		result := rrSelect(rr, channels, weights)
 		firstPositionCount[result[0].Name]++
 	}
 
@@ -99,7 +114,7 @@ func TestSmoothWeightedRR_SequencePattern(t *testing.T) {
 	// 连续8次选择
 	sequence := make([]string, 8)
 	for i := 0; i < 8; i++ {
-		result := rr.Select(channels, weights)
+		result := rrSelect(rr, channels, weights)
 		sequence[i] = result[0].Name
 	}
 
@@ -172,7 +187,7 @@ func TestSmoothWeightedRR_WithCooldown(t *testing.T) {
 			{ID: 2, Name: "channel-B", Priority: 10, KeyCount: 2},
 		}
 
-		result := rr.SelectWithCooldown(channels, keyCooldowns, now)
+		result := rrSelectWithCooldown(rr, channels, keyCooldowns, now)
 		firstPositionCount[result[0].Name]++
 	}
 
@@ -214,7 +229,7 @@ func TestSmoothWeightedRR_Integration(t *testing.T) {
 	callCount := make(map[int64]int)
 
 	for i := 0; i < iterations; i++ {
-		result := balancer.SelectWithCooldown(channels, keyCooldowns, now)
+		result := rrSelectWithCooldown(balancer, channels, keyCooldowns, now)
 		callCount[result[0].ID]++
 	}
 
@@ -245,8 +260,8 @@ func TestSmoothWeightedRR_StateSharedAcrossInputOrder(t *testing.T) {
 		{ID: 10, Name: "ch10"},
 	}
 
-	first := rr.Select(a, []int{1, 1})
-	second := rr.Select(b, []int{1, 1})
+	first := rrSelect(rr, a, []int{1, 1})
+	second := rrSelect(rr, b, []int{1, 1})
 	if first[0].ID != 10 || second[0].ID != 36 {
 		t.Fatalf("相同渠道集合必须共享轮询状态: first=%d second=%d", first[0].ID, second[0].ID)
 	}
@@ -261,14 +276,36 @@ func TestSmoothWeightedRR_TieBreakIndependentOfInputOrder(t *testing.T) {
 	// 相同集合、相同权重，只是输入顺序不同：在“干净状态”下首选应一致（由 tie-break 决定）。
 	rr1 := NewSmoothWeightedRR()
 	rr2 := NewSmoothWeightedRR()
-	r1 := rr1.Select([]*modelpkg.Config{chA, chB}, weights)
-	r2 := rr2.Select([]*modelpkg.Config{chB, chA}, weights)
+	r1 := rrSelect(rr1, []*modelpkg.Config{chA, chB}, weights)
+	r2 := rrSelect(rr2, []*modelpkg.Config{chB, chA}, weights)
 
 	if r1[0].ID != r2[0].ID {
 		t.Fatalf("tie-break should be order independent: r1=%d r2=%d", r1[0].ID, r2[0].ID)
 	}
 	if r1[0].ID != 10 {
 		t.Fatalf("expected smaller ID to win tie-break, got %d", r1[0].ID)
+	}
+}
+
+func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
+	rr := NewSmoothWeightedRR()
+
+	channels := []*modelpkg.Config{
+		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
+		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
+	}
+	rrSelect(rr, channels, []int{1, 1})
+
+	key := rr.generateGroupKey(channels)
+	if rr.states[key] == nil {
+		t.Fatalf("expected state created for group key")
+	}
+
+	rr.states[key].lastAccess = time.Now().Add(-time.Hour)
+	rr.Cleanup(30 * time.Minute)
+
+	if _, ok := rr.states[key]; ok {
+		t.Fatalf("expected expired state cleaned up")
 	}
 }
 
@@ -279,13 +316,13 @@ func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
 		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
 		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
 	}
-	first := rr.Select(channels, []int{1, 1})
+	first := rrSelect(rr, channels, []int{1, 1})
 	if first[0].ID != 1 {
 		t.Fatalf("首次选择渠道=%d, want 1", first[0].ID)
 	}
 
 	rr.ResetAll()
-	afterReset := rr.Select(channels, []int{1, 1})
+	afterReset := rrSelect(rr, channels, []int{1, 1})
 	if afterReset[0].ID != 1 {
 		t.Fatalf("重置后选择渠道=%d, want 1", afterReset[0].ID)
 	}
