@@ -331,16 +331,19 @@
                 </svg>
               </button>
               <span class="logs-pagination-separator">|</span>
-              <span class="pagination-page-size-control">
+              <label class="pagination-page-size-control" for="channels_page_size">
                 <span data-i18n="channels.pageSize">每页</span>
-                <select id="channels_page_size" class="logs-jump-input">
-                  <option value="10">10</option>
-                  <option value="20" selected>20</option>
-                  <option value="50">50</option>
-                  <option value="100">100</option>
-                </select>
+                <input
+                  id="channels_page_size"
+                  class="logs-jump-input"
+                  type="number"
+                  min="1"
+                  max="1000"
+                  step="1"
+                  value="20"
+                  inputmode="numeric">
                 <span data-i18n="channels.pageSizeUnit">条</span>
-              </span>
+              </label>
             </div>
           </div>
         </div>
@@ -382,6 +385,19 @@
                   <span data-i18n="channels.batchDisableChannels">禁用</span>
                 </button>
               </div>
+              <button id="batchRefreshOAuthUsageBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--quota"
+                data-action="batch-refresh-oauth-usage" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M15.1 6.2A6 6 0 1 0 16 10" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" />
+                    <path d="M12.2 4.8H15.6V8.2" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span id="batchRefreshOAuthUsageLabel" data-i18n="channels.oauth.usageRefresh">刷新额度</span>
+              </button>
               <div class="channel-batch-action-group channel-batch-action-group--refresh" role="group"
                 data-i18n-aria-label="channels.batchModelActions" aria-label="模型操作">
                 <button id="batchRefreshMergeBtn" type="button"

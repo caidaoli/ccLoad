@@ -1,6 +1,31 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+test('channel page size accepts whole numbers from 1 to 1000 and otherwise defaults to 20', () => {
+  const previousLocalStorage = Object.getOwnPropertyDescriptor(global, 'localStorage');
+  Object.defineProperty(global, 'localStorage', {
+    configurable: true,
+    writable: true,
+    value: { getItem: () => null }
+  });
+
+  try {
+    delete require.cache[require.resolve('./channels-state.js')];
+    const { normalizeChannelsPageSize } = require('./channels-state.js');
+
+    assert.equal(normalizeChannelsPageSize('1'), 1);
+    assert.equal(normalizeChannelsPageSize('37'), 37);
+    assert.equal(normalizeChannelsPageSize('1000'), 1000);
+    for (const value of [null, '', '0', '-1', '1.5', '1001', 'not-a-number']) {
+      assert.equal(normalizeChannelsPageSize(value), 20, `value ${String(value)}`);
+    }
+  } finally {
+    delete require.cache[require.resolve('./channels-state.js')];
+    if (previousLocalStorage === undefined) delete global.localStorage;
+    else Object.defineProperty(global, 'localStorage', previousLocalStorage);
+  }
+});
+
 test('returning via reload or bfcache restores channel name search with the other filters', async () => {
   const previousGlobals = new Map();
   const setGlobal = (key, value) => {
