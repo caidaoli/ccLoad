@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -36,6 +37,15 @@ var defaultScopes = []string{
 	"https://www.googleapis.com/auth/userinfo.profile",
 	"https://www.googleapis.com/auth/cclog",
 	"https://www.googleapis.com/auth/experimentsandconfigs",
+}
+
+var unavailableModelIDs = map[string]struct{}{
+	"chat_20706":                  {},
+	"chat_23310":                  {},
+	"gemini-2.5-flash-thinking":   {},
+	"gemini-2.5-pro":              {},
+	"tab_flash_lite_preview":      {},
+	"tab_jump_flash_lite_preview": {},
 }
 
 // Service implements the Google OAuth and project-discovery contract used by CLIProxyAPI.
@@ -245,6 +255,54 @@ func (s *Service) FetchProjectID(ctx context.Context, accessToken string) (strin
 		return projectID, nil
 	}
 	return s.onboardUser(ctx, accessToken, defaultTierID(response))
+}
+
+// FetchAvailableModels returns the model identifiers exposed to one
+// Antigravity project by the Cloud Code internal API.
+func (s *Service) FetchAvailableModels(ctx context.Context, baseURL string, credential *Credential) ([]string, error) {
+	if s == nil || s.Client == nil {
+		return nil, errors.New("models: Antigravity service is unavailable")
+	}
+	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		return nil, errors.New("models: Antigravity credential is missing access_token")
+	}
+	projectID := strings.TrimSpace(credential.ProjectID)
+	if projectID == "" {
+		return nil, errors.New("models: Antigravity credential is missing project_id")
+	}
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		return nil, errors.New("models: Antigravity base URL is empty")
+	}
+
+	body, err := s.doJSON(ctx, http.MethodPost, baseURL+"/"+apiVersion+":fetchAvailableModels", credential.AccessToken, map[string]string{
+		"project": projectID,
+	}, false)
+	if err != nil {
+		return nil, fmt.Errorf("fetch Antigravity models: %w", err)
+	}
+	var response struct {
+		Models map[string]json.RawMessage `json:"models"`
+	}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("decode Antigravity models: %w", err)
+	}
+	models := make([]string, 0, len(response.Models))
+	for rawName := range response.Models {
+		name := strings.TrimSpace(rawName)
+		if name == "" {
+			continue
+		}
+		if _, unavailable := unavailableModelIDs[name]; unavailable {
+			continue
+		}
+		models = append(models, name)
+	}
+	if len(models) == 0 {
+		return nil, errors.New("models: Antigravity returned an empty model list")
+	}
+	sort.Strings(models)
+	return models, nil
 }
 
 func (s *Service) onboardUser(ctx context.Context, accessToken, tierID string) (string, error) {

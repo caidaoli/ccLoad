@@ -160,6 +160,49 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 	}
 }
 
+func TestServiceFetchAvailableModels(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if r.URL.RawQuery != "" {
+			t.Fatalf("模型发现 URL 不应包含凭证或查询参数: %s", r.URL.String())
+		}
+		assertBearer(t, r, "at-models-secret")
+		if got := r.Header.Get("User-Agent"); got != DefaultUserAgent {
+			t.Fatalf("User-Agent = %q", got)
+		}
+		var request struct {
+			Project string `json:"project"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Project != "project-1" {
+			t.Fatalf("project = %q", request.Project)
+		}
+		_, _ = w.Write([]byte(`{"models":{
+			"gemini-3.1-pro-low":{},
+			"gemini-3.6-flash-high":{},
+			"chat_20706":{}
+		}}`))
+	}))
+	defer server.Close()
+
+	service := testService(server)
+	models, err := service.FetchAvailableModels(context.Background(), server.URL, &Credential{
+		AccessToken: "at-models-secret",
+		ProjectID:   "project-1",
+	})
+	if err != nil {
+		t.Fatalf("FetchAvailableModels: %v", err)
+	}
+	want := []string{"gemini-3.1-pro-low", "gemini-3.6-flash-high"}
+	if fmt.Sprint(models) != fmt.Sprint(want) {
+		t.Fatalf("models = %v, want %v", models, want)
+	}
+}
+
 func testService(server *httptest.Server) *Service {
 	service := NewService(server.Client())
 	service.AuthorizationURL = "https://accounts.example.test/authorize"

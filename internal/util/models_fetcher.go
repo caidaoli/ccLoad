@@ -202,14 +202,12 @@ func (f *GeminiModelsFetcher) FetchModels(ctx context.Context, baseURL string, a
 	if err != nil {
 		return nil, fmt.Errorf("解析请求 URL 失败: %w", err)
 	}
-	query := endpoint.Query()
-	query.Set("key", apiKey)
-	endpoint.RawQuery = query.Encode()
 
 	req, err := http.NewRequestWithContext(ctx, "GET", endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("创建请求失败: %w", err)
 	}
+	req.Header.Set("X-Goog-Api-Key", apiKey)
 
 	// 使用公共HTTP请求函数 (ctx已包含在req中)
 	body, err := doHTTPRequest(f.client, req)

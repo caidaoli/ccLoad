@@ -2961,37 +2961,48 @@ function initQuickAddChannelModalEvents() {
 }
 
 async function fetchModelsFromAPI() {
-  const urls = getValidInlineURLConfigs();
-  const channelUrl = urls[0]?.url || '';
-  const availableKeys = selectAvailableInlineKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
-
-  if (!channelUrl) {
-    if (window.showError) {
-      window.showError(window.t('channels.fillApiUrlFirst'));
-    } else {
-      alert(window.t('channels.fillApiUrlFirst'));
+  let endpoint;
+  let fetchOptions;
+  if (['antigravity_oauth', 'codex_oauth'].includes(editingChannelAuthType)) {
+    if (!editingChannelId) {
+      if (window.showError) window.showError(window.t('channels.saveBeforeModelTest'));
+      else alert(window.t('channels.saveBeforeModelTest'));
+      return;
     }
-    return;
-  }
+    endpoint = `/admin/channels/${editingChannelId}/models/fetch`;
+  } else {
+    const urls = getValidInlineURLConfigs();
+    const channelUrl = urls[0]?.url || '';
+    const availableKeys = selectAvailableInlineKeys(getInlineKeyRows(), currentChannelKeyCooldowns);
 
-  if (availableKeys.length === 0) {
-    if (window.showError) {
-      window.showError(window.t('channels.addAtLeastOneEnabledKey'));
-    } else {
-      alert(window.t('channels.addAtLeastOneEnabledKey'));
+    if (!channelUrl) {
+      if (window.showError) {
+        window.showError(window.t('channels.fillApiUrlFirst'));
+      } else {
+        alert(window.t('channels.fillApiUrlFirst'));
+      }
+      return;
     }
-    return;
-  }
 
-  const endpoint = '/admin/channels/models/fetch';
-  const fetchOptions = {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      urls,
-      api_keys: availableKeys
-    })
-  };
+    if (availableKeys.length === 0) {
+      if (window.showError) {
+        window.showError(window.t('channels.addAtLeastOneEnabledKey'));
+      } else {
+        alert(window.t('channels.addAtLeastOneEnabledKey'));
+      }
+      return;
+    }
+
+    endpoint = '/admin/channels/models/fetch';
+    fetchOptions = {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        urls,
+        api_keys: availableKeys
+      })
+    };
+  }
 
   try {
     const response = await fetchAPIWithAuth(endpoint, fetchOptions);

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"reflect"
@@ -9,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 
@@ -437,6 +440,197 @@ func TestAdminModels_HandleFetchModels(t *testing.T) {
 			t.Fatalf("expected success=false with error, got %+v", resp)
 		}
 	})
+}
+
+func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
+	const accessToken = "antigravity-access-token-that-must-not-leak"
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {
+			t.Fatalf("request = %s %s", r.Method, r.URL.String())
+		}
+		if r.URL.RawQuery != "" || strings.Contains(r.URL.String(), accessToken) {
+			t.Fatalf("模型发现 URL 泄漏凭证: %s", r.URL.String())
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+			t.Fatalf("Authorization = %q", got)
+		}
+		var request struct {
+			Project string `json:"project"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		if request.Project != "project-models" {
+			t.Fatalf("project = %q", request.Project)
+		}
+		_, _ = w.Write([]byte(`{"models":{
+			"claude-opus-4-6-thinking":{},
+			"claude-sonnet-4-6":{},
+			"gemini-3.6-flash-high":{},
+			"gemini-3-flash":{},
+			"gemini-3-flash-agent":{},
+			"gemini-3.1-flash-image":{},
+			"gemini-pro-agent":{},
+			"gemini-3.1-pro-low":{},
+			"gpt-oss-120b-medium":{},
+			"gemini-3.1-flash-lite":{},
+			"gemini-3.5-flash-low":{},
+			"gemini-3.5-flash-extra-low":{},
+			"gemini-2.5-flash":{}
+		}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.antigravityService = antigravityauth.NewService(upstream.Client())
+	server.antigravityCredentials = newAntigravityCredentialManager(server.antigravityService, store, nil, nil)
+
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: accessToken, RefreshToken: "refresh-token",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "models@example.com", ProjectID: "project-models",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "Antigravity models", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: payload,
+		URLs:         model.ChannelURLs{{URL: upstream.URL, Protocols: []string{"gemini"}}},
+		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), accessToken) {
+		t.Fatalf("response leaked OAuth token: %s", w.Body.String())
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	want := []model.ModelEntry{
+		{Model: "claude-opus-4-6-thinking", RedirectModel: "claude-opus-4-6-thinking"},
+		{Model: "claude-sonnet-4-6", RedirectModel: "claude-sonnet-4-6"},
+		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
+		{Model: "gemini-3-flash", RedirectModel: "gemini-3-flash"},
+		{Model: "gemini-3-flash-agent", RedirectModel: "gemini-3-flash-agent"},
+		{Model: "gemini-3.1-flash-image", RedirectModel: "gemini-3.1-flash-image"},
+		{Model: "gemini-pro-agent", RedirectModel: "gemini-pro-agent"},
+		{Model: "gemini-3.1-pro-low", RedirectModel: "gemini-3.1-pro-low"},
+		{Model: "gpt-oss-120b-medium", RedirectModel: "gpt-oss-120b-medium"},
+		{Model: "gemini-3.1-flash-lite", RedirectModel: "gemini-3.1-flash-lite"},
+		{Model: "gemini-3.5-flash-low", RedirectModel: "gemini-3.5-flash-low"},
+		{Model: "gemini-3.5-flash-extra-low", RedirectModel: "gemini-3.5-flash-extra-low"},
+	}
+	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "gemini" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+
+	batchRequest := map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "replace"}
+	batchContext, batchResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", batchRequest))
+	server.HandleBatchRefreshModels(batchContext)
+	var batchResult struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Updated int `json:"updated"`
+			Failed  int `json:"failed"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, batchResponse.Body.Bytes(), &batchResult)
+	if batchResponse.Code != http.StatusOK || !batchResult.Success || batchResult.Data.Updated != 1 || batchResult.Data.Failed != 0 {
+		t.Fatalf("unexpected batch response: %s", batchResponse.Body.String())
+	}
+	persisted, err := store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPersisted := make([]string, len(want))
+	for i, entry := range want {
+		wantPersisted[i] = entry.Model
+	}
+	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
+		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+	}
+}
+
+func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
+	const accessToken = "codex-access-token-that-must-not-leak"
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.codexCredentials = newCodexCredentialManager(codexauth.NewService(server.client), store, nil, nil)
+
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "refresh-token",
+		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), AccountID: "account-models", PlanType: "free",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "Codex models", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: payload,
+		URLs:         model.ChannelURLs{{URL: codexUpstreamURL, Exact: true, Protocols: []string{"codex"}}},
+		ModelEntries: []model.ModelEntry{{Model: "existing-model"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), accessToken) {
+		t.Fatalf("response leaked OAuth token: %s", w.Body.String())
+	}
+	want := []model.ModelEntry{
+		{Model: "gpt-5.6-terra", RedirectModel: "gpt-5.6-terra"},
+		{Model: "gpt-5.6-luna", RedirectModel: "gpt-5.6-luna"},
+		{Model: "gpt-5.5", RedirectModel: "gpt-5.5"},
+		{Model: "gpt-5.4-mini", RedirectModel: "gpt-5.4-mini"},
+		{Model: "codex-auto-review", RedirectModel: "codex-auto-review"},
+	}
+	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "codex" || resp.Data.Source != "predefined" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+
+	batchRequest := map[string]any{"channel_ids": []int64{cfg.ID}, "mode": "replace"}
+	batchContext, batchResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/models/refresh-batch", batchRequest))
+	server.HandleBatchRefreshModels(batchContext)
+	var batchResult struct {
+		Success bool `json:"success"`
+		Data    struct {
+			Updated int `json:"updated"`
+			Failed  int `json:"failed"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, batchResponse.Body.Bytes(), &batchResult)
+	if batchResponse.Code != http.StatusOK || !batchResult.Success || batchResult.Data.Updated != 1 || batchResult.Data.Failed != 0 {
+		t.Fatalf("unexpected batch response: %s", batchResponse.Body.String())
+	}
+	persisted, err := store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPersisted := make([]string, len(want))
+	for i, entry := range want {
+		wantPersisted[i] = entry.Model
+	}
+	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
+		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+	}
 }
 
 func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {

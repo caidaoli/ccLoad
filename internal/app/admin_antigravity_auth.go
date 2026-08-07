@@ -18,6 +18,7 @@ const (
 	antigravityProdBaseURL  = "https://cloudcode-pa.googleapis.com"
 )
 
+// 导入凭证和动态模型发现必须共享这一份 Antigravity 模型目录。
 var antigravityOAuthDefaultModels = []string{
 	"claude-opus-4-6-thinking",
 	"claude-sonnet-4-6",
@@ -86,6 +87,20 @@ func antigravityOAuthModelEntries() []model.ModelEntry {
 		entries[i] = model.ModelEntry{Model: name}
 	}
 	return entries
+}
+
+func antigravityOAuthAvailableModels(upstreamModels []string) []string {
+	available := make(map[string]struct{}, len(upstreamModels))
+	for _, name := range upstreamModels {
+		available[name] = struct{}{}
+	}
+	models := make([]string, 0, len(antigravityOAuthDefaultModels))
+	for _, name := range antigravityOAuthDefaultModels {
+		if _, ok := available[name]; ok {
+			models = append(models, name)
+		}
+	}
+	return models
 }
 
 func sameAntigravityIdentity(a, b *antigravityauth.Credential) bool {
