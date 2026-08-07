@@ -20,7 +20,7 @@ func normalizeOptionalProtocol(value string) string {
 
 // selectCandidatesByClientProtocol 返回所有启用渠道；clientProtocol 仅用于计算客户端协议对应的模型冷却键。
 func (s *Server) selectCandidatesByClientProtocol(ctx context.Context, clientProtocol string) ([]*modelpkg.Config, error) {
-	channels, err := s.GetEnabledChannelsByModel(ctx, "*")
+	channels, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
 	if err != nil {
 		return nil, err
 	}
@@ -59,7 +59,7 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 	if routeModel == "" {
 		routeModel = "*"
 	}
-	channels, err := s.GetEnabledChannelsByModel(ctx, routeModel)
+	channels, err := s.getEnabledChannelsSnapshotByModel(ctx, routeModel)
 	if err != nil {
 		return nil, err
 	}
@@ -98,7 +98,7 @@ func (s *Server) selectAlphaSearchCandidates(ctx context.Context, modelName stri
 func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, model string, clientProtocol string) ([]*modelpkg.Config, error) {
 	normalizedType := normalizeOptionalProtocol(clientProtocol)
 
-	channels, err := s.GetEnabledChannelsByModel(ctx, model)
+	channels, err := s.getEnabledChannelsSnapshotByModel(ctx, model)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +117,7 @@ func (s *Server) selectCandidatesByModelAndClientProtocol(ctx context.Context, m
 	// 精确候选可能存在但全部在冷却/成本限额下不可用，这时仍需尝试模糊匹配补充候选。
 	var allCandidates []*modelpkg.Config
 	if model != "*" {
-		source, err := s.GetEnabledChannelsByModel(ctx, "*")
+		source, err := s.getEnabledChannelsSnapshotByModel(ctx, "*")
 		if err != nil {
 			return nil, err
 		}

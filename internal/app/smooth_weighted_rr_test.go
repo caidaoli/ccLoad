@@ -1,11 +1,44 @@
 package app
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
 	modelpkg "ccLoad/internal/model"
 )
+
+var benchmarkBalancedChannelsSink []*modelpkg.Config
+
+func BenchmarkSmoothWeightedRRSelect3000(b *testing.B) {
+	channels := make([]*modelpkg.Config, 3000)
+	weights := make([]int, len(channels))
+	for i := range channels {
+		channels[i] = &modelpkg.Config{ID: int64(i + 1), Name: fmt.Sprintf("channel-%d", i+1), KeyCount: 1}
+		weights[i] = 1
+	}
+
+	rr := NewSmoothWeightedRR()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		benchmarkBalancedChannelsSink = rr.Select(channels, weights)
+	}
+}
+
+func BenchmarkSmoothWeightedRRSelectWithCooldownInPlace3000(b *testing.B) {
+	channels := make([]*modelpkg.Config, 3000)
+	for i := range channels {
+		channels[i] = &modelpkg.Config{ID: int64(i + 1), Name: fmt.Sprintf("channel-%d", i+1), KeyCount: 1}
+	}
+
+	rr := NewSmoothWeightedRR()
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		benchmarkBalancedChannelsSink = rr.selectWithCooldownInPlace(channels, nil, time.Now())
+	}
+}
 
 func TestSmoothWeightedRR_ExactDistribution(t *testing.T) {
 	// 测试平滑加权轮询的精确分布
@@ -200,57 +233,7 @@ func TestSmoothWeightedRR_Integration(t *testing.T) {
 	}
 }
 
-func TestSmoothWeightedRR_GroupKeyFormat(t *testing.T) {
-	// 验证 groupKey 的格式与可读性：十进制 + 逗号分隔。
-	// 这不是“修复玄学碰撞”，而是把 key 做成明确、可测试的字符串格式。
-
-	rr := NewSmoothWeightedRR()
-
-	// 场景1: [10, 36] 应该生成 "10,36"
-	channels1 := []*modelpkg.Config{
-		{ID: 10, Name: "ch10"},
-		{ID: 36, Name: "ch36"},
-	}
-	key1 := rr.generateGroupKey(channels1)
-
-	// 场景2: [370] 应该生成 "370"
-	channels2 := []*modelpkg.Config{
-		{ID: 370, Name: "ch370"},
-	}
-	key2 := rr.generateGroupKey(channels2)
-
-	t.Logf("[KEY] 渠道组[10,36]的key: %q", key1)
-	t.Logf("[KEY] 渠道组[370]的key:   %q", key2)
-
-	if key1 == key2 {
-		t.Errorf("哈希冲突检测失败: 不同渠道组合生成了相同的key %q", key1)
-	}
-
-	// 验证生成的key格式正确
-	if key1 != "10,36" {
-		t.Errorf("渠道组[10,36]的key错误: 得到 %q, 期望 \"10,36\"", key1)
-	}
-	if key2 != "370" {
-		t.Errorf("渠道组[370]的key错误: 得到 %q, 期望 \"370\"", key2)
-	}
-
-	// 额外验证：确保轮询状态确实被隔离
-	weights1 := []int{1, 1}
-	weights2 := []int{1}
-
-	// 对第一组轮询几次
-	for i := 0; i < 5; i++ {
-		rr.Select(channels1, weights1)
-	}
-
-	// 对第二组轮询，应该从初始状态开始
-	result2 := rr.Select(channels2, weights2)
-	if result2[0].ID != 370 {
-		t.Errorf("轮询状态隔离失败: 期望选中370，实际选中%d", result2[0].ID)
-	}
-}
-
-func TestSmoothWeightedRR_GroupKeyOrderIndependent(t *testing.T) {
+func TestSmoothWeightedRR_StateSharedAcrossInputOrder(t *testing.T) {
 	rr := NewSmoothWeightedRR()
 
 	a := []*modelpkg.Config{
@@ -262,14 +245,10 @@ func TestSmoothWeightedRR_GroupKeyOrderIndependent(t *testing.T) {
 		{ID: 10, Name: "ch10"},
 	}
 
-	keyA := rr.generateGroupKey(a)
-	keyB := rr.generateGroupKey(b)
-
-	if keyA != keyB {
-		t.Fatalf("same set should have same key: keyA=%q keyB=%q", keyA, keyB)
-	}
-	if keyA != "10,36" {
-		t.Fatalf("unexpected key: %q", keyA)
+	first := rr.Select(a, []int{1, 1})
+	second := rr.Select(b, []int{1, 1})
+	if first[0].ID != 10 || second[0].ID != 36 {
+		t.Fatalf("相同渠道集合必须共享轮询状态: first=%d second=%d", first[0].ID, second[0].ID)
 	}
 }
 
@@ -293,28 +272,6 @@ func TestSmoothWeightedRR_TieBreakIndependentOfInputOrder(t *testing.T) {
 	}
 }
 
-func TestSmoothWeightedRR_Cleanup_RemovesOldStates(t *testing.T) {
-	rr := NewSmoothWeightedRR()
-
-	channels := []*modelpkg.Config{
-		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
-		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
-	}
-	rr.Select(channels, []int{1, 1})
-
-	key := rr.generateGroupKey(channels)
-	if rr.states[key] == nil {
-		t.Fatalf("expected state created for key %q", key)
-	}
-
-	rr.states[key].lastAccess = time.Now().Add(-time.Hour)
-	rr.Cleanup(30 * time.Minute)
-
-	if _, ok := rr.states[key]; ok {
-		t.Fatalf("expected state %q cleaned up", key)
-	}
-}
-
 func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
 	rr := NewSmoothWeightedRR()
 
@@ -322,14 +279,14 @@ func TestSmoothWeightedRR_ResetAll_ClearsStates(t *testing.T) {
 		{ID: 1, Name: "A", Priority: 10, KeyCount: 1},
 		{ID: 2, Name: "B", Priority: 10, KeyCount: 1},
 	}
-	rr.Select(channels, []int{1, 1})
-
-	if len(rr.states) == 0 {
-		t.Fatal("expected states non-empty after Select")
+	first := rr.Select(channels, []int{1, 1})
+	if first[0].ID != 1 {
+		t.Fatalf("首次选择渠道=%d, want 1", first[0].ID)
 	}
 
 	rr.ResetAll()
-	if len(rr.states) != 0 {
-		t.Fatalf("expected states cleared, got len=%d", len(rr.states))
+	afterReset := rr.Select(channels, []int{1, 1})
+	if afterReset[0].ID != 1 {
+		t.Fatalf("重置后选择渠道=%d, want 1", afterReset[0].ID)
 	}
 }

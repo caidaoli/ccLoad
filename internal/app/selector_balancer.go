@@ -180,8 +180,7 @@ func (s *Server) balanceSamePriorityChannels(
 	}
 
 	// 按优先级降序排序（优先级大的排前面），确保相同优先级渠道连续
-	result := make([]*modelpkg.Config, n)
-	copy(result, channels)
+	result := channels
 	sort.SliceStable(result, func(i, j int) bool {
 		return result[i].Priority > result[j].Priority
 	})
@@ -192,8 +191,7 @@ func (s *Server) balanceSamePriorityChannels(
 		if i == n || result[i].Priority != result[groupStart].Priority {
 			if i-groupStart > 1 {
 				group := result[groupStart:i]
-				balanced := s.channelBalancer.SelectWithCooldown(group, keyCooldowns, now)
-				copy(result[groupStart:i], balanced)
+				s.channelBalancer.selectWithCooldownInPlace(group, keyCooldowns, now)
 			}
 			groupStart = i
 		}
@@ -226,7 +224,7 @@ func (s *Server) balanceScoredChannelsInPlace(
 	}
 
 	// 使用平滑加权轮询获取排序后的结果
-	balanced := s.channelBalancer.SelectWithCooldown(configs, keyCooldowns, now)
+	balanced := s.channelBalancer.selectWithCooldownInPlace(configs, keyCooldowns, now)
 
 	// 按轮询结果重排 items（O(n) 交换）
 	// balanced[0] 是选中的渠道，需要把它移到 items[0]

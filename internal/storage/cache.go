@@ -6,6 +6,7 @@ import (
 	"context"
 	"log"
 	"maps"
+	"slices"
 	"sync"
 	"time"
 
@@ -77,6 +78,10 @@ func deepCopyConfigs(src []*modelpkg.Config) []*modelpkg.Config {
 	return result
 }
 
+func copyConfigPointers(src []*modelpkg.Config) []*modelpkg.Config {
+	return slices.Clone(src)
+}
+
 // GetEnabledChannelsByModel 缓存优先的模型查询
 // [FIX] P0-2: 返回深拷贝，防止调用方污染缓存
 func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
@@ -100,6 +105,23 @@ func (c *ChannelCache) GetEnabledChannelsByModel(ctx context.Context, model stri
 	}
 
 	return deepCopyConfigs(channels), nil
+}
+
+// GetEnabledChannelsSnapshotByModel 返回路由热路径使用的只读配置快照。
+// 外层 slice 独立，调用方可以过滤、排序；其中 Config 归缓存所有，禁止修改。
+// 需要可变配置的调用方必须继续使用 GetEnabledChannelsByModel。
+func (c *ChannelCache) GetEnabledChannelsSnapshotByModel(ctx context.Context, model string) ([]*modelpkg.Config, error) {
+	if err := c.refreshIfNeeded(ctx); err != nil {
+		return c.store.GetEnabledChannelsByModel(ctx, model)
+	}
+
+	c.mutex.RLock()
+	defer c.mutex.RUnlock()
+
+	if model == "*" {
+		return copyConfigPointers(c.allChannels), nil
+	}
+	return copyConfigPointers(c.channelsByModel[model]), nil
 }
 
 // GetConfig 获取指定ID的渠道配置

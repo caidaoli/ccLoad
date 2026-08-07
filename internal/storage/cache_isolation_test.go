@@ -125,6 +125,17 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 		t.Errorf("数据库中 ModelEntries 不包含 'model-1'")
 	}
 
+	// 路由只读快照只允许修改外层 slice，重排不能污染缓存索引。
+	snapshot, err := cache.GetEnabledChannelsSnapshotByModel(ctx, "model-1")
+	if err != nil || len(snapshot) != 1 {
+		t.Fatalf("GetEnabledChannelsSnapshotByModel = (%d, %v), want (1, nil)", len(snapshot), err)
+	}
+	snapshot[0] = nil
+	snapshotAgain, err := cache.GetEnabledChannelsSnapshotByModel(ctx, "model-1")
+	if err != nil || len(snapshotAgain) != 1 || snapshotAgain[0] == nil || snapshotAgain[0].ID != created.ID {
+		t.Fatalf("只读快照外层 slice 污染缓存: snapshot=%v err=%v", snapshotAgain, err)
+	}
+
 	t.Logf("✅ 深拷贝隔离性测试通过：调用方修改未污染缓存或数据库")
 }
 
