@@ -279,9 +279,8 @@ func (s *LogService) cleanupDebugLogsLoop() {
 		}
 	}()
 
+	debugCleanupDone := s.cleanupDebugLogs(ctx)
 	for ctx.Err() == nil {
-		s.cleanupDebugLogs(ctx)
-
 		timer := time.NewTimer(config.DebugLogCleanupInterval)
 		select {
 		case <-timer.C:
@@ -294,54 +293,57 @@ func (s *LogService) cleanupDebugLogsLoop() {
 			}
 			return
 		}
+
+		if !debugCleanupDone {
+			debugCleanupDone = s.cleanupDebugLogs(ctx)
+		}
 	}
 }
 
-// cleanupDebugLogs 执行一轮调试日志清理。
-func (s *LogService) cleanupDebugLogs(ctx context.Context) {
+// cleanupDebugLogs 执行一轮调试日志清理。返回 true 表示 Debug 已关闭且表已清空。
+func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
 	setting, err := s.store.GetSetting(ctx, "debug_log_enabled")
 	if err != nil {
 		log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
-		return
+		return false
 	}
-	debugEnabled := setting != nil && setting.Value == "true"
-
-	cutoff := time.Unix(1<<62, 0)
-	if debugEnabled {
-		retentionMinutes := 5
-		if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
-			log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
-			return
-		} else if setting != nil {
-			if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
-				retentionMinutes = value
-			}
+	if setting == nil || setting.Value != "true" {
+		if err := s.store.TruncateDebugLogs(ctx); err != nil {
+			log.Printf("[WARN] 清空调试日志失败: %v", err)
+			return false
 		}
-		cutoff = time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
+		log.Printf("[INFO] 调试日志未启用，已清空历史调试日志")
+		return true
 	}
 
-	var totalDeleted int64
+	retentionMinutes := 5
+	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
+		log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
+		return false
+	} else if setting != nil {
+		if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
+			retentionMinutes = value
+		}
+	}
+	cutoff := time.Now().Add(-time.Duration(retentionMinutes) * time.Minute)
+
 	for {
 		deleted, err := s.store.CleanupDebugLogsBatch(ctx, cutoff, debugLogCleanupBatchSize)
 		if err != nil {
 			if ctx.Err() != nil {
-				return
+				return false
 			}
 			log.Printf("[WARN] 清理调试日志失败，本轮停止 (batch_size=%d): %v", debugLogCleanupBatchSize, err)
-			return
+			return false
 		}
-		totalDeleted += deleted
 		if deleted < int64(debugLogCleanupBatchSize) {
-			if !debugEnabled && totalDeleted > 0 {
-				log.Printf("[INFO] 调试日志未启用，已清空 %d 条历史调试日志", totalDeleted)
-			}
-			return
+			return false
 		}
 
 		select {
 		case <-time.After(debugLogCleanupBatchYield):
 		case <-ctx.Done():
-			return
+			return false
 		}
 	}
 }
