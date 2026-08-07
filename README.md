@@ -22,7 +22,7 @@ ccLoad removes the operational mess of running multiple AI API upstreams. It kee
 During OpenAI Build Week, Codex powered by GPT-5.6 was the primary engineering agent used to:
 
 - Trace request routing, failover, cooldown, protocol conversion, and dashboard flows across the Go backend and embedded web UI.
-- Implement and review model-scoped cooldown handling for upstream `5xx`, key-level `429`, and model-unavailable `404` failures without unnecessarily cooling an entire channel.
+- Implement and review model-scoped cooldown handling for upstream `5xx`, key-level `429`, model-unavailable `404`, and explicit model-retirement `410` failures without unnecessarily cooling an entire channel.
 - Refine the model-status and call-statistics UI, update the English and Chinese documentation, and verify the result with focused Go tests, builds, and browser walkthroughs.
 - Prepare the reproducible demo and Devpost submission while keeping architecture, security, and final-review decisions under human control.
 
@@ -44,7 +44,7 @@ ccLoad handles those cases with:
 
 - **Smart routing**: High-priority channels are selected first; channels at the same priority use smooth weighted round-robin.
 - **Automatic failover**: Failed keys, models, channels, and URLs are skipped according to the classified error scope.
-- **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
+- **Model-aware cooldown**: Structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, model-unavailable 404 errors, and explicit model-retirement 410 errors all cool only the actual upstream model first; other models on the same channel remain available. The channel is promoted to cooldown only after every configured model or every enabled key is cooling.
 - **Multi-URL scheduling**: A single channel can use multiple upstream URLs, weighted by observed latency and health.
 - **Per-URL protocol routing**: Each URL can declare the upstream wire protocols it accepts. Explicit declarations route directly; an empty declaration tries the client protocol first and caches the working fallback.
 - **Responses WebSocket bridging**: Authenticated Codex clients can keep a downstream WebSocket while each candidate uses native Codex WebSocket or the existing HTTP/SSE transport.
@@ -857,7 +857,7 @@ Check out the awesome admin dashboard 👇
   - Eliminates duplicate code, unified cooldown logic
   - Distinguishes network vs HTTP error classification
   - Uses separate Key/Model/Channel actions; `ActionRetryModel` does not retry another Key or URL in the same channel
-  - Persists structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, and model-unavailable 404 errors by `(channel_id, actual upstream model)`; other models on that channel stay eligible
+  - Persists structured `model_cooldown` responses, upstream HTTP 5xx failures, key-level 429 rate limits, model-unavailable 404 errors, and explicit model-retirement 410 errors by `(channel_id, actual upstream model)`; other models on that channel stay eligible
   - Automatically promotes to channel cooldown only when all configured models or all enabled keys are cooling
 - **Multi-URL Selector** (URLSelector):
   - `url_selector.go`: Smart URL selection within a single channel
