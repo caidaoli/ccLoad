@@ -39,6 +39,12 @@ var defaultScopes = []string{
 	"https://www.googleapis.com/auth/experimentsandconfigs",
 }
 
+var (
+	errAccessTokenRejected = errors.New("antigravity access token was rejected")
+	// ErrCredentialUnusable means neither the imported AT nor one RT refresh produced an accepted access token.
+	ErrCredentialUnusable = errors.New("antigravity credential could not obtain a usable access token")
+)
+
 var unavailableModelIDs = map[string]struct{}{
 	"chat_20706":                  {},
 	"chat_23310":                  {},
@@ -157,43 +163,76 @@ func (s *Service) CompleteCredential(ctx context.Context, credential *Credential
 	if err != nil {
 		return nil, err
 	}
+	refreshed := false
 	if needsRefresh {
-		refreshed, err := s.Refresh(ctx, completed.RefreshToken)
+		merged, err := s.refreshCredential(ctx, &completed)
 		if err != nil {
-			return nil, fmt.Errorf("refresh Antigravity credential: %w", err)
-		}
-		merged, err := completed.MergeRefresh(refreshed)
-		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w: %v", ErrCredentialUnusable, err)
 		}
 		completed = *merged
+		refreshed = true
 	}
-	if completed.Email == "" {
-		email, err := s.FetchUserInfo(ctx, completed.AccessToken)
-		if err != nil {
-			return nil, err
+
+	err = s.completeCredentialMetadata(ctx, &completed)
+	if errors.Is(err, errAccessTokenRejected) && !refreshed {
+		merged, refreshErr := s.refreshCredential(ctx, &completed)
+		if refreshErr != nil {
+			return nil, fmt.Errorf("%w: %v", ErrCredentialUnusable, refreshErr)
 		}
-		completed.Email = email
+		completed = *merged
+		err = s.completeCredentialMetadata(ctx, &completed)
 	}
-	if completed.ProjectID == "" {
-		projectID, err := s.FetchProjectID(ctx, completed.AccessToken)
-		if err != nil {
-			return nil, err
-		}
-		completed.ProjectID = projectID
-	}
-	if completed.ProjectID == "" {
-		return nil, errors.New("project discovery: Antigravity returned an empty project_id")
-	}
-	paidTier, err := s.FetchPaidTier(ctx, completed.AccessToken)
 	if err != nil {
+		if errors.Is(err, errAccessTokenRejected) {
+			return nil, fmt.Errorf("%w: refreshed access token was rejected", ErrCredentialUnusable)
+		}
 		return nil, err
 	}
-	completed.PaidTier = paidTier
 	if err := completed.Normalize(); err != nil {
 		return nil, err
 	}
 	return &completed, nil
+}
+
+func (s *Service) refreshCredential(ctx context.Context, credential *Credential) (*Credential, error) {
+	refreshed, err := s.Refresh(ctx, credential.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("refresh Antigravity credential: %w", err)
+	}
+	merged, err := credential.MergeRefresh(refreshed)
+	if err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func (s *Service) completeCredentialMetadata(ctx context.Context, credential *Credential) error {
+	if credential == nil {
+		return errors.New("credential: Antigravity data is nil")
+	}
+	if credential.Email == "" {
+		email, err := s.FetchUserInfo(ctx, credential.AccessToken)
+		if err != nil {
+			return err
+		}
+		credential.Email = email
+	}
+	if credential.ProjectID == "" {
+		projectID, err := s.FetchProjectID(ctx, credential.AccessToken)
+		if err != nil {
+			return err
+		}
+		credential.ProjectID = projectID
+	}
+	if credential.ProjectID == "" {
+		return errors.New("project discovery: Antigravity returned an empty project_id")
+	}
+	paidTier, err := s.FetchPaidTier(ctx, credential.AccessToken)
+	if err != nil {
+		return err
+	}
+	credential.PaidTier = paidTier
+	return nil
 }
 
 // FetchPaidTier returns the current paid subscription tier from the daily
@@ -421,6 +460,9 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
 	if err != nil {
 		return nil, err
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		return nil, fmt.Errorf("%w: upstream returned HTTP %d", errAccessTokenRejected, resp.StatusCode)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)

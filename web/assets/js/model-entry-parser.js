@@ -183,10 +183,23 @@
     return result;
   }
 
+  function serializeModelEntries(entries) {
+    return (entries || [])
+      .map(entry => {
+        const model = String(entry?.model || '').trim();
+        if (!model) return '';
+        const redirectModel = String(entry?.redirect_model || '').trim() || model;
+        return `${model}|${redirectModel}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
   return {
     normalizeModelEntries,
     normalizeModelEntry,
     parseJSONModelEntries,
-    parseModelEntries
+    parseModelEntries,
+    serializeModelEntries
   };
 });

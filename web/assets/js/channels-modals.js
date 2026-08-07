@@ -15,6 +15,7 @@ let protocolTransformModeCombobox = null;
 let quickAddChannelTrigger = null;
 let quickAddChannelRequestVersion = 0;
 let modelImportTrigger = null;
+let modelImportTarget = 'channel';
 
 function getProtocolTransformModeOptions() {
   return [
@@ -333,6 +334,8 @@ function initChannelEditorActions() {
         'fetch-models-from-api': () => invokeChannelEditorAction('fetchModelsFromAPI'),
         'fetch-sub2api-rate': () => invokeChannelEditorAction('fetchSub2APIRate'),
         'add-redirect-row': () => invokeChannelEditorAction('addRedirectRow'),
+        'export-channel-models': () => invokeChannelEditorAction('exportChannelModels'),
+        'open-batch-model-import': () => invokeChannelEditorAction('openBatchModelImportModal'),
         'batch-lowercase-models': () => invokeChannelEditorAction('batchLowercaseSelectedModels'),
         'batch-strip-model-source-prefix': () => invokeChannelEditorAction('batchStripSelectedModelSourcePrefixes'),
         'batch-delete-models': () => invokeChannelEditorAction('batchDeleteSelectedModels'),
@@ -1092,6 +1095,8 @@ function updateBatchChannelSelectionUI() {
     if (!visible) {
       const refreshOptions = document.getElementById('batchRefreshOptions');
       if (refreshOptions) refreshOptions.open = false;
+      const advancedOptions = document.getElementById('batchAdvancedOptions');
+      if (advancedOptions) advancedOptions.open = false;
     }
   }
 
@@ -1137,7 +1142,9 @@ function updateBatchChannelSelectionUI() {
     'batchDeleteChannelsBtn',
     'batchRefreshMergeBtn',
     'batchRefreshReplaceBtn',
-    'batchApplyProtocolBtn'
+    'batchApplyProtocolBtn',
+    'batchApplyCostMultiplierBtn',
+    'batchImportModelsBtn'
   ];
   actionBtnIDs.forEach((id) => {
     const btn = document.getElementById(id);
@@ -1146,6 +1153,8 @@ function updateBatchChannelSelectionUI() {
 
   const protocolMode = document.getElementById('batchProtocolTransformMode');
   if (protocolMode) protocolMode.disabled = selectedCount === 0;
+  const costMultiplier = document.getElementById('batchCostMultiplier');
+  if (costMultiplier) costMultiplier.disabled = selectedCount === 0;
 }
 
 function selectAllVisibleChannels() {
@@ -1239,9 +1248,30 @@ async function batchSetSelectedChannelsEnabled(enabled) {
   }
 }
 
-async function batchSetSelectedChannelsProtocolMode() {
+async function requestBatchAdvancedPatch(patch) {
   const channelIDs = getSelectedChannelIDs();
   if (channelIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return null;
+  }
+
+  const resp = await fetchAPIWithAuth('/admin/channels/batch-advanced', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel_ids: channelIDs, ...patch })
+  });
+  if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+  return resp.data || {};
+}
+
+async function finishBatchAdvancedUpdate() {
+  selectedChannelIds.clear();
+  if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
+  await reloadChannelsList();
+}
+
+async function batchSetSelectedChannelsProtocolMode() {
+  if (getSelectedChannelIDs().length === 0) {
     if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
     return;
   }
@@ -1258,20 +1288,9 @@ async function batchSetSelectedChannelsProtocolMode() {
   if (modeSelect) modeSelect.disabled = true;
 
   try {
-    const resp = await fetchAPIWithAuth('/admin/channels/batch-protocol-mode', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        channel_ids: channelIDs,
-        protocol_transform_mode: mode
-      })
-    });
-    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
-
-    const data = resp.data || {};
-    selectedChannelIds.clear();
-    if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
-    await reloadChannelsList();
+    const data = await requestBatchAdvancedPatch({ protocol_transform_mode: mode });
+    if (!data) return;
+    await finishBatchAdvancedUpdate();
 
     if (window.showSuccess) {
       window.showSuccess(window.t('channels.batchProtocolModeSummary', {
@@ -1283,6 +1302,59 @@ async function batchSetSelectedChannelsProtocolMode() {
     }
   } catch (e) {
     console.error('Batch set protocol transform mode failed', e);
+    if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
+  } finally {
+    updateBatchChannelSelectionUI();
+  }
+}
+
+async function batchSetSelectedChannelsCostMultiplier() {
+  if (getSelectedChannelIDs().length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+
+  const input = document.getElementById('batchCostMultiplier');
+  const applyButton = document.getElementById('batchApplyCostMultiplierBtn');
+  const error = document.getElementById('batchCostMultiplierError');
+  const rawMultiplier = String(input?.value ?? '').trim();
+  const multiplier = Number(rawMultiplier);
+  if (rawMultiplier === '' || !Number.isFinite(multiplier) || multiplier < 0) {
+    const message = window.t('channels.batchCostMultiplierInvalid');
+    if (input) {
+      input.setAttribute('aria-invalid', 'true');
+      input.focus();
+    }
+    if (error) {
+      error.textContent = message;
+      error.hidden = false;
+    }
+    return;
+  }
+  if (error) {
+    error.textContent = '';
+    error.hidden = true;
+  }
+  if (input) {
+    input.setAttribute('aria-invalid', 'false');
+    input.disabled = true;
+  }
+  if (applyButton) applyButton.disabled = true;
+
+  try {
+    const data = await requestBatchAdvancedPatch({ cost_multiplier: multiplier });
+    if (!data) return;
+    await finishBatchAdvancedUpdate();
+    if (window.showSuccess) {
+      window.showSuccess(window.t('channels.batchCostMultiplierSummary', {
+        multiplier,
+        updated: data.updated || 0,
+        unchanged: data.unchanged || 0,
+        notFound: data.not_found_count || 0
+      }));
+    }
+  } catch (e) {
+    console.error('Batch set cost multiplier failed', e);
     if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
   } finally {
     updateBatchChannelSelectionUI();
@@ -1799,26 +1871,61 @@ function addRedirectRow() {
   openModelImportModal();
 }
 
-function openModelImportModal() {
+function setModelImportText(element, key) {
+  if (!element) return;
+  element.setAttribute('data-i18n', key);
+  element.textContent = window.t(key);
+}
+
+function openModelImportModal(target = 'channel') {
+  modelImportTarget = target === 'batch' ? 'batch' : 'channel';
   modelImportTrigger = document.activeElement;
   syncModelNormalizationOptions();
   document.getElementById('modelImportTextarea').value = '';
   document.getElementById('modelImportPreviewContent').classList.add('hidden');
+  const batchImport = modelImportTarget === 'batch';
+  const modeFieldset = document.getElementById('modelImportModeFieldset');
+  if (modeFieldset) modeFieldset.hidden = !batchImport;
+  const appendMode = document.querySelector('input[name="modelImportMode"][value="append"]');
+  if (appendMode) appendMode.checked = true;
+  setModelImportText(document.getElementById('modelImportTitle'), batchImport
+    ? 'channels.batchImportModelsTitle'
+    : 'channels.importModelsTitle');
+  setModelImportText(document.getElementById('modelImportPreviewLabel'), batchImport
+    ? 'channels.batchParseSuccessModel'
+    : 'channels.parseSuccessModel');
+  setModelImportText(document.getElementById('modelImportConfirmBtn'), batchImport
+    ? 'channels.batchImportModelsConfirm'
+    : 'channels.confirmAdd');
   switchModelImportFormat('text');
   const modal = document.getElementById('modelImportModal');
-  document.getElementById('channelModal')?.setAttribute('inert', '');
+  if (batchImport) {
+    document.querySelector('.app-container')?.setAttribute('inert', '');
+  } else {
+    document.getElementById('channelModal')?.setAttribute('inert', '');
+  }
   modal.classList.add('show');
   modal.setAttribute('aria-hidden', 'false');
   setTimeout(() => document.getElementById('modelImportTextarea').focus(), 100);
 }
 
-function closeModelImportModal() {
+function closeModelImportModal(restoreFocus = true) {
   const modal = document.getElementById('modelImportModal');
   modal.classList.remove('show');
   modal.setAttribute('aria-hidden', 'true');
   document.getElementById('channelModal')?.removeAttribute('inert');
-  modelImportTrigger?.focus?.();
+  document.querySelector('.app-container')?.removeAttribute('inert');
+  if (restoreFocus) modelImportTrigger?.focus?.();
   modelImportTrigger = null;
+  modelImportTarget = 'channel';
+}
+
+function openBatchModelImportModal() {
+  if (getSelectedChannelIDs().length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+  openModelImportModal('batch');
 }
 
 function updateModelImportPreview() {
@@ -1886,7 +1993,7 @@ function setupModelImportPreview() {
   modal.dataset.modelImportEventsBound = '1';
 }
 
-function confirmModelImport() {
+async function confirmModelImport() {
   const textarea = document.getElementById('modelImportTextarea');
   const input = textarea.value.trim();
 
@@ -1908,6 +2015,47 @@ function confirmModelImport() {
   if (newModels.length === 0) {
     setModelImportError(window.t('channels.noValidModelParsed'));
     textarea.focus();
+    return;
+  }
+
+  if (modelImportTarget === 'batch') {
+    const mode = document.querySelector('input[name="modelImportMode"]:checked')?.value === 'replace'
+      ? 'replace'
+      : 'append';
+    const channelCount = getSelectedChannelIDs().length;
+    if (mode === 'replace' && !confirm(window.t('channels.batchModelImportReplaceConfirm', { count: channelCount }))) {
+      return;
+    }
+
+    const confirmButton = document.getElementById('modelImportConfirmBtn');
+    if (confirmButton) confirmButton.disabled = true;
+    textarea.disabled = true;
+    try {
+      const data = await requestBatchAdvancedPatch({
+        model_import_mode: mode,
+        models: newModels
+      });
+      if (!data) return;
+      closeModelImportModal(false);
+      await finishBatchAdvancedUpdate();
+      document.getElementById('visibleSelectionCheckbox')?.focus();
+      if (window.showSuccess) {
+        window.showSuccess(window.t('channels.batchModelImportSummary', {
+          mode: window.t(`channels.batchModelImportModeValue.${mode}`),
+          updated: data.updated || 0,
+          unchanged: data.unchanged || 0,
+          notFound: data.not_found_count || 0
+        }));
+      }
+    } catch (error) {
+      console.error('Batch import models failed', error);
+      setModelImportError(window.t('channels.batchOperationFailed', { error: error.message }));
+    } finally {
+      textarea.disabled = false;
+      if (confirmButton) confirmButton.disabled = false;
+      if (document.getElementById('modelImportModal')?.classList.contains('show')) textarea.focus();
+      updateBatchChannelSelectionUI();
+    }
     return;
   }
 
@@ -1945,6 +2093,26 @@ function confirmModelImport() {
   } else {
     window.showNotification(window.t('channels.allModelsExist'), 'info');
   }
+}
+
+function exportChannelModels() {
+  const models = collectModelsForSubmit(redirectTableData);
+  const text = window.ModelEntryParser.serializeModelEntries(models);
+  if (!text) {
+    if (window.showWarning) window.showWarning(window.t('channels.noModelsToExport'));
+    return;
+  }
+
+  const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'channel-models.txt';
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+  if (window.showSuccess) window.showSuccess(window.t('channels.modelsExported', { count: models.length }));
 }
 
 function deleteRedirectRow(index) {
@@ -3303,15 +3471,19 @@ if (typeof module !== 'undefined' && module.exports) {
     addCommonModels,
     addCommonModelsToRows,
     applyQuickAddChannelSetup,
+    batchSetSelectedChannelsCostMultiplier,
     batchSetSelectedChannelsProtocolMode,
     collectModelsForSubmit,
+    confirmModelImport,
     detectChannelWebsocketSupport,
     discoverQuickAddChannelSetup,
     editChannel,
+    exportChannelModels,
     fetchModelsFromAPI,
     fetchSub2APIRate,
     initModelNormalizationOptions,
     mergeModelRowsWithFetchedModels,
+    openBatchModelImportModal,
     parseQuickAddChannelInfo,
     testRedirectModel,
     toggleModelDisabledState

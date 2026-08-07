@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	codexCredentialRefreshLead = 5 * 24 * time.Hour
+	codexCredentialRefreshLead = 5 * time.Minute
 	codexUserAgent             = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
 )
 

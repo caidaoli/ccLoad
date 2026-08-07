@@ -365,20 +365,6 @@
                   <span data-i18n="channels.batchDisableChannels">禁用</span>
                 </button>
               </div>
-              <div class="channel-batch-action-group channel-batch-action-group--protocol" role="group"
-                data-i18n-aria-label="channels.batchProtocolMode" aria-label="协议处理">
-                <select id="batchProtocolTransformMode" class="channel-batch-select"
-                  data-i18n-aria-label="channels.batchProtocolMode" aria-label="协议处理" disabled>
-                  <option value="auto" data-i18n="channels.batchProtocolModeAuto">协议：自动</option>
-                  <option value="upstream" data-i18n="channels.batchProtocolModeUpstream">协议：直通</option>
-                  <option value="local" data-i18n="channels.batchProtocolModeLocal">协议：转换</option>
-                </select>
-                <button id="batchApplyProtocolBtn" type="button"
-                  class="btn btn-sm channel-batch-action channel-batch-action--apply"
-                  data-action="batch-set-protocol-mode" disabled>
-                  <span data-i18n="channels.batchApplyProtocol">应用</span>
-                </button>
-              </div>
               <div class="channel-batch-action-group channel-batch-action-group--refresh" role="group"
                 data-i18n-aria-label="channels.batchModelActions" aria-label="模型操作">
                 <button id="batchRefreshMergeBtn" type="button"
@@ -405,6 +391,48 @@
                   </div>
                 </details>
               </div>
+              <details id="batchAdvancedOptions" class="channel-batch-advanced">
+                <summary data-i18n="channels.batchAdvanced">高级</summary>
+                <div class="channel-batch-advanced__panel">
+                  <div class="channel-batch-advanced__field">
+                    <label for="batchCostMultiplier" data-i18n="channels.batchCostMultiplier">倍率</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchCostMultiplier" class="channel-batch-input" type="number" value="1" min="0"
+                        step="0.01" inputmode="decimal"
+                        aria-describedby="batchCostMultiplierHint batchCostMultiplierError" disabled>
+                      <button id="batchApplyCostMultiplierBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-cost-multiplier" disabled>
+                        <span data-i18n="channels.batchApplyCostMultiplier">设置倍率</span>
+                      </button>
+                    </div>
+                    <span id="batchCostMultiplierHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchCostMultiplierHint">0 表示免费渠道</span>
+                    <span id="batchCostMultiplierError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
+                    <label for="batchProtocolTransformMode" data-i18n="channels.batchProtocolMode">协议处理</label>
+                    <div class="channel-batch-advanced__control">
+                      <select id="batchProtocolTransformMode" class="channel-batch-select"
+                        data-i18n-aria-label="channels.batchProtocolMode" aria-label="协议处理" disabled>
+                        <option value="auto" data-i18n="channels.batchProtocolModeAuto">自动(原生优先)</option>
+                        <option value="upstream" data-i18n="channels.batchProtocolModeUpstream">上游直通(透传)</option>
+                        <option value="local" data-i18n="channels.batchProtocolModeLocal">ccLoad 转换</option>
+                      </select>
+                      <button id="batchApplyProtocolBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-protocol-mode" disabled>
+                        <span data-i18n="channels.batchApplyProtocol">设置协议</span>
+                      </button>
+                    </div>
+                  </div>
+                  <button id="batchImportModelsBtn" type="button"
+                    class="btn btn-sm channel-batch-action channel-batch-action--import"
+                    data-action="open-batch-model-import" disabled>
+                    <span data-i18n="channels.batchImportModels">导入模型</span>
+                  </button>
+                </div>
+              </details>
               <button id="batchDeleteChannelsBtn" type="button"
                 class="btn btn-sm channel-batch-action channel-batch-action--delete"
                 data-action="batch-delete-channels" disabled>
@@ -679,6 +707,15 @@
                       stroke-linejoin="round" />
                   </svg>
                   <span data-i18n="channels.addModel">添加模型</span>
+                </button>
+                <button type="button" class="btn btn-secondary btn-sm" data-action="export-channel-models"
+                  data-i18n-title="channels.exportModelsTitle" title="导出当前模型配置">
+                  <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg"
+                    aria-hidden="true" focusable="false">
+                    <path d="M8 2V10M5 7L8 10L11 7M3 12.5H13" stroke="currentColor" stroke-width="1.5"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  <span data-i18n="channels.exportModels">导出模型</span>
                 </button>
               </div>
               <button type="button" id="batchLowercaseModelsBtn" data-action="batch-lowercase-models" disabled
@@ -1334,6 +1371,19 @@
             </label>
           </div>
         </fieldset>
+        <fieldset id="modelImportModeFieldset" class="model-import-format" hidden>
+          <legend class="form-label" data-i18n="channels.batchModelImportMode">导入方式</legend>
+          <div class="model-import-format-options">
+            <label class="model-import-format-option">
+              <input type="radio" name="modelImportMode" value="append" checked>
+              <span data-i18n="channels.batchModelImportAppend">追加</span>
+            </label>
+            <label class="model-import-format-option">
+              <input type="radio" name="modelImportMode" value="replace">
+              <span data-i18n="channels.batchModelImportReplace">覆盖</span>
+            </label>
+          </div>
+        </fieldset>
         <div class="form-group">
           <label class="form-label" for="modelImportTextarea"><span id="modelImportInputLabel"
               data-i18n="channels.inputModelNames">输入模型名称</span>
@@ -1398,7 +1448,7 @@
                 <path d="M3 8L6.5 11.5L13 5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
                   stroke-linejoin="round" />
               </svg>
-              <span><span data-i18n="channels.parseSuccessModel">解析成功：将添加</span> <span id="modelImportCount">0</span>
+              <span><span id="modelImportPreviewLabel" data-i18n="channels.parseSuccessModel">解析成功：将添加</span> <span id="modelImportCount">0</span>
                 <span data-i18n="channels.modelCountSuffix">个模型</span></span>
             </div>
           </div>
@@ -1407,7 +1457,7 @@
       <div class="form-actions">
         <button type="button" class="btn btn-secondary" data-action="close-model-import-modal"
           data-i18n="common.cancel">取消</button>
-        <button type="button" class="btn btn-primary" data-action="confirm-model-import"
+        <button id="modelImportConfirmBtn" type="button" class="btn btn-primary" data-action="confirm-model-import"
           data-i18n="channels.confirmAdd">添加模型</button>
       </div>
     </div>

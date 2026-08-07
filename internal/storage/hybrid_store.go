@@ -265,18 +265,18 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 	return result, nil
 }
 
-func (h *HybridStore) BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error) {
-	affected, err := h.mysql.BatchUpdateProtocolTransformMode(ctx, channelIDs, mode)
+func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
+	result, err := h.mysql.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {
-		return 0, err
+		return model.BatchConfigPatchResult{}, err
 	}
 
-	h.syncToSQLite("BatchUpdateProtocolTransformMode", func() error {
-		_, err := h.sqlite.BatchUpdateProtocolTransformMode(ctx, channelIDs, mode)
+	h.syncToSQLite("BatchPatchConfigs", func() error {
+		_, err := h.sqlite.BatchPatchConfigs(ctx, channelIDs, patch)
 		return err
 	})
 
-	return affected, nil
+	return result, nil
 }
 
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
@@ -22,6 +24,8 @@ const (
 	maxOAuthCredentialImportBytes     = 1 << 20
 	oauthCredentialUnknownTypeMessage = "credential type could not be determined"
 )
+
+var errOAuthCredentialUnusable = errors.New("OAuth credential could not obtain a usable access token")
 
 type oauthCredentialImportResult struct {
 	FileName    string `json:"file_name"`
@@ -224,6 +228,9 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 
 		channelName, created, importErr := s.importOAuthCredential(c, credentialProvider, raw, nextPriorityByProvider[credentialProvider])
 		switch {
+		case errors.Is(importErr, errOAuthCredentialUnusable), errors.Is(importErr, antigravityauth.ErrCredentialUnusable):
+			result.Status, result.Error = "skipped", importErr.Error()
+			summary.Skipped++
 		case importErr != nil:
 			result.Status, result.Error = "failed", importErr.Error()
 			summary.Failed++
@@ -274,6 +281,10 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 		if err != nil {
 			return "", false, err
 		}
+		credential, err = s.completeImportedCodexCredential(c.Request.Context(), credential)
+		if err != nil {
+			return "", false, err
+		}
 		return createImportedCodexChannel(c.Request.Context(), s.store, credential, priority)
 	case antigravityauth.ChannelType:
 		credential, err := antigravityauth.ParseCredential(raw)
@@ -290,4 +301,69 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 	default:
 		return "", false, fmt.Errorf("unsupported credential provider %q", provider)
 	}
+}
+
+func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
+	if credential == nil {
+		return nil, errors.New("codex credential is nil")
+	}
+	service := s.codexService
+	if service == nil && s.client != nil {
+		service = codexauth.NewService(s.client)
+	}
+	if service == nil || service.Client == nil {
+		return nil, errors.New("codex credential validation is unavailable")
+	}
+
+	needsRefresh, err := credential.NeedsRefresh(time.Now(), codexCredentialRefreshLead)
+	if err != nil {
+		return nil, err
+	}
+	if !needsRefresh {
+		accepted, probeErr := probeCodexAccessToken(ctx, service.Client, credential)
+		if probeErr != nil {
+			return nil, probeErr
+		}
+		if accepted {
+			return credential, nil
+		}
+	}
+
+	refreshed, err := service.Refresh(ctx, credential.RefreshToken)
+	if err != nil {
+		return nil, fmt.Errorf("%w: Codex refresh failed", errOAuthCredentialUnusable)
+	}
+	merged, err := credential.MergeRefresh(refreshed)
+	if err != nil {
+		return nil, fmt.Errorf("%w: Codex refresh response was invalid", errOAuthCredentialUnusable)
+	}
+	accepted, probeErr := probeCodexAccessToken(ctx, service.Client, merged)
+	if probeErr != nil || !accepted {
+		return nil, fmt.Errorf("%w: refreshed Codex access token was not accepted", errOAuthCredentialUnusable)
+	}
+	return merged, nil
+}
+
+func probeCodexAccessToken(ctx context.Context, client *http.Client, credential *codexauth.Credential) (bool, error) {
+	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		return false, errors.New("codex credential validation is unavailable")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, oauthUsageTimeout)
+	defer cancel()
+	req, err := newCodexUsageRequest(probeCtx, credential)
+	if err != nil {
+		return false, errors.New("build Codex credential validation request")
+	}
+	_, err = executeOAuthUsageRequest(client, req, "Codex")
+	if err == nil {
+		return true, nil
+	}
+	var statusErr *oauthUsageHTTPStatusError
+	if errors.As(err, &statusErr) && (statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden) {
+		return false, nil
+	}
+	return false, fmt.Errorf("validate Codex access token: %w", err)
 }

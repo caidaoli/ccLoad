@@ -91,6 +91,15 @@ type oauthUsageSummary struct {
 	Windows  []oauthUsageWindow `json:"windows"`
 }
 
+type oauthUsageHTTPStatusError struct {
+	provider   string
+	statusCode int
+}
+
+func (e *oauthUsageHTTPStatusError) Error() string {
+	return fmt.Sprintf("usage: %s request returned HTTP %d", e.provider, e.statusCode)
+}
+
 func appendCodexUsageWindow(windows []oauthUsageWindow, limitName, kind string, raw *codexUsageRawWindow) []oauthUsageWindow {
 	if raw == nil || raw.UsedPercent == nil {
 		return windows
@@ -213,16 +222,9 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return nil, errors.New("usage: Codex request is unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
+	req, err := newCodexUsageRequest(ctx, credential)
 	if err != nil {
 		return nil, errors.New("usage: Codex request is unavailable")
-	}
-	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", codexUsageUserAgent)
-	if credential.AccountID != "" {
-		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
 	}
 
 	body, err := executeOAuthUsageRequest(client, req, "Codex")
@@ -234,6 +236,24 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 		return nil, errors.New("usage: Codex response is invalid")
 	}
 	return normalizeCodexUsage(&payload, credential.PlanType)
+}
+
+func newCodexUsageRequest(ctx context.Context, credential *codexauth.Credential) (*http.Request, error) {
+	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		return nil, errors.New("usage: Codex request is unavailable")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", codexUsageUserAgent)
+	if credential.AccountID != "" {
+		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
+	}
+	return req, nil
 }
 
 func requestAntigravityUsage(ctx context.Context, client *http.Client, credential *antigravityauth.Credential) (*oauthUsageSummary, error) {
@@ -281,7 +301,7 @@ func executeOAuthUsageRequest(client *http.Client, req *http.Request, provider s
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxOAuthUsageResponseBytes))
-		return nil, fmt.Errorf("usage: %s request returned HTTP %d", provider, resp.StatusCode)
+		return nil, &oauthUsageHTTPStatusError{provider: provider, statusCode: resp.StatusCode}
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxOAuthUsageResponseBytes+1))
 	if err != nil || len(body) > maxOAuthUsageResponseBytes {

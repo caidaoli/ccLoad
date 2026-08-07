@@ -160,6 +160,40 @@ func TestServiceCompleteCredentialRefreshesPaidTierFromDailyAPI(t *testing.T) {
 	}
 }
 
+func TestServiceCompleteCredentialRefreshesRejectedAccessToken(t *testing.T) {
+	var refreshCalls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			refreshCalls++
+			_, _ = w.Write([]byte(`{"access_token":"at-refreshed","refresh_token":"rt-rotated","expires_in":3600}`))
+		case "/daily/v1internal:loadCodeAssist":
+			if r.Header.Get("Authorization") == "Bearer at-stale" {
+				w.WriteHeader(http.StatusUnauthorized)
+				return
+			}
+			assertBearer(t, r, "at-refreshed")
+			_, _ = w.Write([]byte(`{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	service := testService(server)
+	service.DailyAPIBaseURL = server.URL + "/daily"
+	credential, err := service.CompleteCredential(context.Background(), &Credential{
+		Type: ChannelType, AccessToken: "at-stale", RefreshToken: "rt-current",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "user@example.com", ProjectID: "project-1",
+	})
+	if err != nil {
+		t.Fatalf("CompleteCredential: %v", err)
+	}
+	if refreshCalls != 1 || credential.AccessToken != "at-refreshed" || credential.RefreshToken != "rt-rotated" {
+		t.Fatal("rejected access token was not replaced by one refresh")
+	}
+}
+
 func TestServiceFetchAvailableModels(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1internal:fetchAvailableModels" {

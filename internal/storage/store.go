@@ -22,7 +22,7 @@ type Store interface {
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	UpdateOAuthCredential(ctx context.Context, id int64, credential string) error
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
-	BatchUpdateProtocolTransformMode(ctx context.Context, channelIDs []int64, mode string) (int64, error)
+	BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error)
 	DeleteConfig(ctx context.Context, id int64) error
 	GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error)
 	BatchUpdatePriority(ctx context.Context, updates []struct {

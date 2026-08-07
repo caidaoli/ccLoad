@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"sync"
@@ -208,6 +209,84 @@ type ModelEntry struct {
 	Model         string `json:"model"`                    // 模型名称
 	RedirectModel string `json:"redirect_model,omitempty"` // 重定向目标模型（空表示不重定向）
 	Disabled      bool   `json:"disabled,omitempty"`       // 是否停用该渠道的此模型
+}
+
+const (
+	// ModelImportModeAppend 保留原有模型并追加新模型。
+	ModelImportModeAppend = "append"
+	// ModelImportModeReplace 用导入模型完全替换原有模型。
+	ModelImportModeReplace = "replace"
+)
+
+// BatchConfigPatch 只修改显式提供的渠道字段。
+// ModelImportMode 为空时不修改模型；非空时 ModelEntries 必须至少包含一个条目。
+type BatchConfigPatch struct {
+	CostMultiplier        *float64
+	ProtocolTransformMode *string
+	ModelEntries          []ModelEntry
+	ModelImportMode       string
+}
+
+// BatchConfigPatchResult 汇总一次原子批量更新的结果。
+type BatchConfigPatchResult struct {
+	Updated   int
+	Unchanged int
+	NotFound  []int64
+}
+
+// Normalize validates a batch patch and returns an independent normalized copy.
+func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
+	if p.CostMultiplier == nil && p.ProtocolTransformMode == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
+		return BatchConfigPatch{}, errors.New("batch config patch cannot be empty")
+	}
+	if p.CostMultiplier != nil {
+		value := *p.CostMultiplier
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return BatchConfigPatch{}, fmt.Errorf("cost_multiplier must be a finite number >= 0 (got %v)", value)
+		}
+		p.CostMultiplier = &value
+	}
+	if p.ProtocolTransformMode != nil {
+		rawMode := strings.TrimSpace(*p.ProtocolTransformMode)
+		mode := NormalizeProtocolTransformMode(rawMode)
+		if rawMode == "" || mode == "" {
+			return BatchConfigPatch{}, fmt.Errorf("invalid protocol_transform_mode %q", *p.ProtocolTransformMode)
+		}
+		p.ProtocolTransformMode = &mode
+	}
+
+	p.ModelImportMode = strings.ToLower(strings.TrimSpace(p.ModelImportMode))
+	if p.ModelImportMode == "" {
+		if p.ModelEntries != nil {
+			return BatchConfigPatch{}, errors.New("model_import_mode is required when models are provided")
+		}
+		return p, nil
+	}
+	if p.ModelImportMode != ModelImportModeAppend && p.ModelImportMode != ModelImportModeReplace {
+		return BatchConfigPatch{}, fmt.Errorf("invalid model_import_mode %q", p.ModelImportMode)
+	}
+	if len(p.ModelEntries) == 0 {
+		return BatchConfigPatch{}, errors.New("models cannot be empty")
+	}
+
+	seenModels := make(map[string]struct{}, len(p.ModelEntries))
+	normalizedModels := make([]ModelEntry, len(p.ModelEntries))
+	for i, entry := range p.ModelEntries {
+		if err := entry.Validate(); err != nil {
+			return BatchConfigPatch{}, fmt.Errorf("models[%d]: %w", i, err)
+		}
+		if entry.RedirectModel == entry.Model {
+			entry.RedirectModel = ""
+		}
+		key := strings.ToLower(entry.Model)
+		if _, ok := seenModels[key]; ok {
+			return BatchConfigPatch{}, fmt.Errorf("duplicate model %q", entry.Model)
+		}
+		seenModels[key] = struct{}{}
+		normalizedModels[i] = entry
+	}
+	p.ModelEntries = normalizedModels
+	return p, nil
 }
 
 // Validate 验证并规范化模型条目
