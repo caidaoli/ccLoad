@@ -206,8 +206,8 @@ self_test() {
 
   local script_path remote_dir work_dir other_dir stub_dir stub_path before_head before_remote
   local dry_run_output publish_output published_head published_tag_target remote_ahead_error
-  local small_beta_output large_beta_output stable_output invalid_beta_error
-  local stable_commit stable_tree invalid_beta_commit
+  local small_beta_output large_beta_output stable_output stable_publish_output invalid_beta_error
+  local stable_commit stable_tree invalid_beta_commit stable_published_head stable_tag_target
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
   self_test_root=$(mktemp -d)
   trap 'rm -rf -- "$self_test_root"' EXIT
@@ -234,6 +234,10 @@ self_test() {
   cat >"$stub_path" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
+if [[ "$(basename "$0")" == docker ]]; then
+  printf 'sha256:release-self-test\n'
+  exit 0
+fi
 if [[ "$(basename "$0")" != gh ]]; then
   exit 0
 fi
@@ -246,7 +250,13 @@ case "${1:-} ${2:-}" in
     ;;
   'release view')
     case " $* " in
-      *' --json isPrerelease '*) printf 'true\n' ;;
+      *' --json isPrerelease '*)
+        if [[ "${3:-}" == *-beta.* ]]; then
+          printf 'true\n'
+        else
+          printf 'false\n'
+        fi
+        ;;
       *' --json url '*) printf 'https://example.invalid/releases/test\n' ;;
       *) exit 1 ;;
     esac
@@ -257,7 +267,7 @@ case "${1:-} ${2:-}" in
 esac
 EOF
   chmod +x "$stub_path"
-  for command_name in go make node golangci-lint gh; do
+  for command_name in go make node golangci-lint gh docker; do
     ln -s tool-stub "$stub_dir/$command_name"
   done
 
@@ -278,7 +288,8 @@ EOF
   assert_equal "$published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" 'pushed master'
   assert_equal "$published_head" "$published_tag_target" 'published Tag target'
   assert_equal '' "$(git -C "$work_dir" status --porcelain)" 'published worktree'
-  [[ "$publish_output" == *'Container: skipped for Beta'* ]] || fail "publish did not report the Beta container policy"
+  [[ "$publish_output" == *'Container: ghcr.io/caidaoli/ccload:v1.0.1-beta.1 and ghcr.io/caidaoli/ccload:beta'* ]] || \
+    fail "publish did not report the Beta container images"
 
   printf 'next change\n' >>"$work_dir/release-test.txt"
   small_beta_output=$(cd "$work_dir" && "$script_path" beta --dry-run \
@@ -309,6 +320,17 @@ EOF
   [[ "$invalid_beta_error" == *'changes the stable major/minor lane'* ]] || \
     fail "dry-run reported the wrong invalid Beta lane error"
   git -C "$work_dir" tag -d v1.1.0-beta.1 >/dev/null
+
+  stable_publish_output=$(cd "$work_dir" && PATH="$stub_dir:$PATH" "$script_path" stable --publish \
+    --commit-message 'feat: stable minor change')
+  stable_published_head=$(git -C "$work_dir" rev-parse HEAD)
+  stable_tag_target=$(git --git-dir="$remote_dir" rev-parse 'refs/tags/v1.1.0^{}')
+  assert_equal "$stable_published_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" \
+    'stable pushed master'
+  assert_equal "$stable_published_head" "$stable_tag_target" 'stable published Tag target'
+  [[ "$stable_publish_output" == *'Container: ghcr.io/caidaoli/ccload:v1.1.0 and ghcr.io/caidaoli/ccload:latest'* ]] || \
+    fail "publish did not report the stable container images"
+  published_head=$stable_published_head
 
   other_dir="$self_test_root/other"
   git clone "$remote_dir" "$other_dir" >/dev/null 2>&1
@@ -452,12 +474,9 @@ if [[ "$mode" == dry-run ]]; then
   exit 0
 fi
 
-for command_name in go make node golangci-lint gh; do
+for command_name in go make node golangci-lint gh docker; do
   require_command "$command_name"
 done
-if [[ "$channel" == stable ]]; then
-  require_command docker
-fi
 
 gh auth status >/dev/null
 
@@ -537,13 +556,16 @@ is_prerelease=$(gh release view "$release_tag" --json isPrerelease --jq '.isPrer
 release_url=$(gh release view "$release_tag" --json url --jq '.url')
 if [[ "$channel" == beta ]]; then
   [[ "$is_prerelease" == true ]] || fail "$release_tag was not published as a prerelease"
-  printf 'Release: %s\n' "$release_url"
-  printf 'Container: skipped for Beta\n'
+  alias_tag=beta
 else
   [[ "$is_prerelease" == false ]] || fail "$release_tag was unexpectedly published as a prerelease"
-  image=ghcr.io/caidaoli/ccload
-  docker buildx imagetools inspect "$image:$release_tag" >/dev/null
-  docker buildx imagetools inspect "$image:latest" >/dev/null
-  printf 'Release: %s\n' "$release_url"
-  printf 'Container: %s:%s and %s:latest\n' "$image" "$release_tag" "$image"
+  alias_tag=latest
 fi
+image=ghcr.io/caidaoli/ccload
+release_digest=$(docker buildx imagetools inspect "$image:$release_tag" --format '{{.Manifest.Digest}}')
+alias_digest=$(docker buildx imagetools inspect "$image:$alias_tag" --format '{{.Manifest.Digest}}')
+[[ -n "$release_digest" ]] || fail "$image:$release_tag returned an empty manifest digest"
+[[ "$release_digest" == "$alias_digest" ]] || \
+  fail "$image:$release_tag and $image:$alias_tag reference different images"
+printf 'Release: %s\n' "$release_url"
+printf 'Container: %s:%s and %s:%s\n' "$image" "$release_tag" "$image" "$alias_tag"

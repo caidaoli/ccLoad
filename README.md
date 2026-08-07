@@ -1017,7 +1017,7 @@ One update manager owns release checks, version notifications, and optional in-p
 
 Stable metadata is resolved through the configured release sources. Preview discovery reads GitHub's Releases Atom feed, which includes stable and prerelease entries without using the rate-limited REST API. After resolving an exact Tag, ccLoad downloads that Tag's binary and checksum from the configured download sources—by default `gh.monlor.com`, `fastgit.cc`, `ghfast.top`, then GitHub; SHA256 must match before replacement.
 
-Official containers use the same check loop and expose new-version notifications, but do not replace their binary by default. Each stable image contains the exact binary produced by the matching GitHub Release, so the normal update path remains pulling a newer stable image and recreating the container. To pull an image once and then let ccLoad apply Beta releases, set `CCLOAD_ALLOW_SELF_UPDATE=1` in `.env` and change `auto_update_channel` to `preview` in the Web admin. Recreating the container restores the stable version baked into the image; ccLoad checks again after startup.
+Official containers use the same check loop and expose new-version notifications, but do not replace their binary by default. Every stable and Beta image contains the exact binary produced by the matching GitHub Release. Stable releases publish an exact version Tag plus `latest`; Beta releases publish an exact prerelease Tag plus the rolling `beta` alias. The normal update path is pulling the desired image Tag and recreating the container. Set `CCLOAD_ALLOW_SELF_UPDATE=1` only when in-process replacement is explicitly required.
 
 To use a private release mirror, set `CCLOAD_RELEASE_BASE_URL` to a complete latest-download base such as `https://mirror.example/caidaoli/ccLoad/releases/latest/download`. An explicit value disables built-in fallback sources for stable metadata and all asset downloads. Preview metadata still comes from GitHub's Releases Atom feed. This setting does not configure `HTTP_PROXY` or `HTTPS_PROXY` for upstream API traffic.
 
@@ -1089,9 +1089,11 @@ Project supports multi-arch Docker images:
 - **Image Registry**: `ghcr.io/caidaoli/ccload`
 - **Available Tags**:
   - `latest` - Latest stable version
-  - `v2.44.1` - Specific release tag, matching the GitHub Release tag
+  - `beta` - Latest Beta version
+  - `v2.44.1` - Exact stable version, matching the GitHub Release tag
+  - `vX.Y.Z-beta.N` - Exact Beta version, matching the GitHub prerelease tag
 
-The official GHCR runtime image is Alpine-based and immutable: a stable release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Beta releases never publish container images. Containers still check for releases, but `CCLOAD_CONTAINER=1` disables in-process binary replacement by default. Set `CCLOAD_ALLOW_SELF_UPDATE=1` explicitly to let ccLoad update the program in the container's writable layer. Recreating the container restores the image-baked version; the default update path remains pulling a newer version Tag or `latest` and recreating the container.
+The official GHCR runtime image is Alpine-based and immutable: every release packages the already-tested `ccload-linux-amd64` and `ccload-linux-arm64` GitHub Release binaries into the matching multi-arch image. Exact version Tags are immutable release references; `latest` and `beta` are rolling aliases for the newest stable and Beta images. Containers still check for releases, but `CCLOAD_CONTAINER=1` disables in-process binary replacement by default. Set `CCLOAD_ALLOW_SELF_UPDATE=1` explicitly to let ccLoad update the program in the container's writable layer. Recreating the container restores the image-baked version; the default update path remains pulling an exact Tag or the desired rolling alias and recreating the container.
 
 ### Image Tag Guide
 
@@ -1101,6 +1103,9 @@ docker pull ghcr.io/caidaoli/ccload:latest
 
 # Pull specific version
 docker pull ghcr.io/caidaoli/ccload:v2.44.1
+
+# Pull latest Beta; replace beta with a published vX.Y.Z-beta.N Tag to pin it
+docker pull ghcr.io/caidaoli/ccload:beta
 
 # Specify architecture (Docker usually auto-selects)
 docker pull --platform linux/amd64 ghcr.io/caidaoli/ccload:latest
