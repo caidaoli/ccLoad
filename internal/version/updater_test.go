@@ -93,10 +93,10 @@ func TestUpdateManagerReleaseSourceConfiguration(t *testing.T) {
 		})
 	})
 
-	t.Run("preview reads the GitHub releases feed", func(t *testing.T) {
+	t.Run("preview reads published GitHub releases", func(t *testing.T) {
 		t.Setenv("CCLOAD_RELEASE_BASE_URL", "")
 		assertUpdateManagerReleaseRequests(t, ReleaseChannelPreview, []string{
-			"https://github.com/caidaoli/ccLoad/releases.atom",
+			"https://api.github.com/repos/caidaoli/ccLoad/releases?per_page=100",
 		})
 	})
 
@@ -211,15 +211,16 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/releases.atom":
-			w.Header().Set("Content-Type", "application/atom+xml")
-			_, _ = fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <entry><link rel="alternate" href="https://example.test/releases/tag/not-semver"/><title>Release not-semver</title></entry>
-  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.1"/><title>Release v1.1.0-beta.1</title></entry>
-  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.1.0-beta.2"/><title>Release v1.1.0-beta.2</title></entry>
-  <entry><link rel="alternate" href="https://example.test/releases/tag/v1.0.5"/><title>Release v1.0.5</title></entry>
-</feed>`)
+		case "/releases":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[
+  {"tag_name":"not-semver","html_url":"https://example.test/releases/tag/not-semver","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
+  {"tag_name":"v9.0.0-beta.1","html_url":"https://example.test/releases/tag/v9.0.0-beta.1","draft":true,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
+  {"tag_name":"v8.0.0-beta.1","html_url":"https://example.test/releases/tag/v8.0.0-beta.1","draft":false,"prerelease":true,"published_at":null},
+  {"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/releases/tag/v1.1.0-beta.1","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"},
+  {"tag_name":"v1.1.0-beta.2","html_url":"https://example.test/releases/tag/v1.1.0-beta.2","draft":false,"prerelease":true,"published_at":"2026-08-07T02:00:00Z"},
+  {"tag_name":"v1.0.5","html_url":"https://example.test/releases/tag/v1.0.5","draft":false,"prerelease":false,"published_at":"2026-08-07T03:00:00Z"}
+]`)
 		case "/download/v1.1.0-beta.2/checksums.txt":
 			_, _ = fmt.Fprint(w, checksum)
 		case "/download/v1.1.0-beta.2/ccload-linux-amd64":
@@ -241,7 +242,7 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 		ApplyUpdates: true,
 		ReleaseSources: []ReleaseSource{{
 			Name:            "test",
-			ReleasesURL:     server.URL + "/releases.atom",
+			ReleasesURL:     server.URL + "/releases",
 			DownloadBaseURL: server.URL + "/download",
 		}},
 		ExecutablePath: exePath,
@@ -279,6 +280,183 @@ func TestUpdateManagerPreviewChannelSelectsHighestPublishedRelease(t *testing.T)
 	}
 	if string(got) != string(binary) {
 		t.Fatalf("executable content = %q, want preview binary", got)
+	}
+}
+
+func TestUpdateManagerRetriesReleaseAssetPropagationFailure(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	binary := []byte("published binary")
+	sum := sha256.Sum256(binary)
+	checksum := hex.EncodeToString(sum[:]) + "  ccload-linux-amd64\n"
+	var checksumRequests atomic.Int64
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = fmt.Fprint(w, `[{"tag_name":"v1.1.0-beta.1","html_url":"https://example.test/releases/tag/v1.1.0-beta.1","draft":false,"prerelease":true,"published_at":"2026-08-07T01:00:00Z"}]`)
+		case "/broken/download/v1.1.0-beta.1/checksums.txt":
+			http.Error(w, "broken mirror", http.StatusBadRequest)
+		case "/download/v1.1.0-beta.1/checksums.txt":
+			if checksumRequests.Add(1) <= 3 {
+				http.NotFound(w, r)
+				return
+			}
+			_, _ = fmt.Fprint(w, checksum)
+		case "/download/v1.1.0-beta.1/ccload-linux-amd64":
+			_, _ = w.Write(binary)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	exePath := filepath.Join(t.TempDir(), "ccload")
+	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write old executable: %v", err)
+	}
+
+	updater, err := NewUpdateManager(UpdateManagerOptions{
+		Interval:     time.Hour,
+		Channel:      ReleaseChannelPreview,
+		ApplyUpdates: true,
+		RetryDelays: []time.Duration{
+			time.Millisecond,
+			time.Millisecond,
+			time.Millisecond,
+		},
+		ReleaseSources: []ReleaseSource{
+			{
+				Name:            "broken",
+				ReleasesURL:     server.URL + "/releases",
+				DownloadBaseURL: server.URL + "/broken/download",
+			},
+			{
+				Name:            "test",
+				DownloadBaseURL: server.URL + "/download",
+			},
+		},
+		ExecutablePath: exePath,
+		Client:         server.Client(),
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		ActiveRequests: func() int { return 1 },
+		Restart:        func() { t.Error("restart must wait for idle requests") },
+	})
+	if err != nil {
+		t.Fatalf("NewUpdateManager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		updater.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for updater.State().PendingVersion != "v1.1.0-beta.1" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	cancel()
+	<-done
+
+	state := updater.State()
+	if state.PendingVersion != "v1.1.0-beta.1" || !state.PendingRestart || state.LastError != "" {
+		t.Fatalf("state after retry = %+v", state)
+	}
+	if got := checksumRequests.Load(); got != 4 {
+		t.Fatalf("checksum requests = %d, want 4", got)
+	}
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read executable: %v", err)
+	}
+	if string(got) != string(binary) {
+		t.Fatalf("executable content = %q, want published binary", got)
+	}
+}
+
+func TestUpdateManagerDoesNotRetryInvalidChecksums(t *testing.T) {
+	origVersion := Version
+	t.Cleanup(func() { Version = origVersion })
+	Version = "v1.0.0"
+
+	var checksumRequests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/latest":
+			http.Redirect(w, r, "/releases/tag/v1.1.0", http.StatusFound)
+		case "/releases/tag/v1.1.0":
+			_, _ = fmt.Fprint(w, "<html></html>")
+		case "/download/v1.1.0/checksums.txt":
+			checksumRequests.Add(1)
+			_, _ = fmt.Fprint(w, "not-a-checksum\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	exePath := filepath.Join(t.TempDir(), "ccload")
+	if err := os.WriteFile(exePath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("write old executable: %v", err)
+	}
+
+	updater, err := NewUpdateManager(UpdateManagerOptions{
+		Interval:     time.Hour,
+		ApplyUpdates: true,
+		RetryDelays: []time.Duration{
+			time.Millisecond,
+			time.Millisecond,
+			time.Millisecond,
+		},
+		ReleaseSources: []ReleaseSource{{
+			Name:            "test",
+			LatestURL:       server.URL + "/latest",
+			DownloadBaseURL: server.URL + "/download",
+		}},
+		ExecutablePath: exePath,
+		Client:         server.Client(),
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Restart:        func() {},
+	})
+	if err != nil {
+		t.Fatalf("NewUpdateManager: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		updater.Run(ctx)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for updater.State().LastError == "" && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+
+	state := updater.State()
+	if !strings.Contains(state.LastError, "parse checksums") {
+		t.Fatalf("LastError = %q, want checksum parse error", state.LastError)
+	}
+	if got := checksumRequests.Load(); got != 1 {
+		t.Fatalf("checksum requests = %d, want 1", got)
+	}
+	got, err := os.ReadFile(exePath)
+	if err != nil {
+		t.Fatalf("read executable: %v", err)
+	}
+	if string(got) != "old" {
+		t.Fatalf("executable content = %q, want old binary", got)
 	}
 }
 
