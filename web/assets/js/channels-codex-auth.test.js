@@ -270,7 +270,17 @@ test('OAuth credential import dialog defaults to automatic detection with priori
     ['oauthImportProviderSelect', { value: 'antigravity', focus() { this.focused = true; } }],
     ['oauthImportPriorityIncrement', { value: '50' }],
     ['oauthCredentialImportInput', { value: 'stale', removeAttribute() {} }],
-    ['oauthCredentialImportStatus', { textContent: 'stale', hidden: false, dataset: {} }]
+    ['oauthCredentialImportStatus', { textContent: 'stale', hidden: false, dataset: {} }],
+    ['oauthCredentialImportProgress', { hidden: false }],
+    ['oauthCredentialImportProgressBar', { max: 9, value: 8 }],
+    ['oauthCredentialImportProgressCounter', { textContent: '8 / 9' }],
+    ['oauthCredentialImportProgressDetail', { textContent: 'stale' }],
+    ['oauthCredentialImportProgressCounts', { textContent: 'stale' }],
+    ['oauthCredentialImportErrors', { hidden: false }],
+    ['oauthCredentialImportErrorList', {
+      children: ['stale'],
+      replaceChildren() { this.children = []; }
+    }]
   ]);
   const previousDocument = global.document;
   global.document = { getElementById: id => elements.get(id) || null };
@@ -282,6 +292,11 @@ test('OAuth credential import dialog defaults to automatic detection with priori
     assert.equal(elements.get('oauthImportPriorityIncrement').value, '10');
     assert.equal(elements.get('oauthCredentialImportInput').value, '');
     assert.equal(elements.get('oauthCredentialImportStatus').hidden, true);
+    assert.equal(elements.get('oauthCredentialImportProgress').hidden, true);
+    assert.equal(elements.get('oauthCredentialImportProgressBar').max, 1);
+    assert.equal(elements.get('oauthCredentialImportProgressBar').value, 0);
+    assert.equal(elements.get('oauthCredentialImportErrors').hidden, true);
+    assert.deepEqual(elements.get('oauthCredentialImportErrorList').children, []);
   } finally {
     global.document = previousDocument;
   }
@@ -347,7 +362,7 @@ test('Antigravity OAuth helpers use the Antigravity admin contract', async () =>
   ]);
 });
 
-test('OAuth credential import sends automatic detection and priority increment options', async () => {
+test('OAuth credential import streams real progress and sends import options', async () => {
   const previousFormData = global.FormData;
   const previousDocument = global.document;
   const previousWindow = global.window;
@@ -357,42 +372,111 @@ test('OAuth credential import sends automatic detection and priority increment o
     append(name, value) { this.items.push([name, value]); }
   }
   global.FormData = FakeFormData;
-  global.document = { getElementById: () => null };
+  const elements = new Map([
+    ['oauthCredentialImportStatus', { textContent: '', hidden: true, dataset: {} }],
+    ['oauthCredentialImportProgress', { hidden: true }],
+    ['oauthCredentialImportProgressBar', { max: 1, value: 0 }],
+    ['oauthCredentialImportProgressCounter', { textContent: '' }],
+    ['oauthCredentialImportProgressDetail', { textContent: '' }],
+    ['oauthCredentialImportProgressCounts', { textContent: '' }],
+    ['oauthCredentialImportErrors', { hidden: true }],
+    ['oauthCredentialImportErrorList', {
+      children: [],
+      replaceChildren() { this.children = []; },
+      append(child) { this.children.push(child); }
+    }]
+  ]);
+  global.document = {
+    getElementById: id => elements.get(id) || null,
+    createElement: () => ({ textContent: '' })
+  };
   global.window = {
-    t: (key, params) => `${key}:${params?.created ?? ''}:${params?.skipped ?? ''}:${params?.failed ?? ''}`,
+    t: (key, params) => `${key}:${Object.values(params || {}).join(':')}`,
     showSuccess() {},
     showError() {}
   };
   let reloads = 0;
   global.reloadChannelsList = async () => { reloads++; };
-  const files = [{ name: 'one.json' }, { name: 'two.json' }];
+  const files = [{ name: 'credentials.zip' }];
   const captured = [];
+  const streamEvents = [
+    { event: 'start', processed: 0, total: 2, created: 0, skipped: 0, failed: 0 },
+    { event: 'processing', processed: 0, total: 2, created: 0, skipped: 0, failed: 0, file_name: 'credentials.zip/one.json' },
+    { event: 'progress', processed: 1, total: 2, created: 1, skipped: 0, failed: 0, result: { file_name: 'credentials.zip/one.json', channel_name: 'Codex-one', status: 'created' } },
+    { event: 'processing', processed: 1, total: 2, created: 1, skipped: 0, failed: 0, file_name: 'credentials.zip/two.json' },
+    { event: 'progress', processed: 2, total: 2, created: 1, skipped: 0, failed: 1, result: { file_name: 'credentials.zip/two.json', status: 'failed', error: 'invalid credential' } },
+    { event: 'complete', processed: 2, total: 2, created: 1, skipped: 0, failed: 1 }
+  ];
+  const streamText = streamEvents.map(event => `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+  const chunks = [
+    Buffer.from(streamText.slice(0, 37)),
+    Buffer.from(streamText.slice(37, 143)),
+    Buffer.from(streamText.slice(143))
+  ];
   try {
     const result = await importOAuthCredentials(files, null, async (url, options) => {
       captured.push({ url, options });
-      return { created: 1, skipped: 1, failed: 0, results: [] };
+      let index = 0;
+      return {
+        ok: true,
+        status: 200,
+        body: {
+          getReader() {
+            return {
+              async read() {
+                if (index >= chunks.length) return { done: true };
+                return { done: false, value: chunks[index++] };
+              }
+            };
+          }
+        }
+      };
     });
 
     assert.equal(result.created, 1);
-    assert.equal(captured[0].url, '/admin/oauth/credentials/import');
+    assert.equal(result.failed, 1);
+    assert.equal(result.results.length, 2);
+    assert.equal(captured[0].url, '/admin/oauth/credentials/import/stream');
     assert.equal(captured[0].options.method, 'POST');
     assert.deepEqual(captured[0].options.body.items, [
       ['files', files[0]],
-      ['files', files[1]],
       ['provider', 'auto'],
       ['priority_increment', '10']
     ]);
-
-    await importOAuthCredentials(files, null, async (url, options) => {
-      captured.push({ url, options });
-      return { created: 0, skipped: 2, failed: 0, results: [] };
-    }, 'antigravity', 20);
-    assert.equal(captured[1].url, '/admin/oauth/credentials/import');
-    assert.deepEqual(captured[1].options.body.items.slice(-2), [
-      ['provider', 'antigravity'],
-      ['priority_increment', '20']
-    ]);
+    assert.equal(elements.get('oauthCredentialImportProgress').hidden, false);
+    assert.equal(elements.get('oauthCredentialImportProgressBar').max, 2);
+    assert.equal(elements.get('oauthCredentialImportProgressBar').value, 2);
+    assert.match(elements.get('oauthCredentialImportProgressCounter').textContent, /2/);
+    assert.match(elements.get('oauthCredentialImportProgressCounts').textContent, /1/);
+    assert.equal(elements.get('oauthCredentialImportErrors').hidden, false);
+    assert.equal(elements.get('oauthCredentialImportErrorList').children.length, 1);
+    assert.match(elements.get('oauthCredentialImportErrorList').children[0].textContent, /credentials\.zip\/two\.json/);
+    assert.match(elements.get('oauthCredentialImportErrorList').children[0].textContent, /invalid credential/);
     assert.equal(reloads, 1);
+
+    const incompleteText = [
+      { event: 'start', processed: 0, total: 2, created: 0, skipped: 0, failed: 0 },
+      { event: 'processing', processed: 0, total: 2, created: 0, skipped: 0, failed: 0, file_name: 'credentials.zip/one.json' },
+      { event: 'progress', processed: 1, total: 2, created: 1, skipped: 0, failed: 0, result: { file_name: 'credentials.zip/one.json', channel_name: 'Codex-one', status: 'created' } }
+    ].map(event => `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`).join('');
+    const incompleteResult = await importOAuthCredentials(files, null, async () => ({
+      ok: true,
+      status: 200,
+      body: {
+        getReader() {
+          let sent = false;
+          return {
+            async read() {
+              if (sent) return { done: true };
+              sent = true;
+              return { done: false, value: Buffer.from(incompleteText) };
+            }
+          };
+        }
+      }
+    }));
+    assert.equal(incompleteResult, null);
+    assert.equal(reloads, 2);
   } finally {
     global.FormData = previousFormData;
     global.document = previousDocument;

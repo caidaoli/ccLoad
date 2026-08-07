@@ -174,6 +174,92 @@ function setOAuthCredentialImportStatus(message, kind = '') {
   status.dataset.kind = kind;
 }
 
+function resetOAuthCredentialImportProgress() {
+  const container = document.getElementById('oauthCredentialImportProgress');
+  const progress = document.getElementById('oauthCredentialImportProgressBar');
+  const counter = document.getElementById('oauthCredentialImportProgressCounter');
+  const detail = document.getElementById('oauthCredentialImportProgressDetail');
+  const counts = document.getElementById('oauthCredentialImportProgressCounts');
+  const errors = document.getElementById('oauthCredentialImportErrors');
+  const errorList = document.getElementById('oauthCredentialImportErrorList');
+  if (container) container.hidden = true;
+  if (progress) {
+    progress.max = 1;
+    progress.value = 0;
+  }
+  if (counter) counter.textContent = '';
+  if (detail) detail.textContent = '';
+  if (counts) counts.textContent = '';
+  if (errors) errors.hidden = true;
+  errorList?.replaceChildren();
+}
+
+function appendOAuthCredentialImportError(result) {
+  if (!result || result.status !== 'failed' || !result.error) return;
+  const errors = document.getElementById('oauthCredentialImportErrors');
+  const errorList = document.getElementById('oauthCredentialImportErrorList');
+  if (!errors || !errorList) return;
+  const item = document.createElement('li');
+  item.textContent = window.t('channels.oauth.progressErrorItem', {
+    file: result.file_name || '',
+    error: result.error
+  });
+  errorList.append(item);
+  errors.hidden = false;
+}
+
+function updateOAuthCredentialImportProgress(event) {
+  if (!event || typeof event !== 'object') return;
+  const container = document.getElementById('oauthCredentialImportProgress');
+  const progress = document.getElementById('oauthCredentialImportProgressBar');
+  const counter = document.getElementById('oauthCredentialImportProgressCounter');
+  const detail = document.getElementById('oauthCredentialImportProgressDetail');
+  const counts = document.getElementById('oauthCredentialImportProgressCounts');
+  const total = Math.max(0, Number(event.total) || 0);
+  const processed = Math.min(total, Math.max(0, Number(event.processed) || 0));
+  const created = Math.max(0, Number(event.created) || 0);
+  const skipped = Math.max(0, Number(event.skipped) || 0);
+  const failed = Math.max(0, Number(event.failed) || 0);
+
+  if (container) container.hidden = false;
+  if (progress) {
+    progress.max = Math.max(1, total);
+    progress.value = processed;
+  }
+  if (counter) {
+    counter.textContent = window.t('channels.oauth.progressCounter', { processed, total });
+  }
+  if (counts) {
+    counts.textContent = window.t('channels.oauth.progressCounts', { created, skipped, failed });
+  }
+  if (!detail) return;
+  switch (event.event) {
+    case 'preparing':
+      detail.textContent = window.t('channels.oauth.progressPreparing', { count: event.file_count || 0 });
+      break;
+    case 'start':
+      detail.textContent = window.t('channels.oauth.progressStarting', { total });
+      break;
+    case 'processing':
+      detail.textContent = window.t('channels.oauth.progressProcessing', { file: event.file_name || '' });
+      break;
+    case 'progress': {
+      const resultStatus = event.result?.status || 'failed';
+      appendOAuthCredentialImportError(event.result);
+      detail.textContent = window.t('channels.oauth.progressProcessed', {
+        file: event.result?.file_name || event.file_name || '',
+        status: window.t(`channels.oauth.progressStatus.${resultStatus}`)
+      });
+      break;
+    }
+    case 'complete':
+      detail.textContent = window.t('channels.oauth.progressComplete');
+      break;
+    default:
+      break;
+  }
+}
+
 function openOAuthLoginDialog(trigger = null) {
   const dialog = document.getElementById('oauthLoginDialog');
   const providerSelect = document.getElementById('oauthProviderSelect');
@@ -226,6 +312,7 @@ function openOAuthCredentialImportDialog(trigger = null) {
   input.removeAttribute?.('aria-invalid');
   setCodexAuthStatus('');
   setOAuthCredentialImportStatus('');
+  resetOAuthCredentialImportProgress();
   if (!dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
   providerSelect.focus?.();
   return true;
@@ -457,7 +544,7 @@ async function restartOAuth(provider, button) {
 async function importOAuthCredentials(
   files,
   button,
-  fetcher = fetchDataWithAuth,
+  fetcher = fetchWithAuth,
   provider = 'auto',
   priorityIncrement = 10
 ) {
@@ -472,10 +559,14 @@ async function importOAuthCredentials(
     const importingMessage = window.t('channels.oauth.importing', { count: selectedFiles.length });
     setCodexAuthStatus(importingMessage);
     setOAuthCredentialImportStatus(importingMessage);
-    const result = await fetcher('/admin/oauth/credentials/import', {
+    resetOAuthCredentialImportProgress();
+    updateOAuthCredentialImportProgress({ event: 'preparing', file_count: selectedFiles.length });
+    const response = await fetcher('/admin/oauth/credentials/import/stream', {
       method: 'POST',
-      body: formData
+      body: formData,
+      headers: { Accept: 'text/event-stream' }
     });
+    const result = await readOAuthCredentialImportStream(response, updateOAuthCredentialImportProgress);
     const created = Number(result?.created) || 0;
     const skipped = Number(result?.skipped) || 0;
     const failed = Number(result?.failed) || 0;
@@ -495,10 +586,77 @@ async function importOAuthCredentials(
     setCodexAuthStatus(message, 'error');
     setOAuthCredentialImportStatus(message, 'error');
     if (window.showError) window.showError(message);
+    try {
+      await reloadChannelsList();
+    } catch (reloadError) {
+      console.warn('Failed to reload channels after an interrupted OAuth credential import', reloadError);
+    }
     return null;
   } finally {
     if (button) button.disabled = false;
   }
+}
+
+async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
+  if (!response?.ok) {
+    let message = window.t('channels.oauth.importFailed');
+    try {
+      const payload = JSON.parse(await response.text());
+      message = payload?.error || message;
+    } catch (_) {
+      // Keep the stable localized fallback for malformed error responses.
+    }
+    throw new Error(message);
+  }
+
+  const results = [];
+  let complete = null;
+  let buffer = '';
+  const consumeBlock = block => {
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n');
+    if (!data) return;
+    const event = JSON.parse(data);
+    onEvent(event);
+    if (event.event === 'progress' && event.result) results.push(event.result);
+    if (event.event === 'complete') complete = event;
+  };
+  const drain = final => {
+    let boundary;
+    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
+      consumeBlock(buffer.slice(0, boundary));
+      buffer = buffer.slice(boundary + 2);
+    }
+    if (final && buffer.trim()) {
+      consumeBlock(buffer);
+      buffer = '';
+    }
+  };
+
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      drain(false);
+    }
+    buffer += decoder.decode();
+  } else {
+    buffer = await response.text();
+  }
+  drain(true);
+  if (!complete) throw new Error(window.t('channels.oauth.importStreamIncomplete'));
+  return {
+    created: Number(complete.created) || 0,
+    skipped: Number(complete.skipped) || 0,
+    failed: Number(complete.failed) || 0,
+    results
+  };
 }
 
 async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
@@ -655,7 +813,7 @@ function setupOAuthActions() {
       const result = await importOAuthCredentials(
         importInput.files,
         importSubmitButton,
-        fetchDataWithAuth,
+        fetchWithAuth,
         importProviderSelect.value,
         Number(importPriorityIncrementSelect.value)
       );

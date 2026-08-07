@@ -192,15 +192,32 @@
             <div class="oauth-field">
               <label for="oauthCredentialImportInput" data-i18n="channels.oauth.credentialFiles">凭证文件</label>
               <input id="oauthCredentialImportInput" name="credential_files" type="file" class="form-input"
-                accept=".json,application/json" multiple required aria-describedby="oauthCredentialImportHint oauthCredentialImportStatus" />
+                accept=".json,.zip,.tar.gz,.tgz,application/json,application/zip,application/gzip,application/x-gzip" multiple required aria-describedby="oauthCredentialImportHint oauthCredentialImportStatus" />
               <p id="oauthCredentialImportHint" class="oauth-field-hint"
-                data-i18n="channels.oauth.credentialFilesHint">支持同时选择多个 JSON 文件。</p>
+                data-i18n="channels.oauth.credentialFilesHint">支持同时选择 JSON、ZIP、tar.gz 或 tgz 文件。</p>
             </div>
             <div class="oauth-actions">
               <button id="oauthCredentialImportSubmit" type="submit" class="btn btn-primary"
                 data-i18n="channels.oauth.importCredentials">导入凭证</button>
               <button type="button" class="btn btn-secondary" data-action="close-oauth-import"
                 data-i18n="common.close">关闭</button>
+            </div>
+            <div id="oauthCredentialImportProgress" class="oauth-import-progress" hidden>
+              <div class="oauth-import-progress-header">
+                <strong id="oauthCredentialImportProgressTitle" data-i18n="channels.oauth.progressTitle">导入进度</strong>
+                <span id="oauthCredentialImportProgressCounter" class="oauth-import-progress-counter"></span>
+              </div>
+              <progress id="oauthCredentialImportProgressBar" max="1" value="0"
+                aria-labelledby="oauthCredentialImportProgressTitle"
+                aria-describedby="oauthCredentialImportProgressDetail oauthCredentialImportProgressCounts"></progress>
+              <p id="oauthCredentialImportProgressDetail" class="oauth-import-progress-detail" role="status"
+                aria-live="polite"></p>
+              <p id="oauthCredentialImportProgressCounts" class="oauth-import-progress-counts"></p>
+              <div id="oauthCredentialImportErrors" class="oauth-import-errors" role="status" aria-live="polite"
+                aria-labelledby="oauthCredentialImportErrorsTitle" hidden>
+                <strong id="oauthCredentialImportErrorsTitle" data-i18n="channels.oauth.progressErrorsTitle">失败详情</strong>
+                <ul id="oauthCredentialImportErrorList"></ul>
+              </div>
             </div>
             <p id="oauthCredentialImportStatus" class="oauth-dialog-status" role="status"
               aria-live="polite" hidden></p>
