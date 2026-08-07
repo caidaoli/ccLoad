@@ -7,11 +7,13 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"testing/iotest"
 	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	"ccLoad/internal/util"
 
 	"github.com/tidwall/gjson"
 )
@@ -181,6 +183,73 @@ func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
 	}
 	if strings.Contains(recorder.Body.String(), "data:") || strings.Contains(recorder.Body.String(), "response.completed") {
 		t.Fatalf("SSE framing leaked to non-stream client: %s", recorder.Body.String())
+	}
+}
+
+// StreamDiagMsg 非空会让 forwardAttempt 把结果判为 599 并触发模型级冷却，
+// 所以只有真实上游故障才允许写入：客户端取消必须留空，交给 499 路径。
+func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
+	partial := "event: response.output_item.done\n" +
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg-1","content":[{"type":"output_text","text":"ok"}]}}` + "\n\n"
+
+	t.Run("client cancel", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		reqCtx := &requestContext{ctx: ctx, startTime: time.Now(), codexOAuthNonStream: true}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader(partial)),
+		}
+		result, _, err := (&Server{}).handleSuccessResponse(
+			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil,
+		)
+		if err == nil {
+			t.Fatalf("expected cancellation error")
+		}
+		if result.StreamDiagMsg != "" {
+			t.Fatalf("客户端取消不得写入流诊断（会被误判为 599）: %q", result.StreamDiagMsg)
+		}
+	})
+
+	t.Run("upstream failure", func(t *testing.T) {
+		reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), codexOAuthNonStream: true}
+		resp := &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body: io.NopCloser(io.MultiReader(
+				strings.NewReader(partial),
+				iotest.ErrReader(errors.New("websocket: close 1006 (abnormal closure): unexpected EOF")),
+			)),
+		}
+		result, _, err := (&Server{}).handleSuccessResponse(
+			reqCtx, resp, resp.Header.Clone(), newRecorder(), string(protocol.Codex), &streamReadStats{}, nil,
+		)
+		if err == nil {
+			t.Fatalf("expected upstream read error")
+		}
+		if result.StreamDiagMsg == "" {
+			t.Fatalf("上游中断必须写入流诊断，否则不会归类为 599")
+		}
+		markIncompleteStreamForwardResult(result)
+		if result.Status != util.StatusStreamIncomplete {
+			t.Fatalf("status = %d, want %d", result.Status, util.StatusStreamIncomplete)
+		}
+	})
+}
+
+// 598 语义比 599 更精确（冷却时长不同），流诊断不得把它降级覆盖。
+func TestMarkIncompleteStreamForwardResultKeepsFirstByteTimeout(t *testing.T) {
+	res := &fwResult{Status: util.StatusFirstByteTimeout, StreamDiagMsg: "流传输中断"}
+	markIncompleteStreamForwardResult(res)
+	if res.Status != util.StatusFirstByteTimeout {
+		t.Fatalf("status = %d, want %d", res.Status, util.StatusFirstByteTimeout)
+	}
+
+	committed := &fwResult{Status: http.StatusOK, StreamDiagMsg: "流传输中断"}
+	markIncompleteStreamForwardResult(committed)
+	if committed.Status != util.StatusStreamIncomplete {
+		t.Fatalf("status = %d, want %d", committed.Status, util.StatusStreamIncomplete)
 	}
 }
 
