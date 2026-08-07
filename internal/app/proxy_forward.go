@@ -1848,7 +1848,10 @@ func markSSEErrorForwardResult(res *fwResult) {
 
 func markIncompleteStreamForwardResult(res *fwResult) {
 	res.Body = []byte(res.StreamDiagMsg)
-	res.Status = util.StatusStreamIncomplete
+	// 598 已经表达了更精确的流故障语义（冷却时长与 599 不同），不要降级覆盖。
+	if !util.IsModelScopedStreamFailure(res.Status) {
+		res.Status = util.StatusStreamIncomplete
+	}
 }
 
 func (s *Server) handleCommittedAwareProxyError(

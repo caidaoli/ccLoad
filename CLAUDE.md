@@ -69,6 +69,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - **596** 1308 配额超限 → Key 级冷却,不计健康度
 - **597** SSE error(HTTP 200+错误体)→ `classifySSEError` 按 error.type 动态判级
 - **598** 首字节超时 → 模型级;**599** 流式中断 → 模型级
+- **`fwResult.StreamDiagMsg` 是 599 的判定开关,不只是日志字段**:非空即被 `forwardAttempt` 判为流不完整,置 599 并走模型级冷却。所以只有真实上游故障才允许写入,客户端断开必须先过 `isClientDisconnectError`(`buildStreamDiagnostics` 与 Codex 非流式收集器 `codex_wire.go` 各有一处),漏一处就会把 499 误升成 599。`markIncompleteStreamForwardResult` 不覆盖已经是 598 的状态码——两者冷却初值不同
 - **429** 统计页/健康时间线计入 ErrorCount 与成功率,`rate_limited` 是 ErrorCount 子集;健康度排序(`GetChannelSuccessRates`/effective priority)排除 429,真实渠道级限流交给冷却过滤
 
 ## 关键机制(要点,细节读对应文件)

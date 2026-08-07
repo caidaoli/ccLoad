@@ -122,7 +122,10 @@ func (s *Server) handleCodexOAuthNonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), nil
 	}
 	if streamErr != nil {
-		result.StreamDiagMsg = streamErr.Error()
+		// 客户端主动断开不是上游故障：留空诊断信息，让上层按 499 处理而非流不完整。
+		if !isClientDisconnectError(streamErr) {
+			result.StreamDiagMsg = streamErr.Error()
+		}
 		return result, reqCtx.Duration().Seconds(), streamErr
 	}
 	if len(collector.terminal) == 0 {
