@@ -1024,6 +1024,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/channels/export", s.HandleExportChannelsCSV)
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
 		admin.POST("/oauth/credentials/import", s.HandleImportOAuthCredentials)
+		admin.POST("/oauth/credentials/import/stream", s.HandleImportOAuthCredentialsStream)
 		admin.POST("/codex/oauth/start", s.HandleStartCodexOAuth)
 		admin.GET("/codex/oauth/status", s.HandleCodexOAuthStatus)
 		admin.POST("/codex/oauth/cancel", s.HandleCancelCodexOAuth)

@@ -1,7 +1,10 @@
 package app
 
 import (
+	"archive/tar"
+	"archive/zip"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -85,6 +88,10 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 			}
 			_, _ = io.WriteString(w, `{"access_token":"at-refreshed-secret","refresh_token":"rt-rotated-secret","expires_in":3600}`)
 		case "/v1internal:loadCodeAssist":
+			if r.Header.Get("Authorization") == "Bearer at-must-not-overwrite" {
+				http.Error(w, "duplicate credentials must not be validated", http.StatusInternalServerError)
+				return
+			}
 			if r.Header.Get("Authorization") == "Bearer at-unusable-secret" {
 				w.WriteHeader(http.StatusUnauthorized)
 				return
@@ -104,6 +111,9 @@ func newAntigravityPaidTierTestService(t *testing.T) *antigravityauth.Service {
 func newAcceptedCodexImportClient() *http.Client {
 	return &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		switch {
+		case request.Method == http.MethodGet && request.URL.String() == codexUsageURL &&
+			request.Header.Get("Authorization") == "Bearer at-must-not-overwrite":
+			return nil, fmt.Errorf("duplicate credentials must not be validated")
 		case request.Method == http.MethodGet && request.URL.String() == codexUsageURL:
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -652,6 +662,322 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 			t.Fatalf("channel %q auth_type=%q priority=%d, want %q/%d", channel.Name, channel.GetAuthType(), channel.Priority, expected.authType, expected.priority)
 		}
 	}
+}
+
+func TestHandleImportOAuthCredentialsImportsArchivesByCredentialPriorityThenFileName(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	credential := func(account, fileName string, priority any) archiveCredentialTestEntry {
+		priorityJSON, err := json.Marshal(priority)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return archiveCredentialTestEntry{
+			name: fileName,
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-%s","refresh_token":"rt-%s","account_id":%q,"email":%q,"expired":%q,"priority":%s}`,
+				account, account, account, account+"@example.com", expiresAt, priorityJSON,
+			),
+		}
+	}
+
+	zipBody := makeCredentialZIP(t, []archiveCredentialTestEntry{
+		credential("high", "a-high.json", 30),
+		credential("low-z", "z-low.json", 10),
+		{name: "README.txt", body: "not a credential"},
+	})
+	tarGzBody := makeCredentialTarGz(t, []archiveCredentialTestEntry{
+		credential("low-a", "a-low.json", 10),
+		credential("middle-a", "middle.json", 20),
+	})
+	direct := credential("middle-z", "z-middle.json", "20")
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("provider", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("priority_increment", "10"); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []archiveCredentialTestEntry{
+		{name: "credentials.zip", body: zipBody.String()},
+		{name: "credentials.tar.gz", body: tarGzBody.String()},
+		direct,
+	} {
+		part, err := writer.CreateFormFile("files", file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, file.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 5 || result.Data.Skipped != 0 || result.Data.Failed != 0 {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	wantFiles := []string{
+		"credentials.tar.gz/a-low.json",
+		"credentials.zip/z-low.json",
+		"credentials.tar.gz/middle.json",
+		"z-middle.json",
+		"credentials.zip/a-high.json",
+	}
+	gotFiles := make([]string, 0, len(result.Data.Results))
+	for _, importResult := range result.Data.Results {
+		gotFiles = append(gotFiles, importResult.FileName)
+	}
+	if !slices.Equal(gotFiles, wantFiles) {
+		t.Fatalf("import order = %v, want %v", gotFiles, wantFiles)
+	}
+
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPriorityByName := map[string]int{
+		"Codex-low-a@example.com":    10,
+		"Codex-low-z@example.com":    20,
+		"Codex-middle-a@example.com": 30,
+		"Codex-middle-z@example.com": 40,
+		"Codex-high@example.com":     50,
+	}
+	if len(channels) != len(wantPriorityByName) {
+		t.Fatalf("channels = %#v", channels)
+	}
+	for _, channel := range channels {
+		if want, ok := wantPriorityByName[channel.Name]; !ok || channel.Priority != want {
+			t.Fatalf("channel %q priority=%d, want %d", channel.Name, channel.Priority, want)
+		}
+	}
+}
+
+func TestHandleImportOAuthCredentialsStreamReportsEachCredential(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for _, file := range []archiveCredentialTestEntry{
+		{
+			name: "b.json",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-b","refresh_token":"rt-b","account_id":"account-b","email":"b@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+		{
+			name: "a.json",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-a","refresh_token":"rt-a","account_id":"account-a","email":"a@example.com","expired":%q}`,
+				expiresAt,
+			),
+		},
+	} {
+		part, err := writer.CreateFormFile("files", file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, file.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import/stream", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentialsStream(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("Content-Type=%q", contentType)
+	}
+	if !response.Flushed {
+		t.Fatal("stream events were not flushed")
+	}
+	if strings.Contains(response.Body.String(), "at-a") || strings.Contains(response.Body.String(), "rt-b") {
+		t.Fatal("stream leaked credential material")
+	}
+
+	type streamEvent struct {
+		Event     string                       `json:"event"`
+		Processed int                          `json:"processed"`
+		Total     int                          `json:"total"`
+		Created   int                          `json:"created"`
+		Skipped   int                          `json:"skipped"`
+		Failed    int                          `json:"failed"`
+		FileName  string                       `json:"file_name"`
+		Result    *oauthCredentialImportResult `json:"result"`
+	}
+	events := make([]streamEvent, 0)
+	for block := range strings.SplitSeq(strings.TrimSpace(response.Body.String()), "\n\n") {
+		for line := range strings.SplitSeq(block, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event streamEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+				t.Fatalf("decode SSE event: %v", err)
+			}
+			events = append(events, event)
+		}
+	}
+	wantTypes := []string{"start", "processing", "progress", "processing", "progress", "complete"}
+	gotTypes := make([]string, 0, len(events))
+	for _, event := range events {
+		gotTypes = append(gotTypes, event.Event)
+	}
+	if !slices.Equal(gotTypes, wantTypes) {
+		t.Fatalf("event types=%v, want %v; body=%s", gotTypes, wantTypes, response.Body.String())
+	}
+	if events[0].Total != 2 || events[1].FileName != "a.json" || events[2].Processed != 1 || events[2].Result == nil || events[2].Result.FileName != "a.json" {
+		t.Fatalf("first credential events=%#v", events[:3])
+	}
+	complete := events[len(events)-1]
+	if complete.Processed != 2 || complete.Total != 2 || complete.Created != 2 || complete.Skipped != 0 || complete.Failed != 0 {
+		t.Fatalf("complete event=%#v", complete)
+	}
+}
+
+func TestHandleImportOAuthCredentialsRejectsUnsafeOrOversizedArchives(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name      string
+		fileName  string
+		archive   func(*testing.T) bytes.Buffer
+		wantError string
+	}{
+		{
+			name:     "ZIP path escape",
+			fileName: "credentials.zip",
+			archive: func(t *testing.T) bytes.Buffer {
+				return makeCredentialZIP(t, []archiveCredentialTestEntry{{
+					name: "../credential.json",
+					body: `{ "type": "codex" }`,
+				}})
+			},
+			wantError: "entry path",
+		},
+		{
+			name:     "expanded size",
+			fileName: "credentials.zip",
+			archive: func(t *testing.T) bytes.Buffer {
+				return makeCredentialZIP(t, []archiveCredentialTestEntry{{
+					name: "ignored.bin",
+					body: strings.Repeat("0", maxOAuthCredentialExpandedBytes+1),
+				}})
+			},
+			wantError: "expanded bytes",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			server := &Server{store: store, client: newAcceptedCodexImportClient()}
+			archive := tt.archive(t)
+			var body bytes.Buffer
+			writer := multipart.NewWriter(&body)
+			part, err := writer.CreateFormFile("files", tt.fileName)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := part.Write(archive.Bytes()); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+			request.Header.Set("Content-Type", writer.FormDataContentType())
+			requestContext, response := newTestContext(t, request)
+			server.HandleImportOAuthCredentials(requestContext)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+			if result.Data.Created != 0 || result.Data.Failed != 1 || len(result.Data.Results) != 1 {
+				t.Fatalf("import summary = %#v", result.Data)
+			}
+			if !strings.Contains(result.Data.Results[0].Error, tt.wantError) {
+				t.Fatalf("error = %q, want %q", result.Data.Results[0].Error, tt.wantError)
+			}
+			channels, err := store.ListConfigs(context.Background())
+			if err != nil || len(channels) != 0 {
+				t.Fatalf("channels = (%#v, %v), want none", channels, err)
+			}
+		})
+	}
+}
+
+type archiveCredentialTestEntry struct {
+	name string
+	body string
+}
+
+func makeCredentialZIP(t *testing.T, entries []archiveCredentialTestEntry) bytes.Buffer {
+	t.Helper()
+	var body bytes.Buffer
+	writer := zip.NewWriter(&body)
+	for _, entry := range entries {
+		part, err := writer.Create(entry.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func makeCredentialTarGz(t *testing.T, entries []archiveCredentialTestEntry) bytes.Buffer {
+	t.Helper()
+	var body bytes.Buffer
+	gzipWriter := gzip.NewWriter(&body)
+	tarWriter := tar.NewWriter(gzipWriter)
+	for _, entry := range entries {
+		if err := tarWriter.WriteHeader(&tar.Header{
+			Name: entry.name,
+			Mode: 0o600,
+			Size: int64(len(entry.body)),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(tarWriter, entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gzipWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body
 }
 
 func TestHandleImportOAuthCredentialsRejectsInvalidOptions(t *testing.T) {

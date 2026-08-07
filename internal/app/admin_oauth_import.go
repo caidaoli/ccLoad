@@ -6,9 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"mime/multipart"
 	"net/http"
-	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -21,7 +19,6 @@ import (
 
 const (
 	oauthCredentialProviderAuto       = "auto"
-	maxOAuthCredentialImportBytes     = 1 << 20
 	oauthCredentialUnknownTypeMessage = "credential type could not be determined"
 )
 
@@ -41,24 +38,26 @@ type oauthCredentialImportSummary struct {
 	Results []oauthCredentialImportResult `json:"results"`
 }
 
-func readOAuthCredentialFile(file *multipart.FileHeader) ([]byte, error) {
-	if file == nil || file.Size <= 0 || file.Size > maxOAuthCredentialImportBytes {
-		return nil, errors.New("credential file size is invalid")
-	}
-	opened, err := file.Open()
-	if err != nil {
-		return nil, errors.New("open credential file failed")
-	}
-	raw, readErr := io.ReadAll(io.LimitReader(opened, maxOAuthCredentialImportBytes+1))
-	closeErr := opened.Close()
-	if readErr != nil || len(raw) > maxOAuthCredentialImportBytes {
-		return nil, errors.New("failed to read credential")
-	}
-	if closeErr != nil {
-		return nil, errors.New("close credential file failed")
-	}
-	return raw, nil
+type oauthCredentialImportBatch struct {
+	Files                  []oauthCredentialImportFile
+	Provider               string
+	PriorityIncrement      int
+	NextPriorityByProvider map[string]int
+	cleanup                func()
 }
+
+type oauthCredentialImportEvent struct {
+	Event     string                       `json:"event"`
+	Processed int                          `json:"processed"`
+	Total     int                          `json:"total"`
+	Created   int                          `json:"created"`
+	Skipped   int                          `json:"skipped"`
+	Failed    int                          `json:"failed"`
+	FileName  string                       `json:"file_name,omitempty"`
+	Result    *oauthCredentialImportResult `json:"result,omitempty"`
+}
+
+type oauthCredentialImportObserver func(oauthCredentialImportEvent) bool
 
 func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
@@ -87,17 +86,47 @@ func parseOAuthPriorityIncrement(raw string) (int, error) {
 	}
 }
 
-func detectOAuthCredentialProvider(raw []byte) (string, error) {
+func decodeOAuthCredentialFields(raw []byte) (map[string]json.RawMessage, error) {
 	var fields map[string]json.RawMessage
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	if err := decoder.Decode(&fields); err != nil {
-		return "", fmt.Errorf("decode credential: %w", err)
+		return nil, fmt.Errorf("decode credential: %w", err)
 	}
 	if fields == nil {
-		return "", errors.New("credential must be a JSON object")
+		return nil, errors.New("credential must be a JSON object")
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		return "", errors.New("credential contains trailing JSON")
+		return nil, errors.New("credential contains trailing JSON")
+	}
+	return fields, nil
+}
+
+func parseOAuthCredentialPriority(raw []byte) (int, error) {
+	fields, err := decodeOAuthCredentialFields(raw)
+	if err != nil {
+		return 0, err
+	}
+	rawPriority, exists := fields["priority"]
+	if !exists || string(rawPriority) == "null" {
+		return 0, nil
+	}
+	var priority int
+	if err := json.Unmarshal(rawPriority, &priority); err == nil {
+		return priority, nil
+	}
+	var priorityString string
+	if err := json.Unmarshal(rawPriority, &priorityString); err == nil {
+		if parsed, parseErr := strconv.Atoi(strings.TrimSpace(priorityString)); parseErr == nil {
+			return parsed, nil
+		}
+	}
+	return 0, errors.New("credential priority must be an integer")
+}
+
+func detectOAuthCredentialProvider(raw []byte) (string, error) {
+	fields, err := decodeOAuthCredentialFields(raw)
+	if err != nil {
+		return "", err
 	}
 
 	if rawType, exists := fields["type"]; exists {
@@ -142,17 +171,64 @@ func (s *Server) HandleImportOAuthCredentials(c *gin.Context) {
 }
 
 func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider string) {
+	batch, status, err := s.prepareOAuthCredentialImport(c, forcedProvider)
+	if err != nil {
+		RespondError(c, status, err)
+		return
+	}
+	defer batch.close()
+	summary, _ := s.runOAuthCredentialImport(c, batch, nil)
+	RespondJSON(c, http.StatusOK, summary)
+}
+
+// HandleImportOAuthCredentialsStream imports OAuth credentials while emitting
+// one server-sent event before and after each sorted credential.
+func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
+	batch, status, err := s.prepareOAuthCredentialImport(c, "")
+	if err != nil {
+		RespondError(c, status, err)
+		return
+	}
+	defer batch.close()
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("X-Accel-Buffering", "no")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Status(http.StatusOK)
+	start := oauthCredentialImportEvent{Event: "start", Total: len(batch.Files)}
+	if writeOAuthCredentialImportEvent(c, start) != nil {
+		return
+	}
+	observer := func(event oauthCredentialImportEvent) bool {
+		return writeOAuthCredentialImportEvent(c, event) == nil
+	}
+	summary, completed := s.runOAuthCredentialImport(c, batch, observer)
+	if !completed {
+		return
+	}
+	_ = writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{
+		Event:     "complete",
+		Processed: len(summary.Results),
+		Total:     len(batch.Files),
+		Created:   summary.Created,
+		Skipped:   summary.Skipped,
+		Failed:    summary.Failed,
+	})
+}
+
+func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider string) (*oauthCredentialImportBatch, int, error) {
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthCredentialImportRequestBytes)
 	form, err := c.MultipartForm()
 	if err != nil {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
+		return nil, http.StatusBadRequest, errors.New("credential files are required")
 	}
+	cleanup := func() { _ = form.RemoveAll() }
 	files := form.File["files"]
 	if len(files) == 0 {
-		RespondErrorMsg(c, http.StatusBadRequest, "credential files are required")
-		return
+		cleanup()
+		return nil, http.StatusBadRequest, errors.New("credential files are required")
 	}
-	sortOAuthCredentialFiles(files)
 
 	providerValue := forcedProvider
 	if providerValue == "" {
@@ -160,14 +236,15 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 	}
 	provider, err := normalizeOAuthCredentialProvider(providerValue)
 	if err != nil {
-		RespondError(c, http.StatusBadRequest, err)
-		return
+		cleanup()
+		return nil, http.StatusBadRequest, err
 	}
 	priorityIncrement, err := parseOAuthPriorityIncrement(firstMultipartValue(form.Value["priority_increment"]))
 	if err != nil {
-		RespondError(c, http.StatusBadRequest, err)
-		return
+		cleanup()
+		return nil, http.StatusBadRequest, err
 	}
+	credentialFiles := expandOAuthCredentialUploads(files)
 	nextPriorityByProvider := map[string]int{
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
@@ -175,8 +252,8 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 	if priorityIncrement > 0 {
 		configs, listErr := s.store.ListConfigs(c.Request.Context())
 		if listErr != nil {
-			RespondError(c, http.StatusInternalServerError, fmt.Errorf("list channels for OAuth credential priorities: %w", listErr))
-			return
+			cleanup()
+			return nil, http.StatusInternalServerError, fmt.Errorf("list channels for OAuth credential priorities: %w", listErr)
 		}
 		for _, cfg := range configs {
 			if cfg == nil {
@@ -193,78 +270,139 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 			nextPriorityByProvider[credentialProvider] += priorityIncrement
 		}
 	}
+	return &oauthCredentialImportBatch{
+		Files:                  credentialFiles,
+		Provider:               provider,
+		PriorityIncrement:      priorityIncrement,
+		NextPriorityByProvider: nextPriorityByProvider,
+		cleanup:                cleanup,
+	}, 0, nil
+}
 
-	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(files))}
-	for _, file := range files {
-		fileName := ""
-		if file != nil {
-			fileName = file.Filename
+func (b *oauthCredentialImportBatch) close() {
+	if b != nil && b.cleanup != nil {
+		b.cleanup()
+		b.cleanup = nil
+	}
+}
+
+func (s *Server) runOAuthCredentialImport(
+	c *gin.Context,
+	batch *oauthCredentialImportBatch,
+	observer oauthCredentialImportObserver,
+) (oauthCredentialImportSummary, bool) {
+	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(batch.Files))}
+	completed := true
+	for _, file := range batch.Files {
+		if c.Request.Context().Err() != nil {
+			completed = false
+			break
 		}
-		result := oauthCredentialImportResult{FileName: fileName}
-		raw, readErr := readOAuthCredentialFile(file)
-		if readErr != nil {
-			result.Status, result.Error = "failed", readErr.Error()
-			summary.Failed++
-			summary.Results = append(summary.Results, result)
-			continue
+		if observer != nil && !observer(oauthCredentialImportEvent{
+			Event:     "processing",
+			Processed: len(summary.Results),
+			Total:     len(batch.Files),
+			Created:   summary.Created,
+			Skipped:   summary.Skipped,
+			Failed:    summary.Failed,
+			FileName:  file.FileName,
+		}) {
+			completed = false
+			break
 		}
 
-		credentialProvider := provider
-		if credentialProvider == oauthCredentialProviderAuto {
-			credentialProvider, err = detectOAuthCredentialProvider(raw)
-			if err != nil {
-				result.Status, result.Error = "failed", err.Error()
-				summary.Failed++
-				summary.Results = append(summary.Results, result)
-				continue
+		result := s.runOAuthCredentialImportFile(c, batch, file)
+		appendOAuthCredentialImportResult(&summary, result)
+		if observer != nil {
+			resultCopy := result
+			if !observer(oauthCredentialImportEvent{
+				Event:     "progress",
+				Processed: len(summary.Results),
+				Total:     len(batch.Files),
+				Created:   summary.Created,
+				Skipped:   summary.Skipped,
+				Failed:    summary.Failed,
+				FileName:  file.FileName,
+				Result:    &resultCopy,
+			}) {
+				completed = false
+				break
 			}
-			if credentialProvider == "" {
-				result.Status, result.Error = "skipped", oauthCredentialUnknownTypeMessage
-				summary.Skipped++
-				summary.Results = append(summary.Results, result)
-				continue
-			}
 		}
-
-		channelName, created, importErr := s.importOAuthCredential(c, credentialProvider, raw, nextPriorityByProvider[credentialProvider])
-		switch {
-		case errors.Is(importErr, errOAuthCredentialUnusable), errors.Is(importErr, antigravityauth.ErrCredentialUnusable):
-			result.Status, result.Error = "skipped", importErr.Error()
-			summary.Skipped++
-		case importErr != nil:
-			result.Status, result.Error = "failed", importErr.Error()
-			summary.Failed++
-		case created:
-			result.Status, result.ChannelName = "created", channelName
-			summary.Created++
-			nextPriorityByProvider[credentialProvider] += priorityIncrement
-		default:
-			result.Status, result.ChannelName = "skipped", channelName
-			summary.Skipped++
-		}
-		summary.Results = append(summary.Results, result)
 	}
 	if summary.Created > 0 {
 		s.InvalidateChannelListCache()
 	}
-	RespondJSON(c, http.StatusOK, summary)
+	return summary, completed
 }
 
-func sortOAuthCredentialFiles(files []*multipart.FileHeader) {
-	slices.SortStableFunc(files, func(a, b *multipart.FileHeader) int {
-		aName, bName := oauthCredentialFileName(a), oauthCredentialFileName(b)
-		if order := strings.Compare(strings.ToLower(aName), strings.ToLower(bName)); order != 0 {
-			return order
-		}
-		return strings.Compare(aName, bName)
-	})
-}
-
-func oauthCredentialFileName(file *multipart.FileHeader) string {
-	if file == nil {
-		return ""
+func (s *Server) runOAuthCredentialImportFile(
+	c *gin.Context,
+	batch *oauthCredentialImportBatch,
+	file oauthCredentialImportFile,
+) oauthCredentialImportResult {
+	result := oauthCredentialImportResult{FileName: file.FileName}
+	if file.Err != nil {
+		result.Status, result.Error = "failed", file.Err.Error()
+		return result
 	}
-	return file.Filename
+
+	credentialProvider := batch.Provider
+	if credentialProvider == oauthCredentialProviderAuto {
+		detectedProvider, err := detectOAuthCredentialProvider(file.Raw)
+		if err != nil {
+			result.Status, result.Error = "failed", err.Error()
+			return result
+		}
+		if detectedProvider == "" {
+			result.Status, result.Error = "skipped", oauthCredentialUnknownTypeMessage
+			return result
+		}
+		credentialProvider = detectedProvider
+	}
+
+	channelName, created, err := s.importOAuthCredential(
+		c,
+		credentialProvider,
+		file.Raw,
+		batch.NextPriorityByProvider[credentialProvider],
+	)
+	switch {
+	case errors.Is(err, errOAuthCredentialUnusable), errors.Is(err, antigravityauth.ErrCredentialUnusable):
+		result.Status, result.Error = "skipped", err.Error()
+	case err != nil:
+		result.Status, result.Error = "failed", err.Error()
+	case created:
+		result.Status, result.ChannelName = "created", channelName
+		batch.NextPriorityByProvider[credentialProvider] += batch.PriorityIncrement
+	default:
+		result.Status, result.ChannelName = "skipped", channelName
+	}
+	return result
+}
+
+func appendOAuthCredentialImportResult(summary *oauthCredentialImportSummary, result oauthCredentialImportResult) {
+	switch result.Status {
+	case "created":
+		summary.Created++
+	case "skipped":
+		summary.Skipped++
+	default:
+		summary.Failed++
+	}
+	summary.Results = append(summary.Results, result)
+}
+
+func writeOAuthCredentialImportEvent(c *gin.Context, event oauthCredentialImportEvent) error {
+	raw, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Event, raw); err != nil {
+		return err
+	}
+	c.Writer.Flush()
+	return nil
 }
 
 func firstMultipartValue(values []string) string {
@@ -281,6 +419,11 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 		if err != nil {
 			return "", false, err
 		}
+		if existingName, exists, err := s.findExistingOAuthChannelName(c.Request.Context(), codexChannelBaseName(credential)); err != nil {
+			return "", false, fmt.Errorf("list channels for Codex credential: %w", err)
+		} else if exists {
+			return existingName, false, nil
+		}
 		credential, err = s.completeImportedCodexCredential(c.Request.Context(), credential)
 		if err != nil {
 			return "", false, err
@@ -288,12 +431,18 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 		return createImportedCodexChannel(c.Request.Context(), s.store, credential, priority)
 	case antigravityauth.ChannelType:
 		credential, err := antigravityauth.ParseCredential(raw)
-		if err == nil {
-			if s.antigravityService == nil {
-				return "", false, errors.New("antigravity credential completion is unavailable")
-			}
-			credential, err = s.antigravityService.CompleteCredential(c.Request.Context(), credential)
+		if err != nil {
+			return "", false, err
 		}
+		if existingName, exists, findErr := s.findExistingOAuthChannelName(c.Request.Context(), antigravityChannelBaseName(credential)); findErr != nil {
+			return "", false, fmt.Errorf("list channels for Antigravity credential: %w", findErr)
+		} else if exists {
+			return existingName, false, nil
+		}
+		if s.antigravityService == nil {
+			return "", false, errors.New("antigravity credential completion is unavailable")
+		}
+		credential, err = s.antigravityService.CompleteCredential(c.Request.Context(), credential)
 		if err != nil {
 			return "", false, err
 		}
@@ -301,6 +450,21 @@ func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []by
 	default:
 		return "", false, fmt.Errorf("unsupported credential provider %q", provider)
 	}
+}
+
+// findExistingOAuthChannelName is a cheap preflight before remote credential
+// validation. Channel creation repeats the check to close the concurrent-create race.
+func (s *Server) findExistingOAuthChannelName(ctx context.Context, name string) (string, bool, error) {
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	for _, cfg := range configs {
+		if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Name), name) {
+			return cfg.Name, true, nil
+		}
+	}
+	return "", false, nil
 }
 
 func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
