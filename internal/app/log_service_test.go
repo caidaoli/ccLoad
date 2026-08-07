@@ -25,11 +25,12 @@ type debugCleanupResult struct {
 
 type debugCleanupStore struct {
 	storage.Store
-	mu      sync.Mutex
-	results []debugCleanupResult
-	limits  []int
-	done    chan struct{}
-	once    sync.Once
+	mu        sync.Mutex
+	results   []debugCleanupResult
+	limits    []int
+	callTimes []time.Time
+	done      chan struct{}
+	once      sync.Once
 }
 
 func (s *debugCleanupStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
@@ -48,14 +49,19 @@ func (s *debugCleanupStore) CleanupDebugLogsBatch(_ context.Context, _ time.Time
 	defer s.mu.Unlock()
 
 	s.limits = append(s.limits, limit)
-	result := s.results[len(s.limits)-1]
+	s.callTimes = append(s.callTimes, time.Now())
+	resultIndex := len(s.limits) - 1
 	if len(s.limits) == len(s.results) {
 		s.once.Do(func() { close(s.done) })
 	}
+	if resultIndex >= len(s.results) {
+		return 0, errors.New("unexpected extra debug cleanup batch")
+	}
+	result := s.results[resultIndex]
 	return result.deleted, result.err
 }
 
-type blockingDebugTruncateStore struct {
+type blockingDisabledDebugCleanupStore struct {
 	storage.Store
 	started chan struct{}
 	release chan struct{}
@@ -63,22 +69,25 @@ type blockingDebugTruncateStore struct {
 	calls   atomic.Int32
 }
 
-func (s *blockingDebugTruncateStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
+func (s *blockingDisabledDebugCleanupStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
 	if key != "debug_log_enabled" {
 		return nil, fmt.Errorf("unexpected setting: %s", key)
 	}
 	return &model.SystemSetting{Key: key, Value: "false"}, nil
 }
 
-func (s *blockingDebugTruncateStore) TruncateDebugLogs(ctx context.Context) error {
+func (s *blockingDisabledDebugCleanupStore) CleanupDebugLogsBatch(ctx context.Context, _ time.Time, limit int) (int64, error) {
+	if limit != debugLogCleanupBatchSize {
+		return 0, fmt.Errorf("cleanup limit=%d, want %d", limit, debugLogCleanupBatchSize)
+	}
 	s.calls.Add(1)
 	close(s.started)
 	select {
 	case <-s.release:
 		close(s.done)
-		return nil
+		return 0, nil
 	case <-ctx.Done():
-		return ctx.Err()
+		return 0, ctx.Err()
 	}
 }
 
@@ -287,16 +296,13 @@ func TestFlushLogs_ShutdownInterruptsBackoff(t *testing.T) {
 	}
 }
 
-func TestStartCleanupLoop_ReducesDebugLogBatchAfterErrors(t *testing.T) {
+func TestStartCleanupLoop_StopsCurrentDebugCleanupRunAfterFailure(t *testing.T) {
 	shutdownCh := make(chan struct{})
 	isShuttingDown := &atomic.Bool{}
 	var wg sync.WaitGroup
 	store := &debugCleanupStore{
 		results: []debugCleanupResult{
 			{err: errors.New("batch 200 failed")},
-			{err: errors.New("batch 100 failed")},
-			{deleted: 50},
-			{deleted: 12},
 		},
 		done: make(chan struct{}),
 	}
@@ -313,29 +319,24 @@ func TestStartCleanupLoop_ReducesDebugLogBatchAfterErrors(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("debug log cleanup did not run immediately")
 	}
+	time.Sleep(50 * time.Millisecond)
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	want := []int{200, 100, 50, 50}
+	want := []int{200}
 	if fmt.Sprint(store.limits) != fmt.Sprint(want) {
 		t.Fatalf("cleanup limits=%v, want %v", store.limits, want)
 	}
 }
 
-func TestStartCleanupLoop_StopsDebugLogCleanupAfterBatchOneFails(t *testing.T) {
+func TestStartCleanupLoop_WaitsBetweenSuccessfulFullDebugLogBatches(t *testing.T) {
 	shutdownCh := make(chan struct{})
 	isShuttingDown := &atomic.Bool{}
 	var wg sync.WaitGroup
 	store := &debugCleanupStore{
 		results: []debugCleanupResult{
-			{err: errors.New("batch 200 failed")},
-			{err: errors.New("batch 100 failed")},
-			{err: errors.New("batch 50 failed")},
-			{err: errors.New("batch 25 failed")},
-			{err: errors.New("batch 12 failed")},
-			{err: errors.New("batch 6 failed")},
-			{err: errors.New("batch 3 failed")},
-			{err: errors.New("batch 1 failed")},
+			{deleted: debugLogCleanupBatchSize},
+			{deleted: 0},
 		},
 		done: make(chan struct{}),
 	}
@@ -350,22 +351,25 @@ func TestStartCleanupLoop_StopsDebugLogCleanupAfterBatchOneFails(t *testing.T) {
 	select {
 	case <-store.done:
 	case <-time.After(time.Second):
-		t.Fatal("debug log cleanup did not reach batch size 1")
+		t.Fatal("debug log cleanup did not start its second batch")
 	}
 
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	want := []int{200, 100, 50, 25, 12, 6, 3, 1}
+	want := []int{200, 200}
 	if fmt.Sprint(store.limits) != fmt.Sprint(want) {
 		t.Fatalf("cleanup limits=%v, want %v", store.limits, want)
 	}
+	if elapsed := store.callTimes[1].Sub(store.callTimes[0]); elapsed < 90*time.Millisecond {
+		t.Fatalf("successful debug cleanup batches were not yielded: interval=%v", elapsed)
+	}
 }
 
-func TestStartCleanupLoop_DoesNotBlockWhileTruncatingDisabledDebugLogs(t *testing.T) {
+func TestStartCleanupLoop_DoesNotBlockWhileCleaningDisabledDebugLogs(t *testing.T) {
 	shutdownCh := make(chan struct{})
 	isShuttingDown := &atomic.Bool{}
 	var wg sync.WaitGroup
-	store := &blockingDebugTruncateStore{
+	store := &blockingDisabledDebugCleanupStore{
 		started: make(chan struct{}),
 		release: make(chan struct{}),
 		done:    make(chan struct{}),
@@ -385,20 +389,20 @@ func TestStartCleanupLoop_DoesNotBlockWhileTruncatingDisabledDebugLogs(t *testin
 	select {
 	case <-returned:
 	case <-time.After(time.Second):
-		t.Fatal("StartCleanupLoop blocked on debug log truncation")
+		t.Fatal("StartCleanupLoop blocked on disabled debug log cleanup")
 	}
 	select {
 	case <-store.started:
 	case <-time.After(time.Second):
-		t.Fatal("debug log truncation did not start")
+		t.Fatal("disabled debug log cleanup did not start")
 	}
 	close(store.release)
 	select {
 	case <-store.done:
 	case <-time.After(time.Second):
-		t.Fatal("debug log truncation did not finish")
+		t.Fatal("disabled debug log cleanup did not finish")
 	}
 	if calls := store.calls.Load(); calls != 1 {
-		t.Fatalf("truncate calls=%d, want 1", calls)
+		t.Fatalf("cleanup calls=%d, want 1", calls)
 	}
 }

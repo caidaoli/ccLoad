@@ -67,6 +67,7 @@ func (s *SQLStore) CleanupDebugLogsBatch(ctx context.Context, cutoff time.Time, 
 		query = `DELETE FROM debug_logs WHERE created_at < ? ORDER BY created_at LIMIT ?`
 	}
 
+	// 单条 DELETE 不包外层事务；ExecContext 成功返回时该批次已经自动提交。
 	result, err := s.ExecContext(ctx, query, cutoff.Unix(), limit)
 	if err != nil {
 		return 0, err
@@ -75,7 +76,6 @@ func (s *SQLStore) CleanupDebugLogsBatch(ctx context.Context, cutoff time.Time, 
 	if err != nil {
 		return 0, err
 	}
-	s.runSQLiteIncrementalVacuum(ctx, deleted)
 	return deleted, nil
 }
 
