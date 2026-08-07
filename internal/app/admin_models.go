@@ -265,13 +265,29 @@ func (s *Server) HandleBatchRefreshModels(c *gin.Context) {
 
 func availableModelFetchKeys(keys []*model.APIKey, now time.Time) []string {
 	apiKeys := make([]string, 0, len(keys))
+	var cooldownFallback *model.APIKey
 	for _, key := range keys {
-		if key == nil || key.Disabled || key.IsCoolingDown(now) {
+		if key == nil || key.Disabled || strings.TrimSpace(key.APIKey) == "" {
+			continue
+		}
+		if key.IsCoolingDown(now) {
+			if cooldownFallback == nil ||
+				key.CooldownUntil < cooldownFallback.CooldownUntil ||
+				(key.CooldownUntil == cooldownFallback.CooldownUntil && key.KeyIndex < cooldownFallback.KeyIndex) {
+				cooldownFallback = key
+			}
 			continue
 		}
 		apiKeys = append(apiKeys, key.APIKey)
 	}
-	return normalizeModelFetchKeys(apiKeys)
+	apiKeys = normalizeModelFetchKeys(apiKeys)
+	if len(apiKeys) > 0 {
+		return apiKeys
+	}
+	if cooldownFallback != nil {
+		return []string{strings.TrimSpace(cooldownFallback.APIKey)}
+	}
+	return apiKeys
 }
 
 func normalizeModelFetchKeys(apiKeys []string) []string {

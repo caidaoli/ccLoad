@@ -1,7 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { selectAvailableInlineKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
+const { selectAvailableInlineKeys, selectModelFetchKeys, selectFirstEnabledInlineKey } = require('./channels-keys.js');
 const { applyURLStats, fetchURLStats } = require('./channels-urls.js');
 const ModelEntryParser = require('./model-entry-parser.js');
 
@@ -19,6 +19,7 @@ function installFetchModelsGlobals({ rows, states, onFetch, onError, onWarning, 
     editingChannelId: channelId,
     editingChannelAuthType: authType,
     selectAvailableInlineKeys,
+    selectModelFetchKeys,
     selectFirstEnabledInlineKey,
     fetchAPIWithAuth: onFetch,
     alert: onError,
@@ -820,6 +821,38 @@ test('fetchModelsFromAPI sends every available API key', async () => {
 
   assert.deepEqual(requestBody.api_keys, ['enabled-key-1', 'enabled-key-2']);
   assert.equal(requestBody.api_key, undefined);
+  assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
+});
+
+test('fetchModelsFromAPI uses the earliest recovery key when all enabled keys are cooling', async () => {
+  let requestBody;
+  const restore = installFetchModelsGlobals({
+    rows: [
+      { api_key: 'disabled-key' },
+      { api_key: 'cooling-late' },
+      { api_key: 'cooling-soon' },
+      { api_key: 'cooling-soon-higher-index' }
+    ],
+    states: [
+      { key_index: 0, disabled: true },
+      { key_index: 1, disabled: false, cooldown_remaining_ms: 60_000 },
+      { key_index: 2, disabled: false, cooldown_remaining_ms: 10_000 },
+      { key_index: 3, disabled: false, cooldown_remaining_ms: 10_000 }
+    ],
+    onFetch: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return { success: false, error: 'stop after request capture' };
+    },
+    onError: () => {}
+  });
+
+  try {
+    await loadFetchModelsFromAPI()();
+  } finally {
+    restore();
+  }
+
+  assert.deepEqual(requestBody.api_keys, ['cooling-soon']);
   assert.deepEqual(requestBody.urls, [{ url: 'https://upstream.test', exact: false, protocols: ['openai'] }]);
 });
 

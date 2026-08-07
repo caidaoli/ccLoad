@@ -1,4 +1,4 @@
 interface:
-  display_name: "Release ccLoad"
+  display_name: "ccLoad Release"
   short_description: "自动提交并推送后发布 ccLoad Beta 或稳定版本"
   default_prompt: "Use $ccload-release to prepare the current master revision and publish the next ccLoad Beta, or pass stable explicitly."
