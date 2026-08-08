@@ -74,6 +74,8 @@ const (
 	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
 	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
 	WebsocketConnectionLimitCooldown = 5 * time.Second
+	// xaiFreeUsageExhaustedCooldown 是 xAI 免费额度声明的滚动窗口上限。
+	xaiFreeUsageExhaustedCooldown = 24 * time.Hour
 	// RateLimitScope 常量
 	RateLimitScopeGlobal  = "global"
 	RateLimitScopeIP      = "ip"
@@ -704,6 +706,12 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
 		}
 		return time.Time{}, "", ErrorLevelNone, false
+	case strings.Contains(code, "FREE-USAGE-EXHAUSTED") ||
+		strings.Contains(messageUpper, "FREE-USAGE-EXHAUSTED") ||
+		strings.Contains(messageUpper, "INCLUDED FREE USAGE"):
+		// xAI 不提供精确 reset 时间，只承诺滚动 24 小时窗口。账户级
+		// 429 在分类出口会收窄为当前模型，避免误伤同渠道其他模型。
+		return now.Add(xaiFreeUsageExhaustedCooldown), "XAI_FREE_USAGE_EXHAUSTED", ErrorLevelChannel, true
 	case code == "API_KEY_QUOTA_EXHAUSTED":
 		return now.Add(30 * time.Minute), "API_KEY_QUOTA_EXHAUSTED", ErrorLevelKey, true
 	case code == "FREE_TIER_BUDGET_EXCEEDED" || strings.Contains(messageUpper, "FREE_TIER_BUDGET_EXCEEDED"):

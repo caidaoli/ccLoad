@@ -343,6 +343,60 @@ func TestHandleError_Generic429CoolsOnlyCurrentModel(t *testing.T) {
 	}
 }
 
+func TestHandleError_XAIFreeUsageExhaustedCoolsModelFor24Hours(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:     "test-xai-free-usage-exhausted",
+		URLs:     model.ChannelURLs{{URL: "https://cli-chat-proxy.grok.com/v1"}},
+		Priority: 10,
+		Enabled:  true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "grok-4.5"},
+			{Model: "grok-4"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	before := time.Now()
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:     cfg.ID,
+		Model:         "grok-4.5",
+		ChannelModels: []string{"grok-4.5", "grok-4"},
+		KeyIndex:      NoKeyIndex,
+		StatusCode:    429,
+		ErrorBody:     []byte(`{"code":"subscription:free-usage-exhausted","error":"You've used all the included free usage for model grok-4.5 for now. Usage resets over a rolling 24-hour window — tokens (actual/limit): 544466/500000."}`),
+	})
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "grok-4.5")
+	if !exists {
+		t.Fatal("expected grok-4.5 model cooldown")
+	}
+	duration := until.Sub(before)
+	if duration < 24*time.Hour-5*time.Second || duration > 24*time.Hour+5*time.Second {
+		t.Fatalf("model cooldown duration=%v, want about 24h", duration)
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "grok-4"); exists {
+		t.Fatal("unaffected model must not be cooled")
+	}
+
+	channelCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		t.Fatalf("get config: %v", err)
+	}
+	if channelCfg.IsCoolingDown(time.Now()) {
+		t.Fatal("xAI free usage exhaustion must not cool the whole channel while another model is available")
+	}
+}
+
 func TestHandleError_ModelCooldownUsesExponentialBackoff(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
