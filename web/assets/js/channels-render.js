@@ -31,27 +31,21 @@ function escapeChannelRefreshText(value) {
 
 function buildOAuthPlanBadge(channel) {
   let planType = '';
-  let label = '';
   if (channel?.auth_type === 'codex_oauth') {
     planType = String(channel.codex_plan_type || '').trim();
   } else if (channel?.auth_type === 'antigravity_oauth') {
     planType = String(channel.antigravity_paid_tier || '').trim();
   } else if (channel?.auth_type === 'xai_oauth') {
     planType = String(channel.xai_subscription_tier || '').trim();
-    label = [channel.xai_email, planType, channel.xai_entitlement_status]
-      .map(value => String(value || '').trim())
-      .filter(Boolean)
-      .join(' · ');
   }
-  if (!label) label = planType;
-  if (!label) return '';
+  if (!planType) return '';
 
   const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
   if (channel?.auth_type !== 'xai_oauth' && planTokens.includes('free')) return '';
 
   const planTone = ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
   const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
-  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(label)}</span>`;
+  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(planType)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {

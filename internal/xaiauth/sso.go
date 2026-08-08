@@ -78,25 +78,25 @@ func (s *Service) ConvertSSO(ctx context.Context, cookie string) (*Credential, e
 		return nil, errors.New("xAI SSO device response has invalid expires_in")
 	}
 	deviceDeadline := time.Now().Add(time.Duration(device.ExpiresIn) * time.Second)
-	verificationURL, err := validateAuthURL(device.VerificationURIComplete)
+	verificationURL, err := validateSSOVerificationURL(device.VerificationURIComplete)
 	if err != nil {
 		return nil, errors.New("xAI SSO verification URL has an untrusted origin")
 	}
-	status, _, _, err = flow.do(conversionCtx, http.MethodGet, verificationURL, nil, false)
+	status, _, _, err = flow.do(conversionCtx, http.MethodGet, verificationURL, nil, true)
 	if err != nil || status < 200 || status >= 400 {
 		if err != nil {
 			return nil, err
 		}
 		return nil, fmt.Errorf("open xAI SSO verification: HTTP %d", status)
 	}
-	status, finalURL, _, err = flow.do(conversionCtx, http.MethodPost, SSOVerifyURL, url.Values{"user_code": {device.UserCode}}, false)
+	status, finalURL, _, err = flow.do(conversionCtx, http.MethodPost, SSOVerifyURL, url.Values{"user_code": {device.UserCode}}, true)
 	if err != nil {
 		return nil, err
 	}
 	if status < 200 || status >= 400 || !strings.Contains(finalURL, "consent") {
 		return nil, errors.New("xAI SSO verification did not reach consent")
 	}
-	status, finalURL, _, err = flow.do(conversionCtx, http.MethodPost, SSOApproveURL, url.Values{"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""}}, false)
+	status, finalURL, _, err = flow.do(conversionCtx, http.MethodPost, SSOApproveURL, url.Values{"user_code": {device.UserCode}, "action": {"allow"}, "principal_type": {"User"}, "principal_id": {""}}, true)
 	if err != nil {
 		return nil, err
 	}
@@ -249,6 +249,14 @@ func trustedSSOURL(raw string, allowAccounts bool) bool {
 		return true
 	}
 	return allowAccounts && parsed.Host == "accounts.x.ai"
+}
+
+func validateSSOVerificationURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if !trustedSSOURL(raw, true) {
+		return "", errors.New("URL must use a trusted xAI SSO origin")
+	}
+	return raw, nil
 }
 
 func (f *ssoFlow) captureCookies(requestURL *url.URL, response *http.Response) {

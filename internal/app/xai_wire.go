@@ -82,6 +82,19 @@ func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
 		normalizeXAIOrphanedToolControls(payload)
 		return
 	}
+	if !hasXAIResponsesToolIntent(payload) {
+		cacheKey, _ := payload["prompt_cache_key"].(string)
+		if strings.TrimSpace(cacheKey) == "" {
+			normalizeXAIOrphanedToolControls(payload)
+			return
+		}
+		payload["tools"] = []any{
+			map[string]any{"type": "web_search"},
+			map[string]any{"type": "x_search"},
+		}
+		payload["tool_choice"] = "none"
+		return
+	}
 
 	rawTools, toolsExist := payload["tools"]
 	tools, toolsAreArray := rawTools.([]any)
@@ -89,12 +102,38 @@ func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
 		return
 	}
 
-	keptTools, hasNativeWebSearch := normalizeXAIWebSearchTools(tools)
-	if !hasNativeWebSearch {
-		keptTools = append([]any{map[string]any{"type": "web_search"}}, keptTools...)
-	}
-	payload["tools"] = keptTools
+	payload["tools"] = normalizeXAIWebSearchTools(tools)
 	normalizeXAIWebSearchToolChoice(payload)
+	normalizeXAIOrphanedToolControls(payload)
+}
+
+func hasXAIResponsesToolIntent(payload map[string]any) bool {
+	if _, exists := payload["tools"]; exists {
+		return true
+	}
+	if _, exists := payload["tool_choice"]; exists {
+		return true
+	}
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return false
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			continue
+		}
+		itemType, _ := item["type"].(string)
+		if strings.TrimSpace(itemType) != "additional_tools" {
+			continue
+		}
+		rawTools, exists := item["tools"]
+		tools, isArray := rawTools.([]any)
+		if !exists || !isArray || len(tools) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func isXAICLIChatProxyBaseURL(baseURL string) bool {
@@ -104,7 +143,7 @@ func isXAICLIChatProxyBaseURL(baseURL string) bool {
 	return normalize(baseURL) == normalize(xaiauth.CLIBaseURL)
 }
 
-func normalizeXAIWebSearchTools(tools []any) ([]any, bool) {
+func normalizeXAIWebSearchTools(tools []any) []any {
 	kept := make([]any, 0, len(tools))
 	hasNativeWebSearch := false
 	for _, rawTool := range tools {
@@ -122,21 +161,14 @@ func normalizeXAIWebSearchTools(tools []any) ([]any, bool) {
 			kept = append(kept, rawTool)
 			continue
 		}
-		if isXAINamedWebSearchTool(tool) {
-			continue
-		}
 		kept = append(kept, rawTool)
 	}
-	return kept, hasNativeWebSearch
+	return kept
 }
 
 func normalizeXAIWebSearchToolChoice(payload map[string]any) {
 	choice, isObject := payload["tool_choice"].(map[string]any)
 	if !isObject {
-		return
-	}
-	if isXAINamedWebSearchTool(choice) {
-		delete(payload, "tool_choice")
 		return
 	}
 	choiceType, _ := choice["type"].(string)
@@ -148,20 +180,7 @@ func normalizeXAIWebSearchToolChoice(payload map[string]any) {
 	if !exists || !isArray {
 		return
 	}
-	kept, hasNativeWebSearch := normalizeXAIWebSearchTools(allowed)
-	if !hasNativeWebSearch {
-		kept = append(kept, map[string]any{"type": "web_search"})
-	}
-	choice["tools"] = kept
-}
-
-func isXAINamedWebSearchTool(tool map[string]any) bool {
-	toolType, _ := tool["type"].(string)
-	if toolType != "function" && toolType != "custom" {
-		return false
-	}
-	name, _ := tool["name"].(string)
-	return strings.EqualFold(strings.TrimSpace(name), "web_search")
+	choice["tools"] = normalizeXAIWebSearchTools(allowed)
 }
 
 func deleteJSONKeyRecursive(value any, key string) {

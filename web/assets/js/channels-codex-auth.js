@@ -114,10 +114,7 @@ function applyChannelAuthEditorMode(
     : String(channel?.xai_subscription_tier || '').trim();
   const planBadgeText = codexOAuth
     ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
-    : (xaiOAuth
-        ? [channel?.xai_email, planType, channel?.xai_entitlement_status]
-          .map(value => String(value || '').trim()).filter(Boolean).join(' · ')
-        : '');
+    : (xaiOAuth ? planType : '');
   if (notice) {
     const noticeKey = xaiOAuth ? 'channels.xai.editorReadOnly' : 'channels.oauthCredentialReadOnly';
     notice.hidden = !oauth;

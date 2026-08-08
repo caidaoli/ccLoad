@@ -153,8 +153,8 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
       api_key: 'must-not-render'
     });
     assert.match(badge, /Pro &lt;safe&gt;/);
-    assert.match(badge, /user&lt;safe&gt;@example\.com/);
-    assert.match(badge, /active&lt;script&gt;/);
+    assert.doesNotMatch(badge, /user&lt;safe&gt;@example\.com/);
+    assert.doesNotMatch(badge, /active&lt;script&gt;/);
     assert.doesNotMatch(badge, /must-not-render/);
 
     const usage = buildOAuthUsageStatusHtml({ id: 88, auth_type: 'xai_oauth' });

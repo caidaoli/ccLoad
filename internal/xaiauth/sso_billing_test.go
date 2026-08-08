@@ -81,6 +81,69 @@ func TestConvertSSOUsesAccountsThenAuthAndDoesNotLeakCookie(t *testing.T) {
 	}
 }
 
+func TestConvertSSOAcceptsAccountsVerificationURL(t *testing.T) {
+	t.Parallel()
+	const secret = "sso-super-secret"
+	verificationVisited := false
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch {
+		case req.URL.Host == "accounts.x.ai" && req.URL.Path == "/":
+			return response(200, `{}`), nil
+		case req.URL.Host == "auth.x.ai" && req.URL.Path == "/oauth2/device/code":
+			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://accounts.x.ai/oauth2/device?user_code=CODE","interval":1,"expires_in":60}`), nil
+		case req.URL.Host == "accounts.x.ai" && req.URL.Path == "/oauth2/device":
+			verificationVisited = true
+			if !strings.Contains(req.Header.Get("Cookie"), secret) {
+				t.Fatal("SSO cookie missing from accounts verification request")
+			}
+			return response(200, `{}`), nil
+		case req.URL.Host == "auth.x.ai" && req.URL.Path == "/oauth2/device/verify":
+			return response(303, "", http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/consent"}}), nil
+		case req.URL.Host == "accounts.x.ai" && req.URL.Path == "/oauth2/device/consent":
+			return response(200, `{}`), nil
+		case req.URL.Host == "auth.x.ai" && req.URL.Path == "/oauth2/device/approve":
+			return response(303, "", http.Header{"Location": []string{"https://accounts.x.ai/oauth2/device/done"}}), nil
+		case req.URL.Host == "accounts.x.ai" && req.URL.Path == "/oauth2/device/done":
+			return response(200, `{}`), nil
+		case req.URL.Host == "auth.x.ai" && req.URL.Path == "/oauth2/token":
+			return response(200, `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`), nil
+		default:
+			t.Fatalf("unexpected request: %s %s", req.Method, req.URL)
+			return nil, nil
+		}
+	})}
+
+	credential, err := xaiauth.NewService(client).ConvertSSO(context.Background(), secret)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !verificationVisited || credential.AccessToken != "access" {
+		t.Fatalf("accounts verification was not completed: visited=%t credential=%s", verificationVisited, credential.Redacted())
+	}
+}
+
+func TestConvertSSORejectsUntrustedVerificationSubdomain(t *testing.T) {
+	t.Parallel()
+	requests := 0
+	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests++
+		switch requests {
+		case 1:
+			return response(200, `{}`), nil
+		case 2:
+			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://uploads.x.ai/oauth2/device","interval":1,"expires_in":60}`), nil
+		default:
+			t.Fatalf("untrusted verification host was requested: %s", req.URL.Host)
+			return nil, nil
+		}
+	})}
+
+	_, err := xaiauth.NewService(client).ConvertSSO(context.Background(), "secret")
+	if err == nil || !strings.Contains(err.Error(), "untrusted origin") || requests != 2 {
+		t.Fatalf("untrusted verification URL was not rejected before request: requests=%d err=%v", requests, err)
+	}
+}
+
 func TestConvertSSOPollDeadlineBoundsLongInterval(t *testing.T) {
 	t.Parallel()
 	started := time.Now()

@@ -590,6 +590,19 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 		if !gjson.GetBytes(wireBody, "stream").Bool() || gjson.GetBytes(wireBody, "model").String() != "grok-4.5" {
 			t.Errorf("xAI required body fields missing: %s", wireBody)
 		}
+		tools := gjson.GetBytes(wireBody, "tools").Array()
+		switch gjson.GetBytes(wireBody, "tool_choice").String() {
+		case "none":
+			if len(tools) != 2 || tools[0].Get("type").String() != "web_search" || tools[1].Get("type").String() != "x_search" {
+				t.Errorf("xAI cache-route tools = %s, want web_search and x_search", gjson.GetBytes(wireBody, "tools").Raw)
+			}
+		case "auto":
+			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" || tools[0].Get("search_context_size").String() != "low" {
+				t.Errorf("explicit xAI search tool was not preserved: %s", gjson.GetBytes(wireBody, "tools").Raw)
+			}
+		default:
+			t.Errorf("xAI tool_choice = %q, want none for cache routing or preserved auto", gjson.GetBytes(wireBody, "tool_choice").String())
+		}
 		for _, field := range []string{"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options"} {
 			if gjson.GetBytes(wireBody, field).Exists() {
 				t.Errorf("forbidden field %s survived: %s", field, wireBody)
@@ -621,7 +634,13 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "xai-oauth-http", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
 		authType: model.AuthTypeXAIOAuth, oauthCredential: credential, customRequestRules: rules,
-	}}, map[int]string{0: upstream.URL + "/v1"})
+	}}, map[int]string{0: xaiauth.CLIBaseURL})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		clone := req.Clone(req.Context())
+		clone.URL.Scheme = "http"
+		clone.URL.Host = upstream.host
+		return dispatchTestHTTPRequest(clone)
+	})}
 	env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
 
 	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
@@ -631,6 +650,14 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 	}, map[string]string{"Session-Id": "session", "Thread-Id": "parent"})
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-xai" {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	explicitSearchResponse := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "grok-4.5", "stream": false, "input": "current price",
+		"tools":       []any{map[string]any{"type": "web_search", "search_context_size": "low"}},
+		"tool_choice": "auto", "parallel_tool_calls": true,
+	}, map[string]string{"Session-Id": "session", "Thread-Id": "parent"})
+	if explicitSearchResponse.Code != http.StatusOK || gjson.Get(explicitSearchResponse.Body.String(), "id").String() != "resp-xai" {
+		t.Fatalf("explicit search status=%d body=%s", explicitSearchResponse.Code, explicitSearchResponse.Body.String())
 	}
 	if gotConversationID == "" {
 		t.Fatal("xAI conversation identity was not sent")
