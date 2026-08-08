@@ -137,37 +137,50 @@ type sseErrorDetail struct {
 }
 
 type structuredQuotaErrorResponse struct {
-	Code            any             `json:"code"`
-	Message         string          `json:"message"`
-	Model           string          `json:"model"`
-	ResetSeconds    int64           `json:"reset_seconds"`
-	ResetsInSeconds int64           `json:"resets_in_seconds"` // 部分上游使用复数形式
-	ResetsAt        int64           `json:"resets_at"`         // unix 时间戳
-	ResetTime       string          `json:"reset_time"`
-	Status          string          `json:"status"`
-	Error           json.RawMessage `json:"error"`
+	Code            any                          `json:"code"`
+	Message         string                       `json:"message"`
+	Model           string                       `json:"model"`
+	ResetSeconds    int64                        `json:"reset_seconds"`
+	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64                        `json:"resets_at"`         // unix 时间戳
+	ResetTime       string                       `json:"reset_time"`
+	Status          string                       `json:"status"`
+	Details         []structuredQuotaErrorDetail `json:"details"`
+	Error           json.RawMessage              `json:"error"`
 }
 
 type structuredQuotaErrorObject struct {
-	Type            any    `json:"type"`
-	Code            any    `json:"code"`
-	Message         string `json:"message"`
-	Model           string `json:"model"`
-	ResetSeconds    int64  `json:"reset_seconds"`
-	ResetsInSeconds int64  `json:"resets_in_seconds"` // 部分上游使用复数形式
-	ResetsAt        int64  `json:"resets_at"`         // unix 时间戳
-	ResetTime       string `json:"reset_time"`
-	Status          string `json:"status"`
+	Type            any                          `json:"type"`
+	Code            any                          `json:"code"`
+	Message         string                       `json:"message"`
+	Model           string                       `json:"model"`
+	ResetSeconds    int64                        `json:"reset_seconds"`
+	ResetsInSeconds int64                        `json:"resets_in_seconds"` // 部分上游使用复数形式
+	ResetsAt        int64                        `json:"resets_at"`         // unix 时间戳
+	ResetTime       string                       `json:"reset_time"`
+	Status          string                       `json:"status"`
+	Details         []structuredQuotaErrorDetail `json:"details"`
+}
+
+type structuredQuotaErrorDetail struct {
+	Reason   string `json:"reason"`
+	Metadata struct {
+		Model               string `json:"model"`
+		QuotaResetDelay     string `json:"quotaResetDelay"`
+		QuotaResetTimeStamp string `json:"quotaResetTimeStamp"`
+	} `json:"metadata"`
 }
 
 type structuredQuotaError struct {
-	code         string
-	message      string
-	model        string
-	resetSeconds int64
-	resetsAt     int64 // unix 时间戳（秒）
-	resetTime    string
-	status       string
+	code                string
+	message             string
+	model               string
+	resetSeconds        int64
+	resetsAt            int64 // unix 时间戳（秒）
+	resetTime           string
+	status              string
+	quotaResetDelay     string
+	quotaResetTimeStamp string
 }
 
 // ErrorType 返回错误类型（优先使用type字段，如果为空则使用code字段）
@@ -684,6 +697,9 @@ func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time
 		}
 		return time.Time{}, "model_cooldown", ErrorLevelKey, true
 	case quotaErr.status == "RESOURCE_EXHAUSTED" || strings.Contains(messageUpper, "RESOURCE_EXHAUSTED"):
+		if until, ok := parseStructuredCooldownUntil(quotaErr, now); ok {
+			return until, "RESOURCE_EXHAUSTED", ErrorLevelKey, true
+		}
 		if until, ok := parseRetryInCooldownUntil(message, now); ok {
 			return until, "RESOURCE_EXHAUSTED_RETRY_IN", ErrorLevelKey, true
 		}
@@ -737,6 +753,7 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 		resetTime:    errResp.ResetTime,
 		status:       strings.ToUpper(strings.TrimSpace(errResp.Status)),
 	}
+	mergeStructuredQuotaDetails(&parsed, errResp.Details)
 
 	if len(errResp.Error) > 0 {
 		var errorText string
@@ -771,11 +788,32 @@ func parseStructuredQuotaError(responseBody []byte) (structuredQuotaError, bool)
 				if parsed.status == "" {
 					parsed.status = strings.ToUpper(strings.TrimSpace(errorObj.Status))
 				}
+				mergeStructuredQuotaDetails(&parsed, errorObj.Details)
 			}
 		}
 	}
 
 	return parsed, parsed.code != "" || parsed.message != "" || parsed.status != ""
+}
+
+func mergeStructuredQuotaDetails(parsed *structuredQuotaError, details []structuredQuotaErrorDetail) {
+	if parsed == nil {
+		return
+	}
+	for _, detail := range details {
+		if parsed.model == "" {
+			parsed.model = strings.TrimSpace(detail.Metadata.Model)
+		}
+		if parsed.quotaResetTimeStamp == "" {
+			parsed.quotaResetTimeStamp = strings.TrimSpace(detail.Metadata.QuotaResetTimeStamp)
+		}
+		if parsed.quotaResetDelay == "" {
+			parsed.quotaResetDelay = strings.TrimSpace(detail.Metadata.QuotaResetDelay)
+		}
+		if parsed.quotaResetTimeStamp != "" && parsed.quotaResetDelay != "" && parsed.model != "" {
+			return
+		}
+	}
 }
 
 // ExtractUpstreamErrorCodeAndMessage returns the canonical error code and message
@@ -833,15 +871,28 @@ func parseStructuredCooldownUntil(quotaErr structuredQuotaError, now time.Time) 
 		}
 	}
 
-	if quotaErr.resetTime == "" {
-		return time.Time{}, false
+	if quotaErr.quotaResetTimeStamp != "" {
+		until, err := time.Parse(time.RFC3339, quotaErr.quotaResetTimeStamp)
+		if err == nil && until.After(now) {
+			return until, true
+		}
 	}
 
-	duration, err := time.ParseDuration(quotaErr.resetTime)
-	if err != nil || duration <= 0 {
-		return time.Time{}, false
+	if quotaErr.resetTime != "" {
+		duration, err := time.ParseDuration(quotaErr.resetTime)
+		if err == nil && duration > 0 {
+			return now.Add(duration), true
+		}
 	}
-	return now.Add(duration), true
+
+	if quotaErr.quotaResetDelay != "" {
+		duration, err := time.ParseDuration(quotaErr.quotaResetDelay)
+		if err == nil && duration > 0 {
+			return now.Add(duration), true
+		}
+	}
+
+	return time.Time{}, false
 }
 
 func parseRetryInCooldownUntil(message string, now time.Time) (time.Time, bool) {
