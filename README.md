@@ -1004,11 +1004,11 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `auto_update_interval_hours` | `12` | Non-container release check interval (hours, 0=disabled, minimum enabled value is 1); unavailable in containers |
 | `auto_update_channel` | `stable` | Non-container release channel: `stable` accepts stable releases only; `preview` accepts stable and prerelease versions and selects the highest SemVer; unavailable in containers |
 | `model_fuzzy_match` | `false` | When an exact model name misses, fall back to substring matching plus version sorting |
-| `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process |
-| `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token |
-| `responses_ws_max_sessions` | `256` | Max retained Responses WebSocket execution sessions across the process |
-| `responses_ws_session_ttl_minutes` | `15` | Idle execution-session retention in minutes |
-| `responses_ws_max_transcript_bytes` | `268435456` | Process-wide retained transcript payload budget (256 MiB) |
+| `responses_ws_max_connections` | `128` | Max concurrent downstream Responses WebSocket connections across the process; `0` uses the built-in default |
+| `responses_ws_max_connections_per_token` | `64` | Max concurrent downstream Responses WebSocket connections per auth token; `0` uses the built-in default |
+| `responses_ws_max_sessions` | `256` | Max retained Responses WebSocket execution sessions across the process; `0` uses the built-in default |
+| `responses_ws_session_ttl_minutes` | `15` | Idle execution-session retention in minutes; `0` uses the built-in default |
+| `responses_ws_max_transcript_bytes` | `268435456` | Process-wide retained transcript payload budget (256 MiB); `0` uses the built-in default |
 | `debug_log_enabled` | `false` | Capture upstream request/response debug logs |
 | `debug_log_retention_minutes` | `2` | Debug log retention in minutes |
 

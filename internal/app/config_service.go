@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -74,9 +75,22 @@ func (cs *ConfigService) GetBool(key string, defaultValue bool) bool {
 	cs.mu.RUnlock()
 
 	if ok {
-		return setting.Value == "true" || setting.Value == "1"
+		if value, valid := parseSettingBool(setting.Value); valid {
+			return value
+		}
 	}
 	return defaultValue
+}
+
+func parseSettingBool(value string) (bool, bool) {
+	switch value {
+	case "true", "1":
+		return true, true
+	case "false", "0":
+		return false, true
+	default:
+		return false, false
+	}
 }
 
 // GetString 获取字符串配置
@@ -98,7 +112,7 @@ func (cs *ConfigService) GetFloat(key string, defaultValue float64) float64 {
 	cs.mu.RUnlock()
 
 	if ok {
-		if floatVal, err := strconv.ParseFloat(setting.Value, 64); err == nil {
+		if floatVal, err := strconv.ParseFloat(setting.Value, 64); err == nil && !math.IsNaN(floatVal) && !math.IsInf(floatVal, 0) {
 			return floatVal
 		}
 	}
@@ -107,8 +121,39 @@ func (cs *ConfigService) GetFloat(key string, defaultValue float64) float64 {
 
 // GetDuration 获取时长配置(秒转Duration)
 func (cs *ConfigService) GetDuration(key string, defaultValue time.Duration) time.Duration {
-	seconds := cs.GetInt(key, int(defaultValue.Seconds()))
-	return time.Duration(seconds) * time.Second
+	cs.mu.RLock()
+	setting, ok := cs.cache[key]
+	cs.mu.RUnlock()
+	if !ok {
+		return defaultValue
+	}
+	seconds, err := strconv.ParseInt(setting.Value, 10, 64)
+	if err != nil {
+		return defaultValue
+	}
+	duration, valid := settingDurationFromInt64(seconds, time.Second)
+	if !valid {
+		return defaultValue
+	}
+	return duration
+}
+
+func settingDurationFromInt64(value int64, unit time.Duration) (time.Duration, bool) {
+	if value < 0 || unit <= 0 || value > int64((1<<63-1)/unit) {
+		return 0, false
+	}
+	return time.Duration(value) * unit, true
+}
+
+func settingDurationFromFloat64(value float64, unit time.Duration) (time.Duration, bool) {
+	if value < 0 || math.IsNaN(value) || math.IsInf(value, 0) || unit <= 0 || value > float64((1<<63-1)/unit) {
+		return 0, false
+	}
+	duration := time.Duration(value * float64(unit))
+	if duration < 0 {
+		return 0, false
+	}
+	return duration, true
 }
 
 // GetSetting 获取完整配置对象（用于验证等场景）

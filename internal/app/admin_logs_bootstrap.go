@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -66,16 +67,18 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 
 	// goroutine 1: channel_test_content
 	wg.Go(func() {
+		content := config.DefaultChannelTestContent
 		setting, err := s.configService.GetSettingFresh(ctx, "channel_test_content")
 		if err != nil && !errors.Is(err, model.ErrSettingNotFound) {
 			setErr(err)
 			return
 		}
-		if setting != nil {
-			mu.Lock()
-			resp.ChannelTestContent = setting.Value
-			mu.Unlock()
+		if setting != nil && strings.TrimSpace(setting.Value) != "" {
+			content = setting.Value
 		}
+		mu.Lock()
+		resp.ChannelTestContent = content
+		mu.Unlock()
 	})
 
 	// goroutine 2: log_channel_click_action
@@ -94,17 +97,20 @@ func (s *Server) HandleLogsBootstrap(c *gin.Context) {
 
 	// goroutine 3: channel_check_interval_hours
 	wg.Go(func() {
+		hours := defaultChannelCheckIntervalHours
 		setting, err := s.configService.GetSettingFresh(ctx, "channel_check_interval_hours")
 		if err != nil && !errors.Is(err, model.ErrSettingNotFound) {
 			setErr(err)
 			return
 		}
 		if setting != nil {
-			n, _ := strconv.ParseFloat(setting.Value, 64)
-			mu.Lock()
-			resp.ChannelCheckIntervalHours = n
-			mu.Unlock()
+			if parsed, parseErr := strconv.ParseFloat(setting.Value, 64); parseErr == nil {
+				hours = normalizeChannelCheckIntervalHours(parsed)
+			}
 		}
+		mu.Lock()
+		resp.ChannelCheckIntervalHours = hours
+		mu.Unlock()
 	})
 
 	// goroutine 4: auth tokens

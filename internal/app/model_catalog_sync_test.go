@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,28 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 )
+
+func TestNormalizeModelCatalogSyncIntervalHours(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   float64
+		want float64
+	}{
+		{name: "zero disables", in: 0, want: 0},
+		{name: "positive kept", in: 0.5, want: 0.5},
+		{name: "negative uses default", in: -1, want: defaultModelCatalogSyncHours},
+		{name: "nan uses default", in: math.NaN(), want: defaultModelCatalogSyncHours},
+		{name: "overflow uses default", in: float64(maxSettingDurationHours + 1), want: defaultModelCatalogSyncHours},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := normalizeModelCatalogSyncIntervalHours(tt.in); got != tt.want {
+				t.Fatalf("normalizeModelCatalogSyncIntervalHours(%v)=%v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
 
 func TestModelCatalogCachePathDefaultAndFallback(t *testing.T) {
 	t.Setenv("CCLOAD_MODEL_CATALOG_CACHE", "")

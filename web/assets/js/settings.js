@@ -2,6 +2,7 @@
 const t = window.t;
 
 let originalSettings = {}; // 保存原始值用于比较
+let settingDefinitions = new Map();
 let runtimeMetricsLoading = false;
 let runtimeMetricsPreviousFocus = null;
 let globalCooldownRulesPreviousFocus = null;
@@ -30,7 +31,10 @@ const oauthBaseURLPlaceholders = new Map([
   ['XAI_BASE_URL', 'https://cli-chat-proxy.grok.com/v1'],
   ['ANTIGRAVITY_URL', 'https://daily-cloudcode-pa.googleapis.com']
 ]);
-const bytesPerM = 1024 * 1024;
+const bytesPerMiB = 1024 * 1024;
+const maxDurationSeconds = 9223372036;
+const maxDurationMinutes = 153722867;
+const maxDurationHours = 2562047;
 
 const selectSettingOptions = new Map([
   ['auto_update_channel', [
@@ -52,21 +56,114 @@ const selectSettingOptions = new Map([
   ]]
 ]);
 
+const numericSettingConstraints = new Map([
+  ['max_key_retries', { min: 1 }],
+  ['max_concurrency', { min: 1 }],
+  ['max_body_bytes', { min: 1 / bytesPerMiB }],
+  ['max_image_body_bytes', { min: 1 / bytesPerMiB }],
+  ['log_retention_days', { min: -1, max: 365 }],
+  ['cooldown_auth_seconds', { min: 1, max: maxDurationSeconds }],
+  ['cooldown_server_seconds', { min: 1, max: maxDurationSeconds }],
+  ['cooldown_timeout_seconds', { min: 1, max: maxDurationSeconds }],
+  ['cooldown_rate_limit_seconds', { min: 1, max: maxDurationSeconds }],
+  ['cooldown_min_seconds', { min: 1, max: maxDurationSeconds }],
+  ['cooldown_max_seconds', { min: 1, max: maxDurationSeconds }],
+  ['channel_check_interval_hours', { min: 0, max: maxDurationHours }],
+  ['model_catalog_sync_interval_hours', { min: 0, max: maxDurationHours }],
+  ['auto_update_interval_hours', { min: 0, max: maxDurationHours }],
+  ['success_rate_penalty_weight', { min: 0 }],
+  ['health_score_window_minutes', { min: 1, max: maxDurationMinutes }],
+  ['health_score_update_interval', { min: 1, max: maxDurationSeconds }],
+  ['health_min_confident_sample', { min: 1 }],
+  ['ttfb_penalty_weight', { min: 0 }],
+  ['ttfb_max_slow_ratio', { min: 0 }],
+  ['ttfb_min_confident_sample', { min: 1 }],
+  ['debug_log_retention_minutes', { min: 1, max: 1440 }],
+  ['auto_refresh_interval_seconds', { min: 0, max: maxDurationSeconds }],
+  ['responses_ws_max_sessions', { min: 0 }],
+  ['responses_ws_session_ttl_minutes', { min: 0, max: maxDurationMinutes }],
+  ['responses_ws_max_transcript_bytes', { min: 0 }],
+  ['responses_ws_max_connections', { min: 0 }],
+  ['responses_ws_max_connections_per_token', { min: 0 }]
+]);
+
 function settingValueForDisplay(key, value) {
   const normalizedValue = String(value ?? '');
   if (!byteSettingKeys.has(key)) return normalizedValue;
 
   const bytes = Number(normalizedValue);
-  return Number.isFinite(bytes) ? String(bytes / bytesPerM) : normalizedValue;
+  return Number.isFinite(bytes) ? String(bytes / bytesPerMiB) : normalizedValue;
 }
 
 function settingValueForStorage(key, value) {
   const normalizedValue = String(value ?? '');
   if (!byteSettingKeys.has(key)) return normalizedValue;
 
-  const megabytes = Number(normalizedValue);
-  const bytes = Math.round(megabytes * bytesPerM);
+  const mebibytes = Number(normalizedValue);
+  const bytes = Math.round(mebibytes * bytesPerMiB);
   return Number.isFinite(bytes) ? String(bytes) : normalizedValue;
+}
+
+function numericConstraintFor(setting) {
+  const configured = numericSettingConstraints.get(setting.key);
+  if (configured) return configured;
+  if (setting.value_type === 'duration') return { min: 0, max: maxDurationSeconds };
+  return null;
+}
+
+function numericInputAttributes(setting) {
+  const constraint = numericConstraintFor(setting);
+  const attributes = ['required'];
+  if (constraint?.min !== undefined) attributes.push(`min="${constraint.min}"`);
+  if (constraint?.max !== undefined) attributes.push(`max="${constraint.max}"`);
+  const acceptsFraction = setting.value_type === 'float' || byteSettingKeys.has(setting.key);
+  attributes.push(`step="${acceptsFraction ? 'any' : '1'}"`);
+  return attributes.join(' ');
+}
+
+function validateSettingInput(setting, value) {
+  const normalizedValue = String(value ?? '');
+  if (selectSettingOptions.has(setting.key)) {
+    const valid = selectSettingOptions.get(setting.key).some((option) => option.value === normalizedValue);
+    return valid ? '' : t('settings.validation.selectListed');
+  }
+  if (setting.key === 'channel_test_content' && normalizedValue.trim() === '') {
+    return t('settings.validation.testContentRequired');
+  }
+
+  const numeric = setting.value_type === 'int'
+    || setting.value_type === 'float'
+    || setting.value_type === 'duration'
+    || byteSettingKeys.has(setting.key);
+  if (!numeric) return '';
+
+  if (normalizedValue.trim() === '') return t('settings.validation.numberRequired');
+  const number = Number(normalizedValue);
+  if (!Number.isFinite(number)) return t('settings.validation.finiteNumber');
+  if (!byteSettingKeys.has(setting.key) && setting.value_type !== 'float' && !Number.isSafeInteger(number)) {
+    return t('settings.validation.wholeNumber');
+  }
+
+  const constraint = numericConstraintFor(setting);
+  if (constraint?.min !== undefined && number < constraint.min) {
+    return t('settings.validation.minimum', { value: constraint.min });
+  }
+  if (constraint?.max !== undefined && number > constraint.max) {
+    return t('settings.validation.maximum', { value: constraint.max });
+  }
+  if (setting.key === 'log_retention_days' && number !== -1 && (number < 1 || number > 365)) {
+    return t('settings.validation.logRetention');
+  }
+
+  if (byteSettingKeys.has(setting.key)) {
+    const bytes = Math.round(number * bytesPerMiB);
+    if (!Number.isSafeInteger(bytes)) return t('settings.validation.smallerSize');
+    if (number !== 0 && bytes === 0) return t('settings.validation.zeroOrOneByte');
+    if (setting.key !== 'responses_ws_max_transcript_bytes' && bytes < 1) {
+      return t('settings.validation.oneByteMinimum');
+    }
+  }
+  return '';
 }
 
 const runtimeMetricGroups = [
@@ -587,6 +684,7 @@ async function loadSettings() {
 function renderSettings(settings) {
   const tbody = document.getElementById('settings-tbody');
   originalSettings = {};
+  settingDefinitions = new Map(settings.map((setting) => [setting.key, setting]));
   tbody.innerHTML = '';
 
   // 初始化事件委托（仅一次）
@@ -679,6 +777,7 @@ function renderInput(setting) {
   const placeholderAttribute = placeholder ? `placeholder="${escapeHtml(placeholder)}"` : '';
   const wideTextInput = setting.key === 'channel_test_content' || oauthBaseURLPlaceholders.has(setting.key);
   const disabledAttributes = settingDisabledAttributes(setting);
+  const numericAttributes = numericInputAttributes(setting);
 
   if (setting.key === globalCooldownRulesSettingKey) {
     const count = globalCooldownRuleCount(setting.value);
@@ -706,7 +805,7 @@ function renderInput(setting) {
   }
 
   if (byteSettingKeys.has(setting.key)) {
-    return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
+    return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
   }
 
   switch (setting.value_type) {
@@ -723,15 +822,16 @@ function renderInput(setting) {
         </div>`;
     case 'int':
     case 'duration':
-      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
     case 'float':
-      return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
+      return `<input type="number" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${numericAttributes} ${disabledAttributes}>`;
     default:
       return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${wideTextInput ? ' settings-input--wide' : ''}" ${disabledAttributes}>`;
   }
 }
 
 function markChanged(input) {
+  input.removeAttribute?.('aria-invalid');
   const row = input.closest('tr');
   let key, currentValue;
 
@@ -749,6 +849,17 @@ function markChanged(input) {
   } else {
     row.style.background = '';
   }
+}
+
+function setSettingInvalid(key, invalid) {
+  const control = getSettingControl(key);
+  if (!control) return;
+  const inputs = control.radios ? Array.from(control.radios) : [control.input];
+  for (const input of inputs) {
+    if (invalid) input.setAttribute?.('aria-invalid', 'true');
+    else input.removeAttribute?.('aria-invalid');
+  }
+  if (invalid) control.input?.focus?.();
 }
 
 function getSettingControl(key) {
@@ -773,7 +884,7 @@ function getSettingControl(key) {
   };
 }
 
-function syncSettingState(key, value) {
+function setSettingControlValue(key, value) {
   const normalizedValue = settingValueForDisplay(key, value);
   const control = getSettingControl(key);
 
@@ -787,11 +898,18 @@ function syncSettingState(key, value) {
     control.input.value = normalizedValue;
   }
 
+  if (key === globalCooldownRulesSettingKey) updateGlobalCooldownRulesSummary(normalizedValue);
+  return control;
+}
+
+function syncSettingState(key, value) {
+  const normalizedValue = settingValueForDisplay(key, value);
+  const control = setSettingControlValue(key, value);
+
   originalSettings[key] = normalizedValue;
   if (control?.row) {
     control.row.style.background = '';
   }
-  if (key === globalCooldownRulesSettingKey) updateGlobalCooldownRulesSummary(normalizedValue);
 }
 
 async function saveAllSettings() {
@@ -804,6 +922,14 @@ async function saveAllSettings() {
 
     const currentValue = control.value;
     if (currentValue !== originalSettings[key]) {
+      const setting = settingDefinitions.get(key);
+      const validationError = setting ? validateSettingInput(setting, currentValue) : '';
+      if (validationError) {
+        setSettingInvalid(key, true);
+        showError(t('settings.msg.invalidValue', { key, reason: validationError }));
+        return;
+      }
+      setSettingInvalid(key, false);
       updates[key] = settingValueForStorage(key, currentValue);
     }
   }
@@ -811,6 +937,17 @@ async function saveAllSettings() {
   if (Object.keys(updates).length === 0) {
     window.showNotification(t('settings.msg.noChanges'), 'info');
     return;
+  }
+
+  if ('cooldown_min_seconds' in updates || 'cooldown_max_seconds' in updates) {
+    const minSeconds = Number(getSettingControl('cooldown_min_seconds')?.value);
+    const maxSeconds = Number(getSettingControl('cooldown_max_seconds')?.value);
+    if (minSeconds > maxSeconds) {
+      setSettingInvalid('cooldown_min_seconds', true);
+      setSettingInvalid('cooldown_max_seconds', true);
+      showError(t('settings.msg.invalidCooldownBounds'));
+      return;
+    }
   }
 
   if (!confirm(t('settings.msg.confirmSave'))) return;
@@ -834,17 +971,15 @@ async function saveAllSettings() {
   }
 }
 
-async function resetSetting(key) {
-  if (!confirm(t('settings.msg.confirmReset', { key }))) return;
-
-  try {
-    const result = await fetchDataWithAuth(`/admin/settings/${key}/reset`, { method: 'POST' });
-    syncSettingState(key, result?.value ?? '');
-    showSuccess(result?.message || t('settings.msg.resetSuccess', { key }));
-  } catch (err) {
-    console.error('重置异常:', err);
-    showError(t('settings.msg.resetFailed') + ': ' + err.message);
+function resetSetting(key) {
+  const setting = settingDefinitions.get(key);
+  if (!setting) {
+    showError(t('settings.msg.resetUnavailable', { key }));
+    return;
   }
+
+  const control = setSettingControlValue(key, setting.default_value ?? '');
+  if (control?.input) markChanged(control.input);
 }
 
 window.initPageBootstrap({

@@ -1025,11 +1025,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `auto_update_interval_hours` | `12` | 非容器部署的版本检查间隔（小时，0=禁用，启用时最低 1 小时）；容器中不可用 |
 | `auto_update_channel` | `stable` | 非容器部署的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者；容器中不可用 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
-| `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数 |
-| `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数 |
-| `responses_ws_max_sessions` | `256` | 整个进程保留的 Responses WebSocket 执行会话数上限 |
-| `responses_ws_session_ttl_minutes` | `15` | 空闲执行会话保留时长（分钟） |
-| `responses_ws_max_transcript_bytes` | `268435456` | 整个进程保留的 transcript 有效载荷总预算（256 MiB） |
+| `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数；`0` 使用内建默认值 |
+| `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数；`0` 使用内建默认值 |
+| `responses_ws_max_sessions` | `256` | 整个进程保留的 Responses WebSocket 执行会话数上限；`0` 使用内建默认值 |
+| `responses_ws_session_ttl_minutes` | `15` | 空闲执行会话保留时长（分钟）；`0` 使用内建默认值 |
+| `responses_ws_max_transcript_bytes` | `268435456` | 整个进程保留的 transcript 有效载荷总预算（256 MiB）；`0` 使用内建默认值 |
 | `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
 | `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
 

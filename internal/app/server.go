@@ -340,7 +340,8 @@ func NewServer(store storage.Store) *Server {
 	if channelCheckIntervalHours == 0 {
 		log.Print("[INFO] 渠道定时检测未启用（channel_check_interval_hours=0）")
 	} else {
-		s.startScheduledChannelCheckLoop(time.Duration(channelCheckIntervalHours * float64(time.Hour)))
+		interval, _ := settingDurationFromFloat64(channelCheckIntervalHours, time.Hour)
+		s.startScheduledChannelCheckLoop(interval)
 	}
 
 	// 指纹 Job 管理器（内存）
@@ -362,7 +363,7 @@ func loadAntigravityPromptMatcher(configService *ConfigService) *regexp.Regexp {
 		return nil
 	}
 	var words []string
-	if err := json.Unmarshal([]byte(configService.GetString("antigravity_sensitive_words", `["API","proxy","Claude","Anthropic"]`)), &words); err != nil {
+	if err := json.Unmarshal([]byte(configService.GetString("antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON)), &words); err != nil {
 		log.Printf("[WARN] 无效的 antigravity_sensitive_words，已禁用提示词替换: %v", err)
 		return nil
 	}
@@ -395,8 +396,8 @@ func (s *Server) StartModelCatalogSync() {
 		return
 	}
 
-	interval := time.Duration(intervalHours * float64(time.Hour))
-	if interval <= 0 {
+	interval, valid := settingDurationFromFloat64(intervalHours, time.Hour)
+	if !valid || interval <= 0 {
 		log.Printf("[WARN] 无效的模型目录同步间隔: %v 小时", intervalHours)
 		return
 	}
@@ -446,15 +447,25 @@ func loadPositiveInt(cs *ConfigService, key string, defaultValue int) int {
 	return value
 }
 
+// loadPositiveDurationSeconds 读取必须为正数且可安全转换为 time.Duration 的秒数。
+func loadPositiveDurationSeconds(cs *ConfigService, key string, defaultValue int) int {
+	value := loadPositiveInt(cs, key, defaultValue)
+	if _, valid := settingDurationFromInt64(int64(value), time.Second); !valid {
+		log.Printf("[WARN] 无效的 %s=%d（超出可表示的时长），已使用默认值 %d", key, value, defaultValue)
+		return defaultValue
+	}
+	return value
+}
+
 // loadCooldownSettings 从系统设置读取冷却时长（秒），非法值回退默认。
 func loadCooldownSettings(cs *ConfigService) util.CooldownSettings {
 	settings := util.CooldownSettings{
-		AuthSec:      loadPositiveInt(cs, "cooldown_auth_seconds", config.DefaultCooldownAuthSeconds),
-		ServerSec:    loadPositiveInt(cs, "cooldown_server_seconds", config.DefaultCooldownServerSeconds),
-		TimeoutSec:   loadPositiveInt(cs, "cooldown_timeout_seconds", config.DefaultCooldownTimeoutSeconds),
-		RateLimitSec: loadPositiveInt(cs, "cooldown_rate_limit_seconds", config.DefaultCooldownRateLimitSeconds),
-		MaxSec:       loadPositiveInt(cs, "cooldown_max_seconds", config.DefaultCooldownMaxSeconds),
-		MinSec:       loadPositiveInt(cs, "cooldown_min_seconds", config.DefaultCooldownMinSeconds),
+		AuthSec:      loadPositiveDurationSeconds(cs, "cooldown_auth_seconds", config.DefaultCooldownAuthSeconds),
+		ServerSec:    loadPositiveDurationSeconds(cs, "cooldown_server_seconds", config.DefaultCooldownServerSeconds),
+		TimeoutSec:   loadPositiveDurationSeconds(cs, "cooldown_timeout_seconds", config.DefaultCooldownTimeoutSeconds),
+		RateLimitSec: loadPositiveDurationSeconds(cs, "cooldown_rate_limit_seconds", config.DefaultCooldownRateLimitSeconds),
+		MaxSec:       loadPositiveDurationSeconds(cs, "cooldown_max_seconds", config.DefaultCooldownMaxSeconds),
+		MinSec:       loadPositiveDurationSeconds(cs, "cooldown_min_seconds", config.DefaultCooldownMinSeconds),
 	}
 	// 上下限倒挂会让指数退避直接被 max 钳死在下限之下，语义不可用，回退默认对。
 	if settings.MinSec > settings.MaxSec {
@@ -593,15 +604,15 @@ func loadHealthScoreConfig(cs *ConfigService) model.HealthScoreConfig {
 		log.Printf("[WARN] 无效的 success_rate_penalty_weight=%d（必须 >= 0），已使用默认值 %d", successRatePenaltyWeight, defaultHealthCfg.SuccessRatePenaltyWeight)
 		successRatePenaltyWeight = defaultHealthCfg.SuccessRatePenaltyWeight
 	}
-	windowMinutes := cs.GetInt("health_score_window_minutes", 30)
-	if windowMinutes < 1 {
-		log.Printf("[WARN] 无效的 health_score_window_minutes=%d（必须 >= 1），已使用默认值 30", windowMinutes)
-		windowMinutes = 30
+	windowMinutes := cs.GetInt("health_score_window_minutes", defaultHealthCfg.WindowMinutes)
+	if _, valid := settingDurationFromInt64(int64(windowMinutes), time.Minute); windowMinutes < 1 || !valid {
+		log.Printf("[WARN] 无效的 health_score_window_minutes=%d（必须 >= 1），已使用默认值 %d", windowMinutes, defaultHealthCfg.WindowMinutes)
+		windowMinutes = defaultHealthCfg.WindowMinutes
 	}
-	updateInterval := cs.GetInt("health_score_update_interval", 30)
-	if updateInterval < 1 {
-		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 30", updateInterval)
-		updateInterval = 30
+	updateInterval := cs.GetInt("health_score_update_interval", defaultHealthCfg.UpdateIntervalSeconds)
+	if _, valid := settingDurationFromInt64(int64(updateInterval), time.Second); updateInterval < 1 || !valid {
+		log.Printf("[WARN] 无效的 health_score_update_interval=%d（必须 >= 1），已使用默认值 %d", updateInterval, defaultHealthCfg.UpdateIntervalSeconds)
+		updateInterval = defaultHealthCfg.UpdateIntervalSeconds
 	}
 	minConfidentSample := cs.GetInt("health_min_confident_sample", defaultHealthCfg.MinConfidentSample)
 	if minConfidentSample < 1 {

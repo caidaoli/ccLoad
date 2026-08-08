@@ -56,7 +56,7 @@ func NewCooldownPolicy(s CooldownSettings) *CooldownPolicy {
 		minDuration:   MinCooldownDuration,
 	}
 	assign := func(target *time.Duration, seconds int) {
-		if seconds > 0 {
+		if seconds > 0 && int64(seconds) <= int64((1<<63-1)/time.Second) {
 			*target = time.Duration(seconds) * time.Second
 		}
 	}
@@ -78,7 +78,14 @@ func CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, stat
 
 // CalculateBackoffDuration 使用当前策略计算指数退避冷却时间。
 func (p *CooldownPolicy) CalculateBackoffDuration(prevMs int64, until time.Time, now time.Time, statusCode *int) time.Duration {
-	prev := time.Duration(prevMs) * time.Millisecond
+	var prev time.Duration
+	if prevMs <= 0 {
+		prev = 0
+	} else if prevMs > int64((1<<63-1)/time.Millisecond) {
+		prev = p.maxDuration
+	} else {
+		prev = time.Duration(prevMs) * time.Millisecond
+	}
 
 	// 如果没有历史记录，检查until字段
 	if prev <= 0 {
@@ -90,8 +97,12 @@ func (p *CooldownPolicy) CalculateBackoffDuration(prevMs int64, until time.Time,
 		}
 	}
 
-	// 后续错误：指数退避翻倍
-	next := min(max(prev*2, p.minDuration), p.maxDuration)
+	// 后续错误：指数退避翻倍；先按策略上限饱和，避免 Duration 溢出。
+	next := p.maxDuration
+	if prev < p.maxDuration/2 {
+		next = prev * 2
+	}
+	next = min(max(next, p.minDuration), p.maxDuration)
 	return next
 }
 

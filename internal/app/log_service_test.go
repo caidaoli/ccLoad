@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
@@ -25,30 +26,42 @@ type debugCleanupResult struct {
 
 type debugCleanupStore struct {
 	storage.Store
-	mu        sync.Mutex
-	results   []debugCleanupResult
-	limits    []int
-	callTimes []time.Time
-	done      chan struct{}
-	once      sync.Once
+	mu             sync.Mutex
+	results        []debugCleanupResult
+	limits         []int
+	cutoffs        []time.Time
+	callTimes      []time.Time
+	enabledValue   string
+	retentionValue string
+	done           chan struct{}
+	once           sync.Once
 }
 
 func (s *debugCleanupStore) GetSetting(_ context.Context, key string) (*model.SystemSetting, error) {
 	switch key {
 	case "debug_log_enabled":
-		return &model.SystemSetting{Key: key, Value: "true"}, nil
+		value := s.enabledValue
+		if value == "" {
+			value = "true"
+		}
+		return &model.SystemSetting{Key: key, Value: value}, nil
 	case "debug_log_retention_minutes":
-		return &model.SystemSetting{Key: key, Value: "60"}, nil
+		value := s.retentionValue
+		if value == "" {
+			value = "60"
+		}
+		return &model.SystemSetting{Key: key, Value: value}, nil
 	default:
 		return nil, fmt.Errorf("unexpected setting: %s", key)
 	}
 }
 
-func (s *debugCleanupStore) CleanupDebugLogsBatch(_ context.Context, _ time.Time, limit int) (int64, error) {
+func (s *debugCleanupStore) CleanupDebugLogsBatch(_ context.Context, cutoff time.Time, limit int) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.limits = append(s.limits, limit)
+	s.cutoffs = append(s.cutoffs, cutoff)
 	s.callTimes = append(s.callTimes, time.Now())
 	resultIndex := len(s.limits) - 1
 	if len(s.limits) == len(s.results) {
@@ -59,6 +72,41 @@ func (s *debugCleanupStore) CleanupDebugLogsBatch(_ context.Context, _ time.Time
 	}
 	result := s.results[resultIndex]
 	return result.deleted, result.err
+}
+
+func TestStartCleanupLoopAcceptsNumericBoolAndUsesRetentionDefault(t *testing.T) {
+	shutdownCh := make(chan struct{})
+	isShuttingDown := &atomic.Bool{}
+	var wg sync.WaitGroup
+	store := &debugCleanupStore{
+		results:        []debugCleanupResult{{deleted: 0}},
+		enabledValue:   "1",
+		retentionValue: "0",
+		done:           make(chan struct{}),
+	}
+	svc := NewLogService(store, 10, 0, 3, shutdownCh, isShuttingDown, &wg)
+	t.Cleanup(func() {
+		close(shutdownCh)
+		wg.Wait()
+	})
+
+	svc.StartCleanupLoop()
+	select {
+	case <-store.done:
+	case <-time.After(time.Second):
+		t.Fatal("debug log cleanup did not run")
+	}
+
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.cutoffs) != 1 {
+		t.Fatalf("cutoffs=%d, want 1", len(store.cutoffs))
+	}
+	retention := time.Since(store.cutoffs[0])
+	want := time.Duration(config.DefaultDebugLogRetentionMinutes) * time.Minute
+	if retention < want-5*time.Second || retention > want+5*time.Second {
+		t.Fatalf("retention=%v, want about %v", retention, want)
+	}
 }
 
 type blockingDebugTruncateStore struct {

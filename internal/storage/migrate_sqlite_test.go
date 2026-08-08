@@ -7,12 +7,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
-	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
 	sqlstore "ccLoad/internal/storage/sql"
@@ -1560,10 +1558,10 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 	}
 
 	for _, key := range expectedKeys {
-		var val string
+		var val, defaultValue string
 		err := db.QueryRowContext(ctx,
-			"SELECT value FROM system_settings WHERE key=?", key,
-		).Scan(&val)
+			"SELECT value, default_value FROM system_settings WHERE key=?", key,
+		).Scan(&val, &defaultValue)
 		if err != nil {
 			t.Errorf("setting %q not found: %v", key, err)
 		}
@@ -1582,20 +1580,8 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "upstream_connection_reuse_limit_seconds" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
-		if key == "responses_ws_max_sessions" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxSessions) {
-			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxSessions)
-		}
-		if key == "responses_ws_max_connections" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxConnections) {
-			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxConnections)
-		}
-		if key == "responses_ws_max_connections_per_token" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxConnectionsPerToken) {
-			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxConnectionsPerToken)
-		}
-		if key == "responses_ws_session_ttl_minutes" && val != strconv.Itoa(config.DefaultResponsesWebsocketSessionTTLMinutes) {
-			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketSessionTTLMinutes)
-		}
-		if key == "responses_ws_max_transcript_bytes" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxTranscriptBytes) {
-			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxTranscriptBytes)
+		if strings.HasPrefix(key, "responses_ws_") && (val != "0" || defaultValue != "0") {
+			t.Errorf("setting %q initial/default value = %q/%q, want 0/0", key, val, defaultValue)
 		}
 		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
@@ -1625,7 +1611,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 	}
 }
 
-func TestInitDefaultSettings_PreservesExistingResponsesSessionTTL(t *testing.T) {
+func TestInitDefaultSettings_PreservesExistingResponsesSessionTTLValue(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	if err := migrate(ctx, db, DialectSQLite); err != nil {
@@ -1643,16 +1629,19 @@ func TestInitDefaultSettings_PreservesExistingResponsesSessionTTL(t *testing.T) 
 		t.Fatalf("migrate old default: %v", err)
 	}
 
-	var value, defaultValue string
+	var value, defaultValue, valueType, description string
 	if err := db.QueryRowContext(ctx, `
-		SELECT value, default_value
+		SELECT value, default_value, value_type, description
 		FROM system_settings
 		WHERE key = 'responses_ws_session_ttl_minutes'
-	`).Scan(&value, &defaultValue); err != nil {
+	`).Scan(&value, &defaultValue, &valueType, &description); err != nil {
 		t.Fatalf("query migrated TTL: %v", err)
 	}
-	if value != "60" || defaultValue != "15" {
-		t.Fatalf("existing TTL value/default=%q/%q, want 60/15", value, defaultValue)
+	if value != "60" || defaultValue != "0" {
+		t.Fatalf("existing TTL value/default=%q/%q, want 60/0", value, defaultValue)
+	}
+	if valueType != "int" || description == "" || description == "old default" {
+		t.Fatalf("existing TTL metadata type/description=%q/%q was not refreshed", valueType, description)
 	}
 
 	if _, err := db.ExecContext(ctx, `
@@ -1666,18 +1655,18 @@ func TestInitDefaultSettings_PreservesExistingResponsesSessionTTL(t *testing.T) 
 		t.Fatalf("refresh custom TTL metadata: %v", err)
 	}
 	if err := db.QueryRowContext(ctx, `
-		SELECT value, default_value
+		SELECT value, default_value, value_type, description
 		FROM system_settings
 		WHERE key = 'responses_ws_session_ttl_minutes'
-	`).Scan(&value, &defaultValue); err != nil {
+	`).Scan(&value, &defaultValue, &valueType, &description); err != nil {
 		t.Fatalf("query custom TTL: %v", err)
 	}
-	if value != "10" || defaultValue != "15" {
-		t.Fatalf("custom TTL value/default=%q/%q, want 10/15", value, defaultValue)
+	if value != "10" || defaultValue != "0" {
+		t.Fatalf("custom TTL value/default=%q/%q, want 10/0", value, defaultValue)
 	}
 }
 
-func TestInitDefaultSettings_PreservesExistingResponsesWebsocketLimits(t *testing.T) {
+func TestInitDefaultSettings_PreservesExistingResponsesWebsocketValues(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
 	if err := migrate(ctx, db, DialectSQLite); err != nil {
@@ -1693,7 +1682,7 @@ func TestInitDefaultSettings_PreservesExistingResponsesWebsocketLimits(t *testin
 	for key, value := range oldDefaults {
 		if _, err := db.ExecContext(ctx, `
 			UPDATE system_settings
-			SET value = ?, default_value = ?
+			SET value = ?, default_value = ?, value_type = 'string', description = 'legacy'
 			WHERE key = ?
 		`, value, value, key); err != nil {
 			t.Fatalf("restore old default %s: %v", key, err)
@@ -1704,16 +1693,19 @@ func TestInitDefaultSettings_PreservesExistingResponsesWebsocketLimits(t *testin
 		t.Fatalf("reinitialize defaults: %v", err)
 	}
 	for key, want := range oldDefaults {
-		var value, defaultValue string
+		var value, defaultValue, valueType, description string
 		if err := db.QueryRowContext(ctx, `
-			SELECT value, default_value
+			SELECT value, default_value, value_type, description
 			FROM system_settings
 			WHERE key = ?
-		`, key).Scan(&value, &defaultValue); err != nil {
+		`, key).Scan(&value, &defaultValue, &valueType, &description); err != nil {
 			t.Fatalf("query preserved setting %s: %v", key, err)
 		}
-		if value != want || defaultValue != want {
-			t.Errorf("existing setting %s value/default=%q/%q, want %q/%q", key, value, defaultValue, want, want)
+		if value != want || defaultValue != "0" {
+			t.Errorf("existing setting %s value/default=%q/%q, want %q/0", key, value, defaultValue, want)
+		}
+		if valueType != "int" || description == "" || description == "legacy" {
+			t.Errorf("existing setting %s metadata type/description=%q/%q was not refreshed", key, valueType, description)
 		}
 	}
 }

@@ -29,4 +29,5 @@ func TestNewCooldownPolicyUsesOverridesAndDefaults(t *testing.T) {
 	assertDuration("rate limit default", policy.CalculateBackoffDuration(0, time.Time{}, now, &rateLimit), RateLimitErrorCooldown)
 	assertDuration("minimum", policy.CalculateBackoffDuration(1000, time.Time{}, now, &server), 11*time.Second)
 	assertDuration("maximum", policy.CalculateBackoffDuration(int64(20*time.Minute/time.Millisecond), time.Time{}, now, &server), 30*time.Minute)
+	assertDuration("overflow saturates", policy.CalculateBackoffDuration(1<<62, time.Time{}, now, &server), 30*time.Minute)
 }
