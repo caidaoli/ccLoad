@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
@@ -108,7 +109,7 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 		header[0] = strings.TrimPrefix(header[0], "\ufeff")
 	}
 
-	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
+	expectedHeaders := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential"}
 	if len(header) != len(expectedHeaders) {
 		t.Errorf("Header字段数量不匹配: 期望 %d, 实际: %d\nHeader: %v", len(expectedHeaders), len(header), header)
 	}
@@ -124,6 +125,195 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	}
 	if len(records[1]) >= 16 && records[1][15] != "true" {
 		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][15])
+	}
+}
+
+func TestAdminAPI_CSVExportImportOAuthChannelWithFilters(t *testing.T) {
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+	const desiredCredential = `{"type":"codex","access_token":"wanted-access","refresh_token":"wanted-refresh","expired":"2030-01-01T00:00:00Z"}`
+
+	testChannels := []*model.Config{
+		{
+			Name: "Needle Codex", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: desiredCredential,
+			URLs: model.ChannelURLs{{URL: "https://codex.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
+		},
+		{
+			Name: "Needle Disabled", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: desiredCredential,
+			URLs: model.ChannelURLs{{URL: "https://disabled.example.com"}}, Enabled: false,
+			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
+		},
+		{
+			Name: "Needle Other Model", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: desiredCredential,
+			URLs: model.ChannelURLs{{URL: "https://model.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "other-model"}},
+		},
+		{
+			Name: "Other Codex", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: desiredCredential,
+			URLs: model.ChannelURLs{{URL: "https://name.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
+		},
+		{
+			Name: "Needle xAI", AuthType: model.AuthTypeXAIOAuth,
+			OAuthCredential: `{"type":"xai","auth_kind":"oauth","access_token":"xai-access","refresh_token":"xai-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			URLs:            model.ChannelURLs{{URL: "https://xai.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
+		},
+	}
+	var desiredID int64
+	for _, cfg := range testChannels {
+		created, err := server.store.CreateConfig(ctx, cfg)
+		if err != nil {
+			t.Fatalf("CreateConfig(%s): %v", cfg.Name, err)
+		}
+		if cfg.Name == "Needle Codex" {
+			desiredID = created.ID
+		}
+	}
+
+	exportRequest := newRequest(http.MethodGet, "/admin/channels/export?search=needle&status=enabled&auth_type=codex_oauth&model=grok-4.5", nil)
+	exportC, exportW := newTestContext(t, exportRequest)
+	server.HandleExportChannelsCSV(exportC)
+	if exportW.Code != http.StatusOK {
+		t.Fatalf("export status=%d", exportW.Code)
+	}
+	records, err := csv.NewReader(bytes.NewReader(exportW.Body.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse exported CSV: %v", err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("exported row count=%d, want header plus one matching channel", len(records))
+	}
+	headerIndex := buildCSVColumnIndex(records[0])
+	for _, column := range []string{"auth_type", "oauth_credential", "api_key"} {
+		if _, exists := headerIndex[column]; !exists {
+			t.Fatalf("exported CSV is missing %s", column)
+		}
+	}
+	row := records[1]
+	if row[headerIndex["name"]] != "Needle Codex" || row[headerIndex["auth_type"]] != model.AuthTypeCodexOAuth {
+		t.Fatal("exported CSV did not contain the matching Codex OAuth channel")
+	}
+	if row[headerIndex["api_key"]] != "" || row[headerIndex["oauth_credential"]] == "" {
+		t.Fatal("exported OAuth credential columns are inconsistent")
+	}
+
+	if err := server.store.DeleteConfig(ctx, desiredID); err != nil {
+		t.Fatalf("delete exported channel: %v", err)
+	}
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "oauth-roundtrip.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(exportW.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	importRequest := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	importRequest.Header.Set("Content-Type", writer.FormDataContentType())
+	importC, importW := newTestContext(t, importRequest)
+	server.HandleImportChannelsCSV(importC)
+	if importW.Code != http.StatusOK {
+		t.Fatalf("import status=%d", importW.Code)
+	}
+
+	restored, err := server.store.GetConfig(ctx, desiredID)
+	if err != nil {
+		t.Fatalf("get restored OAuth channel: %v", err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(restored.OAuthCredential))
+	if err != nil {
+		t.Fatal("restored OAuth credential is invalid")
+	}
+	if restored.GetAuthType() != model.AuthTypeCodexOAuth || credential.AccessToken != "wanted-access" {
+		t.Fatal("restored OAuth channel lost its authentication state")
+	}
+	keys, err := server.store.GetAPIKeys(ctx, restored.ID)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("restored OAuth channel API key count=%d err=%v", len(keys), err)
+	}
+}
+
+func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
+	source := newInMemoryServer(t)
+	ctx := context.Background()
+	testChannels := []*model.Config{
+		{
+			Name: "Codex OAuth", AuthType: model.AuthTypeCodexOAuth,
+			OAuthCredential: `{"type":"codex","access_token":"codex-access","refresh_token":"codex-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			URLs:            model.ChannelURLs{{URL: "https://codex.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "gpt-5.4"}},
+		},
+		{
+			Name: "Antigravity OAuth", AuthType: model.AuthTypeAntigravityOAuth,
+			OAuthCredential: `{"type":"antigravity","access_token":"gravity-access","refresh_token":"gravity-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			URLs:            model.ChannelURLs{{URL: "https://gravity.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "gemini-3-pro"}},
+		},
+		{
+			Name: "xAI OAuth", AuthType: model.AuthTypeXAIOAuth,
+			OAuthCredential: `{"type":"xai","auth_kind":"oauth","access_token":"xai-access","refresh_token":"xai-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			URLs:            model.ChannelURLs{{URL: "https://xai.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
+		},
+	}
+	for _, cfg := range testChannels {
+		if _, err := source.store.CreateConfig(ctx, cfg); err != nil {
+			t.Fatalf("CreateConfig(%s): %v", cfg.Name, err)
+		}
+	}
+
+	exportC, exportW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export", nil))
+	source.HandleExportChannelsCSV(exportC)
+	if exportW.Code != http.StatusOK {
+		t.Fatalf("export status=%d", exportW.Code)
+	}
+
+	target := newInMemoryServer(t)
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "oauth-channels.csv")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(exportW.Body.Bytes()); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := newRequest(http.MethodPost, "/admin/channels/import", bytes.NewReader(body.Bytes()))
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	importC, importW := newTestContext(t, request)
+	target.HandleImportChannelsCSV(importC)
+	if importW.Code != http.StatusOK {
+		t.Fatalf("import status=%d", importW.Code)
+	}
+
+	configs, err := target.store.ListConfigs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != len(testChannels) {
+		t.Fatalf("restored channel count=%d, want %d", len(configs), len(testChannels))
+	}
+	wantAuthType := make(map[string]string, len(testChannels))
+	for _, cfg := range testChannels {
+		wantAuthType[cfg.Name] = cfg.GetAuthType()
+	}
+	for _, cfg := range configs {
+		if cfg.GetAuthType() != wantAuthType[cfg.Name] || cfg.OAuthCredential == "" {
+			t.Fatalf("restored channel %q lost its OAuth authentication type", cfg.Name)
+		}
+		keys, err := target.store.GetAPIKeys(ctx, cfg.ID)
+		if err != nil || len(keys) != 0 {
+			t.Fatalf("restored OAuth channel %q API key count=%d err=%v", cfg.Name, len(keys), err)
+		}
 	}
 }
 

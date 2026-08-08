@@ -78,6 +78,15 @@
                 </button>
                 <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
               </div>
+              <div id="csvImportProgress" class="csv-import-progress" hidden>
+                <div class="csv-import-progress-header">
+                  <strong id="csvImportProgressLabel" data-i18n="channels.import.progressTitle">CSV 导入进度</strong>
+                  <span id="csvImportProgressDetail" role="status" aria-live="polite"></span>
+                </div>
+                <progress id="csvImportProgressBar" max="1" value="0"
+                  aria-labelledby="csvImportProgressLabel"
+                  aria-describedby="csvImportProgressDetail"></progress>
+              </div>
               <p id="codexAuthStatus" class="channel-codex-auth-status" role="status" aria-live="polite" hidden></p>
             </div>
           </div>
