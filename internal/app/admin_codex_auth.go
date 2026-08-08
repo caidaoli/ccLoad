@@ -746,30 +746,6 @@ func (s *Server) HandleSubmitCodexOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-func createImportedCodexChannel(ctx context.Context, store storage.Store, credential *codexauth.Credential, priority int) (string, bool, error) {
-	credentialJSON, err := credential.JSON()
-	if err != nil {
-		return "", false, err
-	}
-	configs, err := store.ListConfigs(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("list channels for Codex credential: %w", err)
-	}
-	name := codexChannelBaseName(credential)
-	for _, cfg := range configs {
-		if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Name), name) {
-			return cfg.Name, false, nil
-		}
-	}
-	config := newCodexOAuthChannel(name, credentialJSON, credential.PlanType)
-	config.Priority = priority
-	created, err := store.CreateConfig(ctx, config)
-	if err != nil {
-		return "", false, fmt.Errorf("create Codex channel: %w", err)
-	}
-	return created.Name, true, nil
-}
-
 // HandleImportCodexCredential imports CLIProxy-compatible JSON credentials
 // directly into new channels. Existing channel names are skipped unchanged.
 func (s *Server) HandleImportCodexCredential(c *gin.Context) {

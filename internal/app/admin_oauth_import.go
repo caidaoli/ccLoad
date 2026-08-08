@@ -9,10 +9,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/model"
 
 	"github.com/gin-gonic/gin"
 )
@@ -20,6 +22,9 @@ import (
 const (
 	oauthCredentialProviderAuto       = "auto"
 	oauthCredentialUnknownTypeMessage = "credential type could not be determined"
+	oauthCredentialImportWorkers      = 8
+	codexCredentialProbeAttempts      = 3
+	codexCredentialProbeRetryDelay    = 200 * time.Millisecond
 )
 
 var errOAuthCredentialUnusable = errors.New("OAuth credential could not obtain a usable access token")
@@ -45,8 +50,17 @@ type oauthCredentialImportBatch struct {
 	NextPriorityByProvider map[string]int
 }
 
+type preparedOAuthCredentialImport struct {
+	Index       int
+	Provider    string
+	ChannelName string
+	Config      *model.Config
+	Result      oauthCredentialImportResult
+}
+
 type oauthCredentialImportEvent struct {
 	Event     string                       `json:"event"`
+	JobID     string                       `json:"job_id,omitempty"`
 	Processed int                          `json:"processed"`
 	Total     int                          `json:"total"`
 	Created   int                          `json:"created"`
@@ -175,43 +189,9 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		RespondError(c, status, err)
 		return
 	}
-	summary, _ := s.runOAuthCredentialImport(c, batch, nil)
+	defer wipeOAuthCredentialImportBatch(batch)
+	summary, _ := s.runOAuthCredentialImport(c.Request.Context(), batch, nil)
 	RespondJSON(c, http.StatusOK, summary)
-}
-
-// HandleImportOAuthCredentialsStream imports OAuth credentials while emitting
-// one server-sent event before and after each sorted credential.
-func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
-	batch, status, err := s.prepareOAuthCredentialImport(c, "")
-	if err != nil {
-		RespondError(c, status, err)
-		return
-	}
-
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("X-Accel-Buffering", "no")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Status(http.StatusOK)
-	start := oauthCredentialImportEvent{Event: "start", Total: len(batch.Files)}
-	if writeOAuthCredentialImportEvent(c, start) != nil {
-		return
-	}
-	observer := func(event oauthCredentialImportEvent) bool {
-		return writeOAuthCredentialImportEvent(c, event) == nil
-	}
-	summary, completed := s.runOAuthCredentialImport(c, batch, observer)
-	if !completed {
-		return
-	}
-	_ = writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{
-		Event:     "complete",
-		Processed: len(summary.Results),
-		Total:     len(batch.Files),
-		Created:   summary.Created,
-		Skipped:   summary.Skipped,
-		Failed:    summary.Failed,
-	})
 }
 
 func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider string) (*oauthCredentialImportBatch, int, error) {
@@ -273,17 +253,284 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 }
 
 func (s *Server) runOAuthCredentialImport(
-	c *gin.Context,
+	ctx context.Context,
 	batch *oauthCredentialImportBatch,
 	observer oauthCredentialImportObserver,
 ) (oauthCredentialImportSummary, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.oauthCredentialImportRunMu.Lock()
+	defer s.oauthCredentialImportRunMu.Unlock()
+
 	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(batch.Files))}
-	completed := true
-	for _, file := range batch.Files {
-		if c.Request.Context().Err() != nil {
-			completed = false
-			break
+	if len(batch.Files) == 0 {
+		return summary, true
+	}
+
+	configs, err := s.store.ListConfigs(ctx)
+	if err != nil {
+		if ctx.Err() != nil {
+			return summary, false
 		}
+		completed := s.failOAuthCredentialImportBatch(
+			batch,
+			observer,
+			&summary,
+			fmt.Errorf("list channels for OAuth credential import: %w", err),
+		)
+		return summary, completed
+	}
+	initialNames := oauthCredentialChannelNames(configs)
+	committedNames := make(map[string]string, len(initialNames)+len(batch.Files))
+	for normalized, name := range initialNames {
+		committedNames[normalized] = name
+	}
+
+	workerCtx, cancelWorkers := context.WithCancel(ctx)
+	defer cancelWorkers()
+	workerCount := min(oauthCredentialImportWorkers, len(batch.Files))
+	jobs := make(chan int, len(batch.Files))
+	prepared := make(chan preparedOAuthCredentialImport, workerCount)
+	for index := range batch.Files {
+		jobs <- index
+	}
+	close(jobs)
+
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for index := range jobs {
+				if workerCtx.Err() != nil {
+					return
+				}
+				result := s.prepareOAuthCredentialImportFile(
+					workerCtx,
+					batch,
+					index,
+					initialNames,
+				)
+				select {
+				case prepared <- result:
+				case <-workerCtx.Done():
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		workers.Wait()
+		close(prepared)
+	}()
+
+	next := 0
+	pending := make(map[int]preparedOAuthCredentialImport, workerCount)
+	stopped := false
+	for item := range prepared {
+		if stopped {
+			continue
+		}
+		if ctx.Err() != nil {
+			stopped = true
+			cancelWorkers()
+			continue
+		}
+		pending[item.Index] = item
+		for {
+			current, ready := pending[next]
+			if !ready {
+				break
+			}
+			delete(pending, next)
+			if observer != nil && !observer(oauthCredentialImportEvent{
+				Event:     "processing",
+				Processed: len(summary.Results),
+				Total:     len(batch.Files),
+				Created:   summary.Created,
+				Skipped:   summary.Skipped,
+				Failed:    summary.Failed,
+				FileName:  current.Result.FileName,
+			}) {
+				stopped = true
+				cancelWorkers()
+				break
+			}
+
+			result := s.commitPreparedOAuthCredentialImport(ctx, batch, current, committedNames)
+			appendOAuthCredentialImportResult(&summary, result)
+			next++
+			if observer != nil {
+				resultCopy := result
+				if !observer(oauthCredentialImportEvent{
+					Event:     "progress",
+					Processed: len(summary.Results),
+					Total:     len(batch.Files),
+					Created:   summary.Created,
+					Skipped:   summary.Skipped,
+					Failed:    summary.Failed,
+					FileName:  result.FileName,
+					Result:    &resultCopy,
+				}) {
+					stopped = true
+					cancelWorkers()
+					break
+				}
+			}
+		}
+	}
+	if summary.Created > 0 {
+		s.InvalidateChannelListCache()
+	}
+	return summary, !stopped && next == len(batch.Files)
+}
+
+func (s *Server) prepareOAuthCredentialImportFile(
+	ctx context.Context,
+	batch *oauthCredentialImportBatch,
+	index int,
+	existingNames map[string]string,
+) preparedOAuthCredentialImport {
+	file := batch.Files[index]
+	result := oauthCredentialImportResult{FileName: file.FileName}
+	prepared := preparedOAuthCredentialImport{Index: index, Result: result}
+	if file.Err != nil {
+		prepared.Result.Status, prepared.Result.Error = "failed", file.Err.Error()
+		return prepared
+	}
+
+	credentialProvider := batch.Provider
+	if credentialProvider == oauthCredentialProviderAuto {
+		detectedProvider, err := detectOAuthCredentialProvider(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if detectedProvider == "" {
+			prepared.Result.Status, prepared.Result.Error = "skipped", oauthCredentialUnknownTypeMessage
+			return prepared
+		}
+		credentialProvider = detectedProvider
+	}
+	prepared.Provider = credentialProvider
+
+	switch credentialProvider {
+	case codexauth.ChannelType:
+		credential, err := codexauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(codexChannelBaseName(credential))]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+			return prepared
+		}
+		credential, err = s.completeImportedCodexCredential(ctx, credential)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = codexChannelBaseName(credential)
+		prepared.Config = newCodexOAuthChannel(prepared.ChannelName, credentialJSON, credential.PlanType)
+	case antigravityauth.ChannelType:
+		credential, err := antigravityauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(antigravityChannelBaseName(credential))]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+			return prepared
+		}
+		if s.antigravityService == nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", "antigravity credential completion is unavailable"
+			return prepared
+		}
+		credential, err = s.antigravityService.CompleteCredential(ctx, credential)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = antigravityChannelBaseName(credential)
+		prepared.Config = newAntigravityOAuthChannel(prepared.ChannelName, credentialJSON)
+	default:
+		prepared.Result.Status = "failed"
+		prepared.Result.Error = fmt.Sprintf("unsupported credential provider %q", credentialProvider)
+	}
+	return prepared
+}
+
+func (s *Server) commitPreparedOAuthCredentialImport(
+	ctx context.Context,
+	batch *oauthCredentialImportBatch,
+	prepared preparedOAuthCredentialImport,
+	committedNames map[string]string,
+) oauthCredentialImportResult {
+	if prepared.Result.Status != "" {
+		return prepared.Result
+	}
+	normalizedName := normalizeOAuthCredentialChannelName(prepared.ChannelName)
+	if existingName, exists := committedNames[normalizedName]; exists {
+		prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+		return prepared.Result
+	}
+	prepared.Config.Priority = batch.NextPriorityByProvider[prepared.Provider]
+	created, err := s.store.CreateConfig(ctx, prepared.Config)
+	if err != nil {
+		prepared.Result.Status = "failed"
+		prepared.Result.Error = fmt.Sprintf("create %s channel: %v", oauthCredentialProviderLabel(prepared.Provider), err)
+		return prepared.Result
+	}
+	prepared.Result.Status, prepared.Result.ChannelName = "created", created.Name
+	committedNames[normalizedName] = created.Name
+	batch.NextPriorityByProvider[prepared.Provider] += batch.PriorityIncrement
+	return prepared.Result
+}
+
+func oauthCredentialProviderLabel(provider string) string {
+	if provider == codexauth.ChannelType {
+		return "Codex"
+	}
+	if provider == antigravityauth.ChannelType {
+		return "Antigravity"
+	}
+	return provider
+}
+
+func oauthCredentialChannelNames(configs []*model.Config) map[string]string {
+	names := make(map[string]string, len(configs))
+	for _, cfg := range configs {
+		if cfg == nil {
+			continue
+		}
+		name := strings.TrimSpace(cfg.Name)
+		names[normalizeOAuthCredentialChannelName(name)] = name
+	}
+	return names
+}
+
+func normalizeOAuthCredentialChannelName(name string) string {
+	return strings.ToLower(strings.TrimSpace(name))
+}
+
+func (s *Server) failOAuthCredentialImportBatch(
+	batch *oauthCredentialImportBatch,
+	observer oauthCredentialImportObserver,
+	summary *oauthCredentialImportSummary,
+	err error,
+) bool {
+	for _, file := range batch.Files {
 		if observer != nil && !observer(oauthCredentialImportEvent{
 			Event:     "processing",
 			Processed: len(summary.Results),
@@ -293,12 +540,10 @@ func (s *Server) runOAuthCredentialImport(
 			Failed:    summary.Failed,
 			FileName:  file.FileName,
 		}) {
-			completed = false
-			break
+			return false
 		}
-
-		result := s.runOAuthCredentialImportFile(c, batch, file)
-		appendOAuthCredentialImportResult(&summary, result)
+		result := oauthCredentialImportResult{FileName: file.FileName, Status: "failed", Error: err.Error()}
+		appendOAuthCredentialImportResult(summary, result)
 		if observer != nil {
 			resultCopy := result
 			if !observer(oauthCredentialImportEvent{
@@ -311,60 +556,11 @@ func (s *Server) runOAuthCredentialImport(
 				FileName:  file.FileName,
 				Result:    &resultCopy,
 			}) {
-				completed = false
-				break
+				return false
 			}
 		}
 	}
-	if summary.Created > 0 {
-		s.InvalidateChannelListCache()
-	}
-	return summary, completed
-}
-
-func (s *Server) runOAuthCredentialImportFile(
-	c *gin.Context,
-	batch *oauthCredentialImportBatch,
-	file oauthCredentialImportFile,
-) oauthCredentialImportResult {
-	result := oauthCredentialImportResult{FileName: file.FileName}
-	if file.Err != nil {
-		result.Status, result.Error = "failed", file.Err.Error()
-		return result
-	}
-
-	credentialProvider := batch.Provider
-	if credentialProvider == oauthCredentialProviderAuto {
-		detectedProvider, err := detectOAuthCredentialProvider(file.Raw)
-		if err != nil {
-			result.Status, result.Error = "failed", err.Error()
-			return result
-		}
-		if detectedProvider == "" {
-			result.Status, result.Error = "skipped", oauthCredentialUnknownTypeMessage
-			return result
-		}
-		credentialProvider = detectedProvider
-	}
-
-	channelName, created, err := s.importOAuthCredential(
-		c,
-		credentialProvider,
-		file.Raw,
-		batch.NextPriorityByProvider[credentialProvider],
-	)
-	switch {
-	case errors.Is(err, errOAuthCredentialUnusable), errors.Is(err, antigravityauth.ErrCredentialUnusable):
-		result.Status, result.Error = "skipped", err.Error()
-	case err != nil:
-		result.Status, result.Error = "failed", err.Error()
-	case created:
-		result.Status, result.ChannelName = "created", channelName
-		batch.NextPriorityByProvider[credentialProvider] += batch.PriorityIncrement
-	default:
-		result.Status, result.ChannelName = "skipped", channelName
-	}
-	return result
+	return true
 }
 
 func appendOAuthCredentialImportResult(summary *oauthCredentialImportSummary, result oauthCredentialImportResult) {
@@ -389,61 +585,6 @@ func writeOAuthCredentialImportEvent(c *gin.Context, event oauthCredentialImport
 	}
 	c.Writer.Flush()
 	return nil
-}
-
-func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []byte, priority int) (string, bool, error) {
-	switch provider {
-	case codexauth.ChannelType:
-		credential, err := codexauth.ParseCredential(raw)
-		if err != nil {
-			return "", false, err
-		}
-		if existingName, exists, err := s.findExistingOAuthChannelName(c.Request.Context(), codexChannelBaseName(credential)); err != nil {
-			return "", false, fmt.Errorf("list channels for Codex credential: %w", err)
-		} else if exists {
-			return existingName, false, nil
-		}
-		credential, err = s.completeImportedCodexCredential(c.Request.Context(), credential)
-		if err != nil {
-			return "", false, err
-		}
-		return createImportedCodexChannel(c.Request.Context(), s.store, credential, priority)
-	case antigravityauth.ChannelType:
-		credential, err := antigravityauth.ParseCredential(raw)
-		if err != nil {
-			return "", false, err
-		}
-		if existingName, exists, findErr := s.findExistingOAuthChannelName(c.Request.Context(), antigravityChannelBaseName(credential)); findErr != nil {
-			return "", false, fmt.Errorf("list channels for Antigravity credential: %w", findErr)
-		} else if exists {
-			return existingName, false, nil
-		}
-		if s.antigravityService == nil {
-			return "", false, errors.New("antigravity credential completion is unavailable")
-		}
-		credential, err = s.antigravityService.CompleteCredential(c.Request.Context(), credential)
-		if err != nil {
-			return "", false, err
-		}
-		return createImportedAntigravityChannel(c.Request.Context(), s.store, credential, priority)
-	default:
-		return "", false, fmt.Errorf("unsupported credential provider %q", provider)
-	}
-}
-
-// findExistingOAuthChannelName is a cheap preflight before remote credential
-// validation. Channel creation repeats the check to close the concurrent-create race.
-func (s *Server) findExistingOAuthChannelName(ctx context.Context, name string) (string, bool, error) {
-	configs, err := s.store.ListConfigs(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	for _, cfg := range configs {
-		if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Name), name) {
-			return cfg.Name, true, nil
-		}
-	}
-	return "", false, nil
 }
 
 func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
@@ -474,14 +615,17 @@ func (s *Server) completeImportedCodexCredential(ctx context.Context, credential
 
 	refreshed, err := service.Refresh(ctx, credential.RefreshToken)
 	if err != nil {
-		return nil, fmt.Errorf("%w: Codex refresh failed", errOAuthCredentialUnusable)
+		return nil, fmt.Errorf("%w: Codex refresh failed: %v", errOAuthCredentialUnusable, err)
 	}
 	merged, err := credential.MergeRefresh(refreshed)
 	if err != nil {
-		return nil, fmt.Errorf("%w: Codex refresh response was invalid", errOAuthCredentialUnusable)
+		return nil, fmt.Errorf("%w: Codex refresh response was invalid: %v", errOAuthCredentialUnusable, err)
 	}
 	accepted, probeErr := probeCodexAccessToken(ctx, service.Client, merged)
-	if probeErr != nil || !accepted {
+	if probeErr != nil {
+		return nil, fmt.Errorf("%w: refreshed Codex access token validation failed: %v", errOAuthCredentialUnusable, probeErr)
+	}
+	if !accepted {
 		return nil, fmt.Errorf("%w: refreshed Codex access token was not accepted", errOAuthCredentialUnusable)
 	}
 	return merged, nil
@@ -496,17 +640,40 @@ func probeCodexAccessToken(ctx context.Context, client *http.Client, credential 
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, oauthUsageTimeout)
 	defer cancel()
-	req, err := newCodexUsageRequest(probeCtx, credential)
-	if err != nil {
-		return false, errors.New("build Codex credential validation request")
+	for attempt := 0; attempt < codexCredentialProbeAttempts; attempt++ {
+		req, err := newCodexUsageRequest(probeCtx, credential)
+		if err != nil {
+			return false, errors.New("build Codex credential validation request")
+		}
+		_, err = executeOAuthUsageRequest(client, req, "Codex")
+		if err == nil {
+			return true, nil
+		}
+		var statusErr *oauthUsageHTTPStatusError
+		if errors.As(err, &statusErr) && (statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden) {
+			return false, nil
+		}
+		if attempt+1 == codexCredentialProbeAttempts || !isTransientOAuthUsageError(err) {
+			return false, fmt.Errorf("validate Codex access token: %w", err)
+		}
+		delay := time.Duration(attempt+1) * codexCredentialProbeRetryDelay
+		timer := time.NewTimer(delay)
+		select {
+		case <-probeCtx.Done():
+			timer.Stop()
+			return false, fmt.Errorf("validate Codex access token: %w", probeCtx.Err())
+		case <-timer.C:
+		}
 	}
-	_, err = executeOAuthUsageRequest(client, req, "Codex")
-	if err == nil {
-		return true, nil
+	return false, errors.New("validate Codex access token: retry budget exhausted")
+}
+
+func isTransientOAuthUsageError(err error) bool {
+	var requestErr *oauthUsageRequestError
+	if errors.As(err, &requestErr) {
+		return true
 	}
 	var statusErr *oauthUsageHTTPStatusError
-	if errors.As(err, &statusErr) && (statusErr.statusCode == http.StatusUnauthorized || statusErr.statusCode == http.StatusForbidden) {
-		return false, nil
-	}
-	return false, fmt.Errorf("validate Codex access token: %w", err)
+	return errors.As(err, &statusErr) &&
+		(statusErr.statusCode == http.StatusTooManyRequests || statusErr.statusCode >= http.StatusInternalServerError)
 }

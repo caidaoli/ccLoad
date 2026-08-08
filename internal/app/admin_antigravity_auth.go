@@ -200,30 +200,6 @@ func (s *Server) HandleSubmitAntigravityOAuthCallback(c *gin.Context) {
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
 }
 
-func createImportedAntigravityChannel(ctx context.Context, store storage.Store, credential *antigravityauth.Credential, priority int) (string, bool, error) {
-	credentialJSON, err := credential.JSON()
-	if err != nil {
-		return "", false, err
-	}
-	configs, err := store.ListConfigs(ctx)
-	if err != nil {
-		return "", false, fmt.Errorf("list channels for Antigravity credential: %w", err)
-	}
-	name := antigravityChannelBaseName(credential)
-	for _, cfg := range configs {
-		if cfg != nil && strings.EqualFold(strings.TrimSpace(cfg.Name), name) {
-			return cfg.Name, false, nil
-		}
-	}
-	config := newAntigravityOAuthChannel(name, credentialJSON)
-	config.Priority = priority
-	created, err := store.CreateConfig(ctx, config)
-	if err != nil {
-		return "", false, fmt.Errorf("create Antigravity channel: %w", err)
-	}
-	return created.Name, true, nil
-}
-
 // HandleImportAntigravityCredential imports CLIProxyAPI-compatible credential files.
 func (s *Server) HandleImportAntigravityCredential(c *gin.Context) {
 	s.handleImportOAuthCredentials(c, antigravityauth.ChannelType)
