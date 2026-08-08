@@ -232,7 +232,11 @@ func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
 			minutes = defaultResponsesExecutionSessionTTL
 		}
 	}
-	return time.Duration(minutes) * time.Minute
+	ttl, valid := settingDurationFromInt64(int64(minutes), time.Minute)
+	if !valid || ttl == 0 {
+		return time.Duration(defaultResponsesExecutionSessionTTL) * time.Minute
+	}
+	return ttl
 }
 
 func (s *responsesExecutionSessionStore) maxSessionsLimit() int {

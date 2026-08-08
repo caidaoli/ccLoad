@@ -63,7 +63,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	}
 
 	if strings.TrimSpace(testReq.Content) == "" && len(testReq.Messages) == 0 {
-		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
+		testReq.Content = configuredChannelTestContent(s.configService)
 	}
 
 	originalModel := testReq.Model

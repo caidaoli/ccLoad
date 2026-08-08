@@ -9,6 +9,20 @@ import (
 	"time"
 )
 
+func TestNormalizeAutoUpdateIntervalHours(t *testing.T) {
+	t.Parallel()
+	if got := normalizeAutoUpdateIntervalHours(0); got != 0 {
+		t.Fatalf("zero=%d, want disabled", got)
+	}
+	if got := normalizeAutoUpdateIntervalHours(-1); got != defaultAutoUpdateIntervalHours {
+		t.Fatalf("negative=%d, want default %d", got, defaultAutoUpdateIntervalHours)
+	}
+	overflow := int(maxSettingDurationHours + 1)
+	if got := normalizeAutoUpdateIntervalHours(overflow); got != defaultAutoUpdateIntervalHours {
+		t.Fatalf("overflow=%d, want default %d", got, defaultAutoUpdateIntervalHours)
+	}
+}
+
 func TestStartUpdateManagerContainerSkipsReleaseChecks(t *testing.T) {
 	requested := make(chan struct{}, 1)
 	releaseServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

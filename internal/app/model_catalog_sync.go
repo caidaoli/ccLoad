@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -118,8 +117,11 @@ func isModelCatalogCacheDirWritable(dir string) bool {
 }
 
 func normalizeModelCatalogSyncIntervalHours(hours float64) float64 {
-	if hours <= 0 || math.IsNaN(hours) || math.IsInf(hours, 0) {
+	if hours == 0 {
 		return 0
+	}
+	if _, ok := settingDurationFromFloat64(hours, time.Hour); !ok {
+		return defaultModelCatalogSyncHours
 	}
 	return hours
 }

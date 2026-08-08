@@ -26,7 +26,7 @@ func DefaultHealthScoreConfig() HealthScoreConfig {
 	return HealthScoreConfig{
 		Enabled:                  false,
 		SuccessRatePenaltyWeight: 100,
-		WindowMinutes:            5,
+		WindowMinutes:            30,
 		UpdateIntervalSeconds:    30,
 		MinConfidentSample:       20, // 默认20次请求才全额惩罚
 		EnableTTFBScore:          false,

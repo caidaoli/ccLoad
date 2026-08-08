@@ -20,9 +20,12 @@ func runningInContainer() bool {
 }
 
 func normalizeAutoUpdateIntervalHours(hours int) int {
-	if hours < 0 {
-		log.Printf("[WARN] 无效的 auto_update_interval_hours=%v（必须 >= 0），已设为 0（禁用版本检查和自动更新）", hours)
+	if hours == 0 {
 		return 0
+	}
+	if _, ok := settingDurationFromInt64(int64(hours), time.Hour); !ok {
+		log.Printf("[WARN] 无效的 auto_update_interval_hours=%v，已使用默认值 %d", hours, defaultAutoUpdateIntervalHours)
+		return defaultAutoUpdateIntervalHours
 	}
 	return hours
 }
@@ -47,8 +50,9 @@ func (s *Server) StartUpdateManager() {
 		log.Print("[WARN] RestartFunc 为空，仅启动版本检查")
 	}
 
+	interval, _ := settingDurationFromInt64(int64(autoUpdateIntervalHours), time.Hour)
 	s.startUpdateManager(
-		time.Duration(autoUpdateIntervalHours)*time.Hour,
+		interval,
 		s.configuredReleaseChannel(),
 		applyUpdates,
 	)

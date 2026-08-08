@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"net/http"
+	"strconv"
 	"testing"
 	"time"
 
@@ -190,6 +191,140 @@ func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {
 				t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
 			}
 		})
+	}
+}
+
+func TestAdminSettingContractValidation(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+
+	oldRestartFunc := RestartFunc
+	t.Cleanup(func() { RestartFunc = oldRestartFunc })
+	restarted := make(chan struct{}, 32)
+	RestartFunc = func() { restarted <- struct{}{} }
+
+	tests := []struct {
+		name     string
+		key      string
+		value    string
+		wantCode int
+	}{
+		{name: "antigravity empty array", key: "antigravity_sensitive_words", value: `[]`, wantCode: http.StatusOK},
+		{name: "antigravity null", key: "antigravity_sensitive_words", value: `null`, wantCode: http.StatusBadRequest},
+		{name: "antigravity non-string array", key: "antigravity_sensitive_words", value: `[1]`, wantCode: http.StatusBadRequest},
+		{name: "success penalty zero", key: "success_rate_penalty_weight", value: "0", wantCode: http.StatusOK},
+		{name: "success penalty negative", key: "success_rate_penalty_weight", value: "-1", wantCode: http.StatusBadRequest},
+		{name: "health window zero", key: "health_score_window_minutes", value: "0", wantCode: http.StatusBadRequest},
+		{name: "health update zero", key: "health_score_update_interval", value: "0", wantCode: http.StatusBadRequest},
+		{name: "health sample zero", key: "health_min_confident_sample", value: "0", wantCode: http.StatusBadRequest},
+		{name: "ttfb penalty zero", key: "ttfb_penalty_weight", value: "0", wantCode: http.StatusOK},
+		{name: "ttfb penalty negative", key: "ttfb_penalty_weight", value: "-0.1", wantCode: http.StatusBadRequest},
+		{name: "ttfb slow ratio negative", key: "ttfb_max_slow_ratio", value: "-0.1", wantCode: http.StatusBadRequest},
+		{name: "ttfb sample zero", key: "ttfb_min_confident_sample", value: "0", wantCode: http.StatusBadRequest},
+		{name: "debug retention maximum", key: "debug_log_retention_minutes", value: "1440", wantCode: http.StatusOK},
+		{name: "debug retention zero", key: "debug_log_retention_minutes", value: "0", wantCode: http.StatusBadRequest},
+		{name: "debug retention too large", key: "debug_log_retention_minutes", value: "1441", wantCode: http.StatusBadRequest},
+		{name: "auto refresh disabled", key: "auto_refresh_interval_seconds", value: "0", wantCode: http.StatusOK},
+		{name: "auto refresh negative", key: "auto_refresh_interval_seconds", value: "-1", wantCode: http.StatusBadRequest},
+		{name: "channel test content", key: "channel_test_content", value: "ping", wantCode: http.StatusOK},
+		{name: "channel test blank", key: "channel_test_content", value: "  ", wantCode: http.StatusBadRequest},
+		{name: "channel stats listed", key: "channel_stats_range", value: "last_month", wantCode: http.StatusOK},
+		{name: "channel stats unknown", key: "channel_stats_range", value: "forever", wantCode: http.StatusBadRequest},
+		{name: "duration maximum", key: "stream_timeout", value: strconv.FormatInt(maxSettingDurationSeconds, 10), wantCode: http.StatusOK},
+		{name: "duration overflow", key: "stream_timeout", value: strconv.FormatInt(maxSettingDurationSeconds+1, 10), wantCode: http.StatusBadRequest},
+		{name: "channel interval overflow", key: "channel_check_interval_hours", value: strconv.FormatInt(maxSettingDurationHours+1, 10), wantCode: http.StatusBadRequest},
+		{name: "auto update overflow", key: autoUpdateIntervalSettingKey, value: strconv.FormatInt(maxSettingDurationHours+1, 10), wantCode: http.StatusBadRequest},
+		{name: "websocket ttl default", key: responsesWebsocketSessionTTLSetting, value: "0", wantCode: http.StatusOK},
+		{name: "websocket ttl overflow", key: responsesWebsocketSessionTTLSetting, value: strconv.FormatInt(maxSettingDurationMinutes+1, 10), wantCode: http.StatusBadRequest},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			before, err := store.GetSetting(context.Background(), tt.key)
+			if err != nil {
+				t.Fatalf("GetSetting before update: %v", err)
+			}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+tt.key, map[string]string{"value": tt.value}))
+			c.Params = gin.Params{{Key: "key", Value: tt.key}}
+
+			server.AdminUpdateSetting(c)
+
+			if w.Code != tt.wantCode {
+				t.Fatalf("status=%d, want %d body=%s", w.Code, tt.wantCode, w.Body.String())
+			}
+			after, err := store.GetSetting(context.Background(), tt.key)
+			if err != nil {
+				t.Fatalf("GetSetting after update: %v", err)
+			}
+			if tt.wantCode == http.StatusOK {
+				if after.Value != tt.value {
+					t.Fatalf("persisted value=%q, want %q", after.Value, tt.value)
+				}
+				select {
+				case <-restarted:
+				case <-time.After(time.Second):
+					t.Fatal("expected restart triggered")
+				}
+				return
+			}
+			if after.Value != before.Value {
+				t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+			}
+			select {
+			case <-restarted:
+				t.Fatal("rejected update triggered restart")
+			default:
+			}
+		})
+	}
+}
+
+func TestAdminCooldownBoundsUseFreshAtomicSnapshot(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.configService = NewConfigService(store)
+	if err := server.configService.LoadDefaults(context.Background()); err != nil {
+		t.Fatalf("LoadDefaults failed: %v", err)
+	}
+	if err := store.BatchUpdateSettings(context.Background(), map[string]string{
+		cooldownMinSecondsSettingKey: "200",
+		cooldownMaxSecondsSettingKey: "300",
+	}); err != nil {
+		t.Fatalf("seed cooldown bounds: %v", err)
+	}
+
+	oldRestartFunc := RestartFunc
+	t.Cleanup(func() { RestartFunc = oldRestartFunc })
+	restarted := make(chan struct{}, 2)
+	RestartFunc = func() { restarted <- struct{}{} }
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+cooldownMaxSecondsSettingKey, map[string]string{"value": "199"}))
+	c.Params = gin.Params{{Key: "key", Value: cooldownMaxSecondsSettingKey}}
+	server.AdminUpdateSetting(c)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("single update status=%d, want %d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+
+	c, w = newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", map[string]string{
+		cooldownMinSecondsSettingKey: "250",
+		cooldownMaxSecondsSettingKey: "250",
+	}))
+	server.AdminBatchUpdateSettings(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("batch update status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	for _, key := range []string{cooldownMinSecondsSettingKey, cooldownMaxSecondsSettingKey} {
+		setting, err := store.GetSetting(context.Background(), key)
+		if err != nil {
+			t.Fatalf("GetSetting %s: %v", key, err)
+		}
+		if setting.Value != "250" {
+			t.Fatalf("%s=%q, want 250", key, setting.Value)
+		}
 	}
 }
 
@@ -437,6 +572,37 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		}
 		if after.Value != before.Value {
 			t.Fatalf("persisted value=%q, want unchanged %q", after.Value, before.Value)
+		}
+	})
+
+	t.Run("AdminBatchUpdateSettings_responses_websocket_zero_uses_defaults", func(t *testing.T) {
+		updates := map[string]string{
+			responsesWebsocketMaxSessionsSetting:            "0",
+			responsesWebsocketSessionTTLSetting:             "0",
+			responsesWebsocketMaxTranscriptBytesSetting:     "0",
+			responsesWebsocketMaxConnectionsSetting:         "0",
+			responsesWebsocketMaxConnectionsPerTokenSetting: "0",
+		}
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/settings/batch", updates))
+
+		server.AdminBatchUpdateSettings(c)
+
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		for key := range updates {
+			setting, err := store.GetSetting(context.Background(), key)
+			if err != nil {
+				t.Fatalf("GetSetting %q: %v", key, err)
+			}
+			if setting.Value != "0" {
+				t.Fatalf("setting %q value=%q, want 0", key, setting.Value)
+			}
+		}
+		select {
+		case <-restartCh:
+		case <-time.After(time.Second):
+			t.Fatal("expected restart triggered")
 		}
 	})
 

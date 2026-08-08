@@ -824,7 +824,7 @@ func configuredURLAt(cfg *model.Config, index int, runtimeURL string) model.Chan
 func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
 	// 设置默认测试内容（从配置读取）
 	if strings.TrimSpace(testReq.Content) == "" {
-		testReq.Content = s.configService.GetString("channel_test_content", "sonnet 4.0的发布日期是什么")
+		testReq.Content = configuredChannelTestContent(s.configService)
 	}
 
 	clientProtocol := resolveClientProtocol(testReq)

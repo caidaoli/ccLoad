@@ -307,7 +307,11 @@ func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
 		log.Printf("[WARN] 读取 Debug 日志开关失败: %v", err)
 		return false
 	}
-	if setting == nil || setting.Value != "true" {
+	enabled := false
+	if setting != nil {
+		enabled, _ = parseSettingBool(setting.Value)
+	}
+	if !enabled {
 		if err := s.store.TruncateDebugLogs(ctx); err != nil {
 			log.Printf("[WARN] 清空调试日志失败: %v", err)
 			return false
@@ -316,12 +320,12 @@ func (s *LogService) cleanupDebugLogs(ctx context.Context) bool {
 		return true
 	}
 
-	retentionMinutes := 5
+	retentionMinutes := config.DefaultDebugLogRetentionMinutes
 	if setting, err := s.store.GetSetting(ctx, "debug_log_retention_minutes"); err != nil {
 		log.Printf("[WARN] 读取 Debug 日志保留时间失败: %v", err)
 		return false
 	} else if setting != nil {
-		if value, err := strconv.Atoi(setting.Value); err == nil && value > 0 {
+		if value, err := strconv.Atoi(setting.Value); err == nil && value >= 1 && value <= 1440 {
 			retentionMinutes = value
 		}
 	}

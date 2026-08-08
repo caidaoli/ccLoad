@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"ccLoad/internal/config"
+	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
 )
 
@@ -17,7 +18,6 @@ const (
 	structuredChannelURLsMigrationVersion  = "v4_structured_channel_urls"
 	clientProtocolBackfillMigrationVersion = "v5_logs_client_protocol_backfill"
 	modelFingerprintNameMaxRunes           = 191
-	defaultAntigravitySensitiveWords       = `["API","proxy","Claude","Anthropic"]`
 	previousAntigravitySensitiveWords      = `["API","proxy"]`
 )
 
@@ -534,11 +534,27 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 }
 
 func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	responsesWSMaxSessions := strconv.Itoa(config.DefaultResponsesWebsocketMaxSessions)
-	responsesWSSessionTTLMinutes := strconv.Itoa(config.DefaultResponsesWebsocketSessionTTLMinutes)
-	responsesWSMaxTranscriptBytes := strconv.Itoa(config.DefaultResponsesWebsocketMaxTranscriptBytes)
-	responsesWSMaxConnections := strconv.Itoa(config.DefaultResponsesWebsocketMaxConnections)
-	responsesWSMaxConnectionsPerToken := strconv.Itoa(config.DefaultResponsesWebsocketMaxConnectionsPerToken)
+	healthDefaults := model.DefaultHealthScoreConfig()
+	responsesWSMaxSessionsDescription := fmt.Sprintf(
+		"Responses WebSocket execution session limit (process-wide, 0 = use default %d)",
+		config.DefaultResponsesWebsocketMaxSessions,
+	)
+	responsesWSSessionTTLDescription := fmt.Sprintf(
+		"Responses WebSocket idle session retention (minutes, 0 = use default %d)",
+		config.DefaultResponsesWebsocketSessionTTLMinutes,
+	)
+	responsesWSMaxTranscriptBytesDescription := fmt.Sprintf(
+		"Responses WebSocket transcript payload budget (process-wide bytes, 0 = use default %d MiB)",
+		config.DefaultResponsesWebsocketMaxTranscriptBytes/(1024*1024),
+	)
+	responsesWSMaxConnectionsDescription := fmt.Sprintf(
+		"Responses WebSocket downstream connection limit (process-wide, 0 = use default %d)",
+		config.DefaultResponsesWebsocketMaxConnections,
+	)
+	responsesWSMaxConnectionsPerTokenDescription := fmt.Sprintf(
+		"Responses WebSocket downstream connection limit per API token (0 = use default %d)",
+		config.DefaultResponsesWebsocketMaxConnectionsPerToken,
+	)
 	settings := []struct {
 		key, value, valueType, desc, defaultVal string
 	}{
@@ -554,10 +570,10 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"cooldown_server_seconds", "120", "int", "服务器错误(5xx)初始冷却时间(秒)", "120"},
 		{"cooldown_timeout_seconds", "60", "int", "超时错误(597/598)初始冷却时间(秒)", "60"},
 		{"cooldown_rate_limit_seconds", "60", "int", "限流错误(429)初始冷却时间(秒)", "60"},
-		{"cooldown_max_seconds", "1800", "int", "指数退避冷却上限(秒)", "1800"},
-		{"cooldown_min_seconds", "10", "int", "指数退避冷却下限(秒)", "10"},
+		{"cooldown_max_seconds", "1800", "int", "指数退避冷却上限(秒,>=1且必须>=cooldown_min_seconds)", "1800"},
+		{"cooldown_min_seconds", "10", "int", "指数退避冷却下限(秒,>=1且必须<=cooldown_max_seconds)", "10"},
 		{"global_cooldown_detection_rules", "{}", "json", "未配置渠道专属规则时继承的全局冷却探测规则", "{}"},
-		{"antigravity_sensitive_words", defaultAntigravitySensitiveWords, "json", "Antigravity systemInstruction 中使用零宽字符替换的敏感词", defaultAntigravitySensitiveWords},
+		{"antigravity_sensitive_words", config.DefaultAntigravitySensitiveWordsJSON, "json", "Antigravity systemInstruction 中使用零宽字符替换的敏感词 JSON 字符串数组", config.DefaultAntigravitySensitiveWordsJSON},
 		{"upstream_first_byte_timeout", "0", "duration", "流式请求首个有效内容超时(秒,0=禁用)", "0"},
 		{"upstream_connection_reuse_limit_seconds", "0", "duration", "上游连接最长复用时间(秒,0=不限制;达到时限后不接收新请求,在途请求完成后关闭)", "0"},
 		{"stream_timeout", "0", "duration", "流式请求总超时(秒,0=禁用)", "0"},
@@ -571,36 +587,36 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"gemini_first_byte_timeout", "0", "duration", "Gemini流式请求首个有效内容超时(秒,0=使用全局upstream_first_byte_timeout)", "0"},
 		{"gemini_non_stream_timeout", "0", "duration", "Gemini非流式请求超时(秒,0=使用全局non_stream_timeout)", "0"},
 		{"model_fuzzy_match", "false", "bool", "模型匹配失败时，使用子串模糊匹配(多匹配时选最新版本)", "false"},
-		{"channel_test_content", "sonnet 4.0的发布日期是什么", "string", "渠道测试默认内容", "sonnet 4.0的发布日期是什么"},
-		{"channel_check_interval_hours", "5", "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", "5"},
+		{"channel_test_content", config.DefaultChannelTestContent, "string", "渠道测试默认内容（不能为空）", config.DefaultChannelTestContent},
+		{"channel_check_interval_hours", strconv.FormatFloat(config.DefaultChannelCheckIntervalHours, 'f', -1, 64), "float", "渠道定时检测间隔(小时,支持小数如0.5=30分钟,0=关闭)", strconv.FormatFloat(config.DefaultChannelCheckIntervalHours, 'f', -1, 64)},
 		{"model_catalog_sync_interval_hours", "6", "float", "从 models.dev 同步官方模型定价目录的间隔（小时，支持小数）；0 仅关闭网络同步，继续使用最近缓存或内置定价；不影响渠道模型列表", "6"},
 		{"auto_update_interval_hours", "12", "int", "非容器部署的版本检查间隔（整数小时；0=关闭检查；启用时最低1小时）", "12"},
 		{"auto_update_channel", "stable", "string", "非容器部署的版本检查和自动更新渠道（stable=稳定版，preview=稳定版和测试版）", "stable"},
 		{"log_channel_click_action", "edit", "string", "日志页点击渠道名后的操作", "edit"},
-		{"channel_stats_range", "today", "string", "渠道管理页费用统计的时间范围", "today"},
+		{"channel_stats_range", "today", "string", "渠道管理页费用统计时间范围（today/yesterday/day_before_yesterday/this_week/last_week/this_month/last_month）", "today"},
 		// 健康度排序配置
 		{"enable_health_score", "false", "bool", "启用基于健康度的渠道动态排序", "false"},
-		{"success_rate_penalty_weight", "100", "int", "成功率惩罚权重(乘以失败率)", "100"},
-		{"health_score_window_minutes", "30", "int", "成功率统计时间窗口(分钟)", "30"},
-		{"health_score_update_interval", "30", "int", "成功率缓存更新间隔(秒)", "30"},
-		{"health_min_confident_sample", "20", "int", "置信样本量阈值(样本量达到此值时惩罚全额生效)", "20"},
+		{"success_rate_penalty_weight", strconv.Itoa(healthDefaults.SuccessRatePenaltyWeight), "int", "成功率惩罚权重(乘以失败率,>=0)", strconv.Itoa(healthDefaults.SuccessRatePenaltyWeight)},
+		{"health_score_window_minutes", strconv.Itoa(healthDefaults.WindowMinutes), "int", "成功率统计时间窗口(分钟,>=1)", strconv.Itoa(healthDefaults.WindowMinutes)},
+		{"health_score_update_interval", strconv.Itoa(healthDefaults.UpdateIntervalSeconds), "int", "成功率缓存更新间隔(秒,>=1)", strconv.Itoa(healthDefaults.UpdateIntervalSeconds)},
+		{"health_min_confident_sample", strconv.Itoa(healthDefaults.MinConfidentSample), "int", "置信样本量阈值(>=1;样本量达到此值时惩罚全额生效)", strconv.Itoa(healthDefaults.MinConfidentSample)},
 		{"enable_ttfb_score", "false", "bool", "启用渠道首字相对延迟惩罚(需同时开启「启用健康度排序」)", "false"},
-		{"ttfb_penalty_weight", "20", "float", "首字惩罚权重(相对中位慢1倍时全置信惩罚值)", "20"},
-		{"ttfb_max_slow_ratio", "2", "float", "首字相对慢速比(s-1)上限", "2"},
-		{"ttfb_min_confident_sample", "10", "int", "首字置信样本量阈值", "10"},
+		{"ttfb_penalty_weight", strconv.FormatFloat(healthDefaults.TTFBPenaltyWeight, 'f', -1, 64), "float", "首字惩罚权重(>=0;相对中位慢1倍时全置信惩罚值)", strconv.FormatFloat(healthDefaults.TTFBPenaltyWeight, 'f', -1, 64)},
+		{"ttfb_max_slow_ratio", strconv.FormatFloat(healthDefaults.TTFBMaxSlowRatio, 'f', -1, 64), "float", "首字相对慢速比(s-1)上限(>=0)", strconv.FormatFloat(healthDefaults.TTFBMaxSlowRatio, 'f', -1, 64)},
+		{"ttfb_min_confident_sample", strconv.Itoa(healthDefaults.TTFBMinConfidentSample), "int", "首字置信样本量阈值(>=1)", strconv.Itoa(healthDefaults.TTFBMinConfidentSample)},
 		// 冷却兜底配置
 		{"cooldown_fallback_enabled", "true", "bool", "所有渠道冷却时选最优渠道兜底(关闭则直接拒绝请求)", "true"},
 		// Debug日志配置
 		{"debug_log_enabled", "false", "bool", "启用Debug日志(记录上游请求/响应原始数据)", "false"},
-		{"debug_log_retention_minutes", "2", "int", "Debug日志保留时长(分钟,1-1440)", "2"},
+		{"debug_log_retention_minutes", strconv.Itoa(config.DefaultDebugLogRetentionMinutes), "int", "Debug日志保留时长(分钟,1-1440)", strconv.Itoa(config.DefaultDebugLogRetentionMinutes)},
 		// 前端自动刷新
-		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
+		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,>=0;0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
 		// Responses WebSocket
-		{"responses_ws_max_sessions", responsesWSMaxSessions, "int", "Responses WebSocket execution session limit (process-wide, 0 = use default 256)", responsesWSMaxSessions},
-		{"responses_ws_session_ttl_minutes", responsesWSSessionTTLMinutes, "int", "Responses WebSocket idle session retention (minutes, >= 1)", responsesWSSessionTTLMinutes},
-		{"responses_ws_max_transcript_bytes", responsesWSMaxTranscriptBytes, "int", "Responses WebSocket transcript payload budget (process-wide bytes, default 256 MiB)", responsesWSMaxTranscriptBytes},
-		{"responses_ws_max_connections", responsesWSMaxConnections, "int", "Responses WebSocket downstream connection limit (process-wide, 0 = use default 128)", responsesWSMaxConnections},
-		{"responses_ws_max_connections_per_token", responsesWSMaxConnectionsPerToken, "int", "Responses WebSocket downstream connection limit per API token (0 = use default 64)", responsesWSMaxConnectionsPerToken},
+		{"responses_ws_max_sessions", "0", "int", responsesWSMaxSessionsDescription, "0"},
+		{"responses_ws_session_ttl_minutes", "0", "int", responsesWSSessionTTLDescription, "0"},
+		{"responses_ws_max_transcript_bytes", "0", "int", responsesWSMaxTranscriptBytesDescription, "0"},
+		{"responses_ws_max_connections", "0", "int", responsesWSMaxConnectionsDescription, "0"},
+		{"responses_ws_max_connections_per_token", "0", "int", responsesWSMaxConnectionsPerTokenDescription, "0"},
 	}
 
 	var query string
@@ -626,7 +642,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		valueSQL := fmt.Sprintf("UPDATE system_settings SET value = ? WHERE %s = ? AND value = default_value AND default_value IN (?, ?)", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, valueSQL),
-			defaultAntigravitySensitiveWords,
+			config.DefaultAntigravitySensitiveWordsJSON,
 			"antigravity_sensitive_words",
 			"[]",
 			previousAntigravitySensitiveWords,
@@ -635,7 +651,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET default_value = ?, value_type = ? WHERE %s = ?", keyCol)
-		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), defaultAntigravitySensitiveWords, "json", "antigravity_sensitive_words"); err != nil {
+		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL), config.DefaultAntigravitySensitiveWordsJSON, "json", "antigravity_sensitive_words"); err != nil {
 			return fmt.Errorf("refresh setting metadata antigravity_sensitive_words: %w", err)
 		}
 	}
@@ -643,6 +659,52 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 	// 刷新部分配置项的元信息（description/default/value_type），避免"代码语义已变但DB描述仍旧"。
 	{
 		keyCol := quoteKeyIdent(dialect)
+		descriptionRefreshKeys := map[string]bool{
+			"antigravity_sensitive_words":            true,
+			"channel_test_content":                   true,
+			"channel_check_interval_hours":           true,
+			"channel_stats_range":                    true,
+			"success_rate_penalty_weight":            true,
+			"health_score_window_minutes":            true,
+			"health_score_update_interval":           true,
+			"health_min_confident_sample":            true,
+			"ttfb_penalty_weight":                    true,
+			"ttfb_max_slow_ratio":                    true,
+			"ttfb_min_confident_sample":              true,
+			"cooldown_min_seconds":                   true,
+			"cooldown_max_seconds":                   true,
+			"debug_log_retention_minutes":            true,
+			"auto_refresh_interval_seconds":          true,
+			"responses_ws_max_sessions":              true,
+			"responses_ws_session_ttl_minutes":       true,
+			"responses_ws_max_transcript_bytes":      true,
+			"responses_ws_max_connections":           true,
+			"responses_ws_max_connections_per_token": true,
+		}
+		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
+		descriptionSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, value_type = ? WHERE %s = ?", keyCol)
+		for _, setting := range settings {
+			if !descriptionRefreshKeys[setting.key] {
+				continue
+			}
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, descriptionSQL), setting.desc, setting.valueType, setting.key); err != nil {
+				return fmt.Errorf("refresh setting description %s: %w", setting.key, err)
+			}
+		}
+
+		websocketResetDefaultSQL := fmt.Sprintf("UPDATE system_settings SET default_value = '0' WHERE %s = ?", keyCol)
+		for _, key := range []string{
+			"responses_ws_max_sessions",
+			"responses_ws_session_ttl_minutes",
+			"responses_ws_max_transcript_bytes",
+			"responses_ws_max_connections",
+			"responses_ws_max_connections_per_token",
+		} {
+			if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, websocketResetDefaultSQL), key); err != nil {
+				return fmt.Errorf("refresh setting reset default %s: %w", key, err)
+			}
+		}
+
 		//nolint:gosec // G201: keyCol 仅为 "key" 或 "`key`"，由内部逻辑控制
 		metaSQL := fmt.Sprintf("UPDATE system_settings SET description = ?, default_value = ?, value_type = ? WHERE %s = ?", keyCol)
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
@@ -655,7 +717,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		}
 		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
 			"Debug日志保留时长(分钟,1-1440)",
-			"2",
+			strconv.Itoa(config.DefaultDebugLogRetentionMinutes),
 			"int",
 			"debug_log_retention_minutes",
 		); err != nil {
@@ -676,14 +738,6 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 			"auto_update_channel",
 		); err != nil {
 			return fmt.Errorf("refresh setting metadata auto_update_channel: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, metaSQL),
-			"Responses WebSocket idle session retention (minutes, >= 1)",
-			"15",
-			"int",
-			"responses_ws_session_ttl_minutes",
-		); err != nil {
-			return fmt.Errorf("refresh setting metadata responses_ws_session_ttl_minutes: %w", err)
 		}
 	}
 

@@ -113,7 +113,10 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 
 	scheduledCheckEnabled := false
 	if s.configService != nil {
-		scheduledCheckEnabled = s.configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours) > 0
+		hours := normalizeChannelCheckIntervalHours(
+			s.configService.GetFloat("channel_check_interval_hours", defaultChannelCheckIntervalHours),
+		)
+		scheduledCheckEnabled = hours > 0
 	}
 
 	RespondJSON(c, http.StatusOK, channelEditorData{

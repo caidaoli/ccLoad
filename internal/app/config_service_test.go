@@ -35,10 +35,15 @@ func TestConfigService_Getters_FromCache(t *testing.T) {
 	cs.cache["i"] = &model.SystemSetting{Key: "i", Value: "42"}
 	cs.cache["b1"] = &model.SystemSetting{Key: "b1", Value: "true"}
 	cs.cache["b2"] = &model.SystemSetting{Key: "b2", Value: "1"}
+	cs.cache["b3"] = &model.SystemSetting{Key: "b3", Value: "false"}
+	cs.cache["b4"] = &model.SystemSetting{Key: "b4", Value: "0"}
+	cs.cache["bad_bool"] = &model.SystemSetting{Key: "bad_bool", Value: "yes"}
 	cs.cache["s"] = &model.SystemSetting{Key: "s", Value: "x"}
 	cs.cache["f"] = &model.SystemSetting{Key: "f", Value: "1.25"}
 	cs.cache["bad_int"] = &model.SystemSetting{Key: "bad_int", Value: "nope"}
 	cs.cache["bad_float"] = &model.SystemSetting{Key: "bad_float", Value: "nope"}
+	cs.cache["nan_float"] = &model.SystemSetting{Key: "nan_float", Value: "NaN"}
+	cs.cache["duration_overflow"] = &model.SystemSetting{Key: "duration_overflow", Value: "9223372037"}
 	cs.mu.Unlock()
 
 	if got := cs.GetInt("i", 0); got != 42 {
@@ -52,6 +57,15 @@ func TestConfigService_Getters_FromCache(t *testing.T) {
 	}
 	if got := cs.GetBool("b2", false); got != true {
 		t.Fatalf("GetBool(b2)= %v, want true", got)
+	}
+	if got := cs.GetBool("b3", true); got != false {
+		t.Fatalf("GetBool(b3)= %v, want false", got)
+	}
+	if got := cs.GetBool("b4", true); got != false {
+		t.Fatalf("GetBool(b4)= %v, want false", got)
+	}
+	if got := cs.GetBool("bad_bool", true); got != true {
+		t.Fatalf("GetBool(bad_bool)= %v, want default true", got)
 	}
 	if got := cs.GetBool("missing", true); got != true {
 		t.Fatalf("GetBool(missing)= %v, want default true", got)
@@ -68,8 +82,14 @@ func TestConfigService_Getters_FromCache(t *testing.T) {
 	if got := cs.GetFloat("bad_float", 9.9); got != 9.9 {
 		t.Fatalf("GetFloat(bad_float)= %v, want default 9.9", got)
 	}
+	if got := cs.GetFloat("nan_float", 9.9); got != 9.9 {
+		t.Fatalf("GetFloat(nan_float)= %v, want default 9.9", got)
+	}
 	if got := cs.GetDuration("i", 2*time.Second); got != 42*time.Second {
 		t.Fatalf("GetDuration(i)= %v, want 42s", got)
+	}
+	if got := cs.GetDuration("duration_overflow", 2*time.Second); got != 2*time.Second {
+		t.Fatalf("GetDuration(duration_overflow)= %v, want default 2s", got)
 	}
 }
 

@@ -923,6 +923,7 @@ window.WebAuth = window.WebAuth || {
       el.style.borderColor = 'rgba(0,0,0,0.08)';
     }
     el.textContent = message;
+    el.setAttribute('role', type === 'error' ? 'alert' : 'status');
     const host = ensureNotifyHost();
     host.appendChild(el);
     requestAnimationFrame(() => { el.style.opacity = '1'; el.style.transform = 'translateX(0)'; });
