@@ -112,7 +112,10 @@ type Server struct {
 	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
 	// 指纹任务管理器（内存）
-	fingerprintJobs *FingerprintJobManager
+	fingerprintJobs             *FingerprintJobManager
+	oauthCredentialImportRunMu  sync.Mutex
+	oauthCredentialImportJobsMu sync.Mutex
+	oauthCredentialImportJobs   *oauthCredentialImportJobManager
 }
 
 // NewServer 创建并初始化一个新的 Server 实例
@@ -317,6 +320,7 @@ func NewServer(store storage.Store) *Server {
 
 	// 指纹 Job 管理器（内存）
 	s.fingerprintJobs = NewFingerprintJobManager(s.baseCtx, 2)
+	s.oauthCredentialImportJobs = newOAuthCredentialImportJobManager(s.baseCtx, oauthCredentialImportMaxRunningJobs)
 
 	// 所有启动关键状态完成加载后，再启动非关键后台任务。
 	// SQLite 纯模式只有一个连接，维护任务不得与认证/渠道初始化竞争。
@@ -1046,6 +1050,8 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/import", s.HandleImportChannelsCSV)
 		admin.POST("/oauth/credentials/import", s.HandleImportOAuthCredentials)
 		admin.POST("/oauth/credentials/import/stream", s.HandleImportOAuthCredentialsStream)
+		admin.POST("/oauth/credentials/import/jobs", s.HandleStartOAuthCredentialImportJob)
+		admin.GET("/oauth/credentials/import/jobs/:id", s.HandleOAuthCredentialImportJob)
 		admin.POST("/codex/oauth/start", s.HandleStartCodexOAuth)
 		admin.GET("/codex/oauth/status", s.HandleCodexOAuthStatus)
 		admin.POST("/codex/oauth/cancel", s.HandleCancelCodexOAuth)
@@ -1333,6 +1339,10 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.fingerprintJobs != nil {
 		fingerprintShutdownErr = s.fingerprintJobs.Close(ctx)
 	}
+	var oauthCredentialImportShutdownErr error
+	if manager := s.currentOAuthCredentialImportJobs(); manager != nil {
+		oauthCredentialImportShutdownErr = manager.Close(ctx)
+	}
 
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})
@@ -1345,6 +1355,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	if fingerprintShutdownErr != nil {
 		err = fingerprintShutdownErr
+	}
+	if err == nil && oauthCredentialImportShutdownErr != nil {
+		err = oauthCredentialImportShutdownErr
 	}
 	select {
 	case <-done:

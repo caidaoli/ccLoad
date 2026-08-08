@@ -34,6 +34,14 @@ var (
 	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
 )
 
+type oauthUsageRequestError struct {
+	provider string
+}
+
+func (e *oauthUsageRequestError) Error() string {
+	return fmt.Sprintf("usage: %s request failed", e.provider)
+}
+
 type codexUsageRawWindow struct {
 	UsedPercent        *float64 `json:"used_percent"`
 	LimitWindowSeconds int64    `json:"limit_window_seconds"`
@@ -296,7 +304,10 @@ func executeOAuthUsageRequest(client *http.Client, req *http.Request, provider s
 	}
 	resp, err := usageClient.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("usage: %s request failed", provider)
+		if requestErr := req.Context().Err(); requestErr != nil {
+			return nil, requestErr
+		}
+		return nil, &oauthUsageRequestError{provider: provider}
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {

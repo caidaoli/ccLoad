@@ -1,5 +1,13 @@
 const CODEX_OAUTH_POLL_INTERVAL_MS = 1000;
 const CODEX_OAUTH_MAX_POLLS = 300;
+const OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS = 500;
+const OAUTH_CREDENTIAL_IMPORT_MAX_NETWORK_ERRORS = 10;
+class OAuthCredentialImportResponseError extends Error {
+  constructor(message, status = 0) {
+    super(message);
+    this.status = status;
+  }
+}
 let activeCodexOAuthFlow = null;
 let codexOAuthStopPromise = null;
 let currentOAuthCredentialJSON = '';
@@ -194,15 +202,18 @@ function resetOAuthCredentialImportProgress() {
   errorList?.replaceChildren();
 }
 
-function appendOAuthCredentialImportError(result) {
-  if (!result || result.status !== 'failed' || !result.error) return;
+function appendOAuthCredentialImportIssue(result) {
+  if (!result || (result.status !== 'failed' && result.status !== 'skipped')) return;
   const errors = document.getElementById('oauthCredentialImportErrors');
   const errorList = document.getElementById('oauthCredentialImportErrorList');
   if (!errors || !errorList) return;
+  const reason = result.error || (result.channel_name
+    ? window.t('channels.oauth.progressSkippedExisting', { channel: result.channel_name })
+    : window.t('channels.oauth.progressSkippedUnknown'));
   const item = document.createElement('li');
   item.textContent = window.t('channels.oauth.progressErrorItem', {
     file: result.file_name || '',
-    error: result.error
+    error: reason
   });
   errorList.append(item);
   errors.hidden = false;
@@ -245,13 +256,16 @@ function updateOAuthCredentialImportProgress(event) {
       break;
     case 'progress': {
       const resultStatus = event.result?.status || 'failed';
-      appendOAuthCredentialImportError(event.result);
+      appendOAuthCredentialImportIssue(event.result);
       detail.textContent = window.t('channels.oauth.progressProcessed', {
         file: event.result?.file_name || event.file_name || '',
         status: window.t(`channels.oauth.progressStatus.${resultStatus}`)
       });
       break;
     }
+    case 'reconnecting':
+      detail.textContent = window.t('channels.oauth.progressReconnecting');
+      break;
     case 'complete':
       detail.textContent = window.t('channels.oauth.progressComplete');
       break;
@@ -546,7 +560,8 @@ async function importOAuthCredentials(
   button,
   fetcher = fetchWithAuth,
   provider = 'auto',
-  priorityIncrement = 10
+  priorityIncrement = 10,
+  delay = codexOAuthDelay
 ) {
   const selectedFiles = Array.from(files || []).filter(Boolean);
   if (selectedFiles.length === 0) return null;
@@ -561,12 +576,20 @@ async function importOAuthCredentials(
     setOAuthCredentialImportStatus(importingMessage);
     resetOAuthCredentialImportProgress();
     updateOAuthCredentialImportProgress({ event: 'preparing', file_count: selectedFiles.length });
-    const response = await fetcher('/admin/oauth/credentials/import/stream', {
+    const response = await fetcher('/admin/oauth/credentials/import/jobs', {
       method: 'POST',
-      body: formData,
-      headers: { Accept: 'text/event-stream' }
+      body: formData
     });
-    const result = await readOAuthCredentialImportStream(response, updateOAuthCredentialImportProgress);
+    const started = await parseOAuthCredentialImportResponse(response);
+    if (!started?.job_id) throw new Error(window.t('channels.oauth.importFailed'));
+    updateOAuthCredentialImportProgress({ event: 'start', total: started.total });
+    const result = await pollOAuthCredentialImportJob(
+      started.job_id,
+      started.total,
+      fetcher,
+      updateOAuthCredentialImportProgress,
+      delay
+    );
     const created = Number(result?.created) || 0;
     const skipped = Number(result?.skipped) || 0;
     const failed = Number(result?.failed) || 0;
@@ -597,66 +620,92 @@ async function importOAuthCredentials(
   }
 }
 
-async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
-  if (!response?.ok) {
-    let message = window.t('channels.oauth.importFailed');
-    try {
-      const payload = JSON.parse(await response.text());
-      message = payload?.error || message;
-    } catch (_) {
-      // Keep the stable localized fallback for malformed error responses.
-    }
-    throw new Error(message);
+async function parseOAuthCredentialImportResponse(response) {
+  let payload;
+  try {
+    payload = JSON.parse(await response.text());
+  } catch (_) {
+    throw new OAuthCredentialImportResponseError(
+      window.t('channels.oauth.importFailed'),
+      Number(response?.status) || 0
+    );
   }
+  if (!response?.ok || !payload?.success) {
+    throw new OAuthCredentialImportResponseError(
+      payload?.error || window.t('channels.oauth.importFailed'),
+      Number(response?.status) || 0
+    );
+  }
+  return payload.data;
+}
 
+async function pollOAuthCredentialImportJob(jobID, total, fetcher, onEvent, delay) {
+  let cursor = 0;
+  let created = 0;
+  let skipped = 0;
+  let failed = 0;
+  let consecutiveNetworkErrors = 0;
   const results = [];
-  let complete = null;
-  let buffer = '';
-  const consumeBlock = block => {
-    const data = block
-      .split(/\r?\n/)
-      .filter(line => line.startsWith('data:'))
-      .map(line => line.slice(5).trimStart())
-      .join('\n');
-    if (!data) return;
-    const event = JSON.parse(data);
-    onEvent(event);
-    if (event.event === 'progress' && event.result) results.push(event.result);
-    if (event.event === 'complete') complete = event;
-  };
-  const drain = final => {
-    let boundary;
-    while ((boundary = buffer.indexOf('\n\n')) >= 0) {
-      consumeBlock(buffer.slice(0, boundary));
-      buffer = buffer.slice(boundary + 2);
-    }
-    if (final && buffer.trim()) {
-      consumeBlock(buffer);
-      buffer = '';
-    }
-  };
 
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      drain(false);
+  for (;;) {
+    let view;
+    try {
+      const response = await fetcher(
+        `/admin/oauth/credentials/import/jobs/${encodeURIComponent(jobID)}?after=${cursor}`,
+        { method: 'GET' }
+      );
+      view = await parseOAuthCredentialImportResponse(response);
+      consecutiveNetworkErrors = 0;
+    } catch (error) {
+      if (error instanceof OAuthCredentialImportResponseError &&
+          error.status !== 429 && error.status < 500) {
+        throw error;
+      }
+      consecutiveNetworkErrors++;
+      if (consecutiveNetworkErrors > OAUTH_CREDENTIAL_IMPORT_MAX_NETWORK_ERRORS) {
+        throw new Error(window.t('channels.oauth.importProgressUnavailable', { job: jobID }));
+      }
+      onEvent({ event: 'reconnecting', processed: cursor, total, created, skipped, failed });
+      await delay(Math.min(
+        OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS * consecutiveNetworkErrors,
+        5000
+      ));
+      continue;
     }
-    buffer += decoder.decode();
-  } else {
-    buffer = await response.text();
+
+    for (const result of Array.isArray(view?.results) ? view.results : []) {
+      results.push(result);
+      cursor++;
+      if (result.status === 'created') created++;
+      else if (result.status === 'skipped') skipped++;
+      else failed++;
+      onEvent({
+        event: 'progress', processed: cursor, total,
+        created, skipped, failed, file_name: result.file_name, result
+      });
+    }
+    const next = Math.max(cursor, Number(view?.next) || 0);
+    cursor = next;
+
+    if (view?.status === 'succeeded') {
+      const summary = {
+        created: Number(view.created) || 0,
+        skipped: Number(view.skipped) || 0,
+        failed: Number(view.failed) || 0,
+        results
+      };
+      onEvent({ event: 'complete', processed: cursor, total, ...summary });
+      return summary;
+    }
+    if (view?.status && view.status !== 'running') {
+      throw new Error(view.error || window.t('channels.oauth.importJobStopped'));
+    }
+    onEvent({
+      event: 'processing', processed: cursor, total,
+      created, skipped, failed, file_name: view?.file_name || ''
+    });
+    await delay(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS);
   }
-  drain(true);
-  if (!complete) throw new Error(window.t('channels.oauth.importStreamIncomplete'));
-  return {
-    created: Number(complete.created) || 0,
-    skipped: Number(complete.skipped) || 0,
-    failed: Number(complete.failed) || 0,
-    results
-  };
 }
 
 async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
@@ -908,7 +957,7 @@ function setupOAuthActions() {
       event.preventDefault();
       importProviderSelect.disabled = true;
       importPriorityIncrementSelect.disabled = true;
-      const result = await importOAuthCredentials(
+      await importOAuthCredentials(
         importInput.files,
         importSubmitButton,
         fetchWithAuth,
@@ -917,7 +966,6 @@ function setupOAuthActions() {
       );
       importProviderSelect.disabled = false;
       importPriorityIncrementSelect.disabled = false;
-      if (result) closeOAuthCredentialImportDialog();
     });
     importForm.dataset.bound = '1';
   }

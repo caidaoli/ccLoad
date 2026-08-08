@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
@@ -393,7 +394,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 		}
 	}
 	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
-	if result.Data.Created != 1 || result.Data.Skipped != 2 || result.Data.Failed != 1 || len(result.Data.Results) != 4 {
+	if result.Data.Created != 1 || result.Data.Skipped != 1 || result.Data.Failed != 2 || len(result.Data.Results) != 4 {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
 	channels, err := store.ListConfigs(context.Background())
@@ -424,15 +425,24 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	}
 }
 
-func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndSkipsUnusableCredential(t *testing.T) {
+func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCredential(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
+	var transientProbeAttempts atomic.Int32
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		switch {
 		case request.Method == http.MethodGet && request.URL.String() == codexUsageURL:
 			status := http.StatusUnauthorized
-			if authorization := request.Header.Get("Authorization"); authorization == "Bearer at-refreshed" || authorization == "Bearer at-short-lived" {
+			authorization := request.Header.Get("Authorization")
+			switch authorization {
+			case "Bearer at-refreshed", "Bearer at-short-lived":
 				status = http.StatusOK
+			case "Bearer at-transient":
+				if transientProbeAttempts.Add(1) == 1 {
+					status = http.StatusServiceUnavailable
+				} else {
+					status = http.StatusOK
+				}
 			}
 			return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
 		case request.Method == http.MethodPost && request.URL.String() == codexauth.DefaultTokenURL:
@@ -466,6 +476,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndSkipsUnusableCrede
 	}{
 		{name: "refreshable.json", accessToken: "at-stale", refreshToken: "rt-refreshable", accountID: "account-refreshable", idToken: idToken},
 		{name: "short-lived.json", accessToken: "at-short-lived", refreshToken: "rt-short-lived-invalid", accountID: "account-short-lived", idToken: codexTestIDToken(t, "short-lived@example.com", "account-short-lived")},
+		{name: "transient.json", accessToken: "at-transient", refreshToken: "rt-transient", accountID: "account-transient", idToken: codexTestIDToken(t, "transient@example.com", "account-transient")},
 		{name: "unusable.json", accessToken: "at-unusable", refreshToken: "rt-unusable", accountID: "account-unusable", idToken: codexTestIDToken(t, "unusable@example.com", "account-unusable")},
 	}
 	for _, file := range files {
@@ -493,11 +504,24 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndSkipsUnusableCrede
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
-	if result.Data.Created != 2 || result.Data.Skipped != 1 || result.Data.Failed != 0 {
+	if result.Data.Created != 3 || result.Data.Skipped != 0 || result.Data.Failed != 1 {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
+	if attempts := transientProbeAttempts.Load(); attempts != 2 {
+		t.Fatalf("transient probe attempts = %d, want 2", attempts)
+	}
+	var unusableResult *oauthCredentialImportResult
+	for i := range result.Data.Results {
+		if result.Data.Results[i].FileName == "unusable.json" {
+			unusableResult = &result.Data.Results[i]
+			break
+		}
+	}
+	if unusableResult == nil || unusableResult.Status != "failed" || !strings.Contains(unusableResult.Error, "HTTP 401") {
+		t.Fatalf("unusable result = %#v, want failed result with upstream status", unusableResult)
+	}
 	channels, err := store.ListConfigs(context.Background())
-	if err != nil || len(channels) != 2 {
+	if err != nil || len(channels) != 3 {
 		t.Fatalf("persisted channel count = %d, error = %v", len(channels), err)
 	}
 	persisted := make(map[string]*codexauth.Credential, len(channels))
@@ -516,7 +540,11 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndSkipsUnusableCrede
 	if shortLived == nil || shortLived.AccessToken != "at-short-lived" || shortLived.RefreshToken != "rt-short-lived-invalid" {
 		t.Fatal("persisted Codex credential did not keep the accepted access token")
 	}
-	for _, secret := range []string{"at-stale", "rt-refreshable", "at-short-lived", "rt-short-lived-invalid", "at-unusable", "rt-unusable", "at-refreshed", "rt-rotated"} {
+	transient := persisted["account-transient"]
+	if transient == nil || transient.AccessToken != "at-transient" || transient.RefreshToken != "rt-transient" {
+		t.Fatal("persisted Codex credential did not survive a transient validation failure")
+	}
+	for _, secret := range []string{"at-stale", "rt-refreshable", "at-short-lived", "rt-short-lived-invalid", "at-transient", "rt-transient", "at-unusable", "rt-unusable", "at-refreshed", "rt-rotated"} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatal("import response leaked credential material")
 		}
@@ -660,6 +688,116 @@ func TestHandleImportOAuthCredentialsSortsPriorityByCredentialFileName(t *testin
 		}
 		if channel.GetAuthType() != expected.authType || channel.Priority != expected.priority {
 			t.Fatalf("channel %q auth_type=%q priority=%d, want %q/%d", channel.Name, channel.GetAuthType(), channel.Priority, expected.authType, expected.priority)
+		}
+	}
+}
+
+func TestHandleImportOAuthCredentialsValidatesConcurrentlyAndContinuesAfterNetworkFailure(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	var active, maxActive atomic.Int32
+	concurrent := make(chan struct{})
+	var concurrentOnce sync.Once
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		authorization := request.Header.Get("Authorization")
+		if authorization == "Bearer at-a-network" {
+			return nil, errors.New("simulated network failure")
+		}
+		current := active.Add(1)
+		defer active.Add(-1)
+		for observed := maxActive.Load(); current > observed && !maxActive.CompareAndSwap(observed, current); observed = maxActive.Load() {
+		}
+		if current >= 2 {
+			concurrentOnce.Do(func() { close(concurrent) })
+		}
+		select {
+		case <-concurrent:
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+		switch authorization {
+		case "Bearer at-b-valid":
+			time.Sleep(30 * time.Millisecond)
+		case "Bearer at-c-valid":
+			time.Sleep(10 * time.Millisecond)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    request,
+		}, nil
+	})}
+	server := &Server{store: store, client: client}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("provider", "codex"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("priority_increment", "10"); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"d-valid", "a-network", "c-valid", "b-valid"} {
+		part, err := writer.CreateFormFile("files", name+".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential := fmt.Sprintf(
+			`{"type":"codex","access_token":"at-%s","refresh_token":"rt-%s","account_id":"account-%s","email":"%s@example.com","expired":%q}`,
+			name, name, name, name, expiresAt,
+		)
+		if _, err := io.WriteString(part, credential); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	requestCtx, cancelRequest := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelRequest()
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body).WithContext(requestCtx)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes()).Data
+	if result.Created != 3 || result.Failed != 1 || result.Skipped != 0 || len(result.Results) != 4 {
+		t.Fatalf("import summary = %#v", result)
+	}
+	if maxActive.Load() < 2 {
+		t.Fatalf("max concurrent validations = %d, want at least 2", maxActive.Load())
+	}
+	wantFiles := []string{"a-network.json", "b-valid.json", "c-valid.json", "d-valid.json"}
+	gotFiles := make([]string, 0, len(result.Results))
+	for _, importResult := range result.Results {
+		gotFiles = append(gotFiles, importResult.FileName)
+	}
+	if !slices.Equal(gotFiles, wantFiles) {
+		t.Fatalf("result order = %v, want %v", gotFiles, wantFiles)
+	}
+	if failed := result.Results[0]; failed.Status != "failed" || !strings.Contains(failed.Error, "Codex request failed") {
+		t.Fatalf("network failure result = %#v", failed)
+	}
+
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPriority := map[string]int{
+		"Codex-b-valid@example.com": 10,
+		"Codex-c-valid@example.com": 20,
+		"Codex-d-valid@example.com": 30,
+	}
+	if len(channels) != len(wantPriority) {
+		t.Fatalf("channels = %#v", channels)
+	}
+	for _, channel := range channels {
+		if want, ok := wantPriority[channel.Name]; !ok || channel.Priority != want {
+			t.Fatalf("channel %q priority=%d, want %d", channel.Name, channel.Priority, want)
 		}
 	}
 }
@@ -821,6 +959,7 @@ func TestHandleImportOAuthCredentialsStreamReportsEachCredential(t *testing.T) {
 
 	type streamEvent struct {
 		Event     string                       `json:"event"`
+		JobID     string                       `json:"job_id"`
 		Processed int                          `json:"processed"`
 		Total     int                          `json:"total"`
 		Created   int                          `json:"created"`
@@ -850,12 +989,110 @@ func TestHandleImportOAuthCredentialsStreamReportsEachCredential(t *testing.T) {
 	if !slices.Equal(gotTypes, wantTypes) {
 		t.Fatalf("event types=%v, want %v; body=%s", gotTypes, wantTypes, response.Body.String())
 	}
-	if events[0].Total != 2 || events[1].FileName != "a.json" || events[2].Processed != 1 || events[2].Result == nil || events[2].Result.FileName != "a.json" {
+	if events[0].JobID == "" || events[0].Total != 2 || events[1].FileName != "a.json" || events[2].Processed != 1 || events[2].Result == nil || events[2].Result.FileName != "a.json" {
 		t.Fatalf("first credential events=%#v", events[:3])
 	}
 	complete := events[len(events)-1]
 	if complete.Processed != 2 || complete.Total != 2 || complete.Created != 2 || complete.Skipped != 0 || complete.Failed != 0 {
 		t.Fatalf("complete event=%#v", complete)
+	}
+}
+
+func TestOAuthCredentialImportJobSurvivesUploadRequestCancellation(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	probeStarted := make(chan struct{}, 1)
+	releaseProbe := make(chan struct{})
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.String() != codexUsageURL {
+			return nil, fmt.Errorf("unexpected OAuth import request: %s %s", request.Method, request.URL.String())
+		}
+		select {
+		case probeStarted <- struct{}{}:
+		default:
+		}
+		select {
+		case <-releaseProbe:
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+	})}
+	manager := newOAuthCredentialImportJobManager(context.Background(), 2)
+	server := &Server{store: store, client: client, oauthCredentialImportJobs: manager}
+	t.Cleanup(func() {
+		closeCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.Close(closeCtx); err != nil {
+			t.Fatalf("close OAuth credential import jobs: %v", err)
+		}
+	})
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "one.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	credential := fmt.Sprintf(
+		`{"type":"codex","access_token":"at-job","refresh_token":"rt-job","account_id":"account-job","email":"job@example.com","expired":%q}`,
+		expiresAt,
+	)
+	if _, err := io.WriteString(part, credential); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import/jobs", &body).WithContext(requestCtx)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	ginContext, response := newTestContext(t, request)
+	server.HandleStartOAuthCredentialImportJob(ginContext)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start status=%d body=%s", response.Code, response.Body.String())
+	}
+	started := mustParseAPIResponse[oauthCredentialImportJobStart](t, response.Body.Bytes())
+	if started.Data.JobID == "" || started.Data.Total != 1 {
+		t.Fatalf("start response = %#v", started.Data)
+	}
+	cancelRequest()
+
+	select {
+	case <-probeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("background import did not start after upload request cancellation")
+	}
+	close(releaseProbe)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		statusRequest := httptest.NewRequest(http.MethodGet, "/admin/oauth/credentials/import/jobs/"+started.Data.JobID+"?after=0", nil)
+		statusContext, statusResponse := newTestContext(t, statusRequest)
+		statusContext.Params = gin.Params{{Key: "id", Value: started.Data.JobID}}
+		server.HandleOAuthCredentialImportJob(statusContext)
+		if statusResponse.Code != http.StatusOK {
+			t.Fatalf("job status=%d body=%s", statusResponse.Code, statusResponse.Body.String())
+		}
+		if cacheControl := statusResponse.Header().Get("Cache-Control"); cacheControl != "no-store" {
+			t.Fatalf("job Cache-Control = %q, want no-store", cacheControl)
+		}
+		if strings.Contains(statusResponse.Body.String(), "at-job") || strings.Contains(statusResponse.Body.String(), "rt-job") {
+			t.Fatalf("job response leaked credential material: %s", statusResponse.Body.String())
+		}
+		view := mustParseAPIResponse[oauthCredentialImportJobView](t, statusResponse.Body.Bytes()).Data
+		if view.Status == oauthCredentialImportJobSucceeded {
+			if view.Processed != 1 || view.Created != 1 || view.Failed != 0 || len(view.Results) != 1 || view.Next != 1 {
+				t.Fatalf("completed job = %#v", view)
+			}
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job did not complete: %#v", view)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
