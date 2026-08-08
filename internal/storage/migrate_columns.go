@@ -534,16 +534,51 @@ func ensureAuthTokensCacheFieldsMySQL(ctx context.Context, db *sql.DB) error {
 
 // ensureAuthTokensAllowedModels 确保auth_tokens表有allowed_models字段
 func ensureAuthTokensAllowedModels(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "auth_tokens", "allowed_models",
-		"VARCHAR(2000) NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
+	return ensureAuthTokenRestrictionColumn(ctx, db, dialect, "allowed_models")
 }
 
 // ensureAuthTokensAllowedChannelIDs 确保auth_tokens表有allowed_channel_ids字段
 func ensureAuthTokensAllowedChannelIDs(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "auth_tokens", "allowed_channel_ids",
-		"VARCHAR(2000) NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
+	return ensureAuthTokenRestrictionColumn(ctx, db, dialect, "allowed_channel_ids")
+}
+
+func ensureAuthTokenRestrictionColumn(ctx context.Context, db *sql.DB, dialect Dialect, column string) error {
+	if dialect != DialectPostgres {
+		return ensureColumn(ctx, db, dialect, "auth_tokens", column,
+			"VARCHAR(2000) NOT NULL DEFAULT ''",
+			"TEXT NOT NULL DEFAULT ''")
+	}
+
+	if err := ensurePostgresColumns(ctx, db, "auth_tokens", []mysqlColumnDef{{
+		name:       column,
+		definition: "TEXT NOT NULL DEFAULT ''",
+	}}); err != nil {
+		return err
+	}
+
+	var dataType string
+	if err := db.QueryRowContext(ctx, `
+		SELECT data_type
+		FROM information_schema.columns
+		WHERE table_schema = current_schema() AND table_name = 'auth_tokens' AND column_name = $1
+	`, column).Scan(&dataType); err != nil {
+		return fmt.Errorf("inspect auth_tokens.%s type: %w", column, err)
+	}
+	if dataType == "text" {
+		return nil
+	}
+	if dataType != "character varying" {
+		return fmt.Errorf("auth_tokens.%s has unsupported type %q", column, dataType)
+	}
+
+	// column 只来自上面两个固定调用点，不接受外部输入。
+	if _, err := db.ExecContext(ctx, fmt.Sprintf(
+		"ALTER TABLE auth_tokens ALTER COLUMN %s TYPE TEXT", column,
+	)); err != nil {
+		return fmt.Errorf("migrate auth_tokens.%s to TEXT: %w", column, err)
+	}
+	log.Printf("[MIGRATE] 已将 auth_tokens.%s 扩展为 TEXT (postgres)", column)
+	return nil
 }
 
 // ensureAuthTokensChannelRestrictionMode 确保auth_tokens表有channel_restriction_mode字段

@@ -290,6 +290,86 @@ func TestPostgres(t *testing.T) {
 		}
 	})
 
+	t.Run("AuthTokenRestrictionColumnsUseText", func(t *testing.T) {
+		cleanupPostgresTables(t, env.db)
+
+		store, err := CreatePostgresStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("初始迁移失败: %v", err)
+		}
+		defer func() { _ = store.Close() }()
+
+		token := &model.AuthToken{
+			Token:             "pg-large-restrictions",
+			Description:       "验证 PostgreSQL 无损扩展限制列表",
+			CreatedAt:         time.Now(),
+			IsActive:          true,
+			AllowedModels:     []string{"legacy-model"},
+			AllowedChannelIDs: []int64{42},
+		}
+		if err := store.CreateAuthToken(ctx, token); err != nil {
+			t.Fatalf("创建迁移夹具失败: %v", err)
+		}
+
+		for _, column := range []string{"allowed_models", "allowed_channel_ids"} {
+			if _, err := env.db.ExecContext(ctx, fmt.Sprintf(
+				"ALTER TABLE auth_tokens ALTER COLUMN %s TYPE VARCHAR(2000)", column,
+			)); err != nil {
+				t.Fatalf("构造旧列 %s 失败: %v", column, err)
+			}
+		}
+
+		if err := migratePostgres(ctx, env.db); err != nil {
+			t.Fatalf("迁移旧 auth_tokens 限制列失败: %v", err)
+		}
+
+		for _, column := range []string{"allowed_models", "allowed_channel_ids"} {
+			var dataType string
+			if err := env.db.QueryRowContext(ctx, `
+				SELECT data_type
+				FROM information_schema.columns
+				WHERE table_schema = current_schema() AND table_name = 'auth_tokens' AND column_name = $1
+			`, column).Scan(&dataType); err != nil {
+				t.Fatalf("读取 %s 类型失败: %v", column, err)
+			}
+			if dataType != "text" {
+				t.Fatalf("auth_tokens.%s 类型=%q，期望 text", column, dataType)
+			}
+		}
+
+		got, err := store.GetAuthToken(ctx, token.ID)
+		if err != nil {
+			t.Fatalf("读取迁移后的令牌失败: %v", err)
+		}
+		if len(got.AllowedModels) != 1 || got.AllowedModels[0] != "legacy-model" ||
+			len(got.AllowedChannelIDs) != 1 || got.AllowedChannelIDs[0] != 42 {
+			t.Fatalf("迁移损坏已有值: models=%v channels=%v", got.AllowedModels, got.AllowedChannelIDs)
+		}
+
+		got.AllowedModels = make([]string, 300)
+		got.AllowedChannelIDs = make([]int64, 1000)
+		for i := range got.AllowedModels {
+			got.AllowedModels[i] = fmt.Sprintf("model-%04d", i)
+		}
+		for i := range got.AllowedChannelIDs {
+			got.AllowedChannelIDs[i] = int64(i + 1)
+		}
+		if err := store.UpdateAuthToken(ctx, got); err != nil {
+			t.Fatalf("更新超过 2000 字符的限制列表失败: %v", err)
+		}
+		if err := migratePostgres(ctx, env.db); err != nil {
+			t.Fatalf("重复迁移失败: %v", err)
+		}
+
+		got, err = store.GetAuthToken(ctx, token.ID)
+		if err != nil {
+			t.Fatalf("读取大限制列表失败: %v", err)
+		}
+		if len(got.AllowedModels) != 300 || len(got.AllowedChannelIDs) != 1000 {
+			t.Fatalf("大限制列表未完整持久化: models=%d channels=%d", len(got.AllowedModels), len(got.AllowedChannelIDs))
+		}
+	})
+
 	t.Run("ChannelModelDisabledRoundTrip", func(t *testing.T) {
 		cleanupPostgresTables(t, env.db)
 
