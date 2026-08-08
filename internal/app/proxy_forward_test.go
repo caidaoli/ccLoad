@@ -158,7 +158,7 @@ func TestCodexOAuthNonStreamReassemblesTerminalResponse(t *testing.T) {
 		"event: response.completed\n" +
 		`data: {"type":"response.completed","response":{"id":"resp-1","status":"completed","output":[],"usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12}}}` + "\n\n"
 	reqCtx := &requestContext{
-		ctx: context.Background(), startTime: time.Now(), codexOAuthNonStream: true,
+		ctx: context.Background(), startTime: time.Now(), responsesSSEUpstreamNonStream: true,
 	}
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
@@ -195,7 +195,7 @@ func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
 	t.Run("client cancel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		reqCtx := &requestContext{ctx: ctx, startTime: time.Now(), codexOAuthNonStream: true}
+		reqCtx := &requestContext{ctx: ctx, startTime: time.Now(), responsesSSEUpstreamNonStream: true}
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
@@ -213,7 +213,7 @@ func TestCodexOAuthNonStreamDiagnosticsOnlyForUpstreamFailure(t *testing.T) {
 	})
 
 	t.Run("upstream failure", func(t *testing.T) {
-		reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), codexOAuthNonStream: true}
+		reqCtx := &requestContext{ctx: context.Background(), startTime: time.Now(), responsesSSEUpstreamNonStream: true}
 		resp := &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},

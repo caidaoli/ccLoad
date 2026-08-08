@@ -115,8 +115,19 @@ func (s *Server) buildProxyRequest(
 	if err != nil {
 		return nil, err
 	}
+	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
+	if xaiResponsesRequest {
+		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQueryForAttempt(reqCtx, rawQuery))
+	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
+	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
+	if xaiResponsesRequest {
+		upstreamURL = buildXAIResponsesURL(baseURL, upstreamQuery)
+	}
 	if cfg.UsesAntigravityOAuth() {
 		upstreamURL, err = antigravityUpstreamURL(baseURL, upstreamStreaming)
 		if err != nil {
@@ -125,9 +136,12 @@ func (s *Server) buildProxyRequest(
 	}
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
-	codexSessionID := resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
-	if codexSessionID != "" {
-		body = injectCodexPromptCacheKey(body, codexSessionID)
+	codexSessionID := ""
+	if !cfg.UsesXAIOAuth() {
+		codexSessionID = resolveCodexSessionHint(reqCtx, body, apiKey, hdr)
+		if codexSessionID != "" {
+			body = injectCodexPromptCacheKey(body, codexSessionID)
+		}
 	}
 
 	// 2. 创建带上下文的请求
@@ -164,7 +178,9 @@ func (s *Server) buildProxyRequest(
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
-	if upstreamProtocol == protocol.Codex {
+	if cfg.UsesXAIOAuth() {
+		injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
+	} else if upstreamProtocol == protocol.Codex {
 		if isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 			upstreamStreaming = true
 		}
@@ -778,8 +794,8 @@ func (s *Server) handleSuccessResponse(
 	readStats *streamReadStats,
 	observer *ForwardObserver,
 ) (*fwResult, float64, error) {
-	if reqCtx.codexOAuthNonStream && responseIsSSE(resp, true) {
-		return s.handleCodexOAuthNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
+	if reqCtx.responsesSSEUpstreamNonStream && responseIsSSE(resp, true) {
+		return s.handleResponsesSSENonStreamSuccessResponse(reqCtx, resp, hdrClone, w, readStats)
 	}
 	if reqCtx.isStreaming && s.protocolRegistry != nil {
 		detectedProtocol, transform, err := maybePrepareDynamicStreamTransform(reqCtx, resp)
@@ -1535,7 +1551,7 @@ func (s *Server) handleResponse(
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	return s.forwardOnceAsyncWithNativeCodexWebsocket(
-		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil,
+		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "",
 	)
 }
 
@@ -1556,6 +1572,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	w http.ResponseWriter,
 	observer *ForwardObserver,
 	native *nativeCodexWebsocketAttempt,
+	executionIdentity string,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(plan))
@@ -1566,6 +1583,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.translatedBody = plan.TranslatedBody
 	reqCtx.originalModel = plan.ResponseModel()
 	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
+	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
 	if s.protocolRegistry != nil && plan.NeedsTransform {
@@ -1587,8 +1605,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		reqCtx.transformPlan = plan
 		reqCtx.translatedBody = translatedBody
 	}
-	reqCtx.codexOAuthNonStream = !plan.Streaming &&
-		isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
+	reqCtx.responsesSSEUpstreamNonStream = !plan.Streaming &&
+		(isCodexOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath) ||
+			isXAIOAuthResponsesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath))
 
 	// 2. 构建上游请求
 	req, err := s.buildProxyRequest(reqCtx, cfg, apiKey, method, reqCtx.transformPlan.TranslatedBody, hdr, rawQuery, reqCtx.transformPlan.UpstreamPath, baseURL)
@@ -1749,7 +1768,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
-			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil,
+			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity,
 		)
 	}
 	if res != nil {
@@ -1951,7 +1970,7 @@ func (s *Server) forwardAttempt(
 		}, cooldown.ActionRetryChannel, nil
 	}
 	var nativeAttempt *nativeCodexWebsocketAttempt
-	if reqCtx.nativeCodexWS != nil && cfg.Websockets && upstreamProtocol == protocol.Codex &&
+	if reqCtx.nativeCodexWS != nil && cfg.Websockets && !cfg.UsesXAIOAuth() && upstreamProtocol == protocol.Codex &&
 		protocol.DetectRequestFamily(requestPath) == protocol.RequestFamilyResponses && !plan.NeedsTransform {
 		incrementalBody := replaceJSONRequestModel(reqCtx.nativeCodexBody, reqCtx.originalModel, actualModel)
 		incrementalBody = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, incrementalBody)
@@ -1966,9 +1985,10 @@ func (s *Server) forwardAttempt(
 		reqCtx.nativeCodexWS.Close()
 	}
 
+	executionIdentity := deriveXAIExecutionIDForRequest(reqCtx)
 	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
-		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt,
+		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 	)
 
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
@@ -1989,7 +2009,7 @@ func (s *Server) forwardAttempt(
 		s.activeRequests.Retry(reqCtx.activeReqID)
 		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
-			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt,
+			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 		)
 		if res != nil && res.DebugData != nil {
 			reqCtx.debugData = res.DebugData
@@ -2769,6 +2789,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesAntigravityOAuth() {
 		return s.tryAntigravityOAuthChannel(ctx, cfg, reqCtx, w)
 	}
+	if cfg.UsesXAIOAuth() {
+		return s.tryXAIOAuthChannel(ctx, cfg, reqCtx, w)
+	}
 
 	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
 	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)
@@ -2919,6 +2942,71 @@ func codexCredentialUnavailableResult(cfg *model.Config) *proxyResult {
 	return &proxyResult{
 		status:     http.StatusServiceUnavailable,
 		body:       []byte(`{"error":{"message":"Codex channel credential is unavailable","type":"upstream_auth_error"}}`),
+		channelID:  &channelID,
+		succeeded:  false,
+		nextAction: cooldown.ActionRetryChannel,
+	}
+}
+
+func (s *Server) tryXAIOAuthChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	urls := cfg.GetURLs()
+	if len(urls) == 0 {
+		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
+	}
+	selector := s.urlSelector
+	if len(urls) > 1 && selector != nil {
+		urlsSnapshot := append([]string(nil), urls...)
+		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
+	}
+	if s.xaiCredentials == nil {
+		return xaiCredentialUnavailableResult(cfg), nil
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		credential, err := s.xaiCredentials.credential(ctx, cfg, attempt == 1)
+		if err != nil {
+			log.Printf("[WARN] xAI OAuth credential unavailable: channel_id=%d err=%v", cfg.ID, err)
+			return xaiCredentialUnavailableResult(cfg), nil
+		}
+		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
+			ctx, cfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
+		)
+		if err != nil {
+			return nil, err
+		}
+		result := immediate
+		if result == nil {
+			result = lastFailure
+		}
+		if attempt == 0 && result != nil && !result.succeeded &&
+			xaiCredentialRejected(result.status, result.header, result.body) {
+			s.activeRequests.Retry(reqCtx.activeReqID)
+			continue
+		}
+		if result != nil && result.nextAction == cooldown.ActionRetryKey {
+			result.nextAction = cooldown.ActionRetryChannel
+		}
+		if immediate != nil {
+			return immediate, nil
+		}
+		if lastFailure != nil {
+			return lastFailure, nil
+		}
+		break
+	}
+	return nil, ErrAllKeysExhausted
+}
+
+func xaiCredentialUnavailableResult(cfg *model.Config) *proxyResult {
+	channelID := cfg.ID
+	return &proxyResult{
+		status:     http.StatusServiceUnavailable,
+		body:       []byte(`{"error":{"message":"xAI channel credential is unavailable","type":"upstream_auth_error"}}`),
 		channelID:  &channelID,
 		succeeded:  false,
 		nextAction: cooldown.ActionRetryChannel,

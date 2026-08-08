@@ -84,7 +84,7 @@ func prepareCodexOAuthHTTPBody(cfg *model.Config, upstreamProtocol protocol.Prot
 	return body
 }
 
-func (s *Server) handleCodexOAuthNonStreamSuccessResponse(
+func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 	reqCtx *requestContext,
 	resp *http.Response,
 	hdrClone http.Header,
@@ -129,19 +129,19 @@ func (s *Server) handleCodexOAuthNonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), streamErr
 	}
 	if len(collector.terminal) == 0 {
-		result.StreamDiagMsg = "Codex SSE stream ended without response.completed or response.incomplete"
+		result.StreamDiagMsg = "Responses SSE stream ended without response.completed or response.incomplete"
 		return result, reqCtx.Duration().Seconds(), nil
 	}
 
 	terminal := collector.patchedTerminal()
 	response := gjson.GetBytes(terminal, "response")
 	if !response.Exists() || response.Type != gjson.JSON {
-		return result, reqCtx.Duration().Seconds(), fmt.Errorf("codex terminal event is missing response")
+		return result, reqCtx.Duration().Seconds(), fmt.Errorf("responses terminal event is missing response")
 	}
 	responseBody := []byte(response.Raw)
 	if reqCtx.transformPlan.NeedsTransform {
 		if s.protocolRegistry == nil {
-			return result, reqCtx.Duration().Seconds(), errors.New("protocol registry unavailable for Codex non-stream response transform")
+			return result, reqCtx.Duration().Seconds(), errors.New("protocol registry unavailable for Responses non-stream response transform")
 		}
 		translatedBody, err := s.protocolRegistry.TranslateResponseNonStream(
 			reqCtx.ctx,

@@ -22,6 +22,10 @@ func TestAuthService_LoginLogoutAndCleanup(t *testing.T) {
 
 	svc := NewAuthService("pass", limiter, store)
 	t.Cleanup(svc.Close)
+	revoked := make(map[string]int)
+	svc.RegisterWebSessionRevokeHook(func(sessionHash string) {
+		revoked[sessionHash]++
+	})
 
 	mkCtx := func(method string, body []byte) (*gin.Context, *httptest.ResponseRecorder) {
 		req := newJSONRequestBytes(method, "/admin/login", body)
@@ -91,6 +95,9 @@ func TestAuthService_LoginLogoutAndCleanup(t *testing.T) {
 		if svc.isValidToken(token) {
 			t.Fatalf("expected token invalid after logout")
 		}
+		if got := revoked[model.HashToken(token)]; got != 1 {
+			t.Fatalf("logout revoke hook calls=%d, want 1", got)
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -139,6 +146,12 @@ func TestAuthService_LoginLogoutAndCleanup(t *testing.T) {
 		svc.tokensMux.RUnlock()
 		if expiredStill || !validStill {
 			t.Fatalf("unexpected memory tokens: expired=%v valid=%v", expiredStill, validStill)
+		}
+		if got := revoked[expiredHash]; got != 1 {
+			t.Fatalf("expiry revoke hook calls=%d, want 1", got)
+		}
+		if got := revoked[validHash]; got != 0 {
+			t.Fatalf("valid session revoke hook calls=%d, want 0", got)
 		}
 
 		sessions, err := store.LoadWebSessions(ctx)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -234,6 +235,37 @@ func TestAPITokenWebSessionCannotUseAdminMiddleware(t *testing.T) {
 	}
 }
 
+func TestAdminWebIdentityCarriesOnlySessionHash(t *testing.T) {
+	t.Parallel()
+	svc := newTestAuthService(t)
+	plainSession := "admin-session-bearer"
+	injectAdminToken(svc, plainSession, time.Now().Add(time.Hour))
+
+	var captured WebIdentity
+	w := httptest.NewRecorder()
+	_, engine := gin.CreateTestContext(w)
+	engine.GET("/test", svc.RequireAdminAuth(), func(c *gin.Context) {
+		var ok bool
+		captured, ok = WebIdentityFromContext(c)
+		if !ok {
+			c.Status(http.StatusInternalServerError)
+			return
+		}
+		c.JSON(http.StatusOK, captured)
+	})
+	req := httptest.NewRequest(http.MethodGet, "/test", nil)
+	req.Header.Set("Authorization", "Bearer "+plainSession)
+	engine.ServeHTTP(w, req)
+
+	wantHash := model.HashToken(plainSession)
+	if w.Code != http.StatusOK || captured.SessionHash != wantHash || captured.SessionHash == plainSession {
+		t.Fatalf("identity status=%d hash=%q, want non-bearer hash %q", w.Code, captured.SessionHash, wantHash)
+	}
+	if strings.Contains(w.Body.String(), wantHash) || strings.Contains(w.Body.String(), plainSession) {
+		t.Fatalf("serialized identity exposed session material: %s", w.Body.String())
+	}
+}
+
 func TestAPITokenChannelRoutesAreReadOnly(t *testing.T) {
 	server := newInMemoryServer(t)
 	plainSession := "readonly-channel-session"
@@ -347,6 +379,10 @@ func TestReloadAuthTokensRevokesPersistedWebSessions(t *testing.T) {
 		Token string `json:"token"`
 	}
 	mustUnmarshalAPIResponseData(t, w.Body.Bytes(), &login)
+	var revoked []string
+	svc.RegisterWebSessionRevokeHook(func(sessionHash string) {
+		revoked = append(revoked, sessionHash)
+	})
 
 	authToken.IsActive = false
 	if err := store.UpdateAuthToken(context.Background(), authToken); err != nil {
@@ -354,6 +390,15 @@ func TestReloadAuthTokensRevokesPersistedWebSessions(t *testing.T) {
 	}
 	if err := svc.ReloadAuthTokens(); err != nil {
 		t.Fatalf("reload auth tokens: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != model.HashToken(login.Token) || revoked[0] == login.Token {
+		t.Fatalf("revoke hook=%v, want one session hash", revoked)
+	}
+	if err := svc.ReloadAuthTokens(); err != nil {
+		t.Fatalf("second reload auth tokens: %v", err)
+	}
+	if len(revoked) != 1 {
+		t.Fatalf("revoke hook called more than once: %v", revoked)
 	}
 
 	if _, exists, err := store.GetWebSession(context.Background(), login.Token); err != nil || exists {

@@ -34,6 +34,10 @@ func TestAuthService_IsValidToken_ExpiryAndDeletion(t *testing.T) {
 	s := &AuthService{
 		validTokens: make(map[string]model.WebSession),
 	}
+	var revoked []string
+	s.RegisterWebSessionRevokeHook(func(sessionHash string) {
+		revoked = append(revoked, sessionHash)
+	})
 
 	s.tokensMux.Lock()
 	s.validTokens[tokenHash] = model.WebSession{TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(-time.Second)}
@@ -48,6 +52,12 @@ func TestAuthService_IsValidToken_ExpiryAndDeletion(t *testing.T) {
 	if stillExists {
 		t.Fatal("expected expired token to be deleted from cache")
 	}
+	if len(revoked) != 1 || revoked[0] != tokenHash {
+		t.Fatalf("expiry hook=%v, want [%s]", revoked, tokenHash)
+	}
+	if s.isValidToken(token) || len(revoked) != 1 {
+		t.Fatalf("expired session notified more than once: %v", revoked)
+	}
 
 	s.tokensMux.Lock()
 	s.validTokens[tokenHash] = model.WebSession{TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(time.Hour)}
@@ -58,6 +68,32 @@ func TestAuthService_IsValidToken_ExpiryAndDeletion(t *testing.T) {
 
 	if s.isValidToken("missing") {
 		t.Fatal("expected missing token invalid")
+	}
+}
+
+func TestAuthService_RevokeHookRunsOutsideServiceLocks(t *testing.T) {
+	t.Parallel()
+	token := "lock-check-session"
+	tokenHash := model.HashToken(token)
+	s := &AuthService{validTokens: map[string]model.WebSession{
+		tokenHash: {TokenHash: tokenHash, Role: model.WebRoleAdmin, ExpiresAt: time.Now().Add(-time.Second)},
+	}}
+	called := false
+	s.RegisterWebSessionRevokeHook(func(sessionHash string) {
+		called = true
+		if sessionHash != tokenHash {
+			t.Errorf("hook hash=%q, want %q", sessionHash, tokenHash)
+		}
+		if !s.tokensMux.TryLock() {
+			t.Error("revoke hook ran while session lock was held")
+		} else {
+			s.tokensMux.Unlock()
+		}
+		s.RegisterWebSessionRevokeHook(func(string) {})
+	})
+
+	if s.isValidToken(token) || !called {
+		t.Fatalf("expired session valid=%v hook called=%v", s.isValidToken(token), called)
 	}
 }
 

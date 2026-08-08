@@ -611,6 +611,92 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
   }
 });
 
+test('editing an xAI channel keeps the OAuth editor credential-free and key-free', async () => {
+  const channel = {
+    id: 76,
+    name: 'xai-oauth',
+    auth_type: 'xai_oauth',
+    xai_email: 'safe@example.com',
+    xai_subscription_tier: 'pro',
+    urls: [{ url: 'https://cli-chat-proxy.grok.com/v1', exact: false, protocols: ['codex'] }],
+    models: [],
+    priority: 0,
+    enabled: true,
+    protocol_transform_mode: 'local'
+  };
+  const fixture = installEditChannelGlobals(channel, {
+    editorKeys: [],
+    codexCredential: null,
+    codexCredentialInfo: null
+  });
+
+  try {
+    const { editChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+
+    assert.deepEqual(fixture.loadedKeys, []);
+    assert.deepEqual(fixture.authEditorCalls.at(-1), {
+      authType: 'xai_oauth',
+      credential: null,
+      channel,
+      credentialInfo: null
+    });
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('saving an xAI editor preserves xai_oauth and submits no key material', async () => {
+  const channel = {
+    id: 77,
+    name: 'xai-save',
+    auth_type: 'xai_oauth',
+    urls: [{ url: 'https://cli-chat-proxy.grok.com/v1', exact: false, protocols: ['codex'] }],
+    models: [],
+    enabled: true,
+    protocol_transform_mode: 'local'
+  };
+  const fixture = installEditChannelGlobals(channel, { editorKeys: [] });
+  const extraGlobals = new Map();
+  const setGlobal = (key, value) => {
+    extraGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  let submitted;
+
+  try {
+    const { editChannel, saveChannel } = loadChannelsModals();
+    await editChannel(channel.id);
+    global.redirectTableData.push({ model: 'grok-4', redirect_model: '' });
+    fixture.getElement('channelName').value = channel.name;
+    fixture.getElement('channelApiKey').value = 'must-be-cleared';
+    fixture.getElement('protocolTransformModeValue').value = 'local';
+    fixture.getElement('channelEnabled').checked = true;
+    for (const id of [
+      'channelPriority', 'channelRPMLimit', 'channelMaxConcurrency', 'channelDailyCostLimit',
+      'channelCostMultiplier', 'channelScheduledCheckModel', 'channelProxyURL'
+    ]) fixture.getElement(id).value = '0';
+    setGlobal('getValidInlineURLConfigs', () => channel.urls);
+    setGlobal('getValidInlineKeyRows', () => [{ api_key: 'must-not-submit', note: 'secret' }]);
+    setGlobal('fetchAPIWithAuth', async (_url, options) => {
+      submitted = JSON.parse(options.body);
+      return { success: false, error: 'captured' };
+    });
+
+    await saveChannel({ preventDefault() {} });
+    assert.equal(submitted.auth_type, 'xai_oauth');
+    assert.equal(submitted.api_key, '');
+    assert.deepEqual(submitted.api_keys, []);
+    assert.equal(submitted.key_strategy, undefined);
+  } finally {
+    for (const [key, descriptor] of extraGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+    fixture.restore();
+  }
+});
+
 test('editing a channel does not open a partial editor when bootstrap fails', async () => {
   const channel = {
     id: 74,

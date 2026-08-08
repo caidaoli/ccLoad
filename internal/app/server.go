@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -69,6 +70,9 @@ type Server struct {
 	antigravityOAuth              *codexOAuthManager
 	antigravityCredentials        *antigravityCredentialManager
 	antigravityService            *antigravityauth.Service
+	xaiService                    *xaiauth.Service
+	xaiCredentials                *xaiCredentialManager
+	xaiDevice                     *xaiDeviceManager
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -244,6 +248,26 @@ func NewServer(store storage.Store) *Server {
 		s.antigravityCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
 	})
+	s.xaiService = xaiauth.NewService(s.client)
+	s.xaiCredentials = newXAICredentialManager(store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.xaiDevice = newXAIDeviceManager(
+		s.baseCtx,
+		s.xaiService,
+		func(ctx context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return completeXAICredential(ctx, s.xaiService, s.client, credential, xaiauth.CLIBaseURL)
+		},
+		func(ctx context.Context, credential *xaiauth.Credential) (int64, error) {
+			cfg, _, err := createOrUpdateXAIChannel(ctx, store, credential)
+			if err != nil {
+				return 0, err
+			}
+			s.xaiCredentials.invalidate(cfg.ID)
+			s.InvalidateChannelListCache()
+			return cfg.ID, nil
+		},
+	)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -301,6 +325,7 @@ func NewServer(store storage.Store) *Server {
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
 	)
+	s.authService.RegisterWebSessionRevokeHook(s.xaiDevice.cancelByAdmin)
 
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
 	s.startBackgroundWorkers()
@@ -1052,6 +1077,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/antigravity/oauth/callback", s.HandleSubmitAntigravityOAuthCallback)
 		admin.POST("/antigravity/credentials/import", s.HandleImportAntigravityCredential)
 		admin.POST("/channels/:id/antigravity-credential/refresh", s.HandleRefreshAntigravityCredential)
+		admin.POST("/xai/oauth/start", s.HandleStartXAIDeviceOAuth)
+		admin.GET("/xai/oauth/status", s.HandleXAIDeviceOAuthStatus)
+		admin.POST("/xai/oauth/cancel", s.HandleCancelXAIDeviceOAuth)
+		admin.POST("/xai/credentials/import/stream", s.HandleImportXAICredentialsStream)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1299,6 +1328,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.antigravityOAuth != nil {
 		s.antigravityOAuth.close()
+	}
+	if s.xaiDevice != nil {
+		s.xaiDevice.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

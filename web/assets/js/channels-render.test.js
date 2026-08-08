@@ -99,3 +99,57 @@ test('OAuth 计划徽标支持 Antigravity paidTier 并转义内容', () => {
   );
   assert.equal(buildOAuthPlanBadge({ auth_type: 'api_key', antigravity_paid_tier: 'Google AI Pro' }), '');
 });
+
+test('xAI 安全徽标和部分额度不渲染凭证并标记未知周期', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周额度',
+        'channels.oauth.usageMonthly': '月额度',
+        'channels.oauth.usageAvailable': '可用',
+        'channels.oauth.usageUnknown': '未知',
+        'channels.oauth.usageWarnings': '部分数据不可用',
+        'channels.oauth.usageRemaining': '剩余'
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'xai',
+      subscription_tier: 'Pro <safe>',
+      windows: [{ kind: 'weekly', limit_window_seconds: 7 * 24 * 60 * 60, remaining_percent: 75 }],
+      warnings: ['Monthly unavailable <retry>']
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const badge = buildOAuthPlanBadge({
+      auth_type: 'xai_oauth',
+      xai_email: 'user<safe>@example.com',
+      xai_subscription_tier: 'Pro <safe>',
+      xai_entitlement_status: 'active<script>',
+      oauth_credential: 'must-not-render',
+      api_key: 'must-not-render'
+    });
+    assert.match(badge, /Pro &lt;safe&gt;/);
+    assert.match(badge, /user&lt;safe&gt;@example\.com/);
+    assert.match(badge, /active&lt;script&gt;/);
+    assert.doesNotMatch(badge, /must-not-render/);
+
+    const usage = buildOAuthUsageStatusHtml({ id: 88, auth_type: 'xai_oauth' });
+    assert.match(usage, /周额度/);
+    assert.match(usage, /可用/);
+    assert.match(usage, /月额度/);
+    assert.match(usage, /未知/);
+    assert.match(usage, /Monthly unavailable &lt;retry&gt;/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});

@@ -19,6 +19,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -72,6 +73,29 @@ func createAntigravityOAuthChannelForAdminTest(t testing.TB, srv *Server, upstre
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	return created
+}
+
+func createXAIOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
+	t.Helper()
+	credential := &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "at-xai-admin", RefreshToken: "rt-xai-admin",
+		TokenType: "Bearer", Expired: time.Now().UTC().Add(6 * time.Hour).Format(time.RFC3339),
+		TokenEndpoint: xaiauth.TokenURL, BaseURL: xaiauth.CLIBaseURL,
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("encode xAI credential: %v", err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "xai-oauth-admin-test", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: payload,
+		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "grok-4.5"}}, Enabled: true, Websockets: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig xAI OAuth channel: %v", err)
 	}
 	return created
 }
@@ -1219,6 +1243,64 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
 		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])
+	}
+}
+
+func TestHandleChannelTest_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
+	var upstreamBody []byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-xai-admin" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get(xaiauth.CLITokenAuthHeader); got != xaiauth.CLITokenAuthValue {
+			t.Errorf("%s = %q", xaiauth.CLITokenAuthHeader, got)
+		}
+		if r.Header.Get("X-Api-Key") != "" || r.Header.Get("ChatGPT-Account-ID") != "" ||
+			r.Header.Get("Session-Id") != "" || r.Header.Get("Session_id") != "" {
+			t.Errorf("conflicting authentication headers were not removed: %v", r.Header)
+		}
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q", got)
+		}
+		upstreamBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"xai test answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_xai_admin\",\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createXAIOAuthChannelForAdminTest(t, srv, upstream.URL+"/v1")
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "grok-4.5", "client_protocol": "codex", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !resp.Success || !success {
+		t.Fatalf("xAI OAuth channel test failed: %+v", resp)
+	}
+	if got, _ := resp.Data["response_text"].(string); got != "xai test answer" {
+		t.Fatalf("response_text=%q data=%+v", got, resp.Data)
+	}
+	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
+		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])
+	}
+	if got, _ := resp.Data["tested_key_index"].(float64); got != -1 {
+		t.Fatalf("tested_key_index=%v, want -1", resp.Data["tested_key_index"])
+	}
+	if !gjson.GetBytes(upstreamBody, "stream").Bool() || gjson.GetBytes(upstreamBody, "model").String() != "grok-4.5" ||
+		gjson.GetBytes(upstreamBody, "prompt_cache_key").String() == "" {
+		t.Fatalf("xAI request was not finalized: %s", upstreamBody)
 	}
 }
 

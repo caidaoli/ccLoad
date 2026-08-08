@@ -22,6 +22,7 @@ import (
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
@@ -548,6 +549,237 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].OAuthCredential, `"access_token":"at-new"`) {
 		t.Fatalf("persisted refreshed channel=%#v err=%v", configs, err)
+	}
+}
+
+func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T) {
+	t.Parallel()
+
+	var gotConversationID string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read xAI wire body: %v", err)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer xai-access" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get(xaiauth.CLITokenAuthHeader); got != xaiauth.CLITokenAuthValue {
+			t.Errorf("%s = %q", xaiauth.CLITokenAuthHeader, got)
+		}
+		for name, want := range map[string]string{
+			xaiauth.CLIClientVersionHeader:        xaiauth.CLIClientVersion,
+			"User-Agent":                          xaiauth.CLIUserAgent,
+			xaiauth.CLIClientIdentifierHeader:     xaiauth.CLIClientIdentifier,
+			xaiauth.CLIAuthenticateResponseHeader: xaiauth.CLIAuthenticateResponse,
+		} {
+			if got := r.Header.Get(name); got != want {
+				t.Errorf("%s = %q, want %q", name, got, want)
+			}
+		}
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Errorf("Accept = %q", got)
+		}
+		gotConversationID = r.Header.Get("x-grok-conv-id")
+		if gotConversationID == "" || gjson.GetBytes(wireBody, "prompt_cache_key").String() != gotConversationID {
+			t.Errorf("conversation identity mismatch header=%q body=%s", gotConversationID, wireBody)
+		}
+		if !gjson.GetBytes(wireBody, "stream").Bool() || gjson.GetBytes(wireBody, "model").String() != "grok-4.5" {
+			t.Errorf("xAI required body fields missing: %s", wireBody)
+		}
+		for _, field := range []string{"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options"} {
+			if gjson.GetBytes(wireBody, field).Exists() {
+				t.Errorf("forbidden field %s survived: %s", field, wireBody)
+			}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-xai","object":"response","status":"completed","model":"grok-4.5","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-access", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	rules := &model.CustomRequestRules{
+		Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: xaiauth.CLIClientVersionHeader, Value: "client-override"},
+			{Action: model.RuleActionOverride, Name: "x-grok-conv-id", Value: "client-conversation"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "client-agent"},
+			{Action: model.RuleActionOverride, Name: "Accept", Value: "application/json"},
+		},
+		Body: []model.CustomBodyRule{
+			{Action: model.RuleActionOverride, Path: "stream", Value: json.RawMessage(`false`)},
+			{Action: model.RuleActionOverride, Path: "prompt_cache_key", Value: json.RawMessage(`"client-conversation"`)},
+			{Action: model.RuleActionOverride, Path: "previous_response_id", Value: json.RawMessage(`"client-previous"`)},
+		},
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-oauth-http", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
+		authType: model.AuthTypeXAIOAuth, oauthCredential: credential, customRequestRules: rules,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "grok-4.5", "stream": false, "input": "hello",
+		"previous_response_id": "resp-old", "prompt_cache_retention": "24h",
+		"safety_identifier": "client", "stream_options": map[string]any{"include_usage": true},
+	}, map[string]string{"Session-Id": "session", "Thread-Id": "parent"})
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-xai" {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if gotConversationID == "" {
+		t.Fatal("xAI conversation identity was not sent")
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs = %#v, %v", configs, err)
+	}
+	keys, err := env.store.GetAPIKeys(context.Background(), configs[0].ID)
+	if err != nil || len(keys) != 0 {
+		t.Fatalf("xAI OAuth channel keys = %#v, %v", keys, err)
+	}
+}
+
+func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		body        string
+		wantRefresh bool
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":{"type":"authentication_error","code":"invalid_token"}}`, wantRefresh: true},
+		{name: "structured bad credential", status: http.StatusForbidden, body: `{"code":"invalid_token"}`, wantRefresh: true},
+		{name: "ordinary forbidden", status: http.StatusForbidden, body: `{"error":{"message":"forbidden"}}`},
+		{name: "entitlement forbidden", status: http.StatusForbidden, body: `{"code":"subscription_required"}`},
+		{name: "quota", status: http.StatusTooManyRequests, body: `{"code":"quota_exceeded"}`},
+		{name: "upstream failure", status: http.StatusBadGateway, body: `{"error":{"message":"bad gateway"}}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamAttempts atomic.Int32
+			var firstExecutionID string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				attempt := upstreamAttempts.Add(1)
+				wantToken := "xai-old"
+				if attempt == 2 {
+					wantToken = "xai-new"
+				}
+				if got := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "); got != wantToken {
+					t.Errorf("attempt %d access token = %q, want %q", attempt, got, wantToken)
+				}
+				wireBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read attempt %d body: %v", attempt, err)
+				}
+				executionID := r.Header.Get("x-grok-conv-id")
+				if executionID == "" || gjson.GetBytes(wireBody, "prompt_cache_key").String() != executionID {
+					t.Errorf("attempt %d execution identity header=%q body=%s", attempt, executionID, wireBody)
+				}
+				if attempt == 1 {
+					firstExecutionID = executionID
+				} else if executionID != firstExecutionID {
+					t.Errorf("retry execution identity changed: first=%q retry=%q", firstExecutionID, executionID)
+				}
+				if tt.wantRefresh && attempt == 2 {
+					w.Header().Set("Content-Type", "text/event-stream")
+					_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-refreshed","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			}))
+			defer upstream.Close()
+
+			credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+				Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-old", RefreshToken: "xai-refresh",
+				Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+			})
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "xai-replay", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
+				authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+			}}, map[int]string{0: upstream.URL + "/v1"})
+
+			var refreshes atomic.Int32
+			refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				refreshes.Add(1)
+				if req.URL.String() != xaiauth.TokenURL {
+					t.Fatalf("refresh URL = %s", req.URL)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(`{"access_token":"xai-new","refresh_token":"xai-refresh-new","expires_in":3600}`)),
+					Request:    req,
+				}, nil
+			})}
+			env.server.xaiCredentials = newXAICredentialManager(
+				env.store, func(*model.Config) *http.Client { return refreshClient }, func(int64) {
+					env.server.InvalidateChannelListCache()
+				},
+			)
+
+			response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+				"model": "grok-4.5", "stream": false, "input": "hello",
+			}, nil)
+			wantAttempts := int32(1)
+			wantRefreshes := int32(0)
+			if tt.wantRefresh {
+				wantAttempts = 2
+				wantRefreshes = 1
+				if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-refreshed" {
+					t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+			if got := upstreamAttempts.Load(); got != wantAttempts {
+				t.Fatalf("upstream attempts=%d, want %d", got, wantAttempts)
+			}
+			if got := refreshes.Load(); got != wantRefreshes {
+				t.Fatalf("refreshes=%d, want %d", got, wantRefreshes)
+			}
+		})
+	}
+}
+
+func TestProxy_XAIOAuthDoesNotReplayAfterCommittedSemanticOutput(t *testing.T) {
+	var upstreamAttempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamAttempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		largeDelta := strings.Repeat("x", SSEBufferSize)
+		_, _ = fmt.Fprintf(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":%q}\n\n", largeDelta)
+		_, _ = io.WriteString(w, "event: error\n"+`data: {"type":"error","error":{"type":"authentication_error","code":"invalid_token","message":"expired"}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "committed-access", RefreshToken: "committed-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-committed", upstreamProtocol: "codex", models: "grok-4.5", priority: 100,
+		authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	var refreshes atomic.Int32
+	env.server.xaiCredentials = newXAICredentialManager(env.store, func(*model.Config) *http.Client {
+		refreshes.Add(1)
+		return http.DefaultClient
+	}, nil)
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "grok-4.5", "stream": true, "input": "hello",
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"type":"response.output_text.delta"`) {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	if upstreamAttempts.Load() != 1 || refreshes.Load() != 0 {
+		t.Fatalf("upstream attempts=%d refreshes=%d, want 1/0", upstreamAttempts.Load(), refreshes.Load())
 	}
 }
 
