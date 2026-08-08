@@ -141,6 +141,8 @@ func mysqlToPostgres(mysqlCol string) string {
 	col = strings.ReplaceAll(col, "BLOB", "BYTEA")
 	col = strings.ReplaceAll(col, "LONGTEXT", "TEXT")
 	col = strings.ReplaceAll(col, "MEDIUMTEXT", "TEXT")
+	// VARCHAR(2000) 仅用于兼容 MySQL 的默认值语法；在 PostgreSQL 中这些列承载无界 JSON。
+	col = strings.ReplaceAll(col, "VARCHAR(2000)", "TEXT")
 	col = strings.ReplaceAll(col, "TINYINT", "SMALLINT")
 	// DOUBLE → DOUBLE PRECISION（避免重复替换已有 DOUBLE PRECISION）
 	if !strings.Contains(col, "DOUBLE PRECISION") {
