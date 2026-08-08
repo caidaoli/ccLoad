@@ -25,6 +25,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 )
 
+const antigravitySandboxDailyBaseURLForTest = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+
 func channelURLsForTest(rawValues ...string) model.ChannelURLs {
 	urls := make(model.ChannelURLs, 0, len(rawValues))
 	for _, raw := range rawValues {

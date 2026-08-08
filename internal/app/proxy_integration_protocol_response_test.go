@@ -340,9 +340,9 @@ func TestProxy_AnthropicToXAIOAuthKeepsClaudeSessionCacheWireContract(t *testing
 			t.Fatalf("request %d cache/header identity mismatch: body=%q header=%q", i, got, request.executionID)
 		}
 		tools := gjson.GetBytes(request.body, "tools").Array()
-		if len(tools) != 3 || tools[0].Get("type").String() != "function" ||
-			tools[1].Get("type").String() != "web_search" || tools[2].Get("type").String() != "x_search" {
-			t.Fatalf("request %d mixed cache tools=%s", i, gjson.GetBytes(request.body, "tools").Raw)
+		if len(tools) != 2 || tools[0].Get("type").String() != "web_search" ||
+			tools[1].Get("type").String() != "function" || tools[1].Get("name").String() != "lookup" {
+			t.Fatalf("request %d CLI chat-proxy tools=%s", i, gjson.GetBytes(request.body, "tools").Raw)
 		}
 		if gjson.GetBytes(request.body, "tool_choice").String() == "none" {
 			t.Fatalf("request %d disabled client function tools: %s", i, request.body)
