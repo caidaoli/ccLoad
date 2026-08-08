@@ -71,6 +71,62 @@ func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
 	}
 }
 
+func TestUpstreamHTTPTransportClosesIdleCodexUTLSConnectionAtMaxAge(t *testing.T) {
+	closed := make(chan struct{}, 2)
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	server.EnableHTTP2 = true
+	server.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	server.StartTLS()
+	defer server.Close()
+
+	base := buildHTTPTransport(true)
+	dialer := &net.Dialer{}
+	base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, server.Listener.Addr().String())
+	}
+	transport := newUpstreamConnectionAgeTransport(base, 50*time.Millisecond)
+	client := &http.Client{Transport: transport}
+	t.Cleanup(transport.Close)
+
+	doRequest := func() {
+		t.Helper()
+		req, err := http.NewRequestWithContext(
+			context.Background(),
+			http.MethodGet,
+			"https://chatgpt.com/backend-api/codex/responses",
+			nil,
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("request failed: %v", err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err = resp.Body.Close(); err != nil {
+			t.Fatalf("close response: %v", err)
+		}
+	}
+
+	doRequest()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle Codex uTLS connection was not closed after max age")
+	}
+	doRequest()
+}
+
 func TestNewServerAppliesUpstreamConnectionMaxAgeToHTTP(t *testing.T) {
 	t.Setenv("CCLOAD_PASS", "upstream-connection-age-test-password")
 
