@@ -857,7 +857,7 @@ func TestHybridStore_OAuthReplicaRecoveryCopiesCompletePrimaryConfig(t *testing.
 	assertWinner("GetEnabledChannelsByModel", enabled[0])
 }
 
-func TestHybridStore_BatchPatchOAuthModelsWaitsForConditionalCommit(t *testing.T) {
+func TestHybridStore_BatchPatchOAuthModelsSerializesAfterConditionalCommit(t *testing.T) {
 	mysql := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)
 	defer func() {
@@ -909,7 +909,7 @@ func TestHybridStore_BatchPatchOAuthModelsWaitsForConditionalCommit(t *testing.T
 	go func() {
 		_, patchErr := hybrid.BatchPatchConfigs(ctx, []int64{created.ID}, model.BatchConfigPatch{
 			ModelImportMode: model.ModelImportModeReplace,
-			ModelEntries:    []model.ModelEntry{{Model: "stale-model"}},
+			ModelEntries:    []model.ModelEntry{{Model: "admin-model"}},
 		})
 		patchDone <- patchErr
 	}()
@@ -924,12 +924,15 @@ func TestHybridStore_BatchPatchOAuthModelsWaitsForConditionalCommit(t *testing.T
 	if err := <-commitDone; err != nil {
 		t.Fatal(err)
 	}
-	if err := <-patchDone; err == nil {
-		t.Fatal("BatchPatchConfigs updated OAuth-derived model state")
+	if err := <-patchDone; err != nil {
+		t.Fatal(err)
 	}
-	got, err := hybrid.GetConfig(ctx, created.ID)
-	if err != nil || !got.SupportsModel("winner-model") || got.ScheduledCheckModel != "winner-model" {
-		t.Fatalf("winner state = (%+v, %v)", got, err)
+	for source, store := range map[string]*sqlstore.SQLStore{"primary": mysql, "replica": sqlite} {
+		got, getErr := store.GetConfig(ctx, created.ID)
+		if getErr != nil || !got.SupportsModel("admin-model") || got.ScheduledCheckModel != "" ||
+			!got.UsesCodexOAuth() || got.OAuthCredential != credential {
+			t.Fatalf("%s state = (%+v, %v)", source, got, getErr)
+		}
 	}
 }
 
