@@ -70,41 +70,6 @@ jobs:
             echo "make_latest=$make_latest"
           } >> "$GITHUB_OUTPUT"
 
-  verify:
-    name: Full verification
-    needs: metadata
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
-        with:
-          ref: refs/tags/${{ needs.metadata.outputs.tag }}
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version-file: go.mod
-          cache-dependency-path: go.sum
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: '24'
-
-      - name: Test backend
-        run: go test -tags sonic ./internal/...
-
-      - name: Verify web assets
-        run: make verify-web
-
-      - name: Lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.12.2
-          args: --timeout=10m
-
   build:
     name: Build ${{ matrix.output }}
     needs: metadata
@@ -173,7 +138,7 @@ jobs:
 
   release:
     name: Publish ${{ needs.metadata.outputs.channel }} release
-    needs: [metadata, verify, build]
+    needs: [metadata, build]
     runs-on: ubuntu-latest
     permissions:
       contents: write

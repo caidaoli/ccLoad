@@ -93,7 +93,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 - 发布必须使用仓库 Skill：Codex 调 `$ccload-release`，Claude Code 调 `/ccload-release`；唯一源码在 `.agents/skills/ccload-release/`，`.claude/skills/ccload-release` 只是软链接
 - 无参数默认 Beta；只有显式 `stable` 才发稳定版。Tag 只允许 `vX.Y.Z-beta.N` / `vX.Y.Z`
-- `.github/workflows/release.yml` 是唯一发布入口：Tag 先跑 `internal/...`、Web 验证、构建、lint，再生成多平台 Release 和 GHCR 镜像；Beta=`prerelease=true` 且不改 GitHub latest，镜像发布精确版本 Tag+`beta`；稳定版更新 GitHub latest，镜像发布精确版本 Tag+`latest`
+- `.github/workflows/test.yml` 是提交级唯一发布门禁：`master` 的完整 SHA 必须通过后端测试、Web 验证、构建、lint 和 PostgreSQL 集成测试，发布脚本才允许打 Tag。`.github/workflows/release.yml` 只校验 Tag、构建多平台产物并生成 Release 和 GHCR 镜像；Beta=`prerelease=true` 且不改 GitHub latest，镜像发布精确版本 Tag+`beta`；稳定版更新 GitHub latest，镜像发布精确版本 Tag+`latest`
 - 官方容器直接打包同一 Release 的 Linux 二进制；`CCLOAD_CONTAINER=1` 时不启动版本检查或进程内更新，`auto_update_*` 设置只读；稳定版/测试版分别通过 `latest`/`beta` 镜像标签切换
 - 非容器部署的单一更新管理器同时负责前端版本提示和可选自动应用；默认 `auto_update_channel=stable`，`preview` 同时考虑稳定版/测试版并按 SemVer 取最高版本；`auto_update_interval_hours=0` 关闭全部版本检查
 
