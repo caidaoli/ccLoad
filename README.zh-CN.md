@@ -626,7 +626,7 @@ websocat \
 
 原生 WS 的同一上游内部重连把 `response.created`、`response.queued` 和 `response.in_progress` 视为非语义事件，因此在这些事件之后仍可重连一次；其他事件都越过该重连边界。注意，这三个生命周期事件仍是已经提交给下游的可见事件，不能据此承诺继续跨候选切换。一旦文本、推理、工具调用或其他实际输出已经转发，ccLoad 不再切换或重放，避免重复输出、工具调用和费用。消息过大使用 close code `1009`，也不会故障切换。
 
-重连时必须使用相同的 API 令牌和稳定的 execution 请求头。`Session-Id` 表示顶层 Codex 会话；存在 `Thread-Id` 时，ccLoad 组合两个请求头建立身份，使主代理和每个子代理线程分别拥有独立的 transcript、Response ID 和 turn lock。没有 `Thread-Id` 的客户端继续使用原 `Session-Id` 契约。`prompt_cache_key`、请求体 `session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：默认最多保留 32 个会话，新安装或重置后的空闲 TTL 默认为 15 分钟（小内存机器可设为 10 分钟）；升级只更新默认值元数据，不改已有 TTL，因此原值 60 分钟会继续保持。下游全部断开 5 分钟后，每分钟运行的清理器会关闭上游物理连接，因此实际回收时间约为 5–6 分钟，但会话 transcript 会继续保留到 TTL。稳定会话及其已提交 transcript 在 TTL 到期前绝不会因会话容量或内存预算压力被逐出。会话数达到上限时只拒绝新的会话身份，已有稳定会话仍可继续。进程级 transcript 有效载荷总预算默认 128 MiB；已提交载荷超预算后，包括已有会话在内的所有新回合都会在触达上游前被拒绝。两类限制都通过 WebSocket `429/rate_limit_error/rate_limit` 事件返回；客户端应等待 TTL 回收后重试，或修改设置并重启。重启会丢失内存会话，因此客户端随后必须发送不带 `previous_response_id` 的完整会话输入。
+重连时必须使用相同的 API 令牌和稳定的 execution 请求头。`Session-Id` 表示顶层 Codex 会话；存在 `Thread-Id` 时，ccLoad 组合两个请求头建立身份，使主代理和每个子代理线程分别拥有独立的 transcript、Response ID 和 turn lock。没有 `Thread-Id` 的客户端继续使用原 `Session-Id` 契约。`prompt_cache_key`、请求体 `session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：新安装默认最多保留 256 个会话，进程级 transcript 有效载荷总预算为 256 MiB；已有数据库记录不迁移。空闲 TTL 继续默认 15 分钟（小内存机器可设为 10 分钟）。下游全部断开 5 分钟后，每分钟运行的清理器会关闭上游物理连接，因此实际回收时间约为 5–6 分钟，但会话 transcript 会继续保留到 TTL。稳定会话及其已提交 transcript 在 TTL 到期前绝不会因会话容量或内存预算压力被逐出。会话数达到上限时只拒绝新的会话身份，已有稳定会话仍可继续。已提交载荷超预算后，包括已有会话在内的所有新回合都会在触达上游前被拒绝。两类限制都通过 WebSocket `429/rate_limit_error/rate_limit` 事件返回；客户端应等待 TTL 回收后重试，或修改设置并重启。重启会丢失内存会话，因此客户端随后必须发送不带 `previous_response_id` 的完整会话输入。
 
 Transcript 预算是新工作准入阈值，不是严格分配上限：已经准入的回合允许完成并提交。除已配置预算外，有限的最坏超量为 `responses_ws_max_sessions × max_body_bytes`。进程重启不会恢复会话或累计会话指标。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。会话数、TTL 和 transcript 预算可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes`、`responses_ws_max_transcript_bytes` 调整。`GET /admin/runtime-metrics` 的 `transcript_bytes` 表示当前有效载荷字节数，不包含 Go 运行时、WebSocket 缓冲区和请求处理中临时对象的开销；同一响应还提供当前进程累计的 `ttl_expired`、`capacity_rejected`、`budget_rejected` 和 `previous_response_misses` 计数。
 
@@ -1025,8 +1025,11 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `auto_update_interval_hours` | `12` | 非容器部署的版本检查间隔（小时，0=禁用，启用时最低 1 小时）；容器中不可用 |
 | `auto_update_channel` | `stable` | 非容器部署的发布渠道：`stable` 只接收稳定版；`preview` 同时接收稳定版和测试版，并选择语义版本最高者；容器中不可用 |
 | `model_fuzzy_match` | `false` | 模型名精确匹配未命中时，回退到子串匹配 + 版本排序 |
-| `responses_ws_max_connections` | `64` | 下游 Responses WebSocket 全局最大并发连接数 |
-| `responses_ws_max_connections_per_token` | `16` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数 |
+| `responses_ws_max_connections` | `128` | 下游 Responses WebSocket 全局最大并发连接数 |
+| `responses_ws_max_connections_per_token` | `64` | 单个认证 Token 的下游 Responses WebSocket 最大并发连接数 |
+| `responses_ws_max_sessions` | `256` | 整个进程保留的 Responses WebSocket 执行会话数上限 |
+| `responses_ws_session_ttl_minutes` | `15` | 空闲执行会话保留时长（分钟） |
+| `responses_ws_max_transcript_bytes` | `268435456` | 整个进程保留的 transcript 有效载荷总预算（256 MiB） |
 | `debug_log_enabled` | `false` | 记录上游请求/响应调试日志 |
 | `debug_log_retention_minutes` | `2` | 调试日志保留时长（分钟） |
 

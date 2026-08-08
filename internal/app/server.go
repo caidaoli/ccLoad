@@ -217,9 +217,9 @@ func NewServer(store storage.Store) *Server {
 			runtimeCfg.UpstreamConnectionMaxAge,
 		),
 		responsesWebsocketConnections: newResponsesWebsocketConnectionLimiter(
-			configService.GetInt("responses_ws_max_connections", defaultResponsesWebsocketConnectionLimit),
+			configService.GetInt(responsesWebsocketMaxConnectionsSetting, defaultResponsesWebsocketConnectionLimit),
 			configService.GetInt(
-				"responses_ws_max_connections_per_token",
+				responsesWebsocketMaxConnectionsPerTokenSetting,
 				defaultResponsesWebsocketConnectionPerSubjectLimit,
 			),
 		),

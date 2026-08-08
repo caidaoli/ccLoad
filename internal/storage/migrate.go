@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"ccLoad/internal/config"
@@ -533,6 +534,11 @@ func createIndex(ctx context.Context, db *sql.DB, idx schema.IndexDef, dialect D
 }
 
 func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	responsesWSMaxSessions := strconv.Itoa(config.DefaultResponsesWebsocketMaxSessions)
+	responsesWSSessionTTLMinutes := strconv.Itoa(config.DefaultResponsesWebsocketSessionTTLMinutes)
+	responsesWSMaxTranscriptBytes := strconv.Itoa(config.DefaultResponsesWebsocketMaxTranscriptBytes)
+	responsesWSMaxConnections := strconv.Itoa(config.DefaultResponsesWebsocketMaxConnections)
+	responsesWSMaxConnectionsPerToken := strconv.Itoa(config.DefaultResponsesWebsocketMaxConnectionsPerToken)
 	settings := []struct {
 		key, value, valueType, desc, defaultVal string
 	}{
@@ -590,11 +596,11 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		// 前端自动刷新
 		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
 		// Responses WebSocket
-		{"responses_ws_max_sessions", "32", "int", "Responses WebSocket execution session limit (process-wide, 0 = use default 32)", "32"},
-		{"responses_ws_session_ttl_minutes", "15", "int", "Responses WebSocket idle session retention (minutes, >= 1)", "15"},
-		{"responses_ws_max_transcript_bytes", "134217728", "int", "Responses WebSocket transcript payload budget (process-wide bytes, default 128 MiB)", "134217728"},
-		{"responses_ws_max_connections", "64", "int", "Responses WebSocket downstream connection limit (process-wide, 0 = use default 64)", "64"},
-		{"responses_ws_max_connections_per_token", "16", "int", "Responses WebSocket downstream connection limit per API token (0 = use default 16)", "16"},
+		{"responses_ws_max_sessions", responsesWSMaxSessions, "int", "Responses WebSocket execution session limit (process-wide, 0 = use default 256)", responsesWSMaxSessions},
+		{"responses_ws_session_ttl_minutes", responsesWSSessionTTLMinutes, "int", "Responses WebSocket idle session retention (minutes, >= 1)", responsesWSSessionTTLMinutes},
+		{"responses_ws_max_transcript_bytes", responsesWSMaxTranscriptBytes, "int", "Responses WebSocket transcript payload budget (process-wide bytes, default 256 MiB)", responsesWSMaxTranscriptBytes},
+		{"responses_ws_max_connections", responsesWSMaxConnections, "int", "Responses WebSocket downstream connection limit (process-wide, 0 = use default 128)", responsesWSMaxConnections},
+		{"responses_ws_max_connections_per_token", responsesWSMaxConnectionsPerToken, "int", "Responses WebSocket downstream connection limit per API token (0 = use default 64)", responsesWSMaxConnectionsPerToken},
 	}
 
 	var query string

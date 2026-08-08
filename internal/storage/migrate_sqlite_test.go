@@ -7,10 +7,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage/schema"
 	sqlstore "ccLoad/internal/storage/sql"
@@ -1580,17 +1582,20 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "upstream_connection_reuse_limit_seconds" && val != "0" {
 			t.Errorf("setting %q default = %q, want 0", key, val)
 		}
-		if key == "responses_ws_max_connections" && val != "64" {
-			t.Errorf("setting %q default = %q, want 64", key, val)
+		if key == "responses_ws_max_sessions" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxSessions) {
+			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxSessions)
 		}
-		if key == "responses_ws_max_connections_per_token" && val != "16" {
-			t.Errorf("setting %q default = %q, want 16", key, val)
+		if key == "responses_ws_max_connections" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxConnections) {
+			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxConnections)
 		}
-		if key == "responses_ws_session_ttl_minutes" && val != "15" {
-			t.Errorf("setting %q default = %q, want 15", key, val)
+		if key == "responses_ws_max_connections_per_token" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxConnectionsPerToken) {
+			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxConnectionsPerToken)
 		}
-		if key == "responses_ws_max_transcript_bytes" && val != "134217728" {
-			t.Errorf("setting %q default = %q, want 134217728", key, val)
+		if key == "responses_ws_session_ttl_minutes" && val != strconv.Itoa(config.DefaultResponsesWebsocketSessionTTLMinutes) {
+			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketSessionTTLMinutes)
+		}
+		if key == "responses_ws_max_transcript_bytes" && val != strconv.Itoa(config.DefaultResponsesWebsocketMaxTranscriptBytes) {
+			t.Errorf("setting %q default = %q, want %d", key, val, config.DefaultResponsesWebsocketMaxTranscriptBytes)
 		}
 		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
@@ -1669,6 +1674,47 @@ func TestInitDefaultSettings_PreservesExistingResponsesSessionTTL(t *testing.T) 
 	}
 	if value != "10" || defaultValue != "15" {
 		t.Fatalf("custom TTL value/default=%q/%q, want 10/15", value, defaultValue)
+	}
+}
+
+func TestInitDefaultSettings_PreservesExistingResponsesWebsocketLimits(t *testing.T) {
+	db := openTestDB(t)
+	ctx := context.Background()
+	if err := migrate(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	oldDefaults := map[string]string{
+		"responses_ws_max_sessions":              "32",
+		"responses_ws_max_transcript_bytes":      "134217728",
+		"responses_ws_max_connections":           "64",
+		"responses_ws_max_connections_per_token": "16",
+	}
+	for key, value := range oldDefaults {
+		if _, err := db.ExecContext(ctx, `
+			UPDATE system_settings
+			SET value = ?, default_value = ?
+			WHERE key = ?
+		`, value, value, key); err != nil {
+			t.Fatalf("restore old default %s: %v", key, err)
+		}
+	}
+
+	if err := initDefaultSettings(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("reinitialize defaults: %v", err)
+	}
+	for key, want := range oldDefaults {
+		var value, defaultValue string
+		if err := db.QueryRowContext(ctx, `
+			SELECT value, default_value
+			FROM system_settings
+			WHERE key = ?
+		`, key).Scan(&value, &defaultValue); err != nil {
+			t.Fatalf("query preserved setting %s: %v", key, err)
+		}
+		if value != want || defaultValue != want {
+			t.Errorf("existing setting %s value/default=%q/%q, want %q/%q", key, value, defaultValue, want, want)
+		}
 	}
 }
 
