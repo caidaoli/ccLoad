@@ -311,6 +311,7 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	if cfg.UsesXAIOAuth() {
 		return fetchXAIOAuthModels(cfg, overrideProtocol)
 	}

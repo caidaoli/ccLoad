@@ -2889,6 +2889,7 @@ func (s *Server) tryCodexOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
@@ -2954,6 +2955,7 @@ func (s *Server) tryXAIOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
@@ -3019,6 +3021,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
