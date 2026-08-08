@@ -1551,7 +1551,7 @@ func (s *Server) handleResponse(
 // 参数新增 method 用于支持任意HTTP方法（GET、POST、PUT、DELETE等）
 func (s *Server) forwardOnceAsync(ctx context.Context, cfg *model.Config, apiKey string, method string, plan protocol.TransformPlan, hdr http.Header, rawQuery string, baseURL string, w http.ResponseWriter, observer *ForwardObserver) (*fwResult, float64, error) {
 	return s.forwardOnceAsyncWithNativeCodexWebsocket(
-		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "",
+		ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, "", nil,
 	)
 }
 
@@ -1573,6 +1573,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	observer *ForwardObserver,
 	native *nativeCodexWebsocketAttempt,
 	executionIdentity string,
+	translatedRequestOverride []byte,
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(plan))
@@ -1586,10 +1587,22 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
-	if s.protocolRegistry != nil && plan.NeedsTransform {
-		translatedBody, err := s.protocolRegistry.TranslateRequest(plan.ClientProtocol, plan.UpstreamProtocol, plan.RequestModel(), plan.TranslatedBody, plan.Streaming)
-		if err != nil {
-			return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+	if plan.NeedsTransform && (translatedRequestOverride != nil || s.protocolRegistry != nil) {
+		translatedBody := plan.TranslatedBody
+		if translatedRequestOverride != nil {
+			translatedBody = translatedRequestOverride
+		} else if s.protocolRegistry != nil {
+			var err error
+			translatedBody, err = s.protocolRegistry.TranslateRequest(
+				plan.ClientProtocol,
+				plan.UpstreamProtocol,
+				plan.RequestModel(),
+				plan.TranslatedBody,
+				plan.Streaming,
+			)
+			if err != nil {
+				return nil, 0, fmt.Errorf("translate request for channel %d: %w", cfg.ID, err)
+			}
 		}
 		plan.TranslatedBody = translatedBody
 		switch plan.UpstreamProtocol {
@@ -1754,6 +1767,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		responseWriter = dc.wrapTranslatedResponseWriter(w)
 	}
 	res, duration, err = s.handleResponse(reqCtx, resp, responseWriter, string(reqCtx.upstreamProtocol), cfg, apiKey, observer)
+	if res != nil && res.Status == http.StatusBadRequest {
+		res.upstreamRequestBody = bytes.Clone(sentBody)
+	}
 	if usedNativeWebsocket {
 		// Reconnects happen while handleResponse drains the upstream frames. Take
 		// the final snapshot here so the persisted debug log describes the actual
@@ -1768,7 +1784,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 		log.Printf("[INFO] 渠道 %d WebSocket 重连握手失败，同 Key/URL 回退 HTTP: %v", cfg.ID, reconnectFallbackErr)
 		return s.forwardOnceAsyncWithNativeCodexWebsocket(
-			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity,
+			ctx, cfg, apiKey, method, plan, hdr, rawQuery, baseURL, w, observer, nil, executionIdentity, nil,
 		)
 	}
 	if res != nil {
@@ -1988,7 +2004,7 @@ func (s *Server) forwardAttempt(
 	executionIdentity := deriveXAIExecutionIDForRequest(reqCtx)
 	res, duration, err := s.forwardOnceAsyncWithNativeCodexWebsocket(
 		ctx, cfg, selectedKey, reqCtx.requestMethod,
-		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
+		plan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity, nil,
 	)
 
 	// 传递 debug 数据到 proxyRequestContext（用于日志记录）
@@ -1999,7 +2015,11 @@ func (s *Server) forwardAttempt(
 	forceReturnClient := false
 	retryStrategies := make([]string, 0, 2)
 	for {
-		retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, plan, res)
+		retrySourcePlan := plan
+		if res != nil && len(res.upstreamRequestBody) > 0 {
+			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
+		}
+		retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
 			break
 		}
@@ -2010,6 +2030,7 @@ func (s *Server) forwardAttempt(
 		res, duration, err = s.forwardOnceAsyncWithNativeCodexWebsocket(
 			ctx, cfg, selectedKey, reqCtx.requestMethod,
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
+			retryBody,
 		)
 		if res != nil && res.DebugData != nil {
 			reqCtx.debugData = res.DebugData
@@ -2108,37 +2129,56 @@ func (s *Server) forwardAttempt(
 	return result, action, nil
 }
 
-func shouldRetryCodexInvalidEncryptedContent(upstreamProtocol protocol.Protocol, plan protocol.TransformPlan, res *fwResult) bool {
-	return upstreamProtocol == protocol.Codex &&
-		!plan.NeedsTransform &&
-		res != nil &&
-		res.Status == http.StatusBadRequest &&
-		isInvalidEncryptedContentError(res.Body)
+func shouldRetryCodexInvalidEncryptedContent(
+	upstreamProtocol protocol.Protocol,
+	cfg *model.Config,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) bool {
+	if upstreamProtocol != protocol.Codex || res == nil || res.Status != http.StatusBadRequest {
+		return false
+	}
+	if !plan.NeedsTransform {
+		return isInvalidEncryptedContentError(res.Body)
+	}
+	if cfg == nil || !cfg.UsesXAIOAuth() {
+		return false
+	}
+	return isInvalidEncryptedContentError(res.Body) || codexBodyHasEncryptedInputItems(plan.TranslatedBody)
 }
 
 func isInvalidEncryptedContentError(body []byte) bool {
-	var payload struct {
-		Error struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-			Type    string `json:"type"`
-		} `json:"error"`
-	}
-	if err := sonic.Unmarshal(body, &payload); err != nil {
+	if !gjson.ValidBytes(body) {
 		return false
 	}
-	code := strings.ToLower(payload.Error.Code)
+	root := gjson.ParseBytes(body)
+	code := strings.ToLower(strings.TrimSpace(root.Get("error.code").String()))
+	if code == "" {
+		code = strings.ToLower(strings.TrimSpace(root.Get("code").String()))
+	}
 	if code == "invalid_encrypted_content" {
 		return true
 	}
-	message := strings.ToLower(payload.Error.Message)
+	message := strings.TrimSpace(root.Get("error.message").String())
+	if message == "" && root.Get("error").Type == gjson.String {
+		message = root.Get("error").String()
+	}
+	if message == "" {
+		message = root.Get("message").String()
+	}
+	message = strings.ToLower(message)
 	if strings.Contains(message, "invalid_encrypted_content") {
 		return true
 	}
-	return strings.Contains(message, "encrypted content") &&
+	if strings.Contains(message, "encrypted content") &&
 		(strings.Contains(message, "could not be verified") ||
 			strings.Contains(message, "could not be decrypted") ||
-			strings.Contains(message, "could not be parsed"))
+			strings.Contains(message, "could not be parsed") ||
+			strings.Contains(message, "could not decode")) {
+		return true
+	}
+	return strings.Contains(message, "compaction blob") &&
+		(strings.Contains(message, "could not decode") || strings.Contains(message, "unmodified from the compact response"))
 }
 
 func shouldRetryAnyrouterCodexInvalidResponsesRequest(upstreamProtocol protocol.Protocol, cfg *model.Config, res *fwResult) bool {
@@ -2173,7 +2213,7 @@ func codexRetryBodyFor400(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
-	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, plan, res) {
+	if shouldRetryCodexInvalidEncryptedContent(upstreamProtocol, cfg, plan, res) {
 		if retryBody, ok := codexBodyWithoutEncryptedInputItems(plan.TranslatedBody); ok {
 			return retryBody, "strip_codex_encrypted_input", true
 		}
@@ -2283,6 +2323,19 @@ func codexBodyWithoutEncryptedInputItems(body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	return retryBody, true
+}
+
+func codexBodyHasEncryptedInputItems(body []byte) bool {
+	input := gjson.GetBytes(body, "input")
+	if !input.IsArray() {
+		return false
+	}
+	for _, item := range input.Array() {
+		if item.IsObject() && item.Get("encrypted_content").Exists() {
+			return true
+		}
+	}
+	return false
 }
 
 func codexBodyWithoutThinking(body []byte) ([]byte, bool) {
