@@ -124,18 +124,14 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
 		decision.channelCooldownReason = classification.ChannelCooldownReason
 
-		// OAuth 渠道没有独立 Key。把账号额度耗尽继续当作 Key 级错误，
-		// 后续只能得到 NoKeyIndex，最终什么都不会冷却。
-		// 对这种渠道，当前实际模型就是最小且可执行的冷却范围。
-		if in.KeyIndex == NoKeyIndex &&
-			classification.KeyCooldownReason == "USAGE_LIMIT_REACHED" {
+		// OAuth 渠道没有独立 Key。结构化配额错误给出的精确 Key 截止时间
+		// 必须落到当前模型，否则 NoKeyIndex 会让冷却写入直接丢失。
+		if in.KeyIndex == NoKeyIndex && classification.HasKeyCooldownUntil {
 			decision.model = strings.TrimSpace(in.Model)
 			if decision.model != "" {
 				decision.modelScoped = true
-				if classification.HasKeyCooldownUntil {
-					decision.modelCooldownUntil = classification.KeyCooldownUntil
-					decision.hasModelCooldownUntil = true
-				}
+				decision.modelCooldownUntil = classification.KeyCooldownUntil
+				decision.hasModelCooldownUntil = true
 			}
 		}
 

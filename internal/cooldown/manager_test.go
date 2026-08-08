@@ -1887,6 +1887,64 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 	}
 }
 
+func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
+	store, cleanup := setupTestStore(t)
+	defer cleanup()
+	manager := NewManager(store, nil)
+	ctx := context.Background()
+
+	cfg, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "test-antigravity-quota-reset",
+		URLs:    model.ChannelURLs{{URL: "https://cloudcode-pa.googleapis.com"}},
+		Enabled: true,
+		ModelEntries: []model.ModelEntry{
+			{Model: "gemini-3.6-flash-high"},
+			{Model: "gemini-3.5-flash"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("create config: %v", err)
+	}
+
+	resetAt := time.Now().Add(3*time.Hour + 40*time.Minute + 30*time.Second).Truncate(time.Second)
+	body := []byte(fmt.Sprintf(`{
+		"error": {
+			"code": 429,
+			"message": "Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h40m30s.",
+			"status": "RESOURCE_EXHAUSTED",
+			"details": [{
+				"@type": "type.googleapis.com/google.rpc.ErrorInfo",
+				"reason": "QUOTA_EXHAUSTED",
+				"metadata": {
+					"quotaResetTimeStamp": %q,
+					"quotaResetDelay": "3h40m30s",
+					"model": "gemini-3.6-flash-high"
+				}
+			}]
+		}
+	}`, resetAt.Format(time.RFC3339)))
+
+	action := manager.HandleError(ctx, ErrorInput{
+		ChannelID:  cfg.ID,
+		Model:      "gemini-3.6-flash-high",
+		KeyIndex:   NoKeyIndex,
+		StatusCode: 429,
+		ErrorBody:  body,
+	})
+	if action != ActionRetryModel {
+		t.Fatalf("action=%v, want ActionRetryModel", action)
+	}
+
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gemini-3.6-flash-high")
+	if !exists {
+		t.Fatal("expected model cooldown")
+	}
+	if !sameTimeSecond(until, resetAt) {
+		t.Fatalf("model cooldownUntil=%s, want metadata reset timestamp %s",
+			until.Format(time.RFC3339), resetAt.Format(time.RFC3339))
+	}
+}
+
 func TestHandleError_UsageLimitReachedWithoutKeyCoolsModel(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
