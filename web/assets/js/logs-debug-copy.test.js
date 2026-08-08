@@ -1,6 +1,79 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
+test('shared clipboard copy preserves click activation when native Clipboard API is blocked', async () => {
+  const previousGlobals = new Map();
+  const setGlobal = (key, value) => {
+    previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const noop = () => {};
+  const classList = { add: noop, remove: noop, toggle: noop, contains: () => false };
+  const element = () => ({
+    style: { setProperty: noop },
+    dataset: {},
+    classList,
+    appendChild: noop,
+    removeChild: noop,
+    replaceChildren: noop,
+    setAttribute: noop,
+    getAttribute: () => null,
+    addEventListener: noop,
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    closest: () => null
+  });
+  let userActivation = true;
+  let selectedText = '';
+  const body = element();
+
+  setGlobal('window', {
+    location: { pathname: '/', search: '', href: '' },
+    addEventListener: noop,
+    dispatchEvent: noop,
+    matchMedia: () => ({ matches: false, addEventListener: noop })
+  });
+  setGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop });
+  setGlobal('document', {
+    addEventListener: noop,
+    querySelectorAll: () => [],
+    querySelector: () => null,
+    getElementById: () => null,
+    createElement: () => ({
+      ...element(),
+      value: '',
+      select() { selectedText = this.value; }
+    }),
+    execCommand: (command) => command === 'copy' && userActivation,
+    body,
+    documentElement: element()
+  });
+  setGlobal('navigator', {
+    clipboard: {
+      writeText: async () => {
+        userActivation = false;
+        throw new Error('clipboard permission denied');
+      }
+    }
+  });
+  setGlobal('CustomEvent', function CustomEvent() {});
+
+  try {
+    delete require.cache[require.resolve('./ui.js')];
+    require('./ui.js');
+
+    await global.window.copyToClipboard('debug request');
+
+    assert.equal(selectedText, 'debug request');
+  } finally {
+    delete require.cache[require.resolve('./ui.js')];
+    for (const [key, descriptor] of previousGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
+
 test('debug log copy works when the native Clipboard API is unavailable', async () => {
   const previousWindow = global.window;
   const previousDocument = global.document;
