@@ -226,6 +226,14 @@ func NewServer(store storage.Store) *Server {
 
 	// 初始化高性能缓存层（60秒TTL，避免数据库性能杀手查询）
 	s.channelCache = storage.NewChannelCache(store, 60*time.Second)
+	channelLoadCtx, channelLoadCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	channels, err := store.ListConfigs(channelLoadCtx)
+	channelLoadCancel()
+	if err != nil {
+		log.Fatalf("[FATAL] 加载渠道配置失败: %v", err)
+	}
+	log.Printf("[INFO] 已加载渠道配置（%d项）", len(channels))
+
 	codexOAuthService := codexauth.NewService(s.client)
 	s.codexService = codexOAuthService
 	s.codexCredentials = newCodexCredentialManager(codexOAuthService, store, s.getClientForChannel, func(int64) {
@@ -262,7 +270,6 @@ func NewServer(store storage.Store) *Server {
 	healthConfig := loadHealthScoreConfig(configService)
 	s.healthCache = NewHealthCache(store, healthConfig, s.shutdownCh, &s.isShuttingDown, &s.wg)
 	if healthConfig.Enabled {
-		s.healthCache.Start()
 		log.Print("[INFO] 健康度排序已启用（基于成功率动态调整渠道优先级；冷却仍按原规则过滤）")
 	}
 
@@ -288,12 +295,6 @@ func NewServer(store storage.Store) *Server {
 		&s.isShuttingDown,
 		&s.wg,
 	)
-	// 启动日志 Workers
-	s.logService.StartWorkers()
-
-	// 启动清理协程（调试日志清理始终运行，普通日志按保留天数决定）
-	s.logService.StartCleanupLoop()
-
 	// 2. AuthService（负责认证授权）
 	// 初始化时自动从数据库加载API访问令牌
 	s.authService = NewAuthService(
@@ -316,6 +317,12 @@ func NewServer(store storage.Store) *Server {
 
 	// 指纹 Job 管理器（内存）
 	s.fingerprintJobs = NewFingerprintJobManager(s.baseCtx, 2)
+
+	// 所有启动关键状态完成加载后，再启动非关键后台任务。
+	// SQLite 纯模式只有一个连接，维护任务不得与认证/渠道初始化竞争。
+	s.healthCache.Start()
+	s.logService.StartWorkers()
+	s.logService.StartCleanupLoop()
 
 	return s
 
