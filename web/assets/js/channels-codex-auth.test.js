@@ -4,7 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyChannelAuthEditorMode,
   cancelAntigravityOAuth,
-  cancelXAIDevice,
+  cancelXAIOAuth,
   pollCodexOAuthStatus,
   copyCodexOAuthLink,
   copyOAuthCredential,
@@ -12,7 +12,7 @@ const {
   formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
-  pollXAIDeviceStatus,
+  pollXAIOAuthStatus,
   getOAuthUsageState,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
@@ -23,79 +23,43 @@ const {
   setOAuthCredentialView,
   setupOAuthActions,
   showOAuthSession,
-  startXAIDevice,
   submitXAICredentialBatch,
   submitAntigravityOAuthCallback,
-  submitCodexOAuthCallback
+  submitCodexOAuthCallback,
+  submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
 
-test('xAI Device helpers expose only safe fields and cancel the opaque session', async () => {
+test('xAI manual OAuth helpers use the shared state and callback contract', async () => {
   const requests = [];
-  const started = await startXAIDevice(async (url, options) => {
-    requests.push({ url, options });
-    return {
-      session: 'session with / symbols',
-      verification_uri: 'https://auth.x.ai/activate',
-      verification_uri_complete: 'https://auth.x.ai/activate?user_code=SAFE',
-      user_code: 'SAFE-CODE',
-      expires_at: '2030-01-01T00:00:00Z',
-      interval_seconds: 1,
-      status: 'pending',
-      device_code: 'must-not-escape'
-    };
-  });
-  assert.deepEqual(started, {
-    session: 'session with / symbols',
-    verification_uri: 'https://auth.x.ai/activate',
-    verification_uri_complete: 'https://auth.x.ai/activate?user_code=SAFE',
-    user_code: 'SAFE-CODE',
-    expires_at: '2030-01-01T00:00:00Z',
-    interval_seconds: 1,
-    status: 'pending'
-  });
-  assert.equal(requests[0].url, '/admin/xai/oauth/start');
-  assert.equal(requests[0].options.method, 'POST');
-
-  const statuses = [
-    { status: 'pending' },
-    { status: 'processing' },
-    { status: 'committing' },
-    { status: 'complete', channel_id: 91 }
-  ];
-  const complete = await pollXAIDeviceStatus(started.session, {
+  const status = await pollXAIOAuthStatus('xai/state', {
     fetchStatus: async url => {
       requests.push({ url });
-      return statuses.shift();
+      return { status: 'complete', channel_id: 91 };
     },
     delay: async () => {},
-    interval: 0,
-    maxPolls: 4
+    maxPolls: 1
   });
-  assert.equal(complete.channel_id, 91);
-  assert.equal(requests[1].url, '/admin/xai/oauth/status?session=session%20with%20%2F%20symbols');
+  assert.equal(status.channel_id, 91);
+  assert.equal(requests[0].url, '/admin/xai/oauth/status?state=xai%2Fstate');
 
-  await cancelXAIDevice(started.session, async (url, options) => {
-    requests.push({ url, options });
-    return { status: 'cancelled' };
-  });
-  assert.equal(requests.at(-1).url, '/admin/xai/oauth/cancel');
-  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { session: started.session });
-  assert.doesNotMatch(JSON.stringify(requests), /must-not-escape/);
-
-  const previousWindow = global.window;
-  global.window = { t: key => key };
-  try {
-    for (const verification_uri of [
-      'https://auth.x.ai:444/activate',
-      'https://auth.x.ai/activate#device-code'
-    ]) {
-      await assert.rejects(() => startXAIDevice(async () => ({
-        session: 'unsafe-session', verification_uri, user_code: 'UNSAFE'
-      })), /channels\.xai\.deviceStartFailed/);
+  await submitXAIOAuthCallback(
+    '  http://127.0.0.1:56121/callback?code=code-1&state=state-1  ',
+    async (url, options) => {
+      requests.push({ url, options });
+      return { status: 'complete', state: 'state-1', channel_id: 91 };
     }
-  } finally {
-    global.window = previousWindow;
-  }
+  );
+  assert.equal(requests[1].url, '/admin/xai/oauth/callback');
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
+    callback_url: 'http://127.0.0.1:56121/callback?code=code-1&state=state-1'
+  });
+
+  await cancelXAIOAuth(' state-2 ', async (url, options) => {
+    requests.push({ url, options });
+    return { status: 'cancelled', state: 'state-2' };
+  });
+  assert.equal(requests[2].url, '/admin/xai/oauth/cancel');
+  assert.deepEqual(JSON.parse(requests[2].options.body), { state: 'state-2' });
 });
 
 test('xAI refresh-token and SSO submission clears secrets before the request starts', async () => {
@@ -313,109 +277,6 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
   }
 });
 
-test('failed interactive xAI device cancellation keeps the dialog and blocks reauthorization', async () => {
-  const makeTarget = properties => ({
-    dataset: {}, listeners: {},
-    addEventListener(type, listener) { this.listeners[type] = listener; },
-    ...properties
-  });
-  const dialog = makeTarget({ open: true, close() { this.open = false; } });
-  const form = makeTarget({});
-  const restart = makeTarget({ disabled: false });
-  const provider = { value: 'xai', disabled: false };
-  const method = makeTarget({ value: 'device' });
-  const button = { disabled: false };
-  const status = { textContent: '', hidden: true, dataset: {} };
-  const copyButton = makeTarget({});
-  const verificationURL = { value: '' };
-  const verificationLink = { href: '', removeAttribute(name) { if (name === 'href') this.href = ''; } };
-  const elements = new Map([
-    ['oauthLoginDialog', dialog], ['oauthLoginForm', form],
-    ['oauthProviderSelect', provider], ['xaiOAuthMethod', method],
-    ['oauthAuthorizeButton', button], ['oauthSessionFields', { hidden: true }],
-    ['oauthLoginDialogStatus', status], ['xaiDeviceRestart', restart],
-    ['xaiDeviceSessionFields', { hidden: true }],
-    ['xaiVerificationURL', verificationURL],
-    ['xaiCopyVerificationLink', copyButton],
-    ['xaiVerificationLink', verificationLink],
-    ['xaiUserCode', { textContent: '', focus() {} }],
-    ['xaiDeviceExpiresAt', { textContent: '' }]
-  ]);
-  const previous = new Map();
-  const setGlobal = (key, value) => {
-    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
-    Object.defineProperty(global, key, { configurable: true, writable: true, value });
-  };
-  let starts = 0;
-  let cancelFails = true;
-  let pollSignal;
-  let copiedURL = '';
-  setGlobal('document', {
-    getElementById: id => elements.get(id) || null,
-    querySelectorAll: () => []
-  });
-  setGlobal('window', {
-    t: key => key,
-    showError() {},
-    copyToClipboard: async value => { copiedURL = value; }
-  });
-  setGlobal('fetchDataWithAuth', async (url, options = {}) => {
-    if (url.endsWith('/oauth/start')) {
-      starts++;
-      return {
-        session: 'cancel-failure-session', verification_uri: 'https://auth.x.ai/activate',
-        verification_uri_complete: 'https://auth.x.ai/activate?user_code=SAFE',
-        user_code: 'SAFE', expires_at: '2030-01-01T00:00:00Z', interval_seconds: 1
-      };
-    }
-    if (url.includes('/oauth/status')) {
-      pollSignal = options.signal;
-      return new Promise((_resolve, reject) => {
-        options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
-      });
-    }
-    if (url.endsWith('/oauth/cancel')) {
-      if (cancelFails) throw new Error('cancel rejected');
-      return { status: 'cancelled' };
-    }
-    throw new Error(`unexpected ${url}`);
-  });
-  setGlobal('reloadChannelsList', async () => {});
-
-  try {
-    setupOAuthActions();
-    const submit = form.listeners.submit({ preventDefault() {} });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(button.hidden, true);
-    assert.equal(verificationURL.value, 'https://auth.x.ai/activate?user_code=SAFE');
-    assert.equal(verificationLink.href, 'https://auth.x.ai/activate?user_code=SAFE');
-    await copyButton.listeners.click();
-    assert.equal(copiedURL, 'https://auth.x.ai/activate?user_code=SAFE');
-    assert.equal(status.textContent, 'channels.oauth.linkCopied');
-    dialog.listeners.cancel({ preventDefault() {} });
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(dialog.open, true);
-    assert.equal(pollSignal.aborted, false);
-    assert.equal(status.textContent, 'cancel rejected');
-
-    restart.listeners.click();
-    await new Promise(resolve => setImmediate(resolve));
-    assert.equal(starts, 1);
-    assert.equal(dialog.open, true);
-
-    cancelFails = false;
-    dialog.listeners.cancel({ preventDefault() {} });
-    await submit;
-    assert.equal(pollSignal.aborted, true);
-    assert.equal(dialog.open, false);
-  } finally {
-    for (const [key, descriptor] of previous) {
-      if (descriptor === undefined) delete global[key];
-      else Object.defineProperty(global, key, descriptor);
-    }
-  }
-});
-
 test('Codex plan badge appends the subscription calendar date', () => {
   assert.equal(formatCodexPlanBadgeText('plus', '2030-02-03T04:05:06Z'), 'plus · 2030-02-03');
   assert.equal(formatCodexPlanBadgeText('free', ''), 'free');
@@ -550,7 +411,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
   const elements = new Map([
     ['oauthLoginDialog', { open: false, showModal() { this.open = true; } }],
     ['oauthProviderSelect', { value: 'antigravity', disabled: true, focus() { this.focused = true; } }],
-    ['oauthAuthorizeButton', { disabled: true }],
+    ['oauthAuthorizeButton', { disabled: true, hidden: false }],
     ['oauthSessionFields', { hidden: false }],
     ['oauthAuthorizationURL', { value: 'stale', focus() { this.focused = true; }, select() { this.selected = true; } }],
     ['oauthOpenLink', { href: 'https://stale.example', removeAttribute(name) { if (name === 'href') this.href = ''; } }],
@@ -573,6 +434,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
     assert.equal(showOAuthSession({ url: 'https://auth.example/authorize?state=abc', state: 'abc' }, 'antigravity'), true);
     assert.equal(elements.get('oauthProviderSelect').value, 'antigravity');
     assert.equal(elements.get('oauthProviderSelect').disabled, true);
+    assert.equal(elements.get('oauthAuthorizeButton').hidden, true);
     assert.equal(elements.get('oauthSessionFields').hidden, false);
     assert.equal(elements.get('oauthAuthorizationURL').value, 'https://auth.example/authorize?state=abc');
     assert.equal(elements.get('oauthOpenLink').href, 'https://auth.example/authorize?state=abc');
@@ -600,7 +462,7 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   });
   const loginForm = makeTarget({});
   const providerSelect = makeTarget({ value: 'codex', disabled: false, focus() { this.focused = true; } });
-  const xaiMethod = makeTarget({ value: 'device' });
+  const xaiMethod = makeTarget({ value: 'manual' });
   const authorizeButton = {
     disabled: false, hidden: false, textContent: '',
     setAttribute(name, value) { this[name] = value; }
@@ -610,7 +472,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   const openLink = { href: '', removeAttribute() { this.href = ''; } };
   const callbackURL = { value: '', removeAttribute() {} };
   const dialogDescription = { textContent: '' };
-  const deviceFields = { hidden: false };
   const secretField = { hidden: false };
   const xaiProgress = { hidden: false };
   const elements = new Map([
@@ -621,7 +482,6 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ['xaiOAuthMethod', xaiMethod],
     ['xaiOAuthControls', { hidden: true }],
     ['xaiCredentialSecretField', secretField],
-    ['xaiDeviceSessionFields', deviceFields],
     ['xaiCredentialImportProgress', xaiProgress],
     ['xaiCredentialValues', { value: '', removeAttribute() {}, setAttribute() {} }],
     ['oauthAuthorizeButton', authorizeButton],
@@ -661,16 +521,22 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     providerSelect.value = 'xai';
     providerSelect.listeners.change();
     assert.equal(secretField.hidden, true);
-    assert.equal(deviceFields.hidden, true);
     assert.equal(authorizeButton.hidden, false);
     assert.equal(authorizeButton.textContent, 'channels.xai.generateLink');
-    assert.equal(dialogDescription.textContent, 'channels.xai.deviceDescription');
+    assert.equal(dialogDescription.textContent, 'channels.xai.manualDescription');
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.deepEqual(requests, [
+      '/admin/xai/oauth/start',
+      '/admin/xai/oauth/status?state=gravity-state'
+    ]);
 
+    openOAuthLoginDialog(loginButton);
+    providerSelect.value = 'xai';
+    providerSelect.listeners.change();
     xaiMethod.value = 'sso';
     xaiMethod.listeners.change();
     assert.equal(secretField.hidden, false);
     assert.equal(authorizeButton.textContent, 'channels.xai.importSecrets');
-    assert.equal(deviceFields.hidden, true);
     assert.equal(xaiProgress.hidden, true);
     assert.equal(dialogDescription.textContent, 'channels.xai.importDescription');
     openOAuthLoginDialog(loginButton);
@@ -681,6 +547,8 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     providerSelect.value = 'antigravity';
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.deepEqual(requests, [
+      '/admin/xai/oauth/start',
+      '/admin/xai/oauth/status?state=gravity-state',
       '/admin/antigravity/oauth/start',
       '/admin/antigravity/oauth/status?state=gravity-state'
     ]);

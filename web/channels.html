@@ -112,7 +112,7 @@
                 <div class="oauth-field">
                   <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>
                   <select id="xaiOAuthMethod" name="xai_oauth_method" class="form-input">
-                    <option value="device" data-i18n="channels.xai.methodDevice">设备码</option>
+                    <option value="manual" data-i18n="channels.xai.methodManual">手动授权</option>
                     <option value="refresh_token" data-i18n="channels.xai.methodRefreshToken">刷新令牌</option>
                     <option value="sso" data-i18n="channels.xai.methodSSO">SSO Cookie</option>
                   </select>
@@ -143,24 +143,6 @@
                       data-i18n="channels.oauth.progressErrorsTitle">失败详情</strong>
                     <ul id="xaiCredentialImportErrorList"></ul>
                   </div>
-                </div>
-                <div id="xaiDeviceSessionFields" class="oauth-field" hidden>
-                  <label for="xaiVerificationURL" data-i18n="channels.oauth.authorizationURL">授权链接</label>
-                  <textarea id="xaiVerificationURL" class="form-input oauth-url" rows="3"
-                    readonly spellcheck="false"></textarea>
-                  <div class="oauth-actions">
-                    <button id="xaiCopyVerificationLink" type="button" class="btn btn-secondary"
-                      data-i18n="channels.oauth.copyLink">复制链接</button>
-                    <a id="xaiVerificationLink" class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
-                      data-i18n="channels.oauth.openLink">打开链接</a>
-                  </div>
-                  <span data-i18n="channels.xai.userCode">用户代码</span>
-                  <strong id="xaiUserCode" tabindex="-1"></strong>
-                  <span data-i18n="channels.xai.expiresAt">到期时间</span>
-                  <time id="xaiDeviceExpiresAt"></time>
-                  <p data-i18n="channels.xai.deviceHint">复制授权链接或在新标签页打开，然后输入用户代码。此窗口会自动检查结果。</p>
-                  <button id="xaiDeviceRestart" type="button" class="btn btn-secondary"
-                    data-i18n="channels.oauth.restart">重新授权</button>
                 </div>
               </div>
               <div class="oauth-actions">

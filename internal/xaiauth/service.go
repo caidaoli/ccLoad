@@ -2,6 +2,9 @@ package xaiauth
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,193 +33,111 @@ func NewService(client *http.Client) *Service {
 	return &Service{client: client}
 }
 
-// Discovery contains the trusted OAuth endpoints returned by xAI discovery.
-type Discovery struct {
-	DeviceAuthorizationEndpoint string `json:"device_authorization_endpoint"`
-	TokenEndpoint               string `json:"token_endpoint"`
+// Authorization contains one locally generated xAI PKCE flow. Secret PKCE
+// material is deliberately excluded from JSON so it cannot reach the browser.
+type Authorization struct {
+	URL           string `json:"url"`
+	State         string `json:"state"`
+	Nonce         string `json:"-"`
+	CodeVerifier  string `json:"-"`
+	CodeChallenge string `json:"-"`
 }
 
-// DeviceCode contains the server-issued state for an RFC 8628 device flow.
-type DeviceCode struct {
-	DeviceCode              string        `json:"-"`
-	UserCode                string        `json:"user_code"`
-	VerificationURI         string        `json:"verification_uri"`
-	VerificationURIComplete string        `json:"verification_uri_complete"`
-	ExpiresIn               int           `json:"expires_in"`
-	ExpiresAt               time.Time     `json:"expires_at"`
-	Interval                time.Duration `json:"-"`
-	TokenEndpoint           string        `json:"-"`
+// AuthorizationInput is a parsed callback URL, query string, or bare code.
+type AuthorizationInput struct {
+	Code          string
+	State         string
+	RequiresState bool
 }
 
-// Redacted returns a diagnostic representation without the device secret.
-func (d *DeviceCode) Redacted() string {
-	if d == nil {
-		return "<nil>"
-	}
-	return fmt.Sprintf("xAI device code{user_code=%q,verification_uri=%q,expires_in=%d}", d.UserCode, d.VerificationURI, d.ExpiresIn)
-}
-
-func (d *DeviceCode) String() string { return d.Redacted() }
-
-// Discover loads xAI discovery and enforces the fixed trusted origin.
-func (s *Service) Discover(ctx context.Context) (*Discovery, error) {
-	var discovery Discovery
-	if err := s.doJSON(ctx, http.MethodGet, DiscoveryURL, nil, maxOAuthResponseBytes, &discovery); err != nil {
-		return nil, fmt.Errorf("xAI discovery: %w", err)
-	}
-	device, err := validateAuthURL(discovery.DeviceAuthorizationEndpoint)
+// NewAuthorization generates the complete browser URL locally without making
+// an upstream request. xAI's public CLI client uses PKCE and a fixed loopback URI.
+func (s *Service) NewAuthorization() (*Authorization, error) {
+	state, err := randomURLToken(32)
 	if err != nil {
-		return nil, fmt.Errorf("xAI discovery device endpoint origin: %w", err)
+		return nil, fmt.Errorf("generate xAI OAuth state: %w", err)
 	}
-	token, err := validateAuthURL(discovery.TokenEndpoint)
+	nonce, err := randomURLToken(32)
 	if err != nil {
-		return nil, fmt.Errorf("xAI discovery token endpoint origin: %w", err)
+		return nil, fmt.Errorf("generate xAI OAuth nonce: %w", err)
 	}
-	discovery.DeviceAuthorizationEndpoint, discovery.TokenEndpoint = device, token
-	return &discovery, nil
-}
-
-// StartDevice starts an xAI RFC 8628 device authorization flow.
-func (s *Service) StartDevice(ctx context.Context) (*DeviceCode, error) {
-	discovery, err := s.Discover(ctx)
+	verifier, err := randomURLToken(64)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("generate xAI PKCE verifier: %w", err)
 	}
-	form := url.Values{"client_id": {ClientID}, "scope": {DeviceScope}}
-	var payload struct {
-		DeviceCode              string `json:"device_code"`
-		UserCode                string `json:"user_code"`
-		VerificationURI         string `json:"verification_uri"`
-		VerificationURIComplete string `json:"verification_uri_complete"`
-		ExpiresIn               int    `json:"expires_in"`
-		Interval                int    `json:"interval"`
+	digest := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(digest[:])
+	query := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {ClientID},
+		"redirect_uri":          {RedirectURI},
+		"scope":                 {OAuthScope},
+		"state":                 {state},
+		"nonce":                 {nonce},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"plan":                  {"generic"},
+		"referrer":              {"ccload"},
 	}
-	if err := s.doJSON(ctx, http.MethodPost, discovery.DeviceAuthorizationEndpoint, form, maxOAuthResponseBytes, &payload); err != nil {
-		return nil, fmt.Errorf("xAI device code: %w", err)
-	}
-	receivedAt := time.Now().UTC()
-	if strings.TrimSpace(payload.DeviceCode) == "" || strings.TrimSpace(payload.UserCode) == "" {
-		return nil, errors.New("xAI device code response is incomplete")
-	}
-	if payload.ExpiresIn <= 0 {
-		return nil, errors.New("xAI device code response has invalid expires_in")
-	}
-	verification, complete := "", ""
-	if strings.TrimSpace(payload.VerificationURI) != "" {
-		verification, err = validateAuthURL(payload.VerificationURI)
-		if err != nil {
-			return nil, fmt.Errorf("xAI verification URL origin: %w", err)
-		}
-	}
-	if strings.TrimSpace(payload.VerificationURIComplete) != "" {
-		complete, err = validateAuthURL(payload.VerificationURIComplete)
-		if err != nil {
-			return nil, fmt.Errorf("xAI complete verification URL origin: %w", err)
-		}
-	}
-	if verification == "" && complete == "" {
-		return nil, errors.New("xAI device code response is missing verification URL")
-	}
-	interval := time.Duration(payload.Interval) * time.Second
-	if interval <= 0 {
-		interval = defaultPollInterval
-	}
-	return &DeviceCode{
-		DeviceCode: payload.DeviceCode, UserCode: payload.UserCode,
-		VerificationURI: verification, VerificationURIComplete: complete,
-		ExpiresIn: payload.ExpiresIn, ExpiresAt: receivedAt.Add(time.Duration(payload.ExpiresIn) * time.Second),
-		Interval: interval, TokenEndpoint: discovery.TokenEndpoint,
+	return &Authorization{
+		URL: AuthorizeURL + "?" + query.Encode(), State: state, Nonce: nonce,
+		CodeVerifier: verifier, CodeChallenge: challenge,
 	}, nil
 }
 
-// PollDevice waits for a device flow and accepts a nil context as Background.
-func (s *Service) PollDevice(ctx context.Context, device *DeviceCode) (*Credential, error) {
-	if ctx == nil {
-		ctx = context.Background()
+func randomURLToken(size int) (string, error) {
+	raw := make([]byte, size)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
 	}
-	if device == nil || strings.TrimSpace(device.DeviceCode) == "" {
-		return nil, errors.New("xAI device code is required")
-	}
-	endpoint, err := validateAuthURL(device.TokenEndpoint)
-	if err != nil {
-		return nil, fmt.Errorf("xAI token endpoint origin: %w", err)
-	}
-	interval := device.Interval
-	if interval <= 0 {
-		interval = defaultPollInterval
-	}
-	if device.ExpiresAt.IsZero() {
-		return nil, errors.New("xAI device code is missing expires_at")
-	}
-	deadline := device.ExpiresAt
-	hardDeadline := time.Now().Add(MaxDevicePollDuration)
-	if hardDeadline.Before(deadline) {
-		deadline = hardDeadline
-	}
-	parentDeadline, parentHasDeadline := ctx.Deadline()
-	parentOwnsDeadline := parentHasDeadline && parentDeadline.Before(deadline)
-	if parentOwnsDeadline {
-		deadline = parentDeadline
-	}
-	pollCtx, cancel := context.WithDeadline(ctx, deadline)
-	defer cancel()
-	first := true
-	for {
-		if !first {
-			remaining := time.Until(deadline)
-			if remaining <= 0 {
-				return nil, pollDeadlineError(pollCtx, parentOwnsDeadline)
-			}
-			wait := interval
-			if wait > remaining {
-				wait = remaining
-			}
-			if err := sleepContext(pollCtx, wait); err != nil {
-				return nil, pollDeadlineError(pollCtx, parentOwnsDeadline)
-			}
-		}
-		first = false
-		if !time.Now().Before(deadline) {
-			return nil, pollDeadlineError(pollCtx, parentOwnsDeadline)
-		}
-		credential, code, err := s.requestToken(pollCtx, endpoint, url.Values{"grant_type": {DeviceCodeGrantType}, "device_code": {strings.TrimSpace(device.DeviceCode)}, "client_id": {ClientID}})
-		if err == nil {
-			credential.TokenEndpoint = endpoint
-			if err := credential.Normalize(); err != nil {
-				return nil, err
-			}
-			return credential, nil
-		}
-		if pollCtx.Err() != nil {
-			return nil, pollDeadlineError(pollCtx, parentOwnsDeadline)
-		}
-		switch code {
-		case "authorization_pending":
-			continue
-		case "slow_down":
-			interval += 5 * time.Second
-			continue
-		case "access_denied":
-			return nil, ErrAccessDenied
-		case "expired_token":
-			return nil, ErrDeviceExpired
-		default:
-			return nil, err
-		}
-	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
-func pollDeadlineError(ctx context.Context, parentOwnsDeadline bool) error {
-	if errors.Is(ctx.Err(), context.Canceled) {
-		return context.Canceled
+// ParseAuthorizationInput accepts the same manual inputs as Sub2API: a full
+// callback URL, a query string, or a bare authorization code.
+func ParseAuthorizationInput(raw string) AuthorizationInput {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return AuthorizationInput{}
 	}
-	if parentOwnsDeadline {
-		if err := ctx.Err(); err != nil {
-			return err
+	if parsed, err := url.Parse(trimmed); err == nil && parsed != nil {
+		if code := strings.TrimSpace(parsed.Query().Get("code")); code != "" {
+			return AuthorizationInput{Code: code, State: strings.TrimSpace(parsed.Query().Get("state")), RequiresState: true}
 		}
-		return context.DeadlineExceeded
 	}
-	return ErrDeviceExpired
+	queryCandidate := strings.TrimPrefix(trimmed, "?")
+	if strings.Contains(queryCandidate, "=") {
+		if values, err := url.ParseQuery(queryCandidate); err == nil {
+			if code := strings.TrimSpace(values.Get("code")); code != "" {
+				return AuthorizationInput{Code: code, State: strings.TrimSpace(values.Get("state")), RequiresState: true}
+			}
+		}
+	}
+	return AuthorizationInput{Code: trimmed}
+}
+
+// ExchangeCode exchanges one authorization code using the server-held PKCE verifier.
+func (s *Service) ExchangeCode(ctx context.Context, code, verifier string) (*Credential, error) {
+	code = strings.TrimSpace(code)
+	verifier = strings.TrimSpace(verifier)
+	if code == "" {
+		return nil, errors.New("xAI authorization code is required")
+	}
+	if verifier == "" {
+		return nil, errors.New("xAI PKCE verifier is required")
+	}
+	credential, _, err := s.requestToken(ctx, TokenURL, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {ClientID},
+		"code": {code}, "redirect_uri": {RedirectURI}, "code_verifier": {verifier},
+	})
+	if err != nil {
+		return nil, err
+	}
+	credential.TokenEndpoint = TokenURL
+	if err := credential.Normalize(); err != nil {
+		return nil, err
+	}
+	return credential, nil
 }
 
 // Refresh exchanges and merges the refresh token from an existing credential.
@@ -319,20 +240,6 @@ func safeOAuthErrorCode(code string) string {
 	default:
 		return "oauth_error"
 	}
-}
-
-func (s *Service) doJSON(ctx context.Context, method, endpoint string, form url.Values, limit int64, target any) error {
-	body, status, err := s.request(ctx, method, endpoint, form, limit)
-	if err != nil {
-		return err
-	}
-	if status < 200 || status >= 300 {
-		return fmt.Errorf("HTTP %d", status)
-	}
-	if err := json.Unmarshal(body, target); err != nil {
-		return errors.New("invalid JSON response")
-	}
-	return nil
 }
 
 func (s *Service) request(ctx context.Context, method, endpoint string, form url.Values, limit int64) ([]byte, int, error) {

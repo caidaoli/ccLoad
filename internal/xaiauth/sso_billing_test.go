@@ -45,7 +45,7 @@ func TestConvertSSOUsesAccountsThenAuthAndDoesNotLeakCookie(t *testing.T) {
 		}
 		switch req.URL.Path {
 		case "/oauth2/device/code":
-			if err := req.ParseForm(); err != nil || req.Form.Get("scope") != expectedXAIOAuthScope {
+			if err := req.ParseForm(); err != nil || req.Form.Get("scope") != xaiauth.SSOScope {
 				t.Fatalf("unexpected SSO scope: %q err=%v", req.Form.Get("scope"), err)
 			}
 			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://auth.x.ai/activate?user_code=CODE","interval":1,"expires_in":60}`, http.Header{"Set-Cookie": []string{"device-path=1; Path=/oauth2/device; Secure"}}), nil

@@ -72,7 +72,7 @@ type Server struct {
 	antigravityService            *antigravityauth.Service
 	xaiService                    *xaiauth.Service
 	xaiCredentials                *xaiCredentialManager
-	xaiDevice                     *xaiDeviceManager
+	xaiOAuth                      *xaiOAuthManager
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -252,7 +252,7 @@ func NewServer(store storage.Store) *Server {
 	s.xaiCredentials = newXAICredentialManager(store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
-	s.xaiDevice = newXAIDeviceManager(
+	s.xaiOAuth = newXAIOAuthManager(
 		s.baseCtx,
 		s.xaiService,
 		func(ctx context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
@@ -325,7 +325,7 @@ func NewServer(store storage.Store) *Server {
 		s.loginRateLimiter,
 		store, // 传入store用于热更新令牌
 	)
-	s.authService.RegisterWebSessionRevokeHook(s.xaiDevice.cancelByAdmin)
+	s.authService.RegisterWebSessionRevokeHook(s.xaiOAuth.cancelByAdmin)
 
 	// 启动后台 worker（Token 统计 / Token 清理 / 状态清理）
 	s.startBackgroundWorkers()
@@ -1077,9 +1077,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/antigravity/oauth/callback", s.HandleSubmitAntigravityOAuthCallback)
 		admin.POST("/antigravity/credentials/import", s.HandleImportAntigravityCredential)
 		admin.POST("/channels/:id/antigravity-credential/refresh", s.HandleRefreshAntigravityCredential)
-		admin.POST("/xai/oauth/start", s.HandleStartXAIDeviceOAuth)
-		admin.GET("/xai/oauth/status", s.HandleXAIDeviceOAuthStatus)
-		admin.POST("/xai/oauth/cancel", s.HandleCancelXAIDeviceOAuth)
+		admin.POST("/xai/oauth/start", s.HandleStartXAIOAuth)
+		admin.GET("/xai/oauth/status", s.HandleXAIOAuthStatus)
+		admin.POST("/xai/oauth/cancel", s.HandleCancelXAIOAuth)
+		admin.POST("/xai/oauth/callback", s.HandleSubmitXAIOAuthCallback)
 		admin.POST("/xai/credentials/import/stream", s.HandleImportXAICredentialsStream)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
@@ -1329,8 +1330,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if s.antigravityOAuth != nil {
 		s.antigravityOAuth.close()
 	}
-	if s.xaiDevice != nil {
-		s.xaiDevice.close()
+	if s.xaiOAuth != nil {
+		s.xaiOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()
