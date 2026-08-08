@@ -74,6 +74,29 @@ branch_relation() {
   fi
 }
 
+find_workflow_run() {
+  local workflow_file=$1
+  local head_branch=$2
+  local head_sha=$3
+  local run_id=
+  local attempt=0
+
+  while [[ -z "$run_id" ]] && (( attempt < 60 )); do
+    run_id=$(gh run list \
+      --workflow "$workflow_file" \
+      --event push \
+      --limit 50 \
+      --json databaseId,headBranch,headSha \
+      --jq "first(.[] | select(.headBranch == \"$head_branch\" and .headSha == \"$head_sha\")) | .databaseId // empty")
+    if [[ -z "$run_id" ]]; then
+      sleep 2
+    fi
+    attempt=$((attempt + 1))
+  done
+  [[ -n "$run_id" ]] || return 1
+  printf '%s\n' "$run_id"
+}
+
 derive_release_plan() {
   local pending_message=$1
   local pending_subject=${pending_message%%$'\n'*}
@@ -206,6 +229,7 @@ self_test() {
 
   local script_path remote_dir work_dir other_dir stub_dir stub_path before_head before_remote
   local dry_run_output publish_output published_head published_tag_target remote_ahead_error
+  local ci_failure_output ci_failure_head
   local small_beta_output large_beta_output stable_output stable_publish_output invalid_beta_error
   local stable_commit stable_tree invalid_beta_commit stable_published_head stable_tag_target
   script_path=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")
@@ -242,11 +266,26 @@ if [[ "$(basename "$0")" != gh ]]; then
   exit 0
 fi
 case "${1:-} ${2:-}" in
-  'auth status'|'run watch')
+  'auth status')
+    exit 0
+    ;;
+  'run watch')
+    if [[ "${3:-}" == 4100 && "${RELEASE_SELF_TEST_FAIL_TEST_CI:-}" == 1 ]]; then
+      exit 1
+    fi
     exit 0
     ;;
   'run list')
-    printf '4242\n'
+    case " $* " in
+      *' --workflow test.yml '*)
+        expected_sha=$(git rev-parse HEAD)
+        [[ "$*" == *'.headBranch == "master"'* ]] || exit 1
+        [[ "$*" == *".headSha == \"$expected_sha\""* ]] || exit 1
+        printf '4100\n'
+        ;;
+      *' --workflow release.yml '*) printf '4200\n' ;;
+      *) exit 1 ;;
+    esac
     ;;
   'release view')
     case " $* " in
@@ -290,6 +329,20 @@ EOF
   assert_equal '' "$(git -C "$work_dir" status --porcelain)" 'published worktree'
   [[ "$publish_output" == *'Container: ghcr.io/caidaoli/ccload:v1.0.1-beta.1 and ghcr.io/caidaoli/ccload:beta'* ]] || \
     fail "publish did not report the Beta container images"
+
+  printf 'CI failure\n' >>"$work_dir/release-test.txt"
+  if ci_failure_output=$(cd "$work_dir" && PATH="$stub_dir:$PATH" RELEASE_SELF_TEST_FAIL_TEST_CI=1 \
+    "$script_path" beta --publish --commit-message 'fix: rejected by CI' 2>&1); then
+    fail "publish created a release after the Test workflow failed"
+  fi
+  ci_failure_head=$(git -C "$work_dir" rev-parse HEAD)
+  assert_equal "$ci_failure_head" "$(git --git-dir="$remote_dir" rev-parse refs/heads/master)" \
+    'CI-failed pushed master'
+  if git --git-dir="$remote_dir" show-ref --verify --quiet refs/tags/v1.0.1-beta.2; then
+    fail "publish pushed a Tag after the Test workflow failed"
+  fi
+  [[ "$ci_failure_output" == *'Test workflow failed'* ]] || \
+    fail "publish reported the wrong Test workflow failure"
 
   printf 'next change\n' >>"$work_dir/release-test.txt"
   small_beta_output=$(cd "$work_dir" && "$script_path" beta --dry-run \
@@ -452,9 +505,9 @@ else
   worktree_action=clean
 fi
 if [[ "$relation" == local-ahead ]] || [[ -n "$pending_message" ]]; then
-  branch_action='push verified master'
+  branch_action='push master and wait for Test CI'
 else
-  branch_action='already synchronized'
+  branch_action='wait for Test CI on synchronized master'
 fi
 
 cat <<EOF
@@ -474,7 +527,7 @@ if [[ "$mode" == dry-run ]]; then
   exit 0
 fi
 
-for command_name in go make node golangci-lint gh docker; do
+for command_name in gh docker; do
   require_command "$command_name"
 done
 
@@ -498,15 +551,10 @@ derive_release_plan ""
   fail "release commit count changed after automatic commit: got $commit_count, planned $planned_commit_count"
 head_sha=$(git rev-parse HEAD)
 
-go test -tags sonic ./internal/...
-make verify-web
-make build
-golangci-lint config verify
-golangci-lint run ./...
 git diff --check
 
 if [[ -n "$(git status --porcelain --untracked-files=all)" ]]; then
-  fail "verification changed the working tree; refusing to push or tag"
+  fail "working tree is not clean after the release commit; refusing to push or tag"
 fi
 
 git fetch --prune origin master
@@ -515,39 +563,37 @@ relation=$(branch_relation "$head_sha" "$origin_sha")
 case "$relation" in
   equal) ;;
   local-ahead) git push origin 'HEAD:refs/heads/master' ;;
-  remote-ahead) fail "origin/master advanced during verification; refusing to push or tag" ;;
-  diverged) fail "origin/master diverged during verification; refusing to push or tag" ;;
-  *) fail "unknown branch relation after verification: $relation" ;;
+  remote-ahead) fail "origin/master advanced before the branch push; refusing to push or tag" ;;
+  diverged) fail "origin/master diverged before the branch push; refusing to push or tag" ;;
+  *) fail "unknown branch relation before the branch push: $relation" ;;
 esac
 
 git fetch --prune origin master
 origin_sha=$(git rev-parse refs/remotes/origin/master)
 [[ "$head_sha" == "$origin_sha" ]] || fail "local HEAD does not match origin/master after branch push"
 
+test_run_id=$(find_workflow_run test.yml master "$head_sha") || \
+  fail "Test workflow run was not found for master at $head_sha"
+printf 'Test workflow run: https://github.com/caidaoli/ccLoad/actions/runs/%s\n' "$test_run_id"
+if ! gh run watch "$test_run_id" --exit-status; then
+  fail "Test workflow failed for master at $head_sha; refusing to create a Tag"
+fi
+
+git fetch --prune origin master
+origin_sha=$(git rev-parse refs/remotes/origin/master)
+[[ "$head_sha" == "$origin_sha" ]] || \
+  fail "origin/master advanced while Test CI was running; refusing to create a Tag"
+
 git fetch --tags origin
 derive_release_plan ""
 [[ "$release_tag" == "$planned_release_tag" ]] || \
-  fail "release Tag changed while verification was running: got $release_tag, planned $planned_release_tag"
+  fail "release Tag changed while Test CI was running: got $release_tag, planned $planned_release_tag"
 
 git tag -a "$release_tag" -m "Release $release_tag"
 git push origin "refs/tags/$release_tag"
 
-run_id=
-attempt=0
-while [[ -z "$run_id" ]] && (( attempt < 60 )); do
-  run_id=$(gh run list \
-    --workflow release.yml \
-    --event push \
-    --limit 50 \
-    --json databaseId,headBranch,headSha \
-    --jq ".[] | select(.headBranch == \"$release_tag\" and .headSha == \"$head_sha\") | .databaseId" \
-    | head -n 1)
-  if [[ -z "$run_id" ]]; then
-    sleep 2
-  fi
-  attempt=$((attempt + 1))
-done
-[[ -n "$run_id" ]] || fail "GitHub Actions run was not found for $release_tag"
+run_id=$(find_workflow_run release.yml "$release_tag" "$head_sha") || \
+  fail "GitHub Actions run was not found for $release_tag"
 
 printf 'GitHub Actions run: https://github.com/caidaoli/ccLoad/actions/runs/%s\n' "$run_id"
 gh run watch "$run_id" --exit-status
