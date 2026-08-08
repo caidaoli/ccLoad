@@ -52,7 +52,11 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("reasoning = %#v, want normalized high with summary preserved", reasoning)
 	}
-	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" {
+		t.Fatalf("CLI chat-proxy tools = %#v, want one native web_search", tools)
+	}
+	for _, field := range []string{"tool_choice", "parallel_tool_calls"} {
 		if _, exists := payload[field]; exists {
 			t.Fatalf("orphaned tool field %q survived: %s", field, got)
 		}
@@ -106,17 +110,28 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 		wantToolTypes    []string
 		wantToolNames    []string
 		wantChoiceTypes  []string
+		wantChoiceString string
+		wantParallel     bool
 		wantChoiceAbsent bool
+		withoutCacheKey  bool
 	}{
 		{
-			name:          "preserve explicit ordinary tool and enable cache route",
+			name:          "prepend native web search to explicit ordinary tools",
 			baseURL:       xaiauth.CLIBaseURL + "/",
 			body:          `{"tools":[{"type":"function","name":"lookup"}]}`,
-			wantToolTypes: []string{"function", "web_search", "x_search"},
-			wantToolNames: []string{"lookup", "", ""},
+			wantToolTypes: []string{"web_search", "function"},
+			wantToolNames: []string{"", "lookup"},
 		},
 		{
-			name:    "deduplicate native tools and preserve explicit functions",
+			name:            "web search injection is independent of prompt cache key",
+			baseURL:         xaiauth.CLIBaseURL,
+			body:            `{"tools":[{"type":"function","name":"lookup"}]}`,
+			wantToolTypes:   []string{"web_search", "function"},
+			wantToolNames:   []string{"", "lookup"},
+			withoutCacheKey: true,
+		},
+		{
+			name:    "deduplicate native web search and replace same named client tools",
 			baseURL: xaiauth.CLIBaseURL,
 			body: `{
 				"tools":[
@@ -133,15 +148,33 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 					{"type":"web_search"}
 				]}
 			}`,
-			wantToolTypes:   []string{"web_search", "function", "custom", "function", "x_search"},
-			wantToolNames:   []string{"", "web_search", " WEB_SEARCH ", "lookup", ""},
-			wantChoiceTypes: []string{"function", "custom", "web_search", "x_search"},
+			wantToolTypes:   []string{"web_search", "function"},
+			wantToolNames:   []string{"", "lookup"},
+			wantChoiceTypes: []string{"function", "web_search"},
+		},
+		{
+			name:             "replace sole named web search without dropping active controls",
+			baseURL:          xaiauth.CLIBaseURL,
+			body:             `{"tools":[{"type":"function","name":"web_search"}],"tool_choice":"auto","parallel_tool_calls":true}`,
+			wantToolTypes:    []string{"web_search"},
+			wantToolNames:    []string{""},
+			wantChoiceString: "auto",
+			wantParallel:     true,
 		},
 		{
 			name:             "prune choice without declared tools",
 			baseURL:          xaiauth.CLIBaseURL,
 			body:             `{"tool_choice":{"type":"function","name":"web_search"}}`,
+			wantToolTypes:    []string{"web_search"},
+			wantToolNames:    []string{""},
 			wantChoiceAbsent: true,
+		},
+		{
+			name:          "preserve explicit native x search without adding another",
+			baseURL:       xaiauth.CLIBaseURL,
+			body:          `{"tools":[{"type":"x_search"},{"type":"function","name":"lookup"}]}`,
+			wantToolTypes: []string{"web_search", "x_search", "function"},
+			wantToolNames: []string{"", "", "lookup"},
 		},
 		{
 			name:          "custom base does not inject",
@@ -161,7 +194,11 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
-			got, err := finalizeXAIResponsesBody([]byte(test.body), "grok-4.5", "conv", test.baseURL)
+			executionID := "conv"
+			if test.withoutCacheKey {
+				executionID = ""
+			}
+			got, err := finalizeXAIResponsesBody([]byte(test.body), "grok-4.5", executionID, test.baseURL)
 			if err != nil {
 				t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
 			}
@@ -186,6 +223,12 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 					t.Fatalf("tool_choice survived: %#v", choice)
 				}
 				return
+			}
+			if test.wantChoiceString != "" && choice != test.wantChoiceString {
+				t.Fatalf("tool_choice = %#v, want %q", choice, test.wantChoiceString)
+			}
+			if test.wantParallel && payload["parallel_tool_calls"] != true {
+				t.Fatalf("parallel_tool_calls = %#v, want true", payload["parallel_tool_calls"])
 			}
 			if len(test.wantChoiceTypes) == 0 {
 				return

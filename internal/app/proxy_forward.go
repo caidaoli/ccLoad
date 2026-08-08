@@ -2665,6 +2665,11 @@ func (s *Server) attemptKeyAcrossURLs(
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	if cfg.UsesAntigravityOAuth() {
+		// Antigravity owns a fixed provider fallback order. Runtime latency must
+		// not reorder daily, production, and daily sandbox endpoints.
+		sortedURLs = orderURLsWithSelector(nil, cfg.ID, urls)
+	}
 	clientProtocol := reqCtx.clientProtocol
 	transformMode := cfg.GetProtocolTransformMode()
 	if transformMode == model.ProtocolTransformModeAuto {
@@ -2731,6 +2736,9 @@ func (s *Server) attemptKeyAcrossURLs(
 				nextAction:                cooldown.ActionRetryChannel,
 				protocolCapabilityMissing: true,
 			}
+			if cfg.UsesAntigravityOAuth() {
+				break
+			}
 			continue
 		}
 
@@ -2768,8 +2776,17 @@ func (s *Server) attemptKeyAcrossURLs(
 		if result != nil {
 			urlLastFailure = result
 		}
+		if shouldDeferChannelCooldown && result != nil && cfg.UsesAntigravityOAuth() &&
+			(result.isNetworkError || shouldFallbackAntigravityBaseURL(result.status, result.body)) {
+			result.deferredCooldown = nil
+			s.activeRequests.Retry(reqCtx.activeReqID)
+			continue
+		}
 		if result != nil && result.protocolCapabilityMissing {
 			// 能力协商不是 URL 健康故障，不进入通用 URL 冷却。
+			if cfg.UsesAntigravityOAuth() {
+				break
+			}
 			continue
 		}
 
@@ -2792,6 +2809,14 @@ func (s *Server) attemptKeyAcrossURLs(
 			// 无论是否升级，这种故障都与 URL 无关，不应改打同渠道的其他 URL。
 			if isModelScopedHTTPFailure(result) {
 				if result.deferredCooldown != nil {
+					nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
+					result.nextAction = nextAction
+					result.deferredCooldown = nil
+				}
+				break
+			}
+			if cfg.UsesAntigravityOAuth() {
+				if result != nil && result.deferredCooldown != nil {
 					nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
 					result.nextAction = nextAction
 					result.deferredCooldown = nil
@@ -3074,6 +3099,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {

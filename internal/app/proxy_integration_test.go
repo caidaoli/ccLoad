@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -488,6 +489,136 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 	}
 }
 
+func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       int
+		body         string
+		networkError bool
+		wantFallback bool
+	}{
+		{name: "network error", networkError: true, wantFallback: true},
+		{name: "404", status: http.StatusNotFound, body: `{"error":{"code":404,"message":"not found"}}`, wantFallback: true},
+		{name: "429", status: http.StatusTooManyRequests, body: `{"error":{"code":429,"message":"rate limited"}}`, wantFallback: true},
+		{name: "503 no capacity", status: http.StatusServiceUnavailable, body: `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server"}}`, wantFallback: true},
+		{name: "400", status: http.StatusBadRequest, body: `{"error":{"code":400,"message":"bad request"}}`},
+		{name: "405", status: http.StatusMethodNotAllowed, body: `{"error":{"code":405,"message":"method not allowed"}}`},
+		{name: "500", status: http.StatusInternalServerError, body: `{"error":{"code":500,"message":"internal error"}}`},
+		{name: "500 protocol conversion", status: http.StatusInternalServerError, body: `{"error":{"code":"convert_request_failed","message":"not implemented"}}`},
+		{name: "502", status: http.StatusBadGateway, body: `{"error":{"code":502,"message":"bad gateway"}}`},
+		{name: "ordinary 503", status: http.StatusServiceUnavailable, body: `{"error":{"code":503,"message":"service unavailable"}}`},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var firstCalls atomic.Int32
+			var fallbackCalls atomic.Int32
+			first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				firstCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				fallbackCalls.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"fallback ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+
+			firstURL := first.URL
+			if tc.networkError {
+				firstURL = "http://antigravity-network-failure.invalid"
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-fallback", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-fallback"),
+			}}, map[int]string{0: firstURL + "\n" + fallback.URL})
+
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Fatalf("ListConfigs = (%d, %v)", len(configs), err)
+			}
+			// Make the pre-fix weighted selector deterministic. Antigravity fallback
+			// order itself must ignore this runtime preference.
+			env.server.urlSelector.CooldownURL(configs[0].ID, fallback.URL)
+			if tc.networkError {
+				env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					if req.URL.Host == "antigravity-network-failure.invalid" {
+						firstCalls.Add(1)
+						return nil, &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+					}
+					return dispatchTestHTTPRequest(req)
+				})}
+			}
+
+			response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+			}, nil)
+			if firstCalls.Load() != 1 {
+				t.Fatalf("first URL calls=%d, want 1", firstCalls.Load())
+			}
+			if tc.wantFallback {
+				if response.Code != http.StatusOK || fallbackCalls.Load() != 1 ||
+					gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "fallback ok" {
+					t.Fatalf("fallback response=%d calls=%d body=%s", response.Code, fallbackCalls.Load(), response.Body.String())
+				}
+				return
+			}
+			if response.Code != tc.status || fallbackCalls.Load() != 0 {
+				t.Fatalf("non-fallback response=%d fallback calls=%d body=%s", response.Code, fallbackCalls.Load(), response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
+	var mu sync.Mutex
+	requestBaseURLs := make([]string, 0, 3)
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-default-fallback", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-default-fallback"),
+	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		baseURL := req.URL.Scheme + "://" + req.URL.Host
+		mu.Lock()
+		requestBaseURLs = append(requestBaseURLs, baseURL)
+		mu.Unlock()
+		status := http.StatusOK
+		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"sandbox ok"}]},"finishReason":"STOP"}]}}`
+		switch baseURL {
+		case antigravityDailyBaseURL:
+			status = http.StatusServiceUnavailable
+			body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server"}}`
+		case antigravityProdBaseURL:
+			status = http.StatusTooManyRequests
+			body = `{"error":{"code":429,"message":"rate limited"}}`
+		case antigravitySandboxDailyBaseURLForTest:
+		default:
+			t.Fatalf("unexpected Antigravity base URL: %s", baseURL)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "sandbox ok" {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	mu.Lock()
+	got := append([]string(nil), requestBaseURLs...)
+	mu.Unlock()
+	if !slices.Equal(got, want) {
+		t.Fatalf("Antigravity base URL order=%v, want %v", got, want)
+	}
+}
+
 func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
@@ -697,17 +828,17 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 		}
 		tools := gjson.GetBytes(wireBody, "tools").Array()
 		switch gjson.GetBytes(wireBody, "tool_choice").String() {
-		case "none":
-			if len(tools) != 2 || tools[0].Get("type").String() != "web_search" || tools[1].Get("type").String() != "x_search" {
-				t.Errorf("xAI cache-route tools = %s, want web_search and x_search", gjson.GetBytes(wireBody, "tools").Raw)
+		case "":
+			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" {
+				t.Errorf("xAI CLI tools = %s, want one web_search", gjson.GetBytes(wireBody, "tools").Raw)
 			}
 		case "auto":
-			if len(tools) != 2 || tools[0].Get("type").String() != "web_search" ||
-				tools[0].Get("search_context_size").String() != "low" || tools[1].Get("type").String() != "x_search" {
+			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" ||
+				tools[0].Get("search_context_size").String() != "low" {
 				t.Errorf("explicit xAI search tool was not preserved: %s", gjson.GetBytes(wireBody, "tools").Raw)
 			}
 		default:
-			t.Errorf("xAI tool_choice = %q, want none for cache routing or preserved auto", gjson.GetBytes(wireBody, "tool_choice").String())
+			t.Errorf("xAI tool_choice = %q, want absent or preserved auto", gjson.GetBytes(wireBody, "tool_choice").String())
 		}
 		for _, field := range []string{"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options"} {
 			if gjson.GetBytes(wireBody, field).Exists() {

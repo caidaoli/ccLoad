@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	antigravityDailyBaseURL = "https://daily-cloudcode-pa.googleapis.com"
-	antigravityProdBaseURL  = "https://cloudcode-pa.googleapis.com"
+	antigravityDailyBaseURL        = "https://daily-cloudcode-pa.googleapis.com"
+	antigravityProdBaseURL         = "https://cloudcode-pa.googleapis.com"
+	antigravitySandboxDailyBaseURL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
 )
 
 // 导入凭证和动态模型发现必须共享这一份 Antigravity 模型目录。
@@ -80,13 +81,18 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credentialJSON,
-		URLs: model.ChannelURLs{
-			{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
-			{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
-		},
+		URLs:                  antigravityOAuthDefaultURLs(),
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
 		Priority:              0, Enabled: true, CostMultiplier: 1,
 		ModelEntries: antigravityOAuthModelEntries(),
+	}
+}
+
+func antigravityOAuthDefaultURLs() model.ChannelURLs {
+	return model.ChannelURLs{
+		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
+		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
+		{URL: antigravitySandboxDailyBaseURL, Protocols: []string{"gemini"}},
 	}
 }
 

@@ -28,6 +28,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -974,10 +975,16 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	if channel.Name != "Antigravity-gravity@example.com" || !channel.UsesAntigravityOAuth() || channel.KeyCount != 0 || channel.Websockets || channel.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
 		t.Fatalf("created Antigravity channel = %#v", channel)
 	}
-	if len(channel.URLs) != 2 || !channel.SupportsModel("gemini-3-flash") ||
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
 		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("created Antigravity channel contract = %#v", channel)
+	}
+	for i, wantURL := range wantURLs {
+		if channel.URLs[i].URL != wantURL || !channel.URLs[i].SupportsProtocol(util.ProtocolGemini) {
+			t.Fatalf("Antigravity URL[%d] = %#v, want Gemini %s", i, channel.URLs[i], wantURL)
+		}
 	}
 }
 

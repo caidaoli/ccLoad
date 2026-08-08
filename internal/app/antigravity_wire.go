@@ -309,6 +309,34 @@ func antigravityUpstreamURL(baseURL string, streaming bool) (string, error) {
 	return parsed.String(), nil
 }
 
+func withAntigravityDefaultFallbackURLs(cfg *model.Config) *model.Config {
+	if cfg == nil || !cfg.UsesAntigravityOAuth() || len(cfg.URLs) == 0 {
+		return cfg
+	}
+	for _, entry := range cfg.URLs {
+		baseURL := strings.TrimRight(strings.TrimSpace(model.StripExactUpstreamURLMarker(entry.URL)), "/")
+		switch baseURL {
+		case antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURL:
+		default:
+			return cfg
+		}
+	}
+	runtimeCfg := cfg.Clone()
+	runtimeCfg.URLs = antigravityOAuthDefaultURLs()
+	return runtimeCfg
+}
+
+func shouldFallbackAntigravityBaseURL(statusCode int, body []byte) bool {
+	switch statusCode {
+	case http.StatusNotFound, http.StatusTooManyRequests:
+		return true
+	case http.StatusServiceUnavailable:
+		return strings.Contains(strings.ToLower(string(body)), "no capacity available")
+	default:
+		return false
+	}
+}
+
 func injectAntigravityOAuthHeaders(req *http.Request, cfg *model.Config) {
 	if req == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return

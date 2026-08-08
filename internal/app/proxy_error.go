@@ -254,6 +254,7 @@ func (s *Server) handleNetworkError(
 		failure.nextAction = cooldown.ActionReturnClient
 		return failure, cooldown.ActionReturnClient
 	}
+	failure.isNetworkError = true
 
 	input := cooldownInputForModel(networkErrorInput(cfg.ID, keyIndex, statusCode), actualModel)
 	input.ModelScoped = util.IsModelScopedNetworkError(err)
@@ -585,6 +586,11 @@ func (s *Server) handleProxyErrorResponse(
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
+		if cfg.UsesAntigravityOAuth() && shouldFallbackAntigravityBaseURL(res.Status, res.Body) {
+			failure.nextAction = action
+			failure.deferredCooldown = &input
+			return failure, action
+		}
 		keyFallback := cfg.RetryOtherKeysOnFailure &&
 			s.cooldownManager.CanFallbackToOtherKey(s.completeCooldownInput(cfg, input))
 		if action == cooldown.ActionRetryChannel && !keyFallback {

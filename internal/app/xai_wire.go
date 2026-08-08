@@ -102,19 +102,6 @@ func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
 		normalizeXAIOrphanedToolControls(payload)
 		return
 	}
-	if !hasXAIResponsesToolIntent(payload) {
-		cacheKey, _ := payload["prompt_cache_key"].(string)
-		if strings.TrimSpace(cacheKey) == "" {
-			normalizeXAIOrphanedToolControls(payload)
-			return
-		}
-		payload["tools"] = []any{
-			map[string]any{"type": "web_search"},
-			map[string]any{"type": "x_search"},
-		}
-		payload["tool_choice"] = "none"
-		return
-	}
 
 	rawTools, toolsExist := payload["tools"]
 	tools, toolsAreArray := rawTools.([]any)
@@ -122,43 +109,15 @@ func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
 		return
 	}
 
+	payload["tools"] = tools
+	normalizeXAIOrphanedToolControls(payload)
+	tools, _ = payload["tools"].([]any)
 	tools = normalizeXAIWebSearchTools(tools)
-	cacheKey, _ := payload["prompt_cache_key"].(string)
-	if len(tools) > 0 && strings.TrimSpace(cacheKey) != "" {
-		tools = appendMissingXAINativeSearchTools(tools)
+	if !hasXAINativeWebSearch(tools) {
+		tools = append([]any{map[string]any{"type": "web_search"}}, tools...)
 	}
 	payload["tools"] = tools
-	normalizeXAIWebSearchToolChoice(payload, strings.TrimSpace(cacheKey) != "")
-	normalizeXAIOrphanedToolControls(payload)
-}
-
-func hasXAIResponsesToolIntent(payload map[string]any) bool {
-	if _, exists := payload["tools"]; exists {
-		return true
-	}
-	if _, exists := payload["tool_choice"]; exists {
-		return true
-	}
-	input, ok := payload["input"].([]any)
-	if !ok {
-		return false
-	}
-	for _, rawItem := range input {
-		item, ok := rawItem.(map[string]any)
-		if !ok {
-			continue
-		}
-		itemType, _ := item["type"].(string)
-		if strings.TrimSpace(itemType) != "additional_tools" {
-			continue
-		}
-		rawTools, exists := item["tools"]
-		tools, isArray := rawTools.([]any)
-		if !exists || !isArray || len(tools) > 0 {
-			return true
-		}
-	}
-	return false
+	normalizeXAIWebSearchToolChoice(payload)
 }
 
 func isXAICLIChatProxyBaseURL(baseURL string) bool {
@@ -170,7 +129,7 @@ func isXAICLIChatProxyBaseURL(baseURL string) bool {
 
 func normalizeXAIWebSearchTools(tools []any) []any {
 	kept := make([]any, 0, len(tools))
-	seenNativeSearch := make(map[string]bool, 2)
+	seenNativeWebSearch := false
 	for _, rawTool := range tools {
 		tool, isObject := rawTool.(map[string]any)
 		if !isObject {
@@ -178,12 +137,15 @@ func normalizeXAIWebSearchTools(tools []any) []any {
 			continue
 		}
 		toolType, _ := tool["type"].(string)
-		if toolType == "web_search" || toolType == "x_search" {
-			if seenNativeSearch[toolType] {
+		if toolType == "web_search" {
+			if seenNativeWebSearch {
 				continue
 			}
-			seenNativeSearch[toolType] = true
+			seenNativeWebSearch = true
 			kept = append(kept, rawTool)
+			continue
+		}
+		if isXAINamedWebSearchTool(tool) {
 			continue
 		}
 		kept = append(kept, rawTool)
@@ -191,29 +153,36 @@ func normalizeXAIWebSearchTools(tools []any) []any {
 	return kept
 }
 
-func appendMissingXAINativeSearchTools(tools []any) []any {
-	present := make(map[string]bool, 2)
+func hasXAINativeWebSearch(tools []any) bool {
 	for _, rawTool := range tools {
 		tool, ok := rawTool.(map[string]any)
 		if !ok {
 			continue
 		}
 		toolType, _ := tool["type"].(string)
-		if toolType == "web_search" || toolType == "x_search" {
-			present[toolType] = true
+		if toolType == "web_search" {
+			return true
 		}
 	}
-	for _, toolType := range []string{"web_search", "x_search"} {
-		if !present[toolType] {
-			tools = append(tools, map[string]any{"type": toolType})
-		}
-	}
-	return tools
+	return false
 }
 
-func normalizeXAIWebSearchToolChoice(payload map[string]any, enableCacheRoute bool) {
+func isXAINamedWebSearchTool(tool map[string]any) bool {
+	toolType, _ := tool["type"].(string)
+	if toolType != "function" && toolType != "custom" {
+		return false
+	}
+	name, _ := tool["name"].(string)
+	return strings.EqualFold(strings.TrimSpace(name), "web_search")
+}
+
+func normalizeXAIWebSearchToolChoice(payload map[string]any) {
 	choice, isObject := payload["tool_choice"].(map[string]any)
 	if !isObject {
+		return
+	}
+	if isXAINamedWebSearchTool(choice) {
+		delete(payload, "tool_choice")
 		return
 	}
 	choiceType, _ := choice["type"].(string)
@@ -226,8 +195,8 @@ func normalizeXAIWebSearchToolChoice(payload map[string]any, enableCacheRoute bo
 		return
 	}
 	allowed = normalizeXAIWebSearchTools(allowed)
-	if enableCacheRoute && len(allowed) > 0 {
-		allowed = appendMissingXAINativeSearchTools(allowed)
+	if !hasXAINativeWebSearch(allowed) {
+		allowed = append(allowed, map[string]any{"type": "web_search"})
 	}
 	choice["tools"] = allowed
 }
