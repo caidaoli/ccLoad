@@ -18,8 +18,10 @@ const (
 	maxOAuthCredentialImportBytes        = 1 << 20
 	maxOAuthCredentialArchiveBytes       = 8 << 20
 	maxOAuthCredentialImportRequestBytes = 32 << 20
-	maxOAuthCredentialArchiveEntries     = 1000
+	maxOAuthCredentialImportEntries      = 10000
 	maxOAuthCredentialExpandedBytes      = 32 << 20
+	maxOAuthCredentialFormValueBytes     = 1024
+	maxOAuthCredentialMultipartParts     = maxOAuthCredentialImportEntries + 16
 )
 
 type oauthCredentialImportFile struct {
@@ -35,56 +37,68 @@ type oauthCredentialImportBudget struct {
 	expandedSize uint64
 }
 
-func readOAuthCredentialUpload(file *multipart.FileHeader, maxBytes int64) ([]byte, error) {
-	if file == nil || file.Size <= 0 || file.Size > maxBytes {
-		return nil, errors.New("credential file size is invalid")
-	}
-	opened, err := file.Open()
-	if err != nil {
-		return nil, errors.New("open credential file failed")
-	}
-	raw, readErr := io.ReadAll(io.LimitReader(opened, maxBytes+1))
-	closeErr := opened.Close()
-	if readErr != nil || int64(len(raw)) > maxBytes {
-		return nil, errors.New("failed to read credential")
-	}
-	if closeErr != nil {
-		return nil, errors.New("close credential file failed")
-	}
-	return raw, nil
-}
-
-func expandOAuthCredentialUploads(files []*multipart.FileHeader) []oauthCredentialImportFile {
-	items := make([]oauthCredentialImportFile, 0, len(files))
+func parseOAuthCredentialMultipart(reader *multipart.Reader) ([]oauthCredentialImportFile, map[string]string, error) {
+	items := make([]oauthCredentialImportFile, 0)
+	values := make(map[string]string, 2)
 	budget := oauthCredentialImportBudget{}
-	for _, file := range files {
-		fileName := ""
-		if file != nil {
-			fileName = file.Filename
+	partCount := 0
+	for {
+		part, err := reader.NextPart()
+		if errors.Is(err, io.EOF) {
+			sortOAuthCredentialImportFiles(items)
+			return items, values, nil
 		}
+		if err != nil {
+			return nil, nil, fmt.Errorf("read credential multipart form: %w", err)
+		}
+		partCount++
+		if partCount > maxOAuthCredentialMultipartParts {
+			_ = part.Close()
+			return nil, nil, fmt.Errorf("credential import exceeds %d multipart parts", maxOAuthCredentialMultipartParts)
+		}
+
+		formName := part.FormName()
+		fileName := part.FileName()
+		if formName != "files" || fileName == "" {
+			if (formName == "provider" || formName == "priority_increment") && fileName == "" {
+				raw, readErr := io.ReadAll(io.LimitReader(part, maxOAuthCredentialFormValueBytes+1))
+				if readErr != nil {
+					_ = part.Close()
+					return nil, nil, fmt.Errorf("read credential import option %q: %w", formName, readErr)
+				}
+				if len(raw) > maxOAuthCredentialFormValueBytes {
+					_ = part.Close()
+					return nil, nil, fmt.Errorf("credential import option %q is too large", formName)
+				}
+				if _, exists := values[formName]; !exists {
+					values[formName] = string(raw)
+				}
+			}
+			if closeErr := part.Close(); closeErr != nil {
+				return nil, nil, fmt.Errorf("close credential multipart part: %w", closeErr)
+			}
+			continue
+		}
+
 		archiveType := oauthCredentialArchiveType(fileName)
 		maxBytes := int64(maxOAuthCredentialImportBytes)
 		if archiveType != "" {
 			maxBytes = maxOAuthCredentialArchiveBytes
 		}
-		raw, err := readOAuthCredentialUpload(file, maxBytes)
-		if err != nil {
-			items = append(items, failedOAuthCredentialImportFile(fileName, err))
+		raw, readErr := io.ReadAll(io.LimitReader(part, maxBytes+1))
+		closeErr := part.Close()
+		if readErr != nil {
+			return nil, nil, fmt.Errorf("read credential file %q: %w", fileName, readErr)
+		}
+		if closeErr != nil {
+			return nil, nil, fmt.Errorf("close credential file %q: %w", fileName, closeErr)
+		}
+		if len(raw) == 0 || int64(len(raw)) > maxBytes {
+			items = append(items, failedOAuthCredentialImportFile(fileName, errors.New("credential file size is invalid")))
 			continue
 		}
 
-		var expanded []oauthCredentialImportFile
-		switch archiveType {
-		case "zip":
-			expanded, err = expandOAuthCredentialZIP(fileName, raw, &budget)
-		case "tar.gz":
-			expanded, err = expandOAuthCredentialTarGz(fileName, raw, &budget)
-		default:
-			err = budget.reserve(uint64(len(raw)))
-			if err == nil {
-				expanded = []oauthCredentialImportFile{newOAuthCredentialImportFile(fileName, fileName, raw)}
-			}
-		}
+		expanded, err := expandOAuthCredentialUpload(fileName, raw, archiveType, &budget)
 		if err != nil {
 			items = append(items, failedOAuthCredentialImportFile(fileName, err))
 			continue
@@ -95,8 +109,25 @@ func expandOAuthCredentialUploads(files []*multipart.FileHeader) []oauthCredenti
 		}
 		items = append(items, expanded...)
 	}
-	sortOAuthCredentialImportFiles(items)
-	return items
+}
+
+func expandOAuthCredentialUpload(
+	fileName string,
+	raw []byte,
+	archiveType string,
+	budget *oauthCredentialImportBudget,
+) ([]oauthCredentialImportFile, error) {
+	switch archiveType {
+	case "zip":
+		return expandOAuthCredentialZIP(fileName, raw, budget)
+	case "tar.gz":
+		return expandOAuthCredentialTarGz(fileName, raw, budget)
+	default:
+		if err := budget.reserve(uint64(len(raw))); err != nil {
+			return nil, err
+		}
+		return []oauthCredentialImportFile{newOAuthCredentialImportFile(fileName, fileName, raw)}, nil
+	}
 }
 
 func oauthCredentialArchiveType(fileName string) string {
@@ -112,8 +143,8 @@ func oauthCredentialArchiveType(fileName string) string {
 }
 
 func (b *oauthCredentialImportBudget) reserve(size uint64) error {
-	if b.entries >= maxOAuthCredentialArchiveEntries {
-		return fmt.Errorf("credential import exceeds %d entries", maxOAuthCredentialArchiveEntries)
+	if b.entries >= maxOAuthCredentialImportEntries {
+		return fmt.Errorf("credential import exceeds %d entries", maxOAuthCredentialImportEntries)
 	}
 	b.entries++
 	remaining := uint64(maxOAuthCredentialExpandedBytes) - b.expandedSize

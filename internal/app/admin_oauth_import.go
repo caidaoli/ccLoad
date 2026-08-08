@@ -43,7 +43,6 @@ type oauthCredentialImportBatch struct {
 	Provider               string
 	PriorityIncrement      int
 	NextPriorityByProvider map[string]int
-	cleanup                func()
 }
 
 type oauthCredentialImportEvent struct {
@@ -176,7 +175,6 @@ func (s *Server) handleImportOAuthCredentials(c *gin.Context, forcedProvider str
 		RespondError(c, status, err)
 		return
 	}
-	defer batch.close()
 	summary, _ := s.runOAuthCredentialImport(c, batch, nil)
 	RespondJSON(c, http.StatusOK, summary)
 }
@@ -189,7 +187,6 @@ func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
 		RespondError(c, status, err)
 		return
 	}
-	defer batch.close()
 
 	c.Header("Content-Type", "text/event-stream; charset=utf-8")
 	c.Header("Cache-Control", "no-cache")
@@ -219,32 +216,30 @@ func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
 
 func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider string) (*oauthCredentialImportBatch, int, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthCredentialImportRequestBytes)
-	form, err := c.MultipartForm()
+	reader, err := c.Request.MultipartReader()
 	if err != nil {
-		return nil, http.StatusBadRequest, errors.New("credential files are required")
+		return nil, http.StatusBadRequest, errors.New("credential multipart form is required")
 	}
-	cleanup := func() { _ = form.RemoveAll() }
-	files := form.File["files"]
-	if len(files) == 0 {
-		cleanup()
+	credentialFiles, values, err := parseOAuthCredentialMultipart(reader)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
+	}
+	if len(credentialFiles) == 0 {
 		return nil, http.StatusBadRequest, errors.New("credential files are required")
 	}
 
 	providerValue := forcedProvider
 	if providerValue == "" {
-		providerValue = firstMultipartValue(form.Value["provider"])
+		providerValue = values["provider"]
 	}
 	provider, err := normalizeOAuthCredentialProvider(providerValue)
 	if err != nil {
-		cleanup()
 		return nil, http.StatusBadRequest, err
 	}
-	priorityIncrement, err := parseOAuthPriorityIncrement(firstMultipartValue(form.Value["priority_increment"]))
+	priorityIncrement, err := parseOAuthPriorityIncrement(values["priority_increment"])
 	if err != nil {
-		cleanup()
 		return nil, http.StatusBadRequest, err
 	}
-	credentialFiles := expandOAuthCredentialUploads(files)
 	nextPriorityByProvider := map[string]int{
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
@@ -252,7 +247,6 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 	if priorityIncrement > 0 {
 		configs, listErr := s.store.ListConfigs(c.Request.Context())
 		if listErr != nil {
-			cleanup()
 			return nil, http.StatusInternalServerError, fmt.Errorf("list channels for OAuth credential priorities: %w", listErr)
 		}
 		for _, cfg := range configs {
@@ -275,15 +269,7 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 		Provider:               provider,
 		PriorityIncrement:      priorityIncrement,
 		NextPriorityByProvider: nextPriorityByProvider,
-		cleanup:                cleanup,
 	}, 0, nil
-}
-
-func (b *oauthCredentialImportBatch) close() {
-	if b != nil && b.cleanup != nil {
-		b.cleanup()
-		b.cleanup = nil
-	}
 }
 
 func (s *Server) runOAuthCredentialImport(
@@ -403,13 +389,6 @@ func writeOAuthCredentialImportEvent(c *gin.Context, event oauthCredentialImport
 	}
 	c.Writer.Flush()
 	return nil
-}
-
-func firstMultipartValue(values []string) string {
-	if len(values) == 0 {
-		return ""
-	}
-	return values[0]
 }
 
 func (s *Server) importOAuthCredential(c *gin.Context, provider string, raw []byte, priority int) (string, bool, error) {

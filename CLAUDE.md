@@ -61,7 +61,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - Key/模型/渠道共用指数退避策略:按错误类型取初始值(默认认证 5 min、服务端 2 min、超时/限流 1 min),随后翻倍并在 30 min 封顶;上游或自定义规则给出精确 reset 截止时间时优先使用
 - **冷却探测规则**(`cooldown/detection.go`):渠道 `cooldown_detection_rules` 为空时继承系统设置 `global_cooldown_detection_rules`;按 rules 数组顺序(提交后重编号 0..N-1)匹配 status+正则,命名捕获组可解析出精确 reset 时间。网络故障故意不进这个匹配器(没有可信上游错误体);规则命中但不可执行时回退内置分类器,不猜冷却时长。`EvaluateCooldownDetectionRules` 无副作用,代理链路与 admin 规则测试端点共用
 - **全冷却兜底**(`selector_cooldown.go`,`cooldown_fallback_enabled` 默认 true):所有渠道都冷却时不直接拒绝,而是挑「最早恢复」的渠道打 `CooldownFallback` 标记继续走正常流程,Key 也改选最早恢复的(`SelectCooldownFallbackKey`)。排查「明明全冷却了为什么还在发请求」先看这里;设 false 才直接拒绝
-- Responses WebSocket 特例(仅首个语义输出前):非 WS→非 WS、原生 WS→非 WS/原生 WS 均在网关内部切换,其中 WS→非 WS 使用 execution session 的完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并用 close code `1011` 断开,让 Codex 客户端完整 replay;已有语义输出后一律不切换或重放
+- Responses WebSocket 特例:首个语义输出前,非 WS→非 WS、原生 WS→非 WS/原生 WS 均可在网关内部切换,其中 WS→非 WS 使用 execution session 的完整 transcript;非 WS 故障且下一候选为原生 WS 时返回 `status=502` 的 `server_error/upstream_unavailable` 并用 close code `1011` 断开,让 Codex 客户端完整 replay。已有语义输出后禁止网关内部切换或重放;若成功响应流在终结事件前中断,返回 `status=502` 的 `server_error/upstream_stream_interrupted` 并用 `1011` 断开,让 Codex 客户端重连并完整 replay 当前 turn;已完成的工具调用先提交到 execution session,普通残缺文本不提交
 
 ## 自定义状态码(改相关代码前先读语义)
 

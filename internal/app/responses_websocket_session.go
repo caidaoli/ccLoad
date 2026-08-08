@@ -16,11 +16,12 @@ var errResponsesWebsocketPreviousResponseNotFound = errors.New(
 )
 
 type responsesWebsocketSession struct {
-	lastRequest        []byte
-	lastResponseOutput []byte
-	lastResponseID     string
-	pendingToolCallIDs []string
-	maxBodyBytes       int64
+	lastRequest               []byte
+	lastResponseOutput        []byte
+	lastResponseID            string
+	pendingToolCallIDs        []string
+	replacementReplayRequired bool
+	maxBodyBytes              int64
 }
 
 func newResponsesWebsocketSession(maxBodyBytes int64) *responsesWebsocketSession {
@@ -55,6 +56,13 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
 	if previousID != "" && previousID != s.lastResponseID {
 		return nil, fmt.Errorf("%w: %q", errResponsesWebsocketPreviousResponseNotFound, previousID)
+	}
+	if s.replacementReplayRequired && requestType == responsesWebsocketRequestCreate && previousID == "" {
+		normalized, err := normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
+		if err != nil {
+			return nil, err
+		}
+		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 	}
 	if len(s.pendingToolCallIDs) > 0 && !inputSatisfiesResponsesWebsocketToolCalls(nextInput, s.pendingToolCallIDs) {
 		if previousID != "" || requestType == responsesWebsocketRequestAppend {
@@ -101,17 +109,23 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 //
 // 连接是否仍可复用由上游 session 在选定渠道、Key 和 URL 后决定。这里不猜 transport 状态。
 func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayRequest, incrementalRequest []byte, err error) {
+	requestType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
+	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
+	replacementReplay := s.replacementReplayRequired &&
+		requestType == responsesWebsocketRequestCreate && previousID == ""
 	replayRequest, err = s.normalizeRequest(payload)
 	if err != nil {
 		return nil, nil, err
+	}
+	if replacementReplay {
+		s.replacementReplayRequired = false
+		return replayRequest, bytes.Clone(replayRequest), nil
 	}
 	if len(s.lastRequest) == 0 {
 		return replayRequest, bytes.Clone(replayRequest), nil
 	}
 
 	nextInput := gjson.GetBytes(payload, "input")
-	previousID := strings.TrimSpace(gjson.GetBytes(payload, "previous_response_id").String())
-	requestType := strings.TrimSpace(gjson.GetBytes(payload, "type").String())
 	if previousID == "" && inputContainsCompletedTranscript(nextInput) {
 		return replayRequest, bytes.Clone(replayRequest), nil
 	}
@@ -131,6 +145,12 @@ func (s *responsesWebsocketSession) normalizeRequests(payload []byte) (replayReq
 		}
 	}
 	return replayRequest, incrementalRequest, nil
+}
+
+func (s *responsesWebsocketSession) requireReplacementReplay() {
+	if s != nil {
+		s.replacementReplayRequired = true
+	}
 }
 
 // normalizeHTTPRequests keeps ordinary Responses HTTP semantics intact:
