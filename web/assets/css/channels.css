@@ -571,6 +571,50 @@
       font-size: 14px;
     }
 
+    .csv-import-progress {
+      flex: 1 0 100%;
+      display: grid;
+      gap: var(--space-2);
+      max-width: 480px;
+      margin-inline-start: auto;
+      color: var(--neutral-700);
+    }
+
+    .csv-import-progress[hidden] {
+      display: none;
+    }
+
+    .csv-import-progress-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-3);
+      font-size: 0.8125rem;
+    }
+
+    .csv-import-progress-header span {
+      overflow-wrap: anywhere;
+      text-align: end;
+    }
+
+    .csv-import-progress progress {
+      width: 100%;
+      height: 8px;
+      accent-color: var(--primary-500);
+    }
+
+    .csv-import-progress[data-kind="success"] progress {
+      accent-color: var(--success-500);
+    }
+
+    .csv-import-progress[data-kind="error"] {
+      color: var(--error-600);
+    }
+
+    .csv-import-progress[data-kind="error"] progress {
+      accent-color: var(--error-500);
+    }
+
     .channel-filter-action-btn {
       padding: 8px 16px;
       font-size: 14px;
