@@ -907,6 +907,7 @@ func (s *Server) HandleOAuthUsage(c *gin.Context) {
 }
 
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
 	case cfg.UsesCodexOAuth():
 		if s.codexCredentials == nil {

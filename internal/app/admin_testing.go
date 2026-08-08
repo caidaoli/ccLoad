@@ -613,6 +613,7 @@ func (s *Server) prepareChannelTestAuth(
 	requestedKeyIndex int,
 	requestAPIKey string,
 ) (*model.Config, channelTestKeySelection, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	if cfg != nil && cfg.UsesCodexOAuth() {
 		credential, err := s.codexCredentials.credential(ctx, cfg, false)
 		if err != nil {

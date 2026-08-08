@@ -6,8 +6,11 @@ import (
 	"log"
 	"math"
 	"net/http"
+	neturl "net/url"
 	"strconv"
+	"strings"
 
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/version"
 
@@ -326,6 +329,10 @@ func validateSettingValue(key, valueType, value string) error {
 
 	case "string":
 		switch key {
+		case config.CodexBaseURLSettingKey,
+			config.XAIBaseURLSettingKey,
+			config.AntigravityURLSettingKey:
+			return validateOptionalOAuthBaseURL(value)
 		case "log_channel_click_action":
 			if value != "edit" && value != "navigate" {
 				return fmt.Errorf("log_channel_click_action must be edit or navigate")
@@ -339,6 +346,27 @@ func validateSettingValue(key, valueType, value string) error {
 		return fmt.Errorf("unknown value type: %s", valueType)
 	}
 
+	return nil
+}
+
+func validateOptionalOAuthBaseURL(value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parsed, err := neturl.Parse(value)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return fmt.Errorf("must be empty or a valid HTTP(S) URL")
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("URL scheme must be http or https")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("URL must not contain user info")
+	}
+	if parsed.RawQuery != "" || parsed.Fragment != "" {
+		return fmt.Errorf("URL must not contain a query or fragment")
+	}
 	return nil
 }
 

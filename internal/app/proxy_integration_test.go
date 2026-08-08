@@ -241,6 +241,111 @@ func antigravityProxyTestCredential(t testing.TB, accessToken string) string {
 	return payload
 }
 
+func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
+	t.Run("API key channel is unaffected", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"chat-api-key","choices":[{"message":{"role":"assistant","content":"channel url"}}]}`)
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{{
+			name: "api-key-unaffected", upstreamProtocol: "openai", models: "gpt-test",
+		}}, map[int]string{0: upstream.URL}, map[string]string{
+			"CODEX_BASE_URL": "http://127.0.0.1:1/ignored",
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model": "gpt-test", "messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "choices.0.message.content").String() != "channel url" {
+			t.Fatalf("API key channel response=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("Codex", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/codex/responses" {
+				t.Errorf("Codex override path = %q, want /codex/responses", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-codex-override","status":"completed","output":[]}}`+"\n\n")
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{{
+			name: "codex-oauth-override", upstreamProtocol: "codex", models: "gpt-test",
+			authType:        model.AuthTypeCodexOAuth,
+			oauthCredential: codexProxyTestCredential(t, "codex-override-token", "refresh", "account"),
+		}}, map[int]string{0: "http://127.0.0.1:1/ignored#"}, map[string]string{
+			"CODEX_BASE_URL": upstream.URL + "/codex/responses",
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": false, "input": "hello",
+		}, nil)
+		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-codex-override" {
+			t.Fatalf("Codex override response=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("xAI", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1/responses" {
+				t.Errorf("xAI override path = %q, want /v1/responses", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-xai-override","status":"completed","output":[]}}`+"\n\n")
+		}))
+		defer upstream.Close()
+
+		credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+			Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-override-token",
+			RefreshToken: "refresh", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		})
+		env := setupProxyTestEnvWithSettings(t, []testChannel{{
+			name: "xai-oauth-override", upstreamProtocol: "codex", models: "grok-4.5",
+			authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+		}}, map[int]string{0: "http://127.0.0.1:1/ignored"}, map[string]string{
+			"XAI_BASE_URL": upstream.URL + "/v1",
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "grok-4.5", "stream": false, "input": "hello",
+		}, nil)
+		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-xai-override" {
+			t.Fatalf("xAI override response=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("Antigravity", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/v1internal:generateContent" {
+				t.Errorf("Antigravity override path = %q, want /v1internal:generateContent", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"override ok"}]},"finishReason":"STOP"}]}}`)
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{{
+			name: "antigravity-oauth-override", upstreamProtocol: "gemini", models: "gemini-3-flash",
+			authType:        model.AuthTypeAntigravityOAuth,
+			oauthCredential: antigravityProxyTestCredential(t, "antigravity-override-token"),
+		}}, map[int]string{0: "http://127.0.0.1:1/ignored"}, map[string]string{
+			"ANTIGRAVITY_URL": upstream.URL,
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model":    "gemini-3-flash",
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "choices.0.message.content").String() != "override ok" {
+			t.Fatalf("Antigravity override response=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+}
+
 func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {

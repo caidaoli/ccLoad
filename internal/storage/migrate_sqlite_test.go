@@ -1521,6 +1521,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 
 	// 验证所有预期的设置项
 	expectedKeys := []string{
+		"CODEX_BASE_URL",
+		"XAI_BASE_URL",
+		"ANTIGRAVITY_URL",
 		"log_retention_days",
 		"max_key_retries",
 		"upstream_first_byte_timeout",
@@ -1588,6 +1591,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		}
 		if key == "responses_ws_max_transcript_bytes" && val != "134217728" {
 			t.Errorf("setting %q default = %q, want 134217728", key, val)
+		}
+		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL") && val != "" {
+			t.Errorf("setting %q default = %q, want empty", key, val)
 		}
 	}
 	var valueType string

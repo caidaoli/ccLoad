@@ -20,6 +20,16 @@ const byteSettingKeys = new Set([
   'max_image_body_bytes',
   'responses_ws_max_transcript_bytes'
 ]);
+const oauthBaseURLSettingKeys = new Set([
+  'codex_base_url',
+  'xai_base_url',
+  'antigravity_url'
+]);
+const oauthBaseURLPlaceholders = new Map([
+  ['CODEX_BASE_URL', 'https://chatgpt.com/backend-api/codex/responses'],
+  ['XAI_BASE_URL', 'https://cli-chat-proxy.grok.com/v1'],
+  ['ANTIGRAVITY_URL', 'https://daily-cloudcode-pa.googleapis.com']
+]);
 const bytesPerM = 1024 * 1024;
 
 const selectSettingOptions = new Map([
@@ -460,7 +470,7 @@ function getSettingGroupInfo(key) {
     { id: 'advanced', nameKey: 'settings.group.advanced', order: 70, match: () => advancedSettingKeys.has(k) },
     { id: 'channel', nameKey: 'settings.group.channel', order: 10, match: () => k.startsWith('channel_') || k === 'max_key_retries' },
     { id: 'model', nameKey: 'settings.group.model', order: 15, match: () => k.startsWith('model_') },
-    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' },
+    { id: 'upstream-connection', nameKey: 'settings.group.upstreamConnection', order: 19, match: () => k === 'upstream_connection_reuse_limit_seconds' || oauthBaseURLSettingKeys.has(k) },
     { id: 'websocket', nameKey: 'settings.group.websocket', order: 25, match: () => k.startsWith('responses_ws_') },
     { id: 'stream-timeout', nameKey: 'settings.group.streamTimeout', order: 20, match: () => k === 'stream_timeout' || k.endsWith('_first_byte_timeout') },
     { id: 'non-stream-timeout', nameKey: 'settings.group.nonStreamTimeout', order: 21, match: () => k === 'non_stream_timeout' || k.endsWith('_non_stream_timeout') },
@@ -481,6 +491,9 @@ function getSettingGroupInfo(key) {
 function getSettingOrder(key) {
   const orders = {
     upstream_connection_reuse_limit_seconds: 90,
+    codex_base_url: 91,
+    xai_base_url: 92,
+    antigravity_url: 93,
     upstream_first_byte_timeout: 100,
     stream_timeout: 101,
     non_stream_timeout: 102,
@@ -662,6 +675,9 @@ function initSettingsEventDelegation() {
 function renderInput(setting) {
   const safeKey = escapeHtml(setting.key);
   const safeValue = escapeHtml(setting.value);
+  const placeholder = oauthBaseURLPlaceholders.get(setting.key);
+  const placeholderAttribute = placeholder ? `placeholder="${escapeHtml(placeholder)}"` : '';
+  const wideTextInput = setting.key === 'channel_test_content' || oauthBaseURLPlaceholders.has(setting.key);
   const disabledAttributes = settingDisabledAttributes(setting);
 
   if (setting.key === globalCooldownRulesSettingKey) {
@@ -711,7 +727,7 @@ function renderInput(setting) {
     case 'float':
       return `<input type="number" step="any" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--number" ${disabledAttributes}>`;
     default:
-      return `<input type="text" id="${safeKey}" value="${safeValue}" class="settings-input settings-input--text${setting.key === 'channel_test_content' ? ' settings-input--wide' : ''}" ${disabledAttributes}>`;
+      return `<input type="text" id="${safeKey}" value="${safeValue}" ${placeholderAttribute} class="settings-input settings-input--text${wideTextInput ? ' settings-input--wide' : ''}" ${disabledAttributes}>`;
   }
 }
 

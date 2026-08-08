@@ -3,6 +3,13 @@ package config
 
 import "time"
 
+// OAuth 上游地址设置键。键名是用户可见配置契约，保持既有大小写。
+const (
+	CodexBaseURLSettingKey   = "CODEX_BASE_URL"
+	XAIBaseURLSettingKey     = "XAI_BASE_URL"
+	AntigravityURLSettingKey = "ANTIGRAVITY_URL"
+)
+
 // HTTP服务器配置常量
 const (
 	// DefaultMaxConcurrency 默认最大并发请求数
