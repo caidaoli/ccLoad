@@ -311,6 +311,9 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	if cfg == nil {
 		return nil, fmt.Errorf("渠道不存在")
 	}
+	if cfg.UsesXAIOAuth() {
+		return fetchXAIOAuthModels(cfg, overrideProtocol)
+	}
 	if cfg.UsesAntigravityOAuth() {
 		return s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol)
 	}
@@ -327,6 +330,34 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
+}
+
+func fetchXAIOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
+	if overrideProtocol != "" {
+		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
+		}
+		if util.NormalizeProtocol(overrideProtocol) != util.ProtocolCodex {
+			return nil, fmt.Errorf("模型发现: xAI 仅支持 codex 协议")
+		}
+	}
+	models := make([]model.ModelEntry, len(xaiOAuthDefaultModels))
+	for i, name := range xaiOAuthDefaultModels {
+		models[i] = model.ModelEntry{Model: name, RedirectModel: name}
+	}
+	channelURL := ""
+	if len(cfg.URLs) > 0 {
+		channelURL = cfg.URLs[0].RuntimeURL()
+	}
+	return &FetchModelsResponse{
+		Models: models, Protocol: util.ProtocolCodex, Source: "predefined",
+		Debug: &FetchModelsDebug{
+			NormalizedProtocol: util.ProtocolCodex,
+			Fetcher:            "xai_oauth_catalog",
+			ChannelURL:         channelURL,
+		},
+	}, nil
 }
 
 // Antigravity 和 Codex 是产品名称；注释与用户可见文本必须保持首字母大写。

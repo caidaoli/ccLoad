@@ -71,66 +71,99 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 	if !forceRefresh && !needsRefresh {
 		return cloneCodexCredential(credential), nil
 	}
+	forcedAccessToken := credential.AccessToken
+	forceRequested := forceRefresh
 
 	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
-		current, currentErr := m.cachedOrParse(cfg)
-		if currentErr != nil {
-			return nil, currentErr
-		}
-		refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), codexCredentialRefreshLead)
-		if refreshErr != nil {
-			return nil, refreshErr
-		}
-		if !forceRefresh && !refreshNeeded {
-			return cloneCodexCredential(current), nil
-		}
-
-		service := *m.service
-		if m.clientFor != nil {
-			service.Client = m.clientFor(cfg)
-		}
 		refreshCtx := context.Background()
 		if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
-		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
-		if refreshErr != nil {
-			return nil, fmt.Errorf("refresh Codex credential for channel %d: %w", cfg.ID, refreshErr)
+		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
+		if getErr != nil {
+			return nil, fmt.Errorf("reload Codex credential before refresh: %w", getErr)
 		}
-		merged, mergeErr := current.MergeRefresh(refreshed)
-		if mergeErr != nil {
-			return nil, mergeErr
-		}
-		payload, encodeErr := merged.JSON()
-		if encodeErr != nil {
-			return nil, encodeErr
-		}
-		if updateErr := m.store.UpdateOAuthCredential(refreshCtx, cfg.ID, payload); updateErr != nil {
-			return nil, updateErr
-		}
-		models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, current.PlanType, merged.PlanType)
-		if !modelEntriesEqual(cfg.ModelEntries, models) {
-			updatedCfg := cfg.Clone()
-			updatedCfg.ModelEntries = models
-			if !codexOAuthModelAllowed(updatedCfg.ScheduledCheckModel, merged.PlanType) {
-				updatedCfg.ScheduledCheckModel = ""
+		previousModelPlanType := ""
+		for attempt := 0; attempt < 2; attempt++ {
+			current, parseErr := codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse Codex credential for channel %d: %w", currentCfg.ID, parseErr)
 			}
-			if _, updateErr := m.store.UpdateConfig(refreshCtx, cfg.ID, updatedCfg); updateErr != nil {
-				return nil, fmt.Errorf("reconcile Codex models after credential refresh: %w", updateErr)
+			refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), codexCredentialRefreshLead)
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+			forceCurrent := forceRequested && current.AccessToken == forcedAccessToken
+			if !forceCurrent && !refreshNeeded {
+				winner, reconcileErr := applyCodexWinnerModelState(
+					refreshCtx, m.store, currentCfg, previousModelPlanType, current,
+				)
+				if reconcileErr != nil {
+					return nil, reconcileErr
+				}
+				m.cache(currentCfg.ID, winner)
+				return cloneCodexCredential(winner), nil
+			}
+
+			service := *m.service
+			if m.clientFor != nil {
+				service.Client = m.clientFor(currentCfg)
+			}
+			refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
+			if refreshErr != nil {
+				return nil, fmt.Errorf("refresh Codex credential for channel %d: %w", currentCfg.ID, refreshErr)
+			}
+			merged, mergeErr := current.MergeRefresh(refreshed)
+			if mergeErr != nil {
+				return nil, mergeErr
+			}
+			payload, encodeErr := merged.JSON()
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+			updated, updateErr := m.store.CompareAndSwapOAuthCredential(
+				refreshCtx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, payload,
+			)
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			if !updated {
+				winner, getErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+				if getErr != nil {
+					return nil, fmt.Errorf("reload Codex credential after concurrent refresh: %w", getErr)
+				}
+				if attempt == 1 {
+					return nil, errors.New("codex credential changed during refresh retry")
+				}
+				previousModelPlanType = merged.PlanType
+				currentCfg = winner
+				continue
+			}
+
+			persisted, persistErr := persistCodexModelState(
+				refreshCtx, m.store, currentCfg, current.PlanType, merged, payload,
+			)
+			if persistErr != nil {
+				return nil, persistErr
 			}
 			if m.invalidateConfig != nil {
-				m.invalidateConfig(cfg.ID)
+				m.invalidateConfig(currentCfg.ID)
 			}
+			m.cache(currentCfg.ID, persisted)
+			return cloneCodexCredential(persisted), nil
 		}
-		m.mu.Lock()
-		m.entries[cfg.ID] = cloneCodexCredential(merged)
-		m.mu.Unlock()
-		return cloneCodexCredential(merged), nil
+		return nil, errors.New("codex credential refresh retry exhausted")
 	})
 	if err != nil {
 		return nil, err
 	}
 	return value.(*codexauth.Credential), nil
+}
+
+func (m *codexCredentialManager) cache(channelID int64, credential *codexauth.Credential) {
+	m.mu.Lock()
+	m.entries[channelID] = cloneCodexCredential(credential)
+	m.mu.Unlock()
 }
 
 func (m *codexCredentialManager) cachedOrParse(cfg *model.Config) (*codexauth.Credential, error) {

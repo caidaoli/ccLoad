@@ -78,6 +78,15 @@
                 </button>
                 <input type="file" id="importCsvInput" accept=".csv" style="display: none;" />
               </div>
+              <div id="csvImportProgress" class="csv-import-progress" hidden>
+                <div class="csv-import-progress-header">
+                  <strong id="csvImportProgressLabel" data-i18n="channels.import.progressTitle">CSV 导入进度</strong>
+                  <span id="csvImportProgressDetail" role="status" aria-live="polite"></span>
+                </div>
+                <progress id="csvImportProgressBar" max="1" value="0"
+                  aria-labelledby="csvImportProgressLabel"
+                  aria-describedby="csvImportProgressDetail"></progress>
+              </div>
               <p id="codexAuthStatus" class="channel-codex-auth-status" role="status" aria-live="polite" hidden></p>
             </div>
           </div>
@@ -105,7 +114,45 @@
                 <select id="oauthProviderSelect" name="oauth_provider" class="form-input">
                   <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+                  <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
                 </select>
+              </div>
+              <div id="xaiOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>
+                  <select id="xaiOAuthMethod" name="xai_oauth_method" class="form-input">
+                    <option value="manual" data-i18n="channels.xai.methodManual">手动授权</option>
+                    <option value="refresh_token" data-i18n="channels.xai.methodRefreshToken">刷新令牌</option>
+                    <option value="sso" data-i18n="channels.xai.methodSSO">SSO Cookie</option>
+                  </select>
+                </div>
+                <div id="xaiCredentialSecretField" class="oauth-field" hidden>
+                  <label for="xaiCredentialValues" data-i18n="channels.xai.secretLabel">凭证（每行一个）</label>
+                  <textarea id="xaiCredentialValues" name="xai_credential_values" class="form-input oauth-url"
+                    rows="5" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="xaiCredentialSecretHint oauthLoginDialogStatus"></textarea>
+                  <p id="xaiCredentialSecretHint" class="oauth-field-hint"
+                    data-i18n="channels.xai.secretHint">提交后输入会立即清除，不会保存在浏览器中。</p>
+                </div>
+                <div id="xaiCredentialImportProgress" class="oauth-import-progress" hidden>
+                  <div class="oauth-import-progress-header">
+                    <strong id="xaiCredentialImportProgressTitle"
+                      data-i18n="channels.oauth.progressTitle">导入进度</strong>
+                    <span id="xaiCredentialImportProgressCounter" class="oauth-import-progress-counter"></span>
+                  </div>
+                  <progress id="xaiCredentialImportProgressBar" max="1" value="0"
+                    aria-labelledby="xaiCredentialImportProgressTitle"
+                    aria-describedby="xaiCredentialImportProgressDetail xaiCredentialImportProgressCounts"></progress>
+                  <p id="xaiCredentialImportProgressDetail" class="oauth-import-progress-detail" role="status"
+                    aria-live="polite"></p>
+                  <p id="xaiCredentialImportProgressCounts" class="oauth-import-progress-counts"></p>
+                  <div id="xaiCredentialImportErrors" class="oauth-import-errors" role="status" aria-live="polite"
+                    aria-labelledby="xaiCredentialImportErrorsTitle" hidden>
+                    <strong id="xaiCredentialImportErrorsTitle"
+                      data-i18n="channels.oauth.progressErrorsTitle">失败详情</strong>
+                    <ul id="xaiCredentialImportErrorList"></ul>
+                  </div>
+                </div>
               </div>
               <div class="oauth-actions">
                 <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
@@ -178,6 +225,7 @@
                 <option value="auto" data-i18n="channels.oauth.providerAuto">自动判断</option>
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+                <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
               </select>
             </div>
             <div class="oauth-field">

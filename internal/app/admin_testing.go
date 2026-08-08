@@ -139,6 +139,8 @@ type channelTestRequestPlan struct {
 	upstreamProtocol  string
 	upstreamStreaming bool
 	apiKey            string
+	xaiOAuth          bool
+	xaiConversationID string
 	clientTester      testutil.ChannelTester
 	clientURL         string
 	clientHeaders     http.Header
@@ -582,7 +584,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
-	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), runtimeCfg, keySelection.keyIndex, keySelection.apiKey, &testReq, keySelection.updatePersistedCooldown)
+	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), runtimeCfg, keySelection.keyIndex, keySelection.requestCredential, &testReq, keySelection.updatePersistedCooldown)
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
@@ -600,6 +602,7 @@ func channelTestActualModel(result map[string]any, fallback string) string {
 type channelTestKeySelection struct {
 	keyIndex                int
 	apiKey                  string
+	requestCredential       string
 	updatePersistedCooldown bool
 }
 
@@ -636,6 +639,17 @@ func (s *Server) prepareChannelTestAuth(
 			updatePersistedCooldown: true,
 		}, nil
 	}
+	if cfg != nil && cfg.UsesXAIOAuth() {
+		credential, err := s.xaiCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, channelTestKeySelection{}, fmt.Errorf("加载 xAI OAuth 凭证失败: %w", err)
+		}
+		return cfg.Clone(), channelTestKeySelection{
+			keyIndex:                cooldown.NoKeyIndex,
+			requestCredential:       credential.AccessToken,
+			updatePersistedCooldown: true,
+		}, nil
+	}
 
 	if len(apiKeys) == 0 && requestAPIKey == "" {
 		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
@@ -650,6 +664,7 @@ func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex
 		return channelTestKeySelection{
 			keyIndex:                requestedKeyIndex,
 			apiKey:                  requestAPIKey,
+			requestCredential:       requestAPIKey,
 			updatePersistedCooldown: ok && matchedKey.APIKey == requestAPIKey,
 		}, nil
 	}
@@ -664,6 +679,7 @@ func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex
 	return channelTestKeySelection{
 		keyIndex:                requestedKey.KeyIndex,
 		apiKey:                  requestedKey.APIKey,
+		requestCredential:       requestedKey.APIKey,
 		updatePersistedCooldown: true,
 	}, nil
 }
@@ -950,7 +966,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	defer cancel()
 	ctx := req.Context()
-	useNativeCodexWebsocket := cfg.Websockets && testReq.Stream &&
+	useNativeCodexWebsocket := cfg.Websockets && !requestPlan.xaiOAuth && testReq.Stream &&
 		clientProtocol == string(protocol.Codex) && requestPlan.upstreamProtocol == string(protocol.Codex)
 	if useNativeCodexWebsocket {
 		copyCodexWebsocketInputHeaders(req.Header, requestPlan.upstreamHeaders)
@@ -1251,6 +1267,11 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPath = parsed.Path
 	}
 	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
+	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfgForBuild, upstreamProtocolValue, requestPath)
+	if xaiResponsesRequest {
+		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
+		requestPath = extractRequestPath(requestPlan.fullURL)
+	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
 		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.headers,
@@ -1258,7 +1279,20 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
 	}
-	if cfgForBuild.UsesAntigravityOAuth() {
+	if xaiResponsesRequest {
+		requestPlan.xaiConversationID = testReq.ResolveSessionID()
+		requestPlan.requestBody, err = finalizeXAIResponsesBody(
+			requestPlan.requestBody,
+			testReq.Model,
+			requestPlan.xaiConversationID,
+			selectedURL,
+		)
+		if err != nil {
+			return nil, nil, fmt.Errorf("finalize xAI test request body: %w", err)
+		}
+		requestPlan.xaiOAuth = true
+		requestPlan.upstreamStreaming = true
+	} else if cfgForBuild.UsesAntigravityOAuth() {
 		requestPlan.upstreamStreaming = requestedStreaming
 		requestPlan.fullURL, err = antigravityUpstreamURL(selectedURL, requestedStreaming)
 		if err != nil {
@@ -1267,7 +1301,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	} else {
 		requestPlan.upstreamStreaming = isStreamingRequest(requestPath, requestPlan.requestBody)
 	}
-	if upstreamProtocolValue == protocol.Codex {
+	if upstreamProtocolValue == protocol.Codex && !requestPlan.xaiOAuth {
 		sessionID := testReq.ResolveSessionID()
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
 		ensureCodexSessionHeader(requestPlan.headers, sessionID)
@@ -1307,7 +1341,9 @@ func (s *Server) newTestUpstreamRequest(
 		}
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
-	if requestProtocol == protocol.Codex {
+	if requestPlan.xaiOAuth {
+		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
+	} else if requestProtocol == protocol.Codex {
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfgForBuild)

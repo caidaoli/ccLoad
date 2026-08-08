@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +17,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -76,7 +79,7 @@ func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
 	case "", oauthCredentialProviderAuto:
 		return oauthCredentialProviderAuto, nil
-	case codexauth.ChannelType, antigravityauth.ChannelType:
+	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported credential provider %q", normalized)
@@ -148,7 +151,7 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 			return "", errors.New("credential type must be a string")
 		}
 		switch normalized := strings.ToLower(strings.TrimSpace(credentialType)); normalized {
-		case codexauth.ChannelType, antigravityauth.ChannelType:
+		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType:
 			return normalized, nil
 		case "":
 			// Empty and omitted types use the same field-based inference.
@@ -157,15 +160,52 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 		}
 	}
 
-	codexFields := hasAnyJSONField(fields, "id_token", "account_id", "plan_type", "last_refresh")
-	antigravityFields := hasAnyJSONField(fields, "project_id", "expires_in", "timestamp")
-	if codexFields == antigravityFields {
+	codexFields := hasAnyJSONField(fields, "account_id", "plan_type")
+	antigravityFields := hasAnyJSONField(fields, "project_id", "timestamp")
+	xaiFields := hasStrongXAIImportMarker(fields)
+	providerCount := 0
+	for _, matched := range []bool{codexFields, antigravityFields, xaiFields} {
+		if matched {
+			providerCount++
+		}
+	}
+	if providerCount != 1 {
 		return "", nil
 	}
 	if codexFields {
 		return codexauth.ChannelType, nil
 	}
-	return antigravityauth.ChannelType, nil
+	if antigravityFields {
+		return antigravityauth.ChannelType, nil
+	}
+	return xaiauth.ChannelType, nil
+}
+
+func hasStrongXAIImportMarker(fields map[string]json.RawMessage) bool {
+	readString := func(name string) string {
+		var value string
+		if raw, ok := fields[name]; ok {
+			_ = json.Unmarshal(raw, &value)
+		}
+		return strings.TrimSpace(value)
+	}
+	if readString("client_id") == xaiauth.ClientID {
+		return true
+	}
+	if endpoint := readString("token_endpoint"); endpoint != "" {
+		parsed, err := url.Parse(endpoint)
+		if err == nil && parsed.Scheme == "https" && strings.EqualFold(parsed.Host, "auth.x.ai") && parsed.User == nil {
+			return true
+		}
+	}
+	if baseURL := readString("base_url"); baseURL != "" {
+		parsed, err := url.Parse(baseURL)
+		if err == nil && parsed.Scheme == "https" && parsed.User == nil {
+			host := strings.ToLower(parsed.Hostname())
+			return host == "cli-chat-proxy.grok.com" || host == "api.x.ai"
+		}
+	}
+	return false
 }
 
 func hasAnyJSONField(fields map[string]json.RawMessage, names ...string) bool {
@@ -220,9 +260,13 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
+	if provider == oauthCredentialProviderAuto || provider == xaiauth.ChannelType {
+		credentialFiles = expandXAICredentialContainers(credentialFiles, provider)
+	}
 	nextPriorityByProvider := map[string]int{
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
+		xaiauth.ChannelType:         0,
 	}
 	if priorityIncrement > 0 {
 		configs, listErr := s.store.ListConfigs(c.Request.Context())
@@ -238,6 +282,8 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 				nextPriorityByProvider[codexauth.ChannelType] = cfg.Priority
 			case cfg.UsesAntigravityOAuth() && cfg.Priority > nextPriorityByProvider[antigravityauth.ChannelType]:
 				nextPriorityByProvider[antigravityauth.ChannelType] = cfg.Priority
+			case cfg.UsesXAIOAuth() && cfg.Priority > nextPriorityByProvider[xaiauth.ChannelType]:
+				nextPriorityByProvider[xaiauth.ChannelType] = cfg.Priority
 			}
 		}
 		for credentialProvider := range nextPriorityByProvider {
@@ -464,6 +510,34 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		}
 		prepared.ChannelName = antigravityChannelBaseName(credential)
 		prepared.Config = newAntigravityOAuthChannel(prepared.ChannelName, credentialJSON)
+	case xaiauth.ChannelType:
+		credential, err := xaiauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(xaiChannelBaseName(credential))]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+			return prepared
+		}
+		if s.client == nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", "xAI credential completion is unavailable"
+			return prepared
+		}
+		credential, err = completeXAICredential(
+			ctx, xaiauth.NewService(s.client), s.client, credential, xaiauth.CLIBaseURL,
+		)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = xaiChannelBaseName(credential)
+		prepared.Config = newXAIOAuthChannel(prepared.ChannelName, credentialJSON)
 	default:
 		prepared.Result.Status = "failed"
 		prepared.Result.Error = fmt.Sprintf("unsupported credential provider %q", credentialProvider)
@@ -504,6 +578,9 @@ func oauthCredentialProviderLabel(provider string) string {
 	}
 	if provider == antigravityauth.ChannelType {
 		return "Antigravity"
+	}
+	if provider == xaiauth.ChannelType {
+		return "xAI"
 	}
 	return provider
 }
@@ -587,6 +664,59 @@ func writeOAuthCredentialImportEvent(c *gin.Context, event oauthCredentialImport
 	return nil
 }
 
+func expandXAICredentialContainers(files []oauthCredentialImportFile, provider string) []oauthCredentialImportFile {
+	expanded := make([]oauthCredentialImportFile, 0, len(files))
+	for _, file := range files {
+		if file.Err != nil {
+			expanded = append(expanded, file)
+			continue
+		}
+		fields, err := decodeOAuthCredentialFields(file.Raw)
+		if err != nil {
+			expanded = append(expanded, file)
+			continue
+		}
+		rawContainer, ok := fields["credentials"]
+		if !ok {
+			expanded = append(expanded, file)
+			continue
+		}
+		var container map[string]json.RawMessage
+		if json.Unmarshal(rawContainer, &container) != nil || len(container) == 0 {
+			expanded = append(expanded, failedOAuthCredentialImportFile(file.FileName, errors.New("xAI credentials must be a non-empty object")))
+			continue
+		}
+		keys := make([]string, 0, len(container))
+		for key := range container {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		if provider == oauthCredentialProviderAuto {
+			xaiContainer := true
+			for _, key := range keys {
+				detected, detectErr := detectOAuthCredentialProvider(container[key])
+				if detectErr != nil || detected != xaiauth.ChannelType {
+					xaiContainer = false
+					break
+				}
+			}
+			if !xaiContainer {
+				expanded = append(expanded, file)
+				continue
+			}
+		}
+		for index, key := range keys {
+			item := newOAuthCredentialImportFile(
+				fmt.Sprintf("%s#%d", file.FileName, index+1),
+				file.SortName+"\x00"+key,
+				container[key],
+			)
+			expanded = append(expanded, item)
+		}
+	}
+	sortOAuthCredentialImportFiles(expanded)
+	return expanded
+}
 func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
 	if credential == nil {
 		return nil, errors.New("codex credential is nil")

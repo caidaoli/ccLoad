@@ -35,11 +35,13 @@ function buildOAuthPlanBadge(channel) {
     planType = String(channel.codex_plan_type || '').trim();
   } else if (channel?.auth_type === 'antigravity_oauth') {
     planType = String(channel.antigravity_paid_tier || '').trim();
+  } else if (channel?.auth_type === 'xai_oauth') {
+    planType = String(channel.xai_subscription_tier || '').trim();
   }
   if (!planType) return '';
 
   const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  if (planTokens.includes('free')) return '';
+  if (channel?.auth_type !== 'xai_oauth' && planTokens.includes('free')) return '';
 
   const planTone = ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
   const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
@@ -576,8 +578,125 @@ function buildOAuthUsageRefreshButton(channelID, loading = false) {
   return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
 }
 
+function formatXAIUsagePercent(value) {
+  if (value === null || value === undefined || value === '' || !Number.isFinite(Number(value))) return '--';
+  const percent = Math.min(100, Math.max(0, Number(value)));
+  return `${Number.isInteger(percent) ? percent : percent.toFixed(2).replace(/0+$/, '').replace(/\.$/, '')}%`;
+}
+
+function formatXAIUsageMoney(cents) {
+  if (cents === null || cents === undefined || cents === '' || !Number.isFinite(Number(cents))) return '--';
+  return `US$${(Math.round(Number(cents)) / 100).toFixed(2)}`;
+}
+
+function formatXAIUsageReset(resetAt) {
+  const date = new Date(String(resetAt || '').trim());
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = value => String(value).padStart(2, '0');
+  return `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function xaiUsageNumber(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function buildXAIUsageInlineRow(label, value) {
+  return `<div class="ch-oauth-usage__window">
+    <div class="ch-oauth-usage__meta">
+      <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+      <span class="ch-oauth-usage__details">
+        <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(value)}</span>
+      </span>
+    </div>
+  </div>`;
+}
+
+function buildXAIUsageRow(label, usedPercent, amount, resetAt) {
+  const percent = formatXAIUsagePercent(usedPercent);
+  const reset = formatXAIUsageReset(resetAt);
+  const numericUsed = xaiUsageNumber(usedPercent);
+  const remaining = numericUsed !== null ? Math.min(100, Math.max(0, 100 - numericUsed)) : 0;
+  const ariaLabel = numericUsed === null
+    ? `${label}: ${window.t('channels.oauth.usageUsed', { percent })}`
+    : window.t('channels.oauth.usageRemaining', {
+      label,
+      percent: formatOAuthUsagePercent(remaining)
+    });
+  return `<div class="ch-oauth-usage__window">
+    <div class="ch-oauth-usage__meta">
+      <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+      <span class="ch-oauth-usage__details">
+        <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(window.t('channels.oauth.usageUsed', { percent }))}</span>
+        ${amount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(amount)}</span>` : ''}
+        ${reset ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(window.t('channels.oauth.usageReset', { time: reset }))}</span>` : ''}
+      </span>
+    </div>
+    <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100"${numericUsed !== null ? ` aria-valuenow="${remaining}"` : ''}>
+      <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
+    </div>
+  </div>`;
+}
+
+function buildXAIUsageRows(data) {
+  const billing = data?.xai_billing || {};
+  const rows = [];
+  const plan = String(data?.plan_type || data?.subscription_tier || '').trim();
+  if (plan) {
+    rows.push(buildXAIUsageInlineRow(window.t('channels.oauth.usagePlan'), plan));
+  }
+  if (billing.weekly_present === true) {
+    rows.push(buildXAIUsageRow(
+      window.t('channels.oauth.usageWeekly'),
+      billing.weekly_usage_percent,
+      '',
+      billing.weekly_reset_at
+    ));
+  }
+  const products = Array.isArray(billing.product_usage) ? billing.product_usage : [];
+  for (const product of products) {
+    rows.push(buildXAIUsageRow(
+      window.t('channels.oauth.usageProduct', { product: String(product?.product || '') }),
+      product?.usage_percent,
+      '',
+      ''
+    ));
+  }
+  const onDemandCap = xaiUsageNumber(billing.on_demand_cap_cents);
+  if (onDemandCap !== null && onDemandCap > 0) {
+    const used = xaiUsageNumber(billing.on_demand_used_cents);
+    const usedPercent = used !== null ? used * 100 / onDemandCap : null;
+    rows.push(buildXAIUsageRow(
+      window.t('channels.oauth.usageOnDemand'),
+      usedPercent,
+      `${formatXAIUsageMoney(billing.on_demand_used_cents)} / ${formatXAIUsageMoney(billing.on_demand_cap_cents)}`,
+      ''
+    ));
+  } else {
+    rows.push(buildXAIUsageInlineRow(
+      window.t('channels.oauth.usageOnDemand'),
+      window.t('channels.oauth.usageOnDemandDisabled')
+    ));
+  }
+  const monthlyLimit = xaiUsageNumber(billing.monthly_limit_cents);
+  const includedUsed = xaiUsageNumber(billing.included_used_cents);
+  const monthlyPercent = monthlyLimit !== null && monthlyLimit > 0 && includedUsed !== null
+    ? includedUsed * 100 / monthlyLimit
+    : null;
+  if (billing.monthly_present === true) {
+    rows.push(buildXAIUsageRow(
+      window.t('channels.oauth.usageMonthlyCredits'),
+      monthlyPercent,
+      `${formatXAIUsageMoney(billing.included_used_cents)} / ${formatXAIUsageMoney(billing.monthly_limit_cents)}`,
+      billing.monthly_reset_at
+    ));
+  }
+  return rows;
+}
+
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
@@ -596,7 +715,8 @@ function buildOAuthUsageStatusHtml(channel) {
   }
 
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
-  const rows = windows.map(windowInfo => {
+  const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
+  const rows = isXAI ? buildXAIUsageRows(state.data) : windows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
     const duration = formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
@@ -608,16 +728,21 @@ function buildOAuthUsageStatusHtml(channel) {
       <div class="ch-oauth-usage__meta">
         <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
         <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+        ${isXAI ? `<span>${escapeChannelRefreshText(window.t('channels.oauth.usageAvailable'))}</span>` : ''}
         ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
       </div>
       <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
         <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
       </div>
     </div>`;
-  }).join('');
+  });
+  const warnings = isXAI && Array.isArray(state.data?.warnings)
+    ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
+    : '';
   return `<div class="ch-oauth-usage">
     <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id)}</div>
-    ${rows}
+    ${rows.join('')}
+    ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;
 }
 

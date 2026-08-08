@@ -9,7 +9,8 @@ function getChannelAuthTypeOptions() {
     { value: 'all', label: window.t('channels.authTypeAll') },
     { value: 'api_key', label: window.t('channels.authTypeAPI') },
     { value: 'codex_oauth', label: window.t('channels.authTypeCodex') },
-    { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') }
+    { value: 'antigravity_oauth', label: window.t('channels.authTypeAntigravity') },
+    { value: 'xai_oauth', label: window.t('channels.authTypeXAI') }
   ];
 }
 
@@ -123,7 +124,7 @@ function setupFilterListeners() {
       showAllOptionsOnOpen: true,
       getOptions: getChannelAuthTypeOptions,
       onSelect: (value) => {
-        const validValues = new Set(['all', 'api_key', 'codex_oauth', 'antigravity_oauth']);
+        const validValues = new Set(['all', 'api_key', 'codex_oauth', 'antigravity_oauth', 'xai_oauth']);
         filters.authType = validValues.has(value) ? value : 'all';
         channelsCurrentPage = 1;
         if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
@@ -253,4 +254,8 @@ function setupFilterListeners() {
       loadChannels();
     });
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { setupFilterListeners };
 }

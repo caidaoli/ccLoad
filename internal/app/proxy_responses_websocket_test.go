@@ -20,6 +20,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
@@ -1069,6 +1070,103 @@ func TestResponsesWebsocketBridgesHTTPSSEResponse(t *testing.T) {
 	}
 	if request["stream"] != true {
 		t.Fatalf("upstream HTTP request must force stream=true: %#v", request)
+	}
+}
+
+func TestResponsesWebsocketXAIOAuthAlwaysBridgesHTTPSSEResponse(t *testing.T) {
+	var websocketCalls atomic.Int32
+	var httpCalls atomic.Int32
+	requestSeen := make(chan map[string]any, 2)
+	conversationIDs := make(chan string, 2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if websocket.IsWebSocketUpgrade(r) {
+			websocketCalls.Add(1)
+			w.WriteHeader(http.StatusUpgradeRequired)
+			return
+		}
+		turn := httpCalls.Add(1)
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses" {
+			t.Errorf("xAI upstream request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer ws-access" {
+			t.Errorf("Authorization = %q", got)
+		}
+		conversationIDs <- r.Header.Get("x-grok-conv-id")
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		var request map[string]any
+		if err := json.Unmarshal(body, &request); err != nil {
+			t.Errorf("decode upstream request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		requestSeen <- request
+		w.Header().Set("Content-Type", "text/event-stream")
+		responseID := fmt.Sprintf("resp-xai-ws-%d", turn)
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":%q}}\n\n", responseID)
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello-xai-ws\"}\n\n")
+		_, _ = fmt.Fprintf(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":%q,\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n", responseID)
+	}))
+	defer upstream.Close()
+
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "ws-access", RefreshToken: "ws-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	})
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "xai-ws-bridge", upstreamProtocol: "codex", websockets: true,
+		models: "grok-4.5", priority: 100, authType: model.AuthTypeXAIOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL + "/v1"})
+	env.server.xaiCredentials = newXAICredentialManager(env.store, env.server.getClientForChannel, nil)
+
+	conn := dialResponsesWebsocket(t, env.engine)
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set websocket read deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "grok-4.5",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write websocket request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, conn, "response.completed")
+	response, _ := completed["response"].(map[string]any)
+	if response["id"] != "resp-xai-ws-1" {
+		t.Fatalf("completed event = %#v", completed)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "previous_response_id": "resp-xai-ws-1",
+		"input": []any{map[string]any{"role": "user", "content": "again"}},
+	}); err != nil {
+		t.Fatalf("write second websocket request: %v", err)
+	}
+	completed = readWebsocketUntilType(t, conn, "response.completed")
+	response, _ = completed["response"].(map[string]any)
+	if response["id"] != "resp-xai-ws-2" {
+		t.Fatalf("second completed event = %#v", completed)
+	}
+	if websocketCalls.Load() != 0 || httpCalls.Load() != 2 {
+		t.Fatalf("xAI upstream websocket/http calls=%d/%d, want 0/2", websocketCalls.Load(), httpCalls.Load())
+	}
+	firstConversationID := <-conversationIDs
+	secondConversationID := <-conversationIDs
+	if firstConversationID == "" || firstConversationID != secondConversationID {
+		t.Fatalf("xAI websocket conversation IDs=%q/%q, want one stable identity", firstConversationID, secondConversationID)
+	}
+	request := <-requestSeen
+	if request["type"] != nil || request["stream"] != true || request["model"] != "grok-4.5" {
+		t.Fatalf("xAI upstream request = %#v", request)
+	}
+	if _, exists := request["previous_response_id"]; exists {
+		t.Fatalf("xAI upstream retained previous_response_id: %#v", request)
+	}
+	request = <-requestSeen
+	if _, exists := request["previous_response_id"]; exists {
+		t.Fatalf("xAI upstream retained previous_response_id on continued turn: %#v", request)
 	}
 }
 

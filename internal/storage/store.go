@@ -20,7 +20,8 @@ type Store interface {
 	GetConfig(ctx context.Context, id int64) (*model.Config, error)
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
-	UpdateOAuthCredential(ctx context.Context, id int64, credential string) error
+	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
+	UpdateOAuthModelStateIfCredentialMatches(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string, modelEntries []model.ModelEntry, scheduledCheckModel string) (bool, error)
 	UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error)
 	BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error)
 	DeleteConfig(ctx context.Context, id int64) error

@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyChannelAuthEditorMode,
   cancelAntigravityOAuth,
+  cancelXAIOAuth,
   pollCodexOAuthStatus,
   copyCodexOAuthLink,
   copyOAuthCredential,
@@ -11,6 +12,7 @@ const {
   formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
+  pollXAIOAuthStatus,
   getOAuthUsageState,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
@@ -21,9 +23,259 @@ const {
   setOAuthCredentialView,
   setupOAuthActions,
   showOAuthSession,
+  submitXAICredentialBatch,
   submitAntigravityOAuthCallback,
-  submitCodexOAuthCallback
+  submitCodexOAuthCallback,
+  submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('xAI manual OAuth helpers use the shared state and callback contract', async () => {
+  const requests = [];
+  const status = await pollXAIOAuthStatus('xai/state', {
+    fetchStatus: async url => {
+      requests.push({ url });
+      return { status: 'complete', channel_id: 91 };
+    },
+    delay: async () => {},
+    maxPolls: 1
+  });
+  assert.equal(status.channel_id, 91);
+  assert.equal(requests[0].url, '/admin/xai/oauth/status?state=xai%2Fstate');
+
+  await submitXAIOAuthCallback(
+    '  http://127.0.0.1:56121/callback?code=code-1&state=state-1  ',
+    async (url, options) => {
+      requests.push({ url, options });
+      return { status: 'complete', state: 'state-1', channel_id: 91 };
+    }
+  );
+  assert.equal(requests[1].url, '/admin/xai/oauth/callback');
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
+    callback_url: 'http://127.0.0.1:56121/callback?code=code-1&state=state-1'
+  });
+
+  await cancelXAIOAuth(' state-2 ', async (url, options) => {
+    requests.push({ url, options });
+    return { status: 'cancelled', state: 'state-2' };
+  });
+  assert.equal(requests[2].url, '/admin/xai/oauth/cancel');
+  assert.deepEqual(JSON.parse(requests[2].options.body), { state: 'state-2' });
+});
+
+test('xAI refresh-token and SSO submission clears secrets before the request starts', async () => {
+  const previousWindow = global.window;
+  const storageWrites = [];
+  global.window = {
+    t: key => key,
+    localStorage: { setItem: (...args) => storageWrites.push(args) },
+    sessionStorage: { setItem: (...args) => storageWrites.push(args) }
+  };
+  const makeResponse = () => ({
+    ok: true,
+    body: null,
+    async text() {
+      return `event: complete\ndata: {"event":"complete","created":1,"skipped":0,"failed":0}\n\n`;
+    }
+  });
+  try {
+    for (const [method, secret] of [['refresh_token', 'rt-secret-value'], ['sso', 'sso-secret-value']]) {
+      const textarea = { value: secret, removeAttribute() {}, setAttribute() {}, focus() {} };
+      let captured;
+      const result = await submitXAICredentialBatch(method, textarea, null, async (url, options) => {
+        assert.equal(textarea.value, '');
+        captured = { url, options };
+        return makeResponse();
+      });
+      assert.equal(result.created, 1);
+      assert.equal(captured.url, '/admin/xai/credentials/import/stream');
+      assert.deepEqual(JSON.parse(captured.options.body), {
+        method,
+        values: secret,
+        priority_increment: 10
+      });
+      assert.equal(textarea.value, '');
+      assert.doesNotMatch(captured.url, /secret/);
+    }
+    assert.deepEqual(storageWrites, []);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('xAI credential import renders streamed item progress in the OAuth dialog', async () => {
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+    ...properties
+  });
+  const dialog = makeTarget({ open: true, close() { this.open = false; } });
+  const form = makeTarget({});
+  const provider = makeTarget({ value: 'xai', disabled: false });
+  const method = makeTarget({ value: 'sso', disabled: false });
+  const textarea = makeTarget({ value: 'cookie-1\ncookie-2', focus() {} });
+  const button = makeTarget({ disabled: false });
+  const errorList = {
+    children: [],
+    append(item) { this.children.push(item); },
+    replaceChildren() { this.children = []; }
+  };
+  const elements = new Map([
+    ['oauthLoginDialog', dialog],
+    ['oauthLoginForm', form],
+    ['oauthProviderSelect', provider],
+    ['xaiOAuthMethod', method],
+    ['xaiCredentialValues', textarea],
+    ['oauthAuthorizeButton', button],
+    ['oauthSessionFields', { hidden: true }],
+    ['oauthLoginDialogStatus', { textContent: '', hidden: true, dataset: {} }],
+    ['xaiCredentialImportProgress', { hidden: true }],
+    ['xaiCredentialImportProgressBar', { max: 1, value: 0 }],
+    ['xaiCredentialImportProgressCounter', { textContent: '' }],
+    ['xaiCredentialImportProgressDetail', { textContent: '' }],
+    ['xaiCredentialImportProgressCounts', { textContent: '' }],
+    ['xaiCredentialImportErrors', { hidden: true }],
+    ['xaiCredentialImportErrorList', errorList]
+  ]);
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  let reloads = 0;
+  setGlobal('document', {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => [],
+    createElement: () => ({ textContent: '' })
+  });
+  setGlobal('window', {
+    t: (key, values = {}) => `${key}:${JSON.stringify(values)}`,
+    showError() {}
+  });
+  setGlobal('fetchWithAuth', async () => ({
+    ok: true,
+    body: null,
+    async text() {
+      return [
+        'event: start\ndata: {"event":"start","processed":0,"total":2,"created":0,"skipped":0,"failed":0}',
+        'event: processing\ndata: {"event":"processing","processed":0,"total":2,"created":0,"skipped":0,"failed":0,"file_name":"#1"}',
+        'event: progress\ndata: {"event":"progress","processed":1,"total":2,"created":1,"skipped":0,"failed":0,"file_name":"#1","result":{"file_name":"#1","status":"created"}}',
+        'event: progress\ndata: {"event":"progress","processed":2,"total":2,"created":1,"skipped":0,"failed":1,"file_name":"#2","result":{"file_name":"#2","status":"failed","error":"xAI SSO import failed"}}',
+        'event: complete\ndata: {"event":"complete","processed":2,"total":2,"created":1,"skipped":0,"failed":1}'
+      ].join('\n\n') + '\n\n';
+    }
+  }));
+  setGlobal('reloadChannelsList', async () => { reloads++; });
+
+  try {
+    setupOAuthActions();
+    await form.listeners.submit({ preventDefault() {} });
+
+    assert.equal(elements.get('xaiCredentialImportProgress').hidden, false);
+    assert.equal(elements.get('xaiCredentialImportProgressBar').max, 2);
+    assert.equal(elements.get('xaiCredentialImportProgressBar').value, 2);
+    assert.match(elements.get('xaiCredentialImportProgressCounter').textContent, /"processed":2/);
+    assert.match(elements.get('xaiCredentialImportProgressCounts').textContent, /"created":1/);
+    assert.match(elements.get('xaiCredentialImportProgressCounts').textContent, /"failed":1/);
+    assert.match(elements.get('xaiCredentialImportProgressDetail').textContent, /progressComplete/);
+    assert.equal(elements.get('xaiCredentialImportErrors').hidden, false);
+    assert.equal(errorList.children.length, 1);
+    assert.match(errorList.children[0].textContent, /#2/);
+    assert.equal(reloads, 1);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
+
+test('closing and pagehide abort active xAI imports and clear browser-held secrets', async () => {
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    ...properties
+  });
+  const dialog = makeTarget({ open: true, close() { this.open = false; } });
+  const form = makeTarget({});
+  const provider = { value: 'xai', disabled: false };
+  const method = makeTarget({ value: 'refresh_token' });
+  const textarea = { value: 'rt-hanging', removeAttribute() {}, setAttribute() {}, focus() {} };
+  const button = { disabled: false, setAttribute() {}, removeAttribute() {} };
+  const statusWrites = [];
+  const status = { hidden: true, dataset: {} };
+  Object.defineProperty(status, 'textContent', {
+    set(value) { statusWrites.push(value); }, get() { return statusWrites.at(-1) || ''; }
+  });
+  const elements = new Map([
+    ['oauthLoginDialog', dialog],
+    ['oauthLoginForm', form],
+    ['oauthProviderSelect', provider],
+    ['xaiOAuthMethod', method],
+    ['xaiCredentialValues', textarea],
+    ['oauthAuthorizeButton', button],
+    ['oauthSessionFields', { hidden: true }],
+    ['oauthLoginDialogStatus', status]
+  ]);
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const pageListeners = {};
+  const signals = [];
+  let reloads = 0;
+  setGlobal('document', {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => []
+  });
+  setGlobal('window', {
+    t: key => key,
+    addEventListener: (type, listener) => { pageListeners[type] = listener; },
+    showError() {}
+  });
+  setGlobal('fetchWithAuth', (_url, options) => new Promise((resolve, reject) => {
+    signals.push(options.signal);
+    options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  }));
+  setGlobal('reloadChannelsList', async () => { reloads++; });
+
+  try {
+    setupOAuthActions();
+    const firstSubmit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    const beforeCloseWrites = statusWrites.length;
+    dialog.listeners.cancel({ preventDefault() {} });
+    await firstSubmit;
+    assert.equal(signals[0]?.aborted, true);
+    assert.equal(reloads, 0);
+    assert.equal(statusWrites.length, beforeCloseWrites);
+
+    dialog.open = true;
+    textarea.value = 'sso-hanging';
+    method.value = 'sso';
+    const secondSubmit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    const beforePagehideWrites = statusWrites.length;
+    pageListeners.pagehide();
+    await secondSubmit;
+    assert.equal(signals[1]?.aborted, true);
+    assert.equal(statusWrites.length, beforePagehideWrites);
+    assert.equal(reloads, 0);
+    assert.equal(provider.disabled, false);
+
+    textarea.value = 'unsubmitted-secret';
+    pageListeners.pagehide();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(textarea.value, '');
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
 
 test('Codex plan badge appends the subscription calendar date', () => {
   assert.equal(formatCodexPlanBadgeText('plus', '2030-02-03T04:05:06Z'), 'plus · 2030-02-03');
@@ -159,7 +411,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
   const elements = new Map([
     ['oauthLoginDialog', { open: false, showModal() { this.open = true; } }],
     ['oauthProviderSelect', { value: 'antigravity', disabled: true, focus() { this.focused = true; } }],
-    ['oauthAuthorizeButton', { disabled: true }],
+    ['oauthAuthorizeButton', { disabled: true, hidden: false }],
     ['oauthSessionFields', { hidden: false }],
     ['oauthAuthorizationURL', { value: 'stale', focus() { this.focused = true; }, select() { this.selected = true; } }],
     ['oauthOpenLink', { href: 'https://stale.example', removeAttribute(name) { if (name === 'href') this.href = ''; } }],
@@ -182,6 +434,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
     assert.equal(showOAuthSession({ url: 'https://auth.example/authorize?state=abc', state: 'abc' }, 'antigravity'), true);
     assert.equal(elements.get('oauthProviderSelect').value, 'antigravity');
     assert.equal(elements.get('oauthProviderSelect').disabled, true);
+    assert.equal(elements.get('oauthAuthorizeButton').hidden, true);
     assert.equal(elements.get('oauthSessionFields').hidden, false);
     assert.equal(elements.get('oauthAuthorizationURL').value, 'https://auth.example/authorize?state=abc');
     assert.equal(elements.get('oauthOpenLink').href, 'https://auth.example/authorize?state=abc');
@@ -208,22 +461,35 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     close() { this.open = false; }
   });
   const loginForm = makeTarget({});
-  const providerSelect = { value: 'codex', disabled: false, focus() { this.focused = true; } };
-  const authorizeButton = { disabled: false };
+  const providerSelect = makeTarget({ value: 'codex', disabled: false, focus() { this.focused = true; } });
+  const xaiMethod = makeTarget({ value: 'manual' });
+  const authorizeButton = {
+    disabled: false, hidden: false, textContent: '',
+    setAttribute(name, value) { this[name] = value; }
+  };
   const sessionFields = { hidden: false };
   const authorizationURL = { value: '', focus() {}, select() {} };
   const openLink = { href: '', removeAttribute() { this.href = ''; } };
   const callbackURL = { value: '', removeAttribute() {} };
+  const dialogDescription = { textContent: '' };
+  const secretField = { hidden: false };
+  const xaiProgress = { hidden: false };
   const elements = new Map([
     ['oauthLoginBtn', loginButton],
     ['oauthLoginDialog', dialog],
     ['oauthLoginForm', loginForm],
     ['oauthProviderSelect', providerSelect],
+    ['xaiOAuthMethod', xaiMethod],
+    ['xaiOAuthControls', { hidden: true }],
+    ['xaiCredentialSecretField', secretField],
+    ['xaiCredentialImportProgress', xaiProgress],
+    ['xaiCredentialValues', { value: '', removeAttribute() {}, setAttribute() {} }],
     ['oauthAuthorizeButton', authorizeButton],
     ['oauthSessionFields', sessionFields],
     ['oauthAuthorizationURL', authorizationURL],
     ['oauthOpenLink', openLink],
-    ['oauthCallbackURL', callbackURL]
+    ['oauthCallbackURL', callbackURL],
+    ['oauthLoginDialogDescription', dialogDescription]
   ]);
   const previousDocument = global.document;
   const previousWindow = global.window;
@@ -252,9 +518,37 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(sessionFields.hidden, true);
     assert.deepEqual(requests, []);
 
+    providerSelect.value = 'xai';
+    providerSelect.listeners.change();
+    assert.equal(secretField.hidden, true);
+    assert.equal(authorizeButton.hidden, false);
+    assert.equal(authorizeButton.textContent, 'channels.xai.generateLink');
+    assert.equal(dialogDescription.textContent, 'channels.xai.manualDescription');
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.deepEqual(requests, [
+      '/admin/xai/oauth/start',
+      '/admin/xai/oauth/status?state=gravity-state'
+    ]);
+
+    openOAuthLoginDialog(loginButton);
+    providerSelect.value = 'xai';
+    providerSelect.listeners.change();
+    xaiMethod.value = 'sso';
+    xaiMethod.listeners.change();
+    assert.equal(secretField.hidden, false);
+    assert.equal(authorizeButton.textContent, 'channels.xai.importSecrets');
+    assert.equal(xaiProgress.hidden, true);
+    assert.equal(dialogDescription.textContent, 'channels.xai.importDescription');
+    openOAuthLoginDialog(loginButton);
+    assert.equal(authorizeButton.hidden, false);
+    assert.equal(authorizeButton.textContent, 'channels.oauth.startAuthorization');
+    assert.equal(dialogDescription.textContent, 'channels.oauth.loginDialogDescription');
+
     providerSelect.value = 'antigravity';
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.deepEqual(requests, [
+      '/admin/xai/oauth/start',
+      '/admin/xai/oauth/status?state=gravity-state',
       '/admin/antigravity/oauth/start',
       '/admin/antigravity/oauth/status?state=gravity-state'
     ]);
@@ -500,7 +794,7 @@ test('OAuth credential import polls a background job, recovers from network erro
           { file_name: 'credentials.zip/three.json', status: 'failed', error: 'invalid credential' }
         ]
       });
-    }, 'auto', 10, async () => {});
+    }, 'xai', 10, async () => {});
 
     assert.equal(result.created, 1);
     assert.equal(result.skipped, 1);
@@ -510,7 +804,7 @@ test('OAuth credential import polls a background job, recovers from network erro
     assert.equal(captured[0].options.method, 'POST');
     assert.deepEqual(captured[0].options.body.items, [
       ['files', files[0]],
-      ['provider', 'auto'],
+      ['provider', 'xai'],
       ['priority_increment', '10']
     ]);
     assert.equal(elements.get('oauthCredentialImportProgress').hidden, false);
@@ -713,7 +1007,7 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
   }
 });
 
-test('Codex editor shows AT in the normal key area and the full credential read-only', async () => {
+test('OAuth editor keeps credentials read-only and applies provider-specific controls', async () => {
   const elements = new Map();
   for (const id of [
     'codexCredentialReadOnlyNotice',
@@ -725,6 +1019,7 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     'selectAllKeys',
     'codexCredentialTab',
     'codexCredentialContent',
+    'codexCredentialRefreshButton',
     'channelCodexPlanBadge'
   ]) {
     elements.set(id, { hidden: false, required: true, value: 'must-not-remain' });
@@ -801,6 +1096,23 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(antigravityCredential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
 
+    const xaiCredential = {
+      type: 'xai', auth_kind: 'oauth', access_token: 'xai-at', refresh_token: 'xai-rt', id_token: 'xai-id'
+    };
+    applyChannelAuthEditorMode('xai_oauth', xaiCredential, {
+      xai_email: 'safe@example.com',
+      xai_subscription_tier: 'supergrok',
+      xai_entitlement_status: 'active'
+    });
+    assert.equal(elements.get('channelAPIKeyHeader').hidden, true);
+    assert.equal(elements.get('channelAPIKeyTable').hidden, true);
+    assert.equal(elements.get('codexCredentialTab').hidden, false);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
+    assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(xaiCredential, null, 2));
+    let copiedXAICredential = '';
+    await copyOAuthCredential(async text => { copiedXAICredential = text; });
+    assert.equal(copiedXAICredential, elements.get('codexCredentialContent').textContent);
+
     applyChannelAuthEditorMode('api_key');
     assert.equal(elements.get('codexCredentialReadOnlyNotice').hidden, true);
     assert.equal(elements.get('channelAPIKeyHeader').hidden, false);
@@ -809,6 +1121,7 @@ test('Codex editor shows AT in the normal key area and the full credential read-
     assert.equal(elements.get('importKeysBtn').disabled, false);
     assert.equal(elements.get('selectAllKeys').disabled, false);
     assert.equal(elements.get('codexCredentialTab').hidden, true);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
     assert.equal(elements.get('channelCodexPlanBadge').textContent, '');
     assert.equal(elements.get('codexCredentialContent').textContent, '');

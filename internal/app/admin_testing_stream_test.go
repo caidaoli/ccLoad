@@ -1406,6 +1406,40 @@ func TestHandleChannelChat_CodexOAuthWithoutAPIKeyOrSSEContentType(t *testing.T)
 	}
 }
 
+func TestHandleChannelChat_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer at-xai-admin" {
+			t.Errorf("Authorization = %q", got)
+		}
+		if got := r.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
+			t.Errorf("X-XAI-Token-Auth = %q", got)
+		}
+		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"xai chat answer\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createXAIOAuthChannelForAdminTest(t, srv, upstream.URL+"/v1")
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "grok-4.5", "client_protocol": "codex", "stream": true, "content": "hello",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelChat(c)
+
+	if got := w.Body.String(); !strings.Contains(got, `"delta":"xai chat answer"`) ||
+		!strings.Contains(got, "data: [DONE]") || strings.Contains(got, `"error"`) {
+		t.Fatalf("xAI OAuth chat failed: %s", got)
+	}
+}
+
 func TestHandleChannelChat_CodexOAuthTransformsOpenAIClientProtocol(t *testing.T) {
 	var upstreamBody []byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

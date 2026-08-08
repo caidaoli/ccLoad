@@ -27,7 +27,11 @@ function setupImportExport() {
 async function exportChannelsCSV(buttonEl) {
   try {
     if (buttonEl) buttonEl.disabled = true;
-    const res = await fetchWithAuth('/admin/channels/export');
+    const params = buildChannelsListParams();
+    params.delete('limit');
+    params.delete('offset');
+    const query = params.toString();
+    const res = await fetchWithAuth(`/admin/channels/export${query ? `?${query}` : ''}`);
     if (!res.ok) {
       const errorText = await res.text();
       throw new Error(errorText || window.t('channels.import.exportHttpFailed', { status: res.status }));
@@ -52,6 +56,27 @@ async function exportChannelsCSV(buttonEl) {
   }
 }
 
+function updateCSVImportProgress(state, fileName = '') {
+  const container = document.getElementById('csvImportProgress');
+  const progress = document.getElementById('csvImportProgressBar');
+  const detail = document.getElementById('csvImportProgressDetail');
+  if (!container || !progress || !detail) return;
+
+  container.hidden = false;
+  container.dataset.kind = state;
+  progress.max = 1;
+  if (state === 'pending') {
+    progress.removeAttribute('value');
+    detail.textContent = window.t('channels.import.progressPreparing', { file: fileName });
+    return;
+  }
+
+  progress.value = 1;
+  detail.textContent = window.t(
+    state === 'success' ? 'channels.import.progressComplete' : 'channels.import.progressFailed'
+  );
+}
+
 async function handleImportCSV(event, importBtn) {
   const input = event.target;
   if (!input.files || input.files.length === 0) {
@@ -63,6 +88,7 @@ async function handleImportCSV(event, importBtn) {
   formData.append('file', file);
 
   if (importBtn) importBtn.disabled = true;
+  updateCSVImportProgress('pending', file.name);
 
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/import', {
@@ -92,12 +118,18 @@ async function handleImportCSV(event, importBtn) {
       window.showSuccess(window.t('channels.msg.importSuccess'));
     }
 
+    updateCSVImportProgress('success');
     await reloadChannelsList();
   } catch (err) {
     console.error('Import CSV failed', err);
+    updateCSVImportProgress('error');
     if (window.showError) window.showError(err.message || window.t('channels.msg.importFailed'));
   } finally {
     if (importBtn) importBtn.disabled = false;
     input.value = '';
   }
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+  module.exports = { setupImportExport, exportChannelsCSV, handleImportCSV };
 }

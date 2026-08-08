@@ -11,6 +11,7 @@ import (
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
 
 	_ "modernc.org/sqlite"
 )
@@ -140,8 +141,35 @@ func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	}
 
 	updatedCredential := `{"type":"codex","access_token":"new-at","refresh_token":"new-rt","expired":"2031-01-01T00:00:00Z"}`
-	if err := store.UpdateOAuthCredential(ctx, created.ID, updatedCredential); err != nil {
-		t.Fatalf("UpdateOAuthCredential() error = %v", err)
+	updated, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, credential, updatedCredential)
+	if err != nil || !updated {
+		t.Fatalf("CompareAndSwapOAuthCredential() = (%v, %v), want (true, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, updatedCredential, updatedCredential)
+	if err != nil || !updated {
+		t.Fatalf("same-value CompareAndSwapOAuthCredential() = (%v, %v), want (true, nil)", updated, err)
+	}
+	staleCredential := `{"type":"codex","access_token":"stale-at","refresh_token":"stale-rt","expired":"2032-01-01T00:00:00Z"}`
+	caseChangedExpected := strings.Replace(updatedCredential, "new-at", "NEW-AT", 1)
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, caseChangedExpected, staleCredential)
+	if err != nil || updated {
+		t.Fatalf("case-changed CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, updatedCredential+" ", staleCredential)
+	if err != nil || updated {
+		t.Fatalf("space-suffixed CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, credential, staleCredential)
+	if err != nil || updated {
+		t.Fatalf("stale CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeAntigravityOAuth, updatedCredential, staleCredential)
+	if err != nil || updated {
+		t.Fatalf("wrong provider CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
+	}
+	updated, err = store.CompareAndSwapOAuthCredential(ctx, created.ID+99999, model.AuthTypeCodexOAuth, updatedCredential, staleCredential)
+	if err != nil || updated {
+		t.Fatalf("missing channel CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
 	}
 	got, err := store.GetConfig(ctx, created.ID)
 	if err != nil {
@@ -149,6 +177,73 @@ func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	}
 	if got.OAuthCredential != updatedCredential {
 		t.Fatalf("credential=%q, want updated payload", got.OAuthCredential)
+	}
+	if _, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeAPIKey, updatedCredential, staleCredential); err == nil {
+		t.Fatal("CompareAndSwapOAuthCredential() accepted API key auth type")
+	}
+	if _, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, "", staleCredential); err == nil {
+		t.Fatal("CompareAndSwapOAuthCredential() accepted empty expected credential")
+	}
+	if _, err := store.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, updatedCredential, ""); err == nil {
+		t.Fatal("CompareAndSwapOAuthCredential() accepted empty next credential")
+	}
+}
+
+func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *testing.T) {
+	store := newTestStore(t, "explicit-oauth-credential.db")
+	ctx := context.Background()
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "codex-explicit", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: winner,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateConfig(ctx, &model.Config{
+		ID: created.ID, Name: created.Name, AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: `{"type":"codex","access_token":"at-stale","refresh_token":"rt-stale","expired":"2032-01-01T00:00:00Z"}`,
+		URLs:            model.ChannelURLs{{URL: "https://stale.example.com", Protocols: []string{"codex"}}},
+		Enabled:         true, ModelEntries: []model.ModelEntry{{Model: "gpt-stale"}},
+	})
+	if err == nil {
+		t.Fatal("CreateConfig() replaced an existing OAuth channel by explicit ID")
+	}
+	persisted, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.OAuthCredential != winner {
+		t.Fatalf("OAuth credential = %q, want CAS winner", persisted.OAuthCredential)
+	}
+}
+
+func TestConfig_CreateWithExplicitIDRejectsOAuthAcrossExistingAPIKey(t *testing.T) {
+	store := newTestStore(t, "explicit-api-key-to-oauth.db")
+	ctx := context.Background()
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "api-key-winner", AuthType: model.AuthTypeAPIKey,
+		URLs: model.ChannelURLs{{URL: "https://api-key.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.CreateConfig(ctx, &model.Config{
+		ID: created.ID, Name: "oauth-stale", AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: `{"type":"codex","access_token":"at-stale","refresh_token":"rt-stale","expired":"2031-01-01T00:00:00Z"}`,
+		URLs:            model.ChannelURLs{{URL: "https://oauth.example.com", Protocols: []string{"codex"}}},
+		Enabled:         true,
+	})
+	if err == nil {
+		t.Fatal("CreateConfig() replaced an existing API-key channel with incoming OAuth state")
+	}
+	persisted, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.AuthType != model.AuthTypeAPIKey || persisted.Name != "api-key-winner" || persisted.OAuthCredential != "" {
+		t.Fatalf("persisted config = %#v, want original API-key channel", persisted)
 	}
 }
 
@@ -998,6 +1093,101 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 	}
 	if unchanged.Updated != 0 || unchanged.Unchanged != 2 {
 		t.Fatalf("unexpected unchanged result: %+v", unchanged)
+	}
+}
+
+func TestConfig_BatchPatchConfigsRejectsOAuthModelState(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "batch-patch-oauth.db")
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"winner","refresh_token":"winner-rt"}`
+	oauth, err := store.CreateConfig(ctx, &model.Config{
+		Name: "batch-patch-oauth", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://oauth.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "winner-model"}}, ScheduledCheckModel: "winner-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiKey, err := store.CreateConfig(ctx, &model.Config{
+		Name: "batch-patch-api-key", URLs: model.ChannelURLs{{URL: "https://key.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "key-model"}}, ScheduledCheckModel: "key-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.BatchPatchConfigs(ctx, []int64{apiKey.ID, oauth.ID}, model.BatchConfigPatch{
+		ModelImportMode: model.ModelImportModeReplace,
+		ModelEntries:    []model.ModelEntry{{Model: "stale-model"}},
+	})
+	if err == nil {
+		t.Fatal("BatchPatchConfigs updated OAuth-derived model state")
+	}
+	for _, tc := range []struct {
+		id    int64
+		model string
+	}{
+		{id: oauth.ID, model: "winner-model"},
+		{id: apiKey.ID, model: "key-model"},
+	} {
+		got, getErr := store.GetConfig(ctx, tc.id)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != tc.model || got.ScheduledCheckModel != tc.model {
+			t.Fatalf("channel %d state changed after rejected patch: %+v", tc.id, got)
+		}
+	}
+}
+
+func TestConfig_SyncOAuthConfigReplicaIsAtomicAndProviderRestricted(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "sync-oauth-replica.db")
+	replica := store.(*sqlstore.SQLStore)
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"old","refresh_token":"old-rt"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "replica-old", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://old.example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "old-model"}}, ScheduledCheckModel: "old-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongProvider := created.Clone()
+	wrongProvider.AuthType = model.AuthTypeAntigravityOAuth
+	wrongProvider.OAuthCredential = `{"type":"antigravity","access_token":"wrong"}`
+	if err := replica.SyncOAuthConfigReplica(ctx, wrongProvider); err == nil {
+		t.Fatal("SyncOAuthConfigReplica accepted a different OAuth provider")
+	}
+
+	if _, err := replica.ExecContext(ctx, `
+		CREATE TRIGGER reject_replica_model_insert
+		BEFORE INSERT ON channel_models
+		BEGIN
+			SELECT RAISE(FAIL, 'replica models are read only');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	winner := created.Clone()
+	winner.Name = "replica-winner"
+	winner.URLs = model.ChannelURLs{{URL: "https://winner.example.com", Protocols: []string{"codex"}}}
+	winner.OAuthCredential = `{"type":"codex","access_token":"winner","refresh_token":"winner-rt"}`
+	winner.ModelEntries = []model.ModelEntry{{Model: "winner-model"}}
+	winner.ScheduledCheckModel = "winner-model"
+	if err := replica.SyncOAuthConfigReplica(ctx, winner); err == nil {
+		t.Fatal("SyncOAuthConfigReplica succeeded after model persistence failed")
+	}
+	got, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Name != created.Name || got.OAuthCredential != credential || !got.SupportsModel("old-model") || got.SupportsModel("winner-model") {
+		t.Fatalf("failed replica sync was not atomic: %+v", got)
 	}
 }
 
