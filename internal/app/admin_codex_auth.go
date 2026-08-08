@@ -532,17 +532,27 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 		if parseErr != nil || !sameCodexIdentity(existing, credential) {
 			continue
 		}
-		models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, existing.PlanType, credential.PlanType)
-		if err := store.UpdateOAuthCredential(ctx, cfg.ID, credentialJSON); err != nil {
+		credentialUpdated, err := store.CompareAndSwapOAuthCredential(
+			ctx, cfg.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, credentialJSON,
+		)
+		if err != nil {
 			return nil, false, err
 		}
-		if !modelEntriesEqual(cfg.ModelEntries, models) {
-			cfg.ModelEntries = models
-			if !codexOAuthModelAllowed(cfg.ScheduledCheckModel, credential.PlanType) {
-				cfg.ScheduledCheckModel = ""
+		if !credentialUpdated {
+			cfg, err = store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				return nil, false, err
 			}
-			if _, err := store.UpdateConfig(ctx, cfg.ID, cfg); err != nil {
-				return nil, false, fmt.Errorf("reconcile Codex models for plan %q: %w", credential.PlanType, err)
+			credential, err = codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+			if err != nil {
+				return nil, false, fmt.Errorf("parse concurrent Codex credential: %w", err)
+			}
+			if _, err := applyCodexWinnerModelState(ctx, store, cfg, existing.PlanType, credential); err != nil {
+				return nil, false, err
+			}
+		} else {
+			if _, err := persistCodexModelState(ctx, store, cfg, existing.PlanType, credential, credentialJSON); err != nil {
+				return nil, false, err
 			}
 		}
 		updated, err := store.GetConfig(ctx, cfg.ID)
@@ -555,6 +565,63 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 		return nil, false, fmt.Errorf("create Codex channel: %w", err)
 	}
 	return created, true, nil
+}
+
+func persistCodexModelState(
+	ctx context.Context,
+	store storage.Store,
+	cfg *model.Config,
+	previousPlanType string,
+	credential *codexauth.Credential,
+	credentialJSON string,
+) (*codexauth.Credential, error) {
+	models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, previousPlanType, credential.PlanType)
+	scheduledCheckModel := cfg.ScheduledCheckModel
+	if !codexOAuthModelAllowed(scheduledCheckModel, credential.PlanType) {
+		scheduledCheckModel = ""
+	}
+	updated, err := store.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, cfg.ID, model.AuthTypeCodexOAuth, credentialJSON, models, scheduledCheckModel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("reconcile Codex models for plan %q: %w", credential.PlanType, err)
+	}
+	if updated {
+		return credential, nil
+	}
+	winnerCfg, err := store.GetConfig(ctx, cfg.ID)
+	if err != nil {
+		return nil, fmt.Errorf("reload Codex winner for model reconciliation: %w", err)
+	}
+	winner, err := codexauth.ParseCredential([]byte(winnerCfg.OAuthCredential))
+	if err != nil {
+		return nil, fmt.Errorf("parse Codex winner for model reconciliation: %w", err)
+	}
+	return applyCodexWinnerModelState(ctx, store, winnerCfg, credential.PlanType, winner)
+}
+
+func applyCodexWinnerModelState(
+	ctx context.Context,
+	store storage.Store,
+	cfg *model.Config,
+	previousPlanType string,
+	credential *codexauth.Credential,
+) (*codexauth.Credential, error) {
+	models := reconcileCodexOAuthModelEntries(cfg.ModelEntries, previousPlanType, credential.PlanType)
+	scheduledCheckModel := cfg.ScheduledCheckModel
+	if !codexOAuthModelAllowed(scheduledCheckModel, credential.PlanType) {
+		scheduledCheckModel = ""
+	}
+	updated, err := store.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, cfg.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, models, scheduledCheckModel,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("repair Codex models for winning plan %q: %w", credential.PlanType, err)
+	}
+	if !updated {
+		return nil, errors.New("codex credential changed during model reconciliation")
+	}
+	return credential, nil
 }
 
 func newCodexOAuthChannel(name, credentialJSON, planType string) *model.Config {

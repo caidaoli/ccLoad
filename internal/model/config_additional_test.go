@@ -109,6 +109,10 @@ func TestConfig_AuthTypeIsIndependentFromProtocol(t *testing.T) {
 	if gravityClone.OAuthCredential != "gravity-secret" || gravityClone.AntigravityAccessToken != "gravity-at" || gravityClone.AntigravityProjectID != "gravity-project" {
 		t.Fatalf("Clone() lost Antigravity auth state: %#v", gravityClone)
 	}
+	xai := &Config{AuthType: AuthTypeXAIOAuth, OAuthCredential: "xai-secret"}
+	if !xai.UsesXAIOAuth() || !xai.UsesOAuth() {
+		t.Fatal("expected xAI OAuth auth type")
+	}
 }
 
 func TestConfig_ProtocolTransformMode(t *testing.T) {

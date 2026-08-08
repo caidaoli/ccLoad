@@ -15,6 +15,7 @@ const webIdentityContextKey = "ccLoad.webIdentity"
 type WebIdentity struct {
 	Role        model.WebRole `json:"role"`
 	AuthTokenID int64         `json:"auth_token_id,omitempty"`
+	SessionHash string        `json:"-"`
 }
 
 // WebIdentityFromContext returns the authenticated Web identity.

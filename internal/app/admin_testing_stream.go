@@ -111,7 +111,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 		capabilityExhausted := false
 		for protocolIdx, upstreamProtocol := range upstreamProtocols {
 			attempt := s.streamChatWithURLForProtocol(
-				c, cfg, keySelection.apiKey, &testReq, clientProtocol, upstreamProtocol, entry.url, originalModel,
+				c, cfg, keySelection.requestCredential, &testReq, clientProtocol, upstreamProtocol, entry.url, originalModel,
 			)
 			if attempt.handled {
 				// Write chat log from stream result

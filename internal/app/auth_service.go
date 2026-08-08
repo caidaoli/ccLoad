@@ -35,6 +35,9 @@ type AuthService struct {
 	validTokens  map[string]model.WebSession // WebSessionTokenHash → 会话身份
 	tokensMux    sync.RWMutex                // 并发保护
 
+	sessionRevokeHooksMux sync.RWMutex
+	sessionRevokeHooks    []func(string)
+
 	// API 认证（代理 API 使用的数据库令牌）
 	// [FIX] 2025-12: 存储过期时间而非bool，支持懒惰过期校验
 	authTokens          map[string]int64                    // Token哈希 → 过期时间(Unix毫秒，0=永不过期)
@@ -166,6 +169,47 @@ func (s *AuthService) Close() {
 	})
 }
 
+// RegisterWebSessionRevokeHook registers a callback for deleted Web sessions.
+// Callbacks receive only the irreversible session hash and run without service locks held.
+func (s *AuthService) RegisterWebSessionRevokeHook(hook func(sessionHash string)) {
+	if s == nil || hook == nil {
+		return
+	}
+	s.sessionRevokeHooksMux.Lock()
+	s.sessionRevokeHooks = append(s.sessionRevokeHooks, hook)
+	s.sessionRevokeHooksMux.Unlock()
+}
+
+func (s *AuthService) notifyWebSessionRevoked(sessionHashes []string) {
+	if len(sessionHashes) == 0 {
+		return
+	}
+	s.sessionRevokeHooksMux.RLock()
+	hooks := append([]func(string){}, s.sessionRevokeHooks...)
+	s.sessionRevokeHooksMux.RUnlock()
+	for _, sessionHash := range sessionHashes {
+		if strings.TrimSpace(sessionHash) == "" {
+			continue
+		}
+		for _, hook := range hooks {
+			hook(sessionHash)
+		}
+	}
+}
+
+func (s *AuthService) deleteWebSession(tokenHash string) bool {
+	s.tokensMux.Lock()
+	_, exists := s.validTokens[tokenHash]
+	if exists {
+		delete(s.validTokens, tokenHash)
+	}
+	s.tokensMux.Unlock()
+	if exists {
+		s.notifyWebSessionRevoked([]string{tokenHash})
+	}
+	return exists
+}
+
 // ============================================================================
 // Token 生成和验证（内部方法）
 // ============================================================================
@@ -200,9 +244,7 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool) {
 	if time.Now().After(session.ExpiresAt) {
 		// 同步删除过期Token（避免goroutine泄漏）
 		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
-		s.tokensMux.Lock()
-		delete(s.validTokens, tokenHash)
-		s.tokensMux.Unlock()
+		s.deleteWebSession(tokenHash)
 		return model.WebSession{}, false
 	}
 
@@ -214,9 +256,7 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool) {
 		if session.AuthTokenID > 0 && s.store != nil {
 			_ = s.revokeWebSessions([]int64{session.AuthTokenID})
 		} else {
-			s.tokensMux.Lock()
-			delete(s.validTokens, tokenHash)
-			s.tokensMux.Unlock()
+			s.deleteWebSession(tokenHash)
 		}
 		return model.WebSession{}, false
 	}
@@ -257,13 +297,16 @@ func (s *AuthService) CleanExpiredTokens() {
 
 	// 批量删除内存中的过期Token
 	if len(toDelete) > 0 {
+		deleted := make([]string, 0, len(toDelete))
 		s.tokensMux.Lock()
 		for _, tokenHash := range toDelete {
 			if session, exists := s.validTokens[tokenHash]; exists && now.After(session.ExpiresAt) {
 				delete(s.validTokens, tokenHash)
+				deleted = append(deleted, tokenHash)
 			}
 		}
 		s.tokensMux.Unlock()
+		s.notifyWebSessionRevoked(deleted)
 	}
 
 	// 同时清理数据库中的过期会话
@@ -289,7 +332,7 @@ func (s *AuthService) RequireWebAuth() gin.HandlerFunc {
 				token := strings.TrimPrefix(authHeader, prefix)
 
 				if session, ok := s.webSession(token); ok {
-					c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, AuthTokenID: session.AuthTokenID})
+					c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, AuthTokenID: session.AuthTokenID, SessionHash: session.TokenHash})
 					c.Next()
 					return
 				}
@@ -323,7 +366,7 @@ func (s *AuthService) RequireAdminAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		c.Set(webIdentityContextKey, WebIdentity{Role: session.Role})
+		c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, SessionHash: session.TokenHash})
 		c.Next()
 	}
 }
@@ -646,9 +689,7 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 		tokenHash := model.HashToken(token)
 
 		// 删除内存中的TokenHash
-		s.tokensMux.Lock()
-		delete(s.validTokens, tokenHash)
-		s.tokensMux.Unlock()
+		s.deleteWebSession(tokenHash)
 
 		// [INFO] 修复：同步删除数据库中的会话（SQLite本地删除极快，微秒级，无需异步）
 		// 原因：异步goroutine未受控，关机时可能写入已关闭的连接
@@ -770,12 +811,15 @@ func (s *AuthService) revokeWebSessions(tokenIDs []int64) error {
 	}
 
 	s.tokensMux.Lock()
+	revokedSessionHashes := make([]string, 0)
 	for tokenHash, session := range s.validTokens {
 		if _, ok := revoked[session.AuthTokenID]; ok {
 			delete(s.validTokens, tokenHash)
+			revokedSessionHashes = append(revokedSessionHashes, tokenHash)
 		}
 	}
 	s.tokensMux.Unlock()
+	s.notifyWebSessionRevoked(revokedSessionHashes)
 
 	if s.store == nil {
 		return nil

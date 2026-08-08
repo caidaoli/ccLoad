@@ -11,9 +11,12 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -30,6 +33,12 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
+	cfgs = applyChannelListFilters(
+		cfgs,
+		c,
+		s.loadChannelCooldownSnapshot(c.Request.Context()),
+		time.Now(),
+	)
 
 	// 批量查询所有API Keys，消除 N+1
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
@@ -45,7 +54,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -117,6 +126,8 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			cfg.ScheduledCheckModel,
 			cooldownDetectionRulesJSON,
 			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
+			cfg.GetAuthType(),
+			cfg.OAuthCredential,
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -167,7 +178,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	}
 
 	columnIndex := buildCSVColumnIndex(headerRow)
-	required := []string{"name", "api_key", "urls", "models"}
+	required := []string{"name", "urls", "models"}
 	for _, key := range required {
 		if _, ok := columnIndex[key]; !ok {
 			RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("缺少必需列: %s", key))
@@ -317,18 +328,28 @@ func (s *Server) parseChannelImportRow(
 	name := fetch("name")
 	rawID := fetch("id")
 	apiKey := fetch("api_key")
+	rawAuthType := fetch("auth_type")
+	oauthCredential := fetch("oauth_credential")
 	urlsRaw := fetch("urls")
 	modelsRaw := fetch("models")
 	modelRedirectsRaw := fetch("model_redirects")
 	rawProtocolTransformMode := fetch("protocol_transform_mode")
 	keyStrategy := fetch("key_strategy")
 
+	authType := model.NormalizeAuthType(rawAuthType)
+	if authType == "" {
+		return nil, fmt.Sprintf("第%d行认证类型无效: %s", lineNo, rawAuthType), true
+	}
+
 	var missing []string
 	if name == "" {
 		missing = append(missing, "name")
 	}
-	if apiKey == "" {
+	if authType == model.AuthTypeAPIKey && apiKey == "" {
 		missing = append(missing, "api_key")
+	}
+	if authType != model.AuthTypeAPIKey && oauthCredential == "" {
+		missing = append(missing, "oauth_credential")
 	}
 	if urlsRaw == "" {
 		missing = append(missing, "urls")
@@ -338,6 +359,19 @@ func (s *Server) parseChannelImportRow(
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Sprintf("第%d行缺少必填字段: %s", lineNo, strings.Join(missing, ", ")), true
+	}
+	if authType == model.AuthTypeAPIKey && oauthCredential != "" {
+		return nil, fmt.Sprintf("第%d行 API Key 渠道不能包含 OAuth 凭证", lineNo), true
+	}
+	if authType != model.AuthTypeAPIKey && apiKey != "" {
+		return nil, fmt.Sprintf("第%d行 OAuth 渠道不能包含 API Key", lineNo), true
+	}
+	if authType != model.AuthTypeAPIKey {
+		var err error
+		oauthCredential, err = normalizeCSVImportOAuthCredential(authType, oauthCredential)
+		if err != nil {
+			return nil, fmt.Sprintf("第%d行 OAuth 凭证无效: %v", lineNo, err), true
+		}
 	}
 
 	channelID, err := parseImportChannelID(rawID)
@@ -493,6 +527,8 @@ func (s *Server) parseChannelImportRow(
 	cfg := &model.Config{
 		ID:                      channelID,
 		Name:                    name,
+		AuthType:                authType,
+		OAuthCredential:         oauthCredential,
 		URLs:                    urls,
 		Priority:                priority,
 		RPMLimit:                rpmLimit,
@@ -521,6 +557,31 @@ func (s *Server) parseChannelImportRow(
 		Config:  cfg,
 		APIKeys: apiKeys,
 	}, "", false
+}
+
+func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
+	switch authType {
+	case model.AuthTypeCodexOAuth:
+		credential, err := codexauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAntigravityOAuth:
+		credential, err := antigravityauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeXAIOAuth:
+		credential, err := xaiauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	default:
+		return "", fmt.Errorf("unsupported auth_type %q", authType)
+	}
 }
 
 // ==================== CSV辅助函数 ====================

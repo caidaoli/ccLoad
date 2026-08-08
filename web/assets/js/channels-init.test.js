@@ -35,7 +35,7 @@ test('returning via reload or bfcache restores channel name search with the othe
 
   const savedState = {
     status: 'enabled',
-    authType: 'codex_oauth',
+    authType: 'xai_oauth',
     model: 'claude-opus-5',
     modelExact: true,
     search: 'any',
@@ -105,15 +105,15 @@ test('returning via reload or bfcache restores channel name search with the othe
       search: 'any',
       searchExact: false,
       status: 'enabled',
-      authType: 'codex_oauth',
+      authType: 'xai_oauth',
       model: 'claude-opus-5',
       modelExact: true
     });
     assert.equal(elements.searchInput.value, 'any');
-    assert.equal(elements.channelAuthTypeFilter.value, 'codex_oauth');
+    assert.equal(elements.channelAuthTypeFilter.value, 'xai_oauth');
     assert.deepEqual(JSON.parse(storage.get('channels.filters')), {
       status: 'enabled',
-      authType: 'codex_oauth',
+      authType: 'xai_oauth',
       model: 'claude-opus-5',
       modelExact: true,
       search: 'any',
@@ -128,6 +128,53 @@ test('returning via reload or bfcache restores channel name search with the othe
     assert.equal(JSON.parse(storage.get('channels.filters')).search, 'any');
   } finally {
     delete require.cache[require.resolve('./channels-init.js')];
+    for (const [key, descriptor] of previousGlobals) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
+
+test('selecting the xAI auth type keeps the filter and reloads with it', () => {
+  const previousGlobals = new Map();
+  const setGlobal = (key, value) => {
+    previousGlobals.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const elements = new Map([
+    ['statusFilter', { addEventListener() {} }],
+    ['channelAuthTypeFilter', {}],
+    ['modelFilter', {}],
+    ['searchInput', {}],
+    ['btn_filter', { addEventListener() {} }]
+  ]);
+  let authCombobox;
+  let loadedAuthType = '';
+
+  setGlobal('window', { t: key => key });
+  setGlobal('document', { getElementById: id => elements.get(id) || null });
+  setGlobal('filters', { status: 'all', authType: 'all', model: 'all', search: '' });
+  setGlobal('channelsCurrentPage', 4);
+  setGlobal('allAvailableModels', []);
+  setGlobal('allAvailableChannelNames', []);
+  setGlobal('createSearchableCombobox', options => {
+    if (options.inputId === 'channelAuthTypeFilter') authCombobox = options;
+    return { setValue() {}, refresh() {} };
+  });
+  setGlobal('saveChannelsFilters', () => {});
+  setGlobal('loadChannels', () => { loadedAuthType = global.filters.authType; });
+
+  try {
+    delete require.cache[require.resolve('./channels-filters.js')];
+    const { setupFilterListeners } = require('./channels-filters.js');
+    setupFilterListeners();
+    authCombobox.onSelect('xai_oauth');
+
+    assert.equal(global.filters.authType, 'xai_oauth');
+    assert.equal(loadedAuthType, 'xai_oauth');
+    assert.equal(global.channelsCurrentPage, 1);
+  } finally {
+    delete require.cache[require.resolve('./channels-filters.js')];
     for (const [key, descriptor] of previousGlobals) {
       if (descriptor === undefined) delete global[key];
       else Object.defineProperty(global, key, descriptor);

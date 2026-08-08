@@ -250,6 +250,10 @@
       margin: 0;
     }
 
+    .oauth-field[hidden] {
+      display: none;
+    }
+
     .oauth-field label {
       color: var(--neutral-900);
       font-weight: 600;
@@ -565,6 +569,50 @@
     .channel-page-action-btn {
       padding: 8px 16px;
       font-size: 14px;
+    }
+
+    .csv-import-progress {
+      flex: 1 0 100%;
+      display: grid;
+      gap: var(--space-2);
+      max-width: 480px;
+      margin-inline-start: auto;
+      color: var(--neutral-700);
+    }
+
+    .csv-import-progress[hidden] {
+      display: none;
+    }
+
+    .csv-import-progress-header {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: var(--space-3);
+      font-size: 0.8125rem;
+    }
+
+    .csv-import-progress-header span {
+      overflow-wrap: anywhere;
+      text-align: end;
+    }
+
+    .csv-import-progress progress {
+      width: 100%;
+      height: 8px;
+      accent-color: var(--primary-500);
+    }
+
+    .csv-import-progress[data-kind="success"] progress {
+      accent-color: var(--success-500);
+    }
+
+    .csv-import-progress[data-kind="error"] {
+      color: var(--error-600);
+    }
+
+    .csv-import-progress[data-kind="error"] progress {
+      accent-color: var(--error-500);
     }
 
     .channel-filter-action-btn {
@@ -1437,9 +1485,9 @@
     }
 
     .ch-col-models {
-      width: 160px;
-      min-width: 160px;
-      max-width: 160px;
+      width: 132px;
+      min-width: 132px;
+      max-width: 132px;
     }
 
     @media (min-width: 1536px) {
@@ -1451,7 +1499,7 @@
 
       html[lang^="zh"] .channel-table .ch-col-models {
         width: auto;
-        min-width: 240px;
+        min-width: 212px;
         max-width: none;
       }
     }
@@ -1609,9 +1657,9 @@
     }
 
     .ch-col-last-success {
-      width: 184px;
-      min-width: 184px;
-      max-width: 184px;
+      width: 212px;
+      min-width: 212px;
+      max-width: 212px;
       white-space: normal;
       text-align: center;
     }
@@ -1771,6 +1819,23 @@
       color: var(--neutral-900);
       font-variant-numeric: tabular-nums;
       font-weight: 800;
+    }
+
+    .ch-oauth-usage__details {
+      grid-column: 2 / -1;
+      display: flex;
+      flex-wrap: nowrap;
+      align-items: baseline;
+      justify-content: flex-end;
+      gap: 2px;
+      min-width: 0;
+      text-align: end;
+    }
+
+    .ch-oauth-usage__amount {
+      color: var(--neutral-600);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     .ch-oauth-usage__reset {

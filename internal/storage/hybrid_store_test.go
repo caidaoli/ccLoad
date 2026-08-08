@@ -2,7 +2,9 @@ package storage
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -113,6 +115,821 @@ func TestHybridStore_BasicOperations(t *testing.T) {
 	_, err = hybrid.GetConfig(ctx, created.ID)
 	if err == nil {
 		t.Error("删除后 SQLite 缓存应该返回错误")
+	}
+}
+
+func TestHybridStore_CompareAndSwapOAuthCredentialKeepsReplicaOnWinner(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+
+	ctx := context.Background()
+	initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	stale := `{"type":"codex","access_token":"at-stale","refresh_token":"rt-stale","expired":"2032-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "codex-cas", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig() error = %v", err)
+	}
+
+	updated, err := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+	if err != nil || !updated {
+		t.Fatalf("winner CompareAndSwapOAuthCredential() = (%v, %v), want (true, nil)", updated, err)
+	}
+	updated, err = hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, stale)
+	if err != nil || updated {
+		t.Fatalf("stale CompareAndSwapOAuthCredential() = (%v, %v), want (false, nil)", updated, err)
+	}
+	for name, store := range map[string]*sqlstore.SQLStore{"primary": mysql, "replica": sqlite} {
+		persisted, getErr := store.GetConfig(ctx, created.ID)
+		if getErr != nil {
+			t.Fatalf("%s GetConfig() error = %v", name, getErr)
+		}
+		if persisted.OAuthCredential != winner {
+			t.Fatalf("%s credential = %q, want winner", name, persisted.OAuthCredential)
+		}
+	}
+}
+
+func TestHybridStore_CompareAndSwapOAuthCredentialMissRestoresReadMode(t *testing.T) {
+	t.Run("remote winner repairs stale replica", func(t *testing.T) {
+		mysql := createTestSQLiteStore(t)
+		sqlite := createTestSQLiteStore(t)
+		defer func() {
+			_ = sqlite.Close()
+			_ = mysql.Close()
+		}()
+		hybrid := NewHybridStore(sqlite, mysql)
+		defer func() { _ = hybrid.Close() }()
+		ctx := context.Background()
+		initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+		winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+		created, err := hybrid.CreateConfig(ctx, &model.Config{
+			Name: "cas-miss-read-mode", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+			URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "gpt-old"}}, ScheduledCheckModel: "gpt-old",
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := mysql.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+		if err != nil || !updated {
+			t.Fatalf("persist remote winner = (%v, %v)", updated, err)
+		}
+		modelsUpdated, err := mysql.UpdateOAuthModelStateIfCredentialMatches(
+			ctx, created.ID, model.AuthTypeCodexOAuth, winner,
+			[]model.ModelEntry{{Model: "gpt-winner"}}, "gpt-winner",
+		)
+		if err != nil || !modelsUpdated {
+			t.Fatalf("persist remote winner models = (%v, %v)", modelsUpdated, err)
+		}
+		updated, err = hybrid.CompareAndSwapOAuthCredential(
+			ctx, created.ID, model.AuthTypeCodexOAuth, initial, initial+"-loser",
+		)
+		if err != nil || updated {
+			t.Fatalf("CompareAndSwapOAuthCredential() = (%v, %v), want miss", updated, err)
+		}
+		got, err := hybrid.GetConfig(ctx, created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.OAuthCredential != winner || !got.SupportsModel("gpt-winner") {
+			t.Fatalf("GetConfig() = %#v, want primary winner", got)
+		}
+		configs, err := hybrid.ListConfigs(ctx)
+		if err != nil || len(configs) != 1 || configs[0].OAuthCredential != winner || !configs[0].SupportsModel("gpt-winner") {
+			t.Fatalf("ListConfigs() = (%#v, %v), want repaired winner", configs, err)
+		}
+		enabled, err := hybrid.GetEnabledChannelsByModel(ctx, "gpt-winner")
+		if err != nil || len(enabled) != 1 || enabled[0].OAuthCredential != winner {
+			t.Fatalf("GetEnabledChannelsByModel() = (%#v, %v), want repaired winner", enabled, err)
+		}
+		if err := mysql.Close(); err != nil {
+			t.Fatal(err)
+		}
+		got, err = hybrid.GetConfig(ctx, created.ID)
+		if err != nil || got.OAuthCredential != winner || !got.SupportsModel("gpt-winner") {
+			t.Fatalf("replica after primary close = (%#v, %v), want repaired winner", got, err)
+		}
+	})
+
+	t.Run("missing primary deletes replica and clears fallback", func(t *testing.T) {
+		mysql := createTestSQLiteStore(t)
+		sqlite := createTestSQLiteStore(t)
+		defer func() {
+			_ = sqlite.Close()
+			_ = mysql.Close()
+		}()
+		hybrid := NewHybridStore(sqlite, mysql)
+		defer func() { _ = hybrid.Close() }()
+		ctx := context.Background()
+		initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+		created, err := hybrid.CreateConfig(ctx, &model.Config{
+			Name: "cas-miss-deleted-primary", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+			URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := mysql.DeleteConfig(ctx, created.ID); err != nil {
+			t.Fatal(err)
+		}
+		updated, err := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, initial+"-loser")
+		if err != nil || updated {
+			t.Fatalf("CompareAndSwapOAuthCredential() = (%v, %v), want missing-primary miss", updated, err)
+		}
+		if got, err := hybrid.GetConfig(ctx, created.ID); err == nil || got != nil {
+			t.Fatalf("GetConfig() = (%#v, %v), want authoritative deletion", got, err)
+		}
+		if err := mysql.Close(); err != nil {
+			t.Fatal(err)
+		}
+		configs, err := hybrid.ListConfigs(ctx)
+		if err != nil || len(configs) != 0 {
+			t.Fatalf("ListConfigs() after primary close = (%#v, %v), want cleared replica fallback", configs, err)
+		}
+	})
+}
+
+func TestHybridStore_UpdateOAuthModelStateMissRepairsRemoteWinner(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "model-state-cas-miss", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "gpt-old"}}, ScheduledCheckModel: "gpt-old",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated, err := mysql.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, credential,
+		[]model.ModelEntry{{Model: "gpt-winner"}}, "gpt-winner",
+	)
+	if err != nil || !updated {
+		t.Fatalf("persist remote model winner = (%v, %v)", updated, err)
+	}
+	updated, err = hybrid.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, credential+"-stale",
+		[]model.ModelEntry{{Model: "gpt-loser"}}, "gpt-loser",
+	)
+	if err != nil || updated {
+		t.Fatalf("UpdateOAuthModelStateIfCredentialMatches() = (%v, %v), want miss", updated, err)
+	}
+	got, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil || !got.SupportsModel("gpt-winner") || got.SupportsModel("gpt-old") || got.ScheduledCheckModel != "gpt-winner" {
+		t.Fatalf("GetConfig() = (%#v, %v), want remote winner models", got, err)
+	}
+	if err := mysql.Close(); err != nil {
+		t.Fatal(err)
+	}
+	enabled, err := hybrid.GetEnabledChannelsByModel(ctx, "gpt-winner")
+	if err != nil || len(enabled) != 1 || enabled[0].ScheduledCheckModel != "gpt-winner" {
+		t.Fatalf("replica winner models = (%#v, %v)", enabled, err)
+	}
+}
+
+func TestHybridStore_DeleteOAuthConfigRecoversReplicaDeletionFailure(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "delete-replica-failure", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlite.ExecContext(ctx, `
+		CREATE TRIGGER reject_oauth_delete
+		BEFORE DELETE ON channels
+		BEGIN
+			SELECT RAISE(FAIL, 'replica delete rejected');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if err := hybrid.DeleteConfig(ctx, created.ID); err != nil {
+		t.Fatalf("DeleteConfig() error = %v", err)
+	}
+	configs, err := hybrid.ListConfigs(ctx)
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("ListConfigs() after primary deletion = (%#v, %v), want empty", configs, err)
+	}
+	if _, err := sqlite.ExecContext(ctx, `DROP TRIGGER reject_oauth_delete`); err != nil {
+		t.Fatal(err)
+	}
+	configs, err = hybrid.ListConfigs(ctx)
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("ListConfigs() during repair = (%#v, %v), want empty", configs, err)
+	}
+	if err := mysql.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configs, err = hybrid.ListConfigs(ctx)
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("ListConfigs() after repair and primary close = (%#v, %v), want replica read", configs, err)
+	}
+}
+
+func TestHybridStore_DeleteOAuthConfigSerializesWithCredentialCAS(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "delete-during-cas", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := mysql.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.ExecContext(ctx, `UPDATE channels SET updated_at = updated_at WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	casDone := make(chan error, 1)
+	go func() {
+		updated, casErr := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+		if casErr == nil && !updated {
+			casErr = errors.New("OAuth CAS missed")
+		}
+		casDone <- casErr
+	}()
+	time.Sleep(10 * time.Millisecond)
+	deleteDone := make(chan error, 1)
+	go func() { deleteDone <- hybrid.DeleteConfig(ctx, created.ID) }()
+	select {
+	case err := <-deleteDone:
+		t.Fatalf("DeleteConfig crossed in-flight CAS: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-casDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := mysql.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := hybrid.ListConfigs(ctx)
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("ListConfigs() after serialized delete = (%#v, %v), want empty replica read", configs, err)
+	}
+}
+
+func TestHybridStore_CompareAndSwapOAuthCredentialHealsDriftedReplica(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+
+	ctx := context.Background()
+	initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+	drifted := `{"type":"codex","access_token":"at-drifted","refresh_token":"rt-drifted","expired":"2030-01-01T00:00:00Z"}`
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "codex-drift", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "*"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	driftedReplica, err := sqlite.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, drifted)
+	if err != nil || !driftedReplica {
+		t.Fatalf("drift replica = (%v, %v)", driftedReplica, err)
+	}
+
+	updated, err := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+	if err != nil || !updated {
+		t.Fatalf("CompareAndSwapOAuthCredential() = (%v, %v), want healed success", updated, err)
+	}
+	got, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.OAuthCredential != winner {
+		t.Fatalf("GetConfig() credential = %q, want winner", got.OAuthCredential)
+	}
+	replica, err := sqlite.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if replica.OAuthCredential != winner {
+		t.Fatalf("SQLite credential = %q, want repaired winner", replica.OAuthCredential)
+	}
+}
+
+func TestHybridStore_OAuthReplicaFailureFallsBackForAllConfigReadsAndRecovers(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+
+	ctx := context.Background()
+	initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "codex-replica-failure", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-old"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlite.ExecContext(ctx, `
+		CREATE TRIGGER reject_oauth_credential_update
+		BEFORE UPDATE OF oauth_credential ON channels
+		BEGIN
+			SELECT RAISE(FAIL, 'oauth credential replica is read only');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+	if !updated || err != nil {
+		t.Fatalf("CompareAndSwapOAuthCredential() = (%v, %v), want committed primary success", updated, err)
+	}
+	modelsUpdated, err := hybrid.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, winner,
+		[]model.ModelEntry{{Model: "gpt-winner"}}, "gpt-winner",
+	)
+	if !modelsUpdated || err != nil {
+		t.Fatalf("UpdateOAuthModelStateIfCredentialMatches() = (%v, %v), want committed primary success", modelsUpdated, err)
+	}
+	got, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() after replica failure error = %v", err)
+	}
+	if got.OAuthCredential != winner || !got.SupportsModel("gpt-winner") {
+		t.Fatalf("GetConfig() = %#v, want primary winner", got)
+	}
+	configs, err := hybrid.ListConfigs(ctx)
+	if err != nil || len(configs) != 1 || configs[0].OAuthCredential != winner || !configs[0].SupportsModel("gpt-winner") {
+		t.Fatalf("ListConfigs() = (%#v, %v), want primary winner", configs, err)
+	}
+	enabled, err := hybrid.GetEnabledChannelsByModel(ctx, "gpt-winner")
+	if err != nil || len(enabled) != 1 || enabled[0].OAuthCredential != winner {
+		t.Fatalf("GetEnabledChannelsByModel() = (%#v, %v), want primary winner", enabled, err)
+	}
+	if _, err := sqlite.ExecContext(ctx, `DROP TRIGGER reject_oauth_credential_update`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hybrid.GetConfig(ctx, created.ID); err != nil {
+		t.Fatalf("GetConfig() recovery error = %v", err)
+	}
+	if err := mysql.Close(); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig() after primary close error = %v", err)
+	}
+	if recovered.OAuthCredential != winner || !recovered.SupportsModel("gpt-winner") || recovered.ScheduledCheckModel != "gpt-winner" {
+		t.Fatalf("recovered SQLite config = %#v, want repaired winner", recovered)
+	}
+}
+
+func TestHybridStore_ConfigCollectionReadsWaitForOAuthCAS(t *testing.T) {
+	readers := map[string]func(context.Context, *HybridStore) ([]*model.Config, error){
+		"list": func(ctx context.Context, store *HybridStore) ([]*model.Config, error) {
+			return store.ListConfigs(ctx)
+		},
+		"enabled": func(ctx context.Context, store *HybridStore) ([]*model.Config, error) {
+			return store.GetEnabledChannelsByModel(ctx, "gpt-test")
+		},
+	}
+	for name, read := range readers {
+		t.Run(name, func(t *testing.T) {
+			mysql := createTestSQLiteStore(t)
+			sqlite := createTestSQLiteStore(t)
+			defer func() {
+				_ = sqlite.Close()
+				_ = mysql.Close()
+			}()
+			hybrid := NewHybridStore(sqlite, mysql)
+			defer func() { _ = hybrid.Close() }()
+			ctx := context.Background()
+			initial := `{"type":"codex","access_token":"at-old","refresh_token":"rt-old","expired":"2030-01-01T00:00:00Z"}`
+			winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+			created, err := hybrid.CreateConfig(ctx, &model.Config{
+				Name: "codex-read-lock-" + name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: initial,
+				URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+				Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			blocker, err := mysql.BeginTx(ctx, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := blocker.ExecContext(ctx, `UPDATE channels SET updated_at = updated_at WHERE id = ?`, created.ID); err != nil {
+				t.Fatal(err)
+			}
+			casDone := make(chan error, 1)
+			casStarted := make(chan struct{})
+			go func() {
+				close(casStarted)
+				updated, casErr := hybrid.CompareAndSwapOAuthCredential(ctx, created.ID, model.AuthTypeCodexOAuth, initial, winner)
+				if casErr == nil && !updated {
+					casErr = errors.New("OAuth CAS missed")
+				}
+				casDone <- casErr
+			}()
+			<-casStarted
+			// The primary transaction above keeps the CAS inside its public call.
+			// Give that goroutine a scheduling turn before starting the competing read.
+			time.Sleep(10 * time.Millisecond)
+			readDone := make(chan []*model.Config, 1)
+			readErr := make(chan error, 1)
+			go func() {
+				configs, readError := read(ctx, hybrid)
+				readDone <- configs
+				readErr <- readError
+			}()
+			select {
+			case configs := <-readDone:
+				t.Fatalf("collection read crossed in-flight CAS: %#v", configs)
+			case <-time.After(50 * time.Millisecond):
+			}
+			if err := blocker.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			if err := <-casDone; err != nil {
+				t.Fatal(err)
+			}
+			configs := <-readDone
+			if err := <-readErr; err != nil {
+				t.Fatal(err)
+			}
+			if len(configs) != 1 || configs[0].OAuthCredential != winner {
+				t.Fatalf("collection read = %#v, want committed winner", configs)
+			}
+		})
+	}
+}
+
+func TestHybridStore_InitialOAuthWritesFallBackAndRecoverMissingReplica(t *testing.T) {
+	writers := map[string]func(context.Context, *HybridStore, *model.Config) (*model.Config, error){
+		"create": func(ctx context.Context, store *HybridStore, cfg *model.Config) (*model.Config, error) {
+			return store.CreateConfig(ctx, cfg)
+		},
+		"import": func(ctx context.Context, store *HybridStore, cfg *model.Config) (*model.Config, error) {
+			created, updated, err := store.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: cfg}})
+			if err != nil {
+				return nil, err
+			}
+			if created != 1 || updated != 0 {
+				return nil, fmt.Errorf("import counts = (%d, %d)", created, updated)
+			}
+			return cfg, nil
+		},
+	}
+	for name, write := range writers {
+		t.Run(name, func(t *testing.T) {
+			mysql := createTestSQLiteStore(t)
+			sqlite := createTestSQLiteStore(t)
+			defer func() {
+				_ = sqlite.Close()
+				_ = mysql.Close()
+			}()
+			hybrid := NewHybridStore(sqlite, mysql)
+			defer func() { _ = hybrid.Close() }()
+			ctx := context.Background()
+			if _, err := sqlite.ExecContext(ctx, `
+				CREATE TRIGGER reject_oauth_channel_insert
+				BEFORE INSERT ON channels WHEN NEW.auth_type <> 'api_key'
+				BEGIN
+					SELECT RAISE(FAIL, 'oauth channel replica is read only');
+				END
+			`); err != nil {
+				t.Fatal(err)
+			}
+			credential := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+			created, err := write(ctx, hybrid, &model.Config{
+				Name: "codex-initial-" + name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+				URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+				Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-winner"}},
+			})
+			if err != nil {
+				t.Fatalf("initial OAuth %s error = %v", name, err)
+			}
+			if _, err := sqlite.GetConfig(ctx, created.ID); err == nil {
+				t.Fatal("OAuth channel unexpectedly exists in blocked replica")
+			}
+			configs, err := hybrid.ListConfigs(ctx)
+			if err != nil || len(configs) != 1 || configs[0].OAuthCredential != credential {
+				t.Fatalf("ListConfigs() = (%#v, %v), want primary OAuth channel", configs, err)
+			}
+			enabled, err := hybrid.GetEnabledChannelsByModel(ctx, "gpt-winner")
+			if err != nil || len(enabled) != 1 {
+				t.Fatalf("GetEnabledChannelsByModel() = (%#v, %v), want primary OAuth channel", enabled, err)
+			}
+			if _, err := sqlite.ExecContext(ctx, `DROP TRIGGER reject_oauth_channel_insert`); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := hybrid.GetConfig(ctx, created.ID); err != nil {
+				t.Fatalf("GetConfig() recovery error = %v", err)
+			}
+			if err := mysql.Close(); err != nil {
+				t.Fatal(err)
+			}
+			recovered, err := hybrid.GetConfig(ctx, created.ID)
+			if err != nil || recovered.OAuthCredential != credential || !recovered.SupportsModel("gpt-winner") {
+				t.Fatalf("recovered config = (%#v, %v)", recovered, err)
+			}
+		})
+	}
+}
+
+func TestHybridStore_ImportOAuthUsesPrimarySnapshotAfterConcurrentWinner(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	input := `{"type":"codex","access_token":"at-input","refresh_token":"rt-input","expired":"2030-01-01T00:00:00Z"}`
+	winner := `{"type":"codex","access_token":"at-winner","refresh_token":"rt-winner","expired":"2031-01-01T00:00:00Z"}`
+	const channelID int64 = 77
+	cfg := &model.Config{
+		ID: channelID, Name: "codex-import-winner", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: input,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-input"}}, ScheduledCheckModel: "gpt-input",
+	}
+	blocker, err := sqlite.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.ExecContext(ctx, `UPDATE channels SET updated_at = updated_at WHERE id = -1`); err != nil {
+		t.Fatal(err)
+	}
+	importDone := make(chan error, 1)
+	go func() {
+		_, _, importErr := hybrid.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: cfg}})
+		importDone <- importErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		primary, getErr := mysql.GetConfig(ctx, channelID)
+		if getErr == nil && primary.OAuthCredential == input {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("primary import did not commit: %v", getErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	updated, err := mysql.CompareAndSwapOAuthCredential(ctx, channelID, model.AuthTypeCodexOAuth, input, winner)
+	if err != nil || !updated {
+		t.Fatalf("primary winner CAS = (%v, %v)", updated, err)
+	}
+	modelsUpdated, err := mysql.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, channelID, model.AuthTypeCodexOAuth, winner,
+		[]model.ModelEntry{{Model: "gpt-winner"}}, "gpt-winner",
+	)
+	if err != nil || !modelsUpdated {
+		t.Fatalf("primary winner models = (%v, %v)", modelsUpdated, err)
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-importDone; err != nil {
+		t.Fatal(err)
+	}
+	for name, read := range map[string]func() ([]*model.Config, error){
+		"get": func() ([]*model.Config, error) {
+			got, getErr := hybrid.GetConfig(ctx, channelID)
+			return []*model.Config{got}, getErr
+		},
+		"list":    func() ([]*model.Config, error) { return hybrid.ListConfigs(ctx) },
+		"enabled": func() ([]*model.Config, error) { return hybrid.GetEnabledChannelsByModel(ctx, "gpt-winner") },
+	} {
+		configs, readErr := read()
+		if readErr != nil || len(configs) != 1 || configs[0] == nil || configs[0].OAuthCredential != winner ||
+			!configs[0].SupportsModel("gpt-winner") || configs[0].ScheduledCheckModel != "gpt-winner" {
+			t.Fatalf("%s = (%#v, %v), want primary winner snapshot", name, configs, readErr)
+		}
+	}
+}
+
+func TestHybridStore_OAuthReplicaRecoveryCopiesCompletePrimaryConfig(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	const channelID int64 = 91
+	staleCredential := `{"type":"codex","access_token":"stale","refresh_token":"stale-rt"}`
+	winnerCredential := `{"type":"codex","access_token":"winner","refresh_token":"winner-rt"}`
+	if _, err := sqlite.CreateConfig(ctx, &model.Config{
+		ID: channelID, Name: "stale-name", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: staleCredential,
+		URLs:     model.ChannelURLs{{URL: "https://stale.example.com", Protocols: []string{"openai"}}},
+		Priority: -1, RPMLimit: 1, MaxConcurrency: 1, Websockets: false,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream, Enabled: false,
+		ScheduledCheckEnabled: false, ScheduledCheckModel: "stale-model",
+		DailyCostLimit: 1, CostMultiplier: 2, ProxyURL: "http://stale-proxy.example.com",
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{{
+			Action: model.RuleActionOverride, Name: "X-Stale", Value: "true",
+		}}},
+		RetryOtherKeysOnFailure: false, ModelEntries: []model.ModelEntry{{Model: "stale-model"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sqlite.ExecContext(ctx, `UPDATE channels SET cooldown_until = 123, cooldown_duration_ms = 456 WHERE id = ?`, channelID); err != nil {
+		t.Fatal(err)
+	}
+	winner := &model.Config{
+		ID: channelID, Name: "winner-name", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: winnerCredential,
+		URLs: model.ChannelURLs{
+			{URL: "https://winner.example.com/v1", Exact: true, Protocols: []string{"codex"}},
+			{URL: "https://winner-backup.example.com", Protocols: []string{"openai"}},
+		},
+		Priority: 42, RPMLimit: 120, MaxConcurrency: 7, Websockets: true,
+		ProtocolTransformMode: model.ProtocolTransformModeLocal, Enabled: true,
+		ScheduledCheckEnabled: true, ScheduledCheckModel: "winner-model",
+		DailyCostLimit: 33.5, CostMultiplier: 0.75, ProxyURL: "socks5://winner-proxy.example.com:1080",
+		CooldownDetectionRules: &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+			Enabled: true, Name: "winner-rule", Priority: 1, StatusCodes: []int{429},
+			Scope: model.CooldownScopeChannel, Mode: model.CooldownModeFixed, CooldownSeconds: 90,
+		}}},
+		RetryOtherKeysOnFailure: true,
+		ModelEntries:            []model.ModelEntry{{Model: "winner-model", RedirectModel: "winner-upstream"}},
+	}
+	created, updated, err := hybrid.ImportChannelBatch(ctx, []*model.ChannelWithKeys{{Config: winner}})
+	if err != nil || created != 1 || updated != 0 {
+		t.Fatalf("ImportChannelBatch() = (%d, %d, %v)", created, updated, err)
+	}
+	primary, err := mysql.GetConfig(ctx, channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := mysql.Close(); err != nil {
+		t.Fatal(err)
+	}
+	assertWinner := func(source string, got *model.Config) {
+		t.Helper()
+		if got == nil || got.ID != primary.ID || got.Name != primary.Name || got.GetAuthType() != primary.GetAuthType() ||
+			got.OAuthCredential != primary.OAuthCredential || !reflect.DeepEqual(got.URLs, primary.URLs) ||
+			got.Priority != primary.Priority || got.RPMLimit != primary.RPMLimit || got.MaxConcurrency != primary.MaxConcurrency ||
+			got.Websockets != primary.Websockets || got.ProtocolTransformMode != primary.ProtocolTransformMode ||
+			got.Enabled != primary.Enabled || got.ScheduledCheckEnabled != primary.ScheduledCheckEnabled ||
+			got.ScheduledCheckModel != primary.ScheduledCheckModel || got.DailyCostLimit != primary.DailyCostLimit ||
+			got.CostMultiplier != primary.CostMultiplier || got.ProxyURL != primary.ProxyURL ||
+			got.CooldownUntil != primary.CooldownUntil || got.CooldownDurationMs != primary.CooldownDurationMs ||
+			!reflect.DeepEqual(got.CustomRequestRules, primary.CustomRequestRules) ||
+			!reflect.DeepEqual(got.CooldownDetectionRules, primary.CooldownDetectionRules) ||
+			got.RetryOtherKeysOnFailure != primary.RetryOtherKeysOnFailure || !reflect.DeepEqual(got.ModelEntries, primary.ModelEntries) {
+			t.Fatalf("%s stale replica = %+v, want %+v", source, got, primary)
+		}
+	}
+	got, err := hybrid.GetConfig(ctx, channelID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertWinner("GetConfig", got)
+	listed, err := hybrid.ListConfigs(ctx)
+	if err != nil || len(listed) != 1 {
+		t.Fatalf("ListConfigs() = (%+v, %v)", listed, err)
+	}
+	assertWinner("ListConfigs", listed[0])
+	enabled, err := hybrid.GetEnabledChannelsByModel(ctx, "winner-model")
+	if err != nil || len(enabled) != 1 {
+		t.Fatalf("GetEnabledChannelsByModel() = (%+v, %v)", enabled, err)
+	}
+	assertWinner("GetEnabledChannelsByModel", enabled[0])
+}
+
+func TestHybridStore_BatchPatchOAuthModelsWaitsForConditionalCommit(t *testing.T) {
+	mysql := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	defer func() {
+		_ = sqlite.Close()
+		_ = mysql.Close()
+	}()
+	hybrid := NewHybridStore(sqlite, mysql)
+	defer func() { _ = hybrid.Close() }()
+	ctx := context.Background()
+	credential := `{"type":"codex","access_token":"winner","refresh_token":"winner-rt"}`
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "codex-batch-patch-order", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		ModelEntries: []model.ModelEntry{{Model: "old-model"}}, ScheduledCheckModel: "old-model",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := sqlite.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := blocker.ExecContext(ctx, `UPDATE channels SET updated_at = updated_at WHERE id = ?`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	commitDone := make(chan error, 1)
+	go func() {
+		updated, updateErr := hybrid.UpdateOAuthModelStateIfCredentialMatches(
+			ctx, created.ID, model.AuthTypeCodexOAuth, credential,
+			[]model.ModelEntry{{Model: "winner-model"}}, "winner-model",
+		)
+		if updateErr == nil && !updated {
+			updateErr = errors.New("conditional OAuth model update missed")
+		}
+		commitDone <- updateErr
+	}()
+	deadline := time.Now().Add(time.Second)
+	for {
+		primary, getErr := mysql.GetConfig(ctx, created.ID)
+		if getErr == nil && primary.SupportsModel("winner-model") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("primary conditional update did not commit: %v", getErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	patchDone := make(chan error, 1)
+	go func() {
+		_, patchErr := hybrid.BatchPatchConfigs(ctx, []int64{created.ID}, model.BatchConfigPatch{
+			ModelImportMode: model.ModelImportModeReplace,
+			ModelEntries:    []model.ModelEntry{{Model: "stale-model"}},
+		})
+		patchDone <- patchErr
+	}()
+	select {
+	case patchErr := <-patchDone:
+		t.Fatalf("BatchPatchConfigs crossed in-flight OAuth commit: %v", patchErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+	if err := blocker.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-commitDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-patchDone; err == nil {
+		t.Fatal("BatchPatchConfigs updated OAuth-derived model state")
+	}
+	got, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil || !got.SupportsModel("winner-model") || got.ScheduledCheckModel != "winner-model" {
+		t.Fatalf("winner state = (%+v, %v)", got, err)
 	}
 }
 
