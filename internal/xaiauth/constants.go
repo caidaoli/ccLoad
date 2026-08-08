@@ -8,16 +8,18 @@ const (
 	ChannelType = "xai"
 	// OAuthIssuer is the only trusted xAI OAuth issuer origin.
 	OAuthIssuer = "https://auth.x.ai"
-	// DiscoveryURL is the fixed xAI OpenID discovery document.
-	DiscoveryURL = OAuthIssuer + "/.well-known/openid-configuration"
-	// DeviceCodeURL is the fixed xAI device authorization endpoint.
+	// AuthorizeURL is the fixed xAI authorization-code endpoint.
+	AuthorizeURL = OAuthIssuer + "/oauth2/authorize"
+	// DeviceCodeURL is used only for automated SSO-cookie conversion.
 	DeviceCodeURL = OAuthIssuer + "/oauth2/device/code"
 	// TokenURL is the fixed xAI OAuth token endpoint.
 	TokenURL = OAuthIssuer + "/oauth2/token"
 	// ClientID is the public xAI CLI OAuth client identifier.
 	ClientID = "b1a00492-073a-47ea-816f-4c329264a828"
-	// DeviceScope is the exact scope requested by device authorization.
-	DeviceScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
+	// OAuthScope is the scope used by xAI's interactive PKCE authorization flow.
+	OAuthScope = "openid profile email offline_access grok-cli:access api:access"
+	// RedirectURI is the loopback URI registered for the public xAI CLI client.
+	RedirectURI = "http://127.0.0.1:56121/callback"
 	// SSOScope is the exact scope requested during SSO conversion.
 	SSOScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
 	// DeviceCodeGrantType is the RFC 8628 device-code grant type.
@@ -61,10 +63,8 @@ const (
 )
 
 const (
-	// RefreshLead and the related durations bound refresh, device polling, and SSO conversion.
+	// RefreshLead and the related durations bound refresh and SSO conversion.
 	RefreshLead = 5 * time.Minute
-	// MaxDevicePollDuration is the hard upper bound for device polling.
-	MaxDevicePollDuration = 30 * time.Minute
 	// SSOConversionTimeout is the hard upper bound for SSO conversion.
 	SSOConversionTimeout  = 90 * time.Second
 	defaultPollInterval   = 5 * time.Second

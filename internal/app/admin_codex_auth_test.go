@@ -370,416 +370,45 @@ func TestHandleImportOAuthCredentialsDetectsXAIAndExpandsCredentialsMap(t *testi
 	}
 }
 
-func newPendingXAIDeviceService(t *testing.T, deviceStarts *atomic.Int32) *xaiauth.Service {
-	t.Helper()
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		switch request.URL.String() {
-		case xaiauth.DiscoveryURL:
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`)), Request: request}, nil
-		case xaiauth.DeviceCodeURL:
-			index := deviceStarts.Add(1)
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"device_code":"device-secret-%d","user_code":"CODE-%d","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`, index, index))), Request: request}, nil
-		case xaiauth.TokenURL:
-			<-request.Context().Done()
-			return nil, request.Context().Err()
-		default:
-			return nil, fmt.Errorf("unexpected request: %s", request.URL)
-		}
-	})}
-	return xaiauth.NewService(client)
-}
-
-func TestXAIDeviceSessionBindsAdminAndHidesDeviceCode(t *testing.T) {
-	t.Parallel()
-	var starts atomic.Int32
-	manager := newXAIDeviceManager(context.Background(), newPendingXAIDeviceService(t, &starts),
-		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return nil, errors.New("completion must not run")
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) {
-			return 0, errors.New("commit must not run")
-		},
-	)
-	t.Cleanup(manager.close)
-
-	started, err := manager.start(context.Background(), "admin-session-a")
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(started)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(started.Session) != 32 || strings.Contains(string(encoded), "device-secret") || started.UserCode != "CODE-1" {
-		t.Fatalf("unsafe device response: %s", encoded)
-	}
-	if _, ok := manager.status("admin-session-b", started.Session); ok || manager.cancelSession("admin-session-b", started.Session) {
-		t.Fatal("different administrator accessed xAI device session")
-	}
-	if !manager.cancelSession("admin-session-a", started.Session) {
-		t.Fatal("owner could not cancel xAI device session")
-	}
-	status, ok := manager.status("admin-session-a", started.Session)
-	if !ok || status.Status != "cancelled" || status.Error != "" {
-		t.Fatalf("cancelled status = %#v, ok=%v", status, ok)
-	}
-}
-
-func TestXAIDeviceStartCancelsPriorSessionForSameAdmin(t *testing.T) {
-	t.Parallel()
-	var starts atomic.Int32
-	manager := newXAIDeviceManager(context.Background(), newPendingXAIDeviceService(t, &starts),
-		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return nil, errors.New("unexpected completion")
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
-	)
-	t.Cleanup(manager.close)
-
-	first, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	firstStatus, ok := manager.status("admin-session", first.Session)
-	if !ok || firstStatus.Status != "cancelled" || first.Session == second.Session {
-		t.Fatalf("replacement statuses: first=%#v second=%#v", firstStatus, second)
-	}
-}
-
-func TestXAIDeviceCancelWinsBeforeCredentialCommit(t *testing.T) {
-	t.Parallel()
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		var body string
-		switch request.URL.String() {
-		case xaiauth.DiscoveryURL:
-			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-		case xaiauth.DeviceCodeURL:
-			body = `{"device_code":"device-secret","user_code":"CODE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
-		case xaiauth.TokenURL:
-			body = `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
-		default:
-			return nil, fmt.Errorf("unexpected request: %s", request.URL)
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-	})}
-	completionStarted := make(chan struct{})
-	releaseCompletion := make(chan struct{})
-	var commits atomic.Int32
-	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
-		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
-			close(completionStarted)
-			<-releaseCompletion
-			return credential, nil
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) {
-			commits.Add(1)
-			return 1, nil
-		},
-	)
-	t.Cleanup(manager.close)
-	started, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-completionStarted:
-	case <-time.After(time.Second):
-		t.Fatal("credential completion did not start")
-	}
-	if !manager.cancelSession("admin-session", started.Session) {
-		t.Fatal("cancel failed")
-	}
-	close(releaseCompletion)
-	deadline := time.Now().Add(time.Second)
-	for {
-		status, ok := manager.status("admin-session", started.Session)
-		if ok && status.Status == "cancelled" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session status = %#v", status)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	time.Sleep(10 * time.Millisecond)
-	if commits.Load() != 0 {
-		t.Fatalf("cancelled device session committed %d credentials", commits.Load())
-	}
-}
-
-func TestXAIDeviceCommitWinsBeforeCancel(t *testing.T) {
-	t.Parallel()
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		var body string
-		switch request.URL.String() {
-		case xaiauth.DiscoveryURL:
-			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-		case xaiauth.DeviceCodeURL:
-			body = `{"device_code":"commit-secret","user_code":"COMMIT","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
-		case xaiauth.TokenURL:
-			body = `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
-		default:
-			return nil, fmt.Errorf("unexpected request: %s", request.URL)
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-	})}
-	commitStarted := make(chan struct{})
-	releaseCommit := make(chan struct{})
-	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
-		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return credential, nil
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) {
-			close(commitStarted)
-			<-releaseCommit
-			return 42, nil
-		},
-	)
-	t.Cleanup(manager.close)
-	started, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case <-commitStarted:
-	case <-time.After(time.Second):
-		t.Fatal("commit did not start")
-	}
-	status, ok := manager.status("admin-session", started.Session)
-	if !ok || status.Status != "committing" {
-		t.Fatalf("status during commit = %#v, ok=%v", status, ok)
-	}
-	if manager.cancelSession("admin-session", started.Session) {
-		t.Fatal("cancel reported success after commit became irreversible")
-	}
-	manager.cancelByAdmin("admin-session")
-	if status, ok := manager.status("admin-session", started.Session); !ok || status.Status != "committing" {
-		t.Fatalf("admin revocation overwrote committing status: %#v, ok=%v", status, ok)
-	}
-	close(releaseCommit)
-	deadline := time.Now().Add(time.Second)
-	for {
-		status, ok = manager.status("admin-session", started.Session)
-		if ok && status.Status == "complete" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("terminal status = %#v, ok=%v", status, ok)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	if status.ChannelID != 42 {
-		t.Fatalf("channel ID = %d, want 42", status.ChannelID)
-	}
-}
-
-func TestXAIDeviceCloseCancelsPendingAndClearsSessions(t *testing.T) {
-	t.Parallel()
-	pollCancelled := make(chan struct{})
-	var cancelOnce sync.Once
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		body := `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-		switch request.URL.String() {
-		case xaiauth.DeviceCodeURL:
-			body = `{"device_code":"close-secret","user_code":"CLOSE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
-		case xaiauth.TokenURL:
-			<-request.Context().Done()
-			cancelOnce.Do(func() { close(pollCancelled) })
-			return nil, request.Context().Err()
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-	})}
-	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
-		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return nil, errors.New("unexpected completion")
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
-	)
-	started, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.close()
-	select {
-	case <-pollCancelled:
-	case <-time.After(time.Second):
-		t.Fatal("close did not cancel pending device poll")
-	}
-	if status, ok := manager.status("admin-session", started.Session); ok {
-		t.Fatalf("closed manager retained session: %#v", status)
-	}
-	if _, err := manager.start(context.Background(), "admin-session"); err == nil {
-		t.Fatal("closed manager accepted a new device start")
-	}
-	manager.close()
-}
-
-func TestXAIDeviceTerminalStatusExpires(t *testing.T) {
-	t.Parallel()
-	now := time.Now()
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		body := `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
-		switch request.URL.String() {
-		case xaiauth.DiscoveryURL:
-			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-		case xaiauth.DeviceCodeURL:
-			body = `{"device_code":"ttl-secret","user_code":"TTL","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
-		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-	})}
-	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
-		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
-			return credential, nil
-		},
-		func(context.Context, *xaiauth.Credential) (int64, error) { return 7, nil },
-	)
-	manager.now = func() time.Time { return now }
-	t.Cleanup(manager.close)
-	started, err := manager.start(context.Background(), "admin-session")
-	if err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(time.Second)
-	for {
-		status, ok := manager.status("admin-session", started.Session)
-		if ok && status.Status == "complete" {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("session did not complete: %#v", status)
-		}
-		time.Sleep(time.Millisecond)
-	}
-	now = now.Add(10 * time.Minute)
-	if status, ok := manager.status("admin-session", started.Session); ok {
-		t.Fatalf("expired terminal status remained visible: %#v", status)
-	}
-}
-
-func TestXAIDeviceConcurrentStartsAreScopedByAdministrator(t *testing.T) {
-	newService := func(firstStarted chan<- struct{}, releaseFirst <-chan struct{}) *xaiauth.Service {
-		var starts atomic.Int32
-		return xaiauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-			body := `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-			if request.URL.String() == xaiauth.DeviceCodeURL {
-				index := starts.Add(1)
-				if index == 1 {
-					close(firstStarted)
-					<-releaseFirst
-				}
-				body = fmt.Sprintf(`{"device_code":"secret-%d","user_code":"CODE-%d","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`, index, index)
-			}
-			if request.URL.String() == xaiauth.TokenURL {
-				<-request.Context().Done()
-				return nil, request.Context().Err()
-			}
-			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
-		})})
-	}
-	newManager := func(service *xaiauth.Service) *xaiDeviceManager {
-		return newXAIDeviceManager(context.Background(), service,
-			func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
-				return nil, errors.New("unexpected completion")
-			},
-			func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
-		)
-	}
-
-	t.Run("newer start wins for one administrator", func(t *testing.T) {
-		firstStarted := make(chan struct{})
-		releaseFirst := make(chan struct{})
-		manager := newManager(newService(firstStarted, releaseFirst))
-		t.Cleanup(manager.close)
-		firstResult := make(chan xaiDeviceStartResponse, 1)
-		firstErr := make(chan error, 1)
-		go func() {
-			result, err := manager.start(context.Background(), "admin-a")
-			firstResult <- result
-			firstErr <- err
-		}()
-		<-firstStarted
-		second, err := manager.start(context.Background(), "admin-a")
-		if err != nil || second.UserCode != "CODE-2" {
-			t.Fatalf("second start = (%#v, %v)", second, err)
-		}
-		close(releaseFirst)
-		if result, err := <-firstResult, <-firstErr; err == nil || result.Session != "" {
-			t.Fatalf("superseded first start = (%#v, %v)", result, err)
-		}
-		if status, ok := manager.status("admin-a", second.Session); !ok || status.Status != "pending" {
-			t.Fatalf("winning status = %#v, ok=%v", status, ok)
-		}
-	})
-
-	t.Run("different administrators do not block", func(t *testing.T) {
-		firstStarted := make(chan struct{})
-		releaseFirst := make(chan struct{})
-		manager := newManager(newService(firstStarted, releaseFirst))
-		t.Cleanup(manager.close)
-		firstDone := make(chan error, 1)
-		go func() {
-			_, err := manager.start(context.Background(), "admin-a")
-			firstDone <- err
-		}()
-		<-firstStarted
-		secondDone := make(chan error, 1)
-		go func() {
-			_, err := manager.start(context.Background(), "admin-b")
-			secondDone <- err
-		}()
-		select {
-		case err := <-secondDone:
-			if err != nil {
-				t.Fatal(err)
-			}
-		case <-time.After(200 * time.Millisecond):
-			t.Fatal("different administrator was blocked by an unrelated device start")
-		}
-		close(releaseFirst)
-		if err := <-firstDone; err != nil {
-			t.Fatal(err)
-		}
-	})
-}
-
-func TestXAIDeviceHandlersEnforceAdminSessionAndCommitBoundary(t *testing.T) {
+func TestXAIOAuthHandlersGenerateLocallyAndExchangeManualCallback(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	adminA, adminB := "admin-a-bearer", "admin-b-bearer"
 	auth := newTestAuthService(t)
 	injectAdminToken(auth, adminA, time.Now().Add(time.Hour))
 	injectAdminToken(auth, adminB, time.Now().Add(time.Hour))
-	commitStarted := make(chan struct{})
-	releaseCommit := make(chan struct{})
+	var requests atomic.Int32
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		body := `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
-		switch request.URL.String() {
-		case xaiauth.DiscoveryURL:
-			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
-		case xaiauth.DeviceCodeURL:
-			body = `{"device_code":"handler-secret","user_code":"HANDLER","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		requests.Add(1)
+		if request.URL.String() != xaiauth.TokenURL {
+			return nil, fmt.Errorf("unexpected request during xAI OAuth: %s", request.URL)
 		}
-		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		if err := request.ParseForm(); err != nil {
+			return nil, err
+		}
+		if request.Form.Get("grant_type") != "authorization_code" ||
+			request.Form.Get("code") != "manual-code" || request.Form.Get("code_verifier") == "" ||
+			request.Form.Get("redirect_uri") != xaiauth.RedirectURI {
+			return nil, fmt.Errorf("unexpected token form: %s", request.Form.Encode())
+		}
+		body := `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(body)), Request: request,
+		}, nil
 	})}
-	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+	manager := newXAIOAuthManager(context.Background(), xaiauth.NewService(client),
 		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
 			return credential, nil
 		},
-		func(context.Context, *xaiauth.Credential) (int64, error) {
-			close(commitStarted)
-			<-releaseCommit
-			return 99, nil
-		},
+		func(context.Context, *xaiauth.Credential) (int64, error) { return 99, nil },
 	)
 	t.Cleanup(manager.close)
-	server := &Server{xaiDevice: manager}
+	server := &Server{xaiOAuth: manager}
 	engine := gin.New()
-	engine.POST("/admin/xai/oauth/start", auth.RequireAdminAuth(), server.HandleStartXAIDeviceOAuth)
-	engine.GET("/admin/xai/oauth/status", auth.RequireAdminAuth(), server.HandleXAIDeviceOAuthStatus)
-	engine.POST("/admin/xai/oauth/cancel", auth.RequireAdminAuth(), server.HandleCancelXAIDeviceOAuth)
+	engine.POST("/admin/xai/oauth/start", auth.RequireAdminAuth(), server.HandleStartXAIOAuth)
+	engine.GET("/admin/xai/oauth/status", auth.RequireAdminAuth(), server.HandleXAIOAuthStatus)
+	engine.POST("/admin/xai/oauth/cancel", auth.RequireAdminAuth(), server.HandleCancelXAIOAuth)
+	engine.POST("/admin/xai/oauth/callback", auth.RequireAdminAuth(), server.HandleSubmitXAIOAuthCallback)
 	do := func(method, target, bearer string, body any) *httptest.ResponseRecorder {
 		t.Helper()
 		request := newJSONRequest(t, method, target, body)
@@ -788,33 +417,159 @@ func TestXAIDeviceHandlersEnforceAdminSessionAndCommitBoundary(t *testing.T) {
 		engine.ServeHTTP(response, request)
 		return response
 	}
+
 	startResponse := do(http.MethodPost, "/admin/xai/oauth/start", adminA, nil)
-	if startResponse.Code != http.StatusOK {
-		t.Fatalf("start status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	if startResponse.Code != http.StatusOK || requests.Load() != 0 {
+		t.Fatalf("start status=%d requests=%d body=%s", startResponse.Code, requests.Load(), startResponse.Body.String())
 	}
-	started := mustParseAPIResponse[xaiDeviceStartResponse](t, startResponse.Body.Bytes()).Data
-	if strings.Contains(startResponse.Body.String(), "handler-secret") || started.Session == "" {
-		t.Fatalf("unsafe start response: %s", startResponse.Body.String())
+	started := mustParseAPIResponse[xaiOAuthStartResponse](t, startResponse.Body.Bytes()).Data
+	parsed, err := url.Parse(started.URL)
+	if err != nil || started.State == "" || parsed.Query().Get("state") != started.State ||
+		parsed.Query().Get("code_challenge") == "" || parsed.Query().Get("redirect_uri") != xaiauth.RedirectURI {
+		t.Fatalf("invalid local authorization response: %#v", started)
 	}
-	select {
-	case <-commitStarted:
-	case <-time.After(time.Second):
-		t.Fatal("commit did not start")
+	if crossAdmin := do(http.MethodGet, "/admin/xai/oauth/status?state="+url.QueryEscape(started.State), adminB, nil); crossAdmin.Code != http.StatusNotFound {
+		t.Fatalf("cross-admin status=%d body=%s", crossAdmin.Code, crossAdmin.Body.String())
 	}
-	unauthorized := do(http.MethodGet, "/admin/xai/oauth/status?session="+url.QueryEscape(started.Session), adminB, nil)
-	if unauthorized.Code != http.StatusNotFound {
-		t.Fatalf("cross-admin status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	callbackURL := xaiauth.RedirectURI + "?code=manual-code&state=" + url.QueryEscape(started.State)
+	if crossAdmin := do(http.MethodPost, "/admin/xai/oauth/callback", adminB, map[string]string{"callback_url": callbackURL}); crossAdmin.Code != http.StatusBadRequest {
+		t.Fatalf("cross-admin callback=%d body=%s", crossAdmin.Code, crossAdmin.Body.String())
 	}
-	cancel := do(http.MethodPost, "/admin/xai/oauth/cancel", adminA, map[string]string{"session": started.Session})
-	if cancel.Code != http.StatusNotFound || strings.Contains(cancel.Body.String(), "cancelled") {
-		t.Fatalf("commit-boundary cancel=%d body=%s", cancel.Code, cancel.Body.String())
+	callback := do(http.MethodPost, "/admin/xai/oauth/callback", adminA, map[string]string{"callback_url": callbackURL})
+	if callback.Code != http.StatusOK {
+		t.Fatalf("callback status=%d body=%s", callback.Code, callback.Body.String())
 	}
-	statusResponse := do(http.MethodGet, "/admin/xai/oauth/status?session="+url.QueryEscape(started.Session), adminA, nil)
-	status := mustParseAPIResponse[xaiDeviceStatusResponse](t, statusResponse.Body.Bytes()).Data
-	if statusResponse.Code != http.StatusOK || status.Status != "committing" {
-		t.Fatalf("status during commit=%d %#v", statusResponse.Code, status)
+	completed := mustParseAPIResponse[xaiOAuthStatusResponse](t, callback.Body.Bytes()).Data
+	if completed.Status != "complete" || completed.ChannelID != 99 || completed.State != started.State || requests.Load() != 1 {
+		t.Fatalf("callback result=%#v requests=%d", completed, requests.Load())
 	}
-	close(releaseCommit)
+	statusResponse := do(http.MethodGet, "/admin/xai/oauth/status?state="+url.QueryEscape(started.State), adminA, nil)
+	status := mustParseAPIResponse[xaiOAuthStatusResponse](t, statusResponse.Body.Bytes()).Data
+	if statusResponse.Code != http.StatusOK || status.Status != "complete" || status.ChannelID != 99 {
+		t.Fatalf("status=%d %#v", statusResponse.Code, status)
+	}
+}
+
+func TestXAIOAuthAcceptsBareCodeForCurrentAdminSession(t *testing.T) {
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if err := request.ParseForm(); err != nil || request.Form.Get("code") != "bare-code" {
+			return nil, fmt.Errorf("unexpected bare-code request: %v %s", err, request.Form.Encode())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body:    io.NopCloser(strings.NewReader(`{"access_token":"access","refresh_token":"refresh","expires_in":3600}`)),
+			Request: request,
+		}, nil
+	})}
+	manager := newXAIOAuthManager(context.Background(), xaiauth.NewService(client),
+		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return credential, nil
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) { return 7, nil },
+	)
+	t.Cleanup(manager.close)
+	started, err := manager.start("admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.submitCallback("admin-session", " bare-code ")
+	if err != nil || status.State != started.State || status.Status != "complete" || status.ChannelID != 7 {
+		t.Fatalf("bare callback = (%#v, %v)", status, err)
+	}
+}
+
+func TestXAIOAuthCancellationRespectsCommitBoundary(t *testing.T) {
+	newService := func() *xaiauth.Service {
+		return xaiauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: make(http.Header),
+				Body:    io.NopCloser(strings.NewReader(`{"access_token":"access","refresh_token":"refresh","expires_in":3600}`)),
+				Request: request,
+			}, nil
+		})})
+	}
+
+	t.Run("cancel while completing prevents commit", func(t *testing.T) {
+		completeStarted := make(chan struct{})
+		var commits atomic.Int32
+		manager := newXAIOAuthManager(context.Background(), newService(),
+			func(ctx context.Context, _ *xaiauth.Credential) (*xaiauth.Credential, error) {
+				close(completeStarted)
+				<-ctx.Done()
+				return nil, ctx.Err()
+			},
+			func(context.Context, *xaiauth.Credential) (int64, error) {
+				commits.Add(1)
+				return 0, nil
+			},
+		)
+		defer manager.close()
+		started, err := manager.start("admin-session")
+		if err != nil {
+			t.Fatal(err)
+		}
+		result := make(chan error, 1)
+		go func() {
+			_, callbackErr := manager.submitCallback("admin-session", "code=manual-code&state="+url.QueryEscape(started.State))
+			result <- callbackErr
+		}()
+		<-completeStarted
+		if err := manager.cancel("admin-session", started.State); err != nil {
+			t.Fatalf("cancel() error = %v", err)
+		}
+		if err := <-result; err == nil {
+			t.Fatal("submitCallback() error = nil, want cancellation")
+		}
+		status, ok := manager.status("admin-session", started.State)
+		if !ok || status.Status != "cancelled" || commits.Load() != 0 {
+			t.Fatalf("status = (%#v, %v), commits = %d", status, ok, commits.Load())
+		}
+	})
+
+	t.Run("cancel cannot interrupt commit", func(t *testing.T) {
+		commitStarted := make(chan struct{})
+		releaseCommit := make(chan struct{})
+		now := time.Now()
+		manager := newXAIOAuthManager(context.Background(), newService(),
+			func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+				return credential, nil
+			},
+			func(context.Context, *xaiauth.Credential) (int64, error) {
+				close(commitStarted)
+				<-releaseCommit
+				return 42, nil
+			},
+		)
+		defer manager.close()
+		manager.now = func() time.Time { return now }
+		started, err := manager.start("admin-session")
+		if err != nil {
+			t.Fatal(err)
+		}
+		type callbackResult struct {
+			status xaiOAuthStatusResponse
+			err    error
+		}
+		result := make(chan callbackResult, 1)
+		go func() {
+			status, callbackErr := manager.submitCallback("admin-session", "code=manual-code&state="+url.QueryEscape(started.State))
+			result <- callbackResult{status: status, err: callbackErr}
+		}()
+		<-commitStarted
+		now = now.Add(xaiOAuthSessionTTL + time.Second)
+		status, ok := manager.status("admin-session", started.State)
+		if !ok || status.Status != "committing" {
+			t.Fatalf("expired commit status = (%#v, %v), want committing", status, ok)
+		}
+		if err := manager.cancel("admin-session", started.State); err == nil || !strings.Contains(err.Error(), "committing") {
+			t.Fatalf("cancel() error = %v, want committing rejection", err)
+		}
+		close(releaseCommit)
+		completed := <-result
+		if completed.err != nil || completed.status.Status != "complete" || completed.status.ChannelID != 42 {
+			t.Fatalf("submitCallback() = (%#v, %v)", completed.status, completed.err)
+		}
+	})
 }
 
 func xaiTestJWT(email, subject string) string {
@@ -881,7 +636,7 @@ func TestXAIRefreshTokenImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
 	}
 }
 
-func TestXAIDeviceInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
+func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
 	first.IDToken = xaiTestJWT("first@example.com", "stable-subject")
@@ -908,7 +663,7 @@ func TestXAIDeviceInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	}
 }
 
-func TestXAIDeviceConcurrentInteractivePersistenceCreatesOneStableIdentity(t *testing.T) {
+func TestXAIOAuthConcurrentInteractivePersistenceCreatesOneStableIdentity(t *testing.T) {
 	baseStore := newCodexAuthTestStore(t)
 	store := &snapshotBarrierStore{Store: baseStore, ready: make(chan struct{}), release: make(chan struct{})}
 	credential := xaiTestCredential("access", "refresh", time.Now().Add(time.Hour))
