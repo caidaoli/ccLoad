@@ -1251,6 +1251,7 @@
         return;
       }
 
+      const addedCount = selectedChannelsForAdd.size;
       const existingChannelIDs = new Set(editAllowedChannelIDs);
       selectedChannelsForAdd.forEach(channelID => {
         if (!existingChannelIDs.has(channelID)) {
@@ -1261,7 +1262,7 @@
       sortAllowedChannelIDs();
       closeChannelSelectModal();
       renderAllowedChannelsTable();
-      window.showNotification(t('tokens.msg.channelsAdded', { count: selectedChannelsForAdd.size }), 'success');
+      window.showNotification(t('tokens.msg.channelsAdded', { count: addedCount }), 'success');
     }
 
     /**
@@ -1554,12 +1555,12 @@
      * 确认添加选中的模型
      */
     function confirmModelSelection() {
-      
       if (selectedModelsForAdd.size === 0) {
         window.showNotification(t('tokens.msg.selectAtLeastOne'), 'warning');
         return;
       }
 
+      const addedCount = selectedModelsForAdd.size;
       // 添加到模型限制列表
       selectedModelsForAdd.forEach(model => {
         if (!editAllowedModels.includes(model)) {
@@ -1572,7 +1573,7 @@
 
       closeModelSelectModal();
       renderAllowedModelsTable();
-      window.showNotification(t('tokens.msg.modelsAdded', { count: selectedModelsForAdd.size }), 'success');
+      window.showNotification(t('tokens.msg.modelsAdded', { count: addedCount }), 'success');
     }
 
     // ==================== 模型手动输入 ====================
