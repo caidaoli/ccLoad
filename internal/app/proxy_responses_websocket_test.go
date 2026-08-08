@@ -1622,6 +1622,105 @@ func TestResponsesWebsocketRecoversCompletedToolCallAfterInterruptedStream(t *te
 	}
 }
 
+// TestResponsesWebsocketClientRetryAfterInterruptedTextStream locks down the
+// auto-continue contract: once semantic text has reached the downstream client,
+// losing the upstream stream before response.completed must still return a
+// client-retryable server_error and close 1011 so Codex can reconnect and
+// replay the turn instead of treating it as an invalid_request_error.
+func TestResponsesWebsocketClientRetryAfterInterruptedTextStream(t *testing.T) {
+	requests := make(chan []byte, 3)
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch turn.Add(1) {
+		case 1:
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-base","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+		case 2:
+			partial := `data: {"type":"response.created","response":{"id":"resp-interrupted-text","output":[]}}` + "\n\n" +
+				`data: {"type":"response.output_text.delta","delta":"partial answer"}` + "\n\n"
+			w.Header().Set("Content-Length", fmt.Sprint(len(partial)+64))
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, partial)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+		case 3:
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-retried","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}}`+"\n\n")
+		}
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "interrupted-text-stream", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "interrupted-text-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set interrupted text deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write base turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.completed")
+
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.append", "previous_response_id": "resp-base",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "continue"}},
+	}); err != nil {
+		t.Fatalf("write interrupted text turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.output_text.delta")
+	var retryEvent map[string]any
+	if err := conn.ReadJSON(&retryEvent); err != nil {
+		t.Fatalf("read interrupted text retry error: %v", err)
+	}
+	errorObject, _ := retryEvent["error"].(map[string]any)
+	if retryEvent["type"] != "error" || retryEvent["status"] != float64(http.StatusBadGateway) ||
+		errorObject["type"] != "server_error" || errorObject["code"] != "upstream_stream_interrupted" {
+		t.Fatalf("interrupted text retry event=%#v", retryEvent)
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("interrupted text close error=%v, want websocket 1011", errClose)
+	}
+
+	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "interrupted-text-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set interrupted text replay deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "first"},
+			map[string]any{"type": "message", "role": "user", "content": "continue"},
+		},
+	}); err != nil {
+		t.Fatalf("replay interrupted text turn: %v", err)
+	}
+	recovered := readWebsocketUntilType(t, conn, "response.completed")
+	response, _ := recovered["response"].(map[string]any)
+	if response["id"] != "resp-retried" {
+		t.Fatalf("retried response=%#v", recovered)
+	}
+
+	<-requests
+	<-requests
+	replay := <-requests
+	input := gjson.GetBytes(replay, "input").Array()
+	if len(input) != 2 ||
+		input[0].Get("type").String() != "message" || input[0].Get("role").String() != "user" ||
+		input[0].Get("content").String() != "first" ||
+		input[1].Get("type").String() != "message" || input[1].Get("role").String() != "user" ||
+		input[1].Get("content").String() != "continue" {
+		t.Fatalf("retried replay input=%s, want exactly [first, continue]", gjson.GetBytes(replay, "input").Raw)
+	}
+}
+
 // TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest locks down
 // local rejection of a function_call_output whose call_id has no matching
 // function_call anywhere in the same input array. Upstream would hard-reject
@@ -4800,8 +4899,15 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read terminal websocket error: %v", err)
 	}
-	if event["type"] != "error" || event["status"] == float64(http.StatusBadGateway) {
-		t.Fatalf("terminal event=%#v, want non-retryable error", event)
+	errorObject, _ := event["error"].(map[string]any)
+	if event["type"] != "error" || event["status"] != float64(http.StatusBadGateway) ||
+		errorObject["type"] != "server_error" || errorObject["code"] != responsesWebsocketInterruptedCode {
+		t.Fatalf("terminal event=%#v, want interrupted-stream client retry", event)
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("terminal close error=%v, want websocket 1011", errClose)
 	}
 	if fallbackCalls.Load() != 0 {
 		t.Fatalf("fallback called %d times after committed output", fallbackCalls.Load())

@@ -859,6 +859,55 @@ func TestHandleImportOAuthCredentialsStreamReportsEachCredential(t *testing.T) {
 	}
 }
 
+func TestHandleImportOAuthCredentialsStreamAcceptsMoreThanDefaultMultipartLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+
+	const fileCount = 1506
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	for i := range fileCount {
+		part, err := writer.CreateFormFile("files", fmt.Sprintf("credential-%04d.json", i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, `{}`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import/stream", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentialsStream(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+
+	var complete oauthCredentialImportEvent
+	for block := range strings.SplitSeq(strings.TrimSpace(response.Body.String()), "\n\n") {
+		for line := range strings.SplitSeq(block, "\n") {
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event oauthCredentialImportEvent
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event); err != nil {
+				t.Fatalf("decode SSE event: %v", err)
+			}
+			if event.Event == "complete" {
+				complete = event
+			}
+		}
+	}
+	if complete.Event != "complete" || complete.Processed != fileCount || complete.Total != fileCount || complete.Skipped != fileCount {
+		t.Fatalf("complete event=%#v", complete)
+	}
+}
+
 func TestHandleImportOAuthCredentialsRejectsUnsafeOrOversizedArchives(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	tests := []struct {

@@ -32,7 +32,7 @@ const (
 	responsesWebsocketRetryCode          = "upstream_unavailable"
 	responsesWebsocketRetryMessage       = "upstream channel failed before response output; retry the request"
 	responsesWebsocketInterruptedCode    = "upstream_stream_interrupted"
-	responsesWebsocketInterruptedMessage = "upstream response was interrupted after a complete tool call; reconnect and replay the full conversation state"
+	responsesWebsocketInterruptedMessage = "upstream response was interrupted; reconnect and replay the full conversation state"
 )
 
 // responsesWebsocketUpgradePaths lists every downstream path that terminates a
@@ -206,9 +206,13 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				if turnResult.interrupted {
 					s.responsesExecutionSessions.commit(executionSession, requestBody, turnResult)
 				}
-				executionSession.releaseTurn()
 				var retryErr *responsesWebsocketClientRetryError
-				if errors.As(errTurn, &retryErr) {
+				clientRetry := errors.As(errTurn, &retryErr)
+				if clientRetry {
+					executionSession.transcript.requireReplacementReplay()
+				}
+				executionSession.releaseTurn()
+				if clientRetry {
 					if errWrite := writeResponsesWebsocketClientRetryError(conn, retryErr); errWrite != nil {
 						return
 					}
@@ -491,17 +495,20 @@ func (s *Server) executeResponsesWebsocketTurn(
 			}
 			interruptedOutput := bridgeWriter.collectedOutput()
 			pendingToolCallIDs := responsesWebsocketPendingToolCallIDs(interruptedOutput)
+			turnResult := responsesWebsocketTurnResult{}
 			if len(pendingToolCallIDs) > 0 {
-				return responsesWebsocketTurnResult{
-						completedOutput:    interruptedOutput,
-						pendingToolCallIDs: pendingToolCallIDs,
-						interrupted:        true,
-					}, &responsesWebsocketClientRetryError{
-						code:    responsesWebsocketInterruptedCode,
-						message: responsesWebsocketInterruptedMessage,
-					}
+				// Preserve completed tool calls in the execution transcript so the
+				// client's matching tool output is not orphaned on reconnect.
+				turnResult = responsesWebsocketTurnResult{
+					completedOutput:    interruptedOutput,
+					pendingToolCallIDs: pendingToolCallIDs,
+					interrupted:        true,
+				}
 			}
-			return responsesWebsocketTurnResult{}, errors.New("upstream stream closed before response.completed")
+			return turnResult, &responsesWebsocketClientRetryError{
+				code:    responsesWebsocketInterruptedCode,
+				message: responsesWebsocketInterruptedMessage,
+			}
 		}
 		return responsesWebsocketTurnResult{
 			completedOutput:     bytes.Clone(bridgeWriter.completedOutput),
