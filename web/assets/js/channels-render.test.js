@@ -100,20 +100,25 @@ test('OAuth 计划徽标支持 Antigravity paidTier 并转义内容', () => {
   assert.equal(buildOAuthPlanBadge({ auth_type: 'api_key', antigravity_paid_tier: 'Google AI Pro' }), '');
 });
 
-test('xAI 安全徽标和部分额度不渲染凭证并标记未知周期', () => {
+test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;
   const previousReadOnly = global.isTokenChannelsReadOnly;
   global.window = {
-    t(key) {
+    t(key, values = {}) {
       return ({
         'channels.oauth.usageRefresh': '刷新额度',
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageMonthly': '月额度',
         'channels.oauth.usageAvailable': '可用',
-        'channels.oauth.usageUnknown': '未知',
         'channels.oauth.usageWarnings': '部分数据不可用',
-        'channels.oauth.usageRemaining': '剩余'
+        'channels.oauth.usageUsed': `已用${values.percent}`,
+        'channels.oauth.usageRemaining': `${values.label}剩余${values.percent}%`,
+        'channels.oauth.usageProduct': `产品使用 · ${values.product}`,
+        'channels.oauth.usageOnDemand': '按量付费',
+        'channels.oauth.usageOnDemandDisabled': '未启用',
+        'channels.oauth.usageMonthlyCredits': '月度积分',
+        'channels.oauth.usageReset': `重置 ${values.time}`
       })[key] || key;
     }
   };
@@ -122,7 +127,18 @@ test('xAI 安全徽标和部分额度不渲染凭证并标记未知周期', () =
     data: {
       provider: 'xai',
       subscription_tier: 'Pro <safe>',
-      windows: [{ kind: 'weekly', limit_window_seconds: 7 * 24 * 60 * 60, remaining_percent: 75 }],
+      xai_billing: {
+        weekly_present: true,
+        weekly_usage_percent: 25.5,
+        weekly_reset_at: '2026-08-08T00:00:00Z',
+        product_usage: [{ product: 'grok<fast>', usage_percent: 12.25 }],
+        on_demand_cap_cents: 500.25,
+        on_demand_used_cents: 125.5,
+        monthly_limit_cents: 10000.75,
+        included_used_cents: 4000.5,
+        monthly_reset_at: '2026-09-01T00:00:00Z',
+        monthly_present: true
+      },
       warnings: ['Monthly unavailable <retry>']
     }
   });
@@ -143,10 +159,115 @@ test('xAI 安全徽标和部分额度不渲染凭证并标记未知周期', () =
 
     const usage = buildOAuthUsageStatusHtml({ id: 88, auth_type: 'xai_oauth' });
     assert.match(usage, /周额度/);
-    assert.match(usage, /可用/);
-    assert.match(usage, /月额度/);
-    assert.match(usage, /未知/);
+    assert.match(usage, /Pro &lt;safe&gt;/);
+    assert.match(usage, /已用25\.5%/);
+    assert.match(usage, /aria-label="周额度剩余74\.5%"[^>]*aria-valuenow="74\.5"/);
+    assert.match(usage, /产品使用 · grok&lt;fast&gt;/);
+    assert.match(usage, /已用12\.25%/);
+    assert.match(usage, /按量付费/);
+    assert.match(usage, /已用25\.09%/);
+    assert.match(usage, /US\$1\.26 \/ US\$5\.00/);
+    assert.match(usage, /月度积分/);
+    assert.match(usage, /40%/);
+    assert.match(usage, /US\$40\.01 \/ US\$100\.01/);
+    assert.match(usage, /重置/);
+    assert.doesNotMatch(usage, /未知/);
     assert.match(usage, /Monthly unavailable &lt;retry&gt;/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('xAI 零 cap 和零月额度保留金额且不显示未知', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周额度',
+        'channels.oauth.usageUsed': `已用${values.percent}`,
+        'channels.oauth.usageOnDemand': '按量付费',
+        'channels.oauth.usageOnDemandDisabled': '未启用',
+        'channels.oauth.usageMonthlyCredits': '月度积分'
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'xai',
+      xai_billing: {
+        weekly_present: true,
+        weekly_usage_percent: null,
+        on_demand_cap_cents: 0,
+        on_demand_used_cents: 0,
+        monthly_limit_cents: 0,
+        included_used_cents: 25,
+        monthly_present: true
+      }
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const usage = buildOAuthUsageStatusHtml({ id: 89, auth_type: 'xai_oauth' });
+    assert.match(usage, /周额度/);
+    assert.match(usage, /已用--/);
+    assert.match(usage, /按量付费/);
+    assert.match(usage, /未启用/);
+    assert.match(usage, /月度积分/);
+    assert.match(usage, /--/);
+    assert.match(usage, /US\$0\.25 \/ US\$0\.00/);
+    assert.doesNotMatch(usage, /未知/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('xAI 只渲染 API 标记实际存在的周期', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周额度',
+        'channels.oauth.usageUsed': `已用${values.percent}`,
+        'channels.oauth.usageOnDemand': '按量付费',
+        'channels.oauth.usageOnDemandDisabled': '未启用',
+        'channels.oauth.usageMonthlyCredits': '月度积分'
+      })[key] || key;
+    }
+  };
+  let billing = {
+    weekly_present: false,
+    monthly_present: true,
+    monthly_limit_cents: 0,
+    included_used_cents: 0,
+    on_demand_cap_cents: 0
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: { provider: 'xai', xai_billing: billing }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const usage = buildOAuthUsageStatusHtml({ id: 90, auth_type: 'xai_oauth' });
+    assert.doesNotMatch(usage, /周额度/);
+    assert.match(usage, /月度积分/);
+    assert.match(usage, /US\$0\.00 \/ US\$0\.00/);
+
+    billing = { weekly_present: true, weekly_usage_percent: 0, monthly_present: false, on_demand_cap_cents: 0 };
+    const weeklyUsage = buildOAuthUsageStatusHtml({ id: 91, auth_type: 'xai_oauth' });
+    assert.match(weeklyUsage, /周额度/);
+    assert.match(weeklyUsage, /已用0%/);
+    assert.doesNotMatch(weeklyUsage, /月度积分/);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
@@ -81,13 +82,16 @@ func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	if editorResponse.Code != http.StatusOK {
 		t.Fatalf("editor status=%d body=%s", editorResponse.Code, editorResponse.Body.String())
 	}
-	assertSafe("editor", editorResponse.Body.String())
 	editor := mustParseAPIResponse[struct {
-		Channel ChannelWithCooldown `json:"channel"`
-		Keys    []*model.APIKey     `json:"keys"`
+		Channel         ChannelWithCooldown `json:"channel"`
+		Keys            []*model.APIKey     `json:"keys"`
+		OAuthCredential json.RawMessage     `json:"oauth_credential"`
 	}](t, editorResponse.Body.Bytes())
 	if editor.Data.Keys == nil || len(editor.Data.Keys) != 0 {
 		t.Fatalf("editor keys=%#v, want []", editor.Data.Keys)
+	}
+	if string(editor.Data.OAuthCredential) != credentialJSON {
+		t.Fatalf("editor oauth_credential=%s, want canonical credential %s", editor.Data.OAuthCredential, credentialJSON)
 	}
 	if editor.Data.Channel.GetAuthType() != model.AuthTypeXAIOAuth || editor.Data.Channel.XAIEmail != "safe@example.com" ||
 		editor.Data.Channel.XAISubscriptionTier != "supergrok" || editor.Data.Channel.XAIEntitlementStatus != "active" {
@@ -109,6 +113,31 @@ func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	persisted, err := store.GetConfig(context.Background(), created.ID)
 	if err != nil || persisted.OAuthCredential != credentialJSON {
 		t.Fatalf("persisted credential changed: err=%v config=%+v", err, persisted)
+	}
+}
+
+func TestXAIChannelEditorRejectsMalformedCredential(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	created, err := store.CreateConfig(context.Background(), &model.Config{
+		Name:            "xAI malformed credential",
+		AuthType:        model.AuthTypeXAIOAuth,
+		OAuthCredential: `{"type":"xai","access_token":`,
+		URLs:            model.ChannelURLs{{URL: "https://cli-chat-proxy.grok.com", Protocols: []string{"codex"}}},
+		Enabled:         true,
+		ModelEntries:    []model.ModelEntry{{Model: "grok-4.5"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/editor", created.ID)
+	editorContext, editorResponse := newTestContext(t, newRequest(http.MethodGet, path, nil))
+	editorContext.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	server.HandleChannelEditor(editorContext)
+	if editorResponse.Code != http.StatusInternalServerError {
+		t.Fatalf("editor status=%d body=%s", editorResponse.Code, editorResponse.Body.String())
 	}
 }
 

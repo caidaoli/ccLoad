@@ -1285,6 +1285,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 			requestPlan.requestBody,
 			testReq.Model,
 			requestPlan.xaiConversationID,
+			selectedURL,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("finalize xAI test request body: %w", err)

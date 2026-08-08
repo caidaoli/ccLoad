@@ -9,6 +9,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -88,7 +89,12 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	} else if cfg.UsesXAIOAuth() {
+		if _, parseErr := xaiauth.ParseCredential([]byte(cfg.OAuthCredential)); parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
 		apiKeys = make([]*model.APIKey, 0)
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}

@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -96,10 +98,35 @@ type oauthUsageSummary struct {
 	EntitlementStatus string             `json:"entitlement_status,omitempty"`
 	Windows           []oauthUsageWindow `json:"windows"`
 	Warnings          []string           `json:"warnings,omitempty"`
+	XAIBilling        *xaiBillingSummary `json:"xai_billing,omitempty"`
 }
 
 type xaiUsageCent struct {
-	Val float64 `json:"val"`
+	Val *float64 `json:"val"`
+}
+
+type xaiProductUsage struct {
+	Product      string   `json:"product"`
+	UsagePercent *float64 `json:"usagePercent"`
+}
+
+type xaiBillingProductUsage struct {
+	Product      string   `json:"product"`
+	UsagePercent *float64 `json:"usage_percent"`
+}
+
+type xaiBillingSummary struct {
+	WeeklyPresent      bool                     `json:"weekly_present"`
+	WeeklyUsagePercent *float64                 `json:"weekly_usage_percent"`
+	WeeklyResetAt      string                   `json:"weekly_reset_at,omitempty"`
+	ProductUsage       []xaiBillingProductUsage `json:"product_usage,omitempty"`
+	OnDemandCapCents   *float64                 `json:"on_demand_cap_cents"`
+	OnDemandUsedCents  *float64                 `json:"on_demand_used_cents"`
+	MonthlyLimitCents  *float64                 `json:"monthly_limit_cents"`
+	UsedCents          *float64                 `json:"used_cents"`
+	IncludedUsedCents  *float64                 `json:"included_used_cents"`
+	MonthlyResetAt     string                   `json:"monthly_reset_at,omitempty"`
+	MonthlyPresent     bool                     `json:"monthly_present"`
 }
 
 type xaiUsagePeriod struct {
@@ -110,6 +137,7 @@ type xaiUsagePeriod struct {
 
 type xaiUsageConfig struct {
 	CreditUsagePercent   *float64          `json:"creditUsagePercent"`
+	ProductUsage         []xaiProductUsage `json:"productUsage"`
 	CurrentPeriod        *xaiUsagePeriod   `json:"currentPeriod"`
 	MonthlyLimit         *xaiUsageCent     `json:"monthlyLimit"`
 	Used                 *xaiUsageCent     `json:"used"`
@@ -120,6 +148,115 @@ type xaiUsageConfig struct {
 	History              []json.RawMessage `json:"history"`
 	BillingPeriodStart   string            `json:"billingPeriodStart"`
 	BillingPeriodEnd     string            `json:"billingPeriodEnd"`
+}
+
+func (config *xaiUsageConfig) UnmarshalJSON(data []byte) error {
+	type rawProduct struct {
+		Product            string          `json:"product"`
+		UsagePercent       json.RawMessage `json:"usagePercent"`
+		UsagePercentLegacy json.RawMessage `json:"usage_percent"`
+	}
+	type rawConfig struct {
+		CreditUsagePercent       json.RawMessage   `json:"creditUsagePercent"`
+		CreditUsagePercentLegacy json.RawMessage   `json:"credit_usage_percent"`
+		CurrentPeriod            *xaiUsagePeriod   `json:"currentPeriod"`
+		CurrentPeriodLegacy      *xaiUsagePeriod   `json:"current_period"`
+		ProductUsage             []rawProduct      `json:"productUsage"`
+		ProductUsageLegacy       []rawProduct      `json:"product_usage"`
+		MonthlyLimit             json.RawMessage   `json:"monthlyLimit"`
+		MonthlyLimitLegacy       json.RawMessage   `json:"monthly_limit"`
+		Used                     json.RawMessage   `json:"used"`
+		OnDemandCap              json.RawMessage   `json:"onDemandCap"`
+		OnDemandCapLegacy        json.RawMessage   `json:"on_demand_cap"`
+		OnDemandUsed             json.RawMessage   `json:"onDemandUsed"`
+		OnDemandUsedLegacy       json.RawMessage   `json:"on_demand_used"`
+		PrepaidBalance           json.RawMessage   `json:"prepaidBalance"`
+		PrepaidBalanceLegacy     json.RawMessage   `json:"prepaid_balance"`
+		IsUnifiedBillingUser     *bool             `json:"isUnifiedBillingUser"`
+		IsUnifiedLegacy          *bool             `json:"is_unified_billing_user"`
+		History                  []json.RawMessage `json:"history"`
+		BillingPeriodStart       string            `json:"billingPeriodStart"`
+		BillingPeriodStartLegacy string            `json:"billing_period_start"`
+		BillingPeriodEnd         string            `json:"billingPeriodEnd"`
+		BillingPeriodEndLegacy   string            `json:"billing_period_end"`
+	}
+	var raw rawConfig
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	config.CreditUsagePercent = parseXAINumber(firstXAIRaw(raw.CreditUsagePercent, raw.CreditUsagePercentLegacy))
+	config.CurrentPeriod = raw.CurrentPeriod
+	if config.CurrentPeriod == nil {
+		config.CurrentPeriod = raw.CurrentPeriodLegacy
+	}
+	products := raw.ProductUsage
+	if products == nil {
+		products = raw.ProductUsageLegacy
+	}
+	config.ProductUsage = make([]xaiProductUsage, 0, len(products))
+	for _, product := range products {
+		config.ProductUsage = append(config.ProductUsage, xaiProductUsage{
+			Product:      product.Product,
+			UsagePercent: parseXAINumber(firstXAIRaw(product.UsagePercent, product.UsagePercentLegacy)),
+		})
+	}
+	config.MonthlyLimit = parseXAICent(firstXAIRaw(raw.MonthlyLimit, raw.MonthlyLimitLegacy))
+	config.Used = parseXAICent(raw.Used)
+	config.OnDemandCap = parseXAICent(firstXAIRaw(raw.OnDemandCap, raw.OnDemandCapLegacy))
+	config.OnDemandUsed = parseXAICent(firstXAIRaw(raw.OnDemandUsed, raw.OnDemandUsedLegacy))
+	config.PrepaidBalance = parseXAICent(firstXAIRaw(raw.PrepaidBalance, raw.PrepaidBalanceLegacy))
+	config.IsUnifiedBillingUser = raw.IsUnifiedBillingUser
+	if config.IsUnifiedBillingUser == nil {
+		config.IsUnifiedBillingUser = raw.IsUnifiedLegacy
+	}
+	config.History = raw.History
+	config.BillingPeriodStart = firstNonEmpty(raw.BillingPeriodStart, raw.BillingPeriodStartLegacy)
+	config.BillingPeriodEnd = firstNonEmpty(raw.BillingPeriodEnd, raw.BillingPeriodEndLegacy)
+	return nil
+}
+
+func firstXAIRaw(primary, fallback json.RawMessage) json.RawMessage {
+	if len(bytes.TrimSpace(primary)) > 0 && string(bytes.TrimSpace(primary)) != "null" {
+		return primary
+	}
+	return fallback
+}
+
+func parseXAICent(raw json.RawMessage) *xaiUsageCent {
+	value := parseXAINumber(raw)
+	if value == nil {
+		return nil
+	}
+	return &xaiUsageCent{Val: value}
+}
+
+func parseXAINumber(raw json.RawMessage) *float64 {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return nil
+	}
+	if trimmed[0] == '{' {
+		var object struct {
+			Val json.RawMessage `json:"val"`
+		}
+		if json.Unmarshal(trimmed, &object) != nil {
+			return nil
+		}
+		return parseXAINumber(object.Val)
+	}
+	var text string
+	if trimmed[0] == '"' {
+		if json.Unmarshal(trimmed, &text) != nil {
+			return nil
+		}
+	} else {
+		text = string(trimmed)
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return nil
+	}
+	return &value
 }
 
 type xaiUsagePayload struct {
@@ -147,6 +284,7 @@ type xaiUsageEndpointResult struct {
 	subscriptionTier  string
 	entitlementStatus string
 	warning           string
+	billing           *xaiBillingSummary
 }
 
 type oauthUsageHTTPStatusError struct {
@@ -419,6 +557,7 @@ func requestXAIUsage(
 		if result.warning != "" {
 			summary.Warnings = append(summary.Warnings, result.warning)
 		}
+		summary.XAIBilling = mergeXAIBillingSummary(summary.XAIBilling, result.billing)
 	}
 	if summary.PlanType == "" {
 		summary.PlanType = summary.SubscriptionTier
@@ -497,6 +636,7 @@ func xaiUsageResultFromPayload(body []byte, label string) xaiUsageEndpointResult
 		result.recognized = result.planType != "" || result.subscriptionTier != "" || result.entitlementStatus != ""
 		return result
 	}
+	result.billing = xaiBillingSummaryFromConfig(payload.Config)
 	result.recognized = xaiUsageConfigRecognized(payload.Config) ||
 		result.planType != "" || result.subscriptionTier != "" || result.entitlementStatus != ""
 	if window, ok := xaiUsageWindowFromConfig(payload.Config, label); ok {
@@ -510,7 +650,7 @@ func xaiUsageConfigRecognized(config *xaiUsageConfig) bool {
 	if config == nil {
 		return false
 	}
-	if config.CreditUsagePercent != nil || config.MonthlyLimit != nil && config.Used != nil {
+	if config.CreditUsagePercent != nil || len(config.ProductUsage) > 0 || config.MonthlyLimit != nil && config.Used != nil {
 		return true
 	}
 	if config.CurrentPeriod != nil && (config.IsUnifiedBillingUser != nil ||
@@ -527,8 +667,11 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 	if config.CreditUsagePercent != nil {
 		used := min(max(*config.CreditUsagePercent, 0), 100)
 		periodType := ""
-		periodStart := config.BillingPeriodStart
-		periodEnd := config.BillingPeriodEnd
+		periodStart, periodEnd := "", ""
+		if config.MonthlyLimit == nil && config.Used == nil {
+			periodStart = config.BillingPeriodStart
+			periodEnd = config.BillingPeriodEnd
+		}
 		if config.CurrentPeriod != nil {
 			periodType = config.CurrentPeriod.Type
 			periodStart = firstNonEmpty(config.CurrentPeriod.Start, periodStart)
@@ -544,7 +687,7 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 			LimitWindowSeconds: windowSeconds, ResetAt: resetAt,
 		}, true
 	}
-	if config.OnDemandCap != nil && config.OnDemandUsed != nil && config.OnDemandCap.Val > 0 {
+	if (config.MonthlyLimit == nil || config.Used == nil) && config.OnDemandCap != nil && config.OnDemandCap.Val != nil && config.OnDemandUsed != nil && config.OnDemandUsed.Val != nil && *config.OnDemandCap.Val > 0 {
 		periodType := ""
 		periodStart := config.BillingPeriodStart
 		periodEnd := config.BillingPeriodEnd
@@ -557,25 +700,133 @@ func xaiUsageWindowFromConfig(config *xaiUsageConfig, label string) (oauthUsageW
 		if !ok {
 			return oauthUsageWindow{}, false
 		}
-		used := min(max(config.OnDemandUsed.Val*100/config.OnDemandCap.Val, 0), 100)
+		used := min(max(*config.OnDemandUsed.Val*100 / *config.OnDemandCap.Val, 0), 100)
 		return oauthUsageWindow{
 			LimitName: label, Kind: normalizedXAIUsagePeriodKind(periodType, label),
 			UsedPercent: used, RemainingPercent: 100 - used,
 			LimitWindowSeconds: windowSeconds, ResetAt: resetAt,
 		}, true
 	}
-	if config.MonthlyLimit != nil && config.Used != nil && config.MonthlyLimit.Val > 0 {
+	if config.MonthlyLimit != nil && config.MonthlyLimit.Val != nil && config.Used != nil && config.Used.Val != nil && *config.MonthlyLimit.Val > 0 {
 		windowSeconds, resetAt, ok := xaiUsagePeriodBounds(config.BillingPeriodStart, config.BillingPeriodEnd)
 		if !ok {
 			return oauthUsageWindow{}, false
 		}
-		used := min(max(config.Used.Val*100/config.MonthlyLimit.Val, 0), 100)
+		used := min(max(*config.Used.Val*100 / *config.MonthlyLimit.Val, 0), 100)
 		return oauthUsageWindow{
 			LimitName: label, Kind: "monthly", UsedPercent: used, RemainingPercent: 100 - used,
 			LimitWindowSeconds: windowSeconds, ResetAt: resetAt,
 		}, true
 	}
 	return oauthUsageWindow{}, false
+}
+
+func xaiBillingSummaryFromConfig(config *xaiUsageConfig) *xaiBillingSummary {
+	if config == nil {
+		return nil
+	}
+	billing := &xaiBillingSummary{
+		WeeklyUsagePercent: config.CreditUsagePercent,
+		OnDemandCapCents:   xaiCentValue(config.OnDemandCap),
+		OnDemandUsedCents:  xaiCentValue(config.OnDemandUsed),
+		MonthlyLimitCents:  xaiCentValue(config.MonthlyLimit),
+		UsedCents:          xaiCentValue(config.Used),
+		ProductUsage:       make([]xaiBillingProductUsage, 0, len(config.ProductUsage)),
+	}
+	periodKind := ""
+	if config.CurrentPeriod != nil {
+		periodKind = normalizedXAIUsagePeriodKind(config.CurrentPeriod.Type, "")
+	}
+	billing.WeeklyPresent = billing.WeeklyUsagePercent != nil || len(config.ProductUsage) > 0 || periodKind == "weekly"
+	billing.MonthlyPresent = billing.MonthlyLimitCents != nil || billing.UsedCents != nil ||
+		(!billing.WeeklyPresent && (billing.OnDemandCapCents != nil || strings.TrimSpace(config.BillingPeriodEnd) != ""))
+	if config.CurrentPeriod != nil {
+		periodEnd := strings.TrimSpace(config.CurrentPeriod.End)
+		switch periodKind {
+		case "monthly":
+			if billing.MonthlyPresent {
+				billing.MonthlyResetAt = periodEnd
+			}
+		case "weekly":
+			billing.WeeklyResetAt = periodEnd
+		default:
+			if billing.WeeklyUsagePercent != nil || len(config.ProductUsage) > 0 {
+				billing.WeeklyResetAt = periodEnd
+			}
+		}
+	}
+	billingPeriodEnd := strings.TrimSpace(config.BillingPeriodEnd)
+	if billing.MonthlyPresent {
+		billing.MonthlyResetAt = firstNonEmpty(billing.MonthlyResetAt, billingPeriodEnd)
+	} else if billing.WeeklyPresent {
+		billing.WeeklyResetAt = firstNonEmpty(billing.WeeklyResetAt, billingPeriodEnd)
+	}
+	for _, product := range config.ProductUsage {
+		billing.ProductUsage = append(billing.ProductUsage, xaiBillingProductUsage{
+			Product: strings.TrimSpace(product.Product), UsagePercent: product.UsagePercent,
+		})
+	}
+	if billing.UsedCents != nil {
+		included := *billing.UsedCents
+		if billing.MonthlyLimitCents != nil && *billing.MonthlyLimitCents > 0 {
+			included = min(included, *billing.MonthlyLimitCents)
+		}
+		billing.IncludedUsedCents = &included
+		if billing.OnDemandUsedCents == nil && billing.MonthlyLimitCents != nil {
+			onDemandUsed := max(0, *billing.UsedCents-*billing.MonthlyLimitCents)
+			billing.OnDemandUsedCents = &onDemandUsed
+		}
+	}
+	if !billing.WeeklyPresent && !billing.MonthlyPresent && billing.WeeklyUsagePercent == nil && billing.WeeklyResetAt == "" && len(billing.ProductUsage) == 0 &&
+		billing.OnDemandCapCents == nil && billing.OnDemandUsedCents == nil &&
+		billing.MonthlyLimitCents == nil && billing.UsedCents == nil && billing.MonthlyResetAt == "" {
+		return nil
+	}
+	return billing
+}
+
+func xaiCentValue(cent *xaiUsageCent) *float64 {
+	if cent == nil {
+		return nil
+	}
+	return cent.Val
+}
+
+func mergeXAIBillingSummary(current, next *xaiBillingSummary) *xaiBillingSummary {
+	if current == nil {
+		return next
+	}
+	if next == nil {
+		return current
+	}
+	current.WeeklyPresent = current.WeeklyPresent || next.WeeklyPresent
+	current.MonthlyPresent = current.MonthlyPresent || next.MonthlyPresent
+	if current.WeeklyUsagePercent == nil && next.WeeklyUsagePercent != nil {
+		current.WeeklyUsagePercent = next.WeeklyUsagePercent
+	}
+	if current.WeeklyResetAt == "" && next.WeeklyResetAt != "" {
+		current.WeeklyResetAt = next.WeeklyResetAt
+	}
+	if len(current.ProductUsage) == 0 && len(next.ProductUsage) > 0 {
+		current.ProductUsage = next.ProductUsage
+	}
+	if current.OnDemandCapCents == nil && next.OnDemandCapCents != nil {
+		current.OnDemandCapCents = next.OnDemandCapCents
+	}
+	if current.OnDemandUsedCents == nil && next.OnDemandUsedCents != nil {
+		current.OnDemandUsedCents = next.OnDemandUsedCents
+	}
+	if current.MonthlyLimitCents == nil && next.MonthlyLimitCents != nil {
+		current.MonthlyLimitCents = next.MonthlyLimitCents
+	}
+	if current.UsedCents == nil && next.UsedCents != nil {
+		current.UsedCents = next.UsedCents
+		current.IncludedUsedCents = next.IncludedUsedCents
+	}
+	if current.MonthlyResetAt == "" && next.MonthlyResetAt != "" {
+		current.MonthlyResetAt = next.MonthlyResetAt
+	}
+	return current
 }
 
 func xaiUsagePeriodBounds(startRaw, endRaw string) (int64, int64, bool) {

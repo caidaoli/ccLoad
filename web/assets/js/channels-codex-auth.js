@@ -96,8 +96,8 @@ function applyChannelAuthEditorMode(
 ) {
   const codexOAuth = authType === 'codex_oauth';
   const xaiOAuth = authType === 'xai_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth';
-  const oauth = credentialVisible || xaiOAuth;
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth;
+  const oauth = credentialVisible;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -106,6 +106,7 @@ function applyChannelAuthEditorMode(
   const batchDeleteButton = document.getElementById('batchDeleteKeysBtn');
   const selectAll = document.getElementById('selectAllKeys');
   const credentialTab = document.getElementById('codexCredentialTab');
+  const credentialRefreshButton = document.getElementById('codexCredentialRefreshButton');
   const planBadge = document.getElementById('channelCodexPlanBadge');
   const planType = codexOAuth
     ? String(credential?.plan_type || channel?.codex_plan_type || '').trim()
@@ -138,6 +139,7 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
+  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth;
   renderOAuthCredential(
     credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,
@@ -208,14 +210,21 @@ function setOAuthCredentialImportStatus(message, kind = '') {
   status.dataset.kind = kind;
 }
 
-function resetOAuthCredentialImportProgress() {
-  const container = document.getElementById('oauthCredentialImportProgress');
-  const progress = document.getElementById('oauthCredentialImportProgressBar');
-  const counter = document.getElementById('oauthCredentialImportProgressCounter');
-  const detail = document.getElementById('oauthCredentialImportProgressDetail');
-  const counts = document.getElementById('oauthCredentialImportProgressCounts');
-  const errors = document.getElementById('oauthCredentialImportErrors');
-  const errorList = document.getElementById('oauthCredentialImportErrorList');
+function getOAuthCredentialImportProgressElements(prefix = 'oauthCredentialImport') {
+  return {
+    container: document.getElementById(`${prefix}Progress`),
+    progress: document.getElementById(`${prefix}ProgressBar`),
+    counter: document.getElementById(`${prefix}ProgressCounter`),
+    detail: document.getElementById(`${prefix}ProgressDetail`),
+    counts: document.getElementById(`${prefix}ProgressCounts`),
+    errors: document.getElementById(`${prefix}Errors`),
+    errorList: document.getElementById(`${prefix}ErrorList`)
+  };
+}
+
+function resetOAuthCredentialImportProgress(prefix = 'oauthCredentialImport') {
+  const { container, progress, counter, detail, counts, errors, errorList } =
+    getOAuthCredentialImportProgressElements(prefix);
   if (container) container.hidden = true;
   if (progress) {
     progress.max = 1;
@@ -228,10 +237,9 @@ function resetOAuthCredentialImportProgress() {
   errorList?.replaceChildren();
 }
 
-function appendOAuthCredentialImportError(result) {
+function appendOAuthCredentialImportError(result, prefix = 'oauthCredentialImport') {
   if (!result || result.status !== 'failed' || !result.error) return;
-  const errors = document.getElementById('oauthCredentialImportErrors');
-  const errorList = document.getElementById('oauthCredentialImportErrorList');
+  const { errors, errorList } = getOAuthCredentialImportProgressElements(prefix);
   if (!errors || !errorList) return;
   const item = document.createElement('li');
   item.textContent = window.t('channels.oauth.progressErrorItem', {
@@ -242,13 +250,9 @@ function appendOAuthCredentialImportError(result) {
   errors.hidden = false;
 }
 
-function updateOAuthCredentialImportProgress(event) {
+function updateOAuthCredentialImportProgress(event, prefix = 'oauthCredentialImport') {
   if (!event || typeof event !== 'object') return;
-  const container = document.getElementById('oauthCredentialImportProgress');
-  const progress = document.getElementById('oauthCredentialImportProgressBar');
-  const counter = document.getElementById('oauthCredentialImportProgressCounter');
-  const detail = document.getElementById('oauthCredentialImportProgressDetail');
-  const counts = document.getElementById('oauthCredentialImportProgressCounts');
+  const { container, progress, counter, detail, counts } = getOAuthCredentialImportProgressElements(prefix);
   const total = Math.max(0, Number(event.total) || 0);
   const processed = Math.min(total, Math.max(0, Number(event.processed) || 0));
   const created = Math.max(0, Number(event.created) || 0);
@@ -279,7 +283,7 @@ function updateOAuthCredentialImportProgress(event) {
       break;
     case 'progress': {
       const resultStatus = event.result?.status || 'failed';
-      appendOAuthCredentialImportError(event.result);
+      appendOAuthCredentialImportError(event.result, prefix);
       detail.textContent = window.t('channels.oauth.progressProcessed', {
         file: event.result?.file_name || event.file_name || '',
         status: window.t(`channels.oauth.progressStatus.${resultStatus}`)
@@ -318,6 +322,7 @@ function openOAuthLoginDialog(trigger = null) {
   callbackURL.value = '';
   callbackURL.removeAttribute?.('aria-invalid');
   resetXAIOAuthDialog();
+  syncOAuthProviderFields();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
   if (!dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
@@ -340,21 +345,25 @@ function resetXAIOAuthDialog() {
   const secretField = document.getElementById('xaiCredentialSecretField');
   const textarea = document.getElementById('xaiCredentialValues');
   const deviceFields = document.getElementById('xaiDeviceSessionFields');
+  const verificationURL = document.getElementById('xaiVerificationURL');
   const verification = document.getElementById('xaiVerificationLink');
   const userCode = document.getElementById('xaiUserCode');
   const expires = document.getElementById('xaiDeviceExpiresAt');
+  const authorizeButton = document.getElementById('oauthAuthorizeButton');
   if (controls) controls.hidden = true;
   if (method) method.value = 'device';
   if (secretField) secretField.hidden = true;
   clearXAICredentialSecrets(textarea);
   if (textarea) textarea.required = false;
   if (deviceFields) deviceFields.hidden = true;
+  if (verificationURL) verificationURL.value = '';
   if (verification) {
-    verification.textContent = '';
     verification.removeAttribute?.('href');
   }
   if (userCode) userCode.textContent = '';
   if (expires) expires.textContent = '';
+  resetOAuthCredentialImportProgress('xaiCredentialImport');
+  if (authorizeButton) authorizeButton.hidden = false;
   setOAuthAuthorizeButtonLabel('codex', 'device');
 }
 
@@ -372,22 +381,38 @@ function syncOAuthProviderFields() {
   const secretField = document.getElementById('xaiCredentialSecretField');
   const textarea = document.getElementById('xaiCredentialValues');
   const sessionFields = document.getElementById('oauthSessionFields');
+  const deviceFields = document.getElementById('xaiDeviceSessionFields');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
+  const description = document.getElementById('oauthLoginDialogDescription');
+  resetOAuthCredentialImportProgress('xaiCredentialImport');
   if (controls) controls.hidden = !xai;
   if (sessionFields && xai) sessionFields.hidden = true;
+  if (deviceFields && (!xai || method !== 'device')) deviceFields.hidden = true;
   if (secretField) secretField.hidden = !xai || method === 'device';
   if (textarea) {
     textarea.required = xai && method !== 'device';
     textarea.setAttribute?.('aria-describedby', 'xaiCredentialSecretHint oauthLoginDialogStatus');
     if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
   }
-  if (authorizeButton) setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
+  if (description) {
+    const descriptionKey = xai
+      ? (method === 'device' ? 'channels.xai.deviceDescription' : 'channels.xai.importDescription')
+      : 'channels.oauth.loginDialogDescription';
+    description.setAttribute?.('data-i18n', descriptionKey);
+    if (typeof window !== 'undefined' && typeof window.t === 'function') {
+      description.textContent = window.t(descriptionKey);
+    }
+  }
+  if (authorizeButton) {
+    authorizeButton.hidden = false;
+    setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
+  }
 }
 
 function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
   if (!button) return;
-  const key = provider === 'xai' && method !== 'device'
-    ? 'channels.xai.importSecrets'
+  const key = provider === 'xai'
+    ? (method === 'device' ? 'channels.xai.generateLink' : 'channels.xai.importSecrets')
     : 'channels.oauth.startAuthorization';
   button.setAttribute?.('data-i18n', key);
   if (typeof window !== 'undefined' && typeof window.t === 'function') button.textContent = window.t(key);
@@ -395,17 +420,20 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
 
 function showXAIDeviceSession(session) {
   const fields = document.getElementById('xaiDeviceSessionFields');
+  const verificationURL = document.getElementById('xaiVerificationURL');
   const verification = document.getElementById('xaiVerificationLink');
   const userCode = document.getElementById('xaiUserCode');
   const expires = document.getElementById('xaiDeviceExpiresAt');
+  const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const verifiedURL = safeXAIVerificationURL(session?.verification_uri_complete || session?.verification_uri);
-  if (!fields || !verification || !userCode || !expires || !verifiedURL) return false;
+  if (!fields || !verificationURL || !verification || !userCode || !expires || !verifiedURL) return false;
+  verificationURL.value = verifiedURL;
   verification.href = verifiedURL;
-  verification.textContent = verifiedURL;
   userCode.textContent = session.user_code;
   const expiresAt = new Date(session.expires_at);
   expires.textContent = Number.isNaN(expiresAt.getTime()) ? '' : expiresAt.toLocaleString();
   fields.hidden = false;
+  if (authorizeButton) authorizeButton.hidden = true;
   userCode.focus?.();
   return true;
 }
@@ -602,6 +630,7 @@ async function submitXAICredentialBatch(method, textarea, button, fetcher = fetc
     button.setAttribute?.('aria-busy', 'true');
   }
   try {
+    if (typeof document !== 'undefined') resetOAuthCredentialImportProgress('xaiCredentialImport');
     const responsePromise = fetcher('/admin/xai/credentials/import/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -610,7 +639,10 @@ async function submitXAICredentialBatch(method, textarea, button, fetcher = fetc
     });
     body = '';
     const response = await responsePromise;
-    return await readOAuthCredentialImportStream(response);
+    const onEvent = typeof document === 'undefined'
+      ? undefined
+      : event => updateOAuthCredentialImportProgress(event, 'xaiCredentialImport');
+    return await readOAuthCredentialImportStream(response, onEvent);
   } finally {
     if (button) {
       button.disabled = false;
@@ -1125,9 +1157,11 @@ function setupOAuthActions() {
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
+  const xaiCopyButton = document.getElementById('xaiCopyVerificationLink');
   const restartButton = document.getElementById('oauthRestart');
   const xaiRestartButton = document.getElementById('xaiDeviceRestart');
   const authorizationURL = document.getElementById('oauthAuthorizationURL');
+  const xaiVerificationURL = document.getElementById('xaiVerificationURL');
   const callbackForm = document.getElementById('oauthCallbackForm');
   const callbackURL = document.getElementById('oauthCallbackURL');
   const callbackButton = document.getElementById('oauthSubmitCallback');
@@ -1194,16 +1228,17 @@ function setupOAuthActions() {
     });
     loginForm.dataset.bound = '1';
   }
-  if (copyButton && authorizationURL && !copyButton.dataset.bound) {
-    copyButton.addEventListener('click', async () => {
+  for (const [button, input] of [[copyButton, authorizationURL], [xaiCopyButton, xaiVerificationURL]]) {
+    if (!button || !input || button.dataset.bound) continue;
+    button.addEventListener('click', async () => {
       try {
-        await copyCodexOAuthLink(authorizationURL.value);
+        await copyCodexOAuthLink(input.value);
         setCodexOAuthDialogStatus(window.t('channels.oauth.linkCopied'), 'success');
       } catch (error) {
         setCodexOAuthDialogStatus(error?.message || window.t('channels.oauth.copyFailed'), 'error');
       }
     });
-    copyButton.dataset.bound = '1';
+    button.dataset.bound = '1';
   }
   if (restartButton && !restartButton.dataset.bound) {
     restartButton.addEventListener('click', () => restartOAuth(

@@ -29,7 +29,7 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 		"metadata":{"nested":{"external_web_access":false,"keep":"yes"}}
 	}`)
 
-	got, err := finalizeXAIResponsesBody(raw, "grok-4.5", "conv-parent")
+	got, err := finalizeXAIResponsesBody(raw, "grok-4.5", "conv-parent", xaiauth.CLIBaseURL)
 	if err != nil {
 		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
 	}
@@ -42,7 +42,7 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	}
 	for _, field := range []string{
 		"previous_response_id", "prompt_cache_retention", "safety_identifier", "stream_options",
-		"presence_penalty", "frequency_penalty", "stop", "tools", "tool_choice", "parallel_tool_calls",
+		"presence_penalty", "frequency_penalty", "stop",
 	} {
 		if _, exists := payload[field]; exists {
 			t.Fatalf("field %q survived xAI finalization: %s", field, got)
@@ -52,7 +52,124 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("reasoning = %#v, want normalized high with summary preserved", reasoning)
 	}
+	tools, _ := payload["tools"].([]any)
+	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" {
+		t.Fatalf("tools = %#v, want one native web_search", tools)
+	}
+	if payload["tool_choice"] != "auto" || payload["parallel_tool_calls"] != true {
+		t.Fatalf("tool controls = %#v/%#v, want preserved for native web_search", payload["tool_choice"], payload["parallel_tool_calls"])
+	}
 	assertNoJSONKey(t, payload, "external_web_access")
+}
+
+func TestFinalizeXAIResponsesBodyEnsuresCLIWebSearch(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		baseURL          string
+		body             string
+		wantToolTypes    []string
+		wantToolNames    []string
+		wantChoiceTypes  []string
+		wantChoiceAbsent bool
+	}{
+		{
+			name:          "inject native tool and preserve ordinary tool",
+			baseURL:       xaiauth.CLIBaseURL + "/",
+			body:          `{"tools":[{"type":"function","name":"lookup"}]}`,
+			wantToolTypes: []string{"web_search", "function"},
+			wantToolNames: []string{"", "lookup"},
+		},
+		{
+			name:    "deduplicate native tools and remove named stand-ins",
+			baseURL: xaiauth.CLIBaseURL,
+			body: `{
+				"tools":[
+					{"type":"web_search"},
+					{"type":"web_search"},
+					{"type":"function","name":"web_search"},
+					{"type":"custom","name":" WEB_SEARCH "},
+					{"type":"function","name":"lookup"}
+				],
+				"tool_choice":{"type":"allowed_tools","tools":[
+					{"type":"function","name":"lookup"},
+					{"type":"custom","name":"web_search"},
+					{"type":"web_search"},
+					{"type":"web_search"}
+				]}
+			}`,
+			wantToolTypes:   []string{"web_search", "function"},
+			wantToolNames:   []string{"", "lookup"},
+			wantChoiceTypes: []string{"function", "web_search"},
+		},
+		{
+			name:             "drop named web search choice",
+			baseURL:          xaiauth.CLIBaseURL,
+			body:             `{"tool_choice":{"type":"function","name":"web_search"}}`,
+			wantToolTypes:    []string{"web_search"},
+			wantToolNames:    []string{""},
+			wantChoiceAbsent: true,
+		},
+		{
+			name:          "custom base does not inject",
+			baseURL:       "https://gateway.example/v1",
+			body:          `{"tools":[{"type":"function","name":"lookup"}]}`,
+			wantToolTypes: []string{"function"},
+			wantToolNames: []string{"lookup"},
+		},
+		{
+			name:             "public api base does not inject and prunes orphan controls",
+			baseURL:          "https://api.x.ai/v1",
+			body:             `{"tools":[],"tool_choice":"auto","parallel_tool_calls":true}`,
+			wantChoiceAbsent: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := finalizeXAIResponsesBody([]byte(test.body), "grok-4.5", "conv", test.baseURL)
+			if err != nil {
+				t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(got, &payload); err != nil {
+				t.Fatalf("result is not JSON: %v\n%s", err, got)
+			}
+			tools, _ := payload["tools"].([]any)
+			if len(tools) != len(test.wantToolTypes) {
+				t.Fatalf("tools = %#v, want types %#v", tools, test.wantToolTypes)
+			}
+			for i, rawTool := range tools {
+				tool := rawTool.(map[string]any)
+				toolName, _ := tool["name"].(string)
+				if tool["type"] != test.wantToolTypes[i] || toolName != test.wantToolNames[i] {
+					t.Fatalf("tools[%d] = %#v, want type=%q name=%q", i, tool, test.wantToolTypes[i], test.wantToolNames[i])
+				}
+			}
+			choice, choiceExists := payload["tool_choice"]
+			if test.wantChoiceAbsent {
+				if choiceExists {
+					t.Fatalf("tool_choice survived: %#v", choice)
+				}
+				return
+			}
+			if len(test.wantChoiceTypes) == 0 {
+				return
+			}
+			choiceObject := choice.(map[string]any)
+			allowed, _ := choiceObject["tools"].([]any)
+			if len(allowed) != len(test.wantChoiceTypes) {
+				t.Fatalf("allowed_tools = %#v, want types %#v", allowed, test.wantChoiceTypes)
+			}
+			for i, rawTool := range allowed {
+				if rawTool.(map[string]any)["type"] != test.wantChoiceTypes[i] {
+					t.Fatalf("allowed_tools[%d] = %#v, want type=%q", i, rawTool, test.wantChoiceTypes[i])
+				}
+			}
+		})
+	}
 }
 
 func TestFinalizeXAIResponsesBodyDropsUnsupportedReasoning(t *testing.T) {
@@ -66,6 +183,7 @@ func TestFinalizeXAIResponsesBodyDropsUnsupportedReasoning(t *testing.T) {
 				[]byte(`{"model":"old","input":"hi","reasoning":{"effort":"high"}}`),
 				modelName,
 				"conv",
+				xaiauth.CLIBaseURL,
 			)
 			if err != nil {
 				t.Fatalf("finalizeXAIResponsesBody() error = %v", err)

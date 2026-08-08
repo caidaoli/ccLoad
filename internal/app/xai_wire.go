@@ -29,7 +29,7 @@ func buildXAIResponsesURL(baseURL, rawQuery string) string {
 	return buildUpstreamURL(baseURL, "/responses", rawQuery)
 }
 
-func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]byte, error) {
+func finalizeXAIResponsesBody(body []byte, actualModel, executionID, baseURL string) ([]byte, error) {
 	actualModel = strings.TrimSpace(actualModel)
 	if actualModel == "" {
 		return nil, errors.New("xAI Responses request is missing actual model")
@@ -68,13 +68,100 @@ func finalizeXAIResponsesBody(body []byte, actualModel, executionID string) ([]b
 		delete(payload, "stop")
 	}
 	normalizeXAIReasoning(payload, actualModel)
-	normalizeXAIOrphanedToolControls(payload)
+	normalizeXAIWebSearch(payload, baseURL)
 
 	encoded, err := json.Marshal(payload)
 	if err != nil {
 		return nil, errors.New("encode xAI Responses request")
 	}
 	return encoded, nil
+}
+
+func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
+	if !isXAICLIChatProxyBaseURL(baseURL) {
+		normalizeXAIOrphanedToolControls(payload)
+		return
+	}
+
+	rawTools, toolsExist := payload["tools"]
+	tools, toolsAreArray := rawTools.([]any)
+	if toolsExist && !toolsAreArray {
+		return
+	}
+
+	keptTools, hasNativeWebSearch := normalizeXAIWebSearchTools(tools)
+	if !hasNativeWebSearch {
+		keptTools = append([]any{map[string]any{"type": "web_search"}}, keptTools...)
+	}
+	payload["tools"] = keptTools
+	normalizeXAIWebSearchToolChoice(payload)
+}
+
+func isXAICLIChatProxyBaseURL(baseURL string) bool {
+	normalize := func(value string) string {
+		return strings.TrimRight(strings.TrimSpace(value), "/")
+	}
+	return normalize(baseURL) == normalize(xaiauth.CLIBaseURL)
+}
+
+func normalizeXAIWebSearchTools(tools []any) ([]any, bool) {
+	kept := make([]any, 0, len(tools))
+	hasNativeWebSearch := false
+	for _, rawTool := range tools {
+		tool, isObject := rawTool.(map[string]any)
+		if !isObject {
+			kept = append(kept, rawTool)
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType == "web_search" {
+			if hasNativeWebSearch {
+				continue
+			}
+			hasNativeWebSearch = true
+			kept = append(kept, rawTool)
+			continue
+		}
+		if isXAINamedWebSearchTool(tool) {
+			continue
+		}
+		kept = append(kept, rawTool)
+	}
+	return kept, hasNativeWebSearch
+}
+
+func normalizeXAIWebSearchToolChoice(payload map[string]any) {
+	choice, isObject := payload["tool_choice"].(map[string]any)
+	if !isObject {
+		return
+	}
+	if isXAINamedWebSearchTool(choice) {
+		delete(payload, "tool_choice")
+		return
+	}
+	choiceType, _ := choice["type"].(string)
+	if choiceType != "allowed_tools" {
+		return
+	}
+	rawAllowed, exists := choice["tools"]
+	allowed, isArray := rawAllowed.([]any)
+	if !exists || !isArray {
+		return
+	}
+	kept, hasNativeWebSearch := normalizeXAIWebSearchTools(allowed)
+	if !hasNativeWebSearch {
+		kept = append(kept, map[string]any{"type": "web_search"})
+	}
+	choice["tools"] = kept
+}
+
+func isXAINamedWebSearchTool(tool map[string]any) bool {
+	toolType, _ := tool["type"].(string)
+	if toolType != "function" && toolType != "custom" {
+		return false
+	}
+	name, _ := tool["name"].(string)
+	return strings.EqualFold(strings.TrimSpace(name), "web_search")
 }
 
 func deleteJSONKeyRecursive(value any, key string) {
