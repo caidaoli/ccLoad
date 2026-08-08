@@ -4,6 +4,7 @@ package storage
 import (
 	"context"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -39,6 +40,10 @@ type HybridStore struct {
 	syncWg    sync.WaitGroup
 	stopCh    chan struct{}
 	closeOnce sync.Once
+
+	// OAuth credential writes must reach the read replica in primary commit order.
+	oauthCredentialMu sync.Mutex
+	oauthPrimaryReads sync.Map
 
 	// 降级可观测性计数器（参照 LogService.logDropCount 模式）
 	// 静默降级在生产中难以察觉，计数器 + 采样告警让运维可见，不改一致性语义
@@ -206,23 +211,97 @@ func (h *HybridStore) enqueueLogSync(task *syncTask) {
 // === Channel Management ===
 
 func (h *HybridStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	if ids := h.oauthPrimaryReadIDs(); len(ids) != 0 {
+		configs, err := h.mysql.ListConfigs(ctx)
+		if err != nil {
+			return nil, err
+		}
+		h.repairOAuthReplicasLocked(ctx, ids)
+		return configs, nil
+	}
 	return h.sqlite.ListConfigs(ctx)
 }
 
 func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	if _, fallback := h.oauthPrimaryReads.Load(id); fallback {
+		return h.readPrimaryAndRepairOAuthReplicaLocked(ctx, id)
+	}
 	return h.sqlite.GetConfig(ctx, id)
 }
 
+func (h *HybridStore) oauthPrimaryReadIDs() []int64 {
+	ids := make([]int64, 0)
+	h.oauthPrimaryReads.Range(func(key, _ any) bool {
+		if id, ok := key.(int64); ok {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
+func (h *HybridStore) repairOAuthReplicasLocked(ctx context.Context, ids []int64) {
+	for _, id := range ids {
+		_, _ = h.readPrimaryAndRepairOAuthReplicaLocked(ctx, id)
+	}
+}
+
+func (h *HybridStore) readPrimaryAndRepairOAuthReplicaLocked(ctx context.Context, id int64) (*model.Config, error) {
+	cfg, err := h.mysql.GetConfig(ctx, id)
+	if err != nil {
+		if _, fallback := h.oauthPrimaryReads.Load(id); fallback && strings.Contains(err.Error(), "not found") {
+			if deleteErr := h.sqlite.DeleteConfig(ctx, id); deleteErr != nil {
+				h.syncToSQLite("RepairDeletedOAuthConfigReplica", func() error { return deleteErr })
+			} else {
+				h.oauthPrimaryReads.Delete(id)
+			}
+		}
+		return nil, err
+	}
+	if _, fallback := h.oauthPrimaryReads.Load(id); !fallback {
+		return cfg, nil
+	}
+	if !cfg.UsesOAuth() {
+		h.oauthPrimaryReads.Delete(id)
+		return cfg, nil
+	}
+	if err := h.sqlite.SyncOAuthConfigReplica(ctx, cfg); err != nil {
+		h.syncToSQLite("RepairOAuthConfigReplica", func() error { return err })
+		return cfg, nil
+	}
+	h.oauthPrimaryReads.Delete(id)
+	return cfg, nil
+}
+
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
+	if c != nil && c.UsesOAuth() {
+		h.oauthCredentialMu.Lock()
+		defer h.oauthCredentialMu.Unlock()
+	}
 	result, err := h.mysql.CreateConfig(ctx, c)
 	if err != nil {
 		return nil, err
 	}
 
-	h.syncToSQLite("CreateConfig", func() error {
-		_, err := h.sqlite.CreateConfig(ctx, result)
-		return err
-	})
+	if result.UsesOAuth() {
+		h.oauthPrimaryReads.Store(result.ID, struct{}{})
+		if _, syncErr := h.sqlite.CreateConfig(ctx, result); syncErr != nil {
+			h.syncToSQLite("CreateConfig", func() error { return syncErr })
+			return result, nil
+		}
+		h.oauthPrimaryReads.Delete(result.ID)
+	} else {
+		h.syncToSQLite("CreateConfig", func() error {
+			_, err := h.sqlite.CreateConfig(ctx, result)
+			return err
+		})
+	}
 
 	return result, nil
 }
@@ -241,14 +320,74 @@ func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Con
 	return result, nil
 }
 
-func (h *HybridStore) UpdateOAuthCredential(ctx context.Context, id int64, credential string) error {
-	if err := h.mysql.UpdateOAuthCredential(ctx, id, credential); err != nil {
-		return err
+func (h *HybridStore) CompareAndSwapOAuthCredential(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	_, wasFallback := h.oauthPrimaryReads.Load(channelID)
+	h.oauthPrimaryReads.Store(channelID, struct{}{})
+	updated, err := h.mysql.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+	if err != nil {
+		if !wasFallback {
+			h.oauthPrimaryReads.Delete(channelID)
+		}
+		return updated, err
 	}
-	h.syncToSQLite("UpdateOAuthCredential", func() error {
-		return h.sqlite.UpdateOAuthCredential(ctx, id, credential)
-	})
-	return nil
+	if !updated {
+		return false, nil
+	}
+	authoritative, loadErr := h.mysql.GetConfig(ctx, channelID)
+	if loadErr == nil {
+		loadErr = h.sqlite.SyncOAuthConfigReplica(ctx, authoritative)
+	}
+	if loadErr == nil {
+		h.oauthPrimaryReads.Delete(channelID)
+		return true, nil
+	}
+	h.oauthPrimaryReads.Store(channelID, struct{}{})
+	h.syncToSQLite("CompareAndSwapOAuthCredential", func() error { return loadErr })
+	return true, nil
+}
+
+func (h *HybridStore) UpdateOAuthModelStateIfCredentialMatches(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential string,
+	modelEntries []model.ModelEntry,
+	scheduledCheckModel string,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	_, wasFallback := h.oauthPrimaryReads.Load(channelID)
+	h.oauthPrimaryReads.Store(channelID, struct{}{})
+	updated, err := h.mysql.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, channelID, expectedAuthType, expectedCredential, modelEntries, scheduledCheckModel,
+	)
+	if err != nil {
+		if !wasFallback {
+			h.oauthPrimaryReads.Delete(channelID)
+		}
+		return updated, err
+	}
+	if !updated {
+		return false, nil
+	}
+	authoritative, loadErr := h.mysql.GetConfig(ctx, channelID)
+	if loadErr == nil {
+		loadErr = h.sqlite.SyncOAuthConfigReplica(ctx, authoritative)
+	}
+	if loadErr != nil {
+		h.oauthPrimaryReads.Store(channelID, struct{}{})
+		h.syncToSQLite("UpdateOAuthModelStateIfCredentialMatches", func() error { return loadErr })
+		return true, nil
+	}
+	h.oauthPrimaryReads.Delete(channelID)
+	return true, nil
 }
 
 func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
@@ -266,6 +405,10 @@ func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enable
 }
 
 func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, patch model.BatchConfigPatch) (model.BatchConfigPatchResult, error) {
+	if patch.ModelImportMode != "" {
+		h.oauthCredentialMu.Lock()
+		defer h.oauthCredentialMu.Unlock()
+	}
 	result, err := h.mysql.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {
 		return model.BatchConfigPatchResult{}, err
@@ -280,18 +423,35 @@ func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64,
 }
 
 func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
 	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("DeleteConfig", func() error {
-		return h.sqlite.DeleteConfig(ctx, id)
-	})
+	h.oauthPrimaryReads.Store(id, struct{}{})
+	if err := h.sqlite.DeleteConfig(ctx, id); err != nil {
+		h.syncToSQLite("DeleteConfig", func() error { return err })
+		return nil
+	}
+	h.oauthPrimaryReads.Delete(id)
 
 	return nil
 }
 
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	if ids := h.oauthPrimaryReadIDs(); len(ids) != 0 {
+		configs, err := h.mysql.GetEnabledChannelsByModel(ctx, modelName)
+		if err != nil {
+			return nil, err
+		}
+		h.repairOAuthReplicasLocked(ctx, ids)
+		return configs, nil
+	}
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
@@ -954,15 +1114,52 @@ func (h *HybridStore) DeleteFingerprintTestResult(ctx context.Context, id int64)
 // === Batch Operations ===
 
 func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.ChannelWithKeys) (created, updated int, err error) {
+	hasOAuth := false
+	for _, channel := range channels {
+		if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+			hasOAuth = true
+			break
+		}
+	}
+	if hasOAuth {
+		h.oauthCredentialMu.Lock()
+		defer h.oauthCredentialMu.Unlock()
+	}
 	created, updated, err = h.mysql.ImportChannelBatch(ctx, channels)
 	if err != nil {
 		return 0, 0, err
 	}
 
-	h.syncToSQLite("ImportChannelBatch", func() error {
-		_, _, err := h.sqlite.ImportChannelBatch(ctx, channels)
-		return err
-	})
+	if hasOAuth {
+		for _, channel := range channels {
+			if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
+				h.oauthPrimaryReads.Store(channel.Config.ID, struct{}{})
+			}
+		}
+		if _, _, syncErr := h.sqlite.ImportChannelBatch(ctx, channels); syncErr != nil {
+			h.syncToSQLite("ImportChannelBatch", func() error { return syncErr })
+		}
+		for _, channel := range channels {
+			if channel == nil || channel.Config == nil || !channel.Config.UsesOAuth() {
+				continue
+			}
+			authoritative, loadErr := h.mysql.GetConfig(ctx, channel.Config.ID)
+			if loadErr != nil {
+				h.syncToSQLite("ImportChannelBatchOAuthSnapshot", func() error { return loadErr })
+				continue
+			}
+			if syncErr := h.sqlite.SyncOAuthConfigReplica(ctx, authoritative); syncErr != nil {
+				h.syncToSQLite("ImportChannelBatchOAuthSnapshot", func() error { return syncErr })
+				continue
+			}
+			h.oauthPrimaryReads.Delete(channel.Config.ID)
+		}
+	} else {
+		h.syncToSQLite("ImportChannelBatch", func() error {
+			_, _, err := h.sqlite.ImportChannelBatch(ctx, channels)
+			return err
+		})
+	}
 
 	return created, updated, nil
 }

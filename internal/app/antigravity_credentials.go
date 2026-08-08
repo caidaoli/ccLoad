@@ -66,63 +66,96 @@ func (m *antigravityCredentialManager) resolveCredential(
 	if !forceRefresh && !needsRefresh && !refreshMetadata && credential.ProjectID != "" && credential.Email != "" {
 		return cloneAntigravityCredential(credential), nil
 	}
+	forcedAccessToken := credential.AccessToken
+	forceRequested := forceRefresh
 
 	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
-		current, currentErr := m.cachedOrParse(cfg)
-		if currentErr != nil {
-			return nil, currentErr
-		}
-		refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), antigravityauth.CredentialRefreshLead)
-		if refreshErr != nil {
-			return nil, refreshErr
-		}
-
-		service := *m.service
-		if m.clientFor != nil {
-			service.Client = m.clientFor(cfg)
-		}
 		refreshCtx := context.Background()
 		if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
-		merged := current
-		tokenRefreshed := forceRefresh || refreshNeeded
-		if tokenRefreshed {
-			refreshed, err := service.Refresh(refreshCtx, current.RefreshToken)
-			if err != nil {
-				return nil, fmt.Errorf("refresh Antigravity credential for channel %d: %w", cfg.ID, err)
+		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
+		if getErr != nil {
+			return nil, fmt.Errorf("reload Antigravity credential before refresh: %w", getErr)
+		}
+		for attempt := 0; attempt < 2; attempt++ {
+			current, parseErr := antigravityauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, fmt.Errorf("parse Antigravity credential for channel %d: %w", currentCfg.ID, parseErr)
 			}
-			merged, err = current.MergeRefresh(refreshed)
+			refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), antigravityauth.CredentialRefreshLead)
+			if refreshErr != nil {
+				return nil, refreshErr
+			}
+			forceCurrent := forceRequested && current.AccessToken == forcedAccessToken
+			if !forceCurrent && !refreshNeeded && !refreshMetadata && current.ProjectID != "" && current.Email != "" {
+				m.cache(currentCfg.ID, current)
+				return cloneAntigravityCredential(current), nil
+			}
+
+			service := *m.service
+			if m.clientFor != nil {
+				service.Client = m.clientFor(currentCfg)
+			}
+			merged := current
+			tokenRefreshed := forceCurrent || refreshNeeded
+			if tokenRefreshed {
+				refreshed, err := service.Refresh(refreshCtx, current.RefreshToken)
+				if err != nil {
+					return nil, fmt.Errorf("refresh Antigravity credential for channel %d: %w", currentCfg.ID, err)
+				}
+				merged, err = current.MergeRefresh(refreshed)
+				if err != nil {
+					return nil, err
+				}
+			}
+			if refreshMetadata || tokenRefreshed || merged.ProjectID == "" || merged.Email == "" {
+				completed, err := service.CompleteCredential(refreshCtx, merged)
+				if err != nil {
+					return nil, fmt.Errorf("complete Antigravity credential for channel %d: %w", currentCfg.ID, err)
+				}
+				merged = completed
+			}
+			payload, err := merged.JSON()
 			if err != nil {
 				return nil, err
 			}
-		}
-		if refreshMetadata || tokenRefreshed || merged.ProjectID == "" || merged.Email == "" {
-			completed, err := service.CompleteCredential(refreshCtx, merged)
+			updated, err := m.store.CompareAndSwapOAuthCredential(
+				refreshCtx, currentCfg.ID, model.AuthTypeAntigravityOAuth, currentCfg.OAuthCredential, payload,
+			)
 			if err != nil {
-				return nil, fmt.Errorf("complete Antigravity credential for channel %d: %w", cfg.ID, err)
+				return nil, err
 			}
-			merged = completed
+			if !updated {
+				winner, getErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+				if getErr != nil {
+					return nil, fmt.Errorf("reload Antigravity credential after concurrent refresh: %w", getErr)
+				}
+				if attempt == 1 {
+					return nil, errors.New("antigravity credential changed during refresh retry")
+				}
+				currentCfg = winner
+				refreshMetadata = false
+				continue
+			}
+			m.cache(currentCfg.ID, merged)
+			if m.invalidateConfig != nil {
+				m.invalidateConfig(currentCfg.ID)
+			}
+			return cloneAntigravityCredential(merged), nil
 		}
-		payload, err := merged.JSON()
-		if err != nil {
-			return nil, err
-		}
-		if err := m.store.UpdateOAuthCredential(refreshCtx, cfg.ID, payload); err != nil {
-			return nil, err
-		}
-		m.mu.Lock()
-		m.entries[cfg.ID] = cloneAntigravityCredential(merged)
-		m.mu.Unlock()
-		if m.invalidateConfig != nil {
-			m.invalidateConfig(cfg.ID)
-		}
-		return cloneAntigravityCredential(merged), nil
+		return nil, errors.New("antigravity credential refresh retry exhausted")
 	})
 	if err != nil {
 		return nil, err
 	}
 	return value.(*antigravityauth.Credential), nil
+}
+
+func (m *antigravityCredentialManager) cache(channelID int64, credential *antigravityauth.Credential) {
+	m.mu.Lock()
+	m.entries[channelID] = cloneAntigravityCredential(credential)
+	m.mu.Unlock()
 }
 
 func (m *antigravityCredentialManager) cachedOrParse(cfg *model.Config) (*antigravityauth.Credential, error) {

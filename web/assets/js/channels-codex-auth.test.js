@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyChannelAuthEditorMode,
   cancelAntigravityOAuth,
+  cancelXAIDevice,
   pollCodexOAuthStatus,
   copyCodexOAuthLink,
   copyOAuthCredential,
@@ -11,6 +12,7 @@ const {
   formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
+  pollXAIDeviceStatus,
   getOAuthUsageState,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
@@ -21,9 +23,292 @@ const {
   setOAuthCredentialView,
   setupOAuthActions,
   showOAuthSession,
+  startXAIDevice,
+  submitXAICredentialBatch,
   submitAntigravityOAuthCallback,
   submitCodexOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('xAI Device helpers expose only safe fields and cancel the opaque session', async () => {
+  const requests = [];
+  const started = await startXAIDevice(async (url, options) => {
+    requests.push({ url, options });
+    return {
+      session: 'session with / symbols',
+      verification_uri: 'https://auth.x.ai/activate',
+      verification_uri_complete: 'https://auth.x.ai/activate?user_code=SAFE',
+      user_code: 'SAFE-CODE',
+      expires_at: '2030-01-01T00:00:00Z',
+      interval_seconds: 1,
+      status: 'pending',
+      device_code: 'must-not-escape'
+    };
+  });
+  assert.deepEqual(started, {
+    session: 'session with / symbols',
+    verification_uri: 'https://auth.x.ai/activate',
+    verification_uri_complete: 'https://auth.x.ai/activate?user_code=SAFE',
+    user_code: 'SAFE-CODE',
+    expires_at: '2030-01-01T00:00:00Z',
+    interval_seconds: 1,
+    status: 'pending'
+  });
+  assert.equal(requests[0].url, '/admin/xai/oauth/start');
+  assert.equal(requests[0].options.method, 'POST');
+
+  const statuses = [
+    { status: 'pending' },
+    { status: 'processing' },
+    { status: 'committing' },
+    { status: 'complete', channel_id: 91 }
+  ];
+  const complete = await pollXAIDeviceStatus(started.session, {
+    fetchStatus: async url => {
+      requests.push({ url });
+      return statuses.shift();
+    },
+    delay: async () => {},
+    interval: 0,
+    maxPolls: 4
+  });
+  assert.equal(complete.channel_id, 91);
+  assert.equal(requests[1].url, '/admin/xai/oauth/status?session=session%20with%20%2F%20symbols');
+
+  await cancelXAIDevice(started.session, async (url, options) => {
+    requests.push({ url, options });
+    return { status: 'cancelled' };
+  });
+  assert.equal(requests.at(-1).url, '/admin/xai/oauth/cancel');
+  assert.deepEqual(JSON.parse(requests.at(-1).options.body), { session: started.session });
+  assert.doesNotMatch(JSON.stringify(requests), /must-not-escape/);
+
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  try {
+    for (const verification_uri of [
+      'https://auth.x.ai:444/activate',
+      'https://auth.x.ai/activate#device-code'
+    ]) {
+      await assert.rejects(() => startXAIDevice(async () => ({
+        session: 'unsafe-session', verification_uri, user_code: 'UNSAFE'
+      })), /channels\.xai\.deviceStartFailed/);
+    }
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('xAI refresh-token and SSO submission clears secrets before the request starts', async () => {
+  const previousWindow = global.window;
+  const storageWrites = [];
+  global.window = {
+    t: key => key,
+    localStorage: { setItem: (...args) => storageWrites.push(args) },
+    sessionStorage: { setItem: (...args) => storageWrites.push(args) }
+  };
+  const makeResponse = () => ({
+    ok: true,
+    body: null,
+    async text() {
+      return `event: complete\ndata: {"event":"complete","created":1,"skipped":0,"failed":0}\n\n`;
+    }
+  });
+  try {
+    for (const [method, secret] of [['refresh_token', 'rt-secret-value'], ['sso', 'sso-secret-value']]) {
+      const textarea = { value: secret, removeAttribute() {}, setAttribute() {}, focus() {} };
+      let captured;
+      const result = await submitXAICredentialBatch(method, textarea, null, async (url, options) => {
+        assert.equal(textarea.value, '');
+        captured = { url, options };
+        return makeResponse();
+      });
+      assert.equal(result.created, 1);
+      assert.equal(captured.url, '/admin/xai/credentials/import/stream');
+      assert.deepEqual(JSON.parse(captured.options.body), {
+        method,
+        values: secret,
+        priority_increment: 10
+      });
+      assert.equal(textarea.value, '');
+      assert.doesNotMatch(captured.url, /secret/);
+    }
+    assert.deepEqual(storageWrites, []);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('closing and pagehide abort active xAI imports and clear browser-held secrets', async () => {
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    ...properties
+  });
+  const dialog = makeTarget({ open: true, close() { this.open = false; } });
+  const form = makeTarget({});
+  const provider = { value: 'xai', disabled: false };
+  const method = makeTarget({ value: 'refresh_token' });
+  const textarea = { value: 'rt-hanging', removeAttribute() {}, setAttribute() {}, focus() {} };
+  const button = { disabled: false, setAttribute() {}, removeAttribute() {} };
+  const statusWrites = [];
+  const status = { hidden: true, dataset: {} };
+  Object.defineProperty(status, 'textContent', {
+    set(value) { statusWrites.push(value); }, get() { return statusWrites.at(-1) || ''; }
+  });
+  const elements = new Map([
+    ['oauthLoginDialog', dialog],
+    ['oauthLoginForm', form],
+    ['oauthProviderSelect', provider],
+    ['xaiOAuthMethod', method],
+    ['xaiCredentialValues', textarea],
+    ['oauthAuthorizeButton', button],
+    ['oauthSessionFields', { hidden: true }],
+    ['oauthLoginDialogStatus', status]
+  ]);
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const pageListeners = {};
+  const signals = [];
+  let reloads = 0;
+  setGlobal('document', {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => []
+  });
+  setGlobal('window', {
+    t: key => key,
+    addEventListener: (type, listener) => { pageListeners[type] = listener; },
+    showError() {}
+  });
+  setGlobal('fetchWithAuth', (_url, options) => new Promise((resolve, reject) => {
+    signals.push(options.signal);
+    options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  }));
+  setGlobal('reloadChannelsList', async () => { reloads++; });
+
+  try {
+    setupOAuthActions();
+    const firstSubmit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    const beforeCloseWrites = statusWrites.length;
+    dialog.listeners.cancel({ preventDefault() {} });
+    await firstSubmit;
+    assert.equal(signals[0]?.aborted, true);
+    assert.equal(reloads, 0);
+    assert.equal(statusWrites.length, beforeCloseWrites);
+
+    dialog.open = true;
+    textarea.value = 'sso-hanging';
+    method.value = 'sso';
+    const secondSubmit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    const beforePagehideWrites = statusWrites.length;
+    pageListeners.pagehide();
+    await secondSubmit;
+    assert.equal(signals[1]?.aborted, true);
+    assert.equal(statusWrites.length, beforePagehideWrites);
+    assert.equal(reloads, 0);
+    assert.equal(provider.disabled, false);
+
+    textarea.value = 'unsubmitted-secret';
+    pageListeners.pagehide();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(textarea.value, '');
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
+
+test('failed interactive xAI device cancellation keeps the dialog and blocks reauthorization', async () => {
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    ...properties
+  });
+  const dialog = makeTarget({ open: true, close() { this.open = false; } });
+  const form = makeTarget({});
+  const restart = makeTarget({ disabled: false });
+  const provider = { value: 'xai', disabled: false };
+  const method = makeTarget({ value: 'device' });
+  const button = { disabled: false };
+  const status = { textContent: '', hidden: true, dataset: {} };
+  const elements = new Map([
+    ['oauthLoginDialog', dialog], ['oauthLoginForm', form],
+    ['oauthProviderSelect', provider], ['xaiOAuthMethod', method],
+    ['oauthAuthorizeButton', button], ['oauthSessionFields', { hidden: true }],
+    ['oauthLoginDialogStatus', status], ['xaiDeviceRestart', restart],
+    ['xaiDeviceSessionFields', { hidden: true }],
+    ['xaiVerificationLink', { href: '', textContent: '' }],
+    ['xaiUserCode', { textContent: '', focus() {} }],
+    ['xaiDeviceExpiresAt', { textContent: '' }]
+  ]);
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  let starts = 0;
+  let cancelFails = true;
+  let pollSignal;
+  setGlobal('document', {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => []
+  });
+  setGlobal('window', { t: key => key, showError() {} });
+  setGlobal('fetchDataWithAuth', async (url, options = {}) => {
+    if (url.endsWith('/oauth/start')) {
+      starts++;
+      return {
+        session: 'cancel-failure-session', verification_uri: 'https://auth.x.ai/activate',
+        user_code: 'SAFE', expires_at: '2030-01-01T00:00:00Z', interval_seconds: 1
+      };
+    }
+    if (url.includes('/oauth/status')) {
+      pollSignal = options.signal;
+      return new Promise((_resolve, reject) => {
+        options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    }
+    if (url.endsWith('/oauth/cancel')) {
+      if (cancelFails) throw new Error('cancel rejected');
+      return { status: 'cancelled' };
+    }
+    throw new Error(`unexpected ${url}`);
+  });
+  setGlobal('reloadChannelsList', async () => {});
+
+  try {
+    setupOAuthActions();
+    const submit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    dialog.listeners.cancel({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(dialog.open, true);
+    assert.equal(pollSignal.aborted, false);
+    assert.equal(status.textContent, 'cancel rejected');
+
+    restart.listeners.click();
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(starts, 1);
+    assert.equal(dialog.open, true);
+
+    cancelFails = false;
+    dialog.listeners.cancel({ preventDefault() {} });
+    await submit;
+    assert.equal(pollSignal.aborted, true);
+    assert.equal(dialog.open, false);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
+  }
+});
 
 test('Codex plan badge appends the subscription calendar date', () => {
   assert.equal(formatCodexPlanBadgeText('plus', '2030-02-03T04:05:06Z'), 'plus · 2030-02-03');
@@ -208,8 +493,9 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     close() { this.open = false; }
   });
   const loginForm = makeTarget({});
-  const providerSelect = { value: 'codex', disabled: false, focus() { this.focused = true; } };
-  const authorizeButton = { disabled: false };
+  const providerSelect = makeTarget({ value: 'codex', disabled: false, focus() { this.focused = true; } });
+  const xaiMethod = makeTarget({ value: 'device' });
+  const authorizeButton = { disabled: false, textContent: '', setAttribute(name, value) { this[name] = value; } };
   const sessionFields = { hidden: false };
   const authorizationURL = { value: '', focus() {}, select() {} };
   const openLink = { href: '', removeAttribute() { this.href = ''; } };
@@ -219,6 +505,10 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ['oauthLoginDialog', dialog],
     ['oauthLoginForm', loginForm],
     ['oauthProviderSelect', providerSelect],
+    ['xaiOAuthMethod', xaiMethod],
+    ['xaiOAuthControls', { hidden: true }],
+    ['xaiCredentialSecretField', { hidden: true }],
+    ['xaiCredentialValues', { value: '', removeAttribute() {}, setAttribute() {} }],
     ['oauthAuthorizeButton', authorizeButton],
     ['oauthSessionFields', sessionFields],
     ['oauthAuthorizationURL', authorizationURL],
@@ -251,6 +541,14 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(providerSelect.focused, true);
     assert.equal(sessionFields.hidden, true);
     assert.deepEqual(requests, []);
+
+    providerSelect.value = 'xai';
+    xaiMethod.value = 'sso';
+    providerSelect.listeners.change();
+    xaiMethod.listeners.change();
+    assert.equal(authorizeButton.textContent, 'channels.xai.importSecrets');
+    openOAuthLoginDialog(loginButton);
+    assert.equal(authorizeButton.textContent, 'channels.oauth.startAuthorization');
 
     providerSelect.value = 'antigravity';
     await loginForm.listeners.submit({ preventDefault() {} });
@@ -433,7 +731,7 @@ test('OAuth credential import streams real progress and sends import options', a
           }
         }
       };
-    });
+    }, 'xai', 10);
 
     assert.equal(result.created, 1);
     assert.equal(result.failed, 1);
@@ -442,7 +740,7 @@ test('OAuth credential import streams real progress and sends import options', a
     assert.equal(captured[0].options.method, 'POST');
     assert.deepEqual(captured[0].options.body.items, [
       ['files', files[0]],
-      ['provider', 'auto'],
+      ['provider', 'xai'],
       ['priority_increment', '10']
     ]);
     assert.equal(elements.get('oauthCredentialImportProgress').hidden, false);

@@ -173,6 +173,13 @@ func (s *SQLStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Co
 			if err := s.lockPostgresExplicitIDTable(ctx, tx, "channels"); err != nil {
 				return err
 			}
+			existingAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, id)
+			if loadErr == nil && (model.NormalizeAuthType(existingAuthType) != model.AuthTypeAPIKey || authType != model.AuthTypeAPIKey) {
+				return errors.New("OAuth channel cannot replace or be replaced through CreateConfig")
+			}
+			if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
+				return loadErr
+			}
 		}
 		if id == 0 {
 			// 插入渠道记录（数据库生成自增 id）
@@ -339,28 +346,172 @@ func (s *SQLStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config
 	return config, nil
 }
 
-// UpdateOAuthCredential atomically replaces only the private credential payload.
-// It cannot turn a regular channel into an OAuth channel.
-func (s *SQLStore) UpdateOAuthCredential(ctx context.Context, id int64, credential string) error {
-	if strings.TrimSpace(credential) == "" {
-		return errors.New("OAuth credential cannot be empty")
+// CompareAndSwapOAuthCredential replaces the complete private credential only
+// when both its provider and previous payload still match.
+func (s *SQLStore) CompareAndSwapOAuthCredential(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	authType := model.NormalizeAuthType(expectedAuthType)
+	if authType == "" || authType == model.AuthTypeAPIKey {
+		return false, errors.New("OAuth auth type is invalid")
 	}
-	result, err := s.ExecContext(ctx, `
-		UPDATE channels
-		SET oauth_credential = ?, updated_at = ?
-		WHERE id = ? AND auth_type <> ?
-	`, credential, timeToUnix(time.Now()), id, model.AuthTypeAPIKey)
+	if strings.TrimSpace(expectedCredential) == "" {
+		return false, errors.New("expected OAuth credential cannot be empty")
+	}
+	if strings.TrimSpace(nextCredential) == "" {
+		return false, errors.New("next OAuth credential cannot be empty")
+	}
+	matched := false
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		matched = false
+		currentAuthType, currentCredential, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if currentAuthType != authType || currentCredential != expectedCredential {
+			return nil
+		}
+		if _, updateErr := s.execTx(ctx, tx, `
+			UPDATE channels SET oauth_credential = ?, updated_at = ? WHERE id = ?
+		`, nextCredential, timeToUnix(time.Now()), channelID); updateErr != nil {
+			return updateErr
+		}
+		matched = true
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("update OAuth credential: %w", err)
+		return false, fmt.Errorf("compare and swap OAuth credential: %w", err)
 	}
-	affected, err := result.RowsAffected()
+	return matched, nil
+}
+
+func (s *SQLStore) loadOAuthCredentialForUpdate(ctx context.Context, tx *sql.Tx, channelID int64) (string, string, error) {
+	query := `SELECT auth_type, COALESCE(oauth_credential, '') FROM channels WHERE id = ?`
+	if s.supportsRowLock() {
+		query += ` FOR UPDATE`
+	}
+	var authType, credential string
+	err := s.queryRowTx(ctx, tx, query, channelID).Scan(&authType, &credential)
+	return authType, credential, err
+}
+
+// SyncOAuthConfigReplica mirrors a primary OAuth config into a private read
+// replica. It is intentionally absent from Store.
+func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config) error {
+	if cfg == nil || !cfg.UsesOAuth() {
+		return errors.New("OAuth replica config is invalid")
+	}
+	if cfg.ID <= 0 || strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return errors.New("OAuth replica config is invalid")
+	}
+	authType := cfg.GetAuthType()
+	name := cfg.Name
+	urls := cfg.URLs.Clone()
+	protocolTransformMode := cfg.ProtocolTransformMode
+	customRules, err := marshalCustomRequestRules(cfg.CustomRequestRules)
 	if err != nil {
-		return fmt.Errorf("read OAuth credential update result: %w", err)
+		return err
 	}
-	if affected != 1 {
-		return errors.New("OAuth channel not found")
+	cooldownDetectionRules, err := marshalCooldownDetectionRules(cfg.CooldownDetectionRules)
+	if err != nil {
+		return err
 	}
+	nowUnix := timeToUnix(time.Now())
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		currentAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, cfg.ID)
+		switch {
+		case errors.Is(loadErr, sql.ErrNoRows):
+			if _, insertErr := s.execTx(ctx, tx, `
+				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_until, cooldown_duration_ms, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, retry_other_keys_on_failure, created_at, updated_at)
+				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, cfg.ID, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, authType, cfg.OAuthCredential,
+				cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled, cfg.ScheduledCheckModel,
+				cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit, cfg.CostMultiplier,
+				customRules, cooldownDetectionRules, cfg.ProxyURL, cfg.RetryOtherKeysOnFailure, nowUnix, nowUnix); insertErr != nil {
+				return insertErr
+			}
+		case loadErr != nil:
+			return loadErr
+		case model.NormalizeAuthType(currentAuthType) != authType:
+			return errors.New("OAuth replica auth type does not match primary")
+		default:
+			if _, updateErr := s.execTx(ctx, tx, `
+				UPDATE channels SET
+					name = ?, url = ?, priority = ?, rpm_limit = ?, max_concurrency = ?, oauth_credential = ?,
+					websockets = ?, protocol_transform_mode = ?, enabled = ?, scheduled_check_enabled = ?,
+					scheduled_check_model = ?, cooldown_until = ?, cooldown_duration_ms = ?, daily_cost_limit = ?,
+					cost_multiplier = ?, custom_request_rules = ?, cooldown_detection_rules = ?, proxy_url = ?,
+					retry_other_keys_on_failure = ?, updated_at = ?
+				WHERE id = ?
+			`, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, cfg.OAuthCredential,
+				cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled,
+				cfg.ScheduledCheckModel, cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit,
+				cfg.CostMultiplier, customRules, cooldownDetectionRules, cfg.ProxyURL,
+				cfg.RetryOtherKeysOnFailure, nowUnix, cfg.ID); updateErr != nil {
+				return updateErr
+			}
+		}
+		if err := s.saveModelEntriesTx(ctx, tx, cfg.ID, cfg.ModelEntries); err != nil {
+			return fmt.Errorf("sync OAuth replica models: %w", err)
+		}
+		return s.syncPostgresIDSequence(ctx, tx, "channels")
+	})
+	if err != nil {
+		return fmt.Errorf("sync OAuth config replica: %w", err)
+	}
+	s.unmarkChannelDeleted(cfg.ID)
 	return nil
+}
+
+// UpdateOAuthModelStateIfCredentialMatches conditionally commits model state
+// derived from one exact OAuth credential snapshot.
+func (s *SQLStore) UpdateOAuthModelStateIfCredentialMatches(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential string,
+	modelEntries []model.ModelEntry,
+	scheduledCheckModel string,
+) (bool, error) {
+	authType := model.NormalizeAuthType(expectedAuthType)
+	if authType == "" || authType == model.AuthTypeAPIKey {
+		return false, errors.New("OAuth auth type is invalid")
+	}
+	if strings.TrimSpace(expectedCredential) == "" {
+		return false, errors.New("expected OAuth credential cannot be empty")
+	}
+	matched := false
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		matched = false
+		currentAuthType, currentCredential, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, channelID)
+		if errors.Is(loadErr, sql.ErrNoRows) {
+			return nil
+		}
+		if loadErr != nil {
+			return loadErr
+		}
+		if currentAuthType != authType || currentCredential != expectedCredential {
+			return nil
+		}
+		if err := s.saveModelEntriesTx(ctx, tx, channelID, modelEntries); err != nil {
+			return fmt.Errorf("save OAuth model state: %w", err)
+		}
+		if _, updateErr := s.execTx(ctx, tx, `
+			UPDATE channels SET scheduled_check_model = ?, updated_at = ? WHERE id = ?
+		`, scheduledCheckModel, timeToUnix(time.Now()), channelID); updateErr != nil {
+			return updateErr
+		}
+		matched = true
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("update OAuth model state: %w", err)
+	}
+	return matched, nil
 }
 
 // UpdateChannelEnabled updates only the enabled flag.
@@ -418,6 +569,9 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				result.NotFound = append(result.NotFound, channelID)
 				continue
 			}
+			if patch.ModelImportMode != "" && state.authType != model.AuthTypeAPIKey {
+				return fmt.Errorf("patch channel %d: OAuth model state is credential-owned", channelID)
+			}
 
 			nextCostMultiplier := state.costMultiplier
 			if patch.CostMultiplier != nil {
@@ -468,6 +622,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 }
 
 type batchConfigPatchState struct {
+	authType              string
 	costMultiplier        float64
 	protocolTransformMode string
 	scheduledCheckModel   string
@@ -499,7 +654,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
-	query := `SELECT id, cost_multiplier, protocol_transform_mode, scheduled_check_model
+	query := `SELECT id, auth_type, cost_multiplier, protocol_transform_mode, scheduled_check_model
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
 		query += ` FOR UPDATE`
@@ -512,10 +667,11 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	for rows.Next() {
 		var channelID int64
 		state := &batchConfigPatchState{}
-		if err := rows.Scan(&channelID, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
+		if err := rows.Scan(&channelID, &state.authType, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan channel for batch patch: %w", err)
 		}
+		state.authType = model.NormalizeAuthType(state.authType)
 		states[channelID] = state
 	}
 	if err := rows.Err(); err != nil {

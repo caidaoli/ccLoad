@@ -8,12 +8,14 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -25,6 +27,8 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
+	sqlstore "ccLoad/internal/storage/sql"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -38,6 +42,95 @@ type oauthUsageRoundTripper func(*http.Request) (*http.Response, error)
 
 func (f oauthUsageRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+type concurrentOAuthWinnerStore struct {
+	storage.Store
+	once       sync.Once
+	authType   string
+	winnerJSON string
+	winnerErr  error
+}
+
+type blockingCodexModelStateStore struct {
+	storage.Store
+	firstStarted chan struct{}
+	releaseFirst chan struct{}
+	calls        atomic.Int32
+}
+
+type snapshotBarrierStore struct {
+	storage.Store
+	calls   atomic.Int32
+	ready   chan struct{}
+	release chan struct{}
+}
+
+func (s *snapshotBarrierStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
+	configs, err := s.Store.ListConfigs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	call := s.calls.Add(1)
+	if call <= 2 {
+		if call == 2 {
+			close(s.ready)
+		}
+		select {
+		case <-s.release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return configs, nil
+}
+
+func (s *blockingCodexModelStateStore) UpdateOAuthModelStateIfCredentialMatches(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential string,
+	modelEntries []model.ModelEntry,
+	scheduledCheckModel string,
+) (bool, error) {
+	if s.calls.Add(1) == 1 {
+		close(s.firstStarted)
+		select {
+		case <-s.releaseFirst:
+		case <-ctx.Done():
+			return false, ctx.Err()
+		}
+	}
+	return s.Store.UpdateOAuthModelStateIfCredentialMatches(
+		ctx, channelID, expectedAuthType, expectedCredential, modelEntries, scheduledCheckModel,
+	)
+}
+
+func (s *concurrentOAuthWinnerStore) CompareAndSwapOAuthCredential(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	injected := false
+	s.once.Do(func() {
+		injected = true
+		updated, err := s.Store.CompareAndSwapOAuthCredential(
+			ctx, channelID, s.authType, expectedCredential, s.winnerJSON,
+		)
+		if err != nil {
+			s.winnerErr = err
+		} else if !updated {
+			s.winnerErr = fmt.Errorf("inject concurrent OAuth winner: compare and swap missed")
+		}
+	})
+	if s.winnerErr != nil {
+		return false, s.winnerErr
+	}
+	if injected {
+		return false, nil
+	}
+	return s.Store.CompareAndSwapOAuthCredential(
+		ctx, channelID, expectedAuthType, expectedCredential, nextCredential,
+	)
 }
 
 func codexTestIDToken(t *testing.T, email, accountID string) string {
@@ -136,6 +229,844 @@ func newAcceptedCodexImportClient() *http.Client {
 			return nil, fmt.Errorf("unexpected Codex import validation request: %s %s", request.Method, request.URL.Host)
 		}
 	})}
+}
+
+func xaiTestCredential(accessToken, refreshToken string, expiresAt time.Time) *xaiauth.Credential {
+	return &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: accessToken, RefreshToken: refreshToken,
+		Expired: expiresAt.UTC().Format(time.RFC3339), ClientID: xaiauth.ClientID, TokenEndpoint: xaiauth.TokenURL,
+	}
+}
+
+func TestCompleteXAICredentialProbesBillingWithoutRefreshingFreshToken(t *testing.T) {
+	t.Parallel()
+	var requests atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if request.Method != http.MethodGet || request.URL.String() != xaiauth.CLIBaseURL+"/billing" {
+			return nil, fmt.Errorf("unexpected request: %s %s", request.Method, request.URL)
+		}
+		if request.Header.Get("Authorization") != "Bearer fresh-access" {
+			return nil, fmt.Errorf("unexpected authorization")
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"subscription_tier":"pro","entitlement_status":"active"}`)), Request: request}, nil
+	})}
+
+	got, err := completeXAICredential(context.Background(), xaiauth.NewService(client), client, xaiTestCredential("fresh-access", "refresh-secret", time.Now().Add(time.Hour)), xaiauth.CLIBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "fresh-access" || got.SubscriptionTier != "pro" || got.EntitlementStatus != "active" || requests.Load() != 1 {
+		t.Fatalf("completion = %s, requests=%d", got, requests.Load())
+	}
+}
+
+func TestCompleteXAICredentialRefreshesBadCredentialOnlyOnce(t *testing.T) {
+	t.Parallel()
+	var probes atomic.Int32
+	var refreshes atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodGet:
+			probe := probes.Add(1)
+			status := http.StatusUnauthorized
+			body := `{}`
+			if probe == 2 && request.Header.Get("Authorization") == "Bearer rotated-access" {
+				status = http.StatusOK
+				body = `{"subscription_tier":"premium"}`
+			}
+			return &http.Response{StatusCode: status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		case http.MethodPost:
+			refreshes.Add(1)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"access_token":"rotated-access","refresh_token":"rotated-refresh","expires_in":3600}`)), Request: request}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method %s", request.Method)
+		}
+	})}
+
+	got, err := completeXAICredential(context.Background(), xaiauth.NewService(client), client, xaiTestCredential("rejected-access", "refresh-secret", time.Now().Add(time.Hour)), xaiauth.CLIBaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AccessToken != "rotated-access" || got.RefreshToken != "rotated-refresh" || probes.Load() != 2 || refreshes.Load() != 1 {
+		t.Fatalf("completion = %s, probes=%d refreshes=%d", got, probes.Load(), refreshes.Load())
+	}
+}
+
+func TestCompleteXAICredentialRejectsIndeterminateBillingWithoutRefresh(t *testing.T) {
+	t.Parallel()
+	secret := "body-must-not-leak"
+	var refreshes atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodPost {
+			refreshes.Add(1)
+		}
+		return &http.Response{StatusCode: http.StatusForbidden, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":"` + secret + `"}`)), Request: request}, nil
+	})}
+
+	_, err := completeXAICredential(context.Background(), xaiauth.NewService(client), client, xaiTestCredential("fresh-access", "refresh-secret", time.Now().Add(time.Hour)), xaiauth.CLIBaseURL)
+	if err == nil || strings.Contains(err.Error(), secret) || refreshes.Load() != 0 {
+		t.Fatalf("unsafe completion error=%v refreshes=%d", err, refreshes.Load())
+	}
+}
+
+func TestHandleImportOAuthCredentialsDetectsXAIAndExpandsCredentialsMap(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.String() != xaiauth.CLIBaseURL+"/billing" {
+			return nil, fmt.Errorf("unexpected request: %s %s", request.Method, request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
+	})}
+	server := &Server{store: store, client: client}
+	expiresAt := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	container := fmt.Sprintf(`{"credentials":{"map-key-secret-b":{"type":"xai","access_token":"access-secret-b","refresh_token":"refresh-secret-b","email":"b@example.com","expired":%q},"map-key-secret-a":{"client_id":%q,"access_token":"access-secret-a","refresh_token":"refresh-secret-a","email":"a@example.com","expired":%q}}}`, expiresAt, xaiauth.ClientID, expiresAt)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "xai.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(part, container); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("provider", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.WriteField("priority_increment", "10"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 2 || result.Data.Skipped != 0 || result.Data.Failed != 0 {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	for _, secret := range []string{"map-key-secret", "access-secret", "refresh-secret"} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("response leaked %q: %s", secret, response.Body.String())
+		}
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 2 {
+		t.Fatalf("channels=%d error=%v", len(channels), err)
+	}
+	wantPriority := map[string]int{"xAI-a@example.com": 10, "xAI-b@example.com": 20}
+	for _, channel := range channels {
+		if !channel.UsesXAIOAuth() || channel.Priority != wantPriority[channel.Name] || len(channel.ModelEntries) != len(xaiOAuthDefaultModels) {
+			t.Fatalf("unexpected xAI channel: %#v", channel)
+		}
+	}
+}
+
+func newPendingXAIDeviceService(t *testing.T, deviceStarts *atomic.Int32) *xaiauth.Service {
+	t.Helper()
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.String() {
+		case xaiauth.DiscoveryURL:
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`)), Request: request}, nil
+		case xaiauth.DeviceCodeURL:
+			index := deviceStarts.Add(1)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"device_code":"device-secret-%d","user_code":"CODE-%d","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`, index, index))), Request: request}, nil
+		case xaiauth.TokenURL:
+			<-request.Context().Done()
+			return nil, request.Context().Err()
+		default:
+			return nil, fmt.Errorf("unexpected request: %s", request.URL)
+		}
+	})}
+	return xaiauth.NewService(client)
+}
+
+func TestXAIDeviceSessionBindsAdminAndHidesDeviceCode(t *testing.T) {
+	t.Parallel()
+	var starts atomic.Int32
+	manager := newXAIDeviceManager(context.Background(), newPendingXAIDeviceService(t, &starts),
+		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return nil, errors.New("completion must not run")
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) {
+			return 0, errors.New("commit must not run")
+		},
+	)
+	t.Cleanup(manager.close)
+
+	started, err := manager.start(context.Background(), "admin-session-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(started)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(started.Session) != 32 || strings.Contains(string(encoded), "device-secret") || started.UserCode != "CODE-1" {
+		t.Fatalf("unsafe device response: %s", encoded)
+	}
+	if _, ok := manager.status("admin-session-b", started.Session); ok || manager.cancelSession("admin-session-b", started.Session) {
+		t.Fatal("different administrator accessed xAI device session")
+	}
+	if !manager.cancelSession("admin-session-a", started.Session) {
+		t.Fatal("owner could not cancel xAI device session")
+	}
+	status, ok := manager.status("admin-session-a", started.Session)
+	if !ok || status.Status != "cancelled" || status.Error != "" {
+		t.Fatalf("cancelled status = %#v, ok=%v", status, ok)
+	}
+}
+
+func TestXAIDeviceStartCancelsPriorSessionForSameAdmin(t *testing.T) {
+	t.Parallel()
+	var starts atomic.Int32
+	manager := newXAIDeviceManager(context.Background(), newPendingXAIDeviceService(t, &starts),
+		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return nil, errors.New("unexpected completion")
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
+	)
+	t.Cleanup(manager.close)
+
+	first, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStatus, ok := manager.status("admin-session", first.Session)
+	if !ok || firstStatus.Status != "cancelled" || first.Session == second.Session {
+		t.Fatalf("replacement statuses: first=%#v second=%#v", firstStatus, second)
+	}
+}
+
+func TestXAIDeviceCancelWinsBeforeCredentialCommit(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var body string
+		switch request.URL.String() {
+		case xaiauth.DiscoveryURL:
+			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+		case xaiauth.DeviceCodeURL:
+			body = `{"device_code":"device-secret","user_code":"CODE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		case xaiauth.TokenURL:
+			body = `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
+		default:
+			return nil, fmt.Errorf("unexpected request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	completionStarted := make(chan struct{})
+	releaseCompletion := make(chan struct{})
+	var commits atomic.Int32
+	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			close(completionStarted)
+			<-releaseCompletion
+			return credential, nil
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) {
+			commits.Add(1)
+			return 1, nil
+		},
+	)
+	t.Cleanup(manager.close)
+	started, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-completionStarted:
+	case <-time.After(time.Second):
+		t.Fatal("credential completion did not start")
+	}
+	if !manager.cancelSession("admin-session", started.Session) {
+		t.Fatal("cancel failed")
+	}
+	close(releaseCompletion)
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, ok := manager.status("admin-session", started.Session)
+		if ok && status.Status == "cancelled" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session status = %#v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if commits.Load() != 0 {
+		t.Fatalf("cancelled device session committed %d credentials", commits.Load())
+	}
+}
+
+func TestXAIDeviceCommitWinsBeforeCancel(t *testing.T) {
+	t.Parallel()
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		var body string
+		switch request.URL.String() {
+		case xaiauth.DiscoveryURL:
+			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+		case xaiauth.DeviceCodeURL:
+			body = `{"device_code":"commit-secret","user_code":"COMMIT","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		case xaiauth.TokenURL:
+			body = `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
+		default:
+			return nil, fmt.Errorf("unexpected request: %s", request.URL)
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	commitStarted := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return credential, nil
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) {
+			close(commitStarted)
+			<-releaseCommit
+			return 42, nil
+		},
+	)
+	t.Cleanup(manager.close)
+	started, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("commit did not start")
+	}
+	status, ok := manager.status("admin-session", started.Session)
+	if !ok || status.Status != "committing" {
+		t.Fatalf("status during commit = %#v, ok=%v", status, ok)
+	}
+	if manager.cancelSession("admin-session", started.Session) {
+		t.Fatal("cancel reported success after commit became irreversible")
+	}
+	manager.cancelByAdmin("admin-session")
+	if status, ok := manager.status("admin-session", started.Session); !ok || status.Status != "committing" {
+		t.Fatalf("admin revocation overwrote committing status: %#v, ok=%v", status, ok)
+	}
+	close(releaseCommit)
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, ok = manager.status("admin-session", started.Session)
+		if ok && status.Status == "complete" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("terminal status = %#v, ok=%v", status, ok)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if status.ChannelID != 42 {
+		t.Fatalf("channel ID = %d, want 42", status.ChannelID)
+	}
+}
+
+func TestXAIDeviceCloseCancelsPendingAndClearsSessions(t *testing.T) {
+	t.Parallel()
+	pollCancelled := make(chan struct{})
+	var cancelOnce sync.Once
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+		switch request.URL.String() {
+		case xaiauth.DeviceCodeURL:
+			body = `{"device_code":"close-secret","user_code":"CLOSE","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		case xaiauth.TokenURL:
+			<-request.Context().Done()
+			cancelOnce.Do(func() { close(pollCancelled) })
+			return nil, request.Context().Err()
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+		func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return nil, errors.New("unexpected completion")
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
+	)
+	started, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager.close()
+	select {
+	case <-pollCancelled:
+	case <-time.After(time.Second):
+		t.Fatal("close did not cancel pending device poll")
+	}
+	if status, ok := manager.status("admin-session", started.Session); ok {
+		t.Fatalf("closed manager retained session: %#v", status)
+	}
+	if _, err := manager.start(context.Background(), "admin-session"); err == nil {
+		t.Fatal("closed manager accepted a new device start")
+	}
+	manager.close()
+}
+
+func TestXAIDeviceTerminalStatusExpires(t *testing.T) {
+	t.Parallel()
+	now := time.Now()
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
+		switch request.URL.String() {
+		case xaiauth.DiscoveryURL:
+			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+		case xaiauth.DeviceCodeURL:
+			body = `{"device_code":"ttl-secret","user_code":"TTL","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return credential, nil
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) { return 7, nil },
+	)
+	manager.now = func() time.Time { return now }
+	t.Cleanup(manager.close)
+	started, err := manager.start(context.Background(), "admin-session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for {
+		status, ok := manager.status("admin-session", started.Session)
+		if ok && status.Status == "complete" {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session did not complete: %#v", status)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	now = now.Add(10 * time.Minute)
+	if status, ok := manager.status("admin-session", started.Session); ok {
+		t.Fatalf("expired terminal status remained visible: %#v", status)
+	}
+}
+
+func TestXAIDeviceConcurrentStartsAreScopedByAdministrator(t *testing.T) {
+	newService := func(firstStarted chan<- struct{}, releaseFirst <-chan struct{}) *xaiauth.Service {
+		var starts atomic.Int32
+		return xaiauth.NewService(&http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+			body := `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+			if request.URL.String() == xaiauth.DeviceCodeURL {
+				index := starts.Add(1)
+				if index == 1 {
+					close(firstStarted)
+					<-releaseFirst
+				}
+				body = fmt.Sprintf(`{"device_code":"secret-%d","user_code":"CODE-%d","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`, index, index)
+			}
+			if request.URL.String() == xaiauth.TokenURL {
+				<-request.Context().Done()
+				return nil, request.Context().Err()
+			}
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		})})
+	}
+	newManager := func(service *xaiauth.Service) *xaiDeviceManager {
+		return newXAIDeviceManager(context.Background(), service,
+			func(context.Context, *xaiauth.Credential) (*xaiauth.Credential, error) {
+				return nil, errors.New("unexpected completion")
+			},
+			func(context.Context, *xaiauth.Credential) (int64, error) { return 0, errors.New("unexpected commit") },
+		)
+	}
+
+	t.Run("newer start wins for one administrator", func(t *testing.T) {
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		manager := newManager(newService(firstStarted, releaseFirst))
+		t.Cleanup(manager.close)
+		firstResult := make(chan xaiDeviceStartResponse, 1)
+		firstErr := make(chan error, 1)
+		go func() {
+			result, err := manager.start(context.Background(), "admin-a")
+			firstResult <- result
+			firstErr <- err
+		}()
+		<-firstStarted
+		second, err := manager.start(context.Background(), "admin-a")
+		if err != nil || second.UserCode != "CODE-2" {
+			t.Fatalf("second start = (%#v, %v)", second, err)
+		}
+		close(releaseFirst)
+		if result, err := <-firstResult, <-firstErr; err == nil || result.Session != "" {
+			t.Fatalf("superseded first start = (%#v, %v)", result, err)
+		}
+		if status, ok := manager.status("admin-a", second.Session); !ok || status.Status != "pending" {
+			t.Fatalf("winning status = %#v, ok=%v", status, ok)
+		}
+	})
+
+	t.Run("different administrators do not block", func(t *testing.T) {
+		firstStarted := make(chan struct{})
+		releaseFirst := make(chan struct{})
+		manager := newManager(newService(firstStarted, releaseFirst))
+		t.Cleanup(manager.close)
+		firstDone := make(chan error, 1)
+		go func() {
+			_, err := manager.start(context.Background(), "admin-a")
+			firstDone <- err
+		}()
+		<-firstStarted
+		secondDone := make(chan error, 1)
+		go func() {
+			_, err := manager.start(context.Background(), "admin-b")
+			secondDone <- err
+		}()
+		select {
+		case err := <-secondDone:
+			if err != nil {
+				t.Fatal(err)
+			}
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("different administrator was blocked by an unrelated device start")
+		}
+		close(releaseFirst)
+		if err := <-firstDone; err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestXAIDeviceHandlersEnforceAdminSessionAndCommitBoundary(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	adminA, adminB := "admin-a-bearer", "admin-b-bearer"
+	auth := newTestAuthService(t)
+	injectAdminToken(auth, adminA, time.Now().Add(time.Hour))
+	injectAdminToken(auth, adminB, time.Now().Add(time.Hour))
+	commitStarted := make(chan struct{})
+	releaseCommit := make(chan struct{})
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := `{"access_token":"access","refresh_token":"refresh","expires_in":3600}`
+		switch request.URL.String() {
+		case xaiauth.DiscoveryURL:
+			body = `{"device_authorization_endpoint":"` + xaiauth.DeviceCodeURL + `","token_endpoint":"` + xaiauth.TokenURL + `"}`
+		case xaiauth.DeviceCodeURL:
+			body = `{"device_code":"handler-secret","user_code":"HANDLER","verification_uri":"https://auth.x.ai/activate","expires_in":600,"interval":1}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	manager := newXAIDeviceManager(context.Background(), xaiauth.NewService(client),
+		func(_ context.Context, credential *xaiauth.Credential) (*xaiauth.Credential, error) {
+			return credential, nil
+		},
+		func(context.Context, *xaiauth.Credential) (int64, error) {
+			close(commitStarted)
+			<-releaseCommit
+			return 99, nil
+		},
+	)
+	t.Cleanup(manager.close)
+	server := &Server{xaiDevice: manager}
+	engine := gin.New()
+	engine.POST("/admin/xai/oauth/start", auth.RequireAdminAuth(), server.HandleStartXAIDeviceOAuth)
+	engine.GET("/admin/xai/oauth/status", auth.RequireAdminAuth(), server.HandleXAIDeviceOAuthStatus)
+	engine.POST("/admin/xai/oauth/cancel", auth.RequireAdminAuth(), server.HandleCancelXAIDeviceOAuth)
+	do := func(method, target, bearer string, body any) *httptest.ResponseRecorder {
+		t.Helper()
+		request := newJSONRequest(t, method, target, body)
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		response := httptest.NewRecorder()
+		engine.ServeHTTP(response, request)
+		return response
+	}
+	startResponse := do(http.MethodPost, "/admin/xai/oauth/start", adminA, nil)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	started := mustParseAPIResponse[xaiDeviceStartResponse](t, startResponse.Body.Bytes()).Data
+	if strings.Contains(startResponse.Body.String(), "handler-secret") || started.Session == "" {
+		t.Fatalf("unsafe start response: %s", startResponse.Body.String())
+	}
+	select {
+	case <-commitStarted:
+	case <-time.After(time.Second):
+		t.Fatal("commit did not start")
+	}
+	unauthorized := do(http.MethodGet, "/admin/xai/oauth/status?session="+url.QueryEscape(started.Session), adminB, nil)
+	if unauthorized.Code != http.StatusNotFound {
+		t.Fatalf("cross-admin status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	cancel := do(http.MethodPost, "/admin/xai/oauth/cancel", adminA, map[string]string{"session": started.Session})
+	if cancel.Code != http.StatusNotFound || strings.Contains(cancel.Body.String(), "cancelled") {
+		t.Fatalf("commit-boundary cancel=%d body=%s", cancel.Code, cancel.Body.String())
+	}
+	statusResponse := do(http.MethodGet, "/admin/xai/oauth/status?session="+url.QueryEscape(started.Session), adminA, nil)
+	status := mustParseAPIResponse[xaiDeviceStatusResponse](t, statusResponse.Body.Bytes()).Data
+	if statusResponse.Code != http.StatusOK || status.Status != "committing" {
+		t.Fatalf("status during commit=%d %#v", statusResponse.Code, status)
+	}
+	close(releaseCommit)
+}
+
+func xaiTestJWT(email, subject string) string {
+	payload, _ := json.Marshal(map[string]string{"email": email, "sub": subject})
+	return "x." + base64.RawURLEncoding.EncodeToString(payload) + ".y"
+}
+
+func TestXAIRefreshTokenImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	var active atomic.Int32
+	var maximum atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		switch request.Method {
+		case http.MethodPost:
+			current := active.Add(1)
+			defer active.Add(-1)
+			for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
+			}
+			if err := request.ParseForm(); err != nil {
+				return nil, err
+			}
+			refreshToken := request.Form.Get("refresh_token")
+			time.Sleep(25 * time.Millisecond)
+			index := strings.TrimPrefix(refreshToken, "refresh-secret-")
+			body := fmt.Sprintf(`{"access_token":"access-%s","refresh_token":"rotated-%s","id_token":%q,"expires_in":3600}`, index, index, xaiTestJWT("user-"+index+"@example.com", "subject-"+index))
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		case http.MethodGet:
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method: %s", request.Method)
+		}
+	})}
+	server := &Server{store: store, client: client}
+	values := make([]string, 6)
+	for i := range values {
+		values[i] = fmt.Sprintf("refresh-secret-%d", i+1)
+	}
+	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
+		"method": "refresh_token", "values": strings.Join(values, "\n"), "priority_increment": 10,
+	})
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportXAICredentialsStream(requestContext)
+	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "text/event-stream") {
+		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	}
+	if maximum.Load() < 2 || maximum.Load() > 5 {
+		t.Fatalf("maximum refresh concurrency = %d, want 2..5", maximum.Load())
+	}
+	for _, secret := range values {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("SSE response leaked refresh token %q", secret)
+		}
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != len(values) {
+		t.Fatalf("created channels=%d error=%v", len(channels), err)
+	}
+	for _, channel := range channels {
+		var index int
+		if _, err := fmt.Sscanf(channel.Name, "xAI-user-%d@example.com", &index); err != nil || channel.Priority != index*10 {
+			t.Fatalf("channel %q priority=%d", channel.Name, channel.Priority)
+		}
+	}
+}
+
+func TestXAIDeviceInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
+	first.IDToken = xaiTestJWT("first@example.com", "stable-subject")
+	if err := first.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	created, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, first)
+	if err != nil || !wasCreated {
+		t.Fatalf("first persistence = (%#v, %v, %v)", created, wasCreated, err)
+	}
+
+	rotated := xaiTestCredential("access-rotated", "refresh-rotated", time.Now().Add(2*time.Hour))
+	rotated.IDToken = xaiTestJWT("renamed@example.com", "stable-subject")
+	if err := rotated.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	updated, wasCreated, err := createOrUpdateXAIChannel(context.Background(), store, rotated)
+	if err != nil || wasCreated || updated.ID != created.ID {
+		t.Fatalf("second persistence = (%#v, %v, %v)", updated, wasCreated, err)
+	}
+	persisted, err := xaiauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil || persisted.AccessToken != "access-rotated" || persisted.RefreshToken != "refresh-rotated" {
+		t.Fatalf("persisted credential = %s, error=%v", persisted, err)
+	}
+}
+
+func TestXAIDeviceConcurrentInteractivePersistenceCreatesOneStableIdentity(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	store := &snapshotBarrierStore{Store: baseStore, ready: make(chan struct{}), release: make(chan struct{})}
+	credential := xaiTestCredential("access", "refresh", time.Now().Add(time.Hour))
+	credential.IDToken = xaiTestJWT("same@example.com", "same-subject")
+	if err := credential.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	type persistenceResult struct {
+		channel *model.Config
+		err     error
+	}
+	results := make(chan persistenceResult, 2)
+	for range 2 {
+		go func() {
+			channel, _, err := createOrUpdateXAIChannel(context.Background(), store, credential)
+			results <- persistenceResult{channel: channel, err: err}
+		}()
+	}
+	select {
+	case <-store.ready:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent persistence did not reach shared snapshot")
+	}
+	close(store.release)
+	for range 2 {
+		result := <-results
+		if result.err != nil || result.channel == nil {
+			t.Fatalf("persistence result = %#v", result)
+		}
+	}
+	configs, err := baseStore.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("stable identity channels=%d error=%v", len(configs), err)
+	}
+}
+
+func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
+	first.Email = "User@Example.com"
+	if err := first.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	name, created, err := createImportedXAIChannel(context.Background(), store, first, 10)
+	if err != nil || !created || name != "xAI-User@Example.com" {
+		t.Fatalf("first import = (%q, %v, %v)", name, created, err)
+	}
+	second := xaiTestCredential("access-second", "refresh-second", time.Now().Add(time.Hour))
+	second.Email = "user@example.com"
+	if err := second.Normalize(); err != nil {
+		t.Fatal(err)
+	}
+	name, created, err = createImportedXAIChannel(context.Background(), store, second, 20)
+	if err != nil || created || name != "xAI-User@Example.com" {
+		t.Fatalf("duplicate import = (%q, %v, %v)", name, created, err)
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || strings.Contains(configs[0].OAuthCredential, "access-second") {
+		t.Fatalf("create-only configs=%#v error=%v", configs, err)
+	}
+}
+
+func TestXAIRefreshTokenImportDisconnectCancelsPendingWithoutCommit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	started := make(chan struct{})
+	var startedOnce sync.Once
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		startedOnce.Do(func() { close(started) })
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+	server := &Server{store: store, client: client}
+	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
+		"method": "refresh_token", "values": "refresh-secret-1\nrefresh-secret-2\nrefresh-secret-3",
+	})
+	requestCtx, cancel := context.WithCancel(request.Context())
+	request = request.WithContext(requestCtx)
+	requestContext, response := newTestContext(t, request)
+	done := make(chan struct{})
+	go func() {
+		server.HandleImportXAICredentialsStream(requestContext)
+		close(done)
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("refresh import did not start")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("refresh import did not stop after disconnect")
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 0 || strings.Contains(response.Body.String(), "refresh-secret") {
+		t.Fatalf("disconnect persisted or leaked credentials: configs=%d error=%v body=%s", len(configs), err, response.Body.String())
+	}
+}
+
+func TestXAISSOImportRejectsMoreThanTenItemsBeforeUpstream(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	var upstreamCalls atomic.Int32
+	server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(*http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return nil, errors.New("unexpected upstream request")
+	})}}
+	values := make([]string, 11)
+	for i := range values {
+		values[i] = fmt.Sprintf("sso-secret-%d", i)
+	}
+	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
+		"method": "sso", "values": strings.Join(values, "\n"),
+	})
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportXAICredentialsStream(requestContext)
+	if response.Code != http.StatusBadRequest || upstreamCalls.Load() != 0 {
+		t.Fatalf("status=%d upstream=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+	}
+}
+
+func TestXAISSOImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	var active atomic.Int32
+	var maximum atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != xaiauth.SSOAccountsURL {
+			return nil, fmt.Errorf("unexpected SSO URL: %s", request.URL)
+		}
+		current := active.Add(1)
+		defer active.Add(-1)
+		for previous := maximum.Load(); current > previous && !maximum.CompareAndSwap(previous, current); previous = maximum.Load() {
+		}
+		time.Sleep(25 * time.Millisecond)
+		return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`)), Request: request}, nil
+	})}
+	server := &Server{store: store, client: client}
+	values := []string{"sso-secret-1", "sso-secret-2", "sso-secret-3", "sso-secret-4"}
+	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
+		"method": "sso", "values": strings.Join(values, "\n"),
+	})
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportXAICredentialsStream(requestContext)
+	if response.Code != http.StatusOK || maximum.Load() < 2 || maximum.Load() > 3 {
+		t.Fatalf("status=%d maximum concurrency=%d body=%s", response.Code, maximum.Load(), response.Body.String())
+	}
+	for _, secret := range values {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("SSE response leaked SSO cookie %q", secret)
+		}
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 0 {
+		t.Fatalf("failed SSO import persisted channels=%d error=%v", len(configs), err)
+	}
 }
 
 func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
@@ -1719,6 +2650,449 @@ func TestOAuthCredentialRefreshIsSingleflightAndPersistsToDatabase(t *testing.T)
 	}
 	if persisted.SupportsModel("gpt-5.6-sol") || persisted.SupportsModel("gpt-5.4") || persisted.SupportsModel("gpt-5.3-codex-spark") {
 		t.Fatalf("refreshed free channel kept unsupported models: %v", persisted.GetModels())
+	}
+}
+
+func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-cas", PlanType: "free",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-winner", RefreshToken: "rt-winner",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-cas", PlanType: "pro",
+	}
+	winnerJSON, err := winner.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &concurrentOAuthWinnerStore{
+		Store: baseStore, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON,
+	}
+	var refreshCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCount.Add(1)
+		if err := r.ParseForm(); err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Form.Get("refresh_token"); got != "rt-old" {
+			t.Errorf("refresh token = %q, want old token on first attempt", got)
+		}
+		_, _ = io.WriteString(w, `{"access_token":"at-stale","refresh_token":"rt-stale","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+
+	got, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if got.AccessToken != "at-winner" || got.RefreshToken != "rt-winner" {
+		t.Fatalf("credential() = %#v, want concurrent winner", got)
+	}
+	if refreshCount.Load() != 1 {
+		t.Fatalf("refresh requests = %d, want no retry with stale refresh token", refreshCount.Load())
+	}
+	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.RefreshToken != "rt-winner" {
+		t.Fatalf("persisted credential = (%#v, %v), want winner refresh token", persistedCredential, err)
+	}
+	if !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.6-sol") {
+		t.Fatalf("winning pro credential has stale free models: %v", persisted.GetModels())
+	}
+}
+
+func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
+	t.Run("forced request reuses a newer access token", func(t *testing.T) {
+		store := newCodexAuthTestStore(t)
+		initial := &codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+			Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reload", PlanType: "plus",
+		}
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		winner := *initial
+		winner.AccessToken = "at-winner"
+		winner.RefreshToken = "rt-winner"
+		winnerJSON, err := winner.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := store.CompareAndSwapOAuthCredential(
+			context.Background(), channel.ID, model.AuthTypeCodexOAuth, channel.OAuthCredential, winnerJSON,
+		)
+		if err != nil || !updated {
+			t.Fatalf("persist winner = (%v, %v)", updated, err)
+		}
+
+		var refreshCount atomic.Int32
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			refreshCount.Add(1)
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+		}))
+		defer tokenServer.Close()
+		service := codexauth.NewService(tokenServer.Client())
+		service.TokenURL = tokenServer.URL
+		manager := newCodexCredentialManager(service, store, nil, nil)
+
+		got, err := manager.credential(context.Background(), channel, true)
+		if err != nil {
+			t.Fatalf("credential() error = %v", err)
+		}
+		if got.AccessToken != "at-winner" || got.RefreshToken != "rt-winner" {
+			t.Fatalf("credential() = %#v, want persisted winner", got)
+		}
+		if refreshCount.Load() != 0 {
+			t.Fatalf("refresh requests = %d, want 0", refreshCount.Load())
+		}
+	})
+
+	t.Run("expired winner refreshes with the winner refresh token", func(t *testing.T) {
+		store := newCodexAuthTestStore(t)
+		initial := &codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+			Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-refresh-winner", PlanType: "plus",
+		}
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+		if err != nil {
+			t.Fatal(err)
+		}
+		winner := *initial
+		winner.AccessToken = "at-winner"
+		winner.RefreshToken = "rt-winner"
+		winnerJSON, err := winner.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		updated, err := store.CompareAndSwapOAuthCredential(
+			context.Background(), channel.ID, model.AuthTypeCodexOAuth, channel.OAuthCredential, winnerJSON,
+		)
+		if err != nil || !updated {
+			t.Fatalf("persist winner = (%v, %v)", updated, err)
+		}
+
+		var refreshCount atomic.Int32
+		tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			refreshCount.Add(1)
+			if err := r.ParseForm(); err != nil {
+				t.Error(err)
+			}
+			if got := r.Form.Get("refresh_token"); got != "rt-winner" {
+				http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+				return
+			}
+			_, _ = io.WriteString(w, `{"access_token":"at-refreshed","refresh_token":"rt-refreshed","expires_in":3600}`)
+		}))
+		defer tokenServer.Close()
+		service := codexauth.NewService(tokenServer.Client())
+		service.TokenURL = tokenServer.URL
+		manager := newCodexCredentialManager(service, store, nil, nil)
+
+		got, err := manager.credential(context.Background(), channel, false)
+		if err != nil {
+			t.Fatalf("credential() error = %v", err)
+		}
+		if got.AccessToken != "at-refreshed" || got.RefreshToken != "rt-refreshed" {
+			t.Fatalf("credential() = %#v, want refreshed winner", got)
+		}
+		if refreshCount.Load() != 1 {
+			t.Fatalf("refresh requests = %d, want 1", refreshCount.Load())
+		}
+	})
+}
+
+func TestCodexCredentialManagerCachesCommittedWinnerWhenHybridReplicaSyncFails(t *testing.T) {
+	primaryStore, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "primary.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replicaStore, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "replica.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	primary := primaryStore.(*sqlstore.SQLStore)
+	replica := replicaStore.(*sqlstore.SQLStore)
+	hybrid := storage.NewHybridStore(replica, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-hybrid", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), hybrid, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replica.ExecContext(context.Background(), `
+		CREATE TRIGGER reject_oauth_credential_update
+		BEFORE UPDATE OF oauth_credential ON channels
+		BEGIN
+			SELECT RAISE(FAIL, 'oauth credential replica is read only');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	var refreshCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refreshCount.Add(1)
+		_, _ = io.WriteString(w, `{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	var invalidations atomic.Int32
+	manager := newCodexCredentialManager(service, hybrid, nil, func(int64) { invalidations.Add(1) })
+
+	first, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	second, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("cached credential() error = %v", err)
+	}
+	if first.RefreshToken != "rt-new" || second.RefreshToken != "rt-new" {
+		t.Fatalf("credentials = (%#v, %#v), want committed winner", first, second)
+	}
+	if refreshCount.Load() != 1 {
+		t.Fatalf("refresh requests = %d, want one", refreshCount.Load())
+	}
+	if invalidations.Load() != 1 {
+		t.Fatalf("invalidations = %d, want one after committed refresh", invalidations.Load())
+	}
+	persisted, err := primary.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.RefreshToken != "rt-new" {
+		t.Fatalf("primary credential = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestCodexReauthorizationLateModelWriteCannotOverrideWinningPlan(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-initial", RefreshToken: "rt-initial",
+		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel.ScheduledCheckModel = "gpt-5.4"
+	if _, err := baseStore.UpdateConfig(context.Background(), channel.ID, channel); err != nil {
+		t.Fatal(err)
+	}
+
+	store := &blockingCodexModelStateStore{
+		Store: baseStore, firstStarted: make(chan struct{}), releaseFirst: make(chan struct{}),
+	}
+	free := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-free", RefreshToken: "rt-free",
+		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "free",
+	}
+	freeDone := make(chan error, 1)
+	go func() {
+		_, _, updateErr := createOrUpdateCodexChannel(context.Background(), store, free)
+		freeDone <- updateErr
+	}()
+	<-store.firstStarted
+
+	pro := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-pro", RefreshToken: "rt-pro",
+		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "pro",
+	}
+	if _, _, err := createOrUpdateCodexChannel(context.Background(), store, pro); err != nil {
+		t.Fatalf("winning pro reauthorization error = %v", err)
+	}
+	close(store.releaseFirst)
+	if err := <-freeDone; err != nil {
+		t.Fatalf("late free reauthorization error = %v", err)
+	}
+
+	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedCredential.PlanType != "pro" || persistedCredential.RefreshToken != "rt-pro" {
+		t.Fatalf("winning credential = %#v, want pro", persistedCredential)
+	}
+	if !persisted.SupportsModel("gpt-5.4") || !persisted.SupportsModel("gpt-5.6-sol") {
+		t.Fatalf("pro credential has stale free models: %v", persisted.GetModels())
+	}
+	if persisted.ScheduledCheckModel != "gpt-5.4" {
+		t.Fatalf("scheduled check model = %q, want pro model preserved", persisted.ScheduledCheckModel)
+	}
+}
+
+func TestAntigravityCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	initial := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), Email: "cas@example.com", ProjectID: "project-cas",
+	}
+	initialJSON, err := initial.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := baseStore.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity CAS", initialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-winner", RefreshToken: "rt-winner",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "cas@example.com", ProjectID: "project-cas",
+	}
+	winnerJSON, err := winner.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &concurrentOAuthWinnerStore{
+		Store: baseStore, authType: model.AuthTypeAntigravityOAuth, winnerJSON: winnerJSON,
+	}
+	var refreshCount atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := `{}`
+		switch request.URL.Path {
+		case "/token":
+			refreshCount.Add(1)
+			if err := request.ParseForm(); err != nil {
+				return nil, err
+			}
+			if got := request.Form.Get("refresh_token"); got != "rt-old" {
+				t.Errorf("refresh token = %q, want old token on first attempt", got)
+			}
+			body = `{"access_token":"at-stale","refresh_token":"rt-stale","expires_in":3600}`
+		case "/v1internal:loadCodeAssist":
+			body = `{"cloudaicompanionProject":"project-cas","paidTier":{"id":"tier"}}`
+		default:
+			return nil, fmt.Errorf("unexpected Antigravity request: %s", request.URL)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(body)), Request: request,
+		}, nil
+	})}
+	service := antigravityauth.NewService(client)
+	service.TokenURL = "https://oauth.test/token"
+	service.APIBaseURL = "https://api.test"
+	service.DailyAPIBaseURL = "https://api.test"
+	manager := newAntigravityCredentialManager(service, store, nil, nil)
+
+	got, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if got.AccessToken != "at-winner" || got.RefreshToken != "rt-winner" {
+		t.Fatalf("credential() = %#v, want concurrent winner", got)
+	}
+	if refreshCount.Load() != 1 {
+		t.Fatalf("refresh requests = %d, want no retry with stale refresh token", refreshCount.Load())
+	}
+	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.RefreshToken != "rt-winner" {
+		t.Fatalf("persisted credential = (%#v, %v), want winner refresh token", persistedCredential, err)
+	}
+}
+
+func TestAntigravityCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		force         bool
+		winnerExpires time.Duration
+		wantAccess    string
+		wantRefreshes int32
+	}{
+		{name: "forced request reuses a newer access token", force: true, winnerExpires: time.Hour, wantAccess: "at-winner"},
+		{name: "expired winner refreshes with the winner refresh token", winnerExpires: time.Minute, wantAccess: "at-refreshed", wantRefreshes: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := newCodexAuthTestStore(t)
+			initial := &antigravityauth.Credential{
+				Type: antigravityauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old",
+				Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), Email: "reload@example.com", ProjectID: "project-reload",
+			}
+			initialJSON, err := initial.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			channel, err := store.CreateConfig(context.Background(), newAntigravityOAuthChannel("Antigravity reload", initialJSON))
+			if err != nil {
+				t.Fatal(err)
+			}
+			winner := *initial
+			winner.AccessToken = "at-winner"
+			winner.RefreshToken = "rt-winner"
+			winner.Expired = time.Now().UTC().Add(tc.winnerExpires).Format(time.RFC3339)
+			winnerJSON, err := winner.JSON()
+			if err != nil {
+				t.Fatal(err)
+			}
+			updated, err := store.CompareAndSwapOAuthCredential(
+				context.Background(), channel.ID, model.AuthTypeAntigravityOAuth, channel.OAuthCredential, winnerJSON,
+			)
+			if err != nil || !updated {
+				t.Fatalf("persist winner = (%v, %v)", updated, err)
+			}
+
+			var refreshCount atomic.Int32
+			client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				body := `{"cloudaicompanionProject":"project-reload","paidTier":{"id":"tier"}}`
+				if request.URL.Path == "/token" {
+					refreshCount.Add(1)
+					if err := request.ParseForm(); err != nil {
+						return nil, err
+					}
+					if got := request.Form.Get("refresh_token"); got != "rt-winner" {
+						body = `{"error":"invalid_grant"}`
+						return &http.Response{StatusCode: http.StatusBadRequest, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+					}
+					body = `{"access_token":"at-refreshed","refresh_token":"rt-refreshed","expires_in":3600}`
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(body)), Request: request,
+				}, nil
+			})}
+			service := antigravityauth.NewService(client)
+			service.TokenURL = "https://oauth.test/token"
+			service.APIBaseURL = "https://api.test"
+			service.DailyAPIBaseURL = "https://api.test"
+			manager := newAntigravityCredentialManager(service, store, nil, nil)
+
+			got, err := manager.credential(context.Background(), channel, tc.force)
+			if err != nil {
+				t.Fatalf("credential() error = %v", err)
+			}
+			if got.AccessToken != tc.wantAccess {
+				t.Fatalf("credential() = %#v, want access token %q", got, tc.wantAccess)
+			}
+			if refreshCount.Load() != tc.wantRefreshes {
+				t.Fatalf("refresh requests = %d, want %d", refreshCount.Load(), tc.wantRefreshes)
+			}
+		})
 	}
 }
 

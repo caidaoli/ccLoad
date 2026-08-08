@@ -1,0 +1,73 @@
+// Package xaiauth implements the fixed xAI OAuth credential lifecycle.
+package xaiauth
+
+import "time"
+
+const (
+	// ChannelType and the related constants define the fixed xAI OAuth wire contract.
+	ChannelType = "xai"
+	// OAuthIssuer is the only trusted xAI OAuth issuer origin.
+	OAuthIssuer = "https://auth.x.ai"
+	// DiscoveryURL is the fixed xAI OpenID discovery document.
+	DiscoveryURL = OAuthIssuer + "/.well-known/openid-configuration"
+	// DeviceCodeURL is the fixed xAI device authorization endpoint.
+	DeviceCodeURL = OAuthIssuer + "/oauth2/device/code"
+	// TokenURL is the fixed xAI OAuth token endpoint.
+	TokenURL = OAuthIssuer + "/oauth2/token"
+	// ClientID is the public xAI CLI OAuth client identifier.
+	ClientID = "b1a00492-073a-47ea-816f-4c329264a828"
+	// DeviceScope is the exact scope requested by device authorization.
+	DeviceScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
+	// SSOScope is the exact scope requested during SSO conversion.
+	SSOScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
+	// DeviceCodeGrantType is the RFC 8628 device-code grant type.
+	DeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
+
+	// APIBaseURL is the fixed public xAI API base URL.
+	APIBaseURL = "https://api.x.ai/v1"
+	// CLIBaseURL is the fixed xAI CLI proxy base URL.
+	CLIBaseURL = "https://cli-chat-proxy.grok.com/v1"
+	// CLITokenAuthHeader names the CLI token authentication marker.
+	CLITokenAuthHeader = "X-XAI-Token-Auth"
+	// CLITokenAuthValue is the CLI token authentication marker value.
+	CLITokenAuthValue = "xai-grok-cli"
+	// CLIClientVersionHeader names the xAI CLI version header.
+	CLIClientVersionHeader = "x-grok-client-version"
+	// CLIClientVersion is the emulated xAI CLI protocol version.
+	CLIClientVersion = "0.2.120"
+	// CLIUserAgent is the fixed xAI CLI user agent.
+	CLIUserAgent = "xai-grok-workspace/" + CLIClientVersion
+	// CLIClientIdentifierHeader names the xAI CLI client identifier header.
+	CLIClientIdentifierHeader = "x-grok-client-identifier"
+	// CLIClientIdentifier identifies the emulated xAI CLI client.
+	CLIClientIdentifier = "grok-shell"
+	// CLIAuthenticateResponseHeader names the CLI authentication response marker.
+	CLIAuthenticateResponseHeader = "x-authenticateresponse"
+	// CLIAuthenticateResponse is the CLI authentication response marker value.
+	CLIAuthenticateResponse = "authenticate-response"
+
+	// SSOAccountsURL is the initial trusted xAI accounts endpoint.
+	SSOAccountsURL = "https://accounts.x.ai/"
+	// SSODeviceURL is the device endpoint used during SSO conversion.
+	SSODeviceURL = DeviceCodeURL
+	// SSOVerifyURL is the fixed SSO device verification endpoint.
+	SSOVerifyURL = OAuthIssuer + "/oauth2/device/verify"
+	// SSOApproveURL is the fixed SSO consent approval endpoint.
+	SSOApproveURL = OAuthIssuer + "/oauth2/device/approve"
+	// SSOTokenURL is the fixed token endpoint used by SSO conversion.
+	SSOTokenURL = TokenURL
+	// MaxSSOResponseBytes bounds every SSO response body.
+	MaxSSOResponseBytes = 2 << 20
+)
+
+const (
+	// RefreshLead and the related durations bound refresh, device polling, and SSO conversion.
+	RefreshLead = 5 * time.Minute
+	// MaxDevicePollDuration is the hard upper bound for device polling.
+	MaxDevicePollDuration = 30 * time.Minute
+	// SSOConversionTimeout is the hard upper bound for SSO conversion.
+	SSOConversionTimeout  = 90 * time.Second
+	defaultPollInterval   = 5 * time.Second
+	requestTimeout        = 30 * time.Second
+	maxOAuthResponseBytes = 1 << 20
+)

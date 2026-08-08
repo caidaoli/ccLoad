@@ -2,6 +2,9 @@ const CODEX_OAUTH_POLL_INTERVAL_MS = 1000;
 const CODEX_OAUTH_MAX_POLLS = 300;
 let activeCodexOAuthFlow = null;
 let codexOAuthStopPromise = null;
+let activeXAIDeviceFlow = null;
+let xaiOAuthStopPromise = null;
+let oauthPagehideBound = false;
 let currentOAuthCredentialJSON = '';
 let currentOAuthCredential = null;
 let currentOAuthCredentialInfo = null;
@@ -17,6 +20,9 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   antigravity: Object.freeze({
     provider: 'antigravity', label: 'Antigravity', i18n: 'channels.antigravity',
     callbackPlaceholder: 'http://localhost:51121/oauth-callback?code=...&state=...'
+  }),
+  xai: Object.freeze({
+    provider: 'xai', label: 'xAI', i18n: 'channels.xai', callbackPlaceholder: ''
   })
 });
 
@@ -89,7 +95,9 @@ function applyChannelAuthEditorMode(
   credentialView = 'decoded'
 ) {
   const codexOAuth = authType === 'codex_oauth';
-  const oauth = codexOAuth || authType === 'antigravity_oauth';
+  const xaiOAuth = authType === 'xai_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth';
+  const oauth = credentialVisible || xaiOAuth;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
   const keyTable = document.getElementById('channelAPIKeyTable');
@@ -99,17 +107,29 @@ function applyChannelAuthEditorMode(
   const selectAll = document.getElementById('selectAllKeys');
   const credentialTab = document.getElementById('codexCredentialTab');
   const planBadge = document.getElementById('channelCodexPlanBadge');
-  const planType = codexOAuth ? String(credential?.plan_type || channel?.codex_plan_type || '').trim() : '';
+  const planType = codexOAuth
+    ? String(credential?.plan_type || channel?.codex_plan_type || '').trim()
+    : String(channel?.xai_subscription_tier || '').trim();
   const planBadgeText = codexOAuth
     ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
-    : '';
-  if (notice) notice.hidden = !oauth;
+    : (xaiOAuth
+        ? [channel?.xai_email, planType, channel?.xai_entitlement_status]
+          .map(value => String(value || '').trim()).filter(Boolean).join(' · ')
+        : '');
+  if (notice) {
+    const noticeKey = xaiOAuth ? 'channels.xai.editorReadOnly' : 'channels.oauthCredentialReadOnly';
+    notice.hidden = !oauth;
+    notice.setAttribute?.('data-i18n', noticeKey);
+    if (oauth && typeof window !== 'undefined' && typeof window.t === 'function') {
+      notice.textContent = window.t(noticeKey);
+    }
+  }
   if (planBadge) {
     planBadge.textContent = planBadgeText;
     planBadge.hidden = !planBadgeText;
   }
-  if (keyHeader) keyHeader.hidden = false;
-  if (keyTable) keyTable.hidden = false;
+  if (keyHeader) keyHeader.hidden = xaiOAuth;
+  if (keyTable) keyTable.hidden = xaiOAuth;
   if (hiddenKey) {
     hiddenKey.required = !oauth;
     if (oauth) hiddenKey.value = '';
@@ -117,9 +137,9 @@ function applyChannelAuthEditorMode(
   if (importButton) importButton.disabled = oauth;
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
-  if (credentialTab) credentialTab.hidden = !oauth;
+  if (credentialTab) credentialTab.hidden = !credentialVisible;
   renderOAuthCredential(
-    oauth ? credential : null,
+    credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,
     credentialView
   );
@@ -154,8 +174,22 @@ function setCodexAuthStatus(message, kind = '') {
   status.dataset.kind = kind;
 }
 
-function codexOAuthDelay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
+function codexOAuthDelay(ms, signal = undefined) {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Aborted', 'AbortError'));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener?.('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal?.addEventListener?.('abort', onAbort, { once: true });
+  });
 }
 
 function setCodexOAuthDialogStatus(message, kind = '') {
@@ -263,6 +297,8 @@ function updateOAuthCredentialImportProgress(event) {
 function openOAuthLoginDialog(trigger = null) {
   const dialog = document.getElementById('oauthLoginDialog');
   const providerSelect = document.getElementById('oauthProviderSelect');
+  const xaiMethod = document.getElementById('xaiOAuthMethod');
+  const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const authorizationURL = document.getElementById('oauthAuthorizationURL');
@@ -281,6 +317,7 @@ function openOAuthLoginDialog(trigger = null) {
   openLink.removeAttribute?.('href');
   callbackURL.value = '';
   callbackURL.removeAttribute?.('aria-invalid');
+  resetXAIOAuthDialog();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
   if (!dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
@@ -291,9 +328,86 @@ function openOAuthLoginDialog(trigger = null) {
 function closeOAuthLoginDialogElement() {
   const dialog = document.getElementById('oauthLoginDialog');
   if (dialog?.open) dialog.close();
+  resetXAIOAuthDialog();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
   trigger?.focus?.();
+}
+
+function resetXAIOAuthDialog() {
+  const controls = document.getElementById('xaiOAuthControls');
+  const method = document.getElementById('xaiOAuthMethod');
+  const secretField = document.getElementById('xaiCredentialSecretField');
+  const textarea = document.getElementById('xaiCredentialValues');
+  const deviceFields = document.getElementById('xaiDeviceSessionFields');
+  const verification = document.getElementById('xaiVerificationLink');
+  const userCode = document.getElementById('xaiUserCode');
+  const expires = document.getElementById('xaiDeviceExpiresAt');
+  if (controls) controls.hidden = true;
+  if (method) method.value = 'device';
+  if (secretField) secretField.hidden = true;
+  clearXAICredentialSecrets(textarea);
+  if (textarea) textarea.required = false;
+  if (deviceFields) deviceFields.hidden = true;
+  if (verification) {
+    verification.textContent = '';
+    verification.removeAttribute?.('href');
+  }
+  if (userCode) userCode.textContent = '';
+  if (expires) expires.textContent = '';
+  setOAuthAuthorizeButtonLabel('codex', 'device');
+}
+
+function clearXAICredentialSecrets(textarea = document.getElementById('xaiCredentialValues')) {
+  if (!textarea) return;
+  textarea.value = '';
+  textarea.removeAttribute?.('aria-invalid');
+}
+
+function syncOAuthProviderFields() {
+  const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
+  const method = document.getElementById('xaiOAuthMethod')?.value || 'device';
+  const xai = provider === 'xai';
+  const controls = document.getElementById('xaiOAuthControls');
+  const secretField = document.getElementById('xaiCredentialSecretField');
+  const textarea = document.getElementById('xaiCredentialValues');
+  const sessionFields = document.getElementById('oauthSessionFields');
+  const authorizeButton = document.getElementById('oauthAuthorizeButton');
+  if (controls) controls.hidden = !xai;
+  if (sessionFields && xai) sessionFields.hidden = true;
+  if (secretField) secretField.hidden = !xai || method === 'device';
+  if (textarea) {
+    textarea.required = xai && method !== 'device';
+    textarea.setAttribute?.('aria-describedby', 'xaiCredentialSecretHint oauthLoginDialogStatus');
+    if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
+  }
+  if (authorizeButton) setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
+}
+
+function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
+  if (!button) return;
+  const key = provider === 'xai' && method !== 'device'
+    ? 'channels.xai.importSecrets'
+    : 'channels.oauth.startAuthorization';
+  button.setAttribute?.('data-i18n', key);
+  if (typeof window !== 'undefined' && typeof window.t === 'function') button.textContent = window.t(key);
+}
+
+function showXAIDeviceSession(session) {
+  const fields = document.getElementById('xaiDeviceSessionFields');
+  const verification = document.getElementById('xaiVerificationLink');
+  const userCode = document.getElementById('xaiUserCode');
+  const expires = document.getElementById('xaiDeviceExpiresAt');
+  const verifiedURL = safeXAIVerificationURL(session?.verification_uri_complete || session?.verification_uri);
+  if (!fields || !verification || !userCode || !expires || !verifiedURL) return false;
+  verification.href = verifiedURL;
+  verification.textContent = verifiedURL;
+  userCode.textContent = session.user_code;
+  const expiresAt = new Date(session.expires_at);
+  expires.textContent = Number.isNaN(expiresAt.getTime()) ? '' : expiresAt.toLocaleString();
+  fields.hidden = false;
+  userCode.focus?.();
+  return true;
 }
 
 function openOAuthCredentialImportDialog(trigger = null) {
@@ -399,6 +513,112 @@ async function cancelAntigravityOAuth(state, fetcher = fetchDataWithAuth) {
   return cancelOAuth('antigravity', state, fetcher);
 }
 
+function safeXAIVerificationURL(value) {
+  try {
+    const parsed = new URL(String(value || '').trim());
+    if (parsed.origin !== 'https://auth.x.ai' || parsed.username || parsed.password || parsed.hash) return '';
+    return parsed.href;
+  } catch {
+    return '';
+  }
+}
+
+async function startXAIDevice(fetcher = fetchDataWithAuth, signal = undefined) {
+  const response = await fetcher('/admin/xai/oauth/start', { method: 'POST', signal });
+  const session = String(response?.session || '').trim();
+  const verificationURI = safeXAIVerificationURL(response?.verification_uri);
+  const verificationURIComplete = response?.verification_uri_complete
+    ? safeXAIVerificationURL(response.verification_uri_complete)
+    : '';
+  const userCode = String(response?.user_code || '').trim();
+  if (!session || (!verificationURI && !verificationURIComplete) || !userCode) {
+    throw new Error(window.t('channels.xai.deviceStartFailed'));
+  }
+  return {
+    session,
+    verification_uri: verificationURI,
+    verification_uri_complete: verificationURIComplete,
+    user_code: userCode,
+    expires_at: String(response?.expires_at || '').trim(),
+    interval_seconds: Math.max(1, Number(response?.interval_seconds) || 1),
+    status: String(response?.status || 'pending')
+  };
+}
+
+async function cancelXAIDevice(session, fetcher = fetchDataWithAuth, requestOptions = {}) {
+  const normalizedSession = String(session || '').trim();
+  if (!normalizedSession) throw new Error(window.t('channels.xai.deviceSessionMissing'));
+  return fetcher('/admin/xai/oauth/cancel', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session: normalizedSession }),
+    ...requestOptions
+  });
+}
+
+async function pollXAIDeviceStatus(session, options = {}) {
+  const normalizedSession = String(session || '').trim();
+  if (!normalizedSession) throw new Error(window.t('channels.xai.deviceSessionMissing'));
+  const fetchStatus = options.fetchStatus || ((url, fetchOptions) => fetchDataWithAuth(url, fetchOptions));
+  const delay = options.delay || codexOAuthDelay;
+  const maxPolls = options.maxPolls || CODEX_OAUTH_MAX_POLLS;
+  const interval = options.interval ?? CODEX_OAUTH_POLL_INTERVAL_MS;
+  const isActive = options.isActive || (() => true);
+  const signal = options.signal;
+  for (let attempt = 0; attempt < maxPolls; attempt++) {
+    if (!isActive()) throw new Error(window.t('channels.xai.deviceCancelled'));
+    const status = await fetchStatus(
+      `/admin/xai/oauth/status?session=${encodeURIComponent(normalizedSession)}`,
+      { signal }
+    );
+    if (!isActive()) throw new Error(window.t('channels.xai.deviceCancelled'));
+    if (status?.status === 'complete') return status;
+    if (status?.status === 'cancelled') throw new Error(window.t('channels.xai.deviceCancelled'));
+    if (status?.status === 'error') throw new Error(status.error || window.t('channels.xai.deviceFailed'));
+    if (!['pending', 'processing', 'committing'].includes(status?.status)) {
+      throw new Error(window.t('channels.xai.deviceFailed'));
+    }
+    await delay(interval, signal);
+  }
+  throw new Error(window.t('channels.xai.deviceTimedOut'));
+}
+
+async function submitXAICredentialBatch(method, textarea, button, fetcher = fetchWithAuth, signal = undefined) {
+  const normalizedMethod = String(method || '').trim().toLowerCase();
+  if (!['refresh_token', 'sso'].includes(normalizedMethod)) {
+    throw new Error(window.t('channels.xai.methodInvalid'));
+  }
+  let secret = String(textarea?.value || '').trim();
+  if (!secret) {
+    textarea?.setAttribute?.('aria-invalid', 'true');
+    textarea?.focus?.();
+    throw new Error(window.t('channels.xai.secretRequired'));
+  }
+  let body = JSON.stringify({ method: normalizedMethod, values: secret, priority_increment: 10 });
+  secret = '';
+  clearXAICredentialSecrets(textarea);
+  if (button) {
+    button.disabled = true;
+    button.setAttribute?.('aria-busy', 'true');
+  }
+  try {
+    const responsePromise = fetcher('/admin/xai/credentials/import/stream', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      body,
+      signal
+    });
+    body = '';
+    const response = await responsePromise;
+    return await readOAuthCredentialImportStream(response);
+  } finally {
+    if (button) {
+      button.disabled = false;
+      button.removeAttribute?.('aria-busy');
+    }
+  }
+}
+
 async function pollOAuthStatus(provider, state, options = {}) {
   const config = oauthProviderConfig(provider);
   const fetchStatus = options.fetchStatus || (url => fetchDataWithAuth(url));
@@ -472,6 +692,93 @@ async function startOAuth(provider, button) {
   }
 }
 
+async function startXAIDeviceAuthorization(button) {
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const flow = { kind: 'device', session: '', button, cancelling: false, controller };
+  activeXAIDeviceFlow = flow;
+  try {
+    if (button) button.disabled = true;
+    setCodexOAuthDialogStatus(window.t('channels.xai.deviceStarting'));
+    const session = await startXAIDevice(fetchDataWithAuth, controller?.signal);
+    flow.session = session.session;
+    if (flow.cancelling || activeXAIDeviceFlow !== flow) {
+      await cancelXAIDevice(session.session).catch(() => {});
+      return null;
+    }
+    if (!showXAIDeviceSession(session)) throw new Error(window.t('channels.xai.deviceFailed'));
+    setCodexOAuthDialogStatus(window.t('channels.xai.deviceWaiting'));
+    const result = await pollXAIDeviceStatus(session.session, {
+      interval: session.interval_seconds * 1000,
+      signal: controller?.signal,
+      isActive: () => !flow.cancelling && activeXAIDeviceFlow === flow
+    });
+    if (flow.cancelling || activeXAIDeviceFlow !== flow) return null;
+    closeOAuthLoginDialogElement();
+    setCodexAuthStatus(window.t('channels.xai.deviceComplete'), 'success');
+    if (window.showSuccess) window.showSuccess(window.t('channels.xai.deviceComplete'));
+    await reloadChannelsList();
+    return result;
+  } catch (error) {
+    if (flow.cancelling) return null;
+    const message = error?.message || window.t('channels.xai.deviceFailed');
+    setCodexAuthStatus(message, 'error');
+    setCodexOAuthDialogStatus(message, 'error');
+    if (window.showError) window.showError(message);
+    return null;
+  } finally {
+    if (activeXAIDeviceFlow === flow) activeXAIDeviceFlow = null;
+    if (button) button.disabled = false;
+  }
+}
+
+async function stopActiveXAIDevice(options = {}) {
+  const closeDialog = options.closeDialog !== false;
+  const bestEffort = options.bestEffort === true;
+  if (xaiOAuthStopPromise) return xaiOAuthStopPromise;
+  const operation = (async () => {
+    const flow = activeXAIDeviceFlow;
+    if (flow) {
+      if (flow.session && !bestEffort) {
+        await cancelXAIDevice(flow.session);
+      }
+      flow.cancelling = true;
+      flow.controller?.abort?.();
+      if (activeXAIDeviceFlow === flow) activeXAIDeviceFlow = null;
+      clearXAICredentialSecrets(flow.textarea);
+      if (flow.session && bestEffort) {
+        await cancelXAIDevice(flow.session, fetchDataWithAuth, { keepalive: true }).catch(() => {});
+      }
+      if (flow.button) flow.button.disabled = false;
+    }
+    const providerSelect = document.getElementById('oauthProviderSelect');
+    if (providerSelect) providerSelect.disabled = false;
+    clearXAICredentialSecrets();
+    if (closeDialog) {
+      closeOAuthLoginDialogElement();
+      setCodexAuthStatus('');
+      setCodexOAuthDialogStatus('');
+    }
+  })();
+  xaiOAuthStopPromise = operation;
+  try {
+    return await operation;
+  } finally {
+    if (xaiOAuthStopPromise === operation) xaiOAuthStopPromise = null;
+  }
+}
+
+async function stopActiveOAuth(options = {}) {
+  await Promise.all([
+    stopActiveCodexOAuth({ closeDialog: false }),
+    stopActiveXAIDevice({ closeDialog: false, bestEffort: options.bestEffort === true })
+  ]);
+  if (options.closeDialog !== false) {
+    closeOAuthLoginDialogElement();
+    setCodexAuthStatus('');
+    setCodexOAuthDialogStatus('');
+  }
+}
+
 async function stopActiveCodexOAuth(options = {}) {
   const closeDialog = options.closeDialog !== false;
   if (codexOAuthStopPromise) return codexOAuthStopPromise;
@@ -517,7 +824,7 @@ async function stopActiveCodexOAuth(options = {}) {
 
 async function closeOAuthLoginDialog() {
   try {
-    await stopActiveCodexOAuth({ closeDialog: true });
+    await stopActiveOAuth({ closeDialog: true });
   } catch (error) {
     setCodexOAuthDialogStatus(error?.message || window.t('channels.oauth.cancelFailed'), 'error');
   }
@@ -527,9 +834,13 @@ async function restartOAuth(provider, button) {
   const config = oauthProviderConfig(provider);
   try {
     if (button) button.disabled = true;
-    await stopActiveCodexOAuth({ closeDialog: false });
+    await stopActiveOAuth({ closeDialog: false });
     setCodexOAuthDialogStatus(window.t(`${config.i18n}.oauthRestarting`));
     const authorizeButton = document.getElementById('oauthAuthorizeButton');
+    if (config.provider === 'xai') {
+      void startXAIDeviceAuthorization(authorizeButton);
+      return;
+    }
     const completion = startOAuth(config.provider, authorizeButton);
     const newFlow = activeCodexOAuthFlow;
     if (newFlow?.ready) await newFlow.ready;
@@ -740,7 +1051,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchDataWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -809,10 +1120,13 @@ function setupOAuthActions() {
   const loginDialog = document.getElementById('oauthLoginDialog');
   const loginForm = document.getElementById('oauthLoginForm');
   const providerSelect = document.getElementById('oauthProviderSelect');
+  const xaiMethod = document.getElementById('xaiOAuthMethod');
+  const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
   const restartButton = document.getElementById('oauthRestart');
+  const xaiRestartButton = document.getElementById('xaiDeviceRestart');
   const authorizationURL = document.getElementById('oauthAuthorizationURL');
   const callbackForm = document.getElementById('oauthCallbackForm');
   const callbackURL = document.getElementById('oauthCallbackURL');
@@ -831,12 +1145,51 @@ function setupOAuthActions() {
     loginButton.addEventListener('click', () => openOAuthLoginDialog(loginButton));
     loginButton.dataset.bound = '1';
   }
+  if (providerSelect && typeof providerSelect.addEventListener === 'function' && !providerSelect.dataset?.xaiBound) {
+    providerSelect.addEventListener('change', syncOAuthProviderFields);
+    if (providerSelect.dataset) providerSelect.dataset.xaiBound = '1';
+  }
+  if (xaiMethod && !xaiMethod.dataset.bound) {
+    xaiMethod.addEventListener('change', syncOAuthProviderFields);
+    xaiMethod.dataset.bound = '1';
+  }
   if (loginForm && providerSelect && authorizeButton && !loginForm.dataset.bound) {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
-      if (activeCodexOAuthFlow) return;
+      if (activeCodexOAuthFlow || activeXAIDeviceFlow) return;
       providerSelect.disabled = true;
-      await startOAuth(oauthProviderConfig(providerSelect.value).provider, authorizeButton);
+      if (providerSelect.value === 'xai') {
+        const method = xaiMethod?.value || 'device';
+        if (method === 'device') {
+          await startXAIDeviceAuthorization(authorizeButton);
+        } else {
+          const controller = typeof AbortController === 'function' ? new AbortController() : null;
+          const flow = {
+            kind: 'import', session: '', button: authorizeButton, textarea: xaiCredentialValues,
+            cancelling: false, controller
+          };
+          activeXAIDeviceFlow = flow;
+          try {
+            setCodexOAuthDialogStatus(window.t('channels.xai.importing'));
+            const result = await submitXAICredentialBatch(
+              method, xaiCredentialValues, authorizeButton, fetchWithAuth, controller?.signal
+            );
+            if (flow.cancelling || activeXAIDeviceFlow !== flow) return;
+            const message = window.t('channels.oauth.importSummary', result);
+            setCodexOAuthDialogStatus(message, result.failed > 0 ? 'error' : 'success');
+            if (result.created > 0) await reloadChannelsList();
+          } catch (error) {
+            if (flow.cancelling || activeXAIDeviceFlow !== flow) return;
+            const message = error?.message || window.t('channels.xai.importFailed');
+            setCodexOAuthDialogStatus(message, 'error');
+            if (window.showError) window.showError(message);
+          } finally {
+            if (activeXAIDeviceFlow === flow) activeXAIDeviceFlow = null;
+          }
+        }
+      } else {
+        await startOAuth(oauthProviderConfig(providerSelect.value).provider, authorizeButton);
+      }
       if (loginDialog?.open && sessionFields?.hidden) providerSelect.disabled = false;
     });
     loginForm.dataset.bound = '1';
@@ -858,6 +1211,10 @@ function setupOAuthActions() {
       restartButton
     ));
     restartButton.dataset.bound = '1';
+  }
+  if (xaiRestartButton && !xaiRestartButton.dataset.bound) {
+    xaiRestartButton.addEventListener('click', () => restartOAuth('xai', xaiRestartButton));
+    xaiRestartButton.dataset.bound = '1';
   }
   if (callbackForm && callbackURL && !callbackForm.dataset.bound) {
     callbackForm.addEventListener('submit', async event => {
@@ -898,6 +1255,19 @@ function setupOAuthActions() {
       void closeOAuthLoginDialog();
     });
     loginDialog.dataset.cancelBound = '1';
+  }
+  if (loginDialog && !loginDialog.dataset.overlayBound) {
+    loginDialog.addEventListener('click', event => {
+      if (event.target === loginDialog) void closeOAuthLoginDialog();
+    });
+    loginDialog.dataset.overlayBound = '1';
+  }
+  if (!oauthPagehideBound && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+    window.addEventListener('pagehide', () => {
+      clearXAICredentialSecrets();
+      void stopActiveOAuth({ closeDialog: false, bestEffort: true }).catch(() => {});
+    });
+    oauthPagehideBound = true;
   }
   if (importButton && !importButton.dataset.bound) {
     importButton.addEventListener('click', () => openOAuthCredentialImportDialog(importButton));
@@ -994,6 +1364,7 @@ if (typeof module !== 'undefined' && module.exports) {
     batchRefreshSelectedOAuthUsage,
     cancelAntigravityOAuth,
     cancelCodexOAuth,
+    cancelXAIDevice,
     copyOAuthCredential,
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
@@ -1003,6 +1374,7 @@ if (typeof module !== 'undefined' && module.exports) {
     openOAuthLoginDialog,
     pollAntigravityOAuthStatus,
     pollCodexOAuthStatus,
+    pollXAIDeviceStatus,
     refreshOAuthCredential,
     refreshOAuthUsage,
     refreshOAuthUsageBatch,
@@ -1010,7 +1382,9 @@ if (typeof module !== 'undefined' && module.exports) {
     setOAuthCredentialView,
     setupOAuthActions,
     showOAuthSession,
+    startXAIDevice,
     submitAntigravityOAuthCallback,
-    submitCodexOAuthCallback
+    submitCodexOAuthCallback,
+    submitXAICredentialBatch
   };
 }

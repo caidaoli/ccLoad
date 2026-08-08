@@ -360,7 +360,6 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = excluded.priority,
 					rpm_limit = excluded.rpm_limit,
 					max_concurrency = excluded.max_concurrency,
-					oauth_credential = CASE WHEN channels.auth_type = excluded.auth_type THEN excluded.oauth_credential ELSE channels.oauth_credential END,
 					protocol_transform_mode = excluded.protocol_transform_mode,
 					enabled = excluded.enabled,
 					scheduled_check_enabled = excluded.scheduled_check_enabled,
@@ -376,7 +375,6 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = excluded.priority,
 					rpm_limit = excluded.rpm_limit,
 					max_concurrency = excluded.max_concurrency,
-					oauth_credential = CASE WHEN channels.auth_type = excluded.auth_type THEN excluded.oauth_credential ELSE channels.oauth_credential END,
 					protocol_transform_mode = excluded.protocol_transform_mode,
 					enabled = excluded.enabled,
 					scheduled_check_enabled = excluded.scheduled_check_enabled,
@@ -394,7 +392,6 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = VALUES(priority),
 					rpm_limit = VALUES(rpm_limit),
 					max_concurrency = VALUES(max_concurrency),
-					oauth_credential = IF(auth_type = VALUES(auth_type), VALUES(oauth_credential), oauth_credential),
 					protocol_transform_mode = VALUES(protocol_transform_mode),
 					enabled = VALUES(enabled),
 					scheduled_check_enabled = VALUES(scheduled_check_enabled),
@@ -410,7 +407,6 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					priority = VALUES(priority),
 					rpm_limit = VALUES(rpm_limit),
 					max_concurrency = VALUES(max_concurrency),
-					oauth_credential = IF(auth_type = VALUES(auth_type), VALUES(oauth_credential), oauth_credential),
 					protocol_transform_mode = VALUES(protocol_transform_mode),
 					enabled = VALUES(enabled),
 					scheduled_check_enabled = VALUES(scheduled_check_enabled),
@@ -479,10 +475,38 @@ func (s *SQLStore) ImportChannelBatch(ctx context.Context, channels []*model.Cha
 					return fmt.Errorf("import channel %s: auth_type cannot be changed", config.Name)
 				}
 			}
+			if isUpdate && authType != model.AuthTypeAPIKey {
+				return fmt.Errorf("import channel %s: existing OAuth channel cannot be batch updated", config.Name)
+			}
 
 			// 插入或更新渠道配置（不含 models/model_redirects）
 			var channelID int64
-			if useExplicitID {
+			if authType != model.AuthTypeAPIKey && useExplicitID {
+				channelID = config.ID
+				_, err := s.execTx(ctx, tx, `
+					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, config.ID, config.Name, config.URLs, config.Priority,
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: existing OAuth channel cannot be batch updated: %w", config.Name, err)
+				}
+				if err := s.syncPostgresIDSequence(ctx, tx, "channels"); err != nil {
+					return err
+				}
+			} else if authType != model.AuthTypeAPIKey {
+				_, err := s.execTx(ctx, tx, `
+					INSERT INTO channels(name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_detection_rules, retry_other_keys_on_failure, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, config.Name, config.URLs, config.Priority,
+					config.RPMLimit, config.MaxConcurrency, authType, config.OAuthCredential, protocolTransformMode, config.Enabled, config.ScheduledCheckEnabled, config.ScheduledCheckModel, cooldownDetectionRules, config.RetryOtherKeysOnFailure, nowUnix, nowUnix)
+				if err != nil {
+					return fmt.Errorf("import channel %s: existing OAuth channel cannot be batch updated: %w", config.Name, err)
+				}
+				if err := s.queryRowTx(ctx, tx, `SELECT id FROM channels WHERE name = ?`, config.Name).Scan(&channelID); err != nil {
+					return fmt.Errorf("get channel id for %s: %w", config.Name, err)
+				}
+			} else if useExplicitID {
 				channelID = config.ID
 				_, err := channelStmtWithID.ExecContext(ctx,
 					config.ID, config.Name, config.URLs, config.Priority,

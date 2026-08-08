@@ -633,6 +633,54 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 	}
 }
 
+func TestAdminModels_HandleFetchModels_XAIOAuthUsesFixedCatalog(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "xAI models", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: "deliberately-not-json",
+		URLs:         model.ChannelURLs{{URL: "https://unreachable.invalid", Protocols: []string{"codex"}}},
+		ModelEntries: []model.ModelEntry{{Model: "old-model"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch?protocol=codex", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	wantNames := []string{
+		"grok-build-0.1",
+		"grok-4.5",
+		"grok-4.3",
+		"grok-4.20-0309-reasoning",
+		"grok-4.20-0309-non-reasoning",
+		"grok-4.20-multi-agent-0309",
+		"grok-3-mini",
+		"grok-3-mini-fast",
+		"grok-composer-2.5-fast",
+	}
+	response := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
+	if !response.Success || response.Data.Protocol != "codex" || response.Data.Source != "predefined" {
+		t.Fatalf("unexpected response: %s", w.Body.String())
+	}
+	gotNames := make([]string, len(response.Data.Models))
+	for i, entry := range response.Data.Models {
+		gotNames[i] = entry.Model
+		if entry.RedirectModel != entry.Model {
+			t.Fatalf("model[%d]=%+v, want identity redirect", i, entry)
+		}
+	}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("models=%v, want=%v", gotNames, wantNames)
+	}
+}
+
 func TestAdminModels_HandleFetchModels_MultiKeyFallback(t *testing.T) {
 	var gotAuth []string
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

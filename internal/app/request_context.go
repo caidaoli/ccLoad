@@ -12,25 +12,26 @@ import (
 // 从 forwardOnceAsync 提取，遵循SRP原则
 // 补充首字节超时管控（可选）
 type requestContext struct {
-	ctx                 context.Context
-	cancel              context.CancelFunc // [INFO] 总是非 nil（即使是 noop），调用方无需检查
-	startTime           time.Time
-	isStreaming         bool
-	transformPlan       protocol.TransformPlan
-	clientProtocol      protocol.Protocol
-	upstreamProtocol    protocol.Protocol
-	originalModel       string
-	originalBody        []byte
-	translatedBody      []byte
-	firstByteTimeout    time.Duration
-	streamTimeout       time.Duration
-	nonStreamTimeout    time.Duration
-	codexOAuthNonStream bool
-	antigravityOAuth    bool
-	firstByteTimer      *time.Timer
-	streamTimer         *time.Timer
-	firstByteTimedOut   atomic.Bool
-	streamTimedOut      atomic.Bool
+	ctx                           context.Context
+	cancel                        context.CancelFunc // [INFO] 总是非 nil（即使是 noop），调用方无需检查
+	startTime                     time.Time
+	isStreaming                   bool
+	transformPlan                 protocol.TransformPlan
+	clientProtocol                protocol.Protocol
+	upstreamProtocol              protocol.Protocol
+	originalModel                 string
+	originalBody                  []byte
+	translatedBody                []byte
+	firstByteTimeout              time.Duration
+	streamTimeout                 time.Duration
+	nonStreamTimeout              time.Duration
+	responsesSSEUpstreamNonStream bool
+	antigravityOAuth              bool
+	executionIdentity             string
+	firstByteTimer                *time.Timer
+	streamTimer                   *time.Timer
+	firstByteTimedOut             atomic.Bool
+	streamTimedOut                atomic.Bool
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）

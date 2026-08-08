@@ -14,6 +14,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -343,6 +344,9 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
+		XAIEmail:                     metadata.xaiEmail,
+		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
+		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
 	}
 
 	// 渠道级别冷却：使用批量查询结果（性能提升：N -> 1 次查询）
@@ -386,6 +390,9 @@ type channelOAuthMetadata struct {
 	planType                string
 	subscriptionActiveUntil *time.Time
 	antigravityPaidTier     string
+	xaiEmail                string
+	xaiSubscriptionTier     string
+	xaiEntitlementStatus    string
 }
 
 func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata {
@@ -398,6 +405,17 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		return channelOAuthMetadata{antigravityPaidTier: credential.PaidTier.DisplayName()}
+	}
+	if cfg.UsesXAIOAuth() {
+		credential, err := xaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		return channelOAuthMetadata{
+			xaiEmail:             credential.Identity().Email,
+			xaiSubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
+			xaiEntitlementStatus: strings.TrimSpace(credential.EntitlementStatus),
+		}
 	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
@@ -613,6 +631,9 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
+		XAIEmail:                     metadata.xaiEmail,
+		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
+		XAIEntitlementStatus:         metadata.xaiEntitlementStatus,
 		KeyStrategy:                  channelKeyStrategy(apiKeys),
 		ModelCooldowns:               activeModelCooldownInfos(allModelCooldowns[id], time.Now()),
 	}, apiKeys, nil
@@ -838,6 +859,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 			if enabled {
 				s.clearAllChannelCooldowns(c.Request.Context(), id)
 			}
+			if upd.UsesXAIOAuth() && s.xaiCredentials != nil {
+				s.xaiCredentials.invalidate(id)
+			}
 			// enabled 状态变更影响渠道选择，必须立即失效缓存
 			s.InvalidateChannelListCache()
 			RespondJSON(c, http.StatusOK, upd)
@@ -878,6 +902,14 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 		if _, submitted := rawReq["key_strategy"]; submitted {
 			RespondErrorMsg(c, http.StatusConflict, "OAuth channel key strategy is read-only")
 			return
+		}
+	}
+	if existing.UsesXAIOAuth() {
+		for _, field := range []string{"oauth_credential", "credential", "access_token", "refresh_token", "id_token"} {
+			if _, submitted := rawReq[field]; submitted {
+				RespondErrorMsg(c, http.StatusConflict, "xAI OAuth credential is read-only")
+				return
+			}
 		}
 	}
 	if existing.UsesCodexOAuth() {
@@ -946,6 +978,9 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	if err != nil {
 		RespondError(c, http.StatusNotFound, err)
 		return
+	}
+	if existing.UsesXAIOAuth() && s.xaiCredentials != nil {
+		s.xaiCredentials.invalidate(id)
 	}
 
 	// Key或策略变化时更新API Keys
@@ -1480,7 +1515,8 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 		return false, nil
 	}
 
-	if _, err := s.store.GetConfig(ctx, id); err != nil {
+	cfg, err := s.store.GetConfig(ctx, id)
+	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			return false, nil
 		}
@@ -1504,6 +1540,9 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	}
 	if s.antigravityCredentials != nil {
 		s.antigravityCredentials.invalidate(id)
+	}
+	if cfg.UsesXAIOAuth() && s.xaiCredentials != nil {
+		s.xaiCredentials.invalidate(id)
 	}
 	return true, nil
 }

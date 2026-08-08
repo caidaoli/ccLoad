@@ -87,6 +87,8 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			KeyStrategy: model.KeyStrategySequential,
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesXAIOAuth() {
+		apiKeys = make([]*model.APIKey, 0)
 	}
 
 	modelStats := channelEditorModelStats{Available: true, Items: make([]ChannelModelStats, 0)}

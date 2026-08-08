@@ -105,7 +105,37 @@
                 <select id="oauthProviderSelect" name="oauth_provider" class="form-input">
                   <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+                  <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
                 </select>
+              </div>
+              <div id="xaiOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>
+                  <select id="xaiOAuthMethod" name="xai_oauth_method" class="form-input">
+                    <option value="device" data-i18n="channels.xai.methodDevice">设备码</option>
+                    <option value="refresh_token" data-i18n="channels.xai.methodRefreshToken">刷新令牌</option>
+                    <option value="sso" data-i18n="channels.xai.methodSSO">SSO Cookie</option>
+                  </select>
+                </div>
+                <div id="xaiCredentialSecretField" class="oauth-field" hidden>
+                  <label for="xaiCredentialValues" data-i18n="channels.xai.secretLabel">凭证（每行一个）</label>
+                  <textarea id="xaiCredentialValues" name="xai_credential_values" class="form-input oauth-url"
+                    rows="5" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="xaiCredentialSecretHint oauthLoginDialogStatus"></textarea>
+                  <p id="xaiCredentialSecretHint" class="oauth-field-hint"
+                    data-i18n="channels.xai.secretHint">提交后输入会立即清除，不会保存在浏览器中。</p>
+                </div>
+                <div id="xaiDeviceSessionFields" class="oauth-field" hidden>
+                  <span data-i18n="channels.xai.verificationURL">验证地址</span>
+                  <a id="xaiVerificationLink" target="_blank" rel="noopener noreferrer"></a>
+                  <span data-i18n="channels.xai.userCode">用户代码</span>
+                  <strong id="xaiUserCode" tabindex="-1"></strong>
+                  <span data-i18n="channels.xai.expiresAt">到期时间</span>
+                  <time id="xaiDeviceExpiresAt"></time>
+                  <p data-i18n="channels.xai.deviceHint">打开验证地址并输入用户代码。此窗口会自动检查结果。</p>
+                  <button id="xaiDeviceRestart" type="button" class="btn btn-secondary"
+                    data-i18n="channels.oauth.restart">重新授权</button>
+                </div>
               </div>
               <div class="oauth-actions">
                 <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
@@ -178,6 +208,7 @@
                 <option value="auto" data-i18n="channels.oauth.providerAuto">自动判断</option>
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
+                <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
               </select>
             </div>
             <div class="oauth-field">

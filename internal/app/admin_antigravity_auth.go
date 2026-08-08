@@ -51,8 +51,17 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 		if parseErr != nil || !sameAntigravityIdentity(existing, credential) {
 			continue
 		}
-		if err := store.UpdateOAuthCredential(ctx, cfg.ID, credentialJSON); err != nil {
+		credentialUpdated, err := store.CompareAndSwapOAuthCredential(
+			ctx, cfg.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, credentialJSON,
+		)
+		if err != nil {
 			return nil, err
+		}
+		if !credentialUpdated {
+			cfg, err = store.GetConfig(ctx, cfg.ID)
+			if err != nil {
+				return nil, err
+			}
 		}
 		cfg.ModelEntries = antigravityOAuthModelEntries()
 		updated, err := store.UpdateConfig(ctx, cfg.ID, cfg)

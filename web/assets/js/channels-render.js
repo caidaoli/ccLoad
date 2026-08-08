@@ -31,19 +31,27 @@ function escapeChannelRefreshText(value) {
 
 function buildOAuthPlanBadge(channel) {
   let planType = '';
+  let label = '';
   if (channel?.auth_type === 'codex_oauth') {
     planType = String(channel.codex_plan_type || '').trim();
   } else if (channel?.auth_type === 'antigravity_oauth') {
     planType = String(channel.antigravity_paid_tier || '').trim();
+  } else if (channel?.auth_type === 'xai_oauth') {
+    planType = String(channel.xai_subscription_tier || '').trim();
+    label = [channel.xai_email, planType, channel.xai_entitlement_status]
+      .map(value => String(value || '').trim())
+      .filter(Boolean)
+      .join(' · ');
   }
-  if (!planType) return '';
+  if (!label) label = planType;
+  if (!label) return '';
 
   const planTokens = planType.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-  if (planTokens.includes('free')) return '';
+  if (channel?.auth_type !== 'xai_oauth' && planTokens.includes('free')) return '';
 
   const planTone = ['plus', 'pro', 'team'].find(tier => planTokens.includes(tier));
   const toneClass = planTone ? ` ch-oauth-plan-badge--${planTone}` : '';
-  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(planType)}</span>`;
+  return `<span class="ch-oauth-plan-badge${toneClass}">${escapeChannelRefreshText(label)}</span>`;
 }
 
 function normalizeBatchRefreshChannelID(channelID) {
@@ -577,7 +585,7 @@ function buildOAuthUsageRefreshButton(channelID, loading = false) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
@@ -596,6 +604,7 @@ function buildOAuthUsageStatusHtml(channel) {
   }
 
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
+  const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
   const rows = windows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
@@ -608,16 +617,28 @@ function buildOAuthUsageStatusHtml(channel) {
       <div class="ch-oauth-usage__meta">
         <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
         <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+        ${isXAI ? `<span>${escapeChannelRefreshText(window.t('channels.oauth.usageAvailable'))}</span>` : ''}
         ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
       </div>
       <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
         <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>
       </div>
     </div>`;
-  }).join('');
+  });
+  if (isXAI) {
+    const availableKinds = new Set(windows.map(item => String(item?.kind || '').trim().toLowerCase()));
+    for (const [kind, labelKey] of [['weekly', 'channels.oauth.usageWeekly'], ['monthly', 'channels.oauth.usageMonthly']]) {
+      if (availableKinds.has(kind)) continue;
+      rows.push(`<div class="ch-oauth-usage__window"><span>${escapeChannelRefreshText(window.t(labelKey))}</span><span>${escapeChannelRefreshText(window.t('channels.oauth.usageUnknown'))}</span></div>`);
+    }
+  }
+  const warnings = isXAI && Array.isArray(state.data?.warnings)
+    ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
+    : '';
   return `<div class="ch-oauth-usage">
     <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id)}</div>
-    ${rows}
+    ${rows.join('')}
+    ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;
 }
 
