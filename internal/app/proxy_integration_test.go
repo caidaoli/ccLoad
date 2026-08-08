@@ -702,7 +702,8 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 				t.Errorf("xAI cache-route tools = %s, want web_search and x_search", gjson.GetBytes(wireBody, "tools").Raw)
 			}
 		case "auto":
-			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" || tools[0].Get("search_context_size").String() != "low" {
+			if len(tools) != 2 || tools[0].Get("type").String() != "web_search" ||
+				tools[0].Get("search_context_size").String() != "low" || tools[1].Get("type").String() != "x_search" {
 				t.Errorf("explicit xAI search tool was not preserved: %s", gjson.GetBytes(wireBody, "tools").Raw)
 			}
 		default:

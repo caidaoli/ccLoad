@@ -60,6 +60,42 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	assertNoJSONKey(t, payload, "external_web_access")
 }
 
+func TestFinalizeXAIResponsesBodyNormalizesReasoningInputItems(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`{
+		"input":[
+			{"type":"reasoning","summary":[],"content":null,"encrypted_content":"grok-state"},
+			{"type":"reasoning","summary":[],"content":[{"type":"reasoning_text","text":"kept"}],"encrypted_content":null},
+			{"role":"user","content":"continue"}
+		]
+	}`)
+
+	got, err := finalizeXAIResponsesBody(raw, "grok-4.5", "conv", xaiauth.CLIBaseURL)
+	if err != nil {
+		t.Fatalf("finalizeXAIResponsesBody() error = %v", err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(got, &payload); err != nil {
+		t.Fatalf("result is not JSON: %v\n%s", err, got)
+	}
+	input := payload["input"].([]any)
+	first := input[0].(map[string]any)
+	if _, exists := first["content"]; exists {
+		t.Fatalf("null reasoning content survived xAI finalization: %s", got)
+	}
+	if first["encrypted_content"] != "grok-state" {
+		t.Fatalf("valid encrypted state changed: %#v", first)
+	}
+	second := input[1].(map[string]any)
+	if _, exists := second["encrypted_content"]; exists {
+		t.Fatalf("null encrypted_content survived xAI finalization: %s", got)
+	}
+	if _, exists := second["content"]; !exists {
+		t.Fatalf("non-null reasoning content was removed: %s", got)
+	}
+}
+
 func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 	t.Parallel()
 
@@ -73,11 +109,11 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 		wantChoiceAbsent bool
 	}{
 		{
-			name:          "preserve explicit ordinary tool without enabling search",
+			name:          "preserve explicit ordinary tool and enable cache route",
 			baseURL:       xaiauth.CLIBaseURL + "/",
 			body:          `{"tools":[{"type":"function","name":"lookup"}]}`,
-			wantToolTypes: []string{"function"},
-			wantToolNames: []string{"lookup"},
+			wantToolTypes: []string{"function", "web_search", "x_search"},
+			wantToolNames: []string{"lookup", "", ""},
 		},
 		{
 			name:    "deduplicate native tools and preserve explicit functions",
@@ -97,9 +133,9 @@ func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 					{"type":"web_search"}
 				]}
 			}`,
-			wantToolTypes:   []string{"web_search", "function", "custom", "function"},
-			wantToolNames:   []string{"", "web_search", " WEB_SEARCH ", "lookup"},
-			wantChoiceTypes: []string{"function", "custom", "web_search"},
+			wantToolTypes:   []string{"web_search", "function", "custom", "function", "x_search"},
+			wantToolNames:   []string{"", "web_search", " WEB_SEARCH ", "lookup", ""},
+			wantChoiceTypes: []string{"function", "custom", "web_search", "x_search"},
 		},
 		{
 			name:             "prune choice without declared tools",
@@ -261,6 +297,20 @@ func TestDeriveXAIExecutionIDStableAndThreadIsolated(t *testing.T) {
 	}
 	if child == first || otherSubject == first {
 		t.Fatalf("execution identity not isolated: parent=%q child=%q other=%q", first, child, otherSubject)
+	}
+	claudeHeaders := http.Header{"X-Claude-Code-Session-Id": {"claude-session"}}
+	claudeFirst := deriveXAIExecutionID("subject-a", claudeHeaders)
+	claudeSecond := deriveXAIExecutionID("subject-a", claudeHeaders)
+	claudeOtherSession := deriveXAIExecutionID("subject-a", http.Header{
+		"X-Claude-Code-Session-Id": {"other-claude-session"},
+	})
+	if claudeFirst == "" || claudeFirst != claudeSecond || claudeFirst == claudeOtherSession {
+		t.Fatalf(
+			"Claude Code execution identity is not stable and isolated: first=%q second=%q other=%q",
+			claudeFirst,
+			claudeSecond,
+			claudeOtherSession,
+		)
 	}
 	if transient := deriveXAIExecutionID("subject-a", http.Header{}); transient != "" {
 		t.Fatalf("missing explicit session must not invent cross-request identity, got %q", transient)

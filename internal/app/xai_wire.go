@@ -68,6 +68,7 @@ func finalizeXAIResponsesBody(body []byte, actualModel, executionID, baseURL str
 		delete(payload, "stop")
 	}
 	normalizeXAIReasoning(payload, actualModel)
+	normalizeXAIInputReasoningItems(payload)
 	normalizeXAIWebSearch(payload, baseURL)
 
 	encoded, err := json.Marshal(payload)
@@ -75,6 +76,25 @@ func finalizeXAIResponsesBody(body []byte, actualModel, executionID, baseURL str
 		return nil, errors.New("encode xAI Responses request")
 	}
 	return encoded, nil
+}
+
+func normalizeXAIInputReasoningItems(payload map[string]any) {
+	input, ok := payload["input"].([]any)
+	if !ok {
+		return
+	}
+	for _, rawItem := range input {
+		item, ok := rawItem.(map[string]any)
+		if !ok || item["type"] != "reasoning" {
+			continue
+		}
+		if content, exists := item["content"]; exists && content == nil {
+			delete(item, "content")
+		}
+		if encryptedContent, exists := item["encrypted_content"]; exists && encryptedContent == nil {
+			delete(item, "encrypted_content")
+		}
+	}
 }
 
 func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
@@ -102,8 +122,13 @@ func normalizeXAIWebSearch(payload map[string]any, baseURL string) {
 		return
 	}
 
-	payload["tools"] = normalizeXAIWebSearchTools(tools)
-	normalizeXAIWebSearchToolChoice(payload)
+	tools = normalizeXAIWebSearchTools(tools)
+	cacheKey, _ := payload["prompt_cache_key"].(string)
+	if len(tools) > 0 && strings.TrimSpace(cacheKey) != "" {
+		tools = appendMissingXAINativeSearchTools(tools)
+	}
+	payload["tools"] = tools
+	normalizeXAIWebSearchToolChoice(payload, strings.TrimSpace(cacheKey) != "")
 	normalizeXAIOrphanedToolControls(payload)
 }
 
@@ -145,7 +170,7 @@ func isXAICLIChatProxyBaseURL(baseURL string) bool {
 
 func normalizeXAIWebSearchTools(tools []any) []any {
 	kept := make([]any, 0, len(tools))
-	hasNativeWebSearch := false
+	seenNativeSearch := make(map[string]bool, 2)
 	for _, rawTool := range tools {
 		tool, isObject := rawTool.(map[string]any)
 		if !isObject {
@@ -153,11 +178,11 @@ func normalizeXAIWebSearchTools(tools []any) []any {
 			continue
 		}
 		toolType, _ := tool["type"].(string)
-		if toolType == "web_search" {
-			if hasNativeWebSearch {
+		if toolType == "web_search" || toolType == "x_search" {
+			if seenNativeSearch[toolType] {
 				continue
 			}
-			hasNativeWebSearch = true
+			seenNativeSearch[toolType] = true
 			kept = append(kept, rawTool)
 			continue
 		}
@@ -166,7 +191,27 @@ func normalizeXAIWebSearchTools(tools []any) []any {
 	return kept
 }
 
-func normalizeXAIWebSearchToolChoice(payload map[string]any) {
+func appendMissingXAINativeSearchTools(tools []any) []any {
+	present := make(map[string]bool, 2)
+	for _, rawTool := range tools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		toolType, _ := tool["type"].(string)
+		if toolType == "web_search" || toolType == "x_search" {
+			present[toolType] = true
+		}
+	}
+	for _, toolType := range []string{"web_search", "x_search"} {
+		if !present[toolType] {
+			tools = append(tools, map[string]any{"type": toolType})
+		}
+	}
+	return tools
+}
+
+func normalizeXAIWebSearchToolChoice(payload map[string]any, enableCacheRoute bool) {
 	choice, isObject := payload["tool_choice"].(map[string]any)
 	if !isObject {
 		return
@@ -180,7 +225,11 @@ func normalizeXAIWebSearchToolChoice(payload map[string]any) {
 	if !exists || !isArray {
 		return
 	}
-	choice["tools"] = normalizeXAIWebSearchTools(allowed)
+	allowed = normalizeXAIWebSearchTools(allowed)
+	if enableCacheRoute && len(allowed) > 0 {
+		allowed = appendMissingXAINativeSearchTools(allowed)
+	}
+	choice["tools"] = allowed
 }
 
 func deleteJSONKeyRecursive(value any, key string) {
@@ -285,6 +334,14 @@ func injectXAIResponsesHeaders(req *http.Request, accessToken, conversationID st
 func deriveXAIExecutionID(subject string, headers http.Header) string {
 	subject = strings.TrimSpace(subject)
 	sessionID := responsesExecutionSessionID(headers)
+	if sessionID != "" {
+		sessionID = "responses:" + sessionID
+	} else if claudeSessionID := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); claudeSessionID != "" {
+		sessionID = "claude:" + claudeSessionID
+		if threadID := strings.TrimSpace(headers.Get("Thread-Id")); threadID != "" {
+			sessionID += "\x00thread\x00" + threadID
+		}
+	}
 	if subject == "" || sessionID == "" {
 		return ""
 	}
