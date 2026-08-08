@@ -22,7 +22,7 @@ type upstreamConnectionAgeTransport struct {
 }
 
 type upstreamHTTPTransportGeneration struct {
-	transport *http.Transport
+	transport *codexUTLSRoundTripper
 	timer     *time.Timer
 	active    int
 	retired   bool
@@ -43,7 +43,7 @@ func newUpstreamConnectionAgeTransport(
 }
 
 func newUpstreamHTTPClient(base *http.Transport, maxAge time.Duration) *http.Client {
-	var roundTripper http.RoundTripper = base
+	var roundTripper http.RoundTripper = newCodexUTLSRoundTripper(base)
 	if maxAge > 0 {
 		roundTripper = newUpstreamConnectionAgeTransport(base, maxAge)
 	}
@@ -62,7 +62,7 @@ func closeUpstreamHTTPClient(client *http.Client) {
 }
 
 func (t *upstreamConnectionAgeTransport) startGenerationLocked(base *http.Transport) {
-	generation := &upstreamHTTPTransportGeneration{transport: base}
+	generation := &upstreamHTTPTransportGeneration{transport: newCodexUTLSRoundTripper(base)}
 	if t.maxAge > 0 {
 		generation.timer = time.AfterFunc(t.maxAge, func() {
 			t.retire(generation)
