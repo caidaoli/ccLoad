@@ -1096,7 +1096,7 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 	}
 }
 
-func TestConfig_BatchPatchConfigsRejectsOAuthModelState(t *testing.T) {
+func TestConfig_BatchPatchConfigsUpdatesOAuthModelsWithoutCredentialMutation(t *testing.T) {
 	t.Parallel()
 
 	store := newTestStore(t, "batch-patch-oauth.db")
@@ -1118,27 +1118,31 @@ func TestConfig_BatchPatchConfigsRejectsOAuthModelState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = store.BatchPatchConfigs(ctx, []int64{apiKey.ID, oauth.ID}, model.BatchConfigPatch{
+	result, err := store.BatchPatchConfigs(ctx, []int64{apiKey.ID, oauth.ID}, model.BatchConfigPatch{
 		ModelImportMode: model.ModelImportModeReplace,
-		ModelEntries:    []model.ModelEntry{{Model: "stale-model"}},
+		ModelEntries:    []model.ModelEntry{{Model: "replacement-model"}},
 	})
-	if err == nil {
-		t.Fatal("BatchPatchConfigs updated OAuth-derived model state")
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs: %v", err)
 	}
-	for _, tc := range []struct {
-		id    int64
-		model string
-	}{
-		{id: oauth.ID, model: "winner-model"},
-		{id: apiKey.ID, model: "key-model"},
-	} {
-		got, getErr := store.GetConfig(ctx, tc.id)
+	if result.Updated != 2 || result.Unchanged != 0 || len(result.NotFound) != 0 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	for _, channelID := range []int64{oauth.ID, apiKey.ID} {
+		got, getErr := store.GetConfig(ctx, channelID)
 		if getErr != nil {
 			t.Fatal(getErr)
 		}
-		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != tc.model || got.ScheduledCheckModel != tc.model {
-			t.Fatalf("channel %d state changed after rejected patch: %+v", tc.id, got)
+		if len(got.ModelEntries) != 1 || got.ModelEntries[0].Model != "replacement-model" || got.ScheduledCheckModel != "" {
+			t.Fatalf("channel %d model state = %+v", channelID, got)
 		}
+	}
+	persistedOAuth, err := store.GetConfig(ctx, oauth.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persistedOAuth.UsesCodexOAuth() || persistedOAuth.OAuthCredential != credential {
+		t.Fatalf("OAuth identity changed: auth_type=%q credential=%q", persistedOAuth.GetAuthType(), persistedOAuth.OAuthCredential)
 	}
 }
 

@@ -692,6 +692,46 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("imports models into OAuth and API key channels", func(t *testing.T) {
+		const credential = `{"type":"antigravity","access_token":"winner","refresh_token":"winner-rt"}`
+		oauth, err := store.CreateConfig(ctx, &model.Config{
+			Name: "batch-oauth", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential,
+			URLs: model.ChannelURLs{{URL: "https://batch-oauth.example.com"}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "oauth-existing"}},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		apiKey := createChannel("batch-api-key", model.ProtocolTransformModeAuto)
+
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", map[string]any{
+			"channel_ids":       []int64{oauth.ID, apiKey.ID},
+			"model_import_mode": model.ModelImportModeAppend,
+			"models":            []model.ModelEntry{{Model: "imported-model", RedirectModel: "upstream-model"}},
+		}))
+
+		server.HandleBatchPatchChannels(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+		}
+		for _, channelID := range []int64{oauth.ID, apiKey.ID} {
+			persisted, getErr := store.GetConfig(ctx, channelID)
+			if getErr != nil {
+				t.Fatal(getErr)
+			}
+			if !persisted.SupportsModel("imported-model") {
+				t.Fatalf("channel %d models=%+v, want imported-model", channelID, persisted.ModelEntries)
+			}
+		}
+		persistedOAuth, err := store.GetConfig(ctx, oauth.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !persistedOAuth.UsesAntigravityOAuth() || persistedOAuth.OAuthCredential != credential {
+			t.Fatalf("OAuth identity changed: auth_type=%q credential=%q", persistedOAuth.GetAuthType(), persistedOAuth.OAuthCredential)
+		}
+	})
 }
 
 func TestHandleBatchDeleteChannels(t *testing.T) {

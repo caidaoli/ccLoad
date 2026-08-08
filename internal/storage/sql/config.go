@@ -569,10 +569,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				result.NotFound = append(result.NotFound, channelID)
 				continue
 			}
-			if patch.ModelImportMode != "" && state.authType != model.AuthTypeAPIKey {
-				return fmt.Errorf("patch channel %d: OAuth model state is credential-owned", channelID)
-			}
-
+			// Model imports are independent of the channel authentication type.
 			nextCostMultiplier := state.costMultiplier
 			if patch.CostMultiplier != nil {
 				nextCostMultiplier = *patch.CostMultiplier
@@ -622,7 +619,6 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 }
 
 type batchConfigPatchState struct {
-	authType              string
 	costMultiplier        float64
 	protocolTransformMode string
 	scheduledCheckModel   string
@@ -654,7 +650,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
-	query := `SELECT id, auth_type, cost_multiplier, protocol_transform_mode, scheduled_check_model
+	query := `SELECT id, cost_multiplier, protocol_transform_mode, scheduled_check_model
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
 		query += ` FOR UPDATE`
@@ -667,11 +663,10 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	for rows.Next() {
 		var channelID int64
 		state := &batchConfigPatchState{}
-		if err := rows.Scan(&channelID, &state.authType, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
+		if err := rows.Scan(&channelID, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan channel for batch patch: %w", err)
 		}
-		state.authType = model.NormalizeAuthType(state.authType)
 		states[channelID] = state
 	}
 	if err := rows.Err(); err != nil {
