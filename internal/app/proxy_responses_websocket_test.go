@@ -182,15 +182,23 @@ func TestResponsesExecutionSessionPreferredChannelLifecycle(t *testing.T) {
 	}
 }
 
-func readResponsesWebsocketRateLimit(t testing.TB, conn *websocket.Conn) {
+type responsesWebsocketTestError struct {
+	Type         string `json:"type"`
+	Code         string `json:"code"`
+	Param        string `json:"param"`
+	Message      string `json:"message"`
+	Setting      string `json:"setting"`
+	SettingValue int64  `json:"setting_value"`
+	Current      int64  `json:"current"`
+	Unit         string `json:"unit"`
+}
+
+func readResponsesWebsocketRateLimit(t testing.TB, conn *websocket.Conn) responsesWebsocketTestError {
 	t.Helper()
 	var event struct {
-		Type   string `json:"type"`
-		Status int    `json:"status"`
-		Error  struct {
-			Type string `json:"type"`
-			Code string `json:"code"`
-		} `json:"error"`
+		Type   string                      `json:"type"`
+		Status int                         `json:"status"`
+		Error  responsesWebsocketTestError `json:"error"`
 	}
 	if err := conn.ReadJSON(&event); err != nil {
 		t.Fatalf("read websocket rate limit: %v", err)
@@ -199,6 +207,18 @@ func readResponsesWebsocketRateLimit(t testing.TB, conn *websocket.Conn) {
 		event.Error.Type != "rate_limit_error" || event.Error.Code != "rate_limit" {
 		t.Fatalf("unexpected websocket rate limit: %+v", event)
 	}
+	return event.Error
+}
+
+func readResponsesWebsocketUpgradeError(t testing.TB, response *http.Response) responsesWebsocketTestError {
+	t.Helper()
+	var payload struct {
+		Error responsesWebsocketTestError `json:"error"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
+		t.Fatalf("decode websocket upgrade error: %v", err)
+	}
+	return payload.Error
 }
 
 func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T) {
@@ -244,7 +264,12 @@ func TestResponsesWebsocketSessionCapacityPreservesStableReconnect(t *testing.T)
 	}); err != nil {
 		t.Fatalf("write capacity-rejected turn: %v", err)
 	}
-	readResponsesWebsocketRateLimit(t, unrelated)
+	capacityErr := readResponsesWebsocketRateLimit(t, unrelated)
+	if capacityErr.Setting != responsesWebsocketMaxSessionsSetting ||
+		capacityErr.SettingValue != 1 || capacityErr.Current != 1 || capacityErr.Unit != "sessions" ||
+		capacityErr.Message != "Responses WebSocket execution session limit reached (current: 1, limit: 1). Reuse an existing Session-Id, wait for an idle session to expire, or increase responses_ws_max_sessions." {
+		t.Fatalf("capacity error missing actionable setting details: %+v", capacityErr)
+	}
 	_ = unrelated.Close()
 	if got := upstreamCalls.Load(); got != 1 {
 		t.Fatalf("capacity-rejected work reached upstream; calls=%d", got)
@@ -297,7 +322,15 @@ func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSe
 	}); err != nil {
 		t.Fatalf("write in-place budget-rejected continuation: %v", err)
 	}
-	readResponsesWebsocketRateLimit(t, first)
+	firstBudgetErr := readResponsesWebsocketRateLimit(t, first)
+	if firstBudgetErr.Setting != responsesWebsocketMaxTranscriptBytesSetting ||
+		firstBudgetErr.SettingValue != 1 || firstBudgetErr.Current <= firstBudgetErr.SettingValue ||
+		firstBudgetErr.Unit != "bytes" || firstBudgetErr.Message != fmt.Sprintf(
+		"Responses WebSocket transcript budget exceeded (current: %d bytes, limit: 1 byte). Disconnect unused sessions and wait for them to expire, or increase responses_ws_max_transcript_bytes.",
+		firstBudgetErr.Current,
+	) {
+		t.Fatalf("transcript budget error missing actionable setting details: %+v", firstBudgetErr)
+	}
 	_ = first.Close()
 	waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
 
@@ -309,7 +342,10 @@ func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSe
 	}); err != nil {
 		t.Fatalf("write budget-rejected continuation: %v", err)
 	}
-	readResponsesWebsocketRateLimit(t, continued)
+	continuedBudgetErr := readResponsesWebsocketRateLimit(t, continued)
+	if continuedBudgetErr != firstBudgetErr {
+		t.Fatalf("reconnected budget error changed details: got %+v, want %+v", continuedBudgetErr, firstBudgetErr)
+	}
 
 	unrelated := dialResponsesWebsocketWithSessionID(t, env.engine, "budget-b")
 	if err := unrelated.WriteJSON(map[string]any{
@@ -318,7 +354,10 @@ func TestResponsesWebsocketTranscriptBudgetRejectsNewWorkWithoutEvictingStableSe
 	}); err != nil {
 		t.Fatalf("write budget-rejected new session: %v", err)
 	}
-	readResponsesWebsocketRateLimit(t, unrelated)
+	unrelatedBudgetErr := readResponsesWebsocketRateLimit(t, unrelated)
+	if unrelatedBudgetErr != firstBudgetErr {
+		t.Fatalf("new-session budget error changed details: got %+v, want %+v", unrelatedBudgetErr, firstBudgetErr)
+	}
 	if got := upstreamCalls.Load(); got != 1 {
 		t.Fatalf("budget-rejected work reached upstream; calls=%d", got)
 	}
@@ -708,7 +747,7 @@ func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
 	appServer := httptest.NewServer(env.engine)
 	defer appServer.Close()
 
-	const expectedPerTokenLimit = 16
+	const expectedPerTokenLimit = defaultResponsesWebsocketConnectionPerSubjectLimit
 	for range expectedPerTokenLimit {
 		dialResponsesWebsocketAtURL(t, appServer.URL, "test-api-key", "/v1/responses", nil)
 	}
@@ -725,14 +764,27 @@ func TestResponsesWebsocketConnectionLimitRejectsIdleUpgrades(t *testing.T) {
 		defer func() { _ = resp.Body.Close() }()
 	}
 	if err == nil {
-		t.Fatal("17th idle websocket unexpectedly upgraded")
+		t.Fatalf("idle websocket %d unexpectedly upgraded", expectedPerTokenLimit+1)
 	}
 	if resp == nil || resp.StatusCode != http.StatusTooManyRequests {
 		status := 0
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		t.Fatalf("17th idle websocket status=%d, want %d", status, http.StatusTooManyRequests)
+		t.Fatalf("idle websocket %d status=%d, want %d", expectedPerTokenLimit+1, status, http.StatusTooManyRequests)
+	}
+	limitErr := readResponsesWebsocketUpgradeError(t, resp)
+	if limitErr.Type != "rate_limit_error" ||
+		limitErr.Code != "responses_websocket_connection_limit_exceeded" ||
+		limitErr.Setting != responsesWebsocketMaxConnectionsPerTokenSetting ||
+		limitErr.SettingValue != expectedPerTokenLimit || limitErr.Current != expectedPerTokenLimit ||
+		limitErr.Unit != "connections" ||
+		limitErr.Message != fmt.Sprintf(
+			"Responses WebSocket downstream connection limit for this API token reached (current: %d, limit: %d). Close an existing connection for this token or increase responses_ws_max_connections_per_token, then try again.",
+			expectedPerTokenLimit,
+			expectedPerTokenLimit,
+		) {
+		t.Fatalf("per-token connection error missing actionable setting details: %+v", limitErr)
 	}
 }
 
@@ -769,6 +821,14 @@ func TestResponsesWebsocketGlobalConnectionLimitRejectsIdleUpgrades(t *testing.T
 			status = resp.StatusCode
 		}
 		t.Fatalf("second global websocket status=%d, want %d", status, http.StatusTooManyRequests)
+	}
+	limitErr := readResponsesWebsocketUpgradeError(t, resp)
+	if limitErr.Type != "rate_limit_error" ||
+		limitErr.Code != "responses_websocket_connection_limit_exceeded" ||
+		limitErr.Setting != responsesWebsocketMaxConnectionsSetting ||
+		limitErr.SettingValue != 1 || limitErr.Current != 1 || limitErr.Unit != "connections" ||
+		limitErr.Message != "Responses WebSocket process-wide downstream connection limit reached (current: 1, limit: 1). Close an existing connection or increase responses_ws_max_connections, then try again." {
+		t.Fatalf("global connection error missing actionable setting details: %+v", limitErr)
 	}
 }
 
@@ -2371,9 +2431,11 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-expire\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
 	}))
-	env := setupProxyTestEnv(t, []testChannel{{
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
 		name: "expiring-session", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
-	}}, map[int]string{0: upstream.URL})
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		responsesWebsocketSessionTTLSetting: "7",
+	})
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "expire-me")
 	if err := first.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set expiring first deadline: %v", err)
@@ -2404,13 +2466,9 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 		t.Fatalf("write expired continuation: %v", err)
 	}
 	var event struct {
-		Type   string `json:"type"`
-		Status int    `json:"status"`
-		Error  struct {
-			Type  string `json:"type"`
-			Code  string `json:"code"`
-			Param string `json:"param"`
-		} `json:"error"`
+		Type   string                      `json:"type"`
+		Status int                         `json:"status"`
+		Error  responsesWebsocketTestError `json:"error"`
 	}
 	if err := second.ReadJSON(&event); err != nil {
 		t.Fatalf("read expired continuation error: %v", err)
@@ -2418,7 +2476,11 @@ func TestResponsesWebsocketExecutionSessionExpires(t *testing.T) {
 	if event.Type != "error" || event.Status != http.StatusBadRequest ||
 		event.Error.Type != "invalid_request_error" ||
 		event.Error.Code != "previous_response_not_found" ||
-		event.Error.Param != "previous_response_id" {
+		event.Error.Param != "previous_response_id" ||
+		event.Error.Setting != responsesWebsocketSessionTTLSetting ||
+		event.Error.SettingValue != 7 ||
+		event.Error.Unit != "minutes" ||
+		event.Error.Message != "previous_response_id is not available in this execution session. Resend the full conversation input without previous_response_id. Idle sessions are retained for 7 minutes by responses_ws_session_ttl_minutes." {
 		t.Fatalf("expired continuation event=%+v", event)
 	}
 	if calls.Load() != 1 {

@@ -90,13 +90,30 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 	}
 	releaseConnection, connectionLimit := s.responsesWebsocketConnections.acquire(tokenHashString)
 	if connectionLimit != nil {
-		c.JSON(http.StatusTooManyRequests, gin.H{"error": gin.H{
-			"message": fmt.Sprintf(
-				"Responses WebSocket connection limit exceeded: %d active of %d %s limit",
-				connectionLimit.active, connectionLimit.limit, connectionLimit.scope,
-			),
-			"type": "rate_limit_error",
-			"code": "responses_websocket_connection_limit_exceeded",
+		setting := responsesWebsocketMaxConnectionsSetting
+		message := fmt.Sprintf(
+			"Responses WebSocket process-wide downstream connection limit reached (current: %d, limit: %d). Close an existing connection or increase %s, then try again.",
+			connectionLimit.active,
+			connectionLimit.limit,
+			setting,
+		)
+		if connectionLimit.scope == "token" {
+			setting = responsesWebsocketMaxConnectionsPerTokenSetting
+			message = fmt.Sprintf(
+				"Responses WebSocket downstream connection limit for this API token reached (current: %d, limit: %d). Close an existing connection for this token or increase %s, then try again.",
+				connectionLimit.active,
+				connectionLimit.limit,
+				setting,
+			)
+		}
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": responsesWebsocketErrorBody{
+			Message:      message,
+			Type:         "rate_limit_error",
+			Code:         "responses_websocket_connection_limit_exceeded",
+			Setting:      setting,
+			SettingValue: int64(connectionLimit.limit),
+			Current:      int64(connectionLimit.active),
+			Unit:         "connections",
 		}})
 		return
 	}
@@ -162,7 +179,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 				var errSession error
 				executionSession, releaseExecutionSession, errSession = s.responsesExecutionSessions.acquire(tokenHashString, sessionID)
 				if errSession != nil {
-					if errWrite := writeResponsesWebsocketRateLimit(conn, errSession.Error()); errWrite != nil {
+					if errWrite := writeResponsesWebsocketRateLimit(conn, errSession); errWrite != nil {
 						return
 					}
 					continue
@@ -173,7 +190,7 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 			}
 			if errAdmit := s.responsesExecutionSessions.admitTurn(executionSession); errAdmit != nil {
 				executionSession.releaseTurn()
-				if errWrite := writeResponsesWebsocketRateLimit(conn, errAdmit.Error()); errWrite != nil {
+				if errWrite := writeResponsesWebsocketRateLimit(conn, errAdmit); errWrite != nil {
 					return
 				}
 				continue
@@ -189,7 +206,10 @@ func (s *Server) HandleResponsesWebsocket(c *gin.Context) {
 						gjson.GetBytes(message.payload, "previous_response_id").String(),
 						emptySession,
 					)
-					if errWrite := writeResponsesWebsocketPreviousResponseNotFound(conn); errWrite != nil {
+					if errWrite := writeResponsesWebsocketPreviousResponseNotFound(
+						conn,
+						s.responsesExecutionSessions.sessionTTL(),
+					); errWrite != nil {
 						return
 					}
 					continue
@@ -941,66 +961,80 @@ func sseEventData(rawEvent []byte) []byte {
 }
 
 func writeResponsesWebsocketError(conn *websocket.Conn, code string, message string) error {
-	return writeResponsesWebsocketErrorPayload(
-		conn, http.StatusBadRequest, "invalid_request_error", code, "", message,
-	)
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, responsesWebsocketErrorBody{
+		Type: "invalid_request_error", Code: code, Message: message,
+	})
 }
 
-func writeResponsesWebsocketRateLimit(conn *websocket.Conn, message string) error {
-	return writeResponsesWebsocketErrorPayload(
-		conn, http.StatusTooManyRequests, "rate_limit_error", "rate_limit", "", message,
-	)
+func writeResponsesWebsocketRateLimit(conn *websocket.Conn, limitErr error) error {
+	body := responsesWebsocketErrorBody{
+		Type: "rate_limit_error", Code: "rate_limit", Message: limitErr.Error(),
+	}
+	var executionLimitErr *responsesExecutionLimitError
+	if errors.As(limitErr, &executionLimitErr) {
+		body.Setting = executionLimitErr.setting
+		body.SettingValue = executionLimitErr.limit
+		body.Current = executionLimitErr.current
+		body.Unit = executionLimitErr.unit
+	}
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusTooManyRequests, body)
 }
 
 func writeResponsesWebsocketClientRetryError(
 	conn *websocket.Conn,
 	retryErr *responsesWebsocketClientRetryError,
 ) error {
-	return writeResponsesWebsocketErrorPayload(
-		conn,
-		http.StatusBadGateway,
-		"server_error",
-		retryErr.responseCode(),
-		"",
-		retryErr.Error(),
-	)
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadGateway, responsesWebsocketErrorBody{
+		Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error(),
+	})
+}
+
+type responsesWebsocketErrorBody struct {
+	Message      string `json:"message"`
+	Type         string `json:"type"`
+	Code         string `json:"code"`
+	Param        string `json:"param,omitempty"`
+	Setting      string `json:"setting,omitempty"`
+	SettingValue int64  `json:"setting_value,omitempty"`
+	Current      int64  `json:"current,omitempty"`
+	Unit         string `json:"unit,omitempty"`
 }
 
 func writeResponsesWebsocketErrorPayload(
 	conn *websocket.Conn,
 	status int,
-	errorType string,
-	code string,
-	param string,
-	message string,
+	errorBody responsesWebsocketErrorBody,
 ) error {
 	if err := conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 		return err
 	}
-	errorPayload := gin.H{
-		"type":    errorType,
-		"code":    code,
-		"message": message,
-	}
-	if strings.TrimSpace(param) != "" {
-		errorPayload["param"] = param
-	}
 	return conn.WriteJSON(gin.H{
 		"type":   "error",
 		"status": status,
-		"error":  errorPayload,
+		"error":  errorBody,
 	})
 }
 
-func writeResponsesWebsocketPreviousResponseNotFound(conn *websocket.Conn) error {
-	return writeResponsesWebsocketErrorPayload(
-		conn,
-		http.StatusBadRequest,
-		"invalid_request_error",
-		"previous_response_not_found",
-		"previous_response_id",
-		errResponsesWebsocketPreviousResponseNotFound.Error(),
-	)
+func writeResponsesWebsocketPreviousResponseNotFound(conn *websocket.Conn, sessionTTL time.Duration) error {
+	minutes := int64(sessionTTL / time.Minute)
+	minuteLabel := "minutes"
+	if minutes == 1 {
+		minuteLabel = "minute"
+	}
+	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadRequest, responsesWebsocketErrorBody{
+		Type:  "invalid_request_error",
+		Code:  "previous_response_not_found",
+		Param: "previous_response_id",
+		Message: fmt.Sprintf(
+			"previous_response_id is not available in this execution session. Resend the full conversation input without previous_response_id. Idle sessions are retained for %d %s by %s.",
+			minutes,
+			minuteLabel,
+			responsesWebsocketSessionTTLSetting,
+		),
+		Setting:      responsesWebsocketSessionTTLSetting,
+		SettingValue: minutes,
+		Unit:         "minutes",
+	})
 }
 
 func closeResponsesWebsocketForClientRetry(conn *websocket.Conn) error {

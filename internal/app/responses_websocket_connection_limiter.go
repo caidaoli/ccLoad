@@ -3,11 +3,15 @@ package app
 import (
 	"strings"
 	"sync"
+
+	"ccLoad/internal/config"
 )
 
 const (
-	defaultResponsesWebsocketConnectionLimit           = 64
-	defaultResponsesWebsocketConnectionPerSubjectLimit = 16
+	defaultResponsesWebsocketConnectionLimit           = config.DefaultResponsesWebsocketMaxConnections
+	defaultResponsesWebsocketConnectionPerSubjectLimit = config.DefaultResponsesWebsocketMaxConnectionsPerToken
+	responsesWebsocketMaxConnectionsSetting            = "responses_ws_max_connections"
+	responsesWebsocketMaxConnectionsPerTokenSetting    = "responses_ws_max_connections_per_token"
 )
 
 type responsesWebsocketConnectionLimit struct {

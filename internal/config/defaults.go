@@ -43,6 +43,15 @@ const (
 	DefaultCooldownMinSeconds = 10
 )
 
+// Responses WebSocket 资源默认值。
+const (
+	DefaultResponsesWebsocketMaxConnections         = 128
+	DefaultResponsesWebsocketMaxConnectionsPerToken = 64
+	DefaultResponsesWebsocketMaxSessions            = 256
+	DefaultResponsesWebsocketSessionTTLMinutes      = 15
+	DefaultResponsesWebsocketMaxTranscriptBytes     = 256 * 1024 * 1024 // 256 MiB
+)
+
 // HTTP客户端配置常量
 const (
 	// HTTPDialTimeout DNS解析+TCP连接建立超时

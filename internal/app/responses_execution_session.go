@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strconv"
@@ -12,20 +13,66 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"ccLoad/internal/config"
 )
 
 const (
 	responsesExecutionSessionCleanupInterval       = time.Minute
 	responsesExecutionSessionDetachedTransportTTL  = 5 * time.Minute
-	defaultResponsesExecutionSessionLimit          = 32
-	defaultResponsesExecutionSessionTTL            = 15 // minutes
-	defaultResponsesExecutionTranscriptBudgetBytes = 128 * 1024 * 1024
+	defaultResponsesExecutionSessionLimit          = config.DefaultResponsesWebsocketMaxSessions
+	defaultResponsesExecutionSessionTTL            = config.DefaultResponsesWebsocketSessionTTLMinutes
+	defaultResponsesExecutionTranscriptBudgetBytes = config.DefaultResponsesWebsocketMaxTranscriptBytes
+	responsesWebsocketMaxSessionsSetting           = "responses_ws_max_sessions"
+	responsesWebsocketSessionTTLSetting            = "responses_ws_session_ttl_minutes"
+	responsesWebsocketMaxTranscriptBytesSetting    = "responses_ws_max_transcript_bytes"
 )
 
 var (
 	errResponsesExecutionSessionCapacity         = errors.New("responses execution session capacity exceeded")
 	errResponsesExecutionSessionTranscriptBudget = errors.New("responses execution transcript budget exceeded")
 )
+
+type responsesExecutionLimitError struct {
+	cause   error
+	setting string
+	current int64
+	limit   int64
+	unit    string
+}
+
+func (e *responsesExecutionLimitError) Error() string {
+	switch {
+	case errors.Is(e.cause, errResponsesExecutionSessionCapacity):
+		return fmt.Sprintf(
+			"Responses WebSocket execution session limit reached (current: %d, limit: %d). Reuse an existing Session-Id, wait for an idle session to expire, or increase %s.",
+			e.current,
+			e.limit,
+			e.setting,
+		)
+	case errors.Is(e.cause, errResponsesExecutionSessionTranscriptBudget):
+		return fmt.Sprintf(
+			"Responses WebSocket transcript budget exceeded (current: %s, limit: %s). Disconnect unused sessions and wait for them to expire, or increase %s.",
+			formatResponsesWebsocketByteCount(e.current),
+			formatResponsesWebsocketByteCount(e.limit),
+			e.setting,
+		)
+	default:
+		return e.cause.Error()
+	}
+}
+
+func formatResponsesWebsocketByteCount(value int64) string {
+	unit := "bytes"
+	if value == 1 {
+		unit = "byte"
+	}
+	return fmt.Sprintf("%d %s", value, unit)
+}
+
+func (e *responsesExecutionLimitError) Unwrap() error {
+	return e.cause
+}
 
 // responsesExecutionSession owns conversation state. Neither transcript nor
 // upstream transport belongs to a particular downstream TCP/WebSocket connection.
@@ -180,7 +227,7 @@ func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
 	}
 	minutes := defaultResponsesExecutionSessionTTL
 	if s.configService != nil {
-		minutes = s.configService.GetInt("responses_ws_session_ttl_minutes", defaultResponsesExecutionSessionTTL)
+		minutes = s.configService.GetInt(responsesWebsocketSessionTTLSetting, defaultResponsesExecutionSessionTTL)
 		if minutes <= 0 {
 			minutes = defaultResponsesExecutionSessionTTL
 		}
@@ -190,7 +237,7 @@ func (s *responsesExecutionSessionStore) sessionTTL() time.Duration {
 
 func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
 	if s.configService != nil {
-		n := s.configService.GetInt("responses_ws_max_sessions", s.maxSessions)
+		n := s.configService.GetInt(responsesWebsocketMaxSessionsSetting, s.maxSessions)
 		if n > 0 {
 			return n
 		}
@@ -201,7 +248,7 @@ func (s *responsesExecutionSessionStore) maxSessionsLimit() int {
 func (s *responsesExecutionSessionStore) transcriptBudgetLimit() int64 {
 	limit := s.maxTranscriptBytes
 	if s.configService != nil {
-		n := s.configService.GetInt("responses_ws_max_transcript_bytes", int(limit))
+		n := s.configService.GetInt(responsesWebsocketMaxTranscriptBytesSetting, int(limit))
 		if n > 0 {
 			return int64(n)
 		}
@@ -309,6 +356,13 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 	evicted, overBudget := s.trimTranscriptBudgetLocked()
 	if overBudget {
 		s.budgetRejected++
+		limitErr := &responsesExecutionLimitError{
+			cause:   errResponsesExecutionSessionTranscriptBudget,
+			setting: responsesWebsocketMaxTranscriptBytesSetting,
+			current: s.transcriptBytesLocked(),
+			limit:   s.transcriptBudgetLimit(),
+			unit:    "bytes",
+		}
 		s.mu.Unlock()
 		logResponsesExecutionSessionRemovals("ttl_expired", expired)
 		closeResponsesExecutionSessions(append(expired, evicted...))
@@ -318,13 +372,20 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 			responsesExecutionFingerprint(sessionID),
 			"none",
 		)
-		return nil, nil, errResponsesExecutionSessionTranscriptBudget
+		return nil, nil, limitErr
 	}
 	if session == nil {
 		if limit := s.maxSessionsLimit(); limit > 0 && len(s.sessions) >= limit {
 			victim := s.evictIdleLocked(true)
 			if victim == nil {
 				s.capacityRejected++
+				limitErr := &responsesExecutionLimitError{
+					cause:   errResponsesExecutionSessionCapacity,
+					setting: responsesWebsocketMaxSessionsSetting,
+					current: int64(len(s.sessions)),
+					limit:   int64(limit),
+					unit:    "sessions",
+				}
 				s.mu.Unlock()
 				logResponsesExecutionSessionRemovals("ttl_expired", expired)
 				closeResponsesExecutionSessions(append(expired, evicted...))
@@ -334,7 +395,7 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 					responsesExecutionFingerprint(sessionID),
 					"none",
 				)
-				return nil, nil, errResponsesExecutionSessionCapacity
+				return nil, nil, limitErr
 			}
 			evicted = append(evicted, victim)
 		}
@@ -380,8 +441,16 @@ func (s *responsesExecutionSessionStore) admitTurn(session *responsesExecutionSe
 	}
 	s.mu.Lock()
 	evicted, overBudget := s.trimTranscriptBudgetLocked()
+	var limitErr *responsesExecutionLimitError
 	if overBudget {
 		s.budgetRejected++
+		limitErr = &responsesExecutionLimitError{
+			cause:   errResponsesExecutionSessionTranscriptBudget,
+			setting: responsesWebsocketMaxTranscriptBytesSetting,
+			current: s.transcriptBytesLocked(),
+			limit:   s.transcriptBudgetLimit(),
+			unit:    "bytes",
+		}
 	}
 	s.mu.Unlock()
 	closeResponsesExecutionSessions(evicted)
@@ -394,7 +463,7 @@ func (s *responsesExecutionSessionStore) admitTurn(session *responsesExecutionSe
 		session.sessionFingerprint,
 		responsesExecutionFingerprint(session.transcript.lastResponseID),
 	)
-	return errResponsesExecutionSessionTranscriptBudget
+	return limitErr
 }
 
 func (s *responsesExecutionSessionStore) recordPreviousResponseMiss(
