@@ -52,17 +52,15 @@ func TestFinalizeXAIResponsesBodyAppliesProviderContract(t *testing.T) {
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
 		t.Fatalf("reasoning = %#v, want normalized high with summary preserved", reasoning)
 	}
-	tools, _ := payload["tools"].([]any)
-	if len(tools) != 1 || tools[0].(map[string]any)["type"] != "web_search" {
-		t.Fatalf("tools = %#v, want one native web_search", tools)
-	}
-	if payload["tool_choice"] != "auto" || payload["parallel_tool_calls"] != true {
-		t.Fatalf("tool controls = %#v/%#v, want preserved for native web_search", payload["tool_choice"], payload["parallel_tool_calls"])
+	for _, field := range []string{"tools", "tool_choice", "parallel_tool_calls"} {
+		if _, exists := payload[field]; exists {
+			t.Fatalf("orphaned tool field %q survived: %s", field, got)
+		}
 	}
 	assertNoJSONKey(t, payload, "external_web_access")
 }
 
-func TestFinalizeXAIResponsesBodyEnsuresCLIWebSearch(t *testing.T) {
+func TestFinalizeXAIResponsesBodyNormalizesCLITools(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -75,14 +73,14 @@ func TestFinalizeXAIResponsesBodyEnsuresCLIWebSearch(t *testing.T) {
 		wantChoiceAbsent bool
 	}{
 		{
-			name:          "inject native tool and preserve ordinary tool",
+			name:          "preserve explicit ordinary tool without enabling search",
 			baseURL:       xaiauth.CLIBaseURL + "/",
 			body:          `{"tools":[{"type":"function","name":"lookup"}]}`,
-			wantToolTypes: []string{"web_search", "function"},
-			wantToolNames: []string{"", "lookup"},
+			wantToolTypes: []string{"function"},
+			wantToolNames: []string{"lookup"},
 		},
 		{
-			name:    "deduplicate native tools and remove named stand-ins",
+			name:    "deduplicate native tools and preserve explicit functions",
 			baseURL: xaiauth.CLIBaseURL,
 			body: `{
 				"tools":[
@@ -99,16 +97,14 @@ func TestFinalizeXAIResponsesBodyEnsuresCLIWebSearch(t *testing.T) {
 					{"type":"web_search"}
 				]}
 			}`,
-			wantToolTypes:   []string{"web_search", "function"},
-			wantToolNames:   []string{"", "lookup"},
-			wantChoiceTypes: []string{"function", "web_search"},
+			wantToolTypes:   []string{"web_search", "function", "custom", "function"},
+			wantToolNames:   []string{"", "web_search", " WEB_SEARCH ", "lookup"},
+			wantChoiceTypes: []string{"function", "custom", "web_search"},
 		},
 		{
-			name:             "drop named web search choice",
+			name:             "prune choice without declared tools",
 			baseURL:          xaiauth.CLIBaseURL,
 			body:             `{"tool_choice":{"type":"function","name":"web_search"}}`,
-			wantToolTypes:    []string{"web_search"},
-			wantToolNames:    []string{""},
 			wantChoiceAbsent: true,
 		},
 		{
