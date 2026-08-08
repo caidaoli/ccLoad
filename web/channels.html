@@ -125,14 +125,40 @@
                   <p id="xaiCredentialSecretHint" class="oauth-field-hint"
                     data-i18n="channels.xai.secretHint">提交后输入会立即清除，不会保存在浏览器中。</p>
                 </div>
+                <div id="xaiCredentialImportProgress" class="oauth-import-progress" hidden>
+                  <div class="oauth-import-progress-header">
+                    <strong id="xaiCredentialImportProgressTitle"
+                      data-i18n="channels.oauth.progressTitle">导入进度</strong>
+                    <span id="xaiCredentialImportProgressCounter" class="oauth-import-progress-counter"></span>
+                  </div>
+                  <progress id="xaiCredentialImportProgressBar" max="1" value="0"
+                    aria-labelledby="xaiCredentialImportProgressTitle"
+                    aria-describedby="xaiCredentialImportProgressDetail xaiCredentialImportProgressCounts"></progress>
+                  <p id="xaiCredentialImportProgressDetail" class="oauth-import-progress-detail" role="status"
+                    aria-live="polite"></p>
+                  <p id="xaiCredentialImportProgressCounts" class="oauth-import-progress-counts"></p>
+                  <div id="xaiCredentialImportErrors" class="oauth-import-errors" role="status" aria-live="polite"
+                    aria-labelledby="xaiCredentialImportErrorsTitle" hidden>
+                    <strong id="xaiCredentialImportErrorsTitle"
+                      data-i18n="channels.oauth.progressErrorsTitle">失败详情</strong>
+                    <ul id="xaiCredentialImportErrorList"></ul>
+                  </div>
+                </div>
                 <div id="xaiDeviceSessionFields" class="oauth-field" hidden>
-                  <span data-i18n="channels.xai.verificationURL">验证地址</span>
-                  <a id="xaiVerificationLink" target="_blank" rel="noopener noreferrer"></a>
+                  <label for="xaiVerificationURL" data-i18n="channels.oauth.authorizationURL">授权链接</label>
+                  <textarea id="xaiVerificationURL" class="form-input oauth-url" rows="3"
+                    readonly spellcheck="false"></textarea>
+                  <div class="oauth-actions">
+                    <button id="xaiCopyVerificationLink" type="button" class="btn btn-secondary"
+                      data-i18n="channels.oauth.copyLink">复制链接</button>
+                    <a id="xaiVerificationLink" class="btn btn-secondary" target="_blank" rel="noopener noreferrer"
+                      data-i18n="channels.oauth.openLink">打开链接</a>
+                  </div>
                   <span data-i18n="channels.xai.userCode">用户代码</span>
                   <strong id="xaiUserCode" tabindex="-1"></strong>
                   <span data-i18n="channels.xai.expiresAt">到期时间</span>
                   <time id="xaiDeviceExpiresAt"></time>
-                  <p data-i18n="channels.xai.deviceHint">打开验证地址并输入用户代码。此窗口会自动检查结果。</p>
+                  <p data-i18n="channels.xai.deviceHint">复制授权链接或在新标签页打开，然后输入用户代码。此窗口会自动检查结果。</p>
                   <button id="xaiDeviceRestart" type="button" class="btn btn-secondary"
                     data-i18n="channels.oauth.restart">重新授权</button>
                 </div>

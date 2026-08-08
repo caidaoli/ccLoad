@@ -611,7 +611,7 @@ test('editing a Codex channel loads its AT row and full credential into read-onl
   }
 });
 
-test('editing an xAI channel keeps the OAuth editor credential-free and key-free', async () => {
+test('editing an xAI channel loads its full credential into read-only mode and keeps keys empty', async () => {
   const channel = {
     id: 76,
     name: 'xai-oauth',
@@ -624,9 +624,12 @@ test('editing an xAI channel keeps the OAuth editor credential-free and key-free
     enabled: true,
     protocol_transform_mode: 'local'
   };
+  const credential = {
+    type: 'xai', auth_kind: 'oauth', access_token: 'xai-at', refresh_token: 'xai-rt', id_token: 'xai-id'
+  };
   const fixture = installEditChannelGlobals(channel, {
     editorKeys: [],
-    codexCredential: null,
+    codexCredential: credential,
     codexCredentialInfo: null
   });
 
@@ -637,7 +640,7 @@ test('editing an xAI channel keeps the OAuth editor credential-free and key-free
     assert.deepEqual(fixture.loadedKeys, []);
     assert.deepEqual(fixture.authEditorCalls.at(-1), {
       authType: 'xai_oauth',
-      credential: null,
+      credential,
       channel,
       credentialInfo: null
     });
@@ -688,6 +691,11 @@ test('saving an xAI editor preserves xai_oauth and submits no key material', asy
     assert.equal(submitted.api_key, '');
     assert.deepEqual(submitted.api_keys, []);
     assert.equal(submitted.key_strategy, undefined);
+    assert.equal(submitted.oauth_credential, undefined);
+    assert.equal(submitted.credential, undefined);
+    assert.equal(submitted.access_token, undefined);
+    assert.equal(submitted.refresh_token, undefined);
+    assert.equal(submitted.id_token, undefined);
   } finally {
     for (const [key, descriptor] of extraGlobals) {
       if (descriptor === undefined) delete global[key];

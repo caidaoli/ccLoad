@@ -250,6 +250,10 @@
       margin: 0;
     }
 
+    .oauth-field[hidden] {
+      display: none;
+    }
+
     .oauth-field label {
       color: var(--neutral-900);
       font-weight: 600;
@@ -1771,6 +1775,23 @@
       color: var(--neutral-900);
       font-variant-numeric: tabular-nums;
       font-weight: 800;
+    }
+
+    .ch-oauth-usage__details {
+      grid-column: 2 / -1;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      justify-content: flex-end;
+      gap: 2px 4px;
+      min-width: 0;
+      text-align: end;
+    }
+
+    .ch-oauth-usage__amount {
+      color: var(--neutral-600);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
     }
 
     .ch-oauth-usage__reset {

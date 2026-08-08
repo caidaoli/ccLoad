@@ -117,7 +117,7 @@ func (s *Server) buildProxyRequest(
 	}
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if xaiResponsesRequest {
-		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
+		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity, baseURL)
 		if err != nil {
 			return nil, err
 		}
