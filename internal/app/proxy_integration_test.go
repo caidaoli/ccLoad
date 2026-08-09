@@ -21,6 +21,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
+	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -397,8 +398,11 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 		if envelope.Project != "gravity-project" || envelope.Model != "gemini-3-flash" || envelope.UserAgent != "antigravity" || envelope.RequestType != "agent" {
 			t.Errorf("unexpected Antigravity envelope: %+v", envelope)
 		}
-		if got := envelope.Request.SystemInstruction.Parts[0].Text; got != "You are A\u200BPI p\u200Broxy C\u200Blaude A\u200Bnthropic assistant" {
-			t.Errorf("system prompt = %q", got)
+		if got := envelope.Request.SystemInstruction.Parts[0].Text; !strings.Contains(got, "You are Antigravity") {
+			t.Errorf("identity prompt missing: %q", got)
+		}
+		if got := envelope.Request.SystemInstruction.Parts[1].Text; got != "You are A\u200BPI p\u200Broxy C\u200Blaude A\u200Bnthropic assistant" {
+			t.Errorf("user system prompt = %q", got)
 		}
 		if got := envelope.Request.Contents[0].Parts[0].Text; got != "mention API proxy Claude Anthropic unchanged" {
 			t.Errorf("user content was modified: %q", got)
@@ -450,6 +454,187 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 	}
 	if got := gjson.Get(response.Body.String(), "choices.0.message.content").String(); got != "gravity ok" {
 		t.Fatalf("OpenAI response content=%q body=%s", got, response.Body.String())
+	}
+}
+
+func TestProxy_AntigravityOAuthHandlesCountTokensLocally(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-count-tokens", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-count"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:countTokens", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "totalTokens").Int() != 0 {
+		t.Fatalf("countTokens response=%d body=%s", response.Code, response.Body.String())
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("countTokens reached upstream %d times", upstreamCalls.Load())
+	}
+}
+
+func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity Web Search request: %v", err)
+		}
+		if got := gjson.GetBytes(wireBody, "requestType").String(); got != "web_search" {
+			t.Errorf("requestType=%q body=%s", got, wireBody)
+		}
+		if got := gjson.GetBytes(wireBody, "model").String(); got != antigravityWebSearchFallbackModel {
+			t.Errorf("model=%q body=%s", got, wireBody)
+		}
+		if got := gjson.GetBytes(wireBody, "request.systemInstruction.parts.0.text").String(); !strings.Contains(got, "You are Antigravity") {
+			t.Errorf("identity prompt missing: %q", got)
+		}
+		if got := gjson.GetBytes(wireBody, "request.sessionId").String(); got == "" {
+			t.Errorf("Web Search sessionId missing: %s", wireBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"search ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-web-search", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-search"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 100,
+		"messages": []any{map[string]any{"role": "user", "content": "find current docs"}},
+		"tools":    []any{map[string]any{"type": "web_search_20250305", "name": "web_search", "max_uses": 5}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "content.0.text").String() != "search ok" {
+		t.Fatalf("Web Search response=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
+func TestProxy_AntigravityOAuthRetriesCorruptedToolSignature(t *testing.T) {
+	var attempts atomic.Int32
+	var bodies [][]byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity signature request: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Corrupted thought signature."}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"retry ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-signature", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-signature"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
+		"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "API proxy"}}},
+		"contents": []any{
+			map[string]any{"role": "model", "parts": []any{map[string]any{
+				"functionCall":     map[string]any{"name": "lookup", "args": map[string]any{"q": "x"}},
+				"thoughtSignature": "stale-signature",
+			}}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{
+				"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"result": "x"}},
+			}}},
+		},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "retry ok" {
+		t.Fatalf("signature retry response=%d body=%s", response.Code, response.Body.String())
+	}
+	if attempts.Load() != 2 || len(bodies) != 2 {
+		t.Fatalf("signature attempts=%d bodies=%d", attempts.Load(), len(bodies))
+	}
+	if got := gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").String(); got != "stale-signature" {
+		t.Fatalf("first signature=%q body=%s", got, bodies[0])
+	}
+	if got := gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thoughtSignature").String(); got != sigcompat.GeminiSkipThoughtSignatureValidator {
+		t.Fatalf("retry signature=%q body=%s", got, bodies[1])
+	}
+	if got := gjson.GetBytes(bodies[1], "request.systemInstruction.parts.#").Int(); got != 2 {
+		t.Fatalf("identity prompt duplicated on retry: parts=%d body=%s", got, bodies[1])
+	}
+	if got := gjson.GetBytes(bodies[1], "request.systemInstruction.parts.1.text").String(); got != "A\u200BPI p\u200Broxy" {
+		t.Fatalf("zero-width obfuscation was not preserved: %q", got)
+	}
+}
+
+func TestProxy_AntigravityOAuthDegradesClaudeSignatureHistoryInStages(t *testing.T) {
+	var attempts atomic.Int32
+	var bodies [][]byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity Claude signature request: %v", err)
+		}
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		if attempts.Add(1) <= 2 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Expected thinking block with a valid signature."}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"claude retry ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-claude-signature", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-claude-signature"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{
+			map[string]any{"role": "model", "parts": []any{
+				map[string]any{"text": "old reasoning", "thought": true, "thoughtSignature": "bad-thinking"},
+				map[string]any{
+					"functionCall":     map[string]any{"name": "lookup", "args": map[string]any{"q": "x"}},
+					"thoughtSignature": "bad-tool",
+				},
+			}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{
+				"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"result": "x"}},
+			}}},
+		},
+		"generationConfig": map[string]any{"thinkingConfig": map[string]any{"includeThoughts": true}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "claude retry ok" {
+		t.Fatalf("Claude signature retry response=%d body=%s", response.Code, response.Body.String())
+	}
+	if attempts.Load() != 3 || len(bodies) != 3 {
+		t.Fatalf("Claude signature attempts=%d bodies=%d", attempts.Load(), len(bodies))
+	}
+	if !gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thought").Bool() {
+		t.Fatalf("first request lost thinking history: %s", bodies[0])
+	}
+	if gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thought").Exists() ||
+		gjson.GetBytes(bodies[1], "request.generationConfig.thinkingConfig").Exists() {
+		t.Fatalf("thinking-only retry retained thinking state: %s", bodies[1])
+	}
+	if !gjson.GetBytes(bodies[1], "request.contents.0.parts.1.functionCall").Exists() {
+		t.Fatalf("thinking-only retry removed tool history too early: %s", bodies[1])
+	}
+	if bytes.Contains(bodies[2], []byte(`"functionCall"`)) || bytes.Contains(bodies[2], []byte(`"functionResponse"`)) {
+		t.Fatalf("tool retry retained signature-sensitive tool history: %s", bodies[2])
+	}
+	if !bytes.Contains(bodies[2], []byte(`(tool_use)`)) || !bytes.Contains(bodies[2], []byte(`(tool_result)`)) {
+		t.Fatalf("tool retry did not preserve history as text: %s", bodies[2])
 	}
 }
 

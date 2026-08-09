@@ -1756,6 +1756,12 @@ func TestDetectRequestFamily_AlphaSearch(t *testing.T) {
 	}
 }
 
+func TestDetectRequestFamily_GeminiCountTokens(t *testing.T) {
+	if got := protocol.DetectRequestFamily("/v1beta/models/gemini-3-flash:countTokens"); got != protocol.RequestFamilyGenerateContent {
+		t.Fatalf("DetectRequestFamily(countTokens) = %q, want %q", got, protocol.RequestFamilyGenerateContent)
+	}
+}
+
 func TestBuildTransformPlan_CodexAlphaSearchPassthroughOnly(t *testing.T) {
 	t.Parallel()
 

@@ -22,7 +22,18 @@ import (
 	"ccLoad/internal/util"
 )
 
-const zeroWidthSpace = "\u200B"
+const (
+	zeroWidthSpace                    = "\u200B"
+	antigravityWebSearchFallbackModel = "gemini-2.5-flash"
+	antigravityIdentityPrompt         = `<identity>
+You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
+You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
+The USER will send you requests, which you must always prioritize addressing. Along with each USER request, we will attach additional metadata about their current state, such as what files they have open and where their cursor is.
+This information may or may not be relevant to the coding task, it is up for you to decide.
+</identity>
+<communication_style>
+- **Proactiveness**. As an agent, you are allowed to be proactive, but only in the course of completing the user's task. For example, if the user asks you to add a new component, you can edit the code, verify build and test statuses, and take any other obvious follow-up actions, such as performing additional research. However, avoid surprising the user. For example, if the user asks HOW to approach something, you should answer their question and instead of jumping into editing a file.</communication_style>`
+)
 
 func buildAntigravitySensitiveWordMatcher(words []string) *regexp.Regexp {
 	valid := make([]string, 0, len(words))
@@ -58,6 +69,7 @@ func prepareAntigravityRequestBody(
 	cfg *model.Config,
 	modelName string,
 	body []byte,
+	sourceBody []byte,
 	headers http.Header,
 	matcher *regexp.Regexp,
 ) ([]byte, error) {
@@ -78,6 +90,7 @@ func prepareAntigravityRequestBody(
 		}
 		delete(request, "system_instruction")
 	}
+	injectAntigravityIdentityPrompt(request)
 	delete(request, "safetySettings")
 	normalizeAntigravityContentsRoles(request)
 	normalizeAntigravitySchemas(request, modelName)
@@ -89,11 +102,14 @@ func prepareAntigravityRequestBody(
 
 	requestType := "agent"
 	requestID := "agent-" + util.NewUUIDv4()
-	if strings.Contains(strings.ToLower(modelName), "image") {
+	if hasAntigravityWebSearchTool(sourceBody) || hasAntigravityWebSearchTool(body) {
+		requestType = "web_search"
+		modelName = antigravityWebSearchFallbackModel
+	} else if strings.Contains(strings.ToLower(modelName), "image") {
 		requestType = "image_gen"
 		requestID = fmt.Sprintf("image_gen/%d/%s/12", time.Now().UnixMilli(), util.NewUUIDv4())
 	}
-	if requestType == "agent" {
+	if requestType != "image_gen" {
 		if _, exists := request["sessionId"]; !exists {
 			request["sessionId"] = antigravitySessionID(headers, body)
 		}
@@ -111,6 +127,88 @@ func prepareAntigravityRequestBody(
 		return nil, fmt.Errorf("encode Antigravity request: %w", err)
 	}
 	return obfuscateAntigravitySystemInstruction(raw, matcher), nil
+}
+
+func injectAntigravityIdentityPrompt(request map[string]any) {
+	if request == nil || antigravitySystemInstructionContainsIdentity(request["systemInstruction"]) {
+		return
+	}
+	identityPart := map[string]any{"text": antigravityIdentityPrompt}
+	switch instruction := request["systemInstruction"].(type) {
+	case map[string]any:
+		parts, _ := instruction["parts"].([]any)
+		instruction["parts"] = append([]any{identityPart}, parts...)
+	case string:
+		parts := []any{identityPart}
+		if instruction != "" {
+			parts = append(parts, map[string]any{"text": instruction})
+		}
+		request["systemInstruction"] = map[string]any{"parts": parts}
+	default:
+		request["systemInstruction"] = map[string]any{"parts": []any{identityPart}}
+	}
+}
+
+func antigravitySystemInstructionContainsIdentity(instruction any) bool {
+	containsIdentity := func(text string) bool {
+		return strings.Contains(strings.ReplaceAll(text, zeroWidthSpace, ""), "You are Antigravity")
+	}
+	switch value := instruction.(type) {
+	case string:
+		return containsIdentity(value)
+	case map[string]any:
+		parts, _ := value["parts"].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			if text, _ := part["text"].(string); containsIdentity(text) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func hasAntigravityWebSearchTool(body []byte) bool {
+	if len(body) == 0 {
+		return false
+	}
+	var payload map[string]any
+	if json.Unmarshal(body, &payload) != nil {
+		return false
+	}
+	tools, _ := payload["tools"].([]any)
+	for _, rawTool := range tools {
+		tool, _ := rawTool.(map[string]any)
+		if isAntigravityWebSearchName(tool["type"]) || isAntigravityWebSearchName(tool["name"]) {
+			return true
+		}
+		if _, ok := tool["googleSearch"]; ok {
+			return true
+		}
+		if _, ok := tool["google_search"]; ok {
+			return true
+		}
+		function, _ := tool["function"].(map[string]any)
+		if isAntigravityWebSearchName(function["name"]) {
+			return true
+		}
+		for _, key := range []string{"functionDeclarations", "function_declarations"} {
+			declarations, _ := tool[key].([]any)
+			for _, rawDeclaration := range declarations {
+				declaration, _ := rawDeclaration.(map[string]any)
+				if isAntigravityWebSearchName(declaration["name"]) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+func isAntigravityWebSearchName(value any) bool {
+	name, _ := value.(string)
+	name = strings.ToLower(strings.TrimSpace(name))
+	return strings.HasPrefix(name, "web_search") || name == "google_search"
 }
 
 func normalizeAntigravityContentsRoles(request map[string]any) {
@@ -307,6 +405,10 @@ func antigravityUpstreamURL(baseURL string, streaming bool) (string, error) {
 	}
 	parsed.Fragment = ""
 	return parsed.String(), nil
+}
+
+func isAntigravityCountTokensPath(path string) bool {
+	return strings.Contains(strings.TrimSpace(path), ":countTokens")
 }
 
 func withAntigravityDefaultFallbackURLs(cfg *model.Config) *model.Config {

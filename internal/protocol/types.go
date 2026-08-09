@@ -154,7 +154,8 @@ func DetectRequestFamily(path string) RequestFamily {
 		return RequestFamilyMessages
 	case matchesCanonicalEndpoint(path, "/v1/alpha/search"):
 		return RequestFamilyAlphaSearch
-	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"):
+	case strings.Contains(path, ":generateContent"), strings.Contains(path, ":streamGenerateContent"),
+		strings.Contains(path, ":countTokens"):
 		return RequestFamilyGenerateContent
 	case matchesCanonicalEndpoint(path, "/v1/completions"):
 		return RequestFamilyCompletions
