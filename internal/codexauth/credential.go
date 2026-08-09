@@ -31,8 +31,8 @@ type Credential struct {
 	PassiveUsage *PassiveUsage `json:"passive_usage,omitempty"`
 }
 
-// PassiveUsage is the latest quota snapshot sampled from Codex response
-// headers. It contains no OAuth secrets and is safe to project into admin APIs.
+// PassiveUsage is the latest quota snapshot sampled from Codex upstream
+// responses. It contains no OAuth secrets and is safe to project into admin APIs.
 type PassiveUsage struct {
 	Windows   []PassiveUsageWindow `json:"windows"`
 	SampledAt string               `json:"sampled_at"`

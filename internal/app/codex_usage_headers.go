@@ -1,7 +1,10 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"log"
 	"math"
 	"net/http"
@@ -15,8 +18,16 @@ import (
 )
 
 const (
-	codexQuotaHeaderPrefix = "x-codex-"
+	codexQuotaHeaderPrefix            = "x-codex-"
+	maxCodexPassiveUsageSSEEventBytes = 64 << 10
+	codexPassiveUsageSSEEventType     = "codex.rate_limits"
+	codexPassiveUsageQueueSize        = 256
 )
+
+type codexPassiveUsageTask struct {
+	channelID int64
+	update    codexPassiveUsageUpdate
+}
 
 func (s *Server) persistCodexPassiveUsage(ctx context.Context, cfg *model.Config, resp *http.Response) {
 	if s == nil || s.codexCredentials == nil || cfg == nil || !cfg.UsesCodexOAuth() || resp == nil {
@@ -26,8 +37,49 @@ func (s *Server) persistCodexPassiveUsage(ctx context.Context, cfg *model.Config
 	if !statusOK && resp.StatusCode != http.StatusTooManyRequests {
 		return
 	}
-	update, ok := sampleCodexPassiveUsage(resp.Header, time.Now().UTC())
-	if !ok {
+	if update, ok := sampleCodexPassiveUsage(resp.Header, time.Now().UTC()); ok {
+		s.persistCodexPassiveUsageUpdate(ctx, cfg, update)
+	}
+	if resp.Body == nil {
+		return
+	}
+	resp.Body = &codexPassiveUsageReadCloser{
+		ReadCloser: resp.Body,
+		onUpdate: func(update codexPassiveUsageUpdate) {
+			s.enqueueCodexPassiveUsage(cfg.ID, update)
+		},
+	}
+}
+
+func (s *Server) enqueueCodexPassiveUsage(channelID int64, update codexPassiveUsageUpdate) {
+	if s == nil || s.codexPassiveUsageCh == nil || channelID <= 0 || len(update.Windows) == 0 || s.isShuttingDown.Load() {
+		return
+	}
+	select {
+	case s.codexPassiveUsageCh <- codexPassiveUsageTask{channelID: channelID, update: update}:
+	default:
+		if dropped := s.codexPassiveUsageDropCount.Add(1); dropped%100 == 1 {
+			log.Printf("[WARN] Codex passive usage queue full; dropped updates=%d", dropped)
+		}
+	}
+}
+
+func (s *Server) codexPassiveUsageWorker() {
+	defer s.wg.Done()
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case task := <-s.codexPassiveUsageCh:
+			s.persistCodexPassiveUsageUpdate(s.baseCtx, &model.Config{
+				ID: task.channelID, AuthType: model.AuthTypeCodexOAuth,
+			}, task.update)
+		}
+	}
+}
+
+func (s *Server) persistCodexPassiveUsageUpdate(ctx context.Context, cfg *model.Config, update codexPassiveUsageUpdate) {
+	if len(update.Windows) == 0 {
 		return
 	}
 	if ctx == nil {
@@ -48,6 +100,166 @@ func (s *Server) persistCodexPassiveUsage(ctx context.Context, cfg *model.Config
 			cache.InvalidateCache()
 		}
 	}
+}
+
+type codexPassiveUsageReadCloser struct {
+	io.ReadCloser
+	pending  bytes.Buffer
+	done     bool
+	onUpdate func(codexPassiveUsageUpdate)
+}
+
+func (r *codexPassiveUsageReadCloser) Read(p []byte) (int, error) {
+	n, err := r.ReadCloser.Read(p)
+	if n > 0 {
+		r.observe(p[:n])
+	}
+	return n, err
+}
+
+func (r *codexPassiveUsageReadCloser) observe(chunk []byte) {
+	if r == nil || r.done || len(chunk) == 0 {
+		return
+	}
+	remaining := maxCodexPassiveUsageSSEEventBytes - r.pending.Len()
+	if remaining <= 0 {
+		r.done = true
+		r.pending.Reset()
+		return
+	}
+	truncated := len(chunk) > remaining
+	if truncated {
+		chunk = chunk[:remaining]
+	}
+	_, _ = r.pending.Write(chunk)
+	for {
+		rawEvent, ok := nextSSEEvent(&r.pending)
+		if !ok {
+			break
+		}
+		update, sampled := sampleCodexPassiveUsageEvent(sseEventData(rawEvent), time.Now().UTC())
+		if !sampled {
+			continue
+		}
+		r.done = true
+		r.pending.Reset()
+		if r.onUpdate != nil {
+			r.onUpdate(update)
+		}
+		return
+	}
+	if truncated {
+		r.done = true
+		r.pending.Reset()
+	}
+}
+
+type codexPassiveUsageSSEWindow struct {
+	UsedPercent        *float64 `json:"used_percent"`
+	WindowMinutes      int64    `json:"window_minutes"`
+	LimitWindowSeconds int64    `json:"limit_window_seconds"`
+	ResetAfterSeconds  int64    `json:"reset_after_seconds"`
+	ResetAt            int64    `json:"reset_at"`
+}
+
+type codexPassiveUsageSSERateLimit struct {
+	Primary         *codexPassiveUsageSSEWindow `json:"primary"`
+	Secondary       *codexPassiveUsageSSEWindow `json:"secondary"`
+	PrimaryWindow   *codexPassiveUsageSSEWindow `json:"primary_window"`
+	SecondaryWindow *codexPassiveUsageSSEWindow `json:"secondary_window"`
+}
+
+type codexPassiveUsageSSEEvent struct {
+	Type                 string                                    `json:"type"`
+	RateLimits           *codexPassiveUsageSSERateLimit            `json:"rate_limits"`
+	CodeReviewRateLimits *codexPassiveUsageSSERateLimit            `json:"code_review_rate_limits"`
+	AdditionalRateLimits map[string]*codexPassiveUsageSSERateLimit `json:"additional_rate_limits"`
+}
+
+func sampleCodexPassiveUsageEvent(payload []byte, sampledAt time.Time) (codexPassiveUsageUpdate, bool) {
+	var event codexPassiveUsageSSEEvent
+	if json.Unmarshal(payload, &event) != nil || strings.TrimSpace(event.Type) != codexPassiveUsageSSEEventType {
+		return codexPassiveUsageUpdate{}, false
+	}
+	update := codexPassiveUsageUpdate{
+		Windows:   make([]codexauth.PassiveUsageWindow, 0, 4),
+		SampledAt: sampledAt.UTC().Format(time.RFC3339Nano),
+	}
+	update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.RateLimits, "codex", "codex", sampledAt)
+	update.Windows = appendCodexPassiveEventRateLimit(update.Windows, event.CodeReviewRateLimits, "code_review", "code_review", sampledAt)
+	additionalNames := make([]string, 0, len(event.AdditionalRateLimits))
+	for name := range event.AdditionalRateLimits {
+		additionalNames = append(additionalNames, name)
+	}
+	sort.Strings(additionalNames)
+	for _, name := range additionalNames {
+		limitName := strings.TrimSpace(name)
+		if limitName == "" {
+			continue
+		}
+		update.Windows = appendCodexPassiveEventRateLimit(
+			update.Windows, event.AdditionalRateLimits[name], limitName, limitName, sampledAt,
+		)
+	}
+	if len(update.Windows) == 0 {
+		return codexPassiveUsageUpdate{}, false
+	}
+	return update, true
+}
+
+func appendCodexPassiveEventRateLimit(
+	windows []codexauth.PassiveUsageWindow,
+	rateLimit *codexPassiveUsageSSERateLimit,
+	scope, limitName string,
+	sampledAt time.Time,
+) []codexauth.PassiveUsageWindow {
+	if rateLimit == nil {
+		return windows
+	}
+	primary := rateLimit.Primary
+	if primary == nil {
+		primary = rateLimit.PrimaryWindow
+	}
+	secondary := rateLimit.Secondary
+	if secondary == nil {
+		secondary = rateLimit.SecondaryWindow
+	}
+	windows = appendCodexPassiveEventWindow(windows, primary, scope, limitName, "primary", sampledAt)
+	return appendCodexPassiveEventWindow(windows, secondary, scope, limitName, "secondary", sampledAt)
+}
+
+func appendCodexPassiveEventWindow(
+	windows []codexauth.PassiveUsageWindow,
+	window *codexPassiveUsageSSEWindow,
+	scope, limitName, kind string,
+	sampledAt time.Time,
+) []codexauth.PassiveUsageWindow {
+	if window == nil || window.UsedPercent == nil {
+		return windows
+	}
+	windowSeconds := window.WindowMinutes * 60
+	if windowSeconds <= 0 {
+		windowSeconds = window.LimitWindowSeconds
+	}
+	if windowSeconds <= 0 {
+		return windows
+	}
+	resetAt := window.ResetAt
+	if resetAt > 1e11 {
+		resetAt /= 1000
+	}
+	if resetAt <= 0 && window.ResetAfterSeconds > 0 {
+		resetAt = sampledAt.Unix() + window.ResetAfterSeconds
+	}
+	return append(windows, codexauth.PassiveUsageWindow{
+		Scope:              strings.ToLower(strings.TrimSpace(scope)),
+		LimitName:          strings.TrimSpace(limitName),
+		Kind:               kind,
+		UsedPercent:        min(max(*window.UsedPercent, 0), 100),
+		LimitWindowSeconds: windowSeconds,
+		ResetAt:            max(resetAt, 0),
+		SampledAt:          sampledAt.UTC().Format(time.RFC3339Nano),
+	})
 }
 
 func sampleCodexPassiveUsage(headers http.Header, sampledAt time.Time) (codexPassiveUsageUpdate, bool) {

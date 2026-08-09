@@ -3000,6 +3000,26 @@ func TestCodexPassiveUsageKeepsLatestResultPerQuotaGroup(t *testing.T) {
 		persistedCredential.PassiveUsage.Windows[1].UsedPercent != 25 {
 		t.Fatalf("stale response overwrote newer quota: %#v", persistedCredential.PassiveUsage.Windows)
 	}
+
+	sseTime := newerTime.Add(time.Second)
+	if updated, err := manager.updatePassiveUsage(context.Background(), channel, codexPassiveUsageUpdate{
+		SampledAt: sseTime.Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{
+			window("gpt-5.3-codex-spark", "GPT-5.3-Codex-Spark", 30, sseTime),
+		},
+	}); err != nil || !updated {
+		t.Fatalf("merge SSE quota with header quota = (%v, %v)", updated, err)
+	}
+	persisted, err = store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 2 ||
+		persistedCredential.PassiveUsage.Windows[1].Scope != "gpt-5.3-codex-spark" ||
+		persistedCredential.PassiveUsage.Windows[1].UsedPercent != 30 {
+		t.Fatalf("header and SSE quota were not merged by limit name: (%#v, %v)", persistedCredential, err)
+	}
 }
 
 func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {

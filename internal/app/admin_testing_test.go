@@ -1300,6 +1300,68 @@ func TestHandleChannelTest_CodexOAuthWithoutQuotaHeadersLeavesUsageEmpty(t *test
 	}
 }
 
+func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
+	const rateLimitEvent = `{"type":"codex.rate_limits","plan_type":"pro","rate_limits":{"allowed":true,"limit_reached":false,"primary":{"used_percent":10,"window_minutes":10080,"reset_after_seconds":571277,"reset_at":1786851417},"secondary":null},"code_review_rate_limits":null,"additional_rate_limits":{"GPT-5.3-Codex-Spark":{"allowed":true,"limit_reached":false,"primary":{"used_percent":0,"window_minutes":10080,"reset_after_seconds":604800,"reset_at":1786884940},"secondary":null}},"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"promo":null}`
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: "+rateLimitEvent+"\n\n")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_admin\",\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gpt-5.6-sol", "client_protocol": "codex", "stream": true,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !response.Success || !success {
+		t.Fatalf("Codex OAuth channel test failed: %+v", response)
+	}
+	if raw, _ := response.Data["raw_response"].(string); !strings.Contains(raw, rateLimitEvent) {
+		t.Fatalf("raw_response lost codex.rate_limits event: %q", raw)
+	}
+	var credential *codexauth.Credential
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+		if err != nil {
+			t.Fatalf("GetConfig: %v", err)
+		}
+		credential, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+		if err != nil {
+			t.Fatalf("ParseCredential: %v", err)
+		}
+		if credential.PassiveUsage != nil && len(credential.PassiveUsage.Windows) == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for persisted Codex SSE quota: %#v", credential)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	primary := credential.PassiveUsage.Windows[0]
+	if primary.Scope != "codex" || primary.LimitName != "codex" || primary.Kind != "primary" ||
+		primary.UsedPercent != 10 || primary.LimitWindowSeconds != 10080*60 || primary.ResetAt != 1786851417 {
+		t.Fatalf("persisted Codex primary SSE quota window = %#v", primary)
+	}
+	additional := credential.PassiveUsage.Windows[1]
+	if additional.Scope != "gpt-5.3-codex-spark" || additional.LimitName != "GPT-5.3-Codex-Spark" ||
+		additional.Kind != "primary" || additional.UsedPercent != 0 ||
+		additional.LimitWindowSeconds != 10080*60 || additional.ResetAt != 1786884940 {
+		t.Fatalf("persisted Codex additional SSE quota window = %#v", additional)
+	}
+}
+
 func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	var upstreamBody []byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
