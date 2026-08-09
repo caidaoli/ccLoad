@@ -81,10 +81,18 @@ func prepareCodexOAuthHTTPBody(cfg *model.Config, upstreamProtocol protocol.Prot
 	if !isCodexOAuthResponsesRequest(cfg, upstreamProtocol, requestPath) {
 		return body
 	}
+	reasoningSummaryDelivery := gjson.GetBytes(body, "stream_options.reasoning_summary_delivery")
 	for _, field := range []string{
 		"previous_response_id", "generate", "prompt_cache_retention", "safety_identifier", "stream_options",
 	} {
 		body, _ = sjson.DeleteBytes(body, field)
+	}
+	if reasoningSummaryDelivery.Exists() {
+		body, _ = sjson.SetBytes(
+			body,
+			"stream_options.reasoning_summary_delivery",
+			reasoningSummaryDelivery.Value(),
+		)
 	}
 	return body
 }
