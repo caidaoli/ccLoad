@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const {
   applyChannelAuthEditorMode,
   cancelAntigravityOAuth,
+  cancelAnthropicOAuth,
   cancelXAIOAuth,
   pollCodexOAuthStatus,
   copyCodexOAuthLink,
@@ -12,6 +13,7 @@ const {
   formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
+  pollAnthropicOAuthStatus,
   pollXAIOAuthStatus,
   getOAuthUsageState,
   refreshOAuthUsage,
@@ -25,6 +27,7 @@ const {
   showOAuthSession,
   submitXAICredentialBatch,
   submitAntigravityOAuthCallback,
+  submitAnthropicOAuthCode,
   submitCodexOAuthCallback,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
@@ -769,6 +772,31 @@ test('Antigravity OAuth helpers use the Antigravity admin contract', async () =>
   ]);
 });
 
+test('Anthropic OAuth helpers submit the hosted authorization code with bound state', async () => {
+  const requests = [];
+  const status = await pollAnthropicOAuthStatus('state/1', {
+    fetchStatus: async url => {
+      requests.push({ url });
+      return { status: 'complete', channel_id: 71 };
+    },
+    delay: async () => {}, maxPolls: 1
+  });
+  assert.equal(status.channel_id, 71);
+  await submitAnthropicOAuthCode('code-1#state/1', 'state/1', async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    return { status: 'accepted' };
+  });
+  await cancelAnthropicOAuth('state/2', async (url, options) => {
+    requests.push({ url, body: JSON.parse(options.body) });
+    return { status: 'cancelled' };
+  });
+  assert.deepEqual(requests, [
+    { url: '/admin/anthropic/oauth/status?state=state%2F1' },
+    { url: '/admin/anthropic/oauth/callback', body: { state: 'state/1', code: 'code-1#state/1' } },
+    { url: '/admin/anthropic/oauth/cancel', body: { state: 'state/2' } }
+  ]);
+});
+
 test('OAuth credential import polls a background job, recovers from network errors, and shows skipped reasons', async () => {
   const previousFormData = global.FormData;
   const previousDocument = global.document;
@@ -895,6 +923,21 @@ test('manual Antigravity credential refresh targets the saved channel', async ()
   assert.equal(result, response);
   assert.deepEqual(captured, {
     url: '/admin/channels/42/antigravity-credential/refresh',
+    options: { method: 'POST' }
+  });
+});
+
+test('manual Anthropic credential refresh targets the saved channel', async () => {
+  let captured;
+  const response = { oauth_credential: { access_token: 'anthropic-at' } };
+  const result = await refreshOAuthCredential(42, async (url, options) => {
+    captured = { url, options };
+    return response;
+  }, 'anthropic_oauth');
+
+  assert.equal(result, response);
+  assert.deepEqual(captured, {
+    url: '/admin/channels/42/anthropic-credential/refresh',
     options: { method: 'POST' }
   });
 });

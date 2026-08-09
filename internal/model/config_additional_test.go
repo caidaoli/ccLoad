@@ -260,3 +260,11 @@ func TestChannelURLs_NormalizeRejectsInvalidData(t *testing.T) {
 		})
 	}
 }
+
+func TestConfig_AnthropicOAuthAuthType(t *testing.T) {
+	cfg := &Config{AuthType: AuthTypeAnthropicOAuth}
+	if NormalizeAuthType(AuthTypeAnthropicOAuth) != AuthTypeAnthropicOAuth ||
+		!cfg.UsesAnthropicOAuth() || !cfg.UsesOAuth() || cfg.UsesXAIOAuth() {
+		t.Fatalf("Anthropic OAuth auth type was not isolated: %+v", cfg)
+	}
+}

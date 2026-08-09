@@ -315,6 +315,9 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	if cfg.UsesXAIOAuth() {
 		return fetchXAIOAuthModels(cfg, overrideProtocol)
 	}
+	if cfg.UsesAnthropicOAuth() {
+		return fetchAnthropicOAuthModels(cfg, overrideProtocol)
+	}
 	if cfg.UsesAntigravityOAuth() {
 		return s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol)
 	}
@@ -331,6 +334,33 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
+}
+
+func fetchAnthropicOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
+	if overrideProtocol != "" {
+		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
+		}
+		if util.NormalizeProtocol(overrideProtocol) != util.ProtocolAnthropic {
+			return nil, fmt.Errorf("模型发现: Anthropic OAuth 仅支持 anthropic 协议")
+		}
+	}
+	models := make([]model.ModelEntry, len(anthropicOAuthDefaultModels))
+	for i, name := range anthropicOAuthDefaultModels {
+		models[i] = model.ModelEntry{Model: name, RedirectModel: name}
+	}
+	channelURL := ""
+	if len(cfg.URLs) > 0 {
+		channelURL = cfg.URLs[0].RuntimeURL()
+	}
+	return &FetchModelsResponse{
+		Models: models, Protocol: util.ProtocolAnthropic, Source: "predefined",
+		Debug: &FetchModelsDebug{
+			NormalizedProtocol: util.ProtocolAnthropic,
+			Fetcher:            "anthropic_oauth_catalog", ChannelURL: channelURL,
+		},
+	}, nil
 }
 
 func fetchXAIOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {

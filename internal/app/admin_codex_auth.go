@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
 	"html"
@@ -107,6 +108,7 @@ type codexOAuthManager struct {
 	mu           sync.Mutex
 	provider     string
 	callbackPath string
+	redirectURI  string
 	prepare      func(string) (string, string, func(context.Context, string) (any, error), func(context.Context, any) (int64, error), error)
 	listenAddr   string
 	timeout      time.Duration
@@ -218,21 +220,32 @@ func (m *codexOAuthManager) start() (string, string, error) {
 		m.mu.Unlock()
 		return "", "", fmt.Errorf("a %s OAuth login is already pending", m.provider)
 	}
-	listener, err := net.Listen("tcp", m.listenAddr)
-	if err != nil {
-		m.mu.Unlock()
-		return "", "", fmt.Errorf("listen for %s OAuth callback on %s: %w", m.provider, m.listenAddr, err)
+	var listener net.Listener
+	redirectURI := strings.TrimSpace(m.redirectURI)
+	if strings.TrimSpace(m.listenAddr) != "" {
+		var err error
+		listener, err = net.Listen("tcp", m.listenAddr)
+		if err != nil {
+			m.mu.Unlock()
+			return "", "", fmt.Errorf("listen for %s OAuth callback on %s: %w", m.provider, m.listenAddr, err)
+		}
+		_, port, splitErr := net.SplitHostPort(listener.Addr().String())
+		if splitErr != nil {
+			_ = listener.Close()
+			m.mu.Unlock()
+			return "", "", fmt.Errorf("resolve %s OAuth callback port: %w", m.provider, splitErr)
+		}
+		redirectURI = "http://localhost:" + port + m.callbackPath
 	}
-	_, port, splitErr := net.SplitHostPort(listener.Addr().String())
-	if splitErr != nil {
-		_ = listener.Close()
+	if redirectURI == "" {
 		m.mu.Unlock()
-		return "", "", fmt.Errorf("resolve %s OAuth callback port: %w", m.provider, splitErr)
+		return "", "", fmt.Errorf("%s OAuth redirect URI is unavailable", m.provider)
 	}
-	redirectURI := "http://localhost:" + port + m.callbackPath
 	state, authURL, exchange, commit, err := m.prepare(redirectURI)
 	if err != nil {
-		_ = listener.Close()
+		if listener != nil {
+			_ = listener.Close()
+		}
 		m.mu.Unlock()
 		return "", "", err
 	}
@@ -242,22 +255,26 @@ func (m *codexOAuthManager) start() (string, string, error) {
 		state: state, exchange: exchange, commit: commit, status: "pending", createdAt: m.now(),
 		ctx: sessionCtx, cancelContext: cancelSession, result: make(chan codexOAuthResult, 1),
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc(m.callbackPath, func(w http.ResponseWriter, r *http.Request) {
-		m.handleCallback(session, w, r)
-	})
-	session.server = &http.Server{
-		Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second,
+	if listener != nil {
+		mux := http.NewServeMux()
+		mux.HandleFunc(m.callbackPath, func(w http.ResponseWriter, r *http.Request) {
+			m.handleCallback(session, w, r)
+		})
+		session.server = &http.Server{
+			Handler: mux, ReadHeaderTimeout: 5 * time.Second, WriteTimeout: 10 * time.Second,
+		}
 	}
 	m.sessions[state] = session
 	m.active = session
 	m.mu.Unlock()
 
-	go func() {
-		if serveErr := session.server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
-			_ = m.deliverCallback(session, codexOAuthResult{state: state, errorMsg: serveErr.Error()})
-		}
-	}()
+	if listener != nil {
+		go func() {
+			if serveErr := session.server.Serve(listener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				_ = m.deliverCallback(session, codexOAuthResult{state: state, errorMsg: serveErr.Error()})
+			}
+		}()
+	}
 	go m.complete(session)
 	return authURL, state, nil
 }
@@ -277,7 +294,7 @@ func (m *codexOAuthManager) handleCallback(session *codexOAuthSession, w http.Re
 	if result.errorMsg == "" && result.code == "" {
 		result.errorMsg = "missing authorization code"
 	}
-	if result.errorMsg == "" && result.state != session.state {
+	if result.errorMsg == "" && !oauthStateEqual(result.state, session.state) {
 		result.errorMsg = "invalid OAuth state"
 	}
 	if err := m.deliverCallback(session, result); err != nil {
@@ -326,6 +343,33 @@ func (m *codexOAuthManager) submitCallbackURL(rawURL string) (string, error) {
 		return "", err
 	}
 	return result.state, nil
+}
+
+func (m *codexOAuthManager) submitAuthorizationCode(state, rawCode string) (string, error) {
+	state = strings.TrimSpace(state)
+	rawCode = strings.TrimSpace(rawCode)
+	if state == "" || rawCode == "" {
+		return "", fmt.Errorf("%s OAuth state and authorization code are required", m.provider)
+	}
+	code := rawCode
+	if hash := strings.LastIndex(rawCode, "#"); hash >= 0 {
+		code = strings.TrimSpace(rawCode[:hash])
+		embeddedState := strings.TrimSpace(rawCode[hash+1:])
+		if code == "" || embeddedState == "" || !oauthStateEqual(embeddedState, state) {
+			return "", fmt.Errorf("invalid %s OAuth state", m.provider)
+		}
+	}
+	m.mu.Lock()
+	m.pruneLocked()
+	session := m.sessions[state]
+	m.mu.Unlock()
+	if session == nil {
+		return "", fmt.Errorf("%s OAuth session not found", m.provider)
+	}
+	if err := m.deliverCallback(session, codexOAuthResult{code: code, state: state}); err != nil {
+		return "", err
+	}
+	return state, nil
 }
 
 func (m *codexOAuthManager) cancel(state string) error {
@@ -425,7 +469,7 @@ func (m *codexOAuthManager) complete(session *codexOAuthSession) {
 
 	var channelID int64
 	if result.errorMsg == "" {
-		if result.state != session.state {
+		if !oauthStateEqual(result.state, session.state) {
 			result.errorMsg = "invalid OAuth state"
 		} else {
 			if session.exchange == nil || session.commit == nil {
@@ -456,9 +500,11 @@ func (m *codexOAuthManager) complete(session *codexOAuthSession) {
 		}
 	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	_ = session.server.Shutdown(shutdownCtx)
-	cancel()
+	if session.server != nil {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = session.server.Shutdown(shutdownCtx)
+		cancel()
+	}
 
 	m.mu.Lock()
 	cancelled := session.status == "cancelled"
@@ -480,6 +526,10 @@ func (m *codexOAuthManager) complete(session *codexOAuthSession) {
 	if !cancelled && result.errorMsg == "" && m.invalidate != nil {
 		m.invalidate(channelID)
 	}
+}
+
+func oauthStateEqual(left, right string) bool {
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
 func (m *codexOAuthManager) status(state string) (codexOAuthStatus, bool) {

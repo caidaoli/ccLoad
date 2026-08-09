@@ -115,6 +115,7 @@
                   <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
+                  <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
                 </select>
               </div>
               <div id="xaiOAuthControls" hidden>
@@ -183,7 +184,7 @@
               </div>
 
               <form id="oauthCallbackForm" class="oauth-field">
-                <label for="oauthCallbackURL" data-i18n="channels.oauth.callbackURL">回调 URL</label>
+                <label id="oauthCallbackLabel" for="oauthCallbackURL" data-i18n="channels.oauth.callbackURL">回调 URL</label>
                 <textarea id="oauthCallbackURL" class="form-input oauth-url" rows="3"
                   autocomplete="off" spellcheck="false" aria-describedby="oauthCallbackHint oauthLoginDialogStatus"
                   data-i18n-placeholder="channels.oauth.callbackPlaceholder"
@@ -227,6 +228,7 @@
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                 <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
+                <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
               </select>
             </div>
             <div class="oauth-field">

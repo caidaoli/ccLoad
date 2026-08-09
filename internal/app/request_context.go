@@ -27,6 +27,7 @@ type requestContext struct {
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
 	antigravityOAuth              bool
+	anthropicOAuthBodyFinalized   bool
 	executionIdentity             string
 	firstByteTimer                *time.Timer
 	streamTimer                   *time.Timer

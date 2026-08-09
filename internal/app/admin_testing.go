@@ -651,6 +651,16 @@ func (s *Server) prepareChannelTestAuth(
 			updatePersistedCooldown: true,
 		}, nil
 	}
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
+		}
+		return cfg.Clone(), channelTestKeySelection{
+			keyIndex: cooldown.NoKeyIndex, requestCredential: credential.AccessToken,
+			updatePersistedCooldown: true,
+		}, nil
+	}
 
 	if len(apiKeys) == 0 && requestAPIKey == "" {
 		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
@@ -1273,9 +1283,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
 		requestPath = extractRequestPath(requestPlan.fullURL)
 	}
+	if isAnthropicOAuthAPIRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+		requestPlan.fullURL = buildAnthropicOAuthURL(selectedURL, requestPath, "")
+	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers,
+		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers, false,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
@@ -1348,6 +1361,8 @@ func (s *Server) newTestUpstreamRequest(
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfgForBuild)
+	} else if isAnthropicOAuthAPIRequest(cfgForBuild, requestProtocol, extractRequestPath(requestPlan.fullURL)) {
+		injectAnthropicOAuthHeaders(req, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {

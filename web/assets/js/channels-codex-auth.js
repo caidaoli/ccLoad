@@ -32,6 +32,10 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   xai: Object.freeze({
     provider: 'xai', label: 'xAI', i18n: 'channels.xai',
     callbackPlaceholder: 'http://127.0.0.1:56121/callback?code=...&state=...'
+  }),
+  anthropic: Object.freeze({
+    provider: 'anthropic', label: 'Anthropic', i18n: 'channels.anthropic',
+    callbackPlaceholder: 'code#state', authorizationCode: true
   })
 });
 
@@ -105,7 +109,8 @@ function applyChannelAuthEditorMode(
 ) {
   const codexOAuth = authType === 'codex_oauth';
   const xaiOAuth = authType === 'xai_oauth';
-  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth;
+  const anthropicOAuth = authType === 'anthropic_oauth';
+  const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth;
   const oauth = credentialVisible;
   const notice = document.getElementById('codexCredentialReadOnlyNotice');
   const keyHeader = document.getElementById('channelAPIKeyHeader');
@@ -480,6 +485,9 @@ function showOAuthSession(session, provider = 'codex') {
   const authorizationURL = document.getElementById('oauthAuthorizationURL');
   const openLink = document.getElementById('oauthOpenLink');
   const callbackURL = document.getElementById('oauthCallbackURL');
+  const callbackLabel = document.getElementById('oauthCallbackLabel');
+  const callbackHint = document.getElementById('oauthCallbackHint');
+  const callbackButton = document.getElementById('oauthSubmitCallback');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   if (!dialog || !providerSelect || !sessionFields || !authorizationURL || !openLink || !callbackURL) return false;
 
@@ -487,7 +495,23 @@ function showOAuthSession(session, provider = 'codex') {
   providerSelect.disabled = true;
   if (authorizeButton) authorizeButton.hidden = true;
   sessionFields.hidden = false;
-  if (sessionDescription) sessionDescription.textContent = window.t('channels.oauth.sessionDescription');
+  const sessionKey = config.authorizationCode ? 'channels.anthropic.sessionDescription' : 'channels.oauth.sessionDescription';
+  if (sessionDescription) sessionDescription.textContent = window.t(sessionKey);
+  const callbackKey = config.authorizationCode ? 'channels.anthropic.authorizationCode' : 'channels.oauth.callbackURL';
+  const hintKey = config.authorizationCode ? 'channels.anthropic.authorizationCodeHint' : 'channels.oauth.callbackHint';
+  const submitKey = config.authorizationCode ? 'channels.anthropic.submitAuthorizationCode' : 'channels.oauth.submitCallback';
+  if (callbackLabel) {
+    callbackLabel.setAttribute?.('data-i18n', callbackKey);
+    callbackLabel.textContent = window.t(callbackKey);
+  }
+  if (callbackHint) {
+    callbackHint.setAttribute?.('data-i18n', hintKey);
+    callbackHint.textContent = window.t(hintKey);
+  }
+  if (callbackButton) {
+    callbackButton.setAttribute?.('data-i18n', submitKey);
+    callbackButton.textContent = window.t(submitKey);
+  }
   callbackURL.placeholder = config.callbackPlaceholder;
   authorizationURL.value = session.url;
   openLink.href = session.url;
@@ -507,14 +531,17 @@ async function copyCodexOAuthLink(url, copier = window.copyToClipboard) {
   await copier(authorizationURL);
 }
 
-async function submitOAuthCallback(provider, callbackURL, fetcher = fetchDataWithAuth) {
+async function submitOAuthCallback(provider, callbackURL, fetcher = fetchDataWithAuth, state = '') {
   const config = oauthProviderConfig(provider);
   const normalizedURL = String(callbackURL || '').trim();
-  if (!normalizedURL) throw new Error(`${config.label} OAuth callback URL is required`);
+  if (!normalizedURL) throw new Error(`${config.label} OAuth ${config.authorizationCode ? 'authorization code' : 'callback URL'} is required`);
+  const body = config.authorizationCode
+    ? { state: String(state || '').trim(), code: normalizedURL }
+    : { callback_url: normalizedURL };
   return fetcher(`/admin/${config.provider}/oauth/callback`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ callback_url: normalizedURL })
+    body: JSON.stringify(body)
   });
 }
 
@@ -528,6 +555,10 @@ async function submitAntigravityOAuthCallback(callbackURL, fetcher = fetchDataWi
 
 async function submitXAIOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) {
   return submitOAuthCallback('xai', callbackURL, fetcher);
+}
+
+async function submitAnthropicOAuthCode(code, state, fetcher = fetchDataWithAuth) {
+  return submitOAuthCallback('anthropic', code, fetcher, state);
 }
 
 async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
@@ -551,6 +582,10 @@ async function cancelAntigravityOAuth(state, fetcher = fetchDataWithAuth) {
 
 async function cancelXAIOAuth(state, fetcher = fetchDataWithAuth) {
   return cancelOAuth('xai', state, fetcher);
+}
+
+async function cancelAnthropicOAuth(state, fetcher = fetchDataWithAuth) {
+  return cancelOAuth('anthropic', state, fetcher);
 }
 
 async function submitXAICredentialBatch(
@@ -633,6 +668,10 @@ async function pollAntigravityOAuthStatus(state, options = {}) {
 
 async function pollXAIOAuthStatus(state, options = {}) {
   return pollOAuthStatus('xai', state, options);
+}
+
+async function pollAnthropicOAuthStatus(state, options = {}) {
+  return pollOAuthStatus('anthropic', state, options);
 }
 
 async function startOAuth(provider, button) {
@@ -1046,10 +1085,11 @@ async function readXAICredentialImportStream(response, onEvent, recovery) {
 async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
   const numericID = Number(channelID);
   const antigravity = authType === 'antigravity_oauth';
+  const anthropic = authType === 'anthropic_oauth';
   if (!Number.isInteger(numericID) || numericID <= 0) {
-    throw new Error(`A saved ${antigravity ? 'Antigravity' : 'Codex'} channel is required`);
+    throw new Error(`A saved ${anthropic ? 'Anthropic' : (antigravity ? 'Antigravity' : 'Codex')} channel is required`);
   }
-  const resource = antigravity ? 'antigravity-credential' : 'codex-credential';
+  const resource = anthropic ? 'anthropic-credential' : (antigravity ? 'antigravity-credential' : 'codex-credential');
   return fetcher(`/admin/channels/${numericID}/${resource}/refresh`, { method: 'POST' });
 }
 
@@ -1289,19 +1329,23 @@ function setupOAuthActions() {
     callbackForm.addEventListener('submit', async event => {
       event.preventDefault();
       const value = callbackURL.value.trim();
+      const provider = activeCodexOAuthFlow?.provider || oauthProviderConfig(providerSelect?.value).provider;
+      const providerConfig = oauthProviderConfig(provider);
       if (!value) {
         callbackURL.setAttribute('aria-invalid', 'true');
         callbackURL.focus();
-        setCodexOAuthDialogStatus(window.t('channels.oauth.callbackRequired'), 'error');
+        setCodexOAuthDialogStatus(window.t(providerConfig.authorizationCode
+          ? 'channels.anthropic.authorizationCodeRequired' : 'channels.oauth.callbackRequired'), 'error');
         return;
       }
       callbackURL.removeAttribute('aria-invalid');
       try {
         if (callbackButton) callbackButton.disabled = true;
-        setCodexOAuthDialogStatus(window.t('channels.oauth.callbackSubmitting'));
-        const provider = activeCodexOAuthFlow?.provider || oauthProviderConfig(providerSelect?.value).provider;
-        await submitOAuthCallback(provider, value);
-        setCodexOAuthDialogStatus(window.t('channels.oauth.callbackAccepted'), 'success');
+        setCodexOAuthDialogStatus(window.t(providerConfig.authorizationCode
+          ? 'channels.anthropic.authorizationCodeSubmitting' : 'channels.oauth.callbackSubmitting'));
+        await submitOAuthCallback(provider, value, fetchDataWithAuth, activeCodexOAuthFlow?.state || '');
+        setCodexOAuthDialogStatus(window.t(providerConfig.authorizationCode
+          ? 'channels.anthropic.authorizationCodeAccepted' : 'channels.oauth.callbackAccepted'), 'success');
       } catch (error) {
         callbackURL.setAttribute('aria-invalid', 'true');
         callbackURL.focus();
@@ -1393,9 +1437,11 @@ function setupOAuthActions() {
       const previousView = currentOAuthCredentialView;
       try {
         credentialRefreshButton.disabled = true;
-        const authType = editingChannelAuthType === 'antigravity_oauth' ? 'antigravity_oauth' : 'codex_oauth';
+        const authType = ['antigravity_oauth', 'anthropic_oauth'].includes(editingChannelAuthType)
+          ? editingChannelAuthType : 'codex_oauth';
         const antigravity = authType === 'antigravity_oauth';
-        const credentialI18n = antigravity ? 'channels.antigravity' : 'channels.codex';
+        const anthropic = authType === 'anthropic_oauth';
+        const credentialI18n = anthropic ? 'channels.anthropic' : (antigravity ? 'channels.antigravity' : 'channels.codex');
         const result = await refreshOAuthCredential(editingChannelId, fetchDataWithAuth, authType);
         const credential = result?.oauth_credential;
         if (!credential?.access_token) throw new Error(window.t(`${credentialI18n}.credentialRefreshInvalid`));
@@ -1405,7 +1451,7 @@ function setupOAuthActions() {
             channel_id: editingChannelId,
             key_index: 0,
             api_key: credential.access_token,
-            note: antigravity ? 'Antigravity OAuth AT' : 'Codex OAuth AT',
+            note: anthropic ? 'Anthropic OAuth AT' : (antigravity ? 'Antigravity OAuth AT' : 'Codex OAuth AT'),
             key_strategy: 'sequential'
           }]);
           inlineKeyVisible = true;
@@ -1415,7 +1461,9 @@ function setupOAuthActions() {
         await reloadChannelsList();
         if (window.showSuccess) window.showSuccess(window.t(`${credentialI18n}.credentialRefreshed`));
       } catch (error) {
-        const credentialI18n = editingChannelAuthType === 'antigravity_oauth' ? 'channels.antigravity' : 'channels.codex';
+        const credentialI18n = editingChannelAuthType === 'anthropic_oauth'
+          ? 'channels.anthropic'
+          : (editingChannelAuthType === 'antigravity_oauth' ? 'channels.antigravity' : 'channels.codex');
         const message = error?.message || window.t(`${credentialI18n}.credentialRefreshFailed`);
         if (window.showError) window.showError(message);
       } finally {
@@ -1431,6 +1479,7 @@ if (typeof module !== 'undefined' && module.exports) {
     applyChannelAuthEditorMode,
     batchRefreshSelectedOAuthUsage,
     cancelAntigravityOAuth,
+    cancelAnthropicOAuth,
     cancelCodexOAuth,
     cancelXAIOAuth,
     copyOAuthCredential,
@@ -1441,6 +1490,7 @@ if (typeof module !== 'undefined' && module.exports) {
     openOAuthCredentialImportDialog,
     openOAuthLoginDialog,
     pollAntigravityOAuthStatus,
+    pollAnthropicOAuthStatus,
     pollCodexOAuthStatus,
     pollXAIOAuthStatus,
     refreshOAuthCredential,
@@ -1451,6 +1501,7 @@ if (typeof module !== 'undefined' && module.exports) {
     setupOAuthActions,
     showOAuthSession,
     submitAntigravityOAuthCallback,
+    submitAnthropicOAuthCode,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,
     submitXAICredentialBatch
