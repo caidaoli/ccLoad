@@ -12,12 +12,14 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -2147,7 +2149,12 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		if !strings.Contains(r.Header.Get("OpenAI-Beta"), "responses_websockets=") {
 			t.Errorf("OpenAI-Beta = %q", r.Header.Get("OpenAI-Beta"))
 		}
-		conn, err := upgrader.Upgrade(w, r, nil)
+		conn, err := upgrader.Upgrade(w, r, http.Header{
+			"X-Codex-Plan-Type":                   []string{"pro"},
+			"X-Codex-Primary-Used-Percent":        []string{"25"},
+			"X-Codex-Primary-Window-Minutes":      []string{"10080"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+		})
 		if err != nil {
 			t.Errorf("upgrade upstream websocket: %v", err)
 			return
@@ -2194,6 +2201,15 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	}
 	if _, exists := request["include"]; exists {
 		t.Fatalf("upstream include = %#v", request["include"])
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list persisted Codex WebSocket quota channel = (%#v, %v)", configs, err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
+		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 25 {
+		t.Fatalf("persisted Codex WebSocket quota = (%#v, %v)", persistedCredential, err)
 	}
 }
 
@@ -4272,13 +4288,18 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
+		connection := handshakes.Add(1)
+		responseHeaders := http.Header{
+			"X-Codex-Primary-Used-Percent":        []string{strconv.Itoa(int(connection * 25))},
+			"X-Codex-Primary-Window-Minutes":      []string{"10080"},
+			"X-Codex-Primary-Reset-After-Seconds": []string{"604800"},
+		}
+		conn, err := upgrader.Upgrade(w, r, responseHeaders)
 		if err != nil {
 			t.Errorf("upgrade previous-response websocket: %v", err)
 			return
 		}
 		defer func() { _ = conn.Close() }()
-		connection := handshakes.Add(1)
 		if connection == 1 {
 			var first map[string]any
 			if err := conn.ReadJSON(&first); err != nil {
@@ -4329,9 +4350,10 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "previous-response-replay", upstreamProtocol: "codex", websockets: true,
-		models: "gpt-test", priority: 100,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-reconnect", "rt-reconnect", "account-reconnect"),
 	}}, map[int]string{0: upstream.URL})
-	downstream := dialResponsesWebsocket(t, env.engine)
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "quota-reconnect")
 	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
 		t.Fatalf("set previous-response replay deadline: %v", err)
 	}
@@ -4366,6 +4388,15 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 	input, _ := replay["input"].([]any)
 	if len(input) != 3 || handshakes.Load() != 2 {
 		t.Fatalf("replay input=%#v handshakes=%d, want full transcript and two handshakes", input, handshakes.Load())
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list reconnect quota channel = (%#v, %v)", configs, err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
+		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 50 {
+		t.Fatalf("reconnect handshake quota = (%#v, %v)", persistedCredential, err)
 	}
 }
 
@@ -4645,8 +4676,11 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 				t.Errorf("websocket-only headers missing from handshake: %v", r.Header)
 			}
 			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusUpgradeRequired)
-			_, _ = io.WriteString(w, `{"error":{"message":"websocket disabled"}}`)
+			w.Header().Set("X-Codex-Primary-Used-Percent", "100")
+			w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+			w.Header().Set("X-Codex-Primary-Reset-After-Seconds", "60")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"message":"websocket quota exhausted"}}`)
 			return
 		}
 		httpCalls.Add(1)
@@ -4673,7 +4707,8 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "same-channel-fallback", upstreamProtocol: "codex", websockets: true,
-		models: "gpt-test", priority: 100,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-fallback", "rt-fallback", "account-fallback"),
 	}}, map[int]string{0: upstream.URL})
 	env.server.client = upstream.Client()
 	downstream := dialResponsesWebsocketWithTokenAndHeaders(
@@ -4702,6 +4737,15 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	entry := waitForProxyLog(t, env, "gpt-test")
 	if entry.UpstreamWebsocket {
 		t.Fatal("HTTP fallback log must not be marked as upstream websocket")
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list persisted rejected-handshake quota channel = (%#v, %v)", configs, err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
+		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 100 {
+		t.Fatalf("persisted rejected-handshake quota = (%#v, %v)", persistedCredential, err)
 	}
 }
 

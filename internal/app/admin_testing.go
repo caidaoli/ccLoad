@@ -1166,6 +1166,7 @@ func (s *Server) doChannelTestCodexWebsocket(
 		s.skipTLSVerify,
 		s.codexWebsocketTimeouts(),
 		req.URL.String(),
+		nil,
 	)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()

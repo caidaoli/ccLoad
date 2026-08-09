@@ -439,7 +439,10 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 	if err != nil {
 		return channelOAuthMetadata{}
 	}
-	metadata := channelOAuthMetadata{planType: credential.PlanType}
+	metadata := channelOAuthMetadata{
+		planType:   credential.PlanType,
+		oauthUsage: codexPassiveUsageSummary(credential),
+	}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until
 	}

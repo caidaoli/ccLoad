@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -934,6 +935,18 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 		if got := r.Header.Get("Authorization"); got != "Bearer at-new" {
 			t.Errorf("refreshed Authorization = %q", got)
 		}
+		w.Header().Set("X-Codex-Plan-Type", "pro")
+		w.Header().Set("X-Codex-Primary-Used-Percent", "6")
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+		w.Header().Set("X-Codex-Primary-Reset-At", "1786851417")
+		w.Header().Set("X-Codex-Secondary-Used-Percent", "0")
+		w.Header().Set("X-Codex-Secondary-Window-Minutes", "0")
+		w.Header().Set("X-Codex-Bengalfox-Limit-Name", "GPT-5.3-Codex-Spark")
+		w.Header().Set("X-Codex-Bengalfox-Primary-Used-Percent", "0")
+		w.Header().Set("X-Codex-Bengalfox-Primary-Window-Minutes", "10080")
+		w.Header().Set("X-Codex-Bengalfox-Primary-Reset-At", "1786876398000")
+		w.Header().Set("X-Codex-Bengalfox-Secondary-Used-Percent", "0")
+		w.Header().Set("X-Codex-Bengalfox-Secondary-Window-Minutes", "0")
 		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-oauth","status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}`+"\n\n")
 	}))
 	defer upstream.Close()
@@ -970,6 +983,73 @@ func TestProxy_CodexOAuthChannelRefreshes401AndReassemblesNonStream(t *testing.T
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 || !strings.Contains(configs[0].OAuthCredential, `"access_token":"at-new"`) {
 		t.Fatalf("persisted refreshed channel=%#v err=%v", configs, err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil ||
+		len(persistedCredential.PassiveUsage.Windows) != 2 {
+		t.Fatalf("persisted Codex quota = (%#v, %v)", persistedCredential, err)
+	}
+	windows := persistedCredential.PassiveUsage.Windows
+	if windows[0].LimitName != "codex" || windows[0].UsedPercent != 6 ||
+		windows[0].LimitWindowSeconds != 7*24*60*60 || windows[0].ResetAt != 1786851417 ||
+		windows[1].LimitName != "GPT-5.3-Codex-Spark" || windows[1].UsedPercent != 0 ||
+		windows[1].LimitWindowSeconds != 7*24*60*60 || windows[1].ResetAt != 1786876398 {
+		t.Fatalf("persisted Codex quota windows = %#v", windows)
+	}
+
+	adminCtx, adminResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	env.server.HandleChannels(adminCtx)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, adminResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil || len(list.Data[0].OAuthUsage.Windows) != 2 ||
+		list.Data[0].OAuthUsage.Windows[0].RemainingPercent != 94 ||
+		list.Data[0].OAuthUsage.Windows[1].RemainingPercent != 100 {
+		t.Fatalf("channel Codex quota = %+v", list.Data)
+	}
+}
+
+func TestProxy_CodexOAuthQuotaMergesIndependentResponseGroups(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Codex-Primary-Used-Percent", strconv.Itoa(5+int(call)))
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+		w.Header().Set("X-Codex-Primary-Reset-At", "1786851417")
+		if call == 1 {
+			w.Header().Set("X-Codex-Bengalfox-Limit-Name", "GPT-5.3-Codex-Spark")
+			w.Header().Set("X-Codex-Bengalfox-Primary-Used-Percent", "25")
+			w.Header().Set("X-Codex-Bengalfox-Primary-Window-Minutes", "10080")
+			w.Header().Set("X-Codex-Bengalfox-Primary-Reset-At", "1786876398")
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-quota","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-quota-merge", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType:        model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-quota", "rt-quota", "account-quota"),
+	}}, map[int]string{0: upstream.URL})
+	for _, input := range []string{"first", "second"} {
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-test", "stream": false, "input": input,
+		}, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s response status=%d body=%s", input, response.Code, response.Body.String())
+		}
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("list merged quota channel = (%#v, %v)", configs, err)
+	}
+	persisted, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persisted.PassiveUsage == nil || len(persisted.PassiveUsage.Windows) != 2 {
+		t.Fatalf("merged Codex quota = (%#v, %v)", persisted, err)
+	}
+	if persisted.PassiveUsage.Windows[0].UsedPercent != 7 ||
+		persisted.PassiveUsage.Windows[1].LimitName != "GPT-5.3-Codex-Spark" ||
+		persisted.PassiveUsage.Windows[1].UsedPercent != 25 {
+		t.Fatalf("independent quota groups were overwritten: %#v", persisted.PassiveUsage.Windows)
 	}
 }
 
@@ -1277,6 +1357,9 @@ func TestProxy_CodexOAuthNonStreamingOpenAIClientReassemblesAndTranslates(t *tes
 func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Codex-Primary-Used-Percent", "100")
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+		w.Header().Set("X-Codex-Primary-Reset-After-Seconds", "7260")
 		w.WriteHeader(http.StatusTooManyRequests)
 		_, _ = io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"plus","resets_in_seconds":7260}}`)
 	}))
@@ -1310,6 +1393,13 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 	}
 	if _, exists := cooldowns[configs[0].ID]["gpt-5.4"]; exists {
 		t.Fatal("unaffected Codex model must not be cooled")
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
+		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 100 ||
+		persistedCredential.PassiveUsage.Windows[0].LimitWindowSeconds != 7*24*60*60 ||
+		persistedCredential.PassiveUsage.Windows[0].ResetAt < before.Add(7250*time.Second).Unix() {
+		t.Fatalf("HTTP 429 Codex quota = (%#v, %v)", persistedCredential, err)
 	}
 }
 
