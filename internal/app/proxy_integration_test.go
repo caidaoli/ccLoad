@@ -804,6 +804,101 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseURLs(t *testing.T) {
+	var mu sync.Mutex
+	requestBaseURLs := make([]string, 0, antigravityModelCapacityAttempts)
+	requestTimes := make([]time.Time, 0, antigravityModelCapacityAttempts)
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-capacity", upstreamProtocol: "gemini", models: "claude-opus-4-6-thinking", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity"),
+	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		mu.Lock()
+		requestBaseURLs = append(requestBaseURLs, req.URL.Scheme+"://"+req.URL.Host)
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+		body := `{"error":{"code":503,"message":"No capacity available for model claude-opus-4-6-thinking on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-opus-4-6-thinking"}}]}}`
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-opus-4-6-thinking:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429; body=%s", response.Code, response.Body.String())
+	}
+
+	mu.Lock()
+	gotURLs := append([]string(nil), requestBaseURLs...)
+	gotTimes := append([]time.Time(nil), requestTimes...)
+	mu.Unlock()
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("Antigravity capacity attempts=%v, want %v", gotURLs, wantURLs)
+	}
+	for i := 1; i < len(gotTimes); i++ {
+		if delay := gotTimes[i].Sub(gotTimes[i-1]); delay < antigravityBaseURLFallbackDelay {
+			t.Fatalf("Antigravity fallback delay[%d]=%v, want >= %v", i, delay, antigravityBaseURLFallbackDelay)
+		}
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs=(%d, %v)", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := cooldowns[configs[0].ID]["claude-opus-4-6-thinking"]; !until.After(time.Now()) {
+		t.Fatalf("capacity exhaustion did not cool model: %v", cooldowns)
+	}
+}
+
+func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing.T) {
+	baseURLs := []string{
+		"https://capacity-1.test",
+		"https://not-found.test",
+		"https://capacity-2.test",
+		"https://capacity-3.test",
+	}
+	var calls atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-capacity-reset", upstreamProtocol: "gemini", models: "claude-opus-4-6-thinking", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity-reset"),
+	}}, map[int]string{0: strings.Join(baseURLs, "\n")})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		call := calls.Add(1)
+		status := http.StatusServiceUnavailable
+		body := `{"error":{"code":503,"message":"No capacity available for model claude-opus-4-6-thinking on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-opus-4-6-thinking"}}]}}`
+		if call == 2 {
+			status = http.StatusNotFound
+			body = `{"error":{"code":404,"message":"not found"}}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-opus-4-6-thinking:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d, want 503 after interrupted capacity sequence; body=%s", response.Code, response.Body.String())
+	}
+	if got := calls.Load(); got != int32(len(baseURLs)) {
+		t.Fatalf("attempts=%d, want %d", got, len(baseURLs))
+	}
+}
+
 func TestProxy_AntigravityOAuthUnwrapsStreamingGeminiResponse(t *testing.T) {
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {

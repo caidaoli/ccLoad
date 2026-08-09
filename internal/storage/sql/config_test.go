@@ -1007,6 +1007,9 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 			ScheduledCheckEnabled:   true,
 			ScheduledCheckModel:     scheduledModel,
 			CostMultiplier:          1,
+			DailyCostLimit:          5,
+			RPMLimit:                10,
+			MaxConcurrency:          2,
 			ModelEntries:            models,
 			RetryOtherKeysOnFailure: true,
 		})
@@ -1024,9 +1027,15 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 	})
 
 	multiplier := 0.5
+	dailyCostLimit := 25.5
+	rpmLimit := 120
+	maxConcurrency := 8
 	mode := model.ProtocolTransformModeLocal
 	result, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID, first.ID, 99999}, model.BatchConfigPatch{
 		CostMultiplier:        &multiplier,
+		DailyCostLimit:        &dailyCostLimit,
+		RPMLimit:              &rpmLimit,
+		MaxConcurrency:        &maxConcurrency,
 		ProtocolTransformMode: &mode,
 		ModelImportMode:       model.ModelImportModeAppend,
 		ModelEntries: []model.ModelEntry{
@@ -1046,8 +1055,10 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig(%d): %v", channelID, err)
 		}
-		if got.CostMultiplier != multiplier || got.GetProtocolTransformMode() != mode {
-			t.Fatalf("channel %d advanced fields = (%v, %q)", channelID, got.CostMultiplier, got.GetProtocolTransformMode())
+		if got.CostMultiplier != multiplier || got.DailyCostLimit != dailyCostLimit ||
+			got.RPMLimit != rpmLimit || got.MaxConcurrency != maxConcurrency || got.GetProtocolTransformMode() != mode {
+			t.Fatalf("channel %d advanced fields = (%v, %v, %d, %d, %q)", channelID,
+				got.CostMultiplier, got.DailyCostLimit, got.RPMLimit, got.MaxConcurrency, got.GetProtocolTransformMode())
 		}
 		if got.Priority != 7 || !got.RetryOtherKeysOnFailure {
 			t.Fatalf("channel %d unrelated fields changed: %+v", channelID, got)
@@ -1059,6 +1070,23 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		} else if len(got.ModelEntries) != 3 || got.ModelEntries[1].Model != "ALIAS-A" || got.ModelEntries[2].Model != "model-b" || got.ModelEntries[2].RedirectModel != "upstream-b" {
 			t.Fatalf("channel %d models=%+v", channelID, got.ModelEntries)
 		}
+	}
+
+	zeroRPM := 0
+	limitOnlyResult, err := store.BatchPatchConfigs(ctx, []int64{first.ID}, model.BatchConfigPatch{RPMLimit: &zeroRPM})
+	if err != nil {
+		t.Fatalf("BatchPatchConfigs RPM only: %v", err)
+	}
+	if limitOnlyResult.Updated != 1 || limitOnlyResult.Unchanged != 0 {
+		t.Fatalf("unexpected RPM-only result: %+v", limitOnlyResult)
+	}
+	firstAfterRPM, err := store.GetConfig(ctx, first.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstAfterRPM.RPMLimit != 0 || firstAfterRPM.MaxConcurrency != maxConcurrency ||
+		firstAfterRPM.DailyCostLimit != dailyCostLimit || firstAfterRPM.CostMultiplier != multiplier {
+		t.Fatalf("RPM-only patch changed unrelated limits: %+v", firstAfterRPM)
 	}
 
 	replaceResult, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID}, model.BatchConfigPatch{
