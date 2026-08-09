@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -79,7 +80,7 @@ func normalizeOAuthCredentialProvider(provider string) (string, error) {
 	switch normalized := strings.ToLower(strings.TrimSpace(provider)); normalized {
 	case "", oauthCredentialProviderAuto:
 		return oauthCredentialProviderAuto, nil
-	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType:
+	case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType:
 		return normalized, nil
 	default:
 		return "", fmt.Errorf("unsupported credential provider %q", normalized)
@@ -151,9 +152,11 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 			return "", errors.New("credential type must be a string")
 		}
 		switch normalized := strings.ToLower(strings.TrimSpace(credentialType)); normalized {
-		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType:
+		case codexauth.ChannelType, antigravityauth.ChannelType, xaiauth.ChannelType, anthropicauth.ChannelType:
 			return normalized, nil
-		case "":
+		case "claude":
+			return anthropicauth.ChannelType, nil
+		case "", "oauth":
 			// Empty and omitted types use the same field-based inference.
 		default:
 			return "", nil
@@ -163,8 +166,9 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 	codexFields := hasAnyJSONField(fields, "account_id", "plan_type")
 	antigravityFields := hasAnyJSONField(fields, "project_id", "timestamp")
 	xaiFields := hasStrongXAIImportMarker(fields)
+	anthropicFields := hasStrongAnthropicImportMarker(fields)
 	providerCount := 0
-	for _, matched := range []bool{codexFields, antigravityFields, xaiFields} {
+	for _, matched := range []bool{codexFields, antigravityFields, xaiFields, anthropicFields} {
 		if matched {
 			providerCount++
 		}
@@ -178,7 +182,14 @@ func detectOAuthCredentialProvider(raw []byte) (string, error) {
 	if antigravityFields {
 		return antigravityauth.ChannelType, nil
 	}
+	if anthropicFields {
+		return anthropicauth.ChannelType, nil
+	}
 	return xaiauth.ChannelType, nil
+}
+
+func hasStrongAnthropicImportMarker(fields map[string]json.RawMessage) bool {
+	return hasAnyJSONField(fields, "org_uuid", "account_uuid", "email_address")
 }
 
 func hasStrongXAIImportMarker(fields map[string]json.RawMessage) bool {
@@ -267,6 +278,7 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 		codexauth.ChannelType:       0,
 		antigravityauth.ChannelType: 0,
 		xaiauth.ChannelType:         0,
+		anthropicauth.ChannelType:   0,
 	}
 	if priorityIncrement > 0 {
 		configs, listErr := s.store.ListConfigs(c.Request.Context())
@@ -284,6 +296,8 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 				nextPriorityByProvider[antigravityauth.ChannelType] = cfg.Priority
 			case cfg.UsesXAIOAuth() && cfg.Priority > nextPriorityByProvider[xaiauth.ChannelType]:
 				nextPriorityByProvider[xaiauth.ChannelType] = cfg.Priority
+			case cfg.UsesAnthropicOAuth() && cfg.Priority > nextPriorityByProvider[anthropicauth.ChannelType]:
+				nextPriorityByProvider[anthropicauth.ChannelType] = cfg.Priority
 			}
 		}
 		for credentialProvider := range nextPriorityByProvider {
@@ -538,6 +552,45 @@ func (s *Server) prepareOAuthCredentialImportFile(
 		}
 		prepared.ChannelName = xaiChannelBaseName(credential)
 		prepared.Config = newXAIOAuthChannel(prepared.ChannelName, credentialJSON)
+	case anthropicauth.ChannelType:
+		credential, err := anthropicauth.ParseCredential(file.Raw)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		baseName := uniqueAnthropicChannelName(nil, credential)
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(baseName)]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+			return prepared
+		}
+		needsRefresh, err := credential.NeedsRefresh(time.Now(), anthropicauth.CredentialRefreshLead)
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if needsRefresh {
+			if s.anthropicService == nil {
+				prepared.Result.Status, prepared.Result.Error = "failed", "Anthropic credential refresh is unavailable"
+				return prepared
+			}
+			refreshed, refreshErr := s.anthropicService.Refresh(ctx, credential.RefreshToken)
+			if refreshErr != nil {
+				prepared.Result.Status, prepared.Result.Error = "failed", refreshErr.Error()
+				return prepared
+			}
+			credential, err = credential.MergeRefresh(refreshed)
+			if err != nil {
+				prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+				return prepared
+			}
+		}
+		credentialJSON, err := credential.JSON()
+		if err != nil {
+			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		prepared.ChannelName = baseName
+		prepared.Config = newAnthropicOAuthChannel(prepared.ChannelName, credentialJSON)
 	default:
 		prepared.Result.Status = "failed"
 		prepared.Result.Error = fmt.Sprintf("unsupported credential provider %q", credentialProvider)
@@ -581,6 +634,9 @@ func oauthCredentialProviderLabel(provider string) string {
 	}
 	if provider == xaiauth.ChannelType {
 		return "xAI"
+	}
+	if provider == anthropicauth.ChannelType {
+		return "Anthropic"
 	}
 	return provider
 }

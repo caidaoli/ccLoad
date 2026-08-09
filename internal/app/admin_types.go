@@ -447,6 +447,8 @@ type ChannelWithCooldown struct {
 	*model.Config
 	CodexPlanType                string              `json:"codex_plan_type,omitempty"`
 	CodexSubscriptionActiveUntil *time.Time          `json:"codex_subscription_active_until,omitempty"`
+	AnthropicPlanType            string              `json:"anthropic_plan_type,omitempty"`
+	OAuthUsage                   *oauthUsageSummary  `json:"oauth_usage,omitempty"`
 	AntigravityPaidTier          string              `json:"antigravity_paid_tier,omitempty"`
 	XAIEmail                     string              `json:"xai_email,omitempty"`
 	XAISubscriptionTier          string              `json:"xai_subscription_tier,omitempty"`

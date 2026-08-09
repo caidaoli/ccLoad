@@ -18,6 +18,7 @@ const (
 	AuthTypeCodexOAuth       = "codex_oauth"
 	AuthTypeAntigravityOAuth = "antigravity_oauth"
 	AuthTypeXAIOAuth         = "xai_oauth"
+	AuthTypeAnthropicOAuth   = "anthropic_oauth"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -42,6 +43,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeAntigravityOAuth
 	case AuthTypeXAIOAuth:
 		return AuthTypeXAIOAuth
+	case AuthTypeAnthropicOAuth:
+		return AuthTypeAnthropicOAuth
 	default:
 		return ""
 	}
@@ -562,6 +565,11 @@ func (c *Config) UsesAntigravityOAuth() bool {
 // UsesXAIOAuth reports whether this channel is backed by an xAI credential.
 func (c *Config) UsesXAIOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeXAIOAuth
+}
+
+// UsesAnthropicOAuth reports whether this channel is backed by an Anthropic credential.
+func (c *Config) UsesAnthropicOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeAnthropicOAuth
 }
 
 // UsesOAuth reports whether API keys are replaced by a private OAuth credential.

@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -94,6 +95,17 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			return
 		}
 		apiKeys = make([]*model.APIKey, 0)
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesAnthropicOAuth() {
+		credential, parseErr := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		apiKeys = []*model.APIKey{{
+			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
+			Note: "Anthropic OAuth AT", KeyStrategy: model.KeyStrategySequential,
+		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
 

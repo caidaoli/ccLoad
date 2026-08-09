@@ -17,12 +17,14 @@ import (
 	"net/url"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -65,6 +67,43 @@ type snapshotBarrierStore struct {
 	calls   atomic.Int32
 	ready   chan struct{}
 	release chan struct{}
+}
+
+type anthropicMetadataChurnStore struct {
+	storage.Store
+	remaining atomic.Int32
+	sequence  atomic.Int32
+}
+
+func (s *anthropicMetadataChurnStore) CompareAndSwapOAuthCredential(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential, nextCredential string,
+) (bool, error) {
+	if s.remaining.Add(-1) >= 0 {
+		winner, err := anthropicauth.ParseCredential([]byte(expectedCredential))
+		if err != nil {
+			return false, err
+		}
+		winner.PlanType = fmt.Sprintf("Concurrent %d", s.sequence.Add(1))
+		winnerJSON, err := winner.JSON()
+		if err != nil {
+			return false, err
+		}
+		updated, err := s.Store.CompareAndSwapOAuthCredential(
+			ctx, channelID, expectedAuthType, expectedCredential, winnerJSON,
+		)
+		if err != nil {
+			return false, err
+		}
+		if !updated {
+			return false, errors.New("inject Anthropic metadata winner: compare and swap missed")
+		}
+		return false, nil
+	}
+	return s.Store.CompareAndSwapOAuthCredential(
+		ctx, channelID, expectedAuthType, expectedCredential, nextCredential,
+	)
 }
 
 func (s *snapshotBarrierStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
@@ -3387,6 +3426,257 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	}
 }
 
+func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
+	tests := []struct {
+		name             string
+		profileBody      string
+		initialPlan      string
+		initialTrial     string
+		wantPlan         string
+		wantSubscription string
+		wantTrialEndsAt  string
+		wantWarning      bool
+	}{
+		{
+			name:             "pro",
+			profileBody:      `{"account":{"uuid":"account-anthropic-quota","has_claude_pro":true,"has_claude_max":false},"organization":{"uuid":"org-1","organization_type":"claude_pro","rate_limit_tier":"default_claude_zero","claude_code_trial_ends_at":null}}`,
+			wantPlan:         "Pro",
+			wantSubscription: "default_claude_zero",
+		},
+		{
+			name:             "max 20x",
+			profileBody:      `{"account":{"has_claude_pro":false,"has_claude_max":true},"organization":{"organization_type":"claude_max","rate_limit_tier":"default_claude_max_20x","claude_code_trial_ends_at":"2026-09-01T08:30:00+08:00"}}`,
+			initialPlan:      "Pro",
+			wantPlan:         "Max 20x",
+			wantSubscription: "default_claude_max_20x",
+			wantTrialEndsAt:  "2026-09-01T00:30:00Z",
+		},
+		{
+			name:            "missing subscription metadata keeps persisted plan",
+			profileBody:     `{}`,
+			initialPlan:     "Pro",
+			initialTrial:    "2026-08-31T00:00:00Z",
+			wantPlan:        "Pro",
+			wantTrialEndsAt: "2026-08-31T00:00:00Z",
+			wantWarning:     true,
+		},
+		{
+			name:         "unknown profile clears stale paid plan and ended trial",
+			profileBody:  `{"account":{"uuid":"account-anthropic-quota"},"organization":{"uuid":"org-1","organization_type":"unknown","claude_code_trial_ends_at":null}}`,
+			initialPlan:  "Max 20x",
+			initialTrial: "2026-08-31T00:00:00Z",
+			wantWarning:  true,
+		},
+		{
+			name:        "organization type wins over billing fallback",
+			profileBody: `{"subscription_type":"stripe_subscription_contracted","account":{"uuid":"account-anthropic-quota"},"organization":{"uuid":"org-1","organization_type":"claude_team"}}`,
+			initialPlan: "Pro",
+			wantPlan:    "Team",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, store, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			credential := &anthropicauth.Credential{
+				Type: anthropicauth.ChannelType, AccessToken: "at-anthropic-quota-secret", RefreshToken: "rt-anthropic-quota-secret",
+				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "account-anthropic-quota", EmailAddress: "quota@example.com",
+				PlanType: test.initialPlan, ClaudeCodeTrialEndsAt: test.initialTrial,
+			}
+			channel, _, err := createOrUpdateAnthropicChannel(context.Background(), store, credential)
+			if err != nil {
+				t.Fatalf("createOrUpdateAnthropicChannel() error = %v", err)
+			}
+
+			requestCounts := make(map[string]int)
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				requestCounts[request.URL.String()]++
+				if request.Method != http.MethodGet {
+					t.Errorf("usage request method = %s", request.Method)
+				}
+				if got := request.Header.Get("Authorization"); got != "Bearer at-anthropic-quota-secret" {
+					t.Errorf("Authorization = %q", got)
+				}
+				if got := request.Header.Get("User-Agent"); got != anthropicUsageUserAgent {
+					t.Errorf("User-Agent = %q", got)
+				}
+				var responseBody string
+				switch request.URL.String() {
+				case anthropicUsageURL:
+					if got := request.Header.Get("anthropic-beta"); got != "oauth-2025-04-20" {
+						t.Errorf("anthropic-beta = %q", got)
+					}
+					responseBody = `{
+						"five_hour":{"utilization":12.5,"resets_at":"2026-08-09T10:00:00Z"},
+						"seven_day":{"utilization":40,"resets_at":"2026-08-15T10:00:00Z"},
+						"seven_day_sonnet":{"utilization":25,"resets_at":"2026-08-15T11:00:00Z"},
+						"seven_day_overage_included":{"utilization":75,"resets_at":"2026-08-15T12:00:00Z"}
+					}`
+				case anthropicProfileURL:
+					if got := request.Header.Get("Cache-Control"); got != "no-cache" {
+						t.Errorf("Cache-Control = %q", got)
+					}
+					responseBody = test.profileBody
+				default:
+					t.Errorf("usage request URL = %s", request.URL)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body:       io.NopCloser(strings.NewReader(responseBody)),
+					Request:    request,
+				}, nil
+			})}
+			server.anthropicCredentials = newAnthropicCredentialManager(
+				anthropicauth.NewService(server.client), store,
+				func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+			)
+
+			path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+			c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+			server.HandleOAuthUsage(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+			}
+			if strings.Contains(w.Body.String(), "at-anthropic-quota-secret") || strings.Contains(w.Body.String(), "rt-anthropic-quota-secret") {
+				t.Fatalf("usage response leaked credential: %s", w.Body.String())
+			}
+			response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
+			if response.Data.Provider != anthropicauth.ChannelType || response.Data.PlanType != test.wantPlan ||
+				response.Data.SubscriptionTier != test.wantSubscription || len(response.Data.Windows) != 4 {
+				t.Fatalf("usage summary = %#v", response.Data)
+			}
+			if test.wantWarning {
+				if len(response.Data.Warnings) != 1 || response.Data.Warnings[0] != "Anthropic subscription metadata unavailable" {
+					t.Fatalf("usage warnings = %v", response.Data.Warnings)
+				}
+			} else if len(response.Data.Warnings) != 0 {
+				t.Fatalf("usage warnings = %v", response.Data.Warnings)
+			}
+			if requestCounts[anthropicUsageURL] != 1 || requestCounts[anthropicProfileURL] != 1 || len(requestCounts) != 2 {
+				t.Fatalf("Anthropic request counts = %v", requestCounts)
+			}
+			persisted, err := store.GetConfig(context.Background(), channel.ID)
+			if err != nil {
+				t.Fatalf("get persisted Anthropic credential: %v", err)
+			}
+			persistedCredential, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+			if err != nil || persistedCredential.PlanType != test.wantPlan ||
+				persistedCredential.ClaudeCodeTrialEndsAt != test.wantTrialEndsAt {
+				t.Fatalf("persisted Anthropic credential metadata = %+v, %v", persistedCredential, err)
+			}
+			listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+			server.HandleChannels(listContext)
+			list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+			if len(list.Data) != 1 || list.Data[0].AnthropicPlanType != test.wantPlan {
+				t.Fatalf("Anthropic channel list metadata = %+v", list.Data)
+			}
+			windows := response.Data.Windows
+			if windows[0].Kind != "five_hour" || windows[0].UsedPercent != 12.5 || windows[0].RemainingPercent != 87.5 || windows[0].LimitWindowSeconds != 5*60*60 {
+				t.Fatalf("five-hour window = %#v", windows[0])
+			}
+			if windows[2].LimitName != "Claude Sonnet" || windows[2].Kind != "seven_day_sonnet" || windows[2].RemainingPercent != 75 {
+				t.Fatalf("Sonnet window = %#v", windows[2])
+			}
+			if windows[3].LimitName != "Claude Fable" || windows[3].Kind != "seven_day_fable" || windows[3].RemainingPercent != 25 {
+				t.Fatalf("Fable window = %#v", windows[3])
+			}
+		})
+	}
+}
+
+func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "passive-access", RefreshToken: "passive-refresh",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "passive-account", PlanType: "Max 20x",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("credential JSON: %v", err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-passive", payload))
+	if err != nil {
+		t.Fatalf("create channel: %v", err)
+	}
+	server.anthropicCredentials = newAnthropicCredentialManager(
+		anthropicauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+	response := &http.Response{StatusCode: http.StatusTooManyRequests, Header: make(http.Header)}
+	reset5h := time.Now().UTC().Add(-time.Minute).Unix()
+	reset7d := time.Now().UTC().Add(7 * 24 * time.Hour).Unix()
+	reset7dOI := time.Now().UTC().Add(7*24*time.Hour + time.Hour).Unix()
+	response.Header.Set(anthropicRateLimit5hUtilization, "0.25")
+	response.Header.Set(anthropicRateLimit5hReset, strconv.FormatInt(reset5h*1000, 10))
+	response.Header.Set(anthropicRateLimit7dUtilization, "0.4")
+	response.Header.Set(anthropicRateLimit7dReset, strconv.FormatInt(reset7d, 10))
+	response.Header.Set(anthropicRateLimit7dOIUsage, "0.75")
+	response.Header.Set(anthropicRateLimit7dOIReset, strconv.FormatInt(reset7dOI, 10))
+	server.persistAnthropicPassiveUsage(context.Background(), channel, response)
+
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatalf("get persisted channel: %v", err)
+	}
+	persistedCredential, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse persisted credential: %v", err)
+	}
+	usage := persistedCredential.PassiveUsage
+	if usage == nil || usage.FiveHour == nil || usage.FiveHour.Utilization == nil || *usage.FiveHour.Utilization != 0.25 ||
+		usage.FiveHour.ResetAt == nil || *usage.FiveHour.ResetAt != reset5h || usage.SevenDay == nil ||
+		usage.SevenDayOverageIncluded == nil || usage.SampledAt == "" {
+		t.Fatalf("passive usage = %#v", usage)
+	}
+	newerValue := 0.99
+	updated, err := server.anthropicCredentials.updatePassiveUsage(context.Background(), channel, anthropicPassiveUsageUpdate{
+		FiveHour: &anthropicauth.PassiveUsageWindow{Utilization: &newerValue}, SampledAt: usage.SampledAt,
+	})
+	if err != nil || updated {
+		t.Fatalf("equal timestamp passive update = %t, %v", updated, err)
+	}
+	persisted, err = store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err = anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || persistedCredential.PassiveUsage.FiveHour == nil ||
+		persistedCredential.PassiveUsage.FiveHour.Utilization == nil || *persistedCredential.PassiveUsage.FiveHour.Utilization != 0.25 {
+		t.Fatalf("equal timestamp overwrote passive usage: %#v, %v", persistedCredential.PassiveUsage, err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(c)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, w.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil || len(list.Data[0].OAuthUsage.Windows) != 3 {
+		t.Fatalf("channel passive usage = %+v", list.Data)
+	}
+	windows := list.Data[0].OAuthUsage.Windows
+	if windows[0].UsedPercent != 25 || windows[0].ResetAt != reset5h ||
+		windows[2].Kind != "seven_day_fable" || windows[2].RemainingPercent != 25 {
+		t.Fatalf("projected passive windows = %#v", windows)
+	}
+
+	nextWindow := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header)}
+	nextWindow.Header.Set(anthropicRateLimit5hStatus, "allowed")
+	nextWindow.Header.Set(anthropicRateLimit5hUtilization, "0.1")
+	nextWindow.Header.Set(anthropicRateLimit5hReset, strconv.FormatInt(time.Now().UTC().Add(5*time.Hour).Unix(), 10))
+	server.persistAnthropicPassiveUsage(context.Background(), channel, nextWindow)
+	persisted, err = store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatalf("get reset passive usage: %v", err)
+	}
+	persistedCredential, err = anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || persistedCredential.PassiveUsage.SevenDay != nil ||
+		persistedCredential.PassiveUsage.SevenDayOverageIncluded != nil {
+		t.Fatalf("passive usage after 5h window reset = %#v, %v", persistedCredential.PassiveUsage, err)
+	}
+}
+
 func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -3552,5 +3842,303 @@ func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *testing.T) {
+	var exchangedState string
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode token request: %v", err)
+		}
+		exchangedState = payload["state"]
+		_, _ = io.WriteString(w, `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"org-1"},"account":{"uuid":"account-1","email_address":"user@example.com"}}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	manager := newAnthropicOAuthManager(service, store, nil)
+	defer manager.close()
+
+	_, state, err := manager.start()
+	if err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	if _, err := manager.submitAuthorizationCode(state, "code-1#wrong-state"); err == nil {
+		t.Fatal("state mismatch was accepted")
+	}
+	if _, err := manager.submitAuthorizationCode(state, "code-1#"+state); err != nil {
+		t.Fatalf("submitAuthorizationCode() error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, ok := manager.status(state)
+		if !ok {
+			t.Fatal("OAuth session disappeared")
+		}
+		if status.Status == "complete" {
+			if status.ChannelID == 0 || exchangedState != state {
+				t.Fatalf("status=%+v exchanged state=%q", status, exchangedState)
+			}
+			channel, getErr := store.GetConfig(context.Background(), status.ChannelID)
+			if getErr != nil || !channel.UsesAnthropicOAuth() || len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
+				t.Fatalf("created channel=%+v err=%v", channel, getErr)
+			}
+			break
+		}
+		if status.Status == "error" {
+			t.Fatalf("OAuth failed: %s", status.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("OAuth did not complete: %+v", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestHandleAnthropicCookieAuthCreatesChannelWithoutReturningOrPersistingCookie(t *testing.T) {
+	const sessionKey = "sk-ant-sid01-handler-secret"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/api/organizations":
+			cookie, err := request.Cookie("sessionKey")
+			if err != nil || cookie.Value != sessionKey {
+				t.Errorf("organization cookie = %v, err = %v", cookie, err)
+			}
+			_, _ = io.WriteString(w, `[{"uuid":"cookie-org"}]`)
+		case "/v1/oauth/cookie-org/authorize":
+			var payload map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode authorization request: %v", err)
+			}
+			redirect := anthropicauth.RedirectURI + "?code=cookie-code&state=" + url.QueryEscape(payload["state"])
+			_ = json.NewEncoder(w).Encode(map[string]string{"redirect_uri": redirect})
+		case "/token":
+			_, _ = io.WriteString(w, `{"access_token":"cookie-access-secret","refresh_token":"cookie-refresh-secret","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"cookie-org"},"account":{"uuid":"cookie-account","email_address":"cookie@example.com"}}`)
+		default:
+			http.NotFound(w, request)
+		}
+	}))
+	defer upstream.Close()
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	service := anthropicauth.NewService(upstream.Client())
+	service.ClaudeWebURL = upstream.URL
+	service.TokenURL = upstream.URL + "/token"
+	server.anthropicService = service
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
+		"session_key": sessionKey,
+	}))
+	server.HandleAnthropicCookieAuth(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("cookie auth status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), sessionKey) || strings.Contains(w.Body.String(), "cookie-access-secret") ||
+		strings.Contains(w.Body.String(), "cookie-refresh-secret") {
+		t.Fatalf("cookie auth response leaked credentials: %s", w.Body.String())
+	}
+	var response APIResponse[struct {
+		Status    string `json:"status"`
+		ChannelID int64  `json:"channel_id"`
+		Created   bool   `json:"created"`
+	}]
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+	if !response.Success || response.Data.Status != "complete" || !response.Data.Created || response.Data.ChannelID == 0 {
+		t.Fatalf("cookie auth response = %+v", response)
+	}
+	channel, err := store.GetConfig(context.Background(), response.Data.ChannelID)
+	if err != nil {
+		t.Fatalf("get cookie channel: %v", err)
+	}
+	if !channel.UsesAnthropicOAuth() || strings.Contains(channel.OAuthCredential, sessionKey) {
+		t.Fatalf("cookie channel persisted sessionKey: %+v", channel)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(channel.OAuthCredential))
+	if err != nil || credential.AccessToken != "cookie-access-secret" || credential.RefreshToken != "cookie-refresh-secret" {
+		t.Fatalf("stored cookie credential = %+v, err = %v", credential, err)
+	}
+}
+
+func TestHandleAnthropicCookieAuthDoesNotEchoUpstreamSecrets(t *testing.T) {
+	const sessionKey = "sk-ant-sid01-upstream-secret"
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"` + sessionKey + `"}`)),
+			Request:    request,
+		}, nil
+	})}
+	server, _, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	service := anthropicauth.NewService(client)
+	server.anthropicService = service
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
+		"session_key": sessionKey,
+	}))
+	server.HandleAnthropicCookieAuth(c)
+
+	if w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), sessionKey) {
+		t.Fatalf("cookie auth error status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestSameAnthropicIdentityNeverUsesSharedOrganization(t *testing.T) {
+	first := &anthropicauth.Credential{OrgUUID: "shared-org"}
+	second := &anthropicauth.Credential{OrgUUID: "shared-org"}
+	if sameAnthropicIdentity(first, second) {
+		t.Fatal("organization UUID is not an account identity")
+	}
+	first.AccountUUID, second.AccountUUID = "account-1", "account-1"
+	if !sameAnthropicIdentity(first, second) {
+		t.Fatal("matching account UUID should identify the same account")
+	}
+}
+
+func TestAnthropicCredentialManagerPersistsRotatedRefreshToken(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode refresh request: %v", err)
+		}
+		if payload["refresh_token"] != "old-refresh" {
+			t.Errorf("refresh token = %q", payload["refresh_token"])
+		}
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",
+		Expired:     time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		AccountUUID: "account-1", EmailAddress: "user@example.com",
+	}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-test", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newAnthropicCredentialManager(service, store, nil, nil)
+	refreshed, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if refreshed.AccessToken != "new-access" || refreshed.RefreshToken != "rotated-refresh" {
+		t.Fatalf("refreshed credential = %+v", refreshed)
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || winner.RefreshToken != "rotated-refresh" || winner.AccountUUID != "account-1" {
+		t.Fatalf("persisted credential=%+v err=%v", winner, err)
+	}
+}
+
+func TestAnthropicCredentialManagerConsumesConcurrentCASWinnerAfterInvalidGrant(t *testing.T) {
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	oldCredential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	oldRaw, err := oldCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-race", oldRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerCredential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "winner-access", RefreshToken: "winner-refresh",
+		Expired: time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	winnerRaw, err := winnerCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		updated, updateErr := store.CompareAndSwapOAuthCredential(
+			context.Background(), channel.ID, model.AuthTypeAnthropicOAuth, oldRaw, winnerRaw,
+		)
+		if updateErr != nil || !updated {
+			t.Errorf("persist concurrent winner: updated=%v err=%v", updated, updateErr)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newAnthropicCredentialManager(service, store, nil, nil)
+
+	winner, err := manager.credential(context.Background(), channel, true)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if winner.AccessToken != "winner-access" || winner.RefreshToken != "winner-refresh" {
+		t.Fatalf("credential() winner = %+v", winner)
+	}
+}
+
+func TestAnthropicCredentialManagerMergesRepeatedMetadataWinnersWithoutRefreshingTwice(t *testing.T) {
+	_, baseStore, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	oldCredential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",
+		Expired: time.Now().Add(-time.Minute).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	oldRaw, err := oldCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := baseStore.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-metadata-race", oldRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &anthropicMetadataChurnStore{Store: baseStore}
+	store.remaining.Store(5)
+	var refreshCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if refreshCount.Add(1) != 1 {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"rotated-refresh","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newAnthropicCredentialManager(service, store, nil, nil)
+
+	refreshed, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if refreshCount.Load() != 1 || refreshed.AccessToken != "new-access" || refreshed.RefreshToken != "rotated-refresh" ||
+		refreshed.PlanType != "Concurrent 5" {
+		t.Fatalf("refreshed credential = %+v; refresh count = %d", refreshed, refreshCount.Load())
+	}
+	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || winner.RefreshToken != "rotated-refresh" || winner.PlanType != "Concurrent 5" {
+		t.Fatalf("persisted credential = %+v, %v", winner, err)
 	}
 }

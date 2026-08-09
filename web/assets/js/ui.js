@@ -902,25 +902,24 @@ window.WebAuth = window.WebAuth || {
       pointer-events: auto;
     `;
     if (type === 'success') {
-      // 高可读：浅底深字
-      el.style.background = 'var(--success-50)';
-      el.style.color = 'var(--success-600)';
-      el.style.borderColor = 'var(--success-500)';
+      el.style.background = 'var(--notification-success-bg)';
+      el.style.color = 'var(--notification-success-fg)';
+      el.style.borderColor = 'var(--notification-success-border)';
       el.style.boxShadow = '0 6px 28px rgba(16,185,129,0.18)';
     } else if (type === 'error') {
-      el.style.background = 'var(--error-50)';
-      el.style.color = 'var(--error-600)';
-      el.style.borderColor = 'var(--error-500)';
+      el.style.background = 'var(--notification-error-bg)';
+      el.style.color = 'var(--notification-error-fg)';
+      el.style.borderColor = 'var(--notification-error-border)';
       el.style.boxShadow = '0 6px 28px rgba(239,68,68,0.18)';
     } else if (type === 'warning') {
-      el.style.background = 'var(--warning-50)';
-      el.style.color = 'var(--warning-700)';
-      el.style.borderColor = 'var(--warning-500)';
+      el.style.background = 'var(--notification-warning-bg)';
+      el.style.color = 'var(--notification-warning-fg)';
+      el.style.borderColor = 'var(--notification-warning-border)';
       el.style.boxShadow = '0 6px 28px rgba(245,158,11,0.18)';
     } else if (type === 'info') {
-      el.style.background = 'var(--info-50)';
-      el.style.color = 'var(--neutral-800)';
-      el.style.borderColor = 'rgba(0,0,0,0.08)';
+      el.style.background = 'var(--notification-info-bg)';
+      el.style.color = 'var(--notification-info-fg)';
+      el.style.borderColor = 'var(--notification-info-border)';
     }
     el.textContent = message;
     el.setAttribute('role', type === 'error' ? 'alert' : 'status');

@@ -651,6 +651,16 @@ func (s *Server) prepareChannelTestAuth(
 			updatePersistedCooldown: true,
 		}, nil
 	}
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
+		}
+		return cfg.Clone(), channelTestKeySelection{
+			keyIndex: cooldown.NoKeyIndex, requestCredential: credential.AccessToken,
+			updatePersistedCooldown: true,
+		}, nil
+	}
 
 	if len(apiKeys) == 0 && requestAPIKey == "" {
 		return nil, channelTestKeySelection{}, errors.New("渠道未配置有效的 API Key")
@@ -1055,6 +1065,17 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		return attachTestDebugData(requestPlan, nil, result)
 	}
 	defer func() { _ = resp.Body.Close() }()
+	if isAnthropicOAuthMessagesRequest(
+		cfg, protocol.Protocol(requestPlan.upstreamProtocol), req.URL.Path,
+	) {
+		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
+			return attachTestDebugData(requestPlan, resp, map[string]any{
+				"success": false, "error": "解码 Anthropic 测试响应失败: " + decodeErr.Error(),
+				"duration_ms": time.Since(start).Milliseconds(), "status_code": resp.StatusCode,
+				"is_streaming": testReq.Stream,
+			})
+		}
+	}
 	if requestPlan.debugCapture != nil {
 		requestPlan.debugCapture.wrapResponseBody(resp)
 	}
@@ -1285,9 +1306,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
 		requestPath = extractRequestPath(requestPlan.fullURL)
 	}
+	if isAnthropicOAuthMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
+		requestPlan.fullURL = buildAnthropicOAuthURL(selectedURL, requestPath, "")
+	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers,
+		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers, false,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
@@ -1360,6 +1384,8 @@ func (s *Server) newTestUpstreamRequest(
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfgForBuild)
+	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
+		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 	}
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {

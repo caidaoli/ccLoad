@@ -32,7 +32,7 @@ test('冷却超过一小时后按小时和分钟显示', () => {
   }
 });
 
-test('Antigravity OAuth 渠道在状态列提供额度刷新操作', () => {
+test('Antigravity 和 Anthropic OAuth 渠道在状态列提供额度刷新操作', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;
   const previousReadOnly = global.isTokenChannelsReadOnly;
@@ -45,6 +45,9 @@ test('Antigravity OAuth 渠道在状态列提供额度刷新操作', () => {
     assert.match(html, /data-action="refresh-oauth-usage"/);
     assert.match(html, /data-channel-id="25"/);
     assert.match(html, />刷新额度<\/button>/);
+    const anthropicHTML = buildOAuthUsageStatusHtml({ id: 27, auth_type: 'anthropic_oauth' });
+    assert.match(anthropicHTML, /data-action="refresh-oauth-usage"/);
+    assert.match(anthropicHTML, /data-channel-id="27"/);
     assert.equal(buildOAuthUsageStatusHtml({ id: 26, auth_type: 'api_key' }), '');
   } finally {
     global.window = previousWindow;
@@ -93,11 +96,29 @@ test('OAuth 额度就绪后只显示额度而不显示最后成功时间', () =>
 });
 
 test('OAuth 计划徽标支持 Antigravity paidTier 并转义内容', () => {
-  assert.match(
-    buildOAuthPlanBadge({ auth_type: 'antigravity_oauth', antigravity_paid_tier: 'Google AI <Pro>' }),
-    /Google AI &lt;Pro&gt;/
-  );
-  assert.equal(buildOAuthPlanBadge({ auth_type: 'api_key', antigravity_paid_tier: 'Google AI Pro' }), '');
+  const previousGetUsageState = global.getOAuthUsageState;
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: { plan_type: 'Max 20x <safe>' }
+  });
+  try {
+    assert.match(
+      buildOAuthPlanBadge({ auth_type: 'antigravity_oauth', antigravity_paid_tier: 'Google AI <Pro>' }),
+      /Google AI &lt;Pro&gt;/
+    );
+    assert.equal(buildOAuthPlanBadge({ auth_type: 'api_key', antigravity_paid_tier: 'Google AI Pro' }), '');
+    assert.match(
+      buildOAuthPlanBadge({ id: 27, auth_type: 'anthropic_oauth' }),
+      /Max 20x &lt;safe&gt;/
+    );
+    global.getOAuthUsageState = () => null;
+    assert.match(
+      buildOAuthPlanBadge({ id: 27, auth_type: 'anthropic_oauth', anthropic_plan_type: 'Pro <stored>' }),
+      /Pro &lt;stored&gt;/
+    );
+  } finally {
+    global.getOAuthUsageState = previousGetUsageState;
+  }
 });
 
 test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => {

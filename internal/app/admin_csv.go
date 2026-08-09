@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
@@ -575,6 +576,12 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 		return credential.JSON()
 	case model.AuthTypeXAIOAuth:
 		credential, err := xaiauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeAnthropicOAuth:
+		credential, err := anthropicauth.ParseCredential([]byte(raw))
 		if err != nil {
 			return "", err
 		}

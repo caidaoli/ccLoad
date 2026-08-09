@@ -5810,6 +5810,31 @@
       gap: 16px;
     }
 
+    .advanced-settings-retry-label {
+      align-items: flex-start;
+    }
+
+    .advanced-settings-retry-label > input {
+      flex: 0 0 auto;
+      margin-top: 2px;
+    }
+
+    .advanced-settings-inline-help {
+      margin-left: 6px;
+      color: var(--neutral-500);
+      font-size: 0.8rem;
+      font-weight: 400;
+      line-height: 1.45;
+    }
+
+    .advanced-settings-scheduled-row {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      align-items: center;
+      gap: 18px;
+      min-width: 0;
+    }
+
     .advanced-settings-other-field {
       display: grid;
       grid-template-columns: max-content minmax(0, 1fr);
@@ -6090,7 +6115,7 @@
 
     .cooldown-detection-intro {
       margin: 0;
-      color: var(--text-600, #475569);
+      color: var(--muted-fg);
       font-size: 0.86rem;
       line-height: 1.55;
     }
@@ -6106,18 +6131,18 @@
     }
 
     .cooldown-detection-empty {
-      border: 1px dashed var(--border-color, #e2e8f0);
+      border: 1px dashed var(--surface-border-strong);
       border-radius: 8px;
-      color: var(--text-500, #64748b);
+      color: var(--muted-fg);
       font-size: 0.86rem;
       padding: 20px 12px;
       text-align: center;
     }
 
     .cooldown-detection-rule {
-      border: 1px solid var(--border-color, #e2e8f0);
+      border: 1px solid var(--surface-border);
       border-radius: 8px;
-      background: var(--bg-card, #fff);
+      background: transparent;
       padding: 12px;
     }
 
@@ -6129,7 +6154,7 @@
     }
 
     .cooldown-detection-enabled {
-      color: var(--text-700, #334155);
+      color: var(--body-fg);
       font-size: 0.84rem;
       white-space: nowrap;
     }
@@ -6138,7 +6163,7 @@
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      color: var(--text-700, #334155);
+      color: var(--body-fg);
       font-size: 0.84rem;
     }
 
@@ -6149,7 +6174,7 @@
       gap: 6px;
       flex: 0 1 auto;
       min-width: 0;
-      color: var(--text-700, #334155);
+      color: var(--body-fg);
       font-size: 0.84rem;
     }
 
@@ -6207,7 +6232,7 @@
     }
 
     .cooldown-detection-field > span {
-      color: var(--text-600, #475569);
+      color: var(--muted-fg);
       font-size: 0.76rem;
       line-height: 1.2;
       white-space: nowrap;
@@ -6275,22 +6300,26 @@
       flex: 0 0 auto;
       margin-top: 18px;
       padding: 12px;
-      border: 1px solid var(--info-200, #bfdbfe);
+      border: 1px solid var(--surface-border);
       border-radius: 8px;
-      background: var(--info-50, #eff6ff);
+      background: transparent;
     }
 
     .cooldown-detection-test-panel h3 {
       margin: 0;
-      color: var(--text-800, #1e293b);
+      color: var(--body-fg);
       font-size: 0.92rem;
     }
 
     .cooldown-detection-test-panel > p {
       margin: 5px 0 10px;
-      color: var(--text-600, #475569);
+      color: var(--muted-fg);
       font-size: 0.8rem;
       line-height: 1.45;
+    }
+
+    .cooldown-detection-test-panel .cooldown-detection-field > span {
+      color: var(--muted-fg);
     }
 
     .cooldown-detection-test-controls {
@@ -6309,19 +6338,13 @@
     .cooldown-detection-test-result {
       margin: 10px 0 0;
       padding: 10px;
-      border: 1px solid var(--success-200, #bbf7d0);
+      border: 1px solid var(--surface-border);
       border-radius: 6px;
-      background: var(--success-50, #f0fdf4);
-      color: var(--success-800, #166534);
+      background: var(--field-bg);
+      color: var(--body-fg);
       font: 0.8rem/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       white-space: pre-wrap;
       word-break: break-word;
-    }
-
-    .cooldown-detection-test-result--fallback {
-      border-color: var(--warning-200, #fde68a);
-      background: var(--warning-50, #fffbeb);
-      color: var(--warning-800, #92400e);
     }
 
     @media (max-width: 640px) {
@@ -6353,6 +6376,11 @@
       .cooldown-detection-name {
         grid-template-columns: 1fr;
         gap: 4px;
+      }
+
+      .advanced-settings-scheduled-row {
+        grid-template-columns: 1fr;
+        gap: 10px;
       }
 
       html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-field,
