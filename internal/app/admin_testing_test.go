@@ -1262,8 +1262,11 @@ func TestHandleChannelTest_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
 			r.Header.Get("Session-Id") != "" || r.Header.Get("Session_id") != "" {
 			t.Errorf("conflicting authentication headers were not removed: %v", r.Header)
 		}
-		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+		if got := r.Header.Get("Accept"); got != "application/json, text/event-stream" {
 			t.Errorf("Accept = %q", got)
+		}
+		if got := r.Header.Get(xaiauth.CLIClientModeHeader); got != xaiauth.CLIClientMode {
+			t.Errorf("%s = %q", xaiauth.CLIClientModeHeader, got)
 		}
 		upstreamBody, _ = io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "text/event-stream")

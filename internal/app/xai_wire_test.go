@@ -288,8 +288,9 @@ func TestInjectXAIResponsesHeadersRebuildsIdentityAfterRules(t *testing.T) {
 		"X-Xai-Token-Auth":          {"wrong"},
 		"X-Grok-Client-Version":     {"wrong"},
 		"User-Agent":                {"wrong"},
-		"X-Grok-Client-Identifier":  {"wrong"},
-		"X-Authenticateresponse":    {"wrong"},
+		"X-Grok-Client-Identifier":  {"must-be-removed"},
+		"X-Authenticateresponse":    {"must-be-removed"},
+		"X-Grok-Client-Mode":        {"wrong"},
 		"X-Grok-Conv-Id":            {"client-conversation"},
 		"Session-Id":                {"raw-session"},
 		"Session_id":                {"raw-session-legacy"},
@@ -303,23 +304,25 @@ func TestInjectXAIResponsesHeadersRebuildsIdentityAfterRules(t *testing.T) {
 	injectXAIResponsesHeaders(req, "access-token", "conv-derived")
 
 	want := map[string]string{
-		"Authorization":                       "Bearer access-token",
-		"Content-Type":                        "application/json",
-		"Accept":                              "text/event-stream",
-		xaiauth.CLITokenAuthHeader:            xaiauth.CLITokenAuthValue,
-		xaiauth.CLIClientVersionHeader:        xaiauth.CLIClientVersion,
-		"User-Agent":                          xaiauth.CLIUserAgent,
-		xaiauth.CLIClientIdentifierHeader:     xaiauth.CLIClientIdentifier,
-		xaiauth.CLIAuthenticateResponseHeader: xaiauth.CLIAuthenticateResponse,
-		"x-grok-conv-id":                      "conv-derived",
-		"X-Unrelated-Custom-Header":           "preserved",
+		"Authorization":                "Bearer access-token",
+		"Content-Type":                 "application/json",
+		"Accept":                       "application/json, text/event-stream",
+		xaiauth.CLITokenAuthHeader:     xaiauth.CLITokenAuthValue,
+		xaiauth.CLIClientVersionHeader: "0.2.114",
+		"User-Agent":                   xaiauth.CLIUserAgent,
+		xaiauth.CLIClientModeHeader:    xaiauth.CLIClientMode,
+		"x-grok-conv-id":               "conv-derived",
+		"X-Unrelated-Custom-Header":    "preserved",
 	}
 	for name, value := range want {
 		if got := req.Header.Get(name); got != value {
 			t.Errorf("%s = %q, want %q", name, got, value)
 		}
 	}
-	for _, name := range []string{"X-Api-Key", "x-goog-api-key", "Session-Id", "Session_id", "Originator", "ChatGPT-Account-ID"} {
+	for _, name := range []string{
+		"X-Api-Key", "x-goog-api-key", "Session-Id", "Session_id", "Originator", "ChatGPT-Account-ID",
+		"X-Grok-Client-Identifier", "X-Authenticateresponse",
+	} {
 		if got := req.Header.Get(name); got != "" {
 			t.Errorf("conflicting header %s survived with %q", name, got)
 		}

@@ -578,7 +578,63 @@ func xaiTestJWT(email, subject string) string {
 	return "x." + base64.RawURLEncoding.EncodeToString(payload) + ".y"
 }
 
-func TestXAIRefreshTokenImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
+func startXAICredentialImportTestJob(
+	t *testing.T,
+	server *Server,
+	method string,
+	values []string,
+	priorityIncrement int,
+	requestCtx context.Context,
+) (oauthCredentialImportJobStart, string) {
+	t.Helper()
+	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/jobs", map[string]any{
+		"method": method, "values": strings.Join(values, "\n"), "priority_increment": priorityIncrement,
+	})
+	if requestCtx != nil {
+		request = request.WithContext(requestCtx)
+	}
+	requestContext, response := newTestContext(t, request)
+	server.HandleStartXAICredentialImportJob(requestContext)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start xAI import status=%d body=%s", response.Code, response.Body.String())
+	}
+	started := mustParseAPIResponse[oauthCredentialImportJobStart](t, response.Body.Bytes()).Data
+	if started.JobID == "" || started.Total != len(values) {
+		t.Fatalf("start xAI import=%#v", started)
+	}
+	return started, response.Body.String()
+}
+
+func waitXAICredentialImportTestJob(
+	t *testing.T,
+	server *Server,
+	jobID string,
+) (oauthCredentialImportJobView, string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		request := httptest.NewRequest(http.MethodGet, "/admin/oauth/credentials/import/jobs/"+jobID+"?after=0", nil)
+		requestContext, response := newTestContext(t, request)
+		requestContext.Params = gin.Params{{Key: "id", Value: jobID}}
+		server.HandleOAuthCredentialImportJob(requestContext)
+		if response.Code != http.StatusOK {
+			t.Fatalf("xAI import job status=%d body=%s", response.Code, response.Body.String())
+		}
+		view := mustParseAPIResponse[oauthCredentialImportJobView](t, response.Body.Bytes()).Data
+		if view.Status == oauthCredentialImportJobSucceeded {
+			return view, response.Body.String()
+		}
+		if view.Status != oauthCredentialImportJobRunning {
+			t.Fatalf("xAI import job stopped: %#v", view)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("xAI import job did not complete: %#v", view)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestXAIRefreshTokenImportAcceptsMoreThanHundredWithBoundedConcurrencyAndRedactsSecrets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	var active atomic.Int32
@@ -605,24 +661,21 @@ func TestXAIRefreshTokenImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
 		}
 	})}
 	server := &Server{store: store, client: client}
-	values := make([]string, 6)
+	values := make([]string, 101)
 	for i := range values {
 		values[i] = fmt.Sprintf("refresh-secret-%d", i+1)
 	}
-	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
-		"method": "refresh_token", "values": strings.Join(values, "\n"), "priority_increment": 10,
-	})
-	requestContext, response := newTestContext(t, request)
-	server.HandleImportXAICredentialsStream(requestContext)
-	if response.Code != http.StatusOK || !strings.Contains(response.Header().Get("Content-Type"), "text/event-stream") {
-		t.Fatalf("status=%d headers=%v body=%s", response.Code, response.Header(), response.Body.String())
+	started, startBody := startXAICredentialImportTestJob(t, server, "refresh_token", values, 10, nil)
+	view, statusBody := waitXAICredentialImportTestJob(t, server, started.JobID)
+	if view.Created != len(values) || view.Processed != len(values) || view.Failed != 0 {
+		t.Fatalf("completed refresh import=%#v", view)
 	}
 	if maximum.Load() < 2 || maximum.Load() > 5 {
 		t.Fatalf("maximum refresh concurrency = %d, want 2..5", maximum.Load())
 	}
 	for _, secret := range values {
-		if strings.Contains(response.Body.String(), secret) {
-			t.Fatalf("SSE response leaked refresh token %q", secret)
+		if strings.Contains(startBody, secret) || strings.Contains(statusBody, secret) {
+			t.Fatalf("job response leaked refresh token %q", secret)
 		}
 	}
 	channels, err := store.ListConfigs(context.Background())
@@ -727,27 +780,47 @@ func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestXAIRefreshTokenImportDisconnectCancelsPendingWithoutCommit(t *testing.T) {
+func TestXAIRefreshTokenImportJobSurvivesStartRequestCancellation(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	started := make(chan struct{})
 	var startedOnce sync.Once
+	release := make(chan struct{})
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		startedOnce.Do(func() { close(started) })
-		<-request.Context().Done()
-		return nil, request.Context().Err()
+		switch request.Method {
+		case http.MethodPost:
+			startedOnce.Do(func() { close(started) })
+			select {
+			case <-release:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+			if err := request.ParseForm(); err != nil {
+				return nil, err
+			}
+			index := strings.TrimPrefix(request.Form.Get("refresh_token"), "refresh-secret-")
+			body := fmt.Sprintf(
+				`{"access_token":"access-%s","refresh_token":"rotated-%s","id_token":%q,"expires_in":3600}`,
+				index, index, xaiTestJWT("survivor-"+index+"@example.com", "subject-"+index),
+			)
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+		case http.MethodGet:
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)), Request: request}, nil
+		default:
+			return nil, fmt.Errorf("unexpected method: %s", request.Method)
+		}
 	})}
 	server := &Server{store: store, client: client}
+	values := []string{"refresh-secret-1", "refresh-secret-2", "refresh-secret-3"}
+	requestCtx, cancel := context.WithCancel(context.Background())
 	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
-		"method": "refresh_token", "values": "refresh-secret-1\nrefresh-secret-2\nrefresh-secret-3",
-	})
-	requestCtx, cancel := context.WithCancel(request.Context())
-	request = request.WithContext(requestCtx)
+		"method": "refresh_token", "values": strings.Join(values, "\n"),
+	}).WithContext(requestCtx)
 	requestContext, response := newTestContext(t, request)
-	done := make(chan struct{})
+	handlerDone := make(chan struct{})
 	go func() {
 		server.HandleImportXAICredentialsStream(requestContext)
-		close(done)
+		close(handlerDone)
 	}()
 	select {
 	case <-started:
@@ -756,39 +829,58 @@ func TestXAIRefreshTokenImportDisconnectCancelsPendingWithoutCommit(t *testing.T
 	}
 	cancel()
 	select {
-	case <-done:
+	case <-handlerDone:
 	case <-time.After(time.Second):
-		t.Fatal("refresh import did not stop after disconnect")
+		t.Fatal("SSE observer did not stop after request cancellation")
+	}
+	var startEvent oauthCredentialImportEvent
+	for line := range strings.SplitSeq(response.Body.String(), "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &startEvent); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if startEvent.JobID == "" || startEvent.Total != len(values) {
+		t.Fatalf("SSE start event=%#v body=%s", startEvent, response.Body.String())
+	}
+	close(release)
+	view, statusBody := waitXAICredentialImportTestJob(t, server, startEvent.JobID)
+	if view.Created != len(values) || view.Processed != len(values) || view.Failed != 0 {
+		t.Fatalf("completed import after request cancellation=%#v", view)
 	}
 	configs, err := store.ListConfigs(context.Background())
-	if err != nil || len(configs) != 0 || strings.Contains(response.Body.String(), "refresh-secret") {
-		t.Fatalf("disconnect persisted or leaked credentials: configs=%d error=%v body=%s", len(configs), err, response.Body.String())
+	if err != nil || len(configs) != len(values) || strings.Contains(response.Body.String()+statusBody, "refresh-secret") {
+		t.Fatalf("SSE cancellation stopped or leaked import: configs=%d error=%v stream=%s status=%s", len(configs), err, response.Body.String(), statusBody)
 	}
 }
 
-func TestXAISSOImportRejectsMoreThanTenItemsBeforeUpstream(t *testing.T) {
+func TestXAISSOImportAcceptsMoreThanTenItems(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	var upstreamCalls atomic.Int32
-	server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(*http.Request) (*http.Response, error) {
+	server := &Server{store: store, client: &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		upstreamCalls.Add(1)
-		return nil, errors.New("unexpected upstream request")
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+			Request:    request,
+		}, nil
 	})}}
 	values := make([]string, 11)
 	for i := range values {
 		values[i] = fmt.Sprintf("sso-secret-%d", i)
 	}
-	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
-		"method": "sso", "values": strings.Join(values, "\n"),
-	})
-	requestContext, response := newTestContext(t, request)
-	server.HandleImportXAICredentialsStream(requestContext)
-	if response.Code != http.StatusBadRequest || upstreamCalls.Load() != 0 {
-		t.Fatalf("status=%d upstream=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+	started, _ := startXAICredentialImportTestJob(t, server, "sso", values, 0, nil)
+	view, _ := waitXAICredentialImportTestJob(t, server, started.JobID)
+	if view.Failed != len(values) || upstreamCalls.Load() != int32(len(values)) {
+		t.Fatalf("completed import=%#v upstream=%d", view, upstreamCalls.Load())
 	}
 }
 
-func TestXAISSOImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
+func TestXAISSOImportReportsErrorsWithBoundedConcurrencyAndRedactsSecrets(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
 	var active atomic.Int32
@@ -806,17 +898,17 @@ func TestXAISSOImportLimitsConcurrencyAndRedactsSecrets(t *testing.T) {
 	})}
 	server := &Server{store: store, client: client}
 	values := []string{"sso-secret-1", "sso-secret-2", "sso-secret-3", "sso-secret-4"}
-	request := newJSONRequest(t, http.MethodPost, "/admin/xai/credentials/import/stream", map[string]any{
-		"method": "sso", "values": strings.Join(values, "\n"),
-	})
-	requestContext, response := newTestContext(t, request)
-	server.HandleImportXAICredentialsStream(requestContext)
-	if response.Code != http.StatusOK || maximum.Load() < 2 || maximum.Load() > 3 {
-		t.Fatalf("status=%d maximum concurrency=%d body=%s", response.Code, maximum.Load(), response.Body.String())
+	started, startBody := startXAICredentialImportTestJob(t, server, "sso", values, 0, nil)
+	view, statusBody := waitXAICredentialImportTestJob(t, server, started.JobID)
+	if view.Failed != len(values) || maximum.Load() < 2 || maximum.Load() > 3 {
+		t.Fatalf("completed import=%#v maximum concurrency=%d", view, maximum.Load())
+	}
+	if !strings.Contains(statusBody, xaiauth.ErrSSOUnauthorized.Error()) {
+		t.Fatalf("job response omitted SSO failure detail: %s", statusBody)
 	}
 	for _, secret := range values {
-		if strings.Contains(response.Body.String(), secret) {
-			t.Fatalf("SSE response leaked SSO cookie %q", secret)
+		if strings.Contains(startBody, secret) || strings.Contains(statusBody, secret) {
+			t.Fatalf("job response leaked SSO cookie %q", secret)
 		}
 	}
 	configs, err := store.ListConfigs(context.Background())

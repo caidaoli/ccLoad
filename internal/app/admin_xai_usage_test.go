@@ -102,7 +102,7 @@ func TestXAIUsage_DualBillingSuccess(t *testing.T) {
 		if req.Header.Get("Authorization") != "Bearer access-secret" ||
 			req.Header.Get(xaiauth.CLITokenAuthHeader) != xaiauth.CLITokenAuthValue ||
 			req.Header.Get(xaiauth.CLIClientVersionHeader) != xaiauth.CLIClientVersion ||
-			req.Header.Get("User-Agent") != xaiauth.CLIUserAgent {
+			req.Header.Get("User-Agent") != xaiauth.CLIBillingUserAgent {
 			t.Fatalf("billing headers=%v", req.Header)
 		}
 		if req.URL.Query().Get("format") == "credits" {

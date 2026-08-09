@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -264,7 +265,7 @@ func (s *Service) request(ctx context.Context, method, endpoint string, form url
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("xAI request failed: %w", err)
+		return nil, 0, safeRequestError(ctx, "xAI request failed", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
@@ -275,6 +276,22 @@ func (s *Service) request(ctx context.Context, method, endpoint string, form url
 		return nil, resp.StatusCode, errors.New("xAI response exceeds size limit")
 	}
 	return data, resp.StatusCode, nil
+}
+
+// safeRequestError keeps transports from reflecting credentials, request
+// bodies, or redirect URLs while preserving cancellation semantics.
+func safeRequestError(ctx context.Context, message string, err error) error {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return fmt.Errorf("%s: %w", message, context.Canceled)
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return fmt.Errorf("%s: %w", message, context.DeadlineExceeded)
+	}
+	var networkError net.Error
+	if errors.As(err, &networkError) && networkError.Timeout() {
+		return fmt.Errorf("%s: network timeout", message)
+	}
+	return errors.New(message)
 }
 
 func validateAuthURL(raw string) (string, error) {

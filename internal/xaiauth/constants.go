@@ -21,7 +21,7 @@ const (
 	// RedirectURI is the loopback URI registered for the public xAI CLI client.
 	RedirectURI = "http://127.0.0.1:56121/callback"
 	// SSOScope is the exact scope requested during SSO conversion.
-	SSOScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write workspaces:read workspaces:write"
+	SSOScope = "openid profile email offline_access grok-cli:access api:access conversations:read conversations:write"
 	// DeviceCodeGrantType is the RFC 8628 device-code grant type.
 	DeviceCodeGrantType = "urn:ietf:params:oauth:grant-type:device_code"
 
@@ -36,17 +36,15 @@ const (
 	// CLIClientVersionHeader names the xAI CLI version header.
 	CLIClientVersionHeader = "x-grok-client-version"
 	// CLIClientVersion is the emulated xAI CLI protocol version.
-	CLIClientVersion = "0.2.120"
-	// CLIUserAgent is the fixed xAI CLI user agent.
+	CLIClientVersion = "0.2.114"
+	// CLIUserAgent is the fixed xAI model-request user agent.
 	CLIUserAgent = "xai-grok-workspace/" + CLIClientVersion
-	// CLIClientIdentifierHeader names the xAI CLI client identifier header.
-	CLIClientIdentifierHeader = "x-grok-client-identifier"
-	// CLIClientIdentifier identifies the emulated xAI CLI client.
-	CLIClientIdentifier = "grok-shell"
-	// CLIAuthenticateResponseHeader names the CLI authentication response marker.
-	CLIAuthenticateResponseHeader = "x-authenticateresponse"
-	// CLIAuthenticateResponse is the CLI authentication response marker value.
-	CLIAuthenticateResponse = "authenticate-response"
+	// CLIBillingUserAgent is the fixed xAI CLI billing client identity.
+	CLIBillingUserAgent = "grok-pager/" + CLIClientVersion + " grok-shell/" + CLIClientVersion + " (macos; aarch64)"
+	// CLIClientModeHeader names the xAI CLI interaction mode header.
+	CLIClientModeHeader = "X-Grok-Client-Mode"
+	// CLIClientMode identifies normal interactive Grok CLI traffic.
+	CLIClientMode = "interactive"
 
 	// SSOAccountsURL is the initial trusted xAI accounts endpoint.
 	SSOAccountsURL = "https://accounts.x.ai/"

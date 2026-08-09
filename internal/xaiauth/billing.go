@@ -49,7 +49,7 @@ func ApplyBillingHeaders(req *http.Request, accessToken string) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set(CLITokenAuthHeader, CLITokenAuthValue)
 	req.Header.Set(CLIClientVersionHeader, CLIClientVersion)
-	req.Header.Set("User-Agent", CLIUserAgent)
+	req.Header.Set("User-Agent", CLIBillingUserAgent)
 }
 
 // ClassifyBillingResponse maps a known xAI billing response schema to an actionable class.

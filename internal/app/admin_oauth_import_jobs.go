@@ -128,6 +128,11 @@ type oauthCredentialImportJobManager struct {
 	wg      sync.WaitGroup
 }
 
+type oauthCredentialImportJobRunner func(
+	context.Context,
+	oauthCredentialImportObserver,
+) (oauthCredentialImportSummary, bool)
+
 func newOAuthCredentialImportJobManager(parentCtx context.Context, maxRunning int) *oauthCredentialImportJobManager {
 	if parentCtx == nil {
 		parentCtx = context.Background()
@@ -149,6 +154,22 @@ func (m *oauthCredentialImportJobManager) Start(
 	if server == nil || batch == nil {
 		return oauthCredentialImportJobStart{}, errors.New("OAuth credential import job is unavailable")
 	}
+	return m.start(len(batch.Files), func(
+		ctx context.Context,
+		observer oauthCredentialImportObserver,
+	) (oauthCredentialImportSummary, bool) {
+		defer wipeOAuthCredentialImportBatch(batch)
+		return server.runOAuthCredentialImport(ctx, batch, observer)
+	})
+}
+
+func (m *oauthCredentialImportJobManager) start(
+	total int,
+	runner oauthCredentialImportJobRunner,
+) (oauthCredentialImportJobStart, error) {
+	if total <= 0 || runner == nil {
+		return oauthCredentialImportJobStart{}, errors.New("OAuth credential import job is unavailable")
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closing || m.parentCtx.Err() != nil {
@@ -163,8 +184,8 @@ func (m *oauthCredentialImportJobManager) Start(
 	job := &oauthCredentialImportJob{
 		id:        "ocij_" + uuid.New().String(),
 		status:    oauthCredentialImportJobRunning,
-		total:     len(batch.Files),
-		results:   make([]oauthCredentialImportResult, 0, len(batch.Files)),
+		total:     total,
+		results:   make([]oauthCredentialImportResult, 0, total),
 		createdAt: now,
 		cancel:    cancel,
 	}
@@ -176,8 +197,7 @@ func (m *oauthCredentialImportJobManager) Start(
 	go func() {
 		defer m.finishRunningJob()
 		defer cancel()
-		defer wipeOAuthCredentialImportBatch(batch)
-		summary, completed := server.runOAuthCredentialImport(ctx, batch, job.observe)
+		summary, completed := runner(ctx, job.observe)
 		errMessage := ""
 		if !completed && ctx.Err() != nil {
 			errMessage = ctx.Err().Error()
@@ -338,6 +358,10 @@ func (s *Server) HandleImportOAuthCredentialsStream(c *gin.Context) {
 	if !ok {
 		return
 	}
+	s.streamOAuthCredentialImportJob(c, started)
+}
+
+func (s *Server) streamOAuthCredentialImportJob(c *gin.Context, started oauthCredentialImportJobStart) {
 	manager := s.currentOAuthCredentialImportJobs()
 	if manager == nil {
 		return

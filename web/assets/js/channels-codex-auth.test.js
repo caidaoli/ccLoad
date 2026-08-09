@@ -62,7 +62,7 @@ test('xAI manual OAuth helpers use the shared state and callback contract', asyn
   assert.deepEqual(JSON.parse(requests[2].options.body), { state: 'state-2' });
 });
 
-test('xAI refresh-token and SSO submission clears secrets before the request starts', async () => {
+test('xAI refresh-token and SSO jobs survive progress read errors and clear submitted secrets', async () => {
   const previousWindow = global.window;
   const storageWrites = [];
   global.window = {
@@ -70,23 +70,60 @@ test('xAI refresh-token and SSO submission clears secrets before the request sta
     localStorage: { setItem: (...args) => storageWrites.push(args) },
     sessionStorage: { setItem: (...args) => storageWrites.push(args) }
   };
-  const makeResponse = () => ({
+  const makeResponse = data => ({
     ok: true,
-    body: null,
+    status: 200,
     async text() {
-      return `event: complete\ndata: {"event":"complete","created":1,"skipped":0,"failed":0}\n\n`;
+      return JSON.stringify({ success: true, data });
     }
   });
   try {
     for (const [method, secret] of [['refresh_token', 'rt-secret-value'], ['sso', 'sso-secret-value']]) {
       const textarea = { value: secret, removeAttribute() {}, setAttribute() {}, focus() {} };
       let captured;
-      const result = await submitXAICredentialBatch(method, textarea, null, async (url, options) => {
-        assert.equal(textarea.value, '');
-        captured = { url, options };
-        return makeResponse();
-      });
+      let pollAttempts = 0;
+      let streamReads = 0;
+      const result = await submitXAICredentialBatch(
+        method,
+        textarea,
+        null,
+        async (url, options) => {
+          assert.equal(textarea.value, '');
+          if (options.method === 'POST') {
+            captured = { url, options };
+            return {
+              ok: true,
+              body: {
+                getReader() {
+                  return {
+                    async read() {
+                      streamReads++;
+                      if (streamReads === 1) {
+                        return {
+                          done: false,
+                          value: new TextEncoder().encode(
+                            `event: start\ndata: {"event":"start","job_id":"ocij-${method}","total":1}\n\n`
+                          )
+                        };
+                      }
+                      throw new Error('Error in input stream');
+                    }
+                  };
+                }
+              }
+            };
+          }
+          pollAttempts++;
+          return makeResponse({
+            job_id: `ocij-${method}`, status: 'succeeded', processed: 1, total: 1,
+            created: 1, skipped: 0, failed: 0, results: [], next: 1
+          });
+        },
+        undefined,
+        async () => {}
+      );
       assert.equal(result.created, 1);
+      assert.equal(pollAttempts, 1);
       assert.equal(captured.url, '/admin/xai/credentials/import/stream');
       assert.deepEqual(JSON.parse(captured.options.body), {
         method,
@@ -116,6 +153,7 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
   const method = makeTarget({ value: 'sso', disabled: false });
   const textarea = makeTarget({ value: 'cookie-1\ncookie-2', focus() {} });
   const button = makeTarget({ disabled: false });
+  const progress = makeTarget({ hidden: true, focus() { this.focused = true; } });
   const errorList = {
     children: [],
     append(item) { this.children.push(item); },
@@ -130,7 +168,7 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
     ['oauthAuthorizeButton', button],
     ['oauthSessionFields', { hidden: true }],
     ['oauthLoginDialogStatus', { textContent: '', hidden: true, dataset: {} }],
-    ['xaiCredentialImportProgress', { hidden: true }],
+    ['xaiCredentialImportProgress', progress],
     ['xaiCredentialImportProgressBar', { max: 1, value: 0 }],
     ['xaiCredentialImportProgressCounter', { textContent: '' }],
     ['xaiCredentialImportProgressDetail', { textContent: '' }],
@@ -158,7 +196,7 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
     body: null,
     async text() {
       return [
-        'event: start\ndata: {"event":"start","processed":0,"total":2,"created":0,"skipped":0,"failed":0}',
+        'event: start\ndata: {"event":"start","job_id":"ocij-xai","processed":0,"total":2,"created":0,"skipped":0,"failed":0}',
         'event: processing\ndata: {"event":"processing","processed":0,"total":2,"created":0,"skipped":0,"failed":0,"file_name":"#1"}',
         'event: progress\ndata: {"event":"progress","processed":1,"total":2,"created":1,"skipped":0,"failed":0,"file_name":"#1","result":{"file_name":"#1","status":"created"}}',
         'event: progress\ndata: {"event":"progress","processed":2,"total":2,"created":1,"skipped":0,"failed":1,"file_name":"#2","result":{"file_name":"#2","status":"failed","error":"xAI SSO import failed"}}',
@@ -173,6 +211,7 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
     await form.listeners.submit({ preventDefault() {} });
 
     assert.equal(elements.get('xaiCredentialImportProgress').hidden, false);
+    assert.equal(progress.focused, true);
     assert.equal(elements.get('xaiCredentialImportProgressBar').max, 2);
     assert.equal(elements.get('xaiCredentialImportProgressBar').value, 2);
     assert.match(elements.get('xaiCredentialImportProgressCounter').textContent, /"processed":2/);
