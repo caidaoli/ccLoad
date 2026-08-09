@@ -3,8 +3,10 @@ module ccLoad
 go 1.26.0
 
 require (
+	github.com/andybalholm/brotli v1.0.6
 	github.com/bytedance/sonic v1.15.2
 	github.com/gin-gonic/gin v1.12.0
+	github.com/pierrec/xxHash v0.1.5
 	github.com/tidwall/gjson v1.19.0
 	github.com/tidwall/sjson v1.2.5
 	modernc.org/sqlite v1.54.0
@@ -21,7 +23,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.0.6 // indirect
 	github.com/goccy/go-yaml v1.19.2 // indirect
 	github.com/google/pprof v0.0.0-20260709232956-b9395ee17fa0 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

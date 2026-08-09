@@ -12,6 +12,7 @@ let activeCodexOAuthFlow = null;
 let codexOAuthStopPromise = null;
 let activeXAIImportFlow = null;
 let xaiImportStopPromise = null;
+let activeAnthropicCookieFlow = null;
 let oauthPagehideBound = false;
 let currentOAuthCredentialJSON = '';
 let currentOAuthCredential = null;
@@ -124,10 +125,12 @@ function applyChannelAuthEditorMode(
   const planBadge = document.getElementById('channelCodexPlanBadge');
   const planType = codexOAuth
     ? String(credential?.plan_type || channel?.codex_plan_type || '').trim()
-    : String(channel?.xai_subscription_tier || '').trim();
+    : (anthropicOAuth
+        ? String(credential?.plan_type || channel?.anthropic_plan_type || '').trim()
+        : String(channel?.xai_subscription_tier || '').trim());
   const planBadgeText = codexOAuth
     ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
-    : (xaiOAuth ? planType : '');
+    : ((xaiOAuth || anthropicOAuth) ? planType : '');
   if (notice) {
     const noticeKey = xaiOAuth ? 'channels.xai.editorReadOnly' : 'channels.oauthCredentialReadOnly';
     notice.hidden = !oauth;
@@ -360,6 +363,7 @@ function openOAuthLoginDialog(trigger = null) {
   callbackURL.value = '';
   callbackURL.removeAttribute?.('aria-invalid');
   resetXAIOAuthDialog();
+  resetAnthropicCookieDialog();
   syncOAuthProviderFields();
   setCodexAuthStatus('');
   setCodexOAuthDialogStatus('');
@@ -372,6 +376,7 @@ function closeOAuthLoginDialogElement() {
   const dialog = document.getElementById('oauthLoginDialog');
   if (dialog?.open) dialog.close();
   resetXAIOAuthDialog();
+  resetAnthropicCookieDialog();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
   trigger?.focus?.();
@@ -402,29 +407,64 @@ function clearXAICredentialSecrets(textarea = document.getElementById('xaiCreden
   textarea.removeAttribute?.('aria-invalid');
 }
 
+function resetAnthropicCookieDialog() {
+  const controls = document.getElementById('anthropicOAuthControls');
+  const method = document.getElementById('anthropicOAuthMethod');
+  const cookieField = document.getElementById('anthropicCookieField');
+  const input = document.getElementById('anthropicSessionKey');
+  if (controls) controls.hidden = true;
+  if (method) {
+    method.value = 'code';
+    method.disabled = false;
+  }
+  if (cookieField) cookieField.hidden = true;
+  clearAnthropicCookieSecret(input);
+  if (input) input.required = false;
+}
+
+function clearAnthropicCookieSecret(input = document.getElementById('anthropicSessionKey')) {
+  if (!input) return;
+  input.value = '';
+  input.removeAttribute?.('aria-invalid');
+}
+
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
-  const method = document.getElementById('xaiOAuthMethod')?.value || 'manual';
+  const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
+  const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
   const xai = provider === 'xai';
+  const anthropic = provider === 'anthropic';
+  const anthropicCookie = anthropic && anthropicMethod === 'cookie';
   const controls = document.getElementById('xaiOAuthControls');
   const secretField = document.getElementById('xaiCredentialSecretField');
   const textarea = document.getElementById('xaiCredentialValues');
+  const anthropicControls = document.getElementById('anthropicOAuthControls');
+  const anthropicCookieField = document.getElementById('anthropicCookieField');
+  const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const sessionFields = document.getElementById('oauthSessionFields');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const description = document.getElementById('oauthLoginDialogDescription');
   resetOAuthCredentialImportProgress('xaiCredentialImport');
   if (controls) controls.hidden = !xai;
-  if (sessionFields && xai) sessionFields.hidden = true;
-  if (secretField) secretField.hidden = !xai || method === 'manual';
+  if (anthropicControls) anthropicControls.hidden = !anthropic;
+  if (sessionFields && (xai || anthropicCookie)) sessionFields.hidden = true;
+  if (secretField) secretField.hidden = !xai || xaiMethod === 'manual';
   if (textarea) {
-    textarea.required = xai && method !== 'manual';
+    textarea.required = xai && xaiMethod !== 'manual';
     textarea.setAttribute?.('aria-describedby', 'xaiCredentialSecretHint oauthLoginDialogStatus');
     if (!textarea.required) textarea.removeAttribute?.('aria-invalid');
   }
+  if (anthropicCookieField) anthropicCookieField.hidden = !anthropicCookie;
+  if (anthropicSessionKey) {
+    anthropicSessionKey.required = anthropicCookie;
+    if (!anthropicCookie) clearAnthropicCookieSecret(anthropicSessionKey);
+  }
   if (description) {
     const descriptionKey = xai
-      ? (method === 'manual' ? 'channels.xai.manualDescription' : 'channels.xai.importDescription')
-      : 'channels.oauth.loginDialogDescription';
+      ? (xaiMethod === 'manual' ? 'channels.xai.manualDescription' : 'channels.xai.importDescription')
+      : (anthropic
+          ? (anthropicCookie ? 'channels.anthropic.cookieDescription' : 'channels.anthropic.codeDescription')
+          : 'channels.oauth.loginDialogDescription');
     description.setAttribute?.('data-i18n', descriptionKey);
     if (typeof window !== 'undefined' && typeof window.t === 'function') {
       description.textContent = window.t(descriptionKey);
@@ -432,7 +472,7 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
+    setOAuthAuthorizeButtonLabel(provider, xai ? xaiMethod : anthropicMethod, authorizeButton);
   }
 }
 
@@ -440,7 +480,9 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
   if (!button) return;
   const key = provider === 'xai'
     ? (method === 'manual' ? 'channels.xai.generateLink' : 'channels.xai.importSecrets')
-    : 'channels.oauth.startAuthorization';
+    : (provider === 'anthropic' && method === 'cookie'
+        ? 'channels.anthropic.authorizeWithCookie'
+        : 'channels.oauth.startAuthorization');
   button.setAttribute?.('data-i18n', key);
   if (typeof window !== 'undefined' && typeof window.t === 'function') button.textContent = window.t(key);
 }
@@ -559,6 +601,65 @@ async function submitXAIOAuthCallback(callbackURL, fetcher = fetchDataWithAuth) 
 
 async function submitAnthropicOAuthCode(code, state, fetcher = fetchDataWithAuth) {
   return submitOAuthCallback('anthropic', code, fetcher, state);
+}
+
+async function submitAnthropicCookieAuth(
+  input,
+  fetcher = fetchDataWithAuth,
+  signal = undefined,
+  onProgress = () => {}
+) {
+  let entries = String(input?.value || '')
+    .split(/\r?\n/)
+    .map((sessionKey, index) => ({ line: index + 1, sessionKey: sessionKey.trim() }))
+    .filter(entry => entry.sessionKey);
+  if (entries.length === 0) {
+    input?.setAttribute?.('aria-invalid', 'true');
+    input?.focus?.();
+    throw new Error(window.t('channels.anthropic.cookieRequired'));
+  }
+  input?.removeAttribute?.('aria-invalid');
+  clearAnthropicCookieSecret(input);
+  const summary = {
+    total: entries.length,
+    created: 0,
+    updated: 0,
+    failed: 0,
+    failedLines: []
+  };
+  try {
+    for (let index = 0; index < entries.length; index++) {
+      if (signal?.aborted) {
+        const error = new Error('Anthropic Cookie authorization cancelled');
+        error.name = 'AbortError';
+        throw error;
+      }
+      const entry = entries[index];
+      onProgress({ current: index + 1, total: entries.length });
+      let body = JSON.stringify({ session_key: entry.sessionKey });
+      try {
+        const result = await fetcher('/admin/anthropic/oauth/cookie', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body,
+          signal
+        });
+        if (result?.created === true) summary.created++;
+        else summary.updated++;
+      } catch (error) {
+        if (signal?.aborted || error?.name === 'AbortError') throw error;
+        summary.failed++;
+        summary.failedLines.push(entry.line);
+      } finally {
+        body = '';
+        entry.sessionKey = '';
+      }
+    }
+    return summary;
+  } finally {
+    for (const entry of entries) entry.sessionKey = '';
+    entries = [];
+  }
 }
 
 async function cancelOAuth(provider, state, fetcher = fetchDataWithAuth) {
@@ -755,13 +856,30 @@ async function stopActiveXAIImport(options = {}) {
 async function stopActiveOAuth(options = {}) {
   await Promise.all([
     stopActiveCodexOAuth({ closeDialog: false }),
-    stopActiveXAIImport({ closeDialog: false })
+    stopActiveXAIImport({ closeDialog: false }),
+    stopActiveAnthropicCookieAuth()
   ]);
   if (options.closeDialog !== false) {
     closeOAuthLoginDialogElement();
     setCodexAuthStatus('');
     setCodexOAuthDialogStatus('');
   }
+}
+
+function stopActiveAnthropicCookieAuth() {
+  const flow = activeAnthropicCookieFlow;
+  if (flow) {
+    flow.cancelling = true;
+    flow.controller?.abort?.();
+    if (activeAnthropicCookieFlow === flow) activeAnthropicCookieFlow = null;
+    if (flow.button) {
+      flow.button.disabled = false;
+      flow.button.removeAttribute?.('aria-busy');
+    }
+  }
+  clearAnthropicCookieSecret();
+  const method = document.getElementById('anthropicOAuthMethod');
+  if (method) method.disabled = false;
 }
 
 async function stopActiveCodexOAuth(options = {}) {
@@ -1164,7 +1282,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchDataWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -1235,6 +1353,8 @@ function setupOAuthActions() {
   const providerSelect = document.getElementById('oauthProviderSelect');
   const xaiMethod = document.getElementById('xaiOAuthMethod');
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
+  const anthropicMethod = document.getElementById('anthropicOAuthMethod');
+  const anthropicSessionKey = document.getElementById('anthropicSessionKey');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
@@ -1257,18 +1377,22 @@ function setupOAuthActions() {
     loginButton.addEventListener('click', () => openOAuthLoginDialog(loginButton));
     loginButton.dataset.bound = '1';
   }
-  if (providerSelect && typeof providerSelect.addEventListener === 'function' && !providerSelect.dataset?.xaiBound) {
+  if (providerSelect && typeof providerSelect.addEventListener === 'function' && !providerSelect.dataset?.oauthBound) {
     providerSelect.addEventListener('change', syncOAuthProviderFields);
-    if (providerSelect.dataset) providerSelect.dataset.xaiBound = '1';
+    if (providerSelect.dataset) providerSelect.dataset.oauthBound = '1';
   }
   if (xaiMethod && !xaiMethod.dataset.bound) {
     xaiMethod.addEventListener('change', syncOAuthProviderFields);
     xaiMethod.dataset.bound = '1';
   }
+  if (anthropicMethod && !anthropicMethod.dataset.bound) {
+    anthropicMethod.addEventListener('change', syncOAuthProviderFields);
+    anthropicMethod.dataset.bound = '1';
+  }
   if (loginForm && providerSelect && authorizeButton && !loginForm.dataset.bound) {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
-      if (activeCodexOAuthFlow || activeXAIImportFlow) return;
+      if (activeCodexOAuthFlow || activeXAIImportFlow || activeAnthropicCookieFlow) return;
       providerSelect.disabled = true;
       if (providerSelect.value === 'xai') {
         const method = xaiMethod?.value || 'manual';
@@ -1298,6 +1422,65 @@ function setupOAuthActions() {
           } finally {
             if (activeXAIImportFlow === flow) activeXAIImportFlow = null;
           }
+        }
+      } else if (providerSelect.value === 'anthropic' && anthropicMethod?.value === 'cookie') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const flow = { button: authorizeButton, input: anthropicSessionKey, cancelling: false, controller };
+        activeAnthropicCookieFlow = flow;
+        anthropicMethod.disabled = true;
+        authorizeButton.disabled = true;
+        authorizeButton.setAttribute?.('aria-busy', 'true');
+        try {
+          const result = await submitAnthropicCookieAuth(
+            anthropicSessionKey,
+            fetchDataWithAuth,
+            controller?.signal,
+            progress => setCodexOAuthDialogStatus(
+              window.t('channels.anthropic.cookieAuthorizing', progress)
+            )
+          );
+          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
+          const successful = result.created + result.updated;
+          if (result.failed > 0) {
+            const message = window.t('channels.anthropic.cookiePartial', {
+              ...result,
+              lines: result.failedLines.join(', ')
+            });
+            anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
+            anthropicSessionKey?.focus?.();
+            setCodexAuthStatus(message, 'error');
+            setCodexOAuthDialogStatus(message, 'error');
+            if (window.showError) window.showError(message);
+          } else {
+            const message = window.t('channels.anthropic.cookieComplete', result);
+            setCodexAuthStatus(message, 'success');
+            setCodexOAuthDialogStatus(message, 'success');
+            if (window.showSuccess) window.showSuccess(message);
+          }
+          if (successful > 0) {
+            try {
+              await reloadChannelsList();
+            } catch {
+              if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
+              if (window.showError) window.showError(window.t('channels.anthropic.cookieReloadFailed'));
+            }
+          }
+          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
+          if (result.failed === 0) closeOAuthLoginDialogElement();
+          return result;
+        } catch (error) {
+          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
+          anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
+          anthropicSessionKey?.focus?.();
+          const message = error?.message || window.t('channels.anthropic.cookieFailed');
+          setCodexAuthStatus(message, 'error');
+          setCodexOAuthDialogStatus(message, 'error');
+          if (window.showError) window.showError(message);
+        } finally {
+          if (activeAnthropicCookieFlow === flow) activeAnthropicCookieFlow = null;
+          anthropicMethod.disabled = false;
+          authorizeButton.disabled = false;
+          authorizeButton.removeAttribute?.('aria-busy');
         }
       } else {
         await startOAuth(oauthProviderConfig(providerSelect.value).provider, authorizeButton);
@@ -1501,6 +1684,7 @@ if (typeof module !== 'undefined' && module.exports) {
     setupOAuthActions,
     showOAuthSession,
     submitAntigravityOAuthCallback,
+    submitAnthropicCookieAuth,
     submitAnthropicOAuthCode,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,

@@ -132,7 +132,7 @@ func (s *Server) buildProxyRequest(
 
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
-	if isAnthropicOAuthAPIRequest(cfg, upstreamProtocol, requestPath) {
+	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		upstreamURL = buildAnthropicOAuthURL(baseURL, requestPath, upstreamQuery)
 	}
 	if xaiResponsesRequest {
@@ -197,8 +197,8 @@ func (s *Server) buildProxyRequest(
 		injectCodexHeaders(req, cfg, apiKey, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfg)
-	} else if isAnthropicOAuthAPIRequest(cfg, upstreamProtocol, requestPath) {
-		injectAnthropicOAuthHeaders(req, apiKey, upstreamStreaming)
+	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
+		injectAnthropicOAuthHeaders(req, cfg, apiKey, body)
 	}
 
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
@@ -232,7 +232,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
 	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) && !anthropicAlreadyFinalized {
 		var err error
-		body, err = finalizeAnthropicOAuthMessagesBody(body)
+		body, err = finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
 		if err != nil {
 			return nil, err
 		}
@@ -1704,6 +1704,12 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	if observer != nil && observer.OnUpstreamWebsocket != nil {
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
+	}
+	if resp != nil {
+		s.persistAnthropicPassiveUsage(reqCtx.ctx, cfg, resp)
+		if err == nil && cfg.UsesAnthropicOAuth() {
+			err = decodeAnthropicResponse(resp)
+		}
 	}
 	if req != nil {
 		reqCtx.translatedBody = sentBody

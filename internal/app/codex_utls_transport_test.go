@@ -15,9 +15,55 @@ import (
 	"testing"
 )
 
-func TestUpstreamHTTPClientUsesChromeUTLSForChatGPT(t *testing.T) {
+func TestUpstreamHTTPClientUsesChromeUTLSForProtectedWebOrigins(t *testing.T) {
+	for _, targetURL := range []string{
+		"https://chatgpt.com/backend-api/codex/responses",
+		"https://claude.ai/api/organizations",
+		"https://platform.claude.com/v1/oauth/token",
+	} {
+		t.Run(targetURL, func(t *testing.T) {
+			protocol := make(chan int, 1)
+			upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				protocol <- r.ProtoMajor
+				_, _ = io.WriteString(w, "ok")
+			}))
+
+			base := buildHTTPTransport(true)
+			dialer := &net.Dialer{}
+			base.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialer.DialContext(ctx, network, upstream.Listener.Addr().String())
+			}
+			client := newUpstreamHTTPClient(base, 0)
+			t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+			req, err := http.NewRequestWithContext(
+				context.Background(), http.MethodPost, targetURL, bytes.NewBufferString(`{"input":"hello"}`),
+			)
+			if err != nil {
+				t.Fatalf("build request: %v", err)
+			}
+			resp, err := client.Do(req)
+			if err != nil {
+				t.Fatalf("send request: %v", err)
+			}
+			_, _ = io.Copy(io.Discard, resp.Body)
+			if err = resp.Body.Close(); err != nil {
+				t.Fatalf("close response: %v", err)
+			}
+
+			if got := <-protocol; got != 2 {
+				t.Fatalf("upstream protocol = HTTP/%d, want HTTP/2", got)
+			}
+			if !clientHelloHasGREASECipherSuite(captured.Bytes()) {
+				t.Fatal("protected origin TLS ClientHello has no GREASE cipher suite; Chrome uTLS fingerprint was not used")
+			}
+		})
+	}
+}
+
+func TestUpstreamHTTPClientUsesNodeUTLSHTTP11ForAnthropicAPI(t *testing.T) {
 	protocol := make(chan int, 1)
-	upstream, captured := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	upstream, captured := newCapturedTLSServer(t, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		protocol <- r.ProtoMajor
 		_, _ = io.WriteString(w, "ok")
 	}))
@@ -31,10 +77,7 @@ func TestUpstreamHTTPClientUsesChromeUTLSForChatGPT(t *testing.T) {
 	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
 
 	req, err := http.NewRequestWithContext(
-		context.Background(),
-		http.MethodPost,
-		"https://chatgpt.com/backend-api/codex/responses",
-		bytes.NewBufferString(`{"input":"hello"}`),
+		context.Background(), http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(`{"messages":[]}`),
 	)
 	if err != nil {
 		t.Fatalf("build request: %v", err)
@@ -44,15 +87,63 @@ func TestUpstreamHTTPClientUsesChromeUTLSForChatGPT(t *testing.T) {
 		t.Fatalf("send request: %v", err)
 	}
 	_, _ = io.Copy(io.Discard, resp.Body)
-	if err = resp.Body.Close(); err != nil {
-		t.Fatalf("close response: %v", err)
+	_ = resp.Body.Close()
+
+	if got := <-protocol; got != 1 {
+		t.Fatalf("Anthropic protocol = HTTP/%d, want HTTP/1.1", got)
+	}
+	if clientHelloHasGREASECipherSuite(captured.Bytes()) {
+		t.Fatal("Anthropic API used the Chrome cipher profile instead of the Node.js profile")
+	}
+}
+
+func TestProtectedWebOriginsIsolateHTTP2Fallback(t *testing.T) {
+	chatGPTProtocol := make(chan int, 1)
+	chatGPTUpstream, _ := newCapturedTLSServer(t, false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		chatGPTProtocol <- r.ProtoMajor
+		_, _ = io.WriteString(w, "ok")
+	}))
+	claudeProtocol := make(chan int, 1)
+	claudeUpstream, _ := newCapturedTLSServer(t, true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		claudeProtocol <- r.ProtoMajor
+		_, _ = io.WriteString(w, "ok")
+	}))
+
+	base := buildHTTPTransport(true)
+	dialer := &net.Dialer{}
+	base.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		target := chatGPTUpstream.Listener.Addr().String()
+		if strings.HasPrefix(address, "claude.ai:") {
+			target = claudeUpstream.Listener.Addr().String()
+		}
+		return dialer.DialContext(ctx, network, target)
+	}
+	client := newUpstreamHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+
+	for _, targetURL := range []string{
+		"https://chatgpt.com/backend-api/codex/responses",
+		"https://claude.ai/api/organizations",
+	} {
+		request, err := http.NewRequestWithContext(
+			context.Background(), http.MethodPost, targetURL, bytes.NewBufferString(`{"input":"hello"}`),
+		)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("send %s: %v", targetURL, err)
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
 	}
 
-	if got := <-protocol; got != 2 {
-		t.Fatalf("upstream protocol = HTTP/%d, want HTTP/2", got)
+	if got := <-chatGPTProtocol; got != 1 {
+		t.Fatalf("ChatGPT fallback protocol = HTTP/%d, want HTTP/1", got)
 	}
-	if !clientHelloHasGREASECipherSuite(captured.Bytes()) {
-		t.Fatal("ChatGPT TLS ClientHello has no GREASE cipher suite; Chrome uTLS fingerprint was not used")
+	if got := <-claudeProtocol; got != 2 {
+		t.Fatalf("Claude protocol after ChatGPT fallback = HTTP/%d, want isolated HTTP/2", got)
 	}
 }
 

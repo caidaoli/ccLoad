@@ -1125,6 +1125,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/anthropic/oauth/status", s.HandleAnthropicOAuthStatus)
 		admin.POST("/anthropic/oauth/cancel", s.HandleCancelAnthropicOAuth)
 		admin.POST("/anthropic/oauth/callback", s.HandleSubmitAnthropicOAuthCode)
+		admin.POST("/anthropic/oauth/cookie", s.HandleAnthropicCookieAuth)
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级

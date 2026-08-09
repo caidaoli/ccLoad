@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -14,8 +16,10 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
@@ -98,6 +102,50 @@ func createXAIOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL st
 		t.Fatalf("CreateConfig xAI OAuth channel: %v", err)
 	}
 	return created
+}
+
+func createAnthropicOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
+	t.Helper()
+	payload, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "at-anthropic-admin", RefreshToken: "rt-anthropic-admin",
+		Expired: time.Now().UTC().Add(7 * 24 * time.Hour).Format(time.RFC3339), AccountUUID: "anthropic-admin-account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "anthropic-oauth-admin-test", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: payload,
+		URLs:                  model.ChannelURLs{{URL: upstreamURL, Protocols: []string{util.ProtocolAnthropic}}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "claude-sonnet-4-5"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
+func TestAnthropicOAuthChannelTestDecodesAdvertisedCompression(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		var compressed bytes.Buffer
+		writer := gzip.NewWriter(&compressed)
+		_, _ = writer.Write([]byte(`{"id":"msg-test","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-5-20250929","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`))
+		_ = writer.Close()
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = w.Write(compressed.Bytes())
+	}))
+	srv := newInMemoryServer(t)
+	cfg := createAnthropicOAuthChannelForAdminTest(t, srv, upstream.URL)
+	result := srv.executeChannelTestWithCooldown(context.Background(), cfg, cooldown.NoKeyIndex, "at-anthropic-admin", &testutil.TestChannelRequest{
+		Model: "claude-sonnet-4-5", ClientProtocol: util.ProtocolAnthropic, Content: "hello",
+	}, true)
+	if success, _ := result["success"].(bool); !success {
+		t.Fatalf("compressed Anthropic channel test result=%+v", result)
+	}
+	if responseText, _ := result["response_text"].(string); responseText != "ok" {
+		t.Fatalf("decoded response_text=%q result=%+v", responseText, result)
+	}
 }
 
 // TestHandleChannelTest 测试渠道测试功能
