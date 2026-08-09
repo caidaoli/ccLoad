@@ -512,7 +512,8 @@ func (s *Server) handleProxySuccess(
 
 // handleStreamingErrorNoRetry 处理流式响应中途检测到的错误（597/599）
 // 场景：HTTP 200 已发送，流传输中途检测到 SSE error 或流不完整
-// 关键：响应头已发送，重试在 HTTP 协议层面不可能，只触发冷却+记录日志
+// 关键：响应头已发送，重试在 HTTP 协议层面不可能，只记录日志并返回客户端。
+// 普通 SSE/HTTP 故障仍做模型冷却；原生 WS 1006 由目标级 tracker 处理。
 func (s *Server) handleStreamingErrorNoRetry(
 	ctx context.Context,
 	cfg *model.Config,
@@ -526,8 +527,11 @@ func (s *Server) handleStreamingErrorNoRetry(
 	// 记录错误日志
 	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, res.StreamDiagMsg)
 
-	// 触发冷却（保护后续请求）
-	_ = s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
+	// 原生 WS close 1006/心跳传输错误按“两个新物理连接连续失败”冷却具体目标。
+	// 这里再做模型冷却会把网络抖动错误扩大到同渠道的整个模型。
+	if !res.UpstreamWebsocketTransportFailure {
+		_ = s.applyCooldownDecision(ctx, cfg, cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel))
+	}
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
@@ -537,6 +541,38 @@ func (s *Server) handleStreamingErrorNoRetry(
 		succeeded:  true, // 关键：标记为成功，避免触发重试逻辑
 		nextAction: cooldown.ActionReturnClient,
 	}, cooldown.ActionReturnClient
+}
+
+func (s *Server) handleUncommittedWebsocketTransportFailure(
+	cfg *model.Config,
+	actualModel string,
+	selectedKey string,
+	res *fwResult,
+	duration float64,
+	reqCtx *proxyRequestContext,
+) (*proxyResult, cooldown.Action) {
+	s.logProxyResult(
+		reqCtx,
+		cfg,
+		actualModel,
+		selectedKey,
+		res.Status,
+		time.Since(reqCtx.channelStartTime).Seconds(),
+		res,
+		res.StreamDiagMsg,
+	)
+	s.updateTokenStatsForProxy(reqCtx, cfg, false, duration, res, actualModel)
+
+	return &proxyResult{
+		status:                 res.Status,
+		header:                 res.Header,
+		body:                   res.Body,
+		channelID:              &cfg.ID,
+		duration:               duration,
+		succeeded:              false,
+		nextAction:             cooldown.ActionRetryChannel,
+		websocketTargetCooling: true,
+	}, cooldown.ActionRetryChannel
 }
 
 // handleProxyErrorResponse 处理代理错误响应（业务逻辑层）

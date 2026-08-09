@@ -97,11 +97,16 @@ func newResponsesExecutionSession(
 	now time.Time,
 	maxBodyBytes int64,
 	upstreamConnectionMaxAge time.Duration,
+	websocketFailures *codexWebsocketFailureTracker,
 ) *responsesExecutionSession {
 	return &responsesExecutionSession{
 		turn:       make(chan struct{}, 1),
 		transcript: newResponsesWebsocketSession(maxBodyBytes),
-		upstream:   newCodexUpstreamWebsocketSession(maxBodyBytes, upstreamConnectionMaxAge),
+		upstream: newCodexUpstreamWebsocketSession(
+			maxBodyBytes,
+			upstreamConnectionMaxAge,
+			websocketFailures,
+		),
 		lastAccess: now,
 	}
 }
@@ -196,6 +201,7 @@ type responsesExecutionSessionStore struct {
 	maxTranscriptBytes       int64
 	maxBodyBytes             int64
 	upstreamConnectionMaxAge time.Duration
+	websocketFailures        *codexWebsocketFailureTracker
 	nextTransientID          uint64
 	ttlExpired               uint64
 	capacityRejected         uint64
@@ -218,6 +224,7 @@ func newResponsesExecutionSessionStore(
 		maxTranscriptBytes:       defaultResponsesExecutionTranscriptBudgetBytes,
 		maxBodyBytes:             maxBodyBytes,
 		upstreamConnectionMaxAge: upstreamConnectionMaxAge,
+		websocketFailures:        newCodexWebsocketFailureTracker(),
 	}
 }
 
@@ -407,7 +414,12 @@ func (s *responsesExecutionSessionStore) acquire(subject, sessionID string) (*re
 			s.nextTransientID++
 			key = "transient:" + strconv.FormatUint(s.nextTransientID, 10)
 		}
-		session = newResponsesExecutionSession(now, s.maxBodyBytes, s.upstreamConnectionMaxAge)
+		session = newResponsesExecutionSession(
+			now,
+			s.maxBodyBytes,
+			s.upstreamConnectionMaxAge,
+			s.websocketFailures,
+		)
 		session.storeKey = key
 		session.transient = !stable
 		session.subjectFingerprint = responsesExecutionFingerprint(subject)
