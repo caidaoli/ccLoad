@@ -102,21 +102,20 @@ func NewStore() (Store, error) {
 
 	logDays := getLogSyncDays()
 	var primary *sqlstore.SQLStore
-	var initializePrimary primaryStoreInitializer
-	if needsImport {
-		if mysqlDSN != "" {
-			primary, err = createMySQLStore(mysqlDSN)
-		} else {
-			primary, err = createPostgresStore(pgDSN)
-		}
-		if err != nil {
-			_ = sqlite.Close()
-			return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
-		}
-		syncMgr := NewSyncManager(primary, sqlite)
-		restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
+	if mysqlDSN != "" {
+		primary, err = createMySQLStore(mysqlDSN)
+	} else {
+		primary, err = createPostgresStore(pgDSN)
+	}
+	if err != nil {
+		_ = sqlite.Close()
+		return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
+	}
 
+	syncMgr := NewSyncManager(primary, sqlite)
+	restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	if needsImport {
 		if err := syncMgr.RestoreOnStartup(restoreCtx, logDays); err != nil {
 			_ = sqlite.Close()
 			_ = primary.Close()
@@ -129,20 +128,14 @@ func NewStore() (Store, error) {
 		}
 		log.Printf("[INFO] SQLite 首次初始化已从 %s 导入", primaryName)
 	} else {
-		if mysqlDSN != "" {
-			primary, initializePrimary, err = openMySQLStore(mysqlDSN)
-		} else {
-			primary, initializePrimary, err = openPostgresStore(pgDSN)
+		log.Printf("[INFO] 保留现有 SQLite 配置；从 %s 增量导入日志", primaryName)
+		if err := syncMgr.RestoreLogsOnStartup(restoreCtx, logDays); err != nil {
+			log.Printf("[WARN] 日志导入失败: %v（历史日志可能不完整）", err)
 		}
-		if err != nil {
-			_ = sqlite.Close()
-			return nil, fmt.Errorf("打开 %s 异步副本失败: %w", primaryName, err)
-		}
-		log.Printf("[INFO] 保留现有 SQLite 数据；%s 连接与迁移转入后台", primaryName)
 	}
 
-	hybrid := newHybridStore(sqlite, primary, initializePrimary)
-	log.Printf("[INFO] 混合存储已启用（主库副本=%s, 首次日志导入天数: %d）", primaryName, logDays)
+	hybrid := NewHybridStore(sqlite, primary)
+	log.Printf("[INFO] 混合存储已启用（主库副本=%s, SQLite 空库日志导入天数: %d）", primaryName, logDays)
 	return hybrid, nil
 }
 
@@ -227,8 +220,7 @@ func sqliteFileHasData(path string) bool {
 
 type primaryStoreInitializer func(context.Context) error
 
-// openMySQLStore only validates the DSN and creates the lazy connection pool.
-// Ping and migration are returned separately so an initialized hybrid SQLite can start offline.
+// openMySQLStore 创建连接池，并将 Ping 与迁移作为独立初始化步骤返回。
 func openMySQLStore(dsn string) (*sqlstore.SQLStore, primaryStoreInitializer, error) {
 	if dsn == "" {
 		return nil, nil, fmt.Errorf("MySQL DSN不能为空")
@@ -479,11 +471,11 @@ func validateJournalMode(mode string) string {
 	return modeUpper
 }
 
-// getLogSyncDays 获取日志同步天数配置
+// getLogSyncDays 获取 SQLite 日志为空时的首次导入天数配置
 // 环境变量 CCLOAD_SQLITE_LOG_DAYS：
 //   - -1 = 全量恢复（慎用，启动慢）
-//   - 0 = 仅恢复配置表，不恢复日志
-//   - 7 = 恢复配置表 + 最近 7 天日志（默认）
+//   - 0 = 不导入日志
+//   - 7 = 导入最近 7 天日志（默认）
 func getLogSyncDays() int {
 	daysStr := os.Getenv("CCLOAD_SQLITE_LOG_DAYS")
 	if daysStr == "" {

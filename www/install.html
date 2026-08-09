@@ -153,7 +153,7 @@ docker-compose logs -f ccload</code></pre>
               <li>Temporary testing: set only <code>CCLOAD_PASS</code> and use the default SQLite storage.</li>
               <li>Long-term usage: set exactly one of <code>CCLOAD_MYSQL</code> or <code>CCLOAD_POSTGRES</code>.</li>
               <li>High-read workloads: also set <code>CCLOAD_ENABLE_SQLITE_REPLICA=1</code>.</li>
-              <li>Control the log restore window with <code>CCLOAD_SQLITE_LOG_DAYS</code>. All storage variables are bootstrap-only and stay environment variables — they decide how the database is opened.</li>
+              <li>Control the empty-SQLite log import window with <code>CCLOAD_SQLITE_LOG_DAYS</code>; later hybrid startups import only the log tail. All storage variables are bootstrap-only and stay environment variables.</li>
             </ul>
           </article>
         </div>

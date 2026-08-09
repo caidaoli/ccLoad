@@ -285,7 +285,7 @@ func TestHybridBootstrapRetriesPendingImportAndPreservesExistingDatabase(t *test
 	}
 }
 
-func TestNewStore_HybridCompleteSQLiteStartsWithPrimaryOffline(t *testing.T) {
+func TestNewStore_HybridCompleteSQLiteRequiresPrimaryForLogRestore(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "authoritative.db")
 	store, err := createSQLiteStore(path)
 	if err != nil {
@@ -304,15 +304,15 @@ func TestNewStore_HybridCompleteSQLiteStartsWithPrimaryOffline(t *testing.T) {
 	t.Setenv("CCLOAD_ENABLE_SQLITE_REPLICA", "1")
 	t.Setenv("SQLITE_PATH", path)
 	started := time.Now()
-	hybrid, err := NewStore()
-	if err != nil {
-		t.Fatalf("NewStore with offline primary: %v", err)
+	_, err = NewStore()
+	elapsed := time.Since(started)
+	if err == nil {
+		t.Fatal("NewStore with offline primary succeeded, want startup failure")
 	}
-	defer func() { _ = hybrid.Close() }()
-	if elapsed := time.Since(started); elapsed > 2*time.Second {
-		t.Fatalf("offline primary blocked hybrid startup for %v", elapsed)
+	if !strings.Contains(err.Error(), "MySQL 初始化失败") {
+		t.Fatalf("NewStore error=%q, want MySQL initialization failure", err)
 	}
-	if err := hybrid.Ping(ctx); err != nil {
-		t.Fatalf("SQLite health failed: %v", err)
+	if elapsed > 2*time.Second {
+		t.Fatalf("connection-refused primary took too long to fail: %v", elapsed)
 	}
 }

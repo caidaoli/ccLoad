@@ -558,8 +558,9 @@ func TestSyncManager_RestoreLogsSnapshot_ZeroDays(t *testing.T) {
 	}
 }
 
-// TestSyncManager_RestoreLogsSnapshot_RefreshesWindow 验证快照恢复会刷新窗口内数据。
-func TestSyncManager_RestoreLogsSnapshot_RefreshesWindow(t *testing.T) {
+// TestSyncManager_RestoreLogsOnStartupImportsTailWithoutReplacingLocalData
+// 验证后续启动只补齐日志尾部，不覆盖 SQLite 中的权威配置与本地日志。
+func TestSyncManager_RestoreLogsOnStartupImportsTailWithoutReplacingLocalData(t *testing.T) {
 	mysql := createTestStoreForSync(t, "mysql_incr")
 	sqlite := createTestStoreForSync(t, "sqlite_incr")
 	defer func() {
@@ -598,6 +599,41 @@ func TestSyncManager_RestoreLogsSnapshot_RefreshesWindow(t *testing.T) {
 	if len(sqliteLogs) != 3 {
 		t.Fatalf("第一次恢复后 SQLite 日志数量不匹配: got %d, want 3", len(sqliteLogs))
 	}
+	if err := sqlite.UpdateSetting(ctx, "log_retention_days", "30"); err != nil {
+		t.Fatalf("更新 SQLite 权威配置: %v", err)
+	}
+	localOnly := &model.LogEntry{
+		Time:       model.JSONTime{Time: now.Add(30 * time.Second)},
+		ChannelID:  3,
+		Model:      "sqlite-only",
+		StatusCode: 200,
+		Message:    "preserve local debug log",
+		DebugData: &model.DebugLogEntry{
+			CreatedAt:   now.Unix(),
+			ReqMethod:   "POST",
+			ReqURL:      "/v1/messages",
+			ReqHeaders:  "{}",
+			ReqBody:     []byte(`{}`),
+			RespHeaders: "{}",
+		},
+	}
+	if err := sqlite.AddLog(ctx, localOnly); err != nil {
+		t.Fatalf("添加 SQLite 独有日志: %v", err)
+	}
+	localLogs, err := sqlite.ListLogs(ctx, now, 10, 0, nil)
+	if err != nil {
+		t.Fatalf("查询 SQLite 独有日志: %v", err)
+	}
+	var localLogID int64
+	for _, entry := range localLogs {
+		if entry.Message == localOnly.Message {
+			localLogID = entry.ID
+			break
+		}
+	}
+	if localLogID == 0 {
+		t.Fatal("未找到 SQLite 独有日志")
+	}
 
 	// 第三步：在 MySQL 中再添加 2 条新日志
 	for i := 0; i < 2; i++ {
@@ -613,30 +649,33 @@ func TestSyncManager_RestoreLogsSnapshot_RefreshesWindow(t *testing.T) {
 		}
 	}
 
-	// 第四步：第二次恢复（增量）
+	// 第四步：模拟后续启动，只恢复日志。
 	sm2 := NewSyncManager(mysql, sqlite)
-	if err := sm2.RestoreOnStartup(ctx, 7); err != nil {
-		t.Fatalf("第二次 RestoreOnStartup 失败: %v", err)
+	if err := sm2.RestoreLogsOnStartup(ctx, 7); err != nil {
+		t.Fatalf("RestoreLogsOnStartup 失败: %v", err)
 	}
 
-	// 验证 SQLite 现在有 5 条日志（3 + 2）
+	// 验证 SQLite 现在有 6 条日志（3 条首次导入 + 1 条本地日志 + 2 条增量导入）。
 	sqliteLogs, err = sqlite.ListLogs(ctx, now.Add(-24*time.Hour), 100, 0, nil)
 	if err != nil {
 		t.Fatalf("查询 SQLite 日志失败: %v", err)
 	}
-	if len(sqliteLogs) != 5 {
-		t.Fatalf("第二次恢复后 SQLite 日志数量不匹配: got %d, want 5", len(sqliteLogs))
+	if len(sqliteLogs) != 6 {
+		t.Fatalf("第二次恢复后 SQLite 日志数量不匹配: got %d, want 6", len(sqliteLogs))
 	}
 
 	// 验证原有数据未被删除（检查 channel_id=1 的记录仍然存在）
 	count1 := 0
 	count2 := 0
+	count3 := 0
 	for _, entry := range sqliteLogs {
 		switch entry.ChannelID {
 		case 1:
 			count1++
 		case 2:
 			count2++
+		case 3:
+			count3++
 		}
 	}
 	if count1 != 3 {
@@ -644,5 +683,22 @@ func TestSyncManager_RestoreLogsSnapshot_RefreshesWindow(t *testing.T) {
 	}
 	if count2 != 2 {
 		t.Errorf("新增日志（channel_id=2）数量不对: got %d, want 2", count2)
+	}
+	if count3 != 1 {
+		t.Errorf("SQLite 独有日志被意外修改: got %d, want 1", count3)
+	}
+	debugLog, err := sqlite.GetDebugLogByLogID(ctx, localLogID)
+	if err != nil {
+		t.Fatalf("读取 SQLite 独有 DebugData: %v", err)
+	}
+	if debugLog.ReqMethod != "POST" {
+		t.Fatalf("SQLite 独有 DebugData 被修改: got method %q", debugLog.ReqMethod)
+	}
+	setting, err := sqlite.GetSetting(ctx, "log_retention_days")
+	if err != nil {
+		t.Fatalf("读取 SQLite 权威配置: %v", err)
+	}
+	if setting.Value != "30" {
+		t.Fatalf("日志恢复覆盖了 SQLite 权威配置: got %q, want %q", setting.Value, "30")
 	}
 }

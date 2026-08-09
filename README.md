@@ -919,7 +919,7 @@ Environment variables cover bootstrap configuration only — the values ccLoad n
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**Mutually exclusive with `CCLOAD_POSTGRES`** |
 | `CCLOAD_POSTGRES` | None | PostgreSQL DSN (optional, URL or libpq keywords, e.g. `postgres://user:pass@host:5432/db?sslmode=disable`)<br/>**Mutually exclusive with `CCLOAD_MYSQL`** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, needs MySQL or Postgres primary DSN) |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs imported from primary only when hybrid SQLite is first created (-1=all, 0=none) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Initial log window when hybrid SQLite has no logs (-1=all); `0` disables all startup log imports, while other values make later startups import only logs after SQLite's latest timestamp |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
@@ -938,7 +938,7 @@ HuggingFace Spaces and similar environments lose local data on restart, but remo
 
 - **Authoritative SQLite**: Configuration, credentials, keys, cooldowns, settings, and logs are synchronously read and written locally; a successful SQLite commit completes the request
 - **Async Primary Replica**: An in-memory worker coalesces final state by entity and retries failures after 10 seconds, so primary latency does not block requests; excessive distinct dirty entities collapse into one full-state reconciliation instead of growing memory without bound
-- **Startup Semantics**: Primary data is imported only when the SQLite file is first created; an existing completed SQLite database starts even while the primary is offline, then reconnects and migrates the primary in the background
+- **Startup Semantics**: A newly created SQLite file imports configuration from primary; `CCLOAD_SQLITE_LOG_DAYS=0` disables startup log imports, otherwise every startup requires primary to be available, imports only logs newer than `MAX(sqlite.logs.time)` when SQLite already has logs, and uses the configured window only when SQLite logs are empty; existing SQLite configuration and logs are never replaced
 - **Log Semantics**: Primary log writes and cleanup are attempted once, best-effort, and do not enter the 10-second retry loop; newer batches replace older pending batches and increment the dropped metric
 - **Health**: Readiness checks authoritative SQLite only; primary sync health is exposed by runtime metrics
 - **Local-only Data**: Web sessions and raw DebugData remain process-local in SQLite
@@ -948,7 +948,7 @@ HuggingFace Spaces and similar environments lose local data on restart, but remo
 # Enable hybrid mode (MySQL primary)
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
-export CCLOAD_SQLITE_LOG_DAYS=7  # Import last 7 days only on first SQLite creation (optional)
+export CCLOAD_SQLITE_LOG_DAYS=7  # Seed the last 7 days when SQLite is empty, then import only the tail
 
 # Or PostgreSQL primary
 export CCLOAD_POSTGRES="postgres://user:pass@host:5432/db?sslmode=disable"
