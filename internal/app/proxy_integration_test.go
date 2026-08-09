@@ -807,16 +807,15 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 			t.Errorf("%s = %q", xaiauth.CLITokenAuthHeader, got)
 		}
 		for name, want := range map[string]string{
-			xaiauth.CLIClientVersionHeader:        xaiauth.CLIClientVersion,
-			"User-Agent":                          xaiauth.CLIUserAgent,
-			xaiauth.CLIClientIdentifierHeader:     xaiauth.CLIClientIdentifier,
-			xaiauth.CLIAuthenticateResponseHeader: xaiauth.CLIAuthenticateResponse,
+			xaiauth.CLIClientVersionHeader: xaiauth.CLIClientVersion,
+			"User-Agent":                   xaiauth.CLIUserAgent,
+			xaiauth.CLIClientModeHeader:    xaiauth.CLIClientMode,
 		} {
 			if got := r.Header.Get(name); got != want {
 				t.Errorf("%s = %q, want %q", name, got, want)
 			}
 		}
-		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+		if got := r.Header.Get("Accept"); got != "application/json, text/event-stream" {
 			t.Errorf("Accept = %q", got)
 		}
 		gotConversationID = r.Header.Get("x-grok-conv-id")

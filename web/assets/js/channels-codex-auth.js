@@ -243,6 +243,27 @@ function resetOAuthCredentialImportProgress(prefix = 'oauthCredentialImport') {
   errorList?.replaceChildren();
 }
 
+function setXAICredentialImportView(state, textarea, button) {
+  if (typeof document === 'undefined') return;
+  const secretField = document.getElementById('xaiCredentialSecretField');
+  const method = document.getElementById('xaiOAuthMethod');
+  const submitButton = button || document.getElementById('oauthAuthorizeButton');
+  const { container, detail } = getOAuthCredentialImportProgressElements('xaiCredentialImport');
+  const showingResult = state === 'importing' || state === 'result';
+
+  if (secretField) secretField.hidden = showingResult;
+  if (method) method.disabled = state === 'importing';
+  if (submitButton) submitButton.hidden = showingResult;
+  if (state === 'importing') {
+    if (container) container.hidden = false;
+    if (detail) detail.textContent = window.t('channels.xai.importing');
+    container?.focus?.();
+  } else if (state === 'edit') {
+    resetOAuthCredentialImportProgress('xaiCredentialImport');
+    textarea?.removeAttribute?.('aria-invalid');
+  }
+}
+
 function appendOAuthCredentialImportIssue(result, prefix = 'oauthCredentialImport') {
   if (!result || (result.status !== 'failed' && result.status !== 'skipped')) return;
   const { errors, errorList } = getOAuthCredentialImportProgressElements(prefix);
@@ -358,7 +379,10 @@ function resetXAIOAuthDialog() {
   const textarea = document.getElementById('xaiCredentialValues');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   if (controls) controls.hidden = true;
-  if (method) method.value = 'manual';
+  if (method) {
+    method.value = 'manual';
+    method.disabled = false;
+  }
   if (secretField) secretField.hidden = true;
   clearXAICredentialSecrets(textarea);
   if (textarea) textarea.required = false;
@@ -529,7 +553,14 @@ async function cancelXAIOAuth(state, fetcher = fetchDataWithAuth) {
   return cancelOAuth('xai', state, fetcher);
 }
 
-async function submitXAICredentialBatch(method, textarea, button, fetcher = fetchWithAuth, signal = undefined) {
+async function submitXAICredentialBatch(
+  method,
+  textarea,
+  button,
+  fetcher = fetchWithAuth,
+  signal = undefined,
+  delay = codexOAuthDelay
+) {
   const normalizedMethod = String(method || '').trim().toLowerCase();
   if (!['refresh_token', 'sso'].includes(normalizedMethod)) {
     throw new Error(window.t('channels.xai.methodInvalid'));
@@ -547,8 +578,10 @@ async function submitXAICredentialBatch(method, textarea, button, fetcher = fetc
     button.disabled = true;
     button.setAttribute?.('aria-busy', 'true');
   }
+  let completed = false;
   try {
     if (typeof document !== 'undefined') resetOAuthCredentialImportProgress('xaiCredentialImport');
+    setXAICredentialImportView('importing', textarea, button);
     const responsePromise = fetcher('/admin/xai/credentials/import/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
@@ -558,14 +591,19 @@ async function submitXAICredentialBatch(method, textarea, button, fetcher = fetc
     body = '';
     const response = await responsePromise;
     const onEvent = typeof document === 'undefined'
-      ? undefined
+      ? () => {}
       : event => updateOAuthCredentialImportProgress(event, 'xaiCredentialImport');
-    return await readOAuthCredentialImportStream(response, onEvent);
+    const result = await readXAICredentialImportStream(response, onEvent, {
+      fetcher, delay, signal
+    });
+    completed = true;
+    return result;
   } finally {
     if (button) {
       button.disabled = false;
       button.removeAttribute?.('aria-busy');
     }
+    setXAICredentialImportView(completed ? 'result' : 'edit', textarea, button);
   }
 }
 
@@ -840,24 +878,26 @@ async function parseOAuthCredentialImportResponse(response) {
   return payload.data;
 }
 
-async function pollOAuthCredentialImportJob(jobID, total, fetcher, onEvent, delay) {
-  let cursor = 0;
-  let created = 0;
-  let skipped = 0;
-  let failed = 0;
+async function pollOAuthCredentialImportJob(jobID, total, fetcher, onEvent, delay, recovery = {}) {
+  let cursor = Math.max(0, Number(recovery.cursor) || 0);
+  let created = Math.max(0, Number(recovery.created) || 0);
+  let skipped = Math.max(0, Number(recovery.skipped) || 0);
+  let failed = Math.max(0, Number(recovery.failed) || 0);
   let consecutiveNetworkErrors = 0;
-  const results = [];
+  const results = Array.isArray(recovery.results) ? [...recovery.results] : [];
+  const signal = recovery.signal;
 
   for (;;) {
     let view;
     try {
       const response = await fetcher(
         `/admin/oauth/credentials/import/jobs/${encodeURIComponent(jobID)}?after=${cursor}`,
-        { method: 'GET' }
+        { method: 'GET', signal }
       );
       view = await parseOAuthCredentialImportResponse(response);
       consecutiveNetworkErrors = 0;
     } catch (error) {
+      if (signal?.aborted) throw error;
       if (error instanceof OAuthCredentialImportResponseError &&
           error.status !== 429 && error.status < 500) {
         throw error;
@@ -870,7 +910,7 @@ async function pollOAuthCredentialImportJob(jobID, total, fetcher, onEvent, dela
       await delay(Math.min(
         OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS * consecutiveNetworkErrors,
         5000
-      ));
+      ), signal);
       continue;
     }
 
@@ -905,11 +945,11 @@ async function pollOAuthCredentialImportJob(jobID, total, fetcher, onEvent, dela
       event: 'processing', processed: cursor, total,
       created, skipped, failed, file_name: view?.file_name || ''
     });
-    await delay(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS);
+    await delay(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS, signal);
   }
 }
 
-async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
+async function readXAICredentialImportStream(response, onEvent, recovery) {
   if (!response?.ok) {
     let message = window.t('channels.oauth.importFailed');
     try {
@@ -921,7 +961,9 @@ async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
     throw new Error(message);
   }
 
-  const results = [];
+  const state = {
+    jobID: '', total: 0, cursor: 0, created: 0, skipped: 0, failed: 0, results: []
+  };
   let complete = null;
   let buffer = '';
   const consumeBlock = block => {
@@ -932,9 +974,17 @@ async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
       .join('\n');
     if (!data) return;
     const event = JSON.parse(data);
-    onEvent(event);
-    if (event.event === 'progress' && event.result) results.push(event.result);
+    if (event.job_id) state.jobID = event.job_id;
+    state.total = Math.max(state.total, Number(event.total) || 0);
+    if (event.event === 'progress' && event.result) {
+      state.results.push(event.result);
+      state.cursor = Math.max(state.cursor + 1, Number(event.processed) || 0);
+      state.created = Math.max(0, Number(event.created) || 0);
+      state.skipped = Math.max(0, Number(event.skipped) || 0);
+      state.failed = Math.max(0, Number(event.failed) || 0);
+    }
     if (event.event === 'complete') complete = event;
+    onEvent(event);
   };
   const drain = final => {
     for (;;) {
@@ -948,27 +998,48 @@ async function readOAuthCredentialImportStream(response, onEvent = () => {}) {
       buffer = '';
     }
   };
+  const resume = async error => {
+    if (!state.jobID || recovery.signal?.aborted) throw error;
+    onEvent({
+      event: 'reconnecting', processed: state.cursor, total: state.total,
+      created: state.created, skipped: state.skipped, failed: state.failed
+    });
+    return pollOAuthCredentialImportJob(
+      state.jobID,
+      state.total,
+      recovery.fetcher,
+      onEvent,
+      recovery.delay,
+      { ...state, signal: recovery.signal }
+    );
+  };
 
-  if (response.body?.getReader) {
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      drain(false);
+  try {
+    if (response.body?.getReader) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        drain(false);
+      }
+      buffer += decoder.decode();
+    } else {
+      buffer = await response.text();
     }
-    buffer += decoder.decode();
-  } else {
-    buffer = await response.text();
+    drain(true);
+  } catch (error) {
+    return resume(error);
   }
-  drain(true);
-  if (!complete) throw new Error(window.t('channels.oauth.importStreamIncomplete'));
+  if (!complete) {
+    return resume(new Error(window.t('channels.oauth.importStreamIncomplete')));
+  }
   return {
     created: Number(complete.created) || 0,
     skipped: Number(complete.skipped) || 0,
     failed: Number(complete.failed) || 0,
-    results
+    results: state.results
   };
 }
 

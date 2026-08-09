@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	xaiCredentialProbeTimeout  = 30 * time.Second
-	maxXAIBillingResponseBytes = 1 << 20
+	xaiCredentialProbeTimeout   = 30 * time.Second
+	xaiSSOResponseHeaderTimeout = 30 * time.Second
+	maxXAIBillingResponseBytes  = 1 << 20
 )
 
 var xaiOAuthDefaultModels = []string{
@@ -65,47 +66,118 @@ type xaiCredentialBatchItem struct {
 	err        error
 }
 
-// HandleImportXAICredentialsStream imports refresh tokens or SSO cookies with
-// provider-specific bounded concurrency. Secrets are consumed only from the
-// request body and are never copied into progress events.
+type xaiCredentialImportBatch struct {
+	Method            string
+	Values            []string
+	PriorityIncrement int
+	NextPriority      int
+}
+
+// HandleStartXAICredentialImportJob starts an import owned by the server
+// lifecycle. Losing the progress connection must not cancel credential work.
+func (s *Server) HandleStartXAICredentialImportJob(c *gin.Context) {
+	started, ok := s.startXAICredentialImportJob(c)
+	if !ok {
+		return
+	}
+	RespondJSON(c, http.StatusAccepted, started)
+}
+
+// HandleImportXAICredentialsStream streams one background import. A broken SSE
+// connection stops only observation; the job remains owned by the server.
 func (s *Server) HandleImportXAICredentialsStream(c *gin.Context) {
+	started, ok := s.startXAICredentialImportJob(c)
+	if !ok {
+		return
+	}
+	s.streamOAuthCredentialImportJob(c, started)
+}
+
+func (s *Server) startXAICredentialImportJob(c *gin.Context) (oauthCredentialImportJobStart, bool) {
+	batch, status, err := s.prepareXAICredentialImport(c)
+	if err != nil {
+		RespondError(c, status, err)
+		return oauthCredentialImportJobStart{}, false
+	}
+	started, err := s.ensureOAuthCredentialImportJobs().start(
+		len(batch.Values),
+		func(ctx context.Context, observer oauthCredentialImportObserver) (oauthCredentialImportSummary, bool) {
+			defer wipeXAICredentialImportBatch(batch)
+			return s.runXAICredentialImport(ctx, batch, observer)
+		},
+	)
+	if err != nil {
+		wipeXAICredentialImportBatch(batch)
+		status = http.StatusServiceUnavailable
+		if errors.Is(err, errOAuthCredentialImportJobsBusy) {
+			status = http.StatusTooManyRequests
+		}
+		RespondError(c, status, err)
+		return oauthCredentialImportJobStart{}, false
+	}
+	return started, true
+}
+
+func (s *Server) prepareXAICredentialImport(c *gin.Context) (*xaiCredentialImportBatch, int, error) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxOAuthCredentialImportBytes)
 	var request xaiCredentialBatchRequest
 	if err := BindAndValidate(c, &request); err != nil {
-		RespondError(c, http.StatusBadRequest, err)
-		return
+		return nil, http.StatusBadRequest, err
 	}
 	values := splitXAICredentialBatchValues(request.Values)
-	limit, concurrency, itemTimeout := 100, 5, 30*time.Second
-	if request.Method == "sso" {
-		limit, concurrency, itemTimeout = 10, 3, xaiauth.SSOConversionTimeout
-	}
-	if len(values) == 0 || len(values) > limit {
-		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("xAI %s import accepts 1..%d items", request.Method, limit))
-		return
+	request.Values = ""
+	if len(values) == 0 {
+		return nil, http.StatusBadRequest, errors.New("xAI credential import requires at least 1 item")
 	}
 	if s.client == nil || s.store == nil {
-		RespondErrorMsg(c, http.StatusServiceUnavailable, "xAI credential import is unavailable")
-		return
+		return nil, http.StatusServiceUnavailable, errors.New("xAI credential import is unavailable")
 	}
 	nextPriority, err := s.nextXAICredentialPriority(c.Request.Context(), request.PriorityIncrement)
 	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
+		return nil, http.StatusInternalServerError, err
+	}
+	return &xaiCredentialImportBatch{
+		Method:            request.Method,
+		Values:            values,
+		PriorityIncrement: request.PriorityIncrement,
+		NextPriority:      nextPriority,
+	}, 0, nil
+}
+
+func wipeXAICredentialImportBatch(batch *xaiCredentialImportBatch) {
+	if batch == nil {
 		return
 	}
+	for index := range batch.Values {
+		batch.Values[index] = ""
+	}
+	batch.Values = nil
+}
 
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("X-Accel-Buffering", "no")
-	c.Header("X-Content-Type-Options", "nosniff")
-	c.Status(http.StatusOK)
-	if writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{Event: "start", Total: len(values)}) != nil {
-		return
+func (s *Server) runXAICredentialImport(
+	ctx context.Context,
+	batch *xaiCredentialImportBatch,
+	observer oauthCredentialImportObserver,
+) (oauthCredentialImportSummary, bool) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if batch == nil || len(batch.Values) == 0 {
+		return oauthCredentialImportSummary{}, true
+	}
+	concurrency, itemTimeout := 5, 30*time.Second
+	if batch.Method == "sso" {
+		concurrency, itemTimeout = 3, xaiauth.SSOConversionTimeout
 	}
 
-	batchCtx, cancel := context.WithCancel(c.Request.Context())
+	batchCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	service := xaiauth.NewService(s.client)
+	ssoClient := s.xaiSSOClient
+	if ssoClient == nil {
+		ssoClient = s.client
+	}
+	ssoService := xaiauth.NewService(ssoClient)
 	jobs := make(chan int)
 	results := make(chan xaiCredentialBatchItem, concurrency)
 	var workers sync.WaitGroup
@@ -115,7 +187,7 @@ func (s *Server) HandleImportXAICredentialsStream(c *gin.Context) {
 			defer workers.Done()
 			for index := range jobs {
 				itemCtx, itemCancel := context.WithTimeout(batchCtx, itemTimeout)
-				credential, itemErr := acquireXAICredential(itemCtx, service, request.Method, values[index])
+				credential, itemErr := acquireXAICredential(itemCtx, service, ssoService, batch.Method, batch.Values[index])
 				if itemErr == nil {
 					credential, itemErr = completeXAICredential(itemCtx, service, s.client, credential, xaiauth.CLIBaseURL)
 				}
@@ -130,7 +202,7 @@ func (s *Server) HandleImportXAICredentialsStream(c *gin.Context) {
 	}
 	go func() {
 		defer close(jobs)
-		for index := range values {
+		for index := range batch.Values {
 			select {
 			case jobs <- index:
 			case <-batchCtx.Done():
@@ -143,67 +215,63 @@ func (s *Server) HandleImportXAICredentialsStream(c *gin.Context) {
 		close(results)
 	}()
 
-	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(values))}
+	summary := oauthCredentialImportSummary{Results: make([]oauthCredentialImportResult, 0, len(batch.Values))}
 	pending := make(map[int]xaiCredentialBatchItem, concurrency)
 	nextIndex := 0
-	completed := true
-	for nextIndex < len(values) {
+	stopped := false
+	nextPriority := batch.NextPriority
+	for nextIndex < len(batch.Values) && !stopped {
 		select {
 		case <-batchCtx.Done():
-			completed = false
-			nextIndex = len(values)
+			stopped = true
 		case item, ok := <-results:
 			if !ok {
-				completed = false
-				nextIndex = len(values)
+				stopped = true
 				break
 			}
 			pending[item.index] = item
-			for {
+			for !stopped {
 				ready, exists := pending[nextIndex]
 				if !exists {
 					break
 				}
 				delete(pending, nextIndex)
 				fileName := fmt.Sprintf("#%d", nextIndex+1)
-				if writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{
-					Event: "processing", Processed: len(summary.Results), Total: len(values),
+				if observer != nil && !observer(oauthCredentialImportEvent{
+					Event: "processing", Processed: len(summary.Results), Total: len(batch.Values),
 					Created: summary.Created, Skipped: summary.Skipped, Failed: summary.Failed, FileName: fileName,
-				}) != nil {
+				}) {
 					cancel()
-					completed = false
-					nextIndex = len(values)
+					stopped = true
 					break
 				}
-				result := s.persistXAICredentialBatchItem(batchCtx, request.Method, ready, fileName, nextPriority)
+				result := s.persistXAICredentialBatchItem(batchCtx, batch.Method, ready, fileName, nextPriority)
 				if result.Status == "created" {
-					nextPriority += request.PriorityIncrement
+					nextPriority += batch.PriorityIncrement
 				}
 				appendOAuthCredentialImportResult(&summary, result)
-				resultCopy := result
-				if writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{
-					Event: "progress", Processed: len(summary.Results), Total: len(values),
-					Created: summary.Created, Skipped: summary.Skipped, Failed: summary.Failed,
-					FileName: fileName, Result: &resultCopy,
-				}) != nil {
-					cancel()
-					completed = false
-					nextIndex = len(values)
-					break
+				if observer != nil {
+					resultCopy := result
+					if !observer(oauthCredentialImportEvent{
+						Event: "progress", Processed: len(summary.Results), Total: len(batch.Values),
+						Created: summary.Created, Skipped: summary.Skipped, Failed: summary.Failed,
+						FileName: fileName, Result: &resultCopy,
+					}) {
+						cancel()
+						stopped = true
+						break
+					}
 				}
 				nextIndex++
 			}
 		}
 	}
+	cancel()
+	workers.Wait()
 	if summary.Created > 0 {
 		s.InvalidateChannelListCache()
 	}
-	if completed {
-		_ = writeOAuthCredentialImportEvent(c, oauthCredentialImportEvent{
-			Event: "complete", Processed: len(summary.Results), Total: len(values),
-			Created: summary.Created, Skipped: summary.Skipped, Failed: summary.Failed,
-		})
-	}
+	return summary, !stopped && nextIndex == len(batch.Values)
 }
 
 func splitXAICredentialBatchValues(raw string) []string {
@@ -217,15 +285,27 @@ func splitXAICredentialBatchValues(raw string) []string {
 	return values
 }
 
-func acquireXAICredential(ctx context.Context, service *xaiauth.Service, method, value string) (*xaiauth.Credential, error) {
+func acquireXAICredential(
+	ctx context.Context,
+	service *xaiauth.Service,
+	ssoService *xaiauth.Service,
+	method string,
+	value string,
+) (*xaiauth.Credential, error) {
 	switch method {
 	case "refresh_token":
 		return service.RefreshToken(ctx, value, "")
 	case "sso":
-		return service.ConvertSSO(ctx, value)
+		return ssoService.ConvertSSO(ctx, value)
 	default:
 		return nil, errors.New("unsupported xAI credential import method")
 	}
+}
+
+func newXAISSOHTTPClient(base *http.Transport) *http.Client {
+	transport := newStandardHTTP11Transport(base)
+	transport.ResponseHeaderTimeout = xaiSSOResponseHeaderTimeout
+	return &http.Client{Transport: transport, Timeout: xaiauth.SSOConversionTimeout}
 }
 
 func (s *Server) nextXAICredentialPriority(ctx context.Context, increment int) (int, error) {
@@ -255,7 +335,9 @@ func (s *Server) persistXAICredentialBatchItem(
 	result := oauthCredentialImportResult{FileName: fileName}
 	if item.err != nil || item.credential == nil {
 		result.Status = "failed"
-		if method == "sso" {
+		if method == "sso" && item.err != nil {
+			result.Error = item.err.Error()
+		} else if method == "sso" {
 			result.Error = "xAI SSO import failed"
 		} else {
 			result.Error = "xAI refresh token import failed"

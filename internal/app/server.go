@@ -58,6 +58,7 @@ type Server struct {
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client // HTTP客户端（全局默认）
+	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
 	proxyTransports               sync.Map     // proxyURL → *http.Client（渠道级代理缓存）
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
@@ -195,6 +196,7 @@ func NewServer(store storage.Store) *Server {
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
 		client:        newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		xaiSSOClient:  newXAISSOHTTPClient(transport),
 		skipTLSVerify: skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
@@ -1106,6 +1108,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/xai/oauth/cancel", s.HandleCancelXAIOAuth)
 		admin.POST("/xai/oauth/callback", s.HandleSubmitXAIOAuthCallback)
 		admin.POST("/xai/credentials/import/stream", s.HandleImportXAICredentialsStream)
+		admin.POST("/xai/credentials/import/jobs", s.HandleStartXAICredentialImportJob)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1415,6 +1418,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 停止连接池老化计时器并关闭全局及渠道代理 Transport 的空闲连接。
 	closeUpstreamHTTPClient(s.client)
+	closeUpstreamHTTPClient(s.xaiSSOClient)
 	s.proxyTransports.Range(func(_, v any) bool {
 		closeUpstreamHTTPClient(v.(*http.Client))
 		return true

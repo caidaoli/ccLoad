@@ -2,6 +2,7 @@ package xaiauth_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/url"
@@ -159,11 +160,22 @@ func TestRefreshTokenUsesTrustedEndpointAndPreservesInputToken(t *testing.T) {
 func TestTokenErrorsNeverEchoSecretsOrBody(t *testing.T) {
 	t.Parallel()
 	secret := "refresh-super-secret"
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return response(400, `{"error":"`+secret+`","error_description":"`+secret+`"}`), nil
-	})}
-	_, err := xaiauth.NewService(client).Refresh(context.Background(), &xaiauth.Credential{RefreshToken: secret})
-	if err == nil || strings.Contains(err.Error(), secret) {
-		t.Fatalf("unsafe error: %v", err)
+	for name, transport := range map[string]roundTripFunc{
+		"body": func(*http.Request) (*http.Response, error) {
+			return response(400, `{"error":"`+secret+`","error_description":"`+secret+`"}`), nil
+		},
+		"transport": func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("transport echoed " + secret)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := xaiauth.NewService(&http.Client{Transport: transport}).Refresh(
+				context.Background(),
+				&xaiauth.Credential{RefreshToken: secret},
+			)
+			if err == nil || strings.Contains(err.Error(), secret) {
+				t.Fatalf("unsafe error: %v", err)
+			}
+		})
 	}
 }

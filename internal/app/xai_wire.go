@@ -282,19 +282,19 @@ func injectXAIResponsesHeaders(req *http.Request, accessToken, conversationID st
 	for _, name := range []string{
 		"Authorization", "X-Api-Key", "x-goog-api-key",
 		xaiauth.CLITokenAuthHeader, xaiauth.CLIClientVersionHeader,
-		"User-Agent", xaiauth.CLIClientIdentifierHeader, xaiauth.CLIAuthenticateResponseHeader,
+		"User-Agent", xaiauth.CLIClientModeHeader,
+		"x-grok-client-identifier", "x-authenticateresponse",
 		"x-grok-conv-id", "Session-Id", "Session_id", "Originator", "ChatGPT-Account-ID",
 	} {
 		req.Header.Del(name)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
 	req.Header.Set(xaiauth.CLITokenAuthHeader, xaiauth.CLITokenAuthValue)
 	req.Header.Set(xaiauth.CLIClientVersionHeader, xaiauth.CLIClientVersion)
 	req.Header.Set("User-Agent", xaiauth.CLIUserAgent)
-	req.Header.Set(xaiauth.CLIClientIdentifierHeader, xaiauth.CLIClientIdentifier)
-	req.Header.Set(xaiauth.CLIAuthenticateResponseHeader, xaiauth.CLIAuthenticateResponse)
+	req.Header.Set(xaiauth.CLIClientModeHeader, xaiauth.CLIClientMode)
 	if conversationID = strings.TrimSpace(conversationID); conversationID != "" {
 		req.Header.Set("x-grok-conv-id", conversationID)
 	}

@@ -21,7 +21,7 @@ func (externalCookieJar) Cookies(*url.URL) []*http.Cookie {
 
 func (externalCookieJar) SetCookies(*url.URL, []*http.Cookie) {}
 
-func TestConvertSSOUsesAccountsThenAuthAndDoesNotLeakCookie(t *testing.T) {
+func TestConvertSSOMatchesSub2APIWireContractAndIsolatesCallerJar(t *testing.T) {
 	t.Parallel()
 	secret := "sso-super-secret"
 	step := 0
@@ -32,16 +32,19 @@ func TestConvertSSOUsesAccountsThenAuthAndDoesNotLeakCookie(t *testing.T) {
 			t.Fatalf("caller cookie jar leaked into isolated SSO flow: %s", req.Header.Get("Cookie"))
 		}
 		if step == 1 {
-			if req.URL.String() != xaiauth.SSOAccountsURL || !strings.Contains(req.Header.Get("Cookie"), secret) {
-				t.Fatalf("bad initial request: %s", req.URL)
+			if req.URL.String() != xaiauth.SSOAccountsURL ||
+				req.Header.Get("User-Agent") != "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" ||
+				req.Header.Get("Accept-Language") != "zh-CN,zh;q=0.9,en;q=0.8" ||
+				!strings.Contains(req.Header.Get("Cookie"), secret) {
+				t.Fatalf("bad initial request: url=%s headers=%v", req.URL, req.Header)
 			}
 			return response(200, `{}`, http.Header{"Set-Cookie": []string{"accounts-only=1; Path=/; Secure; HttpOnly"}}), nil
 		}
 		if req.URL.Host != "auth.x.ai" {
 			t.Fatalf("non-auth followup: %s", req.URL)
 		}
-		if strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
-			t.Fatalf("accounts host-only cookie leaked to auth: %s", req.Header.Get("Cookie"))
+		if !strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
+			t.Fatalf("xAI flow cookie was not propagated to auth: %s", req.Header.Get("Cookie"))
 		}
 		switch req.URL.Path {
 		case "/oauth2/device/code":
@@ -50,8 +53,8 @@ func TestConvertSSOUsesAccountsThenAuthAndDoesNotLeakCookie(t *testing.T) {
 			}
 			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://auth.x.ai/activate?user_code=CODE","interval":1,"expires_in":60}`, http.Header{"Set-Cookie": []string{"device-path=1; Path=/oauth2/device; Secure"}}), nil
 		case "/activate":
-			if strings.Contains(req.Header.Get("Cookie"), "device-path=1") {
-				t.Fatalf("path-scoped cookie leaked to activate: %s", req.Header.Get("Cookie"))
+			if !strings.Contains(req.Header.Get("Cookie"), "device-path=1") {
+				t.Fatalf("xAI device cookie was not propagated: %s", req.Header.Get("Cookie"))
 			}
 			return response(200, `{}`), nil
 		case "/oauth2/device/verify":
@@ -131,7 +134,7 @@ func TestConvertSSORejectsUntrustedVerificationSubdomain(t *testing.T) {
 		case 1:
 			return response(200, `{}`), nil
 		case 2:
-			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://uploads.x.ai/oauth2/device","interval":1,"expires_in":60}`), nil
+			return response(200, `{"device_code":"device","user_code":"CODE","verification_uri_complete":"https://uploads.x.ai.evil.example/oauth2/device","interval":1,"expires_in":60}`), nil
 		default:
 			t.Fatalf("untrusted verification host was requested: %s", req.URL.Host)
 			return nil, nil
@@ -233,7 +236,7 @@ func TestConvertSSOPollWaitHonorsCancellation(t *testing.T) {
 	}
 }
 
-func TestConvertSSOCookiesRespectHostScopeAcrossRedirects(t *testing.T) {
+func TestConvertSSOPropagatesFlowCookiesAcrossTrustedXAIHosts(t *testing.T) {
 	t.Parallel()
 	step := 0
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
@@ -245,19 +248,17 @@ func TestConvertSSOCookiesRespectHostScopeAcrossRedirects(t *testing.T) {
 				"Set-Cookie": []string{"accounts-only=1; Path=/; Secure"},
 			}), nil
 		case 2:
-			if strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
-				t.Fatalf("accounts cookie leaked to auth: %s", req.Header.Get("Cookie"))
+			if !strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
+				t.Fatalf("accounts flow cookie missing on auth: %s", req.Header.Get("Cookie"))
 			}
 			return response(302, "", http.Header{
 				"Location":   []string{"https://accounts.x.ai/back"},
 				"Set-Cookie": []string{"auth-only=1; Path=/; Secure"},
 			}), nil
 		default:
-			if strings.Contains(req.Header.Get("Cookie"), "auth-only=1") {
-				t.Fatalf("auth cookie leaked to accounts: %s", req.Header.Get("Cookie"))
-			}
-			if !strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
-				t.Fatalf("accounts cookie missing on redirect home: %s", req.Header.Get("Cookie"))
+			if !strings.Contains(req.Header.Get("Cookie"), "auth-only=1") ||
+				!strings.Contains(req.Header.Get("Cookie"), "accounts-only=1") {
+				t.Fatalf("xAI flow cookies missing on redirect home: %s", req.Header.Get("Cookie"))
 			}
 			return response(http.StatusUnauthorized, `{}`), nil
 		}
@@ -277,6 +278,9 @@ func TestConvertSSORejectsRedirectAndBodyLimitsWithoutLeak(t *testing.T) {
 		},
 		"body": func(*http.Request) (*http.Response, error) {
 			return response(200, strings.Repeat("x", xaiauth.MaxSSOResponseBytes+1)+secret), nil
+		},
+		"transport": func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("transport echoed " + secret)
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -352,7 +356,7 @@ func TestBillingHelpersAndClassifications(t *testing.T) {
 	}
 	req, _ := http.NewRequest(http.MethodGet, weekly, nil)
 	xaiauth.ApplyBillingHeaders(req, "access")
-	if req.Header.Get("Authorization") != "Bearer access" || req.Header.Get(xaiauth.CLITokenAuthHeader) != xaiauth.CLITokenAuthValue || req.Header.Get(xaiauth.CLIClientVersionHeader) != xaiauth.CLIClientVersion {
+	if req.Header.Get("Authorization") != "Bearer access" || req.Header.Get(xaiauth.CLITokenAuthHeader) != xaiauth.CLITokenAuthValue || req.Header.Get(xaiauth.CLIClientVersionHeader) != "0.2.114" || req.UserAgent() != "grok-pager/0.2.114 grok-shell/0.2.114 (macos; aarch64)" {
 		t.Fatalf("headers=%v", req.Header)
 	}
 	cases := []struct {
