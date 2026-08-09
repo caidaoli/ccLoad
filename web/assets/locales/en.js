@@ -1430,6 +1430,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.debug_log_enabled': 'Enable debug logging (record raw upstream request/response data)',
   'settings.desc.debug_log_retention_minutes': 'Debug log retention duration (minutes, 1-1440)',
   'settings.desc.auto_refresh_interval_seconds': 'Page auto-refresh interval (seconds, 0 = disabled, recommended ≥30; skipped while a modal is open)',
+  'settings.desc.active_request_title_enabled': 'Show and flash the active request count in the browser title bar',
   'settings.desc.responses_ws_max_sessions': 'Responses WebSocket execution session limit (process-wide, 0 = use built-in default 256)',
   'settings.desc.responses_ws_session_ttl_minutes': 'Responses WebSocket idle session retention (minutes, 0 = use built-in default 15)',
   'settings.desc.responses_ws_max_transcript_bytes': 'Responses WebSocket transcript payload budget (process-wide, in MiB; 0 = use built-in default 256 MiB)',

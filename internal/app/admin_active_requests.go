@@ -9,13 +9,26 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type activeRequestsResponse struct {
+	Success                   bool             `json:"success"`
+	Data                      []*ActiveRequest `json:"data"`
+	Error                     string           `json:"error"`
+	Count                     int              `json:"count"`
+	ActiveRequestTitleEnabled bool             `json:"active_request_title_enabled"`
+}
+
 // HandleActiveRequests 返回当前进行中的请求列表（内存状态，不持久化）
 func (s *Server) HandleActiveRequests(c *gin.Context) {
 	var requests []*ActiveRequest
 	if s.activeRequests != nil {
 		requests = s.activeRequests.List()
 	}
-	RespondJSONWithCount(c, http.StatusOK, requests, len(requests))
+	c.JSON(http.StatusOK, activeRequestsResponse{
+		Success:                   true,
+		Data:                      requests,
+		Count:                     len(requests),
+		ActiveRequestTitleEnabled: s.activeRequestTitleEnabled,
+	})
 }
 
 // HandleRuntimeMetrics 返回进程内长连接资源。

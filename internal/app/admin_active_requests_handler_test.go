@@ -30,13 +30,17 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 
 	var resp struct {
-		Success bool            `json:"success"`
-		Data    []ActiveRequest `json:"data"`
-		Count   int             `json:"count"`
+		Success                   bool            `json:"success"`
+		Data                      []ActiveRequest `json:"data"`
+		Count                     int             `json:"count"`
+		ActiveRequestTitleEnabled bool            `json:"active_request_title_enabled"`
 	}
 	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
 	if !resp.Success || resp.Count != 1 || len(resp.Data) != 1 {
 		t.Fatalf("unexpected resp: %+v", resp)
+	}
+	if resp.ActiveRequestTitleEnabled {
+		t.Fatal("active_request_title_enabled=true, want false by default")
 	}
 	if resp.Data[0].BytesReceived != 123 {
 		t.Fatalf("bytes_received=%d, want 123", resp.Data[0].BytesReceived)
@@ -52,6 +56,29 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 	if resp.Data[0].UpstreamStatus != activeRequestStatusReceiving {
 		t.Fatalf("upstream_status=%q, want %q", resp.Data[0].UpstreamStatus, activeRequestStatusReceiving)
+	}
+}
+
+func TestHandleActiveRequestsExposesTitleSetting(t *testing.T) {
+	t.Parallel()
+
+	s := &Server{
+		activeRequests:            newActiveRequestManager(),
+		activeRequestTitleEnabled: true,
+	}
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/active-requests", nil))
+
+	s.HandleActiveRequests(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d", w.Code, http.StatusOK)
+	}
+	var resp struct {
+		ActiveRequestTitleEnabled bool `json:"active_request_title_enabled"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
+	if !resp.ActiveRequestTitleEnabled {
+		t.Fatal("active_request_title_enabled=false, want true")
 	}
 }
 

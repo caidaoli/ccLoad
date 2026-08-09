@@ -1222,6 +1222,9 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 			t.Errorf("incomplete Codex OAuth headers: %v", r.Header)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("X-Codex-Primary-Used-Percent", "8")
+		w.Header().Set("X-Codex-Primary-Window-Minutes", "10080")
+		w.Header().Set("X-Codex-Primary-Reset-At", "1786851417")
 		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
 		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_admin\",\"status\":\"completed\"}}\n\n")
 	}))
@@ -1251,6 +1254,49 @@ func TestHandleChannelTest_CodexOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if got, _ := resp.Data["tested_key_index"].(float64); got != -1 {
 		t.Fatalf("tested_key_index=%v, want -1", resp.Data["tested_key_index"])
+	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || credential.PassiveUsage == nil || len(credential.PassiveUsage.Windows) != 1 {
+		t.Fatalf("persisted Codex quota = (%#v, %v)", credential, err)
+	}
+	window := credential.PassiveUsage.Windows[0]
+	if window.UsedPercent != 8 || window.LimitWindowSeconds != 7*24*60*60 || window.ResetAt != 1786851417 {
+		t.Fatalf("persisted Codex quota window = %#v", window)
+	}
+}
+
+func TestHandleChannelTest_CodexOAuthWithoutQuotaHeadersLeavesUsageEmpty(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_admin\",\"status\":\"completed\"}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gpt-5.6-sol", "client_protocol": "codex", "stream": true,
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelTest(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("GetConfig: %v", err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || credential.PassiveUsage != nil {
+		t.Fatalf("persisted Codex quota = (%#v, %v)", credential, err)
 	}
 }
 

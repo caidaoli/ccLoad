@@ -389,6 +389,7 @@ window.WebAuth = window.WebAuth || {
   let _activeTitleTimer = null;
   let _activeTitleVisible = false;
   let _activeTitleCount = 0;
+  let _activeTitleEnabled = false;
   let _faviconPulseOn = false;
 
   function brandBadgeLabel(count) {
@@ -555,22 +556,28 @@ window.WebAuth = window.WebAuth || {
     if (_activeTitleBase) document.title = _activeTitleBase;
   }
 
-  function updateActiveTitle(count) {
+  function updateActiveTitle(count, enabled) {
     if (_activeTitleTimer === null) {
       _activeTitleBase = document.title || _activeTitleBase || '';
     }
     _activeTitleCount = count;
+    _activeTitleEnabled = enabled === true;
 
     if (count <= 0) {
       restoreActiveTitle();
       return;
     }
+    if (!_activeTitleEnabled && _activeTitleVisible) {
+      document.title = _activeTitleBase;
+      _activeTitleVisible = false;
+    }
 
     if (_activeTitleTimer === null) {
-      showActiveTitle();
+      if (_activeTitleEnabled) showActiveTitle();
       _activeTitleTimer = setInterval(() => {
         _faviconPulseOn = !_faviconPulseOn;
         redrawActiveFavicon();
+        if (!_activeTitleEnabled) return;
         if (_activeTitleVisible) {
           document.title = _activeTitleBase;
           _activeTitleVisible = false;
@@ -581,10 +588,10 @@ window.WebAuth = window.WebAuth || {
       return;
     }
 
-    if (_activeTitleVisible) showActiveTitle();
+    if (_activeTitleEnabled && _activeTitleVisible) showActiveTitle();
   }
 
-  function updateActiveIndicator(count) {
+  function updateActiveIndicator(count, titleEnabled) {
     _activeTitleCount = count;
     // 页面内 logo：脉冲 + 角标
     if (_activeWrap) {
@@ -602,14 +609,14 @@ window.WebAuth = window.WebAuth || {
         restoreFavicon();
       }
     }
-    updateActiveTitle(count);
+    updateActiveTitle(count, titleEnabled);
   }
 
   async function pollActiveRequests() {
     try {
       const payload = await fetchAPIWithAuth('/admin/active-requests');
       const count = typeof payload.count === 'number' ? payload.count : 0;
-      updateActiveIndicator(count);
+      updateActiveIndicator(count, payload.active_request_title_enabled === true);
       // 推送完整数据给订阅者
       const data = (payload.success && Array.isArray(payload.data)) ? payload.data : [];
       _lastActiveData = data;

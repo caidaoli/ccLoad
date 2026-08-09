@@ -1064,6 +1064,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		result["is_streaming"] = testReq.Stream
 		return attachTestDebugData(requestPlan, nil, result)
 	}
+	s.persistCodexPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
 	if isAnthropicOAuthMessagesRequest(
 		cfg, protocol.Protocol(requestPlan.upstreamProtocol), req.URL.Path,
@@ -1166,7 +1167,15 @@ func (s *Server) doChannelTestCodexWebsocket(
 		s.skipTLSVerify,
 		s.codexWebsocketTimeouts(),
 		req.URL.String(),
-		nil,
+		func(headers http.Header) {
+			if len(headers) == 0 {
+				return
+			}
+			s.persistCodexPassiveUsage(ctx, cfg, &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     headers,
+			})
+		},
 	)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()

@@ -100,7 +100,8 @@ type Server struct {
 	responsesWebsocketPingIntervalOverride time.Duration
 	protocolTimeouts                       map[string]protocolTimeoutConfig // 按运行时上游协议覆盖超时，0=回退全局
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
-	modelFuzzyMatch bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	modelFuzzyMatch           bool // 未命中时启用模糊匹配（子串匹配+版本排序）
+	activeRequestTitleEnabled bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 
@@ -197,6 +198,7 @@ func NewServer(store storage.Store) *Server {
 		protocolTimeouts:         runtimeCfg.ProtocolTimeouts,
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
+		activeRequestTitleEnabled:    runtimeCfg.ActiveRequestTitleEnabled,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
@@ -439,6 +441,7 @@ type serverRuntimeConfig struct {
 	ProtocolTimeouts             map[string]protocolTimeoutConfig
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
+	ActiveRequestTitleEnabled    bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
 	Cooldown                     util.CooldownSettings
 }
@@ -545,6 +548,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		ProtocolTimeouts:             protocolTimeouts,
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
+		ActiveRequestTitleEnabled:    cs.GetBool(config.ActiveRequestTitleEnabledSettingKey, false),
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
 		Cooldown:                     loadCooldownSettings(cs),
 	}
