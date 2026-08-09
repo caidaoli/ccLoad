@@ -4669,6 +4669,7 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	longInputID := strings.Repeat("fallback-item-", 8)
+	longCollisionID := strings.Repeat("a", codexInputItemIDLimit-2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if websocket.IsWebSocketUpgrade(r) {
 			websocketCalls.Add(1)
@@ -4696,8 +4697,48 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 		if gjson.GetBytes(body, "generate").Exists() {
 			t.Errorf("websocket-only generate leaked into HTTP fallback: %s", body)
 		}
-		if got := gjson.GetBytes(body, "input.0.id").String(); len([]rune(got)) != codexInputItemIDLimit {
-			t.Errorf("HTTP fallback input id length=%d, want %d: %q", len([]rune(got)), codexInputItemIDLimit, got)
+		if got := gjson.GetBytes(body, "stream_options.reasoning_summary_delivery").String(); got != "sequential_cutoff" {
+			t.Errorf("HTTP fallback reasoning summary delivery=%q, want sequential_cutoff: %s", got, body)
+		}
+		if gjson.GetBytes(body, "stream_options.include_usage").Exists() {
+			t.Errorf("unsupported include_usage leaked into HTTP fallback: %s", body)
+		}
+		if got := gjson.GetBytes(body, "input.0.id").String(); len([]rune(got)) != codexInputItemIDLimit || !strings.HasPrefix(got, "msg_") {
+			t.Errorf("HTTP fallback message id=%q, want msg_ prefix and length %d", got, codexInputItemIDLimit)
+		}
+		if got := gjson.GetBytes(body, "input.1.id").String(); got != "rs_item_reasoning" {
+			t.Errorf("HTTP fallback reasoning id=%q, want rs_ prefix", got)
+		}
+		if got := gjson.GetBytes(body, "input.2.id").String(); got != "fc_item_function_call" {
+			t.Errorf("HTTP fallback function call id=%q, want fc_ prefix", got)
+		}
+		if got := gjson.GetBytes(body, "input.4.id").String(); got != "ctc_item_custom_call" {
+			t.Errorf("HTTP fallback custom tool call id=%q, want ctc_ prefix", got)
+		}
+		if got := gjson.GetBytes(body, "input.5.id").String(); got != "ctco_item_custom_output" {
+			t.Errorf("HTTP fallback custom tool output id=%q, want ctco_ prefix", got)
+		}
+		collisionID := gjson.GetBytes(body, "input.6.id").String()
+		preservedID := gjson.GetBytes(body, "input.7.id").String()
+		if preservedID != "msg_collision" {
+			t.Errorf("HTTP fallback valid message id=%q, want preserved msg_collision", preservedID)
+		}
+		if collisionID == preservedID || !strings.HasPrefix(collisionID, "msg_") ||
+			len([]rune(collisionID)) > codexInputItemIDLimit {
+			t.Errorf("HTTP fallback colliding message id=%q, want unique bounded msg_ id", collisionID)
+		}
+		longNormalizedID := gjson.GetBytes(body, "input.8.id").String()
+		longPrefixedID := gjson.GetBytes(body, "input.9.id").String()
+		if longNormalizedID == longPrefixedID ||
+			len([]rune(longNormalizedID)) != codexInputItemIDLimit ||
+			len([]rune(longPrefixedID)) != codexInputItemIDLimit ||
+			!strings.HasPrefix(longNormalizedID, "msg_") ||
+			!strings.HasPrefix(longPrefixedID, "msg_") {
+			t.Errorf(
+				"HTTP fallback long colliding ids=(%q, %q), want distinct bounded msg_ ids",
+				longNormalizedID,
+				longPrefixedID,
+			)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-http-fallback\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
@@ -4726,7 +4767,33 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 	}
 	if err := downstream.WriteJSON(map[string]any{
 		"type": "response.create", "model": "gpt-test", "generate": true,
-		"input": []any{map[string]any{"type": "message", "id": longInputID, "role": "user", "content": "fallback"}},
+		"stream_options": map[string]any{
+			"reasoning_summary_delivery": "sequential_cutoff",
+			"include_usage":              true,
+		},
+		"input": []any{
+			map[string]any{"type": "message", "id": longInputID, "role": "user", "content": "fallback"},
+			map[string]any{"type": "reasoning", "id": "item_reasoning", "summary": []any{}},
+			map[string]any{
+				"type": "function_call", "id": "item_function_call", "call_id": "call-function-1",
+				"name": "lookup", "arguments": "{}",
+			},
+			map[string]any{
+				"type": "function_call_output", "call_id": "call-function-1", "output": "done",
+			},
+			map[string]any{
+				"type": "custom_tool_call", "id": "item_custom_call", "call_id": "call-custom-1",
+				"name": "apply_patch", "input": "{}",
+			},
+			map[string]any{
+				"type": "custom_tool_call_output", "id": "item_custom_output",
+				"call_id": "call-custom-1", "output": "done",
+			},
+			map[string]any{"type": "message", "id": "collision", "role": "user", "content": "normalize"},
+			map[string]any{"type": "message", "id": "msg_collision", "role": "user", "content": "preserve"},
+			map[string]any{"type": "message", "id": longCollisionID, "role": "user", "content": "long normalize"},
+			map[string]any{"type": "message", "id": "msg_" + longCollisionID, "role": "user", "content": "long prefixed"},
+		},
 	}); err != nil {
 		t.Fatalf("write same-channel fallback request: %v", err)
 	}
