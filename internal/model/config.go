@@ -228,6 +228,9 @@ const (
 // ModelImportMode 为空时不修改模型；非空时 ModelEntries 必须至少包含一个条目。
 type BatchConfigPatch struct {
 	CostMultiplier        *float64
+	DailyCostLimit        *float64
+	RPMLimit              *int
+	MaxConcurrency        *int
 	ProtocolTransformMode *string
 	ModelEntries          []ModelEntry
 	ModelImportMode       string
@@ -242,7 +245,8 @@ type BatchConfigPatchResult struct {
 
 // Normalize validates a batch patch and returns an independent normalized copy.
 func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
-	if p.CostMultiplier == nil && p.ProtocolTransformMode == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
+	if p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
+		p.ProtocolTransformMode == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
 		return BatchConfigPatch{}, errors.New("batch config patch cannot be empty")
 	}
 	if p.CostMultiplier != nil {
@@ -251,6 +255,27 @@ func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
 			return BatchConfigPatch{}, fmt.Errorf("cost_multiplier must be a finite number >= 0 (got %v)", value)
 		}
 		p.CostMultiplier = &value
+	}
+	if p.DailyCostLimit != nil {
+		value := *p.DailyCostLimit
+		if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+			return BatchConfigPatch{}, fmt.Errorf("daily_cost_limit must be a finite number >= 0 (got %v)", value)
+		}
+		p.DailyCostLimit = &value
+	}
+	if p.RPMLimit != nil {
+		value := *p.RPMLimit
+		if value < 0 {
+			return BatchConfigPatch{}, fmt.Errorf("rpm_limit must be >= 0 (got %d)", value)
+		}
+		p.RPMLimit = &value
+	}
+	if p.MaxConcurrency != nil {
+		value := *p.MaxConcurrency
+		if value < 0 {
+			return BatchConfigPatch{}, fmt.Errorf("max_concurrency must be >= 0 (got %d)", value)
+		}
+		p.MaxConcurrency = &value
 	}
 	if p.ProtocolTransformMode != nil {
 		rawMode := strings.TrimSpace(*p.ProtocolTransformMode)

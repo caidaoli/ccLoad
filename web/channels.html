@@ -513,6 +513,53 @@
                     <span id="batchCostMultiplierError" class="channel-batch-advanced__error" role="alert" hidden></span>
                   </div>
                   <div class="channel-batch-advanced__field">
+                    <label for="batchRPMLimit" data-i18n="channels.batchRPMLimit">RPM</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchRPMLimit" class="channel-batch-input" type="number" value="0" min="0"
+                        step="1" inputmode="numeric" aria-describedby="batchRPMLimitHint batchRPMLimitError" disabled>
+                      <button id="batchApplyRPMLimitBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-rpm-limit" disabled>
+                        <span data-i18n="channels.batchApplyRPMLimit">设置 RPM</span>
+                      </button>
+                    </div>
+                    <span id="batchRPMLimitHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchRPMLimitHint">0 表示不限制每分钟请求数</span>
+                    <span id="batchRPMLimitError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
+                    <label for="batchMaxConcurrency" data-i18n="channels.batchMaxConcurrency">并发</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchMaxConcurrency" class="channel-batch-input" type="number" value="0" min="0"
+                        step="1" inputmode="numeric"
+                        aria-describedby="batchMaxConcurrencyHint batchMaxConcurrencyError" disabled>
+                      <button id="batchApplyMaxConcurrencyBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-max-concurrency" disabled>
+                        <span data-i18n="channels.batchApplyMaxConcurrency">设置并发</span>
+                      </button>
+                    </div>
+                    <span id="batchMaxConcurrencyHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchMaxConcurrencyHint">0 表示不限制并发请求数</span>
+                    <span id="batchMaxConcurrencyError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
+                    <label for="batchDailyCostLimit" data-i18n="channels.batchDailyCostLimit">日限额</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchDailyCostLimit" class="channel-batch-input" type="number" value="0" min="0"
+                        step="0.01" inputmode="decimal"
+                        aria-describedby="batchDailyCostLimitHint batchDailyCostLimitError" disabled>
+                      <button id="batchApplyDailyCostLimitBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-daily-cost-limit" disabled>
+                        <span data-i18n="channels.batchApplyDailyCostLimit">设置日限额</span>
+                      </button>
+                    </div>
+                    <span id="batchDailyCostLimitHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchDailyCostLimitHint">0 表示不限制每日成本（美元）</span>
+                    <span id="batchDailyCostLimitError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
                     <label for="batchProtocolTransformMode" data-i18n="channels.batchProtocolMode">协议处理</label>
                     <div class="channel-batch-advanced__control">
                       <select id="batchProtocolTransformMode" class="channel-batch-select"

@@ -17,6 +17,7 @@ const (
 	antigravityDailyBaseURL        = "https://daily-cloudcode-pa.googleapis.com"
 	antigravityProdBaseURL         = "https://cloudcode-pa.googleapis.com"
 	antigravitySandboxDailyBaseURL = "https://daily-cloudcode-pa.sandbox.googleapis.com"
+	antigravityOAuthMaxConcurrency = 3
 )
 
 // 导入凭证和动态模型发现必须共享这一份 Antigravity 模型目录。
@@ -65,6 +66,7 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 			}
 		}
 		cfg.ModelEntries = antigravityOAuthModelEntries()
+		cfg.MaxConcurrency = antigravityOAuthMaxConcurrency
 		updated, err := store.UpdateConfig(ctx, cfg.ID, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("update Antigravity channel: %w", err)
@@ -84,7 +86,8 @@ func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
 		URLs:                  antigravityOAuthDefaultURLs(),
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
 		Priority:              0, Enabled: true, CostMultiplier: 1,
-		ModelEntries: antigravityOAuthModelEntries(),
+		MaxConcurrency: antigravityOAuthMaxConcurrency,
+		ModelEntries:   antigravityOAuthModelEntries(),
 	}
 }
 

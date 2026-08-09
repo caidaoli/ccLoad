@@ -1103,7 +1103,9 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 		t.Fatalf("ListConfigs = (%d, %v)", len(channels), err)
 	}
 	channel := channels[0]
-	if channel.Name != "Antigravity-gravity@example.com" || !channel.UsesAntigravityOAuth() || channel.KeyCount != 0 || channel.Websockets || channel.GetProtocolTransformMode() != model.ProtocolTransformModeLocal {
+	if channel.Name != "Antigravity-gravity@example.com" || !channel.UsesAntigravityOAuth() || channel.KeyCount != 0 ||
+		channel.Websockets || channel.GetProtocolTransformMode() != model.ProtocolTransformModeLocal ||
+		channel.MaxConcurrency != antigravityOAuthMaxConcurrency {
 		t.Fatalf("created Antigravity channel = %#v", channel)
 	}
 	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
@@ -1116,6 +1118,44 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 		if channel.URLs[i].URL != wantURL || !channel.URLs[i].SupportsProtocol(util.ProtocolGemini) {
 			t.Fatalf("Antigravity URL[%d] = %#v, want Gemini %s", i, channel.URLs[i], wantURL)
 		}
+	}
+}
+
+func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	existingCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "old-project",
+	}
+	existingPayload, err := existingCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingConfig := newAntigravityOAuthChannel("Antigravity-existing@example.com", existingPayload)
+	existingConfig.MaxConcurrency = 0
+	existing, err := store.CreateConfig(context.Background(), existingConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	updatedCredential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "new-at", RefreshToken: "new-rt",
+		Expired: time.Now().UTC().Add(2 * time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "new-project",
+	}
+	updated, err := createAntigravityChannel(context.Background(), store, updatedCredential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.ID != existing.ID || updated.MaxConcurrency != antigravityOAuthMaxConcurrency {
+		t.Fatalf("updated Antigravity channel = %#v", updated)
+	}
+	persisted, err := store.GetConfig(context.Background(), existing.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.MaxConcurrency != antigravityOAuthMaxConcurrency ||
+		!strings.Contains(persisted.OAuthCredential, `"access_token":"new-at"`) {
+		t.Fatalf("persisted Antigravity channel = %#v", persisted)
 	}
 }
 
@@ -1231,7 +1271,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 			break
 		}
 	}
-	if imported == nil || !imported.UsesAntigravityOAuth() {
+	if imported == nil || !imported.UsesAntigravityOAuth() || imported.MaxConcurrency != antigravityOAuthMaxConcurrency {
 		t.Fatalf("new Antigravity channel was not created with canonical name: %#v", channels)
 	}
 	importedCredential, err := antigravityauth.ParseCredential([]byte(imported.OAuthCredential))
