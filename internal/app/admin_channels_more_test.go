@@ -672,6 +672,7 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 	t.Run("updates selected channels", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", map[string]any{
 			"channel_ids":             []int64{c1.ID, c2.ID, c3.ID, c2.ID, 99999},
+			"priority":                -20,
 			"protocol_transform_mode": model.ProtocolTransformModeUpstream,
 			"cost_multiplier":         0.25,
 			"daily_cost_limit":        12.5,
@@ -717,6 +718,9 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			}
 			if cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
 				t.Fatalf("channel %d mode=%q, want %q", channelID, cfg.GetProtocolTransformMode(), model.ProtocolTransformModeUpstream)
+			}
+			if cfg.Priority != -20 {
+				t.Fatalf("channel %d priority=%d, want -20", channelID, cfg.Priority)
 			}
 			if cfg.CostMultiplier != 0.25 {
 				t.Fatalf("channel %d cost_multiplier=%v, want 0.25", channelID, cfg.CostMultiplier)

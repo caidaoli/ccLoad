@@ -227,6 +227,7 @@ const (
 // BatchConfigPatch 只修改显式提供的渠道字段。
 // ModelImportMode 为空时不修改模型；非空时 ModelEntries 必须至少包含一个条目。
 type BatchConfigPatch struct {
+	Priority              *int
 	CostMultiplier        *float64
 	DailyCostLimit        *float64
 	RPMLimit              *int
@@ -245,9 +246,13 @@ type BatchConfigPatchResult struct {
 
 // Normalize validates a batch patch and returns an independent normalized copy.
 func (p BatchConfigPatch) Normalize() (BatchConfigPatch, error) {
-	if p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
+	if p.Priority == nil && p.CostMultiplier == nil && p.DailyCostLimit == nil && p.RPMLimit == nil && p.MaxConcurrency == nil &&
 		p.ProtocolTransformMode == nil && p.ModelImportMode == "" && p.ModelEntries == nil {
 		return BatchConfigPatch{}, errors.New("batch config patch cannot be empty")
+	}
+	if p.Priority != nil {
+		value := *p.Priority
+		p.Priority = &value
 	}
 	if p.CostMultiplier != nil {
 		value := *p.CostMultiplier

@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
@@ -3732,6 +3733,12 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			server, store, cleanup := setupAdminTestServer(t)
 			defer cleanup()
+			customBaseURL := "https://gateway.example/anthropic"
+			expectedUsageURL := customBaseURL + "/api/oauth/usage"
+			expectedProfileURL := customBaseURL + "/api/oauth/profile"
+			server.configService = newStubConfigService(map[string]string{
+				config.AnthropicBaseURLSettingKey: customBaseURL,
+			})
 			credential := &anthropicauth.Credential{
 				Type: anthropicauth.ChannelType, AccessToken: "at-anthropic-quota-secret", RefreshToken: "rt-anthropic-quota-secret",
 				Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "account-anthropic-quota", EmailAddress: "quota@example.com",
@@ -3756,7 +3763,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 				}
 				var responseBody string
 				switch request.URL.String() {
-				case anthropicUsageURL:
+				case expectedUsageURL:
 					if got := request.Header.Get("anthropic-beta"); got != "oauth-2025-04-20" {
 						t.Errorf("anthropic-beta = %q", got)
 					}
@@ -3766,7 +3773,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 						"seven_day_sonnet":{"utilization":25,"resets_at":"2026-08-15T11:00:00Z"},
 						"seven_day_overage_included":{"utilization":75,"resets_at":"2026-08-15T12:00:00Z"}
 					}`
-				case anthropicProfileURL:
+				case expectedProfileURL:
 					if got := request.Header.Get("Cache-Control"); got != "no-cache" {
 						t.Errorf("Cache-Control = %q", got)
 					}
@@ -3809,7 +3816,7 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			} else if len(response.Data.Warnings) != 0 {
 				t.Fatalf("usage warnings = %v", response.Data.Warnings)
 			}
-			if requestCounts[anthropicUsageURL] != 1 || requestCounts[anthropicProfileURL] != 1 || len(requestCounts) != 2 {
+			if requestCounts[expectedUsageURL] != 1 || requestCounts[expectedProfileURL] != 1 || len(requestCounts) != 2 {
 				t.Fatalf("Anthropic request counts = %v", requestCounts)
 			}
 			persisted, err := store.GetConfig(context.Background(), channel.ID)

@@ -3215,6 +3215,7 @@ func (s *Server) tryAnthropicOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)

@@ -497,6 +497,22 @@
                 <summary data-i18n="channels.batchAdvanced">高级</summary>
                 <div class="channel-batch-advanced__panel">
                   <div class="channel-batch-advanced__field">
+                    <label for="batchPriority" data-i18n="channels.batchPriority">优先级</label>
+                    <div class="channel-batch-advanced__control">
+                      <input id="batchPriority" class="channel-batch-input" type="number" value="0" min="-99999"
+                        max="99999" step="1" inputmode="numeric"
+                        aria-describedby="batchPriorityHint batchPriorityError" disabled>
+                      <button id="batchApplyPriorityBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-set-priority" disabled>
+                        <span data-i18n="channels.batchApplyPriority">设置优先级</span>
+                      </button>
+                    </div>
+                    <span id="batchPriorityHint" class="channel-batch-advanced__hint"
+                      data-i18n="channels.batchPriorityHint">数值越大优先级越高</span>
+                    <span id="batchPriorityError" class="channel-batch-advanced__error" role="alert" hidden></span>
+                  </div>
+                  <div class="channel-batch-advanced__field">
                     <label for="batchCostMultiplier" data-i18n="channels.batchCostMultiplier">倍率</label>
                     <div class="channel-batch-advanced__control">
                       <input id="batchCostMultiplier" class="channel-batch-input" type="number" value="1" min="0"

@@ -90,6 +90,9 @@ function installBatchProtocolModeGlobals(response) {
   const elements = {
     batchProtocolTransformMode: { value: 'local', disabled: false },
     batchApplyProtocolBtn: makeButton(),
+    batchPriority: makeNumericInput('-20'),
+    batchApplyPriorityBtn: makeButton(),
+    batchPriorityError: { textContent: '', hidden: true },
     batchCostMultiplier: makeNumericInput('0.5'),
     batchApplyCostMultiplierBtn: makeButton(),
     batchCostMultiplierError: { textContent: '', hidden: true },
@@ -1174,6 +1177,13 @@ test('batch cost multiplier submits a numeric patch and refreshes the list', asy
 
 for (const testCase of [
   {
+    name: 'priority',
+    exportName: 'batchSetSelectedChannelsPriority',
+    field: 'priority',
+    value: -20,
+    summaryKey: 'channels.batchPrioritySummary'
+  },
+  {
     name: 'RPM',
     exportName: 'batchSetSelectedChannelsRPMLimit',
     field: 'rpm_limit',
@@ -1243,6 +1253,23 @@ test('batch RPM rejects fractional values without sending a request', async () =
     assert.equal(fixture.selectedChannelIds.size, 2);
     assert.equal(fixture.elements.batchRPMLimit.attributes.get('aria-invalid'), 'true');
     assert.equal(fixture.elements.batchRPMLimitError.hidden, false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch priority rejects values outside the editor range', async () => {
+  const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
+  fixture.elements.batchPriority.value = '100000';
+
+  try {
+    const { batchSetSelectedChannelsPriority } = loadChannelsModals();
+    await batchSetSelectedChannelsPriority();
+
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.selectedChannelIds.size, 2);
+    assert.equal(fixture.elements.batchPriority.attributes.get('aria-invalid'), 'true');
+    assert.equal(fixture.elements.batchPriorityError.hidden, false);
   } finally {
     fixture.restore();
   }

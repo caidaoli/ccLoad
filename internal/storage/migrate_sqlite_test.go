@@ -1336,6 +1336,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"CODEX_BASE_URL",
 		"XAI_BASE_URL",
 		"ANTIGRAVITY_URL",
+		"ANTHROPIC_BASE_URL",
 		"log_retention_days",
 		"max_key_retries",
 		"upstream_first_byte_timeout",
@@ -1399,7 +1400,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		if key == "active_request_title_enabled" && (val != "false" || defaultValue != "false") {
 			t.Errorf("setting %q initial/default value = %q/%q, want false/false", key, val, defaultValue)
 		}
-		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL") && val != "" {
+		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL" || key == "ANTHROPIC_BASE_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
 		}
 	}

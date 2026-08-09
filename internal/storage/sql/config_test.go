@@ -1027,11 +1027,13 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 	})
 
 	multiplier := 0.5
+	priority := -12
 	dailyCostLimit := 25.5
 	rpmLimit := 120
 	maxConcurrency := 8
 	mode := model.ProtocolTransformModeLocal
 	result, err := store.BatchPatchConfigs(ctx, []int64{first.ID, second.ID, first.ID, 99999}, model.BatchConfigPatch{
+		Priority:              &priority,
 		CostMultiplier:        &multiplier,
 		DailyCostLimit:        &dailyCostLimit,
 		RPMLimit:              &rpmLimit,
@@ -1055,12 +1057,12 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("GetConfig(%d): %v", channelID, err)
 		}
-		if got.CostMultiplier != multiplier || got.DailyCostLimit != dailyCostLimit ||
+		if got.Priority != priority || got.CostMultiplier != multiplier || got.DailyCostLimit != dailyCostLimit ||
 			got.RPMLimit != rpmLimit || got.MaxConcurrency != maxConcurrency || got.GetProtocolTransformMode() != mode {
 			t.Fatalf("channel %d advanced fields = (%v, %v, %d, %d, %q)", channelID,
 				got.CostMultiplier, got.DailyCostLimit, got.RPMLimit, got.MaxConcurrency, got.GetProtocolTransformMode())
 		}
-		if got.Priority != 7 || !got.RetryOtherKeysOnFailure {
+		if !got.RetryOtherKeysOnFailure {
 			t.Fatalf("channel %d unrelated fields changed: %+v", channelID, got)
 		}
 		if channelID == first.ID {
@@ -1085,7 +1087,8 @@ func TestConfig_BatchPatchConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if firstAfterRPM.RPMLimit != 0 || firstAfterRPM.MaxConcurrency != maxConcurrency ||
-		firstAfterRPM.DailyCostLimit != dailyCostLimit || firstAfterRPM.CostMultiplier != multiplier {
+		firstAfterRPM.DailyCostLimit != dailyCostLimit || firstAfterRPM.CostMultiplier != multiplier ||
+		firstAfterRPM.Priority != priority {
 		t.Fatalf("RPM-only patch changed unrelated limits: %+v", firstAfterRPM)
 	}
 

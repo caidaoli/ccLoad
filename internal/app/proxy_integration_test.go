@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -244,6 +245,20 @@ func antigravityProxyTestCredential(t testing.TB, accessToken string) string {
 	return payload
 }
 
+func anthropicProxyTestCredential(t testing.TB, accessToken string) string {
+	t.Helper()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-anthropic",
+		Expired:     time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+		AccountUUID: "account-anthropic", DeviceID: "device-anthropic",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("Anthropic credential JSON: %v", err)
+	}
+	return payload
+}
+
 func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 	t.Run("API key channel is unaffected", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -318,6 +333,36 @@ func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 		}, nil)
 		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "id").String() != "resp-xai-override" {
 			t.Fatalf("xAI override response=%d body=%s", response.Code, response.Body.String())
+		}
+	})
+
+	t.Run("Anthropic", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/anthropic/v1/messages" || r.URL.Query().Get("beta") != "true" {
+				t.Errorf("Anthropic override URL = %s?%s", r.URL.Path, r.URL.RawQuery)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer anthropic-override-token" {
+				t.Errorf("Authorization = %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"msg-override","type":"message","role":"assistant","model":"claude-test","content":[{"type":"text","text":"override ok"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`)
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{{
+			name: "anthropic-oauth-override", upstreamProtocol: "anthropic", models: "claude-test",
+			authType:        model.AuthTypeAnthropicOAuth,
+			oauthCredential: anthropicProxyTestCredential(t, "anthropic-override-token"),
+		}}, map[int]string{0: "http://127.0.0.1:1/ignored"}, map[string]string{
+			"ANTHROPIC_BASE_URL": upstream.URL + "/anthropic",
+		})
+
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "claude-test", "max_tokens": 32,
+			"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+		}, nil)
+		if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "content.0.text").String() != "override ok" {
+			t.Fatalf("Anthropic override response=%d body=%s", response.Code, response.Body.String())
 		}
 	})
 
