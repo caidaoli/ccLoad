@@ -1112,7 +1112,7 @@ function updateBatchChannelSelectionUI() {
   }
 
   const closeBtn = document.getElementById('batchFloatingMenuCloseBtn');
-  if (closeBtn) closeBtn.disabled = selectedCount === 0;
+  if (closeBtn) closeBtn.disabled = selectedCount === 0 || batchBusy;
 
   const selectionToggle = document.getElementById('visibleSelectionToggle');
   const selectionCheckbox = document.getElementById('visibleSelectionCheckbox');
@@ -1127,12 +1127,12 @@ function updateBatchChannelSelectionUI() {
     selectionText.textContent = selectionLabel;
   }
   if (selectionToggle) {
-    selectionToggle.classList.toggle('is-disabled', visibleCount === 0);
+    selectionToggle.classList.toggle('is-disabled', visibleCount === 0 || batchBusy);
     selectionToggle.setAttribute('data-i18n-title', selectionI18nKey);
     selectionToggle.title = selectionLabel;
   }
   if (selectionCheckbox) {
-    selectionCheckbox.disabled = visibleCount === 0;
+    selectionCheckbox.disabled = visibleCount === 0 || batchBusy;
     selectionCheckbox.checked = visibleCount > 0 && visibleSelectedCount === visibleCount;
     selectionCheckbox.indeterminate = visibleSelectedCount > 0 && visibleSelectedCount < visibleCount;
   }
@@ -1146,6 +1146,9 @@ function updateBatchChannelSelectionUI() {
     'batchRefreshReplaceBtn',
     'batchApplyProtocolBtn',
     'batchApplyCostMultiplierBtn',
+    'batchApplyRPMLimitBtn',
+    'batchApplyMaxConcurrencyBtn',
+    'batchApplyDailyCostLimitBtn',
     'batchImportModelsBtn'
   ];
   actionBtnIDs.forEach((id) => {
@@ -1155,8 +1158,19 @@ function updateBatchChannelSelectionUI() {
 
   const protocolMode = document.getElementById('batchProtocolTransformMode');
   if (protocolMode) protocolMode.disabled = selectedCount === 0 || batchBusy;
-  const costMultiplier = document.getElementById('batchCostMultiplier');
-  if (costMultiplier) costMultiplier.disabled = selectedCount === 0 || batchBusy;
+  ['batchCostMultiplier', 'batchRPMLimit', 'batchMaxConcurrency', 'batchDailyCostLimit'].forEach((id) => {
+    const input = document.getElementById(id);
+    if (input) input.disabled = selectedCount === 0 || batchBusy;
+  });
+}
+
+function setBatchChannelOperationBusy(busy) {
+  const floatingMenu = document.getElementById('batchFloatingMenu');
+  if (floatingMenu) {
+    if (busy) floatingMenu.setAttribute('aria-busy', 'true');
+    else floatingMenu.removeAttribute('aria-busy');
+  }
+  updateBatchChannelSelectionUI();
 }
 
 function selectAllVisibleChannels() {
@@ -1223,6 +1237,7 @@ async function batchSetSelectedChannelsEnabled(enabled) {
     return;
   }
 
+  setBatchChannelOperationBusy(true);
   try {
     const resp = await fetchAPIWithAuth('/admin/channels/batch-enabled', {
       method: 'POST',
@@ -1247,6 +1262,8 @@ async function batchSetSelectedChannelsEnabled(enabled) {
   } catch (e) {
     console.error('Batch set enabled failed', e);
     if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
+  } finally {
+    setBatchChannelOperationBusy(false);
   }
 }
 
@@ -1286,8 +1303,8 @@ async function batchSetSelectedChannelsProtocolMode() {
   }
 
   const applyButton = document.getElementById('batchApplyProtocolBtn');
-  if (applyButton) applyButton.disabled = true;
-  if (modeSelect) modeSelect.disabled = true;
+  if (applyButton) applyButton.setAttribute('aria-busy', 'true');
+  setBatchChannelOperationBusy(true);
 
   try {
     const data = await requestBatchAdvancedPatch({ protocol_transform_mode: mode });
@@ -1306,23 +1323,65 @@ async function batchSetSelectedChannelsProtocolMode() {
     console.error('Batch set protocol transform mode failed', e);
     if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
   } finally {
-    updateBatchChannelSelectionUI();
+    if (applyButton) applyButton.removeAttribute('aria-busy');
+    setBatchChannelOperationBusy(false);
   }
 }
 
-async function batchSetSelectedChannelsCostMultiplier() {
+const batchNumericSettingConfigs = {
+  cost_multiplier: {
+    inputID: 'batchCostMultiplier',
+    buttonID: 'batchApplyCostMultiplierBtn',
+    errorID: 'batchCostMultiplierError',
+    invalidKey: 'channels.batchCostMultiplierInvalid',
+    summaryKey: 'channels.batchCostMultiplierSummary',
+    summaryValueName: 'multiplier',
+    integer: false
+  },
+  rpm_limit: {
+    inputID: 'batchRPMLimit',
+    buttonID: 'batchApplyRPMLimitBtn',
+    errorID: 'batchRPMLimitError',
+    invalidKey: 'channels.batchRPMLimitInvalid',
+    summaryKey: 'channels.batchRPMLimitSummary',
+    summaryValueName: 'value',
+    integer: true
+  },
+  max_concurrency: {
+    inputID: 'batchMaxConcurrency',
+    buttonID: 'batchApplyMaxConcurrencyBtn',
+    errorID: 'batchMaxConcurrencyError',
+    invalidKey: 'channels.batchMaxConcurrencyInvalid',
+    summaryKey: 'channels.batchMaxConcurrencySummary',
+    summaryValueName: 'value',
+    integer: true
+  },
+  daily_cost_limit: {
+    inputID: 'batchDailyCostLimit',
+    buttonID: 'batchApplyDailyCostLimitBtn',
+    errorID: 'batchDailyCostLimitError',
+    invalidKey: 'channels.batchDailyCostLimitInvalid',
+    summaryKey: 'channels.batchDailyCostLimitSummary',
+    summaryValueName: 'value',
+    integer: false
+  }
+};
+
+async function batchSetSelectedChannelsNumericSetting(fieldName) {
   if (getSelectedChannelIDs().length === 0) {
     if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
     return;
   }
 
-  const input = document.getElementById('batchCostMultiplier');
-  const applyButton = document.getElementById('batchApplyCostMultiplierBtn');
-  const error = document.getElementById('batchCostMultiplierError');
-  const rawMultiplier = String(input?.value ?? '').trim();
-  const multiplier = Number(rawMultiplier);
-  if (rawMultiplier === '' || !Number.isFinite(multiplier) || multiplier < 0) {
-    const message = window.t('channels.batchCostMultiplierInvalid');
+  const config = batchNumericSettingConfigs[fieldName];
+  if (!config) return;
+  const input = document.getElementById(config.inputID);
+  const applyButton = document.getElementById(config.buttonID);
+  const error = document.getElementById(config.errorID);
+  const rawValue = String(input?.value ?? '').trim();
+  const value = Number(rawValue);
+  if (rawValue === '' || !Number.isFinite(value) || value < 0 || (config.integer && !Number.isInteger(value))) {
+    const message = window.t(config.invalidKey);
     if (input) {
       input.setAttribute('aria-invalid', 'true');
       input.focus();
@@ -1339,28 +1398,46 @@ async function batchSetSelectedChannelsCostMultiplier() {
   }
   if (input) {
     input.setAttribute('aria-invalid', 'false');
-    input.disabled = true;
   }
-  if (applyButton) applyButton.disabled = true;
+  if (applyButton) applyButton.setAttribute('aria-busy', 'true');
+  setBatchChannelOperationBusy(true);
 
   try {
-    const data = await requestBatchAdvancedPatch({ cost_multiplier: multiplier });
+    const data = await requestBatchAdvancedPatch({ [fieldName]: value });
     if (!data) return;
     await finishBatchAdvancedUpdate();
     if (window.showSuccess) {
-      window.showSuccess(window.t('channels.batchCostMultiplierSummary', {
-        multiplier,
+      const params = {
         updated: data.updated || 0,
         unchanged: data.unchanged || 0,
         notFound: data.not_found_count || 0
-      }));
+      };
+      params[config.summaryValueName] = value;
+      window.showSuccess(window.t(config.summaryKey, params));
     }
   } catch (e) {
-    console.error('Batch set cost multiplier failed', e);
+    console.error(`Batch set ${fieldName} failed`, e);
     if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
   } finally {
-    updateBatchChannelSelectionUI();
+    if (applyButton) applyButton.removeAttribute('aria-busy');
+    setBatchChannelOperationBusy(false);
   }
+}
+
+async function batchSetSelectedChannelsCostMultiplier() {
+  return batchSetSelectedChannelsNumericSetting('cost_multiplier');
+}
+
+async function batchSetSelectedChannelsRPMLimit() {
+  return batchSetSelectedChannelsNumericSetting('rpm_limit');
+}
+
+async function batchSetSelectedChannelsMaxConcurrency() {
+  return batchSetSelectedChannelsNumericSetting('max_concurrency');
+}
+
+async function batchSetSelectedChannelsDailyCostLimit() {
+  return batchSetSelectedChannelsNumericSetting('daily_cost_limit');
 }
 
 function batchDeleteSelectedChannels() {
@@ -1554,11 +1631,8 @@ async function batchRefreshSelectedChannels(mode) {
     clearAllBatchRefreshResults();
   }
 
-  // 禁用批量操作按钮
-  const actionBtnIDs = ['batchRefreshMergeBtn', 'batchRefreshReplaceBtn', 'batchRefreshOAuthUsageBtn', 'batchEnableChannelsBtn', 'batchDisableChannelsBtn', 'batchDeleteChannelsBtn', 'batchApplyProtocolBtn'];
-  actionBtnIDs.forEach(id => { const btn = document.getElementById(id); if (btn) btn.disabled = true; });
-  const protocolModeSelect = document.getElementById('batchProtocolTransformMode');
-  if (protocolModeSelect) protocolModeSelect.disabled = true;
+  setBatchChannelOperationBusy(true);
+  try {
 
   const total = channelIDs.length;
   const modeLabel = mode === 'replace' ? window.t('channels.batchModeReplace') : window.t('channels.batchModeMerge');
@@ -1684,6 +1758,9 @@ async function batchRefreshSelectedChannels(mode) {
   if (typeof saveChannelsFilters === 'function') saveChannelsFilters();
   await reloadChannelsList();
   updateBatchChannelSelectionUI();
+  } finally {
+    setBatchChannelOperationBusy(false);
+  }
 }
 
 function batchEnableSelectedChannels() {
@@ -3473,8 +3550,11 @@ if (typeof module !== 'undefined' && module.exports) {
     addCommonModels,
     addCommonModelsToRows,
     applyQuickAddChannelSetup,
+    batchSetSelectedChannelsDailyCostLimit,
     batchSetSelectedChannelsCostMultiplier,
+    batchSetSelectedChannelsMaxConcurrency,
     batchSetSelectedChannelsProtocolMode,
+    batchSetSelectedChannelsRPMLimit,
     collectModelsForSubmit,
     confirmModelImport,
     detectChannelWebsocketSupport,

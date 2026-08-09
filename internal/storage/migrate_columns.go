@@ -12,16 +12,14 @@ import (
 // sqliteMigratableTables 允许增量迁移的SQLite表名白名单
 // 安全设计：防止SQL注入，新增表时需在此处注册
 var sqliteMigratableTables = map[string]bool{
-	"logs":                     true,
-	"auth_tokens":              true,
-	"channel_models":           true,
-	"channel_model_cooldowns":  true,
-	"api_keys":                 true,
-	"channels":                 true,
-	"debug_logs":               true,
-	"fingerprint_test_results": true,
-	"model_fingerprints":       true,
-	"schema_migrations":        true,
+	"logs":                    true,
+	"auth_tokens":             true,
+	"channel_models":          true,
+	"channel_model_cooldowns": true,
+	"api_keys":                true,
+	"channels":                true,
+	"debug_logs":              true,
+	"schema_migrations":       true,
 }
 
 type sqliteColumnDef struct {
@@ -156,41 +154,6 @@ func ensureModelCooldownDuration(ctx context.Context, db *sql.DB, dialect Dialec
 		return fmt.Errorf("backfill model cooldown duration: %w", err)
 	}
 	return nil
-}
-
-func ensureFingerprintTestResultsDistribution(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	switch dialect {
-	case DialectMySQL:
-		if err := ensureMySQLColumns(ctx, db, "fingerprint_test_results", []mysqlColumnDef{{
-			name: "distribution", definition: "LONGTEXT",
-		}}); err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, "UPDATE fingerprint_test_results SET distribution = '[]' WHERE distribution IS NULL OR distribution = ''"); err != nil {
-			return fmt.Errorf("backfill distribution: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, "ALTER TABLE fingerprint_test_results MODIFY COLUMN distribution LONGTEXT NOT NULL"); err != nil {
-			return fmt.Errorf("require distribution: %w", err)
-		}
-		return nil
-	case DialectPostgres:
-		if err := ensurePostgresColumns(ctx, db, "fingerprint_test_results", []mysqlColumnDef{{
-			name: "distribution", definition: "TEXT",
-		}}); err != nil {
-			return err
-		}
-		if _, err := db.ExecContext(ctx, "UPDATE fingerprint_test_results SET distribution = '[]' WHERE distribution IS NULL OR distribution = ''"); err != nil {
-			return fmt.Errorf("backfill distribution: %w", err)
-		}
-		if _, err := db.ExecContext(ctx, "ALTER TABLE fingerprint_test_results ALTER COLUMN distribution SET NOT NULL"); err != nil {
-			return fmt.Errorf("require distribution: %w", err)
-		}
-		return nil
-	default:
-		return ensureSQLiteColumns(ctx, db, "fingerprint_test_results", []sqliteColumnDef{{
-			name: "distribution", definition: "TEXT NOT NULL DEFAULT '[]'",
-		}})
-	}
 }
 
 func sqliteExistingColumns(ctx context.Context, db *sql.DB, table string) (map[string]bool, error) {
@@ -491,12 +454,6 @@ func ensureLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) 
 
 func ensureLogsUpstreamProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "logs", "upstream_protocol",
-		"VARCHAR(32) NOT NULL DEFAULT ''",
-		"TEXT NOT NULL DEFAULT ''")
-}
-
-func ensureModelFingerprintsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
-	return ensureColumn(ctx, db, dialect, "model_fingerprints", "client_protocol",
 		"VARCHAR(32) NOT NULL DEFAULT ''",
 		"TEXT NOT NULL DEFAULT ''")
 }

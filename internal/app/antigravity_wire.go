@@ -25,6 +25,8 @@ import (
 const (
 	zeroWidthSpace                    = "\u200B"
 	antigravityWebSearchFallbackModel = "gemini-2.5-flash"
+	antigravityBaseURLFallbackDelay   = time.Second
+	antigravityModelCapacityAttempts  = 3
 	antigravityIdentityPrompt         = `<identity>
 You are Antigravity, a powerful agentic AI coding assistant designed by the Google Deepmind team working on Advanced Agentic Coding.
 You are pair programming with a USER to solve their coding task. The task may require creating a new codebase, modifying or debugging an existing codebase, or simply answering a question.
@@ -428,12 +430,40 @@ func withAntigravityDefaultFallbackURLs(cfg *model.Config) *model.Config {
 	return runtimeCfg
 }
 
+type antigravityGoogleRPCErrorEnvelope struct {
+	Error struct {
+		Status  string `json:"status"`
+		Details []struct {
+			Type   string `json:"@type"`
+			Reason string `json:"reason"`
+		} `json:"details"`
+	} `json:"error"`
+}
+
+func isAntigravityModelCapacityExhausted(statusCode int, body []byte) bool {
+	if statusCode != http.StatusServiceUnavailable || len(body) == 0 {
+		return false
+	}
+	var envelope antigravityGoogleRPCErrorEnvelope
+	if json.Unmarshal(body, &envelope) != nil || envelope.Error.Status != "UNAVAILABLE" {
+		return false
+	}
+	for _, detail := range envelope.Error.Details {
+		if detail.Type == "type.googleapis.com/google.rpc.ErrorInfo" &&
+			detail.Reason == "MODEL_CAPACITY_EXHAUSTED" {
+			return true
+		}
+	}
+	return false
+}
+
 func shouldFallbackAntigravityBaseURL(statusCode int, body []byte) bool {
 	switch statusCode {
 	case http.StatusNotFound, http.StatusTooManyRequests:
 		return true
 	case http.StatusServiceUnavailable:
-		return strings.Contains(strings.ToLower(string(body)), "no capacity available")
+		return isAntigravityModelCapacityExhausted(statusCode, body) ||
+			strings.Contains(strings.ToLower(string(body)), "no capacity available")
 	default:
 		return false
 	}

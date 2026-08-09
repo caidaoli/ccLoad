@@ -622,6 +622,18 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			if patch.CostMultiplier != nil {
 				nextCostMultiplier = *patch.CostMultiplier
 			}
+			nextDailyCostLimit := state.dailyCostLimit
+			if patch.DailyCostLimit != nil {
+				nextDailyCostLimit = *patch.DailyCostLimit
+			}
+			nextRPMLimit := state.rpmLimit
+			if patch.RPMLimit != nil {
+				nextRPMLimit = *patch.RPMLimit
+			}
+			nextMaxConcurrency := state.maxConcurrency
+			if patch.MaxConcurrency != nil {
+				nextMaxConcurrency = *patch.MaxConcurrency
+			}
 			nextProtocolMode := state.protocolTransformMode
 			if patch.ProtocolTransformMode != nil {
 				nextProtocolMode = *patch.ProtocolTransformMode
@@ -636,6 +648,9 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			}
 
 			changed := state.costMultiplier != nextCostMultiplier ||
+				state.dailyCostLimit != nextDailyCostLimit ||
+				state.rpmLimit != nextRPMLimit ||
+				state.maxConcurrency != nextMaxConcurrency ||
 				state.protocolTransformMode != nextProtocolMode ||
 				state.scheduledCheckModel != nextScheduledCheckModel ||
 				modelsChanged
@@ -646,9 +661,11 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 
 			if _, err := s.execTx(ctx, tx, `
 				UPDATE channels
-				SET cost_multiplier = ?, protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
+				SET cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
+					protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
 				WHERE id = ?
-			`, nextCostMultiplier, nextProtocolMode, nextScheduledCheckModel, timeToUnix(time.Now()), channelID); err != nil {
+			`, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
+				nextProtocolMode, nextScheduledCheckModel, timeToUnix(time.Now()), channelID); err != nil {
 				return fmt.Errorf("patch channel %d: %w", channelID, err)
 			}
 			if modelsChanged {
@@ -668,6 +685,9 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 
 type batchConfigPatchState struct {
 	costMultiplier        float64
+	dailyCostLimit        float64
+	rpmLimit              int
+	maxConcurrency        int
 	protocolTransformMode string
 	scheduledCheckModel   string
 	modelEntries          []model.ModelEntry
@@ -698,7 +718,8 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
-	query := `SELECT id, cost_multiplier, protocol_transform_mode, scheduled_check_model
+	query := `SELECT id, cost_multiplier, daily_cost_limit, rpm_limit, max_concurrency,
+		protocol_transform_mode, scheduled_check_model
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
 		query += ` FOR UPDATE`
@@ -711,7 +732,10 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	for rows.Next() {
 		var channelID int64
 		state := &batchConfigPatchState{}
-		if err := rows.Scan(&channelID, &state.costMultiplier, &state.protocolTransformMode, &state.scheduledCheckModel); err != nil {
+		if err := rows.Scan(
+			&channelID, &state.costMultiplier, &state.dailyCostLimit, &state.rpmLimit, &state.maxConcurrency,
+			&state.protocolTransformMode, &state.scheduledCheckModel,
+		); err != nil {
 			_ = rows.Close()
 			return nil, fmt.Errorf("scan channel for batch patch: %w", err)
 		}
@@ -820,9 +844,6 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 		}
 		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel url states: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `UPDATE model_fingerprints SET channel_id = NULL WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("clear fingerprint channel_id: %w", err)
 		}
 		if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
 			return fmt.Errorf("delete channel debug logs: %w", err)

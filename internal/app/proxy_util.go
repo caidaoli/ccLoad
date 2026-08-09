@@ -183,6 +183,7 @@ type proxyResult struct {
 	isNetworkError            bool
 	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
 	deferredCooldown          *cooldown.ErrorInput
+	antigravityCapacity429    bool
 	protocolCapabilityMissing bool
 	websocketTargetCooling    bool
 	responsesTurn             responsesWebsocketTurnResult
