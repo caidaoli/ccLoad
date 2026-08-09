@@ -1145,6 +1145,7 @@ function updateBatchChannelSelectionUI() {
     'batchRefreshMergeBtn',
     'batchRefreshReplaceBtn',
     'batchApplyProtocolBtn',
+    'batchApplyPriorityBtn',
     'batchApplyCostMultiplierBtn',
     'batchApplyRPMLimitBtn',
     'batchApplyMaxConcurrencyBtn',
@@ -1158,7 +1159,7 @@ function updateBatchChannelSelectionUI() {
 
   const protocolMode = document.getElementById('batchProtocolTransformMode');
   if (protocolMode) protocolMode.disabled = selectedCount === 0 || batchBusy;
-  ['batchCostMultiplier', 'batchRPMLimit', 'batchMaxConcurrency', 'batchDailyCostLimit'].forEach((id) => {
+  ['batchPriority', 'batchCostMultiplier', 'batchRPMLimit', 'batchMaxConcurrency', 'batchDailyCostLimit'].forEach((id) => {
     const input = document.getElementById(id);
     if (input) input.disabled = selectedCount === 0 || batchBusy;
   });
@@ -1329,6 +1330,17 @@ async function batchSetSelectedChannelsProtocolMode() {
 }
 
 const batchNumericSettingConfigs = {
+  priority: {
+    inputID: 'batchPriority',
+    buttonID: 'batchApplyPriorityBtn',
+    errorID: 'batchPriorityError',
+    invalidKey: 'channels.batchPriorityInvalid',
+    summaryKey: 'channels.batchPrioritySummary',
+    summaryValueName: 'value',
+    integer: true,
+    min: -99999,
+    max: 99999
+  },
   cost_multiplier: {
     inputID: 'batchCostMultiplier',
     buttonID: 'batchApplyCostMultiplierBtn',
@@ -1380,7 +1392,9 @@ async function batchSetSelectedChannelsNumericSetting(fieldName) {
   const error = document.getElementById(config.errorID);
   const rawValue = String(input?.value ?? '').trim();
   const value = Number(rawValue);
-  if (rawValue === '' || !Number.isFinite(value) || value < 0 || (config.integer && !Number.isInteger(value))) {
+  const min = config.min ?? 0;
+  const max = config.max ?? Number.POSITIVE_INFINITY;
+  if (rawValue === '' || !Number.isFinite(value) || value < min || value > max || (config.integer && !Number.isInteger(value))) {
     const message = window.t(config.invalidKey);
     if (input) {
       input.setAttribute('aria-invalid', 'true');
@@ -1426,6 +1440,10 @@ async function batchSetSelectedChannelsNumericSetting(fieldName) {
 
 async function batchSetSelectedChannelsCostMultiplier() {
   return batchSetSelectedChannelsNumericSetting('cost_multiplier');
+}
+
+async function batchSetSelectedChannelsPriority() {
+  return batchSetSelectedChannelsNumericSetting('priority');
 }
 
 async function batchSetSelectedChannelsRPMLimit() {
@@ -3550,6 +3568,7 @@ if (typeof module !== 'undefined' && module.exports) {
     addCommonModels,
     addCommonModelsToRows,
     applyQuickAddChannelSetup,
+    batchSetSelectedChannelsPriority,
     batchSetSelectedChannelsDailyCostLimit,
     batchSetSelectedChannelsCostMultiplier,
     batchSetSelectedChannelsMaxConcurrency,

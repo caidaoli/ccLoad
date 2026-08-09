@@ -8,6 +8,7 @@ const (
 	CodexBaseURLSettingKey              = "CODEX_BASE_URL"
 	XAIBaseURLSettingKey                = "XAI_BASE_URL"
 	AntigravityURLSettingKey            = "ANTIGRAVITY_URL"
+	AnthropicBaseURLSettingKey          = "ANTHROPIC_BASE_URL"
 	ActiveRequestTitleEnabledSettingKey = "active_request_title_enabled"
 )
 

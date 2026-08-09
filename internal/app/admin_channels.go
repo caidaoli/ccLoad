@@ -1435,6 +1435,7 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 	var req struct {
 		ChannelIDs            []int64            `json:"channel_ids"`
+		Priority              *int               `json:"priority"`
 		CostMultiplier        *float64           `json:"cost_multiplier"`
 		DailyCostLimit        *float64           `json:"daily_cost_limit"`
 		RPMLimit              *int               `json:"rpm_limit"`
@@ -1456,6 +1457,7 @@ func (s *Server) HandleBatchPatchChannels(c *gin.Context) {
 	}
 
 	patch, err := (model.BatchConfigPatch{
+		Priority:              req.Priority,
 		CostMultiplier:        req.CostMultiplier,
 		DailyCostLimit:        req.DailyCostLimit,
 		RPMLimit:              req.RPMLimit,

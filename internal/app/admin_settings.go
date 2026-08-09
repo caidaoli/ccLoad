@@ -453,7 +453,8 @@ func validateSettingValue(key, valueType, value string) error {
 		switch key {
 		case config.CodexBaseURLSettingKey,
 			config.XAIBaseURLSettingKey,
-			config.AntigravityURLSettingKey:
+			config.AntigravityURLSettingKey,
+			config.AnthropicBaseURLSettingKey:
 			return validateOptionalOAuthBaseURL(value)
 		case "log_channel_click_action":
 			if value != "edit" && value != "navigate" {

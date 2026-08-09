@@ -25,12 +25,14 @@ const byteSettingKeys = new Set([
 const oauthBaseURLSettingKeys = new Set([
   'codex_base_url',
   'xai_base_url',
-  'antigravity_url'
+  'antigravity_url',
+  'anthropic_base_url'
 ]);
 const oauthBaseURLPlaceholders = new Map([
   ['CODEX_BASE_URL', 'https://chatgpt.com/backend-api/codex/responses'],
   ['XAI_BASE_URL', 'https://cli-chat-proxy.grok.com/v1'],
-  ['ANTIGRAVITY_URL', 'https://daily-cloudcode-pa.googleapis.com']
+  ['ANTIGRAVITY_URL', 'https://daily-cloudcode-pa.googleapis.com'],
+  ['ANTHROPIC_BASE_URL', 'https://api.anthropic.com']
 ]);
 const bytesPerMiB = 1024 * 1024;
 const maxDurationSeconds = 9223372036;
@@ -592,6 +594,7 @@ function getSettingOrder(key) {
     codex_base_url: 91,
     xai_base_url: 92,
     antigravity_url: 93,
+    anthropic_base_url: 94,
     upstream_first_byte_timeout: 100,
     stream_timeout: 101,
     non_stream_timeout: 102,

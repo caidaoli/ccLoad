@@ -25,8 +25,6 @@ import (
 const (
 	codexUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
 	codexUsageUserAgent        = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
-	anthropicUsageURL          = anthropicauth.DefaultUpstreamURL + "/api/oauth/usage"
-	anthropicProfileURL        = anthropicauth.DefaultUpstreamURL + "/api/oauth/profile"
 	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 	antigravityUsageUserAgent  = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
@@ -656,11 +654,18 @@ func requestAnthropicUsage(
 	ctx context.Context,
 	client *http.Client,
 	credential *anthropicauth.Credential,
+	baseURL string,
 ) (*oauthUsageSummary, anthropicCredentialMetadata, error) {
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic request is unavailable")
 	}
-	usageRequest, err := newAnthropicOAuthMetadataRequest(ctx, anthropicUsageURL, credential.AccessToken)
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = anthropicauth.DefaultUpstreamURL
+	}
+	usageURL := buildUpstreamURL(baseURL, "/api/oauth/usage", "")
+	profileURL := buildUpstreamURL(baseURL, "/api/oauth/profile", "")
+	usageRequest, err := newAnthropicOAuthMetadataRequest(ctx, usageURL, credential.AccessToken, true)
 	if err != nil {
 		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic request is unavailable")
 	}
@@ -678,7 +683,7 @@ func requestAnthropicUsage(
 	}
 	summary.PlanType = strings.TrimSpace(credential.PlanType)
 
-	profileRequest, err := newAnthropicOAuthMetadataRequest(ctx, anthropicProfileURL, credential.AccessToken)
+	profileRequest, err := newAnthropicOAuthMetadataRequest(ctx, profileURL, credential.AccessToken, false)
 	if err != nil {
 		summary.Warnings = append(summary.Warnings, "Anthropic subscription metadata unavailable")
 		return summary, anthropicCredentialMetadata{}, nil
@@ -708,7 +713,7 @@ func requestAnthropicUsage(
 	}, nil
 }
 
-func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToken string) (*http.Request, error) {
+func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToken string, usage bool) (*http.Request, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
 	if err != nil {
 		return nil, err
@@ -717,7 +722,7 @@ func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToke
 	req.Header.Set("Accept", "application/json, text/plain, */*")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", anthropicUsageUserAgent)
-	if targetURL == anthropicUsageURL {
+	if usage {
 		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	} else {
 		req.Header.Set("Cache-Control", "no-cache")
@@ -1373,7 +1378,11 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Anthropic credential refresh failed")
 		}
-		summary, metadata, err := requestAnthropicUsage(ctx, s.getClientForChannel(cfg), credential)
+		baseURL := anthropicauth.DefaultUpstreamURL
+		if urls := cfg.GetURLs(); len(urls) > 0 {
+			baseURL = urls[0]
+		}
+		summary, metadata, err := requestAnthropicUsage(ctx, s.getClientForChannel(cfg), credential, baseURL)
 		if err != nil {
 			return nil, err
 		}

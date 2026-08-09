@@ -4239,7 +4239,7 @@
     .channel-batch-advanced__field {
       min-width: 0;
       display: grid;
-      grid-template-columns: 6.75rem minmax(0, 1fr);
+      grid-template-columns: 6rem minmax(0, 1fr);
       align-items: center;
       column-gap: 10px;
       row-gap: 4px;
@@ -4250,6 +4250,7 @@
       font-size: var(--text-sm);
       font-weight: 600;
       line-height: 1.2;
+      text-align: end;
     }
 
     .channel-batch-advanced__control {

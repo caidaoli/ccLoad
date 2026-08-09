@@ -617,7 +617,11 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 				result.NotFound = append(result.NotFound, channelID)
 				continue
 			}
-			// Model imports are independent of the channel authentication type.
+			// Resolve the full next state so omitted fields remain untouched.
+			nextPriority := state.priority
+			if patch.Priority != nil {
+				nextPriority = *patch.Priority
+			}
 			nextCostMultiplier := state.costMultiplier
 			if patch.CostMultiplier != nil {
 				nextCostMultiplier = *patch.CostMultiplier
@@ -642,12 +646,14 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 			nextModels := state.modelEntries
 			modelsChanged := false
 			if patch.ModelImportMode != "" {
+				// Model imports are independent of the channel authentication type.
 				nextModels = importedModelEntries(state.modelEntries, patch.ModelEntries, patch.ModelImportMode)
 				modelsChanged = !modelEntrySlicesEqual(state.modelEntries, nextModels)
 				nextScheduledCheckModel = reconciledScheduledCheckModel(nextScheduledCheckModel, nextModels)
 			}
 
-			changed := state.costMultiplier != nextCostMultiplier ||
+			changed := state.priority != nextPriority ||
+				state.costMultiplier != nextCostMultiplier ||
 				state.dailyCostLimit != nextDailyCostLimit ||
 				state.rpmLimit != nextRPMLimit ||
 				state.maxConcurrency != nextMaxConcurrency ||
@@ -661,10 +667,10 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 
 			if _, err := s.execTx(ctx, tx, `
 				UPDATE channels
-				SET cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
+				SET priority = ?, cost_multiplier = ?, daily_cost_limit = ?, rpm_limit = ?, max_concurrency = ?,
 					protocol_transform_mode = ?, scheduled_check_model = ?, updated_at = ?
 				WHERE id = ?
-			`, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
+			`, nextPriority, nextCostMultiplier, nextDailyCostLimit, nextRPMLimit, nextMaxConcurrency,
 				nextProtocolMode, nextScheduledCheckModel, timeToUnix(time.Now()), channelID); err != nil {
 				return fmt.Errorf("patch channel %d: %w", channelID, err)
 			}
@@ -684,6 +690,7 @@ func (s *SQLStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64, pa
 }
 
 type batchConfigPatchState struct {
+	priority              int
 	costMultiplier        float64
 	dailyCostLimit        float64
 	rpmLimit              int
@@ -718,7 +725,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 	}
 
 	//nolint:gosec // placeholders are generated internally and contain only "?".
-	query := `SELECT id, cost_multiplier, daily_cost_limit, rpm_limit, max_concurrency,
+	query := `SELECT id, priority, cost_multiplier, daily_cost_limit, rpm_limit, max_concurrency,
 		protocol_transform_mode, scheduled_check_model
 		FROM channels WHERE id IN (` + strings.Join(placeholders, ",") + `) ORDER BY id`
 	if s.supportsRowLock() {
@@ -733,7 +740,7 @@ func (s *SQLStore) loadBatchConfigPatchStates(ctx context.Context, tx *sql.Tx, c
 		var channelID int64
 		state := &batchConfigPatchState{}
 		if err := rows.Scan(
-			&channelID, &state.costMultiplier, &state.dailyCostLimit, &state.rpmLimit, &state.maxConcurrency,
+			&channelID, &state.priority, &state.costMultiplier, &state.dailyCostLimit, &state.rpmLimit, &state.maxConcurrency,
 			&state.protocolTransformMode, &state.scheduledCheckModel,
 		); err != nil {
 			_ = rows.Close()

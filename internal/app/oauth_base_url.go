@@ -29,6 +29,9 @@ func (s *Server) withOAuthBaseURLOverride(cfg *model.Config) *model.Config {
 	case cfg.UsesAntigravityOAuth():
 		settingKey = config.AntigravityURLSettingKey
 		entry.Protocols = []string{string(protocol.Gemini)}
+	case cfg.UsesAnthropicOAuth():
+		settingKey = config.AnthropicBaseURLSettingKey
+		entry.Protocols = []string{string(protocol.Anthropic)}
 	default:
 		return cfg
 	}
