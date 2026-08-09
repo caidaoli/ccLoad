@@ -55,7 +55,7 @@ window.I18N_LOCALES['en'] = Object.assign(window.I18N_LOCALES['en'] || {}, {
   'www.home.admin.title': 'Not a black-box proxy',
   'www.home.admin.desc': 'ccLoad puts channels, models, tokens, cost, first-byte latency, failure reasons, and model verification into one console. Administrators manage the gateway; API-token users get a read-only view scoped to their permitted channels and usage data.',
   'www.home.admin.item1': 'Track requests, tokens, cost and latency system-wide as an administrator or within one API token\'s scope.',
-  'www.home.admin.item2': 'Run chat-style tests or compare statistical model fingerprints against saved baselines.',
+  'www.home.admin.item2': 'Run chat-style tests or test models by channel through the real proxy path.',
   'www.home.admin.item3': 'Configure multiple URLs and keys, pause individual models, and enforce RPM, concurrency and daily cost limits per channel.',
   'www.home.admin.item4': 'Export conversations as Markdown or HTML, then inspect masked upstream requests and responses when tracking automatic protocol fallback issues.',
   'www.home.admin.usage': 'View API usage',

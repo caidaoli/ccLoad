@@ -11,10 +11,8 @@ import (
 )
 
 var replicaTables = map[string]string{
-	"channels":                 "channels",
-	"auth_tokens":              "auth_tokens",
-	"model_fingerprints":       "model_fingerprints",
-	"fingerprint_test_results": "fingerprint_test_results",
+	"channels":    "channels",
+	"auth_tokens": "auth_tokens",
 }
 
 // ReplicaCooldownState preserves both fields used by exponential backoff.
@@ -205,7 +203,6 @@ func (s *SQLStore) deleteChannelReplicaTx(ctx context.Context, tx *sql.Tx, chann
 		`DELETE FROM channel_models WHERE channel_id = ?`,
 		`DELETE FROM channel_model_cooldowns WHERE channel_id = ?`,
 		`DELETE FROM channel_url_states WHERE channel_id = ?`,
-		`UPDATE model_fingerprints SET channel_id = NULL WHERE channel_id = ?`,
 		`DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`,
 		`DELETE FROM logs WHERE channel_id = ?`,
 		`DELETE FROM channels WHERE id = ?`,
@@ -219,7 +216,7 @@ func (s *SQLStore) deleteChannelReplicaTx(ctx context.Context, tx *sql.Tx, chann
 }
 
 // replaceChannelSchedulingReplicaTx removes only the mutable scheduling
-// aggregate. Historical logs and fingerprint references keep the same channel ID.
+// aggregate. Historical logs keep the same channel ID.
 func (s *SQLStore) replaceChannelSchedulingReplicaTx(ctx context.Context, tx *sql.Tx, channelID int64) error {
 	statements := []string{
 		`DELETE FROM api_keys WHERE channel_id = ?`,

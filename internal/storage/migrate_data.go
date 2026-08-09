@@ -34,15 +34,13 @@ const logsClientProtocolBackfillCase = `CASE
 		ELSE 'openai'
 	END`
 
-// backfillLogsClientProtocol 回填历史行的 client_protocol：
-// logs 按模型名推断，model_fingerprints 从保留的 channel_type 物理列复制。
+// backfillLogsClientProtocol 按模型名推断历史日志的 client_protocol。
 //
 // 模型名推断是 best-effort 启发式：client_protocol 的语义是客户端入口协议，与模型名
 // 没有必然对应（经 OpenAI 兼容端点调用 Claude 模型的历史日志会被误标为 anthropic）。
 // 历史数据仅用于统计展示，新日志由代理链路准确写入，误差可接受。
 //
 // 幂等标记在全部步骤完成后写入：中途失败重跑时从剩余未回填行继续。
-// 必须在 logs 与 model_fingerprints 两表的列迁移都完成后调用（建表循环之外）。
 func backfillLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	if hasMigration(ctx, db, clientProtocolBackfillMigrationVersion, dialect) {
 		return nil
@@ -50,14 +48,6 @@ func backfillLogsClientProtocol(ctx context.Context, db *sql.DB, dialect Dialect
 
 	if err := backfillLogsClientProtocolBatches(ctx, db, dialect, 0); err != nil {
 		return err
-	}
-
-	// 历史指纹行：channel_type 与 client_protocol 取值域一致（四协议名），直接复制。
-	// 指纹表行数极少，无需分批。
-	if _, err := db.ExecContext(ctx,
-		"UPDATE model_fingerprints SET client_protocol = channel_type WHERE client_protocol = '' AND channel_type != ''",
-	); err != nil {
-		return fmt.Errorf("backfill model_fingerprints client_protocol: %w", err)
 	}
 
 	return recordMigration(ctx, db, clientProtocolBackfillMigrationVersion, dialect)

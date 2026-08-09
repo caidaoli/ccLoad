@@ -16,7 +16,6 @@
   <script defer src="/web/assets/locales/zh-CN.js?v=__VERSION__"></script>
   <script defer src="/web/assets/locales/en.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/i18n.js?v=__VERSION__"></script>
-  <script defer src="/web/assets/js/echarts.min.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/template-engine.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/web-auth.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/ui.js?v=__VERSION__"></script>
@@ -28,7 +27,6 @@
   <script defer src="/web/assets/js/model-test-chat-session.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
-  <script defer src="/web/assets/js/model-fingerprint.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/logs-channel-editor.js?v=__VERSION__"></script>
   <script src="/web/assets/js/marked.min.js?v=__VERSION__"></script>
@@ -103,14 +101,6 @@
                   <rect x="3" y="14" width="7" height="7"></rect>
                 </svg>
                 <span data-i18n="modelTest.mode.model">按模型测试</span>
-              </button>
-              <button id="modeTabFingerprint" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="fingerprint">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                  <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"></path>
-                  <path d="M12 6c-3.31 0-6 2.69-6 6s2.69 6 6 6 6-2.69 6-6-2.69-6-6-6z"></path>
-                  <path d="M12 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z"></path>
-                </svg>
-                <span data-i18n="modelTest.mode.fingerprint">指纹对比</span>
               </button>
             </div>
           </div>
@@ -361,195 +351,9 @@
               <button id="chatSendBtn" type="button" class="btn btn-primary chat-send-btn" data-action="send-chat-message" data-i18n="modelTest.chat.send">发送</button>
             </div>
           </div>
-
-          <!-- 指纹对比面板 -->
-          <section id="fingerprintPanel" class="fingerprint-panel hidden">
-            <div class="fp-explanation">
-              <section class="fp-explanation-card">
-                <h3 data-i18n="modelTest.fingerprint.principleTitle">原理</h3>
-                <p data-i18n="modelTest.fingerprint.principleP1">大语言模型并非真正的随机数生成器。当被要求“随机选数字”时，不同模型由于其训练数据、架构、RLHF对齐方式、tokenization策略等差异，会产生不同的偏差。</p>
-                <p data-i18n="modelTest.fingerprint.principleP2">这些差异在大量采样后就形成了统计学上可区分的指纹。</p>
-                <p data-i18n="modelTest.fingerprint.principleP3">这一指纹不能轻易被系统提示词覆盖，所以可以用来检测第三方API是真的假的。</p>
-              </section>
-              <section class="fp-explanation-card fp-explanation-card--disclaimer">
-                <h3 data-i18n="modelTest.fingerprint.disclaimerTitle">免责声明</h3>
-                <p data-i18n="modelTest.fingerprint.disclaimerP1">测试结果仅供参考。</p>
-                <p data-i18n="modelTest.fingerprint.disclaimerP2">由于大模型本身存在随机性及网络波动，本工具的测试结果不能作为任何商业纠纷、退款索赔的绝对法律/事实依据。</p>
-              </section>
-            </div>
-
-            <!-- 基准列表 -->
-            <div class="fp-section">
-              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.baselines">已有基准</h3>
-              <div class="table-container">
-                <table class="modern-table">
-                  <thead>
-                    <tr>
-                      <th data-i18n="modelTest.fingerprint.col.name">名称</th>
-                      <th data-i18n="modelTest.fingerprint.col.channel">渠道</th>
-                      <th data-i18n="common.model">模型</th>
-                      <th data-i18n="modelTest.fingerprint.col.createdAt">创建时间</th>
-                      <th data-i18n="common.actions">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="fpBaselineTbody">
-                    <tr><td colspan="5" style="text-align:center;color:var(--text-muted)" data-i18n="modelTest.fingerprint.noBaselines">暂无基准，请先标定</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-
-            <!-- 标定表单 -->
-            <div class="fp-section">
-              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.calibrate">标定基准</h3>
-              <div class="fp-form fp-form--inline">
-                <label class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.name">名称</span>
-                  <input id="fpCalibrateName" type="text" class="form-input fp-input"
-                    data-i18n-placeholder="modelTest.fingerprint.namePlaceholder" placeholder="基准名称">
-                </label>
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="common.model">模型</span>
-                  <div id="fpCalibrateModelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpCalibrateModel">
-                </div>
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <div id="fpCalibrateChannelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpCalibrateChannel">
-                </div>
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
-                  <div id="fpCalibrateClientProtocolContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpCalibrateClientProtocol" value="anthropic">
-                </div>
-                <label class="fp-form-row fp-stream-toggle">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.stream">流式</span>
-                  <input type="checkbox" id="fpCalibrateStream" class="control-checkbox">
-                </label>
-                <div class="fp-form-row fp-form-row--pair">
-                  <label class="fp-pair-item">
-                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
-                    <input id="fpCalibrateIterations" type="number" class="form-input fp-input fp-input--number"
-                      value="100" min="50" max="500">
-                  </label>
-                  <label class="fp-pair-item">
-                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
-                    <input id="fpCalibrateConcurrency" type="number" class="form-input fp-input fp-input--number"
-                      value="5" min="1" max="20">
-                  </label>
-                  <div class="fp-form-actions">
-                    <button id="fpCalibrateBtn" type="button" class="btn btn-primary"
-                      data-i18n="modelTest.fingerprint.calibrate">标定基准</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- 对比测试表单 -->
-            <div class="fp-section">
-              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.test">开始对比</h3>
-              <div class="fp-form fp-form--inline">
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="common.model">模型</span>
-                  <div id="fpTestModelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpTestModel">
-                </div>
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.col.channel">渠道</span>
-                  <div id="fpTestChannelContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpTestChannel">
-                </div>
-                <div class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.requestProtocol">请求协议</span>
-                  <div id="fpTestClientProtocolContainer" class="fp-combobox-container"></div>
-                  <input type="hidden" id="fpTestClientProtocol" value="anthropic">
-                </div>
-                <label class="fp-form-row">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.baseline">对比基准</span>
-                  <select id="fpTestBaselineSelect" class="filter-select fp-select">
-                    <option value="" data-i18n="modelTest.fingerprint.baselineAny">任意（全量对比）</option>
-                  </select>
-                </label>
-                <label class="fp-form-row fp-stream-toggle">
-                  <span class="fp-form-label" data-i18n="modelTest.fingerprint.stream">流式</span>
-                  <input type="checkbox" id="fpTestStream" class="control-checkbox">
-                </label>
-                <div class="fp-form-row fp-form-row--pair">
-                  <label class="fp-pair-item">
-                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.iterations">迭代次数</span>
-                    <input id="fpTestIterations" type="number" class="form-input fp-input fp-input--number"
-                      value="100" min="50" max="500">
-                  </label>
-                  <label class="fp-pair-item">
-                    <span class="fp-form-label" data-i18n="modelTest.fingerprint.concurrency">并发</span>
-                    <input id="fpTestConcurrency" type="number" class="form-input fp-input fp-input--number"
-                      value="5" min="1" max="20">
-                  </label>
-                  <div class="fp-form-actions">
-                    <button id="fpTestBtn" type="button" class="btn btn-primary"
-                      data-i18n="modelTest.fingerprint.test">开始对比</button>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <!-- 进度 & 结果 -->
-            <div id="fpProgress" class="fp-progress hidden">
-              <div class="fp-progress-track">
-                <div id="fpProgressFill" class="fp-progress-fill" style="width:0%"></div>
-              </div>
-              <div id="fpProgressText" class="fp-progress-text"></div>
-            </div>
-            <div id="fpResults" class="fp-results hidden"></div>
-
-            <!-- 对比历史 -->
-            <div class="fp-section">
-              <h3 class="fp-section-title" data-i18n="modelTest.fingerprint.history">对比历史</h3>
-              <div class="table-container">
-                <table class="modern-table">
-                  <thead>
-                    <tr>
-                      <th data-i18n="common.model">模型</th>
-                      <th data-i18n="modelTest.fingerprint.col.channel">渠道</th>
-                      <th data-i18n="modelTest.fingerprint.sampleCount">样本数</th>
-                      <th data-i18n="modelTest.fingerprint.col.score">最高评分</th>
-                      <th data-i18n="modelTest.fingerprint.col.time">时间</th>
-                      <th data-i18n="common.actions">操作</th>
-                    </tr>
-                  </thead>
-                  <tbody id="fpHistoryTbody">
-                    <tr><td colspan="6" style="text-align:center;color:var(--text-muted)" data-i18n="modelTest.fingerprint.noHistory">暂无对比历史</td></tr>
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </section>
         </section>
       </div>
     </main>
-  </div>
-
-  <!-- 指纹历史分布对比弹窗 -->
-  <div id="fpHistoryDetailModal" class="modal" aria-hidden="true">
-    <div class="modal-content modal-content--xl fp-history-modal-content" role="dialog" aria-modal="true" aria-labelledby="fpHistoryDetailTitle">
-      <div class="modal-header">
-        <h2 id="fpHistoryDetailTitle" class="modal-title" data-i18n="modelTest.fingerprint.historyDetail">对比详情</h2>
-        <button id="fpHistoryDetailCloseBtn" type="button" class="close-btn" aria-label="Close">&times;</button>
-      </div>
-      <div id="fpHistoryDetailMeta" class="fp-history-modal-meta"></div>
-      <section class="fp-distribution-section">
-        <div class="fp-distribution-header">
-          <h3 data-i18n="modelTest.fingerprint.distributionCompare">分布对比</h3>
-          <div class="fp-chart-type-toggle" role="group" aria-label="Chart type">
-            <button type="button" class="btn btn-secondary btn-sm fp-chart-type-btn active" data-fp-chart-type="line" aria-pressed="true" data-i18n="modelTest.fingerprint.lineChart">折线图</button>
-            <button type="button" class="btn btn-secondary btn-sm fp-chart-type-btn" data-fp-chart-type="bar" aria-pressed="false" data-i18n="modelTest.fingerprint.barChart">直方图</button>
-          </div>
-        </div>
-        <div id="fpHistoryDistributionChart" class="fp-distribution-chart"></div>
-      </section>
-      <div id="fpHistoryMatches" class="fp-history-matches"></div>
-    </div>
   </div>
 
   <!-- 对话高级选项弹窗 -->

@@ -199,7 +199,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -224,7 +224,7 @@ func TestMySQL(t *testing.T) {
 		defer func() { _ = store.Close() }()
 
 		// 验证关键表存在
-		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "model_fingerprints", "fingerprint_test_results"}
+		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions"}
 		for _, table := range tables {
 			var count int
 			err := env.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count)
@@ -387,18 +387,6 @@ func TestMySQL(t *testing.T) {
 		verifyClientProtocolBackfill(t, context.Background(), env.db, DialectMySQL, func(ctx context.Context, db *sql.DB) error {
 			return migrateMySQL(ctx, db)
 		})
-	})
-
-	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
-		cleanupMySQLTables(t, env.db)
-
-		store, err := CreateMySQLStoreForTest(env.dsn)
-		if err != nil {
-			t.Fatalf("迁移失败: %v", err)
-		}
-		defer func() { _ = store.Close() }()
-
-		verifyFingerprintStorageContract(t, store)
 	})
 
 	t.Run("Idempotent", func(t *testing.T) {
