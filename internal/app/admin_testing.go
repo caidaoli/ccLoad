@@ -1275,7 +1275,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.headers,
+		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)

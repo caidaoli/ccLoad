@@ -111,7 +111,13 @@ func (s *Server) buildProxyRequest(
 	// 1. 构建完整 URL
 	upstreamProtocol := protocol.Protocol(runtimeUpstreamProtocol(reqCtx, cfg))
 	upstreamStreaming := reqCtx != nil && reqCtx.isStreaming
-	body, err := s.prepareTranslatedUpstreamBody(cfg, upstreamProtocol, requestPath, body, hdr)
+	var sourceBody []byte
+	if reqCtx != nil {
+		sourceBody = reqCtx.transformPlan.OriginalBody
+	}
+	body, err := s.prepareTranslatedUpstreamBody(
+		cfg, upstreamProtocol, requestPath, body, sourceBody, hdr,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -207,6 +213,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	upstreamProtocol protocol.Protocol,
 	requestPath string,
 	body []byte,
+	sourceBody []byte,
 	headers http.Header,
 ) ([]byte, error) {
 	body = normalizeAnyrouterAdaptiveThinking(cfg, string(upstreamProtocol), requestPath, body)
@@ -214,7 +221,9 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
 	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
 	if cfg != nil && cfg.UsesAntigravityOAuth() {
-		return prepareAntigravityRequestBody(cfg, extractModelFromPath(requestPath), body, headers, s.antigravityPromptMatcher)
+		return prepareAntigravityRequestBody(
+			cfg, extractModelFromPath(requestPath), body, sourceBody, headers, s.antigravityPromptMatcher,
+		)
 	}
 	return body, nil
 }
@@ -2019,7 +2028,7 @@ func (s *Server) forwardAttempt(
 		if res != nil && len(res.upstreamRequestBody) > 0 {
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
 		}
-		retryBody, retryStrategy, ok := codexRetryBodyFor400(upstreamProtocol, cfg, retrySourcePlan, res)
+		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retrySourcePlan, res)
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
 			break
 		}
@@ -2205,6 +2214,20 @@ func isInvalidResponsesRequestError(body []byte) bool {
 		return true
 	}
 	return strings.Contains(strings.ToLower(payload.Error.Message), "invalid_responses_request")
+}
+
+func retryBodyForRejectedRequest(
+	upstreamProtocol protocol.Protocol,
+	cfg *model.Config,
+	plan protocol.TransformPlan,
+	res *fwResult,
+) ([]byte, string, bool) {
+	if cfg != nil && cfg.UsesAntigravityOAuth() && res != nil && !res.ResponseCommitted {
+		if retryBody, strategy, ok := antigravitySignatureRetryBody(plan.TranslatedBody, res.Body, res.Status); ok {
+			return retryBody, strategy, true
+		}
+	}
+	return codexRetryBodyFor400(upstreamProtocol, cfg, plan, res)
 }
 
 func codexRetryBodyFor400(
@@ -3099,6 +3122,16 @@ func (s *Server) tryAntigravityOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
+	if isAntigravityCountTokensPath(reqCtx.requestPath) {
+		body := []byte(`{"totalTokens":0}`)
+		headers := make(http.Header, 1)
+		headers.Set("Content-Type", "application/json; charset=utf-8")
+		writeResponseWithHeaders(w, http.StatusOK, headers, body)
+		return &proxyResult{
+			status: http.StatusOK, body: body, channelID: &cfg.ID,
+			succeeded: true, nextAction: cooldown.ActionReturnClient,
+		}, nil
+	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
