@@ -24,7 +24,7 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	rawJSON = setCodexRequiredBool(rawJSON, "stream", true)
 	rawJSON = setCodexRequiredBool(rawJSON, "store", false)
 	rawJSON = setCodexRequiredBool(rawJSON, "parallel_tool_calls", true)
-	rawJSON = setCodexRequiredInclude(rawJSON)
+	rawJSON = ensureCodexReasoningInclude(rawJSON)
 	// Codex Responses rejects token limit fields, so strip them out before forwarding.
 	rawJSON = deleteCodexRequestFields(rawJSON, "max_output_tokens", "max_completion_tokens", "temperature", "top_p")
 	if serviceTier := gjson.GetBytes(rawJSON, "service_tier"); serviceTier.Exists() && serviceTier.String() != "priority" {
@@ -57,14 +57,29 @@ func setCodexRequiredBool(rawJSON []byte, path string, value bool) []byte {
 	return updated
 }
 
-func setCodexRequiredInclude(rawJSON []byte) []byte {
-	current := gjson.GetBytes(rawJSON, "include")
-	values := current.Array()
-	if current.IsArray() && len(values) == 1 && values[0].Type == gjson.String && values[0].String() == "reasoning.encrypted_content" {
+func ensureCodexReasoningInclude(rawJSON []byte) []byte {
+	reasoning := gjson.GetBytes(rawJSON, "reasoning")
+	if !reasoning.IsObject() || len(reasoning.Map()) == 0 {
 		return rawJSON
 	}
 
-	updated, errSet := sjson.SetRawBytes(rawJSON, "include", []byte(`["reasoning.encrypted_content"]`))
+	current := gjson.GetBytes(rawJSON, "include")
+	if !current.Exists() || current.Type == gjson.Null {
+		updated, errSet := sjson.SetRawBytes(rawJSON, "include", []byte(`["reasoning.encrypted_content"]`))
+		if errSet != nil {
+			return rawJSON
+		}
+		return updated
+	}
+	if !current.IsArray() {
+		return rawJSON
+	}
+	for _, value := range current.Array() {
+		if value.Type == gjson.String && value.String() == "reasoning.encrypted_content" {
+			return rawJSON
+		}
+	}
+	updated, errSet := sjson.SetBytes(rawJSON, "include.-1", "reasoning.encrypted_content")
 	if errSet != nil {
 		return rawJSON
 	}

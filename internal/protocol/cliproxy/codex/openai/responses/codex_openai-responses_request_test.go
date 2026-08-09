@@ -212,10 +212,8 @@ func TestConvertOpenAIResponsesRequestToCodex_OriginalIssue(t *testing.T) {
 	}
 
 	include := gjson.Get(outputStr, "include")
-	if !include.IsArray() || len(include.Array()) != 1 {
-		t.Error("include should be an array with one element")
-	} else if include.Array()[0].String() != "reasoning.encrypted_content" {
-		t.Errorf("Expected include[0] to be 'reasoning.encrypted_content', got '%s'", include.Array()[0].String())
+	if include.Exists() {
+		t.Errorf("include should be absent without reasoning, got %s", include.Raw)
 	}
 }
 
@@ -261,8 +259,8 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 		t.Fatalf("parallel_tool_calls = %s, want true", parallel.Raw)
 	}
 	include := gjson.GetBytes(output, "include").Array()
-	if len(include) != 1 || include[0].Type != gjson.String || include[0].String() != "reasoning.encrypted_content" {
-		t.Fatalf("include = %s, want reasoning.encrypted_content only", gjson.GetBytes(output, "include").Raw)
+	if len(include) != 2 || include[0].String() != "file_search_call.results" || include[1].String() != "reasoning.encrypted_content" {
+		t.Fatalf("include = %s, want existing values preserved", gjson.GetBytes(output, "include").Raw)
 	}
 	if role := gjson.GetBytes(output, "input.0.role").String(); role != "developer" {
 		t.Fatalf("input.0.role = %q, want developer", role)
@@ -279,6 +277,44 @@ func TestConvertOpenAIResponsesRequestToCodexNormalizesRequiredFields(t *testing
 		if gjson.GetBytes(output, path).Exists() {
 			t.Fatalf("%s should be removed: %s", path, output)
 		}
+	}
+}
+
+func TestConvertOpenAIResponsesRequestToCodexAddsReasoningIncludeIncrementally(t *testing.T) {
+	tests := []struct {
+		name        string
+		input       string
+		wantInclude string
+	}{
+		{
+			name:        "missing include",
+			input:       `{"model":"gpt-5.6","reasoning":{"effort":"medium"},"input":[]}`,
+			wantInclude: `["reasoning.encrypted_content"]`,
+		},
+		{
+			name:        "append to existing include",
+			input:       `{"model":"gpt-5.6","reasoning":{"effort":"medium"},"include":["file_search_call.results"],"input":[]}`,
+			wantInclude: `["file_search_call.results","reasoning.encrypted_content"]`,
+		},
+		{
+			name:        "do not duplicate",
+			input:       `{"model":"gpt-5.6","reasoning":{"effort":"medium"},"include":["reasoning.encrypted_content","file_search_call.results"],"input":[]}`,
+			wantInclude: `["reasoning.encrypted_content","file_search_call.results"]`,
+		},
+		{
+			name:        "preserve malformed include",
+			input:       `{"model":"gpt-5.6","reasoning":{"effort":"medium"},"include":"file_search_call.results","input":[]}`,
+			wantInclude: `"file_search_call.results"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			output := ConvertOpenAIResponsesRequestToCodex("gpt-5.6", []byte(tt.input), true)
+			if got := gjson.GetBytes(output, "include").Raw; got != tt.wantInclude {
+				t.Fatalf("include = %s, want %s; body=%s", got, tt.wantInclude, output)
+			}
+		})
 	}
 }
 

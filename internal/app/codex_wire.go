@@ -51,8 +51,13 @@ func prepareCodexOAuthResponsesBody(
 		strings.EqualFold(strings.TrimSpace(effort.String()), "minimal") {
 		body, _ = sjson.SetBytes(body, "reasoning.effort", "low")
 	}
-	if instructions := gjson.GetBytes(body, "instructions"); !instructions.Exists() || instructions.Type == gjson.Null {
-		body, _ = sjson.SetBytes(body, "instructions", "")
+	if instructions := gjson.GetBytes(body, "instructions"); !instructions.Exists() ||
+		instructions.Type != gjson.String || strings.TrimSpace(instructions.String()) == "" {
+		body, _ = sjson.SetBytes(
+			body,
+			"instructions",
+			codexBaseInstructionsForModel(gjson.GetBytes(body, "model").String()),
+		)
 	}
 
 	responsesLite := strings.EqualFold(strings.TrimSpace(headers.Get(codexResponsesLiteHeader)), "true")
