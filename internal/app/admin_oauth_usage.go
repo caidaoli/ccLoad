@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -24,6 +25,9 @@ import (
 const (
 	codexUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
 	codexUsageUserAgent        = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
+	anthropicUsageURL          = anthropicauth.DefaultUpstreamURL + "/api/oauth/usage"
+	anthropicProfileURL        = anthropicauth.DefaultUpstreamURL + "/api/oauth/profile"
+	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 	antigravityUsageUserAgent  = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
 	oauthUsageTimeout          = 30 * time.Second
@@ -35,6 +39,7 @@ const (
 var (
 	errOAuthUsageUnsupported         = errors.New("usage: channel does not use a supported OAuth provider")
 	errCodexUsageManagerUnavailable  = errors.New("usage: Codex credential manager is unavailable")
+	errAnthropicManagerUnavailable   = errors.New("usage: Anthropic credential manager is unavailable")
 	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
 	errXAIUsageManagerUnavailable    = errors.New("usage: xAI credential manager is unavailable")
 	errXAIBillingBadCredential       = errors.New("usage: xAI credential was rejected")
@@ -71,6 +76,41 @@ type codexUsagePayload struct {
 	PlanType             string                     `json:"plan_type"`
 	RateLimit            *codexUsageRateLimit       `json:"rate_limit"`
 	AdditionalRateLimits []codexAdditionalRateLimit `json:"additional_rate_limits"`
+}
+
+type anthropicUsageRawWindow struct {
+	Utilization *float64 `json:"utilization"`
+	ResetsAt    string   `json:"resets_at"`
+}
+
+type anthropicUsagePayload struct {
+	FiveHour                *anthropicUsageRawWindow `json:"five_hour"`
+	SevenDay                *anthropicUsageRawWindow `json:"seven_day"`
+	SevenDaySonnet          *anthropicUsageRawWindow `json:"seven_day_sonnet"`
+	SevenDayOverageIncluded *anthropicUsageRawWindow `json:"seven_day_overage_included"`
+}
+
+type anthropicProfileSubject struct {
+	SubscriptionType string `json:"subscription_type"`
+	RateLimitTier    string `json:"rate_limit_tier"`
+	HasClaudePro     *bool  `json:"has_claude_pro"`
+	HasClaudeMax     *bool  `json:"has_claude_max"`
+}
+
+type anthropicProfileOrganization struct {
+	OrganizationType      string          `json:"organization_type"`
+	RateLimitTier         string          `json:"rate_limit_tier"`
+	ClaudeCodeTrialEndsAt json.RawMessage `json:"claude_code_trial_ends_at"`
+}
+
+type anthropicProfilePayload struct {
+	SubscriptionType          string                        `json:"subscription_type"`
+	OrganizationType          string                        `json:"organization_type"`
+	OrganizationRateLimitTier string                        `json:"organization_rate_limit_tier"`
+	UserRateLimitTier         string                        `json:"user_rate_limit_tier"`
+	Account                   *anthropicProfileSubject      `json:"account"`
+	User                      *anthropicProfileSubject      `json:"user"`
+	Organization              *anthropicProfileOrganization `json:"organization"`
 }
 
 type antigravityUsageBucket struct {
@@ -361,6 +401,136 @@ func normalizeCodexUsage(payload *codexUsagePayload, fallbackPlanType string) (*
 	return summary, nil
 }
 
+func appendAnthropicUsageWindow(
+	windows []oauthUsageWindow,
+	limitName string,
+	kind string,
+	windowSeconds int64,
+	raw *anthropicUsageRawWindow,
+) []oauthUsageWindow {
+	if raw == nil || raw.Utilization == nil {
+		return windows
+	}
+	usedPercent := min(max(*raw.Utilization, 0), 100)
+	resetAt := int64(0)
+	if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(raw.ResetsAt)); err == nil {
+		resetAt = parsed.Unix()
+	}
+	return append(windows, oauthUsageWindow{
+		LimitName:          limitName,
+		Kind:               kind,
+		UsedPercent:        usedPercent,
+		RemainingPercent:   100 - usedPercent,
+		LimitWindowSeconds: windowSeconds,
+		ResetAt:            resetAt,
+	})
+}
+
+func normalizeAnthropicUsage(payload *anthropicUsagePayload) (*oauthUsageSummary, error) {
+	if payload == nil {
+		return nil, errors.New("usage: Anthropic response is invalid")
+	}
+	summary := &oauthUsageSummary{
+		Provider: anthropicauth.ChannelType,
+		Windows:  make([]oauthUsageWindow, 0, 4),
+	}
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "five_hour", 5*60*60, payload.FiveHour)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "", "seven_day", weeklyUsageWindowSeconds, payload.SevenDay)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Sonnet", "seven_day_sonnet", weeklyUsageWindowSeconds, payload.SevenDaySonnet)
+	summary.Windows = appendAnthropicUsageWindow(summary.Windows, "Claude Fable", "seven_day_fable", weeklyUsageWindowSeconds, payload.SevenDayOverageIncluded)
+	if len(summary.Windows) == 0 {
+		return nil, errors.New("usage: Anthropic response has no rate limit windows")
+	}
+	return summary, nil
+}
+
+func anthropicProfileMetadata(payload *anthropicProfilePayload) (string, string, string, string, bool, bool, bool) {
+	if payload == nil {
+		return "", "", "", "", false, false, false
+	}
+	var accountSubscription, accountTier, userSubscription, userTier string
+	var hasClaudeMax, hasClaudePro bool
+	if payload.Account != nil {
+		accountSubscription = payload.Account.SubscriptionType
+		accountTier = payload.Account.RateLimitTier
+		hasClaudeMax = payload.Account.HasClaudeMax != nil && *payload.Account.HasClaudeMax
+		hasClaudePro = payload.Account.HasClaudePro != nil && *payload.Account.HasClaudePro
+	}
+	if payload.User != nil {
+		userSubscription = payload.User.SubscriptionType
+		userTier = payload.User.RateLimitTier
+	}
+	organizationType, organizationTier, trialEndsAt, trialEndsAtSet := payload.OrganizationType, payload.OrganizationRateLimitTier, "", false
+	if payload.Organization != nil {
+		organizationType = firstNonEmpty(payload.Organization.OrganizationType, organizationType)
+		organizationTier = firstNonEmpty(payload.Organization.RateLimitTier, organizationTier)
+		if raw := payload.Organization.ClaudeCodeTrialEndsAt; len(raw) > 0 {
+			trialEndsAtSet = true
+			if string(raw) != "null" {
+				var value string
+				if json.Unmarshal(raw, &value) != nil {
+					trialEndsAtSet = false
+				} else if parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value)); err == nil {
+					trialEndsAt = parsed.UTC().Format(time.RFC3339)
+				} else {
+					trialEndsAtSet = false
+				}
+			}
+		}
+	}
+	return firstNonEmpty(payload.SubscriptionType, userSubscription, accountSubscription),
+		firstNonEmpty(organizationTier, payload.UserRateLimitTier, userTier, accountTier),
+		strings.TrimSpace(organizationType), trialEndsAt, trialEndsAtSet, hasClaudeMax, hasClaudePro
+}
+
+func anthropicPlanLabel(subscriptionType, rateLimitTier, organizationType string, hasClaudeMax, hasClaudePro bool) (string, bool) {
+	normalize := func(value string) string {
+		value = strings.ToLower(strings.TrimSpace(value))
+		return strings.NewReplacer("-", "_", " ", "_").Replace(value)
+	}
+	subscription := normalize(subscriptionType)
+	tier := normalize(rateLimitTier)
+	organization := normalize(organizationType)
+	if organization != "" {
+		switch organization {
+		case "claude_enterprise", "enterprise":
+			return "Enterprise", true
+		case "claude_team", "team":
+			return "Team", true
+		case "claude_max", "max":
+			if strings.Contains(tier, "max_20x") {
+				return "Max 20x", true
+			}
+			if strings.Contains(tier, "max_5x") {
+				return "Max 5x", true
+			}
+			return "Max", true
+		case "claude_pro", "pro":
+			return "Pro", true
+		default:
+			return "", true
+		}
+	}
+	switch {
+	case strings.Contains(tier, "max_20x"):
+		return "Max 20x", true
+	case strings.Contains(tier, "max_5x"):
+		return "Max 5x", true
+	case hasClaudeMax, subscription == "max", subscription == "claude_max":
+		return "Max", true
+	case hasClaudePro, subscription == "pro", subscription == "claude_pro",
+		subscription == "stripe_subscription", subscription == "stripe_subscription_contracted",
+		subscription == "apple_subscription", subscription == "google_play_subscription":
+		return "Pro", true
+	case subscription == "team":
+		return "Team", true
+	case subscription == "enterprise":
+		return "Enterprise", true
+	default:
+		return "", false
+	}
+}
+
 func normalizeAntigravityUsage(payload *antigravityUsagePayload) (*oauthUsageSummary, error) {
 	if payload == nil {
 		return nil, errors.New("usage: Antigravity response is invalid")
@@ -456,6 +626,79 @@ func newCodexUsageRequest(ctx context.Context, credential *codexauth.Credential)
 	req.Header.Set("User-Agent", codexUsageUserAgent)
 	if credential.AccountID != "" {
 		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
+	}
+	return req, nil
+}
+
+func requestAnthropicUsage(
+	ctx context.Context,
+	client *http.Client,
+	credential *anthropicauth.Credential,
+) (*oauthUsageSummary, anthropicCredentialMetadata, error) {
+	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
+		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic request is unavailable")
+	}
+	usageRequest, err := newAnthropicOAuthMetadataRequest(ctx, anthropicUsageURL, credential.AccessToken)
+	if err != nil {
+		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic request is unavailable")
+	}
+	usageBody, err := executeOAuthUsageRequest(client, usageRequest, "Anthropic")
+	if err != nil {
+		return nil, anthropicCredentialMetadata{}, err
+	}
+	var usagePayload anthropicUsagePayload
+	if err := json.Unmarshal(usageBody, &usagePayload); err != nil {
+		return nil, anthropicCredentialMetadata{}, errors.New("usage: Anthropic response is invalid")
+	}
+	summary, err := normalizeAnthropicUsage(&usagePayload)
+	if err != nil {
+		return nil, anthropicCredentialMetadata{}, err
+	}
+	summary.PlanType = strings.TrimSpace(credential.PlanType)
+
+	profileRequest, err := newAnthropicOAuthMetadataRequest(ctx, anthropicProfileURL, credential.AccessToken)
+	if err != nil {
+		summary.Warnings = append(summary.Warnings, "Anthropic subscription metadata unavailable")
+		return summary, anthropicCredentialMetadata{}, nil
+	}
+	profileBody, err := executeOAuthUsageRequest(client, profileRequest, "Anthropic profile")
+	if err != nil {
+		summary.Warnings = append(summary.Warnings, "Anthropic subscription metadata unavailable")
+		return summary, anthropicCredentialMetadata{}, nil
+	}
+	var profilePayload anthropicProfilePayload
+	if err := json.Unmarshal(profileBody, &profilePayload); err != nil {
+		summary.Warnings = append(summary.Warnings, "Anthropic subscription metadata unavailable")
+		return summary, anthropicCredentialMetadata{}, nil
+	}
+	subscriptionType, rateLimitTier, organizationType, trialEndsAt, trialEndsAtSet, hasClaudeMax, hasClaudePro := anthropicProfileMetadata(&profilePayload)
+	profilePlanType, planTypeSet := anthropicPlanLabel(subscriptionType, rateLimitTier, organizationType, hasClaudeMax, hasClaudePro)
+	summary.SubscriptionTier = rateLimitTier
+	if planTypeSet {
+		summary.PlanType = profilePlanType
+	}
+	if !planTypeSet || profilePlanType == "" {
+		summary.Warnings = append(summary.Warnings, "Anthropic subscription metadata unavailable")
+	}
+	return summary, anthropicCredentialMetadata{
+		PlanType: profilePlanType, PlanTypeSet: planTypeSet,
+		ClaudeCodeTrialEndsAt: trialEndsAt, TrialEndsAtSet: trialEndsAtSet,
+	}, nil
+}
+
+func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToken string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	req.Header.Set("Accept", "application/json, text/plain, */*")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", anthropicUsageUserAgent)
+	if targetURL == anthropicUsageURL {
+		req.Header.Set("anthropic-beta", "oauth-2025-04-20")
+	} else {
+		req.Header.Set("Cache-Control", "no-cache")
 	}
 	return req, nil
 }
@@ -895,6 +1138,7 @@ func (s *Server) HandleOAuthUsage(c *gin.Context) {
 		case errors.Is(err, errOAuthUsageUnsupported):
 			RespondError(c, http.StatusConflict, err)
 		case errors.Is(err, errCodexUsageManagerUnavailable),
+			errors.Is(err, errAnthropicManagerUnavailable),
 			errors.Is(err, errAntigravityManagerUnavailable),
 			errors.Is(err, errXAIUsageManagerUnavailable):
 			RespondError(c, http.StatusServiceUnavailable, err)
@@ -918,6 +1162,26 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			return nil, errors.New("usage: Codex credential refresh failed")
 		}
 		return requestCodexUsage(ctx, s.getClientForChannel(cfg), credential)
+	case cfg.UsesAnthropicOAuth():
+		if s.anthropicCredentials == nil {
+			return nil, errAnthropicManagerUnavailable
+		}
+		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, errors.New("usage: Anthropic credential refresh failed")
+		}
+		summary, metadata, err := requestAnthropicUsage(ctx, s.getClientForChannel(cfg), credential)
+		if err != nil {
+			return nil, err
+		}
+		updated, err := s.anthropicCredentials.updateMetadata(ctx, cfg, metadata)
+		if err != nil {
+			return nil, errors.New("usage: persist Anthropic subscription metadata failed")
+		}
+		if updated {
+			s.InvalidateChannelListCache()
+		}
+		return summary, nil
 	case cfg.UsesAntigravityOAuth():
 		if s.antigravityCredentials == nil {
 			return nil, errAntigravityManagerUnavailable

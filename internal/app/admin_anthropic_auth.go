@@ -33,12 +33,23 @@ type anthropicOAuthCodeRequest struct {
 	Code  string `json:"code"`
 }
 
+type anthropicCookieAuthRequest struct {
+	SessionKey string `json:"session_key"`
+}
+
 func (r *anthropicOAuthCodeRequest) Validate() error {
 	if strings.TrimSpace(r.State) == "" {
 		return errors.New("state is required")
 	}
 	if strings.TrimSpace(r.Code) == "" {
 		return errors.New("code is required")
+	}
+	return nil
+}
+
+func (r *anthropicCookieAuthRequest) Validate() error {
+	if strings.TrimSpace(r.SessionKey) == "" {
+		return errors.New("session_key is required")
 	}
 	return nil
 }
@@ -108,8 +119,16 @@ func createOrUpdateAnthropicChannel(
 		if parseErr != nil || !sameAnthropicIdentity(existing, credential) {
 			continue
 		}
+		merged, mergeErr := existing.MergeRefresh(credential)
+		if mergeErr != nil {
+			return nil, false, mergeErr
+		}
+		mergedJSON, encodeErr := merged.JSON()
+		if encodeErr != nil {
+			return nil, false, encodeErr
+		}
 		updated, updateErr := store.CompareAndSwapOAuthCredential(
-			ctx, cfg.ID, model.AuthTypeAnthropicOAuth, cfg.OAuthCredential, credentialJSON,
+			ctx, cfg.ID, model.AuthTypeAnthropicOAuth, cfg.OAuthCredential, mergedJSON,
 		)
 		if updateErr != nil {
 			return nil, false, updateErr
@@ -247,6 +266,37 @@ func (s *Server) HandleSubmitAnthropicOAuthCode(c *gin.Context) {
 		return
 	}
 	RespondJSON(c, http.StatusOK, gin.H{"state": state, "status": "accepted"})
+}
+
+// HandleAnthropicCookieAuth exchanges a claude.ai sessionKey and creates or updates one channel.
+func (s *Server) HandleAnthropicCookieAuth(c *gin.Context) {
+	var request anthropicCookieAuthRequest
+	if err := BindAndValidate(c, &request); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	if s.anthropicService == nil || s.store == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "Anthropic Cookie authorization is unavailable")
+		return
+	}
+	credential, err := s.anthropicService.CookieAuth(c.Request.Context(), request.SessionKey)
+	request.SessionKey = ""
+	if err != nil {
+		RespondError(c, http.StatusBadGateway, err)
+		return
+	}
+	channel, created, err := createOrUpdateAnthropicChannel(c.Request.Context(), s.store, credential)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if s.anthropicCredentials != nil {
+		s.anthropicCredentials.invalidate(channel.ID)
+	}
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{
+		"status": "complete", "channel_id": channel.ID, "created": created,
+	})
 }
 
 // HandleRefreshAnthropicCredential forces the channel's atomic refresh path.

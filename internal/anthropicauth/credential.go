@@ -1,6 +1,7 @@
 package anthropicauth
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -33,6 +34,27 @@ type Credential struct {
 	OrgUUID      string `json:"org_uuid,omitempty"`
 	AccountUUID  string `json:"account_uuid,omitempty"`
 	EmailAddress string `json:"email_address,omitempty"`
+	DeviceID     string `json:"device_id,omitempty"`
+	PlanType     string `json:"plan_type,omitempty"`
+	// ClaudeCodeTrialEndsAt is a trial boundary reported by /api/oauth/profile.
+	// It is not a general subscription expiration time.
+	ClaudeCodeTrialEndsAt string        `json:"claude_code_trial_ends_at,omitempty"`
+	PassiveUsage          *PassiveUsage `json:"passive_usage,omitempty"`
+}
+
+// PassiveUsage is the latest quota snapshot sampled from Anthropic model
+// response headers. Utilization is stored as Anthropic's native 0..1 fraction.
+type PassiveUsage struct {
+	FiveHour                *PassiveUsageWindow `json:"five_hour,omitempty"`
+	SevenDay                *PassiveUsageWindow `json:"seven_day,omitempty"`
+	SevenDayOverageIncluded *PassiveUsageWindow `json:"seven_day_overage_included,omitempty"`
+	SampledAt               string              `json:"sampled_at,omitempty"`
+}
+
+// PassiveUsageWindow contains one rate-limit window sampled from response headers.
+type PassiveUsageWindow struct {
+	Utilization *float64 `json:"utilization,omitempty"`
+	ResetAt     *int64   `json:"reset_at,omitempty"`
 }
 
 // ParseCredential accepts both ccLoad's canonical shape and sub2api's mixed
@@ -54,22 +76,28 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	}
 	var credential Credential
 	if err := json.Unmarshal(raw, &struct {
-		Type         *string `json:"type"`
-		AccessToken  *string `json:"access_token"`
-		RefreshToken *string `json:"refresh_token"`
-		TokenType    *string `json:"token_type"`
-		Expired      *string `json:"expired"`
-		LastRefresh  *string `json:"last_refresh"`
-		Scope        *string `json:"scope"`
-		OrgUUID      *string `json:"org_uuid"`
-		AccountUUID  *string `json:"account_uuid"`
-		EmailAddress *string `json:"email_address"`
+		Type         *string        `json:"type"`
+		AccessToken  *string        `json:"access_token"`
+		RefreshToken *string        `json:"refresh_token"`
+		TokenType    *string        `json:"token_type"`
+		Expired      *string        `json:"expired"`
+		LastRefresh  *string        `json:"last_refresh"`
+		Scope        *string        `json:"scope"`
+		OrgUUID      *string        `json:"org_uuid"`
+		AccountUUID  *string        `json:"account_uuid"`
+		EmailAddress *string        `json:"email_address"`
+		DeviceID     *string        `json:"device_id"`
+		PlanType     *string        `json:"plan_type"`
+		TrialEndsAt  *string        `json:"claude_code_trial_ends_at"`
+		PassiveUsage **PassiveUsage `json:"passive_usage"`
 	}{
 		Type: &credential.Type, AccessToken: &credential.AccessToken,
 		RefreshToken: &credential.RefreshToken, TokenType: &credential.TokenType,
 		Expired: &credential.Expired, LastRefresh: &credential.LastRefresh,
 		Scope: &credential.Scope, OrgUUID: &credential.OrgUUID,
 		AccountUUID: &credential.AccountUUID, EmailAddress: &credential.EmailAddress,
+		DeviceID: &credential.DeviceID, PlanType: &credential.PlanType,
+		TrialEndsAt: &credential.ClaudeCodeTrialEndsAt, PassiveUsage: &credential.PassiveUsage,
 	}); err != nil {
 		return nil, fmt.Errorf("decode Anthropic credential fields: %w", err)
 	}
@@ -121,6 +149,30 @@ func (c *Credential) Normalize() error {
 	c.OrgUUID = strings.TrimSpace(c.OrgUUID)
 	c.AccountUUID = strings.TrimSpace(c.AccountUUID)
 	c.EmailAddress = strings.TrimSpace(c.EmailAddress)
+	c.DeviceID = strings.TrimSpace(c.DeviceID)
+	if c.DeviceID == "" && c.AccountUUID != "" {
+		digest := sha256.Sum256([]byte("ccLoad:anthropic-device:" + c.AccountUUID))
+		c.DeviceID = fmt.Sprintf("%x", digest[:])
+	}
+	c.PlanType = strings.TrimSpace(c.PlanType)
+	c.ClaudeCodeTrialEndsAt = strings.TrimSpace(c.ClaudeCodeTrialEndsAt)
+	if c.ClaudeCodeTrialEndsAt != "" {
+		trialEndsAt, err := time.Parse(time.RFC3339, c.ClaudeCodeTrialEndsAt)
+		if err != nil {
+			return errors.New("anthropic credential has invalid claude_code_trial_ends_at")
+		}
+		c.ClaudeCodeTrialEndsAt = trialEndsAt.UTC().Format(time.RFC3339)
+	}
+	if c.PassiveUsage != nil {
+		c.PassiveUsage.SampledAt = strings.TrimSpace(c.PassiveUsage.SampledAt)
+		if c.PassiveUsage.SampledAt != "" {
+			sampledAt, err := time.Parse(time.RFC3339, c.PassiveUsage.SampledAt)
+			if err != nil {
+				return errors.New("anthropic credential has invalid passive_usage.sampled_at")
+			}
+			c.PassiveUsage.SampledAt = sampledAt.UTC().Format(time.RFC3339Nano)
+		}
+	}
 	if c.AccessToken == "" {
 		return errors.New("anthropic credential is missing access_token")
 	}
@@ -218,10 +270,44 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	preserve(&merged.OrgUUID, c.OrgUUID)
 	preserve(&merged.AccountUUID, c.AccountUUID)
 	preserve(&merged.EmailAddress, c.EmailAddress)
+	preserve(&merged.DeviceID, c.DeviceID)
+	preserve(&merged.PlanType, c.PlanType)
+	preserve(&merged.ClaudeCodeTrialEndsAt, c.ClaudeCodeTrialEndsAt)
+	if merged.PassiveUsage == nil {
+		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
+	}
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}
 	return &merged, nil
+}
+
+// ClonePassiveUsage returns an independent quota snapshot.
+func ClonePassiveUsage(usage *PassiveUsage) *PassiveUsage {
+	if usage == nil {
+		return nil
+	}
+	clone := *usage
+	clone.FiveHour = clonePassiveUsageWindow(usage.FiveHour)
+	clone.SevenDay = clonePassiveUsageWindow(usage.SevenDay)
+	clone.SevenDayOverageIncluded = clonePassiveUsageWindow(usage.SevenDayOverageIncluded)
+	return &clone
+}
+
+func clonePassiveUsageWindow(window *PassiveUsageWindow) *PassiveUsageWindow {
+	if window == nil {
+		return nil
+	}
+	clone := *window
+	if window.Utilization != nil {
+		value := *window.Utilization
+		clone.Utilization = &value
+	}
+	if window.ResetAt != nil {
+		value := *window.ResetAt
+		clone.ResetAt = &value
+	}
+	return &clone
 }
 
 // JSON returns the canonical private database payload.

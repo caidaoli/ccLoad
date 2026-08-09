@@ -156,6 +156,25 @@
                   </div>
                 </div>
               </div>
+              <div id="anthropicOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="anthropicOAuthMethod" data-i18n="channels.anthropic.methodLabel">Anthropic 授权方式</label>
+                  <select id="anthropicOAuthMethod" name="anthropic_oauth_method" class="form-input">
+                    <option value="code" data-i18n="channels.anthropic.methodCode">授权码</option>
+                    <option value="cookie" data-i18n="channels.anthropic.methodCookie">sessionKey Cookie</option>
+                  </select>
+                </div>
+                <div id="anthropicCookieField" class="oauth-field" hidden>
+                  <label for="anthropicSessionKey" data-i18n="channels.anthropic.cookieLabel">sessionKey（每行一个）</label>
+                  <textarea id="anthropicSessionKey" name="anthropic_session_keys" class="form-input oauth-url"
+                    rows="5" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="anthropicCookieHint oauthLoginDialogStatus"
+                    data-i18n-placeholder="channels.anthropic.cookiePlaceholder"
+                    placeholder="sk-ant-sid01-xxxxx...&#10;sk-ant-sid01-yyyyy..."></textarea>
+                  <p id="anthropicCookieHint" class="oauth-field-hint"
+                    data-i18n="channels.anthropic.cookieHint">每行粘贴一个完整的 sessionKey。提交后输入会立即从页面清除，ccLoad 不保存这些 Cookie。</p>
+                </div>
+              </div>
               <div class="oauth-actions">
                 <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
                   data-i18n="channels.oauth.startAuthorization">开始授权</button>

@@ -37,6 +37,14 @@ function buildOAuthPlanBadge(channel) {
     planType = String(channel.antigravity_paid_tier || '').trim();
   } else if (channel?.auth_type === 'xai_oauth') {
     planType = String(channel.xai_subscription_tier || '').trim();
+  } else if (channel?.auth_type === 'anthropic_oauth') {
+    planType = String(channel.anthropic_plan_type || '').trim();
+    const usageState = typeof getOAuthUsageState === 'function'
+      ? getOAuthUsageState(channel.id)
+      : null;
+    if (usageState?.status === 'ready' && String(usageState.data?.plan_type || '').trim()) {
+      planType = String(usageState.data.plan_type).trim();
+    }
   }
   if (!planType) return '';
 
@@ -696,11 +704,12 @@ function buildXAIUsageRows(data) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }
-  const state = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
+  const liveState = typeof getOAuthUsageState === 'function' ? getOAuthUsageState(channel.id) : null;
+  const state = liveState || (channel?.oauth_usage ? { status: 'ready', data: channel.oauth_usage } : null);
   if (!state) {
     return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id)}</div>`;
   }
@@ -736,7 +745,7 @@ function buildOAuthUsageStatusHtml(channel) {
       </div>
     </div>`;
   });
-  const warnings = isXAI && Array.isArray(state.data?.warnings)
+  const warnings = Array.isArray(state.data?.warnings)
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
   return `<div class="ch-oauth-usage">
