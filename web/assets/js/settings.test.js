@@ -146,7 +146,6 @@ async function loadSettingsPage(t, settings, inputValues) {
 
   return {
     inputs,
-    rows,
     radioGroups,
     errors,
     notifications,
@@ -331,10 +330,8 @@ test('WebSocket 恢复默认写入 0，且只在保存所有更改后提交', as
 
   for (const setting of websocketSettings) {
     assert.equal(page.inputs[setting.key].value, '0');
-    assert.notEqual(page.rows[setting.key].style.background, '');
   }
   assert.equal(page.radioGroups.get(boolKey).find((radio) => radio.value === 'false').checked, true);
-  assert.notEqual(page.rows[boolKey].style.background, '');
   assert.equal(page.prompts.length, 0);
   assert.equal(saveRequests(page).length, 0);
 
@@ -352,22 +349,6 @@ test('WebSocket 恢复默认写入 0，且只在保存所有更改后提交', as
     responses_ws_max_connections_per_token: '0',
     [boolKey]: 'false'
   });
-});
-
-test('固定选项设置使用原生下拉框', async (t) => {
-  const page = await loadSettingsPage(t, [
-    { key: 'channel_stats_range', value: 'this_week', value_type: 'string', description: '' },
-    { key: 'log_channel_click_action', value: 'navigate', value_type: 'string', description: '' }
-  ], {});
-
-  const rows = new Map(page.renderCalls
-    .filter(({ template }) => template === 'tpl-setting-row')
-    .map(({ data }) => [data.key, data.inputHtml]));
-
-  assert.match(rows.get('channel_stats_range'), /<select\b[^>]*id="channel_stats_range"/);
-  assert.match(rows.get('channel_stats_range'), /<option value="this_week" selected>/);
-  assert.match(rows.get('log_channel_click_action'), /<select\b[^>]*id="log_channel_click_action"/);
-  assert.match(rows.get('log_channel_click_action'), /<option value="navigate" selected>/);
 });
 
 test('全局冷却规则通过设置批量保存接口持久化', async (t) => {

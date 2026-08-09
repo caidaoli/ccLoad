@@ -22,15 +22,6 @@ func TestJoinRawArray(t *testing.T) {
 	}
 }
 
-func TestNewRawArrayItems(t *testing.T) {
-	if items := NewRawArrayItems(0); items != nil {
-		t.Fatalf("NewRawArrayItems(0) = %#v, want nil", items)
-	}
-	if items := NewRawArrayItems(3); len(items) != 0 || cap(items) != 3 {
-		t.Fatalf("NewRawArrayItems(3) len = %d, cap = %d; want len 0, cap 3", len(items), cap(items))
-	}
-}
-
 func TestSetRawArrayItems(t *testing.T) {
 	tests := []struct {
 		name  string

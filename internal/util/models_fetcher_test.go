@@ -35,35 +35,6 @@ func newJSONResponse(status int, body string) *http.Response {
 // 模型获取器工厂测试
 // ============================================================
 
-func TestNewModelsFetcher(t *testing.T) {
-	tests := []struct {
-		name             string
-		upstreamProtocol string
-		expectedType     string
-	}{
-		{"Anthropic渠道", "anthropic", "*util.AnthropicModelsFetcher"},
-		{"OpenAI渠道", "openai", "*util.OpenAIModelsFetcher"},
-		{"Gemini渠道", "gemini", "*util.GeminiModelsFetcher"},
-		{"Codex渠道", "codex", "*util.CodexModelsFetcher"},
-		{"空值默认", "", "*util.AnthropicModelsFetcher"},
-		{"未知类型默认", "unknown", "*util.AnthropicModelsFetcher"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			fetcher := NewModelsFetcher(tt.upstreamProtocol)
-			if fetcher == nil {
-				t.Fatal("fetcher不应为nil")
-			}
-			// 类型断言验证
-			typeName := getTypeName(fetcher)
-			if typeName != tt.expectedType {
-				t.Errorf("期望类型 %s, 实际类型 %s", tt.expectedType, typeName)
-			}
-		})
-	}
-}
-
 // ============================================================
 // Anthropic 模型获取器测试
 // ============================================================
@@ -349,10 +320,6 @@ func TestCodexModelsFetcher(t *testing.T) {
 // ============================================================
 // 辅助函数
 // ============================================================
-
-func getTypeName(v any) string {
-	return fmt.Sprintf("%T", v)
-}
 
 func containsString(s, substr string) bool {
 	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||

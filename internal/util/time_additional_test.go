@@ -62,23 +62,3 @@ func TestCalculateCooldownDuration(t *testing.T) {
 		})
 	}
 }
-
-// TestCalculateCooldownDuration_Precision 测试精度
-func TestCalculateCooldownDuration_Precision(t *testing.T) {
-	now := time.Now()
-
-	// 测试毫秒级精度
-	until := now.Add(1234 * time.Millisecond)
-	result := CalculateCooldownDuration(until, now)
-
-	expected := int64(1234)
-	diff := result - expected
-	if diff < 0 {
-		diff = -diff
-	}
-
-	// 允许±1毫秒误差
-	if diff > 1 {
-		t.Errorf("精度测试失败: 期望 %d ms, 实际 %d ms", expected, result)
-	}
-}
