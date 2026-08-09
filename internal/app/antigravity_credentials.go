@@ -197,5 +197,6 @@ func cloneAntigravityCredential(credential *antigravityauth.Credential) *antigra
 		paidTier := *credential.PaidTier
 		clone.PaidTier = &paidTier
 	}
+	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	return &clone
 }

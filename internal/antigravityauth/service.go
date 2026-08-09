@@ -70,6 +70,26 @@ type Service struct {
 	OnboardPollAttempts int
 }
 
+type tokenEndpointError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e *tokenEndpointError) Error() string {
+	if e == nil {
+		return "token: Antigravity endpoint request failed"
+	}
+	return fmt.Sprintf("token: Antigravity endpoint returned HTTP %d", e.statusCode)
+}
+
+// UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
+func (e *tokenEndpointError) UpstreamResponseBody() string {
+	if e == nil {
+		return ""
+	}
+	return e.responseBody
+}
+
 // NewService returns the production Antigravity OAuth service.
 func NewService(client *http.Client) *Service {
 	if client == nil {
@@ -404,7 +424,7 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 		return nil, fmt.Errorf("read Antigravity token response: %w", err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("token: Antigravity endpoint returned HTTP %d", resp.StatusCode)
+		return nil, &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
 	}
 	var token struct {
 		AccessToken  string `json:"access_token"`

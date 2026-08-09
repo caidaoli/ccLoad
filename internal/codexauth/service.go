@@ -42,6 +42,26 @@ type Service struct {
 	RedirectURI      string
 }
 
+type tokenEndpointError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e *tokenEndpointError) Error() string {
+	if e == nil {
+		return "codex token endpoint request failed"
+	}
+	return fmt.Sprintf("codex token endpoint returned HTTP %d", e.statusCode)
+}
+
+// UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
+func (e *tokenEndpointError) UpstreamResponseBody() string {
+	if e == nil {
+		return ""
+	}
+	return e.responseBody
+}
+
 // NewService returns the production Codex OAuth service.
 func NewService(client *http.Client) *Service {
 	if client == nil {
@@ -181,7 +201,7 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 		return nil, fmt.Errorf("read Codex token response: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("codex token endpoint returned HTTP %d", resp.StatusCode)
+		return nil, &tokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
 	}
 
 	var token struct {

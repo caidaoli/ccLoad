@@ -57,6 +57,26 @@ type Service struct {
 	Now              func() time.Time
 }
 
+type tokenEndpointError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e *tokenEndpointError) Error() string {
+	if e == nil {
+		return "anthropic token endpoint request failed"
+	}
+	return fmt.Sprintf("anthropic token endpoint returned HTTP %d", e.statusCode)
+}
+
+// UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
+func (e *tokenEndpointError) UpstreamResponseBody() string {
+	if e == nil {
+		return ""
+	}
+	return e.responseBody
+}
+
 // NewService returns the production Anthropic OAuth service.
 func NewService(client *http.Client) *Service {
 	if client == nil {
@@ -364,7 +384,10 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 		return nil, fmt.Errorf("read Anthropic token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("anthropic token endpoint returned HTTP %d", response.StatusCode)
+		return nil, &tokenEndpointError{
+			statusCode:   response.StatusCode,
+			responseBody: string(responseBody),
+		}
 	}
 	var token struct {
 		AccessToken  string `json:"access_token"`

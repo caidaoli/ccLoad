@@ -152,6 +152,13 @@ func TestXAIUsage_DualBillingSuccess(t *testing.T) {
 	if requests.Load() != 2 {
 		t.Fatalf("billing requests=%d, want 2", requests.Load())
 	}
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil ||
+		list.Data[0].OAuthUsage.Provider != xaiauth.ChannelType || list.Data[0].OAuthUsage.XAIBilling == nil {
+		t.Fatalf("persisted xAI usage = %+v", list.Data)
+	}
 }
 
 func TestXAIUsage_UnifiedBillingOnDemandCapCalculatesWindow(t *testing.T) {

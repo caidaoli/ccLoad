@@ -572,6 +572,29 @@ function formatOAuthUsageLimitName(limitName) {
   return String(limitName).trim();
 }
 
+function formatOAuthUsageError(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch (_) {
+    return raw;
+  }
+  if (typeof payload === 'string') return payload.trim() || raw;
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return raw;
+
+  const nested = payload.error && typeof payload.error === 'object' ? payload.error : null;
+  const code = String(
+    (typeof payload.error === 'string' ? payload.error : '') ||
+    nested?.code || nested?.type || payload.code || payload.type || ''
+  ).trim();
+  const description = String(
+    payload.error_description || nested?.message || payload.message || payload.description || ''
+  ).trim();
+  return description || code || raw;
+}
+
 function oauthUsageLevel(remainingPercent) {
   if (remainingPercent >= 70) return 'high';
   if (remainingPercent >= 30) return 'medium';
@@ -717,9 +740,11 @@ function buildOAuthUsageStatusHtml(channel) {
     return `<div class="ch-oauth-usage">${buildOAuthUsageRefreshButton(channel.id, true)}</div>`;
   }
   if (state.status === 'error') {
+    const fallback = window.t('channels.oauth.usageFailed');
+    const message = formatOAuthUsageError(state.error) || fallback;
     return `<div class="ch-oauth-usage">
       ${buildOAuthUsageRefreshButton(channel.id)}
-      <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(state.error)}">${escapeChannelRefreshText(window.t('channels.oauth.usageFailed'))}</div>
+      <div class="ch-oauth-usage__error" title="${escapeChannelRefreshText(message)}">${escapeChannelRefreshText(message)}</div>
     </div>`;
   }
 

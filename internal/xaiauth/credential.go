@@ -15,25 +15,26 @@ const maxCredentialSize = 1 << 20
 
 // Credential is the canonical persisted xAI OAuth credential.
 type Credential struct {
-	Type              string `json:"type"`
-	AccessToken       string `json:"access_token"`
-	RefreshToken      string `json:"refresh_token"`
-	IDToken           string `json:"id_token,omitempty"`
-	TokenType         string `json:"token_type,omitempty"`
-	ExpiresIn         int64  `json:"expires_in,omitempty"`
-	ExpiresAt         any    `json:"expires_at,omitempty"`
-	Expired           string `json:"expired"`
-	LastRefresh       string `json:"last_refresh,omitempty"`
-	Email             string `json:"email,omitempty"`
-	Subject           string `json:"sub,omitempty"`
-	BaseURL           string `json:"base_url,omitempty"`
-	TokenEndpoint     string `json:"token_endpoint,omitempty"`
-	AuthKind          string `json:"auth_kind"`
-	ClientID          string `json:"client_id,omitempty"`
-	Scope             string `json:"scope,omitempty"`
-	TeamID            string `json:"team_id,omitempty"`
-	SubscriptionTier  string `json:"subscription_tier,omitempty"`
-	EntitlementStatus string `json:"entitlement_status,omitempty"`
+	Type              string          `json:"type"`
+	AccessToken       string          `json:"access_token"`
+	RefreshToken      string          `json:"refresh_token"`
+	IDToken           string          `json:"id_token,omitempty"`
+	TokenType         string          `json:"token_type,omitempty"`
+	ExpiresIn         int64           `json:"expires_in,omitempty"`
+	ExpiresAt         any             `json:"expires_at,omitempty"`
+	Expired           string          `json:"expired"`
+	LastRefresh       string          `json:"last_refresh,omitempty"`
+	Email             string          `json:"email,omitempty"`
+	Subject           string          `json:"sub,omitempty"`
+	BaseURL           string          `json:"base_url,omitempty"`
+	TokenEndpoint     string          `json:"token_endpoint,omitempty"`
+	AuthKind          string          `json:"auth_kind"`
+	ClientID          string          `json:"client_id,omitempty"`
+	Scope             string          `json:"scope,omitempty"`
+	TeamID            string          `json:"team_id,omitempty"`
+	SubscriptionTier  string          `json:"subscription_tier,omitempty"`
+	EntitlementStatus string          `json:"entitlement_status,omitempty"`
+	OAuthUsage        json.RawMessage `json:"oauth_usage,omitempty"`
 }
 
 // Identity contains the non-secret account identity derived from a credential.
@@ -225,6 +226,7 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	preserve(&merged.TeamID, c.TeamID)
 	preserve(&merged.SubscriptionTier, c.SubscriptionTier)
 	preserve(&merged.EntitlementStatus, c.EntitlementStatus)
+	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
 	merged.Email = identity.Email
 	merged.Subject = identity.Subject
 	if err := merged.Normalize(); err != nil {

@@ -56,6 +56,44 @@ test('Antigravity 和 Anthropic OAuth 渠道在状态列提供额度刷新操作
   }
 });
 
+test('OAuth 额度刷新失败时格式化结构化错误并转义内容', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  let error = '{"error":"invalid_grant","error_description":"Refresh token not found or invalid"}';
+  global.window = {
+    t: key => key === 'channels.oauth.usageRefresh' ? '刷新额度' : '额度刷新失败'
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'error',
+    error
+  });
+  global.isTokenChannelsReadOnly = () => false;
+
+  try {
+    let html = buildOAuthUsageStatusHtml({ id: 25, auth_type: 'antigravity_oauth' });
+    assert.match(html, /Refresh token not found or invalid/);
+    assert.doesNotMatch(html, /invalid_grant/);
+    assert.doesNotMatch(html, /\{"error"/);
+    assert.doesNotMatch(html, /额度刷新失败/);
+    assert.match(html, /data-action="refresh-oauth-usage"/);
+
+    error = '{"error":{"type":"invalid_grant","message":"Refresh token <expired>"}}';
+    html = buildOAuthUsageStatusHtml({ id: 25, auth_type: 'anthropic_oauth' });
+    assert.match(html, /Refresh token &lt;expired&gt;/);
+    assert.doesNotMatch(html, /invalid_grant/);
+    assert.doesNotMatch(html, /Refresh token <expired>/);
+
+    error = 'network timeout';
+    html = buildOAuthUsageStatusHtml({ id: 25, auth_type: 'codex_oauth' });
+    assert.match(html, /network timeout/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
 test('OAuth 额度就绪后只显示额度而不显示最后成功时间', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;
