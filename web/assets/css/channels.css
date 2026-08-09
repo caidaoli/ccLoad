@@ -4224,9 +4224,7 @@
       position: absolute;
       inset-inline-end: 0;
       bottom: calc(100% + 8px);
-      width: min(410px, calc(100vw - 32px));
-      max-height: min(70vh, 520px);
-      overflow-y: auto;
+      width: min(520px, calc(100vw - 32px));
       padding: 12px;
       border: 1px solid var(--neutral-200);
       border-radius: var(--radius-lg);
@@ -4234,21 +4232,24 @@
       box-shadow: var(--shadow-lg);
       display: grid;
       grid-template-columns: minmax(0, 1fr);
-      gap: 14px;
+      gap: 10px;
       z-index: 3;
     }
 
     .channel-batch-advanced__field {
       min-width: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
+      display: grid;
+      grid-template-columns: 6.75rem minmax(0, 1fr);
+      align-items: center;
+      column-gap: 10px;
+      row-gap: 4px;
     }
 
     .channel-batch-advanced__field > label {
       color: var(--neutral-700);
       font-size: var(--text-sm);
       font-weight: 600;
+      line-height: 1.2;
     }
 
     .channel-batch-advanced__control {
@@ -4301,12 +4302,14 @@
     }
 
     .channel-batch-advanced__hint {
+      grid-column: 2;
       color: var(--neutral-500);
       font-size: var(--text-xs);
       line-height: 1.35;
     }
 
     .channel-batch-advanced__error {
+      grid-column: 2;
       color: var(--error-600);
       font-size: var(--text-xs);
       line-height: 1.35;
@@ -5631,6 +5634,11 @@
       .channel-batch-advanced__panel {
         inset-inline: 12px;
         width: auto;
+      }
+
+      .channel-batch-advanced__field {
+        grid-template-columns: 4.5rem minmax(0, 1fr);
+        column-gap: 8px;
       }
 
       .channel-batch-option {

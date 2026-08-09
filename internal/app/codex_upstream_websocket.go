@@ -36,7 +36,14 @@ const (
 	codexWebsocketReadQueueFrameLimit = 128
 )
 
-const codexInputItemIDLimit = 64
+const (
+	codexInputItemIDLimit                 = 64
+	codexMessageItemIDPrefix              = "msg"
+	codexReasoningItemIDPrefix            = "rs"
+	codexFunctionCallItemIDPrefix         = "fc"
+	codexCustomToolCallItemIDPrefix       = "ctc"
+	codexCustomToolCallOutputItemIDPrefix = "ctco"
+)
 
 var codexWebsocketForwardHeaders = []string{
 	"X-Codex-Beta-Features",
@@ -886,12 +893,21 @@ func sanitizeCodexInputItemIDs(body []byte) []byte {
 			continue
 		}
 		itemID := item.Get("id")
-		if itemID.Type == gjson.String && len([]rune(itemID.String())) <= codexInputItemIDLimit {
-			occupied[itemID.String()] = struct{}{}
+		if itemID.Type != gjson.String {
+			continue
+		}
+		originalID := itemID.String()
+		if normalizeCodexInputItemID(item, originalID) == originalID &&
+			len([]rune(originalID)) <= codexInputItemIDLimit {
+			occupied[originalID] = struct{}{}
 		}
 	}
 
-	mapped := make(map[string]string, len(items))
+	type inputItemIDMappingKey struct {
+		originalID   string
+		normalizedID string
+	}
+	mapped := make(map[inputItemIDMappingKey]string, len(items))
 	rebuilt := make([]string, 0, len(items))
 	changed := false
 	for _, item := range items {
@@ -901,22 +917,29 @@ func sanitizeCodexInputItemIDs(body []byte) []byte {
 		}
 		raw := item.Raw
 		itemID := item.Get("id")
-		if itemID.Type == gjson.String && len([]rune(itemID.String())) > codexInputItemIDLimit {
-			original := itemID.String()
-			shortened, ok := mapped[original]
-			if !ok {
-				for attempt := 0; ; attempt++ {
-					shortened = shortenCodexInputItemID(original, attempt)
-					if _, exists := occupied[shortened]; !exists {
-						break
+		if itemID.Type == gjson.String {
+			originalID := itemID.String()
+			id := normalizeCodexInputItemID(item, originalID)
+			if id != originalID || len([]rune(id)) > codexInputItemIDLimit {
+				mappingKey := inputItemIDMappingKey{originalID: originalID, normalizedID: id}
+				shortened, ok := mapped[mappingKey]
+				if !ok {
+					for attempt := 0; ; attempt++ {
+						shortened = shortenCodexInputItemID(id, attempt)
+						if _, exists := occupied[shortened]; !exists {
+							break
+						}
 					}
+					mapped[mappingKey] = shortened
+					occupied[shortened] = struct{}{}
 				}
-				mapped[original] = shortened
-				occupied[shortened] = struct{}{}
+				id = shortened
 			}
-			if updated, errSet := sjson.SetBytes([]byte(raw), "id", shortened); errSet == nil {
-				raw = string(updated)
-				changed = true
+			if id != originalID {
+				if updated, errSet := sjson.SetBytes([]byte(raw), "id", id); errSet == nil {
+					raw = string(updated)
+					changed = true
+				}
 			}
 		}
 		rebuilt = append(rebuilt, raw)
@@ -929,6 +952,28 @@ func sanitizeCodexInputItemIDs(body []byte) []byte {
 		return body
 	}
 	return updated
+}
+
+func normalizeCodexInputItemID(item gjson.Result, id string) string {
+	var prefix string
+	switch item.Get("type").String() {
+	case "message":
+		prefix = codexMessageItemIDPrefix
+	case "reasoning":
+		prefix = codexReasoningItemIDPrefix
+	case "function_call":
+		prefix = codexFunctionCallItemIDPrefix
+	case "custom_tool_call":
+		prefix = codexCustomToolCallItemIDPrefix
+	case "custom_tool_call_output":
+		prefix = codexCustomToolCallOutputItemIDPrefix
+	default:
+		return id
+	}
+	if id == "" || strings.HasPrefix(id, prefix) {
+		return id
+	}
+	return prefix + "_" + id
 }
 
 func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
@@ -945,7 +990,7 @@ func shouldDropCodexEncryptedReasoningItem(item gjson.Result) bool {
 
 func shortenCodexInputItemID(id string, attempt int) string {
 	runes := []rune(id)
-	if len(runes) <= codexInputItemIDLimit {
+	if len(runes) <= codexInputItemIDLimit && attempt == 0 {
 		return id
 	}
 	hashInput := id
@@ -954,7 +999,8 @@ func shortenCodexInputItemID(id string, attempt int) string {
 	}
 	sum := sha256.Sum256([]byte(hashInput))
 	suffix := fmt.Sprintf("_%x", sum[:8])
-	return string(runes[:codexInputItemIDLimit-len(suffix)]) + suffix
+	prefixLength := min(len(runes), codexInputItemIDLimit-len(suffix))
+	return string(runes[:prefixLength]) + suffix
 }
 
 func copyCodexWebsocketInputHeaders(target, source http.Header) {
