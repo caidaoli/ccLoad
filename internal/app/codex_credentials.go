@@ -403,7 +403,11 @@ func mergeCodexPassiveUsage(
 }
 
 func codexPassiveUsageWindowKey(window codexauth.PassiveUsageWindow) string {
-	return strings.ToLower(strings.TrimSpace(window.Scope)) + "\x00" +
+	limitName := strings.ToLower(strings.TrimSpace(window.LimitName))
+	if limitName == "" {
+		limitName = strings.ToLower(strings.TrimSpace(window.Scope))
+	}
+	return limitName + "\x00" +
 		strings.ToLower(strings.TrimSpace(window.Kind))
 }
 

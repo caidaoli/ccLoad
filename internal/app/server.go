@@ -83,8 +83,10 @@ type Server struct {
 	scheduledChannelChecksRunning atomic.Bool
 
 	// 异步统计（有界队列，避免每请求起goroutine）
-	tokenStatsCh        chan tokenStatsUpdate
-	tokenStatsDropCount atomic.Int64
+	tokenStatsCh               chan tokenStatsUpdate
+	tokenStatsDropCount        atomic.Int64
+	codexPassiveUsageCh        chan codexPassiveUsageTask
+	codexPassiveUsageDropCount atomic.Int64
 
 	// 运行时配置（启动时从数据库加载，修改后重启生效）
 	maxKeyRetries    int // 单个渠道内最大Key重试次数
@@ -217,7 +219,8 @@ func NewServer(store storage.Store) *Server {
 		shutdownDone: make(chan struct{}),
 
 		// Token统计队列（避免每请求起goroutine）
-		tokenStatsCh: make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
+		tokenStatsCh:        make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
+		codexPassiveUsageCh: make(chan codexPassiveUsageTask, codexPassiveUsageQueueSize),
 
 		activeRequests: newActiveRequestManager(),
 		responsesExecutionSessions: newResponsesExecutionSessionStore(
@@ -714,6 +717,10 @@ func (s *Server) startBackgroundWorkers() {
 	// 启动Token统计Worker（有界队列：性能可控，Shutdown可等待）
 	s.wg.Add(1)
 	go s.tokenStatsWorker()
+
+	// Codex SSE 额度是旁路元数据，异步落库不得阻塞流式响应。
+	s.wg.Add(1)
+	go s.codexPassiveUsageWorker()
 
 	// 启动后台清理协程（Token 认证）
 	s.wg.Add(1)
