@@ -33,6 +33,31 @@ func TestMarkSSEErrorForwardResultPreservesWebsocketStatusAndHeaders(t *testing.
 	}
 }
 
+func TestMarkSSEErrorForwardResultClassifiesInterruptedStream(t *testing.T) {
+	res := &fwResult{SSEErrorEvent: []byte(`{
+		"type":"error",
+		"status":502,
+		"headers":{"X-Request-Id":"req-interrupted"},
+		"error":{
+			"type":"server_error",
+			"code":"upstream_stream_interrupted",
+			"message":"upstream response was interrupted; reconnect and replay the full conversation state"
+		}
+	}`)}
+
+	markSSEErrorForwardResult(res)
+
+	if res.Status != util.StatusStreamIncomplete {
+		t.Fatalf("status=%d, want internal stream incomplete status %d", res.Status, util.StatusStreamIncomplete)
+	}
+	if res.UpstreamStatus != http.StatusBadGateway {
+		t.Fatalf("upstream status=%d, want original status %d", res.UpstreamStatus, http.StatusBadGateway)
+	}
+	if got := res.Header.Get("X-Request-Id"); got != "req-interrupted" {
+		t.Fatalf("X-Request-Id=%q, want req-interrupted", got)
+	}
+}
+
 func TestMarkSSEErrorForwardResultRejectsNonErrorWebsocketStatus(t *testing.T) {
 	res := &fwResult{SSEErrorEvent: []byte(`{
 		"type":"error",

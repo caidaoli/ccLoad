@@ -1296,10 +1296,13 @@ func shouldProbeSoftError(reqCtx *requestContext, resp *http.Response, upstreamP
 }
 
 // classifySSEErrorStatus 根据响应体内容判定 SSE 错误的状态码：
-// 上下文超限 → 400；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
+// 上下文超限 → 400；上游流中断 → 599；1308 配额超限 → 596；明确限流 → 429；其他 → 597。
 func classifySSEErrorStatus(body []byte) int {
 	if util.IsContextLengthExceededError(body) {
 		return http.StatusBadRequest
+	}
+	if gjson.GetBytes(body, "error.code").String() == responsesWebsocketInterruptedCode {
+		return util.StatusStreamIncomplete
 	}
 	if status, _ := websocketErrorStatusAndHeaders(body); status >= 400 && status <= 599 {
 		return status
@@ -1879,7 +1882,6 @@ func markSSEErrorForwardResult(res *fwResult) {
 	res.Body = res.SSEErrorEvent
 	res.Status = classifySSEErrorStatus(res.SSEErrorEvent)
 	if upstreamStatus, headers := websocketErrorStatusAndHeaders(res.SSEErrorEvent); upstreamStatus != 0 {
-		res.Status = upstreamStatus
 		res.UpstreamStatus = upstreamStatus
 		res.Header = headers
 	}
