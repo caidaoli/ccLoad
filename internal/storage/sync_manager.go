@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"strings"
@@ -10,31 +11,30 @@ import (
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
-// SyncManager 负责启动时从 MySQL 恢复数据到 SQLite
+// SyncManager 负责启动时从主库恢复数据到 SQLite。
 //
 // 核心职责：
-// - 启动时从 MySQL 恢复数据到 SQLite
-// - 配置表全量恢复（~500 条数据，<1 秒）
-// - logs 表按天数恢复 MySQL 快照（流式处理，避免内存溢出）
-// - **无超时机制**：恢复失败直接返回错误，降级到纯 MySQL
+// - 配置表在同一主库快照中全量恢复
+// - logs 表按天数恢复主库快照（流式处理，避免内存溢出）
+// - 超时由调用方 context 统一约束，配置恢复失败直接阻止启动
 //
 // 设计原则：
 // - KISS：简单的单向数据复制，无复杂一致性
 // - Fail-Fast：恢复失败直接退出，不降级
 type SyncManager struct {
-	mysql  *sqlstore.SQLStore
-	sqlite *sqlstore.SQLStore
+	primary *sqlstore.SQLStore
+	sqlite  *sqlstore.SQLStore
 }
 
 // NewSyncManager 创建同步管理器
-func NewSyncManager(mysql, sqlite *sqlstore.SQLStore) *SyncManager {
+func NewSyncManager(primary, sqlite *sqlstore.SQLStore) *SyncManager {
 	return &SyncManager{
-		mysql:  mysql,
-		sqlite: sqlite,
+		primary: primary,
+		sqlite:  sqlite,
 	}
 }
 
-// RestoreOnStartup 启动时恢复数据（从 MySQL 恢复到 SQLite）
+// RestoreOnStartup 启动时恢复数据（从主库恢复到 SQLite）
 //
 // logDays 参数：
 //   - -1 = 全量恢复（慎用，启动慢）
@@ -49,17 +49,40 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 		"channels",
 		"channel_models",
 		"channel_model_cooldowns",
+		"channel_url_states",
 		"api_keys",
 		"auth_tokens",
 		"model_fingerprints",
 		"fingerprint_test_results",
 	}
 
+	// TiDB 不实现 MySQL 的 READ ONLY 事务选项；恢复代码本身只发 SELECT，
+	// 对 MySQL/TiDB 保留 REPEATABLE READ 即可获得一致快照。
+	primaryTx, err := sm.primary.BeginTx(ctx, &sql.TxOptions{
+		Isolation: sql.LevelRepeatableRead,
+		ReadOnly:  !sm.primary.IsMySQL(),
+	})
+	if err != nil {
+		return fmt.Errorf("开启主库配置快照失败: %w", err)
+	}
+	defer func() { _ = primaryTx.Rollback() }()
+	sqliteTx, err := sm.sqlite.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("开启 SQLite 配置恢复事务失败: %w", err)
+	}
+	defer func() { _ = sqliteTx.Rollback() }()
+
 	log.Printf("[INFO] 开始恢复配置表（共 %d 个表）...", len(configTables))
 	for _, table := range configTables {
-		if err := sm.restoreTable(ctx, table); err != nil {
+		if err := sm.restoreTable(ctx, primaryTx, sqliteTx, table); err != nil {
 			return fmt.Errorf("恢复表 %s 失败: %w", table, err)
 		}
+	}
+	if err := primaryTx.Commit(); err != nil {
+		return fmt.Errorf("提交主库配置快照失败: %w", err)
+	}
+	if err := sqliteTx.Commit(); err != nil {
+		return fmt.Errorf("提交 SQLite 配置恢复事务失败: %w", err)
 	}
 
 	log.Printf("[INFO] 配置表恢复完成，耗时: %v", time.Since(start))
@@ -81,25 +104,16 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 }
 
 // restoreTable 恢复单表（幂等，DELETE + INSERT）
-// 配置表数据量限制：最多 10000 行，超过则报错（防止内存溢出）
 //
-// 关键设计：只恢复 SQLite 和 MySQL 都存在的列（交集），避免 schema 不一致时的列数不匹配错误。
-// MySQL 可能有历史遗留列或新增列，SQLite 按最新 schema 创建，两者不一定完全一致。
-func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error {
-	const maxConfigRows = 10000 // 配置表最大行数限制
+// 关键设计：只恢复 SQLite 和主库都存在的列（交集），避免 schema 不一致时的列数不匹配错误。
+// 主库或 SQLite 可能保留历史废弃列，两者不一定完全一致。
+type rowsQueryer interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
 
-	// 1. 先检查行数，防止内存溢出
-	var rowCount int64
-	countQuery := fmt.Sprintf("SELECT COUNT(*) FROM %s", tableName) //nolint:gosec // G201: 表名来自代码硬编码
-	if err := sm.mysql.QueryRowContext(ctx, countQuery).Scan(&rowCount); err != nil {
-		return fmt.Errorf("统计行数失败: %w", err)
-	}
-	if rowCount > maxConfigRows {
-		return fmt.Errorf("表 %s 行数 %d 超过限制 %d，请检查数据或使用分批恢复", tableName, rowCount, maxConfigRows)
-	}
-
-	// 2. 获取 SQLite 表的列（目标 schema）
-	sqliteCols, err := sm.getTableColumns(ctx, sm.sqlite, tableName)
+func (sm *SyncManager) restoreTable(ctx context.Context, source rowsQueryer, target *sql.Tx, tableName string) error {
+	// 1. 获取 SQLite 表的列（目标 schema）
+	sqliteCols, err := sm.getTableColumns(ctx, target, tableName)
 	if err != nil {
 		return fmt.Errorf("获取 SQLite 表列失败: %w", err)
 	}
@@ -108,19 +122,19 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 		sqliteColSet[col] = true
 	}
 
-	// 3. 获取 MySQL 表的列（源数据）
-	mysqlCols, err := sm.getTableColumns(ctx, sm.mysql, tableName)
+	// 2. 获取主库表的列（源数据）
+	sourceCols, err := sm.getTableColumns(ctx, source, tableName)
 	if err != nil {
-		return fmt.Errorf("获取 MySQL 表列失败: %w", err)
+		return fmt.Errorf("获取主库表列失败: %w", err)
 	}
 
-	// 4. 计算交集列（只恢复两边都存在的列）
+	// 3. 计算交集列（只恢复两边都存在的列）
 	var commonCols []string
-	var mysqlColIndices []int // MySQL 结果集中这些列的索引
-	for i, col := range mysqlCols {
+	var sourceColIndices []int // 主库结果集中这些列的索引
+	for i, col := range sourceCols {
 		if sqliteColSet[col] {
 			commonCols = append(commonCols, col)
-			mysqlColIndices = append(mysqlColIndices, i)
+			sourceColIndices = append(sourceColIndices, i)
 		}
 	}
 
@@ -128,100 +142,86 @@ func (sm *SyncManager) restoreTable(ctx context.Context, tableName string) error
 		return fmt.Errorf("表 %s 无共同列，无法恢复", tableName)
 	}
 
-	// 5. 从 MySQL 查询所有列（SELECT * 保持原逻辑）
+	// 4. 从主库查询所有列（SELECT * 保持原逻辑）
 	query := fmt.Sprintf("SELECT * FROM %s", tableName) //nolint:gosec // G201: 表名来自代码硬编码，非用户输入
-	rows, err := sm.mysql.QueryContext(ctx, query)
+	rows, err := source.QueryContext(ctx, query)
 	if err != nil {
-		return fmt.Errorf("MySQL 查询失败: %w", err)
+		return fmt.Errorf("主库查询失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
-	// 6. 读取数据，只提取交集列
-	var records [][]any
-	for rows.Next() {
-		// 扫描 MySQL 所有列
-		scanArgs := make([]any, len(mysqlCols))
-		scanVals := make([]any, len(mysqlCols))
-		for i := range scanVals {
-			scanArgs[i] = &scanVals[i]
-		}
-
-		if err := rows.Scan(scanArgs...); err != nil {
-			return fmt.Errorf("扫描行失败: %w", err)
-		}
-
-		// 只保留交集列的值
-		// 注意：MySQL 驱动将 VARCHAR 扫描为 []byte，需要转换为 string
-		// 否则 SQLite 驱动会将 []byte 绑定为 BLOB（类型亲和性问题）
-		record := make([]any, len(commonCols))
-		for i, idx := range mysqlColIndices {
-			val := scanVals[idx]
-			// NULL 和空字符串均表示无 OAuth 凭证；恢复时统一为空字符串，
-			// 同时兼容已存在的 NOT NULL SQLite 副本。
-			if commonCols[i] == "oauth_credential" && val == nil {
-				record[i] = ""
-				continue
-			}
-			// 将 []byte 转为 string（MySQL VARCHAR -> Go string）
-			if b, ok := val.([]byte); ok {
-				record[i] = string(b)
-			} else {
-				record[i] = val
-			}
-		}
-		records = append(records, record)
+	// 5. 所有配置表共用一个 SQLite 事务，保证跨表快照原子性。
+	deleteQuery := fmt.Sprintf("DELETE FROM %s", tableName) //nolint:gosec // G201: 表名来自代码硬编码
+	if _, err := target.ExecContext(ctx, deleteQuery); err != nil {
+		return fmt.Errorf("清空 SQLite 表失败: %w", err)
 	}
-
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("读取数据失败: %w", err)
-	}
-
-	if len(records) == 0 {
-		log.Printf("[INFO] 表 %s 为空，跳过恢复", tableName)
+	if !rows.Next() {
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("读取数据失败: %w", err)
+		}
+		log.Printf("[INFO] 表 %s 已写入恢复事务，共 0 条记录", tableName)
 		return nil
 	}
 
-	// 7. 清空 + 插入必须在同一个事务里，保证原子性
-	tx, err := sm.sqlite.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("开启事务失败: %w", err)
-	}
-	defer func() { _ = tx.Rollback() }()
-
-	deleteQuery := fmt.Sprintf("DELETE FROM %s", tableName) //nolint:gosec // G201: 表名来自代码硬编码
-	if _, err := tx.ExecContext(ctx, deleteQuery); err != nil {
-		return fmt.Errorf("清空 SQLite 表失败: %w", err)
-	}
-
-	// 8. 批量插入 SQLite（显式指定列名）
+	// 6. 逐行写入 SQLite，避免整表数据常驻内存
 	// 构建 INSERT 语句（显式列名）
 	colNames := strings.Join(commonCols, ", ")
 	placeholders := strings.Repeat("?,", len(commonCols))
 	placeholders = placeholders[:len(placeholders)-1]                                                // 去掉末尾逗号
 	insertQuery := fmt.Sprintf("INSERT INTO %s (%s) VALUES (%s)", tableName, colNames, placeholders) //nolint:gosec // G201: 表名和列名来自代码，非用户输入
 
-	stmt, err := tx.Prepare(insertQuery)
+	stmt, err := target.PrepareContext(ctx, insertQuery)
 	if err != nil {
 		return fmt.Errorf("准备插入语句失败: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
-	for _, record := range records {
-		if _, err := stmt.Exec(record...); err != nil {
+	totalRestored := 0
+	for {
+		// 扫描主库所有列
+		scanArgs := make([]any, len(sourceCols))
+		scanVals := make([]any, len(sourceCols))
+		for i := range scanVals {
+			scanArgs[i] = &scanVals[i]
+		}
+		if err := rows.Scan(scanArgs...); err != nil {
+			return fmt.Errorf("扫描行失败: %w", err)
+		}
+
+		// 只保留交集列的值。MySQL 驱动将 VARCHAR 扫描为 []byte，
+		// 需要转为 string，否则 SQLite 会将其绑定为 BLOB。
+		record := make([]any, len(commonCols))
+		for i, idx := range sourceColIndices {
+			val := scanVals[idx]
+			if commonCols[i] == "oauth_credential" && val == nil {
+				record[i] = ""
+				continue
+			}
+			if b, ok := val.([]byte); ok {
+				record[i] = string(b)
+			} else {
+				record[i] = val
+			}
+		}
+
+		if _, err := stmt.ExecContext(ctx, record...); err != nil {
 			return fmt.Errorf("插入数据失败: %w", err)
 		}
+		totalRestored++
+		if !rows.Next() {
+			break
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("读取数据失败: %w", err)
 	}
 
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交事务失败: %w", err)
-	}
-
-	log.Printf("[INFO] 表 %s 恢复完成，共 %d 条记录（%d/%d 列）", tableName, len(records), len(commonCols), len(mysqlCols))
+	log.Printf("[INFO] 表 %s 已写入恢复事务，共 %d 条记录（%d/%d 列）", tableName, totalRestored, len(commonCols), len(sourceCols))
 	return nil
 }
 
 // getTableColumns 获取表的列名列表
-func (sm *SyncManager) getTableColumns(ctx context.Context, store *sqlstore.SQLStore, tableName string) ([]string, error) {
+func (sm *SyncManager) getTableColumns(ctx context.Context, store rowsQueryer, tableName string) ([]string, error) {
 	// 使用 SELECT * LIMIT 0 获取列信息（跨数据库兼容）
 	query := fmt.Sprintf("SELECT * FROM %s LIMIT 0", tableName) //nolint:gosec // G201: 表名来自代码硬编码
 	rows, err := store.QueryContext(ctx, query)
@@ -233,10 +233,10 @@ func (sm *SyncManager) getTableColumns(ctx context.Context, store *sqlstore.SQLS
 	return rows.Columns()
 }
 
-// restoreLogsSnapshot 使用 MySQL 快照重建 SQLite 的日志时间窗口。
+// restoreLogsSnapshot 使用主库快照重建 SQLite 的日志时间窗口。
 //
 // 两个数据库独立分配 logs.id，跨库比较 MAX(id) 会同时造成漏行和重复。
-// SQLite 是本地副本，恢复时复制 MySQL 的业务列但排除 id，由 SQLite 维护自己的本地主键。
+// SQLite 是本地副本，恢复时复制主库的业务列但排除 id，由 SQLite 维护自己的本地主键。
 // 删除与重建处于同一事务，任何错误都会保留旧快照。
 func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error {
 	var startTime int64
@@ -258,18 +258,18 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 		sqliteColSet[col] = true
 	}
 
-	mysqlCols, err := sm.getTableColumns(ctx, sm.mysql, "logs")
+	sourceCols, err := sm.getTableColumns(ctx, sm.primary, "logs")
 	if err != nil {
-		return fmt.Errorf("获取 MySQL logs 表列失败: %w", err)
+		return fmt.Errorf("获取主库 logs 表列失败: %w", err)
 	}
 
 	// 计算交集列
 	var commonCols []string
-	var mysqlColIndices []int
-	for i, col := range mysqlCols {
+	var sourceColIndices []int
+	for i, col := range sourceCols {
 		if col != "id" && sqliteColSet[col] {
 			commonCols = append(commonCols, col)
-			mysqlColIndices = append(mysqlColIndices, i)
+			sourceColIndices = append(sourceColIndices, i)
 		}
 	}
 
@@ -277,9 +277,9 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 		return fmt.Errorf("logs 表无共同列，无法恢复")
 	}
 
-	rows, err := sm.mysql.QueryContext(ctx, "SELECT * FROM logs WHERE time >= ?", startTime)
+	rows, err := sm.primary.QueryContext(ctx, "SELECT * FROM logs WHERE time >= ?", startTime)
 	if err != nil {
-		return fmt.Errorf("查询 MySQL 日志快照失败: %w", err)
+		return fmt.Errorf("查询主库日志快照失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
@@ -304,18 +304,18 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 
 	totalRestored := 0
 	for rows.Next() {
-		scanArgs := make([]any, len(mysqlCols))
-		scanVals := make([]any, len(mysqlCols))
+		scanArgs := make([]any, len(sourceCols))
+		scanVals := make([]any, len(sourceCols))
 		for i := range scanVals {
 			scanArgs[i] = &scanVals[i]
 		}
 
 		if err := rows.Scan(scanArgs...); err != nil {
-			return fmt.Errorf("扫描 MySQL 日志失败: %w", err)
+			return fmt.Errorf("扫描主库日志失败: %w", err)
 		}
 
 		record := make([]any, len(commonCols))
-		for i, idx := range mysqlColIndices {
+		for i, idx := range sourceColIndices {
 			val := scanVals[idx]
 			if b, ok := val.([]byte); ok {
 				record[i] = string(b)
@@ -333,13 +333,13 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("读取 MySQL 日志快照失败: %w", err)
+		return fmt.Errorf("读取主库日志快照失败: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("提交 SQLite 日志快照失败: %w", err)
 	}
 
-	log.Printf("[INFO] 日志快照恢复完成，共 %d 条（%d/%d 列，不复制 id）", totalRestored, len(commonCols), len(mysqlCols))
+	log.Printf("[INFO] 日志快照恢复完成，共 %d 条（%d/%d 列，不复制 id）", totalRestored, len(commonCols), len(sourceCols))
 	return nil
 }

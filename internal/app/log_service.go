@@ -34,6 +34,7 @@ type LogService struct {
 	logChan      chan *model.LogEntry
 	logWorkers   int
 	logDropCount atomic.Uint64
+	logFailCount atomic.Uint64
 
 	// 日志保留天数（启动时确定，修改后重启生效）
 	retentionDays int
@@ -42,6 +43,25 @@ type LogService struct {
 	shutdownCh     chan struct{}
 	isShuttingDown *atomic.Bool
 	wg             *sync.WaitGroup
+}
+
+type logRuntimeMetrics struct {
+	DroppedEntries           uint64 `json:"dropped_entries"`
+	PersistenceFailedEntries uint64 `json:"persistence_failed_entries"`
+	BacklogEntries           int    `json:"backlog_entries"`
+	QueueCapacityEntries     int    `json:"queue_capacity_entries"`
+}
+
+func (s *LogService) runtimeMetrics() logRuntimeMetrics {
+	if s == nil {
+		return logRuntimeMetrics{}
+	}
+	return logRuntimeMetrics{
+		DroppedEntries:           s.logDropCount.Load(),
+		PersistenceFailedEntries: s.logFailCount.Load(),
+		BacklogEntries:           len(s.logChan),
+		QueueCapacityEntries:     cap(s.logChan),
+	}
 }
 
 // NewLogService 创建日志服务实例
@@ -186,6 +206,7 @@ retryLoop:
 	}
 
 	log.Printf("[ERROR] 日志批量写入最终失败 (attempts=%d, batch_size=%d): %v", attempts, len(logs), lastErr)
+	s.logFailCount.Add(uint64(len(logs)))
 }
 
 func (s *LogService) isShutdownInProgress() bool {

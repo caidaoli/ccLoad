@@ -3,12 +3,29 @@ package storage_test
 import (
 	"context"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
+
+type blockingAPIKeyStore struct {
+	storage.Store
+	loaded  chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *blockingAPIKeyStore) GetAPIKeys(ctx context.Context, channelID int64) ([]*model.APIKey, error) {
+	keys, err := s.Store.GetAPIKeys(ctx, channelID)
+	s.once.Do(func() {
+		close(s.loaded)
+		<-s.release
+	})
+	return keys, err
+}
 
 func TestChannelCache_GetConfig(t *testing.T) {
 	ctx := context.Background()
@@ -177,6 +194,83 @@ func TestChannelCache_APIKeysCacheAndInvalidation(t *testing.T) {
 	}
 	if len(keys5) != 2 {
 		t.Fatalf("expected keys len=2 after invalidate-all reload, got %d", len(keys5))
+	}
+}
+
+func TestChannelCache_APIKeysCacheExpires(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "cache_apikey_ttl.db"))
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "ttl-channel", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channel.ID, KeyIndex: 0, APIKey: "sk-0", KeyStrategy: model.KeyStrategySequential, //nolint:gosec
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	cache := storage.NewChannelCache(store, 0)
+	if keys, err := cache.GetAPIKeys(ctx, channel.ID); err != nil || len(keys) != 1 {
+		t.Fatalf("initial GetAPIKeys = (%+v, %v)", keys, err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channel.ID, KeyIndex: 1, APIKey: "sk-1", KeyStrategy: model.KeyStrategySequential, //nolint:gosec
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch second key failed: %v", err)
+	}
+	if keys, err := cache.GetAPIKeys(ctx, channel.ID); err != nil || len(keys) != 2 {
+		t.Fatalf("expired GetAPIKeys = (%+v, %v), want two fresh keys", keys, err)
+	}
+}
+
+func TestChannelCache_APIKeyInvalidationRejectsInFlightStaleFill(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "cache_apikey_generation.db"))
+	if err != nil {
+		t.Fatalf("CreateSQLiteStore failed: %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	channel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "generation-channel", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channel.ID, KeyIndex: 0, APIKey: "sk-old", KeyStrategy: model.KeyStrategySequential, //nolint:gosec
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch initial: %v", err)
+	}
+
+	blocking := &blockingAPIKeyStore{Store: store, loaded: make(chan struct{}), release: make(chan struct{})}
+	cache := storage.NewChannelCache(blocking, time.Minute)
+	result := make(chan []*model.APIKey, 1)
+	go func() {
+		keys, _ := cache.GetAPIKeys(ctx, channel.ID)
+		result <- keys
+	}()
+	<-blocking.loaded
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: channel.ID, KeyIndex: 1, APIKey: "sk-new", KeyStrategy: model.KeyStrategySequential, //nolint:gosec
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch updated: %v", err)
+	}
+	cache.InvalidateAPIKeysCache(channel.ID)
+	close(blocking.release)
+	if keys := <-result; len(keys) != 1 {
+		t.Fatalf("in-flight caller keys=%d, want its original snapshot", len(keys))
+	}
+	keys, err := cache.GetAPIKeys(ctx, channel.ID)
+	if err != nil || len(keys) != 2 {
+		t.Fatalf("post-invalidation GetAPIKeys = (%+v, %v), want fresh two-key snapshot", keys, err)
 	}
 }
 

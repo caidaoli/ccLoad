@@ -205,7 +205,6 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 	if err != nil {
 		return err
 	}
-
 	if s.supportsONConflict() {
 		query := `
 			INSERT INTO auth_tokens (
@@ -269,11 +268,20 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		}
 		if s.IsPostgres() {
 			err = s.withPostgresExplicitIDTx(ctx, "auth_tokens", func(tx *sql.Tx) error {
+				if _, deleteErr := s.execTx(ctx, tx, `DELETE FROM auth_tokens WHERE token = ? AND id <> ?`, token.Token, token.ID); deleteErr != nil {
+					return deleteErr
+				}
 				_, execErr := s.execTx(ctx, tx, query, args...)
 				return execErr
 			})
 		} else {
-			_, err = s.ExecContext(ctx, query, args...)
+			err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+				if _, deleteErr := s.execTx(ctx, tx, `DELETE FROM auth_tokens WHERE token = ? AND id <> ?`, token.Token, token.ID); deleteErr != nil {
+					return deleteErr
+				}
+				_, execErr := s.execTx(ctx, tx, query, args...)
+				return execErr
+			})
 		}
 		if err != nil {
 			return fmt.Errorf("upsert auth token all fields: %w", err)
@@ -281,7 +289,11 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 		return nil
 	}
 
-	_, err = s.ExecContext(ctx, `
+	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, deleteErr := s.execTx(ctx, tx, `DELETE FROM auth_tokens WHERE token = ? AND id <> ?`, token.Token, token.ID); deleteErr != nil {
+			return deleteErr
+		}
+		_, execErr := s.execTx(ctx, tx, `
 		INSERT INTO auth_tokens (
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
@@ -315,32 +327,34 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			channel_restriction_mode = VALUES(channel_restriction_mode),
 			max_concurrency = VALUES(max_concurrency)
 	`,
-		token.ID,
-		token.Token,
-		token.Description,
-		token.CreatedAt.UnixMilli(),
-		expiresAt,
-		lastUsedAt,
-		token.IsActive,
-		token.SuccessCount,
-		token.FailureCount,
-		token.StreamAvgTTFB,
-		token.NonStreamAvgRT,
-		token.StreamCount,
-		token.NonStreamCount,
-		token.PromptTokensTotal,
-		token.CompletionTokensTotal,
-		token.CacheReadTokensTotal,
-		token.CacheCreationTokensTotal,
-		token.TotalCostUSD,
-		token.EffectiveCostUSD,
-		token.CostUsedMicroUSD,
-		token.CostLimitMicroUSD,
-		allowedModelsJSON,
-		allowedChannelIDsJSON,
-		channelRestrictionMode,
-		token.MaxConcurrency,
-	)
+			token.ID,
+			token.Token,
+			token.Description,
+			token.CreatedAt.UnixMilli(),
+			expiresAt,
+			lastUsedAt,
+			token.IsActive,
+			token.SuccessCount,
+			token.FailureCount,
+			token.StreamAvgTTFB,
+			token.NonStreamAvgRT,
+			token.StreamCount,
+			token.NonStreamCount,
+			token.PromptTokensTotal,
+			token.CompletionTokensTotal,
+			token.CacheReadTokensTotal,
+			token.CacheCreationTokensTotal,
+			token.TotalCostUSD,
+			token.EffectiveCostUSD,
+			token.CostUsedMicroUSD,
+			token.CostLimitMicroUSD,
+			allowedModelsJSON,
+			allowedChannelIDsJSON,
+			channelRestrictionMode,
+			token.MaxConcurrency,
+		)
+		return execErr
+	})
 	if err != nil {
 		return fmt.Errorf("upsert auth token all fields: %w", err)
 	}
@@ -740,6 +754,14 @@ func (s *SQLStore) DeleteAuthToken(ctx context.Context, id int64) error {
 		return fmt.Errorf("auth token not found")
 	}
 
+	return nil
+}
+
+// DeleteAuthTokenReplica is the idempotent tombstone form used by write-behind.
+func (s *SQLStore) DeleteAuthTokenReplica(ctx context.Context, id int64) error {
+	if _, err := s.ExecContext(ctx, `DELETE FROM auth_tokens WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete auth token replica: %w", err)
+	}
 	return nil
 }
 

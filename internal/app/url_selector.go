@@ -558,18 +558,17 @@ func (s *URLSelector) EnableURL(channelID int64, url string) {
 	delete(s.disabled, key)
 }
 
-// LoadDisabled 启动时从持久化存储回填手动禁用URL集合
+// LoadDisabled 用持久化快照替换手动禁用URL集合。
 func (s *URLSelector) LoadDisabled(disabled map[int64][]string) {
-	if len(disabled) == 0 {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	next := make(map[urlKey]bool)
 	for channelID, urls := range disabled {
 		for _, u := range urls {
-			s.disabled[urlKey{channelID: channelID, url: u}] = true
+			next[urlKey{channelID: channelID, url: u}] = true
 		}
 	}
+	s.mu.Lock()
+	s.disabled = next
+	s.mu.Unlock()
 }
 
 // IsDisabled 检查URL是否被手动禁用

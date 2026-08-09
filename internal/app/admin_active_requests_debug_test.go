@@ -10,9 +10,19 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
 )
+
+type runtimeMetricsStore struct {
+	storage.Store
+	metrics storage.HybridRuntimeMetrics
+}
+
+func (s *runtimeMetricsStore) RuntimeMetrics() storage.HybridRuntimeMetrics {
+	return s.metrics
+}
 
 func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 	t.Parallel()
@@ -53,6 +63,19 @@ func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 
 func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	srv := newInMemoryServer(t)
+	srv.logService.logDropCount.Store(4)
+	srv.logService.logFailCount.Store(5)
+	srv.store = &runtimeMetricsStore{
+		Store: srv.store,
+		metrics: storage.HybridRuntimeMetrics{
+			SQLiteReadFailures:     2,
+			AnalyticsReadsPrimary:  true,
+			PrimarySyncPending:     7,
+			PrimarySyncFailures:    3,
+			PrimarySyncDropped:     1,
+			PrimarySyncLastSuccess: 123456,
+		},
+	}
 	srv.responsesWebsocketConnections = newResponsesWebsocketConnectionLimiter(1, 1)
 	releaseConnection, limit := srv.responsesWebsocketConnections.acquire("token-a")
 	if limit != nil {
@@ -147,6 +170,23 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 		if _, exists := ws[key]; !exists {
 			t.Fatalf("%s metric missing: %#v", key, ws)
 		}
+	}
+	storageMetrics, ok := resp.Data["storage"].(map[string]any)
+	if !ok {
+		t.Fatalf("storage metrics missing: %#v", resp.Data)
+	}
+	if storageMetrics["sqlite_read_failures"] != float64(2) || storageMetrics["analytics_reads_primary"] != true {
+		t.Fatalf("unexpected storage metrics: %#v", storageMetrics)
+	}
+	if storageMetrics["primary_sync_pending"] != float64(7) ||
+		storageMetrics["primary_sync_failures"] != float64(3) ||
+		storageMetrics["primary_sync_dropped"] != float64(1) ||
+		storageMetrics["primary_sync_last_success_unix_ms"] != float64(123456) {
+		t.Fatalf("unexpected primary sync metrics: %#v", storageMetrics)
+	}
+	logMetrics, ok := resp.Data["logs"].(map[string]any)
+	if !ok || logMetrics["dropped_entries"] != float64(4) || logMetrics["persistence_failed_entries"] != float64(5) {
+		t.Fatalf("unexpected log metrics: %#v", logMetrics)
 	}
 }
 

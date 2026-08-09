@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	sqlstore "ccLoad/internal/storage/sql"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -67,6 +68,63 @@ func setupMySQLEnv(t *testing.T) *mysqlTestEnv {
 	}
 
 	return startDockerMySQL(t)
+}
+
+// TestMySQLRepeatableReadSnapshotCompatibility 可安全指向远程实例：只验证恢复所需的
+// REPEATABLE READ 事务能力，不创建、修改或删除任何对象。
+func TestMySQLRepeatableReadSnapshotCompatibility(t *testing.T) {
+	dsn := os.Getenv("CCLOAD_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("CCLOAD_TEST_MYSQL_DSN 未设置")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		t.Fatalf("open MySQL: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		t.Fatalf("ping MySQL: %v", err)
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		t.Fatalf("begin repeatable-read transaction: %v", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	var one int
+	if err := tx.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+		t.Fatalf("query in snapshot transaction: %v", err)
+	}
+	if one != 1 {
+		t.Fatalf("SELECT 1 = %d", one)
+	}
+}
+
+// BenchmarkMySQLReadOnlyRoundTrip 测量远程主库最小查询往返；不触碰业务表。
+func BenchmarkMySQLReadOnlyRoundTrip(b *testing.B) {
+	dsn := os.Getenv("CCLOAD_TEST_MYSQL_DSN")
+	if dsn == "" {
+		b.Skip("CCLOAD_TEST_MYSQL_DSN 未设置")
+	}
+	db, err := sql.Open("mysql", dsn)
+	if err != nil {
+		b.Fatalf("open MySQL: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+	ctx := context.Background()
+	if err := db.PingContext(ctx); err != nil {
+		b.Fatalf("ping MySQL: %v", err)
+	}
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		var one int
+		if err := db.QueryRowContext(ctx, "SELECT 1").Scan(&one); err != nil {
+			b.Fatalf("SELECT 1: %v", err)
+		}
+	}
 }
 
 // startDockerMySQL 启动 Docker MySQL 容器
@@ -141,7 +199,7 @@ func cleanupMySQLTables(t *testing.T, db *sql.DB) {
 	_, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 0")
 	defer func() { _, _ = db.Exec("SET FOREIGN_KEY_CHECKS = 1") }()
 
-	tables := []string{"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
+	tables := []string{"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings", "auth_tokens", "channel_model_cooldowns", "channel_url_states", "channel_models", "channel_protocol_transforms", "api_keys", "channels", "schema_migrations"}
 	for _, table := range tables {
 		_, _ = db.Exec("DROP TABLE IF EXISTS " + table)
 	}
@@ -174,6 +232,69 @@ func TestMySQL(t *testing.T) {
 				t.Fatalf("表 %s 查询失败: %v", table, err)
 			}
 			t.Logf("表 %s 存在（行数: %d）", table, count)
+		}
+	})
+
+	t.Run("SyncManagerLargeRestore", func(t *testing.T) {
+		cleanupMySQLTables(t, env.db)
+		primaryStore, err := CreateMySQLStoreForTest(env.dsn)
+		if err != nil {
+			t.Fatalf("CreateMySQLStore: %v", err)
+		}
+		defer func() { _ = primaryStore.Close() }()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		channel, err := primaryStore.CreateConfig(ctx, &model.Config{
+			Name: "large-restore", URLs: model.ChannelURLs{{URL: "https://example.com"}}, Enabled: true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig: %v", err)
+		}
+		t.Cleanup(func() {
+			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cleanupCancel()
+			if _, cleanupErr := env.db.ExecContext(cleanupCtx, "DELETE FROM channels WHERE id = ?", channel.ID); cleanupErr != nil {
+				t.Errorf("cleanup large restore fixture: %v", cleanupErr)
+			}
+		})
+		const rowCount = 10_001
+		const batchSize = 500
+		for start := 0; start < rowCount; start += batchSize {
+			end := min(start+batchSize, rowCount)
+			placeholders := make([]string, 0, end-start)
+			args := make([]any, 0, (end-start)*5)
+			for i := start; i < end; i++ {
+				placeholders = append(placeholders, "(?, ?, ?, ?, ?)")
+				args = append(args, channel.ID, fmt.Sprintf("model-%05d", i), "", 0, time.Now().UnixMilli())
+			}
+			query := "INSERT INTO channel_models (channel_id, model, redirect_model, disabled, created_at) VALUES " + strings.Join(placeholders, ",")
+			if _, err := env.db.ExecContext(ctx, query, args...); err != nil {
+				t.Fatalf("seed channel_models [%d,%d): %v", start, end, err)
+			}
+		}
+
+		sqliteStore, err := CreateSQLiteStore(t.TempDir() + "/restore.db")
+		if err != nil {
+			t.Fatalf("CreateSQLiteStore: %v", err)
+		}
+		defer func() { _ = sqliteStore.Close() }()
+		primarySQL, ok := primaryStore.(*sqlstore.SQLStore)
+		if !ok {
+			t.Fatalf("primary store type %T", primaryStore)
+		}
+		sqliteSQL, ok := sqliteStore.(*sqlstore.SQLStore)
+		if !ok {
+			t.Fatalf("sqlite store type %T", sqliteStore)
+		}
+		if err := NewSyncManager(primarySQL, sqliteSQL).RestoreOnStartup(ctx, 0); err != nil {
+			t.Fatalf("RestoreOnStartup: %v", err)
+		}
+		restored, err := sqliteStore.GetConfig(ctx, channel.ID)
+		if err != nil {
+			t.Fatalf("GetConfig restored channel: %v", err)
+		}
+		if len(restored.ModelEntries) != rowCount {
+			t.Fatalf("restored model rows=%d, want %d", len(restored.ModelEntries), rowCount)
 		}
 	})
 

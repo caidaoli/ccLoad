@@ -2953,7 +2953,7 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 	})
 }
 
-func TestCodexCredentialManagerCachesCommittedWinnerWhenHybridReplicaSyncFails(t *testing.T) {
+func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing.T) {
 	primaryStore, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "primary.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -2974,11 +2974,20 @@ func TestCodexCredentialManagerCachesCommittedWinnerWhenHybridReplicaSyncFails(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := replica.ExecContext(context.Background(), `
+	if _, err := primary.ExecContext(context.Background(), `
 		CREATE TRIGGER reject_oauth_credential_update
 		BEFORE UPDATE OF oauth_credential ON channels
 		BEGIN
 			SELECT RAISE(FAIL, 'oauth credential replica is read only');
+		END
+	`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.ExecContext(context.Background(), `
+		CREATE TRIGGER reject_oauth_channel_insert
+		BEFORE INSERT ON channels
+		BEGIN
+			SELECT RAISE(FAIL, 'primary is unavailable');
 		END
 	`); err != nil {
 		t.Fatal(err)
@@ -3011,13 +3020,13 @@ func TestCodexCredentialManagerCachesCommittedWinnerWhenHybridReplicaSyncFails(t
 	if invalidations.Load() != 1 {
 		t.Fatalf("invalidations = %d, want one after committed refresh", invalidations.Load())
 	}
-	persisted, err := primary.GetConfig(context.Background(), channel.ID)
+	persisted, err := replica.GetConfig(context.Background(), channel.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil || persistedCredential.RefreshToken != "rt-new" {
-		t.Fatalf("primary credential = (%#v, %v)", persistedCredential, err)
+		t.Fatalf("SQLite credential = (%#v, %v)", persistedCredential, err)
 	}
 }
 

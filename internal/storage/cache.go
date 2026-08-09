@@ -26,6 +26,9 @@ type ChannelCache struct {
 
 	// 扩展缓存支持更多关键查询
 	apiKeysByChannelID map[int64][]*modelpkg.APIKey // channelID → API keys
+	apiKeysLastUpdate  map[int64]time.Time
+	apiKeysGeneration  map[int64]uint64
+	apiKeysAllGen      uint64
 	cooldownCache      struct {
 		channels          map[int64]time.Time            // channelID → cooldown until
 		keys              map[int64]map[int]time.Time    // channelID→keyIndex→cooldown until
@@ -47,6 +50,8 @@ func NewChannelCache(store Store, ttl time.Duration) *ChannelCache {
 
 		// 初始化扩展缓存
 		apiKeysByChannelID: make(map[int64][]*modelpkg.APIKey),
+		apiKeysLastUpdate:  make(map[int64]time.Time),
+		apiKeysGeneration:  make(map[int64]uint64),
 		cooldownCache: struct {
 			channels          map[int64]time.Time
 			keys              map[int64]map[int]time.Time
@@ -206,7 +211,8 @@ func (c *ChannelCache) InvalidateCache() {
 func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*modelpkg.APIKey, error) {
 	// 检查缓存
 	c.mutex.RLock()
-	if keys, exists := c.apiKeysByChannelID[channelID]; exists {
+	keys, exists := c.apiKeysByChannelID[channelID]
+	if exists && time.Since(c.apiKeysLastUpdate[channelID]) <= c.ttl {
 		c.mutex.RUnlock()
 		// 深拷贝: 防止调用方修改污染缓存
 		result := make([]*modelpkg.APIKey, len(keys))
@@ -216,6 +222,8 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 		}
 		return result, nil
 	}
+	channelGeneration := c.apiKeysGeneration[channelID]
+	allGeneration := c.apiKeysAllGen
 	c.mutex.RUnlock()
 
 	// 缓存未命中，从数据库加载
@@ -226,7 +234,10 @@ func (c *ChannelCache) GetAPIKeys(ctx context.Context, channelID int64) ([]*mode
 
 	// 存储到缓存（只存 slice 本身；对外总是返回深拷贝，避免污染缓存）
 	c.mutex.Lock()
-	c.apiKeysByChannelID[channelID] = keys
+	if c.apiKeysGeneration[channelID] == channelGeneration && c.apiKeysAllGen == allGeneration {
+		c.apiKeysByChannelID[channelID] = keys
+		c.apiKeysLastUpdate[channelID] = time.Now()
+	}
 	c.mutex.Unlock()
 
 	result := make([]*modelpkg.APIKey, len(keys))
@@ -343,6 +354,8 @@ func (c *ChannelCache) InvalidateAPIKeysCache(channelID int64) {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	delete(c.apiKeysByChannelID, channelID)
+	delete(c.apiKeysLastUpdate, channelID)
+	c.apiKeysGeneration[channelID]++
 }
 
 // InvalidateAllAPIKeysCache 清空所有API Key缓存（批量操作后使用）
@@ -350,6 +363,8 @@ func (c *ChannelCache) InvalidateAllAPIKeysCache() {
 	c.mutex.Lock()
 	defer c.mutex.Unlock()
 	c.apiKeysByChannelID = make(map[int64][]*modelpkg.APIKey)
+	c.apiKeysLastUpdate = make(map[int64]time.Time)
+	c.apiKeysAllGen++
 }
 
 // InvalidateCooldownCache 手动失效冷却缓存

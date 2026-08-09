@@ -8,15 +8,10 @@ import (
 	"ccLoad/internal/model"
 )
 
-func TestHybridStore_EnsureAuthToken_SyncsExistingIDToSQLite(t *testing.T) {
-	mysql := createTestSQLiteStore(t)
+func TestHybridStore_EnsureAuthTokenKeepsSQLiteIDAndConvergesPrimary(t *testing.T) {
+	primary := createTestSQLiteStore(t)
 	sqlite := createTestSQLiteStore(t)
-	defer func() {
-		_ = sqlite.Close()
-		_ = mysql.Close()
-	}()
-
-	hybrid := NewHybridStore(sqlite, mysql)
+	hybrid := NewHybridStore(sqlite, primary)
 	defer func() { _ = hybrid.Close() }()
 
 	ctx := context.Background()
@@ -35,17 +30,14 @@ func TestHybridStore_EnsureAuthToken_SyncsExistingIDToSQLite(t *testing.T) {
 		t.Fatalf("first run created=%v id=%d, want created with id", created, first.ID)
 	}
 
-	mysqlToken, err := mysql.GetAuthTokenByValue(ctx, tokenHash)
-	if err != nil {
-		t.Fatalf("mysql GetAuthTokenByValue failed: %v", err)
-	}
 	sqliteToken, err := sqlite.GetAuthTokenByValue(ctx, tokenHash)
 	if err != nil {
 		t.Fatalf("sqlite GetAuthTokenByValue failed: %v", err)
 	}
-	if mysqlToken.ID != sqliteToken.ID || mysqlToken.ID != first.ID {
-		t.Fatalf("id mismatch mysql=%d sqlite=%d first=%d", mysqlToken.ID, sqliteToken.ID, first.ID)
-	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		primaryToken, getErr := primary.GetAuthTokenByValue(ctx, tokenHash)
+		return getErr == nil && primaryToken.ID == sqliteToken.ID && primaryToken.ID == first.ID
+	})
 
 	second := &model.AuthToken{
 		Token:       tokenHash,

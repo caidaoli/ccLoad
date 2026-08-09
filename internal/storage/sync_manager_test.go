@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,6 +40,90 @@ func TestSyncManager_RestoreOnStartup_EmptyMySQL(t *testing.T) {
 	err := sm.RestoreOnStartup(ctx, 7)
 	if err != nil {
 		t.Fatalf("RestoreOnStartup 失败: %v", err)
+	}
+}
+
+func TestSyncManager_RestoreOnStartup_EmptySourceClearsStaleReplica(t *testing.T) {
+	source := createTestStoreForSync(t, "empty_source")
+	target := createTestStoreForSync(t, "stale_target")
+	defer func() {
+		_ = source.Close()
+		_ = target.Close()
+	}()
+
+	ctx := context.Background()
+	if _, err := target.CreateConfig(ctx, &model.Config{
+		Name:     "stale-channel",
+		URLs:     model.ChannelURLs{{URL: "https://stale.example.com"}},
+		Enabled:  true,
+		Priority: 1,
+		ModelEntries: []model.ModelEntry{{
+			Model: "stale-model",
+		}},
+	}); err != nil {
+		t.Fatalf("create stale replica config: %v", err)
+	}
+	staleToken := &model.AuthToken{
+		Token:       model.HashToken("stale-token"),
+		Description: "stale-token",
+		CreatedAt:   time.Now(),
+		IsActive:    true,
+	}
+	if err := target.CreateAuthToken(ctx, staleToken); err != nil {
+		t.Fatalf("create stale replica auth token: %v", err)
+	}
+
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
+		t.Fatalf("restore empty source: %v", err)
+	}
+	configs, err := target.ListConfigs(ctx)
+	if err != nil {
+		t.Fatalf("list target configs: %v", err)
+	}
+	if len(configs) != 0 {
+		t.Fatalf("stale replica configs survived empty source: %+v", configs)
+	}
+	tokens, err := target.ListAuthTokens(ctx)
+	if err != nil {
+		t.Fatalf("list target auth tokens: %v", err)
+	}
+	if len(tokens) != 0 {
+		t.Fatalf("stale replica auth tokens survived empty source: %+v", tokens)
+	}
+}
+
+func TestSyncManager_RestoreOnStartup_RestoresChannelURLStates(t *testing.T) {
+	source := createTestStoreForSync(t, "url_state_source")
+	target := createTestStoreForSync(t, "url_state_target")
+	defer func() {
+		_ = source.Close()
+		_ = target.Close()
+	}()
+
+	ctx := context.Background()
+	const channelURL = "https://disabled.example.com"
+	created, err := source.CreateConfig(ctx, &model.Config{
+		Name:     "disabled-url-channel",
+		URLs:     model.ChannelURLs{{URL: channelURL}},
+		Enabled:  true,
+		Priority: 1,
+	})
+	if err != nil {
+		t.Fatalf("create source config: %v", err)
+	}
+	if err := source.SetURLDisabled(ctx, created.ID, channelURL, true); err != nil {
+		t.Fatalf("disable source URL: %v", err)
+	}
+
+	if err := NewSyncManager(source, target).RestoreOnStartup(ctx, 0); err != nil {
+		t.Fatalf("restore URL state: %v", err)
+	}
+	disabled, err := target.LoadDisabledURLs(ctx)
+	if err != nil {
+		t.Fatalf("load restored URL states: %v", err)
+	}
+	if len(disabled[created.ID]) != 1 || disabled[created.ID][0] != channelURL {
+		t.Fatalf("restored URL states=%v, want channel %d URL %q", disabled, created.ID, channelURL)
 	}
 }
 
@@ -94,6 +179,47 @@ func TestSyncManager_RestoreOnStartup_WithData(t *testing.T) {
 	}
 	if restored.OAuthCredential != "" {
 		t.Errorf("恢复的 OAuthCredential = %q, want empty", restored.OAuthCredential)
+	}
+}
+
+func TestSyncManager_RestoreOnStartup_RestoresMoreThanTenThousandConfigRows(t *testing.T) {
+	source := createTestStoreForSync(t, "large_source")
+	target := createTestStoreForSync(t, "large_target")
+	defer func() {
+		_ = source.Close()
+		_ = target.Close()
+	}()
+
+	const modelCount = 10001
+	entries := make([]model.ModelEntry, modelCount)
+	for i := range entries {
+		name := fmt.Sprintf("model-%05d", i)
+		entries[i] = model.ModelEntry{Model: name, RedirectModel: name}
+	}
+
+	ctx := context.Background()
+	if _, err := source.CreateConfig(ctx, &model.Config{
+		Name:         "large-channel",
+		URLs:         model.ChannelURLs{{URL: "https://large.example.com"}},
+		Priority:     1,
+		Enabled:      true,
+		ModelEntries: entries,
+	}); err != nil {
+		t.Fatalf("create large source config: %v", err)
+	}
+
+	restoreCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := NewSyncManager(source, target).RestoreOnStartup(restoreCtx, 0); err != nil {
+		t.Fatalf("restore more than 10000 config rows: %v", err)
+	}
+
+	var restored int
+	if err := target.QueryRowContext(ctx, "SELECT COUNT(*) FROM channel_models").Scan(&restored); err != nil {
+		t.Fatalf("count restored channel models: %v", err)
+	}
+	if restored != modelCount {
+		t.Fatalf("restored channel models=%d, want %d", restored, modelCount)
 	}
 }
 

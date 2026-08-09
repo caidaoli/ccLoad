@@ -337,8 +337,9 @@ Hugging Face Spaces 提供免费的 Docker 托管和自动 HTTPS，适合个人�
 由于 Hugging Face Spaces 的限制（`/tmp` 目录重启后清空），**强烈推荐使用外部 MySQL 或 PostgreSQL 数据库**实现完整的数据持久化：
 
 **方案一：混合存储模式（推荐，性能最优）**
-- ✅ **极速查询**: 读操作走本地 SQLite，避免远程数据库延迟
-- ✅ **重启不丢数据**: 持久化数据写入 MySQL/PostgreSQL，启动时自动恢复
+- ✅ **本地权威读写**: 配置、凭据、Key、冷却与日志都先提交 SQLite，远程数据库延迟不进入调度热路径
+- ✅ **后台最终一致**: 主库写入按实体合并，失败后每 10 秒重试
+- ⚠️ **单实例语义**: 不支持多个混合实例或外部程序同时写主库；进程退出可能丢失尚未同步的内存任务
 - ✅ **统计缓存**: 智能 TTL 缓存，减少重复聚合查询
 - 配置方法: 在 Secrets 中添加一个主库 DSN（`CCLOAD_MYSQL` 或 `CCLOAD_POSTGRES`），再加 `CCLOAD_ENABLE_SQLITE_REPLICA=1`
 
@@ -628,7 +629,7 @@ websocat \
 
 重连时必须使用相同的 API 令牌和稳定的 execution 请求头。`Session-Id` 表示顶层 Codex 会话；存在 `Thread-Id` 时，ccLoad 组合两个请求头建立身份，使主代理和每个子代理线程分别拥有独立的 transcript、Response ID 和 turn lock。没有 `Thread-Id` 的客户端继续使用原 `Session-Id` 契约。`prompt_cache_key`、请求体 `session_id` 及其他缓存路由提示不代表 execution session，不会触发本地串行，也不会共享本地会话状态。execution session 是单进程内存状态：新安装默认最多保留 256 个会话，进程级 transcript 有效载荷总预算为 256 MiB；已有数据库记录不迁移。空闲 TTL 继续默认 15 分钟（小内存机器可设为 10 分钟）。下游全部断开 5 分钟后，每分钟运行的清理器会关闭上游物理连接，因此实际回收时间约为 5–6 分钟，但会话 transcript 会继续保留到 TTL。稳定会话及其已提交 transcript 在 TTL 到期前绝不会因会话容量或内存预算压力被逐出。会话数达到上限时只拒绝新的会话身份，已有稳定会话仍可继续。已提交载荷超预算后，包括已有会话在内的所有新回合都会在触达上游前被拒绝。两类限制都通过 WebSocket `429/rate_limit_error/rate_limit` 事件返回；客户端应等待 TTL 回收后重试，或修改设置并重启。重启会丢失内存会话，因此客户端随后必须发送不带 `previous_response_id` 的完整会话输入。
 
-Transcript 预算是新工作准入阈值，不是严格分配上限：已经准入的回合允许完成并提交。除已配置预算外，有限的最坏超量为 `responses_ws_max_sessions × max_body_bytes`。进程重启不会恢复会话或累计会话指标。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。会话数、TTL 和 transcript 预算可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes`、`responses_ws_max_transcript_bytes` 调整。`GET /admin/runtime-metrics` 的 `transcript_bytes` 表示当前有效载荷字节数，不包含 Go 运行时、WebSocket 缓冲区和请求处理中临时对象的开销；同一响应还提供当前进程累计的 `ttl_expired`、`capacity_rejected`、`budget_rejected` 和 `previous_response_misses` 计数。
+Transcript 预算是新工作准入阈值，不是严格分配上限：已经准入的回合允许完成并提交。除已配置预算外，有限的最坏超量为 `responses_ws_max_sessions × max_body_bytes`。进程重启不会恢复会话或累计会话指标。多实例部署必须使用粘性路由保证重连命中同一实例；否则客户端应发送不带 `previous_response_id` 的完整会话输入。会话数、TTL 和 transcript 预算可在系统设置中通过 `responses_ws_max_sessions`、`responses_ws_session_ttl_minutes`、`responses_ws_max_transcript_bytes` 调整。`GET /admin/runtime-metrics` 的 `transcript_bytes` 表示当前有效载荷字节数，不包含 Go 运行时、WebSocket 缓冲区和请求处理中临时对象的开销；同一响应还提供 WebSocket 拒绝、日志队列/落库失败，以及混合存储主库同步积压、失败、丢弃和最后成功时间。
 
 **Codex Alpha Search（仅原生透传）**：
 
@@ -939,33 +940,36 @@ ccLoad 使用的核心技术栈：
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**与 `CCLOAD_POSTGRES` 互斥** |
 | `CCLOAD_POSTGRES` | 无 | PostgreSQL DSN（可选，支持 URL 或 libpq 关键字，例如 `postgres://user:pass@host:5432/db?sslmode=disable`）<br/>**与 `CCLOAD_MYSQL` 互斥** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，需要 MySQL 或 PostgreSQL 主库 DSN） |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式启动时从主库恢复日志的天数（-1=全量，0=不恢复日志） |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式首次创建 SQLite 时从主库导入日志的天数（-1=全量，0=不导入） |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
 | `GIN_LOG` | `true` | Gin 访问日志开关（`false`/`0`/`no`/`off` 关闭） |
 | `TRUSTED_PROXIES` | 私有网段 + Loopback + `100.64.0.0/10` | 可信代理 CIDR 列表（逗号分隔）；`none`=不信任任何代理 |
-| `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（仅 SQLite 模式） |
+| `SQLITE_PATH` | `data/ccload.db` | SQLite 数据库文件路径（纯 SQLite 与混合模式） |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal 模式（WAL/TRUNCATE/DELETE 等，容器环境建议 TRUNCATE） |
 | `CCLOAD_HOST_OVERRIDES` | 无 | DNS 覆盖：将上游域名钉到固定 IP，绕过 DNS 解析。格式：`host1=ip1,host2=ip2`，例如 `anyrouter.top=47.246.23.200`。不影响 TLS SNI/证书/Host 头 |
 
 > 如果你的服务挂在反向代理或负载均衡后面，建议显式设置 `TRUSTED_PROXIES`，避免伪造 `X-Forwarded-For` 干扰客户端 IP 识别和登录限速。
-> 可通过 `GET /admin/runtime-metrics` 查看 Responses WebSocket 的实时资源占用和上限。
+> 可通过 `GET /admin/runtime-metrics` 查看 Responses WebSocket、日志队列/落库失败，以及混合存储主库待同步、失败、丢弃与最后成功时间。
 
-#### 混合存储模式（主库 + SQLite 缓存）
+#### 混合存储模式（SQLite 权威库 + 主库异步副本）
 
 HuggingFace Spaces 等环境重启后本地数据会丢失，远程 MySQL/PostgreSQL 又可能存在网络延迟。混合模式兼顾持久化和本地读性能：
 
-- **主存储（MySQL 或 PostgreSQL）**：配置数据先写主库，确保数据持久化
-- **SQLite 本地缓存**：读操作走本地 SQLite，延迟 <1ms
-- **启动恢复**：从主库恢复数据到 SQLite，支持按天数恢复日志
-- **日志特殊处理**：先写 SQLite（快），再异步同步到主库
+- **SQLite 权威库**：配置、凭据、Key、冷却、设置和日志都同步读写本地 SQLite；SQLite 成功就是请求成功
+- **主库异步副本**：进程内 worker 按实体合并最终状态；失败任务等待 10 秒后重试，主库慢或临时故障不阻塞请求；脏实体过多时折叠为一次全量状态对账，避免内存无界增长
+- **启动语义**：只在 SQLite 文件首次创建时从主库导入；完成首次导入后，即使主库离线也能直接用 SQLite 启动，主库连接和迁移在后台重试
+- **日志语义**：主库日志与日志清理只做一次 best-effort 尝试，不进入 10 秒重试；较慢时新批次会替换旧批次并计入 dropped，允许主库日志缺失
+- **健康检查**：只检查权威 SQLite；主库同步状态通过 runtime metrics 观察
+- **仅本地数据**：Web Session 与原始 DebugData 只保存在当前实例的 SQLite
+- **明确边界**：这是单实例、单写者方案。进程重启会丢失尚在内存中的同步任务，不使用 outbox，也不支持多实例混合写
 
 ```bash
 # MySQL 主库
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
-export CCLOAD_SQLITE_LOG_DAYS=7  # 恢复最近 7 天日志（可选）
+export CCLOAD_SQLITE_LOG_DAYS=7  # 首次创建 SQLite 时导入最近 7 天日志（可选）
 
 # 或 PostgreSQL 主库
 export CCLOAD_POSTGRES="postgres://user:pass@host:5432/db?sslmode=disable"
