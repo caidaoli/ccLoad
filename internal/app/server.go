@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
@@ -74,6 +75,9 @@ type Server struct {
 	xaiService                    *xaiauth.Service
 	xaiCredentials                *xaiCredentialManager
 	xaiOAuth                      *xaiOAuthManager
+	anthropicService              *anthropicauth.Service
+	anthropicCredentials          *anthropicCredentialManager
+	anthropicOAuth                *codexOAuthManager
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -281,6 +285,14 @@ func NewServer(store storage.Store) *Server {
 			return cfg.ID, nil
 		},
 	)
+	s.anthropicService = anthropicauth.NewService(s.client)
+	s.anthropicCredentials = newAnthropicCredentialManager(
+		s.anthropicService, store, s.getClientForChannel, func(int64) { s.InvalidateChannelListCache() },
+	)
+	s.anthropicOAuth = newAnthropicOAuthManager(s.anthropicService, store, func(channelID int64) {
+		s.anthropicCredentials.invalidate(channelID)
+		s.InvalidateChannelListCache()
+	})
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -1109,6 +1121,11 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/xai/oauth/callback", s.HandleSubmitXAIOAuthCallback)
 		admin.POST("/xai/credentials/import/stream", s.HandleImportXAICredentialsStream)
 		admin.POST("/xai/credentials/import/jobs", s.HandleStartXAICredentialImportJob)
+		admin.POST("/anthropic/oauth/start", s.HandleStartAnthropicOAuth)
+		admin.GET("/anthropic/oauth/status", s.HandleAnthropicOAuthStatus)
+		admin.POST("/anthropic/oauth/cancel", s.HandleCancelAnthropicOAuth)
+		admin.POST("/anthropic/oauth/callback", s.HandleSubmitAnthropicOAuthCode)
+		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1359,6 +1376,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.xaiOAuth != nil {
 		s.xaiOAuth.close()
+	}
+	if s.anthropicOAuth != nil {
+		s.anthropicOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

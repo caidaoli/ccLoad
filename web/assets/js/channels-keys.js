@@ -11,7 +11,8 @@ function parseKeys(input) {
 }
 
 function isChannelKeyEditorReadOnly() {
-  return typeof editingChannelAuthType !== 'undefined' && editingChannelAuthType === 'codex_oauth';
+  return typeof editingChannelAuthType !== 'undefined' &&
+    ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth'].includes(editingChannelAuthType);
 }
 
 function normalizeInlineKeyRow(row) {

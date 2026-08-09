@@ -874,3 +874,98 @@ func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 		t.Fatalf("expected StreamDiagMsg to include upstream error, got %q", res.StreamDiagMsg)
 	}
 }
+
+func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-5","system":"answer tersely","messages":[{"role":"user","content":"hello world"}],
+		"thinking":{"type":"enabled"},"tool_choice":{"type":"auto"}
+	}`))
+	if err != nil {
+		t.Fatalf("finalizeAnthropicOAuthMessagesBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "model").String(); got != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("model = %q", got)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") {
+		t.Fatalf("billing block = %q", got)
+	}
+	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nanswer tersely" {
+		t.Fatalf("moved system = %q", got)
+	}
+	if !gjson.GetBytes(body, "tools").IsArray() || gjson.GetBytes(body, "tool_choice").Exists() ||
+		gjson.GetBytes(body, "temperature").Int() != 1 || gjson.GetBytes(body, "max_tokens").Int() != 128000 ||
+		gjson.GetBytes(body, "context_management.edits.0.type").String() != "clear_thinking_20251015" {
+		t.Fatalf("normalized body = %s", body)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer attacker")
+	injectAnthropicOAuthHeaders(request, "oauth-access", true)
+	if request.Header.Get("authorization") != "Bearer oauth-access" || request.Header.Get("x-api-key") != "" ||
+		request.Header.Get("anthropic-version") != "2023-06-01" ||
+		!strings.Contains(request.Header.Get("anthropic-beta"), "oauth-2025-04-20") ||
+		request.Header.Get("x-stainless-helper-method") != "stream" || request.Header.Get("x-client-request-id") == "" {
+		t.Fatalf("Anthropic OAuth headers = %v", request.Header)
+	}
+	if got := buildAnthropicOAuthURL("https://api.anthropic.com", "/v1/messages", "foo=bar"); got != "https://api.anthropic.com/v1/messages?beta=true&foo=bar" {
+		t.Fatalf("upstream URL = %q", got)
+	}
+}
+
+func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-6",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: attacker-controlled"}],
+		"messages":[{"role":"user","content":"hello"}]
+	}`))
+	if err != nil {
+		t.Fatalf("finalizeAnthropicOAuthMessagesBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); got == "x-anthropic-billing-header: attacker-controlled" ||
+		!strings.Contains(got, "cc_version=2.1.220.") {
+		t.Fatalf("forged billing block survived: %q", got)
+	}
+	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nx-anthropic-billing-header: attacker-controlled" {
+		t.Fatalf("client system was not demoted to instructions: %q", got)
+	}
+}
+
+func TestAnthropicOAuthBuildProxyRequestUsesOAuthWireAfterCustomRules(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID: 91, Name: "Anthropic", AuthType: model.AuthTypeAnthropicOAuth,
+		URLs: model.ChannelURLs{{URL: "https://api.anthropic.com", Protocols: []string{"anthropic"}}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
+			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "must-drop"},
+		}},
+	}
+	reqCtx := &requestContext{
+		ctx: context.Background(), startTime: time.Now(), isStreaming: true,
+		clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+	}
+	request, err := srv.buildProxyRequest(
+		reqCtx, cfg, "oauth-access", http.MethodPost,
+		[]byte(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+		http.Header{"Content-Type": []string{"application/json"}, "Anthropic-Beta": []string{"attacker-beta"}},
+		"client=true", "/v1/messages", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest() error = %v", err)
+	}
+	if request.URL.String() != "https://api.anthropic.com/v1/messages?beta=true&client=true" {
+		t.Fatalf("URL = %s", request.URL)
+	}
+	if request.Header.Get("Authorization") != "Bearer oauth-access" ||
+		request.Header.Get("User-Agent") != "claude-cli/2.1.220 (external, cli)" ||
+		request.Header.Get("X-Configured") != "" || request.Header.Get("Anthropic-Beta") != anthropicOAuthBetas {
+		t.Fatalf("headers = %v", request.Header)
+	}
+	if !strings.HasPrefix(gjson.GetBytes(reqCtx.translatedBody, "system.0.text").String(), "x-anthropic-billing-header:") {
+		t.Fatalf("translated body = %s", reqCtx.translatedBody)
+	}
+}

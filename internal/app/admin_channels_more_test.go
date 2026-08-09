@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
@@ -113,6 +114,37 @@ func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	persisted, err := store.GetConfig(context.Background(), created.ID)
 	if err != nil || persisted.OAuthCredential != credentialJSON {
 		t.Fatalf("persisted credential changed: err=%v config=%+v", err, persisted)
+	}
+}
+
+func TestDeleteChannelClearsAnthropicCredentialCache(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-delete", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.anthropicCredentials = newAnthropicCredentialManager(
+		anthropicauth.NewService(http.DefaultClient), store, nil, nil,
+	)
+	server.anthropicCredentials.cache(channel.ID, credential)
+	deleted, err := server.deleteChannelByID(context.Background(), channel.ID)
+	if err != nil || !deleted {
+		t.Fatalf("deleteChannelByID() = %v, %v", deleted, err)
+	}
+	server.anthropicCredentials.mu.RLock()
+	_, cached := server.anthropicCredentials.entries[channel.ID]
+	server.anthropicCredentials.mu.RUnlock()
+	if cached {
+		t.Fatal("deleted Anthropic credential remained cached")
 	}
 }
 

@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -3543,5 +3544,165 @@ func TestHandleOAuthUsageRejectsUnsupportedChannel(t *testing.T) {
 
 	if w.Code != http.StatusConflict {
 		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestAnthropicOAuthManagerValidatesCombinedCodeStateAndCreatesChannel(t *testing.T) {
+	var exchangedState string
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode token request: %v", err)
+		}
+		exchangedState = payload["state"]
+		_, _ = io.WriteString(w, `{"access_token":"anthropic-access","refresh_token":"anthropic-refresh","token_type":"Bearer","expires_in":3600,"scope":"user:inference","organization":{"uuid":"org-1"},"account":{"uuid":"account-1","email_address":"user@example.com"}}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	manager := newAnthropicOAuthManager(service, store, nil)
+	defer manager.close()
+
+	_, state, err := manager.start()
+	if err != nil {
+		t.Fatalf("start() error = %v", err)
+	}
+	if _, err := manager.submitAuthorizationCode(state, "code-1#wrong-state"); err == nil {
+		t.Fatal("state mismatch was accepted")
+	}
+	if _, err := manager.submitAuthorizationCode(state, "code-1#"+state); err != nil {
+		t.Fatalf("submitAuthorizationCode() error = %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		status, ok := manager.status(state)
+		if !ok {
+			t.Fatal("OAuth session disappeared")
+		}
+		if status.Status == "complete" {
+			if status.ChannelID == 0 || exchangedState != state {
+				t.Fatalf("status=%+v exchanged state=%q", status, exchangedState)
+			}
+			channel, getErr := store.GetConfig(context.Background(), status.ChannelID)
+			if getErr != nil || !channel.UsesAnthropicOAuth() || len(channel.ModelEntries) != len(anthropicOAuthDefaultModels) {
+				t.Fatalf("created channel=%+v err=%v", channel, getErr)
+			}
+			break
+		}
+		if status.Status == "error" {
+			t.Fatalf("OAuth failed: %s", status.Error)
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("OAuth did not complete: %+v", status)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestSameAnthropicIdentityNeverUsesSharedOrganization(t *testing.T) {
+	first := &anthropicauth.Credential{OrgUUID: "shared-org"}
+	second := &anthropicauth.Credential{OrgUUID: "shared-org"}
+	if sameAnthropicIdentity(first, second) {
+		t.Fatal("organization UUID is not an account identity")
+	}
+	first.AccountUUID, second.AccountUUID = "account-1", "account-1"
+	if !sameAnthropicIdentity(first, second) {
+		t.Fatal("matching account UUID should identify the same account")
+	}
+}
+
+func TestAnthropicCredentialManagerPersistsRotatedRefreshToken(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var payload map[string]string
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode refresh request: %v", err)
+		}
+		if payload["refresh_token"] != "old-refresh" {
+			t.Errorf("refresh token = %q", payload["refresh_token"])
+		}
+		_, _ = io.WriteString(w, `{"access_token":"new-access","refresh_token":"rotated-refresh","token_type":"Bearer","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",
+		Expired:     time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		AccountUUID: "account-1", EmailAddress: "user@example.com",
+	}
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-test", raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newAnthropicCredentialManager(service, store, nil, nil)
+	refreshed, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if refreshed.AccessToken != "new-access" || refreshed.RefreshToken != "rotated-refresh" {
+		t.Fatalf("refreshed credential = %+v", refreshed)
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner, err := anthropicauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || winner.RefreshToken != "rotated-refresh" || winner.AccountUUID != "account-1" {
+		t.Fatalf("persisted credential=%+v err=%v", winner, err)
+	}
+}
+
+func TestAnthropicCredentialManagerConsumesConcurrentCASWinnerAfterInvalidGrant(t *testing.T) {
+	_, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	oldCredential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	oldRaw, err := oldCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newAnthropicOAuthChannel("Anthropic-race", oldRaw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	winnerCredential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "winner-access", RefreshToken: "winner-refresh",
+		Expired: time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339), AccountUUID: "account-1",
+	}
+	winnerRaw, err := winnerCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		updated, updateErr := store.CompareAndSwapOAuthCredential(
+			context.Background(), channel.ID, model.AuthTypeAnthropicOAuth, oldRaw, winnerRaw,
+		)
+		if updateErr != nil || !updated {
+			t.Errorf("persist concurrent winner: updated=%v err=%v", updated, updateErr)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+	}))
+	defer tokenServer.Close()
+	service := anthropicauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newAnthropicCredentialManager(service, store, nil, nil)
+
+	winner, err := manager.credential(context.Background(), channel, true)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if winner.AccessToken != "winner-access" || winner.RefreshToken != "winner-refresh" {
+		t.Fatalf("credential() winner = %+v", winner)
 	}
 }

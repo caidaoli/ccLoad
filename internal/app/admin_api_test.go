@@ -261,6 +261,12 @@ func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
 			URLs:            model.ChannelURLs{{URL: "https://xai.example.com"}}, Enabled: true,
 			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
 		},
+		{
+			Name: "Anthropic OAuth", AuthType: model.AuthTypeAnthropicOAuth,
+			OAuthCredential: `{"type":"anthropic","access_token":"anthropic-access","refresh_token":"anthropic-refresh","expired":"2030-01-01T00:00:00Z","account_uuid":"account-1"}`,
+			URLs:            model.ChannelURLs{{URL: "https://api.anthropic.com", Protocols: []string{"anthropic"}}}, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-6"}},
+		},
 	}
 	for _, cfg := range testChannels {
 		if _, err := source.store.CreateConfig(ctx, cfg); err != nil {

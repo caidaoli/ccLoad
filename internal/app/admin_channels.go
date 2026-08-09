@@ -1544,5 +1544,8 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	if cfg.UsesXAIOAuth() && s.xaiCredentials != nil {
 		s.xaiCredentials.invalidate(id)
 	}
+	if s.anthropicCredentials != nil {
+		s.anthropicCredentials.invalidate(id)
+	}
 	return true, nil
 }
