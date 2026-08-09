@@ -164,6 +164,77 @@ func (s *SQLStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFi
 	return s.GetModelFingerprint(ctx, newID)
 }
 
+// UpsertModelFingerprintReplica writes the SQLite-assigned final state to a
+// primary replica. Replaying it after an ambiguous commit is safe.
+func (s *SQLStore) UpsertModelFingerprintReplica(ctx context.Context, fp *model.ModelFingerprint) error {
+	if fp == nil || fp.ID <= 0 {
+		return fmt.Errorf("invalid model fingerprint replica")
+	}
+	distJSON, err := marshalJSON("distribution", fp.Distribution)
+	if err != nil {
+		return err
+	}
+	statsJSON, err := marshalJSON("stats", fp.Stats)
+	if err != nil {
+		return err
+	}
+	rawJSON, err := marshalJSON("raw_data", fp.RawData)
+	if err != nil {
+		return err
+	}
+	promptVersion := fp.PromptVersion
+	if promptVersion == "" {
+		promptVersion = "v1"
+	}
+	createdAt := fp.CreatedAt.Time
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	updatedAt := fp.UpdatedAt.Time
+	if updatedAt.IsZero() {
+		updatedAt = createdAt
+	}
+	var channelID sql.NullInt64
+	if fp.ChannelID != nil {
+		channelID = sql.NullInt64{Int64: *fp.ChannelID, Valid: true}
+	}
+
+	args := []any{fp.ID, fp.Name, channelID, fp.ChannelName, fp.Model, fp.ActualModel, fp.ClientProtocol,
+		fp.SampleCount, distJSON, statsJSON, rawJSON, promptVersion, timeToUnix(createdAt), timeToUnix(updatedAt)}
+	query := `
+		INSERT INTO model_fingerprints
+			(id, name, channel_id, channel_name, model, actual_model, client_protocol,
+			 sample_count, distribution, stats, raw_data, prompt_version, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if s.supportsONConflict() {
+		query += ` ON CONFLICT(id) DO UPDATE SET
+			name = excluded.name, channel_id = excluded.channel_id, channel_name = excluded.channel_name,
+			model = excluded.model, actual_model = excluded.actual_model, client_protocol = excluded.client_protocol,
+			sample_count = excluded.sample_count, distribution = excluded.distribution, stats = excluded.stats,
+			raw_data = excluded.raw_data, prompt_version = excluded.prompt_version, created_at = excluded.created_at,
+			updated_at = excluded.updated_at`
+	} else {
+		query += ` ON DUPLICATE KEY UPDATE
+			name = VALUES(name), channel_id = VALUES(channel_id), channel_name = VALUES(channel_name),
+			model = VALUES(model), actual_model = VALUES(actual_model), client_protocol = VALUES(client_protocol),
+			sample_count = VALUES(sample_count), distribution = VALUES(distribution), stats = VALUES(stats),
+			raw_data = VALUES(raw_data), prompt_version = VALUES(prompt_version), created_at = VALUES(created_at),
+			updated_at = VALUES(updated_at)`
+	}
+	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if err := s.lockPostgresExplicitIDTable(ctx, tx, "model_fingerprints"); err != nil {
+			return err
+		}
+		if _, err := s.execTx(ctx, tx, `DELETE FROM model_fingerprints WHERE name = ? AND id <> ?`, fp.Name, fp.ID); err != nil {
+			return fmt.Errorf("delete stale model fingerprint replica: %w", err)
+		}
+		if _, err := s.execTx(ctx, tx, query, args...); err != nil {
+			return fmt.Errorf("upsert model fingerprint replica: %w", err)
+		}
+		return s.syncPostgresIDSequence(ctx, tx, "model_fingerprints")
+	})
+}
+
 func (s *SQLStore) modelFingerprintInsertError(ctx context.Context, name string, insertErr error) error {
 	exists, err := s.ModelFingerprintNameExists(ctx, name)
 	if err == nil && exists {
@@ -316,17 +387,80 @@ func (s *SQLStore) CreateFingerprintTestResult(ctx context.Context, rec *model.F
 	return nil
 }
 
+// UpsertFingerprintTestResultReplica is the idempotent replica form of
+// CreateFingerprintTestResult.
+func (s *SQLStore) UpsertFingerprintTestResultReplica(ctx context.Context, rec *model.FingerprintTestRecord) error {
+	if rec == nil || rec.ID <= 0 {
+		return fmt.Errorf("invalid fingerprint test result replica")
+	}
+	distributionJSON, err := marshalJSON("distribution", rec.Distribution)
+	if err != nil {
+		return err
+	}
+	createdAt := rec.CreatedAt.Time
+	if createdAt.IsZero() {
+		createdAt = time.Now()
+	}
+	var channelID sql.NullInt64
+	if rec.ChannelID != nil {
+		channelID = sql.NullInt64{Int64: *rec.ChannelID, Valid: true}
+	}
+	query := `
+		INSERT INTO fingerprint_test_results
+			(id, channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	if s.supportsONConflict() {
+		query += ` ON CONFLICT(id) DO UPDATE SET
+			channel_id = excluded.channel_id, channel_name = excluded.channel_name, model = excluded.model,
+			sample_count = excluded.sample_count, best_score = excluded.best_score,
+			distribution = excluded.distribution, matches_json = excluded.matches_json, created_at = excluded.created_at`
+	} else {
+		query += ` ON DUPLICATE KEY UPDATE
+			channel_id = VALUES(channel_id), channel_name = VALUES(channel_name), model = VALUES(model),
+			sample_count = VALUES(sample_count), best_score = VALUES(best_score),
+			distribution = VALUES(distribution), matches_json = VALUES(matches_json), created_at = VALUES(created_at)`
+	}
+	return s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if err := s.lockPostgresExplicitIDTable(ctx, tx, "fingerprint_test_results"); err != nil {
+			return err
+		}
+		if _, err := s.execTx(ctx, tx, query, rec.ID, channelID, rec.ChannelName, rec.Model,
+			rec.SampleCount, rec.BestScore, distributionJSON, rec.MatchesJSON, timeToUnix(createdAt)); err != nil {
+			return fmt.Errorf("upsert fingerprint test result replica: %w", err)
+		}
+		return s.syncPostgresIDSequence(ctx, tx, "fingerprint_test_results")
+	})
+}
+
 // ListFingerprintTestResults 查询最近 limit 条对比结果。
 func (s *SQLStore) ListFingerprintTestResults(ctx context.Context, limit int) ([]*model.FingerprintTestRecord, error) {
 	if limit <= 0 {
 		limit = 50
 	}
+	return s.listFingerprintTestResults(ctx, `ORDER BY created_at DESC LIMIT ?`, limit)
+}
+
+// ListFingerprintTestResultsReplicaPage scans a bounded ID-ordered page for reconciliation.
+func (s *SQLStore) ListFingerprintTestResultsReplicaPage(
+	ctx context.Context,
+	afterID int64,
+	limit int,
+) ([]*model.FingerprintTestRecord, error) {
+	if limit <= 0 {
+		limit = 500
+	}
+	return s.listFingerprintTestResults(ctx, `WHERE id > ? ORDER BY id ASC LIMIT ?`, afterID, limit)
+}
+
+func (s *SQLStore) listFingerprintTestResults(
+	ctx context.Context,
+	suffix string,
+	args ...any,
+) ([]*model.FingerprintTestRecord, error) {
 	rows, err := s.QueryContext(ctx, `
 		SELECT id, channel_id, channel_name, model, sample_count, best_score, distribution, matches_json, created_at
 		FROM fingerprint_test_results
-		ORDER BY created_at DESC
-		LIMIT ?
-	`, limit)
+		`+suffix, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query fingerprint_test_results: %w", err)
 	}

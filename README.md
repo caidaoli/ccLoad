@@ -326,8 +326,9 @@ Hugging Face Spaces provides free container hosting with Docker support, ideal f
 Due to Hugging Face Spaces limitations (`/tmp` directory clears on restart), **we strongly recommend using an external MySQL or PostgreSQL database** for complete data persistence:
 
 **Option 1: Hybrid Storage Mode (Recommended, Best Performance)**
-- ✅ **Ultra-fast queries**: Reads go through local SQLite, avoiding remote database latency
-- ✅ **Restart-safe**: Durable data is stored in MySQL/PostgreSQL and restored on startup
+- ✅ **Local authoritative I/O**: Config, credentials, keys, cooldowns, and logs commit to SQLite first, keeping remote latency off the scheduling path
+- ✅ **Eventually consistent primary**: Writes are coalesced by entity and retried every 10 seconds after failure
+- ⚠️ **Single-instance semantics**: Multiple hybrid writers and external primary writes are unsupported; process exit may lose in-memory pending syncs
 - ✅ **Stats caching**: Smart TTL cache reduces repetitive aggregate queries
 - Configuration: Add one primary DSN (`CCLOAD_MYSQL` or `CCLOAD_POSTGRES`) plus `CCLOAD_ENABLE_SQLITE_REPLICA=1` in Secrets
 
@@ -613,7 +614,7 @@ For the same-upstream native WebSocket reconnect, `response.created`, `response.
 
 Reconnects must use the same API token and stable execution headers. `Session-Id` identifies the top-level Codex session; when `Thread-Id` is present, ccLoad combines both headers so the parent and every subagent thread own independent transcripts, Response IDs, and turn locks. Clients without `Thread-Id` retain the `Session-Id`-only contract. `prompt_cache_key`, body `session_id`, and other cache-routing hints do not identify an execution session and never serialize or share local conversation state. An execution session is in-memory and process-local: new installations retain at most 256 sessions with a process-wide transcript payload budget of 256 MiB. Existing database records are not migrated. The idle TTL remains 15 minutes by default (10 minutes is suitable for small-memory hosts). After all downstream attachments have been gone for five minutes, the one-minute cleanup loop closes the physical upstream connection, so actual reclamation takes about 5–6 minutes while the transcript remains until the session TTL. A stable session and its committed transcript are never evicted by session-capacity or memory-budget pressure before that TTL expires. When the session ceiling is full, only a new session identity is rejected; an existing stable session may continue. Once the committed payload is over budget, every new turn, including turns on existing sessions, is rejected before upstream work starts. Both limits use a WebSocket `429/rate_limit_error/rate_limit` event; retry after TTL reclamation, or change the setting and restart. A restart loses in-memory sessions, so the client must then resend the complete conversation input without `previous_response_id`.
 
-The transcript budget is an admission threshold, not a strict allocation cap: turns already admitted are allowed to complete and commit. The finite worst-case overshoot is `responses_ws_max_sessions × max_body_bytes` in addition to the configured budget. Process restarts do not restore sessions or cumulative session metrics. Multi-instance deployments need sticky routing so reconnects reach the same instance. Otherwise, the client must send the complete conversation input without `previous_response_id`. Adjust session count, TTL, and transcript budget with `responses_ws_max_sessions`, `responses_ws_session_ttl_minutes`, and `responses_ws_max_transcript_bytes` in system settings. `GET /admin/runtime-metrics` reports the current effective payload as `transcript_bytes`; it excludes the Go runtime, WebSocket buffers, and temporary request-processing objects. The same response also exposes cumulative `ttl_expired`, `capacity_rejected`, `budget_rejected`, and `previous_response_misses` counters for the current process.
+The transcript budget is an admission threshold, not a strict allocation cap: turns already admitted are allowed to complete and commit. The finite worst-case overshoot is `responses_ws_max_sessions × max_body_bytes` in addition to the configured budget. Process restarts do not restore sessions or cumulative session metrics. Multi-instance deployments need sticky routing so reconnects reach the same instance. Otherwise, the client must send the complete conversation input without `previous_response_id`. Adjust session count, TTL, and transcript budget with `responses_ws_max_sessions`, `responses_ws_session_ttl_minutes`, and `responses_ws_max_transcript_bytes` in system settings. `GET /admin/runtime-metrics` reports the current effective payload as `transcript_bytes`; it excludes the Go runtime, WebSocket buffers, and temporary request-processing objects. The same response exposes WebSocket rejection counters, log queue/drop/persistence-failure counters, and—when hybrid storage is enabled—primary-sync backlog, failures, dropped tasks, and the last successful sync time.
 
 **Codex Alpha Search (Native Passthrough Only)**:
 
@@ -918,33 +919,36 @@ Environment variables cover bootstrap configuration only — the values ccLoad n
 | `CCLOAD_MYSQL` | None | MySQL DSN (optional, format: `user:pass@tcp(host:port)/db?charset=utf8mb4`)<br/>**Mutually exclusive with `CCLOAD_POSTGRES`** |
 | `CCLOAD_POSTGRES` | None | PostgreSQL DSN (optional, URL or libpq keywords, e.g. `postgres://user:pass@host:5432/db?sslmode=disable`)<br/>**Mutually exclusive with `CCLOAD_MYSQL`** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | Hybrid storage mode switch (`1`=enable, needs MySQL or Postgres primary DSN) |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs to restore from primary DB on startup in hybrid mode (-1=all, 0=no logs) |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | Days of logs imported from primary only when hybrid SQLite is first created (-1=all, 0=none) |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | Disable upstream TLS cert validation (`1`=enable; ⚠️for troubleshooting/controlled intranet only) |
 | `PORT` | `8080` | Service port |
 | `GIN_MODE` | `release` | Run mode (`debug`/`release`) |
 | `GIN_LOG` | `true` | Gin access log switch (`false`/`0`/`no`/`off` to disable) |
 | `TRUSTED_PROXIES` | Private ranges + Loopback + `100.64.0.0/10` | Trusted proxy CIDRs (comma-separated); `none` = trust no proxies |
-| `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (SQLite mode only) |
+| `SQLITE_PATH` | `data/ccload.db` | SQLite database file path (pure SQLite and hybrid modes) |
 | `SQLITE_JOURNAL_MODE` | `WAL` | SQLite Journal mode (WAL/TRUNCATE/DELETE, recommend TRUNCATE for containers) |
 | `CCLOAD_HOST_OVERRIDES` | None | DNS override: pin upstream domains to fixed IPs, bypassing DNS resolution. Format: `host1=ip1,host2=ip2`, e.g. `anyrouter.top=47.246.23.200`. TLS SNI/cert/Host header unaffected |
 
 > If the service sits behind a reverse proxy or load balancer, set `TRUSTED_PROXIES` explicitly so spoofed `X-Forwarded-For` values cannot affect client IP detection or login rate limiting.
 > Responses WebSocket runtime usage and limits are available from `GET /admin/runtime-metrics`.
 
-#### Hybrid Storage Mode (Primary DB + SQLite Cache)
+#### Hybrid Storage Mode (Authoritative SQLite + Async Primary Replica)
 
 HuggingFace Spaces and similar environments lose local data on restart, but remote MySQL/Postgres can have high query latency. Hybrid mode offers the best of both worlds:
 
-- **Primary Storage (MySQL or PostgreSQL)**: Write operations go to the primary first, ensuring data persistence
-- **SQLite Local Cache**: Read operations go through local SQLite, latency <1ms
-- **Startup Recovery**: Restore data from primary to SQLite, supports restoring logs by days
-- **Log Special Handling**: Write to SQLite first (fast), then async sync to primary (backup)
+- **Authoritative SQLite**: Configuration, credentials, keys, cooldowns, settings, and logs are synchronously read and written locally; a successful SQLite commit completes the request
+- **Async Primary Replica**: An in-memory worker coalesces final state by entity and retries failures after 10 seconds, so primary latency does not block requests; excessive distinct dirty entities collapse into one full-state reconciliation instead of growing memory without bound
+- **Startup Semantics**: Primary data is imported only when the SQLite file is first created; an existing completed SQLite database starts even while the primary is offline, then reconnects and migrates the primary in the background
+- **Log Semantics**: Primary log writes and cleanup are attempted once, best-effort, and do not enter the 10-second retry loop; newer batches replace older pending batches and increment the dropped metric
+- **Health**: Readiness checks authoritative SQLite only; primary sync health is exposed by runtime metrics
+- **Local-only Data**: Web sessions and raw DebugData remain process-local in SQLite
+- **Boundary**: This is a single-instance, single-writer design. Pending in-memory work is lost on process restart; there is no outbox and no multi-instance write coordination
 
 ```bash
 # Enable hybrid mode (MySQL primary)
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
-export CCLOAD_SQLITE_LOG_DAYS=7  # Restore last 7 days of logs (optional)
+export CCLOAD_SQLITE_LOG_DAYS=7  # Import last 7 days only on first SQLite creation (optional)
 
 # Or PostgreSQL primary
 export CCLOAD_POSTGRES="postgres://user:pass@host:5432/db?sslmode=disable"
@@ -1151,7 +1155,7 @@ storage/
 - `CCLOAD_MYSQL` set → MySQL primary (fatal if also set with `CCLOAD_POSTGRES`)
 - `CCLOAD_POSTGRES` set → PostgreSQL primary
 - Neither set → SQLite (default)
-- Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → Hybrid (primary write + SQLite read cache)
+- Primary DSN + `CCLOAD_ENABLE_SQLITE_REPLICA=1` → Hybrid (authoritative SQLite + async primary replica)
 
 **Core Table Structure** (SQLite / MySQL / PostgreSQL shared):
 - `channels` - Channel config (channel-level cooldown inline, UNIQUE constraint on name, with multi-protocol handling config, scheduled check config, RPM/concurrency limit config)

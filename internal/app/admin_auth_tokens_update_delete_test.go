@@ -350,3 +350,61 @@ func TestHandleDeleteAuthToken(t *testing.T) {
 		t.Fatalf("expected token deleted from DB")
 	}
 }
+
+func TestHandleDeleteAuthToken_ReloadFailureFailsClosed(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	plainToken := "deleted-while-primary-read-fails"
+	token := &model.AuthToken{
+		Token: model.HashToken(plainToken), Description: "fail closed", IsActive: true,
+	}
+	if err := store.CreateAuthToken(context.Background(), token); err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+
+	svc := newTestAuthService(t)
+	injectAPIToken(svc, plainToken, 0, token.ID)
+	sessionToken := "web-session-for-deleted-token"
+	sessionHash := model.HashToken(sessionToken)
+	svc.tokensMux.Lock()
+	svc.validTokens[sessionHash] = model.WebSession{
+		TokenHash: sessionHash, Role: model.WebRoleAPIToken, AuthTokenID: token.ID,
+		ExpiresAt: time.Now().Add(time.Hour),
+	}
+	svc.tokensMux.Unlock()
+	failingStore := &failingAuthReloadStore{Store: store}
+	svc.store = failingStore
+	svc.authTokensReloadAt.Store(time.Now().UnixMilli())
+	server.authService = svc
+
+	c, w := newTestContext(t, newRequest(http.MethodDelete, "/admin/auth-tokens/1", nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(token.ID, 10)}}
+	server.HandleDeleteAuthToken(c)
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("delete status=%d, want 503: %s", w.Code, w.Body.String())
+	}
+	if _, err := store.GetAuthToken(context.Background(), token.ID); err == nil {
+		t.Fatal("token must remain deleted in the authoritative database")
+	}
+
+	apiReq := newRequest(http.MethodGet, "/test", nil)
+	apiReq.Header.Set("Authorization", "Bearer "+plainToken)
+	if got := runMiddleware(t, svc.RequireAPIAuth(), apiReq); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("API auth status=%d, want 503: %s", got.Code, got.Body.String())
+	}
+	webReq := newRequest(http.MethodGet, "/test", nil)
+	webReq.Header.Set("Authorization", "Bearer "+sessionToken)
+	if got := runMiddleware(t, svc.RequireWebAuth(), webReq); got.Code != http.StatusServiceUnavailable {
+		t.Fatalf("Web auth status=%d, want 503: %s", got.Code, got.Body.String())
+	}
+	if calls := failingStore.calls.Load(); calls != 1 {
+		t.Fatalf("reload calls=%d, want one attempt during retry backoff", calls)
+	}
+	svc.tokensMux.RLock()
+	_, sessionExists := svc.validTokens[sessionHash]
+	svc.tokensMux.RUnlock()
+	if !sessionExists {
+		t.Fatal("temporary reload failure must not delete the Web session")
+	}
+}

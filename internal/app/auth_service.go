@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"ccLoad/internal/config"
@@ -49,6 +50,10 @@ type AuthService struct {
 	authTokenMaxConns   map[string]int                      // Token哈希 → 最大并发请求数（0=无限制）
 	authTokenActiveReqs map[string]int                      // Token哈希 → 当前进行中请求数
 	authTokensMux       sync.RWMutex                        // 并发保护（支持热更新）
+	authTokensRefreshMu sync.Mutex
+	authTokensReloadAt  atomic.Int64
+	authTokensNextRetry time.Time
+	authTokensReloadErr error
 
 	// 数据库依赖（用于热更新令牌）
 	store storage.Store
@@ -71,6 +76,8 @@ type tokenCostLimit struct {
 }
 
 var authPasswordHashCost = bcrypt.DefaultCost
+
+const authTokenReloadInterval = 30 * time.Second
 
 // NewAuthService 创建认证服务实例
 // 初始化时自动从数据库加载 API 访问令牌和 Web 会话。
@@ -226,11 +233,11 @@ func (s *AuthService) generateToken() (string, error) {
 // isValidToken 验证Token有效性（检查过期时间）
 // [INFO] 安全修复：通过tokenHash查询(2025-12)
 func (s *AuthService) isValidToken(token string) bool {
-	_, ok := s.webSession(token)
+	_, ok, _ := s.webSession(token)
 	return ok
 }
 
-func (s *AuthService) webSession(token string) (model.WebSession, bool) {
+func (s *AuthService) webSession(token string) (model.WebSession, bool, error) {
 	tokenHash := model.HashToken(token)
 
 	s.tokensMux.RLock()
@@ -238,19 +245,23 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool) {
 	s.tokensMux.RUnlock()
 
 	if !exists {
-		return model.WebSession{}, false
+		return model.WebSession{}, false, nil
 	}
 
 	if time.Now().After(session.ExpiresAt) {
 		// 同步删除过期Token（避免goroutine泄漏）
 		// 原因：map删除操作非常快（O(1)），无需异步，异步反而导致goroutine泄漏
 		s.deleteWebSession(tokenHash)
-		return model.WebSession{}, false
+		return model.WebSession{}, false, nil
 	}
 
 	validIdentity := session.Role == model.WebRoleAdmin && session.AuthTokenID == 0
 	if session.Role == model.WebRoleAPIToken {
-		validIdentity = s.isActiveAuthTokenID(session.AuthTokenID)
+		var err error
+		validIdentity, err = s.isActiveAuthTokenID(session.AuthTokenID)
+		if err != nil {
+			return model.WebSession{}, false, err
+		}
 	}
 	if !validIdentity {
 		if session.AuthTokenID > 0 && s.store != nil {
@@ -258,25 +269,28 @@ func (s *AuthService) webSession(token string) (model.WebSession, bool) {
 		} else {
 			s.deleteWebSession(tokenHash)
 		}
-		return model.WebSession{}, false
+		return model.WebSession{}, false, nil
 	}
 
-	return session, true
+	return session, true, nil
 }
 
-func (s *AuthService) isActiveAuthTokenID(tokenID int64) bool {
+func (s *AuthService) isActiveAuthTokenID(tokenID int64) (bool, error) {
 	if tokenID <= 0 {
-		return false
+		return false, nil
+	}
+	if err := s.refreshAuthTokensIfStale(); err != nil {
+		return false, err
 	}
 	s.authTokensMux.RLock()
 	tokenHash, ok := s.authTokenHashes[tokenID]
 	if !ok {
 		s.authTokensMux.RUnlock()
-		return false
+		return false, nil
 	}
 	expiresAt, ok := s.authTokens[tokenHash]
 	s.authTokensMux.RUnlock()
-	return ok && (expiresAt <= 0 || time.Now().UnixMilli() <= expiresAt)
+	return ok && (expiresAt <= 0 || time.Now().UnixMilli() <= expiresAt), nil
 }
 
 // CleanExpiredTokens 清理过期Token（定期任务）
@@ -331,7 +345,13 @@ func (s *AuthService) RequireWebAuth() gin.HandlerFunc {
 			if strings.HasPrefix(authHeader, prefix) {
 				token := strings.TrimPrefix(authHeader, prefix)
 
-				if session, ok := s.webSession(token); ok {
+				session, ok, err := s.webSession(token)
+				if err != nil {
+					RespondErrorMsg(c, http.StatusServiceUnavailable, "authorization backend unavailable")
+					c.Abort()
+					return
+				}
+				if ok {
 					c.Set(webIdentityContextKey, WebIdentity{Role: session.Role, AuthTokenID: session.AuthTokenID, SessionHash: session.TokenHash})
 					c.Next()
 					return
@@ -355,7 +375,12 @@ func (s *AuthService) RequireAdminAuth() gin.HandlerFunc {
 			c.Abort()
 			return
 		}
-		session, ok := s.webSession(token)
+		session, ok, err := s.webSession(token)
+		if err != nil {
+			RespondErrorMsg(c, http.StatusServiceUnavailable, "authorization backend unavailable")
+			c.Abort()
+			return
+		}
 		if !ok {
 			RespondErrorMsg(c, http.StatusUnauthorized, "未授权访问，请先登录")
 			c.Abort()
@@ -378,6 +403,11 @@ func (s *AuthService) RequireWebAPITokenProxyAuth() gin.HandlerFunc {
 		identity, ok := WebIdentityFromContext(c)
 		if !ok || identity.Role != model.WebRoleAPIToken || identity.AuthTokenID <= 0 {
 			RespondErrorMsg(c, http.StatusForbidden, "API Token 会话权限不足")
+			c.Abort()
+			return
+		}
+		if err := s.refreshAuthTokensIfStale(); err != nil {
+			RespondErrorMsg(c, http.StatusServiceUnavailable, "authorization backend unavailable")
 			c.Abort()
 			return
 		}
@@ -451,6 +481,9 @@ func (s *AuthService) IsTokenActive(tokenHash string) bool {
 	if s == nil || strings.TrimSpace(tokenHash) == "" {
 		return false
 	}
+	if err := s.refreshAuthTokensIfStale(); err != nil {
+		return false
+	}
 	s.authTokensMux.RLock()
 	expiresAt, exists := s.authTokens[tokenHash]
 	s.authTokensMux.RUnlock()
@@ -461,6 +494,11 @@ func (s *AuthService) IsTokenActive(tokenHash string) bool {
 // [FIX] 2025-12: 添加过期时间校验，支持懒惰剔除过期令牌
 func (s *AuthService) RequireAPIAuth() gin.HandlerFunc {
 	return func(c *gin.Context) {
+		if err := s.refreshAuthTokensIfStale(); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "authorization backend unavailable"})
+			c.Abort()
+			return
+		}
 		// 未配置认证令牌时，默认全部返回 401（不允许公开访问）
 		s.authTokensMux.RLock()
 		tokenCount := len(s.authTokens)
@@ -615,6 +653,10 @@ func (s *AuthService) HandleLogin(c *gin.Context) {
 		s.loginRateLimiter.RecordSuccess(adminRateKey)
 		session.Role = model.WebRoleAdmin
 	case model.WebRoleAPIToken:
+		if err := s.refreshAuthTokensIfStale(); err != nil {
+			RespondErrorMsg(c, http.StatusServiceUnavailable, "authorization backend unavailable")
+			return
+		}
 		_, expiresAt, tokenID, exists := s.resolveAuthToken(strings.TrimSpace(req.Token))
 		if !exists || tokenID <= 0 || (expiresAt > 0 && time.Now().UnixMilli() > expiresAt) {
 			RespondErrorMsg(c, http.StatusUnauthorized, "Invalid credentials")
@@ -713,6 +755,26 @@ func (s *AuthService) HandleLogout(c *gin.Context) {
 // 用于CRUD操作后立即生效，无需重启服务
 // [FIX] 2025-12: 同时加载过期时间，支持懒惰过期校验
 func (s *AuthService) ReloadAuthTokens() error {
+	s.authTokensRefreshMu.Lock()
+	defer s.authTokensRefreshMu.Unlock()
+	return s.reloadAuthTokensAndRecordStateLocked()
+}
+
+func (s *AuthService) reloadAuthTokensAndRecordStateLocked() error {
+	err := s.reloadAuthTokensLocked()
+	if err != nil {
+		// 数据库中的权限可能已经变化。旧快照即使刚加载过也不能继续被信任。
+		s.authTokensReloadAt.Store(0)
+		s.authTokensReloadErr = err
+		s.authTokensNextRetry = time.Now().Add(time.Second)
+		return err
+	}
+	s.authTokensReloadErr = nil
+	s.authTokensNextRetry = time.Time{}
+	return nil
+}
+
+func (s *AuthService) reloadAuthTokensLocked() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -794,11 +856,33 @@ func (s *AuthService) ReloadAuthTokens() error {
 	s.authTokenCostLimits = newTokenCostLimits
 	s.authTokenMaxConns = newTokenMaxConns
 	s.authTokensMux.Unlock()
+	s.authTokensReloadAt.Store(time.Now().UnixMilli())
 	if err := s.revokeWebSessions(revokedTokenIDs); err != nil {
 		return fmt.Errorf("revoke web sessions: %w", err)
 	}
 
 	return nil
+}
+
+func (s *AuthService) refreshAuthTokensIfStale() error {
+	if s == nil || s.store == nil {
+		return nil
+	}
+	lastReload := s.authTokensReloadAt.Load()
+	if lastReload > 0 && time.Since(time.UnixMilli(lastReload)) < authTokenReloadInterval {
+		return nil
+	}
+
+	s.authTokensRefreshMu.Lock()
+	defer s.authTokensRefreshMu.Unlock()
+	lastReload = s.authTokensReloadAt.Load()
+	if lastReload > 0 && time.Since(time.UnixMilli(lastReload)) < authTokenReloadInterval {
+		return nil
+	}
+	if time.Now().Before(s.authTokensNextRetry) {
+		return s.authTokensReloadErr
+	}
+	return s.reloadAuthTokensAndRecordStateLocked()
 }
 
 func (s *AuthService) revokeWebSessions(tokenIDs []int64) error {

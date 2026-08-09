@@ -18,7 +18,7 @@ import (
 //
 // 测试场景：
 //   - SQLite（本地）vs MySQL（远程）的读写延迟对比
-//   - 混合模式（读 SQLite + 写 MySQL）的性能表现
+//   - 混合模式请求热缓存、远程主库与本地 SQLite 的延迟对比
 //
 // 运行方式：
 //   go test -tags sonic -bench=BenchmarkHybrid -benchtime=3s ./internal/storage/...
@@ -114,6 +114,33 @@ func BenchmarkHybrid_ListConfigs_MySQL(b *testing.B) {
 		_, err := store.ListConfigs(ctx)
 		if err != nil {
 			b.Fatalf("ListConfigs 失败: %v", err)
+		}
+	}
+}
+
+func BenchmarkHybrid_ChannelCacheWarmRead(b *testing.B) {
+	store := createBenchSQLite(b)
+	ctx := context.Background()
+	for i := range 10 {
+		_, err := store.CreateConfig(ctx, &model.Config{
+			Name: fmt.Sprintf("cache-channel-%d", i), URLs: model.ChannelURLs{{URL: "https://api.openai.com"}},
+			Priority: 100, Enabled: true,
+			ModelEntries: []model.ModelEntry{{Model: "gpt-cache"}},
+		})
+		if err != nil {
+			b.Fatalf("创建渠道失败: %v", err)
+		}
+	}
+	cache := storage.NewChannelCache(store, time.Hour)
+	if _, err := cache.GetEnabledChannelsSnapshotByModel(ctx, "gpt-cache"); err != nil {
+		b.Fatalf("预热缓存失败: %v", err)
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := cache.GetEnabledChannelsSnapshotByModel(ctx, "gpt-cache"); err != nil {
+			b.Fatalf("读取缓存失败: %v", err)
 		}
 	}
 }

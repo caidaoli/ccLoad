@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"strconv"
 
+	"ccLoad/internal/storage"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -29,7 +31,14 @@ func (s *Server) HandleRuntimeMetrics(c *gin.Context) {
 		stats.MaxDownstreamConnections = connections.Max
 		stats.MaxDownstreamConnectionsPerToken = connections.MaxPerSubject
 	}
-	RespondJSON(c, http.StatusOK, gin.H{"responses_websocket": stats})
+	data := gin.H{"responses_websocket": stats}
+	if provider, ok := s.store.(storage.HybridRuntimeMetricsProvider); ok {
+		data["storage"] = provider.RuntimeMetrics()
+	}
+	if s.logService != nil {
+		data["logs"] = s.logService.runtimeMetrics()
+	}
+	RespondJSON(c, http.StatusOK, data)
 }
 
 // HandleGetActiveRequestDebugLog 返回运行中请求的调试日志快照。

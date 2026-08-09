@@ -339,7 +339,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		log.Print("[WARN]  热更新失败: " + err.Error())
+		log.Print("[ERROR] 令牌已更新，但运行时热更新失败: " + err.Error())
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
 	}
 
 	RespondJSON(c, http.StatusOK, token)
@@ -365,7 +367,9 @@ func (s *Server) HandleDeleteAuthToken(c *gin.Context) {
 
 	// 触发热更新
 	if err := s.authService.ReloadAuthTokens(); err != nil {
-		log.Print("[WARN]  热更新失败: " + err.Error())
+		log.Print("[ERROR] 令牌已删除，但运行时热更新失败: " + err.Error())
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
 	}
 
 	log.Printf("[INFO] 删除API令牌: ID=%d", id)

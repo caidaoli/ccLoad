@@ -30,6 +30,27 @@ func TestURLSelector_EmptyURLs(t *testing.T) {
 	}
 }
 
+func TestURLSelector_LoadDisabledReplacesSnapshot(t *testing.T) {
+	sel := NewURLSelector()
+	sel.LoadDisabled(map[int64][]string{1: {"https://old.example.com"}})
+	if !sel.IsDisabled(1, "https://old.example.com") {
+		t.Fatal("initial disabled URL missing")
+	}
+
+	sel.LoadDisabled(map[int64][]string{2: {"https://new.example.com"}})
+	if sel.IsDisabled(1, "https://old.example.com") {
+		t.Fatal("stale disabled URL survived snapshot replacement")
+	}
+	if !sel.IsDisabled(2, "https://new.example.com") {
+		t.Fatal("new disabled URL missing")
+	}
+
+	sel.LoadDisabled(nil)
+	if sel.IsDisabled(2, "https://new.example.com") {
+		t.Fatal("empty authoritative snapshot did not clear disabled URLs")
+	}
+}
+
 func TestURLSelector_ColdStart_Distributes(t *testing.T) {
 	sel := NewURLSelector()
 	urls := []string{"https://a.com", "https://b.com", "https://c.com"}

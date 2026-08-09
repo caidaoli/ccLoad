@@ -2,10 +2,12 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestIsDirWritable(t *testing.T) {
@@ -138,8 +140,9 @@ func TestValidateJournalMode(t *testing.T) {
 }
 
 func TestBuildSQLiteDSN(t *testing.T) {
-	dsn := buildSQLiteDSN("/tmp/test.db")
-	if !strings.Contains(dsn, "/tmp/test.db") {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	dsn := buildSQLiteDSN(dbPath)
+	if !strings.Contains(dsn, dbPath) {
 		t.Errorf("DSN should contain db path, got %q", dsn)
 	}
 	if !strings.Contains(dsn, "journal_mode") {
@@ -147,6 +150,20 @@ func TestBuildSQLiteDSN(t *testing.T) {
 	}
 	if !strings.Contains(dsn, "busy_timeout") {
 		t.Errorf("DSN should contain busy_timeout pragma, got %q", dsn)
+	}
+
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		t.Fatalf("open SQLite: %v", err)
+	}
+	defer func() { _ = db.Close() }()
+
+	var foreignKeys int
+	if err := db.QueryRow("PRAGMA foreign_keys").Scan(&foreignKeys); err != nil {
+		t.Fatalf("query foreign_keys pragma: %v", err)
+	}
+	if foreignKeys != 1 {
+		t.Fatalf("foreign_keys=%d, want 1", foreignKeys)
 	}
 }
 
@@ -201,5 +218,101 @@ func TestCreateSQLiteStore_CreatesParentDir(t *testing.T) {
 	// 验证父目录被创建
 	if _, err := os.Stat(filepath.Dir(dbPath)); os.IsNotExist(err) {
 		t.Fatalf("parent directory not created")
+	}
+}
+
+func TestHybridBootstrapRetriesPendingImportAndPreservesExistingDatabase(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "fresh.db")
+	store, err := createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	needsImport, err := prepareHybridBootstrap(ctx, store, false)
+	if err != nil || !needsImport {
+		t.Fatalf("fresh prepare = (%v, %v), want import", needsImport, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err = createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = store.Close() }()
+	needsImport, err = prepareHybridBootstrap(ctx, store, true)
+	if err != nil || !needsImport {
+		t.Fatalf("pending prepare = (%v, %v), want retry", needsImport, err)
+	}
+	if err := completeHybridBootstrap(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	needsImport, err = prepareHybridBootstrap(ctx, store, true)
+	if err != nil || needsImport {
+		t.Fatalf("complete prepare = (%v, %v), want skip", needsImport, err)
+	}
+
+	legacyPath := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := createSQLiteStore(legacyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = legacy.Close() }()
+	needsImport, err = prepareHybridBootstrap(ctx, legacy, true)
+	if err != nil || needsImport {
+		t.Fatalf("existing unmarked prepare = (%v, %v), want preserve", needsImport, err)
+	}
+
+	interruptedPath := filepath.Join(t.TempDir(), "interrupted.db")
+	interrupted, err := createSQLiteStore(interruptedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = interrupted.Close() }()
+	if _, err := interrupted.ExecContext(ctx, `
+		CREATE TABLE hybrid_bootstrap_state (
+			id INTEGER PRIMARY KEY,
+			status VARCHAR(16) NOT NULL,
+			updated_at BIGINT NOT NULL
+		)
+	`); err != nil {
+		t.Fatal(err)
+	}
+	needsImport, err = prepareHybridBootstrap(ctx, interrupted, true)
+	if err != nil || !needsImport {
+		t.Fatalf("empty marker prepare = (%v, %v), want retry", needsImport, err)
+	}
+}
+
+func TestNewStore_HybridCompleteSQLiteStartsWithPrimaryOffline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "authoritative.db")
+	store, err := createSQLiteStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := prepareHybridBootstrap(ctx, store, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CCLOAD_MYSQL", "user:pass@tcp(127.0.0.1:1)/offline?parseTime=true")
+	t.Setenv("CCLOAD_POSTGRES", "")
+	t.Setenv("CCLOAD_ENABLE_SQLITE_REPLICA", "1")
+	t.Setenv("SQLITE_PATH", path)
+	started := time.Now()
+	hybrid, err := NewStore()
+	if err != nil {
+		t.Fatalf("NewStore with offline primary: %v", err)
+	}
+	defer func() { _ = hybrid.Close() }()
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("offline primary blocked hybrid startup for %v", elapsed)
+	}
+	if err := hybrid.Ping(ctx); err != nil {
+		t.Fatalf("SQLite health failed: %v", err)
 	}
 }

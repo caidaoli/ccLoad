@@ -400,16 +400,27 @@ func (s *SQLStore) loadOAuthCredentialForUpdate(ctx context.Context, tx *sql.Tx,
 	return authType, credential, err
 }
 
-// SyncOAuthConfigReplica mirrors a primary OAuth config into a private read
-// replica. It is intentionally absent from Store.
-func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config) error {
-	if cfg == nil || !cfg.UsesOAuth() {
-		return errors.New("OAuth replica config is invalid")
+// SyncConfigReplica idempotently mirrors a complete channel snapshot while
+// preserving the SQLite-assigned ID. It is intentionally absent from Store.
+func (s *SQLStore) SyncConfigReplica(ctx context.Context, cfg *model.Config) error {
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		return s.syncConfigReplicaTx(ctx, tx, cfg)
+	})
+	if err != nil {
+		return fmt.Errorf("sync config replica: %w", err)
 	}
-	if cfg.ID <= 0 || strings.TrimSpace(cfg.OAuthCredential) == "" {
-		return errors.New("OAuth replica config is invalid")
+	s.unmarkChannelDeleted(cfg.ID)
+	return nil
+}
+
+func (s *SQLStore) syncConfigReplicaTx(ctx context.Context, tx *sql.Tx, cfg *model.Config) error {
+	if cfg == nil || cfg.ID <= 0 {
+		return errors.New("replica config is invalid")
 	}
 	authType := cfg.GetAuthType()
+	if authType != model.AuthTypeAPIKey && strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return errors.New("replica OAuth config is invalid")
+	}
 	name := cfg.Name
 	urls := cfg.URLs.Clone()
 	protocolTransformMode := cfg.ProtocolTransformMode
@@ -422,26 +433,46 @@ func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config
 		return err
 	}
 	nowUnix := timeToUnix(time.Now())
-	err = s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		currentAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, cfg.ID)
-		switch {
-		case errors.Is(loadErr, sql.ErrNoRows):
-			if _, insertErr := s.execTx(ctx, tx, `
-				INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_until, cooldown_duration_ms, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, retry_other_keys_on_failure, created_at, updated_at)
-				VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-			`, cfg.ID, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, authType, cfg.OAuthCredential,
-				cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled, cfg.ScheduledCheckModel,
-				cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit, cfg.CostMultiplier,
-				customRules, cooldownDetectionRules, cfg.ProxyURL, cfg.RetryOtherKeysOnFailure, nowUnix, nowUnix); insertErr != nil {
-				return insertErr
-			}
-		case loadErr != nil:
-			return loadErr
-		case model.NormalizeAuthType(currentAuthType) != authType:
-			return errors.New("OAuth replica auth type does not match primary")
-		default:
-			if _, updateErr := s.execTx(ctx, tx, `
-				UPDATE channels SET
+	var conflictingID int64
+	conflictErr := s.queryRowTx(ctx, tx, `SELECT id FROM channels WHERE name = ? AND id <> ?`, name, cfg.ID).Scan(&conflictingID)
+	if conflictErr == nil {
+		if err := s.deleteChannelReplicaTx(ctx, tx, conflictingID); err != nil {
+			return err
+		}
+	} else if !errors.Is(conflictErr, sql.ErrNoRows) {
+		return conflictErr
+	}
+
+	currentAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, cfg.ID)
+	switch {
+	case errors.Is(loadErr, sql.ErrNoRows):
+		if _, insertErr := s.execTx(ctx, tx, `
+					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_until, cooldown_duration_ms, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, retry_other_keys_on_failure, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, cfg.ID, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, authType, cfg.OAuthCredential,
+			cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled, cfg.ScheduledCheckModel,
+			cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit, normalizeCostMultiplier(cfg.CostMultiplier),
+			customRules, cooldownDetectionRules, cfg.ProxyURL, cfg.RetryOtherKeysOnFailure, nowUnix, nowUnix); insertErr != nil {
+			return insertErr
+		}
+	case loadErr != nil:
+		return loadErr
+	case model.NormalizeAuthType(currentAuthType) != authType:
+		if err := s.replaceChannelSchedulingReplicaTx(ctx, tx, cfg.ID); err != nil {
+			return err
+		}
+		if _, insertErr := s.execTx(ctx, tx, `
+					INSERT INTO channels(id, name, url, priority, rpm_limit, max_concurrency, auth_type, oauth_credential, websockets, protocol_transform_mode, enabled, scheduled_check_enabled, scheduled_check_model, cooldown_until, cooldown_duration_ms, daily_cost_limit, cost_multiplier, custom_request_rules, cooldown_detection_rules, proxy_url, retry_other_keys_on_failure, created_at, updated_at)
+					VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, cfg.ID, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, authType, cfg.OAuthCredential,
+			cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled, cfg.ScheduledCheckModel,
+			cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit, normalizeCostMultiplier(cfg.CostMultiplier),
+			customRules, cooldownDetectionRules, cfg.ProxyURL, cfg.RetryOtherKeysOnFailure, nowUnix, nowUnix); insertErr != nil {
+			return insertErr
+		}
+	default:
+		if _, updateErr := s.execTx(ctx, tx, `
+					UPDATE channels SET
 					name = ?, url = ?, priority = ?, rpm_limit = ?, max_concurrency = ?, oauth_credential = ?,
 					websockets = ?, protocol_transform_mode = ?, enabled = ?, scheduled_check_enabled = ?,
 					scheduled_check_model = ?, cooldown_until = ?, cooldown_duration_ms = ?, daily_cost_limit = ?,
@@ -449,17 +480,34 @@ func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config
 					retry_other_keys_on_failure = ?, updated_at = ?
 				WHERE id = ?
 			`, name, urls, cfg.Priority, cfg.RPMLimit, cfg.MaxConcurrency, cfg.OAuthCredential,
-				cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled,
-				cfg.ScheduledCheckModel, cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit,
-				cfg.CostMultiplier, customRules, cooldownDetectionRules, cfg.ProxyURL,
-				cfg.RetryOtherKeysOnFailure, nowUnix, cfg.ID); updateErr != nil {
-				return updateErr
-			}
+			cfg.Websockets, protocolTransformMode, cfg.Enabled, cfg.ScheduledCheckEnabled,
+			cfg.ScheduledCheckModel, cfg.CooldownUntil, cfg.CooldownDurationMs, cfg.DailyCostLimit,
+			normalizeCostMultiplier(cfg.CostMultiplier), customRules, cooldownDetectionRules, cfg.ProxyURL,
+			cfg.RetryOtherKeysOnFailure, nowUnix, cfg.ID); updateErr != nil {
+			return updateErr
 		}
-		if err := s.saveModelEntriesTx(ctx, tx, cfg.ID, cfg.ModelEntries); err != nil {
-			return fmt.Errorf("sync OAuth replica models: %w", err)
+	}
+	if err := s.saveModelEntriesTx(ctx, tx, cfg.ID, cfg.ModelEntries); err != nil {
+		return fmt.Errorf("sync replica models: %w", err)
+	}
+	return s.syncPostgresIDSequence(ctx, tx, "channels")
+}
+
+// SyncOAuthConfigReplica keeps the stricter OAuth-only contract used by
+// startup restore and older callers.
+func (s *SQLStore) SyncOAuthConfigReplica(ctx context.Context, cfg *model.Config) error {
+	if cfg == nil || !cfg.UsesOAuth() {
+		return errors.New("OAuth replica config is invalid")
+	}
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		currentAuthType, _, loadErr := s.loadOAuthCredentialForUpdate(ctx, tx, cfg.ID)
+		if loadErr == nil && model.NormalizeAuthType(currentAuthType) != cfg.GetAuthType() {
+			return errors.New("OAuth replica provider does not match existing channel")
 		}
-		return s.syncPostgresIDSequence(ctx, tx, "channels")
+		if loadErr != nil && !errors.Is(loadErr, sql.ErrNoRows) {
+			return loadErr
+		}
+		return s.syncConfigReplicaTx(ctx, tx, cfg)
 	})
 	if err != nil {
 		return fmt.Errorf("sync OAuth config replica: %w", err)

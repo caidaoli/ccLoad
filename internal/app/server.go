@@ -56,6 +56,7 @@ type Server struct {
 	updateManager                 *version.UpdateManager     // 版本检查与可选自动应用的唯一状态源
 	channelBalancer               *SmoothWeightedRR          // 渠道负载均衡器（平滑加权轮询）
 	urlSelector                   *URLSelector               // URL选择器（多URL场景的延迟追踪与冷却）
+	disabledURLSyncMu             sync.Mutex
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client // HTTP客户端（全局默认）
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
@@ -679,13 +680,15 @@ func bootstrapCostAndURLStats(store storage.Store, costCache *CostCache, urlSele
 	disabledURLs, err := store.LoadDisabledURLs(disabledLoadCtx)
 	if err != nil {
 		log.Printf("[WARN] 加载手动禁用URL状态失败: %v（重启后禁用状态可能丢失）", err)
-	} else if len(disabledURLs) > 0 {
+	} else {
 		urlSelector.LoadDisabled(disabledURLs)
 		count := 0
 		for _, urls := range disabledURLs {
 			count += len(urls)
 		}
-		log.Printf("[INFO] 已恢复手动禁用URL状态（%d条）", count)
+		if count > 0 {
+			log.Printf("[INFO] 已恢复手动禁用URL状态（%d条）", count)
+		}
 	}
 }
 
@@ -705,7 +708,34 @@ func (s *Server) startBackgroundWorkers() {
 	go s.stateCleanupLoop()
 
 	s.wg.Add(1)
+	go s.disabledURLReloadLoop()
+
+	s.wg.Add(1)
 	go s.responsesExecutionSessionCleanupLoop()
+}
+
+func (s *Server) disabledURLReloadLoop() {
+	defer s.wg.Done()
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			s.disabledURLSyncMu.Lock()
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			disabled, err := s.store.LoadDisabledURLs(ctx)
+			cancel()
+			if err != nil {
+				s.disabledURLSyncMu.Unlock()
+				log.Printf("[WARN] 刷新手动禁用URL状态失败: %v", err)
+				continue
+			}
+			s.urlSelector.LoadDisabled(disabled)
+			s.disabledURLSyncMu.Unlock()
+		}
+	}
 }
 
 // ================== 缓存辅助函数 ==================

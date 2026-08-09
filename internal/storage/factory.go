@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -57,68 +58,185 @@ func NewStore() (Store, error) {
 	}
 
 	enableHybrid := os.Getenv("CCLOAD_ENABLE_SQLITE_REPLICA") == "1"
-
-	// 主库连接
-	var primary *sqlstore.SQLStore
-	var primaryName string
-	var err error
+	primaryName := "PostgreSQL"
 	if mysqlDSN != "" {
-		primary, err = createMySQLStore(mysqlDSN)
 		primaryName = "MySQL"
-	} else {
-		primary, err = createPostgresStore(pgDSN)
-		primaryName = "PostgreSQL"
-	}
-	if err != nil {
-		return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
 	}
 
 	if !enableHybrid {
+		var primary *sqlstore.SQLStore
+		var err error
+		if mysqlDSN != "" {
+			primary, err = createMySQLStore(mysqlDSN)
+		} else {
+			primary, err = createPostgresStore(pgDSN)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
+		}
 		log.Printf("使用 %s 存储（纯模式）", primaryName)
 		return primary, nil
 	}
 
-	// 混合模式（主库 + SQLite 本地缓存）
-	log.Printf("[INFO] 启动混合存储模式（%s 主 + SQLite 缓存）", primaryName)
+	// 混合模式（SQLite 权威库 + 主库异步副本）
+	log.Printf("[INFO] 启动混合存储模式（SQLite 权威库 + %s 异步副本）", primaryName)
 
 	sqlitePath := os.Getenv("SQLITE_PATH")
 	if sqlitePath == "" {
 		sqlitePath = resolveSQLitePath()
 	}
+	sqliteExisted := sqliteFileHasData(sqlitePath)
 	sqlite, err := createSQLiteStore(sqlitePath)
 	if err != nil {
-		_ = primary.Close()
 		return nil, fmt.Errorf("SQLite 初始化失败: %w", err)
 	}
-	log.Printf("[INFO] SQLite 本地缓存已创建: %s", sqlitePath)
+	log.Printf("[INFO] SQLite 权威库已打开: %s", sqlitePath)
 
-	logDays := getLogSyncDays()
-	syncMgr := NewSyncManager(primary, sqlite)
-
-	restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	defer cancel()
-
-	if err := syncMgr.RestoreOnStartup(restoreCtx, logDays); err != nil {
+	bootstrapCtx, bootstrapCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
+	needsImport, err := prepareHybridBootstrap(bootstrapCtx, sqlite, sqliteExisted)
+	bootstrapCancel()
+	if err != nil {
 		_ = sqlite.Close()
-		_ = primary.Close()
-		return nil, fmt.Errorf("数据恢复失败: %w", err)
+		return nil, fmt.Errorf("SQLite 混合模式状态初始化失败: %w", err)
 	}
 
-	hybrid := NewHybridStore(sqlite, primary)
-	log.Printf("[INFO] 混合存储已启用（主库=%s, logs 恢复天数: %d）", primaryName, logDays)
+	logDays := getLogSyncDays()
+	var primary *sqlstore.SQLStore
+	var initializePrimary primaryStoreInitializer
+	if needsImport {
+		if mysqlDSN != "" {
+			primary, err = createMySQLStore(mysqlDSN)
+		} else {
+			primary, err = createPostgresStore(pgDSN)
+		}
+		if err != nil {
+			_ = sqlite.Close()
+			return nil, fmt.Errorf("%s 初始化失败: %w", primaryName, err)
+		}
+		syncMgr := NewSyncManager(primary, sqlite)
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+
+		if err := syncMgr.RestoreOnStartup(restoreCtx, logDays); err != nil {
+			_ = sqlite.Close()
+			_ = primary.Close()
+			return nil, fmt.Errorf("首次数据导入失败: %w", err)
+		}
+		if err := completeHybridBootstrap(restoreCtx, sqlite); err != nil {
+			_ = sqlite.Close()
+			_ = primary.Close()
+			return nil, fmt.Errorf("记录首次数据导入状态失败: %w", err)
+		}
+		log.Printf("[INFO] SQLite 首次初始化已从 %s 导入", primaryName)
+	} else {
+		if mysqlDSN != "" {
+			primary, initializePrimary, err = openMySQLStore(mysqlDSN)
+		} else {
+			primary, initializePrimary, err = openPostgresStore(pgDSN)
+		}
+		if err != nil {
+			_ = sqlite.Close()
+			return nil, fmt.Errorf("打开 %s 异步副本失败: %w", primaryName, err)
+		}
+		log.Printf("[INFO] 保留现有 SQLite 数据；%s 连接与迁移转入后台", primaryName)
+	}
+
+	hybrid := newHybridStore(sqlite, primary, initializePrimary)
+	log.Printf("[INFO] 混合存储已启用（主库副本=%s, 首次日志导入天数: %d）", primaryName, logDays)
 	return hybrid, nil
 }
 
-// createMySQLStore 创建 MySQL 存储实例（内部函数，返回具体类型以支持生命周期方法调用）
-func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
-	// 确保DSN包含必要参数
+const (
+	hybridBootstrapPending  = "pending"
+	hybridBootstrapComplete = "complete"
+)
+
+// prepareHybridBootstrap returns true until a fresh SQLite import has completed.
+// Existing databases from before the marker was introduced are treated as authoritative.
+func prepareHybridBootstrap(ctx context.Context, sqlite *sqlstore.SQLStore, fileExisted bool) (bool, error) {
+	var markerTableExisted bool
+	var tableCount int
+	if err := sqlite.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'table' AND name = 'hybrid_bootstrap_state'
+	`).Scan(&tableCount); err != nil {
+		return false, err
+	}
+	markerTableExisted = tableCount > 0
+
+	var needsImport bool
+	err := sqlite.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if _, err := tx.ExecContext(ctx, `
+			CREATE TABLE IF NOT EXISTS hybrid_bootstrap_state (
+				id INTEGER PRIMARY KEY,
+				status VARCHAR(16) NOT NULL,
+				updated_at BIGINT NOT NULL
+			)
+		`); err != nil {
+			return err
+		}
+
+		var status string
+		err := tx.QueryRowContext(ctx, `SELECT status FROM hybrid_bootstrap_state WHERE id = 1`).Scan(&status)
+		if err == nil {
+			switch status {
+			case hybridBootstrapComplete:
+				needsImport = false
+				return nil
+			case hybridBootstrapPending:
+				needsImport = true
+				return nil
+			default:
+				return fmt.Errorf("unknown hybrid bootstrap status %q", status)
+			}
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+
+		// Only an old database that never had the marker is adopted as complete.
+		// An existing but empty marker table means a previous bootstrap was interrupted.
+		status = hybridBootstrapPending
+		needsImport = true
+		if fileExisted && !markerTableExisted {
+			status = hybridBootstrapComplete
+			needsImport = false
+		}
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO hybrid_bootstrap_state(id, status, updated_at) VALUES(1, ?, ?)
+		`, status, time.Now().Unix())
+		return err
+	})
+	return needsImport, err
+}
+
+func completeHybridBootstrap(ctx context.Context, sqlite *sqlstore.SQLStore) error {
+	_, err := sqlite.ExecContext(ctx, `
+		UPDATE hybrid_bootstrap_state SET status = ?, updated_at = ? WHERE id = 1
+	`, hybridBootstrapComplete, time.Now().Unix())
+	return err
+}
+
+func sqliteFileHasData(path string) bool {
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file::memory:") {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Size() > 0
+}
+
+type primaryStoreInitializer func(context.Context) error
+
+// openMySQLStore only validates the DSN and creates the lazy connection pool.
+// Ping and migration are returned separately so an initialized hybrid SQLite can start offline.
+func openMySQLStore(dsn string) (*sqlstore.SQLStore, primaryStoreInitializer, error) {
 	if dsn == "" {
-		return nil, fmt.Errorf("MySQL DSN不能为空")
+		return nil, nil, fmt.Errorf("MySQL DSN不能为空")
 	}
 
 	db, err := sql.Open("mysql", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("打开MySQL连接失败: %w", err)
+		return nil, nil, fmt.Errorf("打开MySQL连接失败: %w", err)
 	}
 
 	// 连接池配置
@@ -126,59 +244,81 @@ func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
 	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile * 2)
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
-	// 测试连接（带超时，Fail-Fast）
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), config.StartupDBPingTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("MySQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
-	}
-
-	// 创建统一的 SQLStore
 	store := sqlstore.NewSQLStore(db, "mysql")
-
-	// 执行MySQL迁移（带超时）
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
-	defer migrateCancel()
-	if err := migrateMySQL(migrateCtx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("MySQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
+	initialize := func(ctx context.Context) error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, config.StartupDBPingTimeout)
+		err := db.PingContext(pingCtx)
+		pingCancel()
+		if err != nil {
+			return fmt.Errorf("MySQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
+		}
+		migrateCtx, migrateCancel := context.WithTimeout(ctx, config.StartupMigrationTimeout)
+		err = migrateMySQL(migrateCtx, db)
+		migrateCancel()
+		if err != nil {
+			return fmt.Errorf("MySQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
+		}
+		return nil
 	}
+	return store, initialize, nil
+}
 
+// createMySQLStore creates and fully initializes a primary-only or bootstrap store.
+func createMySQLStore(dsn string) (*sqlstore.SQLStore, error) {
+	store, initialize, err := openMySQLStore(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := initialize(context.Background()); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
-// createPostgresStore 创建 PostgreSQL 存储实例
-func createPostgresStore(dsn string) (*sqlstore.SQLStore, error) {
+func openPostgresStore(dsn string) (*sqlstore.SQLStore, primaryStoreInitializer, error) {
 	if dsn == "" {
-		return nil, fmt.Errorf("PostgreSQL DSN不能为空")
+		return nil, nil, fmt.Errorf("PostgreSQL DSN不能为空")
 	}
 
 	db, err := sql.Open("pgx", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("打开PostgreSQL连接失败: %w", err)
+		return nil, nil, fmt.Errorf("打开PostgreSQL连接失败: %w", err)
 	}
 
 	db.SetMaxOpenConns(config.SQLiteMaxOpenConnsFile * 2)
 	db.SetMaxIdleConns(config.SQLiteMaxIdleConnsFile * 2)
 	db.SetConnMaxLifetime(config.SQLiteConnMaxLifetime)
 
-	pingCtx, pingCancel := context.WithTimeout(context.Background(), config.StartupDBPingTimeout)
-	defer pingCancel()
-	if err := db.PingContext(pingCtx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("PostgreSQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
-	}
-
 	store := sqlstore.NewSQLStore(db, "postgres")
-
-	migrateCtx, migrateCancel := context.WithTimeout(context.Background(), config.StartupMigrationTimeout)
-	defer migrateCancel()
-	if err := migratePostgres(migrateCtx, db); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("PostgreSQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
+	initialize := func(ctx context.Context) error {
+		pingCtx, pingCancel := context.WithTimeout(ctx, config.StartupDBPingTimeout)
+		err := db.PingContext(pingCtx)
+		pingCancel()
+		if err != nil {
+			return fmt.Errorf("PostgreSQL连接测试失败（超时%v）: %w", config.StartupDBPingTimeout, err)
+		}
+		migrateCtx, migrateCancel := context.WithTimeout(ctx, config.StartupMigrationTimeout)
+		err = migratePostgres(migrateCtx, db)
+		migrateCancel()
+		if err != nil {
+			return fmt.Errorf("PostgreSQL迁移失败（超时%v）: %w", config.StartupMigrationTimeout, err)
+		}
+		return nil
 	}
+	return store, initialize, nil
+}
 
+// createPostgresStore 创建并完成 PostgreSQL 初始化。
+func createPostgresStore(dsn string) (*sqlstore.SQLStore, error) {
+	store, initialize, err := openPostgresStore(dsn)
+	if err != nil {
+		return nil, err
+	}
+	if err := initialize(context.Background()); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
 	return store, nil
 }
 
@@ -307,7 +447,7 @@ func isDirWritable(dir string) bool {
 // buildSQLiteDSN 构建SQLite DSN
 func buildSQLiteDSN(path string) string {
 	journalMode := validateJournalMode(os.Getenv("SQLITE_JOURNAL_MODE"))
-	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_foreign_keys=on&_pragma=journal_mode=%s&_pragma=wal_autocheckpoint(500)&_loc=Local", path, journalMode)
+	return fmt.Sprintf("file:%s?_pragma=busy_timeout(5000)&_pragma=foreign_keys(1)&_pragma=journal_mode=%s&_pragma=wal_autocheckpoint(500)&_loc=Local", path, journalMode)
 }
 
 // validateJournalMode 验证SQLITE_JOURNAL_MODE环境变量的合法性（白名单）

@@ -3,8 +3,9 @@ package storage
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,100 +15,144 @@ import (
 	"ccLoad/internal/util"
 )
 
-// HybridStore 混合存储（MySQL 主 + SQLite 本地缓存）
+// HybridStore 混合存储（SQLite 权威库 + 主库异步副本）
 //
 // 核心职责：
-// - 读操作：从 SQLite 读取（本地缓存，低延迟）
-// - 写操作：先写 MySQL（主存储），再同步更新 SQLite 缓存
-// - 统计/日志查询：从 SQLite 查询
+// - 权威读写：使用 SQLite，主库延迟不进入请求热路径
+// - 后台复制：按实体合并最终状态，失败 10 秒后重试
+// - 本地分析：日志与统计默认使用 SQLite；读取失败后可回退主库
+// - 本地临时数据：Web session 和 DebugData 仅存 SQLite
 //
 // 设计原则：
-// - MySQL = 主存储（source of truth，持久化与恢复的唯一来源）
-// - SQLite = 本地缓存（读加速，允许短暂不一致）
-// - 写操作以 MySQL 为准：MySQL 成功即成功，SQLite 失败仅警告
-//
-// 日志特殊处理（高吞吐场景）：
-// - 写入顺序：先写 SQLite（快），再异步同步到 MySQL（备份）
-// - 这是性能妥协：日志写入频率高，同步延迟可接受
-// - 代价：极端情况下 MySQL 可能丢失少量最新日志
-// - 恢复时：SyncManager 从 MySQL 恢复历史日志到 SQLite
+// - SQLite = source of truth
+// - 主库 = 最终一致副本；进程退出时允许丢失尚未同步的内存任务
+// - 单实例单写者；不支持多个混合实例或外部进程同时修改主库
 type HybridStore struct {
-	sqlite *sqlstore.SQLStore // 本地缓存（读路径）
-	mysql  *sqlstore.SQLStore // 主存储（写路径）
+	sqlite  *sqlstore.SQLStore // 权威库、本地分析和临时数据
+	primary *sqlstore.SQLStore // 主库（MySQL 或 PostgreSQL）
 
-	// 异步同步队列（仅用于 logs）
-	syncCh    chan *syncTask
-	syncWg    sync.WaitGroup
-	stopCh    chan struct{}
-	closeOnce sync.Once
+	closeOnce   sync.Once
+	primarySync *primaryWriteBehind
 
-	// OAuth credential writes must reach the read replica in primary commit order.
+	// OAuth credential writes are serialized so the SQLite projection cannot apply them out of order.
 	oauthCredentialMu sync.Mutex
-	oauthPrimaryReads sync.Map
 
-	// 降级可观测性计数器（参照 LogService.logDropCount 模式）
-	// 静默降级在生产中难以察觉，计数器 + 采样告警让运维可见，不改一致性语义
-	sqliteSyncFailCount atomic.Uint64 // SQLite 缓存同步失败累计
-	syncQueueDropCount  atomic.Uint64 // MySQL 同步队列满丢弃累计
+	sqliteReadFailCount atomic.Uint64
+	analyticsPrimary    atomic.Bool
+	primaryReconcileMu  sync.Mutex
+	primaryReconcile    primaryReconcileCursor
 }
 
-// syncTask 同步任务
-type syncTask struct {
-	operation string
-	data      any
+// HybridRuntimeMetrics 是混合存储的进程内健康快照。
+type HybridRuntimeMetrics struct {
+	SQLiteReadFailures     uint64 `json:"sqlite_read_failures"`
+	AnalyticsReadsPrimary  bool   `json:"analytics_reads_primary"`
+	PrimarySyncPending     int    `json:"primary_sync_pending"`
+	PrimarySyncFailures    uint64 `json:"primary_sync_failures"`
+	PrimarySyncDropped     uint64 `json:"primary_sync_dropped"`
+	PrimarySyncLastSuccess int64  `json:"primary_sync_last_success_unix_ms"`
 }
 
-// syncTaskLog 日志同步数据
-type syncTaskLog struct {
-	entry *model.LogEntry
+// HybridRuntimeMetricsProvider 由混合存储实现，避免污染所有 Store 实现。
+type HybridRuntimeMetricsProvider interface {
+	RuntimeMetrics() HybridRuntimeMetrics
 }
-
-// syncTaskLogBatch 批量日志同步数据
-type syncTaskLogBatch struct {
-	entries []*model.LogEntry
-}
-
-const (
-	syncQueueSize = 10000 // 异步同步队列大小（仅用于 logs）
-)
 
 // NewHybridStore 创建混合存储实例
-func NewHybridStore(sqlite, mysql *sqlstore.SQLStore) *HybridStore {
+func NewHybridStore(sqlite, primary *sqlstore.SQLStore) *HybridStore {
+	return newHybridStore(sqlite, primary, nil)
+}
+
+func newHybridStore(sqlite, primary *sqlstore.SQLStore, initialize func(context.Context) error) *HybridStore {
 	h := &HybridStore{
-		sqlite: sqlite,
-		mysql:  mysql,
-		syncCh: make(chan *syncTask, syncQueueSize),
-		stopCh: make(chan struct{}),
+		sqlite:  sqlite,
+		primary: primary,
 	}
-
-	// 启动异步同步 worker
-	h.syncWg.Add(1)
-	go h.syncWorker()
-
+	h.primarySync = newPrimaryWriteBehindWithInitializer(primarySyncRetryDelay, primarySyncTimeout, initialize)
+	h.primarySync.configureReconcile(primarySyncMaxPending, h.reconcilePrimary, h.markPrimaryReconcileDirty)
 	return h
 }
 
-// syncToSQLite 同步更新 SQLite 缓存
-// SQLite 是本地库，启动时已验证可写，运行时通常不会失败
-// 但磁盘空间不足等极端情况仍可能导致写入失败，记录日志以便排查
-func (h *HybridStore) syncToSQLite(op string, fn func() error) {
-	if err := fn(); err != nil {
-		count := h.sqliteSyncFailCount.Add(1)
-		// 采样告警：首次必打印，之后每 10 次一次（避免磁盘满时日志洪泛）
-		if count%10 == 1 {
-			log.Printf("[WARN] SQLite 同步失败 (%s): %v (累计失败: %d)", op, err, count)
+func (h *HybridStore) markChannelDirty(channelID int64, deleted bool) {
+	key := fmt.Sprintf("channel/%d", channelID)
+	h.primarySync.enqueue(key, "channel", func(ctx context.Context) error {
+		if deleted {
+			return h.primary.DeleteConfig(ctx, channelID)
 		}
+		return h.syncChannelReplica(ctx, channelID)
+	})
+}
+
+func (h *HybridStore) markAuthTokenDirty(id int64, tokenHash string, deleted bool) {
+	key := "auth-token/" + tokenHash
+	h.primarySync.enqueue(key, "auth token", func(ctx context.Context) error {
+		if deleted {
+			return h.primary.DeleteAuthTokenReplica(ctx, id)
+		}
+		token, err := h.sqlite.GetAuthTokenByValue(ctx, tokenHash)
+		if err != nil {
+			return err
+		}
+		return h.primary.UpsertAuthTokenAllFields(ctx, token)
+	})
+}
+
+func (h *HybridStore) markFingerprintDirty(id int64, deleted bool) {
+	key := fmt.Sprintf("fingerprint/%d", id)
+	h.primarySync.enqueue(key, "model fingerprint", func(ctx context.Context) error {
+		if deleted {
+			return h.primary.DeleteModelFingerprint(ctx, id)
+		}
+		fp, err := h.sqlite.GetModelFingerprint(ctx, id)
+		if err != nil {
+			return err
+		}
+		return h.primary.UpsertModelFingerprintReplica(ctx, fp)
+	})
+}
+
+func (h *HybridStore) recordSQLiteReadFailure(op string, err error) {
+	count := h.sqliteReadFailCount.Add(1)
+	h.analyticsPrimary.Store(true)
+	if count%10 == 1 {
+		log.Printf("[WARN] SQLite 读取失败 (%s): %v (累计失败: %d)", op, err, count)
 	}
 }
 
-// cloneLogEntryForSync 克隆日志条目（异步队列需要）
+func readAnalytics[T any](h *HybridStore, op string, fn func(*sqlstore.SQLStore) (T, error)) (T, error) {
+	store := h.analyticsStore()
+	result, err := fn(store)
+	if err == nil || store == h.primary {
+		return result, err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return result, err
+	}
+	h.recordSQLiteReadFailure(op, err)
+	return fn(h.primary)
+}
+
+func execAnalytics(h *HybridStore, op string, fn func(*sqlstore.SQLStore) error) error {
+	store := h.analyticsStore()
+	err := fn(store)
+	if err == nil || store == h.primary {
+		return err
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
+	h.recordSQLiteReadFailure(op, err)
+	return fn(h.primary)
+}
+
+// cloneLogEntryForSync 克隆写入主库的日志并剔除只允许本地保存的 DebugData。
 func cloneLogEntryForSync(e *model.LogEntry) *model.LogEntry {
 	if e == nil {
 		return nil
 	}
 	clone := *e
-	// 同步到 MySQL 时丢弃 DebugData：调试原始请求/响应体仅保留在 SQLite，
-	// 避免膨胀 MySQL；但 logs 表主数据仍需正常同步
+	// 同步到主库时丢弃 DebugData：调试原始请求/响应体仅保留在 SQLite，
+	// 避免膨胀主库；但 logs 表主数据仍需正常同步
 	clone.DebugData = nil
 	return &clone
 }
@@ -125,86 +170,6 @@ func cloneLogEntriesForSync(entries []*model.LogEntry) []*model.LogEntry {
 }
 
 // ============================================================================
-// 异步同步 Worker（仅用于 logs）
-// ============================================================================
-
-func (h *HybridStore) syncWorker() {
-	defer h.syncWg.Done()
-
-	for {
-		select {
-		case <-h.stopCh:
-			h.drainSyncQueue()
-			return
-		case task := <-h.syncCh:
-			h.executeSyncTask(task)
-		}
-	}
-}
-
-// drainSyncQueue 处理剩余的同步任务（优雅关闭）
-func (h *HybridStore) drainSyncQueue() {
-	queueLen := len(h.syncCh)
-	timeoutSec := min(5+queueLen/100, 30)
-	timeout := time.After(time.Duration(timeoutSec) * time.Second)
-
-	processed := 0
-	for {
-		select {
-		case task := <-h.syncCh:
-			h.executeSyncTask(task)
-			processed++
-		case <-timeout:
-			remaining := len(h.syncCh)
-			if remaining > 0 {
-				log.Printf("[WARN] MySQL 同步关闭超时（已处理 %d），丢弃 %d 个任务", processed, remaining)
-			}
-			return
-		default:
-			if processed > 0 {
-				log.Printf("[INFO] MySQL 同步队列已清空，共处理 %d 个任务", processed)
-			}
-			return
-		}
-	}
-}
-
-// executeSyncTask 执行单个同步任务
-func (h *HybridStore) executeSyncTask(task *syncTask) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var err error
-	switch task.operation {
-	case "log":
-		data := task.data.(*syncTaskLog)
-		err = h.mysql.AddLog(ctx, data.entry)
-	case "log_batch":
-		data := task.data.(*syncTaskLogBatch)
-		err = h.mysql.BatchAddLogs(ctx, data.entries)
-	default:
-		return
-	}
-
-	if err != nil {
-		log.Printf("[WARN] MySQL 同步失败: %v, operation=%s", err, task.operation)
-	}
-}
-
-// enqueueLogSync 将日志同步任务加入队列（非阻塞，队列满则丢弃）
-func (h *HybridStore) enqueueLogSync(task *syncTask) {
-	select {
-	case h.syncCh <- task:
-	default:
-		count := h.syncQueueDropCount.Add(1)
-		// 队列满=MySQL 备份丢日志（数据丢失），ERROR 级；采样首次必打印
-		if count%10 == 1 {
-			log.Printf("[ERROR] MySQL 同步队列已满，丢弃任务: %s (累计丢弃: %d) - 考虑增大 syncQueueSize", task.operation, count)
-		}
-	}
-}
-
-// ============================================================================
 // Store 接口实现
 // ============================================================================
 
@@ -213,70 +178,13 @@ func (h *HybridStore) enqueueLogSync(task *syncTask) {
 func (h *HybridStore) ListConfigs(ctx context.Context) ([]*model.Config, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
-
-	if ids := h.oauthPrimaryReadIDs(); len(ids) != 0 {
-		configs, err := h.mysql.ListConfigs(ctx)
-		if err != nil {
-			return nil, err
-		}
-		h.repairOAuthReplicasLocked(ctx, ids)
-		return configs, nil
-	}
 	return h.sqlite.ListConfigs(ctx)
 }
 
 func (h *HybridStore) GetConfig(ctx context.Context, id int64) (*model.Config, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
-
-	if _, fallback := h.oauthPrimaryReads.Load(id); fallback {
-		return h.readPrimaryAndRepairOAuthReplicaLocked(ctx, id)
-	}
 	return h.sqlite.GetConfig(ctx, id)
-}
-
-func (h *HybridStore) oauthPrimaryReadIDs() []int64 {
-	ids := make([]int64, 0)
-	h.oauthPrimaryReads.Range(func(key, _ any) bool {
-		if id, ok := key.(int64); ok {
-			ids = append(ids, id)
-		}
-		return true
-	})
-	return ids
-}
-
-func (h *HybridStore) repairOAuthReplicasLocked(ctx context.Context, ids []int64) {
-	for _, id := range ids {
-		_, _ = h.readPrimaryAndRepairOAuthReplicaLocked(ctx, id)
-	}
-}
-
-func (h *HybridStore) readPrimaryAndRepairOAuthReplicaLocked(ctx context.Context, id int64) (*model.Config, error) {
-	cfg, err := h.mysql.GetConfig(ctx, id)
-	if err != nil {
-		if _, fallback := h.oauthPrimaryReads.Load(id); fallback && strings.Contains(err.Error(), "not found") {
-			if deleteErr := h.sqlite.DeleteConfig(ctx, id); deleteErr != nil {
-				h.syncToSQLite("RepairDeletedOAuthConfigReplica", func() error { return deleteErr })
-			} else {
-				h.oauthPrimaryReads.Delete(id)
-			}
-		}
-		return nil, err
-	}
-	if _, fallback := h.oauthPrimaryReads.Load(id); !fallback {
-		return cfg, nil
-	}
-	if !cfg.UsesOAuth() {
-		h.oauthPrimaryReads.Delete(id)
-		return cfg, nil
-	}
-	if err := h.sqlite.SyncOAuthConfigReplica(ctx, cfg); err != nil {
-		h.syncToSQLite("RepairOAuthConfigReplica", func() error { return err })
-		return cfg, nil
-	}
-	h.oauthPrimaryReads.Delete(id)
-	return cfg, nil
 }
 
 func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error) {
@@ -284,39 +192,21 @@ func (h *HybridStore) CreateConfig(ctx context.Context, c *model.Config) (*model
 		h.oauthCredentialMu.Lock()
 		defer h.oauthCredentialMu.Unlock()
 	}
-	result, err := h.mysql.CreateConfig(ctx, c)
+	result, err := h.sqlite.CreateConfig(ctx, c)
 	if err != nil {
 		return nil, err
 	}
-
-	if result.UsesOAuth() {
-		h.oauthPrimaryReads.Store(result.ID, struct{}{})
-		if _, syncErr := h.sqlite.CreateConfig(ctx, result); syncErr != nil {
-			h.syncToSQLite("CreateConfig", func() error { return syncErr })
-			return result, nil
-		}
-		h.oauthPrimaryReads.Delete(result.ID)
-	} else {
-		h.syncToSQLite("CreateConfig", func() error {
-			_, err := h.sqlite.CreateConfig(ctx, result)
-			return err
-		})
-	}
-
+	h.markChannelDirty(result.ID, false)
 	return result, nil
 }
 
 func (h *HybridStore) UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error) {
-	result, err := h.mysql.UpdateConfig(ctx, id, upd)
+	result, err := h.sqlite.UpdateConfig(ctx, id, upd)
 	if err != nil {
 		return nil, err
 	}
 
-	h.syncToSQLite("UpdateConfig", func() error {
-		_, err := h.sqlite.UpdateConfig(ctx, id, result)
-		return err
-	})
-
+	h.markChannelDirty(id, false)
 	return result, nil
 }
 
@@ -328,28 +218,14 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
 
-	_, wasFallback := h.oauthPrimaryReads.Load(channelID)
-	h.oauthPrimaryReads.Store(channelID, struct{}{})
-	updated, err := h.mysql.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
+	updated, err := h.sqlite.CompareAndSwapOAuthCredential(ctx, channelID, expectedAuthType, expectedCredential, nextCredential)
 	if err != nil {
-		if !wasFallback {
-			h.oauthPrimaryReads.Delete(channelID)
-		}
 		return updated, err
 	}
 	if !updated {
 		return false, nil
 	}
-	authoritative, loadErr := h.mysql.GetConfig(ctx, channelID)
-	if loadErr == nil {
-		loadErr = h.sqlite.SyncOAuthConfigReplica(ctx, authoritative)
-	}
-	if loadErr == nil {
-		h.oauthPrimaryReads.Delete(channelID)
-		return true, nil
-	}
-	h.oauthPrimaryReads.Store(channelID, struct{}{})
-	h.syncToSQLite("CompareAndSwapOAuthCredential", func() error { return loadErr })
+	h.markChannelDirty(channelID, false)
 	return true, nil
 }
 
@@ -363,44 +239,26 @@ func (h *HybridStore) UpdateOAuthModelStateIfCredentialMatches(
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
 
-	_, wasFallback := h.oauthPrimaryReads.Load(channelID)
-	h.oauthPrimaryReads.Store(channelID, struct{}{})
-	updated, err := h.mysql.UpdateOAuthModelStateIfCredentialMatches(
+	updated, err := h.sqlite.UpdateOAuthModelStateIfCredentialMatches(
 		ctx, channelID, expectedAuthType, expectedCredential, modelEntries, scheduledCheckModel,
 	)
 	if err != nil {
-		if !wasFallback {
-			h.oauthPrimaryReads.Delete(channelID)
-		}
 		return updated, err
 	}
 	if !updated {
 		return false, nil
 	}
-	authoritative, loadErr := h.mysql.GetConfig(ctx, channelID)
-	if loadErr == nil {
-		loadErr = h.sqlite.SyncOAuthConfigReplica(ctx, authoritative)
-	}
-	if loadErr != nil {
-		h.oauthPrimaryReads.Store(channelID, struct{}{})
-		h.syncToSQLite("UpdateOAuthModelStateIfCredentialMatches", func() error { return loadErr })
-		return true, nil
-	}
-	h.oauthPrimaryReads.Delete(channelID)
+	h.markChannelDirty(channelID, false)
 	return true, nil
 }
 
 func (h *HybridStore) UpdateChannelEnabled(ctx context.Context, id int64, enabled bool) (*model.Config, error) {
-	result, err := h.mysql.UpdateChannelEnabled(ctx, id, enabled)
+	result, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
 	if err != nil {
 		return nil, err
 	}
 
-	h.syncToSQLite("UpdateChannelEnabled", func() error {
-		_, err := h.sqlite.UpdateChannelEnabled(ctx, id, enabled)
-		return err
-	})
-
+	h.markChannelDirty(id, false)
 	return result, nil
 }
 
@@ -409,16 +267,14 @@ func (h *HybridStore) BatchPatchConfigs(ctx context.Context, channelIDs []int64,
 		h.oauthCredentialMu.Lock()
 		defer h.oauthCredentialMu.Unlock()
 	}
-	result, err := h.mysql.BatchPatchConfigs(ctx, channelIDs, patch)
+	result, err := h.sqlite.BatchPatchConfigs(ctx, channelIDs, patch)
 	if err != nil {
 		return model.BatchConfigPatchResult{}, err
 	}
 
-	h.syncToSQLite("BatchPatchConfigs", func() error {
-		_, err := h.sqlite.BatchPatchConfigs(ctx, channelIDs, patch)
-		return err
-	})
-
+	for _, id := range channelIDs {
+		h.markChannelDirty(id, false)
+	}
 	return result, nil
 }
 
@@ -426,32 +282,16 @@ func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
 
-	if err := h.mysql.DeleteConfig(ctx, id); err != nil {
+	if err := h.sqlite.DeleteConfig(ctx, id); err != nil {
 		return err
 	}
-
-	h.oauthPrimaryReads.Store(id, struct{}{})
-	if err := h.sqlite.DeleteConfig(ctx, id); err != nil {
-		h.syncToSQLite("DeleteConfig", func() error { return err })
-		return nil
-	}
-	h.oauthPrimaryReads.Delete(id)
-
+	h.markChannelDirty(id, true)
 	return nil
 }
 
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()
-
-	if ids := h.oauthPrimaryReadIDs(); len(ids) != 0 {
-		configs, err := h.mysql.GetEnabledChannelsByModel(ctx, modelName)
-		if err != nil {
-			return nil, err
-		}
-		h.repairOAuthReplicasLocked(ctx, ids)
-		return configs, nil
-	}
 	return h.sqlite.GetEnabledChannelsByModel(ctx, modelName)
 }
 
@@ -459,16 +299,14 @@ func (h *HybridStore) BatchUpdatePriority(ctx context.Context, updates []struct 
 	ID       int64
 	Priority int
 }) (int64, error) {
-	affected, err := h.mysql.BatchUpdatePriority(ctx, updates)
+	affected, err := h.sqlite.BatchUpdatePriority(ctx, updates)
 	if err != nil {
 		return 0, err
 	}
 
-	h.syncToSQLite("BatchUpdatePriority", func() error {
-		_, err := h.sqlite.BatchUpdatePriority(ctx, updates)
-		return err
-	})
-
+	for _, update := range updates {
+		h.markChannelDirty(update.ID, false)
+	}
 	return affected, nil
 }
 
@@ -479,36 +317,26 @@ func (h *HybridStore) LoadDisabledURLs(ctx context.Context) (map[int64][]string,
 }
 
 func (h *HybridStore) SetURLDisabled(ctx context.Context, channelID int64, url string, disabled bool) error {
-	if err := h.mysql.SetURLDisabled(ctx, channelID, url, disabled); err != nil {
+	if err := h.sqlite.SetURLDisabled(ctx, channelID, url, disabled); err != nil {
 		return err
 	}
-	h.syncToSQLite("SetURLDisabled", func() error {
-		return h.sqlite.SetURLDisabled(ctx, channelID, url, disabled)
-	})
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) SetAPIKeyDisabled(ctx context.Context, channelID int64, keyIndex int, disabled bool) error {
-	if err := h.mysql.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled); err != nil {
+	if err := h.sqlite.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled); err != nil {
 		return err
 	}
-	h.syncToSQLite("SetAPIKeyDisabled", func() error {
-		return h.sqlite.SetAPIKeyDisabled(ctx, channelID, keyIndex, disabled)
-	})
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) CleanupOrphanedURLStates(ctx context.Context, channelID int64, keepURLs []string) error {
-	// 先清理MySQL（主存储）
-	if err := h.mysql.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
+	if err := h.sqlite.CleanupOrphanedURLStates(ctx, channelID, keepURLs); err != nil {
 		return err
 	}
-
-	// 同步清理SQLite缓存（失败仅警告）
-	h.syncToSQLite("CleanupOrphanedURLStates", func() error {
-		return h.sqlite.CleanupOrphanedURLStates(ctx, channelID, keepURLs)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
@@ -527,81 +355,66 @@ func (h *HybridStore) GetAllAPIKeys(ctx context.Context) (map[int64][]*model.API
 }
 
 func (h *HybridStore) CreateAPIKeysBatch(ctx context.Context, keys []*model.APIKey) error {
-	if err := h.mysql.CreateAPIKeysBatch(ctx, keys); err != nil {
+	if err := h.sqlite.CreateAPIKeysBatch(ctx, keys); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("CreateAPIKeysBatch", func() error {
-		return h.sqlite.CreateAPIKeysBatch(ctx, keys)
-	})
-
+	for _, key := range keys {
+		if key != nil {
+			h.markChannelDirty(key.ChannelID, false)
+		}
+	}
 	return nil
 }
 
 func (h *HybridStore) UpdateAPIKeysStrategy(ctx context.Context, channelID int64, strategy string) error {
-	if err := h.mysql.UpdateAPIKeysStrategy(ctx, channelID, strategy); err != nil {
+	if err := h.sqlite.UpdateAPIKeysStrategy(ctx, channelID, strategy); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("UpdateAPIKeysStrategy", func() error {
-		return h.sqlite.UpdateAPIKeysStrategy(ctx, channelID, strategy)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) UpdateAPIKeyNotes(ctx context.Context, channelID int64, notesByIndex map[int]string) error {
-	if err := h.mysql.UpdateAPIKeyNotes(ctx, channelID, notesByIndex); err != nil {
+	if err := h.sqlite.UpdateAPIKeyNotes(ctx, channelID, notesByIndex); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("UpdateAPIKeyNotes", func() error {
-		return h.sqlite.UpdateAPIKeyNotes(ctx, channelID, notesByIndex)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) DeleteAPIKey(ctx context.Context, channelID int64, keyIndex int) error {
-	if err := h.mysql.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
+	if err := h.sqlite.DeleteAPIKey(ctx, channelID, keyIndex); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("DeleteAPIKey", func() error {
-		return h.sqlite.DeleteAPIKey(ctx, channelID, keyIndex)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) CompactKeyIndices(ctx context.Context, channelID int64, removedIndex int) error {
-	if err := h.mysql.CompactKeyIndices(ctx, channelID, removedIndex); err != nil {
+	if err := h.sqlite.CompactKeyIndices(ctx, channelID, removedIndex); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("CompactKeyIndices", func() error {
-		return h.sqlite.CompactKeyIndices(ctx, channelID, removedIndex)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) DeleteAllAPIKeys(ctx context.Context, channelID int64) error {
-	if err := h.mysql.DeleteAllAPIKeys(ctx, channelID); err != nil {
+	if err := h.sqlite.DeleteAllAPIKeys(ctx, channelID); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("DeleteAllAPIKeys", func() error {
-		return h.sqlite.DeleteAllAPIKeys(ctx, channelID)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 // === Cooldown Management ===
 
 func (h *HybridStore) ConfigureCooldown(settings util.CooldownSettings) {
-	h.mysql.ConfigureCooldown(settings)
+	h.primary.ConfigureCooldown(settings)
 	h.sqlite.ConfigureCooldown(settings)
 }
 
@@ -610,52 +423,39 @@ func (h *HybridStore) GetAllChannelCooldowns(ctx context.Context) (map[int64]tim
 }
 
 func (h *HybridStore) BumpChannelCooldown(ctx context.Context, channelID int64, now time.Time, statusCode int) (time.Duration, error) {
-	duration, err := h.mysql.BumpChannelCooldown(ctx, channelID, now, statusCode)
+	duration, err := h.sqlite.BumpChannelCooldown(ctx, channelID, now, statusCode)
 	if err != nil {
 		return 0, err
 	}
 
-	h.syncToSQLite("BumpChannelCooldown", func() error {
-		_, err := h.sqlite.BumpChannelCooldown(ctx, channelID, now, statusCode)
-		return err
-	})
-
+	h.markChannelDirty(channelID, false)
 	return duration, nil
 }
 
 func (h *HybridStore) ResetChannelCooldown(ctx context.Context, channelID int64) error {
-	if err := h.mysql.ResetChannelCooldown(ctx, channelID); err != nil {
+	if err := h.sqlite.ResetChannelCooldown(ctx, channelID); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("ResetChannelCooldown", func() error {
-		return h.sqlite.ResetChannelCooldown(ctx, channelID)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) ResetAllCooldowns(ctx context.Context, channelID int64) error {
-	if err := h.mysql.ResetAllCooldowns(ctx, channelID); err != nil {
+	if err := h.sqlite.ResetAllCooldowns(ctx, channelID); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("ResetAllCooldowns", func() error {
-		return h.sqlite.ResetAllCooldowns(ctx, channelID)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) SetChannelCooldown(ctx context.Context, channelID int64, until time.Time) error {
-	if err := h.mysql.SetChannelCooldown(ctx, channelID, until); err != nil {
+	if err := h.sqlite.SetChannelCooldown(ctx, channelID, until); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("SetChannelCooldown", func() error {
-		return h.sqlite.SetChannelCooldown(ctx, channelID, until)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
@@ -664,40 +464,31 @@ func (h *HybridStore) GetAllKeyCooldowns(ctx context.Context) (map[int64]map[int
 }
 
 func (h *HybridStore) BumpKeyCooldown(ctx context.Context, channelID int64, keyIndex int, now time.Time, statusCode int) (time.Duration, error) {
-	duration, err := h.mysql.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
+	duration, err := h.sqlite.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
 	if err != nil {
 		return 0, err
 	}
 
-	h.syncToSQLite("BumpKeyCooldown", func() error {
-		_, err := h.sqlite.BumpKeyCooldown(ctx, channelID, keyIndex, now, statusCode)
-		return err
-	})
+	h.markChannelDirty(channelID, false)
 
 	return duration, nil
 }
 
 func (h *HybridStore) ResetKeyCooldown(ctx context.Context, channelID int64, keyIndex int) error {
-	if err := h.mysql.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
+	if err := h.sqlite.ResetKeyCooldown(ctx, channelID, keyIndex); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("ResetKeyCooldown", func() error {
-		return h.sqlite.ResetKeyCooldown(ctx, channelID, keyIndex)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) SetKeyCooldown(ctx context.Context, channelID int64, keyIndex int, until time.Time) error {
-	if err := h.mysql.SetKeyCooldown(ctx, channelID, keyIndex, until); err != nil {
+	if err := h.sqlite.SetKeyCooldown(ctx, channelID, keyIndex, until); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("SetKeyCooldown", func() error {
-		return h.sqlite.SetKeyCooldown(ctx, channelID, keyIndex, until)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
@@ -712,115 +503,125 @@ func (h *HybridStore) BumpModelCooldown(
 	now time.Time,
 	statusCode int,
 ) (time.Duration, error) {
-	duration, err := h.mysql.BumpModelCooldown(ctx, channelID, model, now, statusCode)
+	duration, err := h.sqlite.BumpModelCooldown(ctx, channelID, model, now, statusCode)
 	if err != nil {
 		return 0, err
 	}
 
-	h.syncToSQLite("BumpModelCooldown", func() error {
-		_, err := h.sqlite.BumpModelCooldown(ctx, channelID, model, now, statusCode)
-		return err
-	})
-
+	h.markChannelDirty(channelID, false)
 	return duration, nil
 }
 
 func (h *HybridStore) SetModelCooldown(ctx context.Context, channelID int64, model string, until time.Time) error {
-	if err := h.mysql.SetModelCooldown(ctx, channelID, model, until); err != nil {
+	if err := h.sqlite.SetModelCooldown(ctx, channelID, model, until); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("SetModelCooldown", func() error {
-		return h.sqlite.SetModelCooldown(ctx, channelID, model, until)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 func (h *HybridStore) ResetModelCooldown(ctx context.Context, channelID int64, model string) error {
-	if err := h.mysql.ResetModelCooldown(ctx, channelID, model); err != nil {
+	if err := h.sqlite.ResetModelCooldown(ctx, channelID, model); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("ResetModelCooldown", func() error {
-		return h.sqlite.ResetModelCooldown(ctx, channelID, model)
-	})
-
+	h.markChannelDirty(channelID, false)
 	return nil
 }
 
 // === Log Management ===
-// 日志特殊处理：写 SQLite（快）+ 异步同步到 MySQL（备份）
+// SQLite 写入成功即完成；主库只保留最后一个待同步日志批次。日志允许少量丢失。
 
 func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
+	if e == nil {
+		return nil
+	}
+	if e.Time.IsZero() {
+		e.Time = model.JSONTime{Time: time.Now()}
+	}
 	if err := h.sqlite.AddLog(ctx, e); err != nil {
 		return err
 	}
-
-	// 启用 Debug 日志的条目只保留在 SQLite，不同步到 MySQL（避免上游原始请求/响应体膨胀 MySQL）
-	// clone 时已剔除 DebugData，logs 主数据仍需同步到 MySQL
-
-	h.enqueueLogSync(&syncTask{
-		operation: "log",
-		data:      &syncTaskLog{entry: cloneLogEntryForSync(e)},
+	entry := cloneLogEntryForSync(e)
+	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
+		return h.primary.AddLog(syncCtx, entry)
 	})
-
 	return nil
 }
 
 func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) error {
+	now := time.Now()
+	for _, entry := range logs {
+		if entry != nil && entry.Time.IsZero() {
+			entry.Time = model.JSONTime{Time: now}
+		}
+	}
 	if err := h.sqlite.BatchAddLogs(ctx, logs); err != nil {
 		return err
 	}
-
-	syncable := make([]*model.LogEntry, 0, len(logs))
-	for _, entry := range logs {
-		if entry == nil {
-			continue
-		}
-		syncable = append(syncable, entry)
-	}
-
-	if len(syncable) > 0 {
-		h.enqueueLogSync(&syncTask{
-			operation: "log_batch",
-			data:      &syncTaskLogBatch{entries: cloneLogEntriesForSync(syncable)},
-		})
-	}
-
+	entries := cloneLogEntriesForSync(logs)
+	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
+		return h.primary.BatchAddLogs(syncCtx, entries)
+	})
 	return nil
 }
 
+func (h *HybridStore) analyticsStore() *sqlstore.SQLStore {
+	if h.analyticsPrimary.Load() {
+		return h.primary
+	}
+	return h.sqlite
+}
+
 func (h *HybridStore) ListLogs(ctx context.Context, since time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	return h.sqlite.ListLogs(ctx, since, limit, offset, filter)
+	return readAnalytics(h, "ListLogs", func(store *sqlstore.SQLStore) ([]*model.LogEntry, error) {
+		return store.ListLogs(ctx, since, limit, offset, filter)
+	})
 }
 
 func (h *HybridStore) ListLogsRange(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, error) {
-	return h.sqlite.ListLogsRange(ctx, since, until, limit, offset, filter)
+	return readAnalytics(h, "ListLogsRange", func(store *sqlstore.SQLStore) ([]*model.LogEntry, error) {
+		return store.ListLogsRange(ctx, since, until, limit, offset, filter)
+	})
 }
 
 func (h *HybridStore) ListLogsRangeWithCount(ctx context.Context, since, until time.Time, limit, offset int, filter *model.LogFilter) ([]*model.LogEntry, int, error) {
-	return h.sqlite.ListLogsRangeWithCount(ctx, since, until, limit, offset, filter)
+	type result struct {
+		entries []*model.LogEntry
+		count   int
+	}
+	page, err := readAnalytics(h, "ListLogsRangeWithCount", func(store *sqlstore.SQLStore) (result, error) {
+		entries, count, queryErr := store.ListLogsRangeWithCount(ctx, since, until, limit, offset, filter)
+		return result{entries: entries, count: count}, queryErr
+	})
+	return page.entries, page.count, err
 }
 
 func (h *HybridStore) CountLogs(ctx context.Context, since time.Time, filter *model.LogFilter) (int, error) {
-	return h.sqlite.CountLogs(ctx, since, filter)
+	return readAnalytics(h, "CountLogs", func(store *sqlstore.SQLStore) (int, error) {
+		return store.CountLogs(ctx, since, filter)
+	})
 }
 
 func (h *HybridStore) CountLogsRange(ctx context.Context, since, until time.Time, filter *model.LogFilter) (int, error) {
-	return h.sqlite.CountLogsRange(ctx, since, until, filter)
+	return readAnalytics(h, "CountLogsRange", func(store *sqlstore.SQLStore) (int, error) {
+		return store.CountLogsRange(ctx, since, until, filter)
+	})
 }
 
 func (h *HybridStore) GetTodayChannelURLStats(ctx context.Context, dayStart time.Time) ([]model.ChannelURLLogStat, error) {
-	return h.sqlite.GetTodayChannelURLStats(ctx, dayStart)
+	return readAnalytics(h, "GetTodayChannelURLStats", func(store *sqlstore.SQLStore) ([]model.ChannelURLLogStat, error) {
+		return store.GetTodayChannelURLStats(ctx, dayStart)
+	})
 }
 
 func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) error {
-	if err := h.mysql.CleanupLogsBefore(ctx, cutoff); err != nil {
+	if err := h.sqlite.CleanupLogsBefore(ctx, cutoff); err != nil {
 		return err
 	}
-	h.syncToSQLite("CleanupLogsBefore", func() error {
-		return h.sqlite.CleanupLogsBefore(ctx, cutoff)
+	h.primarySync.enqueueBestEffort("logs/cleanup", "log cleanup", func(syncCtx context.Context) error {
+		return h.primary.CleanupLogsBefore(syncCtx, cutoff)
 	})
 	return nil
 }
@@ -828,74 +629,93 @@ func (h *HybridStore) CleanupLogsBefore(ctx context.Context, cutoff time.Time) e
 // === Metrics & Statistics ===
 
 func (h *HybridStore) AggregateRangeWithFilter(ctx context.Context, since, until time.Time, bucket time.Duration, filter *model.LogFilter) ([]model.MetricPoint, error) {
-	return h.sqlite.AggregateRangeWithFilter(ctx, since, until, bucket, filter)
+	return readAnalytics(h, "AggregateRangeWithFilter", func(store *sqlstore.SQLStore) ([]model.MetricPoint, error) {
+		return store.AggregateRangeWithFilter(ctx, since, until, bucket, filter)
+	})
 }
 
 func (h *HybridStore) GetDistinctModels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]string, error) {
-	return h.sqlite.GetDistinctModels(ctx, since, until, filter)
+	return readAnalytics(h, "GetDistinctModels", func(store *sqlstore.SQLStore) ([]string, error) {
+		return store.GetDistinctModels(ctx, since, until, filter)
+	})
 }
 
 func (h *HybridStore) GetDistinctStatusCodes(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]int, error) {
-	return h.sqlite.GetDistinctStatusCodes(ctx, since, until, filter)
+	return readAnalytics(h, "GetDistinctStatusCodes", func(store *sqlstore.SQLStore) ([]int, error) {
+		return store.GetDistinctStatusCodes(ctx, since, until, filter)
+	})
 }
 
 func (h *HybridStore) GetDistinctChannels(ctx context.Context, since, until time.Time, filter *model.LogFilter) ([]model.ChannelNameID, error) {
-	return h.sqlite.GetDistinctChannels(ctx, since, until, filter)
+	return readAnalytics(h, "GetDistinctChannels", func(store *sqlstore.SQLStore) ([]model.ChannelNameID, error) {
+		return store.GetDistinctChannels(ctx, since, until, filter)
+	})
 }
 
 func (h *HybridStore) GetStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) ([]model.StatsEntry, error) {
-	return h.sqlite.GetStats(ctx, startTime, endTime, filter, isToday)
+	return readAnalytics(h, "GetStats", func(store *sqlstore.SQLStore) ([]model.StatsEntry, error) {
+		return store.GetStats(ctx, startTime, endTime, filter, isToday)
+	})
 }
 
 func (h *HybridStore) GetStatsLite(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.StatsEntry, error) {
-	return h.sqlite.GetStatsLite(ctx, startTime, endTime, filter)
+	return readAnalytics(h, "GetStatsLite", func(store *sqlstore.SQLStore) ([]model.StatsEntry, error) {
+		return store.GetStatsLite(ctx, startTime, endTime, filter)
+	})
 }
 
 func (h *HybridStore) GetClientProtocolStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter) ([]model.ClientProtocolStats, error) {
-	return h.sqlite.GetClientProtocolStats(ctx, startTime, endTime, filter)
+	return readAnalytics(h, "GetClientProtocolStats", func(store *sqlstore.SQLStore) ([]model.ClientProtocolStats, error) {
+		return store.GetClientProtocolStats(ctx, startTime, endTime, filter)
+	})
 }
 
 func (h *HybridStore) GetRPMStats(ctx context.Context, startTime, endTime time.Time, filter *model.LogFilter, isToday bool) (*model.RPMStats, error) {
-	return h.sqlite.GetRPMStats(ctx, startTime, endTime, filter, isToday)
+	return readAnalytics(h, "GetRPMStats", func(store *sqlstore.SQLStore) (*model.RPMStats, error) {
+		return store.GetRPMStats(ctx, startTime, endTime, filter, isToday)
+	})
 }
 
 func (h *HybridStore) GetChannelSuccessRates(ctx context.Context, since time.Time) (map[int64]model.ChannelHealthStats, error) {
-	return h.sqlite.GetChannelSuccessRates(ctx, since)
+	return readAnalytics(h, "GetChannelSuccessRates", func(store *sqlstore.SQLStore) (map[int64]model.ChannelHealthStats, error) {
+		return store.GetChannelSuccessRates(ctx, since)
+	})
 }
 
 func (h *HybridStore) GetHealthTimeline(ctx context.Context, params model.HealthTimelineParams) ([]model.HealthTimelineRow, error) {
-	return h.sqlite.GetHealthTimeline(ctx, params)
+	return readAnalytics(h, "GetHealthTimeline", func(store *sqlstore.SQLStore) ([]model.HealthTimelineRow, error) {
+		return store.GetHealthTimeline(ctx, params)
+	})
 }
 
 func (h *HybridStore) GetTodayChannelCosts(ctx context.Context, todayStart time.Time) (map[int64]float64, error) {
-	return h.sqlite.GetTodayChannelCosts(ctx, todayStart)
+	return readAnalytics(h, "GetTodayChannelCosts", func(store *sqlstore.SQLStore) (map[int64]float64, error) {
+		return store.GetTodayChannelCosts(ctx, todayStart)
+	})
 }
 
 // === Auth Token Management ===
 
 func (h *HybridStore) CreateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	if err := h.mysql.CreateAuthToken(ctx, token); err != nil {
+	if err := h.sqlite.CreateAuthToken(ctx, token); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("CreateAuthToken", func() error {
-		return h.sqlite.CreateAuthToken(ctx, token)
-	})
-
+	current, err := h.sqlite.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		return err
+	}
+	h.markAuthTokenDirty(current.ID, current.Token, false)
 	return nil
 }
 
-// EnsureAuthToken creates a missing auth token in the primary store and mirrors it to SQLite.
+// EnsureAuthToken creates a missing auth token in SQLite and schedules its final state.
 func (h *HybridStore) EnsureAuthToken(ctx context.Context, token *model.AuthToken) (bool, error) {
-	created, err := h.mysql.EnsureAuthToken(ctx, token)
+	created, err := h.sqlite.EnsureAuthToken(ctx, token)
 	if err != nil {
 		return false, err
 	}
 
-	h.syncToSQLite("EnsureAuthToken", func() error {
-		return h.sqlite.UpsertAuthTokenAllFields(ctx, token)
-	})
-
+	h.markAuthTokenDirty(token.ID, token.Token, false)
 	return created, nil
 }
 
@@ -916,59 +736,64 @@ func (h *HybridStore) ListActiveAuthTokens(ctx context.Context) ([]*model.AuthTo
 }
 
 func (h *HybridStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) error {
-	if err := h.mysql.UpdateAuthToken(ctx, token); err != nil {
+	if err := h.sqlite.UpdateAuthToken(ctx, token); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("UpdateAuthToken", func() error {
-		return h.sqlite.UpdateAuthToken(ctx, token)
-	})
-
+	current, err := h.sqlite.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		return err
+	}
+	h.markAuthTokenDirty(current.ID, current.Token, false)
 	return nil
 }
 
 func (h *HybridStore) DeleteAuthToken(ctx context.Context, id int64) error {
-	if err := h.mysql.DeleteAuthToken(ctx, id); err != nil {
+	token, err := h.sqlite.GetAuthToken(ctx, id)
+	if err != nil {
 		return err
 	}
-
-	h.syncToSQLite("DeleteAuthToken", func() error {
-		return h.sqlite.DeleteAuthToken(ctx, id)
-	})
-
+	if err := h.sqlite.DeleteAuthToken(ctx, id); err != nil {
+		return err
+	}
+	h.markAuthTokenDirty(id, token.Token, true)
 	return nil
 }
 
 func (h *HybridStore) UpdateTokenLastUsed(ctx context.Context, tokenHash string, now time.Time) error {
-	if err := h.mysql.UpdateTokenLastUsed(ctx, tokenHash, now); err != nil {
+	if err := h.sqlite.UpdateTokenLastUsed(ctx, tokenHash, now); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("UpdateTokenLastUsed", func() error {
-		return h.sqlite.UpdateTokenLastUsed(ctx, tokenHash, now)
-	})
-
+	token, err := h.sqlite.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		return err
+	}
+	h.markAuthTokenDirty(token.ID, tokenHash, false)
 	return nil
 }
 
 func (h *HybridStore) UpdateTokenStats(ctx context.Context, tokenHash string, isSuccess bool, duration float64, isStreaming bool, firstByteTime float64, promptTokens int64, completionTokens int64, cacheReadTokens int64, cacheCreationTokens int64, costUSD float64, effectiveCostUSD float64) error {
-	if err := h.mysql.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD, effectiveCostUSD); err != nil {
+	if err := h.sqlite.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD, effectiveCostUSD); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("UpdateTokenStats", func() error {
-		return h.sqlite.UpdateTokenStats(ctx, tokenHash, isSuccess, duration, isStreaming, firstByteTime, promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens, costUSD, effectiveCostUSD)
-	})
-
+	token, err := h.sqlite.GetAuthTokenByValue(ctx, tokenHash)
+	if err != nil {
+		return err
+	}
+	h.markAuthTokenDirty(token.ID, tokenHash, false)
 	return nil
 }
 
 func (h *HybridStore) GetAuthTokenStatsInRange(ctx context.Context, startTime, endTime time.Time) (map[int64]*model.AuthTokenRangeStats, error) {
-	return h.sqlite.GetAuthTokenStatsInRange(ctx, startTime, endTime)
+	return readAnalytics(h, "GetAuthTokenStatsInRange", func(store *sqlstore.SQLStore) (map[int64]*model.AuthTokenRangeStats, error) {
+		return store.GetAuthTokenStatsInRange(ctx, startTime, endTime)
+	})
 }
 
 func (h *HybridStore) FillAuthTokenRPMStats(ctx context.Context, stats map[int64]*model.AuthTokenRangeStats, startTime, endTime time.Time, isToday bool) error {
-	return h.sqlite.FillAuthTokenRPMStats(ctx, stats, startTime, endTime, isToday)
+	return execAnalytics(h, "FillAuthTokenRPMStats", func(store *sqlstore.SQLStore) error {
+		return store.FillAuthTokenRPMStats(ctx, stats, startTime, endTime, isToday)
+	})
 }
 
 // === System Settings ===
@@ -982,26 +807,26 @@ func (h *HybridStore) ListAllSettings(ctx context.Context) ([]*model.SystemSetti
 }
 
 func (h *HybridStore) UpdateSetting(ctx context.Context, key, value string) error {
-	if err := h.mysql.UpdateSetting(ctx, key, value); err != nil {
+	if err := h.sqlite.UpdateSetting(ctx, key, value); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("UpdateSetting", func() error {
-		return h.sqlite.UpdateSetting(ctx, key, value)
+	h.primarySync.enqueue("setting/"+key, "setting", func(syncCtx context.Context) error {
+		return h.primary.UpdateSetting(syncCtx, key, value)
 	})
 
 	return nil
 }
 
 func (h *HybridStore) BatchUpdateSettings(ctx context.Context, updates map[string]string) error {
-	if err := h.mysql.BatchUpdateSettings(ctx, updates); err != nil {
+	if err := h.sqlite.BatchUpdateSettings(ctx, updates); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("BatchUpdateSettings", func() error {
-		return h.sqlite.BatchUpdateSettings(ctx, updates)
-	})
-
+	for key, value := range updates {
+		settingKey, settingValue := key, value
+		h.primarySync.enqueue("setting/"+settingKey, "setting", func(syncCtx context.Context) error {
+			return h.primary.UpdateSetting(syncCtx, settingKey, settingValue)
+		})
+	}
 	return nil
 }
 
@@ -1040,56 +865,55 @@ func (h *HybridStore) GetModelFingerprint(ctx context.Context, id int64) (*model
 }
 
 func (h *HybridStore) ModelFingerprintNameExists(ctx context.Context, name string) (bool, error) {
-	return h.mysql.ModelFingerprintNameExists(ctx, name)
+	return h.sqlite.ModelFingerprintNameExists(ctx, name)
 }
 
 func (h *HybridStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
-	result, err := h.mysql.CreateModelFingerprint(ctx, fp)
+	result, err := h.sqlite.CreateModelFingerprint(ctx, fp)
 	if err != nil {
 		return nil, err
 	}
 
-	h.syncToSQLite("CreateModelFingerprint", func() error {
-		_, err := h.sqlite.CreateModelFingerprint(ctx, result)
-		return err
-	})
-
+	h.markFingerprintDirty(result.ID, false)
 	return result, nil
 }
 
 func (h *HybridStore) DeleteModelFingerprint(ctx context.Context, id int64) error {
-	if err := h.mysql.DeleteModelFingerprint(ctx, id); err != nil {
+	if err := h.sqlite.DeleteModelFingerprint(ctx, id); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("DeleteModelFingerprint", func() error {
-		return h.sqlite.DeleteModelFingerprint(ctx, id)
-	})
-
+	h.markFingerprintDirty(id, true)
 	return nil
 }
 
 func (h *HybridStore) ClearFingerprintChannelID(ctx context.Context, channelID int64) error {
-	if err := h.mysql.ClearFingerprintChannelID(ctx, channelID); err != nil {
+	fingerprints, err := h.sqlite.ListModelFingerprints(ctx)
+	if err != nil {
 		return err
 	}
-
-	h.syncToSQLite("ClearFingerprintChannelID", func() error {
-		return h.sqlite.ClearFingerprintChannelID(ctx, channelID)
-	})
-
+	if err := h.sqlite.ClearFingerprintChannelID(ctx, channelID); err != nil {
+		return err
+	}
+	for _, fp := range fingerprints {
+		if fp != nil && fp.ChannelID != nil && *fp.ChannelID == channelID {
+			h.markFingerprintDirty(fp.ID, false)
+		}
+	}
 	return nil
 }
 
 // === Fingerprint Test Results ===
 
 func (h *HybridStore) CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error {
-	if err := h.mysql.CreateFingerprintTestResult(ctx, rec); err != nil {
+	if err := h.sqlite.CreateFingerprintTestResult(ctx, rec); err != nil {
 		return err
 	}
-
-	h.syncToSQLite("CreateFingerprintTestResult", func() error {
-		return h.sqlite.CreateFingerprintTestResult(ctx, rec)
+	clone := *rec
+	clone.Distribution = append([]float64(nil), rec.Distribution...)
+	clone.Matches = append([]any(nil), rec.Matches...)
+	h.primarySync.enqueue(fmt.Sprintf("fingerprint-test/%d", rec.ID), "fingerprint test result", func(syncCtx context.Context) error {
+		return h.primary.UpsertFingerprintTestResultReplica(syncCtx, &clone)
 	})
 
 	return nil
@@ -1100,12 +924,12 @@ func (h *HybridStore) ListFingerprintTestResults(ctx context.Context, limit int)
 }
 
 func (h *HybridStore) DeleteFingerprintTestResult(ctx context.Context, id int64) error {
-	if err := h.mysql.DeleteFingerprintTestResult(ctx, id); err != nil {
+	if err := h.sqlite.DeleteFingerprintTestResult(ctx, id); err != nil {
 		return err
 	}
 
-	h.syncToSQLite("DeleteFingerprintTestResult", func() error {
-		return h.sqlite.DeleteFingerprintTestResult(ctx, id)
+	h.primarySync.enqueue(fmt.Sprintf("fingerprint-test/%d", id), "delete fingerprint test result", func(syncCtx context.Context) error {
+		return h.primary.DeleteFingerprintTestResult(syncCtx, id)
 	})
 
 	return nil
@@ -1125,40 +949,14 @@ func (h *HybridStore) ImportChannelBatch(ctx context.Context, channels []*model.
 		h.oauthCredentialMu.Lock()
 		defer h.oauthCredentialMu.Unlock()
 	}
-	created, updated, err = h.mysql.ImportChannelBatch(ctx, channels)
+	created, updated, err = h.sqlite.ImportChannelBatch(ctx, channels)
 	if err != nil {
 		return 0, 0, err
 	}
-
-	if hasOAuth {
-		for _, channel := range channels {
-			if channel != nil && channel.Config != nil && channel.Config.UsesOAuth() {
-				h.oauthPrimaryReads.Store(channel.Config.ID, struct{}{})
-			}
+	for _, channel := range channels {
+		if channel != nil && channel.Config != nil {
+			h.markChannelDirty(channel.Config.ID, false)
 		}
-		if _, _, syncErr := h.sqlite.ImportChannelBatch(ctx, channels); syncErr != nil {
-			h.syncToSQLite("ImportChannelBatch", func() error { return syncErr })
-		}
-		for _, channel := range channels {
-			if channel == nil || channel.Config == nil || !channel.Config.UsesOAuth() {
-				continue
-			}
-			authoritative, loadErr := h.mysql.GetConfig(ctx, channel.Config.ID)
-			if loadErr != nil {
-				h.syncToSQLite("ImportChannelBatchOAuthSnapshot", func() error { return loadErr })
-				continue
-			}
-			if syncErr := h.sqlite.SyncOAuthConfigReplica(ctx, authoritative); syncErr != nil {
-				h.syncToSQLite("ImportChannelBatchOAuthSnapshot", func() error { return syncErr })
-				continue
-			}
-			h.oauthPrimaryReads.Delete(channel.Config.ID)
-		}
-	} else {
-		h.syncToSQLite("ImportChannelBatch", func() error {
-			_, _, err := h.sqlite.ImportChannelBatch(ctx, channels)
-			return err
-		})
 	}
 
 	return created, updated, nil
@@ -1170,18 +968,29 @@ func (h *HybridStore) Ping(ctx context.Context) error {
 	return h.sqlite.Ping(ctx)
 }
 
-// SyncQueueLen 返回当前同步队列中待处理的任务数量（用于监控）
-func (h *HybridStore) SyncQueueLen() int {
-	return len(h.syncCh)
+func (h *HybridStore) RuntimeMetrics() HybridRuntimeMetrics {
+	return HybridRuntimeMetrics{
+		SQLiteReadFailures:     h.sqliteReadFailCount.Load(),
+		AnalyticsReadsPrimary:  h.analyticsPrimary.Load(),
+		PrimarySyncPending:     h.primarySync.pending(),
+		PrimarySyncFailures:    h.primarySync.failures.Load(),
+		PrimarySyncDropped:     h.primarySync.dropped.Load(),
+		PrimarySyncLastSuccess: h.primarySync.success.Load(),
+	}
 }
 
-// === Debug Log Management (SQLite only, no MySQL sync) ===
+// === Debug Log Management (SQLite only, no primary sync) ===
 
 func (h *HybridStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) error {
 	return h.sqlite.AddDebugLog(ctx, e)
 }
 
 func (h *HybridStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error) {
+	// 主库日志 ID 与本地 SQLite 日志 ID 不是同一个命名空间。
+	// 分析读已切主库时按数值 ID 查询本地 DebugData 可能泄露另一条请求，必须拒绝。
+	if h.analyticsPrimary.Load() {
+		return nil, nil
+	}
 	return h.sqlite.GetDebugLogByLogID(ctx, logID)
 }
 
@@ -1196,13 +1005,11 @@ func (h *HybridStore) TruncateDebugLogs(ctx context.Context) error {
 func (h *HybridStore) Close() error {
 	var err error
 	h.closeOnce.Do(func() {
-		close(h.stopCh)
-		h.syncWg.Wait()
-
+		h.primarySync.close()
 		if closeErr := h.sqlite.Close(); closeErr != nil {
 			err = closeErr
 		}
-		if closeErr := h.mysql.Close(); closeErr != nil && err == nil {
+		if closeErr := h.primary.Close(); closeErr != nil && err == nil {
 			err = closeErr
 		}
 	})
