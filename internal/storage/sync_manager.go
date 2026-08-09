@@ -52,8 +52,6 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 		"channel_url_states",
 		"api_keys",
 		"auth_tokens",
-		"model_fingerprints",
-		"fingerprint_test_results",
 	}
 
 	// TiDB 不实现 MySQL 的 READ ONLY 事务选项；恢复代码本身只发 SELECT，

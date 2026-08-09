@@ -97,20 +97,6 @@ func (h *HybridStore) markAuthTokenDirty(id int64, tokenHash string, deleted boo
 	})
 }
 
-func (h *HybridStore) markFingerprintDirty(id int64, deleted bool) {
-	key := fmt.Sprintf("fingerprint/%d", id)
-	h.primarySync.enqueue(key, "model fingerprint", func(ctx context.Context) error {
-		if deleted {
-			return h.primary.DeleteModelFingerprint(ctx, id)
-		}
-		fp, err := h.sqlite.GetModelFingerprint(ctx, id)
-		if err != nil {
-			return err
-		}
-		return h.primary.UpsertModelFingerprintReplica(ctx, fp)
-	})
-}
-
 func (h *HybridStore) recordSQLiteReadFailure(op string, err error) {
 	count := h.sqliteReadFailCount.Add(1)
 	h.analyticsPrimary.Store(true)
@@ -852,87 +838,6 @@ func (h *HybridStore) CleanExpiredWebSessions(ctx context.Context) error {
 
 func (h *HybridStore) LoadWebSessions(ctx context.Context) (map[string]model.WebSession, error) {
 	return h.sqlite.LoadWebSessions(ctx)
-}
-
-// === Model Fingerprint Management ===
-
-func (h *HybridStore) ListModelFingerprints(ctx context.Context) ([]*model.ModelFingerprint, error) {
-	return h.sqlite.ListModelFingerprints(ctx)
-}
-
-func (h *HybridStore) GetModelFingerprint(ctx context.Context, id int64) (*model.ModelFingerprint, error) {
-	return h.sqlite.GetModelFingerprint(ctx, id)
-}
-
-func (h *HybridStore) ModelFingerprintNameExists(ctx context.Context, name string) (bool, error) {
-	return h.sqlite.ModelFingerprintNameExists(ctx, name)
-}
-
-func (h *HybridStore) CreateModelFingerprint(ctx context.Context, fp *model.ModelFingerprint) (*model.ModelFingerprint, error) {
-	result, err := h.sqlite.CreateModelFingerprint(ctx, fp)
-	if err != nil {
-		return nil, err
-	}
-
-	h.markFingerprintDirty(result.ID, false)
-	return result, nil
-}
-
-func (h *HybridStore) DeleteModelFingerprint(ctx context.Context, id int64) error {
-	if err := h.sqlite.DeleteModelFingerprint(ctx, id); err != nil {
-		return err
-	}
-
-	h.markFingerprintDirty(id, true)
-	return nil
-}
-
-func (h *HybridStore) ClearFingerprintChannelID(ctx context.Context, channelID int64) error {
-	fingerprints, err := h.sqlite.ListModelFingerprints(ctx)
-	if err != nil {
-		return err
-	}
-	if err := h.sqlite.ClearFingerprintChannelID(ctx, channelID); err != nil {
-		return err
-	}
-	for _, fp := range fingerprints {
-		if fp != nil && fp.ChannelID != nil && *fp.ChannelID == channelID {
-			h.markFingerprintDirty(fp.ID, false)
-		}
-	}
-	return nil
-}
-
-// === Fingerprint Test Results ===
-
-func (h *HybridStore) CreateFingerprintTestResult(ctx context.Context, rec *model.FingerprintTestRecord) error {
-	if err := h.sqlite.CreateFingerprintTestResult(ctx, rec); err != nil {
-		return err
-	}
-	clone := *rec
-	clone.Distribution = append([]float64(nil), rec.Distribution...)
-	clone.Matches = append([]any(nil), rec.Matches...)
-	h.primarySync.enqueue(fmt.Sprintf("fingerprint-test/%d", rec.ID), "fingerprint test result", func(syncCtx context.Context) error {
-		return h.primary.UpsertFingerprintTestResultReplica(syncCtx, &clone)
-	})
-
-	return nil
-}
-
-func (h *HybridStore) ListFingerprintTestResults(ctx context.Context, limit int) ([]*model.FingerprintTestRecord, error) {
-	return h.sqlite.ListFingerprintTestResults(ctx, limit)
-}
-
-func (h *HybridStore) DeleteFingerprintTestResult(ctx context.Context, id int64) error {
-	if err := h.sqlite.DeleteFingerprintTestResult(ctx, id); err != nil {
-		return err
-	}
-
-	h.primarySync.enqueue(fmt.Sprintf("fingerprint-test/%d", id), "delete fingerprint test result", func(syncCtx context.Context) error {
-		return h.primary.DeleteFingerprintTestResult(syncCtx, id)
-	})
-
-	return nil
 }
 
 // === Batch Operations ===

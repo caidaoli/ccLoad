@@ -945,7 +945,7 @@ window.WebAuth = window.WebAuth || {
   // 复用公共工具（DRY）：真实实现由下方公共工具模块导出到 window.escapeHtml
   const escapeHtml = (str) => window.escapeHtml(str);
 
-  // 协议显示名由 locales 提供（与 model-test.js / model-fingerprint.js 共用词条）
+  // 协议显示名由 locales 提供（与 model-test.js 共用词条）
   const PROTOCOL_LABEL_KEYS = {
     anthropic: 'modelTest.clientProtocolAnthropic',
     codex: 'modelTest.clientProtocolCodex',
