@@ -87,19 +87,28 @@ func (sm *SyncManager) RestoreOnStartup(ctx context.Context, logDays int) error 
 
 	log.Printf("[INFO] 配置表恢复完成，耗时: %v", time.Since(start))
 
-	// 第二步：恢复 logs 表（可选，按天数）
-	// logDays: -1=全量, 0=不恢复, >0=恢复指定天数
-	if logDays != 0 {
-		logsStart := time.Now()
-		if err := sm.restoreLogsSnapshot(ctx, logDays); err != nil {
-			// 日志恢复失败不阻止启动，仅警告
-			log.Printf("[WARN] 日志恢复失败: %v（历史日志可能不完整）", err)
-		} else {
-			log.Printf("[INFO] 日志恢复完成，耗时: %v", time.Since(logsStart))
-		}
+	// 第二步：首次启动也执行与后续启动相同的日志增量导入。
+	if err := sm.RestoreLogsOnStartup(ctx, logDays); err != nil {
+		// 日志恢复失败不阻止启动；下一次启动会再次尝试。
+		log.Printf("[WARN] 日志导入失败: %v（历史日志可能不完整）", err)
 	}
 
 	log.Printf("[INFO] 数据恢复完成，总耗时: %v", time.Since(start))
+	return nil
+}
+
+// RestoreLogsOnStartup 从主库增量补齐 SQLite 日志尾部。
+// SQLite 日志为空时按 logDays 限制首次导入窗口；0 表示明确跳过日志导入。
+func (sm *SyncManager) RestoreLogsOnStartup(ctx context.Context, logDays int) error {
+	if logDays == 0 {
+		return nil
+	}
+
+	start := time.Now()
+	if err := sm.importLogsAfterSQLiteTail(ctx, logDays); err != nil {
+		return err
+	}
+	log.Printf("[INFO] 日志导入完成，耗时: %v", time.Since(start))
 	return nil
 }
 
@@ -233,19 +242,31 @@ func (sm *SyncManager) getTableColumns(ctx context.Context, store rowsQueryer, t
 	return rows.Columns()
 }
 
-// restoreLogsSnapshot 使用主库快照重建 SQLite 的日志时间窗口。
-//
-// 两个数据库独立分配 logs.id，跨库比较 MAX(id) 会同时造成漏行和重复。
-// SQLite 是本地副本，恢复时复制主库的业务列但排除 id，由 SQLite 维护自己的本地主键。
-// 删除与重建处于同一事务，任何错误都会保留旧快照。
-func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error {
-	var startTime int64
+// importLogsAfterSQLiteTail 从主库增量导入 SQLite 尾部之后的日志。
+// 两个数据库的 logs.id 不在同一命名空间，只能使用日志时间确定增量边界。
+func (sm *SyncManager) importLogsAfterSQLiteTail(ctx context.Context, days int) error {
+	var windowStart int64
 	if days < 0 {
-		startTime = 0
-		log.Print("[INFO] 准备全量恢复 logs 表快照...")
+		windowStart = 0
 	} else {
-		startTime = time.Now().AddDate(0, 0, -days).UnixMilli()
-		log.Printf("[INFO] 准备恢复最近 %d 天的 logs 表快照...", days)
+		windowStart = time.Now().AddDate(0, 0, -days).UnixMilli()
+	}
+
+	var sqliteLastTime int64
+	if err := sm.sqlite.QueryRowContext(ctx, "SELECT COALESCE(MAX(time), 0) FROM logs").Scan(&sqliteLastTime); err != nil {
+		return fmt.Errorf("查询 SQLite 最后日志时间失败: %w", err)
+	}
+
+	query := "SELECT * FROM logs WHERE time >= ? ORDER BY time ASC, id ASC"
+	startTime := windowStart
+	if sqliteLastTime > 0 {
+		startTime = sqliteLastTime
+		query = "SELECT * FROM logs WHERE time > ? ORDER BY time ASC, id ASC"
+		log.Printf("[INFO] 准备导入 SQLite 最后日志时间之后的数据: %d", sqliteLastTime)
+	} else if days < 0 {
+		log.Print("[INFO] SQLite 日志为空，准备全量导入 logs...")
+	} else {
+		log.Printf("[INFO] SQLite 日志为空，准备导入最近 %d 天的 logs...", days)
 	}
 
 	// 预先计算列映射。id 是每个数据库的本地主键，不属于复制契约。
@@ -274,35 +295,31 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 	}
 
 	if len(commonCols) == 0 {
-		return fmt.Errorf("logs 表无共同列，无法恢复")
+		return fmt.Errorf("logs 表无共同列，无法导入")
 	}
 
-	rows, err := sm.primary.QueryContext(ctx, "SELECT * FROM logs WHERE time >= ?", startTime)
+	rows, err := sm.primary.QueryContext(ctx, query, startTime)
 	if err != nil {
-		return fmt.Errorf("查询主库日志快照失败: %w", err)
+		return fmt.Errorf("查询主库增量日志失败: %w", err)
 	}
 	defer func() { _ = rows.Close() }()
 
 	tx, err := sm.sqlite.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("开启 SQLite 日志恢复事务失败: %w", err)
+		return fmt.Errorf("开启 SQLite 日志导入事务失败: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-
-	if _, err := tx.ExecContext(ctx, "DELETE FROM logs WHERE time >= ?", startTime); err != nil {
-		return fmt.Errorf("清理 SQLite 日志窗口失败: %w", err)
-	}
 
 	colNames := strings.Join(commonCols, ", ")
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(commonCols)), ",")
 	insertQuery := fmt.Sprintf("INSERT INTO logs (%s) VALUES (%s)", colNames, placeholders) //nolint:gosec // G201: 列名来自数据库 schema 交集
 	stmt, err := tx.PrepareContext(ctx, insertQuery)
 	if err != nil {
-		return fmt.Errorf("准备 SQLite 日志恢复语句失败: %w", err)
+		return fmt.Errorf("准备 SQLite 日志导入语句失败: %w", err)
 	}
 	defer func() { _ = stmt.Close() }()
 
-	totalRestored := 0
+	totalImported := 0
 	for rows.Next() {
 		scanArgs := make([]any, len(sourceCols))
 		scanVals := make([]any, len(sourceCols))
@@ -324,22 +341,22 @@ func (sm *SyncManager) restoreLogsSnapshot(ctx context.Context, days int) error 
 			}
 		}
 		if _, err := stmt.ExecContext(ctx, record...); err != nil {
-			return fmt.Errorf("插入 SQLite 日志快照失败: %w", err)
+			return fmt.Errorf("插入 SQLite 增量日志失败: %w", err)
 		}
-		totalRestored++
-		if totalRestored%50000 == 0 {
-			log.Printf("[INFO] 已恢复 %d 条日志...", totalRestored)
+		totalImported++
+		if totalImported%50000 == 0 {
+			log.Printf("[INFO] 已导入 %d 条日志...", totalImported)
 		}
 	}
 
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("读取主库日志快照失败: %w", err)
+		return fmt.Errorf("读取主库增量日志失败: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("提交 SQLite 日志快照失败: %w", err)
+		return fmt.Errorf("提交 SQLite 增量日志失败: %w", err)
 	}
 
-	log.Printf("[INFO] 日志快照恢复完成，共 %d 条（%d/%d 列，不复制 id）", totalRestored, len(commonCols), len(sourceCols))
+	log.Printf("[INFO] 日志增量导入完成，共 %d 条（%d/%d 列，不复制 id）", totalImported, len(commonCols), len(sourceCols))
 	return nil
 }

@@ -111,8 +111,8 @@
               <tr>
                 <td><code>CCLOAD_SQLITE_LOG_DAYS</code></td>
                 <td><code>7</code></td>
-                <td>Number of log days restored from the primary database on hybrid startup.</td>
-                <td><code>-1</code> restores all logs; <code>0</code> restores no logs. Only applies in hybrid mode.</td>
+                <td>Initial log window imported from primary when hybrid SQLite has no logs.</td>
+                <td><code>-1</code> imports all logs; <code>0</code> disables startup log imports. Other values make later startups import only logs newer than SQLite's latest timestamp.</td>
               </tr>
               <tr>
                 <td><code>CCLOAD_ALLOW_INSECURE_TLS</code></td>

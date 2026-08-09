@@ -940,7 +940,7 @@ ccLoad 使用的核心技术栈：
 | `CCLOAD_MYSQL` | 无 | MySQL DSN（可选，格式: `user:pass@tcp(host:port)/db?charset=utf8mb4`）<br/>**与 `CCLOAD_POSTGRES` 互斥** |
 | `CCLOAD_POSTGRES` | 无 | PostgreSQL DSN（可选，支持 URL 或 libpq 关键字，例如 `postgres://user:pass@host:5432/db?sslmode=disable`）<br/>**与 `CCLOAD_MYSQL` 互斥** |
 | `CCLOAD_ENABLE_SQLITE_REPLICA` | `0` | 混合存储模式开关（`1`=启用，需要 MySQL 或 PostgreSQL 主库 DSN） |
-| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式首次创建 SQLite 时从主库导入日志的天数（-1=全量，0=不导入） |
+| `CCLOAD_SQLITE_LOG_DAYS` | `7` | 混合模式 SQLite 日志为空时的首次导入天数（-1=全量）；`0` 关闭所有启动日志导入，其他值在后续启动只导入 SQLite 最后时间之后的日志 |
 | `CCLOAD_ALLOW_INSECURE_TLS` | `0` | 禁用上游 TLS 证书校验（`1`=启用；⚠️仅用于临时排障/受控内网环境） |
 | `PORT` | `8080` | 服务端口 |
 | `GIN_MODE` | `release` | 运行模式（`debug`/`release`） |
@@ -959,7 +959,7 @@ HuggingFace Spaces 等环境重启后本地数据会丢失，远程 MySQL/Postgr
 
 - **SQLite 权威库**：配置、凭据、Key、冷却、设置和日志都同步读写本地 SQLite；SQLite 成功就是请求成功
 - **主库异步副本**：进程内 worker 按实体合并最终状态；失败任务等待 10 秒后重试，主库慢或临时故障不阻塞请求；脏实体过多时折叠为一次全量状态对账，避免内存无界增长
-- **启动语义**：只在 SQLite 文件首次创建时从主库导入；完成首次导入后，即使主库离线也能直接用 SQLite 启动，主库连接和迁移在后台重试
+- **启动语义**：SQLite 文件首次创建时从主库导入配置；`CCLOAD_SQLITE_LOG_DAYS=0` 关闭启动日志导入，否则每次启动都要求主库可用，已有日志时只从主库增量导入 `time > MAX(sqlite.logs.time)` 的尾部，日志为空时才按该变量限制导入窗口；已有 SQLite 配置和日志都不会被删除覆盖
 - **日志语义**：主库日志与日志清理只做一次 best-effort 尝试，不进入 10 秒重试；较慢时新批次会替换旧批次并计入 dropped，允许主库日志缺失
 - **健康检查**：只检查权威 SQLite；主库同步状态通过 runtime metrics 观察
 - **仅本地数据**：Web Session 与原始 DebugData 只保存在当前实例的 SQLite
@@ -969,7 +969,7 @@ HuggingFace Spaces 等环境重启后本地数据会丢失，远程 MySQL/Postgr
 # MySQL 主库
 export CCLOAD_MYSQL="user:pass@tcp(host:3306)/db?charset=utf8mb4"
 export CCLOAD_ENABLE_SQLITE_REPLICA=1
-export CCLOAD_SQLITE_LOG_DAYS=7  # 首次创建 SQLite 时导入最近 7 天日志（可选）
+export CCLOAD_SQLITE_LOG_DAYS=7  # SQLite 日志为空时先导入最近 7 天，后续启动只补尾部日志
 
 # 或 PostgreSQL 主库
 export CCLOAD_POSTGRES="postgres://user:pass@host:5432/db?sslmode=disable"
