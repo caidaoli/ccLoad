@@ -2187,11 +2187,12 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		t.Fatalf("completed response = %#v", completed)
 	}
 	request := <-requestBody
-	if request["stream"] != true || request["store"] != false || request["instructions"] != "" {
+	instructions, _ := request["instructions"].(string)
+	if request["stream"] != true || request["store"] != false ||
+		!strings.HasPrefix(instructions, "You are Codex, an agent based on GPT-5.") {
 		t.Fatalf("upstream Codex request = %#v", request)
 	}
-	include, _ := request["include"].([]any)
-	if len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+	if _, exists := request["include"]; exists {
 		t.Fatalf("upstream include = %#v", request["include"])
 	}
 }

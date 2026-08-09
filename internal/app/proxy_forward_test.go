@@ -132,8 +132,10 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	if got := gjson.GetBytes(wireBody, "reasoning.effort").String(); got != "low" {
 		t.Fatalf("reasoning.effort = %q, want minimal normalized to low; body=%s", got, wireBody)
 	}
-	if !gjson.GetBytes(wireBody, "instructions").Exists() ||
-		gjson.GetBytes(wireBody, "include.0").String() != "reasoning.encrypted_content" {
+	if instructions := gjson.GetBytes(wireBody, "instructions").String(); !strings.HasPrefix(instructions, "You are Codex, a coding agent based on GPT-5.") {
+		t.Fatalf("Codex model instructions missing: %s", wireBody)
+	}
+	if gjson.GetBytes(wireBody, "include.0").String() != "reasoning.encrypted_content" {
 		t.Fatalf("Codex required fields missing: %s", wireBody)
 	}
 
@@ -149,6 +151,63 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		if gjson.GetBytes(httpBody, field).Exists() {
 			t.Fatalf("HTTP-only unsupported field %s leaked: %s", field, httpBody)
 		}
+	}
+}
+
+func TestCodexOAuthRequestInjectsModelInstructionsAndPreservesExplicitValue(t *testing.T) {
+	cfg := &model.Config{AuthType: model.AuthTypeCodexOAuth}
+	tests := []struct {
+		name             string
+		body             string
+		wantPrefix       string
+		wantInstructions string
+	}{
+		{
+			name:       "gpt-5.1",
+			body:       `{"model":"gpt-5.1","input":[]}`,
+			wantPrefix: "You are GPT-5.1 running in the Codex CLI",
+		},
+		{
+			name:       "gpt-5.2 blank instructions",
+			body:       `{"model":"gpt-5.2","instructions":"  ","input":[]}`,
+			wantPrefix: "You are GPT-5.2 running in the Codex CLI",
+		},
+		{
+			name:       "gpt-5.6",
+			body:       `{"model":"gpt-5.6-sol","input":[]}`,
+			wantPrefix: "You are Codex, an agent based on GPT-5.",
+		},
+		{
+			name:       "codex model",
+			body:       `{"model":"gpt-5.3-codex","input":[]}`,
+			wantPrefix: "You are Codex, based on GPT-5.",
+		},
+		{
+			name:             "explicit instructions",
+			body:             `{"model":"gpt-5.6-sol","instructions":"keep this","input":[]}`,
+			wantInstructions: "keep this",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			body := prepareCodexOAuthResponsesBody(
+				cfg, protocol.Codex, "/v1/responses", []byte(tt.body), make(http.Header),
+			)
+			instructions := gjson.GetBytes(body, "instructions").String()
+			if tt.wantInstructions != "" {
+				if instructions != tt.wantInstructions {
+					t.Fatalf("instructions = %q, want %q", instructions, tt.wantInstructions)
+				}
+				return
+			}
+			if !strings.HasPrefix(instructions, tt.wantPrefix) {
+				t.Fatalf("instructions prefix = %q, want %q; body=%s", instructions, tt.wantPrefix, body)
+			}
+			if strings.Contains(instructions, "{{ personality }}") {
+				t.Fatalf("instructions retained template placeholder: %s", body)
+			}
+		})
 	}
 }
 
