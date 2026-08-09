@@ -1012,6 +1012,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		websocketSession = newCodexUpstreamWebsocketSession(
 			s.bodyLimits.maxForPath("/v1/responses"),
 			s.upstreamConnectionMaxAge,
+			newCodexWebsocketFailureTracker(),
 		)
 		defer websocketSession.Close()
 	}
@@ -1127,12 +1128,23 @@ func (s *Server) doChannelTestCodexWebsocket(
 	capacityRelease func(),
 ) (*http.Response, error) {
 	if capacityRelease == nil {
-		resp, _, _, err := s.doCodexWebsocketRequest(ctx, cfg, session, req, body, nil, nil)
+		resp, _, _, err := s.doCodexWebsocketRequest(
+			ctx, cfg, session, req, body, nil, nil, req.URL.String(),
+		)
 		return resp, err
 	}
 
 	resp, _, _, err := session.roundTrip(
-		ctx, cfg, s.codexWebsocketDialer(cfg), req, body, nil, nil, s.skipTLSVerify, s.codexWebsocketTimeouts(),
+		ctx,
+		cfg,
+		s.codexWebsocketDialer(cfg),
+		req,
+		body,
+		nil,
+		nil,
+		s.skipTLSVerify,
+		s.codexWebsocketTimeouts(),
+		req.URL.String(),
 	)
 	if err != nil || resp == nil || resp.Body == nil {
 		capacityRelease()

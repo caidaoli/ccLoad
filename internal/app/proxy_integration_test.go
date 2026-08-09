@@ -6503,6 +6503,28 @@ func TestProxy_StreamTimeoutDoesNotRetryAfterResponseCommit(t *testing.T) {
 	if calls := fallbackCalls.Load(); calls != 0 {
 		t.Fatalf("fallback calls=%d, want 0 after response commit", calls)
 	}
+	entry := waitForProxyLog(t, env, "gpt-4")
+	if entry.StatusCode != util.StatusStreamIncomplete || entry.UpstreamWebsocket {
+		t.Fatalf("proxy log status/ws=%d/%v, want ordinary HTTP 599", entry.StatusCode, entry.UpstreamWebsocket)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatalf("list configs: %v", err)
+	}
+	var timeoutChannelID int64
+	for _, cfg := range configs {
+		if cfg.Name == "timeout" {
+			timeoutChannelID = cfg.ID
+			break
+		}
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get model cooldowns: %v", err)
+	}
+	if until := cooldowns[timeoutChannelID]["gpt-4"]; timeoutChannelID == 0 || !until.After(time.Now()) {
+		t.Fatalf("ordinary HTTP 599 did not cool model: channel=%d cooldowns=%v", timeoutChannelID, cooldowns)
+	}
 }
 
 func TestProxy_MultiURLFirstAttempt_UsesWeightedRandom(t *testing.T) {

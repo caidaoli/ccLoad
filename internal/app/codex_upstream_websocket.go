@@ -57,12 +57,119 @@ type codexWebsocketTimeouts struct {
 	ping time.Duration
 }
 
+const (
+	codexWebsocketFailureWindow      = 10 * time.Minute
+	codexWebsocketFailureThreshold   = 2
+	codexWebsocketTargetCooldownBase = 2 * time.Minute
+	codexWebsocketTargetCooldownMax  = 30 * time.Minute
+)
+
 type codexWebsocketTarget struct {
 	channelID     int64
 	keyHash       [sha256.Size]byte
 	headerHash    [sha256.Size]byte
 	transportHash [sha256.Size]byte
 	url           string
+	baseURL       string
+}
+
+// codexWebsocketFailureTarget intentionally excludes request headers. Session-Id,
+// Conversation-Id and similar headers define socket reuse, not upstream health.
+type codexWebsocketFailureTarget struct {
+	channelID     int64
+	keyHash       [sha256.Size]byte
+	transportHash [sha256.Size]byte
+	baseURL       string
+}
+
+func (t codexWebsocketTarget) failureTarget() codexWebsocketFailureTarget {
+	return codexWebsocketFailureTarget{
+		channelID:     t.channelID,
+		keyHash:       t.keyHash,
+		transportHash: t.transportHash,
+		baseURL:       t.baseURL,
+	}
+}
+
+type codexWebsocketFailureState struct {
+	count            int
+	lastFailure      time.Time
+	cooldownUntil    time.Time
+	cooldownDuration time.Duration
+}
+
+// codexWebsocketFailureTracker is shared by all execution sessions in one server.
+// It is deliberately in-memory: a process restart also creates fresh sockets.
+type codexWebsocketFailureTracker struct {
+	mu     sync.Mutex
+	states map[codexWebsocketFailureTarget]codexWebsocketFailureState
+}
+
+func newCodexWebsocketFailureTracker() *codexWebsocketFailureTracker {
+	return &codexWebsocketFailureTracker{
+		states: make(map[codexWebsocketFailureTarget]codexWebsocketFailureState),
+	}
+}
+
+func (t *codexWebsocketFailureTracker) recordFailure(target codexWebsocketFailureTarget, now time.Time) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	state := t.states[target]
+	if state.count == 0 || state.cooldownDuration == 0 && now.After(state.lastFailure.Add(codexWebsocketFailureWindow)) {
+		state = codexWebsocketFailureState{count: 1, lastFailure: now}
+		t.states[target] = state
+		t.mu.Unlock()
+		return
+	}
+
+	state.count++
+	state.lastFailure = now
+	if state.count >= codexWebsocketFailureThreshold {
+		duration := codexWebsocketTargetCooldownBase
+		if state.cooldownDuration > 0 {
+			duration = min(state.cooldownDuration*2, codexWebsocketTargetCooldownMax)
+		}
+		state.cooldownDuration = duration
+		state.cooldownUntil = now.Add(duration)
+	}
+	t.states[target] = state
+	t.mu.Unlock()
+
+	if !state.cooldownUntil.IsZero() {
+		log.Printf(
+			"[COOLDOWN] Codex WebSocket目标冷却: 渠道=%d 连续异常关闭=%d 时长=%v",
+			target.channelID,
+			state.count,
+			state.cooldownDuration,
+		)
+	}
+}
+
+func (t *codexWebsocketFailureTracker) recordSuccess(target codexWebsocketFailureTarget) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	delete(t.states, target)
+	t.mu.Unlock()
+}
+
+func (t *codexWebsocketFailureTracker) cooldown(
+	target codexWebsocketFailureTarget,
+	now time.Time,
+) (time.Time, bool) {
+	if t == nil {
+		return time.Time{}, false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state, ok := t.states[target]
+	if !ok || !now.Before(state.cooldownUntil) {
+		return time.Time{}, false
+	}
+	return state.cooldownUntil, true
 }
 
 type codexWebsocketDebugSnapshot struct {
@@ -77,22 +184,25 @@ type codexWebsocketDebugSnapshot struct {
 // codexUpstreamWebsocketSession belongs to one execution session.
 // The socket is disposable; responsesWebsocketSession owns the durable transcript.
 type codexUpstreamWebsocketSession struct {
-	turnMu          sync.Mutex
-	writeMu         sync.Mutex
-	mu              sync.Mutex
-	conn            *websocket.Conn
-	connDone        chan struct{}
-	target          codexWebsocketTarget
-	affinity        codexWebsocketTarget
-	hasAffinity     bool
-	reads           []codexWebsocketRead
-	readBytes       int64
-	readNotify      chan struct{}
-	readSpaceNotify chan struct{}
-	maxBodyBytes    int64
-	maxAge          time.Duration
-	maxAgeTimer     *time.Timer
-	maxAgeExpired   bool
+	turnMu                sync.Mutex
+	writeMu               sync.Mutex
+	mu                    sync.Mutex
+	conn                  *websocket.Conn
+	connDone              chan struct{}
+	target                codexWebsocketTarget
+	affinity              codexWebsocketTarget
+	hasAffinity           bool
+	reads                 []codexWebsocketRead
+	readBytes             int64
+	readNotify            chan struct{}
+	readSpaceNotify       chan struct{}
+	maxBodyBytes          int64
+	maxAge                time.Duration
+	maxAgeTimer           *time.Timer
+	maxAgeExpired         bool
+	turnTerminal          bool
+	pendingHeartbeatConn  *websocket.Conn
+	pendingHeartbeatCause error
 
 	handshakeRequestHeaders  http.Header
 	handshakeResponseStatus  int
@@ -104,11 +214,13 @@ type codexUpstreamWebsocketSession struct {
 	reconnects               uint64
 	lastReconnectReason      string
 	lastCloseReason          string
+	failureTracker           *codexWebsocketFailureTracker
 }
 
 func newCodexUpstreamWebsocketSession(
 	maxBodyBytes int64,
 	maxAge time.Duration,
+	failureTracker *codexWebsocketFailureTracker,
 ) *codexUpstreamWebsocketSession {
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = config.DefaultMaxBodyBytes
@@ -118,6 +230,7 @@ func newCodexUpstreamWebsocketSession(
 		readSpaceNotify: make(chan struct{}, 1),
 		maxBodyBytes:    maxBodyBytes,
 		maxAge:          maxAge,
+		failureTracker:  failureTracker,
 	}
 }
 
@@ -126,6 +239,7 @@ type codexWebsocketRead struct {
 	messageType int
 	payload     []byte
 	err         error
+	terminal    bool
 }
 
 type codexWebsocketHTTPFallbackError struct {
@@ -188,6 +302,8 @@ func (s *codexUpstreamWebsocketSession) closeLocked() {
 	s.conn = nil
 	s.target = codexWebsocketTarget{}
 	s.connectedAt = time.Time{}
+	s.pendingHeartbeatConn = nil
+	s.pendingHeartbeatCause = nil
 	s.reads = nil
 	s.readBytes = 0
 	s.signalReadLocked()
@@ -214,6 +330,10 @@ func (s *codexUpstreamWebsocketSession) enqueueRead(event codexWebsocketRead) bo
 		if s.conn != event.conn {
 			s.mu.Unlock()
 			return false
+		}
+		if event.terminal && !s.turnTerminal {
+			s.turnTerminal = true
+			s.failureTracker.recordSuccess(s.target.failureTarget())
 		}
 		maxQueueBytes := s.maxBodyBytes
 		// Read failures must remain observable even when the data queue is full.
@@ -395,19 +515,22 @@ func (s *codexUpstreamWebsocketSession) startReader(
 	go func() {
 		for {
 			if err := refreshReadDeadline(); err != nil {
-				if s.enqueueRead(codexWebsocketRead{conn: conn, err: err}) {
-					s.detachReadFailure(conn, err, false)
-				}
+				s.detachReadFailure(conn, err, false)
 				return
 			}
 			messageType, payload, err := conn.ReadMessage()
-			if !s.enqueueRead(codexWebsocketRead{
-				conn: conn, messageType: messageType, payload: payload, err: err,
-			}) {
-				return
-			}
 			if err != nil {
 				s.detachReadFailure(conn, err, isCodexWebsocketHeartbeatFailure(err))
+				return
+			}
+			if !s.enqueueRead(codexWebsocketRead{
+				conn:        conn,
+				messageType: messageType,
+				payload:     payload,
+				terminal: messageType == websocket.TextMessage && isCodexWebsocketTerminalEvent(
+					strings.TrimSpace(gjson.GetBytes(payload, "type").String()),
+				),
+			}) {
 				return
 			}
 		}
@@ -428,7 +551,7 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				)
 				s.writeMu.Unlock()
 				if err != nil {
-					s.detachReadFailure(conn, fmt.Errorf("ping upstream websocket: %w", err), true)
+					s.signalHeartbeatFailure(conn, fmt.Errorf("ping upstream websocket: %w", err))
 					return
 				}
 			}
@@ -441,6 +564,21 @@ func isCodexWebsocketHeartbeatFailure(cause error) bool {
 	return errors.As(cause, &netErr) && netErr.Timeout()
 }
 
+func (s *codexUpstreamWebsocketSession) signalHeartbeatFailure(conn *websocket.Conn, cause error) {
+	s.mu.Lock()
+	active := s.conn == conn
+	if active {
+		s.pendingHeartbeatConn = conn
+		s.pendingHeartbeatCause = cause
+	}
+	s.mu.Unlock()
+	if active {
+		// Reader is the sole detach authority. Closing only wakes it while
+		// preserving the order between an already-read terminal frame and EOF.
+		_ = conn.Close()
+	}
+}
+
 func (s *codexUpstreamWebsocketSession) detachReadFailure(
 	conn *websocket.Conn,
 	cause error,
@@ -448,6 +586,23 @@ func (s *codexUpstreamWebsocketSession) detachReadFailure(
 ) {
 	s.mu.Lock()
 	if s.conn == conn {
+		if s.pendingHeartbeatConn == conn {
+			heartbeatFailure = true
+			if s.pendingHeartbeatCause != nil {
+				cause = s.pendingHeartbeatCause
+			}
+			s.pendingHeartbeatConn = nil
+			s.pendingHeartbeatCause = nil
+		}
+		target := s.target
+		readErr := cause
+		if !s.turnTerminal && isCodexWebsocketTransportFailure(cause, heartbeatFailure) {
+			failureTarget := target.failureTarget()
+			s.failureTracker.recordFailure(failureTarget, time.Now())
+			readErr = &codexWebsocketTransportError{cause: cause}
+		}
+		// Reader is the only detach authority, so one physical connection is counted once.
+		s.reads = append(s.reads, codexWebsocketRead{conn: conn, err: readErr})
 		if s.maxAgeTimer != nil {
 			s.maxAgeTimer.Stop()
 			s.maxAgeTimer = nil
@@ -505,6 +660,9 @@ func (s *codexUpstreamWebsocketSession) dial(
 	s.hasAffinity = true
 	s.connectedAt = time.Now()
 	s.maxAgeExpired = false
+	s.turnTerminal = false
+	s.pendingHeartbeatConn = nil
+	s.pendingHeartbeatCause = nil
 	if s.maxAge > 0 {
 		s.maxAgeTimer = time.AfterFunc(s.maxAge, func() { s.expireConnection(conn) })
 	}
@@ -542,6 +700,15 @@ func isCodexWebsocketSemanticEvent(eventType string) bool {
 	}
 }
 
+func isCodexWebsocketTerminalEvent(eventType string) bool {
+	switch eventType {
+	case "response.completed", "response.done", "response.incomplete":
+		return true
+	default:
+		return false
+	}
+}
+
 func (s *codexUpstreamWebsocketSession) invalidate(conn *websocket.Conn) {
 	s.mu.Lock()
 	if s.conn == conn {
@@ -550,13 +717,23 @@ func (s *codexUpstreamWebsocketSession) invalidate(conn *websocket.Conn) {
 	s.mu.Unlock()
 }
 
-func codexWebsocketTargetForRequest(cfg *model.Config, req *http.Request, skipTLSVerify bool) codexWebsocketTarget {
+func codexWebsocketTargetForRequest(
+	cfg *model.Config,
+	req *http.Request,
+	skipTLSVerify bool,
+	baseURL string,
+) codexWebsocketTarget {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL == "" {
+		baseURL = req.URL.String()
+	}
 	return codexWebsocketTarget{
 		channelID:     cfg.ID,
 		keyHash:       sha256.Sum256([]byte(req.Header.Get("Authorization"))),
 		headerHash:    codexWebsocketHeaderHash(codexWebsocketHeaders(req.Header)),
 		transportHash: codexWebsocketTransportHash(cfg, skipTLSVerify),
 		url:           req.URL.String(),
+		baseURL:       baseURL,
 	}
 }
 
@@ -882,6 +1059,44 @@ type codexWebsocketResponseBody struct {
 	abort     func()
 }
 
+type codexWebsocketTransportError struct {
+	cause error
+}
+
+func (e *codexWebsocketTransportError) Error() string {
+	if e == nil || e.cause == nil {
+		return "upstream websocket transport interrupted"
+	}
+	return e.cause.Error()
+}
+
+func (e *codexWebsocketTransportError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+type codexWebsocketTargetCooldownError struct {
+	until time.Time
+}
+
+func (e *codexWebsocketTargetCooldownError) Error() string {
+	if e == nil || e.until.IsZero() {
+		return "upstream websocket target is cooling down"
+	}
+	return fmt.Sprintf("upstream websocket target is cooling down until %s", e.until.Format(time.RFC3339))
+}
+
+func isCodexWebsocketTransportFailure(err error, heartbeatFailure bool) bool {
+	if err == nil {
+		return false
+	}
+	var closeErr *websocket.CloseError
+	return errors.As(err, &closeErr) && closeErr.Code == websocket.CloseAbnormalClosure ||
+		errors.Is(err, io.ErrUnexpectedEOF) || heartbeatFailure
+}
+
 func (b *codexWebsocketResponseBody) Close() error {
 	if !b.completed.Load() && b.abort != nil {
 		b.abort()
@@ -1003,7 +1218,7 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 				_ = writer.CloseWithError(errRetry)
 				return
 			}
-			if eventType == "response.completed" || eventType == "response.done" || eventType == "response.incomplete" {
+			if isCodexWebsocketTerminalEvent(eventType) {
 				// The HTTP/SSE consumer may stop reading as soon as it sees the
 				// terminal event. Mark the turn complete before the pipe write so
 				// Response.Body.Close cannot invalidate a reusable socket in that race.
@@ -1073,6 +1288,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	incrementalBody []byte,
 	skipTLSVerify bool,
 	timeouts codexWebsocketTimeouts,
+	baseURL string,
 ) (resp *http.Response, usedReq *http.Request, usedBody []byte, err error) {
 	s.turnMu.Lock()
 	handedOff := false
@@ -1081,7 +1297,10 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 			s.finishTurn()
 		}
 	}()
-	target := codexWebsocketTargetForRequest(cfg, replayReq, skipTLSVerify)
+	target := codexWebsocketTargetForRequest(cfg, replayReq, skipTLSVerify, baseURL)
+	if until, cooling := s.failureTracker.cooldown(target.failureTarget(), time.Now()); cooling {
+		return nil, replayReq, replayBody, &codexWebsocketTargetCooldownError{until: until}
+	}
 
 	conn, reuse := s.connectionReusable(target)
 	s.mu.Lock()
@@ -1110,6 +1329,12 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 			}
 			return nil, usedReq, usedBody, err
 		}
+	} else {
+		s.mu.Lock()
+		if s.conn == conn {
+			s.turnTerminal = false
+		}
+		s.mu.Unlock()
 	}
 
 	err = s.writeRequest(conn, preparedBody)
@@ -1154,6 +1379,7 @@ func (s *Server) doCodexWebsocketRequest(
 	replayBody []byte,
 	incrementalReq *http.Request,
 	incrementalBody []byte,
+	baseURL string,
 ) (*http.Response, *http.Request, []byte, error) {
 	if replayReq != nil {
 		replayBody = normalizeCodexWebsocketParallelToolCalls(replayBody, replayReq.Header)
@@ -1175,6 +1401,7 @@ func (s *Server) doCodexWebsocketRequest(
 		incrementalBody,
 		s.skipTLSVerify,
 		s.codexWebsocketTimeouts(),
+		baseURL,
 	)
 	if err != nil {
 		release()

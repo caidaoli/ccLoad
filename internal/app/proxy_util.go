@@ -116,6 +116,9 @@ type fwResult struct {
 	ResponseCommitted bool
 	// UpstreamWebsocket 只表示本次实际上游请求采用了WebSocket，不表示下游协议或渠道配置。
 	UpstreamWebsocket bool
+	// UpstreamWebsocketTransportFailure 表示原生上游 WebSocket 以 close 1006
+	// 或心跳传输错误结束。该故障按物理连接连续计数，不得升级为模型冷却。
+	UpstreamWebsocketTransportFailure bool
 
 	// OpenAI service_tier（2026-03新增）。Codex 请求中的 priority 是 Fast 模式标记；
 	// 其他情况由上游响应中的 service_tier 决定。
@@ -181,6 +184,7 @@ type proxyResult struct {
 	nextAction                cooldown.Action // 统一重试决策：RetryKey/RetryChannel/ReturnClient
 	deferredCooldown          *cooldown.ErrorInput
 	protocolCapabilityMissing bool
+	websocketTargetCooling    bool
 	responsesTurn             responsesWebsocketTurnResult
 	hasResponsesTurn          bool
 }

@@ -1664,6 +1664,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		resp, req, sentBody, err = s.doCodexWebsocketRequest(
 			reqCtx.ctx, cfg, native.session,
 			replayReq, replayBody, incrementalReq, incrementalBody,
+			baseURL,
 		)
 		if err != nil && isCodexWebsocketHandshakeFallbackError(err) {
 			log.Printf("[INFO] 渠道 %d WebSocket 握手协商失败 (%v)，同 Key/URL 回退 HTTP", cfg.ID, err)
@@ -1801,6 +1802,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 	if res != nil {
 		res.UpstreamWebsocket = usedNativeWebsocket
+		var transportErr *codexWebsocketTransportError
+		res.UpstreamWebsocketTransportFailure = usedNativeWebsocket && errors.As(err, &transportErr)
 	}
 
 	// [FIX] 2025-12: 流式传输过程中首字节超时的错误修正
@@ -1911,6 +1914,11 @@ func (s *Server) handleCommittedAwareProxyError(
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
 ) (*proxyResult, cooldown.Action) {
+	if res.UpstreamWebsocketTransportFailure && !res.ResponseCommitted {
+		return s.handleUncommittedWebsocketTransportFailure(
+			cfg, actualModel, selectedKey, res, duration, reqCtx,
+		)
+	}
 	if !res.ResponseCommitted {
 		return s.handleProxyErrorResponse(
 			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, false,
@@ -2067,6 +2075,17 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
+		var targetCooldownErr *codexWebsocketTargetCooldownError
+		if errors.As(err, &targetCooldownErr) {
+			return &proxyResult{
+				status:                 util.StatusStreamIncomplete,
+				body:                   []byte(targetCooldownErr.Error()),
+				channelID:              &cfg.ID,
+				succeeded:              false,
+				nextAction:             cooldown.ActionRetryChannel,
+				websocketTargetCooling: true,
+			}, cooldown.ActionRetryChannel, nil
+		}
 		var translationErr *protocol.RequestTranslationError
 		if errors.As(err, &translationErr) {
 			if cfg.GetProtocolTransformMode() == model.ProtocolTransformModeAuto {
@@ -2813,6 +2832,17 @@ func (s *Server) attemptKeyAcrossURLs(
 				break
 			}
 			continue
+		}
+		if result != nil && result.websocketTargetCooling {
+			if urlIdx < len(sortedURLs)-1 {
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				continue
+			}
+			if cfg.RetryOtherKeysOnFailure {
+				result.nextAction = cooldown.ActionRetryKey
+				nextAction = cooldown.ActionRetryKey
+			}
+			break
 		}
 
 		// Key级错误：换URL无意义，跳出URL循环

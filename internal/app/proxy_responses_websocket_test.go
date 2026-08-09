@@ -433,7 +433,7 @@ func TestNativeCodexWebsocketReaderDetachesClosedConnectionImmediately(t *testin
 	}))
 	defer upstream.Close()
 
-	session := newCodexUpstreamWebsocketSession(0, 0)
+	session := newCodexUpstreamWebsocketSession(0, 0, newCodexWebsocketFailureTracker())
 	defer session.Close()
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream.URL+"/v1/responses", nil)
 	if err != nil {
@@ -481,14 +481,14 @@ func TestCodexWebsocketTargetChangesWithTransportConfiguration(t *testing.T) {
 		Action: model.RuleActionOverride, Name: "OpenAI-Beta", Value: "changed",
 	}}}
 
-	baseTarget := codexWebsocketTargetForRequest(base, req, false)
-	if baseTarget == codexWebsocketTargetForRequest(withProxy, req, false) {
+	baseTarget := codexWebsocketTargetForRequest(base, req, false, "https://example.com")
+	if baseTarget == codexWebsocketTargetForRequest(withProxy, req, false, "https://example.com") {
 		t.Fatal("proxy configuration change did not invalidate websocket target")
 	}
-	if baseTarget == codexWebsocketTargetForRequest(withHeader, req, false) {
+	if baseTarget == codexWebsocketTargetForRequest(withHeader, req, false, "https://example.com") {
 		t.Fatal("custom header configuration change did not invalidate websocket target")
 	}
-	if baseTarget == codexWebsocketTargetForRequest(base, req, true) {
+	if baseTarget == codexWebsocketTargetForRequest(base, req, true, "https://example.com") {
 		t.Fatal("TLS verification configuration change did not invalidate websocket target")
 	}
 }
@@ -4434,6 +4434,13 @@ func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(
 	if _, exists := request["previous_response_id"]; exists {
 		t.Fatalf("fallback websocket received stale previous_response_id: %#v", request)
 	}
+	modelCooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get model cooldowns after websocket failover: %v", err)
+	}
+	if len(modelCooldowns) != 0 {
+		t.Fatalf("websocket transport failure created model cooldowns: %v", modelCooldowns)
+	}
 }
 
 func TestResponsesWebsocketFailsOverBeforeSemanticOutput(t *testing.T) {
@@ -5075,14 +5082,16 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 	}
 }
 
-func TestNativeCodexWebsocketAbnormalCloseAfterSemanticOutputLogsStreamIncomplete(t *testing.T) {
+func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTargetCooldown(t *testing.T) {
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	var primaryHandshakes atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			t.Errorf("upgrade abnormal-close websocket: %v", err)
 			return
 		}
+		primaryHandshakes.Add(1)
 		if _, _, err := conn.ReadMessage(); err != nil {
 			t.Errorf("read abnormal-close request: %v", err)
 			_ = conn.Close()
@@ -5097,40 +5106,199 @@ func TestNativeCodexWebsocketAbnormalCloseAfterSemanticOutputLogsStreamIncomplet
 		}
 		_ = conn.UnderlyingConn().Close()
 	}))
-	defer upstream.Close()
+	defer primary.Close()
 
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "abnormal-close-native", upstreamProtocol: "codex", websockets: true,
-		models: "gpt-test", priority: 100,
-	}}, map[int]string{0: upstream.URL})
-	downstream := dialResponsesWebsocket(t, env.engine)
-	if err := downstream.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-		t.Fatalf("set abnormal-close deadline: %v", err)
-	}
-	if err := downstream.WriteJSON(map[string]any{
+	var fallbackCalls atomic.Int32
+	fallbackBodies := make(chan []byte, 1)
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fallbackCalls.Add(1)
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read fallback request: %v", err)
+			return
+		}
+		fallbackBodies <- body
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"fallback\"}\n\n")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-fallback\",\"status\":\"completed\",\"output\":[]}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer fallback.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "abnormal-close-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "healthy-http-fallback", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	request := map[string]any{
 		"type": "response.create", "model": "gpt-test",
-		"input": []any{map[string]any{"role": "user", "content": "interrupt"}},
-	}); err != nil {
-		t.Fatalf("write abnormal-close request: %v", err)
+		"input": []any{map[string]any{"role": "user", "content": "full replay"}},
+	}
+	readInterruptedTurn := func(conn *websocket.Conn) {
+		t.Helper()
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set abnormal-close deadline: %v", err)
+		}
+		if err := conn.WriteJSON(request); err != nil {
+			t.Fatalf("write abnormal-close request: %v", err)
+		}
+
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("read partial event: %v", err)
+		}
+		if event["type"] != "response.output_text.delta" {
+			t.Fatalf("first event=%#v, want output delta", event)
+		}
+		if err := conn.ReadJSON(&event); err != nil {
+			t.Fatalf("read interrupted event: %v", err)
+		}
+		if event["type"] != "error" || event["status"] != float64(http.StatusBadGateway) {
+			t.Fatalf("terminal event=%#v, want 502 error", event)
+		}
+		_, _, closeReadErr := conn.ReadMessage()
+		var closeErr *websocket.CloseError
+		if !errors.As(closeReadErr, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+			t.Fatalf("terminal close=%v, want websocket 1011", closeReadErr)
+		}
+		waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
+	}
+	assertNoModelCooldown := func() {
+		t.Helper()
+		cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+		if err != nil {
+			t.Fatalf("get model cooldowns: %v", err)
+		}
+		if len(cooldowns) != 0 {
+			t.Fatalf("native websocket 1006 created model cooldowns: %v", cooldowns)
+		}
 	}
 
-	var event map[string]any
-	if err := downstream.ReadJSON(&event); err != nil {
-		t.Fatalf("read partial event: %v", err)
+	first := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-a")
+	readInterruptedTurn(first)
+	if primaryHandshakes.Load() != 1 || fallbackCalls.Load() != 0 {
+		t.Fatalf("after first 1006 primary/fallback=%d/%d, want 1/0", primaryHandshakes.Load(), fallbackCalls.Load())
 	}
-	if event["type"] != "response.output_text.delta" {
-		t.Fatalf("first event=%#v, want output delta", event)
-	}
-	if err := downstream.ReadJSON(&event); err != nil {
-		t.Fatalf("read interrupted event: %v", err)
-	}
-	if event["type"] != "error" {
-		t.Fatalf("terminal event=%#v, want error", event)
-	}
+	assertNoModelCooldown()
 
 	entry := waitForProxyLog(t, env, "gpt-test")
 	if entry.StatusCode != util.StatusStreamIncomplete {
 		t.Fatalf("proxy log status=%d message=%q, want %d", entry.StatusCode, entry.Message, util.StatusStreamIncomplete)
+	}
+	if !entry.UpstreamWebsocket {
+		t.Fatal("proxy log did not mark native upstream websocket")
+	}
+
+	second := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-b")
+	readInterruptedTurn(second)
+	if primaryHandshakes.Load() != 2 || fallbackCalls.Load() != 0 {
+		t.Fatalf("after second 1006 primary/fallback=%d/%d, want 2/0", primaryHandshakes.Load(), fallbackCalls.Load())
+	}
+	assertNoModelCooldown()
+
+	third := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-b")
+	if err := third.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set fallback deadline: %v", err)
+	}
+	if err := third.WriteJSON(request); err != nil {
+		t.Fatalf("write fallback replay request: %v", err)
+	}
+	readWebsocketUntilType(t, third, "response.completed")
+	if primaryHandshakes.Load() != 2 || fallbackCalls.Load() != 1 {
+		t.Fatalf("after target cooldown primary/fallback=%d/%d, want 2/1", primaryHandshakes.Load(), fallbackCalls.Load())
+	}
+	fallbackBody := <-fallbackBodies
+	if gjson.GetBytes(fallbackBody, "previous_response_id").Exists() ||
+		gjson.GetBytes(fallbackBody, "input.0.content").String() != "full replay" {
+		t.Fatalf("fallback did not receive full replay: %s", fallbackBody)
+	}
+}
+
+func TestNativeCodexWebsocketCompletedTurnResetsAbnormalCloseStreak(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	var primaryHandshakes atomic.Int32
+	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade reset-streak websocket: %v", err)
+			return
+		}
+		connection := primaryHandshakes.Add(1)
+		if _, _, err := conn.ReadMessage(); err != nil {
+			t.Errorf("read reset-streak request: %v", err)
+			_ = conn.Close()
+			return
+		}
+		if connection%2 == 1 {
+			_ = conn.WriteJSON(map[string]any{
+				"type": "response.output_text.delta", "delta": "partial",
+			})
+			_ = conn.UnderlyingConn().Close()
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-reset", "status": "completed", "output": []any{},
+			},
+		})
+		_ = conn.Close()
+	}))
+	defer primary.Close()
+
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"unexpected-fallback\",\"status\":\"completed\",\"output\":[]}}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer fallback.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{
+		{name: "reset-streak-native", upstreamProtocol: "codex", websockets: true, models: "gpt-test", priority: 100},
+		{name: "must-not-run", upstreamProtocol: "codex", models: "gpt-test", priority: 90},
+	}, map[int]string{0: primary.URL, 1: fallback.URL})
+	request := map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "reset streak"}},
+	}
+	runInterrupted := func(sessionID string) {
+		t.Helper()
+		conn := dialResponsesWebsocketWithSessionID(t, env.engine, sessionID)
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set interrupted deadline: %v", err)
+		}
+		if err := conn.WriteJSON(request); err != nil {
+			t.Fatalf("write interrupted request: %v", err)
+		}
+		readWebsocketUntilType(t, conn, "response.output_text.delta")
+		var event map[string]any
+		if err := conn.ReadJSON(&event); err != nil || event["type"] != "error" {
+			t.Fatalf("interrupted event=%#v err=%v", event, err)
+		}
+		_, _, _ = conn.ReadMessage()
+		waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
+	}
+	runCompleted := func(sessionID string) {
+		t.Helper()
+		conn := dialResponsesWebsocketWithSessionID(t, env.engine, sessionID)
+		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			t.Fatalf("set completed deadline: %v", err)
+		}
+		if err := conn.WriteJSON(request); err != nil {
+			t.Fatalf("write completed request: %v", err)
+		}
+		readWebsocketUntilType(t, conn, "response.completed")
+		_ = conn.Close()
+		waitForResponsesWebsocketAttachments(t, env.server.responsesExecutionSessions, 0)
+	}
+
+	runInterrupted("reset-streak-1")
+	runCompleted("reset-streak-2")
+	runInterrupted("reset-streak-3")
+	runCompleted("reset-streak-4")
+	if primaryHandshakes.Load() != 4 || fallbackCalls.Load() != 0 {
+		t.Fatalf("handshakes/fallback=%d/%d, want 4/0 after completed turn reset", primaryHandshakes.Load(), fallbackCalls.Load())
 	}
 }
 
