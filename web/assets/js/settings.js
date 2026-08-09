@@ -12,6 +12,7 @@ const containerImageManagedDisabledReason = 'container_image_managed';
 const advancedSettingKeys = new Set([
   globalCooldownRulesSettingKey,
   'auto_refresh_interval_seconds',
+  'active_request_title_enabled',
   'model_catalog_sync_interval_hours',
   'model_fuzzy_match'
 ]);

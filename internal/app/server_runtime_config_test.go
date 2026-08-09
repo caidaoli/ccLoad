@@ -31,15 +31,16 @@ func TestLoadServerRuntimeConfigLimitsAndCooldown(t *testing.T) {
 	t.Parallel()
 
 	cfg := loadServerRuntimeConfig(newStubConfigService(map[string]string{
-		"max_concurrency":             "250",
-		"max_body_bytes":              "2048",
-		"max_image_body_bytes":        "4096",
-		"cooldown_auth_seconds":       "77",
-		"cooldown_server_seconds":     "88",
-		"cooldown_timeout_seconds":    "99",
-		"cooldown_rate_limit_seconds": "111",
-		"cooldown_min_seconds":        "5",
-		"cooldown_max_seconds":        "600",
+		"max_concurrency":              "250",
+		"max_body_bytes":               "2048",
+		"max_image_body_bytes":         "4096",
+		"cooldown_auth_seconds":        "77",
+		"cooldown_server_seconds":      "88",
+		"cooldown_timeout_seconds":     "99",
+		"cooldown_rate_limit_seconds":  "111",
+		"cooldown_min_seconds":         "5",
+		"cooldown_max_seconds":         "600",
+		"active_request_title_enabled": "true",
 	}))
 
 	if cfg.MaxConcurrency != 250 {
@@ -47,6 +48,9 @@ func TestLoadServerRuntimeConfigLimitsAndCooldown(t *testing.T) {
 	}
 	if cfg.MaxBodyBytes != 2048 || cfg.MaxImageBodyBytes != 4096 {
 		t.Fatalf("body limits=%d/%d, want 2048/4096", cfg.MaxBodyBytes, cfg.MaxImageBodyBytes)
+	}
+	if !cfg.ActiveRequestTitleEnabled {
+		t.Fatal("ActiveRequestTitleEnabled=false, want true")
 	}
 	want := map[string]int{
 		"auth": 77, "server": 88, "timeout": 99, "rate": 111, "min": 5, "max": 600,

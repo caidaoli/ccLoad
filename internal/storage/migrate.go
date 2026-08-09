@@ -611,6 +611,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"debug_log_retention_minutes", strconv.Itoa(config.DefaultDebugLogRetentionMinutes), "int", "Debug日志保留时长(分钟,1-1440)", strconv.Itoa(config.DefaultDebugLogRetentionMinutes)},
 		// 前端自动刷新
 		{"auto_refresh_interval_seconds", "0", "int", "页面自动刷新间隔(秒,>=0;0=禁用,建议≥30;有对话框打开时跳过本次刷新)", "0"},
+		{config.ActiveRequestTitleEnabledSettingKey, "false", "bool", "有请求处理时在浏览器标题栏显示请求数量并闪烁", "false"},
 		// Responses WebSocket
 		{"responses_ws_max_sessions", "0", "int", responsesWSMaxSessionsDescription, "0"},
 		{"responses_ws_session_ttl_minutes", "0", "int", responsesWSSessionTTLDescription, "0"},

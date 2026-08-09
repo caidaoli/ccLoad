@@ -1550,6 +1550,7 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		"health_score_update_interval",
 		"health_min_confident_sample",
 		"cooldown_fallback_enabled",
+		"active_request_title_enabled",
 		"responses_ws_max_sessions",
 		"responses_ws_session_ttl_minutes",
 		"responses_ws_max_transcript_bytes",
@@ -1582,6 +1583,9 @@ func TestInitDefaultSettings_SQLite(t *testing.T) {
 		}
 		if strings.HasPrefix(key, "responses_ws_") && (val != "0" || defaultValue != "0") {
 			t.Errorf("setting %q initial/default value = %q/%q, want 0/0", key, val, defaultValue)
+		}
+		if key == "active_request_title_enabled" && (val != "false" || defaultValue != "false") {
+			t.Errorf("setting %q initial/default value = %q/%q, want false/false", key, val, defaultValue)
 		}
 		if (key == "CODEX_BASE_URL" || key == "XAI_BASE_URL" || key == "ANTIGRAVITY_URL") && val != "" {
 			t.Errorf("setting %q default = %q, want empty", key, val)
