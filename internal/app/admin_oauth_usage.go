@@ -33,6 +33,7 @@ const (
 	oauthUsageTimeout          = 30 * time.Second
 	xaiUsageRequestTimeout     = 15 * time.Second
 	maxOAuthUsageResponseBytes = 1 << 20
+	maxOAuthCredentialBytes    = 1 << 20
 	weeklyUsageWindowSeconds   = 7 * 24 * 60 * 60
 )
 
@@ -51,6 +52,21 @@ type oauthUsageRequestError struct {
 
 func (e *oauthUsageRequestError) Error() string {
 	return fmt.Sprintf("usage: %s request failed", e.provider)
+}
+
+type oauthUsageUpstreamResponseError interface {
+	error
+	UpstreamResponseBody() string
+}
+
+func oauthUsageCredentialRefreshError(err error, fallback string) error {
+	var upstreamErr oauthUsageUpstreamResponseError
+	if errors.As(err, &upstreamErr) {
+		if body := upstreamErr.UpstreamResponseBody(); body != "" {
+			return errors.New(body)
+		}
+	}
+	return errors.New(fallback)
 }
 
 type codexUsageRawWindow struct {
@@ -147,6 +163,12 @@ type oauthUsageSummary struct {
 	Windows           []oauthUsageWindow `json:"windows"`
 	Warnings          []string           `json:"warnings,omitempty"`
 	XAIBilling        *xaiBillingSummary `json:"xai_billing,omitempty"`
+}
+
+type persistedOAuthUsageSnapshot struct {
+	RequestedAt string            `json:"requested_at"`
+	SampledAt   string            `json:"sampled_at"`
+	Summary     oauthUsageSummary `json:"summary"`
 }
 
 type xaiUsageCent struct {
@@ -1129,6 +1151,7 @@ func (s *Server) HandleOAuthUsage(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
 		return
 	}
+	requestedAt := time.Now().UTC()
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), oauthUsageTimeout)
 	defer cancel()
@@ -1147,7 +1170,187 @@ func (s *Server) HandleOAuthUsage(c *gin.Context) {
 		}
 		return
 	}
+	sampledAt := time.Now().UTC()
+	summary, err = s.persistOAuthUsage(c.Request.Context(), cfg, summary, requestedAt, sampledAt)
+	if err != nil {
+		RespondErrorMsg(c, http.StatusInternalServerError, "usage: persist OAuth quota failed")
+		return
+	}
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+func (s *Server) persistOAuthUsage(
+	ctx context.Context,
+	cfg *model.Config,
+	summary *oauthUsageSummary,
+	requestedAt time.Time,
+	sampledAt time.Time,
+) (*oauthUsageSummary, error) {
+	if s == nil || s.store == nil || cfg == nil || summary == nil {
+		return nil, errors.New("OAuth usage persistence is unavailable")
+	}
+	snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+		RequestedAt: requestedAt.UTC().Format(time.RFC3339Nano),
+		SampledAt:   sampledAt.UTC().Format(time.RFC3339Nano),
+		Summary:     *summary,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode OAuth usage snapshot: %w", err)
+	}
+
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		currentCfg, err := s.store.GetConfig(ctx, cfg.ID)
+		if err != nil {
+			return nil, fmt.Errorf("reload OAuth credential: %w", err)
+		}
+
+		var authType string
+		var payload string
+		switch {
+		case currentCfg.UsesCodexOAuth() && summary.Provider == codexauth.ChannelType:
+			authType = model.AuthTypeCodexOAuth
+			credential, parseErr := codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if persisted, ok := s.currentOAuthUsageAtOrAfter(
+				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
+			); ok {
+				return persisted, nil
+			}
+			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
+			payload, err = credential.JSON()
+		case currentCfg.UsesAnthropicOAuth() && summary.Provider == anthropicauth.ChannelType:
+			authType = model.AuthTypeAnthropicOAuth
+			credential, parseErr := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if persisted, ok := s.currentOAuthUsageAtOrAfter(
+				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
+			); ok {
+				return persisted, nil
+			}
+			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
+			payload, err = credential.JSON()
+		case currentCfg.UsesAntigravityOAuth() && summary.Provider == antigravityauth.ChannelType:
+			authType = model.AuthTypeAntigravityOAuth
+			credential, parseErr := antigravityauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if persisted, ok := s.currentOAuthUsageAtOrAfter(
+				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
+			); ok {
+				return persisted, nil
+			}
+			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
+			payload, err = credential.JSON()
+		case currentCfg.UsesXAIOAuth() && summary.Provider == xaiauth.ChannelType:
+			authType = model.AuthTypeXAIOAuth
+			credential, parseErr := xaiauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil {
+				return nil, parseErr
+			}
+			if persisted, ok := s.currentOAuthUsageAtOrAfter(
+				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
+			); ok {
+				return persisted, nil
+			}
+			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
+			payload, err = credential.JSON()
+		default:
+			return nil, errors.New("OAuth credential changed provider while persisting usage")
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) > maxOAuthCredentialBytes {
+			return nil, errors.New("OAuth credential exceeds persistence limit")
+		}
+		updated, err := s.store.CompareAndSwapOAuthCredential(
+			ctx, currentCfg.ID, authType, currentCfg.OAuthCredential, payload,
+		)
+		if err != nil {
+			return nil, err
+		}
+		if !updated {
+			continue
+		}
+
+		s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
+		s.InvalidateChannelListCache()
+		return summary, nil
+	}
+}
+
+func (s *Server) invalidateOAuthCredential(channelID int64, provider string) {
+	switch provider {
+	case codexauth.ChannelType:
+		s.codexCredentials.invalidateCredentialCache(channelID)
+	case anthropicauth.ChannelType:
+		s.anthropicCredentials.invalidate(channelID)
+	case antigravityauth.ChannelType:
+		s.antigravityCredentials.invalidate(channelID)
+	case xaiauth.ChannelType:
+		s.xaiCredentials.invalidate(channelID)
+	}
+}
+
+func persistedOAuthUsage(raw json.RawMessage, provider string) (*oauthUsageSummary, time.Time, time.Time) {
+	if len(raw) == 0 {
+		return nil, time.Time{}, time.Time{}
+	}
+	var snapshot persistedOAuthUsageSnapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil || snapshot.Summary.Provider != provider {
+		return nil, time.Time{}, time.Time{}
+	}
+	sampledAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(snapshot.SampledAt))
+	if err != nil {
+		return nil, time.Time{}, time.Time{}
+	}
+	requestedAt, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(snapshot.RequestedAt))
+	if err != nil {
+		return nil, time.Time{}, time.Time{}
+	}
+	return &snapshot.Summary, sampledAt, requestedAt
+}
+
+func (s *Server) currentOAuthUsageAtOrAfter(
+	channelID int64,
+	raw json.RawMessage,
+	provider string,
+	requestedAt time.Time,
+) (*oauthUsageSummary, bool) {
+	persisted, _, persistedRequestAt := persistedOAuthUsage(raw, provider)
+	if persisted == nil || persistedRequestAt.Before(requestedAt) {
+		return nil, false
+	}
+	s.invalidateOAuthCredential(channelID, provider)
+	s.InvalidateChannelListCache()
+	return persisted, true
+}
+
+func latestOAuthUsage(
+	active *oauthUsageSummary,
+	activeSampledAt time.Time,
+	passive *oauthUsageSummary,
+	passiveSampledAt string,
+) *oauthUsageSummary {
+	if active == nil {
+		return passive
+	}
+	if passive == nil {
+		return active
+	}
+	passiveTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(passiveSampledAt))
+	if err == nil && passiveTime.After(activeSampledAt) {
+		return passive
+	}
+	return active
 }
 
 func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oauthUsageSummary, error) {
@@ -1159,7 +1362,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		credential, err := s.codexCredentials.credential(ctx, cfg, false)
 		if err != nil {
-			return nil, errors.New("usage: Codex credential refresh failed")
+			return nil, oauthUsageCredentialRefreshError(err, "usage: Codex credential refresh failed")
 		}
 		return requestCodexUsage(ctx, s.getClientForChannel(cfg), credential)
 	case cfg.UsesAnthropicOAuth():
@@ -1168,7 +1371,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
 		if err != nil {
-			return nil, errors.New("usage: Anthropic credential refresh failed")
+			return nil, oauthUsageCredentialRefreshError(err, "usage: Anthropic credential refresh failed")
 		}
 		summary, metadata, err := requestAnthropicUsage(ctx, s.getClientForChannel(cfg), credential)
 		if err != nil {
@@ -1188,7 +1391,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		credential, err := s.antigravityCredentials.credentialWithMetadata(ctx, cfg)
 		if err != nil {
-			return nil, errors.New("usage: Antigravity credential refresh failed")
+			return nil, oauthUsageCredentialRefreshError(err, "usage: Antigravity credential refresh failed")
 		}
 		return requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential)
 	case cfg.UsesXAIOAuth():
@@ -1197,7 +1400,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		}
 		credential, err := s.xaiCredentials.credential(ctx, cfg, false)
 		if err != nil {
-			return nil, errors.New("usage: xAI credential refresh failed")
+			return nil, oauthUsageCredentialRefreshError(err, "usage: xAI credential refresh failed")
 		}
 		baseURL := xaiauth.CLIBaseURL
 		if len(cfg.URLs) > 0 && strings.TrimSpace(cfg.URLs[0].URL) != "" {
@@ -1214,7 +1417,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			}
 			credential, err = s.xaiCredentials.credential(ctx, cfg, true)
 			if err != nil {
-				return nil, errors.New("usage: xAI credential refresh failed")
+				return nil, oauthUsageCredentialRefreshError(err, "usage: xAI credential refresh failed")
 			}
 		}
 		return nil, errors.New("usage: xAI credential was rejected")

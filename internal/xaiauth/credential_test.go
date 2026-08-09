@@ -50,6 +50,7 @@ func TestCredentialNormalizeSupportsLastRefreshExpiresInAndRefreshMerge(t *testi
 		AccessToken: "old-access", RefreshToken: "old-refresh", IDToken: "old-id",
 		ExpiresIn: 3600, LastRefresh: "2030-01-01T00:00:00Z", Email: "old@example.com", Subject: "old-sub",
 		ClientID: "custom-client", Scope: "old-scope", TeamID: "team", SubscriptionTier: "pro", EntitlementStatus: "active",
+		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-01T00:00:00Z"}`),
 	}
 	if err := old.Normalize(); err != nil {
 		t.Fatal(err)
@@ -59,7 +60,9 @@ func TestCredentialNormalizeSupportsLastRefreshExpiresInAndRefreshMerge(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if merged.RefreshToken != "old-refresh" || merged.IDToken != "old-id" || merged.Email != "old@example.com" || merged.ClientID != "custom-client" || merged.SubscriptionTier != "pro" {
+	if merged.RefreshToken != "old-refresh" || merged.IDToken != "old-id" || merged.Email != "old@example.com" ||
+		merged.ClientID != "custom-client" || merged.SubscriptionTier != "pro" ||
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` {
 		t.Fatalf("stable fields not preserved: %+v", merged.Redacted())
 	}
 	if merged.Expired != "2030-01-02T02:00:00Z" {

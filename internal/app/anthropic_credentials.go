@@ -275,6 +275,7 @@ func cloneAnthropicCredential(credential *anthropicauth.Credential) *anthropicau
 	}
 	clone := *credential
 	clone.PassiveUsage = anthropicauth.ClonePassiveUsage(credential.PassiveUsage)
+	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	return &clone
 }
 

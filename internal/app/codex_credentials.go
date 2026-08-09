@@ -252,6 +252,7 @@ func cloneCodexCredential(credential *codexauth.Credential) *codexauth.Credentia
 	}
 	clone := *credential
 	clone.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
+	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	return &clone
 }
 

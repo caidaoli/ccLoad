@@ -32,6 +32,7 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		Expired: "2030-01-01T00:00:00Z", Scope: "scope", OrgUUID: "org",
 		AccountUUID: "account", EmailAddress: "user@example.com", PlanType: "Pro",
 		ClaudeCodeTrialEndsAt: "2030-02-03T04:05:06Z",
+		OAuthUsage:            []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`),
 	}
 	refreshed := &Credential{
 		Type: ChannelType, AccessToken: "new-access", RefreshToken: "rotated-refresh",
@@ -42,7 +43,8 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		t.Fatalf("MergeRefresh() error = %v", err)
 	}
 	if merged.RefreshToken != "rotated-refresh" || merged.AccountUUID != "account" || merged.Scope != "scope" ||
-		merged.PlanType != "Pro" || merged.ClaudeCodeTrialEndsAt != "2030-02-03T04:05:06Z" {
+		merged.PlanType != "Pro" || merged.ClaudeCodeTrialEndsAt != "2030-02-03T04:05:06Z" ||
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` {
 		t.Fatalf("merged = %+v", merged)
 	}
 	needsRefresh, err := merged.NeedsRefresh(time.Date(2030, 1, 1, 23, 56, 0, 0, time.UTC), 5*time.Minute)

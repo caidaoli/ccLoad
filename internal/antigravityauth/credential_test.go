@@ -18,6 +18,7 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 		credential.PaidTier == nil || credential.PaidTier.ID != "g1-pro-tier" || credential.PaidTier.Name != "Google AI Pro" {
 		t.Fatalf("credential = %#v", credential)
 	}
+	credential.OAuthUsage = []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`)
 	needsRefresh, err := credential.NeedsRefresh(now, 2*time.Hour)
 	if err != nil || !needsRefresh {
 		t.Fatalf("NeedsRefresh = (%v, %v)", needsRefresh, err)
@@ -28,7 +29,8 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 		t.Fatalf("MergeRefresh: %v", err)
 	}
 	if merged.RefreshToken != "rt" || merged.Email != "user@example.com" || merged.ProjectID != "project-1" ||
-		merged.PaidTier == nil || merged.PaidTier.DisplayName() != "Google AI Pro" {
+		merged.PaidTier == nil || merged.PaidTier.DisplayName() != "Google AI Pro" ||
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` {
 		t.Fatalf("merged = %#v", merged)
 	}
 	raw, err := merged.JSON()

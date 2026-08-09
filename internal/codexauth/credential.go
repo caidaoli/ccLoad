@@ -19,16 +19,17 @@ const (
 // private channel field. General channel responses omit it; the authenticated
 // single-channel editor response may expose it for read-only inspection.
 type Credential struct {
-	IDToken      string        `json:"id_token,omitempty"`
-	AccessToken  string        `json:"access_token"`
-	RefreshToken string        `json:"refresh_token"`
-	AccountID    string        `json:"account_id,omitempty"`
-	LastRefresh  string        `json:"last_refresh,omitempty"`
-	Email        string        `json:"email,omitempty"`
-	Type         string        `json:"type"`
-	Expired      string        `json:"expired"`
-	PlanType     string        `json:"plan_type,omitempty"`
-	PassiveUsage *PassiveUsage `json:"passive_usage,omitempty"`
+	IDToken      string          `json:"id_token,omitempty"`
+	AccessToken  string          `json:"access_token"`
+	RefreshToken string          `json:"refresh_token"`
+	AccountID    string          `json:"account_id,omitempty"`
+	LastRefresh  string          `json:"last_refresh,omitempty"`
+	Email        string          `json:"email,omitempty"`
+	Type         string          `json:"type"`
+	Expired      string          `json:"expired"`
+	PlanType     string          `json:"plan_type,omitempty"`
+	PassiveUsage *PassiveUsage   `json:"passive_usage,omitempty"`
+	OAuthUsage   json.RawMessage `json:"oauth_usage,omitempty"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Codex upstream
@@ -232,6 +233,7 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	if merged.PassiveUsage == nil {
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
 	}
+	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}

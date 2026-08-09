@@ -409,17 +409,23 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		if err != nil {
 			return channelOAuthMetadata{}
 		}
-		return channelOAuthMetadata{antigravityPaidTier: credential.PaidTier.DisplayName()}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, antigravityauth.ChannelType)
+		return channelOAuthMetadata{
+			antigravityPaidTier: credential.PaidTier.DisplayName(),
+			oauthUsage:          usage,
+		}
 	}
 	if cfg.UsesXAIOAuth() {
 		credential, err := xaiauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
 			return channelOAuthMetadata{}
 		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, xaiauth.ChannelType)
 		return channelOAuthMetadata{
 			xaiEmail:             credential.Identity().Email,
 			xaiSubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
 			xaiEntitlementStatus: strings.TrimSpace(credential.EntitlementStatus),
+			oauthUsage:           usage,
 		}
 	}
 	if cfg.UsesAnthropicOAuth() {
@@ -427,9 +433,16 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		if err != nil {
 			return channelOAuthMetadata{}
 		}
+		active, activeSampledAt, _ := persistedOAuthUsage(credential.OAuthUsage, anthropicauth.ChannelType)
+		passiveSampledAt := ""
+		if credential.PassiveUsage != nil {
+			passiveSampledAt = credential.PassiveUsage.SampledAt
+		}
 		return channelOAuthMetadata{
 			anthropicPlanType: strings.TrimSpace(credential.PlanType),
-			oauthUsage:        anthropicPassiveUsageSummary(credential),
+			oauthUsage: latestOAuthUsage(
+				active, activeSampledAt, anthropicPassiveUsageSummary(credential), passiveSampledAt,
+			),
 		}
 	}
 	if !cfg.UsesCodexOAuth() {
@@ -439,9 +452,16 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 	if err != nil {
 		return channelOAuthMetadata{}
 	}
+	active, activeSampledAt, _ := persistedOAuthUsage(credential.OAuthUsage, codexauth.ChannelType)
+	passiveSampledAt := ""
+	if credential.PassiveUsage != nil {
+		passiveSampledAt = credential.PassiveUsage.SampledAt
+	}
 	metadata := channelOAuthMetadata{
-		planType:   credential.PlanType,
-		oauthUsage: codexPassiveUsageSummary(credential),
+		planType: credential.PlanType,
+		oauthUsage: latestOAuthUsage(
+			active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt,
+		),
 	}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until

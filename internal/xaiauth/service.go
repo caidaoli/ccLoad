@@ -26,6 +26,27 @@ var (
 // Service performs xAI OAuth operations against fixed trusted endpoints.
 type Service struct{ client *http.Client }
 
+type tokenEndpointError struct {
+	statusCode   int
+	code         string
+	responseBody string
+}
+
+func (e *tokenEndpointError) Error() string {
+	if e == nil {
+		return "xAI token endpoint request failed"
+	}
+	return fmt.Sprintf("xAI token endpoint returned HTTP %d (%s)", e.statusCode, e.code)
+}
+
+// UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
+func (e *tokenEndpointError) UpstreamResponseBody() string {
+	if e == nil {
+		return ""
+	}
+	return e.responseBody
+}
+
 // NewService constructs a Service using client or http.DefaultClient when nil.
 func NewService(client *http.Client) *Service {
 	if client == nil {
@@ -212,15 +233,19 @@ func (s *Service) requestToken(ctx context.Context, endpoint string, form url.Va
 		Scope        string `json:"scope"`
 		Error        string `json:"error"`
 	}
-	if json.Unmarshal(body, &token) != nil {
-		return nil, "", errors.New("decode xAI token response")
+	decodeErr := json.Unmarshal(body, &token)
+	code := ""
+	if decodeErr == nil {
+		code = safeOAuthErrorCode(token.Error)
 	}
-	code := safeOAuthErrorCode(token.Error)
 	if status < 200 || status >= 300 || code != "" {
 		if code == "" {
 			code = "http_error"
 		}
-		return nil, code, fmt.Errorf("xAI token endpoint returned HTTP %d (%s)", status, code)
+		return nil, code, &tokenEndpointError{statusCode: status, code: code, responseBody: string(body)}
+	}
+	if decodeErr != nil {
+		return nil, "", errors.New("decode xAI token response")
 	}
 	if strings.TrimSpace(token.AccessToken) == "" || token.ExpiresIn <= 0 {
 		return nil, "", errors.New("xAI token response is incomplete")

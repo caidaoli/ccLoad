@@ -77,6 +77,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 			}},
 			SampledAt: now.Format(time.RFC3339Nano),
 		},
+		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-02T03:00:00Z"}`),
 	}
 	needsRefresh, err := current.NeedsRefresh(now, 5*time.Minute)
 	if err != nil || !needsRefresh {
@@ -88,7 +89,8 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		t.Fatalf("MergeRefresh() error = %v", err)
 	}
 	if merged.RefreshToken != "old-rt" || merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
-		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 {
+		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 ||
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99

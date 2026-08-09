@@ -171,5 +171,6 @@ func cloneXAICredential(credential *xaiauth.Credential) *xaiauth.Credential {
 		return nil
 	}
 	clone := *credential
+	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
 	return &clone
 }

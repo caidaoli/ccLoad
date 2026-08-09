@@ -41,15 +41,16 @@ func (t *PaidTier) DisplayName() string {
 // Credential is the CLIProxyAPI-compatible Antigravity OAuth payload stored in
 // the private OAuth channel column.
 type Credential struct {
-	Type         string    `json:"type"`
-	AccessToken  string    `json:"access_token"`
-	RefreshToken string    `json:"refresh_token"`
-	ExpiresIn    int64     `json:"expires_in,omitempty"`
-	Timestamp    int64     `json:"timestamp,omitempty"`
-	Expired      string    `json:"expired"`
-	Email        string    `json:"email,omitempty"`
-	ProjectID    string    `json:"project_id,omitempty"`
-	PaidTier     *PaidTier `json:"paid_tier,omitempty"`
+	Type         string          `json:"type"`
+	AccessToken  string          `json:"access_token"`
+	RefreshToken string          `json:"refresh_token"`
+	ExpiresIn    int64           `json:"expires_in,omitempty"`
+	Timestamp    int64           `json:"timestamp,omitempty"`
+	Expired      string          `json:"expired"`
+	Email        string          `json:"email,omitempty"`
+	ProjectID    string          `json:"project_id,omitempty"`
+	PaidTier     *PaidTier       `json:"paid_tier,omitempty"`
+	OAuthUsage   json.RawMessage `json:"oauth_usage,omitempty"`
 }
 
 // ParseCredential validates imported CLIProxyAPI JSON and returns its canonical form.
@@ -153,6 +154,7 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 		paidTier := *c.PaidTier
 		merged.PaidTier = &paidTier
 	}
+	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}

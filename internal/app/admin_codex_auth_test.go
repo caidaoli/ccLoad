@@ -3595,6 +3595,89 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	if windows[2].LimitName != "codex-spark" || windows[2].Kind != "secondary" || windows[2].RemainingPercent != 0 {
 		t.Fatalf("additional secondary window = %#v", windows[2])
 	}
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil ||
+		list.Data[0].OAuthUsage.Provider != codexauth.ChannelType || len(list.Data[0].OAuthUsage.Windows) != 3 {
+		t.Fatalf("persisted Codex usage = %+v", list.Data)
+	}
+}
+
+func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-quota-race", RefreshToken: "rt-quota-race",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-quota-race",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newerSnapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+		RequestedAt: time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		SampledAt:   time.Now().UTC().Add(time.Hour).Format(time.RFC3339Nano),
+		Summary: oauthUsageSummary{
+			Provider: codexauth.ChannelType,
+			Windows: []oauthUsageWindow{{
+				LimitName: "codex", Kind: "primary", UsedPercent: 90, RemainingPercent: 10,
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := *credential
+	winner.OAuthUsage = newerSnapshot
+	winnerJSON, err := winner.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raceStore := &concurrentOAuthWinnerStore{
+		Store: store, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON,
+	}
+	server.store = raceStore
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":604800}}}`,
+			)),
+			Request: request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), raceStore,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+	primeContext, primeResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(primeContext)
+	prime := mustParseAPIResponse[[]ChannelWithCooldown](t, primeResponse.Body.Bytes())
+	if len(prime.Data) != 1 || prime.Data[0].OAuthUsage != nil {
+		t.Fatalf("unexpected usage before refresh: %+v", prime.Data)
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+	c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+	server.HandleOAuthUsage(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+	}
+	response := mustParseAPIResponse[oauthUsageSummary](t, w.Body.Bytes())
+	if len(response.Data.Windows) != 1 || response.Data.Windows[0].UsedPercent != 90 {
+		t.Fatalf("usage response regressed to stale snapshot: %+v", response.Data)
+	}
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil || len(list.Data[0].OAuthUsage.Windows) != 1 ||
+		list.Data[0].OAuthUsage.Windows[0].UsedPercent != 90 {
+		t.Fatalf("persisted usage regressed to stale snapshot: %+v", list.Data)
+	}
 }
 
 func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
@@ -3741,7 +3824,9 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 			listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
 			server.HandleChannels(listContext)
 			list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
-			if len(list.Data) != 1 || list.Data[0].AnthropicPlanType != test.wantPlan {
+			if len(list.Data) != 1 || list.Data[0].AnthropicPlanType != test.wantPlan ||
+				list.Data[0].OAuthUsage == nil || list.Data[0].OAuthUsage.Provider != anthropicauth.ChannelType ||
+				len(list.Data[0].OAuthUsage.Windows) != 4 {
 				t.Fatalf("Anthropic channel list metadata = %+v", list.Data)
 			}
 			windows := response.Data.Windows
@@ -3758,6 +3843,130 @@ func TestHandleOAuthUsageReturnsAnthropicQuotaAndSubscription(t *testing.T) {
 	}
 }
 
+func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
+	const upstreamBody = "  {\"error\":\"invalid_grant\",\"error_description\":\"refresh token expired\"}\n"
+	tests := []struct {
+		name  string
+		setup func(*testing.T, *Server) *model.Config
+	}{
+		{
+			name: "Codex",
+			setup: func(t *testing.T, server *Server) *model.Config {
+				credential := &codexauth.Credential{
+					Type: codexauth.ChannelType, AccessToken: "expired-codex-access", RefreshToken: "expired-codex-refresh",
+					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), AccountID: "expired-codex-account",
+				}
+				channel, _, err := createOrUpdateCodexChannel(context.Background(), server.store, credential)
+				if err != nil {
+					t.Fatalf("create Codex channel: %v", err)
+				}
+				server.codexCredentials = newCodexCredentialManager(
+					codexauth.NewService(server.client), server.store,
+					func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+				)
+				return channel
+			},
+		},
+		{
+			name: "Anthropic",
+			setup: func(t *testing.T, server *Server) *model.Config {
+				credential := &anthropicauth.Credential{
+					Type: anthropicauth.ChannelType, AccessToken: "expired-anthropic-access", RefreshToken: "expired-anthropic-refresh",
+					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), AccountUUID: "expired-anthropic-account",
+				}
+				channel, _, err := createOrUpdateAnthropicChannel(context.Background(), server.store, credential)
+				if err != nil {
+					t.Fatalf("create Anthropic channel: %v", err)
+				}
+				server.anthropicCredentials = newAnthropicCredentialManager(
+					anthropicauth.NewService(server.client), server.store,
+					func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+				)
+				return channel
+			},
+		},
+		{
+			name: "Antigravity",
+			setup: func(t *testing.T, server *Server) *model.Config {
+				credential := &antigravityauth.Credential{
+					Type: antigravityauth.ChannelType, AccessToken: "expired-antigravity-access", RefreshToken: "expired-antigravity-refresh",
+					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339), Email: "expired@example.com", ProjectID: "expired-project",
+				}
+				raw, err := credential.JSON()
+				if err != nil {
+					t.Fatalf("encode Antigravity credential: %v", err)
+				}
+				channel, err := server.store.CreateConfig(
+					context.Background(), newAntigravityOAuthChannel("Antigravity-expired", raw),
+				)
+				if err != nil {
+					t.Fatalf("create Antigravity channel: %v", err)
+				}
+				server.antigravityCredentials = newAntigravityCredentialManager(
+					antigravityauth.NewService(server.client), server.store,
+					func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+				)
+				return channel
+			},
+		},
+		{
+			name: "xAI",
+			setup: func(t *testing.T, server *Server) *model.Config {
+				credential := &xaiauth.Credential{
+					Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "expired-xai-access", RefreshToken: "expired-xai-refresh",
+					Expired: time.Now().UTC().Add(-time.Hour).Format(time.RFC3339),
+				}
+				raw, err := credential.JSON()
+				if err != nil {
+					t.Fatalf("encode xAI credential: %v", err)
+				}
+				channel, err := server.store.CreateConfig(context.Background(), &model.Config{
+					Name: "xAI-expired", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: raw, Enabled: true,
+					URLs: model.ChannelURLs{{URL: xaiauth.CLIBaseURL, Protocols: []string{"codex"}}},
+				})
+				if err != nil {
+					t.Fatalf("create xAI channel: %v", err)
+				}
+				server.xaiCredentials = newXAICredentialManager(
+					server.store, func(*model.Config) *http.Client { return server.client }, nil,
+				)
+				return channel
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			server, _, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+				if request.Method != http.MethodPost {
+					t.Errorf("token request method = %s", request.Method)
+				}
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Body:       io.NopCloser(strings.NewReader(upstreamBody)),
+					Request:    request,
+				}, nil
+			})}
+			channel := test.setup(t, server)
+
+			path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+			c, w := newTestContext(t, newRequest(http.MethodPost, path, nil))
+			c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", channel.ID)}}
+			server.HandleOAuthUsage(c)
+
+			if w.Code != http.StatusBadGateway {
+				t.Fatalf("usage status=%d body=%s", w.Code, w.Body.String())
+			}
+			response := mustParseAPIResponse[any](t, w.Body.Bytes())
+			if response.Error != upstreamBody {
+				t.Fatalf("usage error = %q, want raw upstream body %q", response.Error, upstreamBody)
+			}
+		})
+	}
+}
+
 func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -3765,6 +3974,19 @@ func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t 
 		Type: anthropicauth.ChannelType, AccessToken: "passive-access", RefreshToken: "passive-refresh",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountUUID: "passive-account", PlanType: "Max 20x",
 	}
+	olderTime := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339Nano)
+	activeSnapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+		RequestedAt: olderTime,
+		SampledAt:   olderTime,
+		Summary: oauthUsageSummary{
+			Provider: anthropicauth.ChannelType,
+			Windows:  []oauthUsageWindow{{Kind: "five_hour", UsedPercent: 99, RemainingPercent: 1}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential.OAuthUsage = activeSnapshot
 	payload, err := credential.JSON()
 	if err != nil {
 		t.Fatalf("credential JSON: %v", err)
@@ -3949,6 +4171,13 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	persistedCredential, err := antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if err != nil || persistedCredential.PaidTier == nil || persistedCredential.PaidTier.DisplayName() != "Google AI Pro" {
 		t.Fatalf("persisted paid tier = (%#v, %v)", persistedCredential, err)
+	}
+	listContext, listResponse := newTestContext(t, newRequest(http.MethodGet, "/admin/channels", nil))
+	server.HandleChannels(listContext)
+	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
+	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil ||
+		list.Data[0].OAuthUsage.Provider != antigravityauth.ChannelType || len(list.Data[0].OAuthUsage.Windows) != 3 {
+		t.Fatalf("persisted Antigravity usage = %+v", list.Data)
 	}
 	windows := response.Data.Windows
 	if windows[0].LimitName != "Gemini Models" || windows[0].Kind != "gemini-weekly" || windows[0].RemainingPercent != 100 || windows[0].UsedPercent != 0 || windows[0].LimitWindowSeconds != weeklyUsageWindowSeconds || windows[0].ResetAt != 1786609461 {
