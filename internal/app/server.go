@@ -124,8 +124,6 @@ type Server struct {
 	modelCatalogSyncStarted atomic.Bool
 	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
-	// 指纹任务管理器（内存）
-	fingerprintJobs             *FingerprintJobManager
 	oauthCredentialImportRunMu  sync.Mutex
 	oauthCredentialImportJobsMu sync.Mutex
 	oauthCredentialImportJobs   *oauthCredentialImportJobManager
@@ -364,8 +362,6 @@ func NewServer(store storage.Store) *Server {
 		s.startScheduledChannelCheckLoop(interval)
 	}
 
-	// 指纹 Job 管理器（内存）
-	s.fingerprintJobs = NewFingerprintJobManager(s.baseCtx, 2)
 	s.oauthCredentialImportJobs = newOAuthCredentialImportJobManager(s.baseCtx, oauthCredentialImportMaxRunningJobs)
 
 	// 所有启动关键状态完成加载后，再启动非关键后台任务。
@@ -1224,18 +1220,6 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.PUT("/settings/:key", s.AdminUpdateSetting)
 		admin.POST("/settings/:key/reset", s.AdminResetSetting)
 		admin.POST("/settings/batch", s.AdminBatchUpdateSettings)
-
-		// 模型指纹
-		admin.GET("/fingerprints", s.HandleListFingerprints)
-		admin.GET("/fingerprints/test-results", s.HandleListFingerprintTestResults)
-		admin.DELETE("/fingerprints/test-results/:id", s.HandleDeleteFingerprintTestResult)
-		admin.GET("/fingerprints/:id", s.HandleGetFingerprint)
-		admin.DELETE("/fingerprints/:id", s.HandleDeleteFingerprint)
-		admin.POST("/fingerprints/calibrate", s.HandleCalibrateFingerprint)
-		admin.POST("/fingerprints/test", s.HandleTestFingerprint)
-		admin.GET("/fingerprints/jobs/:id", s.HandleFingerprintJob)
-		admin.GET("/fingerprints/jobs/:id/stream", s.HandleFingerprintJobStream)
-		admin.POST("/fingerprints/jobs/:id/cancel", s.HandleCancelFingerprintJob)
 	}
 
 	// Web 仪表盘只读 API。API Token 会话由服务端强制绑定 auth_token_id。
@@ -1444,10 +1428,6 @@ func (s *Server) Shutdown(ctx context.Context) error {
 		s.statsCache.Close()
 	}
 
-	var fingerprintShutdownErr error
-	if s.fingerprintJobs != nil {
-		fingerprintShutdownErr = s.fingerprintJobs.Close(ctx)
-	}
 	var oauthCredentialImportShutdownErr error
 	if manager := s.currentOAuthCredentialImportJobs(); manager != nil {
 		oauthCredentialImportShutdownErr = manager.Close(ctx)
@@ -1462,10 +1442,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 等待完成或超时
 	var err error
-	if fingerprintShutdownErr != nil {
-		err = fingerprintShutdownErr
-	}
-	if err == nil && oauthCredentialImportShutdownErr != nil {
+	if oauthCredentialImportShutdownErr != nil {
 		err = oauthCredentialImportShutdownErr
 	}
 	select {

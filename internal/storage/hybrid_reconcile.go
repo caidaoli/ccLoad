@@ -3,8 +3,6 @@ package storage
 import (
 	"context"
 	"fmt"
-
-	"ccLoad/internal/model"
 )
 
 const primaryReconcilePageSize = 25
@@ -15,10 +13,6 @@ const (
 	reconcileLocalAuthTokens
 	reconcilePrimaryAuthTokens
 	reconcileSettings
-	reconcileLocalFingerprints
-	reconcilePrimaryFingerprints
-	reconcileLocalFingerprintTests
-	reconcilePrimaryFingerprintTests
 	reconcilePhaseCount
 )
 
@@ -165,70 +159,6 @@ func (h *HybridStore) reconcilePrimaryPage(ctx context.Context) (bool, error) {
 		}
 		pageDone = true
 
-	case reconcileLocalFingerprints:
-		ids, err := h.sqlite.ListReplicaIDsPage(ctx, "model_fingerprints", afterID, primaryReconcilePageSize)
-		if err != nil {
-			return false, fmt.Errorf("list SQLite fingerprint IDs: %w", err)
-		}
-		for _, id := range ids {
-			fingerprint, err := h.sqlite.GetModelFingerprint(ctx, id)
-			if err != nil {
-				return false, fmt.Errorf("load SQLite fingerprint %d: %w", id, err)
-			}
-			if err := h.primary.UpsertModelFingerprintReplica(ctx, fingerprint); err != nil {
-				return false, fmt.Errorf("sync fingerprint %d: %w", id, err)
-			}
-		}
-		lastID, pageDone = lastReplicaID(ids, afterID), len(ids) < primaryReconcilePageSize
-
-	case reconcilePrimaryFingerprints:
-		ids, err := h.primary.ListReplicaIDsPage(ctx, "model_fingerprints", afterID, primaryReconcilePageSize)
-		if err != nil {
-			return false, fmt.Errorf("list primary fingerprint IDs: %w", err)
-		}
-		for _, id := range ids {
-			exists, err := h.sqlite.ReplicaRowExists(ctx, "model_fingerprints", id)
-			if err != nil {
-				return false, fmt.Errorf("check SQLite fingerprint %d: %w", id, err)
-			}
-			if !exists {
-				if err := h.primary.DeleteModelFingerprint(ctx, id); err != nil {
-					return false, fmt.Errorf("delete stale primary fingerprint %d: %w", id, err)
-				}
-			}
-		}
-		lastID, pageDone = lastReplicaID(ids, afterID), len(ids) < primaryReconcilePageSize
-
-	case reconcileLocalFingerprintTests:
-		tests, err := h.sqlite.ListFingerprintTestResultsReplicaPage(ctx, afterID, primaryReconcilePageSize)
-		if err != nil {
-			return false, fmt.Errorf("list SQLite fingerprint tests: %w", err)
-		}
-		for _, test := range tests {
-			if err := h.primary.UpsertFingerprintTestResultReplica(ctx, test); err != nil {
-				return false, fmt.Errorf("sync fingerprint test %d: %w", test.ID, err)
-			}
-		}
-		lastID, pageDone = lastFingerprintTestID(tests, afterID), len(tests) < primaryReconcilePageSize
-
-	case reconcilePrimaryFingerprintTests:
-		ids, err := h.primary.ListReplicaIDsPage(ctx, "fingerprint_test_results", afterID, primaryReconcilePageSize)
-		if err != nil {
-			return false, fmt.Errorf("list primary fingerprint test IDs: %w", err)
-		}
-		for _, id := range ids {
-			exists, err := h.sqlite.ReplicaRowExists(ctx, "fingerprint_test_results", id)
-			if err != nil {
-				return false, fmt.Errorf("check SQLite fingerprint test %d: %w", id, err)
-			}
-			if !exists {
-				if err := h.primary.DeleteFingerprintTestResult(ctx, id); err != nil {
-					return false, fmt.Errorf("delete stale primary fingerprint test %d: %w", id, err)
-				}
-			}
-		}
-		lastID, pageDone = lastReplicaID(ids, afterID), len(ids) < primaryReconcilePageSize
-
 	default:
 		return false, fmt.Errorf("unknown primary reconciliation phase %d", phase)
 	}
@@ -264,11 +194,4 @@ func lastReplicaID(ids []int64, fallback int64) int64 {
 		return fallback
 	}
 	return ids[len(ids)-1]
-}
-
-func lastFingerprintTestID(tests []*model.FingerprintTestRecord, fallback int64) int64 {
-	if len(tests) == 0 {
-		return fallback
-	}
-	return tests[len(tests)-1].ID
 }

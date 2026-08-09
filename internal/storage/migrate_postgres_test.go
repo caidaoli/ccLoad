@@ -128,7 +128,7 @@ func cleanupPostgresTables(t *testing.T, db *sql.DB) {
 	t.Helper()
 
 	tables := []string{
-		"fingerprint_test_results", "model_fingerprints", "debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
+		"debug_logs", "logs", "web_sessions", "admin_sessions", "system_settings",
 		"auth_tokens", "channel_models", "channel_model_cooldowns", "channel_protocol_transforms", "api_keys", "channel_url_states",
 		"channels", "schema_migrations", "key_rr",
 	}
@@ -163,7 +163,7 @@ func TestPostgres(t *testing.T) {
 		}
 		defer func() { _ = store.Close() }()
 
-		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "schema_migrations", "model_fingerprints", "fingerprint_test_results"}
+		tables := []string{"channels", "api_keys", "channel_models", "auth_tokens", "logs", "system_settings", "web_sessions", "schema_migrations"}
 		for _, table := range tables {
 			var count int
 			if err := env.db.QueryRow(fmt.Sprintf("SELECT COUNT(*) FROM %s", table)).Scan(&count); err != nil {
@@ -225,18 +225,6 @@ func TestPostgres(t *testing.T) {
 		verifyClientProtocolBackfill(t, ctx, env.db, DialectPostgres, func(ctx context.Context, db *sql.DB) error {
 			return migratePostgres(ctx, db)
 		})
-	})
-
-	t.Run("FingerprintExplicitIDAndRestore", func(t *testing.T) {
-		cleanupPostgresTables(t, env.db)
-
-		store, err := CreatePostgresStoreForTest(env.dsn)
-		if err != nil {
-			t.Fatalf("迁移失败: %v", err)
-		}
-		defer func() { _ = store.Close() }()
-
-		verifyFingerprintStorageContract(t, store)
 	})
 
 	t.Run("Idempotent", func(t *testing.T) {
@@ -1122,55 +1110,6 @@ func TestPostgres(t *testing.T) {
 			}
 			if err := store.Ping(ctx); err != nil {
 				t.Fatalf("Ping: %v", err)
-			}
-		})
-
-		t.Run("Fingerprints", func(t *testing.T) {
-			store := newPostgresQueryStore(t, env)
-			ch, err := store.CreateConfig(ctx, &model.Config{
-				Name: "pg-query-fingerprint", URLs: model.ChannelURLs{{URL: "https://api.example.com"}}, Enabled: true,
-			})
-			if err != nil {
-				t.Fatalf("CreateConfig: %v", err)
-			}
-			channelID := ch.ID
-			fingerprint, err := store.CreateModelFingerprint(ctx, &model.ModelFingerprint{
-				Name: "pg-query-fingerprint", ChannelID: &channelID, ChannelName: ch.Name,
-				Model: "gpt-4o", SampleCount: 3,
-				Distribution: []float64{0.5, 0.25, 0.25},
-				Stats: model.FingerprintStats{
-					Mean: 2, Median: 2, Min: 1, Max: 3, Unique: 3, Mode: 1, ModeCount: 1,
-				},
-				RawData: []int{1, 2, 3}, PromptVersion: "v1",
-			})
-			if err != nil {
-				t.Fatalf("CreateModelFingerprint: %v", err)
-			}
-			if fingerprints, err := store.ListModelFingerprints(ctx); err != nil || len(fingerprints) != 1 {
-				t.Fatalf("ListModelFingerprints: fingerprints=%v err=%v", fingerprints, err)
-			}
-			if _, err := store.GetModelFingerprint(ctx, fingerprint.ID); err != nil {
-				t.Fatalf("GetModelFingerprint: %v", err)
-			}
-			if err := store.ClearFingerprintChannelID(ctx, ch.ID); err != nil {
-				t.Fatalf("ClearFingerprintChannelID: %v", err)
-			}
-
-			result := &model.FingerprintTestRecord{
-				ChannelID: &channelID, ChannelName: ch.Name, Model: "gpt-4o", SampleCount: 3,
-				BestScore: 0.9, Distribution: []float64{0.5, 0.25, 0.25}, MatchesJSON: `[{"score":0.9}]`,
-			}
-			if err := store.CreateFingerprintTestResult(ctx, result); err != nil {
-				t.Fatalf("CreateFingerprintTestResult: %v", err)
-			}
-			if results, err := store.ListFingerprintTestResults(ctx, 10); err != nil || len(results) != 1 {
-				t.Fatalf("ListFingerprintTestResults: results=%v err=%v", results, err)
-			}
-			if err := store.DeleteFingerprintTestResult(ctx, result.ID); err != nil {
-				t.Fatalf("DeleteFingerprintTestResult: %v", err)
-			}
-			if err := store.DeleteModelFingerprint(ctx, fingerprint.ID); err != nil {
-				t.Fatalf("DeleteModelFingerprint: %v", err)
 			}
 		})
 	})

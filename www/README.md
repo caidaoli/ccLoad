@@ -116,7 +116,7 @@ cp -r www /path/to/webroot/
 - Anthropic / OpenAI / Gemini / Codex / Token 统计示例
 - HTTP 与 Responses WebSocket 端点速查表、会话隔离、连接轮换和故障切换边界
 - 多协议内置搜索映射说明
-- 管理后台的客户端协议统计、7 天服务健康度与模型统计指纹说明
+- 管理后台的客户端协议统计、7 天服务健康度与模型测试说明
 - 渠道管理 API 与 CSV 导入导出
 
 ### ✅ 反馈渠道（feedback.html）

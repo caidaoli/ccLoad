@@ -6,7 +6,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -278,198 +277,6 @@ func TestMigrate_SQLite_AntigravitySensitiveWordsDefault(t *testing.T) {
 	assertSetting(customValue, wantDefault)
 }
 
-func TestMigrate_SQLite_RenamesDuplicateModelFingerprintNames(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, `
-		CREATE TABLE model_fingerprints (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			name TEXT NOT NULL,
-			channel_id INTEGER,
-			channel_name TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL,
-			actual_model TEXT NOT NULL DEFAULT '',
-			channel_type TEXT NOT NULL DEFAULT '',
-			client_protocol TEXT NOT NULL DEFAULT '',
-			sample_count INTEGER NOT NULL DEFAULT 0,
-			distribution TEXT NOT NULL,
-			stats TEXT NOT NULL,
-			raw_data TEXT NOT NULL,
-			prompt_version TEXT NOT NULL DEFAULT 'v1',
-			created_at INTEGER NOT NULL,
-			updated_at INTEGER NOT NULL
-		)
-	`); err != nil {
-		t.Fatalf("create legacy fingerprints table: %v", err)
-	}
-
-	longName := strings.Repeat("界", 191)
-	records := []struct {
-		name        string
-		model       string
-		sampleCount int
-		createdAt   int64
-	}{
-		{name: "duplicate-baseline", model: "model-a", sampleCount: 11, createdAt: 30},
-		{name: "duplicate-baseline", model: "model-b", sampleCount: 12, createdAt: 10},
-		{name: "duplicate-baseline", model: "model-c", sampleCount: 13, createdAt: 20},
-		{name: "collision", model: "collision-original", sampleCount: 21, createdAt: 1},
-		{name: "collision-1", model: "collision-suffix", sampleCount: 22, createdAt: 2},
-		{name: "collision", model: "collision-duplicate", sampleCount: 23, createdAt: 3},
-		{name: longName, model: "long-original", sampleCount: 31, createdAt: 1},
-		{name: longName, model: "long-duplicate", sampleCount: 32, createdAt: 2},
-	}
-	for _, record := range records {
-		if _, err := db.ExecContext(ctx, `
-			INSERT INTO model_fingerprints
-				(name, model, sample_count, distribution, stats, raw_data, created_at, updated_at)
-			VALUES (?, ?, ?, '[]', '{}', '[]', ?, ?)
-		`, record.name, record.model, record.sampleCount, record.createdAt, record.createdAt); err != nil {
-			t.Fatalf("insert legacy fingerprint %s: %v", record.model, err)
-		}
-	}
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate duplicate fingerprints: %v", err)
-	}
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("second migration must be idempotent: %v", err)
-	}
-
-	want := map[string]struct {
-		name        string
-		sampleCount int
-	}{
-		"model-a":             {name: "duplicate-baseline-2", sampleCount: 11},
-		"model-b":             {name: "duplicate-baseline", sampleCount: 12},
-		"model-c":             {name: "duplicate-baseline-1", sampleCount: 13},
-		"collision-original":  {name: "collision", sampleCount: 21},
-		"collision-suffix":    {name: "collision-1", sampleCount: 22},
-		"collision-duplicate": {name: "collision-2", sampleCount: 23},
-		"long-original":       {name: longName, sampleCount: 31},
-		"long-duplicate":      {name: strings.Repeat("界", 189) + "-1", sampleCount: 32},
-	}
-	rows, err := db.QueryContext(ctx, `SELECT model, name, sample_count FROM model_fingerprints`)
-	if err != nil {
-		t.Fatalf("query migrated fingerprints: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	seen := 0
-	for rows.Next() {
-		var modelName, name string
-		var sampleCount int
-		if err := rows.Scan(&modelName, &name, &sampleCount); err != nil {
-			t.Fatalf("scan migrated fingerprint: %v", err)
-		}
-		expected, ok := want[modelName]
-		if !ok {
-			t.Fatalf("unexpected migrated model %q", modelName)
-		}
-		if name != expected.name || sampleCount != expected.sampleCount {
-			t.Errorf("model=%q got (name=%q,samples=%d), want (name=%q,samples=%d)",
-				modelName, name, sampleCount, expected.name, expected.sampleCount)
-		}
-		seen++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate migrated fingerprints: %v", err)
-	}
-	if seen != len(want) {
-		t.Fatalf("migrated row count=%d, want %d", seen, len(want))
-	}
-}
-
-func TestMigrate_SQLite_RollsBackFingerprintRenamesOnFailure(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-	if _, err := db.ExecContext(ctx, schema.DefineModelFingerprintsTable().BuildSQLite()); err != nil {
-		t.Fatalf("create fingerprints table: %v", err)
-	}
-	insert := `
-		INSERT INTO model_fingerprints
-			(name, model, distribution, stats, raw_data, created_at, updated_at)
-		VALUES (?, ?, '[]', '{}', '[]', ?, ?)
-	`
-	for _, record := range []struct {
-		name      string
-		model     string
-		createdAt int64
-	}{
-		{name: "alpha", model: "alpha-original", createdAt: 1},
-		{name: "alpha", model: "alpha-duplicate", createdAt: 2},
-		{name: "zeta", model: "zeta-original", createdAt: 3},
-		{name: "zeta", model: "zeta-fail", createdAt: 4},
-	} {
-		if _, err := db.ExecContext(ctx, insert, record.name, record.model, record.createdAt, record.createdAt); err != nil {
-			t.Fatalf("insert fingerprint %s: %v", record.model, err)
-		}
-	}
-	if _, err := db.ExecContext(ctx, `
-		CREATE TRIGGER fail_fingerprint_rename
-		BEFORE UPDATE OF name ON model_fingerprints
-		WHEN OLD.model = 'zeta-fail'
-		BEGIN
-			SELECT RAISE(ABORT, 'forced fingerprint rename failure');
-		END
-	`); err != nil {
-		t.Fatalf("create failure trigger: %v", err)
-	}
-
-	err := migrate(ctx, db, DialectSQLite)
-	if err == nil || !strings.Contains(err.Error(), "forced fingerprint rename failure") {
-		t.Fatalf("migrate error=%v, want forced rename failure", err)
-	}
-
-	rows, err := db.QueryContext(ctx, `SELECT name FROM model_fingerprints ORDER BY id`)
-	if err != nil {
-		t.Fatalf("query fingerprints after rollback: %v", err)
-	}
-	defer func() { _ = rows.Close() }()
-	var names []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			t.Fatalf("scan fingerprint after rollback: %v", err)
-		}
-		names = append(names, name)
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("iterate fingerprints after rollback: %v", err)
-	}
-	want := []string{"alpha", "alpha", "zeta", "zeta"}
-	if !reflect.DeepEqual(names, want) {
-		t.Fatalf("names after rollback=%v, want %v", names, want)
-	}
-}
-
-func TestMigrate_SQLite_EnforcesUniqueModelFingerprintNames(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	insert := `
-		INSERT INTO model_fingerprints
-			(name, model, distribution, stats, raw_data, created_at, updated_at)
-		VALUES (?, ?, '[]', '{}', '[]', 1, 1)
-	`
-	if _, err := db.ExecContext(ctx, insert, "unique-baseline", "model-a"); err != nil {
-		t.Fatalf("insert first fingerprint: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, insert, "unique-baseline", "model-b"); err == nil {
-		t.Fatal("database must reject a duplicate fingerprint name")
-	}
-
-	var count int
-	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM model_fingerprints`).Scan(&count); err != nil {
-		t.Fatalf("count fingerprints: %v", err)
-	}
-	if count != 1 {
-		t.Fatalf("fingerprints count=%d, want 1", count)
-	}
-}
-
 func TestMigrateSQLite_BackfillsClientProtocolFromHistoricalModels(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -548,25 +355,6 @@ func verifyClientProtocolBackfill(
 			t.Fatalf("insert log time=%d: %v", tc.time, err)
 		}
 	}
-	// model_fingerprints 历史行：client_protocol 为空时从保留的 channel_type 物理列复制
-	fingerprintCases := []struct {
-		name           string
-		channelType    string
-		clientProtocol string
-		wantProtocol   string
-	}{
-		{"fp-legacy-backfill", "anthropic", "", "anthropic"},
-		{"fp-already-set", "openai", "gemini", "gemini"},
-		{"fp-both-empty", "", "", ""},
-	}
-	for _, fp := range fingerprintCases {
-		if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
-			INSERT INTO model_fingerprints (name, model, channel_type, client_protocol, distribution, stats, raw_data, created_at, updated_at)
-			VALUES (?, 'fp-model', ?, ?, '{}', '{}', '{}', 0, 0)
-		`), fp.name, fp.channelType, fp.clientProtocol); err != nil {
-			t.Fatalf("insert fingerprint %s: %v", fp.name, err)
-		}
-	}
 	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, "DELETE FROM schema_migrations WHERE version = ?"), clientProtocolBackfillMigrationVersion); err != nil {
 		t.Fatalf("reset client protocol migration: %v", err)
 	}
@@ -583,16 +371,6 @@ func verifyClientProtocolBackfill(
 			t.Errorf("model=%q source=%q protocol=%q, want %q", tc.model, tc.logSource, got, tc.wantProtocol)
 		}
 	}
-	for _, fp := range fingerprintCases {
-		var got string
-		if err := db.QueryRowContext(ctx, rebindIfPostgres(dialect, "SELECT client_protocol FROM model_fingerprints WHERE name = ?"), fp.name).Scan(&got); err != nil {
-			t.Fatalf("query fingerprint %s: %v", fp.name, err)
-		}
-		if got != fp.wantProtocol {
-			t.Errorf("fingerprint=%q protocol=%q, want %q", fp.name, got, fp.wantProtocol)
-		}
-	}
-
 	if _, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
 		INSERT INTO logs (time, model, log_source, status_code, message)
 		VALUES (11, 'gpt-5.6-terra', 'proxy', 200, 'after migration')
@@ -837,45 +615,79 @@ func TestMigrate_SQLite_Idempotent(t *testing.T) {
 	}
 }
 
-func TestMigrateSQLiteAddsFingerprintTestDistribution(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
+func TestMigrateSQLiteLeavesRemovedFingerprintTablesAlone(t *testing.T) {
+	t.Run("fresh database", func(t *testing.T) {
+		db := openTestDB(t)
+		ctx := context.Background()
+		if err := migrate(ctx, db, DialectSQLite); err != nil {
+			t.Fatalf("migrate fresh database: %v", err)
+		}
 
-	if _, err := db.ExecContext(ctx, `
-		CREATE TABLE fingerprint_test_results (
-			id INTEGER PRIMARY KEY AUTOINCREMENT,
-			channel_id INTEGER,
-			channel_name TEXT NOT NULL DEFAULT '',
-			model TEXT NOT NULL DEFAULT '',
-			sample_count INTEGER NOT NULL DEFAULT 0,
-			best_score REAL NOT NULL DEFAULT 0,
-			matches_json TEXT NOT NULL,
-			created_at INTEGER NOT NULL
-		)
-	`); err != nil {
-		t.Fatalf("create legacy fingerprint_test_results: %v", err)
-	}
-	if _, err := db.ExecContext(ctx, `
-		INSERT INTO fingerprint_test_results
-			(channel_name, model, sample_count, best_score, matches_json, created_at)
-		VALUES ('legacy', 'gpt-test', 10, 0.9, '[]', 1)
-	`); err != nil {
-		t.Fatalf("insert legacy fingerprint_test_results: %v", err)
-	}
+		for _, table := range []string{"model_fingerprints", "fingerprint_test_results"} {
+			var count int
+			if err := db.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?", table,
+			).Scan(&count); err != nil {
+				t.Fatalf("check fresh table %s: %v", table, err)
+			}
+			if count != 0 {
+				t.Fatalf("fresh migration created removed table %s", table)
+			}
+		}
+	})
 
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate legacy fingerprint_test_results: %v", err)
-	}
+	t.Run("legacy database", func(t *testing.T) {
+		db := openTestDB(t)
+		ctx := context.Background()
+		if _, err := db.ExecContext(ctx, `
+			CREATE TABLE model_fingerprints (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+			CREATE UNIQUE INDEX legacy_model_fingerprints_payload ON model_fingerprints(payload);
+			CREATE TRIGGER preserve_model_fingerprints
+				BEFORE UPDATE ON model_fingerprints
+				BEGIN SELECT RAISE(ABORT, 'model_fingerprints must not be modified'); END;
+			CREATE TABLE fingerprint_test_results (id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
+			CREATE UNIQUE INDEX legacy_fingerprint_test_results_payload ON fingerprint_test_results(payload);
+			CREATE TRIGGER preserve_fingerprint_test_results
+				BEFORE UPDATE ON fingerprint_test_results
+				BEGIN SELECT RAISE(ABORT, 'fingerprint_test_results must not be modified'); END;
+			INSERT INTO model_fingerprints (id, payload) VALUES (1, 'baseline');
+			INSERT INTO fingerprint_test_results (id, payload) VALUES (1, 'result');
+		`); err != nil {
+			t.Fatalf("create legacy fingerprint tables: %v", err)
+		}
+		if err := migrate(ctx, db, DialectSQLite); err != nil {
+			t.Fatalf("first migration of legacy database: %v", err)
+		}
 
-	var distribution string
-	if err := db.QueryRowContext(ctx, `
-		SELECT distribution FROM fingerprint_test_results WHERE model = 'gpt-test'
-	`).Scan(&distribution); err != nil {
-		t.Fatalf("read migrated distribution: %v", err)
-	}
-	if distribution != "[]" {
-		t.Fatalf("distribution=%q, want []", distribution)
-	}
+		for table, want := range map[string]string{
+			"model_fingerprints":       "baseline",
+			"fingerprint_test_results": "result",
+		} {
+			var columnCount int
+			if err := db.QueryRowContext(ctx, "SELECT COUNT(*) FROM pragma_table_info(?)", table).Scan(&columnCount); err != nil {
+				t.Fatalf("inspect preserved table %s: %v", table, err)
+			}
+			if columnCount != 2 {
+				t.Fatalf("preserved table %s columns=%d, want 2", table, columnCount)
+			}
+			var objectCount int
+			if err := db.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM sqlite_master WHERE tbl_name = ? AND type IN ('table', 'index', 'trigger')", table,
+			).Scan(&objectCount); err != nil {
+				t.Fatalf("inspect preserved objects for %s: %v", table, err)
+			}
+			if objectCount != 3 {
+				t.Fatalf("preserved table %s objects=%d, want table, index and trigger", table, objectCount)
+			}
+			var payload string
+			if err := db.QueryRowContext(ctx, "SELECT payload FROM "+table+" WHERE id = 1").Scan(&payload); err != nil {
+				t.Fatalf("read preserved table %s: %v", table, err)
+			}
+			if payload != want {
+				t.Fatalf("preserved table %s payload=%q, want %q", table, payload, want)
+			}
+		}
+	})
 }
 
 func TestMigrate_SQLite_FailsOnInvalidAllowedModelsJSON(t *testing.T) {

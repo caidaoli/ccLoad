@@ -624,6 +624,27 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 		}
 	})
 
+	for _, tc := range []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "negative RPM limit", field: "rpm_limit", value: -1},
+		{name: "fractional RPM limit", field: "rpm_limit", value: 1.5},
+		{name: "negative max concurrency", field: "max_concurrency", value: -1},
+		{name: "negative daily cost limit", field: "daily_cost_limit", value: -0.01},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := map[string]any{"channel_ids": []int64{c1.ID}, tc.field: tc.value}
+			c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", body))
+
+			server.HandleBatchPatchChannels(c)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+			}
+		})
+	}
+
 	t.Run("invalid model import", func(t *testing.T) {
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-advanced", map[string]any{
 			"channel_ids": []int64{c1.ID},
@@ -653,6 +674,9 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			"channel_ids":             []int64{c1.ID, c2.ID, c3.ID, c2.ID, 99999},
 			"protocol_transform_mode": model.ProtocolTransformModeUpstream,
 			"cost_multiplier":         0.25,
+			"daily_cost_limit":        12.5,
+			"rpm_limit":               60,
+			"max_concurrency":         3,
 			"model_import_mode":       model.ModelImportModeAppend,
 			"models": []model.ModelEntry{
 				{Model: "m", RedirectModel: "ignored-duplicate"},
@@ -696,6 +720,10 @@ func TestHandleBatchPatchChannels(t *testing.T) {
 			}
 			if cfg.CostMultiplier != 0.25 {
 				t.Fatalf("channel %d cost_multiplier=%v, want 0.25", channelID, cfg.CostMultiplier)
+			}
+			if cfg.DailyCostLimit != 12.5 || cfg.RPMLimit != 60 || cfg.MaxConcurrency != 3 {
+				t.Fatalf("channel %d limits=(%v, %d, %d), want (12.5, 60, 3)",
+					channelID, cfg.DailyCostLimit, cfg.RPMLimit, cfg.MaxConcurrency)
 			}
 			if len(cfg.ModelEntries) != 2 || cfg.ModelEntries[1].Model != "new-model" || cfg.ModelEntries[1].RedirectModel != "upstream-model" {
 				t.Fatalf("channel %d models=%+v", channelID, cfg.ModelEntries)

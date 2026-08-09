@@ -73,25 +73,45 @@ function installBatchProtocolModeGlobals(response) {
   const modelImportModeAppend = { value: 'append', checked: true };
   const modelImportModeReplace = { value: 'replace', checked: false };
   const modelImportFormatText = { value: 'text', checked: true };
+  const makeNumericInput = value => ({
+    value,
+    disabled: false,
+    attributes: new Map(),
+    setAttribute(name, attributeValue) { this.attributes.set(name, attributeValue); },
+    focus() {}
+  });
+  const makeButton = () => ({
+    disabled: false,
+    attributes: new Map(),
+    getAttribute(name) { return this.attributes.get(name) || null; },
+    setAttribute(name, value) { this.attributes.set(name, value); },
+    removeAttribute(name) { this.attributes.delete(name); }
+  });
   const elements = {
     batchProtocolTransformMode: { value: 'local', disabled: false },
-    batchApplyProtocolBtn: { disabled: false },
-    batchCostMultiplier: {
-      value: '0.5',
-      disabled: false,
-      attributes: new Map(),
-      setAttribute(name, value) { this.attributes.set(name, value); },
-      focus() {}
-    },
-    batchApplyCostMultiplierBtn: { disabled: false },
+    batchApplyProtocolBtn: makeButton(),
+    batchCostMultiplier: makeNumericInput('0.5'),
+    batchApplyCostMultiplierBtn: makeButton(),
     batchCostMultiplierError: { textContent: '', hidden: true },
+    batchRPMLimit: makeNumericInput('120'),
+    batchApplyRPMLimitBtn: makeButton(),
+    batchRPMLimitError: { textContent: '', hidden: true },
+    batchMaxConcurrency: makeNumericInput('8'),
+    batchApplyMaxConcurrencyBtn: makeButton(),
+    batchMaxConcurrencyError: { textContent: '', hidden: true },
+    batchDailyCostLimit: makeNumericInput('25.5'),
+    batchApplyDailyCostLimitBtn: makeButton(),
+    batchDailyCostLimitError: { textContent: '', hidden: true },
     batchImportModelsBtn: { disabled: false },
     batchAdvancedOptions: { open: true },
     batchRefreshOptions: { open: false },
     batchFloatingMenu: {
       inert: false,
+      attributes: new Map(),
       classList: { toggle() {} },
-      setAttribute() {}
+      getAttribute(name) { return this.attributes.get(name) || null; },
+      setAttribute(name, value) { this.attributes.set(name, value); },
+      removeAttribute(name) { this.attributes.delete(name); }
     },
     selectedChannelsSummary: { textContent: '' },
     selectedChannelsCountBadge: { textContent: '' },
@@ -1147,6 +1167,106 @@ test('batch cost multiplier submits a numeric patch and refreshes the list', asy
         }
       }
     }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+for (const testCase of [
+  {
+    name: 'RPM',
+    exportName: 'batchSetSelectedChannelsRPMLimit',
+    field: 'rpm_limit',
+    value: 120,
+    summaryKey: 'channels.batchRPMLimitSummary'
+  },
+  {
+    name: 'max concurrency',
+    exportName: 'batchSetSelectedChannelsMaxConcurrency',
+    field: 'max_concurrency',
+    value: 8,
+    summaryKey: 'channels.batchMaxConcurrencySummary'
+  },
+  {
+    name: 'daily cost limit',
+    exportName: 'batchSetSelectedChannelsDailyCostLimit',
+    field: 'daily_cost_limit',
+    value: 25.5,
+    summaryKey: 'channels.batchDailyCostLimitSummary'
+  }
+]) {
+  test(`batch ${testCase.name} submits only its selected channel patch`, async () => {
+    const fixture = installBatchProtocolModeGlobals({
+      success: true,
+      data: { updated: 2, unchanged: 0, not_found_count: 0 }
+    });
+
+    try {
+      const handler = loadChannelsModals()[testCase.exportName];
+      await handler();
+
+      assert.equal(fixture.requests.length, 1);
+      assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+        channel_ids: [11, 22],
+        [testCase.field]: testCase.value
+      });
+      assert.equal(fixture.selectedChannelIds.size, 0);
+      assert.equal(fixture.filterSaves, 1);
+      assert.equal(fixture.reloads, 1);
+      assert.deepEqual(fixture.notifications, [{
+        type: 'success',
+        message: {
+          key: testCase.summaryKey,
+          params: {
+            updated: 2,
+            unchanged: 0,
+            notFound: 0,
+            value: testCase.value
+          }
+        }
+      }]);
+    } finally {
+      fixture.restore();
+    }
+  });
+}
+
+test('batch RPM rejects fractional values without sending a request', async () => {
+  const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
+  fixture.elements.batchRPMLimit.value = '1.5';
+
+  try {
+    const { batchSetSelectedChannelsRPMLimit } = loadChannelsModals();
+    await batchSetSelectedChannelsRPMLimit();
+
+    assert.equal(fixture.requests.length, 0);
+    assert.equal(fixture.selectedChannelIds.size, 2);
+    assert.equal(fixture.elements.batchRPMLimit.attributes.get('aria-invalid'), 'true');
+    assert.equal(fixture.elements.batchRPMLimitError.hidden, false);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch numeric setting marks the whole selection menu busy until the request finishes', async () => {
+  let resolveResponse;
+  const pendingResponse = new Promise(resolve => { resolveResponse = resolve; });
+  const fixture = installBatchProtocolModeGlobals(pendingResponse);
+
+  try {
+    const { batchSetSelectedChannelsRPMLimit } = loadChannelsModals();
+    const operation = batchSetSelectedChannelsRPMLimit();
+    await Promise.resolve();
+
+    assert.equal(fixture.elements.batchFloatingMenu.getAttribute('aria-busy'), 'true');
+    assert.equal(fixture.elements.batchApplyProtocolBtn.disabled, true);
+    assert.equal(fixture.elements.batchApplyMaxConcurrencyBtn.disabled, true);
+    assert.equal(fixture.elements.batchMaxConcurrency.disabled, true);
+
+    resolveResponse({ success: true, data: { updated: 2, unchanged: 0, not_found_count: 0 } });
+    await operation;
+
+    assert.equal(fixture.elements.batchFloatingMenu.getAttribute('aria-busy'), null);
   } finally {
     fixture.restore();
   }
