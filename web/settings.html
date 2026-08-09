@@ -83,7 +83,7 @@
 
         <section class="cooldown-detection-test-panel">
           <h3 data-i18n="channels.cooldownDetection.testTitle">测试草稿规则</h3>
-          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试上游日志或响应体；标准日志中的状态码优先，不会写入任何冷却状态。</p>
+          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试上游响应；标准日志中的状态码优先，不会写入任何冷却状态。</p>
           <div class="cooldown-detection-test-controls">
             <label class="cooldown-detection-field" for="cooldownDetectionTestStatus">
               <span data-i18n="channels.cooldownDetection.testStatus">状态码</span>
@@ -94,7 +94,7 @@
               data-action="test-cooldown-detection-rules" data-i18n="channels.cooldownDetection.testButton">测试匹配</button>
           </div>
           <label class="cooldown-detection-field cooldown-detection-field--body" for="cooldownDetectionTestBody">
-            <span data-i18n="channels.cooldownDetection.testBody">上游日志或响应体</span>
+            <span data-i18n="channels.cooldownDetection.testBody">上游响应</span>
             <textarea id="cooldownDetectionTestBody" class="form-input" rows="4" spellcheck="false"
               data-i18n-placeholder="channels.cooldownDetection.testBodyPlaceholder"
               title="支持 upstream status N: JSON 标准日志或纯 JSON 响应体；标准日志状态码优先" data-i18n-title="channels.cooldownDetection.testBodyHelp"
