@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"ccLoad/internal/config"
+	"ccLoad/internal/httpwire"
 
 	utls "github.com/refraction-networking/utls"
 	"golang.org/x/net/http2"
@@ -33,11 +34,16 @@ type codexUTLSRoundTripper struct {
 	fallback   *http.Transport
 	h2         *http2.Transport
 	h1         *http.Transport
+	anthropic  *http.Transport
 	standardH1 *http.Transport
 
-	degradeMu    sync.Mutex
-	degradedTill time.Time
-	degradeTTL   time.Duration
+	degradeMu sync.Mutex
+	degraded  map[string]h2DegradeState
+}
+
+type h2DegradeState struct {
+	till time.Time
+	ttl  time.Duration
 }
 
 func newCodexUTLSRoundTripper(base *http.Transport) *codexUTLSRoundTripper {
@@ -48,23 +54,38 @@ func newCodexUTLSRoundTripper(base *http.Transport) *codexUTLSRoundTripper {
 		fallback:   base,
 		h2:         newCodexUTLSH2Transport(base),
 		h1:         newCodexUTLSHTTP11Transport(base),
+		anthropic:  newAnthropicNodeHTTP11Transport(base),
 		standardH1: newStandardHTTP11Transport(base),
+		degraded:   make(map[string]h2DegradeState, 2),
 	}
 }
 
 func (t *codexUTLSRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if !isCodexUTLSRequest(req) {
+	if isAnthropicNodeUTLSRequest(req) {
+		return t.anthropic.RoundTrip(req)
+	}
+	if !isChromeUTLSRequest(req) {
 		return t.fallback.RoundTrip(req)
 	}
 	return t.roundTripProtected(req)
 }
 
-func isCodexUTLSRequest(req *http.Request) bool {
+func isChromeUTLSRequest(req *http.Request) bool {
+	if req == nil || req.URL == nil || req.URL.Scheme != "https" {
+		return false
+	}
+	host := req.URL.Hostname()
+	return strings.EqualFold(host, "chatgpt.com") || strings.EqualFold(host, "claude.ai") ||
+		strings.EqualFold(host, "platform.claude.com")
+}
+
+func isAnthropicNodeUTLSRequest(req *http.Request) bool {
 	return req != nil && req.URL != nil && req.URL.Scheme == "https" &&
-		strings.EqualFold(req.URL.Hostname(), "chatgpt.com")
+		strings.EqualFold(req.URL.Hostname(), "api.anthropic.com")
 }
 
 func (t *codexUTLSRoundTripper) roundTripProtected(req *http.Request) (*http.Response, error) {
+	host := strings.ToLower(req.URL.Hostname())
 	transports := []struct {
 		transport http.RoundTripper
 		h2        bool
@@ -77,7 +98,7 @@ func (t *codexUTLSRoundTripper) roundTripProtected(req *http.Request) (*http.Res
 	var lastErr error
 	sent := 0
 	for _, candidate := range transports {
-		if candidate.h2 && t.h2Degraded() {
+		if candidate.h2 && t.h2Degraded(host) {
 			continue
 		}
 		attempt, err := requestForCodexUTLSAttempt(req, sent)
@@ -88,9 +109,9 @@ func (t *codexUTLSRoundTripper) roundTripProtected(req *http.Request) (*http.Res
 		sent++
 		if candidate.h2 {
 			if resp != nil {
-				t.recordH2Success()
+				t.recordH2Success(host)
 			} else if roundTripErr != nil && req.Context().Err() == nil {
-				t.recordH2Failure()
+				t.recordH2Failure(host)
 			}
 		}
 		if resp != nil {
@@ -124,27 +145,26 @@ func requestForCodexUTLSAttempt(req *http.Request, attempt int) (*http.Request, 
 	return cloned, nil
 }
 
-func (t *codexUTLSRoundTripper) h2Degraded() bool {
+func (t *codexUTLSRoundTripper) h2Degraded(host string) bool {
 	t.degradeMu.Lock()
 	defer t.degradeMu.Unlock()
-	return time.Now().Before(t.degradedTill)
+	return time.Now().Before(t.degraded[host].till)
 }
 
-func (t *codexUTLSRoundTripper) recordH2Failure() {
+func (t *codexUTLSRoundTripper) recordH2Failure(host string) {
 	t.degradeMu.Lock()
 	defer t.degradeMu.Unlock()
+	state := t.degraded[host]
 	ttl := codexUTLSH2DegradeInitial
-	if t.degradeTTL > 0 {
-		ttl = min(t.degradeTTL*2, codexUTLSH2DegradeMax)
+	if state.ttl > 0 {
+		ttl = min(state.ttl*2, codexUTLSH2DegradeMax)
 	}
-	t.degradeTTL = ttl
-	t.degradedTill = time.Now().Add(ttl)
+	t.degraded[host] = h2DegradeState{ttl: ttl, till: time.Now().Add(ttl)}
 }
 
-func (t *codexUTLSRoundTripper) recordH2Success() {
+func (t *codexUTLSRoundTripper) recordH2Success(host string) {
 	t.degradeMu.Lock()
-	t.degradeTTL = 0
-	t.degradedTill = time.Time{}
+	delete(t.degraded, host)
 	t.degradeMu.Unlock()
 }
 
@@ -154,6 +174,7 @@ func (t *codexUTLSRoundTripper) CloseIdleConnections() {
 	}
 	t.h2.CloseIdleConnections()
 	t.h1.CloseIdleConnections()
+	t.anthropic.CloseIdleConnections()
 	t.standardH1.CloseIdleConnections()
 	t.fallback.CloseIdleConnections()
 }
@@ -203,6 +224,23 @@ func newCodexUTLSHTTP11Transport(base *http.Transport) *http.Transport {
 	return transport
 }
 
+func newAnthropicNodeHTTP11Transport(base *http.Transport) *http.Transport {
+	dialer := newCodexUTLSDialer(base)
+	transport := base.Clone()
+	transport.Proxy = nil
+	transport.ForceAttemptHTTP2 = false
+	transport.TLSNextProto = make(map[string]func(string, *cryptotls.Conn) http.RoundTripper)
+	transport.TLSClientConfig = cloneTLSConfig(base.TLSClientConfig, []string{"http/1.1"})
+	transport.DialTLSContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		rawConn, err := dialer(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return dialAnthropicNodeUTLS(ctx, rawConn, addr, base)
+	}
+	return transport
+}
+
 func newStandardHTTP11Transport(base *http.Transport) *http.Transport {
 	transport := base.Clone()
 	transport.ForceAttemptHTTP2 = false
@@ -229,15 +267,79 @@ func dialCodexUTLS(
 	alpn []string,
 	dropApplicationSettings bool,
 ) (net.Conn, error) {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		_ = rawConn.Close()
-		return nil, fmt.Errorf("split Codex uTLS address: %w", err)
-	}
 	spec, err := codexChromeClientHelloSpec(alpn, dropApplicationSettings)
 	if err != nil {
 		_ = rawConn.Close()
 		return nil, fmt.Errorf("build Codex uTLS ClientHello: %w", err)
+	}
+	return dialCustomUTLS(ctx, rawConn, addr, base, alpn, spec, "codex")
+}
+
+func dialAnthropicNodeUTLS(
+	ctx context.Context,
+	rawConn net.Conn,
+	addr string,
+	base *http.Transport,
+) (net.Conn, error) {
+	conn, err := dialCustomUTLS(
+		ctx, rawConn, addr, base, []string{"http/1.1"}, anthropicNodeClientHelloSpec(), "anthropic",
+	)
+	if err != nil {
+		return nil, err
+	}
+	return httpwire.NewOrderedRequestConn(conn, anthropicClaudeCodeHeaderOrder), nil
+}
+
+var anthropicClaudeCodeMessagesHeaderOrder = []string{
+	"Accept",
+	"Authorization",
+	"Content-Type",
+	"User-Agent",
+	"X-Claude-Code-Session-Id",
+	"X-Stainless-Arch",
+	"X-Stainless-Lang",
+	"X-Stainless-OS",
+	"X-Stainless-Package-Version",
+	"X-Stainless-Retry-Count",
+	"X-Stainless-Runtime",
+	"X-Stainless-Runtime-Version",
+	"X-Stainless-Timeout",
+	"anthropic-beta",
+	"anthropic-dangerous-direct-browser-access",
+	"anthropic-version",
+	"x-app",
+	"x-client-request-id",
+	"Connection",
+	"Host",
+	"Accept-Encoding",
+	"Content-Length",
+}
+
+func anthropicClaudeCodeHeaderOrder(_, requestTarget string) []string {
+	requestPath := requestTarget
+	if query := strings.IndexByte(requestPath, '?'); query >= 0 {
+		requestPath = requestPath[:query]
+	}
+	requestPath = strings.TrimSuffix(requestPath, "/")
+	if requestPath == "/v1/messages" || requestPath == "/messages" {
+		return anthropicClaudeCodeMessagesHeaderOrder
+	}
+	return nil
+}
+
+func dialCustomUTLS(
+	ctx context.Context,
+	rawConn net.Conn,
+	addr string,
+	base *http.Transport,
+	alpn []string,
+	spec utls.ClientHelloSpec,
+	provider string,
+) (net.Conn, error) {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		_ = rawConn.Close()
+		return nil, fmt.Errorf("split %s uTLS address: %w", provider, err)
 	}
 	utlsConfig := &utls.Config{
 		ServerName: host,
@@ -257,7 +359,7 @@ func dialCodexUTLS(
 	tlsConn := utls.UClient(rawConn, utlsConfig, utls.HelloCustom)
 	if err = tlsConn.ApplyPreset(&spec); err != nil {
 		_ = tlsConn.Close()
-		return nil, fmt.Errorf("apply Codex uTLS ClientHello: %w", err)
+		return nil, fmt.Errorf("apply %s uTLS ClientHello: %w", provider, err)
 	}
 	handshakeCtx := ctx
 	cancel := func() {}
@@ -267,14 +369,49 @@ func dialCodexUTLS(
 	defer cancel()
 	if err = tlsConn.HandshakeContext(handshakeCtx); err != nil {
 		_ = tlsConn.Close()
-		return nil, fmt.Errorf("codex uTLS handshake: %w", err)
+		return nil, fmt.Errorf("%s uTLS handshake: %w", provider, err)
 	}
 	if len(alpn) == 1 && tlsConn.ConnectionState().NegotiatedProtocol != alpn[0] {
 		negotiated := tlsConn.ConnectionState().NegotiatedProtocol
 		_ = tlsConn.Close()
-		return nil, fmt.Errorf("codex uTLS negotiated ALPN %q, want %q", negotiated, alpn[0])
+		return nil, fmt.Errorf("%s uTLS negotiated ALPN %q, want %q", provider, negotiated, alpn[0])
 	}
 	return tlsConn, nil
+}
+
+// anthropicNodeClientHelloSpec is sub2api's built-in Node.js 24.x profile.
+// It is used there when TLS fingerprinting is enabled without an account profile.
+func anthropicNodeClientHelloSpec() utls.ClientHelloSpec {
+	return utls.ClientHelloSpec{
+		CipherSuites: []uint16{
+			0x1301, 0x1302, 0x1303,
+			0xc02b, 0xc02f, 0xc02c, 0xc030,
+			0xcca9, 0xcca8,
+			0xc009, 0xc013, 0xc00a, 0xc014,
+			0x009c, 0x009d, 0x002f, 0x0035,
+		},
+		CompressionMethods: []uint8{0},
+		Extensions: []utls.TLSExtension{
+			&utls.SNIExtension{},
+			&utls.GREASEEncryptedClientHelloExtension{},
+			&utls.ExtendedMasterSecretExtension{},
+			&utls.RenegotiationInfoExtension{},
+			&utls.SupportedCurvesExtension{Curves: []utls.CurveID{utls.X25519, utls.CurveP256, utls.CurveP384}},
+			&utls.SupportedPointsExtension{SupportedPoints: []byte{0}},
+			&utls.SessionTicketExtension{},
+			&utls.ALPNExtension{AlpnProtocols: []string{"http/1.1"}},
+			&utls.StatusRequestExtension{},
+			&utls.SignatureAlgorithmsExtension{SupportedSignatureAlgorithms: []utls.SignatureScheme{
+				0x0403, 0x0804, 0x0401, 0x0503, 0x0805, 0x0501, 0x0806, 0x0601, 0x0201,
+			}},
+			&utls.SCTExtension{},
+			&utls.KeyShareExtension{KeyShares: []utls.KeyShare{{Group: utls.X25519}}},
+			&utls.PSKKeyExchangeModesExtension{Modes: []uint8{uint8(utls.PskModeDHE)}},
+			&utls.SupportedVersionsExtension{Versions: []uint16{utls.VersionTLS13, utls.VersionTLS12}},
+		},
+		TLSVersMax: utls.VersionTLS13,
+		TLSVersMin: utls.VersionTLS10,
+	}
 }
 
 func codexChromeClientHelloSpec(alpn []string, dropApplicationSettings bool) (utls.ClientHelloSpec, error) {

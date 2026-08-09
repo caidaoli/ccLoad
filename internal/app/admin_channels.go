@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
@@ -343,6 +344,8 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		AnthropicPlanType:            metadata.anthropicPlanType,
+		OAuthUsage:                   metadata.oauthUsage,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		XAIEmail:                     metadata.xaiEmail,
 		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
@@ -389,6 +392,8 @@ func (ectx *channelEnrichmentContext) enrichChannel(cfg *model.Config) ChannelWi
 type channelOAuthMetadata struct {
 	planType                string
 	subscriptionActiveUntil *time.Time
+	anthropicPlanType       string
+	oauthUsage              *oauthUsageSummary
 	antigravityPaidTier     string
 	xaiEmail                string
 	xaiSubscriptionTier     string
@@ -415,6 +420,16 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			xaiEmail:             credential.Identity().Email,
 			xaiSubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
 			xaiEntitlementStatus: strings.TrimSpace(credential.EntitlementStatus),
+		}
+	}
+	if cfg.UsesAnthropicOAuth() {
+		credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		return channelOAuthMetadata{
+			anthropicPlanType: strings.TrimSpace(credential.PlanType),
+			oauthUsage:        anthropicPassiveUsageSummary(credential),
 		}
 	}
 	if !cfg.UsesCodexOAuth() {
@@ -630,6 +645,8 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 		Config:                       cfg,
 		CodexPlanType:                metadata.planType,
 		CodexSubscriptionActiveUntil: metadata.subscriptionActiveUntil,
+		AnthropicPlanType:            metadata.anthropicPlanType,
+		OAuthUsage:                   metadata.oauthUsage,
 		AntigravityPaidTier:          metadata.antigravityPaidTier,
 		XAIEmail:                     metadata.xaiEmail,
 		XAISubscriptionTier:          metadata.xaiSubscriptionTier,
@@ -1545,6 +1562,9 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	}
 	if cfg.UsesXAIOAuth() && s.xaiCredentials != nil {
 		s.xaiCredentials.invalidate(id)
+	}
+	if s.anthropicCredentials != nil {
+		s.anthropicCredentials.invalidate(id)
 	}
 	return true, nil
 }

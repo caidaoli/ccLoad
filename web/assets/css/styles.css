@@ -78,6 +78,20 @@
   --info-500: #06b6d4;
   --info-600: #0891b2;
 
+  /* 通知使用语义色，避免暗色主题反转中性色后出现浅底浅字 */
+  --notification-success-bg: #ecfdf5;
+  --notification-success-fg: #065f46;
+  --notification-success-border: #10b981;
+  --notification-error-bg: #fef2f2;
+  --notification-error-fg: #991b1b;
+  --notification-error-border: #ef4444;
+  --notification-warning-bg: #fffbeb;
+  --notification-warning-fg: #92400e;
+  --notification-warning-border: #f59e0b;
+  --notification-info-bg: #f0f9ff;
+  --notification-info-fg: #155e75;
+  --notification-info-border: #06b6d4;
+
   /* 玻璃态效果 */
   --glass-bg: rgba(255, 255, 255, 0.98);
   --glass-border: rgba(17, 24, 39, 0.10);
@@ -270,6 +284,22 @@ html[data-theme="dark"] {
     --topbar-fg: var(--neutral-900);
     --topbar-fg-muted: var(--neutral-600);
   }
+}
+
+html[data-theme="dark"],
+html[data-theme="system"][data-resolved-theme="dark"] {
+  --notification-success-bg: #052e24;
+  --notification-success-fg: #d1fae5;
+  --notification-success-border: #10b981;
+  --notification-error-bg: #450a0a;
+  --notification-error-fg: #fee2e2;
+  --notification-error-border: #ef4444;
+  --notification-warning-bg: #451a03;
+  --notification-warning-fg: #fef3c7;
+  --notification-warning-border: #f59e0b;
+  --notification-info-bg: #083344;
+  --notification-info-fg: #cffafe;
+  --notification-info-border: #06b6d4;
 }
 
 @media (forced-colors: active) {

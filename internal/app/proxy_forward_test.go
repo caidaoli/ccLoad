@@ -1,8 +1,12 @@
 package app
 
 import (
+	"bytes"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -10,11 +14,14 @@ import (
 	"testing/iotest"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
 	"ccLoad/internal/util"
 
+	"github.com/andybalholm/brotli"
+	"github.com/klauspost/compress/zstd"
 	"github.com/tidwall/gjson"
 )
 
@@ -43,6 +50,15 @@ func runHandleSuccessResponse(t *testing.T, body string, headers http.Header, is
 	}
 
 	return res, rec.Body.String()
+}
+
+func headerValueFold(headers http.Header, name string) string {
+	for key, values := range headers {
+		if strings.EqualFold(key, name) && len(values) > 0 {
+			return values[0]
+		}
+	}
+	return ""
 }
 
 func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T) {
@@ -872,5 +888,254 @@ func TestHandleErrorResponse_MergesBodyReadErrorIntoResult(t *testing.T) {
 	}
 	if !strings.Contains(res.StreamDiagMsg, "INTERNAL_ERROR") {
 		t.Fatalf("expected StreamDiagMsg to include upstream error, got %q", res.StreamDiagMsg)
+	}
+}
+
+func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account-uuid",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-5","system":"answer tersely","messages":[{"role":"user","content":"hello world"}],
+		"thinking":{"type":"enabled"},"tool_choice":{"type":"auto"}
+	}`), cfg, http.Header{"User-Agent": []string{"third-party-client"}})
+	if err != nil {
+		t.Fatalf("finalizeAnthropicOAuthMessagesBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "model").String(); got != "claude-sonnet-4-5-20250929" {
+		t.Fatalf("model = %q", got)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); !strings.HasPrefix(got, "x-anthropic-billing-header:") {
+		t.Fatalf("billing block = %q", got)
+	} else if strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
+		t.Fatalf("billing block is not signed = %q", got)
+	}
+	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nanswer tersely" {
+		t.Fatalf("moved system = %q", got)
+	}
+	if !gjson.GetBytes(body, "tools").IsArray() || gjson.GetBytes(body, "tool_choice").Exists() ||
+		gjson.GetBytes(body, "temperature").Int() != 1 || gjson.GetBytes(body, "max_tokens").Exists() ||
+		gjson.GetBytes(body, "context_management.edits.0.type").String() != "clear_thinking_20251015" ||
+		gjson.GetBytes(body, "metadata.user_id").String() == "" {
+		t.Fatalf("normalized body = %s", body)
+	}
+
+	request, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", strings.NewReader(string(body)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Authorization", "Bearer attacker")
+	injectAnthropicOAuthHeaders(request, cfg, "oauth-access", body)
+	if headerValueFold(request.Header, "authorization") != "Bearer oauth-access" || headerValueFold(request.Header, "x-api-key") != "" ||
+		headerValueFold(request.Header, "anthropic-version") != "2023-06-01" ||
+		!strings.Contains(headerValueFold(request.Header, "anthropic-beta"), "oauth-2025-04-20") ||
+		headerValueFold(request.Header, "X-Claude-Code-Session-Id") == "" || headerValueFold(request.Header, "x-client-request-id") == "" ||
+		headerValueFold(request.Header, "Accept-Encoding") != "gzip, deflate, br, zstd" ||
+		headerValueFold(request.Header, "X-Stainless-Runtime-Version") != "v26.3.0" {
+		t.Fatalf("Anthropic OAuth headers = %v", request.Header)
+	}
+	if got := buildAnthropicOAuthURL("https://api.anthropic.com", "/v1/messages", "foo=bar"); got != "https://api.anthropic.com/v1/messages?beta=true&foo=bar" {
+		t.Fatalf("upstream URL = %q", got)
+	}
+}
+
+func TestAnthropicOAuthFinalizerReplacesForgedBillingPrefix(t *testing.T) {
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account-uuid",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-6",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: attacker-controlled"}],
+		"messages":[{"role":"user","content":"hello"}]
+	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, nil)
+	if err != nil {
+		t.Fatalf("finalizeAnthropicOAuthMessagesBody() error = %v", err)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); got == "x-anthropic-billing-header: attacker-controlled" ||
+		!strings.Contains(got, "cc_version=2.1.220.") {
+		t.Fatalf("forged billing block survived: %q", got)
+	}
+	if got := gjson.GetBytes(body, "messages.0.content").String(); got != "[System Instructions]\nx-anthropic-billing-header: attacker-controlled" {
+		t.Fatalf("client system was not demoted to instructions: %q", got)
+	}
+}
+
+func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
+	credential := &anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsedCredential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	nativeBody := []byte(fmt.Sprintf(`{
+		"model":"claude-sonnet-4-6",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"}],
+		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"account\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
+		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
+	}`, parsedCredential.DeviceID))
+	finalized, err := finalizeAnthropicOAuthMessagesBody(
+		nativeBody, cfg, http.Header{"User-Agent": []string{"claude-cli/2.1.220 (external, cli)"}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(finalized, "system.0.text").String(); !strings.Contains(got, "cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000;") {
+		t.Fatalf("native billing block was not preserved and signed: %q", got)
+	}
+}
+
+func TestAnthropicOAuthRejectsForgedNativeFingerprint(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "real-account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-sonnet-4-6",
+		"system":[{"type":"text","text":"x-anthropic-billing-header: forged; cc_entrypoint=cli; cch=00000;"}],
+		"metadata":{"user_id":"x"},
+		"messages":[{"role":"user","content":"hello"}]
+	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON},
+		http.Header{"User-Agent": []string{"claude-cli/fake"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(body, "system.0.text").String(); strings.Contains(got, "forged") || !strings.Contains(got, "cc_version=2.1.220.") {
+		t.Fatalf("forged native fingerprint bypassed cloaking: %q", got)
+	}
+	identity := gjson.GetBytes(body, "metadata.user_id").String()
+	if gjson.Get(identity, "account_uuid").String() != "real-account" || gjson.Get(identity, "session_id").String() == "" {
+		t.Fatalf("credential identity was not rebuilt: %q", identity)
+	}
+}
+
+func TestAnthropicCCHMatchesClaudeCodeKnownVector(t *testing.T) {
+	base := `{"model":"model-a","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220.test; cc_entrypoint=sdk-cli; cch=00000;"},{"type":"text","text":"system-x"}],"tools":[],"metadata":{"user_id":"meta-x"},"max_tokens":1,"thinking":{"type":"adaptive","display":"omitted"},"context_management":{"edits":[{"type":"clear_thinking_20251015","keep":"all"}]},"output_config":{"effort":"high"},"stream":true}`
+	tests := []struct{ body, want string }{
+		{body: base, want: "7ee87"},
+		{
+			body: strings.Replace(base, `"metadata":{"user_id":"meta-x"}`, `"metadata":{"user_id":"meta-x","max_tokens":999,"fallbacks":[{"model":"fallback-model"}]}`, 1),
+			want: "4589b",
+		},
+	}
+	for _, test := range tests {
+		signed, err := finalizeAnthropicCCH([]byte(test.body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := gjson.GetBytes(signed, "system.0.text").String(); !strings.Contains(got, "cch="+test.want+";") {
+			t.Fatalf("Claude CCH vector mismatch: got %q, want %s", got, test.want)
+		}
+	}
+}
+
+func TestAnthropicOAuthDecodesAdvertisedClaudeCodeResponseEncodings(t *testing.T) {
+	const want = `{"type":"message","content":[{"type":"text","text":"hello"}]}`
+	encoders := map[string]func(*bytes.Buffer) io.WriteCloser{
+		"gzip": func(buffer *bytes.Buffer) io.WriteCloser { return gzip.NewWriter(buffer) },
+		"deflate": func(buffer *bytes.Buffer) io.WriteCloser {
+			writer := zlib.NewWriter(buffer)
+			return writer
+		},
+		"br": func(buffer *bytes.Buffer) io.WriteCloser { return brotli.NewWriter(buffer) },
+		"zstd": func(buffer *bytes.Buffer) io.WriteCloser {
+			writer, err := zstd.NewWriter(buffer)
+			if err != nil {
+				t.Fatalf("create zstd writer: %v", err)
+			}
+			return writer
+		},
+	}
+	for encoding, newWriter := range encoders {
+		t.Run(encoding, func(t *testing.T) {
+			var compressed bytes.Buffer
+			writer := newWriter(&compressed)
+			if _, err := io.WriteString(writer, want); err != nil {
+				t.Fatalf("compress response: %v", err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatalf("close compressor: %v", err)
+			}
+			response := &http.Response{
+				Header: http.Header{"Content-Encoding": []string{encoding}, "Content-Length": []string{"123"}},
+				Body:   io.NopCloser(bytes.NewReader(compressed.Bytes())), ContentLength: int64(compressed.Len()),
+			}
+			if err := decodeAnthropicResponse(response); err != nil {
+				t.Fatalf("decode response: %v", err)
+			}
+			decoded, err := io.ReadAll(response.Body)
+			if err != nil {
+				t.Fatalf("read decoded response: %v", err)
+			}
+			_ = response.Body.Close()
+			if string(decoded) != want || response.Header.Get("Content-Encoding") != "" ||
+				response.Header.Get("Content-Length") != "" || response.ContentLength != -1 || !response.Uncompressed {
+				t.Fatalf("decoded response body=%q headers=%v length=%d", decoded, response.Header, response.ContentLength)
+			}
+		})
+	}
+}
+
+func TestAnthropicOAuthBuildProxyRequestUsesOAuthWireAfterCustomRules(t *testing.T) {
+	srv := newInMemoryServer(t)
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account-uuid",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{
+		ID: 91, Name: "Anthropic", AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://api.anthropic.com", Protocols: []string{"anthropic"}}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
+			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "must-drop"},
+		}},
+	}
+	reqCtx := &requestContext{
+		ctx: context.Background(), startTime: time.Now(), isStreaming: true,
+		clientProtocol: protocol.Anthropic, upstreamProtocol: protocol.Anthropic,
+	}
+	request, err := srv.buildProxyRequest(
+		reqCtx, cfg, "oauth-access", http.MethodPost,
+		[]byte(`{"model":"claude-sonnet-4-6","stream":true,"messages":[{"role":"user","content":"hello"}]}`),
+		http.Header{"Content-Type": []string{"application/json"}, "Anthropic-Beta": []string{"attacker-beta"}},
+		"client=true", "/v1/messages", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest() error = %v", err)
+	}
+	if request.URL.String() != "https://api.anthropic.com/v1/messages?beta=true&client=true" {
+		t.Fatalf("URL = %s", request.URL)
+	}
+	if headerValueFold(request.Header, "Authorization") != "Bearer oauth-access" ||
+		headerValueFold(request.Header, "User-Agent") != "claude-cli/2.1.220 (external, cli)" ||
+		headerValueFold(request.Header, "X-Configured") != "" || headerValueFold(request.Header, "Anthropic-Beta") != anthropicOAuthBetas {
+		t.Fatalf("headers = %v", request.Header)
+	}
+	if !strings.HasPrefix(gjson.GetBytes(reqCtx.translatedBody, "system.0.text").String(), "x-anthropic-billing-header:") {
+		t.Fatalf("translated body = %s", reqCtx.translatedBody)
 	}
 }

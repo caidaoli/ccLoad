@@ -115,6 +115,7 @@
                   <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
+                  <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
                 </select>
               </div>
               <div id="xaiOAuthControls" hidden>
@@ -155,6 +156,25 @@
                   </div>
                 </div>
               </div>
+              <div id="anthropicOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="anthropicOAuthMethod" data-i18n="channels.anthropic.methodLabel">Anthropic 授权方式</label>
+                  <select id="anthropicOAuthMethod" name="anthropic_oauth_method" class="form-input">
+                    <option value="code" data-i18n="channels.anthropic.methodCode">授权码</option>
+                    <option value="cookie" data-i18n="channels.anthropic.methodCookie">sessionKey Cookie</option>
+                  </select>
+                </div>
+                <div id="anthropicCookieField" class="oauth-field" hidden>
+                  <label for="anthropicSessionKey" data-i18n="channels.anthropic.cookieLabel">sessionKey（每行一个）</label>
+                  <textarea id="anthropicSessionKey" name="anthropic_session_keys" class="form-input oauth-url"
+                    rows="5" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="anthropicCookieHint oauthLoginDialogStatus"
+                    data-i18n-placeholder="channels.anthropic.cookiePlaceholder"
+                    placeholder="sk-ant-sid01-xxxxx...&#10;sk-ant-sid01-yyyyy..."></textarea>
+                  <p id="anthropicCookieHint" class="oauth-field-hint"
+                    data-i18n="channels.anthropic.cookieHint">每行粘贴一个完整的 sessionKey。提交后输入会立即从页面清除，ccLoad 不保存这些 Cookie。</p>
+                </div>
+              </div>
               <div class="oauth-actions">
                 <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
                   data-i18n="channels.oauth.startAuthorization">开始授权</button>
@@ -183,7 +203,7 @@
               </div>
 
               <form id="oauthCallbackForm" class="oauth-field">
-                <label for="oauthCallbackURL" data-i18n="channels.oauth.callbackURL">回调 URL</label>
+                <label id="oauthCallbackLabel" for="oauthCallbackURL" data-i18n="channels.oauth.callbackURL">回调 URL</label>
                 <textarea id="oauthCallbackURL" class="form-input oauth-url" rows="3"
                   autocomplete="off" spellcheck="false" aria-describedby="oauthCallbackHint oauthLoginDialogStatus"
                   data-i18n-placeholder="channels.oauth.callbackPlaceholder"
@@ -227,6 +247,7 @@
                 <option value="codex" data-i18n="channels.oauth.providerCodex">Codex</option>
                 <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                 <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
+                <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
               </select>
             </div>
             <div class="oauth-field">
@@ -1137,7 +1158,7 @@
 
         <section class="cooldown-detection-test-panel">
           <h3 data-i18n="channels.cooldownDetection.testTitle">测试草稿规则</h3>
-          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试上游日志或响应体；标准日志中的状态码优先，不会写入任何冷却状态。</p>
+          <p data-i18n="channels.cooldownDetection.testDescription">使用当前未保存的规则测试上游响应；标准日志中的状态码优先，不会写入任何冷却状态。</p>
           <div class="cooldown-detection-test-controls">
             <label class="cooldown-detection-field" for="cooldownDetectionTestStatus">
               <span data-i18n="channels.cooldownDetection.testStatus">状态码</span>
@@ -1148,7 +1169,7 @@
               data-i18n="channels.cooldownDetection.testButton">测试匹配</button>
           </div>
           <label class="cooldown-detection-field cooldown-detection-field--body" for="cooldownDetectionTestBody">
-            <span data-i18n="channels.cooldownDetection.testBody">上游日志或响应体</span>
+            <span data-i18n="channels.cooldownDetection.testBody">上游响应</span>
             <textarea id="cooldownDetectionTestBody" class="form-input" rows="4" spellcheck="false"
               data-i18n-placeholder="channels.cooldownDetection.testBodyPlaceholder"
               title="支持 upstream status N: JSON 标准日志或纯 JSON 响应体；标准日志状态码优先" data-i18n-title="channels.cooldownDetection.testBodyHelp"
@@ -1192,25 +1213,26 @@
 
       <section id="advancedSettingsPanelOther" class="advanced-settings-panel hidden" role="tabpanel">
         <div class="advanced-settings-other-fields">
-          <label class="form-label channel-editor-checkbox-label" for="channelRetryOtherKeysOnFailure"
+          <label class="form-label channel-editor-checkbox-label advanced-settings-retry-label" for="channelRetryOtherKeysOnFailure"
             title="渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。"
             data-i18n-title="channels.retryOtherKeysOnFailureHelp">
             <input type="checkbox" id="channelRetryOtherKeysOnFailure">
-            <span data-i18n="channels.retryOtherKeysOnFailure">渠道故障优先换 Key</span>
+            <span><span data-i18n="channels.retryOtherKeysOnFailure">渠道故障优先换 Key</span><span class="advanced-settings-inline-help" data-i18n="channels.retryOtherKeysOnFailureHelp">渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。</span></span>
           </label>
-          <span class="models-hint" data-i18n="channels.retryOtherKeysOnFailureHelp">渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。</span>
-          <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
-            <input type="checkbox" id="channelScheduledCheckEnabled">
-            <span data-i18n="channels.enableScheduledCheck">定时检测</span>
-          </label>
-          <div id="channelScheduledCheckModelWrapper" class="advanced-settings-other-field" hidden>
-            <label class="form-label" for="channelScheduledCheckModelInput"
-              data-i18n="channels.scheduledCheckModel">检测模型</label>
-            <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
-              <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
-                autocomplete="off" spellcheck="false">
-              <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
-              <input type="hidden" id="channelScheduledCheckModel" value="">
+          <div class="advanced-settings-scheduled-row">
+            <label id="channelScheduledCheckEnabledWrapper" class="form-label channel-editor-checkbox-label" hidden>
+              <input type="checkbox" id="channelScheduledCheckEnabled">
+              <span data-i18n="channels.enableScheduledCheck">定时检测</span>
+            </label>
+            <div id="channelScheduledCheckModelWrapper" class="advanced-settings-other-field" hidden>
+              <label class="form-label" for="channelScheduledCheckModelInput"
+                data-i18n="channels.scheduledCheckModel">检测模型</label>
+              <div class="filter-combobox-wrapper channel-editor-scheduled-model-control">
+                <input id="channelScheduledCheckModelInput" class="filter-select filter-combobox" type="text"
+                  autocomplete="off" spellcheck="false">
+                <div id="channelScheduledCheckModelDropdown" class="filter-dropdown" role="listbox"></div>
+                <input type="hidden" id="channelScheduledCheckModel" value="">
+              </div>
             </div>
           </div>
         </div>
