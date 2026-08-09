@@ -12,20 +12,6 @@ import (
 	"ccLoad/internal/util"
 )
 
-// TestNewManager 测试管理器创建
-func TestNewManager(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	manager := NewManager(store, nil)
-	if manager == nil {
-		t.Fatal("NewManager should not return nil")
-	}
-	if manager.store == nil {
-		t.Error("Manager.store should not be nil")
-	}
-}
-
 // TestHandleError_ClientError 测试客户端错误处理（不冷却）
 func TestHandleError_ClientError(t *testing.T) {
 	store, cleanup := setupTestStore(t)

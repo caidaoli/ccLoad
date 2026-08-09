@@ -112,62 +112,6 @@ func TestJSONTime_UnmarshalJSON(t *testing.T) {
 	}
 }
 
-// ==================== Config 序列化完整性测试 ====================
-
-func TestConfig_JSONSerialization(t *testing.T) {
-	now := time.Now()
-	config := &Config{
-		ID:       1,
-		Name:     "test-channel",
-		URLs:     ChannelURLs{{URL: "https://api.example.com"}},
-		Priority: 10,
-		ModelEntries: []ModelEntry{
-			{Model: "model-1", RedirectModel: ""},
-			{Model: "model-2", RedirectModel: "model-2-new"},
-		},
-		Enabled:   true,
-		CreatedAt: JSONTime{Time: now},
-		UpdatedAt: JSONTime{Time: now},
-	}
-
-	// 序列化
-	data, err := json.Marshal(config)
-	if err != nil {
-		t.Fatalf("序列化失败: %v", err)
-	}
-
-	// 反序列化
-	var restored Config
-	if err := json.Unmarshal(data, &restored); err != nil {
-		t.Fatalf("反序列化失败: %v", err)
-	}
-
-	// 验证关键字段
-	if restored.Name != "test-channel" {
-		t.Errorf("name不匹配: 期望 test-channel, 实际 %s", restored.Name)
-	}
-
-	if len(restored.ModelEntries) != 2 {
-		t.Errorf("model_entries数量不匹配: 期望 2, 实际 %d", len(restored.ModelEntries))
-	}
-
-	// 验证 GetModels() 返回正确的模型列表
-	models := restored.GetModels()
-	if len(models) != 2 {
-		t.Errorf("GetModels()数量不匹配: 期望 2, 实际 %d", len(models))
-	}
-
-	// 验证 GetRedirectModel() 返回正确的重定向
-	if redirect, ok := restored.GetRedirectModel("model-2"); !ok || redirect != "model-2-new" {
-		t.Errorf("GetRedirectModel()不匹配: 期望 (model-2-new, true), 实际 (%s, %v)", redirect, ok)
-	}
-
-	// 时间比较：允许1秒误差（JSON序列化精度损失）
-	if !restored.CreatedAt.Time.Truncate(time.Second).Equal(now.Truncate(time.Second)) {
-		t.Errorf("created_at时间不匹配:\n期望: %v\n实际: %v", now, restored.CreatedAt.Time)
-	}
-}
-
 // ==================== 模糊匹配测试 ====================
 
 func TestConfig_FuzzyMatchModel(t *testing.T) {

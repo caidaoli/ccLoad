@@ -5,6 +5,8 @@ import (
 	"time"
 )
 
+// HashToken 的输出会持久化进数据库并用于令牌校验，算法一旦变化所有已存令牌立即失效，
+// 因此断言固定的 SHA256 向量而非长度或自洽性。
 func TestHashToken(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -14,26 +16,19 @@ func TestHashToken(t *testing.T) {
 		{
 			name:  "标准令牌",
 			token: "sk-ant-1234567890abcdef",
-			want:  "8a6d3b9c7f2e1a5d4c8b7a6f5e4d3c2b1a9f8e7d6c5b4a3f2e1d0c9b8a7f6e5d", // SHA256哈希
+			want:  "e1ff2b6240d21c9b8524ffb591363c1b5c44c297666ae70ae7bafbe7ad83287d",
 		},
 		{
 			name:  "空字符串",
 			token: "",
-			want:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", // 空字符串的SHA256
+			want:  "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := HashToken(tt.token)
-			// 验证是否为64字符的十六进制字符串
-			if len(got) != 64 {
-				t.Errorf("HashToken() 返回长度 = %v, 期望 64", len(got))
-			}
-			// 每次调用应返回相同的哈希值
-			got2 := HashToken(tt.token)
-			if got != got2 {
-				t.Errorf("HashToken() 不一致: %v != %v", got, got2)
+			if got := HashToken(tt.token); got != tt.want {
+				t.Errorf("HashToken(%q) = %v, 期望 %v", tt.token, got, tt.want)
 			}
 		})
 	}
@@ -202,25 +197,5 @@ func TestAuthToken_UpdateLastUsed(t *testing.T) {
 	// 验证时间已更新
 	if secondTime <= firstTime {
 		t.Errorf("UpdateLastUsed() 时间未更新: %v <= %v", secondTime, firstTime)
-	}
-}
-
-func TestHashToken_Consistency(t *testing.T) {
-	// 验证相同输入总是产生相同输出
-	token := "sk-ant-test-token-12345" //nolint:gosec // G101: 测试用假凭证
-	hash1 := HashToken(token)
-	hash2 := HashToken(token)
-	hash3 := HashToken(token)
-
-	if hash1 != hash2 || hash2 != hash3 {
-		t.Errorf("HashToken() 不一致: %v, %v, %v", hash1, hash2, hash3)
-	}
-
-	// 验证不同输入产生不同输出
-	differentToken := "sk-ant-test-token-54321" //nolint:gosec // G101: 测试用假凭证
-	differentHash := HashToken(differentToken)
-
-	if hash1 == differentHash {
-		t.Errorf("HashToken() 不同输入产生相同哈希值")
 	}
 }

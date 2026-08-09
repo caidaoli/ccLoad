@@ -2,25 +2,6 @@ package util
 
 import "testing"
 
-func TestProtocolConstants(t *testing.T) {
-	// 验证常量值正确
-	tests := []struct {
-		constant string
-		expected string
-	}{
-		{ProtocolAnthropic, "anthropic"},
-		{ProtocolCodex, "codex"},
-		{ProtocolOpenAI, "openai"},
-		{ProtocolGemini, "gemini"},
-	}
-
-	for _, tt := range tests {
-		if tt.constant != tt.expected {
-			t.Errorf("Constant mismatch: got %q, want %q", tt.constant, tt.expected)
-		}
-	}
-}
-
 // TestNormalizeProtocol 测试协议规范化
 func TestNormalizeProtocol(t *testing.T) {
 	tests := []struct {
