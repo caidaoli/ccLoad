@@ -1694,6 +1694,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if err == nil && resp != nil && (resp.StatusCode < 200 || resp.StatusCode >= 300) {
 			// A concrete HTTP response here is a rejected WebSocket handshake. The
 			// selected channel may still support the ordinary Responses HTTP endpoint.
+			s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
 			_ = resp.Body.Close()
 			log.Printf("[INFO] 渠道 %d WebSocket 握手返回 %d，同 Key/URL 回退 HTTP", cfg.ID, resp.StatusCode)
 			sentBody = responsesBodyForHTTPTransport(cfg, plan, replayBody)
@@ -1710,6 +1711,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		observer.OnUpstreamWebsocket(usedNativeWebsocket)
 	}
 	if resp != nil {
+		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
 		s.persistAnthropicPassiveUsage(reqCtx.ctx, cfg, resp)
 		if err == nil && cfg.UsesAnthropicOAuth() {
 			err = decodeAnthropicResponse(resp)

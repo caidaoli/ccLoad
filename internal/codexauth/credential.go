@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 )
@@ -18,15 +19,34 @@ const (
 // private channel field. General channel responses omit it; the authenticated
 // single-channel editor response may expose it for read-only inspection.
 type Credential struct {
-	IDToken      string `json:"id_token,omitempty"`
-	AccessToken  string `json:"access_token"`
-	RefreshToken string `json:"refresh_token"`
-	AccountID    string `json:"account_id,omitempty"`
-	LastRefresh  string `json:"last_refresh,omitempty"`
-	Email        string `json:"email,omitempty"`
-	Type         string `json:"type"`
-	Expired      string `json:"expired"`
-	PlanType     string `json:"plan_type,omitempty"`
+	IDToken      string        `json:"id_token,omitempty"`
+	AccessToken  string        `json:"access_token"`
+	RefreshToken string        `json:"refresh_token"`
+	AccountID    string        `json:"account_id,omitempty"`
+	LastRefresh  string        `json:"last_refresh,omitempty"`
+	Email        string        `json:"email,omitempty"`
+	Type         string        `json:"type"`
+	Expired      string        `json:"expired"`
+	PlanType     string        `json:"plan_type,omitempty"`
+	PassiveUsage *PassiveUsage `json:"passive_usage,omitempty"`
+}
+
+// PassiveUsage is the latest quota snapshot sampled from Codex response
+// headers. It contains no OAuth secrets and is safe to project into admin APIs.
+type PassiveUsage struct {
+	Windows   []PassiveUsageWindow `json:"windows"`
+	SampledAt string               `json:"sampled_at"`
+}
+
+// PassiveUsageWindow contains one account or product quota window.
+type PassiveUsageWindow struct {
+	Scope              string  `json:"scope"`
+	LimitName          string  `json:"limit_name"`
+	Kind               string  `json:"kind"`
+	UsedPercent        float64 `json:"used_percent"`
+	LimitWindowSeconds int64   `json:"limit_window_seconds"`
+	ResetAt            int64   `json:"reset_at"`
+	SampledAt          string  `json:"sampled_at"`
 }
 
 // IDTokenInfo is the readable Codex subscription metadata embedded in an ID
@@ -74,6 +94,25 @@ func (c *Credential) Normalize() error {
 	c.Type = strings.ToLower(strings.TrimSpace(c.Type))
 	c.Expired = strings.TrimSpace(c.Expired)
 	c.PlanType = strings.TrimSpace(c.PlanType)
+	if c.PassiveUsage != nil {
+		c.PassiveUsage.SampledAt = strings.TrimSpace(c.PassiveUsage.SampledAt)
+		if _, err := time.Parse(time.RFC3339, c.PassiveUsage.SampledAt); err != nil {
+			return errors.New("codex credential has invalid passive_usage.sampled_at")
+		}
+		for i := range c.PassiveUsage.Windows {
+			window := &c.PassiveUsage.Windows[i]
+			window.Scope = strings.ToLower(strings.TrimSpace(window.Scope))
+			window.LimitName = strings.TrimSpace(window.LimitName)
+			window.Kind = strings.TrimSpace(window.Kind)
+			window.SampledAt = strings.TrimSpace(window.SampledAt)
+			_, sampledAtErr := time.Parse(time.RFC3339, window.SampledAt)
+			if window.Scope == "" || window.Kind == "" || sampledAtErr != nil ||
+				math.IsNaN(window.UsedPercent) || math.IsInf(window.UsedPercent, 0) ||
+				window.UsedPercent < 0 || window.UsedPercent > 100 || window.LimitWindowSeconds < 0 || window.ResetAt < 0 {
+				return errors.New("codex credential has invalid passive_usage window")
+			}
+		}
+	}
 
 	if c.Type == "" {
 		c.Type = ChannelType
@@ -190,10 +229,23 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	if merged.PlanType == "" {
 		merged.PlanType = c.PlanType
 	}
+	if merged.PassiveUsage == nil {
+		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
+	}
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}
 	return &merged, nil
+}
+
+// ClonePassiveUsage returns an independent quota snapshot.
+func ClonePassiveUsage(usage *PassiveUsage) *PassiveUsage {
+	if usage == nil {
+		return nil
+	}
+	clone := *usage
+	clone.Windows = append([]PassiveUsageWindow(nil), usage.Windows...)
+	return &clone
 }
 
 // JSON returns the canonical private database payload.

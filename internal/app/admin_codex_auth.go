@@ -647,7 +647,7 @@ func persistCodexModelState(
 	if err != nil {
 		return nil, fmt.Errorf("parse Codex winner for model reconciliation: %w", err)
 	}
-	return applyCodexWinnerModelState(ctx, store, winnerCfg, credential.PlanType, winner)
+	return applyCodexWinnerModelState(ctx, store, winnerCfg, previousPlanType, winner)
 }
 
 func applyCodexWinnerModelState(

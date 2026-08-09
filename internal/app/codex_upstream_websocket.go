@@ -1122,10 +1122,10 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 	replayReq *http.Request,
 	replayBody []byte,
 	timeouts codexWebsocketTimeouts,
-) (*websocket.Conn, error) {
+) (*websocket.Conn, http.Header, error) {
 	prepared, err := buildCodexWebsocketRequestBody(replayBody)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	conn, resp, err := s.dial(ctx, dialer, target, replayReq, timeouts)
 	if err != nil {
@@ -1133,15 +1133,22 @@ func (s *codexUpstreamWebsocketSession) reconnectWithReplay(
 			_ = resp.Body.Close()
 		}
 		if resp != nil || isCodexWebsocketHandshakeFallbackError(err) {
-			return nil, &codexWebsocketHTTPFallbackError{cause: err}
+			return nil, nil, &codexWebsocketHTTPFallbackError{cause: err}
 		}
-		return nil, err
+		return nil, nil, err
 	}
 	if err = s.writeRequest(conn, prepared); err != nil {
 		s.invalidate(conn)
-		return nil, err
+		return nil, nil, err
 	}
-	return conn, nil
+	var handshakeHeaders http.Header
+	if resp != nil {
+		handshakeHeaders = cloneCodexQuotaHeaders(resp.Header)
+		if resp.Body != nil {
+			_ = resp.Body.Close()
+		}
+	}
+	return conn, handshakeHeaders, nil
 }
 
 func (s *codexUpstreamWebsocketSession) streamResponse(
@@ -1153,6 +1160,8 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 	replayReq *http.Request,
 	replayBody []byte,
 	timeouts codexWebsocketTimeouts,
+	handshakeHeaders http.Header,
+	onReconnectHandshake func(http.Header),
 ) *http.Response {
 	reader, writer := io.Pipe()
 	body := &codexWebsocketResponseBody{PipeReader: reader, abort: func() { s.invalidate(conn) }}
@@ -1183,10 +1192,13 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 				if !semanticOutput && !retried && ctx.Err() == nil {
 					retried = true
 					s.recordReconnect("read: " + readErr.Error())
-					connRetry, errRetry := s.reconnectWithReplay(
+					connRetry, retryHeaders, errRetry := s.reconnectWithReplay(
 						ctx, dialer, target, replayReq, replayBody, timeouts,
 					)
 					if errRetry == nil {
+						if onReconnectHandshake != nil && len(retryHeaders) > 0 {
+							onReconnectHandshake(retryHeaders)
+						}
 						conn = connRetry
 						continue
 					}
@@ -1208,10 +1220,13 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 				retried = true
 				s.invalidate(conn)
 				s.recordReconnect("previous_response_not_found")
-				connRetry, errRetry := s.reconnectWithReplay(
+				connRetry, retryHeaders, errRetry := s.reconnectWithReplay(
 					ctx, dialer, target, replayReq, replayBody, timeouts,
 				)
 				if errRetry == nil {
+					if onReconnectHandshake != nil && len(retryHeaders) > 0 {
+						onReconnectHandshake(retryHeaders)
+					}
 					conn = connRetry
 					continue
 				}
@@ -1243,10 +1258,12 @@ func (s *codexUpstreamWebsocketSession) streamResponse(
 		}
 	}()
 
+	responseHeaders := cloneCodexQuotaHeaders(handshakeHeaders)
+	responseHeaders.Set("Content-Type", "text/event-stream")
 	return &http.Response{
 		StatusCode: http.StatusOK,
 		Status:     "200 OK",
-		Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+		Header:     responseHeaders,
 		Body:       body,
 		Request:    request,
 	}
@@ -1289,6 +1306,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	skipTLSVerify bool,
 	timeouts codexWebsocketTimeouts,
 	baseURL string,
+	onReconnectHandshake func(http.Header),
 ) (resp *http.Response, usedReq *http.Request, usedBody []byte, err error) {
 	s.turnMu.Lock()
 	handedOff := false
@@ -1310,6 +1328,7 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 	s.mu.Unlock()
 
 	usedReq, usedBody = replayReq, replayBody
+	var handshakeHeaders http.Header
 	if reuse && incrementalReq != nil && len(incrementalBody) > 0 {
 		usedReq, usedBody = incrementalReq, incrementalBody
 	}
@@ -1329,6 +1348,12 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 			}
 			return nil, usedReq, usedBody, err
 		}
+		if resp != nil {
+			handshakeHeaders = cloneCodexQuotaHeaders(resp.Header)
+			if resp.Body != nil {
+				_ = resp.Body.Close()
+			}
+		}
 	} else {
 		s.mu.Lock()
 		if s.conn == conn {
@@ -1345,9 +1370,17 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		if errPrepare == nil {
 			connRetry, respRetry, errDial := s.dial(ctx, dialer, target, replayReq, timeouts)
 			if errDial == nil {
+				var retryHeaders http.Header
+				if respRetry != nil {
+					retryHeaders = cloneCodexQuotaHeaders(respRetry.Header)
+					if respRetry.Body != nil {
+						_ = respRetry.Body.Close()
+					}
+				}
 				if errWrite := s.writeRequest(connRetry, preparedReplay); errWrite == nil {
 					response := s.streamResponse(
-						ctx, connRetry, replayReq, dialer, target, replayReq, replayBody, timeouts,
+						ctx, connRetry, replayReq, dialer, target, replayReq, replayBody, timeouts, retryHeaders,
+						onReconnectHandshake,
 					)
 					handedOff = true
 					return response, replayReq, replayBody, nil
@@ -1365,7 +1398,8 @@ func (s *codexUpstreamWebsocketSession) roundTrip(
 		return nil, usedReq, usedBody, err
 	}
 	response := s.streamResponse(
-		ctx, conn, usedReq, dialer, target, replayReq, replayBody, timeouts,
+		ctx, conn, usedReq, dialer, target, replayReq, replayBody, timeouts, handshakeHeaders,
+		onReconnectHandshake,
 	)
 	handedOff = true
 	return response, usedReq, usedBody, nil
@@ -1402,6 +1436,15 @@ func (s *Server) doCodexWebsocketRequest(
 		s.skipTLSVerify,
 		s.codexWebsocketTimeouts(),
 		baseURL,
+		func(headers http.Header) {
+			if len(headers) == 0 {
+				return
+			}
+			s.persistCodexPassiveUsage(ctx, cfg, &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     headers,
+			})
+		},
 	)
 	if err != nil {
 		release()

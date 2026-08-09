@@ -2891,6 +2891,117 @@ func TestCodexCredentialManagerCASMissReusesConcurrentWinner(t *testing.T) {
 	}
 }
 
+func TestCodexCredentialManagerCASMissMergesPassiveUsageWithoutRefreshingTwice(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-once",
+		Expired: time.Now().UTC().Add(time.Minute).Format(time.RFC3339), AccountID: "account-passive-cas", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := *initial
+	sampledAt := time.Now().UTC()
+	winner.PassiveUsage = &codexauth.PassiveUsage{
+		SampledAt: sampledAt.Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{{
+			Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 25,
+			LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: time.Now().Add(7 * 24 * time.Hour).Unix(),
+			SampledAt: sampledAt.Format(time.RFC3339Nano),
+		}},
+	}
+	winnerJSON, err := winner.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &concurrentOAuthWinnerStore{
+		Store: baseStore, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON,
+	}
+	var refreshCount atomic.Int32
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if refreshCount.Add(1) != 1 {
+			http.Error(w, `{"error":"invalid_grant"}`, http.StatusBadRequest)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"at-new","refresh_token":"rt-new","expires_in":3600}`)
+	}))
+	defer tokenServer.Close()
+	service := codexauth.NewService(tokenServer.Client())
+	service.TokenURL = tokenServer.URL
+	manager := newCodexCredentialManager(service, store, nil, nil)
+
+	got, err := manager.credential(context.Background(), channel, false)
+	if err != nil {
+		t.Fatalf("credential() error = %v", err)
+	}
+	if got.AccessToken != "at-new" || got.RefreshToken != "rt-new" {
+		t.Fatalf("credential() = %#v, want refreshed token", got)
+	}
+	if refreshCount.Load() != 1 {
+		t.Fatalf("refresh requests = %d, want exactly one", refreshCount.Load())
+	}
+	persisted, err := baseStore.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 1 ||
+		persistedCredential.PassiveUsage.Windows[0].UsedPercent != 25 {
+		t.Fatalf("persisted credential lost passive quota = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestCodexPassiveUsageKeepsLatestResultPerQuotaGroup(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at", RefreshToken: "rt",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-quota-order", PlanType: "pro",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manager := newCodexCredentialManager(codexauth.NewService(nil), store, nil, nil)
+	newerTime := time.Date(2030, 1, 2, 3, 4, 6, 0, time.UTC)
+	olderTime := newerTime.Add(-time.Second)
+	window := func(scope, name string, used float64, sampledAt time.Time) codexauth.PassiveUsageWindow {
+		return codexauth.PassiveUsageWindow{
+			Scope: scope, LimitName: name, Kind: "primary", UsedPercent: used,
+			LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: 1893542400,
+			SampledAt: sampledAt.Format(time.RFC3339Nano),
+		}
+	}
+	if updated, err := manager.updatePassiveUsage(context.Background(), channel, codexPassiveUsageUpdate{
+		SampledAt: newerTime.Format(time.RFC3339Nano),
+		Windows:   []codexauth.PassiveUsageWindow{window("codex", "codex", 20, newerTime)},
+	}); err != nil || !updated {
+		t.Fatalf("persist newer generic quota = (%v, %v)", updated, err)
+	}
+	if updated, err := manager.updatePassiveUsage(context.Background(), channel, codexPassiveUsageUpdate{
+		SampledAt: olderTime.Format(time.RFC3339Nano),
+		Windows: []codexauth.PassiveUsageWindow{
+			window("codex", "codex", 10, olderTime),
+			window("bengalfox", "GPT-5.3-Codex-Spark", 25, olderTime),
+		},
+	}); err != nil || !updated {
+		t.Fatalf("merge older independent quota group = (%v, %v)", updated, err)
+	}
+
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.PassiveUsage == nil || len(persistedCredential.PassiveUsage.Windows) != 2 {
+		t.Fatalf("persisted ordered quota = (%#v, %v)", persistedCredential, err)
+	}
+	if persistedCredential.PassiveUsage.Windows[0].UsedPercent != 20 ||
+		persistedCredential.PassiveUsage.Windows[1].UsedPercent != 25 {
+		t.Fatalf("stale response overwrote newer quota: %#v", persistedCredential.PassiveUsage.Windows)
+	}
+}
+
 func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testing.T) {
 	t.Run("forced request reuses a newer access token", func(t *testing.T) {
 		store := newCodexAuthTestStore(t)

@@ -69,6 +69,14 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		AccessToken: "old-at", RefreshToken: "old-rt", IDToken: "old-id",
 		AccountID: "account-1", Email: "user@example.com", Type: ChannelType,
 		Expired: now.Add(4 * time.Minute).Format(time.RFC3339), PlanType: "plus",
+		PassiveUsage: &PassiveUsage{
+			Windows: []PassiveUsageWindow{{
+				Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 6,
+				LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: now.Add(7 * 24 * time.Hour).Unix(),
+				SampledAt: now.Format(time.RFC3339Nano),
+			}},
+			SampledAt: now.Format(time.RFC3339Nano),
+		},
 	}
 	needsRefresh, err := current.NeedsRefresh(now, 5*time.Minute)
 	if err != nil || !needsRefresh {
@@ -79,8 +87,13 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeRefresh() error = %v", err)
 	}
-	if merged.RefreshToken != "old-rt" || merged.AccountID != "account-1" || merged.AccessToken != "new-at" {
+	if merged.RefreshToken != "old-rt" || merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
+		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged credential = %#v", merged)
+	}
+	current.PassiveUsage.Windows[0].UsedPercent = 99
+	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
+		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
 	}
 }
 
