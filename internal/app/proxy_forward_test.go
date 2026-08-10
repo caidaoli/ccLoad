@@ -920,7 +920,7 @@ func TestAnthropicOAuthFinalizerBuildsClaudeCodeWireContract(t *testing.T) {
 		t.Fatalf("moved system = %q", got)
 	}
 	if !gjson.GetBytes(body, "tools").IsArray() || gjson.GetBytes(body, "tool_choice").Exists() ||
-		gjson.GetBytes(body, "temperature").Int() != 1 || gjson.GetBytes(body, "max_tokens").Exists() ||
+		gjson.GetBytes(body, "temperature").Exists() || gjson.GetBytes(body, "max_tokens").Exists() ||
 		gjson.GetBytes(body, "context_management.edits.0.type").String() != "clear_thinking_20251015" ||
 		gjson.GetBytes(body, "metadata.user_id").String() == "" {
 		t.Fatalf("normalized body = %s", body)
@@ -1132,10 +1132,46 @@ func TestAnthropicOAuthBuildProxyRequestUsesOAuthWireAfterCustomRules(t *testing
 	}
 	if headerValueFold(request.Header, "Authorization") != "Bearer oauth-access" ||
 		headerValueFold(request.Header, "User-Agent") != "claude-cli/2.1.220 (external, cli)" ||
-		headerValueFold(request.Header, "X-Configured") != "" || headerValueFold(request.Header, "Anthropic-Beta") != anthropicOAuthBetas {
+		headerValueFold(request.Header, "X-Configured") != "" ||
+		!strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "oauth-2025-04-20") ||
+		!strings.Contains(headerValueFold(request.Header, "Anthropic-Beta"), "extended-cache-ttl-2025-04-11") {
 		t.Fatalf("headers = %v", request.Header)
 	}
 	if !strings.HasPrefix(gjson.GetBytes(reqCtx.translatedBody, "system.0.text").String(), "x-anthropic-billing-header:") {
 		t.Fatalf("translated body = %s", reqCtx.translatedBody)
+	}
+}
+
+func TestAnthropicAPIKeyAuthenticationUsesOfficialOriginBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		target   string
+		official bool
+	}{
+		{name: "default HTTPS", target: "https://api.anthropic.com/v1/messages", official: true},
+		{name: "HTTPS 443", target: "https://api.anthropic.com:443/v1/messages", official: true},
+		{name: "HTTP", target: "http://api.anthropic.com/v1/messages"},
+		{name: "custom port", target: "https://api.anthropic.com:8443/v1/messages"},
+		{name: "userinfo", target: "https://caller@api.anthropic.com/v1/messages"},
+		{name: "lookalike", target: "https://api.anthropic.com.example/v1/messages"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request, err := http.NewRequest(http.MethodPost, test.target, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			injectAPIKeyHeaders(request, "sk-ant", util.ProtocolAnthropic)
+			if got := request.Header.Get("x-api-key"); got != "sk-ant" {
+				t.Fatalf("x-api-key=%q", got)
+			}
+			gotAuthorization := request.Header.Get("Authorization")
+			if test.official && gotAuthorization != "" {
+				t.Fatalf("official Authorization=%q, want empty", gotAuthorization)
+			}
+			if !test.official && gotAuthorization != "Bearer sk-ant" {
+				t.Fatalf("compatible gateway Authorization=%q", gotAuthorization)
+			}
+		})
 	}
 }

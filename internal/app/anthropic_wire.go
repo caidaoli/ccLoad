@@ -13,14 +13,12 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
-	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
 
 	"github.com/google/uuid"
 )
 
 const (
 	anthropicCLIVersion  = "2.1.220"
-	anthropicOAuthBetas  = "claude-code-20250219,oauth-2025-04-20,interleaved-thinking-2025-05-14,prompt-caching-scope-2026-01-05,effort-2025-11-24,context-management-2025-06-27,extended-cache-ttl-2025-04-11"
 	anthropicBillingSalt = "59cf53e54c78"
 )
 
@@ -37,11 +35,33 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
  - Do not use a colon before tool calls. Your tool calls may not be shown directly in the output, so text like "Let me read the file:" followed by a read tool call should just be "Let me read the file." with a period.`
 
 func isAnthropicOAuthMessagesRequest(cfg *model.Config, upstream protocol.Protocol, requestPath string) bool {
-	if cfg == nil || !cfg.UsesAnthropicOAuth() || upstream != protocol.Anthropic {
+	return cfg != nil && cfg.UsesAnthropicOAuth() && isAnthropicMessagesRequest(upstream, requestPath)
+}
+
+func isAnthropicMessagesRequest(upstream protocol.Protocol, requestPath string) bool {
+	if upstream != protocol.Anthropic {
 		return false
 	}
 	path := strings.TrimSuffix(strings.TrimSpace(requestPath), "/")
 	return path == "/v1/messages" || path == "/messages"
+}
+
+func isOfficialAnthropicURL(target *url.URL) bool {
+	if target == nil || target.User != nil || !strings.EqualFold(target.Scheme, "https") ||
+		!strings.EqualFold(strings.TrimSpace(target.Hostname()), "api.anthropic.com") {
+		return false
+	}
+	port := target.Port()
+	return port == "" || port == "443"
+}
+
+func isOfficialAnthropicAPIKeyMessagesRequest(
+	cfg *model.Config,
+	upstream protocol.Protocol,
+	requestPath string,
+	target *url.URL,
+) bool {
+	return cfg != nil && !cfg.UsesOAuth() && isAnthropicMessagesRequest(upstream, requestPath) && isOfficialAnthropicURL(target)
 }
 
 func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
@@ -104,16 +124,9 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 			return nil, err
 		}
 	}
-	sanitizeAnthropicOAuthMessages(request)
-	enforceAnthropicCacheControlLimit(request, 4)
-	encoded, err := json.Marshal(request)
+	encoded, err := encodeNormalizedAnthropicRequest(request, true)
 	if err != nil {
-		return nil, errors.New("finalize Anthropic OAuth request: encode body")
-	}
-	encoded, _ = cliproxysignature.SanitizeClaudeMessagesForClaudeUpstream(encoded, stringValue(request["model"]))
-	encoded, err = finalizeAnthropicCCH(encoded)
-	if err != nil {
-		return nil, errors.New("finalize Anthropic OAuth request: sign Claude CCH")
+		return nil, errors.New("finalize Anthropic OAuth request: normalize body")
 	}
 	return encoded, nil
 }
@@ -280,46 +293,56 @@ func stringValue(value any) string {
 }
 
 func enforceAnthropicCacheControlLimit(request map[string]any, limit int) {
-	remaining := limit
-	consume := func(block map[string]any) {
-		if _, exists := block["cache_control"]; !exists {
-			return
-		}
-		if remaining > 0 {
-			remaining--
-			return
-		}
-		delete(block, "cache_control")
+	if limit < 0 {
+		limit = 0
 	}
-	if system, ok := request["system"].([]any); ok {
-		for _, raw := range system {
+	collect := func(values []any) []map[string]any {
+		blocks := make([]map[string]any, 0, len(values))
+		for _, raw := range values {
 			if block, ok := raw.(map[string]any); ok {
-				consume(block)
-			}
-		}
-	}
-	if messages, ok := request["messages"].([]any); ok {
-		for _, rawMessage := range messages {
-			message, ok := rawMessage.(map[string]any)
-			if !ok {
-				continue
-			}
-			if content, ok := message["content"].([]any); ok {
-				for _, rawBlock := range content {
-					if block, ok := rawBlock.(map[string]any); ok {
-						consume(block)
-					}
+				if _, exists := block["cache_control"]; exists {
+					blocks = append(blocks, block)
 				}
 			}
 		}
+		return blocks
 	}
-	if tools, ok := request["tools"].([]any); ok {
-		for _, raw := range tools {
-			if block, ok := raw.(map[string]any); ok {
-				consume(block)
-			}
+	toolsRaw, _ := request["tools"].([]any)
+	systemRaw, _ := request["system"].([]any)
+	tools := collect(toolsRaw)
+	system := collect(systemRaw)
+	messages := make([]map[string]any, 0)
+	if rawMessages, ok := request["messages"].([]any); ok {
+		for _, rawMessage := range rawMessages {
+			message, _ := rawMessage.(map[string]any)
+			content, _ := message["content"].([]any)
+			messages = append(messages, collect(content)...)
 		}
 	}
+	excess := len(tools) + len(system) + len(messages) - limit
+	remove := func(blocks []map[string]any) {
+		for _, block := range blocks {
+			if excess <= 0 {
+				return
+			}
+			if _, exists := block["cache_control"]; !exists {
+				continue
+			}
+			delete(block, "cache_control")
+			excess--
+		}
+	}
+	// Preserve the last tool and last system breakpoint as long as possible;
+	// each one covers the complete prefix of its section.
+	if len(system) > 1 {
+		remove(system[:len(system)-1])
+	}
+	if len(tools) > 1 {
+		remove(tools[:len(tools)-1])
+	}
+	remove(messages)
+	remove(system)
+	remove(tools)
 }
 
 func anthropicSystemText(system any) string {
@@ -387,11 +410,86 @@ func injectAnthropicOAuthHeaders(
 	for name := range req.Header {
 		delete(req.Header, name)
 	}
-	setRawHeader(req.Header, "Accept", "application/json")
 	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
+	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeBetas(body, true), resolveAnthropicSessionID(body, cfg))
+}
+
+func injectAnthropicAPIKeyHeaders(req *http.Request, apiKey string, body []byte) {
+	if req == nil {
+		return
+	}
+	req.Header.Del("Authorization")
+	setRawHeader(req.Header, "x-api-key", strings.TrimSpace(apiKey))
+	applyAnthropicClaudeCodeHeaders(
+		req, anthropicClaudeCodeBetas(body, false),
+		resolveAnthropicAPIKeySessionID(body, apiKey, req.Header.Get("X-Claude-Code-Session-Id")),
+	)
+}
+
+func anthropicClaudeCodeBetas(body []byte, oauth bool) string {
+	request, _ := decodeAnthropicRequest(body)
+	betas := make([]string, 0, 14)
+	betas = append(betas, "claude-code-20250219")
+	if oauth {
+		betas = append(betas, "oauth-2025-04-20")
+	}
+	betas = append(betas, "interleaved-thinking-2025-05-14")
+	thinking, _ := request["thinking"].(map[string]any)
+	if strings.TrimSpace(stringValue(thinking["display"])) == "" {
+		betas = append(betas, "redact-thinking-2026-02-12")
+	}
+	betas = append(betas,
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+	)
+	if !anthropicUsesLegacySystemReminder(stringValue(request["model"])) {
+		betas = append(betas, "mid-conversation-system-2026-04-07")
+	}
+	if tools, ok := request["tools"].([]any); ok && len(tools) > 0 {
+		betas = append(betas, "advanced-tool-use-2025-11-20")
+	}
+	betas = append(betas, "effort-2025-11-24")
+	if oauth {
+		betas = append(betas, "fallback-credit-2026-06-01")
+	}
+	if strings.EqualFold(strings.TrimSpace(stringValue(request["speed"])), "fast") {
+		betas = append(betas, "fast-mode-2026-02-01")
+	}
+	if oauth {
+		betas = append(betas, "extended-cache-ttl-2025-04-11")
+	}
+	if _, ok := request["diagnostics"].(map[string]any); ok {
+		betas = append(betas, "cache-diagnosis-2026-04-07")
+	}
+	return strings.Join(betas, ",")
+}
+
+func anthropicUsesLegacySystemReminder(modelName string) bool {
+	modelName = strings.ToLower(strings.TrimSpace(modelName))
+	if slash := strings.LastIndexByte(modelName, '/'); slash >= 0 {
+		modelName = modelName[slash+1:]
+	}
+	switch modelName {
+	case "claude-3-5-haiku-20241022", "claude-3-5-haiku-latest",
+		"claude-3-7-sonnet-20250219", "claude-3-7-sonnet-latest",
+		"claude-haiku-4-5", "claude-haiku-4-5-20251001",
+		"claude-opus-4", "claude-opus-4-20250514", "claude-opus-4-1",
+		"claude-opus-4-1-20250805", "claude-opus-4-5", "claude-opus-4-5-20251101",
+		"claude-opus-4-6", "claude-opus-4-7", "claude-sonnet-4",
+		"claude-sonnet-4-20250514", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929",
+		"claude-sonnet-4-6":
+		return true
+	default:
+		return false
+	}
+}
+
+func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID string) {
+	setRawHeader(req.Header, "Accept", "application/json")
 	setRawHeader(req.Header, "Content-Type", "application/json")
 	setRawHeader(req.Header, "User-Agent", "claude-cli/2.1.220 (external, cli)")
-	setRawHeader(req.Header, "X-Claude-Code-Session-Id", resolveAnthropicSessionID(body, cfg))
+	setRawHeader(req.Header, "X-Claude-Code-Session-Id", sessionID)
 	setRawHeader(req.Header, "X-Stainless-Arch", anthropicStainlessArch())
 	setRawHeader(req.Header, "X-Stainless-Lang", "js")
 	setRawHeader(req.Header, "X-Stainless-OS", anthropicStainlessOS())
@@ -400,7 +498,7 @@ func injectAnthropicOAuthHeaders(
 	setRawHeader(req.Header, "X-Stainless-Runtime", "node")
 	setRawHeader(req.Header, "X-Stainless-Runtime-Version", "v26.3.0")
 	setRawHeader(req.Header, "X-Stainless-Timeout", "600")
-	setRawHeader(req.Header, "anthropic-beta", anthropicOAuthBetas)
+	setRawHeader(req.Header, "anthropic-beta", betas)
 	setRawHeader(req.Header, "anthropic-dangerous-direct-browser-access", "true")
 	setRawHeader(req.Header, "anthropic-version", "2023-06-01")
 	setRawHeader(req.Header, "x-app", "cli")
@@ -419,23 +517,11 @@ func setRawHeader(headers http.Header, name, value string) {
 }
 
 func resolveAnthropicSessionID(body []byte, cfg *model.Config) string {
+	if sessionID := anthropicSessionIDFromBody(body); sessionID != "" {
+		return sessionID
+	}
 	var request map[string]any
 	if json.Unmarshal(body, &request) == nil {
-		if metadata, ok := request["metadata"].(map[string]any); ok {
-			if userID, ok := metadata["user_id"].(string); ok {
-				var identity struct {
-					SessionID string `json:"session_id"`
-				}
-				if json.Unmarshal([]byte(userID), &identity) == nil && strings.TrimSpace(identity.SessionID) != "" {
-					return identity.SessionID
-				}
-				if marker := strings.LastIndex(userID, "_session_"); marker >= 0 {
-					if parsed, err := uuid.Parse(strings.TrimSpace(userID[marker+len("_session_"):])); err == nil {
-						return parsed.String()
-					}
-				}
-			}
-		}
 		credential := anthropicCredentialForWire(cfg)
 		if credential != nil && credential.AccountUUID != "" {
 			messages, _ := request["messages"].([]any)
@@ -443,6 +529,42 @@ func resolveAnthropicSessionID(body []byte, cfg *model.Config) string {
 		}
 	}
 	return uuid.NewString()
+}
+
+func resolveAnthropicAPIKeySessionID(body []byte, apiKey, incomingSessionID string) string {
+	if parsed, err := uuid.Parse(strings.TrimSpace(incomingSessionID)); err == nil {
+		return parsed.String()
+	}
+	if sessionID := anthropicSessionIDFromBody(body); sessionID != "" {
+		return sessionID
+	}
+	request, _ := decodeAnthropicRequest(body)
+	messages, _ := request["messages"].([]any)
+	keyHash := sha256.Sum256([]byte(strings.TrimSpace(apiKey)))
+	return anthropicStableSessionID(hex.EncodeToString(keyHash[:]), anthropicFirstUserText(messages))
+}
+
+func anthropicSessionIDFromBody(body []byte) string {
+	var request map[string]any
+	if json.Unmarshal(body, &request) != nil {
+		return ""
+	}
+	metadata, _ := request["metadata"].(map[string]any)
+	userID, _ := metadata["user_id"].(string)
+	var identity struct {
+		SessionID string `json:"session_id"`
+	}
+	if json.Unmarshal([]byte(userID), &identity) == nil {
+		if parsed, err := uuid.Parse(strings.TrimSpace(identity.SessionID)); err == nil {
+			return parsed.String()
+		}
+	}
+	if marker := strings.LastIndex(userID, "_session_"); marker >= 0 {
+		if parsed, err := uuid.Parse(strings.TrimSpace(userID[marker+len("_session_"):])); err == nil {
+			return parsed.String()
+		}
+	}
+	return ""
 }
 
 func anthropicStainlessOS() string {

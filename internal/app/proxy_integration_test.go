@@ -259,6 +259,411 @@ func anthropicProxyTestCredential(t testing.TB, accessToken string) string {
 	return payload
 }
 
+func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
+	t.Parallel()
+
+	var upstreamBody []byte
+	var upstreamHeaders http.Header
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "official-anthropic-api-key", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant-official",
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		upstreamHeaders = r.Header.Clone()
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+			map[string]any{"type": "text", "text": "keep this native prompt"},
+		},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "first turn"},
+			map[string]any{"role": "assistant", "content": []any{map[string]any{
+				"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"q": "x"}, "signature": "foreign",
+			}}},
+			map[string]any{"role": "user", "content": "second turn"},
+		},
+		"tools": []any{map[string]any{
+			"name": "lookup", "description": "lookup", "input_schema": map[string]any{"type": "object"},
+		}},
+		"tool_choice": map[string]any{"type": "auto"},
+		"thinking":    map[string]any{"type": "auto", "budget_tokens": 4096},
+		"temperature": 0.4,
+		"top_p":       0.8,
+		"top_k":       12,
+		"speed":       "fast",
+		"diagnostics": map[string]any{"enabled": true},
+		"max_tokens":  8192,
+	}, map[string]string{
+		"anthropic-version": "2023-06-01",
+		"anthropic-beta":    "attacker-beta",
+		"User-Agent":        "third-party-client",
+	})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := upstreamHeaders.Get("Authorization"); got != "" {
+		t.Fatalf("official Anthropic Authorization=%q, want empty", got)
+	}
+	if got := headerValueFold(upstreamHeaders, "x-api-key"); got != "sk-ant-official" {
+		t.Fatalf("official Anthropic x-api-key=%q", got)
+	}
+	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.220 (external, cli)" {
+		t.Fatalf("User-Agent=%q", got)
+	}
+	if got := headerValueFold(upstreamHeaders, "Anthropic-Beta"); strings.Contains(got, "oauth-2025-04-20") {
+		t.Fatalf("Anthropic-Beta=%q contains OAuth capability", got)
+	} else {
+		for _, required := range []string{
+			"claude-code-20250219", "advanced-tool-use-2025-11-20", "fast-mode-2026-02-01", "cache-diagnosis-2026-04-07",
+		} {
+			if !strings.Contains(got, required) {
+				t.Fatalf("Anthropic-Beta=%q missing %q", got, required)
+			}
+		}
+	}
+	if upstreamHeaders.Get("X-Claude-Code-Session-Id") == "" || headerValueFold(upstreamHeaders, "x-client-request-id") == "" ||
+		upstreamHeaders.Get("X-Stainless-Runtime-Version") != "v26.3.0" {
+		t.Fatalf("Claude Code identity headers=%v", upstreamHeaders)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "keep this native prompt" {
+		t.Fatalf("native prompt=%q body=%s", got, upstreamBody)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
+		t.Fatalf("CCH was not rebuilt: %q", got)
+	}
+	if gjson.GetBytes(upstreamBody, "temperature").Exists() || gjson.GetBytes(upstreamBody, "top_p").Exists() ||
+		gjson.GetBytes(upstreamBody, "top_k").Exists() {
+		t.Fatalf("sampling fields survived: %s", upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "thinking.type").String() != "adaptive" ||
+		gjson.GetBytes(upstreamBody, "thinking.budget_tokens").Exists() ||
+		gjson.GetBytes(upstreamBody, "output_config.effort").String() != "medium" {
+		t.Fatalf("thinking was not normalized: %s", upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "messages.1.content.0.signature").Exists() ||
+		gjson.GetBytes(upstreamBody, "messages.1.content.0.type").String() != "tool_use" {
+		t.Fatalf("tool history provenance was not sanitized: %s", upstreamBody)
+	}
+	for _, path := range []string{
+		"tools.0.cache_control.type", "system.1.cache_control.type", "messages.0.content.0.cache_control.type",
+	} {
+		if got := gjson.GetBytes(upstreamBody, path).String(); got != "ephemeral" {
+			t.Fatalf("cache breakpoint %s=%q body=%s", path, got, upstreamBody)
+		}
+	}
+}
+
+func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
+	t.Parallel()
+
+	credentialJSON := anthropicProxyTestCredential(t, "oauth-anthropic-token")
+	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := json.Marshal(map[string]string{
+		"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID,
+		"session_id": "e03895ad-8b34-4a84-bbf6-002e8909b17b",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var attempts atomic.Int32
+	var bodies [][]byte
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "native-anthropic-oauth", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+		authType: model.AuthTypeAnthropicOAuth, oauthCredential: credentialJSON,
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		if attempts.Add(1) == 1 {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"type":"error","error":{"type":"invalid_request_error","message":"thinking blocks are not supported"}}`,
+				)),
+			}, nil
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+			map[string]any{"type": "text", "text": "native OAuth prompt"},
+		},
+		"metadata":   map[string]any{"user_id": string(identity)},
+		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
+		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 2048},
+		"max_tokens": 4096,
+	}, map[string]string{"User-Agent": "claude-cli/2.1.220 (external, cli)"})
+
+	if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
+		t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
+	}
+	for index, body := range bodies {
+		if got := gjson.GetBytes(body, "system.#").Int(); got != 2 {
+			t.Fatalf("attempt %d system blocks=%d body=%s", index+1, got, body)
+		}
+		if got := gjson.GetBytes(body, "system.1.text").String(); got != "native OAuth prompt" {
+			t.Fatalf("attempt %d prompt=%q body=%s", index+1, got, body)
+		}
+		if got := gjson.GetBytes(body, "messages.#").Int(); got != 1 {
+			t.Fatalf("attempt %d messages=%d body=%s", index+1, got, body)
+		}
+	}
+	if !gjson.GetBytes(bodies[0], "thinking").Exists() || gjson.GetBytes(bodies[1], "thinking").Exists() {
+		t.Fatalf("thinking downgrade failed: first=%s second=%s", bodies[0], bodies[1])
+	}
+}
+
+func TestProxy_NativeAnthropicPreservesExplicitCachePolicy(t *testing.T) {
+	t.Parallel()
+
+	var upstreamBody []byte
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "anthropic-explicit-cache", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant",
+	}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamBody, _ = io.ReadAll(r.Body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6",
+		"system": []any{map[string]any{
+			"type": "text", "text": "explicit cache only",
+			"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+		}},
+		"messages": []any{
+			map[string]any{"role": "user", "content": "first"},
+			map[string]any{"role": "assistant", "content": "ok"},
+			map[string]any{"role": "user", "content": "second"},
+		},
+		"tools":      []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
+		"max_tokens": 1024,
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if gjson.GetBytes(upstreamBody, "system.0.cache_control.ttl").String() != "1h" {
+		t.Fatalf("explicit cache breakpoint changed: %s", upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "tools.0.cache_control").Exists() ||
+		gjson.GetBytes(upstreamBody, "messages.0.content.0.cache_control").Exists() {
+		t.Fatalf("automatic cache breakpoints were added beside explicit policy: %s", upstreamBody)
+	}
+}
+
+func TestProxy_NativeAnthropic400RepairsToolAndBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		upstreamError string
+		request       map[string]any
+		assertRetry   func(testing.TB, []byte)
+	}{
+		{
+			name:          "tool blocks",
+			upstreamError: `{"type":"error","error":{"type":"invalid_request_error","message":"tool_use blocks are not supported"}}`,
+			request: map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 4096,
+				"messages": []any{
+					map[string]any{"role": "user", "content": "call a tool"},
+					map[string]any{"role": "assistant", "content": []any{map[string]any{
+						"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{"q": "x"},
+					}}},
+					map[string]any{"role": "user", "content": []any{map[string]any{
+						"type": "tool_result", "tool_use_id": "toolu_1", "content": "result",
+					}}},
+				},
+				"tools":       []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
+				"tool_choice": map[string]any{"type": "auto"},
+			},
+			assertRetry: func(t testing.TB, body []byte) {
+				t.Helper()
+				if gjson.GetBytes(body, "tools").Exists() || gjson.GetBytes(body, "tool_choice").Exists() ||
+					strings.Contains(string(body), `"type":"tool_use"`) || strings.Contains(string(body), `"type":"tool_result"`) {
+					t.Fatalf("tool blocks survived retry: %s", body)
+				}
+				if !strings.Contains(string(body), "[Tool call: lookup]") || !strings.Contains(string(body), "[Tool result: toolu_1]") {
+					t.Fatalf("tool semantics were not preserved as text: %s", body)
+				}
+			},
+		},
+		{
+			name:          "thinking budget",
+			upstreamError: `{"type":"error","error":{"type":"invalid_request_error","message":"thinking budget_tokens must be less than max_tokens"}}`,
+			request: map[string]any{
+				"model": "claude-sonnet-4-6", "max_tokens": 10000,
+				"thinking": map[string]any{"type": "enabled", "budget_tokens": 10000},
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			},
+			assertRetry: func(t testing.TB, body []byte) {
+				t.Helper()
+				if got := gjson.GetBytes(body, "thinking.type").String(); got != "enabled" {
+					t.Fatalf("thinking.type=%q body=%s", got, body)
+				}
+				if got := gjson.GetBytes(body, "thinking.budget_tokens").Int(); got != 32000 {
+					t.Fatalf("budget_tokens=%d body=%s", got, body)
+				}
+				if got := gjson.GetBytes(body, "max_tokens").Int(); got != 64000 {
+					t.Fatalf("max_tokens=%d body=%s", got, body)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			var attempts atomic.Int32
+			var bodies [][]byte
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "anthropic-repair", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant",
+			}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				body, _ := io.ReadAll(r.Body)
+				bodies = append(bodies, body)
+				if attempts.Add(1) == 1 {
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Header:     http.Header{"Content-Type": []string{"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(test.upstreamError)),
+					}, nil
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+					)),
+				}, nil
+			})}
+
+			response := doProxyRequest(t, env.engine, "/v1/messages", test.request, map[string]string{
+				"anthropic-version": "2023-06-01",
+			})
+			if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
+				t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
+			}
+			test.assertRetry(t, bodies[1])
+		})
+	}
+}
+
+func TestProxy_NativeAnthropicDoesNotRepairUnrelatedSignature400(t *testing.T) {
+	t.Parallel()
+
+	var attempts atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "anthropic-signature-auth-error", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6", apiKey: "sk-ant",
+	}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+		attempts.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"type":"error","error":{"type":"authentication_error","message":"invalid billing signature"}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"thinking": map[string]any{"type": "enabled", "budget_tokens": 512},
+		"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+	if response.Code != http.StatusBadRequest || attempts.Load() != 1 {
+		t.Fatalf("status=%d attempts=%d body=%s", response.Code, attempts.Load(), response.Body.String())
+	}
+}
+
+func TestProxy_NativeAnthropicRepairFailureUsesNormalChannelRouting(t *testing.T) {
+	t.Parallel()
+
+	var firstAttempts atomic.Int32
+	var fallbackAttempts atomic.Int32
+	firstRule := &model.CooldownDetectionRules{Rules: []model.CooldownDetectionRule{{
+		Enabled: true, Name: "Anthropic request rejection", Priority: 0,
+		StatusCodes: []int{http.StatusBadRequest}, Scope: model.CooldownScopeChannel,
+		Mode: model.CooldownModeFixed, CooldownSeconds: 60,
+	}}}
+	env := setupProxyTestEnv(t, []testChannel{
+		{
+			name: "anthropic-repair-fails", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+			apiKey: "sk-first", priority: 100, cooldownDetectionRules: firstRule,
+		},
+		{
+			name: "anthropic-fallback", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+			apiKey: "sk-second", priority: 90,
+		},
+	}, map[int]string{0: "https://first-anthropic.example.com", 1: "https://fallback-anthropic.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host == "first-anthropic.example.com" {
+			firstAttempts.Add(1)
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(
+					`{"type":"error","error":{"type":"invalid_request_error","message":"tool_use blocks are not supported"}}`,
+				)),
+			}, nil
+		}
+		fallbackAttempts.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"fallback ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 1024,
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"role": "assistant", "content": []any{map[string]any{
+				"type": "tool_use", "id": "toolu_1", "name": "lookup", "input": map[string]any{},
+			}}},
+		},
+		"tools": []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
+	}, map[string]string{"anthropic-version": "2023-06-01"})
+	if response.Code != http.StatusOK || firstAttempts.Load() != 2 || fallbackAttempts.Load() != 1 {
+		t.Fatalf("status=%d first=%d fallback=%d body=%s", response.Code, firstAttempts.Load(), fallbackAttempts.Load(), response.Body.String())
+	}
+}
+
 func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 	t.Run("API key channel is unaffected", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -3118,6 +3523,10 @@ func TestProxy_Success_NonStreaming_AnthropicToGeminiTransform(t *testing.T) {
 
 	w := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "gemini-2.5-pro",
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+			map[string]any{"type": "text", "text": "keep cross-protocol system prompt"},
+		},
 		"messages": []map[string]any{{
 			"role":    "user",
 			"content": []map[string]string{{"type": "text", "text": "hi"}},
@@ -3132,6 +3541,10 @@ func TestProxy_Success_NonStreaming_AnthropicToGeminiTransform(t *testing.T) {
 	}
 	if !bytes.Contains(gotBody, []byte(`"contents"`)) {
 		t.Fatalf("expected Gemini request body, got %s", gotBody)
+	}
+	if bytes.Contains(gotBody, []byte("x-anthropic-billing-header")) ||
+		!bytes.Contains(gotBody, []byte("keep cross-protocol system prompt")) {
+		t.Fatalf("billing metadata leaked or real system prompt was lost: %s", gotBody)
 	}
 
 	var resp struct {
