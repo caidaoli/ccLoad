@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -450,6 +451,41 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create config: %v", err)
 	}
+	other, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "keep-channel",
+		URLs:    model.ChannelURLs{{URL: "https://keep.example.com"}},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("create other config: %v", err)
+	}
+
+	allowToken := &model.AuthToken{
+		Token:                  "delete-config-allow-token",
+		Description:            "allow restriction",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{created.ID, other.ID},
+		ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
+	}
+	allowOnlyToken := &model.AuthToken{
+		Token:                  "delete-config-allow-only-token",
+		Description:            "allow only deleted channel",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{created.ID},
+		ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
+	}
+	denyToken := &model.AuthToken{
+		Token:                  "delete-config-deny-token",
+		Description:            "deny restriction",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{created.ID},
+		ChannelRestrictionMode: model.ChannelRestrictionModeDeny,
+	}
+	for _, token := range []*model.AuthToken{allowToken, allowOnlyToken, denyToken} {
+		if err := store.CreateAuthToken(ctx, token); err != nil {
+			t.Fatalf("create auth token %q: %v", token.Description, err)
+		}
+	}
 
 	// 删除渠道
 	if err := store.DeleteConfig(ctx, created.ID); err != nil {
@@ -460,6 +496,44 @@ func TestConfig_DeleteConfig(t *testing.T) {
 	_, err = store.GetConfig(ctx, created.ID)
 	if err == nil {
 		t.Error("expected error after delete")
+	}
+
+	storedAllow, err := store.GetAuthToken(ctx, allowToken.ID)
+	if err != nil {
+		t.Fatalf("get allow token after delete: %v", err)
+	}
+	if !slices.Equal(storedAllow.AllowedChannelIDs, []int64{other.ID}) {
+		t.Fatalf("allow token channel ids=%v, want [%d]", storedAllow.AllowedChannelIDs, other.ID)
+	}
+	storedAllowOnly, err := store.GetAuthToken(ctx, allowOnlyToken.ID)
+	if err != nil {
+		t.Fatalf("get allow-only token after delete: %v", err)
+	}
+	if storedAllowOnly.IsActive {
+		t.Fatal("allow-only token must be disabled after its last allowed channel is deleted")
+	}
+	if len(storedAllowOnly.AllowedChannelIDs) != 0 {
+		t.Fatalf("allow-only token channel ids=%v, want empty", storedAllowOnly.AllowedChannelIDs)
+	}
+	storedDeny, err := store.GetAuthToken(ctx, denyToken.ID)
+	if err != nil {
+		t.Fatalf("get deny token after delete: %v", err)
+	}
+	if len(storedDeny.AllowedChannelIDs) != 0 {
+		t.Fatalf("deny token channel ids=%v, want empty", storedDeny.AllowedChannelIDs)
+	}
+	if storedDeny.ChannelRestrictionMode != model.ChannelRestrictionModeDeny {
+		t.Fatalf("deny token mode=%q, want deny", storedDeny.ChannelRestrictionMode)
+	}
+	if !storedDeny.IsActive {
+		t.Fatal("deny token must remain active after its only denied channel is deleted")
+	}
+	denyRestriction, err := storedDeny.ChannelRestriction()
+	if err != nil {
+		t.Fatalf("build deny restriction: %v", err)
+	}
+	if !denyRestriction.Allows(other.ID) {
+		t.Fatalf("deny token must allow remaining channel %d", other.ID)
 	}
 }
 

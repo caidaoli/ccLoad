@@ -755,6 +755,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'tokens.channelModeAllow': '白名单',
   'tokens.channelModeDeny': '黑名单',
   'tokens.channelName': '渠道',
+  'tokens.filterChannels': '过滤渠道',
   'tokens.protocol': '协议',
   'tokens.selectChannel': '+ 选择渠道',
   'tokens.selectChannelTitle': '从渠道列表中选择',
@@ -769,6 +770,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'tokens.manualInputTitle': '手动输入模型名称',
   'tokens.deleteSelected': '删除选中',
   'tokens.modelName': '模型名称',
+  'tokens.filterModels': '过滤模型',
   // 模型选择对话框
   'tokens.selectModelTitle': '选择模型',
   'tokens.searchModelPlaceholder': '搜索模型...',

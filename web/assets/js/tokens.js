@@ -19,6 +19,8 @@
     let editAllowedChannelIDs = [];           // 编辑模态框中当前的渠道限制列表
     let editChannelRestrictionMode = 'allow'; // allow|deny
     let selectedAllowedChannelIDs = new Set(); // 已选中的渠道ID（批量删除用）
+    let currentAllowedChannelFilter = '';
+    let currentAllowedModelFilter = '';
     let selectedChannelsForAdd = new Set();   // 渠道选择对话框中已选的渠道ID
     let currentVisibleChannels = [];          // 当前可见的渠道列表（用于全选功能）
 
@@ -90,6 +92,7 @@
       // 监听语言切换事件，重新渲染令牌相关动态内容
       window.i18n.onLocaleChange(() => {
         renderAllowedChannelsTable();
+        renderAllowedModelsTable();
         renderTokens();
       });
 
@@ -170,6 +173,8 @@
         input: {
           'filter-available-channels': (actionTarget) => filterAvailableChannels(actionTarget.value),
           'filter-available-models': (actionTarget) => filterAvailableModels(actionTarget.value),
+          'filter-allowed-channels': (actionTarget) => filterAllowedChannels(actionTarget.value),
+          'filter-allowed-models': (actionTarget) => filterAllowedModels(actionTarget.value),
           'update-model-import-preview': () => updateModelImportPreview()
         }
       });
@@ -743,12 +748,18 @@
       // 初始化模型限制状态（2026-01新增）
       editAllowedModels = (token.allowed_models || []).slice();
       selectedAllowedModelIndices.clear();
+      currentAllowedModelFilter = '';
+      const allowedModelFilterInput = document.getElementById('allowedModelFilterInput');
+      if (allowedModelFilterInput) allowedModelFilterInput.value = '';
       renderAllowedModelsTable();
 
       // 初始化渠道限制状态（2026-04新增）
       editAllowedChannelIDs = (token.allowed_channel_ids || []).slice();
       editChannelRestrictionMode = normalizeChannelRestrictionMode(token.channel_restriction_mode);
       selectedAllowedChannelIDs.clear();
+      currentAllowedChannelFilter = '';
+      const allowedChannelFilterInput = document.getElementById('allowedChannelFilterInput');
+      if (allowedChannelFilterInput) allowedChannelFilterInput.value = '';
       const modeSelect = document.getElementById('editChannelRestrictionMode');
       if (modeSelect) modeSelect.value = editChannelRestrictionMode;
       updateChannelRestrictionModeUI();
@@ -768,9 +779,11 @@
       // 清理模型限制状态
       editAllowedModels = [];
       selectedAllowedModelIndices.clear();
+      currentAllowedModelFilter = '';
       editAllowedChannelIDs = [];
       editChannelRestrictionMode = 'allow';
       selectedAllowedChannelIDs.clear();
+      currentAllowedChannelFilter = '';
       const modeSelect = document.getElementById('editChannelRestrictionMode');
       if (modeSelect) modeSelect.value = 'allow';
       updateChannelRestrictionModeUI();
@@ -929,17 +942,36 @@
 
     function getChannelDisplayName(channelID) {
       const channel = getChannelByID(channelID);
-      if (!channel) return `${t('common.unknown')} #${channelID}`;
-      return `${channel.name || t('common.unknown')} #${channel.id}`;
+      return channel?.name || t('common.unknown');
     }
 
-    function getChannelProtocolText(channelID) {
-      const channel = getChannelByID(channelID);
-      if (!channel) return '-';
-      const protocols = getChannelProtocols(channel);
-      return protocols.length > 0
-        ? protocols.map(getProtocolLabel).join(', ')
-        : t('channels.urlProtocolAuto');
+    function normalizeRestrictionFilter(value) {
+      return String(value || '').trim().toLowerCase();
+    }
+
+    function getVisibleAllowedChannelIDs() {
+      const filter = normalizeRestrictionFilter(currentAllowedChannelFilter);
+      if (!filter) return editAllowedChannelIDs;
+      return editAllowedChannelIDs.filter((channelID) =>
+        getChannelDisplayName(channelID).toLowerCase().includes(filter)
+      );
+    }
+
+    function getVisibleAllowedModelEntries() {
+      const entries = editAllowedModels.map((model, index) => ({ model, index }));
+      const filter = normalizeRestrictionFilter(currentAllowedModelFilter);
+      if (!filter) return entries;
+      return entries.filter(({ model }) => String(model).toLowerCase().includes(filter));
+    }
+
+    function filterAllowedChannels(searchText) {
+      currentAllowedChannelFilter = searchText;
+      renderAllowedChannelsTable();
+    }
+
+    function filterAllowedModels(searchText) {
+      currentAllowedModelFilter = searchText;
+      renderAllowedModelsTable();
     }
 
     function sortAllowedChannelIDs() {
@@ -957,8 +989,8 @@
       const countSpan = document.getElementById('editAllowedChannelsCount');
       const selectAllCheckbox = document.getElementById('selectAllAllowedChannels');
       const mobileLabelChannelName = t('tokens.channelName');
-      const mobileLabelProtocol = t('tokens.protocol');
       const mobileLabelActions = t('tokens.table.actions');
+      const visibleChannelIDs = getVisibleAllowedChannelIDs();
 
       if (!tbody) return;
 
@@ -966,22 +998,33 @@
       updateBatchDeleteChannelsBtn();
 
       if (selectAllCheckbox) {
-        selectAllCheckbox.checked = editAllowedChannelIDs.length > 0 &&
-          selectedAllowedChannelIDs.size === editAllowedChannelIDs.length;
+        const selectedVisibleCount = visibleChannelIDs.filter((channelID) => selectedAllowedChannelIDs.has(channelID)).length;
+        selectAllCheckbox.checked = visibleChannelIDs.length > 0 && selectedVisibleCount === visibleChannelIDs.length;
+        selectAllCheckbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleChannelIDs.length;
       }
 
       if (editAllowedChannelIDs.length === 0) {
         tbody.innerHTML = `
           <tr class="allowed-channels-empty-row">
-            <td colspan="4" class="allowed-channels-empty-cell">
+            <td colspan="3" class="allowed-channels-empty-cell">
               ${t('tokens.noChannelRestriction')}
             </td>
           </tr>
         `;
         return;
       }
+      if (visibleChannelIDs.length === 0) {
+        tbody.innerHTML = `
+          <tr class="allowed-channels-empty-row">
+            <td colspan="3" class="allowed-channels-empty-cell">
+              ${t('tokens.noMatchingChannel')}
+            </td>
+          </tr>
+        `;
+        return;
+      }
 
-      tbody.innerHTML = editAllowedChannelIDs.map((channelID) => `
+      tbody.innerHTML = visibleChannelIDs.map((channelID) => `
         <tr class="mobile-inline-row allowed-channel-row">
           <td class="allowed-channel-col-select mobile-inline-no-label">
             <input type="checkbox" class="allowed-channel-checkbox" data-channel-id="${channelID}"
@@ -990,7 +1033,6 @@
             >
           </td>
           <td class="allowed-channel-col-name" data-mobile-label="${mobileLabelChannelName}">${escapeHtml(getChannelDisplayName(channelID))}</td>
-          <td class="allowed-channel-col-type" data-mobile-label="${mobileLabelProtocol}">${escapeHtml(getChannelProtocolText(channelID))}</td>
           <td class="allowed-channel-col-actions" data-mobile-label="${mobileLabelActions}">
             <button type="button" class="allowed-channel-remove-btn btn btn-secondary btn-sm" data-action="remove-allowed-channel" data-channel-id="${channelID}">${t('common.delete')}</button>
           </td>
@@ -1010,9 +1052,9 @@
 
     function toggleSelectAllAllowedChannels(checked) {
       if (checked) {
-        editAllowedChannelIDs.forEach(channelID => selectedAllowedChannelIDs.add(channelID));
+        getVisibleAllowedChannelIDs().forEach(channelID => selectedAllowedChannelIDs.add(channelID));
       } else {
-        selectedAllowedChannelIDs.clear();
+        getVisibleAllowedChannelIDs().forEach(channelID => selectedAllowedChannelIDs.delete(channelID));
       }
       renderAllowedChannelsTable();
     }
@@ -1027,8 +1069,10 @@
     function updateSelectAllAllowedChannelsCheckbox() {
       const checkbox = document.getElementById('selectAllAllowedChannels');
       if (checkbox) {
-        checkbox.checked = editAllowedChannelIDs.length > 0 &&
-          selectedAllowedChannelIDs.size === editAllowedChannelIDs.length;
+        const visibleChannelIDs = getVisibleAllowedChannelIDs();
+        const selectedVisibleCount = visibleChannelIDs.filter((channelID) => selectedAllowedChannelIDs.has(channelID)).length;
+        checkbox.checked = visibleChannelIDs.length > 0 && selectedVisibleCount === visibleChannelIDs.length;
+        checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleChannelIDs.length;
       }
     }
 
@@ -1274,6 +1318,7 @@
       const selectAllCheckbox = document.getElementById('selectAllAllowedModels');
       const mobileLabelModelName = t('tokens.modelName');
       const mobileLabelActions = t('tokens.table.actions');
+      const visibleModelEntries = getVisibleAllowedModelEntries();
 
       if (!tbody) return;
 
@@ -1285,8 +1330,9 @@
 
       // 更新全选复选框状态
       if (selectAllCheckbox) {
-        selectAllCheckbox.checked = editAllowedModels.length > 0 &&
-          selectedAllowedModelIndices.size === editAllowedModels.length;
+        const selectedVisibleCount = visibleModelEntries.filter(({ index }) => selectedAllowedModelIndices.has(index)).length;
+        selectAllCheckbox.checked = visibleModelEntries.length > 0 && selectedVisibleCount === visibleModelEntries.length;
+        selectAllCheckbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleModelEntries.length;
       }
 
       if (editAllowedModels.length === 0) {
@@ -1299,8 +1345,18 @@
         `;
         return;
       }
+      if (visibleModelEntries.length === 0) {
+        tbody.innerHTML = `
+          <tr class="allowed-models-empty-row">
+            <td colspan="3" class="allowed-models-empty-cell">
+              ${t('tokens.noMatchingModel')}
+            </td>
+          </tr>
+        `;
+        return;
+      }
 
-      tbody.innerHTML = editAllowedModels.map((model, index) => {
+      tbody.innerHTML = visibleModelEntries.map(({ model, index }) => {
         return `
         <tr class="mobile-inline-row allowed-model-row">
           <td class="allowed-model-col-select mobile-inline-no-label">
@@ -1335,9 +1391,9 @@
      */
     function toggleSelectAllAllowedModels(checked) {
       if (checked) {
-        editAllowedModels.forEach((_, index) => selectedAllowedModelIndices.add(index));
+        getVisibleAllowedModelEntries().forEach(({ index }) => selectedAllowedModelIndices.add(index));
       } else {
-        selectedAllowedModelIndices.clear();
+        getVisibleAllowedModelEntries().forEach(({ index }) => selectedAllowedModelIndices.delete(index));
       }
       renderAllowedModelsTable();
     }
@@ -1358,8 +1414,10 @@
     function updateSelectAllCheckbox() {
       const checkbox = document.getElementById('selectAllAllowedModels');
       if (checkbox) {
-        checkbox.checked = editAllowedModels.length > 0 &&
-          selectedAllowedModelIndices.size === editAllowedModels.length;
+        const visibleModelEntries = getVisibleAllowedModelEntries();
+        const selectedVisibleCount = visibleModelEntries.filter(({ index }) => selectedAllowedModelIndices.has(index)).length;
+        checkbox.checked = visibleModelEntries.length > 0 && selectedVisibleCount === visibleModelEntries.length;
+        checkbox.indeterminate = selectedVisibleCount > 0 && selectedVisibleCount < visibleModelEntries.length;
       }
     }
 

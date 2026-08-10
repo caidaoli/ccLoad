@@ -1882,6 +1882,33 @@ func TestHandleDeleteChannel(t *testing.T) {
 	if err != nil {
 		t.Fatalf("创建测试渠道失败: %v", err)
 	}
+	other, err := store.CreateConfig(ctx, &model.Config{
+		Name:    "Still-Available",
+		URLs:    model.ChannelURLs{{URL: "https://other.example.com"}},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("创建其他渠道失败: %v", err)
+	}
+	const tokenHash = "delete-channel-token-hash"
+	authToken := &model.AuthToken{
+		Token:                  tokenHash,
+		Description:            "delete channel restriction reload",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{created.ID},
+		ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
+	}
+	if err := store.CreateAuthToken(ctx, authToken); err != nil {
+		t.Fatalf("创建 API 令牌失败: %v", err)
+	}
+	server.authService = newTestAuthService(t)
+	server.authService.store = store
+	if err := server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatalf("加载 API 令牌失败: %v", err)
+	}
+	if server.authService.IsChannelAllowed(tokenHash, other.ID) {
+		t.Fatal("删除前令牌不应允许其他渠道")
+	}
 
 	tests := []struct {
 		name           string
@@ -1891,7 +1918,7 @@ func TestHandleDeleteChannel(t *testing.T) {
 	}{
 		{
 			name:           "成功删除渠道",
-			channelID:      "1",
+			channelID:      strconv.FormatInt(created.ID, 10),
 			expectedStatus: http.StatusOK, // Gin测试: c.Status()未写入响应时默认200
 			checkSuccess:   true,
 		},
@@ -1923,13 +1950,22 @@ func TestHandleDeleteChannel(t *testing.T) {
 			}
 
 			if tt.checkSuccess {
-				// 删除成功，无响应体
-				// 验证渠道是否真的被删除（仅对首个测试）
-				if tt.channelID == "1" {
-					_, err := store.GetConfig(ctx, created.ID)
-					if err == nil {
-						t.Error("渠道应该已被删除")
-					}
+				_, err := store.GetConfig(ctx, created.ID)
+				if err == nil {
+					t.Error("渠道应该已被删除")
+				}
+				storedToken, err := store.GetAuthToken(ctx, authToken.ID)
+				if err != nil {
+					t.Fatalf("读取 API 令牌失败: %v", err)
+				}
+				if len(storedToken.AllowedChannelIDs) != 0 {
+					t.Fatalf("删除后 allowed_channel_ids=%v，期望为空", storedToken.AllowedChannelIDs)
+				}
+				if storedToken.IsActive {
+					t.Fatal("删除唯一白名单渠道后令牌应被禁用")
+				}
+				if server.authService.IsTokenActive(tokenHash) {
+					t.Fatal("删除后热更新未生效：被禁用令牌仍在鉴权缓存中")
 				}
 			}
 		})

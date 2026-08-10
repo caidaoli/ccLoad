@@ -18,6 +18,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+type failChannelDeleteStore struct {
+	storage.Store
+	failID int64
+}
+
+func (s *failChannelDeleteStore) DeleteConfig(ctx context.Context, id int64) error {
+	if id == s.failID {
+		return fmt.Errorf("forced delete failure for channel %d", id)
+	}
+	return s.Store.DeleteConfig(ctx, id)
+}
+
 func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
@@ -883,4 +895,95 @@ func TestHandleBatchDeleteChannels(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestHandleBatchDeleteChannels_FinalizesCommittedDeletesBeforeFailure(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	deletedChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "deleted-before-failure", URLs: model.ChannelURLs{{URL: "https://deleted.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failingChannel, err := store.CreateConfig(ctx, &model.Config{
+		Name: "delete-fails", URLs: model.ChannelURLs{{URL: "https://failure.example.com"}},
+		ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const tokenHash = "batch-partial-delete-token"
+	token := &model.AuthToken{
+		Token: tokenHash, Description: "disabled after partial delete", IsActive: true,
+		AllowedChannelIDs: []int64{deletedChannel.ID}, ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
+	}
+	if err := store.CreateAuthToken(ctx, token); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID: deletedChannel.ID, KeyIndex: 0, APIKey: "deleted-channel-key",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	failingStore := &failChannelDeleteStore{Store: store, failID: failingChannel.ID}
+	server.store = failingStore
+	server.channelCache = storage.NewChannelCache(failingStore, time.Hour)
+	server.authService = newTestAuthService(t)
+	server.authService.store = failingStore
+	if err := server.authService.ReloadAuthTokens(); err != nil {
+		t.Fatal(err)
+	}
+	if !server.authService.IsTokenActive(tokenHash) {
+		t.Fatal("test token must be active before deletion")
+	}
+	before, err := server.channelCache.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil || len(before) != 2 {
+		t.Fatalf("prime channel cache: channels=%d err=%v", len(before), err)
+	}
+	beforeKeys, err := server.channelCache.GetAPIKeys(ctx, deletedChannel.ID)
+	if err != nil || len(beforeKeys) != 1 {
+		t.Fatalf("prime API key cache: keys=%d err=%v", len(beforeKeys), err)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-delete", map[string]any{
+		"channel_ids": []int64{deletedChannel.ID, failingChannel.ID},
+	}))
+	server.HandleBatchDeleteChannels(c)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusInternalServerError, w.Body.String())
+	}
+	if _, err := store.GetConfig(ctx, deletedChannel.ID); err == nil {
+		t.Fatal("first channel delete must remain committed")
+	}
+	if _, err := store.GetConfig(ctx, failingChannel.ID); err != nil {
+		t.Fatalf("failed channel delete must leave channel intact: %v", err)
+	}
+	storedToken, err := store.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if storedToken.IsActive || server.authService.IsTokenActive(tokenHash) {
+		t.Fatal("token must be disabled in storage and auth cache after its last allowed channel is deleted")
+	}
+	after, err := server.channelCache.GetEnabledChannelsByModel(ctx, "*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != 1 || after[0].ID != failingChannel.ID {
+		t.Fatalf("channel cache was not finalized after partial delete: %+v", after)
+	}
+	afterKeys, err := server.channelCache.GetAPIKeys(ctx, deletedChannel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterKeys) != 0 {
+		t.Fatalf("API key cache retained %d keys for deleted channel", len(afterKeys))
+	}
 }

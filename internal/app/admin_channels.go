@@ -1114,6 +1114,11 @@ func (s *Server) handleDeleteChannel(c *gin.Context, id int64) {
 	// 删除渠道后必须同步失效该渠道的 API Keys 缓存，
 	// 否则若后续以同 ID 重新创建渠道（显式主键路径，例如混合存储恢复），可能读到旧 keys。
 	s.InvalidateAPIKeysCache(id)
+	if err := s.reloadAuthTokensAfterChannelDeletion(); err != nil {
+		log.Printf("渠道 %d 已删除，但 API 令牌限制热更新失败: %v", id, err)
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
+	}
 	RespondJSON(c, http.StatusOK, gin.H{"id": id})
 }
 
@@ -1515,6 +1520,11 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 		wasDeleted, err := s.deleteChannelByID(ctx, channelID)
 		if err != nil {
 			log.Printf("批量删除渠道 %d 失败: %v", channelID, err)
+			if finalizeErr := s.finalizeDeletedChannels(deleted); finalizeErr != nil {
+				log.Printf("部分渠道已删除，但删除后状态同步失败: %v", finalizeErr)
+				RespondError(c, http.StatusServiceUnavailable, finalizeErr)
+				return
+			}
 			RespondError(c, http.StatusInternalServerError, err)
 			return
 		}
@@ -1525,11 +1535,10 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 		deleted++
 	}
 
-	if deleted > 0 {
-		s.InvalidateChannelListCache()
-		// 同步失效所有 API Keys 缓存：批量删除涉及多个渠道，
-		// 全量清空比逐个 InvalidateAPIKeysCache(id) 更便宜，且不会造成残留。
-		s.InvalidateAllAPIKeysCache()
+	if err := s.finalizeDeletedChannels(deleted); err != nil {
+		log.Printf("批量渠道已删除，但删除后状态同步失败: %v", err)
+		RespondError(c, http.StatusServiceUnavailable, err)
+		return
 	}
 
 	RespondJSON(c, http.StatusOK, gin.H{
@@ -1538,6 +1547,15 @@ func (s *Server) HandleBatchDeleteChannels(c *gin.Context) {
 		"not_found":       notFound,
 		"not_found_count": len(notFound),
 	})
+}
+
+func (s *Server) finalizeDeletedChannels(deleted int) error {
+	if deleted == 0 {
+		return nil
+	}
+	s.InvalidateChannelListCache()
+	s.InvalidateAllAPIKeysCache()
+	return s.reloadAuthTokensAfterChannelDeletion()
 }
 
 func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
@@ -1558,6 +1576,16 @@ func normalizeBatchChannelIDs(rawIDs []int64) []int64 {
 		ids = append(ids, id)
 	}
 	return ids
+}
+
+func (s *Server) reloadAuthTokensAfterChannelDeletion() error {
+	if s.authService == nil {
+		return nil
+	}
+	if err := s.authService.ReloadAuthTokens(); err != nil {
+		return fmt.Errorf("reload API tokens after channel deletion: %w", err)
+	}
+	return nil
 }
 
 func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) {

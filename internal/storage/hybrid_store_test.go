@@ -165,15 +165,42 @@ func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateConfig: %v", err)
 	}
+	token := &model.AuthToken{
+		Token:                  "hybrid-delete-channel-token",
+		Description:            "hybrid channel restriction",
+		IsActive:               true,
+		AllowedChannelIDs:      []int64{created.ID},
+		ChannelRestrictionMode: model.ChannelRestrictionModeAllow,
+	}
+	if err := hybrid.CreateAuthToken(ctx, token); err != nil {
+		t.Fatalf("CreateAuthToken: %v", err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		primaryToken, tokenErr := primary.GetAuthToken(ctx, token.ID)
+		return tokenErr == nil && len(primaryToken.AllowedChannelIDs) == 1 &&
+			hybrid.RuntimeMetrics().PrimarySyncPending == 0
+	})
 	if err := hybrid.DeleteConfig(ctx, created.ID); err != nil {
 		t.Fatalf("DeleteConfig: %v", err)
 	}
 	waitForCondition(t, 3*time.Second, func() bool {
 		_, getErr := primary.GetConfig(ctx, created.ID)
-		return getErr != nil && hybrid.RuntimeMetrics().PrimarySyncPending == 0
+		primaryToken, tokenErr := primary.GetAuthToken(ctx, token.ID)
+		return getErr != nil && tokenErr == nil && !primaryToken.IsActive && len(primaryToken.AllowedChannelIDs) == 0 &&
+			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
 	if _, err := hybrid.GetConfig(ctx, created.ID); err == nil {
 		t.Fatal("SQLite 中被删除的渠道不应复活")
+	}
+	localToken, err := hybrid.GetAuthToken(ctx, token.ID)
+	if err != nil {
+		t.Fatalf("GetAuthToken: %v", err)
+	}
+	if len(localToken.AllowedChannelIDs) != 0 {
+		t.Fatalf("SQLite allowed_channel_ids=%v, want empty", localToken.AllowedChannelIDs)
+	}
+	if localToken.IsActive {
+		t.Fatal("SQLite token must be disabled after its last allowed channel is deleted")
 	}
 }
 
