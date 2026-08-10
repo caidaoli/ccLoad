@@ -17,11 +17,15 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/anthropicauth"
+	"ccLoad/internal/antigravityauth"
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -565,24 +569,6 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		}
 		testReq.BaseURL = normalizedBaseURL
 	}
-
-	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
-	if err != nil {
-		RespondError(c, http.StatusInternalServerError, err)
-		return
-	}
-	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
-		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
-	)
-	if err != nil {
-		RespondJSON(c, http.StatusOK, gin.H{
-			"success":    false,
-			"error":      err.Error(),
-			"total_keys": len(apiKeys),
-		})
-		return
-	}
-
 	if !cfg.SupportsModel(testReq.Model) {
 		RespondJSON(c, http.StatusOK, gin.H{
 			"success":          false,
@@ -593,8 +579,52 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 
+	apiKeys, err := s.store.GetAPIKeys(c.Request.Context(), id)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	runtimeCfg, keySelection, err := s.prepareChannelTestAuth(
+		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+		oauthCredentialUseCurrent,
+	)
+	if err != nil {
+		RespondJSON(c, http.StatusOK, gin.H{
+			"success":    false,
+			"error":      err.Error(),
+			"total_keys": len(apiKeys),
+		})
+		return
+	}
+
 	requestedModel := testReq.Model
-	testResult := s.executeChannelTestWithCooldown(c.Request.Context(), runtimeCfg, keySelection.keyIndex, keySelection.requestCredential, &testReq, keySelection.updatePersistedCooldown)
+	testResult := s.testChannelAPI(c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq)
+	statusCode, _ := getResultInt(testResult["status_code"])
+	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized {
+		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
+			c.Request.Context(), cfg, oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection),
+		)
+		if !handled && refreshErr == nil {
+			refreshErr = errors.New("OAuth credential refresh is unavailable")
+		}
+		if refreshErr != nil {
+			message := "刷新 OAuth 凭证失败: " + refreshErr.Error()
+			if original := strings.TrimSpace(getResultString(testResult, "error")); original != "" {
+				message = original + "; " + message
+			}
+			testResult["error"] = message
+		} else {
+			runtimeCfg = refreshedCfg
+			keySelection = refreshedSelection
+			testResult = s.testChannelAPI(
+				c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq,
+			)
+		}
+	}
+	testResult = s.applyChannelTestResultCooldown(
+		c.Request.Context(), runtimeCfg, keySelection.keyIndex, &testReq,
+		keySelection.updatePersistedCooldown, testResult,
+	)
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualTest, requestedModel, channelTestActualModel(testResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, testResult))
 	testResult["tested_key_index"] = keySelection.keyIndex
 	testResult["total_keys"] = len(apiKeys)
@@ -616,15 +646,24 @@ type channelTestKeySelection struct {
 	updatePersistedCooldown bool
 }
 
+type oauthCredentialLoadMode uint8
+
+const (
+	oauthCredentialUseCurrent oauthCredentialLoadMode = iota
+	oauthCredentialRefreshIfNeeded
+	oauthCredentialForceRefresh
+)
+
 func (s *Server) prepareChannelTestAuth(
 	ctx context.Context,
 	cfg *model.Config,
 	apiKeys []*model.APIKey,
 	requestedKeyIndex int,
 	requestAPIKey string,
+	oauthMode oauthCredentialLoadMode,
 ) (*model.Config, channelTestKeySelection, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, false); handled {
+	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, oauthMode); handled {
 		return runtimeCfg, selection, err
 	}
 
@@ -638,7 +677,26 @@ func (s *Server) prepareChannelTestAuth(
 func (s *Server) prepareOAuthChannelTestAuth(
 	ctx context.Context,
 	cfg *model.Config,
-	forceRefresh bool,
+	mode oauthCredentialLoadMode,
+) (*model.Config, channelTestKeySelection, bool, error) {
+	return s.prepareOAuthChannelTestAuthForRejectedToken(ctx, cfg, mode, "")
+}
+
+func (s *Server) prepareRejectedOAuthChannelTestAuth(
+	ctx context.Context,
+	cfg *model.Config,
+	rejectedAccessToken string,
+) (*model.Config, channelTestKeySelection, bool, error) {
+	return s.prepareOAuthChannelTestAuthForRejectedToken(
+		ctx, cfg, oauthCredentialForceRefresh, rejectedAccessToken,
+	)
+}
+
+func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
+	ctx context.Context,
+	cfg *model.Config,
+	mode oauthCredentialLoadMode,
+	rejectedAccessToken string,
 ) (*model.Config, channelTestKeySelection, bool, error) {
 	selection := channelTestKeySelection{
 		keyIndex:                cooldown.NoKeyIndex,
@@ -651,7 +709,16 @@ func (s *Server) prepareOAuthChannelTestAuth(
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
 	case cfg.UsesCodexOAuth():
-		credential, err := s.codexCredentials.credential(ctx, cfg, forceRefresh)
+		var credential *codexauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.codexCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		default:
+			credential, err = s.codexCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			if err == nil {
 				err = errors.New("codex OAuth credential is unavailable")
@@ -666,7 +733,16 @@ func (s *Server) prepareOAuthChannelTestAuth(
 		}
 		return runtimeCfg, selection, true, nil
 	case cfg.UsesAntigravityOAuth():
-		credential, err := s.antigravityCredentials.credential(ctx, cfg, forceRefresh)
+		var credential *antigravityauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.antigravityCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		default:
+			credential, err = s.antigravityCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			if err == nil {
 				err = errors.New("antigravity OAuth credential is unavailable")
@@ -681,7 +757,16 @@ func (s *Server) prepareOAuthChannelTestAuth(
 		}
 		return runtimeCfg, selection, true, nil
 	case cfg.UsesXAIOAuth():
-		credential, err := s.xaiCredentials.credential(ctx, cfg, forceRefresh)
+		var credential *xaiauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = xaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.xaiCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		default:
+			credential, err = s.xaiCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			if err == nil {
 				err = errors.New("xAI OAuth credential is unavailable")
@@ -694,7 +779,16 @@ func (s *Server) prepareOAuthChannelTestAuth(
 		}
 		return cfg.Clone(), selection, true, nil
 	case cfg.UsesAnthropicOAuth():
-		credential, err := s.anthropicCredentials.credential(ctx, cfg, forceRefresh)
+		var credential *anthropicauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.anthropicCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		default:
+			credential, err = s.anthropicCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			if err == nil {
 				err = errors.New("anthropic OAuth credential is unavailable")
@@ -752,6 +846,10 @@ func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyI
 
 func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
 	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
+	return s.applyChannelTestResultCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result)
+}
+
+func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.Config, keyIndex int, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool, result map[string]any) map[string]any {
 	actualModel := channelTestActualModel(result, testReq.Model)
 	if success, ok := result["success"].(bool); ok && success {
 		if updatePersistedCooldown {

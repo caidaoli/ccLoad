@@ -59,6 +59,26 @@ func (m *anthropicCredentialManager) credential(
 	cfg *model.Config,
 	forceRefresh bool,
 ) (*anthropicauth.Credential, error) {
+	return m.credentialForRejectedAccessToken(ctx, cfg, forceRefresh, "")
+}
+
+func (m *anthropicCredentialManager) credentialAfterUnauthorized(
+	ctx context.Context,
+	cfg *model.Config,
+	rejectedAccessToken string,
+) (*anthropicauth.Credential, error) {
+	if rejectedAccessToken == "" {
+		return nil, errors.New("anthropic rejected access token is required")
+	}
+	return m.credentialForRejectedAccessToken(ctx, cfg, true, rejectedAccessToken)
+}
+
+func (m *anthropicCredentialManager) credentialForRejectedAccessToken(
+	ctx context.Context,
+	cfg *model.Config,
+	forceRefresh bool,
+	rejectedAccessToken string,
+) (*anthropicauth.Credential, error) {
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
 		return nil, errors.New("anthropic credential manager is unavailable")
 	}
@@ -77,9 +97,10 @@ func (m *anthropicCredentialManager) credential(
 		return cloneAnthropicCredential(credential), nil
 	}
 	forcedAccessToken := credential.AccessToken
-	forceRequested := forceRefresh
-
-	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	if rejectedAccessToken != "" {
+		forcedAccessToken = rejectedAccessToken
+	}
+	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
 		refreshCtx := context.Background()
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
@@ -95,39 +116,34 @@ func (m *anthropicCredentialManager) credential(
 		if getErr != nil {
 			return nil, fmt.Errorf("reload Anthropic credential before refresh: %w", getErr)
 		}
-		for attempt := 0; attempt < 2; attempt++ {
-			current, parseErr := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if parseErr != nil {
-				return nil, fmt.Errorf("parse Anthropic credential for channel %d: %w", currentCfg.ID, parseErr)
-			}
-			refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), anthropicauth.CredentialRefreshLead)
-			if refreshErr != nil {
-				return nil, refreshErr
-			}
-			forceCurrent := forceRequested && current.AccessToken == forcedAccessToken
-			if !forceCurrent && !refreshNeeded {
-				m.cache(currentCfg.ID, current)
-				return cloneAnthropicCredential(current), nil
-			}
-
-			service := *m.service
-			if m.clientFor != nil {
-				service.Client = m.clientFor(currentCfg)
-			}
-			refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
-			if refreshErr != nil {
-				winner, getErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
-				if getErr == nil && winner.OAuthCredential != currentCfg.OAuthCredential && attempt == 0 {
-					// Another instance may already have consumed Anthropic's one-time
-					// refresh token. Re-read its CAS winner before surfacing invalid_grant.
-					currentCfg = winner
-					continue
-				}
-				return nil, fmt.Errorf("refresh Anthropic credential for channel %d: %w", currentCfg.ID, refreshErr)
-			}
-			return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
+		current, parseErr := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+		if parseErr != nil {
+			return nil, fmt.Errorf("parse Anthropic credential for channel %d: %w", currentCfg.ID, parseErr)
 		}
-		return nil, errors.New("anthropic credential refresh retry exhausted")
+		if current.AccessToken != forcedAccessToken {
+			m.cache(currentCfg.ID, current)
+			return oauthCredentialRefreshRedirect{}, nil
+		}
+		service := *m.service
+		if m.clientFor != nil {
+			service.Client = m.clientFor(currentCfg)
+		}
+		refreshed, refreshErr := service.Refresh(refreshCtx, current.RefreshToken)
+		if refreshErr != nil {
+			winner, getErr := m.store.GetConfig(refreshCtx, currentCfg.ID)
+			if getErr == nil && winner.OAuthCredential != currentCfg.OAuthCredential {
+				// Another instance may already have consumed Anthropic's one-time
+				// refresh token. Re-read its CAS winner before surfacing invalid_grant.
+				winnerCredential, parseWinnerErr := anthropicauth.ParseCredential([]byte(winner.OAuthCredential))
+				if parseWinnerErr == nil &&
+					(winnerCredential.AccessToken != current.AccessToken || winnerCredential.RefreshToken != current.RefreshToken) {
+					m.cache(winner.ID, winnerCredential)
+					return cloneAnthropicCredential(winnerCredential), nil
+				}
+			}
+			return nil, fmt.Errorf("refresh Anthropic credential for channel %d: %w", currentCfg.ID, refreshErr)
+		}
+		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})
 	var result singleflight.Result
 	if ctx == nil {
@@ -141,6 +157,16 @@ func (m *anthropicCredentialManager) credential(
 	}
 	if result.Err != nil {
 		return cloneAnthropicCredential(credential), result.Err
+	}
+	if _, redirected := result.Val.(oauthCredentialRefreshRedirect); redirected {
+		winner, winnerErr := m.cachedOrParse(cfg)
+		if winnerErr != nil {
+			return nil, winnerErr
+		}
+		if rejectedAccessToken != "" {
+			return cloneAnthropicCredential(winner), nil
+		}
+		return m.credentialForRejectedAccessToken(ctx, cfg, false, "")
 	}
 	return result.Val.(*anthropicauth.Credential), nil
 }

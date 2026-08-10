@@ -2,11 +2,27 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"sync"
 )
 
 var errOAuthCredentialRefreshesClosed = errors.New("OAuth credential refreshes are shutting down")
+
+type oauthCredentialRefreshRedirect struct{}
+
+func oauthCredentialRefreshSingleflightKey(channelID int64, accessToken string, tokenRefresh bool) string {
+	if accessToken == "" {
+		return fmt.Sprintf("channel:%d", channelID)
+	}
+	kind := "metadata"
+	if tokenRefresh {
+		kind = "token"
+	}
+	fingerprint := sha256.Sum256([]byte(accessToken))
+	return fmt.Sprintf("channel:%d:%s:%x", channelID, kind, fingerprint[:8])
+}
 
 // oauthCredentialRefreshTracker lets request waiters cancel immediately while
 // keeping the shared singleflight refresh owned by the Server lifecycle.
