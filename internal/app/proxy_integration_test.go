@@ -2123,8 +2123,8 @@ func TestProxy_XAIOAuthZeroKeyFinalizesWireAndReassemblesNonStream(t *testing.T)
 		tools := gjson.GetBytes(wireBody, "tools").Array()
 		switch gjson.GetBytes(wireBody, "tool_choice").String() {
 		case "":
-			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" {
-				t.Errorf("xAI CLI tools = %s, want one web_search", gjson.GetBytes(wireBody, "tools").Raw)
+			if len(tools) != 0 {
+				t.Errorf("xAI CLI tools = %s, want no implicit tools", gjson.GetBytes(wireBody, "tools").Raw)
 			}
 		case "auto":
 			if len(tools) != 1 || tools[0].Get("type").String() != "web_search" ||
