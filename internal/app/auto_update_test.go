@@ -34,11 +34,7 @@ func TestStartUpdateManagerContainerSkipsReleaseChecks(t *testing.T) {
 	t.Setenv("CCLOAD_CONTAINER", "1")
 	t.Setenv("CCLOAD_RELEASE_BASE_URL", releaseServer.URL+"/caidaoli/ccLoad/releases/latest/download")
 
-	originalRestartFunc := RestartFunc
 	var restartCalls atomic.Int64
-	RestartFunc = func() { restartCalls.Add(1) }
-	t.Cleanup(func() { RestartFunc = originalRestartFunc })
-
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	server := &Server{
@@ -48,6 +44,7 @@ func TestStartUpdateManagerContainerSkipsReleaseChecks(t *testing.T) {
 		}),
 		baseCtx: ctx,
 	}
+	server.SetRestartFunc(func() { restartCalls.Add(1) })
 
 	server.StartUpdateManager()
 	if server.updateManager != nil {

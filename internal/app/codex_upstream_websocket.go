@@ -530,6 +530,12 @@ func (s *codexUpstreamWebsocketSession) startReader(
 				s.detachReadFailure(conn, err, isCodexWebsocketHeartbeatFailure(err))
 				return
 			}
+			// A nested gateway reports its broken upstream socket as a structured
+			// retry event. Restore the transport provenance before retry/cooldown.
+			if interruptedErr := codexWebsocketInterruptedEventError(messageType, payload); interruptedErr != nil {
+				s.detachReadFailure(conn, interruptedErr, false)
+				return
+			}
 			if !s.enqueueRead(codexWebsocketRead{
 				conn:        conn,
 				messageType: messageType,
@@ -1109,6 +1115,8 @@ type codexWebsocketTransportError struct {
 	cause error
 }
 
+var errCodexWebsocketInterruptedEvent = errors.New("upstream websocket reported interrupted stream")
+
 func (e *codexWebsocketTransportError) Error() string {
 	if e == nil || e.cause == nil {
 		return "upstream websocket transport interrupted"
@@ -1140,7 +1148,21 @@ func isCodexWebsocketTransportFailure(err error, heartbeatFailure bool) bool {
 	}
 	var closeErr *websocket.CloseError
 	return errors.As(err, &closeErr) && closeErr.Code == websocket.CloseAbnormalClosure ||
-		errors.Is(err, io.ErrUnexpectedEOF) || heartbeatFailure
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, errCodexWebsocketInterruptedEvent) ||
+		heartbeatFailure
+}
+
+func codexWebsocketInterruptedEventError(messageType int, payload []byte) error {
+	if messageType != websocket.TextMessage ||
+		gjson.GetBytes(payload, "error.code").String() != responsesWebsocketInterruptedCode {
+		return nil
+	}
+	message := strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	if message == "" {
+		return errCodexWebsocketInterruptedEvent
+	}
+	return fmt.Errorf("%w: %s", errCodexWebsocketInterruptedEvent, message)
 }
 
 func (b *codexWebsocketResponseBody) Close() error {

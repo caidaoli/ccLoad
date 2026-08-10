@@ -45,16 +45,16 @@ func (s *Server) StartUpdateManager() {
 		return
 	}
 
-	applyUpdates := RestartFunc != nil
-	if !applyUpdates {
-		log.Print("[WARN] RestartFunc 为空，仅启动版本检查")
+	restart := s.restartFuncSnapshot()
+	if restart == nil {
+		log.Print("[WARN] 重启函数为空，仅启动版本检查")
 	}
 
 	interval, _ := settingDurationFromInt64(int64(autoUpdateIntervalHours), time.Hour)
 	s.startUpdateManager(
 		interval,
 		s.configuredReleaseChannel(),
-		applyUpdates,
+		restart,
 	)
 }
 
@@ -68,13 +68,13 @@ func (s *Server) configuredReleaseChannel() version.ReleaseChannel {
 	return channel
 }
 
-func (s *Server) startUpdateManager(interval time.Duration, channel version.ReleaseChannel, applyUpdates bool) {
+func (s *Server) startUpdateManager(interval time.Duration, channel version.ReleaseChannel, restart func()) {
 	manager, err := version.NewUpdateManager(version.UpdateManagerOptions{
 		Interval:       interval,
 		Channel:        channel,
-		ApplyUpdates:   applyUpdates,
+		ApplyUpdates:   restart != nil,
 		ActiveRequests: s.activeRequestCount,
-		Restart:        RestartFunc,
+		Restart:        restart,
 	})
 	if err != nil {
 		log.Printf("[WARN] 更新管理器未启动: %v", err)
@@ -87,7 +87,7 @@ func (s *Server) startUpdateManager(interval time.Duration, channel version.Rele
 		defer s.wg.Done()
 		manager.Run(s.baseCtx)
 	}()
-	log.Printf("[INFO] 更新管理器已启用，渠道: %s，检测间隔: %v，自动应用: %t", channel, interval, applyUpdates)
+	log.Printf("[INFO] 更新管理器已启用，渠道: %s，检测间隔: %v，自动应用: %t", channel, interval, restart != nil)
 }
 
 func (s *Server) activeRequestCount() int {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,57 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestServerRestartFuncIsConcurrentAndInstanceScoped(t *testing.T) {
+	first := &Server{}
+	second := &Server{}
+	var firstCalls atomic.Int64
+	var secondCalls atomic.Int64
+
+	var firstRestart func()
+	firstRestart = func() {
+		firstCalls.Add(1)
+		first.SetRestartFunc(firstRestart)
+	}
+	var secondRestart func()
+	secondRestart = func() {
+		secondCalls.Add(1)
+		second.SetRestartFunc(secondRestart)
+	}
+	first.SetRestartFunc(firstRestart)
+	second.SetRestartFunc(secondRestart)
+
+	const triggersPerServer = 64
+	var wg sync.WaitGroup
+	wg.Add(triggersPerServer * 2)
+	for range triggersPerServer {
+		go func() {
+			defer wg.Done()
+			first.triggerRestart()
+		}()
+		go func() {
+			defer wg.Done()
+			second.triggerRestart()
+		}()
+	}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("restart callbacks deadlocked while replacing themselves")
+	}
+
+	if got := firstCalls.Load(); got != triggersPerServer {
+		t.Fatalf("first restart calls=%d, want %d", got, triggersPerServer)
+	}
+	if got := secondCalls.Load(); got != triggersPerServer {
+		t.Fatalf("second restart calls=%d, want %d", got, triggersPerServer)
+	}
+}
 
 func findAdminSetting(t *testing.T, settings []map[string]any, key string) map[string]any {
 	t.Helper()
@@ -67,10 +120,8 @@ func TestAdminContainerUpdateSettingsDisabled(t *testing.T) {
 		}
 	})
 
-	oldRestartFunc := RestartFunc
-	t.Cleanup(func() { RestartFunc = oldRestartFunc })
 	restarted := make(chan struct{}, 1)
-	RestartFunc = func() { restarted <- struct{}{} }
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
 
 	t.Run("all write paths reject container-managed settings", func(t *testing.T) {
 		for _, key := range updateKeys {
@@ -138,10 +189,8 @@ func TestAdminUpdateModelCatalogSyncIntervalSetting(t *testing.T) {
 		t.Fatalf("LoadDefaults failed: %v", err)
 	}
 
-	oldRestartFunc := RestartFunc
-	t.Cleanup(func() { RestartFunc = oldRestartFunc })
 	restartCh := make(chan struct{}, 3)
-	RestartFunc = func() { restartCh <- struct{}{} }
+	server.SetRestartFunc(func() { restartCh <- struct{}{} })
 
 	const key = "model_catalog_sync_interval_hours"
 	tests := []struct {
@@ -202,10 +251,8 @@ func TestAdminSettingContractValidation(t *testing.T) {
 		t.Fatalf("LoadDefaults failed: %v", err)
 	}
 
-	oldRestartFunc := RestartFunc
-	t.Cleanup(func() { RestartFunc = oldRestartFunc })
 	restarted := make(chan struct{}, 32)
-	RestartFunc = func() { restarted <- struct{}{} }
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
 
 	tests := []struct {
 		name     string
@@ -297,10 +344,8 @@ func TestAdminCooldownBoundsUseFreshAtomicSnapshot(t *testing.T) {
 		t.Fatalf("seed cooldown bounds: %v", err)
 	}
 
-	oldRestartFunc := RestartFunc
-	t.Cleanup(func() { RestartFunc = oldRestartFunc })
 	restarted := make(chan struct{}, 2)
-	RestartFunc = func() { restarted <- struct{}{} }
+	server.SetRestartFunc(func() { restarted <- struct{}{} })
 
 	c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/settings/"+cooldownMaxSecondsSettingKey, map[string]string{"value": "199"}))
 	c.Params = gin.Params{{Key: "key", Value: cooldownMaxSecondsSettingKey}}
@@ -337,13 +382,8 @@ func TestAdminSettingsHandlers(t *testing.T) {
 		t.Fatalf("LoadDefaults failed: %v", err)
 	}
 
-	origRestartFunc := RestartFunc
-	defer func() {
-		RestartFunc = origRestartFunc
-	}()
-
 	restartCh := make(chan struct{}, 10)
-	RestartFunc = func() { restartCh <- struct{}{} }
+	server.SetRestartFunc(func() { restartCh <- struct{}{} })
 
 	t.Run("AdminGetSetting_missing_key", func(t *testing.T) {
 		c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/settings/", nil))
