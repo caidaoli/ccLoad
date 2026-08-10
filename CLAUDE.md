@@ -74,7 +74,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 关键机制(要点,细节读对应文件)
 
-- **选择**:先冷却过滤(正确性优先),再二选一排序——`enable_health_score` 默认 **false** 走渠道平滑加权轮询(按有效 Key 数),开启才走健康度排序(`calculateEffectivePriority`:`P_eff = Priority - 失败惩罚 - TTFB惩罚`,两种惩罚各自按样本量打置信度折扣,TTFB 部分还要 `enable_ttfb_score` 单独开)。成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;`ChannelURL.Exact` 派生运行时 `#` 标记实现精确转发,持久化 URL 本身不含标记
+- **选择**:先冷却过滤(正确性优先),再二选一排序——`enable_health_score` 默认 **false** 走渠道平滑加权轮询(按有效 Key 数),开启才走健康度排序(`calculateEffectivePriority`:`P_eff = Priority - 失败惩罚 - TTFB惩罚`,两种惩罚各自按样本量打置信度折扣,TTFB 部分还要 `enable_ttfb_score` 单独开)。成本限额检查优先于冷却;模型冷却按每个渠道解析重定向/模糊匹配后的实际上游模型过滤;多 URL 探索优先→1/EWMA 加权随机,失败 URL 独立退避;TCP 预探测只播种初始延迟,失败只作弱降权且不冷却、不计调用,真实成功或配置裁剪会使迟到探测结果失效;`ChannelURL.Exact` 派生运行时 `#` 标记实现精确转发,持久化 URL 本身不含标记
 - **路由候选是只读快照**(`cache.go:GetEnabledChannelsSnapshotByModel`):选择链路拿到的 `*model.Config` 归缓存所有,只有外层 slice 是请求私有的——可以过滤、排序、原地重排,但**禁止改 Config 字段**,要改先 `Clone()`(见 `selectAlphaSearchCandidates`);需要可变副本的路径继续用深拷贝的 `GetEnabledChannelsByModel`。`filterCooledChannels`/`selectByWeight`/`selectWithCooldownInPlace` 都原地压缩或重排入参,调用方只能用返回值,不能再按原长度复用入参
 - **模型停用**(`ModelEntry.Disabled`):`disabled=true` 的模型对外完全不存在——`GetModels`/`modelIndex`/`FuzzyMatchModel`/`channelModelCooldownKeys` 一律跳过。刷新模型列表的 `replace` 模式会按原名、归一化别名、重定向目标三种键把停用标记传播回新拉取的条目,避免刷新一次就把停用状态洗掉
 - **渠道级限流**(`channel_rpm_limiter.go`+`channel_concurrency_limiter.go`):`rpm_limit`/`max_concurrency` 都是 0=无限。注意 `max_concurrency` 这个名字在系统设置(全局信号量)、Auth Token、渠道三处各有一份,互不相干,改代码前先认准层级
@@ -82,7 +82,7 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 - **自定义请求规则**(`custom_rules.go`):`channels.custom_request_rules` JSON;header remove/override/append、body remove/override(点分路径);`validateCustomRequestRules` 强制认证头黑名单 + 禁 CRLF
 - **Codex 上游 Header 契约**(`codex_credentials.go`+`codex_upstream_websocket.go`):不走通用反代透传；HTTP 只接收 Codex 客户端白名单，静态 Key 与 OAuth 都只用 `Authorization: Bearer`，固定官方 `User-Agent`/`Originator`，认证与身份头在自定义规则后重建。原生 WebSocket 额外接收 turn state/timing/`OpenAI-Beta`，握手前删除 HTTP 传输头并归一 `OpenAI-Beta`、`Session_id`、`Conversation_id`；渠道自定义 Header 规则仍可显式增加非认证 Header
 - **Codex 上游 TLS**(`codex_utls_transport.go`):普通 HTTP 请求仅对 `https://chatgpt.com` 使用 Chrome uTLS，按 HTTP/2 → uTLS HTTP/1.1 → 标准 HTTP/1.1 降级并保留请求体重放；其他 Host 继续走标准 Transport。uTLS 继承环境/渠道代理、Host 覆盖、证书校验和握手超时，连接池跟随 `upstream_connection_reuse_limit_seconds` 整代轮换；原生 WebSocket 保持独立 Dialer
-- **OAuth 全局上游地址**:`CODEX_BASE_URL`(完整 Responses URL)、`XAI_BASE_URL`(API 根地址,通常以 `/v1` 结尾)、`ANTIGRAVITY_URL`、`ANTHROPIC_BASE_URL`(API 根地址)默认均为空；设置页分别以 `https://chatgpt.com/backend-api/codex/responses`、`https://cli-chat-proxy.grok.com/v1`、`https://daily-cloudcode-pa.googleapis.com`、`https://api.anthropic.com` 显示默认渠道地址占位提示，Antigravity 另有 `https://cloudcode-pa.googleapis.com` 备用地址。非空时对应 OAuth 渠道的数据请求、模型发现、测试和额度查询只使用该全局地址并忽略渠道 URL；OAuth 授权、Token 交换/刷新仍使用提供商官方地址，API Key 渠道不受影响。属于系统设置，修改后重启生效
+- **OAuth 全局上游地址**:`CODEX_BASE_URL`(完整 Responses URL)、`XAI_BASE_URL`(API 根地址,通常以 `/v1` 结尾)、`ANTIGRAVITY_URL`、`ANTHROPIC_BASE_URL`(API 根地址)默认均为空；设置页分别以 `https://chatgpt.com/backend-api/codex/responses`、`https://cli-chat-proxy.grok.com/v1`、`https://daily-cloudcode-pa.googleapis.com`、`https://api.anthropic.com` 显示默认渠道地址占位提示，Antigravity 另有 `https://cloudcode-pa.googleapis.com` 备用地址。非空时对应 OAuth 渠道的数据请求、模型发现、测试和额度查询只使用该全局地址并忽略渠道 URL；OAuth 授权、Token 交换/刷新仍使用提供商官方地址，API Key 渠道不受影响。Antigravity 的精确 `MODEL_CAPACITY_EXHAUSTED` 保留上游 503 供诊断,对外统一为 429 并只写模型冷却；数据请求最多跨 3 个 URL 重试,模型发现不因该错误冷却 URL。属于系统设置，修改后重启生效
 - **系统设置无热重载**(`config_service.go`+`admin_settings.go`):`LoadDefaults` 启动读一次进内存,运行期只读;单改/重置/批量三个写入口都是写库后 `go triggerRestart()`,2 秒后重启进程生效。别在 `AdminUpdateSetting` 里加"顺手刷新缓存"——重启才是生效机制
 - **引导期配置只能是环境变量**:`ConfigService` 依赖已建好的 `storage.Store`,所以建库阶段消费的配置不可能迁进系统设置(要读设置得先开库,要开库得先知道设置)。`SQLITE_PATH`/`SQLITE_JOURNAL_MODE`(拼 DSN,`factory.go:buildSQLiteDSN`)、`CCLOAD_MYSQL`/`CCLOAD_POSTGRES`/`CCLOAD_ENABLE_SQLITE_REPLICA`/`CCLOAD_SQLITE_LOG_DAYS`(`factory.go:NewStore`)全部属于这一类,保持环境变量;运行期策略才进系统设置
 - **全局限额与冷却时长**(`server.go:loadServerRuntimeConfig`):均为系统设置,启动读一次,改后重启生效。`max_concurrency`(全局并发信号量,注意与 Auth Token、渠道的同名字段是三个独立层级)、`max_body_bytes`/`max_image_body_bytes`(Images 路径独立上限,同时约束 Responses WS 帧与 transcript,注入见 `newRequestBodyLimits`)、`cooldown_{auth,server,timeout,rate_limit,min,max}_seconds`(`loadCooldownSettings` 读出 `util.CooldownSettings`,经 `Store.ConfigureCooldown` 注入;下限>上限时整对回退默认)。旧 `CCLOAD_MAX_CONCURRENCY`/`CCLOAD_MAX_BODY_BYTES`/`CCLOAD_COOLDOWN_*` 已废弃,仍设置时启动打 WARN
@@ -101,10 +101,10 @@ Responses WebSocket execution identity：同 Token 下以 `Session-Id` 标识顶
 
 ## 协议转换核心(改前必读)
 
-- 同步/审查转换核心必须使用仓库 Skill：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；唯一源码在 `.agents/skills/`，`.claude/skills/` 只放发现链接
+- 同步/审查转换核心与 provider 纯请求/响应适配器必须使用仓库 Skill：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；一次操作固定同一上游 commit 并原子完成全部登记范围，唯一 Skill 源码在 `.agents/skills/`，`.claude/skills/` 只放发现链接
 - `protocol/registry.go` 是唯一契约/调度边界:同协议原样透传;跨协议只走 `builtin/register.go` 注册的 12 个有向转换对
-- `builtin/cliproxy_adapter.go` 只处理 ccLoad 边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只放从 CLIProxyAPI 同步的纯转换核心
-- 不要把上游 auth/config/routing/cache/plugin/network 代码搬进来,也不要改成运行时 Go module 依赖;来源 commit、许可证和同步步骤以 `protocol/cliproxy/UPSTREAM.md` 为准
+- `builtin/cliproxy_adapter.go` 只处理 ccLoad 通用边界(输入验证、JSON/SSE 规范化、流帧封装);`protocol/cliproxy/` 只允许放从 CLIProxyAPI 同步的纯转换核心和 allowlist provider adapter，实际已导入状态以 `protocol/cliproxy/UPSTREAM.md` 为准
+- 不要把上游 auth/config/routing/cache service/plugin/executor/network 代码搬进来,也不要改成运行时 Go module 依赖;来源 commit、provider allowlist、许可证和同步步骤以 `protocol/cliproxy/UPSTREAM.md` 与仓库 Skill 为准
 - `RequestTranslationError` 是客户端语义错误:代理返回 HTTP 400,不切渠道、不冷却;不要把无法表示的请求伪装成上游故障
 - Registry 边界测试定义 ccLoad 线协议契约,上游同步测试守住转换行为;改协议后先跑命令区快照审计,再跑全量 `internal/...`
 

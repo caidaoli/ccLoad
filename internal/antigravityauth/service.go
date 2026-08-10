@@ -485,6 +485,9 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 		return nil, fmt.Errorf("%w: upstream returned HTTP %d", errAccessTokenRejected, resp.StatusCode)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		if responseBody := strings.TrimSpace(string(raw)); responseBody != "" {
+			return nil, fmt.Errorf("upstream returned HTTP %d: %s", resp.StatusCode, responseBody)
+		}
 		return nil, fmt.Errorf("upstream returned HTTP %d", resp.StatusCode)
 	}
 	return raw, nil

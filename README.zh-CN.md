@@ -866,8 +866,8 @@ ccLoad 使用的核心技术栈：
   - `protocol/registry.go`：请求、流式响应和非流式响应的契约边界；同协议请求不进入转换
   - `protocol/builtin/register.go`：注册全部 12 个跨协议有向组合
   - `protocol/builtin/cliproxy_adapter.go`：ccLoad 自有的输入验证、JSON/SSE 规范化与流帧封装
-  - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 转换核心快照；来源和同步规则见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
-  - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；两者使用 `.agents/skills/` 下的同一份仓库 Skill
+  - `protocol/cliproxy/`：仓库内维护的纯 [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) 四协议核心及 allowlist provider 请求/响应适配器快照边界；来源、同步规则和 provider 实际导入状态见 [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
+  - 上游同步入口：Codex 调 `$sync-cliproxy-core`，Claude Code 调 `/sync-cliproxy-core`；一次原子操作固定一个 commit，同时同步核心和全部已登记 provider adapter
   - 无法表示为目标协议的请求返回 `400 Bad Request`，不会触发渠道故障切换或冷却
   - 每个渠道默认接受 Anthropic、Codex、OpenAI、Gemini 客户端；实际上游协议能力属于结构化 URL
   - 显式协议声明直接选路，不兼容 URL 不发请求、不冷却地跳过；自动模式先试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 回落并跳过已试协议；local 模式仅在全部 URL 未声明时按 Anthropic → Codex → OpenAI → Gemini 回落

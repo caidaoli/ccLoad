@@ -641,6 +641,9 @@ func shouldCooldownURLOnFetchModelsError(err error) bool {
 	}
 	errMsg := err.Error()
 	if statusCode, body, ok := parseFetchModelsStatus(errMsg); ok {
+		if isAntigravityModelCapacityExhausted(statusCode, []byte(body)) {
+			return false
+		}
 		classification := util.ClassifyHTTPResponseWithMeta(statusCode, nil, []byte(body))
 		return classification.Level == util.ErrorLevelChannel
 	}

@@ -47,17 +47,18 @@ type urlRequestCount struct {
 
 // URLSelector 基于EWMA延迟和冷却状态选择最优URL
 type URLSelector struct {
-	mu           sync.RWMutex
-	latencies    map[urlKey]*ewmaValue
-	cooldowns    map[urlKey]urlCooldownState
-	requests     map[urlKey]*urlRequestCount
-	probing      map[urlKey]time.Time
-	disabled     map[urlKey]bool // 手动禁用的URL（启动时从 channel_url_states 回填）
-	alpha        float64         // EWMA权重因子
-	cooldownBase time.Duration   // 基础冷却时间
-	cooldownMax  time.Duration   // 最大冷却时间
-	probeTimeout time.Duration
-	probeDial    func(ctx context.Context, network, address string) (net.Conn, error)
+	mu            sync.RWMutex
+	latencies     map[urlKey]*ewmaValue
+	cooldowns     map[urlKey]urlCooldownState
+	requests      map[urlKey]*urlRequestCount
+	probing       map[urlKey]time.Time
+	probeFailures map[urlKey]time.Time
+	disabled      map[urlKey]bool // 手动禁用的URL（启动时从 channel_url_states 回填）
+	alpha         float64         // EWMA权重因子
+	cooldownBase  time.Duration   // 基础冷却时间
+	cooldownMax   time.Duration   // 最大冷却时间
+	probeTimeout  time.Duration
+	probeDial     func(ctx context.Context, network, address string) (net.Conn, error)
 	// 低频清理调度，避免 map 长期只增不减。
 	cleanupInterval time.Duration
 	latencyMaxAge   time.Duration
@@ -73,6 +74,7 @@ func normalizeLatencyMS(ttfb time.Duration) float64 {
 }
 
 func (s *URLSelector) upsertLatencyLocked(key urlKey, ms float64, now time.Time) {
+	delete(s.probeFailures, key)
 	if e, ok := s.latencies[key]; ok {
 		e.value = s.alpha*ms + (1-s.alpha)*e.value
 		e.lastSeen = now
@@ -89,6 +91,7 @@ func NewURLSelector() *URLSelector {
 		cooldowns:       make(map[urlKey]urlCooldownState),
 		requests:        make(map[urlKey]*urlRequestCount),
 		probing:         make(map[urlKey]time.Time),
+		probeFailures:   make(map[urlKey]time.Time),
 		disabled:        make(map[urlKey]bool),
 		alpha:           0.3,
 		cooldownBase:    2 * time.Minute,
@@ -111,6 +114,11 @@ func (s *URLSelector) gcLocked(now time.Time, maxAge time.Duration) {
 			if ewma == nil || ewma.lastSeen.IsZero() || ewma.lastSeen.Before(cutoff) {
 				delete(s.latencies, key)
 				delete(s.requests, key)
+			}
+		}
+		for key, failedAt := range s.probeFailures {
+			if failedAt.IsZero() || failedAt.Before(cutoff) {
+				delete(s.probeFailures, key)
 			}
 		}
 	}
@@ -185,6 +193,22 @@ func (s *URLSelector) PruneChannel(channelID int64, keepURLs []string) {
 			delete(s.requests, key)
 		}
 	}
+	for key := range s.probeFailures {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.probeFailures, key)
+		}
+	}
+	for key := range s.probing {
+		if key.channelID != channelID {
+			continue
+		}
+		if _, ok := keep[key.url]; !ok {
+			delete(s.probing, key)
+		}
+	}
 	for key := range s.disabled {
 		if key.channelID != channelID {
 			continue
@@ -215,10 +239,11 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 	defer s.mu.RUnlock()
 
 	type candidate struct {
-		url     string
-		idx     int
-		latency float64 // -1 表示无数据
-		cooled  bool
+		url         string
+		idx         int
+		latency     float64 // -1 表示无数据
+		cooled      bool
+		probeFailed bool
 	}
 
 	candidates := make([]candidate, 0, len(urls))
@@ -233,6 +258,7 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 		if e, ok := s.latencies[key]; ok {
 			c.latency = e.value
 		}
+		_, c.probeFailed = s.probeFailures[key]
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
@@ -260,16 +286,24 @@ func (s *URLSelector) SelectURL(channelID int64, urls []string) (string, int) {
 	}
 
 	// 未探索URL优先：随机选一个未探索的
-	var unknown, known []candidate
+	var unknown, known, probeFailed []candidate
 	for _, c := range available {
 		if c.latency < 0 {
-			unknown = append(unknown, c)
+			if c.probeFailed {
+				probeFailed = append(probeFailed, c)
+			} else {
+				unknown = append(unknown, c)
+			}
 		} else {
 			known = append(known, c)
 		}
 	}
 	if len(unknown) > 0 {
 		pick := unknown[rand.IntN(len(unknown))]
+		return pick.url, pick.idx
+	}
+	if len(known) == 0 {
+		pick := probeFailed[rand.IntN(len(probeFailed))]
 		return pick.url, pick.idx
 	}
 
@@ -309,6 +343,8 @@ func (s *URLSelector) RecordLatency(channelID int64, url string, ttfb time.Durat
 	now := time.Now()
 	s.maybeCleanupLocked(now)
 
+	// 真实成功比并发 TCP 弱探测更权威；撤销占位使迟到结果失效。
+	delete(s.probing, key)
 	s.upsertLatencyLocked(key, ms, now)
 
 	// 成功请求：清除冷却状态，立即恢复可用
@@ -472,10 +508,11 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	defer s.mu.RUnlock()
 
 	type candidate struct {
-		url     string
-		idx     int
-		latency float64
-		cooled  bool
+		url         string
+		idx         int
+		latency     float64
+		cooled      bool
+		probeFailed bool
 	}
 
 	candidates := make([]candidate, 0, len(urls))
@@ -489,6 +526,7 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 		if e, ok := s.latencies[key]; ok {
 			c.latency = e.value
 		}
+		_, c.probeFailed = s.probeFailures[key]
 		if cd, ok := s.cooldowns[key]; ok && now.Before(cd.until) {
 			c.cooled = true
 		}
@@ -508,7 +546,8 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 	rand.Shuffle(len(candidates), func(i, j int) {
 		candidates[i], candidates[j] = candidates[j], candidates[i]
 	})
-	// 排序优先级：非冷却 > 冷却，同组内未探索 > 已知，已知按EWMA升序
+	// 排序优先级：非冷却 > 冷却，同组内未探索 > 已知 > TCP探测失败。
+	// 探测失败只降低优先级，不产生冷却。
 	slices.SortStableFunc(candidates, func(ci, cj candidate) int {
 		if ci.cooled != cj.cooled {
 			if !ci.cooled {
@@ -516,15 +555,21 @@ func (s *URLSelector) SortURLs(channelID int64, urls []string) []sortedURL {
 			}
 			return 1
 		}
-		iKnown, jKnown := ci.latency >= 0, cj.latency >= 0
-		if iKnown != jKnown {
-			if !iKnown {
-				return -1 // 未探索的优先
+		rank := func(c candidate) int {
+			if c.latency >= 0 {
+				return 1
 			}
-			return 1
+			if c.probeFailed {
+				return 2
+			}
+			return 0
 		}
-		if !iKnown {
-			return 0 // 都未探索：保持随机顺序
+		iRank, jRank := rank(ci), rank(cj)
+		if iRank != jRank {
+			return iRank - jRank
+		}
+		if iRank != 1 {
+			return 0 // 都未探索或都探测失败：保持随机顺序
 		}
 		if ci.latency < cj.latency {
 			return -1
@@ -636,6 +681,7 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 		unknowns = append(unknowns, u)
 	}
 	s.mu.Unlock()
+	probeGeneration := now
 
 	if len(unknowns) == 0 {
 		return // 所有URL已有数据
@@ -658,11 +704,19 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 
 	results := make(chan probeResult, len(unknowns))
 	pending := make(map[string]struct{}, len(unknowns))
-	clearProbing := func(probedURL string) {
+	finishProbe := func(probedURL string, apply func(urlKey)) bool {
 		key := urlKey{channelID: channelID, url: probedURL}
 		s.mu.Lock()
+		defer s.mu.Unlock()
+		started, ok := s.probing[key]
+		if !ok || !started.Equal(probeGeneration) {
+			return false
+		}
 		delete(s.probing, key)
-		s.mu.Unlock()
+		if apply != nil {
+			apply(key)
+		}
+		return true
 	}
 	for _, u := range unknowns {
 		pending[u] = struct{}{}
@@ -692,27 +746,33 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 			return
 		}
 		delete(pending, r.url)
-		defer clearProbing(r.url)
 		if r.err != nil {
-			// 请求取消/服务关闭导致的探测中断不应污染URL冷却状态。
+			// TCP 预探测只用于延迟播种：它不走渠道代理，也没有 TLS/HTTP
+			// 语义，失败不能作为 URL 故障的权威证据。真实请求失败会单独冷却 URL。
 			if errors.Is(r.err, context.Canceled) {
+				finishProbe(r.url, nil)
 				return
 			}
-			s.CooldownURL(channelID, r.url)
-			failed++
+			if finishProbe(r.url, func(key urlKey) {
+				if _, known := s.latencies[key]; !known {
+					s.probeFailures[key] = time.Now()
+				}
+			}) {
+				failed++
+			}
 			return
 		}
 		latency := r.latency
 		if latency <= 0 {
 			latency = time.Millisecond
 		}
-		key := urlKey{channelID: channelID, url: r.url}
-		s.mu.Lock()
-		now := time.Now()
-		s.maybeCleanupLocked(now)
-		s.upsertLatencyLocked(key, normalizeLatencyMS(latency), now)
-		s.mu.Unlock()
-		probed++
+		if finishProbe(r.url, func(key urlKey) {
+			now := time.Now()
+			s.maybeCleanupLocked(now)
+			s.upsertLatencyLocked(key, normalizeLatencyMS(latency), now)
+		}) {
+			probed++
+		}
 	}
 
 	for range len(unknowns) {
@@ -720,18 +780,23 @@ func (s *URLSelector) ProbeURLs(parentCtx context.Context, channelID int64, urls
 		case r := <-results:
 			handleResult(r)
 		case <-ctx.Done():
-			// 超时/取消：先吸收已完成结果，再把剩余未完成URL标记为冷却，避免继续以unknown优先被选中。
+			// 超时/取消：先吸收已完成结果，再清理剩余占位。
+			// 未完成的弱探测同样不能污染 URL 冷却状态。
 			ctxErr := ctx.Err()
-			shouldCooldownPending := errors.Is(ctxErr, context.DeadlineExceeded)
 			for {
 				select {
 				case r := <-results:
 					handleResult(r)
 				default:
 					for pendingURL := range pending {
-						clearProbing(pendingURL)
-						if shouldCooldownPending {
-							s.CooldownURL(channelID, pendingURL)
+						markFailed := errors.Is(ctxErr, context.DeadlineExceeded)
+						if finishProbe(pendingURL, func(key urlKey) {
+							if markFailed {
+								if _, known := s.latencies[key]; !known {
+									s.probeFailures[key] = time.Now()
+								}
+							}
+						}) && markFailed {
 							failed++
 						}
 					}
