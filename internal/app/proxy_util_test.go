@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -164,6 +165,45 @@ func TestBuildLogEntry_StreamDiagMsg(t *testing.T) {
 		})
 		if entry.Message != errMsg {
 			t.Errorf("expected Message=%q, got %q", errMsg, entry.Message)
+		}
+	})
+
+	t.Run("响应头前传输错误明确没有上游响应体", func(t *testing.T) {
+		res := &fwResult{
+			Status: http.StatusBadGateway,
+			Body:   []byte("unexpected EOF"),
+		}
+		entry := buildLogEntry(logEntryParams{
+			RequestModel: "claude-sonnet-5",
+			ChannelID:    channelID,
+			StatusCode:   http.StatusBadGateway,
+			Duration:     1.5,
+			Result:       res,
+			ErrMsg:       "unexpected EOF",
+		})
+		if !strings.Contains(entry.Message, "before HTTP response (no response body)") ||
+			!strings.Contains(entry.Message, "unexpected EOF") {
+			t.Fatalf("transport error message=%q", entry.Message)
+		}
+	})
+
+	t.Run("处理错误时普通日志保留上游响应体", func(t *testing.T) {
+		res := &fwResult{
+			Status:         http.StatusBadGateway,
+			UpstreamStatus: http.StatusBadRequest,
+			Body:           []byte(`{"error":{"message":"invalid thinking level"}}`),
+		}
+		entry := buildLogEntry(logEntryParams{
+			RequestModel: "claude-sonnet-5",
+			ChannelID:    channelID,
+			StatusCode:   http.StatusBadGateway,
+			Duration:     1.5,
+			Result:       res,
+			ErrMsg:       "decode upstream response",
+		})
+		if !strings.Contains(entry.Message, "decode upstream response") ||
+			!strings.Contains(entry.Message, "invalid thinking level") {
+			t.Fatalf("upstream error message=%q", entry.Message)
 		}
 	})
 

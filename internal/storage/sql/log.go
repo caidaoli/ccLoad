@@ -284,13 +284,13 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 				return err
 			}
 			if _, err := s.execTx(ctx, tx, `
-				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body,
+				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body, upstream_error,
 					protocol_transformed, original_req_url, original_req_headers, original_req_body,
 					translated_resp_status, translated_resp_headers, translated_resp_body)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 				logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
 				e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
-				e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.ProtocolTransformed,
+				e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.UpstreamError, e.DebugData.ProtocolTransformed,
 				e.DebugData.OriginalReqURL, e.DebugData.OriginalReqHeaders, e.DebugData.OriginalReqBody,
 				e.DebugData.TranslatedRespStatus, e.DebugData.TranslatedRespHeaders, e.DebugData.TranslatedRespBody,
 			); err != nil {
@@ -313,13 +313,13 @@ func insertLogsWithDebug(ctx context.Context, s *SQLStore, tx *sql.Tx, logs []*m
 		}
 		logID, _ := result.LastInsertId()
 		if _, err := s.execTx(ctx, tx, `
-			INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body,
+			INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body, upstream_error,
 				protocol_transformed, original_req_url, original_req_headers, original_req_body,
 				translated_resp_status, translated_resp_headers, translated_resp_body)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			logID, e.DebugData.CreatedAt, e.DebugData.ReqMethod, e.DebugData.ReqURL,
 			e.DebugData.ReqHeaders, e.DebugData.ReqBody, e.DebugData.RespStatus,
-			e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.ProtocolTransformed,
+			e.DebugData.RespHeaders, e.DebugData.RespBody, e.DebugData.UpstreamError, e.DebugData.ProtocolTransformed,
 			e.DebugData.OriginalReqURL, e.DebugData.OriginalReqHeaders, e.DebugData.OriginalReqBody,
 			e.DebugData.TranslatedRespStatus, e.DebugData.TranslatedRespHeaders, e.DebugData.TranslatedRespBody,
 		); err != nil {

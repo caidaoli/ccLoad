@@ -214,6 +214,7 @@ func DefineDebugLogsTable() *TableBuilder {
 		Column("resp_status INT NOT NULL DEFAULT 0").
 		Column("resp_headers TEXT NOT NULL").
 		Column("resp_body LONGBLOB").
+		Column("upstream_error TEXT").
 		Column("protocol_transformed TINYINT NOT NULL DEFAULT 0").
 		Column("original_req_url TEXT").
 		Column("original_req_headers TEXT").

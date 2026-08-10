@@ -1503,10 +1503,11 @@ func emptyOKResponseResult(reqCtx *requestContext, resp *http.Response, hdrClone
 	duration := reqCtx.Duration().Seconds()
 	err := fmt.Errorf("%w (200 OK %s)", util.ErrUpstreamEmptyResponse, detail)
 	return &fwResult{
-		Status:        resp.StatusCode,
-		Header:        hdrClone,
-		Body:          []byte(err.Error()),
-		FirstByteTime: readStats.firstByteSec,
+		Status:         resp.StatusCode,
+		UpstreamStatus: resp.StatusCode,
+		Header:         hdrClone,
+		Body:           []byte(err.Error()),
+		FirstByteTime:  readStats.firstByteSec,
 	}, duration, err
 }
 
@@ -1815,6 +1816,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		}
 	}
 	dc := s.captureDebugRequest(debugReq, debugBody)
+	dc.captureUpstreamError(err)
 	if reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth {
 		originalReqURL := reqCtx.transformPlan.OriginalPath
 		if rawQuery != "" {
@@ -1860,6 +1862,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 
 	if err != nil {
 		errRes, errDur, errErr := s.handleRequestError(reqCtx, cfg, err)
+		dc.captureUpstreamError(errErr)
 		if errRes != nil {
 			errRes.DebugData = dc.buildEntry(resp)
 			if usedNativeWebsocket {
@@ -1936,6 +1939,7 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	}
 
 	// 5. Debug捕获：构建完整的 debug 日志条目（响应体已通过 TeeReader 收集完毕）
+	dc.captureUpstreamError(err)
 	if res != nil {
 		res.DebugData = dc.buildEntry(resp)
 		if usedNativeWebsocket {

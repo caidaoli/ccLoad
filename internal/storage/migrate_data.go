@@ -835,6 +835,7 @@ func rebuildDebugLogsForProtocolPayloads(ctx context.Context, db *sql.DB, dialec
 
 func ensureDebugLogsProtocolMetadata(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	columns := []mysqlColumnDef{
+		{name: "upstream_error", definition: "TEXT"},
 		{name: "original_req_url", definition: "TEXT"},
 		{name: "original_req_headers", definition: "TEXT"},
 		{name: "translated_resp_status", definition: "INT NOT NULL DEFAULT 0"},

@@ -2297,9 +2297,13 @@ function composeDebugRequest(method, url, headerData, bodyData) {
   return parts.join('\n');
 }
 
-function composeDebugResponse(status, headerData, bodyData) {
+function composeDebugResponse(status, headerData, bodyData, upstreamError) {
   const parts = [];
   if (status) parts.push('HTTP ' + status);
+  if (upstreamError) {
+    if (!status) parts.push('UPSTREAM TRANSPORT ERROR (no HTTP response)');
+    parts.push(String(upstreamError));
+  }
   const headers = formatHeaderLines(headerData);
   if (headers) parts.push(headers);
   const body = formatJsonSafe(bodyData);
@@ -2318,7 +2322,7 @@ function composeDebugRawRequest(data) {
 }
 
 function composeDebugRawResponse(data) {
-  return composeDebugResponse(data?.resp_status, data?.resp_headers, data?.resp_body);
+  return composeDebugResponse(data?.resp_status, data?.resp_headers, data?.resp_body, data?.upstream_error);
 }
 
 function composeDebugTranslatedRequest(data) {

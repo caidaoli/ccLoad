@@ -15,11 +15,11 @@ func (s *SQLStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) erro
 		e.CreatedAt = time.Now().Unix()
 	}
 	_, err := s.ExecContext(ctx, `
-			INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body,
-				protocol_transformed, original_req_url, original_req_headers, original_req_body,
-				translated_resp_status, translated_resp_headers, translated_resp_body)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		e.LogID, e.CreatedAt, e.ReqMethod, e.ReqURL, e.ReqHeaders, e.ReqBody, e.RespStatus, e.RespHeaders, e.RespBody,
+				INSERT INTO debug_logs (log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body, upstream_error,
+					protocol_transformed, original_req_url, original_req_headers, original_req_body,
+					translated_resp_status, translated_resp_headers, translated_resp_body)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		e.LogID, e.CreatedAt, e.ReqMethod, e.ReqURL, e.ReqHeaders, e.ReqBody, e.RespStatus, e.RespHeaders, e.RespBody, e.UpstreamError,
 		e.ProtocolTransformed, e.OriginalReqURL, e.OriginalReqHeaders, e.OriginalReqBody,
 		e.TranslatedRespStatus, e.TranslatedRespHeaders, e.TranslatedRespBody,
 	)
@@ -29,15 +29,15 @@ func (s *SQLStore) AddDebugLog(ctx context.Context, e *model.DebugLogEntry) erro
 // GetDebugLogByLogID 根据 log_id 查询调试日志
 func (s *SQLStore) GetDebugLogByLogID(ctx context.Context, logID int64) (*model.DebugLogEntry, error) {
 	row := s.QueryRowContext(ctx, `
-			SELECT log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body,
-				protocol_transformed, COALESCE(original_req_url, ''), COALESCE(original_req_headers, ''), original_req_body,
+				SELECT log_id, created_at, req_method, req_url, req_headers, req_body, resp_status, resp_headers, resp_body, COALESCE(upstream_error, ''),
+					protocol_transformed, COALESCE(original_req_url, ''), COALESCE(original_req_headers, ''), original_req_body,
 				translated_resp_status, COALESCE(translated_resp_headers, ''), translated_resp_body
 			FROM debug_logs WHERE log_id = ? LIMIT 1`, logID)
 
 	var e model.DebugLogEntry
 	err := row.Scan(
 		&e.LogID, &e.CreatedAt, &e.ReqMethod, &e.ReqURL, &e.ReqHeaders, &e.ReqBody,
-		&e.RespStatus, &e.RespHeaders, &e.RespBody, &e.ProtocolTransformed,
+		&e.RespStatus, &e.RespHeaders, &e.RespBody, &e.UpstreamError, &e.ProtocolTransformed,
 		&e.OriginalReqURL, &e.OriginalReqHeaders, &e.OriginalReqBody,
 		&e.TranslatedRespStatus, &e.TranslatedRespHeaders, &e.TranslatedRespBody,
 	)

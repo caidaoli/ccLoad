@@ -10,8 +10,9 @@ type DebugLogEntry struct {
 	ReqHeaders            string `json:"req_headers"` // JSON string
 	ReqBody               []byte `json:"req_body"`    // 实际发往上游的请求体
 	RespStatus            int    `json:"resp_status"`
-	RespHeaders           string `json:"resp_headers"` // JSON string
-	RespBody              []byte `json:"resp_body"`    // 上游原始响应体
+	RespHeaders           string `json:"resp_headers"`   // JSON string
+	RespBody              []byte `json:"resp_body"`      // 上游原始响应体
+	UpstreamError         string `json:"upstream_error"` // 未形成完整 HTTP 响应时的传输/解析错误
 	ProtocolTransformed   bool   `json:"protocol_transformed"`
 	OriginalReqURL        string `json:"original_req_url"`        // 客户端原始请求目标
 	OriginalReqHeaders    string `json:"original_req_headers"`    // 客户端原始请求头，JSON string

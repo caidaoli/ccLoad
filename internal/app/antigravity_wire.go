@@ -215,6 +215,7 @@ func prepareAntigravityRequestBody(
 	normalizeAntigravityContentsRoles(request)
 	restoreAntigravityAnthropicToolIDs(request, sourceBody)
 	normalizeAntigravitySchemas(request, modelName)
+	normalizeAntigravityThinkingLevel(request)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		ensureAntigravityValidatedToolMode(request)
 	} else if generationConfig, ok := request["generationConfig"].(map[string]any); ok {
@@ -248,6 +249,39 @@ func prepareAntigravityRequestBody(
 		return nil, fmt.Errorf("encode Antigravity request: %w", err)
 	}
 	return obfuscateAntigravitySystemInstruction(raw, matcher), nil
+}
+
+// normalizeAntigravityThinkingLevel replaces client-facing effort aliases that
+// are not valid Antigravity ThinkingLevel enum values. CLIProxyAPI normally does
+// this in its excluded runtime ApplyThinking stage, so ccLoad must enforce the
+// provider wire contract at the shared finalization boundary.
+func normalizeAntigravityThinkingLevel(request map[string]any) {
+	for _, generationConfigKey := range []string{"generationConfig", "generation_config"} {
+		generationConfig, _ := request[generationConfigKey].(map[string]any)
+		if generationConfig == nil {
+			continue
+		}
+		for _, thinkingConfigKey := range []string{"thinkingConfig", "thinking_config"} {
+			thinkingConfig, _ := generationConfig[thinkingConfigKey].(map[string]any)
+			if thinkingConfig == nil {
+				continue
+			}
+			levelKey := "thinkingLevel"
+			level, _ := thinkingConfig[levelKey].(string)
+			if level == "" {
+				levelKey = "thinking_level"
+				level, _ = thinkingConfig[levelKey].(string)
+			}
+			switch normalized := strings.ToLower(strings.TrimSpace(level)); normalized {
+			case "minimal":
+				thinkingConfig[levelKey] = "low"
+			case "xhigh", "max":
+				thinkingConfig[levelKey] = "high"
+			case "low", "medium", "high":
+				thinkingConfig[levelKey] = normalized
+			}
+		}
+	}
 }
 
 func restoreAntigravityAnthropicToolIDs(request map[string]any, sourceBody []byte) {

@@ -117,6 +117,9 @@ documented adaptations:
 - Antigravity adapters keep only request-local conversion state. Runtime signature
   caches, dynamic model registries, and logging side effects remain outside the
   provider packages; OpenAI summary aliases are normalized locally as wire data.
+  The shared Antigravity wire finalizer also performs the excluded runtime
+  `ApplyThinking` effort-alias normalization (`minimal` to `low`, `xhigh`/`max`
+  to `high`) for every client protocol before the request is sent.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
 
