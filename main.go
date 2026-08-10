@@ -110,7 +110,7 @@ func main() {
 
 	// 注入重启函数（避免循环依赖）
 	// 语义：标记“需要重启”，并发送 SIGTERM 触发优雅关闭；main 在退出前检测标记并 execSelf。
-	app.RestartFunc = func() {
+	srv.SetRestartFunc(func() {
 		RequestRestart()
 
 		p, err := os.FindProcess(os.Getpid())
@@ -121,7 +121,7 @@ func main() {
 		if err := p.Signal(syscall.SIGTERM); err != nil {
 			log.Printf("[ERROR] 发送 SIGTERM 失败: %v", err)
 		}
-	}
+	})
 
 	srv.StartUpdateManager()
 

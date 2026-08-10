@@ -232,7 +232,7 @@ func (s *Server) AdminUpdateSetting(c *gin.Context) {
 	})
 
 	// 异步触发重启
-	go triggerRestart()
+	go s.triggerRestart()
 }
 
 // AdminResetSetting 重置配置为默认值
@@ -281,7 +281,7 @@ func (s *Server) AdminResetSetting(c *gin.Context) {
 	})
 
 	// 异步触发重启
-	go triggerRestart()
+	go s.triggerRestart()
 }
 
 // AdminBatchUpdateSettings 批量更新配置(事务保护)
@@ -333,7 +333,7 @@ func (s *Server) AdminBatchUpdateSettings(c *gin.Context) {
 	})
 
 	// 异步触发重启
-	go triggerRestart()
+	go s.triggerRestart()
 }
 
 // validateSettingValue 验证配置值的合法性
@@ -527,17 +527,36 @@ func validateOptionalOAuthBaseURL(value string) error {
 	return nil
 }
 
-// RestartFunc 重启函数（由 main 包注入，避免循环依赖）
-var RestartFunc func()
+// SetRestartFunc 注入当前 Server 的重启函数（由 main 包提供，避免循环依赖）。
+// 回调在锁外执行，允许重启流程并发访问 Server 而不会死锁。
+func (s *Server) SetRestartFunc(fn func()) {
+	if s == nil {
+		return
+	}
+	s.restartMu.Lock()
+	s.restartFunc = fn
+	s.restartMu.Unlock()
+}
+
+func (s *Server) restartFuncSnapshot() func() {
+	if s == nil {
+		return nil
+	}
+	s.restartMu.RLock()
+	fn := s.restartFunc
+	s.restartMu.RUnlock()
+	return fn
+}
 
 // triggerRestart 触发程序重启
 // 依赖优雅关闭语义：触发 SIGTERM 后，HTTP 服务器应完成当前请求再退出。
-func triggerRestart() {
+func (s *Server) triggerRestart() {
 	log.Print("[INFO] 配置变更触发重启...")
 
-	if RestartFunc == nil {
-		log.Printf("[ERROR] RestartFunc 为空，重启已跳过")
+	fn := s.restartFuncSnapshot()
+	if fn == nil {
+		log.Printf("[ERROR] 重启函数为空，重启已跳过")
 		return
 	}
-	RestartFunc()
+	fn()
 }
