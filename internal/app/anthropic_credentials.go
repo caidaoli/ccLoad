@@ -20,6 +20,7 @@ type anthropicCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*anthropicauth.Credential
 	refreshes        singleflight.Group
+	refreshTracker   *oauthCredentialRefreshTracker
 	service          *anthropicauth.Service
 	store            storage.Store
 	clientFor        func(*model.Config) *http.Client
@@ -61,6 +62,9 @@ func (m *anthropicCredentialManager) credential(
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAnthropicOAuth() {
 		return nil, errors.New("anthropic credential manager is unavailable")
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil {
 		return nil, err
@@ -75,9 +79,16 @@ func (m *anthropicCredentialManager) credential(
 	forcedAccessToken := credential.AccessToken
 	forceRequested := forceRefresh
 
-	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
 		refreshCtx := context.Background()
-		if ctx != nil {
+		if m.refreshTracker != nil {
+			trackedCtx, done, beginErr := m.refreshTracker.begin()
+			if beginErr != nil {
+				return nil, beginErr
+			}
+			defer done()
+			refreshCtx = trackedCtx
+		} else if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -118,10 +129,20 @@ func (m *anthropicCredentialManager) credential(
 		}
 		return nil, errors.New("anthropic credential refresh retry exhausted")
 	})
-	if err != nil {
-		return nil, err
+	var result singleflight.Result
+	if ctx == nil {
+		result = <-resultCh
+	} else {
+		select {
+		case result = <-resultCh:
+		case <-ctx.Done():
+			return cloneAnthropicCredential(credential), ctx.Err()
+		}
 	}
-	return value.(*anthropicauth.Credential), nil
+	if result.Err != nil {
+		return cloneAnthropicCredential(credential), result.Err
+	}
+	return result.Val.(*anthropicauth.Credential), nil
 }
 
 func (m *anthropicCredentialManager) persistRefreshResult(

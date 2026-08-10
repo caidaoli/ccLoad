@@ -6,6 +6,8 @@ const {
   cancelAntigravityOAuth,
   cancelAnthropicOAuth,
   cancelXAIOAuth,
+  cancelOAuthCredentialCleanup,
+  cleanupOAuthCredentials,
   pollCodexOAuthStatus,
   copyCodexOAuthLink,
   copyOAuthCredential,
@@ -32,6 +34,274 @@ const {
   submitCodexOAuthCallback,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
+
+test('OAuth credential cleanup resumes its SSE stream without restarting the destructive job', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const requests = [];
+  const events = [];
+  let startAttempts = 0;
+  let streamReads = 0;
+  let terminalReads = 0;
+  try {
+    const result = await cleanupOAuthCredentials(
+      'codex_oauth',
+      'gpt-test',
+      async (url, options) => {
+        requests.push({ url, options });
+        if (url === '/admin/oauth/credentials/cleanup/jobs') {
+          startAttempts++;
+          if (startAttempts === 1) throw new Error('start response lost');
+          if (startAttempts === 2) {
+            return {
+              ok: true,
+              status: 202,
+              async text() { return '{"success":true,"data":'; }
+            };
+          }
+          return {
+            ok: true,
+            status: 202,
+            async text() {
+              return JSON.stringify({ success: true, data: { job_id: 'occj-1', total: 2 } });
+            }
+          };
+        }
+        if (url.endsWith('after=0')) {
+          return {
+            ok: true,
+            status: 200,
+            body: {
+              getReader() {
+                return {
+                  async read() {
+                    streamReads++;
+                    if (streamReads === 1) {
+                      return {
+                        done: false,
+                        value: new TextEncoder().encode(
+                          'event: start\ndata: {"event":"start","sequence":1,"total":2}\n\n' +
+                          'event: progress\ndata: {"event":"progress","sequence":2,"processed":1,"total":2,"healthy":1,"status":"healthy","channel_name":"one"}\n\n'
+                        )
+                      };
+                    }
+                    throw new Error('network interrupted');
+                  }
+                };
+              }
+            }
+          };
+        }
+        assert.match(url, /after=2$/);
+        return {
+          ok: true,
+          status: 200,
+          body: {
+            getReader() {
+              return {
+                async read() {
+                  terminalReads++;
+                  if (terminalReads === 1) {
+                    return {
+                      done: false,
+                      value: new TextEncoder().encode(
+                        'event: progress\ndata: {"event":"progress","sequence":3,"processed":2,"total":2,"healthy":1,"deleted":1,"status":"deleted","channel_name":"two"}\n\n' +
+                        'event: complete\ndata: {"event":"complete","sequence":4,"processed":2,"total":2,"healthy":1,"deleted":1,"status":"succeeded"}\n\n'
+                      )
+                    };
+                  }
+                  throw new Error('connection reset after complete');
+                },
+                async cancel() {}
+              };
+            }
+          }
+        };
+      },
+      event => events.push(event),
+      async () => {}
+    );
+
+    assert.deepEqual(result, {
+      healthy: 1, refreshed: 0, deleted: 1, failed: 0, skipped: 0, total: 2
+    });
+    const starts = requests.filter(request => request.url === '/admin/oauth/credentials/cleanup/jobs');
+    assert.equal(starts.length, 3);
+    assert.ok(starts[0].options.headers['Idempotency-Key']);
+    assert.equal(starts[0].options.headers['Idempotency-Key'], starts[1].options.headers['Idempotency-Key']);
+    assert.equal(starts[0].options.headers['Idempotency-Key'], starts[2].options.headers['Idempotency-Key']);
+    for (const start of starts) {
+      assert.deepEqual(JSON.parse(start.options.body), {
+        auth_type: 'codex_oauth',
+        model: 'gpt-test'
+      });
+    }
+    assert.equal(terminalReads, 1);
+    assert.ok(events.some(event => event.event === 'reconnecting' && event.processed === 1));
+    assert.equal(events.at(-1).event, 'complete');
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('OAuth credential cleanup does not start after another cleanup reports busy', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  let requests = 0;
+  let delays = 0;
+  try {
+    await assert.rejects(
+      cleanupOAuthCredentials(
+        'anthropic_oauth',
+        'claude-sonnet-4',
+        async () => {
+          requests++;
+          return {
+            ok: false,
+            status: 429,
+            async text() { return JSON.stringify({ success: false, error: 'cleanup already running' }); }
+          };
+        },
+        () => {},
+        async () => { delays++; }
+      ),
+      /cleanup already running/
+    );
+    assert.equal(requests, 1);
+    assert.equal(delays, 0);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('OAuth credential cleanup resolves cancelled SSE with partial progress', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const events = [];
+  try {
+    const result = await cleanupOAuthCredentials(
+      'xai_oauth',
+      'grok-4',
+      async url => {
+        if (url === '/admin/oauth/credentials/cleanup/jobs') {
+          return {
+            ok: true,
+            status: 202,
+            async text() {
+              return JSON.stringify({ success: true, data: { job_id: 'occj-stop', total: 3 } });
+            }
+          };
+        }
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return [
+              'event: progress',
+              'data: {"event":"progress","sequence":1,"processed":1,"total":3,"healthy":1,"status":"healthy"}',
+              '',
+              'event: complete',
+              'data: {"event":"complete","sequence":2,"processed":1,"total":3,"healthy":1,"status":"cancelled"}',
+              ''
+            ].join('\n');
+          }
+        };
+      },
+      event => events.push(event),
+      async () => {}
+    );
+
+    assert.deepEqual(result, {
+      healthy: 1,
+      refreshed: 0,
+      deleted: 0,
+      failed: 0,
+      skipped: 0,
+      total: 3,
+      cancelled: true
+    });
+    assert.equal(events.at(-1).status, 'cancelled');
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('OAuth credential cleanup follows SSE without waiting for a lost stop response', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  let startCallbackResolved = false;
+  let streamOpenedBeforeCallbackResolved = false;
+  try {
+    const result = await cleanupOAuthCredentials(
+      'codex_oauth',
+      'gpt-5',
+      async url => {
+        if (url === '/admin/oauth/credentials/cleanup/jobs') {
+          return {
+            ok: true,
+            status: 202,
+            async text() {
+              return JSON.stringify({ success: true, data: { job_id: 'occj-start-stop', total: 1 } });
+            }
+          };
+        }
+        streamOpenedBeforeCallbackResolved = !startCallbackResolved;
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return 'event: complete\ndata: {"event":"complete","sequence":1,"processed":0,"total":1,"status":"cancelled"}\n\n';
+          }
+        };
+      },
+      () => {},
+      async () => {},
+      async () => {
+        await new Promise(resolve => setTimeout(resolve, 20));
+        startCallbackResolved = true;
+      }
+    );
+
+    assert.equal(streamOpenedBeforeCallbackResolved, true);
+    assert.equal(result.cancelled, true);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
+test('OAuth credential cleanup cancellation retries a lost successful response', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  const requests = [];
+  let attempts = 0;
+  try {
+    const result = await cancelOAuthCredentialCleanup(
+      'occj/a',
+      async (url, options) => {
+        requests.push({ url, options });
+        attempts++;
+        if (attempts === 1) {
+          return { ok: true, status: 200, async text() { return '{"success":true,"data":'; } };
+        }
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ success: true, data: { job_id: 'occj/a', status: 'cancelled' } });
+          }
+        };
+      },
+      async () => {}
+    );
+
+    assert.deepEqual(result, { job_id: 'occj/a', status: 'cancelled' });
+    assert.equal(requests.length, 2);
+    assert.equal(requests[0].url, '/admin/oauth/credentials/cleanup/jobs/occj%2Fa/cancel');
+    assert.equal(requests[0].options.method, 'POST');
+  } finally {
+    global.window = previousWindow;
+  }
+});
 
 test('xAI manual OAuth helpers use the shared state and callback contract', async () => {
   const requests = [];
@@ -508,6 +778,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
     ['oauthLoginDialog', { open: false, showModal() { this.open = true; } }],
     ['oauthProviderSelect', { value: 'antigravity', disabled: true, focus() { this.focused = true; } }],
     ['oauthAuthorizeButton', { disabled: true, hidden: false }],
+    ['oauthLoginActions', { hidden: true }],
     ['oauthSessionFields', { hidden: false }],
     ['oauthAuthorizationURL', { value: 'stale', focus() { this.focused = true; }, select() { this.selected = true; } }],
     ['oauthOpenLink', { href: 'https://stale.example', removeAttribute(name) { if (name === 'href') this.href = ''; } }],
@@ -523,6 +794,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
     assert.equal(elements.get('oauthProviderSelect').disabled, false);
     assert.equal(elements.get('oauthProviderSelect').focused, true);
     assert.equal(elements.get('oauthAuthorizeButton').disabled, false);
+    assert.equal(elements.get('oauthLoginActions').hidden, false);
     assert.equal(elements.get('oauthSessionFields').hidden, true);
     assert.equal(elements.get('oauthAuthorizationURL').value, '');
     assert.equal(elements.get('oauthOpenLink').href, '');
@@ -530,7 +802,7 @@ test('OAuth login dialog requires provider selection before exposing an authoriz
     assert.equal(showOAuthSession({ url: 'https://auth.example/authorize?state=abc', state: 'abc' }, 'antigravity'), true);
     assert.equal(elements.get('oauthProviderSelect').value, 'antigravity');
     assert.equal(elements.get('oauthProviderSelect').disabled, true);
-    assert.equal(elements.get('oauthAuthorizeButton').hidden, true);
+    assert.equal(elements.get('oauthLoginActions').hidden, true);
     assert.equal(elements.get('oauthSessionFields').hidden, false);
     assert.equal(elements.get('oauthAuthorizationURL').value, 'https://auth.example/authorize?state=abc');
     assert.equal(elements.get('oauthOpenLink').href, 'https://auth.example/authorize?state=abc');

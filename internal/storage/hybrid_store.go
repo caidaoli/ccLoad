@@ -275,6 +275,21 @@ func (h *HybridStore) DeleteConfig(ctx context.Context, id int64) error {
 	return nil
 }
 
+func (h *HybridStore) DeleteConfigIfOAuthSnapshotMatches(
+	ctx context.Context,
+	expected *model.Config,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	deleted, err := h.sqlite.DeleteConfigIfOAuthSnapshotMatches(ctx, expected)
+	if err != nil || !deleted {
+		return deleted, err
+	}
+	h.markChannelDirty(expected.ID, true)
+	return true, nil
+}
+
 func (h *HybridStore) GetEnabledChannelsByModel(ctx context.Context, modelName string) ([]*model.Config, error) {
 	h.oauthCredentialMu.Lock()
 	defer h.oauthCredentialMu.Unlock()

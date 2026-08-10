@@ -19,6 +19,7 @@ type xaiCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*xaiauth.Credential
 	refreshes        singleflight.Group
+	refreshTracker   *oauthCredentialRefreshTracker
 	store            storage.Store
 	clientFor        func(*model.Config) *http.Client
 	invalidateConfig func(int64)
@@ -44,6 +45,9 @@ func (m *xaiCredentialManager) credential(
 	if m == nil || m.store == nil || cfg == nil || !cfg.UsesXAIOAuth() {
 		return nil, errors.New("xAI credential manager is unavailable")
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil {
 		return nil, err
@@ -56,9 +60,16 @@ func (m *xaiCredentialManager) credential(
 		return cloneXAICredential(credential), nil
 	}
 
-	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
 		refreshCtx := context.Background()
-		if ctx != nil {
+		if m.refreshTracker != nil {
+			trackedCtx, done, beginErr := m.refreshTracker.begin()
+			if beginErr != nil {
+				return nil, beginErr
+			}
+			defer done()
+			refreshCtx = trackedCtx
+		} else if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -124,10 +135,20 @@ func (m *xaiCredentialManager) credential(
 		}
 		return nil, errors.New("xAI credential refresh retry exhausted")
 	})
-	if err != nil {
-		return nil, err
+	var result singleflight.Result
+	if ctx == nil {
+		result = <-resultCh
+	} else {
+		select {
+		case result = <-resultCh:
+		case <-ctx.Done():
+			return cloneXAICredential(credential), ctx.Err()
+		}
 	}
-	return value.(*xaiauth.Credential), nil
+	if result.Err != nil {
+		return cloneXAICredential(credential), result.Err
+	}
+	return result.Val.(*xaiauth.Credential), nil
 }
 
 func (m *xaiCredentialManager) cache(channelID int64, credential *xaiauth.Credential) {

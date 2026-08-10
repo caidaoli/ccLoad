@@ -285,6 +285,10 @@
       gap: var(--space-2);
     }
 
+    .oauth-actions[hidden] {
+      display: none;
+    }
+
     .oauth-dialog-status[data-kind="success"] {
       color: var(--success-600);
     }
@@ -339,6 +343,68 @@
 
     .oauth-import-progress-counts {
       font-variant-numeric: tabular-nums;
+    }
+
+    .credential-cleanup-progress {
+      max-width: 100%;
+      margin-top: var(--space-2);
+    }
+
+    .credential-cleanup-dialog[open]:has(.credential-cleanup-progress:not([hidden])) {
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      height: min(760px, calc(100vh - 32px));
+      overflow: hidden;
+    }
+
+    .credential-cleanup-dialog[open]:has(.credential-cleanup-progress:not([hidden])) .oauth-dialog-body {
+      min-height: 0;
+      grid-template-rows: auto auto auto minmax(15rem, 1fr);
+      overflow-y: auto;
+      overscroll-behavior: contain;
+    }
+
+    .credential-cleanup-dialog[open]:has(.credential-cleanup-progress:not([hidden])) .credential-cleanup-progress {
+      min-height: 0;
+      grid-template-rows: auto auto auto auto minmax(0, 1fr);
+      overflow: hidden;
+    }
+
+    .credential-cleanup-dialog[open]:has(.credential-cleanup-progress:not([hidden])) .oauth-import-progress-detail {
+      block-size: 3em;
+      line-height: 1.5;
+      overflow: hidden;
+    }
+
+    .credential-cleanup-results {
+      display: grid;
+      align-content: start;
+      gap: var(--space-1);
+      max-height: 12rem;
+      margin: 0;
+      padding-inline-start: var(--space-5);
+      overflow-y: auto;
+      color: var(--neutral-700);
+      font-size: 0.8125rem;
+    }
+
+    .credential-cleanup-dialog[open]:has(.credential-cleanup-progress:not([hidden])) .credential-cleanup-results {
+      min-height: 0;
+      max-height: none;
+    }
+
+    .credential-cleanup-results li {
+      overflow-wrap: anywhere;
+    }
+
+    .credential-cleanup-results li[data-status="deleted"],
+    .credential-cleanup-results li[data-status="failed"] {
+      color: var(--error-700, #b91c1c);
+    }
+
+    .credential-cleanup-results li[data-status="healthy"],
+    .credential-cleanup-results li[data-status="refreshed"] {
+      color: var(--success-700, #15803d);
     }
 
     .oauth-import-errors {
@@ -569,6 +635,12 @@
     .channel-page-action-btn {
       padding: 8px 16px;
       font-size: 14px;
+    }
+
+    .credential-cleanup-selection {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: var(--space-3);
     }
 
     .csv-import-progress {
@@ -4393,6 +4465,10 @@
         font-size: var(--text-xs);
         min-height: 36px;
         white-space: nowrap;
+      }
+
+      .credential-cleanup-selection {
+        grid-template-columns: 1fr;
       }
 
       .channels-filter-controls .filter-label {

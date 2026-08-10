@@ -3198,13 +3198,17 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	return nil, ErrAllKeysExhausted
 }
 
-func (s *Server) tryCodexOAuthChannel(
+const rejectedOAuthCredentialCooldown = 24 * time.Hour
+
+func (s *Server) tryOAuthChannel(
 	ctx context.Context,
 	cfg *model.Config,
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
+	provider string,
+	loadCredential func(forceRefresh bool) (*model.Config, string, error),
+	credentialRejected func(*proxyResult) bool,
 ) (*proxyResult, error) {
-	cfg = s.withOAuthBaseURLOverride(cfg)
 	urls := cfg.GetURLs()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
@@ -3215,18 +3219,29 @@ func (s *Server) tryCodexOAuthChannel(
 		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
 	}
 
+	var rejectedAccessToken string
+	var rejectedResult *proxyResult
 	for attempt := 0; attempt < 2; attempt++ {
-		credential, err := s.codexCredentials.credential(ctx, cfg, attempt == 1)
-		if err != nil {
-			log.Printf("[WARN] Codex OAuth 凭证不可用: channel_id=%d err=%v", cfg.ID, err)
-			return codexCredentialUnavailableResult(cfg), nil
+		runtimeCfg, accessToken, credentialErr := loadCredential(attempt == 1)
+		accessToken = strings.TrimSpace(accessToken)
+		if runtimeCfg == nil {
+			runtimeCfg = cfg
 		}
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.CodexAccessToken = credential.AccessToken
-		runtimeCfg.CodexAccountID = credential.AccountID
+		if credentialErr != nil {
+			log.Printf("[WARN] %s OAuth credential refresh failed: channel_id=%d err=%v", provider, cfg.ID, credentialErr)
+			if accessToken == "" || (rejectedResult != nil && accessToken == rejectedAccessToken) {
+				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
+				if rejectedResult != nil {
+					rejectedResult.nextAction = cooldown.ActionRetryChannel
+					return rejectedResult, nil
+				}
+				return oauthCredentialUnavailableResult(cfg, provider), nil
+			}
+			log.Printf("[WARN] %s OAuth refresh failed; checking existing access token: channel_id=%d", provider, cfg.ID)
+		}
 
 		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
-			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
+			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, accessToken, reqCtx, w,
 		)
 		if err != nil {
 			return nil, err
@@ -3235,7 +3250,14 @@ func (s *Server) tryCodexOAuthChannel(
 		if result == nil {
 			result = lastFailure
 		}
-		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
+		if result != nil && credentialRejected(result) {
+			if credentialErr != nil || attempt == 1 {
+				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
+				result.nextAction = cooldown.ActionRetryChannel
+				return result, nil
+			}
+			rejectedAccessToken = accessToken
+			rejectedResult = result
 			s.activeRequests.Retry(reqCtx.activeReqID)
 			continue
 		}
@@ -3253,15 +3275,50 @@ func (s *Server) tryCodexOAuthChannel(
 	return nil, ErrAllKeysExhausted
 }
 
-func codexCredentialUnavailableResult(cfg *model.Config) *proxyResult {
+func (s *Server) cooldownRejectedOAuthCredential(ctx context.Context, cfg *model.Config, provider string) {
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+
+	until := time.Now().Add(rejectedOAuthCredentialCooldown)
+	if err := s.store.SetChannelCooldown(cooldownCtx, cfg.ID, until); err != nil {
+		log.Printf("[WARN] 设置 OAuth 凭证失效渠道冷却失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
+	} else {
+		log.Printf("[COOLDOWN] OAuth 凭证失效渠道冷却: provider=%s channel_id=%d 禁用至 %s (24小时)",
+			provider, cfg.ID, until.Format("2006-01-02 15:04:05"))
+	}
+	s.invalidateChannelRelatedCache(cfg.ID)
+}
+
+func oauthCredentialUnavailableResult(cfg *model.Config, provider string) *proxyResult {
 	channelID := cfg.ID
 	return &proxyResult{
 		status:     http.StatusServiceUnavailable,
-		body:       []byte(`{"error":{"message":"Codex channel credential is unavailable","type":"upstream_auth_error"}}`),
+		body:       []byte(fmt.Sprintf(`{"error":{"message":"%s channel credential is unavailable","type":"upstream_auth_error"}}`, provider)),
 		channelID:  &channelID,
 		succeeded:  false,
 		nextAction: cooldown.ActionRetryChannel,
 	}
+}
+
+func (s *Server) tryCodexOAuthChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	cfg = s.withOAuthBaseURLOverride(cfg)
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Codex", func(forceRefresh bool) (*model.Config, string, error) {
+		credential, err := s.codexCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			return cfg, "", err
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.CodexAccessToken = credential.AccessToken
+		runtimeCfg.CodexAccountID = credential.AccountID
+		return runtimeCfg, credential.AccessToken, err
+	}, func(result *proxyResult) bool {
+		return result != nil && result.status == http.StatusUnauthorized
+	})
 }
 
 func (s *Server) tryXAIOAuthChannel(
@@ -3271,63 +3328,15 @@ func (s *Server) tryXAIOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	urls := cfg.GetURLs()
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
-	}
-	selector := s.urlSelector
-	if len(urls) > 1 && selector != nil {
-		urlsSnapshot := append([]string(nil), urls...)
-		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
-	}
-	if s.xaiCredentials == nil {
-		return xaiCredentialUnavailableResult(cfg), nil
-	}
-
-	for attempt := 0; attempt < 2; attempt++ {
-		credential, err := s.xaiCredentials.credential(ctx, cfg, attempt == 1)
-		if err != nil {
-			log.Printf("[WARN] xAI OAuth credential unavailable: channel_id=%d err=%v", cfg.ID, err)
-			return xaiCredentialUnavailableResult(cfg), nil
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "xAI", func(forceRefresh bool) (*model.Config, string, error) {
+		credential, err := s.xaiCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			return cfg, "", err
 		}
-		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
-			ctx, cfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
-		)
-		if err != nil {
-			return nil, err
-		}
-		result := immediate
-		if result == nil {
-			result = lastFailure
-		}
-		if attempt == 0 && result != nil && !result.succeeded &&
-			xaiCredentialRejected(result.status, result.header, result.body) {
-			s.activeRequests.Retry(reqCtx.activeReqID)
-			continue
-		}
-		if result != nil && result.nextAction == cooldown.ActionRetryKey {
-			result.nextAction = cooldown.ActionRetryChannel
-		}
-		if immediate != nil {
-			return immediate, nil
-		}
-		if lastFailure != nil {
-			return lastFailure, nil
-		}
-		break
-	}
-	return nil, ErrAllKeysExhausted
-}
-
-func xaiCredentialUnavailableResult(cfg *model.Config) *proxyResult {
-	channelID := cfg.ID
-	return &proxyResult{
-		status:     http.StatusServiceUnavailable,
-		body:       []byte(`{"error":{"message":"xAI channel credential is unavailable","type":"upstream_auth_error"}}`),
-		channelID:  &channelID,
-		succeeded:  false,
-		nextAction: cooldown.ActionRetryChannel,
-	}
+		return cfg, credential.AccessToken, err
+	}, func(result *proxyResult) bool {
+		return result != nil && !result.succeeded && xaiCredentialRejected(result.status, result.header, result.body)
+	})
 }
 
 func (s *Server) tryAnthropicOAuthChannel(
@@ -3337,59 +3346,15 @@ func (s *Server) tryAnthropicOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	urls := cfg.GetURLs()
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
-	}
-	selector := s.urlSelector
-	if len(urls) > 1 && selector != nil {
-		urlsSnapshot := append([]string(nil), urls...)
-		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
-	}
-	if s.anthropicCredentials == nil {
-		return anthropicCredentialUnavailableResult(cfg), nil
-	}
-	for attempt := 0; attempt < 2; attempt++ {
-		credential, err := s.anthropicCredentials.credential(ctx, cfg, attempt == 1)
-		if err != nil {
-			log.Printf("[WARN] Anthropic OAuth credential unavailable: channel_id=%d err=%v", cfg.ID, err)
-			return anthropicCredentialUnavailableResult(cfg), nil
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Anthropic", func(forceRefresh bool) (*model.Config, string, error) {
+		credential, err := s.anthropicCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			return cfg, "", err
 		}
-		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
-			ctx, cfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
-		)
-		if err != nil {
-			return nil, err
-		}
-		result := immediate
-		if result == nil {
-			result = lastFailure
-		}
-		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
-			s.activeRequests.Retry(reqCtx.activeReqID)
-			continue
-		}
-		if result != nil && result.nextAction == cooldown.ActionRetryKey {
-			result.nextAction = cooldown.ActionRetryChannel
-		}
-		if immediate != nil {
-			return immediate, nil
-		}
-		if lastFailure != nil {
-			return lastFailure, nil
-		}
-		break
-	}
-	return nil, ErrAllKeysExhausted
-}
-
-func anthropicCredentialUnavailableResult(cfg *model.Config) *proxyResult {
-	channelID := cfg.ID
-	return &proxyResult{
-		status:    http.StatusServiceUnavailable,
-		body:      []byte(`{"error":{"message":"Anthropic channel credential is unavailable","type":"upstream_auth_error"}}`),
-		channelID: &channelID, succeeded: false, nextAction: cooldown.ActionRetryChannel,
-	}
+		return cfg, credential.AccessToken, err
+	}, func(result *proxyResult) bool {
+		return result != nil && result.status == http.StatusUnauthorized
+	})
 }
 
 func (s *Server) tryAntigravityOAuthChannel(
@@ -3410,63 +3375,18 @@ func (s *Server) tryAntigravityOAuthChannel(
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	urls := cfg.GetURLs()
-	if len(urls) == 0 {
-		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
-	}
-	selector := s.urlSelector
-	if len(urls) > 1 && selector != nil {
-		urlsSnapshot := append([]string(nil), urls...)
-		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
-	}
-
-	for attempt := 0; attempt < 2; attempt++ {
-		credential, err := s.antigravityCredentials.credential(ctx, cfg, attempt == 1)
-		if err != nil {
-			log.Printf("[WARN] Antigravity OAuth 凭证不可用: channel_id=%d err=%v", cfg.ID, err)
-			return antigravityCredentialUnavailableResult(cfg), nil
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Antigravity", func(forceRefresh bool) (*model.Config, string, error) {
+		credential, err := s.antigravityCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			return cfg, "", err
 		}
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.AntigravityAccessToken = credential.AccessToken
 		runtimeCfg.AntigravityProjectID = credential.ProjectID
-
-		immediate, lastFailure, err := s.attemptKeyAcrossURLs(
-			ctx, runtimeCfg, urls, selector, cooldown.NoKeyIndex, credential.AccessToken, reqCtx, w,
-		)
-		if err != nil {
-			return nil, err
-		}
-		result := immediate
-		if result == nil {
-			result = lastFailure
-		}
-		if attempt == 0 && result != nil && result.status == http.StatusUnauthorized {
-			s.activeRequests.Retry(reqCtx.activeReqID)
-			continue
-		}
-		if result != nil && result.nextAction == cooldown.ActionRetryKey {
-			result.nextAction = cooldown.ActionRetryChannel
-		}
-		if immediate != nil {
-			return immediate, nil
-		}
-		if lastFailure != nil {
-			return lastFailure, nil
-		}
-		break
-	}
-	return nil, ErrAllKeysExhausted
-}
-
-func antigravityCredentialUnavailableResult(cfg *model.Config) *proxyResult {
-	channelID := cfg.ID
-	return &proxyResult{
-		status:     http.StatusServiceUnavailable,
-		body:       []byte(`{"error":{"message":"Antigravity channel credential is unavailable","type":"upstream_auth_error"}}`),
-		channelID:  &channelID,
-		succeeded:  false,
-		nextAction: cooldown.ActionRetryChannel,
-	}
+		return runtimeCfg, credential.AccessToken, err
+	}, func(result *proxyResult) bool {
+		return result != nil && result.status == http.StatusUnauthorized
+	})
 }
 
 func isModelScopedHTTPFailure(result *proxyResult) bool {

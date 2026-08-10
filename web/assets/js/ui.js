@@ -2074,15 +2074,23 @@ window.WebAuth = window.WebAuth || {
     ta.value = text;
     ta.style.position = 'fixed';
     ta.style.left = '-9999px';
-    document.body.appendChild(ta);
+    ta.tabIndex = -1;
+    const dialogs = typeof document.querySelectorAll === 'function'
+      ? document.querySelectorAll('dialog[open]')
+      : [];
+    const host = dialogs.length > 0 ? dialogs[dialogs.length - 1] : document.body;
+    const previousFocus = document.activeElement;
+    host.appendChild(ta);
     ta.select();
+    ta.setSelectionRange?.(0, ta.value.length);
 
     try {
       return typeof document.execCommand === 'function' && document.execCommand('copy');
     } catch {
       return false;
     } finally {
-      document.body.removeChild(ta);
+      host.removeChild(ta);
+      previousFocus?.focus?.({ preventScroll: true });
     }
   }
 

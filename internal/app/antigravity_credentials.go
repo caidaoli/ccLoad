@@ -19,6 +19,7 @@ type antigravityCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*antigravityauth.Credential
 	refreshes        singleflight.Group
+	refreshTracker   *oauthCredentialRefreshTracker
 	service          *antigravityauth.Service
 	store            storage.Store
 	clientFor        func(*model.Config) *http.Client
@@ -55,6 +56,9 @@ func (m *antigravityCredentialManager) resolveCredential(
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return nil, errors.New("credential manager: Antigravity is unavailable")
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil {
 		return nil, err
@@ -69,9 +73,16 @@ func (m *antigravityCredentialManager) resolveCredential(
 	forcedAccessToken := credential.AccessToken
 	forceRequested := forceRefresh
 
-	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
 		refreshCtx := context.Background()
-		if ctx != nil {
+		if m.refreshTracker != nil {
+			trackedCtx, done, beginErr := m.refreshTracker.begin()
+			if beginErr != nil {
+				return nil, beginErr
+			}
+			defer done()
+			refreshCtx = trackedCtx
+		} else if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -146,10 +157,20 @@ func (m *antigravityCredentialManager) resolveCredential(
 		}
 		return nil, errors.New("antigravity credential refresh retry exhausted")
 	})
-	if err != nil {
-		return nil, err
+	var result singleflight.Result
+	if ctx == nil {
+		result = <-resultCh
+	} else {
+		select {
+		case result = <-resultCh:
+		case <-ctx.Done():
+			return cloneAntigravityCredential(credential), ctx.Err()
+		}
 	}
-	return value.(*antigravityauth.Credential), nil
+	if result.Err != nil {
+		return cloneAntigravityCredential(credential), result.Err
+	}
+	return result.Val.(*antigravityauth.Credential), nil
 }
 
 func (m *antigravityCredentialManager) cache(channelID int64, credential *antigravityauth.Credential) {

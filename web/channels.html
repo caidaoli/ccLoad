@@ -62,6 +62,11 @@
                   data-i18n-title="channels.oauth.importTitle" title="导入 OAuth 凭证 JSON">
                   <span data-i18n="channels.oauth.import">导入凭证</span>
                 </button>
+                <button id="oauthCredentialCleanupOpenBtn" type="button"
+                  class="btn btn-secondary channel-page-action-btn"
+                  data-i18n-title="channels.oauth.cleanupTitle" title="打开凭证清理">
+                  <span data-i18n="channels.oauth.cleanup">清理凭证</span>
+                </button>
                 <button id="exportCsvBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.exportCsvTitle"
                   title="导出渠道列表为CSV">
@@ -175,7 +180,7 @@
                     data-i18n="channels.anthropic.cookieHint">每行粘贴一个完整的 sessionKey。提交后输入会立即从页面清除，ccLoad 不保存这些 Cookie。</p>
                 </div>
               </div>
-              <div class="oauth-actions">
+              <div id="oauthLoginActions" class="oauth-actions">
                 <button id="oauthAuthorizeButton" type="submit" class="btn btn-primary"
                   data-i18n="channels.oauth.startAuthorization">开始授权</button>
                 <button type="button" class="btn btn-secondary" data-action="close-oauth-login"
@@ -290,6 +295,68 @@
             </div>
             <p id="oauthCredentialImportStatus" class="oauth-dialog-status" role="status"
               aria-live="polite" hidden></p>
+          </form>
+        </dialog>
+
+        <dialog id="oauthCredentialCleanupDialog" class="oauth-dialog oauth-dialog--compact credential-cleanup-dialog"
+          aria-labelledby="oauthCredentialCleanupDialogTitle"
+          aria-describedby="oauthCredentialCleanupDialogDescription">
+          <div class="oauth-dialog-header">
+            <div>
+              <p class="oauth-dialog-eyebrow">OAuth</p>
+              <h2 id="oauthCredentialCleanupDialogTitle"
+                data-i18n="channels.oauth.cleanupDialogTitle">清理 OAuth 凭证</h2>
+            </div>
+            <button type="button" class="close-btn" data-action="close-oauth-cleanup"
+              data-i18n-aria-label="common.close" aria-label="关闭">&times;</button>
+          </div>
+          <form id="oauthCredentialCleanupForm" class="oauth-dialog-body">
+            <p id="oauthCredentialCleanupDialogDescription" class="oauth-dialog-description"
+              data-i18n="channels.oauth.cleanupDialogDescription">
+              选择凭证类型和去重后的模型，将测试该类型的全部渠道。关闭窗口不会中断正在运行的任务。
+            </p>
+            <div class="credential-cleanup-selection">
+              <div class="oauth-field">
+                <label for="oauthCredentialCleanupAuthType"
+                  data-i18n="channels.oauth.cleanupAuthType">凭证类型</label>
+                <select id="oauthCredentialCleanupAuthType" class="form-input" name="auth_type">
+                  <option value="codex_oauth">Codex</option>
+                  <option value="antigravity_oauth">Antigravity</option>
+                  <option value="xai_oauth">xAI</option>
+                  <option value="anthropic_oauth">Anthropic</option>
+                </select>
+              </div>
+              <div class="oauth-field">
+                <label for="oauthCredentialCleanupModel"
+                  data-i18n="channels.oauth.cleanupModel">模型</label>
+                <select id="oauthCredentialCleanupModel" class="form-input" name="model" required disabled>
+                  <option value="" data-i18n="channels.oauth.cleanupModelsLoading">正在加载模型…</option>
+                </select>
+              </div>
+            </div>
+            <div class="oauth-actions">
+              <button id="oauthCredentialCleanupBtn" type="submit" class="btn btn-secondary"
+                data-i18n-title="channels.oauth.cleanupTitle" title="开始清理" disabled>
+                <span data-i18n="channels.oauth.cleanupStart">开始清理</span>
+              </button>
+              <button type="button" class="btn btn-secondary" data-action="close-oauth-cleanup"
+                data-i18n="common.close">关闭</button>
+            </div>
+            <div id="oauthCredentialCleanupProgress" class="oauth-import-progress credential-cleanup-progress"
+              tabindex="-1" aria-labelledby="oauthCredentialCleanupProgressTitle" hidden>
+              <div class="oauth-import-progress-header">
+                <strong id="oauthCredentialCleanupProgressTitle"
+                  data-i18n="channels.oauth.cleanupProgressTitle">凭证清理进度</strong>
+                <span id="oauthCredentialCleanupProgressCounter" class="oauth-import-progress-counter">0 / 0</span>
+              </div>
+              <progress id="oauthCredentialCleanupProgressBar" max="1" value="0"
+                aria-labelledby="oauthCredentialCleanupProgressTitle"
+                aria-describedby="oauthCredentialCleanupProgressDetail oauthCredentialCleanupProgressCounts"></progress>
+              <p id="oauthCredentialCleanupProgressDetail" class="oauth-import-progress-detail" role="status"
+                aria-live="polite"></p>
+              <p id="oauthCredentialCleanupProgressCounts" class="oauth-import-progress-counts"></p>
+              <ul id="oauthCredentialCleanupResults" class="credential-cleanup-results"></ul>
+            </div>
           </form>
         </dialog>
 

@@ -220,6 +220,66 @@ func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *test
 	}
 }
 
+func TestConfig_DeleteConfigIfOAuthSnapshotMatches(t *testing.T) {
+	store := newTestStore(t, "conditional-oauth-delete.db")
+	ctx := context.Background()
+	original := `{"type":"codex","access_token":"old-at","refresh_token":"old-rt"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "conditional-oauth-delete", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: original,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	staleSnapshot := created.Clone()
+	staleSnapshot.OAuthCredential = original + " "
+	deleted, err := store.DeleteConfigIfOAuthSnapshotMatches(ctx, staleSnapshot)
+	if err != nil || deleted {
+		t.Fatalf("stale conditional delete = (%v, %v), want (false, nil)", deleted, err)
+	}
+	if _, err := store.GetConfig(ctx, created.ID); err != nil {
+		t.Fatalf("stale cleanup deleted current channel: %v", err)
+	}
+
+	updated := `{"type":"codex","access_token":"new-at","refresh_token":"new-rt"}`
+	if swapped, err := store.CompareAndSwapOAuthCredential(
+		ctx, created.ID, model.AuthTypeCodexOAuth, original, updated,
+	); err != nil || !swapped {
+		t.Fatalf("credential update = (%v, %v)", swapped, err)
+	}
+	deleted, err = store.DeleteConfigIfOAuthSnapshotMatches(ctx, created)
+	if err != nil || deleted {
+		t.Fatalf("old snapshot conditional delete = (%v, %v), want (false, nil)", deleted, err)
+	}
+	updatedSnapshot, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	beforeEdit := updatedSnapshot.Clone()
+	updatedSnapshot.URLs = model.ChannelURLs{{URL: "https://healthy.example.com", Protocols: []string{"codex"}}}
+	updatedSnapshot.ModelEntries = []model.ModelEntry{{Model: "gpt-next"}}
+	if _, err := store.UpdateConfig(ctx, created.ID, updatedSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = store.DeleteConfigIfOAuthSnapshotMatches(ctx, beforeEdit)
+	if err != nil || deleted {
+		t.Fatalf("edited routing snapshot conditional delete = (%v, %v), want (false, nil)", deleted, err)
+	}
+	updatedSnapshot, err = store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deleted, err = store.DeleteConfigIfOAuthSnapshotMatches(ctx, updatedSnapshot)
+	if err != nil || !deleted {
+		t.Fatalf("matching conditional delete = (%v, %v), want (true, nil)", deleted, err)
+	}
+	if _, err := store.GetConfig(ctx, created.ID); err == nil {
+		t.Fatal("matching conditional delete kept the channel")
+	}
+}
+
 func TestConfig_CreateWithExplicitIDRejectsOAuthAcrossExistingAPIKey(t *testing.T) {
 	store := newTestStore(t, "explicit-api-key-to-oauth.db")
 	ctx := context.Background()

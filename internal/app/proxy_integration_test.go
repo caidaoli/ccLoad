@@ -278,6 +278,43 @@ func anthropicProxyTestCredential(t testing.TB, accessToken string) string {
 	return payload
 }
 
+func expiredProxyOAuthCredential(t testing.TB, authType, accessToken string) string {
+	t.Helper()
+	expired := time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
+	var (
+		payload string
+		err     error
+	)
+	switch authType {
+	case model.AuthTypeCodexOAuth:
+		payload, err = (&codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-codex",
+			AccountID: "account-codex", Expired: expired,
+		}).JSON()
+	case model.AuthTypeXAIOAuth:
+		payload, err = (&xaiauth.Credential{
+			Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: accessToken,
+			RefreshToken: "rt-xai", Expired: expired,
+		}).JSON()
+	case model.AuthTypeAnthropicOAuth:
+		payload, err = (&anthropicauth.Credential{
+			Type: anthropicauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-anthropic",
+			Expired: expired, AccountUUID: "account-anthropic", DeviceID: "device-anthropic",
+		}).JSON()
+	case model.AuthTypeAntigravityOAuth:
+		payload, err = (&antigravityauth.Credential{
+			Type: antigravityauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-antigravity",
+			Expired: expired, Email: "gravity@example.com", ProjectID: "gravity-project",
+		}).JSON()
+	default:
+		t.Fatalf("unsupported OAuth auth type %q", authType)
+	}
+	if err != nil {
+		t.Fatalf("encode expired %s credential: %v", authType, err)
+	}
+	return payload
+}
+
 func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	t.Parallel()
 
@@ -2301,6 +2338,162 @@ func TestProxy_XAIOAuthRefreshReplayBoundary(t *testing.T) {
 				t.Fatalf("refreshes=%d, want %d", got, wantRefreshes)
 			}
 		})
+	}
+}
+
+func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
+	tests := []struct {
+		name             string
+		authType         string
+		upstreamProtocol string
+		model            string
+		path             string
+		request          map[string]any
+		successType      string
+		successBody      string
+		rejectedBody     string
+		xaiBaseURL       bool
+	}{
+		{
+			name: "codex", authType: model.AuthTypeCodexOAuth, upstreamProtocol: "codex", model: "gpt-test",
+			path: "/v1/responses", request: map[string]any{"model": "gpt-test", "stream": false, "input": "hello"},
+			successType:  "text/event-stream",
+			successBody:  `data: {"type":"response.completed","response":{"id":"resp-codex","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n",
+			rejectedBody: `{"error":{"type":"authentication_error","message":"expired"}}`,
+		},
+		{
+			name: "xai", authType: model.AuthTypeXAIOAuth, upstreamProtocol: "codex", model: "grok-4.5",
+			path: "/v1/responses", request: map[string]any{"model": "grok-4.5", "stream": false, "input": "hello"},
+			successType: "text/event-stream", xaiBaseURL: true,
+			successBody:  `data: {"type":"response.completed","response":{"id":"resp-xai","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}` + "\n\n",
+			rejectedBody: `{"error":{"type":"authentication_error","code":"invalid_token"}}`,
+		},
+		{
+			name: "anthropic", authType: model.AuthTypeAnthropicOAuth, upstreamProtocol: "anthropic", model: "claude-test",
+			path: "/v1/messages", request: map[string]any{
+				"model": "claude-test", "max_tokens": 16,
+				"messages": []any{map[string]any{"role": "user", "content": "hello"}},
+			},
+			successType:  "application/json",
+			successBody:  `{"id":"msg-ok","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-test","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			rejectedBody: `{"type":"error","error":{"type":"authentication_error","message":"expired"}}`,
+		},
+		{
+			name: "antigravity", authType: model.AuthTypeAntigravityOAuth, upstreamProtocol: "gemini", model: "gemini-test",
+			path: "/v1beta/models/gemini-test:generateContent", request: map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+			},
+			successType:  "application/json",
+			successBody:  `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`,
+			rejectedBody: `{"error":{"code":401,"message":"expired"}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		for _, rejectAccessToken := range []bool{false, true} {
+			outcome := "existing access token succeeds"
+			if rejectAccessToken {
+				outcome = "existing access token rejected"
+			}
+			t.Run(tt.name+"/"+outcome, func(t *testing.T) {
+				const accessToken = "stale-access-token"
+				var upstreamAttempts atomic.Int32
+				upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					upstreamAttempts.Add(1)
+					if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+						t.Errorf("Authorization = %q", got)
+					}
+					w.Header().Set("Content-Type", tt.successType)
+					if rejectAccessToken {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusUnauthorized)
+						_, _ = io.WriteString(w, tt.rejectedBody)
+						return
+					}
+					_, _ = io.WriteString(w, tt.successBody)
+				}))
+				defer upstream.Close()
+
+				upstreamURL := upstream.URL
+				if tt.xaiBaseURL {
+					upstreamURL += "/v1"
+				}
+				env := setupProxyTestEnv(t, []testChannel{{
+					name: tt.name + "-refresh-failure", upstreamProtocol: tt.upstreamProtocol,
+					models: tt.model, priority: 100, authType: tt.authType,
+					oauthCredential: expiredProxyOAuthCredential(t, tt.authType, accessToken),
+				}}, map[int]string{0: upstreamURL})
+
+				var refreshAttempts atomic.Int32
+				refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+					refreshAttempts.Add(1)
+					return &http.Response{
+						StatusCode: http.StatusBadRequest,
+						Header:     http.Header{"Content-Type": {"application/json"}},
+						Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant"}`)),
+						Request:    req,
+					}, nil
+				})}
+				switch tt.authType {
+				case model.AuthTypeCodexOAuth:
+					service := codexauth.NewService(refreshClient)
+					service.TokenURL = "https://oauth.test/token"
+					env.server.codexCredentials.service = service
+					env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+				case model.AuthTypeXAIOAuth:
+					env.server.xaiCredentials = newXAICredentialManager(
+						env.store, func(*model.Config) *http.Client { return refreshClient }, nil,
+					)
+				case model.AuthTypeAnthropicOAuth:
+					service := anthropicauth.NewService(refreshClient)
+					service.TokenURL = "https://oauth.test/token"
+					env.server.anthropicCredentials.service = service
+					env.server.anthropicCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+				case model.AuthTypeAntigravityOAuth:
+					service := antigravityauth.NewService(refreshClient)
+					service.TokenURL = "https://oauth.test/token"
+					env.server.antigravityCredentials.service = service
+					env.server.antigravityCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+				}
+
+				startedAt := time.Now()
+				response := doProxyRequest(t, env.engine, tt.path, tt.request, nil)
+				if got := refreshAttempts.Load(); got != 1 {
+					t.Fatalf("refresh attempts=%d, want 1", got)
+				}
+				if got := upstreamAttempts.Load(); got != 1 {
+					t.Fatalf("upstream attempts=%d, want 1", got)
+				}
+
+				configs, err := env.store.ListConfigs(context.Background())
+				if err != nil || len(configs) != 1 {
+					t.Fatalf("ListConfigs = %#v, %v", configs, err)
+				}
+				cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+				if err != nil {
+					t.Fatalf("GetAllChannelCooldowns: %v", err)
+				}
+				until, cooling := cooldowns[configs[0].ID]
+				if !rejectAccessToken {
+					if response.Code != http.StatusOK {
+						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+					}
+					if cooling {
+						t.Fatalf("usable existing access token caused cooldown until %s", until)
+					}
+					return
+				}
+				if response.Code != http.StatusUnauthorized {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if !cooling {
+					t.Fatal("rejected existing access token did not cool channel")
+				}
+				if until.Before(startedAt.Add(24*time.Hour-time.Minute)) || until.After(time.Now().Add(24*time.Hour+time.Minute)) {
+					t.Fatalf("cooldown until=%s, want about 24 hours", until)
+				}
+			})
+		}
 	}
 }
 

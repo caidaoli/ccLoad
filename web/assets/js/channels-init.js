@@ -201,7 +201,7 @@ function initChannelsPageActions() {
 function applyChannelsAccessMode() {
   const readOnly = isTokenChannelsReadOnly();
   document.body.classList.toggle('channels-readonly', readOnly);
-  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'oauthCredentialCleanupOpenBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
     const el = document.getElementById(id);
     if (el) el.hidden = readOnly;
   }

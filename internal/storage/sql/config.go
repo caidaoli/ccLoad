@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -829,54 +830,223 @@ func reconciledScheduledCheckModel(current string, entries []model.ModelEntry) s
 
 // DeleteConfig 删除渠道配置
 func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
+	_, err := s.deleteConfig(ctx, id, nil)
+	return err
+}
+
+// DeleteConfigIfOAuthSnapshotMatches atomically deletes a channel only when
+// the complete persisted configuration still matches the configuration that
+// produced the failed conversation test.
+func (s *SQLStore) DeleteConfigIfOAuthSnapshotMatches(
+	ctx context.Context,
+	expected *model.Config,
+) (bool, error) {
+	if expected == nil || expected.ID <= 0 {
+		return false, errors.New("expected OAuth channel snapshot is invalid")
+	}
+	authType := expected.GetAuthType()
+	if authType == "" || authType == model.AuthTypeAPIKey {
+		return false, errors.New("OAuth auth type is invalid")
+	}
+	if strings.TrimSpace(expected.OAuthCredential) == "" {
+		return false, errors.New("expected OAuth credential cannot be empty")
+	}
+	return s.deleteConfig(ctx, expected.ID, expected.Clone())
+}
+
+func (s *SQLStore) deleteConfig(
+	ctx context.Context,
+	id int64,
+	expected *model.Config,
+) (bool, error) {
 	// 检查记录是否存在，但不存在也继续清理残留子数据。
-	if _, err := s.GetConfig(ctx, id); err != nil {
-		if !strings.Contains(err.Error(), "not found") {
-			return err
+	if expected == nil {
+		if _, err := s.GetConfig(ctx, id); err != nil {
+			if !strings.Contains(err.Error(), "not found") {
+				return false, err
+			}
 		}
 	}
 
-	s.markChannelDeleted(id)
-
-	// 显式删除关联数据，不依赖驱动或 DSN 是否正确启用外键级联。
+	matched := expected == nil
+	markedDeleted := false
 	var deletedRowsForVacuum int64
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
-		if err := s.removeChannelFromAuthTokenRestrictions(ctx, tx, id); err != nil {
-			return err
+		if markedDeleted {
+			s.unmarkChannelDeleted(id)
 		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel api keys: %w", err)
+		matched = expected == nil
+		markedDeleted = false
+		deletedRowsForVacuum = 0
+		if expected != nil {
+			current, loadErr := s.loadConfigSnapshotForUpdate(ctx, tx, id)
+			if errors.Is(loadErr, sql.ErrNoRows) {
+				return nil
+			}
+			if loadErr != nil {
+				return loadErr
+			}
+			if !reflect.DeepEqual(oauthDeletionSnapshot(current), oauthDeletionSnapshot(expected)) {
+				return nil
+			}
+			matched = true
 		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel models: %w", err)
+		if !matched {
+			return nil
 		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel model cooldowns: %w", err)
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel url states: %w", err)
-		}
-		if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
-			return fmt.Errorf("delete channel debug logs: %w", err)
-		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
-			deletedRowsForVacuum += affected
-		}
-		if result, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel logs: %w", err)
-		} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
-			deletedRowsForVacuum += affected
-		}
-		if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
-			return fmt.Errorf("delete channel: %w", err)
-		}
-		return nil
+
+		s.markChannelDeleted(id)
+		markedDeleted = true
+		return s.deleteConfigRowsTx(ctx, tx, id, &deletedRowsForVacuum)
 	})
 	if err != nil {
-		s.unmarkChannelDeleted(id)
-		return err
+		if markedDeleted {
+			s.unmarkChannelDeleted(id)
+		}
+		return false, err
+	}
+	if !matched {
+		return false, nil
 	}
 
 	s.runSQLiteIncrementalVacuum(ctx, deletedRowsForVacuum)
+	return true, nil
+}
+
+type oauthChannelDeletionSnapshot struct {
+	ID                      int64
+	Name                    string
+	AuthType                string
+	OAuthCredential         string
+	URLs                    model.ChannelURLs
+	Priority                int
+	RPMLimit                int
+	MaxConcurrency          int
+	Websockets              bool
+	ProtocolTransformMode   string
+	Enabled                 bool
+	ScheduledCheckEnabled   bool
+	ScheduledCheckModel     string
+	ModelEntries            []model.ModelEntry
+	CooldownUntil           int64
+	CooldownDurationMs      int64
+	DailyCostLimit          float64
+	CostMultiplier          float64
+	CustomRequestRules      *model.CustomRequestRules
+	CooldownDetectionRules  *model.CooldownDetectionRules
+	ProxyURL                string
+	RetryOtherKeysOnFailure bool
+	CreatedAtUnix           int64
+	UpdatedAtUnix           int64
+}
+
+func oauthDeletionSnapshot(cfg *model.Config) oauthChannelDeletionSnapshot {
+	return oauthChannelDeletionSnapshot{
+		ID:                      cfg.ID,
+		Name:                    cfg.Name,
+		AuthType:                cfg.GetAuthType(),
+		OAuthCredential:         cfg.OAuthCredential,
+		URLs:                    cfg.URLs.Clone(),
+		Priority:                cfg.Priority,
+		RPMLimit:                cfg.RPMLimit,
+		MaxConcurrency:          cfg.MaxConcurrency,
+		Websockets:              cfg.Websockets,
+		ProtocolTransformMode:   cfg.GetProtocolTransformMode(),
+		Enabled:                 cfg.Enabled,
+		ScheduledCheckEnabled:   cfg.ScheduledCheckEnabled,
+		ScheduledCheckModel:     cfg.ScheduledCheckModel,
+		ModelEntries:            append([]model.ModelEntry(nil), cfg.ModelEntries...),
+		CooldownUntil:           cfg.CooldownUntil,
+		CooldownDurationMs:      cfg.CooldownDurationMs,
+		DailyCostLimit:          cfg.DailyCostLimit,
+		CostMultiplier:          cfg.CostMultiplier,
+		CustomRequestRules:      cfg.CustomRequestRules.Clone(),
+		CooldownDetectionRules:  cfg.CooldownDetectionRules.Clone(),
+		ProxyURL:                cfg.ProxyURL,
+		RetryOtherKeysOnFailure: cfg.RetryOtherKeysOnFailure,
+		CreatedAtUnix:           cfg.CreatedAt.Unix(),
+		UpdatedAtUnix:           cfg.UpdatedAt.Unix(),
+	}
+}
+
+func (s *SQLStore) loadConfigSnapshotForUpdate(
+	ctx context.Context,
+	tx *sql.Tx,
+	id int64,
+) (*model.Config, error) {
+	query := `
+		SELECT c.id, c.name, c.url, c.priority, c.rpm_limit, c.max_concurrency,
+		       c.auth_type, COALESCE(c.oauth_credential, ''), c.websockets,
+		       c.protocol_transform_mode, c.enabled, c.scheduled_check_enabled,
+		       c.scheduled_check_model, c.cooldown_until, c.cooldown_duration_ms,
+		       c.daily_cost_limit, c.cost_multiplier, c.custom_request_rules,
+		       c.cooldown_detection_rules, c.proxy_url, c.retry_other_keys_on_failure,
+		       0 AS key_count, c.created_at, c.updated_at
+		FROM channels c WHERE c.id = ?`
+	if s.supportsRowLock() {
+		query += ` FOR UPDATE`
+	}
+	cfg, err := NewConfigScanner().ScanConfig(s.queryRowTx(ctx, tx, query, id))
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, s.q(`
+		SELECT model, redirect_model, disabled
+		FROM channel_models
+		WHERE channel_id = ?
+		ORDER BY created_at ASC, model ASC
+	`), normalizeSQLArgs([]any{id})...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	for rows.Next() {
+		var entry model.ModelEntry
+		if err := rows.Scan(&entry.Model, &entry.RedirectModel, &entry.Disabled); err != nil {
+			return nil, err
+		}
+		cfg.ModelEntries = append(cfg.ModelEntries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func (s *SQLStore) deleteConfigRowsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	id int64,
+	deletedRowsForVacuum *int64,
+) error {
+	if err := s.removeChannelFromAuthTokenRestrictions(ctx, tx, id); err != nil {
+		return err
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel api keys: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_models WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel models: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_model_cooldowns WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel model cooldowns: %w", err)
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channel_url_states WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel url states: %w", err)
+	}
+	if result, err := s.execTx(ctx, tx, `DELETE FROM debug_logs WHERE log_id IN (SELECT id FROM logs WHERE channel_id = ?)`, id); err != nil {
+		return fmt.Errorf("delete channel debug logs: %w", err)
+	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+		*deletedRowsForVacuum += affected
+	}
+	if result, err := s.execTx(ctx, tx, `DELETE FROM logs WHERE channel_id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel logs: %w", err)
+	} else if affected, rowsErr := result.RowsAffected(); rowsErr == nil {
+		*deletedRowsForVacuum += affected
+	}
+	if _, err := s.execTx(ctx, tx, `DELETE FROM channels WHERE id = ?`, id); err != nil {
+		return fmt.Errorf("delete channel: %w", err)
+	}
 	return nil
 }
 

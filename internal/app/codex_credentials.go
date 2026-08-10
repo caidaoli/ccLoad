@@ -37,6 +37,7 @@ type codexCredentialManager struct {
 	mu               sync.RWMutex
 	entries          map[int64]*codexauth.Credential
 	refreshes        singleflight.Group
+	refreshTracker   *oauthCredentialRefreshTracker
 	service          *codexauth.Service
 	store            storage.Store
 	clientFor        func(*model.Config) *http.Client
@@ -68,6 +69,9 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
 		return nil, errors.New("codex credential manager is unavailable")
 	}
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
+	}
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil {
 		return nil, err
@@ -82,9 +86,16 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 	forcedAccessToken := credential.AccessToken
 	forceRequested := forceRefresh
 
-	value, err, _ := m.refreshes.Do(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
 		refreshCtx := context.Background()
-		if ctx != nil {
+		if m.refreshTracker != nil {
+			trackedCtx, done, beginErr := m.refreshTracker.begin()
+			if beginErr != nil {
+				return nil, beginErr
+			}
+			defer done()
+			refreshCtx = trackedCtx
+		} else if ctx != nil {
 			refreshCtx = context.WithoutCancel(ctx)
 		}
 		currentCfg, getErr := m.store.GetConfig(refreshCtx, cfg.ID)
@@ -134,10 +145,20 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 		}
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})
-	if err != nil {
-		return nil, err
+	var result singleflight.Result
+	if ctx == nil {
+		result = <-resultCh
+	} else {
+		select {
+		case result = <-resultCh:
+		case <-ctx.Done():
+			return cloneCodexCredential(credential), ctx.Err()
+		}
 	}
-	return value.(*codexauth.Credential), nil
+	if result.Err != nil {
+		return cloneCodexCredential(credential), result.Err
+	}
+	return result.Val.(*codexauth.Credential), nil
 }
 
 func (m *codexCredentialManager) persistRefreshResult(

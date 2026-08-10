@@ -1604,6 +1604,27 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	if err := s.store.DeleteConfig(ctx, id); err != nil {
 		return false, err
 	}
+	s.removeDeletedChannelRuntimeState(cfg)
+	return true, nil
+}
+
+func (s *Server) deleteChannelIfOAuthCredentialMatches(
+	ctx context.Context,
+	cfg *model.Config,
+) (bool, error) {
+	if cfg == nil || cfg.ID <= 0 || !cfg.UsesOAuth() || strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return false, nil
+	}
+	deleted, err := s.store.DeleteConfigIfOAuthSnapshotMatches(ctx, cfg)
+	if err != nil || !deleted {
+		return deleted, err
+	}
+	s.removeDeletedChannelRuntimeState(cfg)
+	return true, nil
+}
+
+func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
+	id := cfg.ID
 	if s.keySelector != nil {
 		s.keySelector.RemoveChannelCounter(id)
 	}
@@ -1625,5 +1646,4 @@ func (s *Server) deleteChannelByID(ctx context.Context, id int64) (bool, error) 
 	if s.anthropicCredentials != nil {
 		s.anthropicCredentials.invalidate(id)
 	}
-	return true, nil
 }

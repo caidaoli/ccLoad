@@ -709,11 +709,15 @@ func appendOAuthCredentialImportResult(summary *oauthCredentialImportSummary, re
 }
 
 func writeOAuthCredentialImportEvent(c *gin.Context, event oauthCredentialImportEvent) error {
-	raw, err := json.Marshal(event)
+	return writeSSEEvent(c, event.Event, event)
+}
+
+func writeSSEEvent(c *gin.Context, eventName string, payload any) error {
+	raw, err := json.Marshal(payload)
 	if err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", event.Event, raw); err != nil {
+	if _, err := fmt.Fprintf(c.Writer, "event: %s\ndata: %s\n\n", eventName, raw); err != nil {
 		return err
 	}
 	c.Writer.Flush()
