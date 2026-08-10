@@ -415,7 +415,11 @@ func newInMemoryServerWithSettings(t testing.TB, settings map[string]string) *Se
 	}
 
 	srv := NewServer(store)
-	srv.client = newTestHTTPClient()
+	closeUpstreamHTTPClient(srv.client)
+	closeUpstreamHTTPClient(srv.antigravityClient)
+	testClient := newTestHTTPClient()
+	srv.client = testClient
+	srv.antigravityClient = testClient
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()

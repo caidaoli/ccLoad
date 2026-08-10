@@ -3956,6 +3956,7 @@ func TestHandleOAuthUsageReturnsRawCredentialRefreshResponse(t *testing.T) {
 					Request:    request,
 				}, nil
 			})}
+			server.antigravityClient = server.client
 			channel := test.setup(t, server)
 
 			path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
@@ -4147,6 +4148,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 			Request:    request,
 		}, nil
 	})}
+	server.antigravityClient = server.client
 	server.antigravityService = antigravityauth.NewService(server.client)
 	server.antigravityCredentials = newAntigravityCredentialManager(
 		server.antigravityService, store,

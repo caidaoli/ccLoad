@@ -1,12 +1,15 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httptrace"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +17,213 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
+
+func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
+	type observedRequest struct {
+		path     string
+		protocol int
+	}
+	observed := make(chan observedRequest, 4)
+	closed := make(chan struct{}, 2)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observedRequest{path: r.URL.Path, protocol: r.ProtoMajor}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.Config.ConnState = func(_ net.Conn, state http.ConnState) {
+		if state == http.StateClosed {
+			select {
+			case closed <- struct{}{}:
+			default:
+			}
+		}
+	}
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+
+	base := buildHTTPTransport(true)
+	maxAge := 100 * time.Millisecond
+	server := &Server{
+		client:            newUpstreamHTTPClient(base, maxAge),
+		antigravityClient: newAntigravityHTTPClient(base, maxAge),
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.client)
+		closeUpstreamHTTPClient(server.antigravityClient)
+	})
+
+	request := func(config *model.Config, path string) httptrace.GotConnInfo {
+		t.Helper()
+		gotConn := make(chan httptrace.GotConnInfo, 1)
+		req, err := http.NewRequestWithContext(
+			context.Background(), http.MethodPost, upstream.URL+path, bytes.NewBufferString(`{"request":{}}`),
+		)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		}))
+		resp, err := server.getClientForChannel(config).Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err = resp.Body.Close(); err != nil {
+			t.Fatalf("close %s response: %v", path, err)
+		}
+		return <-gotConn
+	}
+
+	antigravity := &model.Config{AuthType: model.AuthTypeAntigravityOAuth}
+	first := request(antigravity, "/antigravity-first")
+	second := request(antigravity, "/antigravity-second")
+	if !second.Reused || first.Conn != second.Conn {
+		t.Fatalf("Antigravity HTTP/1.1 connection was not reused: reused=%t same=%t", second.Reused, first.Conn == second.Conn)
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Antigravity HTTP/1.1 connection was not closed after max age")
+	}
+	third := request(antigravity, "/antigravity-third")
+	request(&model.Config{}, "/default")
+
+	if third.Reused || third.Conn == first.Conn {
+		t.Fatalf("Antigravity reused an aged connection: reused=%t same=%t", third.Reused, third.Conn == first.Conn)
+	}
+
+	protocols := make(map[string]int, 4)
+	for range 4 {
+		got := <-observed
+		protocols[got.path] = got.protocol
+	}
+	for _, path := range []string{"/antigravity-first", "/antigravity-second", "/antigravity-third"} {
+		if got := protocols[path]; got != 1 {
+			t.Fatalf("%s protocol = HTTP/%d, want HTTP/1.1", path, got)
+		}
+	}
+	if got := protocols["/default"]; got != 2 {
+		t.Fatalf("default protocol = HTTP/%d, want HTTP/2", got)
+	}
+}
+
+func TestServerSeparatesAntigravityHTTP11FromDefaultClientThroughSameProxy(t *testing.T) {
+	type observedRequest struct {
+		path     string
+		protocol int
+	}
+	observed := make(chan observedRequest, 2)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- observedRequest{path: r.URL.Path, protocol: r.ProtoMajor}
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.EnableHTTP2 = true
+	upstream.StartTLS()
+	t.Cleanup(upstream.Close)
+
+	connectTargets := make(chan string, 2)
+	proxyAuthorizations := make(chan string, 2)
+	proxyErrors := make(chan error, 2)
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodConnect {
+			proxyErrors <- fmt.Errorf("proxy method = %s, want CONNECT", r.Method)
+			http.Error(w, "CONNECT required", http.StatusMethodNotAllowed)
+			return
+		}
+		connectTargets <- r.Host
+		proxyAuthorizations <- r.Header.Get("Proxy-Authorization")
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			proxyErrors <- fmt.Errorf("proxy response writer cannot hijack")
+			return
+		}
+		clientConn, buffered, err := hijacker.Hijack()
+		if err != nil {
+			proxyErrors <- fmt.Errorf("hijack proxy connection: %w", err)
+			return
+		}
+		upstreamConn, err := net.Dial("tcp", upstream.Listener.Addr().String())
+		if err != nil {
+			_ = clientConn.Close()
+			proxyErrors <- fmt.Errorf("dial test upstream: %w", err)
+			return
+		}
+		if _, err = buffered.WriteString("HTTP/1.1 200 Connection Established\r\n\r\n"); err != nil {
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+			proxyErrors <- fmt.Errorf("write CONNECT response: %w", err)
+			return
+		}
+		if err = buffered.Flush(); err != nil {
+			_ = clientConn.Close()
+			_ = upstreamConn.Close()
+			proxyErrors <- fmt.Errorf("flush CONNECT response: %w", err)
+			return
+		}
+		go func() {
+			_, _ = io.Copy(upstreamConn, buffered)
+			_ = upstreamConn.Close()
+		}()
+		_, _ = io.Copy(clientConn, upstreamConn)
+		_ = clientConn.Close()
+	}))
+	t.Cleanup(proxy.Close)
+
+	server := &Server{skipTLSVerify: true}
+	t.Cleanup(func() {
+		server.proxyTransports.Range(func(_, value any) bool {
+			closeUpstreamHTTPClient(value.(*http.Client))
+			return true
+		})
+	})
+	proxyURL := strings.Replace(proxy.URL, "http://", "http://proxy:secret@", 1)
+	request := func(config *model.Config, path string) {
+		t.Helper()
+		req, err := http.NewRequestWithContext(
+			context.Background(), http.MethodPost, "https://upstream.example"+path, bytes.NewBufferString(`{"request":{}}`),
+		)
+		if err != nil {
+			t.Fatalf("build request: %v", err)
+		}
+		resp, err := server.getClientForChannel(config).Do(req)
+		if err != nil {
+			t.Fatalf("POST %s through proxy: %v", path, err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		if err = resp.Body.Close(); err != nil {
+			t.Fatalf("close %s response: %v", path, err)
+		}
+	}
+
+	request(&model.Config{ID: 1, ProxyURL: proxyURL}, "/default")
+	request(&model.Config{ID: 2, AuthType: model.AuthTypeAntigravityOAuth, ProxyURL: proxyURL}, "/antigravity")
+
+	protocols := make(map[string]int, 2)
+	for range 2 {
+		got := <-observed
+		protocols[got.path] = got.protocol
+	}
+	if got := protocols["/default"]; got != 2 {
+		t.Fatalf("default proxied protocol = HTTP/%d, want HTTP/2", got)
+	}
+	if got := protocols["/antigravity"]; got != 1 {
+		t.Fatalf("Antigravity proxied protocol = HTTP/%d, want HTTP/1.1", got)
+	}
+	for range 2 {
+		if got := <-connectTargets; got != "upstream.example:443" {
+			t.Fatalf("CONNECT target = %q, want upstream.example:443", got)
+		}
+		if got := <-proxyAuthorizations; got != "Basic cHJveHk6c2VjcmV0" {
+			t.Fatalf("Proxy-Authorization = %q, want proxy credentials", got)
+		}
+	}
+	select {
+	case err := <-proxyErrors:
+		t.Fatal(err)
+	default:
+	}
+}
 
 func TestUpstreamHTTPTransportClosesIdleConnectionAtMaxAge(t *testing.T) {
 	closed := make(chan struct{}, 2)
