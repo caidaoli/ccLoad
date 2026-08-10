@@ -3878,6 +3878,33 @@ func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
+	testNativeCodexWebsocketReadFailureReconnectsWithReplay(t, "EOF", nil)
+}
+
+func TestNativeCodexWebsocketInterruptedEventReconnectsWithReplayBeforeSemanticOutput(t *testing.T) {
+	testNativeCodexWebsocketReadFailureReconnectsWithReplay(
+		t,
+		responsesWebsocketInterruptedCode,
+		func(conn *websocket.Conn) error {
+			return conn.WriteJSON(map[string]any{
+				"type":   "error",
+				"status": http.StatusBadGateway,
+				"error": map[string]any{
+					"type":    "server_error",
+					"code":    responsesWebsocketInterruptedCode,
+					"message": responsesWebsocketInterruptedMessage,
+				},
+			})
+		},
+	)
+}
+
+func testNativeCodexWebsocketReadFailureReconnectsWithReplay(
+	t *testing.T,
+	failureName string,
+	interrupt func(*websocket.Conn) error,
+) {
+	t.Helper()
 	primaryRequests := make(chan map[string]any, 3)
 	var handshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -3933,7 +3960,12 @@ func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
 			return
 		}
 		primaryRequests <- second
-		// No semantic event: closing the transport must permit a replay on another channel.
+		// No semantic event: the transport failure must permit a same-target full replay.
+		if interrupt != nil {
+			if err := interrupt(conn); err != nil {
+				t.Errorf("interrupt %s websocket: %v", failureName, err)
+			}
+		}
 	}))
 	defer primary.Close()
 
@@ -3985,6 +4017,13 @@ func TestNativeCodexWebsocketReadFailureReconnectsWithReplay(t *testing.T) {
 	}
 	if handshakes.Load() != 2 || fallbackCalls.Load() != 0 {
 		t.Fatalf("handshakes=%d fallback calls=%d, want 2/0", handshakes.Load(), fallbackCalls.Load())
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("get model cooldowns after %s replay: %v", failureName, err)
+	}
+	if len(cooldowns) != 0 {
+		t.Fatalf("%s replay created model cooldowns: %v", failureName, cooldowns)
 	}
 }
 
@@ -5194,28 +5233,60 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTargetCooldown(t *testing.T) {
+	testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBeforeTargetCooldown(
+		t,
+		"1006",
+		func(conn *websocket.Conn) error { return conn.UnderlyingConn().Close() },
+	)
+}
+
+func TestNativeCodexWebsocketInterruptedEventRequiresTwoPhysicalConnectionsBeforeTargetCooldown(t *testing.T) {
+	testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBeforeTargetCooldown(
+		t,
+		responsesWebsocketInterruptedCode,
+		func(conn *websocket.Conn) error {
+			return conn.WriteJSON(map[string]any{
+				"type":   "error",
+				"status": http.StatusBadGateway,
+				"error": map[string]any{
+					"type":    "server_error",
+					"code":    responsesWebsocketInterruptedCode,
+					"message": responsesWebsocketInterruptedMessage,
+				},
+			})
+		},
+	)
+}
+
+func testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBeforeTargetCooldown(
+	t *testing.T,
+	failureName string,
+	interrupt func(*websocket.Conn) error,
+) {
+	t.Helper()
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var primaryHandshakes atomic.Int32
 	primary := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
-			t.Errorf("upgrade abnormal-close websocket: %v", err)
+			t.Errorf("upgrade %s websocket: %v", failureName, err)
 			return
 		}
+		defer func() { _ = conn.Close() }()
 		primaryHandshakes.Add(1)
 		if _, _, err := conn.ReadMessage(); err != nil {
-			t.Errorf("read abnormal-close request: %v", err)
-			_ = conn.Close()
+			t.Errorf("read %s request: %v", failureName, err)
 			return
 		}
 		if err := conn.WriteJSON(map[string]any{
 			"type": "response.output_text.delta", "delta": "partial",
 		}); err != nil {
-			t.Errorf("write abnormal-close delta: %v", err)
-			_ = conn.Close()
+			t.Errorf("write %s delta: %v", failureName, err)
 			return
 		}
-		_ = conn.UnderlyingConn().Close()
+		if err := interrupt(conn); err != nil {
+			t.Errorf("interrupt %s websocket: %v", failureName, err)
+		}
 	}))
 	defer primary.Close()
 
@@ -5247,10 +5318,10 @@ func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTa
 	readInterruptedTurn := func(conn *websocket.Conn) {
 		t.Helper()
 		if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
-			t.Fatalf("set abnormal-close deadline: %v", err)
+			t.Fatalf("set %s deadline: %v", failureName, err)
 		}
 		if err := conn.WriteJSON(request); err != nil {
-			t.Fatalf("write abnormal-close request: %v", err)
+			t.Fatalf("write %s request: %v", failureName, err)
 		}
 
 		var event map[string]any
@@ -5263,7 +5334,9 @@ func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTa
 		if err := conn.ReadJSON(&event); err != nil {
 			t.Fatalf("read interrupted event: %v", err)
 		}
-		if event["type"] != "error" || event["status"] != float64(http.StatusBadGateway) {
+		errorObject, _ := event["error"].(map[string]any)
+		if event["type"] != "error" || event["status"] != float64(http.StatusBadGateway) ||
+			errorObject["code"] != responsesWebsocketInterruptedCode {
 			t.Fatalf("terminal event=%#v, want 502 error", event)
 		}
 		_, _, closeReadErr := conn.ReadMessage()
@@ -5280,14 +5353,14 @@ func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTa
 			t.Fatalf("get model cooldowns: %v", err)
 		}
 		if len(cooldowns) != 0 {
-			t.Fatalf("native websocket 1006 created model cooldowns: %v", cooldowns)
+			t.Fatalf("native websocket %s created model cooldowns: %v", failureName, cooldowns)
 		}
 	}
 
 	first := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-a")
 	readInterruptedTurn(first)
 	if primaryHandshakes.Load() != 1 || fallbackCalls.Load() != 0 {
-		t.Fatalf("after first 1006 primary/fallback=%d/%d, want 1/0", primaryHandshakes.Load(), fallbackCalls.Load())
+		t.Fatalf("after first %s primary/fallback=%d/%d, want 1/0", failureName, primaryHandshakes.Load(), fallbackCalls.Load())
 	}
 	assertNoModelCooldown()
 
@@ -5302,7 +5375,7 @@ func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTa
 	second := dialResponsesWebsocketWithSessionID(t, env.engine, "two-physical-failures-b")
 	readInterruptedTurn(second)
 	if primaryHandshakes.Load() != 2 || fallbackCalls.Load() != 0 {
-		t.Fatalf("after second 1006 primary/fallback=%d/%d, want 2/0", primaryHandshakes.Load(), fallbackCalls.Load())
+		t.Fatalf("after second %s primary/fallback=%d/%d, want 2/0", failureName, primaryHandshakes.Load(), fallbackCalls.Load())
 	}
 	assertNoModelCooldown()
 
