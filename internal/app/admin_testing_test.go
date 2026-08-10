@@ -10,8 +10,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -123,6 +125,771 @@ func createAnthropicOAuthChannelForAdminTest(t testing.TB, srv *Server, upstream
 		t.Fatal(err)
 	}
 	return created
+}
+
+func TestOAuthCredentialCleanupQueueUsesPriorityThenChannelName(t *testing.T) {
+	arrivals := make(chan string, 10)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseAll)
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrivals <- strings.TrimPrefix(r.URL.Path, "/")
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cleanup-order\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	type channelSpec struct {
+		name     string
+		priority int
+	}
+	// Deliberately insert in the opposite of the required queue order so this
+	// test observes the public cleanup behavior instead of storage row order.
+	specs := []channelSpec{
+		{name: "priority-low", priority: 10},
+		{name: "name-z", priority: 20},
+		{name: "name-y", priority: 20},
+		{name: "priority-high-z", priority: 30},
+		{name: "name-x", priority: 20},
+		{name: "name-w", priority: 20},
+		{name: "name-v", priority: 20},
+		{name: "name-b", priority: 20},
+		{name: "name-a", priority: 20},
+		{name: "priority-high-a", priority: 30},
+	}
+	for _, spec := range specs {
+		credential, err := (&codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: "at-" + spec.name,
+			RefreshToken: "rt-" + spec.name, Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			AccountID: "account-" + spec.name,
+		}).JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := srv.store.CreateConfig(context.Background(), &model.Config{
+			Name: spec.name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+			URLs: model.ChannelURLs{{
+				URL: upstream.URL + "/" + spec.name, Exact: true, Protocols: []string{util.ProtocolCodex},
+			}},
+			ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+			ModelEntries:          []model.ModelEntry{{Model: "gpt-order"}},
+			Priority:              spec.priority,
+			Enabled:               true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	req := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-order"}`,
+	))
+	req.Header.Set("Content-Type", "application/json")
+	c, w := newTestContext(t, req)
+	srv.HandleStartOAuthCredentialCleanupJob(c)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("start cleanup status=%d body=%s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Success bool                           `json:"success"`
+		Data    oauthCredentialCleanupJobStart `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Success || response.Data.Total != len(specs) {
+		t.Fatalf("cleanup start=%+v", response)
+	}
+
+	firstWave := make(map[string]struct{}, oauthCredentialCleanupWorkers)
+	deadline := time.After(5 * time.Second)
+	for len(firstWave) < oauthCredentialCleanupWorkers {
+		select {
+		case name := <-arrivals:
+			firstWave[name] = struct{}{}
+		case <-deadline:
+			t.Fatalf("first cleanup wave=%v", firstWave)
+		}
+	}
+	wantFirstWave := map[string]struct{}{
+		"priority-high-a": {},
+		"priority-high-z": {},
+		"name-a":          {},
+		"name-b":          {},
+		"name-v":          {},
+		"name-w":          {},
+		"name-x":          {},
+		"name-y":          {},
+	}
+	if !reflect.DeepEqual(firstWave, wantFirstWave) {
+		t.Fatalf("first cleanup wave=%v, want %v", firstWave, wantFirstWave)
+	}
+	select {
+	case name := <-arrivals:
+		t.Fatalf("channel %q started before a higher-ranked worker slot completed", name)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	releaseAll()
+	var view oauthCredentialCleanupJobView
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		var err error
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(response.Data.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobSucceeded {
+		t.Fatalf("cleanup status=%q error=%q", view.Status, view.Error)
+	}
+}
+
+func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *testing.T) {
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	var healthyArrivals atomic.Int32
+	releaseHealthy := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/reject", "/transient", "/refreshed-reject":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+			return
+		case "/refresh-other":
+			if !strings.Contains(r.Header.Get("Authorization"), "at-cleanup-refresh-other-next") {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+				return
+			}
+			fallthrough
+		case "/healthy-1", "/healthy-2", "/healthy-expired":
+			current := inFlight.Add(1)
+			defer inFlight.Add(-1)
+			for {
+				seen := maxInFlight.Load()
+				if current <= seen || maxInFlight.CompareAndSwap(seen, current) {
+					break
+				}
+			}
+			if healthyArrivals.Add(1) == 2 {
+				close(releaseHealthy)
+			}
+			select {
+			case <-releaseHealthy:
+			case <-time.After(time.Second):
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cleanup\",\"status\":\"completed\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+			return
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	var refreshAttempts atomic.Int32
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		refreshAttempts.Add(1)
+		requestBody, _ := io.ReadAll(req.Body)
+		form, _ := url.ParseQuery(string(requestBody))
+		statusCode := http.StatusBadRequest
+		responseBody := `{"error":"invalid_grant"}`
+		switch form.Get("refresh_token") {
+		case "rt-cleanup-transient":
+			statusCode = http.StatusServiceUnavailable
+			responseBody = `{"error":"temporarily_unavailable"}`
+		case "rt-cleanup-expired-refreshed-rejected":
+			statusCode = http.StatusOK
+			responseBody = `{"access_token":"at-cleanup-expired-refreshed-rejected-next","refresh_token":"rt-cleanup-rotated","expires_in":3600}`
+		case "rt-cleanup-refresh-other":
+			statusCode = http.StatusOK
+			responseBody = `{"access_token":"at-cleanup-refresh-other-next","refresh_token":"rt-cleanup-refresh-other-next","expires_in":3600}`
+		}
+		return &http.Response{
+			StatusCode: statusCode,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(responseBody)),
+			Request:    req,
+		}, nil
+	})}
+	refreshService := codexauth.NewService(refreshClient)
+	refreshService.TokenURL = "https://oauth.test/token"
+	srv.codexCredentials.service = refreshService
+	srv.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	createChannel := func(name, endpoint string, models []model.ModelEntry, scheduledModel string) *model.Config {
+		t.Helper()
+		expiresAt := time.Now().UTC().Add(24 * time.Hour)
+		if strings.Contains(name, "expired") {
+			expiresAt = time.Now().UTC().Add(-time.Hour)
+		}
+		credential, err := (&codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: "at-" + name, RefreshToken: "rt-" + name,
+			Expired: expiresAt.Format(time.RFC3339), AccountID: "account-" + name,
+		}).JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+			Name: name, AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+			URLs:                  model.ChannelURLs{{URL: endpoint, Exact: true, Protocols: []string{util.ProtocolCodex}}},
+			ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+			ModelEntries:          models,
+			ScheduledCheckModel:   scheduledModel,
+			Enabled:               true,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return created
+	}
+
+	rejected := createChannel("cleanup-rejected", upstream.URL+"/reject", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	transientRefresh := createChannel("cleanup-transient", upstream.URL+"/transient", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	healthyOne := createChannel("cleanup-healthy-1", upstream.URL+"/healthy-1", []model.ModelEntry{{Model: "gpt-5.4"}, {Model: "gpt-preferred"}}, "gpt-preferred")
+	createChannel("cleanup-healthy-2", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	expiredButUsable := createChannel("cleanup-healthy-expired", upstream.URL+"/healthy-expired", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	refreshedRejected := createChannel("cleanup-expired-refreshed-rejected", upstream.URL+"/refreshed-reject", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	networkFailure := createChannel("cleanup-network", "http://127.0.0.1:1/v1/responses", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	excludedModel := createChannel("cleanup-other-model", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "gpt-other"}}, "")
+	refreshedOtherModel := createChannel("cleanup-refresh-other", upstream.URL+"/refresh-other", []model.ModelEntry{{Model: "gpt-other"}}, "")
+	optionsRequest := newRequest(http.MethodGet, "/admin/oauth/credentials/cleanup/options?auth_type=codex_oauth", nil)
+	optionsContext, optionsResponse := newTestContext(t, optionsRequest)
+	srv.HandleOAuthCredentialCleanupOptions(optionsContext)
+	if optionsResponse.Code != http.StatusOK {
+		t.Fatalf("cleanup options status=%d body=%s", optionsResponse.Code, optionsResponse.Body.String())
+	}
+	var optionsPayload struct {
+		Success bool                          `json:"success"`
+		Data    oauthCredentialCleanupOptions `json:"data"`
+	}
+	if err := json.Unmarshal(optionsResponse.Body.Bytes(), &optionsPayload); err != nil {
+		t.Fatalf("decode cleanup options: %v", err)
+	}
+	if !optionsPayload.Success || optionsPayload.Data.AuthType != model.AuthTypeCodexOAuth ||
+		optionsPayload.Data.ChannelCount != 9 ||
+		!reflect.DeepEqual(optionsPayload.Data.Models, []string{"gpt-5.4", "gpt-other", "gpt-preferred"}) {
+		t.Fatalf("cleanup options=%+v", optionsPayload)
+	}
+
+	startCleanup := func() oauthCredentialCleanupJobStart {
+		t.Helper()
+		req := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+			`{"auth_type":"codex_oauth","model":"gpt-5.4"}`,
+		))
+		req.Header.Set("Idempotency-Key", "cleanup-test-request")
+		req.Header.Set("Content-Type", "application/json")
+		c, w := newTestContext(t, req)
+		srv.HandleStartOAuthCredentialCleanupJob(c)
+		if w.Code != http.StatusAccepted {
+			t.Fatalf("start cleanup status=%d body=%s", w.Code, w.Body.String())
+		}
+		var response struct {
+			Success bool                           `json:"success"`
+			Data    oauthCredentialCleanupJobStart `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode cleanup start: %v", err)
+		}
+		if !response.Success || response.Data.JobID == "" {
+			t.Fatalf("invalid cleanup start response: %s", w.Body.String())
+		}
+		return response.Data
+	}
+	started := startCleanup()
+	if started.Total != 9 || started.AuthType != model.AuthTypeCodexOAuth || started.Model != "gpt-5.4" {
+		t.Fatalf("cleanup selection=%+v", started)
+	}
+	recovered := startCleanup()
+	if recovered != started {
+		t.Fatalf("idempotent start=%+v, want %+v", recovered, started)
+	}
+	conflictReq := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-other"}`,
+	))
+	conflictReq.Header.Set("Idempotency-Key", "cleanup-test-request")
+	conflictReq.Header.Set("Content-Type", "application/json")
+	conflictContext, conflictResponse := newTestContext(t, conflictReq)
+	srv.HandleStartOAuthCredentialCleanupJob(conflictContext)
+	if conflictResponse.Code != http.StatusConflict {
+		t.Fatalf("idempotency conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
+	}
+
+	var view oauthCredentialCleanupJobView
+	var err error
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(started.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobSucceeded {
+		t.Fatalf("cleanup status=%q error=%q events=%+v", view.Status, view.Error, view.Events)
+	}
+	if maxInFlight.Load() < 2 {
+		t.Fatalf("healthy channel tests were not concurrent: max_in_flight=%d", maxInFlight.Load())
+	}
+	if refreshAttempts.Load() != 6 {
+		t.Fatalf("refresh attempts=%d, want 6", refreshAttempts.Load())
+	}
+	if _, err := srv.store.GetConfig(context.Background(), rejected.ID); err == nil {
+		t.Fatal("channel whose 401 refresh failed was not deleted")
+	}
+	if _, err := srv.store.GetConfig(context.Background(), networkFailure.ID); err != nil {
+		t.Fatalf("network failure must not delete its channel: %v", err)
+	}
+	if _, err := srv.store.GetConfig(context.Background(), transientRefresh.ID); err != nil {
+		t.Fatalf("transient refresh failure must not delete its channel: %v", err)
+	}
+	if _, err := srv.store.GetConfig(context.Background(), expiredButUsable.ID); err != nil {
+		t.Fatalf("an expired credential whose existing access token still works must be kept: %v", err)
+	}
+	if _, err := srv.store.GetConfig(context.Background(), refreshedRejected.ID); err == nil {
+		t.Fatal("channel tested with an eagerly refreshed credential was not deleted after that refresh token was rejected")
+	}
+	if _, err := srv.store.GetConfig(context.Background(), excludedModel.ID); err != nil {
+		t.Fatalf("all channels of the selected auth type must be tested: %v", err)
+	}
+
+	var complete oauthCredentialCleanupEvent
+	foundPreferredModel := false
+	foundNonSupportingChannel := false
+	foundUnsupportedRetest := false
+	for _, event := range view.Events {
+		if event.Event == "testing" && event.ChannelID == healthyOne.ID {
+			foundPreferredModel = event.Model == "gpt-5.4" && len(event.Models) == 2
+		}
+		if event.Event == "testing" && event.ChannelID == excludedModel.ID {
+			foundNonSupportingChannel = event.Model == "gpt-5.4"
+		}
+		if event.Event == "retesting" && event.ChannelID == refreshedOtherModel.ID {
+			foundUnsupportedRetest = event.Model == "gpt-5.4"
+		}
+		if event.Event == "complete" {
+			complete = event
+		}
+	}
+	if !foundPreferredModel {
+		t.Fatal("cleanup did not list supported models and select the configured test model")
+	}
+	if !foundNonSupportingChannel {
+		t.Fatal("cleanup did not test a same-auth-type channel lacking the selected model")
+	}
+	if !foundUnsupportedRetest {
+		t.Fatal("cleanup did not retest the selected model after refreshing a channel that lacks it")
+	}
+	if complete.Deleted != 2 || complete.Healthy != 4 || complete.Refreshed != 1 || complete.Failed != 2 || complete.Processed != 9 {
+		t.Fatalf("cleanup summary=%+v", complete)
+	}
+
+	resumeAfter := complete.Sequence - 1
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/oauth/credentials/cleanup/jobs/%s/stream?after=%d", started.JobID, resumeAfter), nil))
+	c.Params = gin.Params{{Key: "id", Value: started.JobID}}
+	srv.HandleOAuthCredentialCleanupStream(c)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"event":"complete"`) || strings.Contains(w.Body.String(), `"event":"start"`) {
+		t.Fatalf("resumed SSE response status=%d body=%s", w.Code, w.Body.String())
+	}
+
+	staleRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(fmt.Sprintf(
+		`{"auth_type":"codex_oauth","channel_id":%d,"model":"gpt-other"}`, healthyOne.ID,
+	)))
+	staleRequest.Header.Set("Content-Type", "application/json")
+	staleContext, staleResponse := newTestContext(t, staleRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(staleContext)
+	if staleResponse.Code != http.StatusBadRequest {
+		t.Fatalf("stale channel-scoped cleanup status=%d body=%s", staleResponse.Code, staleResponse.Body.String())
+	}
+	unknownModelRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-not-configured"}`,
+	))
+	unknownModelRequest.Header.Set("Content-Type", "application/json")
+	unknownModelContext, unknownModelResponse := newTestContext(t, unknownModelRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(unknownModelContext)
+	if unknownModelResponse.Code != http.StatusBadRequest {
+		t.Fatalf("unknown cleanup model status=%d body=%s", unknownModelResponse.Code, unknownModelResponse.Body.String())
+	}
+
+	secondRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-other"}`,
+	))
+	secondRequest.Header.Set("Content-Type", "application/json")
+	secondRequest.Header.Set("Idempotency-Key", "cleanup-second-all-channels")
+	secondContext, secondResponse := newTestContext(t, secondRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(secondContext)
+	if secondResponse.Code != http.StatusAccepted {
+		t.Fatalf("second cleanup status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	var secondStart struct {
+		Data oauthCredentialCleanupJobStart `json:"data"`
+	}
+	if err := json.Unmarshal(secondResponse.Body.Bytes(), &secondStart); err != nil {
+		t.Fatal(err)
+	}
+	if secondStart.Data.Total != 7 || secondStart.Data.Model != "gpt-other" {
+		t.Fatalf("second cleanup start=%+v", secondStart.Data)
+	}
+	deadline = time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(secondStart.Data.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobSucceeded || len(view.Events) == 0 ||
+		view.Events[len(view.Events)-1].Processed != 7 {
+		t.Fatalf("second cleanup view=%+v", view)
+	}
+	createChannel("cleanup-wildcard", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "*"}}, "")
+	wildcardOptionsContext, wildcardOptionsResponse := newTestContext(t, newRequest(
+		http.MethodGet, "/admin/oauth/credentials/cleanup/options?auth_type=codex_oauth", nil,
+	))
+	srv.HandleOAuthCredentialCleanupOptions(wildcardOptionsContext)
+	if wildcardOptionsResponse.Code != http.StatusOK {
+		t.Fatalf("wildcard cleanup options status=%d body=%s", wildcardOptionsResponse.Code, wildcardOptionsResponse.Body.String())
+	}
+	if err := json.Unmarshal(wildcardOptionsResponse.Body.Bytes(), &optionsPayload); err != nil {
+		t.Fatal(err)
+	}
+	seenModels := make(map[string]struct{}, len(optionsPayload.Data.Models))
+	for _, modelName := range optionsPayload.Data.Models {
+		if modelName == "*" {
+			t.Fatalf("wildcard model leaked into cleanup options: %+v", optionsPayload.Data)
+		}
+		if _, duplicate := seenModels[modelName]; duplicate {
+			t.Fatalf("duplicate model leaked into cleanup options: %+v", optionsPayload.Data)
+		}
+		seenModels[modelName] = struct{}{}
+	}
+	if optionsPayload.Data.ChannelCount != 8 {
+		t.Fatalf("wildcard cleanup options=%+v", optionsPayload.Data)
+	}
+}
+
+func TestOAuthCredentialCleanupCancelDuringRefreshKeepsChannel(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+	}))
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+
+	refreshStarted := make(chan struct{})
+	releaseRefresh := make(chan struct{})
+	refreshReturned := make(chan struct{})
+	var startOnce sync.Once
+	var releaseOnce sync.Once
+	var returnedOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseRefresh) }) })
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		startOnce.Do(func() { close(refreshStarted) })
+		<-releaseRefresh
+		returnedOnce.Do(func() { close(refreshReturned) })
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant"}`)),
+			Request:    req,
+		}, nil
+	})}
+	refreshService := codexauth.NewService(refreshClient)
+	refreshService.TokenURL = "https://oauth.test/token"
+	srv.codexCredentials.service = refreshService
+	srv.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	credential, err := (&codexauth.Credential{
+		Type:         codexauth.ChannelType,
+		AccessToken:  "at-cleanup-stop",
+		RefreshToken: "rt-cleanup-stop",
+		Expired:      time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		AccountID:    "account-cleanup-stop",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name:            "cleanup-stop",
+		AuthType:        model.AuthTypeCodexOAuth,
+		OAuthCredential: credential,
+		URLs: model.ChannelURLs{{
+			URL: upstream.URL, Exact: true, Protocols: []string{util.ProtocolCodex},
+		}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-stop"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-stop"}`,
+	))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startContext, startResponse := newTestContext(t, startRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(startContext)
+	if startResponse.Code != http.StatusAccepted {
+		t.Fatalf("start cleanup status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var started struct {
+		Data oauthCredentialCleanupJobStart `json:"data"`
+	}
+	if err := json.Unmarshal(startResponse.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-refreshStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cleanup did not reach credential refresh")
+	}
+
+	cancelContext, cancelResponse := newTestContext(t, newRequest(
+		http.MethodPost,
+		fmt.Sprintf("/admin/oauth/credentials/cleanup/jobs/%s/cancel", started.Data.JobID),
+		nil,
+	))
+	cancelContext.Params = gin.Params{{Key: "id", Value: started.Data.JobID}}
+	srv.HandleCancelOAuthCredentialCleanupJob(cancelContext)
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("cancel cleanup status=%d body=%s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	var view oauthCredentialCleanupJobView
+	for time.Now().Before(deadline) {
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(started.Data.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobCancelled {
+		t.Fatalf("cancelled cleanup status=%q error=%q events=%+v", view.Status, view.Error, view.Events)
+	}
+	if _, err := srv.store.GetConfig(context.Background(), created.ID); err != nil {
+		t.Fatalf("stopped cleanup deleted its channel: %v", err)
+	}
+
+	releaseOnce.Do(func() { close(releaseRefresh) })
+	select {
+	case <-refreshReturned:
+	case <-time.After(2 * time.Second):
+		t.Fatal("background refresh did not return")
+	}
+	if _, err := srv.store.GetConfig(context.Background(), created.ID); err != nil {
+		t.Fatalf("late refresh failure deleted a channel after stop: %v", err)
+	}
+
+	streamContext, streamResponse := newTestContext(t, newRequest(
+		http.MethodGet,
+		fmt.Sprintf("/admin/oauth/credentials/cleanup/jobs/%s/stream?after=0", started.Data.JobID),
+		nil,
+	))
+	streamContext.Params = gin.Params{{Key: "id", Value: started.Data.JobID}}
+	srv.HandleOAuthCredentialCleanupStream(streamContext)
+	if streamResponse.Code != http.StatusOK || !strings.Contains(streamResponse.Body.String(), `"status":"cancelled"`) {
+		t.Fatalf("cancelled cleanup SSE status=%d body=%s", streamResponse.Code, streamResponse.Body.String())
+	}
+}
+
+func TestOAuthCredentialCleanupConcurrentEditKeepsCurrentChannel(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseRequest := make(chan struct{})
+	var startedOnce sync.Once
+	var releaseOnce sync.Once
+	t.Cleanup(func() { releaseOnce.Do(func() { close(releaseRequest) }) })
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		startedOnce.Do(func() { close(requestStarted) })
+		<-releaseRequest
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+	}))
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"invalid_grant"}`)),
+			Request:    req,
+		}, nil
+	})}
+	refreshService := codexauth.NewService(refreshClient)
+	refreshService.TokenURL = "https://oauth.test/token"
+	srv.codexCredentials.service = refreshService
+	srv.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	credential, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-concurrent-edit", RefreshToken: "rt-concurrent-edit",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-concurrent-edit",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "cleanup-concurrent-edit", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL + "/stale", Exact: true, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-edit"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	startRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-edit"}`,
+	))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startContext, startResponse := newTestContext(t, startRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(startContext)
+	if startResponse.Code != http.StatusAccepted {
+		t.Fatalf("start cleanup status=%d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var started struct {
+		Data oauthCredentialCleanupJobStart `json:"data"`
+	}
+	if err := json.Unmarshal(startResponse.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-requestStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cleanup did not start the conversation test")
+	}
+
+	current, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current.URLs = model.ChannelURLs{{URL: upstream.URL + "/healthy", Exact: true, Protocols: []string{util.ProtocolCodex}}}
+	if _, err := srv.store.UpdateConfig(context.Background(), created.ID, current); err != nil {
+		t.Fatal(err)
+	}
+	releaseOnce.Do(func() { close(releaseRequest) })
+
+	deadline := time.Now().Add(3 * time.Second)
+	var view oauthCredentialCleanupJobView
+	for time.Now().Before(deadline) {
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(started.Data.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobSucceeded {
+		t.Fatalf("cleanup status=%q error=%q events=%+v", view.Status, view.Error, view.Events)
+	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("cleanup deleted the concurrently edited channel: %v", err)
+	}
+	if got := persisted.URLs[0].URL; got != upstream.URL+"/healthy" {
+		t.Fatalf("persisted URL=%q, want concurrent edit", got)
+	}
+	foundSkipped := false
+	for _, event := range view.Events {
+		if event.Event == "progress" && event.ChannelID == created.ID && event.Status == "skipped" {
+			foundSkipped = true
+		}
+	}
+	if !foundSkipped {
+		t.Fatalf("cleanup did not report the snapshot mismatch: %+v", view.Events)
+	}
+}
+
+func TestOAuthCredentialRefreshTrackerOwnsDetachedRefreshLifetime(t *testing.T) {
+	_, cancelParent := context.WithCancel(context.Background())
+	tracker := newOAuthCredentialRefreshTracker()
+	trackedCtx, done, err := tracker.begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closeResult := make(chan error, 1)
+	go func() {
+		closeResult <- tracker.close(context.Background())
+	}()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		tracker.mu.Lock()
+		closing := tracker.closing
+		tracker.mu.Unlock()
+		if closing {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-closeResult:
+		t.Fatalf("tracker closed before its refresh exited: %v", err)
+	default:
+	}
+	if _, _, err := tracker.begin(); !errors.Is(err, errOAuthCredentialRefreshesClosed) {
+		t.Fatalf("begin after close error=%v", err)
+	}
+	cancelParent()
+	select {
+	case <-trackedCtx.Done():
+		t.Fatal("server cancellation interrupted a refresh before it persisted")
+	case <-time.After(20 * time.Millisecond):
+	}
+	done()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tracker did not finish after refresh exit")
+	}
+	select {
+	case <-trackedCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("closed tracker did not release its owned context")
+	}
+
+	timeoutTracker := newOAuthCredentialRefreshTracker()
+	timeoutCtx, timeoutDone, err := timeoutTracker.begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
+	cancelShutdown()
+	if err := timeoutTracker.close(shutdownCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("timed out tracker close error=%v", err)
+	}
+	select {
+	case <-timeoutCtx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("forced tracker shutdown did not cancel the refresh context")
+	}
+	timeoutDone()
 }
 
 func TestAnthropicOAuthChannelTestDecodesAdvertisedCompression(t *testing.T) {

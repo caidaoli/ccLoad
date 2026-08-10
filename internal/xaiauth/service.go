@@ -47,6 +47,14 @@ func (e *tokenEndpointError) UpstreamResponseBody() string {
 	return e.responseBody
 }
 
+// StatusCode exposes the token endpoint status without exposing the private error type.
+func (e *tokenEndpointError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.statusCode
+}
+
 // NewService constructs a Service using client or http.DefaultClient when nil.
 func NewService(client *http.Client) *Service {
 	if client == nil {

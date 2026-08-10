@@ -26,6 +26,12 @@ test('shared clipboard copy preserves click activation when native Clipboard API
   let userActivation = true;
   let selectedText = '';
   const body = element();
+  let copyHost = null;
+  const modal = {
+    ...element(),
+    appendChild() { copyHost = 'dialog'; },
+    removeChild: noop
+  };
 
   setGlobal('window', {
     location: { pathname: '/', search: '', href: '' },
@@ -36,7 +42,7 @@ test('shared clipboard copy preserves click activation when native Clipboard API
   setGlobal('localStorage', { getItem: () => null, setItem: noop, removeItem: noop });
   setGlobal('document', {
     addEventListener: noop,
-    querySelectorAll: () => [],
+    querySelectorAll: selector => selector === 'dialog[open]' ? [modal] : [],
     querySelector: () => null,
     getElementById: () => null,
     createElement: () => ({
@@ -65,6 +71,7 @@ test('shared clipboard copy preserves click activation when native Clipboard API
     await global.window.copyToClipboard('debug request');
 
     assert.equal(selectedText, 'debug request');
+    assert.equal(copyHost, 'dialog');
   } finally {
     delete require.cache[require.resolve('./ui.js')];
     for (const [key, descriptor] of previousGlobals) {

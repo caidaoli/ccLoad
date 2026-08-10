@@ -127,9 +127,12 @@ type Server struct {
 	modelCatalogSyncStarted atomic.Bool
 	wg                      sync.WaitGroup // 等待所有后台goroutine结束
 
-	oauthCredentialImportRunMu  sync.Mutex
-	oauthCredentialImportJobsMu sync.Mutex
-	oauthCredentialImportJobs   *oauthCredentialImportJobManager
+	oauthCredentialImportRunMu   sync.Mutex
+	oauthCredentialImportJobsMu  sync.Mutex
+	oauthCredentialImportJobs    *oauthCredentialImportJobManager
+	oauthCredentialCleanupJobsMu sync.Mutex
+	oauthCredentialCleanupJobs   *oauthCredentialCleanupJobManager
+	oauthCredentialRefreshes     *oauthCredentialRefreshTracker
 }
 
 // NewServer 创建并初始化一个新的 Server 实例
@@ -215,10 +218,11 @@ func NewServer(store storage.Store) *Server {
 		maxConcurrency: maxConcurrency,
 
 		// 初始化优雅关闭机制
-		baseCtx:      baseCtx,
-		baseCancel:   baseCancel,
-		shutdownCh:   make(chan struct{}),
-		shutdownDone: make(chan struct{}),
+		baseCtx:                  baseCtx,
+		baseCancel:               baseCancel,
+		shutdownCh:               make(chan struct{}),
+		shutdownDone:             make(chan struct{}),
+		oauthCredentialRefreshes: newOAuthCredentialRefreshTracker(),
 
 		// Token统计队列（避免每请求起goroutine）
 		tokenStatsCh:        make(chan tokenStatsUpdate, config.DefaultTokenStatsBufferSize),
@@ -260,6 +264,7 @@ func NewServer(store storage.Store) *Server {
 	s.codexCredentials = newCodexCredentialManager(codexOAuthService, store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
+	s.codexCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.codexOAuth = newCodexOAuthManager(codexOAuthService, store, func(channelID int64) {
 		s.codexCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
@@ -269,6 +274,7 @@ func NewServer(store storage.Store) *Server {
 	s.antigravityCredentials = newAntigravityCredentialManager(s.antigravityService, store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
+	s.antigravityCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.antigravityOAuth = newAntigravityOAuthManager(s.antigravityService, store, func(channelID int64) {
 		s.antigravityCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
@@ -277,6 +283,7 @@ func NewServer(store storage.Store) *Server {
 	s.xaiCredentials = newXAICredentialManager(store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
 	})
+	s.xaiCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.xaiOAuth = newXAIOAuthManager(
 		s.baseCtx,
 		s.xaiService,
@@ -297,6 +304,7 @@ func NewServer(store storage.Store) *Server {
 	s.anthropicCredentials = newAnthropicCredentialManager(
 		s.anthropicService, store, s.getClientForChannel, func(int64) { s.InvalidateChannelListCache() },
 	)
+	s.anthropicCredentials.refreshTracker = s.oauthCredentialRefreshes
 	s.anthropicOAuth = newAnthropicOAuthManager(s.anthropicService, store, func(channelID int64) {
 		s.anthropicCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
@@ -367,6 +375,7 @@ func NewServer(store storage.Store) *Server {
 	}
 
 	s.oauthCredentialImportJobs = newOAuthCredentialImportJobManager(s.baseCtx, oauthCredentialImportMaxRunningJobs)
+	s.oauthCredentialCleanupJobs = newOAuthCredentialCleanupJobManager(s.baseCtx)
 
 	// 所有启动关键状态完成加载后，再启动非关键后台任务。
 	// SQLite 纯模式只有一个连接，维护任务不得与认证/渠道初始化竞争。
@@ -1159,6 +1168,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/oauth/credentials/import/stream", s.HandleImportOAuthCredentialsStream)
 		admin.POST("/oauth/credentials/import/jobs", s.HandleStartOAuthCredentialImportJob)
 		admin.GET("/oauth/credentials/import/jobs/:id", s.HandleOAuthCredentialImportJob)
+		admin.GET("/oauth/credentials/cleanup/options", s.HandleOAuthCredentialCleanupOptions)
+		admin.POST("/oauth/credentials/cleanup/jobs", s.HandleStartOAuthCredentialCleanupJob)
+		admin.GET("/oauth/credentials/cleanup/jobs/:id/stream", s.HandleOAuthCredentialCleanupStream)
+		admin.POST("/oauth/credentials/cleanup/jobs/:id/cancel", s.HandleCancelOAuthCredentialCleanupJob)
 		admin.POST("/codex/oauth/start", s.HandleStartCodexOAuth)
 		admin.GET("/codex/oauth/status", s.HandleCodexOAuthStatus)
 		admin.POST("/codex/oauth/cancel", s.HandleCancelCodexOAuth)
@@ -1452,6 +1465,14 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	if manager := s.currentOAuthCredentialImportJobs(); manager != nil {
 		oauthCredentialImportShutdownErr = manager.Close(ctx)
 	}
+	var oauthCredentialCleanupShutdownErr error
+	if manager := s.currentOAuthCredentialCleanupJobs(); manager != nil {
+		oauthCredentialCleanupShutdownErr = manager.Close(ctx)
+	}
+	var oauthCredentialRefreshShutdownErr error
+	if s.oauthCredentialRefreshes != nil {
+		oauthCredentialRefreshShutdownErr = s.oauthCredentialRefreshes.close(ctx)
+	}
 
 	// 使用channel等待所有goroutine完成
 	done := make(chan struct{})
@@ -1464,6 +1485,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	var err error
 	if oauthCredentialImportShutdownErr != nil {
 		err = oauthCredentialImportShutdownErr
+	}
+	if oauthCredentialCleanupShutdownErr != nil && err == nil {
+		err = oauthCredentialCleanupShutdownErr
+	}
+	if oauthCredentialRefreshShutdownErr != nil && err == nil {
+		err = oauthCredentialRefreshShutdownErr
 	}
 	select {
 	case <-done:

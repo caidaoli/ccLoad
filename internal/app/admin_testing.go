@@ -624,52 +624,8 @@ func (s *Server) prepareChannelTestAuth(
 	requestAPIKey string,
 ) (*model.Config, channelTestKeySelection, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	if cfg != nil && cfg.UsesCodexOAuth() {
-		credential, err := s.codexCredentials.credential(ctx, cfg, false)
-		if err != nil {
-			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
-		}
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.CodexAccessToken = credential.AccessToken
-		runtimeCfg.CodexAccountID = credential.AccountID
-		return runtimeCfg, channelTestKeySelection{
-			keyIndex:                cooldown.NoKeyIndex,
-			updatePersistedCooldown: true,
-		}, nil
-	}
-	if cfg != nil && cfg.UsesAntigravityOAuth() {
-		credential, err := s.antigravityCredentials.credential(ctx, cfg, false)
-		if err != nil {
-			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Antigravity OAuth 凭证失败: %w", err)
-		}
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.AntigravityAccessToken = credential.AccessToken
-		runtimeCfg.AntigravityProjectID = credential.ProjectID
-		return runtimeCfg, channelTestKeySelection{
-			keyIndex:                cooldown.NoKeyIndex,
-			updatePersistedCooldown: true,
-		}, nil
-	}
-	if cfg != nil && cfg.UsesXAIOAuth() {
-		credential, err := s.xaiCredentials.credential(ctx, cfg, false)
-		if err != nil {
-			return nil, channelTestKeySelection{}, fmt.Errorf("加载 xAI OAuth 凭证失败: %w", err)
-		}
-		return cfg.Clone(), channelTestKeySelection{
-			keyIndex:                cooldown.NoKeyIndex,
-			requestCredential:       credential.AccessToken,
-			updatePersistedCooldown: true,
-		}, nil
-	}
-	if cfg != nil && cfg.UsesAnthropicOAuth() {
-		credential, err := s.anthropicCredentials.credential(ctx, cfg, false)
-		if err != nil {
-			return nil, channelTestKeySelection{}, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
-		}
-		return cfg.Clone(), channelTestKeySelection{
-			keyIndex: cooldown.NoKeyIndex, requestCredential: credential.AccessToken,
-			updatePersistedCooldown: true,
-		}, nil
+	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, false); handled {
+		return runtimeCfg, selection, err
 	}
 
 	if len(apiKeys) == 0 && requestAPIKey == "" {
@@ -677,6 +633,82 @@ func (s *Server) prepareChannelTestAuth(
 	}
 	selection, err := s.selectChannelTestKey(apiKeys, requestedKeyIndex, requestAPIKey)
 	return cfg, selection, err
+}
+
+func (s *Server) prepareOAuthChannelTestAuth(
+	ctx context.Context,
+	cfg *model.Config,
+	forceRefresh bool,
+) (*model.Config, channelTestKeySelection, bool, error) {
+	selection := channelTestKeySelection{
+		keyIndex:                cooldown.NoKeyIndex,
+		updatePersistedCooldown: true,
+	}
+	if cfg == nil || !cfg.UsesOAuth() {
+		return nil, selection, false, nil
+	}
+
+	cfg = s.withOAuthBaseURLOverride(cfg)
+	switch {
+	case cfg.UsesCodexOAuth():
+		credential, err := s.codexCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			if err == nil {
+				err = errors.New("codex OAuth credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.CodexAccessToken = credential.AccessToken
+		runtimeCfg.CodexAccountID = credential.AccountID
+		if err != nil {
+			return runtimeCfg, selection, true, fmt.Errorf("加载 Codex OAuth 凭证失败: %w", err)
+		}
+		return runtimeCfg, selection, true, nil
+	case cfg.UsesAntigravityOAuth():
+		credential, err := s.antigravityCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			if err == nil {
+				err = errors.New("antigravity OAuth credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Antigravity OAuth 凭证失败: %w", err)
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.AntigravityAccessToken = credential.AccessToken
+		runtimeCfg.AntigravityProjectID = credential.ProjectID
+		if err != nil {
+			return runtimeCfg, selection, true, fmt.Errorf("加载 Antigravity OAuth 凭证失败: %w", err)
+		}
+		return runtimeCfg, selection, true, nil
+	case cfg.UsesXAIOAuth():
+		credential, err := s.xaiCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			if err == nil {
+				err = errors.New("xAI OAuth credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 xAI OAuth 凭证失败: %w", err)
+		}
+		selection.requestCredential = credential.AccessToken
+		if err != nil {
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 xAI OAuth 凭证失败: %w", err)
+		}
+		return cfg.Clone(), selection, true, nil
+	case cfg.UsesAnthropicOAuth():
+		credential, err := s.anthropicCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			if err == nil {
+				err = errors.New("anthropic OAuth credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
+		}
+		selection.requestCredential = credential.AccessToken
+		if err != nil {
+			return cfg.Clone(), selection, true, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
+		}
+		return cfg.Clone(), selection, true, nil
+	default:
+		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
+	}
 }
 
 func (s *Server) selectChannelTestKey(apiKeys []*model.APIKey, requestedKeyIndex int, requestAPIKey string) (channelTestKeySelection, error) {

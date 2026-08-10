@@ -14,6 +14,10 @@ let activeXAIImportFlow = null;
 let xaiImportStopPromise = null;
 let activeAnthropicCookieFlow = null;
 let oauthPagehideBound = false;
+let activeOAuthCredentialCleanup = null;
+let oauthCredentialCleanupModelLoadSequence = 0;
+let oauthCredentialCleanupOptions = { models: [] };
+let oauthCredentialCleanupDialogTrigger = null;
 let currentOAuthCredentialJSON = '';
 let currentOAuthCredential = null;
 let currentOAuthCredentialInfo = null;
@@ -345,6 +349,7 @@ function openOAuthLoginDialog(trigger = null) {
   const xaiMethod = document.getElementById('xaiOAuthMethod');
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
+  const loginActions = document.getElementById('oauthLoginActions');
   const sessionFields = document.getElementById('oauthSessionFields');
   const authorizationURL = document.getElementById('oauthAuthorizationURL');
   const openLink = document.getElementById('oauthOpenLink');
@@ -357,6 +362,7 @@ function openOAuthLoginDialog(trigger = null) {
   providerSelect.value = 'codex';
   providerSelect.disabled = false;
   authorizeButton.disabled = false;
+  if (loginActions) loginActions.hidden = false;
   sessionFields.hidden = true;
   authorizationURL.value = '';
   openLink.removeAttribute?.('href');
@@ -531,11 +537,13 @@ function showOAuthSession(session, provider = 'codex') {
   const callbackHint = document.getElementById('oauthCallbackHint');
   const callbackButton = document.getElementById('oauthSubmitCallback');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
+  const loginActions = document.getElementById('oauthLoginActions');
   if (!dialog || !providerSelect || !sessionFields || !authorizationURL || !openLink || !callbackURL) return false;
 
   providerSelect.value = config.provider;
   providerSelect.disabled = true;
-  if (authorizeButton) authorizeButton.hidden = true;
+  if (loginActions) loginActions.hidden = true;
+  else if (authorizeButton) authorizeButton.hidden = true;
   sessionFields.hidden = false;
   const sessionKey = config.authorizationCode ? 'channels.anthropic.sessionDescription' : 'channels.oauth.sessionDescription';
   if (sessionDescription) sessionDescription.textContent = window.t(sessionKey);
@@ -1017,18 +1025,22 @@ async function importOAuthCredentials(
 }
 
 async function parseOAuthCredentialImportResponse(response) {
+  return parseAdminJobResponse(response, 'channels.oauth.importFailed');
+}
+
+async function parseAdminJobResponse(response, fallbackKey) {
   let payload;
   try {
     payload = JSON.parse(await response.text());
   } catch (_) {
     throw new OAuthCredentialImportResponseError(
-      window.t('channels.oauth.importFailed'),
+      window.t(fallbackKey),
       Number(response?.status) || 0
     );
   }
   if (!response?.ok || !payload?.success) {
     throw new OAuthCredentialImportResponseError(
-      payload?.error || window.t('channels.oauth.importFailed'),
+      payload?.error || window.t(fallbackKey),
       Number(response?.status) || 0
     );
   }
@@ -1200,6 +1212,394 @@ async function readXAICredentialImportStream(response, onEvent, recovery) {
   };
 }
 
+function oauthCredentialCleanupProviderLabel(authType) {
+  return ({
+    codex_oauth: 'Codex',
+    antigravity_oauth: 'Antigravity',
+    xai_oauth: 'xAI',
+    anthropic_oauth: 'Anthropic'
+  })[authType] || authType;
+}
+
+function openOAuthCredentialCleanupDialog(trigger = null) {
+  const dialog = document.getElementById('oauthCredentialCleanupDialog');
+  const authType = document.getElementById('oauthCredentialCleanupAuthType');
+  if (!dialog) return false;
+  oauthCredentialCleanupDialogTrigger = trigger;
+  if (!dialog.open && typeof dialog.showModal === 'function') dialog.showModal();
+  authType?.focus?.();
+  return true;
+}
+
+function closeOAuthCredentialCleanupDialog() {
+  const dialog = document.getElementById('oauthCredentialCleanupDialog');
+  if (dialog?.open) dialog.close();
+  const trigger = oauthCredentialCleanupDialogTrigger;
+  oauthCredentialCleanupDialogTrigger = null;
+  trigger?.focus?.();
+}
+
+function setOAuthCredentialCleanupButtonState(button, state) {
+  if (!button) return;
+  const label = button.querySelector?.('span') || button;
+  button.dataset.state = state;
+  button.removeAttribute?.('aria-busy');
+  button.removeAttribute?.('aria-disabled');
+  if (state === 'running') {
+    if (label.dataset) label.dataset.i18n = 'channels.oauth.cleanupStop';
+    if (button.dataset) button.dataset.i18nTitle = 'channels.oauth.cleanupStopTitle';
+    label.textContent = window.t('channels.oauth.cleanupStop');
+    button.title = window.t('channels.oauth.cleanupStopTitle');
+    button.disabled = false;
+    return;
+  }
+  if (state === 'stopping') {
+    if (label.dataset) label.dataset.i18n = 'channels.oauth.cleanupStopping';
+    if (button.dataset) button.dataset.i18nTitle = 'channels.oauth.cleanupStopTitle';
+    label.textContent = window.t('channels.oauth.cleanupStopping');
+    button.title = window.t('channels.oauth.cleanupStopTitle');
+    button.disabled = false;
+    button.setAttribute?.('aria-disabled', 'true');
+    button.setAttribute?.('aria-busy', 'true');
+    return;
+  }
+  if (label.dataset) label.dataset.i18n = 'channels.oauth.cleanupStart';
+  if (button.dataset) button.dataset.i18nTitle = 'channels.oauth.cleanupTitle';
+  label.textContent = window.t('channels.oauth.cleanupStart');
+  button.title = window.t('channels.oauth.cleanupTitle');
+}
+
+function replaceOAuthCredentialCleanupModelOptions(select, models, placeholderKey) {
+  if (!select) return;
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = window.t(placeholderKey);
+  const options = [placeholder];
+  for (const modelName of models) {
+    const option = document.createElement('option');
+    option.value = modelName;
+    option.textContent = modelName;
+    options.push(option);
+  }
+  select.replaceChildren(...options);
+  select.value = '';
+}
+
+async function loadOAuthCredentialCleanupModels(
+  authType,
+  modelSelect,
+  cleanupButton,
+  fetcher = fetchDataWithAuth
+) {
+  const sequence = ++oauthCredentialCleanupModelLoadSequence;
+  replaceOAuthCredentialCleanupModelOptions(modelSelect, [], 'channels.oauth.cleanupModelsLoading');
+  modelSelect.disabled = true;
+  if (!activeOAuthCredentialCleanup) cleanupButton.disabled = true;
+  try {
+    const result = await fetcher(
+      `/admin/oauth/credentials/cleanup/options?auth_type=${encodeURIComponent(authType)}`
+    );
+    if (sequence !== oauthCredentialCleanupModelLoadSequence) return null;
+    const models = [...new Set(Array.isArray(result?.models)
+      ? result.models.map(value => String(value).trim()).filter(Boolean)
+      : [])];
+    oauthCredentialCleanupOptions = { models };
+    replaceOAuthCredentialCleanupModelOptions(
+      modelSelect,
+      models,
+      models.length > 0
+        ? 'channels.oauth.cleanupSelectModel'
+        : 'channels.oauth.cleanupNoModelsForType'
+    );
+    modelSelect.disabled = models.length === 0 || Boolean(activeOAuthCredentialCleanup);
+    if (!activeOAuthCredentialCleanup) cleanupButton.disabled = true;
+    return result;
+  } catch (error) {
+    if (sequence !== oauthCredentialCleanupModelLoadSequence) return null;
+    oauthCredentialCleanupOptions = { models: [] };
+    replaceOAuthCredentialCleanupModelOptions(modelSelect, [], 'channels.oauth.cleanupModelsLoadFailed');
+    modelSelect.disabled = true;
+    if (!activeOAuthCredentialCleanup) cleanupButton.disabled = true;
+    throw error;
+  }
+}
+
+function getOAuthCredentialCleanupProgressElements() {
+  return {
+    container: document.getElementById('oauthCredentialCleanupProgress'),
+    progress: document.getElementById('oauthCredentialCleanupProgressBar'),
+    counter: document.getElementById('oauthCredentialCleanupProgressCounter'),
+    detail: document.getElementById('oauthCredentialCleanupProgressDetail'),
+    counts: document.getElementById('oauthCredentialCleanupProgressCounts'),
+    results: document.getElementById('oauthCredentialCleanupResults')
+  };
+}
+
+function resetOAuthCredentialCleanupProgress() {
+  const { container, progress, counter, detail, counts, results } = getOAuthCredentialCleanupProgressElements();
+  if (container) {
+    container.hidden = false;
+    delete container.dataset.kind;
+  }
+  if (progress) {
+    progress.max = 1;
+    progress.value = 0;
+  }
+  if (counter) counter.textContent = window.t('channels.oauth.cleanupCounter', { processed: 0, total: 0 });
+  if (detail) detail.textContent = window.t('channels.oauth.cleanupStarting');
+  if (counts) counts.textContent = window.t('channels.oauth.cleanupCounts', {
+    healthy: 0, refreshed: 0, deleted: 0, failed: 0, skipped: 0
+  });
+  if (results) results.replaceChildren();
+}
+
+function appendOAuthCredentialCleanupResult(event, results) {
+  if (!results || event.event !== 'progress') return;
+  const item = document.createElement('li');
+  const status = window.t(`channels.oauth.cleanupStatus.${event.status || 'failed'}`);
+  item.dataset.status = event.status || 'failed';
+  item.textContent = window.t('channels.oauth.cleanupResult', {
+    channel: event.channel_name || `#${event.channel_id || ''}`,
+    status
+  });
+  if (event.error) item.textContent += ` · ${event.error}`;
+  results.append(item);
+}
+
+function updateOAuthCredentialCleanupProgress(event) {
+  if (!event || typeof event !== 'object') return;
+  const { container, progress, counter, detail, counts, results } = getOAuthCredentialCleanupProgressElements();
+  const total = Math.max(0, Number(event.total) || 0);
+  const processed = Math.min(total, Math.max(0, Number(event.processed) || 0));
+  const summary = {
+    healthy: Math.max(0, Number(event.healthy) || 0),
+    refreshed: Math.max(0, Number(event.refreshed) || 0),
+    deleted: Math.max(0, Number(event.deleted) || 0),
+    failed: Math.max(0, Number(event.failed) || 0),
+    skipped: Math.max(0, Number(event.skipped) || 0)
+  };
+  if (container) container.hidden = false;
+  if (progress) {
+    progress.max = Math.max(1, total);
+    progress.value = processed;
+  }
+  if (counter) counter.textContent = window.t('channels.oauth.cleanupCounter', { processed, total });
+  if (counts) counts.textContent = window.t('channels.oauth.cleanupCounts', summary);
+  appendOAuthCredentialCleanupResult(event, results);
+  if (!detail) return;
+
+  const stageData = {
+    channel: event.channel_name || `#${event.channel_id || ''}`,
+    model: event.model || window.t('channels.oauth.cleanupNoModelSelected')
+  };
+  switch (event.event) {
+    case 'start':
+      detail.textContent = window.t('channels.oauth.cleanupStarted', { total });
+      break;
+    case 'testing':
+    case 'refreshing':
+    case 'deleting':
+    case 'retesting':
+      detail.textContent = window.t(`channels.oauth.cleanupStage.${event.event}`, stageData);
+      break;
+    case 'progress':
+      detail.textContent = window.t('channels.oauth.cleanupProcessed', {
+        channel: stageData.channel,
+        status: window.t(`channels.oauth.cleanupStatus.${event.status || 'failed'}`)
+      });
+      break;
+    case 'reconnecting':
+      detail.textContent = window.t('channels.oauth.cleanupReconnecting');
+      break;
+    case 'complete':
+      if (event.status === 'cancelled') {
+        detail.textContent = window.t('channels.oauth.cleanupStopped');
+        if (container) container.dataset.kind = 'warning';
+      } else {
+        detail.textContent = event.status === 'succeeded'
+          ? window.t('channels.oauth.cleanupComplete')
+          : (event.error || window.t('channels.oauth.cleanupFailed'));
+        if (container) container.dataset.kind = event.status === 'succeeded' ? 'success' : 'error';
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+async function readOAuthCredentialCleanupStream(response, onEvent) {
+  if (!response?.ok) {
+    await parseAdminJobResponse(response, 'channels.oauth.cleanupFailed');
+    throw new Error(window.t('channels.oauth.cleanupFailed'));
+  }
+
+  let buffer = '';
+  let complete = null;
+  const consumeBlock = block => {
+    const data = block
+      .split(/\r?\n/)
+      .filter(line => line.startsWith('data:'))
+      .map(line => line.slice(5).trimStart())
+      .join('\n');
+    if (!data) return;
+    const event = JSON.parse(data);
+    if (event.event === 'error') {
+      throw new OAuthCredentialImportResponseError(
+        event.error || window.t('channels.oauth.cleanupFailed'),
+        404
+      );
+    }
+    if (event.event === 'complete') complete = event;
+    onEvent(event);
+  };
+  const drain = final => {
+    for (;;) {
+      const boundary = /\r?\n\r?\n/.exec(buffer);
+      if (!boundary) break;
+      consumeBlock(buffer.slice(0, boundary.index));
+      buffer = buffer.slice(boundary.index + boundary[0].length);
+    }
+    if (final && buffer.trim()) {
+      consumeBlock(buffer);
+      buffer = '';
+    }
+  };
+
+  if (response.body?.getReader) {
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      drain(false);
+      if (complete) {
+        try { await reader.cancel?.(); } catch (_) {}
+        return complete;
+      }
+    }
+    buffer += decoder.decode();
+  } else {
+    buffer = await response.text();
+  }
+  drain(true);
+  if (!complete) throw new Error(window.t('channels.oauth.cleanupStreamIncomplete'));
+  return complete;
+}
+
+async function followOAuthCredentialCleanupJob(jobID, total, fetcher, onEvent, delay = codexOAuthDelay) {
+  let cursor = 0;
+  let consecutiveNetworkErrors = 0;
+  let latest = { processed: 0, total, healthy: 0, refreshed: 0, deleted: 0, failed: 0, skipped: 0 };
+  for (;;) {
+    try {
+      const response = await fetcher(
+        `/admin/oauth/credentials/cleanup/jobs/${encodeURIComponent(jobID)}/stream?after=${cursor}`,
+        { method: 'GET', headers: { Accept: 'text/event-stream' } }
+      );
+      const complete = await readOAuthCredentialCleanupStream(response, event => {
+        cursor = Math.max(cursor, Number(event.sequence) || 0);
+        latest = { ...latest, ...event };
+        consecutiveNetworkErrors = 0;
+        onEvent(event);
+      });
+      if (complete.status !== 'succeeded' && complete.status !== 'cancelled') {
+        throw new OAuthCredentialImportResponseError(
+          complete.error || window.t('channels.oauth.cleanupFailed'),
+          400
+        );
+      }
+      const summary = {
+        healthy: Number(complete.healthy) || 0,
+        refreshed: Number(complete.refreshed) || 0,
+        deleted: Number(complete.deleted) || 0,
+        failed: Number(complete.failed) || 0,
+        skipped: Number(complete.skipped) || 0,
+        total: Number(complete.total) || total
+      };
+      if (complete.status === 'cancelled') summary.cancelled = true;
+      return summary;
+    } catch (error) {
+      if (error instanceof OAuthCredentialImportResponseError && error.status < 500) {
+        throw error;
+      }
+      consecutiveNetworkErrors++;
+      onEvent({ ...latest, event: 'reconnecting' });
+      await delay(Math.min(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS * consecutiveNetworkErrors, 5000));
+    }
+  }
+}
+
+async function cleanupOAuthCredentials(
+  authType,
+  modelName,
+  fetcher = fetchWithAuth,
+  onEvent = updateOAuthCredentialCleanupProgress,
+  delay = codexOAuthDelay,
+  onStarted = null
+) {
+  const requestID = typeof globalThis.crypto?.randomUUID === 'function'
+    ? globalThis.crypto.randomUUID()
+    : `cleanup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let attempts = 0;
+  for (;;) {
+    try {
+      const response = await fetcher('/admin/oauth/credentials/cleanup/jobs', {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          'Content-Type': 'application/json',
+          'Idempotency-Key': requestID
+        },
+        body: JSON.stringify({ auth_type: authType, model: modelName })
+      });
+      const started = await parseAdminJobResponse(response, 'channels.oauth.cleanupFailed');
+      if (!started?.job_id) {
+        throw new OAuthCredentialImportResponseError(window.t('channels.oauth.cleanupFailed'), 400);
+      }
+      if (typeof onStarted === 'function') onStarted(started);
+      return followOAuthCredentialCleanupJob(started.job_id, Number(started.total) || 0, fetcher, onEvent, delay);
+    } catch (error) {
+      const status = error instanceof OAuthCredentialImportResponseError ? error.status : 0;
+      const retryable = status === 0 || status === 408 ||
+        (status >= 200 && status < 300) || status >= 500;
+      if (!retryable) {
+        throw error;
+      }
+      attempts++;
+      onEvent({ event: 'reconnecting', processed: 0, total: 0 });
+      await delay(Math.min(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS * attempts, 5000));
+    }
+  }
+}
+
+async function cancelOAuthCredentialCleanup(
+  jobID,
+  fetcher = fetchWithAuth,
+  delay = codexOAuthDelay,
+  signal = undefined
+) {
+  let attempts = 0;
+  for (;;) {
+    if (signal?.aborted) throw signal.reason || new Error('Credential cleanup cancellation was aborted');
+    try {
+      const response = await fetcher(
+        `/admin/oauth/credentials/cleanup/jobs/${encodeURIComponent(jobID)}/cancel`,
+        { method: 'POST', headers: { Accept: 'application/json' }, signal }
+      );
+      return await parseAdminJobResponse(response, 'channels.oauth.cleanupStopFailed');
+    } catch (error) {
+      if (signal?.aborted) throw signal.reason || error;
+      const status = error instanceof OAuthCredentialImportResponseError ? error.status : 0;
+      const retryable = status === 0 || status === 408 ||
+        (status >= 200 && status < 300) || status >= 500;
+      if (!retryable) throw error;
+      attempts++;
+      await delay(Math.min(OAUTH_CREDENTIAL_IMPORT_POLL_INTERVAL_MS * attempts, 5000), signal);
+    }
+  }
+}
+
 async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, authType = 'codex_oauth') {
   const numericID = Number(channelID);
   const antigravity = authType === 'antigravity_oauth';
@@ -1364,6 +1764,12 @@ function setupOAuthActions() {
   const callbackURL = document.getElementById('oauthCallbackURL');
   const callbackButton = document.getElementById('oauthSubmitCallback');
   const importButton = document.getElementById('oauthCredentialImportBtn');
+  const cleanupOpenButton = document.getElementById('oauthCredentialCleanupOpenBtn');
+  const cleanupDialog = document.getElementById('oauthCredentialCleanupDialog');
+  const cleanupForm = document.getElementById('oauthCredentialCleanupForm');
+  const cleanupButton = document.getElementById('oauthCredentialCleanupBtn');
+  const cleanupAuthType = document.getElementById('oauthCredentialCleanupAuthType');
+  const cleanupModel = document.getElementById('oauthCredentialCleanupModel');
   const importDialog = document.getElementById('oauthCredentialImportDialog');
   const importForm = document.getElementById('oauthCredentialImportForm');
   const importProviderSelect = document.getElementById('oauthImportProviderSelect');
@@ -1569,6 +1975,166 @@ function setupOAuthActions() {
     importButton.addEventListener('click', () => openOAuthCredentialImportDialog(importButton));
     importButton.dataset.bound = '1';
   }
+  if (cleanupForm && cleanupButton && cleanupAuthType && cleanupModel && !cleanupForm.dataset.bound) {
+    const requestCleanupStop = async flow => {
+      if (!flow?.jobID || flow.cancelPromise) return flow?.cancelPromise;
+      flow.cancelPromise = cancelOAuthCredentialCleanup(
+        flow.jobID,
+        fetchWithAuth,
+        codexOAuthDelay,
+        flow.cancelController?.signal
+      ).catch(error => {
+        if (flow.cancelController?.signal.aborted || activeOAuthCredentialCleanup !== flow) return null;
+        flow.stopRequested = false;
+        flow.cancelPromise = null;
+        setOAuthCredentialCleanupButtonState(cleanupButton, 'running');
+        if (window.showError) {
+          window.showError(error?.message || window.t('channels.oauth.cleanupStopFailed'));
+        }
+        return null;
+      });
+      return flow.cancelPromise;
+    };
+    const refreshCleanupModels = async () => {
+      cleanupModel.removeAttribute?.('aria-invalid');
+      try {
+        await loadOAuthCredentialCleanupModels(
+          cleanupAuthType.value,
+          cleanupModel,
+          cleanupButton
+        );
+      } catch (error) {
+        console.warn('Failed to load OAuth credential cleanup models', error);
+      }
+    };
+    if (cleanupOpenButton && !cleanupOpenButton.dataset.bound) {
+      cleanupOpenButton.addEventListener('click', () => {
+        if (!openOAuthCredentialCleanupDialog(cleanupOpenButton)) return;
+        if (!activeOAuthCredentialCleanup && cleanupModel.options.length <= 1) {
+          void refreshCleanupModels();
+        }
+      });
+      cleanupOpenButton.dataset.bound = '1';
+    }
+    cleanupAuthType.addEventListener('change', () => { void refreshCleanupModels(); });
+    const syncCleanupButtonForModel = () => {
+      cleanupModel.removeAttribute?.('aria-invalid');
+      if (!activeOAuthCredentialCleanup) cleanupButton.disabled = cleanupModel.value.trim() === '';
+    };
+    cleanupModel.addEventListener('change', syncCleanupButtonForModel);
+    cleanupForm.addEventListener('submit', async event => {
+      event.preventDefault();
+      if (activeOAuthCredentialCleanup) {
+        const flow = activeOAuthCredentialCleanup;
+        if (flow.stopRequested) return;
+        flow.stopRequested = true;
+        setOAuthCredentialCleanupButtonState(cleanupButton, 'stopping');
+        const { detail } = getOAuthCredentialCleanupProgressElements();
+        if (detail) detail.textContent = window.t('channels.oauth.cleanupStopping');
+        if (flow.jobID) void requestCleanupStop(flow);
+        return;
+      }
+
+      const authType = cleanupAuthType.value;
+      const modelName = cleanupModel.value.trim();
+      if (!modelName) {
+        cleanupModel.setAttribute?.('aria-invalid', 'true');
+        cleanupModel.focus?.();
+        return;
+      }
+      if (!oauthCredentialCleanupOptions.models.includes(modelName)) {
+        cleanupModel.setAttribute?.('aria-invalid', 'true');
+        cleanupModel.focus?.();
+        return;
+      }
+      const provider = cleanupAuthType.selectedOptions?.[0]?.textContent?.trim() ||
+        oauthCredentialCleanupProviderLabel(authType);
+      if (typeof window.confirm === 'function' && !window.confirm(window.t('channels.oauth.cleanupConfirm', {
+        provider,
+        model: modelName
+      }))) return;
+
+      const flow = {
+        jobID: '',
+        stopRequested: false,
+        cancelPromise: null,
+        cancelController: typeof AbortController === 'function' ? new AbortController() : null
+      };
+      activeOAuthCredentialCleanup = flow;
+      cleanupAuthType.disabled = true;
+      cleanupModel.disabled = true;
+      setOAuthCredentialCleanupButtonState(cleanupButton, 'running');
+      resetOAuthCredentialCleanupProgress();
+      try {
+        const result = await cleanupOAuthCredentials(
+          authType,
+          modelName,
+          fetchWithAuth,
+          updateOAuthCredentialCleanupProgress,
+          codexOAuthDelay,
+          started => {
+            if (activeOAuthCredentialCleanup !== flow) return;
+            flow.jobID = started.job_id;
+            if (flow.stopRequested) void requestCleanupStop(flow);
+          }
+        );
+        const message = result.cancelled
+          ? window.t('channels.oauth.cleanupStopped')
+          : window.t('channels.oauth.cleanupSummary', result);
+        let reloadFailed = false;
+        if (result.deleted > 0 && typeof reloadChannelsList === 'function') {
+          try {
+            await reloadChannelsList({ throwOnError: true });
+          } catch (error) {
+            reloadFailed = true;
+            console.warn('OAuth credential cleanup finished, but the channel list could not be reloaded', error);
+          }
+        }
+        const notification = reloadFailed
+          ? `${message} ${window.t('channels.oauth.cleanupReloadFailed')}`
+          : message;
+        if ((result.cancelled || result.failed > 0 || reloadFailed) && window.showWarning) {
+          window.showWarning(notification);
+        } else if (window.showSuccess) {
+          window.showSuccess(message);
+        }
+      } catch (error) {
+        const message = error?.message || window.t('channels.oauth.cleanupFailed');
+        const { container, detail } = getOAuthCredentialCleanupProgressElements();
+        if (container) container.dataset.kind = 'error';
+        if (detail) detail.textContent = message;
+        if (window.showError) window.showError(message);
+        if (typeof reloadChannelsList === 'function') {
+          try { await reloadChannelsList(); } catch (_) {}
+        }
+      } finally {
+        flow.cancelController?.abort();
+        activeOAuthCredentialCleanup = null;
+        cleanupAuthType.disabled = false;
+        setOAuthCredentialCleanupButtonState(cleanupButton, 'idle');
+        await refreshCleanupModels();
+      }
+    });
+    cleanupForm.dataset.bound = '1';
+  }
+  document.querySelectorAll('[data-action="close-oauth-cleanup"]').forEach(closeButton => {
+    if (closeButton.dataset.bound) return;
+    closeButton.addEventListener('click', () => closeOAuthCredentialCleanupDialog());
+    closeButton.dataset.bound = '1';
+  });
+  if (cleanupDialog && !cleanupDialog.dataset.cancelBound) {
+    cleanupDialog.addEventListener('cancel', event => {
+      event.preventDefault();
+      closeOAuthCredentialCleanupDialog();
+    });
+    cleanupDialog.dataset.cancelBound = '1';
+  }
+  if (cleanupDialog && !cleanupDialog.dataset.overlayBound) {
+    cleanupDialog.addEventListener('click', event => {
+      if (event.target === cleanupDialog) closeOAuthCredentialCleanupDialog();
+    });
+    cleanupDialog.dataset.overlayBound = '1';
+  }
   if (importForm && importProviderSelect && importPriorityIncrementSelect && importInput && importSubmitButton && !importForm.dataset.bound) {
     importForm.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1664,12 +2230,15 @@ if (typeof module !== 'undefined' && module.exports) {
     cancelAntigravityOAuth,
     cancelAnthropicOAuth,
     cancelCodexOAuth,
+    cancelOAuthCredentialCleanup,
     cancelXAIOAuth,
+    cleanupOAuthCredentials,
     copyOAuthCredential,
     copyCodexOAuthLink,
     formatCodexPlanBadgeText,
     getOAuthUsageState,
     importOAuthCredentials,
+    loadOAuthCredentialCleanupModels,
     openOAuthCredentialImportDialog,
     openOAuthLoginDialog,
     pollAntigravityOAuthStatus,

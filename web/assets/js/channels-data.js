@@ -17,7 +17,7 @@ function buildChannelsListParams() {
   return params;
 }
 
-async function loadChannels() {
+async function loadChannels(options = {}) {
   try {
     const params = buildChannelsListParams();
     const listBase = channelsReadURL('/admin/channels', '/dashboard/channels');
@@ -34,7 +34,7 @@ async function loadChannels() {
 
     if (channelsCurrentPage > channelsTotalPages) {
       channelsCurrentPage = channelsTotalPages;
-      return loadChannels();
+      return loadChannels(options);
     }
 
     if (typeof syncSelectedChannelsWithLoadedChannels === 'function') {
@@ -47,20 +47,21 @@ async function loadChannels() {
     }
   } catch (e) {
     console.error('Failed to load channels', e);
+    if (options.throwOnError) throw e;
     if (window.showError) window.showError(window.t('channels.loadChannelsFailed'));
   }
 }
 
 // CRUD 操作后同时刷新列表分页与筛选下拉全集
-async function reloadChannelsList() {
+async function reloadChannelsList(options = {}) {
   await Promise.all([
-    loadChannelsFilterOptions(),
-    loadChannels()
+    loadChannelsFilterOptions(options),
+    loadChannels(options)
   ]);
 }
 
 // 加载渠道筛选下拉全集，与列表的分页和全部筛选条件彻底解耦
-async function loadChannelsFilterOptions() {
+async function loadChannelsFilterOptions(options = {}) {
   try {
     const params = new URLSearchParams();
     const optionsBase = channelsReadURL('/admin/channels/filter-options', '/dashboard/channels/filter-options');
@@ -71,6 +72,7 @@ async function loadChannelsFilterOptions() {
     allAvailableModels = Array.isArray(data && data.models) ? data.models : [];
   } catch (e) {
     console.error('Failed to load filter options', e);
+    if (options.throwOnError) throw e;
     allAvailableChannelNames = [];
     allAvailableModels = [];
   }

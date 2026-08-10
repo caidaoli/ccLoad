@@ -90,6 +90,14 @@ func (e *tokenEndpointError) UpstreamResponseBody() string {
 	return e.responseBody
 }
 
+// StatusCode exposes the token endpoint status without exposing the private error type.
+func (e *tokenEndpointError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.statusCode
+}
+
 // NewService returns the production Antigravity OAuth service.
 func NewService(client *http.Client) *Service {
 	if client == nil {
