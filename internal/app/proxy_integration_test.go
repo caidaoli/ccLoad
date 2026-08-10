@@ -942,7 +942,9 @@ func antigravityProviderAdapterCases() []antigravityProviderAdapterCase {
 			name: "Claude", path: "/v1/messages",
 			body: map[string]any{
 				"model": "gemini-3-flash", "max_tokens": 64,
-				"messages": []any{map[string]any{"role": "user", "content": "provider request"}},
+				"messages":      []any{map[string]any{"role": "user", "content": "provider request"}},
+				"thinking":      map[string]any{"type": "adaptive"},
+				"output_config": map[string]any{"effort": "max"},
 			},
 			nonStreamTextPath: "content.0.text",
 			streamTextPath:    "delta.text",
@@ -952,6 +954,10 @@ func antigravityProviderAdapterCases() []antigravityProviderAdapterCase {
 			name: "Gemini", path: "/v1beta/models/gemini-3-flash:generateContent",
 			body: map[string]any{
 				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "provider request"}}}},
+				"generationConfig": map[string]any{"thinkingConfig": map[string]any{
+					"includeThoughts": true,
+					"thinkingLevel":   "max",
+				}},
 			},
 			nonStreamTextPath: "candidates.0.content.parts.0.text",
 			streamTextPath:    "candidates.0.content.parts.0.text",
@@ -959,8 +965,9 @@ func antigravityProviderAdapterCases() []antigravityProviderAdapterCase {
 		{
 			name: "OpenAI", path: "/v1/chat/completions",
 			body: map[string]any{
-				"model":    "gemini-3-flash",
-				"messages": []any{map[string]any{"role": "user", "content": "provider request"}},
+				"model":            "gemini-3-flash",
+				"messages":         []any{map[string]any{"role": "user", "content": "provider request"}},
+				"reasoning_effort": "max",
 			},
 			nonStreamTextPath: "choices.0.message.content",
 			streamTextPath:    "choices.0.delta.content",
@@ -968,7 +975,10 @@ func antigravityProviderAdapterCases() []antigravityProviderAdapterCase {
 		},
 		{
 			name: "Codex", path: "/v1/responses",
-			body:              map[string]any{"model": "gemini-3-flash", "input": "provider request"},
+			body: map[string]any{
+				"model": "gemini-3-flash", "input": "provider request",
+				"reasoning": map[string]any{"effort": "max"},
+			},
 			nonStreamTextPath: "output.0.content.0.text",
 			streamTextPath:    "delta",
 			streamRequest:     true,
@@ -1006,6 +1016,9 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 				}
 				if !antigravityWireContainsText(wire, "provider request") {
 					t.Errorf("client text missing from provider request: %s", wire)
+				}
+				if got := gjson.GetBytes(wire, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "high" {
+					t.Errorf("thinkingLevel=%q, want high; body=%s", got, wire)
 				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"provider response"}]},"finishReason":"STOP"}]}}`)
@@ -1379,38 +1392,53 @@ func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *t
 }
 
 func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) {
-	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		wireBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Fatalf("read Antigravity wire body: %v", err)
-		}
-		if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != "low" {
-			t.Errorf("Antigravity thinkingLevel=%q, want low; body=%s", got, wireBody)
-		}
-		if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
-			t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity thinking ok"}]},"finishReason":"STOP"}]}}`)
-	}))
-	defer upstream.Close()
-
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "antigravity-anthropic-thinking", upstreamProtocol: "gemini", models: "gemini-3.1-pro-low", priority: 100,
-		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-thinking"),
-	}}, map[int]string{0: upstream.URL})
-
-	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
-		"model": "gemini-3.1-pro-low", "max_tokens": 100,
-		"messages":      []any{map[string]any{"role": "user", "content": "think"}},
-		"thinking":      map[string]any{"type": "adaptive"},
-		"output_config": map[string]any{"effort": "minimal"},
-	}, nil)
-	if response.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	tests := []struct {
+		effort string
+		want   string
+	}{
+		{effort: "minimal", want: "low"},
+		{effort: "xhigh", want: "high"},
+		{effort: "max", want: "high"},
+		{effort: "low", want: "low"},
+		{effort: "medium", want: "medium"},
+		{effort: "high", want: "high"},
 	}
-	if got := gjson.Get(response.Body.String(), "content.0.text").String(); got != "gravity thinking ok" {
-		t.Fatalf("Anthropic response content=%q body=%s", got, response.Body.String())
+	for _, tt := range tests {
+		t.Run(tt.effort, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wireBody, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read Antigravity wire body: %v", err)
+				}
+				if got := gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.thinkingLevel").String(); got != tt.want {
+					t.Errorf("Antigravity thinkingLevel=%q, want %s; body=%s", got, tt.want, wireBody)
+				}
+				if !gjson.GetBytes(wireBody, "request.generationConfig.thinkingConfig.includeThoughts").Bool() {
+					t.Errorf("Antigravity includeThoughts=false; body=%s", wireBody)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"gravity thinking ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-anthropic-thinking", upstreamProtocol: "gemini", models: "gemini-3.1-pro-low", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-thinking"),
+			}}, map[int]string{0: upstream.URL})
+
+			response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+				"model": "gemini-3.1-pro-low", "max_tokens": 100,
+				"messages":      []any{map[string]any{"role": "user", "content": "think"}},
+				"thinking":      map[string]any{"type": "adaptive"},
+				"output_config": map[string]any{"effort": tt.effort},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if got := gjson.Get(response.Body.String(), "content.0.text").String(); got != "gravity thinking ok" {
+				t.Fatalf("Anthropic response content=%q body=%s", got, response.Body.String())
+			}
+		})
 	}
 }
 
@@ -3757,6 +3785,82 @@ func TestProxy_Success_NonStreaming_OpenAIToGeminiTransform(t *testing.T) {
 	if len(resp.Choices) != 1 || resp.Choices[0].Message.Content != "hello from gemini" {
 		t.Fatalf("unexpected translated response: %s", w.Body.String())
 	}
+}
+
+func TestProxy_DebugLogDistinguishesTransportErrorFromEmptyHTTPResponse(t *testing.T) {
+	t.Parallel()
+
+	t.Run("transport error before response", func(t *testing.T) {
+		env := setupProxyTestEnv(t, []testChannel{
+			{name: "transport-debug", upstreamProtocol: "openai", models: "gpt-transport-debug", apiKey: "sk-test"},
+		}, map[int]string{0: "https://transport-error.example.com"})
+		env.server.client = &http.Client{Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return nil, io.ErrUnexpectedEOF
+		})}
+		env.server.configService.mu.Lock()
+		env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+		env.server.configService.mu.Unlock()
+
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model":    "gpt-transport-debug",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status=%d, want 502; body=%s", w.Code, w.Body.String())
+		}
+
+		entry := waitForProxyLog(t, env, "gpt-transport-debug")
+		if !strings.Contains(entry.Message, "before HTTP response (no response body)") ||
+			!strings.Contains(entry.Message, "unexpected EOF") {
+			t.Fatalf("log message=%q", entry.Message)
+		}
+		debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+		if err != nil || debugLog == nil {
+			t.Fatalf("GetDebugLogByLogID failed: debug=%+v err=%v", debugLog, err)
+		}
+		if debugLog.RespStatus != 0 || len(debugLog.RespBody) != 0 {
+			t.Fatalf("transport error invented HTTP response: status=%d body=%q", debugLog.RespStatus, debugLog.RespBody)
+		}
+		if !strings.Contains(debugLog.UpstreamError, "unexpected EOF") {
+			t.Fatalf("debug upstream error=%q", debugLog.UpstreamError)
+		}
+	})
+
+	t.Run("empty HTTP response", func(t *testing.T) {
+		env := setupProxyTestEnv(t, []testChannel{
+			{name: "empty-response-debug", upstreamProtocol: "openai", models: "gpt-empty-response", apiKey: "sk-test"},
+		}, map[int]string{0: "https://empty-response.example.com"})
+		env.server.client = &http.Client{Transport: roundTripperFunc(func(_ *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader("")),
+			}, nil
+		})}
+		env.server.configService.mu.Lock()
+		env.server.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+		env.server.configService.mu.Unlock()
+
+		w := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
+			"model":    "gpt-empty-response",
+			"messages": []map[string]string{{"role": "user", "content": "hi"}},
+		}, nil)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("status=%d, want 502; body=%s", w.Code, w.Body.String())
+		}
+
+		entry := waitForProxyLog(t, env, "gpt-empty-response")
+		if strings.Contains(entry.Message, "before HTTP response") || !strings.Contains(entry.Message, "200 OK") {
+			t.Fatalf("empty HTTP response log message=%q", entry.Message)
+		}
+		debugLog, err := env.store.GetDebugLogByLogID(context.Background(), entry.ID)
+		if err != nil || debugLog == nil {
+			t.Fatalf("GetDebugLogByLogID failed: debug=%+v err=%v", debugLog, err)
+		}
+		if debugLog.RespStatus != http.StatusOK {
+			t.Fatalf("debug response status=%d, want 200", debugLog.RespStatus)
+		}
+	})
 }
 
 func TestProxy_LocalTransformRejectsHTMLSuccessResponse(t *testing.T) {

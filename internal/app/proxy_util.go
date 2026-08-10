@@ -938,7 +938,16 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 		// [FIX] 2026-02: 错误场景下也保留诊断信息（特别是499客户端取消）
 		// 场景：流式请求中途取消，此时已有 FirstByteTime 和 BytesReceived
 		// 将字节数追加到 message 中便于诊断
-		msg := truncateErr(p.ErrMsg)
+		msg := p.ErrMsg
+		if p.StatusCode >= http.StatusInternalServerError && p.Result != nil && p.Result.UpstreamStatus == 0 {
+			msg = fmt.Sprintf("upstream transport error before HTTP response (no response body): %s", msg)
+		}
+		if p.Result != nil && len(p.Result.Body) > 0 {
+			body := strings.TrimSpace(safeBodyToString(p.Result.Body))
+			if body != "" && body != strings.TrimSpace(p.ErrMsg) {
+				msg = fmt.Sprintf("%s: %s", msg, body)
+			}
+		}
 		if p.Result != nil && p.IsStreaming {
 			if p.Result.FirstByteTime > 0 {
 				entry.FirstByteTime = p.Result.FirstByteTime
@@ -947,7 +956,7 @@ func buildLogEntry(p logEntryParams) *model.LogEntry {
 				msg = fmt.Sprintf("%s (received %s)", msg, formatBytes(p.Result.BytesReceived))
 			}
 		}
-		entry.Message = msg
+		entry.Message = truncateErr(msg)
 	} else if p.Result != nil {
 		res := p.Result
 		if p.StatusCode >= 200 && p.StatusCode < 300 {

@@ -110,6 +110,7 @@ func TestLog_AddLogPersistsDebugData(t *testing.T) {
 			RespStatus:            200,
 			RespHeaders:           `{"Content-Type":"application/json"}`,
 			RespBody:              []byte(`{"candidates":[{"content":"ok"}]}`),
+			UpstreamError:         "response stream ended unexpectedly",
 			ProtocolTransformed:   true,
 			OriginalReqURL:        "/v1/chat/completions",
 			OriginalReqHeaders:    `{"X-Client-Trace":"original"}`,
@@ -142,6 +143,9 @@ func TestLog_AddLogPersistsDebugData(t *testing.T) {
 	if string(debugLog.RespBody) != `{"candidates":[{"content":"ok"}]}` {
 		t.Fatalf("debug resp body=%q", string(debugLog.RespBody))
 	}
+	if debugLog.UpstreamError != "response stream ended unexpectedly" {
+		t.Fatalf("debug upstream error=%q", debugLog.UpstreamError)
+	}
 	if !debugLog.ProtocolTransformed {
 		t.Fatal("debug protocol transform flag was not persisted")
 	}
@@ -171,6 +175,7 @@ func TestDebugLog_AddPersistsProtocolMetadata(t *testing.T) {
 		ReqBody:               []byte(`{"upstream":true}`),
 		RespStatus:            http.StatusOK,
 		RespHeaders:           `{}`,
+		UpstreamError:         "unexpected EOF",
 		ProtocolTransformed:   true,
 		OriginalReqURL:        "/v1/chat/completions",
 		OriginalReqHeaders:    `{"X-Client-Trace":"direct"}`,
@@ -195,6 +200,9 @@ func TestDebugLog_AddPersistsProtocolMetadata(t *testing.T) {
 	}
 	if got.TranslatedRespStatus != entry.TranslatedRespStatus || got.TranslatedRespHeaders != entry.TranslatedRespHeaders {
 		t.Fatalf("translated response metadata=%+v", got)
+	}
+	if got.UpstreamError != entry.UpstreamError {
+		t.Fatalf("upstream error=%q, want %q", got.UpstreamError, entry.UpstreamError)
 	}
 }
 

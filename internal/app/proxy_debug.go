@@ -64,6 +64,7 @@ type debugCapture struct {
 	respStatus            int
 	respHeaders           string       // JSON
 	respBuf               *debugBuffer // 上游原始响应 TeeReader 写入端
+	upstreamError         string
 	protocolTransformed   bool
 	originalReqURL        string
 	originalReqHeaders    string
@@ -160,6 +161,15 @@ func (dc *debugCapture) captureResponseMeta(resp *http.Response) {
 	dc.mu.Unlock()
 }
 
+func (dc *debugCapture) captureUpstreamError(err error) {
+	if dc == nil || err == nil {
+		return
+	}
+	dc.mu.Lock()
+	dc.upstreamError = err.Error()
+	dc.mu.Unlock()
+}
+
 // wrapResponseBody 用 TeeReader 包装响应体以捕获内容
 func (dc *debugCapture) wrapResponseBody(resp *http.Response) {
 	if dc == nil || resp == nil {
@@ -190,6 +200,7 @@ func (dc *debugCapture) buildEntry(resp *http.Response) *model.DebugLogEntry {
 		ReqBody:               append([]byte(nil), dc.reqBody...),
 		RespStatus:            dc.respStatus,
 		RespHeaders:           dc.respHeaders,
+		UpstreamError:         dc.upstreamError,
 		ProtocolTransformed:   dc.protocolTransformed,
 		OriginalReqURL:        dc.originalReqURL,
 		OriginalReqHeaders:    dc.originalReqHeaders,

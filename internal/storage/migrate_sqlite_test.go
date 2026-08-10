@@ -514,6 +514,7 @@ func TestMigrate_SQLite_RebuildsOnlyDebugLogsForProtocolPayloads(t *testing.T) {
 		t.Fatalf("list rebuilt debug columns: %v", err)
 	}
 	for _, column := range []string{
+		"upstream_error",
 		"protocol_transformed", "original_req_url", "original_req_headers", "original_req_body",
 		"translated_resp_status", "translated_resp_headers", "translated_resp_body",
 	} {
@@ -574,7 +575,7 @@ func TestMigrate_SQLite_AddsDebugProtocolMetadataWithoutDroppingRows(t *testing.
 	if err != nil {
 		t.Fatalf("list debug columns: %v", err)
 	}
-	for _, column := range []string{"original_req_url", "original_req_headers", "translated_resp_status", "translated_resp_headers"} {
+	for _, column := range []string{"upstream_error", "original_req_url", "original_req_headers", "translated_resp_status", "translated_resp_headers"} {
 		if !columns[column] {
 			t.Fatalf("debug_logs missing column %q: %v", column, columns)
 		}

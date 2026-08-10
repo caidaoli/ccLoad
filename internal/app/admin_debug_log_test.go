@@ -72,6 +72,7 @@ func TestDebugLogResponse_IncludesProtocolTransformBodiesOnlyForLocalTransform(t
 		OriginalReqBody:       []byte(`{"messages":[{"content":"hello"}]}`),
 		ReqBody:               []byte(`{"contents":[{"parts":[{"text":"hello"}]}]}`),
 		RespBody:              []byte(`{"candidates":[{"content":"world"}]}`),
+		UpstreamError:         "unexpected EOF",
 		TranslatedRespStatus:  http.StatusOK,
 		TranslatedRespHeaders: `{"Content-Type":"application/json"}`,
 		TranslatedRespBody:    []byte(`{"choices":[{"message":{"content":"world"}}]}`),
@@ -96,6 +97,9 @@ func TestDebugLogResponse_IncludesProtocolTransformBodiesOnlyForLocalTransform(t
 	}
 	if got := transformed["translated_resp_headers"]; got != `{"Content-Type":"application/json"}` {
 		t.Fatalf("translated_resp_headers=%v", got)
+	}
+	if got := transformed["upstream_error"]; got != "unexpected EOF" {
+		t.Fatalf("upstream_error=%v", got)
 	}
 
 	native := debugLogResponse(&model.DebugLogEntry{ReqBody: []byte(`{"model":"gpt-4"}`)})

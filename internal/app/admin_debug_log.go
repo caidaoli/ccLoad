@@ -81,6 +81,9 @@ func debugLogResponse(entry *model.DebugLogEntry) gin.H {
 		"resp_status":  entry.RespStatus,
 		"resp_headers": maskSensitiveHeaderJSON(entry.RespHeaders),
 	}
+	if entry.UpstreamError != "" {
+		resp["upstream_error"] = entry.UpstreamError
+	}
 
 	if utf8.Valid(entry.ReqBody) {
 		resp["req_body"] = string(entry.ReqBody)
