@@ -240,7 +240,6 @@ type CodexModelsFetcher struct {
 
 // FetchModels 从 Codex API 获取可用模型列表（使用 OpenAI 兼容接口）。
 func (f *CodexModelsFetcher) FetchModels(ctx context.Context, baseURL string, apiKey string) ([]string, error) {
-	// Codex使用与OpenAI相同的标准接口 /v1/models
 	openAIFetcher := &OpenAIModelsFetcher{client: f.client}
 	return openAIFetcher.FetchModels(ctx, baseURL, apiKey)
 }

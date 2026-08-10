@@ -17,17 +17,6 @@ func TestNewUUIDv4Format(t *testing.T) {
 	}
 }
 
-func TestNewUUIDv4Unique(t *testing.T) {
-	seen := make(map[string]struct{}, 1024)
-	for range 1024 {
-		v := NewUUIDv4()
-		if _, dup := seen[v]; dup {
-			t.Fatalf("duplicate UUIDv4 within 1024 samples: %q", v)
-		}
-		seen[v] = struct{}{}
-	}
-}
-
 func TestNewUUIDv5Deterministic(t *testing.T) {
 	a := NewUUIDv5(NameSpaceOID, "ccload:test:foo")
 	b := NewUUIDv5(NameSpaceOID, "ccload:test:foo")

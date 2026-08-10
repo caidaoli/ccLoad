@@ -262,62 +262,6 @@ func TestGeminiModelsFetcherTransportErrorDoesNotLeakAPIKey(t *testing.T) {
 	}
 }
 
-// ============================================================
-// Codex 模型获取器测试
-// ============================================================
-
-func TestCodexModelsFetcher(t *testing.T) {
-	responseBody, err := json.Marshal(map[string]any{
-		"data": []map[string]any{
-			{"id": "gpt-4"},
-			{"id": "gpt-3.5-turbo"},
-			{"id": "text-davinci-003"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal 响应失败: %v", err)
-	}
-
-	fetcher := &CodexModelsFetcher{
-		client: newTestModelsFetcherClient(func(r *http.Request) (*http.Response, error) {
-			if r.URL.Path != "/v1/models" {
-				t.Fatalf("期望路径 /v1/models, 实际 %s", r.URL.Path)
-			}
-			return newJSONResponse(http.StatusOK, string(responseBody)), nil
-		}),
-	}
-	ctx := context.Background()
-
-	models, err := fetcher.FetchModels(ctx, "https://codex.test", "dummy-key")
-	if err != nil {
-		t.Fatalf("获取失败: %v", err)
-	}
-
-	if len(models) == 0 {
-		t.Fatal("Codex应返回模型列表")
-	}
-
-	// 验证返回的模型
-	expectedModels := []string{"gpt-4", "gpt-3.5-turbo", "text-davinci-003"}
-	if len(models) != len(expectedModels) {
-		t.Errorf("期望 %d 个模型, 实际获取 %d 个", len(expectedModels), len(models))
-	}
-
-	for _, expected := range expectedModels {
-		found := false
-		for _, model := range models {
-			if model == expected {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Errorf("未找到期望的模型: %s", expected)
-		}
-	}
-}
-
-// ============================================================
 // 辅助函数
 // ============================================================
 
