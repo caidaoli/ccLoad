@@ -3,6 +3,7 @@ package sql
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -840,6 +841,9 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	// 显式删除关联数据，不依赖驱动或 DSN 是否正确启用外键级联。
 	var deletedRowsForVacuum int64
 	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		if err := s.removeChannelFromAuthTokenRestrictions(ctx, tx, id); err != nil {
+			return err
+		}
 		if _, err := s.execTx(ctx, tx, `DELETE FROM api_keys WHERE channel_id = ?`, id); err != nil {
 			return fmt.Errorf("delete channel api keys: %w", err)
 		}
@@ -873,6 +877,92 @@ func (s *SQLStore) DeleteConfig(ctx context.Context, id int64) error {
 	}
 
 	s.runSQLiteIncrementalVacuum(ctx, deletedRowsForVacuum)
+	return nil
+}
+
+func (s *SQLStore) removeChannelFromAuthTokenRestrictions(ctx context.Context, tx *sql.Tx, channelID int64) error {
+	query := `
+		SELECT id, COALESCE(allowed_channel_ids, ''), channel_restriction_mode
+		FROM auth_tokens
+		WHERE allowed_channel_ids IS NOT NULL AND allowed_channel_ids <> ''
+	`
+	if s.supportsRowLock() {
+		query += ` FOR UPDATE`
+	}
+	rows, err := tx.QueryContext(ctx, s.q(query))
+	if err != nil {
+		return fmt.Errorf("query auth token channel restrictions: %w", err)
+	}
+
+	type restrictionUpdate struct {
+		tokenID int64
+		value   string
+		disable bool
+	}
+	updates := make([]restrictionUpdate, 0)
+	for rows.Next() {
+		var tokenID int64
+		var raw string
+		var mode string
+		if err := rows.Scan(&tokenID, &raw, &mode); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan auth token channel restriction: %w", err)
+		}
+		normalizedMode, err := model.NormalizeChannelRestrictionMode(mode)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("normalize auth token %d channel restriction mode: %w", tokenID, err)
+		}
+
+		var channelIDs []int64
+		if err := json.Unmarshal([]byte(raw), &channelIDs); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("decode auth token %d allowed_channel_ids: %w", tokenID, err)
+		}
+
+		kept := channelIDs[:0]
+		removed := false
+		for _, id := range channelIDs {
+			if id == channelID {
+				removed = true
+				continue
+			}
+			kept = append(kept, id)
+		}
+		if !removed {
+			continue
+		}
+
+		value, err := marshalAllowedChannelIDs(kept)
+		if err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("encode auth token %d allowed_channel_ids: %w", tokenID, err)
+		}
+		updates = append(updates, restrictionUpdate{
+			tokenID: tokenID,
+			value:   value,
+			disable: normalizedMode == model.ChannelRestrictionModeAllow && len(kept) == 0,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate auth token channel restrictions: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("close auth token channel restrictions: %w", err)
+	}
+
+	for _, update := range updates {
+		if update.disable {
+			if _, err := s.execTx(ctx, tx, `UPDATE auth_tokens SET allowed_channel_ids = ?, is_active = ? WHERE id = ?`, update.value, false, update.tokenID); err != nil {
+				return fmt.Errorf("disable auth token %d after removing its last allowed channel: %w", update.tokenID, err)
+			}
+			continue
+		}
+		if _, err := s.execTx(ctx, tx, `UPDATE auth_tokens SET allowed_channel_ids = ? WHERE id = ?`, update.value, update.tokenID); err != nil {
+			return fmt.Errorf("update auth token %d channel restriction: %w", update.tokenID, err)
+		}
+	}
 	return nil
 }
 

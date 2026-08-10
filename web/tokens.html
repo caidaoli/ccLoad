@@ -241,6 +241,12 @@
                 <span class="token-edit-channels-meta"><span data-i18n="tokens.channelCountPrefix">共</span> <span id="editAllowedChannelsCount">0</span> <span id="editChannelCountSuffix" data-i18n="tokens.channelCountSuffixAllow">个渠道（空表示允许所有）</span></span>
               </h3>
               <div class="token-edit-channels-actions">
+                <label class="token-edit-restriction-filter">
+                  <span data-i18n="tokens.filterChannels">过滤渠道</span>
+                  <input type="search" id="allowedChannelFilterInput" class="form-input token-edit-restriction-filter-input"
+                    data-i18n-placeholder="tokens.searchChannelPlaceholder" placeholder="搜索渠道..."
+                    data-input-action="filter-allowed-channels">
+                </label>
                 <select id="editChannelRestrictionMode" class="form-input token-edit-channels-mode" data-change-action="change-channel-restriction-mode" title="渠道限制模式">
                   <option value="allow" data-i18n="tokens.channelModeAllow">白名单</option>
                   <option value="deny" data-i18n="tokens.channelModeDeny">黑名单</option>
@@ -262,7 +268,6 @@
                       <input type="checkbox" id="selectAllAllowedChannels" data-change-action="toggle-select-all-allowed-channels">
                     </th>
                     <th class="allowed-channel-col-name-head" data-i18n="tokens.channelName">渠道</th>
-                    <th class="allowed-channel-col-type-head" data-i18n="tokens.protocol">协议</th>
                     <th class="allowed-channel-col-actions-head"></th>
                   </tr>
                 </thead>
@@ -281,6 +286,12 @@
                 <span class="token-edit-models-meta"><span data-i18n="tokens.modelCountPrefix">共</span> <span id="editAllowedModelsCount">0</span> <span data-i18n="tokens.modelCountSuffix">个模型（空表示允许所有）</span></span>
               </h3>
               <div class="token-edit-models-actions">
+                <label class="token-edit-restriction-filter">
+                  <span data-i18n="tokens.filterModels">过滤模型</span>
+                  <input type="search" id="allowedModelFilterInput" class="form-input token-edit-restriction-filter-input"
+                    data-i18n-placeholder="tokens.searchModelPlaceholder" placeholder="搜索模型..."
+                    data-input-action="filter-allowed-models">
+                </label>
                 <button type="button" class="btn btn-secondary btn-sm token-edit-models-btn" data-action="show-model-select-modal" data-i18n-title="tokens.selectFromListTitle" title="从渠道模型列表中选择" data-i18n="tokens.selectFromList">
                   + 从列表选择
                 </button>

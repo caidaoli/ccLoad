@@ -755,6 +755,7 @@ window.I18N_LOCALES['en'] = {
   'tokens.channelModeAllow': 'Allow list',
   'tokens.channelModeDeny': 'Deny list',
   'tokens.channelName': 'Channel',
+  'tokens.filterChannels': 'Filter channels',
   'tokens.protocol': 'Protocol',
   'tokens.selectChannel': '+ Select Channel',
   'tokens.selectChannelTitle': 'Select from channel list',
@@ -769,6 +770,7 @@ window.I18N_LOCALES['en'] = {
   'tokens.manualInputTitle': 'Manually input model names',
   'tokens.deleteSelected': 'Delete Selected',
   'tokens.modelName': 'Model Name',
+  'tokens.filterModels': 'Filter models',
   // Model selection modal
   'tokens.selectModelTitle': 'Select Models',
   'tokens.searchModelPlaceholder': 'Search models...',

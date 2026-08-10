@@ -744,6 +744,22 @@
     .token-edit-channels-actions .btn {
       white-space: nowrap;
     }
+    .token-edit-restriction-filter {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      color: var(--neutral-600);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .token-edit-restriction-filter-input {
+      width: 150px;
+      min-width: 120px;
+      height: auto;
+      padding: 5px 8px;
+      font-size: 12px;
+    }
     .token-edit-channels-mode {
       width: auto;
       min-width: 96px;
@@ -814,7 +830,6 @@
     }
     .allowed-channel-col-select-head,
     .allowed-channel-col-name-head,
-    .allowed-channel-col-type-head,
     .allowed-channel-col-actions-head {
       padding: 8px;
     }
@@ -822,8 +837,7 @@
       width: 40px;
       text-align: center;
     }
-    .allowed-channel-col-name-head,
-    .allowed-channel-col-type-head {
+    .allowed-channel-col-name-head {
       text-align: left;
     }
     .allowed-channel-col-actions-head {
@@ -835,7 +849,6 @@
       color: var(--neutral-500);
     }
     .allowed-channel-col-select,
-    .allowed-channel-col-type,
     .allowed-channel-col-actions {
       padding: 8px;
       text-align: center;
@@ -843,10 +856,6 @@
     .allowed-channel-col-name {
       padding: 8px;
       font-weight: 500;
-    }
-    .allowed-channel-col-type {
-      color: var(--neutral-600);
-      font-size: 13px;
     }
     .allowed-channel-remove-btn {
       padding: 2px 8px;
@@ -1113,6 +1122,15 @@
       width: 8%;
     }
     @media (max-width: 768px) {
+      .token-edit-restriction-filter {
+        flex: 1 1 100%;
+        width: 100%;
+      }
+      .token-edit-restriction-filter-input {
+        flex: 1 1 auto;
+        width: auto;
+        min-width: 0;
+      }
       .token-table {
         overflow: visible;
         background: transparent;
@@ -1297,7 +1315,6 @@
       }
       .allowed-channels-table tbody .mobile-inline-row .allowed-channel-col-select,
       .allowed-channels-table tbody .mobile-inline-row .allowed-channel-col-name,
-      .allowed-channels-table tbody .mobile-inline-row .allowed-channel-col-type,
       .allowed-channels-table tbody .mobile-inline-row .allowed-channel-col-actions {
         grid-column: auto;
       }
@@ -1337,9 +1354,6 @@
       .allowed-channels-table tbody .mobile-inline-row td.allowed-channel-col-name::-webkit-scrollbar {
         display: none;
       }
-      .allowed-channels-table tbody .mobile-inline-row td.allowed-channel-col-type {
-        display: none;
-      }
       .allowed-models-table tbody .mobile-inline-row td.allowed-model-col-actions {
         grid-column: auto;
         display: flex;
@@ -1374,7 +1388,6 @@
         display: none;
       }
       .allowed-channels-table tbody .mobile-inline-row td.allowed-channel-col-name::before,
-      .allowed-channels-table tbody .mobile-inline-row td.allowed-channel-col-type::before,
       .allowed-channels-table tbody .mobile-inline-row td.allowed-channel-col-actions::before {
         content: none;
         display: none;
