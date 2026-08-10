@@ -294,11 +294,15 @@ func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 	freshLatencyKey := urlKey{channelID: 1, url: "https://fresh-latency.com"}
 	expiredCooldownKey := urlKey{channelID: 1, url: "https://expired-cooldown.com"}
 	activeCooldownKey := urlKey{channelID: 1, url: "https://active-cooldown.com"}
+	oldProbeFailureKey := urlKey{channelID: 1, url: "https://old-probe-failure.com"}
+	freshProbeFailureKey := urlKey{channelID: 1, url: "https://fresh-probe-failure.com"}
 
 	sel.latencies[oldLatencyKey] = &ewmaValue{value: 120, lastSeen: now.Add(-25 * time.Hour)}
 	sel.latencies[freshLatencyKey] = &ewmaValue{value: 80, lastSeen: now.Add(-2 * time.Hour)}
 	sel.cooldowns[expiredCooldownKey] = urlCooldownState{until: now.Add(-time.Minute), consecutiveFails: 2}
 	sel.cooldowns[activeCooldownKey] = urlCooldownState{until: now.Add(2 * time.Minute), consecutiveFails: 1}
+	sel.probeFailures[oldProbeFailureKey] = now.Add(-25 * time.Hour)
+	sel.probeFailures[freshProbeFailureKey] = now.Add(-2 * time.Hour)
 
 	sel.GC(24 * time.Hour)
 
@@ -313,6 +317,12 @@ func TestURLSelector_GC_RemovesExpiredState(t *testing.T) {
 	}
 	if _, ok := sel.cooldowns[activeCooldownKey]; !ok {
 		t.Fatalf("expected active cooldown to be preserved")
+	}
+	if _, ok := sel.probeFailures[oldProbeFailureKey]; ok {
+		t.Fatal("expected expired probe failure to be removed")
+	}
+	if _, ok := sel.probeFailures[freshProbeFailureKey]; !ok {
+		t.Fatal("expected fresh probe failure to be preserved")
 	}
 }
 
@@ -362,7 +372,7 @@ func TestExtractHostPort(t *testing.T) {
 	}
 }
 
-func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
+func TestURLSelector_ProbeURLs_TimeoutDoesNotCoolPendingURLs(t *testing.T) {
 	sel := NewURLSelector()
 	sel.probeTimeout = 20 * time.Millisecond
 	sel.probeDial = func(ctx context.Context, _, address string) (net.Conn, error) {
@@ -383,8 +393,8 @@ func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
 	urls := []string{"https://fast.example", "https://slow.example"}
 	sel.ProbeURLs(context.Background(), 1, urls)
 
-	if !sel.IsCooledDown(1, "https://slow.example") {
-		t.Fatalf("expected timed out URL to be cooled down")
+	if sel.IsCooledDown(1, "https://slow.example") {
+		t.Fatalf("TCP probe timeout must not cool URL")
 	}
 
 	sel.mu.RLock()
@@ -401,7 +411,11 @@ func TestURLSelector_ProbeURLs_TimeoutCoolsPendingURLs(t *testing.T) {
 
 	selected, _ := sel.SelectURL(1, urls)
 	if selected != "https://fast.example" {
-		t.Fatalf("expected known fast URL selected after probe timeout, got %s", selected)
+		t.Fatalf("failed TCP probe must rank behind known URL, got %s", selected)
+	}
+	ordered := sel.SortURLs(1, urls)
+	if len(ordered) != 2 || ordered[0].url != "https://fast.example" {
+		t.Fatalf("failed TCP probe sort order = %+v", ordered)
 	}
 }
 
@@ -448,14 +462,96 @@ func TestURLSelector_ProbeURLs_SkipsKnownURLs(t *testing.T) {
 
 func TestURLSelector_ProbeURLs_InvalidURL(t *testing.T) {
 	sel := NewURLSelector()
-	// 无效URL应被冷却，不应panic
+	// 无效 URL 不应产生延迟或冷却状态。
 	sel.ProbeURLs(context.Background(), 1, []string{"not-a-valid-url", "also-invalid"})
 
 	sel.mu.RLock()
-	defer sel.mu.RUnlock()
-	// 无效URL应该被冷却或至少不产生延迟数据
 	if len(sel.latencies) != 0 {
+		sel.mu.RUnlock()
 		t.Errorf("invalid URLs should not produce latency data, got %d", len(sel.latencies))
+		return
+	}
+	sel.mu.RUnlock()
+	for _, rawURL := range []string{"not-a-valid-url", "also-invalid"} {
+		if sel.IsCooledDown(1, rawURL) {
+			t.Fatalf("invalid TCP probe must not cool URL %q", rawURL)
+		}
+	}
+	if selected, _ := sel.SelectURL(1, []string{"not-a-valid-url", "also-invalid"}); selected == "" {
+		t.Fatal("all failed probes must retain a URL fallback")
+	}
+	if ordered := sel.SortURLs(1, []string{"not-a-valid-url", "also-invalid"}); len(ordered) != 2 {
+		t.Fatalf("all failed probes sort result = %+v", ordered)
+	}
+}
+
+func TestURLSelector_ProbeURLs_RealSuccessInvalidatesInFlightFailure(t *testing.T) {
+	sel := NewURLSelector()
+	targetStarted := make(chan struct{})
+	releaseTarget := make(chan struct{})
+	sel.probeDial = func(_ context.Context, _, address string) (net.Conn, error) {
+		if address == "target.example:443" {
+			close(targetStarted)
+			<-releaseTarget
+			return nil, net.UnknownNetworkError("probe failed")
+		}
+		conn, peer := net.Pipe()
+		_ = peer.Close()
+		return conn, nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sel.ProbeURLs(context.Background(), 1, []string{"https://target.example", "https://peer.example"})
+		close(done)
+	}()
+	<-targetStarted
+	sel.RecordLatency(1, "https://target.example", 25*time.Millisecond)
+	close(releaseTarget)
+	<-done
+
+	key := urlKey{channelID: 1, url: "https://target.example"}
+	sel.mu.RLock()
+	_, failed := sel.probeFailures[key]
+	latency := sel.latencies[key]
+	sel.mu.RUnlock()
+	if failed || latency == nil {
+		t.Fatalf("real success must win over stale probe failure: failed=%v latency=%v", failed, latency)
+	}
+}
+
+func TestURLSelector_ProbeURLs_PruneInvalidatesInFlightFailure(t *testing.T) {
+	sel := NewURLSelector()
+	targetStarted := make(chan struct{})
+	releaseTarget := make(chan struct{})
+	sel.probeDial = func(_ context.Context, _, address string) (net.Conn, error) {
+		if address == "removed.example:443" {
+			close(targetStarted)
+			<-releaseTarget
+			return nil, net.UnknownNetworkError("probe failed")
+		}
+		conn, peer := net.Pipe()
+		_ = peer.Close()
+		return conn, nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		sel.ProbeURLs(context.Background(), 1, []string{"https://removed.example", "https://keep.example"})
+		close(done)
+	}()
+	<-targetStarted
+	sel.PruneChannel(1, []string{"https://keep.example"})
+	close(releaseTarget)
+	<-done
+
+	key := urlKey{channelID: 1, url: "https://removed.example"}
+	sel.mu.RLock()
+	_, probing := sel.probing[key]
+	_, failed := sel.probeFailures[key]
+	sel.mu.RUnlock()
+	if probing || failed {
+		t.Fatalf("pruned URL retained probe state: probing=%v failed=%v", probing, failed)
 	}
 }
 
@@ -470,15 +566,11 @@ func TestURLSelector_ProbeURLs_RealTCP(t *testing.T) {
 	urls := []string{"https://127.0.0.1:1", "https://127.0.0.1:2"}
 	sel.ProbeURLs(context.Background(), 1, urls)
 
-	// 连接失败的URL应被冷却
-	cooled := 0
+	// TCP 探测失败只是弱信号，不应污染 URL 冷却。
 	for _, u := range urls {
 		if sel.IsCooledDown(1, u) {
-			cooled++
+			t.Fatalf("failed TCP probe must not cool URL %s", u)
 		}
-	}
-	if cooled == 0 {
-		t.Logf("warning: no URLs were cooled down (might succeed if ports are open)")
 	}
 }
 

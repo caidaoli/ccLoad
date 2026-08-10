@@ -3,10 +3,12 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -23,13 +25,13 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
-	sigcompat "ccLoad/internal/protocol/cliproxy/signature"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tidwall/gjson"
+	"google.golang.org/protobuf/encoding/protowire"
 )
 
 // ============================================================================
@@ -243,6 +245,23 @@ func antigravityProxyTestCredential(t testing.TB, accessToken string) string {
 		t.Fatalf("Antigravity credential JSON: %v", err)
 	}
 	return payload
+}
+
+func antigravityProxyClaudeThoughtSignature() string {
+	channelBlock := []byte{}
+	channelBlock = protowire.AppendTag(channelBlock, 1, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 12)
+	channelBlock = protowire.AppendTag(channelBlock, 2, protowire.VarintType)
+	channelBlock = protowire.AppendVarint(channelBlock, 2)
+	channelBlock = protowire.AppendTag(channelBlock, 6, protowire.BytesType)
+	channelBlock = protowire.AppendString(channelBlock, "claude-sonnet-4-6")
+	container := protowire.AppendTag(nil, 1, protowire.BytesType)
+	container = protowire.AppendBytes(container, channelBlock)
+	payload := protowire.AppendTag(nil, 2, protowire.BytesType)
+	payload = protowire.AppendBytes(payload, container)
+	payload = protowire.AppendTag(payload, 3, protowire.VarintType)
+	payload = protowire.AppendVarint(payload, 1)
+	return base64.StdEncoding.EncodeToString(payload)
 }
 
 func anthropicProxyTestCredential(t testing.TB, accessToken string) string {
@@ -908,6 +927,235 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 	}
 }
 
+type antigravityProviderAdapterCase struct {
+	name              string
+	path              string
+	body              map[string]any
+	nonStreamTextPath string
+	streamTextPath    string
+	streamRequest     bool
+}
+
+func antigravityProviderAdapterCases() []antigravityProviderAdapterCase {
+	return []antigravityProviderAdapterCase{
+		{
+			name: "Claude", path: "/v1/messages",
+			body: map[string]any{
+				"model": "gemini-3-flash", "max_tokens": 64,
+				"messages": []any{map[string]any{"role": "user", "content": "provider request"}},
+			},
+			nonStreamTextPath: "content.0.text",
+			streamTextPath:    "delta.text",
+			streamRequest:     true,
+		},
+		{
+			name: "Gemini", path: "/v1beta/models/gemini-3-flash:generateContent",
+			body: map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "provider request"}}}},
+			},
+			nonStreamTextPath: "candidates.0.content.parts.0.text",
+			streamTextPath:    "candidates.0.content.parts.0.text",
+		},
+		{
+			name: "OpenAI", path: "/v1/chat/completions",
+			body: map[string]any{
+				"model":    "gemini-3-flash",
+				"messages": []any{map[string]any{"role": "user", "content": "provider request"}},
+			},
+			nonStreamTextPath: "choices.0.message.content",
+			streamTextPath:    "choices.0.delta.content",
+			streamRequest:     true,
+		},
+		{
+			name: "Codex", path: "/v1/responses",
+			body:              map[string]any{"model": "gemini-3-flash", "input": "provider request"},
+			nonStreamTextPath: "output.0.content.0.text",
+			streamTextPath:    "delta",
+			streamRequest:     true,
+		},
+	}
+}
+
+func antigravityWireContainsText(wire []byte, want string) bool {
+	for _, content := range gjson.GetBytes(wire, "request.contents").Array() {
+		for _, part := range content.Get("parts").Array() {
+			if part.Get("text").String() == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
+	for _, testCase := range antigravityProviderAdapterCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read Antigravity provider request: %v", err)
+				}
+				if got := gjson.GetBytes(wire, "model").String(); got != "gemini-3-flash" {
+					t.Errorf("model=%q body=%s", got, wire)
+				}
+				if got := gjson.GetBytes(wire, "project").String(); got != "gravity-project" {
+					t.Errorf("project=%q body=%s", got, wire)
+				}
+				if got := gjson.GetBytes(wire, "requestId").String(); got == "" {
+					t.Errorf("requestId missing: %s", wire)
+				}
+				if !antigravityWireContainsText(wire, "provider request") {
+					t.Errorf("client text missing from provider request: %s", wire)
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"provider response"}]},"finishReason":"STOP"}]}}`)
+			}))
+			t.Cleanup(upstream.Close)
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-provider-request-" + testCase.name, upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-provider-request"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, testCase.path, testCase.body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
+	for _, testCase := range antigravityProviderAdapterCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"responseId":"gravity-response","candidates":[{"content":{"role":"model","parts":[{"text":"provider response"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`)
+			}))
+			t.Cleanup(upstream.Close)
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-provider-nonstream-" + testCase.name, upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-provider-nonstream"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, testCase.path, testCase.body, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			if !gjson.Valid(response.Body.String()) {
+				t.Fatalf("invalid JSON response: %s", response.Body.String())
+			}
+			if got := gjson.Get(response.Body.String(), testCase.nonStreamTextPath).String(); got != "provider response" {
+				t.Fatalf("translated text=%q path=%s body=%s", got, testCase.nonStreamTextPath, response.Body.String())
+			}
+			if gjson.Get(response.Body.String(), "response").Exists() {
+				t.Fatalf("Antigravity wrapper leaked to client: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
+	for _, testCase := range antigravityProviderAdapterCases() {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, `data: {"response":{"responseId":"gravity-stream","candidates":[{"content":{"role":"model","parts":[{"text":"provider stream"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`+"\n\n")
+			}))
+			t.Cleanup(upstream.Close)
+
+			requestBody := maps.Clone(testCase.body)
+			path := testCase.path
+			if testCase.streamRequest {
+				requestBody["stream"] = true
+			} else {
+				path = "/v1beta/models/gemini-3-flash:streamGenerateContent?alt=sse"
+			}
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-provider-stream-" + testCase.name, upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-provider-stream"),
+			}}, map[int]string{0: upstream.URL})
+			response := doProxyRequest(t, env.engine, path, requestBody, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+
+			found := false
+			complete := testCase.name != "Claude"
+			for _, block := range strings.Split(response.Body.String(), "\n\n") {
+				event, data := parseSSEEventChunk([]byte(block))
+				if len(data) == 0 || bytes.Equal(bytes.TrimSpace(data), []byte("[DONE]")) {
+					continue
+				}
+				if !gjson.ValidBytes(data) {
+					t.Fatalf("invalid SSE JSON payload: %q", data)
+				}
+				if gjson.GetBytes(data, "response.candidates").Exists() {
+					t.Fatalf("Antigravity wrapper leaked to stream: %s", data)
+				}
+				if gjson.GetBytes(data, testCase.streamTextPath).String() == "provider stream" {
+					found = true
+				}
+				if event == "message_stop" && gjson.GetBytes(data, "type").String() == "message_stop" {
+					complete = true
+				}
+			}
+			if !found {
+				t.Fatalf("translated stream text missing at %s: %s", testCase.streamTextPath, response.Body.String())
+			}
+			if !complete {
+				t.Fatalf("translated Claude stream missing message_stop: %s", response.Body.String())
+			}
+		})
+	}
+}
+
+func TestProxy_AntigravityOAuthPreservesAnthropicToolIDs(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wireBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity tool request: %v", err)
+		}
+		if got := gjson.GetBytes(wireBody, "request.contents.1.parts.0.functionCall.id").String(); got != "Skill-15" {
+			t.Errorf("functionCall.id=%q, want Skill-15; body=%s", got, wireBody)
+		}
+		if got := gjson.GetBytes(wireBody, "request.contents.2.parts.0.functionResponse.id").String(); got != "Skill-15" {
+			t.Errorf("functionResponse.id=%q, want Skill-15; body=%s", got, wireBody)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"tool ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-anthropic-tools", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-tools"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "max_tokens": 100,
+		"messages": []any{
+			map[string]any{"role": "user", "content": "load the skill"},
+			map[string]any{"role": "assistant", "content": []any{
+				map[string]any{"type": "text", "text": ""},
+				map[string]any{"type": "tool_use", "id": "Skill-15", "name": "Skill", "input": map[string]any{"skill": "test"}},
+				map[string]any{"type": "text", "text": ""},
+			}},
+			map[string]any{"role": "user", "content": []any{
+				map[string]any{"type": "tool_result", "tool_use_id": "Skill-15", "content": "loaded"},
+			}},
+		},
+		"tools": []any{map[string]any{
+			"name": "Skill", "description": "Load a skill",
+			"input_schema": map[string]any{
+				"type": "object", "properties": map[string]any{"skill": map[string]any{"type": "string"}}, "required": []string{"skill"},
+			},
+		}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "content.0.text").String() != "tool ok" {
+		t.Fatalf("tool response=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestProxy_AntigravityOAuthHandlesCountTokensLocally(t *testing.T) {
 	var upstreamCalls atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -970,7 +1218,8 @@ func TestProxy_AntigravityOAuthUsesWebSearchWireContract(t *testing.T) {
 	}
 }
 
-func TestProxy_AntigravityOAuthRetriesCorruptedToolSignature(t *testing.T) {
+func TestProxy_AntigravityOAuthRetriesRejectedClaudeThinkingSignature(t *testing.T) {
+	validSignature := antigravityProxyClaudeThoughtSignature()
 	var attempts atomic.Int32
 	var bodies [][]byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -990,33 +1239,33 @@ func TestProxy_AntigravityOAuthRetriesCorruptedToolSignature(t *testing.T) {
 	defer upstream.Close()
 
 	env := setupProxyTestEnv(t, []testChannel{{
-		name: "antigravity-signature", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
+		name: "antigravity-signature", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-signature"),
 	}}, map[int]string{0: upstream.URL})
 
-	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3-flash:generateContent", map[string]any{
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
 		"systemInstruction": map[string]any{"parts": []any{map[string]any{"text": "API proxy"}}},
 		"contents": []any{
 			map[string]any{"role": "model", "parts": []any{map[string]any{
-				"functionCall":     map[string]any{"name": "lookup", "args": map[string]any{"q": "x"}},
-				"thoughtSignature": "stale-signature",
+				"text":             "prior reasoning",
+				"thought":          true,
+				"thoughtSignature": validSignature,
 			}}},
-			map[string]any{"role": "user", "parts": []any{map[string]any{
-				"functionResponse": map[string]any{"name": "lookup", "response": map[string]any{"result": "x"}},
-			}}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "continue"}}},
 		},
 	}, nil)
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "retry ok" {
-		t.Fatalf("signature retry response=%d body=%s", response.Code, response.Body.String())
+		t.Fatalf("signature retry response=%d body=%s upstream_bodies=%q", response.Code, response.Body.String(), bodies)
 	}
 	if attempts.Load() != 2 || len(bodies) != 2 {
 		t.Fatalf("signature attempts=%d bodies=%d", attempts.Load(), len(bodies))
 	}
-	if got := gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").String(); got != "stale-signature" {
-		t.Fatalf("first signature=%q body=%s", got, bodies[0])
+	if got := gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").String(); got == "" {
+		t.Fatalf("first signature missing: body=%s", bodies[0])
 	}
-	if got := gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thoughtSignature").String(); got != sigcompat.GeminiSkipThoughtSignatureValidator {
-		t.Fatalf("retry signature=%q body=%s", got, bodies[1])
+	if gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thoughtSignature").Exists() ||
+		gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thought").Exists() {
+		t.Fatalf("retry kept rejected thinking metadata: body=%s", bodies[1])
 	}
 	if got := gjson.GetBytes(bodies[1], "request.systemInstruction.parts.#").Int(); got != 2 {
 		t.Fatalf("identity prompt duplicated on retry: parts=%d body=%s", got, bodies[1])
@@ -1026,7 +1275,57 @@ func TestProxy_AntigravityOAuthRetriesCorruptedToolSignature(t *testing.T) {
 	}
 }
 
-func TestProxy_AntigravityOAuthDegradesClaudeSignatureHistoryInStages(t *testing.T) {
+func TestProxy_AntigravityOAuthCapacityAfterSignatureRetryCoolsModel(t *testing.T) {
+	validSignature := antigravityProxyClaudeThoughtSignature()
+	var attempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if attempts.Add(1) == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Corrupted thought signature."}}`)
+			return
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-signature-capacity", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-signature-capacity"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{
+			map[string]any{"role": "model", "parts": []any{map[string]any{
+				"text":             "prior reasoning",
+				"thought":          true,
+				"thoughtSignature": validSignature,
+			}}},
+			map[string]any{"role": "user", "parts": []any{map[string]any{"text": "continue"}}},
+		},
+	}, nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429; body=%s", response.Code, response.Body.String())
+	}
+	if got := attempts.Load(); got != 2 {
+		t.Fatalf("attempts=%d, want 2", got)
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs=(%d, %v)", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]; !until.After(time.Now()) {
+		t.Fatalf("capacity after signature retry did not cool model: %v", cooldowns)
+	}
+}
+
+func TestProxy_AntigravityOAuthSanitizesClaudeSignatureHistoryBeforeForward(t *testing.T) {
 	var attempts atomic.Int32
 	var bodies [][]byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1036,11 +1335,7 @@ func TestProxy_AntigravityOAuthDegradesClaudeSignatureHistoryInStages(t *testing
 		}
 		bodies = append(bodies, body)
 		w.Header().Set("Content-Type", "application/json")
-		if attempts.Add(1) <= 2 {
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = io.WriteString(w, `{"error":{"code":400,"message":"Expected thinking block with a valid signature."}}`)
-			return
-		}
+		attempts.Add(1)
 		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"claude retry ok"}]},"finishReason":"STOP"}]}}`)
 	}))
 	defer upstream.Close()
@@ -1068,24 +1363,18 @@ func TestProxy_AntigravityOAuthDegradesClaudeSignatureHistoryInStages(t *testing
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "claude retry ok" {
 		t.Fatalf("Claude signature retry response=%d body=%s", response.Code, response.Body.String())
 	}
-	if attempts.Load() != 3 || len(bodies) != 3 {
+	if attempts.Load() != 1 || len(bodies) != 1 {
 		t.Fatalf("Claude signature attempts=%d bodies=%d", attempts.Load(), len(bodies))
 	}
-	if !gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thought").Bool() {
-		t.Fatalf("first request lost thinking history: %s", bodies[0])
+	if gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thought").Exists() {
+		t.Fatalf("invalid thinking history reached upstream: %s", bodies[0])
 	}
-	if gjson.GetBytes(bodies[1], "request.contents.0.parts.0.thought").Exists() ||
-		gjson.GetBytes(bodies[1], "request.generationConfig.thinkingConfig").Exists() {
-		t.Fatalf("thinking-only retry retained thinking state: %s", bodies[1])
+	functionCall := gjson.GetBytes(bodies[0], "request.contents.0.parts.0.functionCall")
+	if !functionCall.Exists() {
+		t.Fatalf("signature sanitizer removed the tool call: %s", bodies[0])
 	}
-	if !gjson.GetBytes(bodies[1], "request.contents.0.parts.1.functionCall").Exists() {
-		t.Fatalf("thinking-only retry removed tool history too early: %s", bodies[1])
-	}
-	if bytes.Contains(bodies[2], []byte(`"functionCall"`)) || bytes.Contains(bodies[2], []byte(`"functionResponse"`)) {
-		t.Fatalf("tool retry retained signature-sensitive tool history: %s", bodies[2])
-	}
-	if !bytes.Contains(bodies[2], []byte(`(tool_use)`)) || !bytes.Contains(bodies[2], []byte(`(tool_result)`)) {
-		t.Fatalf("tool retry did not preserve history as text: %s", bodies[2])
+	if gjson.GetBytes(bodies[0], "request.contents.0.parts.0.thoughtSignature").Exists() {
+		t.Fatalf("invalid tool signature reached upstream: %s", bodies[0])
 	}
 }
 
@@ -1311,12 +1600,54 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	}
 }
 
+func TestProxy_AntigravityOAuthSingleURLModelCapacityExhaustionBecomes429(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-single-capacity", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-single-capacity"),
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d, want 429; body=%s", response.Code, response.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls=%d, want 1", got)
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs=(%d, %v)", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]; !until.After(time.Now()) {
+		t.Fatalf("capacity exhaustion did not cool model: %v", cooldowns)
+	}
+	if env.server.urlSelector.IsCooledDown(configs[0].ID, upstream.URL) {
+		t.Fatal("model capacity exhaustion must not cool the URL")
+	}
+}
+
 func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing.T) {
 	baseURLs := []string{
 		"https://capacity-1.test",
 		"https://not-found.test",
 		"https://capacity-2.test",
 		"https://capacity-3.test",
+		"https://ordinary-503.test",
 	}
 	var calls atomic.Int32
 	env := setupProxyTestEnv(t, []testChannel{{
@@ -1330,6 +1661,8 @@ func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing
 		if call == 2 {
 			status = http.StatusNotFound
 			body = `{"error":{"code":404,"message":"not found"}}`
+		} else if call == int32(len(baseURLs)) {
+			body = `{"error":{"code":503,"message":"service unavailable"}}`
 		}
 		return &http.Response{
 			StatusCode: status,

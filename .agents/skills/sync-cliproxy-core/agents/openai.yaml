@@ -1,4 +1,4 @@
 interface:
-  display_name: "同步 CLIProxy 核心"
-  short_description: "安全同步并验证 ccLoad 的 CLIProxyAPI 协议转换核心"
-  default_prompt: "使用 $sync-cliproxy-core 自动将 ccLoad 的 cliproxy 转换核心同步到上游最新稳定版本并完成验证。"
+  display_name: "同步 CLIProxy 核心与渠道适配器"
+  short_description: "原子同步 CLIProxy 核心及 Antigravity 等渠道转换"
+  default_prompt: "使用 $sync-cliproxy-core 从同一上游 commit 原子同步四协议核心与全部已登记 provider adapters，并完成验证。"

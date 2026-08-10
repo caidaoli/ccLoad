@@ -847,8 +847,8 @@ Check out the awesome admin dashboard 👇
   - `protocol/registry.go`: Contract boundary for request, streaming response, and non-stream response transforms; same-protocol traffic bypasses conversion
   - `protocol/builtin/register.go`: Registers all 12 directed cross-protocol pairs
   - `protocol/builtin/cliproxy_adapter.go`: ccLoad-owned request validation, JSON/SSE normalization, and stream framing
-  - `protocol/cliproxy/`: In-tree snapshot of the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) conversion core; provenance and synchronization rules live in [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md)
-  - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; both resolve to the same repository Skill under `.agents/skills/`
+  - `protocol/cliproxy/`: In-tree snapshot boundary for the pure [CLIProxyAPI](https://github.com/caidaoli/CLIProxyAPI) four-protocol core and allowlisted provider request/response adapters; [`UPSTREAM.md`](internal/protocol/cliproxy/UPSTREAM.md) records provenance, synchronization rules, and which provider adapters are actually present
+  - Upstream refresh workflow: invoke `$sync-cliproxy-core` in Codex or `/sync-cliproxy-core` in Claude Code; one atomic operation pins one commit and synchronizes both the core and every registered provider adapter
   - Requests that cannot be represented in the selected upstream protocol return `400 Bad Request`; they do not trigger channel failover or cooldown
   - Every channel accepts Anthropic, Codex, OpenAI, and Gemini clients; upstream protocol capability belongs to each structured URL
   - Explicit protocol declarations route directly and skip incompatible URLs without request or cooldown; automatic mode starts with the client protocol, then falls back through OpenAI → Anthropic → Codex → Gemini without retrying it, while local mode falls back through Anthropic → Codex → OpenAI → Gemini only when all URLs are undeclared

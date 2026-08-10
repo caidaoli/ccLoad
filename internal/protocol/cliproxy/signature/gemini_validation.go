@@ -72,6 +72,8 @@ import (
 	"fmt"
 	"strings"
 
+	"ccLoad/internal/protocol/cliproxy/util"
+
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -508,8 +510,8 @@ func isASCIIUUIDBytes(decoded []byte) bool {
 }
 
 func geminiContents(inputRawJSON []byte) (gjson.Result, string) {
-	if contents := gjson.GetBytes(inputRawJSON, "contents"); contents.Exists() {
+	if contents := util.GetGJSONBytesNoCopy(inputRawJSON, "contents"); contents.Exists() {
 		return contents, "contents"
 	}
-	return gjson.GetBytes(inputRawJSON, "request.contents"), "request.contents"
+	return util.GetGJSONBytesNoCopy(inputRawJSON, "request.contents"), "request.contents"
 }

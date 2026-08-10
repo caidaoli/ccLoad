@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/json"
@@ -18,8 +19,15 @@ import (
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/protocol"
+	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
+	antigravitygemini "ccLoad/internal/protocol/cliproxy/providers/antigravity/gemini"
+	antigravitychat "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/chat-completions"
+	antigravityresponses "ccLoad/internal/protocol/cliproxy/providers/antigravity/openai/responses"
 	cliproxyutil "ccLoad/internal/protocol/cliproxy/util"
 	"ccLoad/internal/util"
+
+	"github.com/tidwall/gjson"
 )
 
 const (
@@ -67,6 +75,112 @@ func buildAntigravitySensitiveWordMatcher(words []string) *regexp.Regexp {
 	return matcher
 }
 
+func translateAntigravityRequest(clientProtocol protocol.Protocol, modelName string, body []byte, stream bool) ([]byte, error) {
+	var translated []byte
+	switch clientProtocol {
+	case protocol.Anthropic:
+		translated = antigravityclaude.ConvertClaudeRequestToAntigravity(modelName, body, stream)
+	case protocol.Codex:
+		translated = antigravityresponses.ConvertOpenAIResponsesRequestToAntigravity(modelName, body, stream)
+	case protocol.OpenAI:
+		translated = antigravitychat.ConvertOpenAIRequestToAntigravity(modelName, body, stream)
+	case protocol.Gemini:
+		translated = antigravitygemini.ConvertGeminiRequestToAntigravity(modelName, body, stream)
+	default:
+		return nil, &protocol.RequestTranslationError{From: clientProtocol, To: protocol.Gemini, Err: fmt.Errorf("unsupported Antigravity client protocol")}
+	}
+	if !gjson.ValidBytes(translated) {
+		return nil, &protocol.RequestTranslationError{From: clientProtocol, To: protocol.Gemini, Err: fmt.Errorf("antigravity adapter produced invalid JSON")}
+	}
+	return translated, nil
+}
+
+func translateAntigravityResponseNonStream(
+	ctx context.Context,
+	clientProtocol protocol.Protocol,
+	modelName string,
+	originalRequest, translatedRequest, response []byte,
+) ([]byte, error) {
+	state := any(nil)
+	var translated []byte
+	switch clientProtocol {
+	case protocol.Anthropic:
+		translated = antigravityclaude.ConvertAntigravityResponseToClaudeNonStream(ctx, modelName, originalRequest, translatedRequest, response, &state)
+	case protocol.Codex:
+		translated = antigravityresponses.ConvertAntigravityResponseToOpenAIResponsesNonStream(ctx, modelName, originalRequest, translatedRequest, response, &state)
+	case protocol.OpenAI:
+		translated = antigravitychat.ConvertAntigravityResponseToOpenAINonStream(ctx, modelName, originalRequest, translatedRequest, response, &state)
+	case protocol.Gemini:
+		translated = antigravitygemini.ConvertAntigravityResponseToGeminiNonStream(ctx, modelName, originalRequest, translatedRequest, response, &state)
+	default:
+		return nil, fmt.Errorf("unsupported Antigravity client protocol %q", clientProtocol)
+	}
+	if !gjson.ValidBytes(translated) {
+		return nil, fmt.Errorf("antigravity %s response adapter produced invalid JSON", clientProtocol)
+	}
+	return translated, nil
+}
+
+func translateAntigravityResponseStream(
+	ctx context.Context,
+	clientProtocol protocol.Protocol,
+	modelName string,
+	originalRequest, translatedRequest, response []byte,
+	state *any,
+) ([][]byte, error) {
+	var chunks [][]byte
+	switch clientProtocol {
+	case protocol.Anthropic:
+		chunks = antigravityclaude.ConvertAntigravityResponseToClaude(ctx, modelName, originalRequest, translatedRequest, response, state)
+	case protocol.Codex:
+		chunks = antigravityresponses.ConvertAntigravityResponseToOpenAIResponses(ctx, modelName, originalRequest, translatedRequest, response, state)
+	case protocol.OpenAI:
+		chunks = antigravitychat.ConvertAntigravityResponseToOpenAI(ctx, modelName, originalRequest, translatedRequest, response, state)
+	case protocol.Gemini:
+		chunks = antigravitygemini.ConvertAntigravityResponseToGemini(ctx, modelName, originalRequest, translatedRequest, response, state)
+	default:
+		return nil, fmt.Errorf("unsupported Antigravity client protocol %q", clientProtocol)
+	}
+	return frameAntigravityStreamChunks(chunks), nil
+}
+
+func frameAntigravityStreamChunks(chunks [][]byte) [][]byte {
+	framed := make([][]byte, 0, len(chunks))
+	for _, chunk := range chunks {
+		chunk = bytes.TrimSpace(chunk)
+		if len(chunk) == 0 {
+			continue
+		}
+		if bytes.HasPrefix(chunk, []byte("event:")) || bytes.HasPrefix(chunk, []byte("data:")) {
+			event := append([]byte(nil), chunk...)
+			event = append(event, '\n', '\n')
+			framed = append(framed, event)
+			continue
+		}
+		event := make([]byte, 0, len(chunk)+8)
+		event = append(event, "data: "...)
+		event = append(event, chunk...)
+		event = append(event, '\n', '\n')
+		framed = append(framed, event)
+	}
+	return framed
+}
+
+func antigravitySSEData(event []byte) ([]byte, error) {
+	normalized := bytes.ReplaceAll(event, []byte("\r\n"), []byte("\n"))
+	for _, line := range bytes.Split(normalized, []byte("\n")) {
+		trimmed := bytes.TrimSpace(line)
+		if !bytes.HasPrefix(trimmed, []byte("data:")) {
+			continue
+		}
+		data := bytes.TrimSpace(trimmed[len("data:"):])
+		if len(data) > 0 {
+			return data, nil
+		}
+	}
+	return nil, errors.New("stream: Antigravity SSE event is missing data")
+}
+
 func prepareAntigravityRequestBody(
 	cfg *model.Config,
 	modelName string,
@@ -81,9 +195,13 @@ func prepareAntigravityRequestBody(
 	if strings.TrimSpace(cfg.AntigravityProjectID) == "" {
 		return nil, errors.New("request: Antigravity credential is missing project_id")
 	}
-	var request map[string]any
-	if err := json.Unmarshal(body, &request); err != nil {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, fmt.Errorf("decode Antigravity Gemini request: %w", err)
+	}
+	request := payload
+	if nested, ok := payload["request"].(map[string]any); ok {
+		request = nested
 	}
 	delete(request, "model")
 	if instruction, exists := request["system_instruction"]; exists {
@@ -95,6 +213,7 @@ func prepareAntigravityRequestBody(
 	injectAntigravityIdentityPrompt(request)
 	delete(request, "safetySettings")
 	normalizeAntigravityContentsRoles(request)
+	restoreAntigravityAnthropicToolIDs(request, sourceBody)
 	normalizeAntigravitySchemas(request, modelName)
 	if strings.Contains(strings.ToLower(modelName), "claude") {
 		ensureAntigravityValidatedToolMode(request)
@@ -129,6 +248,65 @@ func prepareAntigravityRequestBody(
 		return nil, fmt.Errorf("encode Antigravity request: %w", err)
 	}
 	return obfuscateAntigravitySystemInstruction(raw, matcher), nil
+}
+
+func restoreAntigravityAnthropicToolIDs(request map[string]any, sourceBody []byte) {
+	messages := gjson.GetBytes(sourceBody, "messages")
+	if !messages.IsArray() {
+		return
+	}
+
+	var callIDs, responseIDs []string
+	messages.ForEach(func(_, message gjson.Result) bool {
+		parts := message.Get("content")
+		if !parts.IsArray() {
+			return true
+		}
+		parts.ForEach(func(_, part gjson.Result) bool {
+			switch part.Get("type").String() {
+			case "tool_use":
+				if id := part.Get("id").String(); id != "" {
+					callIDs = append(callIDs, id)
+				}
+			case "tool_result":
+				if id := part.Get("tool_use_id").String(); id != "" {
+					responseIDs = append(responseIDs, id)
+				}
+			}
+			return true
+		})
+		return true
+	})
+
+	var calls, responses []map[string]any
+	contents, _ := request["contents"].([]any)
+	for _, rawContent := range contents {
+		content, _ := rawContent.(map[string]any)
+		parts, _ := content["parts"].([]any)
+		for _, rawPart := range parts {
+			part, _ := rawPart.(map[string]any)
+			if call, ok := part["functionCall"].(map[string]any); ok {
+				calls = append(calls, call)
+			}
+			if response, ok := part["functionResponse"].(map[string]any); ok {
+				responses = append(responses, response)
+			}
+		}
+	}
+
+	restoreAntigravityToolIDs(calls, callIDs)
+	restoreAntigravityToolIDs(responses, responseIDs)
+}
+
+func restoreAntigravityToolIDs(parts []map[string]any, ids []string) {
+	if len(parts) != len(ids) {
+		return
+	}
+	for i, part := range parts {
+		if id, _ := part["id"].(string); id == "" {
+			part["id"] = ids[i]
+		}
+	}
 }
 
 func injectAntigravityIdentityPrompt(request map[string]any) {

@@ -1049,15 +1049,27 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 		}, reqCtx.Duration().Seconds(), err
 	}
 
-	translatedBody, err := s.protocolRegistry.TranslateResponseNonStream(
-		reqCtx.ctx,
-		reqCtx.transformPlan.UpstreamProtocol,
-		reqCtx.transformPlan.ClientProtocol,
-		reqCtx.transformPlan.ResponseModel(),
-		reqCtx.transformPlan.OriginalBody,
-		translatedRequestBody,
-		responseBody,
-	)
+	var translatedBody []byte
+	if reqCtx.antigravityOAuth {
+		translatedBody, err = translateAntigravityResponseNonStream(
+			reqCtx.ctx,
+			reqCtx.transformPlan.ClientProtocol,
+			reqCtx.transformPlan.ResponseModel(),
+			reqCtx.transformPlan.OriginalBody,
+			translatedRequestBody,
+			rawBody,
+		)
+	} else {
+		translatedBody, err = s.protocolRegistry.TranslateResponseNonStream(
+			reqCtx.ctx,
+			reqCtx.transformPlan.UpstreamProtocol,
+			reqCtx.transformPlan.ClientProtocol,
+			reqCtx.transformPlan.ResponseModel(),
+			reqCtx.transformPlan.OriginalBody,
+			translatedRequestBody,
+			responseBody,
+		)
+	}
 	if err != nil {
 		return &fwResult{
 			Status:         resp.StatusCode,
@@ -1146,8 +1158,7 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		func(rawEvent []byte) ([][]byte, error) {
 			translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 			if reqCtx.antigravityOAuth {
-				var err error
-				rawEvent, err = unwrapAntigravitySSEEvent(rawEvent)
+				providerEvent, err := antigravitySSEData(rawEvent)
 				if err != nil {
 					return nil, err
 				}
@@ -1155,6 +1166,22 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 				if err != nil {
 					return nil, err
 				}
+				chunks, translateErr := translateAntigravityResponseStream(
+					reqCtx.ctx,
+					reqCtx.transformPlan.ClientProtocol,
+					reqCtx.transformPlan.ResponseModel(),
+					reqCtx.transformPlan.OriginalBody,
+					translatedRequestBody,
+					providerEvent,
+					&state,
+				)
+				if translateErr != nil {
+					return nil, translateErr
+				}
+				if !translatedComplete && translatedStreamChunksComplete(reqCtx.transformPlan.ClientProtocol, chunks) {
+					translatedComplete = true
+				}
+				return chunks, nil
 			}
 			chunks, err := s.protocolRegistry.TranslateResponseStream(
 				reqCtx.ctx,
@@ -1641,7 +1668,27 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
-	if plan.NeedsTransform && (translatedRequestOverride != nil || s.protocolRegistry != nil) {
+	if cfg.UsesAntigravityOAuth() {
+		var translatedBody []byte
+		if translatedRequestOverride != nil {
+			translatedBody = translatedRequestOverride
+		} else {
+			var err error
+			translatedBody, err = translateAntigravityRequest(
+				plan.ClientProtocol,
+				plan.RequestModel(),
+				plan.TranslatedBody,
+				plan.Streaming,
+			)
+			if err != nil {
+				return nil, 0, fmt.Errorf("translate Antigravity request for channel %d: %w", cfg.ID, err)
+			}
+		}
+		plan.TranslatedBody = translatedBody
+		plan.UpstreamPath = buildGeminiGeneratePath(plan.RequestModel(), plan.Streaming)
+		reqCtx.transformPlan = plan
+		reqCtx.translatedBody = translatedBody
+	} else if plan.NeedsTransform && (translatedRequestOverride != nil || s.protocolRegistry != nil) {
 		translatedBody := plan.TranslatedBody
 		if translatedRequestOverride != nil {
 			translatedBody = translatedRequestOverride
@@ -2022,7 +2069,6 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
-	classifyAntigravityCapacityAsRateLimit bool,
 ) (*proxyResult, cooldown.Action, error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
@@ -2123,11 +2169,13 @@ func (s *Server) forwardAttempt(
 		gjson.GetBytes(reqCtx.body, "service_tier").String() == "priority" {
 		res.ServiceTier = "priority"
 	}
-	modelCapacityRateLimited := err == nil && res != nil && classifyAntigravityCapacityAsRateLimit &&
-		cfg.UsesAntigravityOAuth() && isAntigravityModelCapacityExhausted(res.Status, res.Body)
+	modelCapacityRateLimited := err == nil && res != nil && cfg.UsesAntigravityOAuth() &&
+		isAntigravityModelCapacityExhausted(res.Status, res.Body)
 	if modelCapacityRateLimited {
 		// 保留 UpstreamStatus=503 供诊断和自定义规则使用；网关侧按模型容量限流处理。
 		res.Status = http.StatusTooManyRequests
+		// 签名/请求体降级重试只能截止请求语义错误，不能吞掉后续的模型容量冷却。
+		forceReturnClient = false
 	}
 
 	// 处理网络错误或异常响应（如空响应）
@@ -2854,13 +2902,12 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		var result *proxyResult
 		var nextAction cooldown.Action
-		classifyCapacityAsRateLimit := modelCapacityFailures >= antigravityModelCapacityAttempts-1
 		for protocolIdx, upstreamProtocol := range protocolCandidates {
 			s.activeRequests.SetUpstreamProtocol(reqCtx.activeReqID, string(upstreamProtocol))
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
 				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w,
-				shouldDeferChannelCooldown, classifyCapacityAsRateLimit)
+				shouldDeferChannelCooldown)
 			if attemptErr != nil {
 				return nil, nil, attemptErr
 			}
@@ -2887,13 +2934,25 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		if result != nil {
 			urlLastFailure = result
-			if result.antigravityCapacity429 || isAntigravityModelCapacityExhausted(result.status, result.body) {
+			if result.antigravityCapacity429 {
 				modelCapacityFailures++
 			} else {
 				modelCapacityFailures = 0
 			}
 		}
 		if result != nil && result.antigravityCapacity429 {
+			if shouldDeferChannelCooldown && modelCapacityFailures < antigravityModelCapacityAttempts {
+				result.deferredCooldown = nil
+				timer := time.NewTimer(antigravityBaseURLFallbackDelay)
+				select {
+				case <-ctx.Done():
+					timer.Stop()
+					return buildCtxDoneResult(cfg, ctx.Err()), nil, nil
+				case <-timer.C:
+				}
+				s.activeRequests.Retry(reqCtx.activeReqID)
+				continue
+			}
 			if result.deferredCooldown != nil {
 				nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
 				result.nextAction = nextAction

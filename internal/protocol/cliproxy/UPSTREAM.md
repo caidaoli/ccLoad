@@ -2,39 +2,59 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `2b9a9d23d2226efdea25d9710f217208cb52ff8b` (`fork/v8.61.0`)
-- Synchronized at: `2026-08-05`
+- Last synchronized commit: `957a33eeff89a73972d2d82ee88097934d65789b` (`fork/v8.64.0`)
+- Synchronized at: `2026-08-10`
 
-This directory contains the four-protocol conversion core only. Authentication,
-configuration, routing, caches, plugins, dynamic registries, network refreshers,
-Antigravity, and Interactions are intentionally excluded. ccLoad-specific wire
-adaptation lives in `internal/protocol/builtin`, not in this directory.
+This directory is maintained by one atomic synchronization operation. It currently
+contains the four-protocol conversion core. Allowlisted provider-specific pure
+translators enter `providers/` through that same operation; the provider section
+below records what is actually present. Core and imported provider adapters always
+share the same upstream commit and synchronization date. Authentication,
+configuration, routing, cache services, plugins, dynamic registries, executors,
+and network refreshers are intentionally excluded. ccLoad-specific generic wire
+adaptation lives in `internal/protocol/builtin`.
+
+## Provider adapter snapshot
+
+The canonical synchronization operation audits the semantic boundary in
+`.agents/skills/sync-cliproxy-core/references/provider-adapters.md` and the sole
+machine-readable file/exclusion/wiring/test allowlist in the adjacent
+`provider-adapters.manifest`. Provider adapters are never synchronized in a
+second pass or assigned an independent version.
+
+Antigravity is the first eligible provider adapter:
+
+- Upstream sources: `internal/translator/antigravity/{claude,gemini,openai/chat-completions,openai/responses}`
+- Local destination: `internal/protocol/cliproxy/providers/antigravity`
+- Snapshot status: synchronized at shared commit
+- Excluded: dynamic `init.go` registration, noop/allocation tests, runtime cache/logging services, executors, auth, Interactions, and the two Claude request/response suites coupled to those runtime services
+- Pure provider tests synchronized: 8; ccLoad HTTP wire contracts cover request, non-stream response, and stream response for Claude, Codex, Gemini, and OpenAI clients
 
 ## Synchronized tests
 
-The snapshot includes 44 upstream `_test.go` files from the same commit as the
+The core snapshot includes 53 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
-- `claude/openai/chat-completions`: 2
-- `claude/openai/responses`: 2
-- `codex/claude`: 3
+- `claude/openai/chat-completions`: 3
+- `claude/openai/responses`: 3
+- `codex/claude`: 4
 - `codex/gemini`: 2
 - `codex/openai/chat-completions`: 2
 - `codex/openai/responses`: 2
-- `common`: 4
-- `gemini/claude`: 2
+- `common`: 6
+- `gemini/claude`: 3
 - `gemini/openai/chat-completions`: 4
 - `gemini/openai/responses`: 3
-- `openai/claude`: 2
+- `openai/claude`: 3
 - `openai/gemini`: 2
 - `openai/openai/responses`: 2
-- `signature`: 6
+- `signature`: 8
 - `util`: 4
 
 Tests for excluded packages are not copied. Performance-only benchmarks are
 also excluded: the translator-wide benchmark requires the excluded dynamic
-Registry, Antigravity, and Interactions paths, while the Claude-to-Codex
+Registry and Interactions paths, while the Claude-to-Codex
 benchmark measures allocation details rather than a wire contract. Upstream
 `noop_optimization_test.go` files and allocation-reuse assertions are likewise
 excluded because they test private implementation and memory reuse instead of
@@ -94,6 +114,11 @@ documented adaptations:
   upstream.
 - Gemini signature sanitization keeps upstream signature ownership and parallel
   function-call semantics without importing its runtime debug logger.
+- Antigravity adapters keep only request-local conversion state. Runtime signature
+  caches, dynamic model registries, and logging side effects remain outside the
+  provider packages; OpenAI summary aliases are normalized locally as wire data.
+- Antigravity stream payloads are framed at the app boundary because the upstream
+  executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
 
 ## Updating from CLIProxyAPI
 
@@ -102,19 +127,24 @@ Codex or `/sync-cliproxy-core` in Claude Code. Both entry points resolve to the
 canonical skill under `.agents/skills/sync-cliproxy-core`.
 
 1. Fetch the ccLoad CLIProxyAPI fork and choose one immutable commit or tag.
-2. Diff both production sources and the synchronized test files listed above
-   against the commit above. Source and tests must always come from the same commit.
-3. Copy the changed pure conversion files and matching tests only; do not add a
-   Go module import, `replace`, authentication, configuration, routing, caches,
-   plugins, SDK registries, or network update code.
-4. Keep Antigravity, Interactions, and tests for uncopied packages excluded.
-5. Resolve the diff against the documented local wire contract instead of
-   overwriting it, then update the commit and date above.
-6. Run `go test -tags sonic ./internal/protocol/cliproxy/...`,
+2. Generate one combined diff for the four-protocol core and every provider in
+   the canonical allowlist. All production sources and tests must come from that commit.
+3. Copy changed pure conversion files and matching tests only; do not add a Go
+   module import, `replace`, authentication, configuration, routing, cache services,
+   plugins, SDK registries, executors, or network update code.
+4. Port provider-specific pure request/response semantics into `providers/<provider>`
+   and connect request, non-stream response, and stream response paths. Keep
+   Interactions excluded until ccLoad supports that public wire protocol.
+5. Resolve the combined diff against Registry and provider wire contracts. If any
+   domain cannot be integrated or tested, leave the whole synchronization incomplete.
+6. After core, all providers, production wiring, and tests pass, update the single
+   shared commit and date above once.
+7. Run `go test -tags sonic ./internal/protocol/cliproxy/...`,
    `go test -tags sonic ./internal/protocol`, and the repository verification
    commands from `CLAUDE.md`.
 
-The upstream core tests prove the snapshot was synchronized without losing its
-conversion behavior. The Registry boundary tests remain ccLoad's compatibility
-authority. A future upstream sync is incomplete if either layer fails or any of
-the 12 request, non-stream response, or stream response directions regress.
+The upstream core/provider tests prove the snapshot was synchronized without
+losing conversion behavior. Registry and provider boundary tests remain ccLoad's
+compatibility authority. A future upstream sync is incomplete if either layer
+fails, any of the 12 core request/non-stream/stream directions regresses, or an
+allowlisted provider is omitted.

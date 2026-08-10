@@ -434,13 +434,23 @@ func (s *Server) buildChannelTestRequestPlan(
 		return nil, err
 	}
 
-	translatedBody, err := s.protocolRegistry.TranslateRequest(
-		transformPlan.ClientProtocol,
-		transformPlan.UpstreamProtocol,
-		transformPlan.RequestModel(),
-		transformPlan.TranslatedBody,
-		transformPlan.Streaming,
-	)
+	var translatedBody []byte
+	if cfgForBuild.UsesAntigravityOAuth() {
+		translatedBody, err = translateAntigravityRequest(
+			transformPlan.ClientProtocol,
+			transformPlan.RequestModel(),
+			transformPlan.TranslatedBody,
+			transformPlan.Streaming,
+		)
+	} else {
+		translatedBody, err = s.protocolRegistry.TranslateRequest(
+			transformPlan.ClientProtocol,
+			transformPlan.UpstreamProtocol,
+			transformPlan.RequestModel(),
+			transformPlan.TranslatedBody,
+			transformPlan.Streaming,
+		)
+	}
 	if err != nil {
 		return nil, err
 	}

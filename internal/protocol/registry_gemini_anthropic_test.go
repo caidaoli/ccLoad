@@ -36,21 +36,24 @@ func TestRegistry_TranslateRequest_GeminiToAnthropic(t *testing.T) {
 	if err := json.Unmarshal(got, &req); err != nil {
 		t.Fatalf("unmarshal anthropic request: %v", err)
 	}
-	if len(req.System) != 1 || req.System[0]["text"] != "be careful" {
+	if len(req.System) != 0 {
 		t.Fatalf("unexpected anthropic system: %+v", req.System)
 	}
-	if len(req.Messages) != 3 {
+	if len(req.Messages) != 4 {
 		t.Fatalf("unexpected anthropic messages: %+v", req.Messages)
 	}
-	if req.Messages[0].Role != "user" || req.Messages[0].Content[0]["text"] != "hello" {
+	if req.Messages[0].Role != "user" || req.Messages[0].Content[0]["text"] != "be careful" {
 		t.Fatalf("unexpected user message: %+v", req.Messages[0])
 	}
-	toolUseID, _ := req.Messages[1].Content[0]["id"].(string)
-	if req.Messages[1].Role != "assistant" || req.Messages[1].Content[0]["type"] != "tool_use" || toolUseID == "" || req.Messages[1].Content[0]["name"] != "lookup" {
-		t.Fatalf("unexpected tool use message: %+v", req.Messages[1])
+	if req.Messages[1].Role != "user" || req.Messages[1].Content[0]["text"] != "hello" {
+		t.Fatalf("unexpected user message: %+v", req.Messages[1])
 	}
-	if req.Messages[2].Role != "user" || req.Messages[2].Content[0]["type"] != "tool_result" || req.Messages[2].Content[0]["tool_use_id"] != toolUseID || req.Messages[2].Content[0]["content"] != "done" {
-		t.Fatalf("unexpected tool result message: %+v", req.Messages[2])
+	toolUseID, _ := req.Messages[2].Content[0]["id"].(string)
+	if req.Messages[2].Role != "assistant" || req.Messages[2].Content[0]["type"] != "tool_use" || toolUseID == "" || req.Messages[2].Content[0]["name"] != "lookup" {
+		t.Fatalf("unexpected tool use message: %+v", req.Messages[2])
+	}
+	if req.Messages[3].Role != "user" || req.Messages[3].Content[0]["type"] != "tool_result" || req.Messages[3].Content[0]["tool_use_id"] != toolUseID || req.Messages[3].Content[0]["content"] != "done" {
+		t.Fatalf("unexpected tool result message: %+v", req.Messages[3])
 	}
 	if len(req.Tools) != 1 || req.Tools[0]["name"] != "lookup" || req.Tools[0]["description"] != "lookup docs" {
 		t.Fatalf("unexpected anthropic tools: %+v", req.Tools)

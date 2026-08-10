@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -557,6 +559,77 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	}
 	if !reflect.DeepEqual(persisted.GetModels(), wantPersisted) {
 		t.Fatalf("persisted models = %#v, want %#v", persisted.GetModels(), wantPersisted)
+	}
+}
+
+func TestAdminModels_HandleFetchModels_AntigravityCapacityDoesNotCooldownURLs(t *testing.T) {
+	const capacityBody = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`
+	var calls atomic.Int32
+	newCapacityUpstream := func() *testHTTPServer {
+		return newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls.Add(1)
+			if r.URL.Path != "/v1internal:fetchAvailableModels" {
+				t.Fatalf("request path = %s", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, capacityBody)
+		}))
+	}
+	first := newCapacityUpstream()
+	second := newCapacityUpstream()
+	t.Cleanup(first.Close)
+	t.Cleanup(second.Close)
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.urlSelector = NewURLSelector()
+	server.antigravityService = antigravityauth.NewService(first.Client())
+	server.antigravityCredentials = newAntigravityCredentialManager(server.antigravityService, store, nil, nil)
+
+	credential := &antigravityauth.Credential{
+		Type: antigravityauth.ChannelType, AccessToken: "at-capacity", RefreshToken: "rt-capacity",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "capacity@example.com", ProjectID: "project-capacity",
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := store.CreateConfig(context.Background(), &model.Config{
+		Name: "Antigravity capacity models", AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: payload,
+		URLs: model.ChannelURLs{
+			{URL: first.URL, Protocols: []string{"gemini"}},
+			{URL: second.URL, Protocols: []string{"gemini"}},
+		},
+		ModelEntries: []model.ModelEntry{{Model: "claude-sonnet-4-6"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, fmt.Sprintf("/admin/channels/%d/models/fetch", cfg.ID), nil))
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", cfg.ID)}}
+	server.HandleFetchModels(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200, body=%s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+	if response.Success || !strings.Contains(response.Error, "MODEL_CAPACITY_EXHAUSTED") {
+		t.Fatalf("capacity response was not preserved: %+v", response)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("model fetch calls=%d, want 2", got)
+	}
+	for _, rawURL := range []string{first.URL, second.URL} {
+		if server.urlSelector.IsCooledDown(cfg.ID, rawURL) {
+			t.Fatalf("model capacity exhaustion must not cool URL %s", rawURL)
+		}
 	}
 }
 
