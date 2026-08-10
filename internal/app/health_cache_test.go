@@ -11,7 +11,7 @@ import (
 )
 
 func TestHealthCache_Defaults(t *testing.T) {
-	server, store, cleanup := setupAdminTestServer(t)
+	_, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 
 	var wg sync.WaitGroup
@@ -21,15 +21,10 @@ func TestHealthCache_Defaults(t *testing.T) {
 	h := NewHealthCache(store, model.HealthScoreConfig{Enabled: false}, stopCh, &isShuttingDown, &wg)
 
 	// 未命中默认 100% 成功率（新渠道不惩罚）
-	if got := h.GetSuccessRate(123); got != 1.0 {
-		t.Fatalf("GetSuccessRate=%v, want 1.0", got)
+	got := h.GetHealthStats(123)
+	if got.SuccessRate != 1.0 || got.SampleCount != 0 {
+		t.Fatalf("GetHealthStats=%+v, want default healthy stats", got)
 	}
-	if got := h.GetAllSuccessRates(); len(got) != 0 {
-		t.Fatalf("GetAllSuccessRates len=%d, want 0", len(got))
-	}
-
-	// 仅用于确保未使用变量（server 在此测试无用，但 helper 返回了它）
-	_ = server
 }
 
 func TestHealthCache_UpdateAndLoop(t *testing.T) {

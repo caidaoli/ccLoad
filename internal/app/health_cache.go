@@ -109,24 +109,6 @@ func (h *HealthCache) GetHealthStats(channelID int64) model.ChannelHealthStats {
 	return model.ChannelHealthStats{SuccessRate: 1.0, SampleCount: 0} // 新渠道默认成功率100%
 }
 
-// GetSuccessRate 获取渠道成功率（兼容旧接口）
-func (h *HealthCache) GetSuccessRate(channelID int64) float64 {
-	return h.GetHealthStats(channelID).SuccessRate
-}
-
-// GetAllSuccessRates 获取所有渠道成功率（返回快照副本，兼容旧接口）
-func (h *HealthCache) GetAllSuccessRates() map[int64]float64 {
-	stats := h.healthStats.Load()
-	if stats == nil {
-		return make(map[int64]float64)
-	}
-	result := make(map[int64]float64, len(*stats))
-	for k, v := range *stats {
-		result[k] = v.SuccessRate
-	}
-	return result
-}
-
 // Config 返回健康度配置
 func (h *HealthCache) Config() model.HealthScoreConfig {
 	return h.config

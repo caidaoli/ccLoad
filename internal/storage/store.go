@@ -8,9 +8,6 @@ import (
 	"ccLoad/internal/util"
 )
 
-// ErrSettingNotFound 系统设置未找到错误（重导出自 model 包以保持兼容性）
-var ErrSettingNotFound = model.ErrSettingNotFound
-
 // Store 数据持久化接口
 // [REFACTOR] 2025-12：合并子接口，所有方法平铺
 // 理由：8个子接口无任何地方被独立使用，所有消费者都依赖完整 Store
