@@ -66,6 +66,22 @@ func newCodexCredentialManager(
 }
 
 func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Config, forceRefresh bool) (*codexauth.Credential, error) {
+	return m.credentialForRejectedAccessToken(ctx, cfg, forceRefresh, "")
+}
+
+func (m *codexCredentialManager) credentialAfterUnauthorized(ctx context.Context, cfg *model.Config, rejectedAccessToken string) (*codexauth.Credential, error) {
+	if rejectedAccessToken == "" {
+		return nil, errors.New("codex rejected access token is required")
+	}
+	return m.credentialForRejectedAccessToken(ctx, cfg, true, rejectedAccessToken)
+}
+
+func (m *codexCredentialManager) credentialForRejectedAccessToken(
+	ctx context.Context,
+	cfg *model.Config,
+	forceRefresh bool,
+	rejectedAccessToken string,
+) (*codexauth.Credential, error) {
 	if m == nil || m.service == nil || m.store == nil || cfg == nil || !cfg.UsesCodexOAuth() {
 		return nil, errors.New("codex credential manager is unavailable")
 	}
@@ -84,9 +100,10 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 		return cloneCodexCredential(credential), nil
 	}
 	forcedAccessToken := credential.AccessToken
-	forceRequested := forceRefresh
-
-	resultCh := m.refreshes.DoChan(fmt.Sprintf("channel:%d", cfg.ID), func() (any, error) {
+	if rejectedAccessToken != "" {
+		forcedAccessToken = rejectedAccessToken
+	}
+	resultCh := m.refreshes.DoChan(oauthCredentialRefreshSingleflightKey(cfg.ID, forcedAccessToken, true), func() (any, error) {
 		refreshCtx := context.Background()
 		if m.refreshTracker != nil {
 			trackedCtx, done, beginErr := m.refreshTracker.begin()
@@ -106,20 +123,14 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 		if parseErr != nil {
 			return nil, fmt.Errorf("parse Codex credential for channel %d: %w", currentCfg.ID, parseErr)
 		}
-		refreshNeeded, refreshErr := current.NeedsRefresh(m.now(), codexCredentialRefreshLead)
-		if refreshErr != nil {
-			return nil, refreshErr
-		}
-		forceCurrent := forceRequested && current.AccessToken == forcedAccessToken
-		if !forceCurrent && !refreshNeeded {
+		if current.AccessToken != forcedAccessToken {
 			winner, reconcileErr := applyCodexWinnerModelState(refreshCtx, m.store, currentCfg, "", current)
 			if reconcileErr != nil {
 				return nil, reconcileErr
 			}
 			m.cache(currentCfg.ID, winner)
-			return cloneCodexCredential(winner), nil
+			return oauthCredentialRefreshRedirect{}, nil
 		}
-
 		service := *m.service
 		if m.clientFor != nil {
 			service.Client = m.clientFor(currentCfg)
@@ -157,6 +168,16 @@ func (m *codexCredentialManager) credential(ctx context.Context, cfg *model.Conf
 	}
 	if result.Err != nil {
 		return cloneCodexCredential(credential), result.Err
+	}
+	if _, redirected := result.Val.(oauthCredentialRefreshRedirect); redirected {
+		winner, winnerErr := m.cachedOrParse(cfg)
+		if winnerErr != nil {
+			return nil, winnerErr
+		}
+		if rejectedAccessToken != "" {
+			return cloneCodexCredential(winner), nil
+		}
+		return m.credentialForRejectedAccessToken(ctx, cfg, false, "")
 	}
 	return result.Val.(*codexauth.Credential), nil
 }

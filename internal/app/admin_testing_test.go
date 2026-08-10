@@ -106,6 +106,36 @@ func createXAIOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL st
 	return created
 }
 
+func replaceXAIOAuthCredentialForAdminTest(
+	t testing.TB,
+	srv *Server,
+	cfg *model.Config,
+	accessToken, refreshToken string,
+	expiresAt time.Time,
+) *model.Config {
+	t.Helper()
+	credential := &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: accessToken, RefreshToken: refreshToken,
+		TokenType: "Bearer", Expired: expiresAt.UTC().Format(time.RFC3339),
+		TokenEndpoint: xaiauth.TokenURL, BaseURL: xaiauth.CLIBaseURL,
+	}
+	payload, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("encode replacement xAI credential: %v", err)
+	}
+	updated, err := srv.store.CompareAndSwapOAuthCredential(
+		context.Background(), cfg.ID, model.AuthTypeXAIOAuth, cfg.OAuthCredential, payload,
+	)
+	if err != nil || !updated {
+		t.Fatalf("replace xAI credential: updated=%v err=%v", updated, err)
+	}
+	reloaded, err := srv.store.GetConfig(context.Background(), cfg.ID)
+	if err != nil {
+		t.Fatalf("reload replaced xAI credential: %v", err)
+	}
+	return reloaded
+}
+
 func createAnthropicOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
 	t.Helper()
 	payload, err := (&anthropicauth.Credential{
@@ -2228,6 +2258,131 @@ func TestHandleChannelTest_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
 		gjson.GetBytes(upstreamBody, "prompt_cache_key").String() == "" {
 		t.Fatalf("xAI request was not finalized: %s", upstreamBody)
 	}
+}
+
+func TestHandleChannelTest_XAIOAuthUsesCurrentAccessTokenBeforeRefreshing(t *testing.T) {
+	callTest := func(t *testing.T, srv *Server, channelID int64) APIResponse[map[string]any] {
+		t.Helper()
+		id := fmt.Sprintf("%d", channelID)
+		c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+id+"/test", map[string]any{
+			"model": "grok-4.5", "client_protocol": "codex", "stream": false, "content": "hello",
+		}))
+		c.Params = gin.Params{{Key: "id", Value: id}}
+		srv.HandleChannelTest(c)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+		return mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	}
+
+	t.Run("expired metadata does not refresh a working access token", func(t *testing.T) {
+		var upstreamRequests atomic.Int32
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			upstreamRequests.Add(1)
+			if got := r.Header.Get("Authorization"); got != "Bearer at-current" {
+				t.Errorf("Authorization=%q, want current access token", got)
+			}
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"current token works\"}\n\n")
+			_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_current\",\"status\":\"completed\"}}\n\n")
+		}))
+
+		srv := newInMemoryServer(t)
+		srv.client = upstream.Client()
+		created := createXAIOAuthChannelForAdminTest(t, srv, upstream.URL+"/v1")
+		created = replaceXAIOAuthCredentialForAdminTest(
+			t, srv, created, "at-current", "rt-current", time.Now().Add(-24*time.Hour),
+		)
+		var refreshRequests atomic.Int32
+		srv.xaiCredentials.clientFor = func(*model.Config) *http.Client {
+			return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				refreshRequests.Add(1)
+				return &http.Response{
+					StatusCode: http.StatusInternalServerError, Header: make(http.Header),
+					Body: io.NopCloser(strings.NewReader(`{"error":"unexpected_refresh"}`)), Request: req,
+				}, nil
+			})}
+		}
+
+		response := callTest(t, srv, created.ID)
+		if success, _ := response.Data["success"].(bool); !response.Success || !success {
+			t.Fatalf("channel test failed: %+v", response)
+		}
+		if upstreamRequests.Load() != 1 || refreshRequests.Load() != 0 {
+			t.Fatalf("upstream=%d refresh=%d, want 1/0", upstreamRequests.Load(), refreshRequests.Load())
+		}
+	})
+
+	t.Run("unauthorized access token refreshes once then retries", func(t *testing.T) {
+		var orderMu sync.Mutex
+		order := make([]string, 0, 3)
+		record := func(stage string) {
+			orderMu.Lock()
+			order = append(order, stage)
+			orderMu.Unlock()
+		}
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.Header.Get("Authorization") {
+			case "Bearer at-rejected":
+				record("test-current")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+			case "Bearer at-refreshed":
+				record("test-refreshed")
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"refreshed token works\"}\n\n")
+				_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_refreshed\",\"status\":\"completed\"}}\n\n")
+			default:
+				t.Errorf("unexpected Authorization=%q", r.Header.Get("Authorization"))
+				w.WriteHeader(http.StatusUnauthorized)
+			}
+		}))
+
+		srv := newInMemoryServer(t)
+		srv.client = upstream.Client()
+		created := createXAIOAuthChannelForAdminTest(t, srv, upstream.URL+"/v1")
+		cached, err := srv.xaiCredentials.credential(context.Background(), created, false)
+		if err != nil || cached.AccessToken != "at-xai-admin" {
+			t.Fatalf("prime credential cache=%v err=%v", cached, err)
+		}
+		created = replaceXAIOAuthCredentialForAdminTest(
+			t, srv, created, "at-rejected", "rt-current", time.Now().Add(-24*time.Hour),
+		)
+		var refreshRequests atomic.Int32
+		refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			refreshRequests.Add(1)
+			record("refresh")
+			if req.URL.String() != xaiauth.TokenURL {
+				t.Errorf("refresh URL=%s", req.URL)
+			}
+			if err := req.ParseForm(); err != nil || req.Form.Get("refresh_token") != "rt-current" {
+				t.Errorf("refresh form=%v err=%v", req.Form, err)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}},
+				Body:    io.NopCloser(strings.NewReader(`{"access_token":"at-refreshed","refresh_token":"rt-refreshed","expires_in":3600}`)),
+				Request: req,
+			}, nil
+		})}
+		srv.xaiCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+		response := callTest(t, srv, created.ID)
+		if success, _ := response.Data["success"].(bool); !response.Success || !success {
+			t.Fatalf("channel test failed after refresh: %+v", response)
+		}
+		if refreshRequests.Load() != 1 || !reflect.DeepEqual(order, []string{"test-current", "refresh", "test-refreshed"}) {
+			t.Fatalf("refreshes=%d order=%v", refreshRequests.Load(), order)
+		}
+		persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		credential, err := xaiauth.ParseCredential([]byte(persisted.OAuthCredential))
+		if err != nil || credential.AccessToken != "at-refreshed" || credential.RefreshToken != "rt-refreshed" {
+			t.Fatalf("persisted refreshed credential=%v err=%v", credential, err)
+		}
+	})
 }
 
 func TestHandleChannelTest_CodexOAuthUsageLimitCoolsModel(t *testing.T) {

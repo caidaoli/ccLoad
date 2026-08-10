@@ -51,6 +51,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	persistedCfg := cfg
 	cfg, keySelection, err := s.prepareChannelTestAuth(
 		c.Request.Context(), cfg, apiKeys, testReq.KeyIndex, strings.TrimSpace(testReq.APIKey),
+		oauthCredentialRefreshIfNeeded,
 	)
 	if err != nil {
 		writeChatErrorEvent(c, err.Error())

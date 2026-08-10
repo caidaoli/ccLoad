@@ -727,7 +727,7 @@ func (s *Server) cleanupOAuthCredentialChannel(
 	event oauthCredentialCleanupEvent,
 	finalizeDeletion func() error,
 ) oauthCredentialCleanupEvent {
-	result, testedCfg, err := s.testOAuthCredentialChannel(ctx, cfg, event.Model)
+	result, testedCfg, rejectedAccessToken, err := s.testOAuthCredentialChannel(ctx, cfg, event.Model)
 	if err != nil {
 		event.Status = "failed"
 		event.Error = err.Error()
@@ -753,7 +753,7 @@ func (s *Server) cleanupOAuthCredentialChannel(
 	}
 
 	job.appendEvent(withOAuthCredentialCleanupStage(event, "refreshing"))
-	if _, _, handled, refreshErr := s.prepareOAuthChannelTestAuth(ctx, cfg, true); !handled || refreshErr != nil {
+	if _, _, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(ctx, cfg, rejectedAccessToken); !handled || refreshErr != nil {
 		if refreshErr == nil {
 			refreshErr = errors.New("OAuth credential refresh is unavailable")
 		}
@@ -811,7 +811,7 @@ func (s *Server) cleanupOAuthCredentialChannel(
 	}
 	event.Models = freshCfg.GetModels()
 	job.appendEvent(withOAuthCredentialCleanupStage(event, "retesting"))
-	result, _, err = s.testOAuthCredentialChannel(ctx, freshCfg, event.Model)
+	result, _, _, err = s.testOAuthCredentialChannel(ctx, freshCfg, event.Model)
 	if err != nil {
 		event.Status = "failed"
 		event.Error = err.Error()
@@ -878,14 +878,15 @@ func (s *Server) testOAuthCredentialChannel(
 	ctx context.Context,
 	cfg *model.Config,
 	modelName string,
-) (map[string]any, *model.Config, error) {
-	runtimeCfg, keySelection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, false)
+) (map[string]any, *model.Config, string, error) {
+	runtimeCfg, keySelection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, oauthCredentialRefreshIfNeeded)
 	if !handled {
-		return nil, cfg, errors.New("channel does not use OAuth credentials")
+		return nil, cfg, "", errors.New("channel does not use OAuth credentials")
 	}
 	if err != nil && runtimeCfg == nil {
-		return nil, cfg, err
+		return nil, cfg, "", err
 	}
+	testedAccessToken := oauthCredentialTestAccessToken(cfg, runtimeCfg, keySelection)
 	testedCfg := cfg.Clone()
 	if currentCfg, loadErr := s.store.GetConfig(ctx, cfg.ID); loadErr == nil &&
 		oauthCredentialMatchesTestRuntime(currentCfg, runtimeCfg, keySelection) {
@@ -903,7 +904,7 @@ func (s *Server) testOAuthCredentialChannel(
 		Stream:          false,
 		WaitForCapacity: true,
 	}
-	return s.testChannelAPI(ctx, runtimeCfg, keySelection.requestCredential, req), testedCfg, nil
+	return s.testChannelAPI(ctx, runtimeCfg, keySelection.requestCredential, req), testedCfg, testedAccessToken, nil
 }
 
 func oauthCredentialMatchesTestRuntime(
@@ -919,16 +920,26 @@ func oauthCredentialMatchesTestRuntime(
 	if sonic.Unmarshal([]byte(persisted.OAuthCredential), &payload) != nil || payload.AccessToken == "" {
 		return false
 	}
-	var runtimeAccessToken string
+	runtimeAccessToken := oauthCredentialTestAccessToken(persisted, runtimeCfg, selection)
+	return payload.AccessToken == runtimeAccessToken
+}
+
+func oauthCredentialTestAccessToken(
+	persisted, runtimeCfg *model.Config,
+	selection channelTestKeySelection,
+) string {
+	if persisted == nil || runtimeCfg == nil {
+		return ""
+	}
 	switch {
 	case persisted.UsesCodexOAuth():
-		runtimeAccessToken = runtimeCfg.CodexAccessToken
+		return runtimeCfg.CodexAccessToken
 	case persisted.UsesAntigravityOAuth():
-		runtimeAccessToken = runtimeCfg.AntigravityAccessToken
+		return runtimeCfg.AntigravityAccessToken
 	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth():
-		runtimeAccessToken = selection.requestCredential
+		return selection.requestCredential
 	}
-	return payload.AccessToken == runtimeAccessToken
+	return ""
 }
 
 func oauthCredentialCleanupProtocol(cfg *model.Config) string {
