@@ -16,24 +16,41 @@ var errUpstreamConnectionAgeTransportClosed = errors.New("upstream connection ag
 type upstreamConnectionAgeTransport struct {
 	mu       sync.Mutex
 	template *http.Transport
+	factory  upstreamRoundTripperFactory
 	current  *upstreamHTTPTransportGeneration
 	maxAge   time.Duration
 	closed   bool
 }
 
 type upstreamHTTPTransportGeneration struct {
-	transport *codexUTLSRoundTripper
+	transport upstreamRoundTripper
 	timer     *time.Timer
 	active    int
 	retired   bool
 }
 
+type upstreamRoundTripper interface {
+	http.RoundTripper
+	CloseIdleConnections()
+}
+
+type upstreamRoundTripperFactory func(*http.Transport) upstreamRoundTripper
+
 func newUpstreamConnectionAgeTransport(
 	base *http.Transport,
 	maxAge time.Duration,
 ) *upstreamConnectionAgeTransport {
+	return newUpstreamConnectionAgeTransportWithFactory(base, maxAge, newDefaultUpstreamRoundTripper)
+}
+
+func newUpstreamConnectionAgeTransportWithFactory(
+	base *http.Transport,
+	maxAge time.Duration,
+	factory upstreamRoundTripperFactory,
+) *upstreamConnectionAgeTransport {
 	transport := &upstreamConnectionAgeTransport{
 		template: base.Clone(),
+		factory:  factory,
 		maxAge:   maxAge,
 	}
 	transport.mu.Lock()
@@ -43,11 +60,31 @@ func newUpstreamConnectionAgeTransport(
 }
 
 func newUpstreamHTTPClient(base *http.Transport, maxAge time.Duration) *http.Client {
-	var roundTripper http.RoundTripper = newCodexUTLSRoundTripper(base)
+	return newHTTPClientWithRoundTripperFactory(base, maxAge, newDefaultUpstreamRoundTripper)
+}
+
+func newAntigravityHTTPClient(base *http.Transport, maxAge time.Duration) *http.Client {
+	return newHTTPClientWithRoundTripperFactory(base, maxAge, newAntigravityUpstreamRoundTripper)
+}
+
+func newHTTPClientWithRoundTripperFactory(
+	base *http.Transport,
+	maxAge time.Duration,
+	factory upstreamRoundTripperFactory,
+) *http.Client {
+	var roundTripper http.RoundTripper = factory(base)
 	if maxAge > 0 {
-		roundTripper = newUpstreamConnectionAgeTransport(base, maxAge)
+		roundTripper = newUpstreamConnectionAgeTransportWithFactory(base, maxAge, factory)
 	}
 	return &http.Client{Transport: roundTripper, Timeout: 0}
+}
+
+func newDefaultUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
+	return newCodexUTLSRoundTripper(base)
+}
+
+func newAntigravityUpstreamRoundTripper(base *http.Transport) upstreamRoundTripper {
+	return newStandardHTTP11Transport(base)
 }
 
 func closeUpstreamHTTPClient(client *http.Client) {
@@ -62,7 +99,7 @@ func closeUpstreamHTTPClient(client *http.Client) {
 }
 
 func (t *upstreamConnectionAgeTransport) startGenerationLocked(base *http.Transport) {
-	generation := &upstreamHTTPTransportGeneration{transport: newCodexUTLSRoundTripper(base)}
+	generation := &upstreamHTTPTransportGeneration{transport: t.factory(base)}
 	if t.maxAge > 0 {
 		generation.timer = time.AfterFunc(t.maxAge, func() {
 			t.retire(generation)

@@ -2022,7 +2022,8 @@ func (s *Server) handleCommittedAwareProxyError(
 	}
 	if !res.ResponseCommitted {
 		return s.handleProxyErrorResponse(
-			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, false,
+			ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx,
+			deferChannelCooldown, false, false,
 		)
 	}
 	return s.handleStreamingErrorNoRetry(ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx)
@@ -2073,6 +2074,7 @@ func (s *Server) forwardAttempt(
 	baseURL string, // 显式传入的URL（多URL场景）
 	w http.ResponseWriter,
 	deferChannelCooldown bool, // 多URL场景下，非最后一个URL不应触发渠道级冷却
+	antigravityCapacityRetries int,
 ) (*proxyResult, cooldown.Action, error) {
 	// 记录渠道尝试开始时间（用于日志记录，每次渠道/Key切换时更新）
 	reqCtx.attemptStartTime = time.Now()
@@ -2173,6 +2175,14 @@ func (s *Server) forwardAttempt(
 		gjson.GetBytes(reqCtx.body, "service_tier").String() == "priority" {
 		res.ServiceTier = "priority"
 	}
+	if res != nil && antigravityCapacityRetries > 0 {
+		capacityRetryStrategy := fmt.Sprintf("模型容量重试 %d 次", antigravityCapacityRetries)
+		if res.RetryStrategy == "" {
+			res.RetryStrategy = capacityRetryStrategy
+		} else {
+			res.RetryStrategy += "," + capacityRetryStrategy
+		}
+	}
 	modelCapacityRateLimited := err == nil && res != nil && cfg.UsesAntigravityOAuth() &&
 		isAntigravityModelCapacityExhausted(res.Status, res.Body)
 	if modelCapacityRateLimited {
@@ -2265,7 +2275,8 @@ func (s *Server) forwardAttempt(
 
 	// 处理错误响应
 	result, action := s.handleProxyErrorResponse(
-		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx, deferChannelCooldown, forceReturnClient,
+		ctx, cfg, keyIndex, actualModel, selectedKey, res, duration, reqCtx,
+		deferChannelCooldown, forceReturnClient, modelCapacityRateLimited,
 	)
 	if result != nil {
 		result.antigravityCapacity429 = modelCapacityRateLimited
@@ -2848,6 +2859,13 @@ func (s *Server) attemptKeyAcrossURLs(
 	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
 	urlsCount := len(urls)
 	modelCapacityFailures := 0
+	modelCapacityRetries := 0
+	var deferredCapacityLog *model.LogEntry
+	defer func() {
+		if deferredCapacityLog != nil {
+			s.AddLogAsync(deferredCapacityLog)
+		}
+	}()
 	for urlIdx, urlEntry := range sortedURLs {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return buildCtxDoneResult(cfg, ctxErr), nil, nil
@@ -2911,7 +2929,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
 				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w,
-				shouldDeferChannelCooldown)
+				shouldDeferChannelCooldown, modelCapacityRetries)
 			if attemptErr != nil {
 				return nil, nil, attemptErr
 			}
@@ -2927,6 +2945,15 @@ func (s *Server) attemptKeyAcrossURLs(
 			}
 			if learnCapability {
 				s.protocolCapabilities.set(capabilityKey, protocolUnsupported)
+			}
+		}
+
+		if result != nil {
+			if result.antigravityCapacity429 {
+				deferredCapacityLog = result.deferredLog
+				result.deferredLog = nil
+			} else if result.proxyLogWritten {
+				deferredCapacityLog = nil
 			}
 		}
 
@@ -2946,7 +2973,6 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 		if result != nil && result.antigravityCapacity429 {
 			if shouldDeferChannelCooldown && modelCapacityFailures < antigravityModelCapacityAttempts {
-				result.deferredCooldown = nil
 				timer := time.NewTimer(antigravityBaseURLFallbackDelay)
 				select {
 				case <-ctx.Done():
@@ -2954,6 +2980,8 @@ func (s *Server) attemptKeyAcrossURLs(
 					return buildCtxDoneResult(cfg, ctx.Err()), nil, nil
 				case <-timer.C:
 				}
+				result.deferredCooldown = nil
+				modelCapacityRetries++
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
 			}

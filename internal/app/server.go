@@ -60,8 +60,9 @@ type Server struct {
 	disabledURLSyncMu             sync.Mutex
 	protocolRegistry              *protocol.Registry
 	client                        *http.Client // HTTP客户端（全局默认）
+	antigravityClient             *http.Client // Antigravity 专用标准 HTTP/1.1 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
-	proxyTransports               sync.Map     // proxyURL → *http.Client（渠道级代理缓存）
+	proxyTransports               sync.Map     // upstreamHTTPClientCacheKey → *http.Client（渠道级代理缓存）
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -178,7 +179,7 @@ func NewServer(store storage.Store) *Server {
 
 	// 构建HTTP Transport（使用统一函数，消除DRY违反）
 	transport := buildHTTPTransport(skipTLSVerify)
-	log.Print("[INFO] HTTP/2已启用（头部压缩+多路复用，HTTPS自动协商）")
+	log.Print("[INFO] HTTP/2已启用（HTTPS自动协商）；Antigravity 固定使用 HTTP/1.1")
 	logHostOverrides(getHostOverrides())
 
 	baseCtx, baseCancel := context.WithCancel(context.Background())
@@ -202,9 +203,10 @@ func NewServer(store storage.Store) *Server {
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
-		client:        newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		xaiSSOClient:  newXAISSOHTTPClient(transport),
-		skipTLSVerify: skipTLSVerify,
+		client:            newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		antigravityClient: newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		xaiSSOClient:      newXAISSOHTTPClient(transport),
+		skipTLSVerify:     skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -260,7 +262,7 @@ func NewServer(store storage.Store) *Server {
 		s.codexCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
 	})
-	s.antigravityService = antigravityauth.NewService(s.client)
+	s.antigravityService = antigravityauth.NewService(s.antigravityClient)
 	s.antigravityPromptMatcher = loadAntigravityPromptMatcher(configService)
 	s.antigravityCredentials = newAntigravityCredentialManager(s.antigravityService, store, s.getClientForChannel, func(int64) {
 		s.InvalidateChannelListCache()
@@ -831,26 +833,42 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 }
 
 // getClientForChannel 返回渠道对应的 HTTP 客户端。
-// 无代理或空串 → 全局 client；相同 proxyURL 共享 Transport 和连接池。
+// 无代理或空串 → 对应的全局 client；相同 proxyURL 和传输配置共享 Transport 和连接池。
 //
-// 缓存按 proxyURL 永久保留：渠道改 proxyURL 后旧 client 不再被引用，
+// 缓存按 proxyURL 和传输配置永久保留：渠道改 proxyURL 后旧 client 不再被引用，
 // 其空闲连接随 IdleConnTimeout 自然回收，进程退出时由 Shutdown 统一关闭。
 // 这是有界泄漏（proxyURL 种类有限），故意不引入 LRU/引用计数（YAGNI）。
+type upstreamHTTPClientCacheKey struct {
+	proxyURL              string
+	antigravityHTTP11Only bool
+}
+
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
-	if cfg.ProxyURL == "" {
-		return s.client
+	defaultClient := s.client
+	clientFactory := newUpstreamHTTPClient
+	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
+	if antigravityHTTP11Only {
+		defaultClient = s.antigravityClient
+		clientFactory = newAntigravityHTTPClient
 	}
-	if v, ok := s.proxyTransports.Load(cfg.ProxyURL); ok {
+	if cfg.ProxyURL == "" {
+		return defaultClient
+	}
+	cacheKey := upstreamHTTPClientCacheKey{
+		proxyURL:              cfg.ProxyURL,
+		antigravityHTTP11Only: antigravityHTTP11Only,
+	}
+	if v, ok := s.proxyTransports.Load(cacheKey); ok {
 		return v.(*http.Client)
 	}
 
 	t, err := buildChannelProxyTransport(cfg.ProxyURL, s.skipTLSVerify)
 	if err != nil {
 		log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退全局: %v", cfg.ID, cfg.ProxyURL, err)
-		return s.client
+		return defaultClient
 	}
-	c := newUpstreamHTTPClient(t, s.upstreamConnectionMaxAge)
-	if actual, loaded := s.proxyTransports.LoadOrStore(cfg.ProxyURL, c); loaded {
+	c := clientFactory(t, s.upstreamConnectionMaxAge)
+	if actual, loaded := s.proxyTransports.LoadOrStore(cacheKey, c); loaded {
 		closeUpstreamHTTPClient(c)
 		return actual.(*http.Client)
 	}
@@ -1457,6 +1475,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 	// 停止连接池老化计时器并关闭全局及渠道代理 Transport 的空闲连接。
 	closeUpstreamHTTPClient(s.client)
+	closeUpstreamHTTPClient(s.antigravityClient)
 	closeUpstreamHTTPClient(s.xaiSSOClient)
 	s.proxyTransports.Range(func(_, v any) bool {
 		closeUpstreamHTTPClient(v.(*http.Client))

@@ -166,7 +166,20 @@ func (s *Server) logProxyResult(
 	res *fwResult,
 	errMsg string,
 ) {
-	s.AddLogAsync(buildLogEntry(logEntryParams{
+	s.AddLogAsync(buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, statusCode, duration, res, errMsg))
+}
+
+func buildProxyLogEntry(
+	reqCtx *proxyRequestContext,
+	cfg *model.Config,
+	actualModel string,
+	selectedKey string,
+	statusCode int,
+	duration float64,
+	res *fwResult,
+	errMsg string,
+) *model.LogEntry {
+	return buildLogEntry(logEntryParams{
 		RequestModel:     reqCtx.originalModel,
 		ActualModel:      actualModel,
 		RequestPath:      reqCtx.requestPath,
@@ -186,7 +199,7 @@ func (s *Server) logProxyResult(
 		DebugData:        reqCtx.debugData,
 		CostMultiplier:   cfg.CostMultiplier,
 		ThinkingEffort:   reqCtx.thinkingEffort,
-	}))
+	})
 }
 
 func (s *Server) updateTokenStatsForProxy(
@@ -239,6 +252,7 @@ func (s *Server) handleNetworkError(
 		duration:         duration,
 		succeeded:        false,
 		isClientCanceled: errors.Is(err, context.Canceled),
+		proxyLogWritten:  true,
 	}
 
 	// [FIX] 2025-12: 保留 499 场景下已消耗的 token 统计
@@ -505,6 +519,7 @@ func (s *Server) handleProxySuccess(
 		firstByteTime:    res.FirstByteTime,
 		succeeded:        true,
 		nextAction:       cooldown.ActionReturnClient,
+		proxyLogWritten:  true,
 		responsesTurn:    res.ResponsesTurnResult,
 		hasResponsesTurn: res.HasResponsesTurnResult,
 	}, cooldown.ActionReturnClient
@@ -535,11 +550,12 @@ func (s *Server) handleStreamingErrorNoRetry(
 
 	// 返回"成功"：数据已发送给客户端，不触发重试
 	return &proxyResult{
-		status:     res.Status,
-		channelID:  &cfg.ID,
-		duration:   duration,
-		succeeded:  true, // 关键：标记为成功，避免触发重试逻辑
-		nextAction: cooldown.ActionReturnClient,
+		status:          res.Status,
+		channelID:       &cfg.ID,
+		duration:        duration,
+		succeeded:       true, // 关键：标记为成功，避免触发重试逻辑
+		nextAction:      cooldown.ActionReturnClient,
+		proxyLogWritten: true,
 	}, cooldown.ActionReturnClient
 }
 
@@ -571,6 +587,7 @@ func (s *Server) handleUncommittedWebsocketTransportFailure(
 		duration:               duration,
 		succeeded:              false,
 		nextAction:             cooldown.ActionRetryChannel,
+		proxyLogWritten:        true,
 		websocketTargetCooling: true,
 	}, cooldown.ActionRetryChannel
 }
@@ -589,6 +606,7 @@ func (s *Server) handleProxyErrorResponse(
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
 	forceReturnClient bool,
+	deferResultLog bool,
 ) (*proxyResult, cooldown.Action) {
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
@@ -596,8 +614,12 @@ func (s *Server) handleProxyErrorResponse(
 		errMsg = "upstream returned 499 (not client cancel)"
 	}
 
-	// Duration 使用「当前渠道开始到现在」的累计耗时（覆盖同渠道多URL尝试，不跨渠道）
-	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, time.Since(reqCtx.channelStartTime).Seconds(), res, errMsg)
+	// Duration 使用「当前渠道开始到现在」的累计耗时（覆盖同渠道多URL尝试，不跨渠道）。
+	// Antigravity 容量错误要等 URL 重试器决定最终结果后再落日志；否则一次逻辑请求会产生多条 429。
+	logEntry := buildProxyLogEntry(
+		reqCtx, cfg, actualModel, selectedKey, res.Status,
+		time.Since(reqCtx.channelStartTime).Seconds(), res, errMsg,
+	)
 
 	// [FIX] 2026-01: 499（客户端取消）不计入成功/失败统计，与 logs 表聚合逻辑保持一致
 	if res.Status != 499 {
@@ -612,6 +634,12 @@ func (s *Server) handleProxyErrorResponse(
 		channelID: &cfg.ID,
 		duration:  duration,
 		succeeded: false,
+	}
+	if deferResultLog {
+		failure.deferredLog = logEntry
+	} else {
+		s.AddLogAsync(logEntry)
+		failure.proxyLogWritten = true
 	}
 
 	if forceReturnClient {

@@ -1502,6 +1502,7 @@ func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
 					}
 					return dispatchTestHTTPRequest(req)
 				})}
+				env.server.antigravityClient = env.server.client
 			}
 
 			response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
@@ -1556,6 +1557,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 			Request:    req,
 		}, nil
 	})}
+	env.server.antigravityClient = env.server.client
 
 	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
@@ -1569,6 +1571,111 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 	mu.Unlock()
 	if !slices.Equal(got, want) {
 		t.Fatalf("Antigravity base URL order=%v, want %v", got, want)
+	}
+}
+
+func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
+	var calls atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-capacity-retry", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity-retry"),
+	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"retry ok"}]},"finishReason":"STOP"}]}}`
+		if calls.Add(1) == 1 {
+			status = http.StatusServiceUnavailable
+			body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	env.server.antigravityClient = env.server.client
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "retry ok" {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("calls=%d, want 2", got)
+	}
+
+	entry := waitForProxyLog(t, env, "claude-sonnet-4-6")
+	if entry.StatusCode != http.StatusOK {
+		t.Fatalf("log status=%d, want 200", entry.StatusCode)
+	}
+	if entry.Message != "ok [模型容量重试 1 次]" {
+		t.Fatalf("log message=%q, want capacity retry count", entry.Message)
+	}
+	logs, err := env.store.ListLogs(
+		context.Background(), time.Now().Add(-time.Minute), 20, 0,
+		&model.LogFilter{LogSource: model.LogSourceProxy},
+	)
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("proxy logs=%d, want only final success log: %+v", len(logs), logs)
+	}
+}
+
+func TestProxy_AntigravityOAuthCapacityRetryBlockedBeforeNextRequestPreservesLog(t *testing.T) {
+	var calls atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-capacity-rpm", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity-rpm"),
+	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		body := `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	env.server.antigravityClient = env.server.client
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs=(%d, %v)", len(configs), err)
+	}
+	configs[0].RPMLimit = 1
+	if _, err := env.store.UpdateConfig(context.Background(), configs[0].ID, configs[0]); err != nil {
+		t.Fatalf("UpdateConfig: %v", err)
+	}
+	env.server.InvalidateChannelListCache()
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code == http.StatusOK {
+		t.Fatalf("response unexpectedly succeeded: %s", response.Body.String())
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d, want second attempt blocked by RPM limit", got)
+	}
+
+	entry := waitForProxyLog(t, env, "claude-sonnet-4-6")
+	if entry.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("log status=%d, want preserved 429", entry.StatusCode)
+	}
+	logs, err := env.store.ListLogs(
+		context.Background(), time.Now().Add(-time.Minute), 20, 0,
+		&model.LogFilter{LogSource: model.LogSourceProxy},
+	)
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("proxy logs=%d, want one preserved capacity log: %+v", len(logs), logs)
 	}
 }
 
@@ -1593,6 +1700,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 			Request:    req,
 		}, nil
 	})}
+	env.server.antigravityClient = env.server.client
 
 	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-opus-4-6-thinking:generateContent", map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
@@ -1625,6 +1733,21 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	}
 	if until := cooldowns[configs[0].ID]["claude-opus-4-6-thinking"]; !until.After(time.Now()) {
 		t.Fatalf("capacity exhaustion did not cool model: %v", cooldowns)
+	}
+
+	entry := waitForProxyLog(t, env, "claude-opus-4-6-thinking")
+	if entry.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("log status=%d, want 429", entry.StatusCode)
+	}
+	logs, err := env.store.ListLogs(
+		context.Background(), time.Now().Add(-time.Minute), 20, 0,
+		&model.LogFilter{LogSource: model.LogSourceProxy},
+	)
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("proxy logs=%d, want only final 429 log: %+v", len(logs), logs)
 	}
 }
 
@@ -1699,6 +1822,7 @@ func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing
 			Request:    req,
 		}, nil
 	})}
+	env.server.antigravityClient = env.server.client
 
 	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-opus-4-6-thinking:generateContent", map[string]any{
 		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
