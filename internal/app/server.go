@@ -65,6 +65,8 @@ type Server struct {
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
+	restartMu                     sync.RWMutex
+	restartFunc                   func()
 	responsesExecutionSessions    *responsesExecutionSessionStore
 	responsesWebsocketConnections *responsesWebsocketConnectionLimiter
 	codexOAuth                    *codexOAuthManager
