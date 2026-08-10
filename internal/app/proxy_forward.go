@@ -144,6 +144,19 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
+	parsedUpstreamURL, err := url.Parse(upstreamURL)
+	if err != nil {
+		return nil, err
+	}
+	officialAnthropicAPIKey := isOfficialAnthropicAPIKeyMessagesRequest(
+		cfg, upstreamProtocol, requestPath, parsedUpstreamURL,
+	)
+	if officialAnthropicAPIKey {
+		body, err = finalizeAnthropicCCH(body)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
 	codexSessionID := ""
@@ -199,6 +212,8 @@ func (s *Server) buildProxyRequest(
 		injectAntigravityOAuthHeaders(req, cfg)
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		injectAnthropicOAuthHeaders(req, cfg, apiKey, body)
+	} else if officialAnthropicAPIKey {
+		injectAnthropicAPIKeyHeaders(req, apiKey, body)
 	}
 
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
@@ -230,9 +245,17 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	body = applyBodyRules(headers.Get("Content-Type"), body, cfg.BodyRules())
 	body = prepareCodexResponsesBodyForUpstream(cfg, upstreamProtocol, requestPath, body)
 	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
-	if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) && !anthropicAlreadyFinalized {
+	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
-		body, err = finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
+		if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
+			if anthropicAlreadyFinalized {
+				body, err = normalizeAnthropicMessagesBody(body, true)
+			} else {
+				body, err = finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
+			}
+		} else {
+			body, err = normalizeAnthropicMessagesBody(body, false)
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -1613,6 +1636,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.translatedBody = plan.TranslatedBody
 	reqCtx.originalModel = plan.ResponseModel()
 	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
+	reqCtx.anthropicOAuthBodyFinalized = translatedRequestOverride != nil &&
+		isAnthropicOAuthMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
@@ -2084,7 +2109,9 @@ func (s *Server) forwardAttempt(
 			res.RetryStrategy = strings.Join(retryStrategies, ",")
 			break
 		}
-		forceReturnClient = true
+		if upstreamProtocol != protocol.Anthropic {
+			forceReturnClient = true
+		}
 		plan = retryPlan
 		if err != nil || res == nil {
 			break
@@ -2278,6 +2305,9 @@ func retryBodyForRejectedRequest(
 	plan protocol.TransformPlan,
 	res *fwResult,
 ) ([]byte, string, bool) {
+	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, plan, res); ok {
+		return retryBody, strategy, true
+	}
 	if cfg != nil && cfg.UsesAntigravityOAuth() && res != nil && !res.ResponseCommitted {
 		if retryBody, strategy, ok := antigravitySignatureRetryBody(plan.TranslatedBody, res.Body, res.Status); ok {
 			return retryBody, strategy, true

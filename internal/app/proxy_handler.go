@@ -299,10 +299,6 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		all = sanitizeCodexAlphaSearchBody(all)
 	}
 
-	// 清理 Anthropic 请求中注入的 billing header 元数据
-	if clientProtocol == protocol.Anthropic {
-		all = stripAnthropicBillingHeaders(all)
-	}
 	thinkingEffort := extractThinkingEffortFromJSON(all)
 
 	tokenHashStr := ""

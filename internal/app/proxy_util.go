@@ -347,8 +347,15 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol stri
 	case util.ProtocolGemini:
 		// Gemini API: 仅使用 x-goog-api-key
 		req.Header.Set("x-goog-api-key", apiKey)
+	case util.ProtocolAnthropic:
+		req.Header.Set("x-api-key", apiKey)
+		if isOfficialAnthropicURL(req.URL) {
+			req.Header.Del("Authorization")
+		} else {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	default:
-		// OpenAI/Claude/Anthropic/Codex API: 同时设置两个头
+		// OpenAI/Codex API: 同时设置两个头
 		req.Header.Set("x-api-key", apiKey)
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
@@ -625,6 +632,12 @@ func (s *Server) prepareRequestBody(cfg *model.Config, reqCtx *proxyRequestConte
 	actualModel = s.resolveFinalUpstreamModel(cfg, reqCtx.originalModel, string(upstreamProtocol))
 
 	bodyToSend = reqCtx.body
+	// billing/CCH 块是真 Claude Code 请求的身份与签名载体。只有跨协议
+	// 转换时才能删除；Anthropic -> Anthropic 必须保留，供 OAuth finalizer
+	// 识别并保留原生 Claude Code prompt。
+	if reqCtx.clientProtocol == protocol.Anthropic && upstreamProtocol != protocol.Anthropic {
+		bodyToSend = stripAnthropicBillingHeaders(bodyToSend)
+	}
 	bodyToSend = replaceJSONRequestModel(bodyToSend, reqCtx.originalModel, actualModel)
 
 	return actualModel, bodyToSend
