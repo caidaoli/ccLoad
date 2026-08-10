@@ -340,8 +340,7 @@ func TestProxy_AnthropicToXAIOAuthKeepsClaudeSessionCacheWireContract(t *testing
 			t.Fatalf("request %d cache/header identity mismatch: body=%q header=%q", i, got, request.executionID)
 		}
 		tools := gjson.GetBytes(request.body, "tools").Array()
-		if len(tools) != 2 || tools[0].Get("type").String() != "web_search" ||
-			tools[1].Get("type").String() != "function" || tools[1].Get("name").String() != "lookup" {
+		if len(tools) != 1 || tools[0].Get("type").String() != "function" || tools[0].Get("name").String() != "lookup" {
 			t.Fatalf("request %d CLI chat-proxy tools=%s", i, gjson.GetBytes(request.body, "tools").Raw)
 		}
 		if gjson.GetBytes(request.body, "tool_choice").String() == "none" {
