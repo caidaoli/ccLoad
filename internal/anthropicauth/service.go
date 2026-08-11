@@ -10,11 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
+	"unicode/utf16"
 )
 
 const (
@@ -57,28 +60,29 @@ type Service struct {
 	Now              func() time.Time
 }
 
-type tokenEndpointError struct {
+type upstreamResponseError struct {
+	operation    string
 	statusCode   int
 	responseBody string
 }
 
-func (e *tokenEndpointError) Error() string {
+func (e *upstreamResponseError) Error() string {
 	if e == nil {
-		return "anthropic token endpoint request failed"
+		return "anthropic upstream request failed"
 	}
-	return fmt.Sprintf("anthropic token endpoint returned HTTP %d", e.statusCode)
+	return fmt.Sprintf("anthropic %s returned HTTP %d", e.operation, e.statusCode)
 }
 
 // UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
-func (e *tokenEndpointError) UpstreamResponseBody() string {
+func (e *upstreamResponseError) UpstreamResponseBody() string {
 	if e == nil {
 		return ""
 	}
 	return e.responseBody
 }
 
-// StatusCode exposes the token endpoint status without exposing the private error type.
-func (e *tokenEndpointError) StatusCode() int {
+// StatusCode exposes the upstream status without exposing the private error type.
+func (e *upstreamResponseError) StatusCode() int {
 	if e == nil {
 		return 0
 	}
@@ -196,7 +200,7 @@ func (s *Service) CookieAuth(ctx context.Context, sessionKey string) (*Credentia
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	orgUUID, err := s.cookieOrganizationUUID(requestCtx, &client, sessionKey)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
 	state, err := GenerateState()
 	if err != nil {
@@ -208,12 +212,11 @@ func (s *Service) CookieAuth(ctx context.Context, sessionKey string) (*Credentia
 	}
 	code, err := s.cookieAuthorizationCode(requestCtx, &client, sessionKey, orgUUID, state, pkce.Challenge)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
-	sessionKey = ""
 	credential, err := s.ExchangeCode(requestCtx, code, state, pkce)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
 	if credential.OrgUUID == "" {
 		credential.OrgUUID = orgUUID
@@ -256,7 +259,7 @@ func (s *Service) cookieOrganizationUUID(ctx context.Context, client *http.Clien
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("anthropic organization endpoint returned HTTP %d", response.StatusCode)
+		return "", newUpstreamResponseError(response, "organization endpoint")
 	}
 	var organizations []struct {
 		UUID      string  `json:"uuid"`
@@ -313,7 +316,7 @@ func (s *Service) cookieAuthorizationCode(
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("anthropic Cookie authorization endpoint returned HTTP %d", response.StatusCode)
+		return "", newUpstreamResponseError(response, "Cookie authorization endpoint")
 	}
 	var result struct {
 		RedirectURI string `json:"redirect_uri"`
@@ -362,6 +365,223 @@ func decodeLimitedJSON(reader io.Reader, target any) error {
 	return nil
 }
 
+type upstreamResponseBodyError interface {
+	error
+	UpstreamResponseBody() string
+}
+
+func newUpstreamResponseError(response *http.Response, operation string) error {
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxTokenResponseSize))
+	if err != nil {
+		return fmt.Errorf("read Anthropic %s response: %w", operation, err)
+	}
+	return &upstreamResponseError{
+		operation: operation, statusCode: response.StatusCode, responseBody: string(body),
+	}
+}
+
+func annotateCookieAuthError(err error, sessionKey string) error {
+	var upstreamErr upstreamResponseBodyError
+	if !errors.As(err, &upstreamErr) {
+		return err
+	}
+	body := strings.TrimSpace(upstreamErr.UpstreamResponseBody())
+	if body == "" {
+		return err
+	}
+	body = sanitizeCookieAuthUpstreamBody(body, sessionKey)
+	return fmt.Errorf("%w: %s", err, body)
+}
+
+func sanitizeCookieAuthUpstreamBody(body, sessionKey string) string {
+	candidates := make([]string, 0)
+	decoder := json.NewDecoder(strings.NewReader(body))
+	sawJSONToken := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if sawJSONToken || strings.Contains(body, `\u`) || strings.Contains(body, `\/`) {
+				return "[REDACTED]"
+			}
+			if containsCookieAuthSecret(body, sessionKey, 4) {
+				return "[REDACTED]"
+			}
+			return body
+		}
+		sawJSONToken = true
+		if value, ok := token.(string); ok {
+			candidates = append(candidates, value)
+		}
+	}
+	for _, candidate := range candidates {
+		if containsCookieAuthSecret(candidate, sessionKey, 4) {
+			return "[REDACTED]"
+		}
+	}
+	return body
+}
+
+func containsCookieAuthSecret(value, sessionKey string, decodeDepth int) bool {
+	if sessionKey == "" {
+		return false
+	}
+	type candidate struct {
+		value string
+		depth int
+	}
+	queue := []candidate{{value: value}}
+	seen := map[string]struct{}{value: {}}
+	for len(queue) > 0 {
+		current := queue[0]
+		queue = queue[1:]
+		if strings.Contains(current.value, sessionKey) {
+			return true
+		}
+		if current.depth >= decodeDepth {
+			continue
+		}
+		decodedValues := []string{html.UnescapeString(current.value)}
+		if strings.Contains(current.value, "%") {
+			decodedValues = append(decodedValues,
+				decodePercentEscapes(current.value, false),
+				decodePercentEscapes(current.value, true),
+			)
+		}
+		if strings.Contains(current.value, `\u`) || strings.Contains(current.value, `\/`) {
+			decodedValues = append(decodedValues, decodeJSONEscapes(current.value))
+		}
+		for _, decoded := range decodedValues {
+			if decoded == current.value {
+				continue
+			}
+			if _, exists := seen[decoded]; exists {
+				continue
+			}
+			seen[decoded] = struct{}{}
+			queue = append(queue, candidate{value: decoded, depth: current.depth + 1})
+		}
+	}
+	return false
+}
+
+func decodeJSONEscapes(value string) string {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); {
+		if value[index] != '\\' {
+			decoded.WriteByte(value[index])
+			index++
+			continue
+		}
+		if index+1 >= len(value) {
+			decoded.WriteByte(value[index])
+			break
+		}
+		switch value[index+1] {
+		case '"', '\\', '/':
+			decoded.WriteByte(value[index+1])
+			index += 2
+		case 'b':
+			decoded.WriteByte('\b')
+			index += 2
+		case 'f':
+			decoded.WriteByte('\f')
+			index += 2
+		case 'n':
+			decoded.WriteByte('\n')
+			index += 2
+		case 'r':
+			decoded.WriteByte('\r')
+			index += 2
+		case 't':
+			decoded.WriteByte('\t')
+			index += 2
+		case 'u':
+			first, next, err := decodeJSONUnicodeEscape(value, index+2)
+			if err != nil {
+				decoded.WriteString(value[index : index+2])
+				index += 2
+				continue
+			}
+			if first >= 0xd800 && first <= 0xdbff {
+				if next+6 > len(value) || value[next] != '\\' || value[next+1] != 'u' {
+					decoded.WriteString(value[index:next])
+					index = next
+					continue
+				}
+				second, afterSecond, secondErr := decodeJSONUnicodeEscape(value, next+2)
+				if secondErr != nil || second < 0xdc00 || second > 0xdfff {
+					decoded.WriteString(value[index:next])
+					index = next
+					continue
+				}
+				decoded.WriteRune(utf16.DecodeRune(first, second))
+				index = afterSecond
+			} else if first >= 0xdc00 && first <= 0xdfff {
+				decoded.WriteString(value[index:next])
+				index = next
+			} else {
+				decoded.WriteRune(first)
+				index = next
+			}
+		default:
+			decoded.WriteString(value[index : index+2])
+			index += 2
+		}
+	}
+	return decoded.String()
+}
+
+func decodePercentEscapes(value string, plusAsSpace bool) string {
+	var decoded strings.Builder
+	decoded.Grow(len(value))
+	for index := 0; index < len(value); {
+		if value[index] == '%' && index+2 < len(value) {
+			high, highOK := hexNibble(value[index+1])
+			low, lowOK := hexNibble(value[index+2])
+			if highOK && lowOK {
+				decoded.WriteByte(high<<4 | low)
+				index += 3
+				continue
+			}
+		}
+		if plusAsSpace && value[index] == '+' {
+			decoded.WriteByte(' ')
+		} else {
+			decoded.WriteByte(value[index])
+		}
+		index++
+	}
+	return decoded.String()
+}
+
+func hexNibble(value byte) (byte, bool) {
+	switch {
+	case value >= '0' && value <= '9':
+		return value - '0', true
+	case value >= 'a' && value <= 'f':
+		return value - 'a' + 10, true
+	case value >= 'A' && value <= 'F':
+		return value - 'A' + 10, true
+	default:
+		return 0, false
+	}
+}
+
+func decodeJSONUnicodeEscape(value string, start int) (rune, int, error) {
+	if start+4 > len(value) {
+		return 0, start, errors.New("short JSON Unicode escape")
+	}
+	parsed, err := strconv.ParseUint(value[start:start+4], 16, 16)
+	if err != nil {
+		return 0, start, errors.New("invalid JSON Unicode escape")
+	}
+	return rune(parsed), start + 4, nil
+}
+
 func (s *Service) requestToken(ctx context.Context, payload map[string]string) (*Credential, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -392,7 +612,8 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 		return nil, fmt.Errorf("read Anthropic token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, &tokenEndpointError{
+		return nil, &upstreamResponseError{
+			operation:    "token endpoint",
 			statusCode:   response.StatusCode,
 			responseBody: string(responseBody),
 		}

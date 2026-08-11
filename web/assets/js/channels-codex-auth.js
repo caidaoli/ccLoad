@@ -635,7 +635,8 @@ async function submitAnthropicCookieAuth(
     created: 0,
     updated: 0,
     failed: 0,
-    failedLines: []
+    failedLines: [],
+    failedDetails: []
   };
   try {
     for (let index = 0; index < entries.length; index++) {
@@ -660,6 +661,11 @@ async function submitAnthropicCookieAuth(
         if (signal?.aborted || error?.name === 'AbortError') throw error;
         summary.failed++;
         summary.failedLines.push(entry.line);
+        const errorMessage = String(error?.message || '').trim();
+        summary.failedDetails.push({
+          line: entry.line,
+          error: errorMessage || window.t('channels.anthropic.cookieFailed')
+        });
       } finally {
         body = '';
         entry.sessionKey = '';
@@ -1915,46 +1921,45 @@ function setupOAuthActions() {
           );
           if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
           const successful = result.created + result.updated;
+          let resultMessage = '';
           if (result.failed > 0) {
-            const message = window.t('channels.anthropic.cookiePartial', {
+            const details = result.failedDetails
+              .map(detail => window.t('channels.anthropic.cookieFailureDetail', detail))
+              .join('\n');
+            resultMessage = window.t('channels.anthropic.cookiePartial', {
               ...result,
-              lines: result.failedLines.join(', ')
+              details
             });
             anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
             anthropicSessionKey?.focus?.();
-            setCodexAuthStatus(message, 'error');
-            setCodexOAuthDialogStatus(message, 'error');
-            if (window.showError) window.showError(message);
+            setCodexOAuthDialogStatus(resultMessage, 'error');
           } else {
-            const message = window.t('channels.anthropic.cookieComplete', result);
-            setCodexAuthStatus(message, 'success');
-            setCodexOAuthDialogStatus(message, 'success');
-            if (window.showSuccess) window.showSuccess(message);
+            resultMessage = window.t('channels.anthropic.cookieComplete', result);
+            setCodexOAuthDialogStatus(resultMessage, 'success');
           }
           if (successful > 0) {
             try {
-              await reloadChannelsList();
+              await reloadChannelsList({ throwOnError: true });
             } catch {
               if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
-              if (window.showError) window.showError(window.t('channels.anthropic.cookieReloadFailed'));
+              setCodexOAuthDialogStatus(window.t('channels.anthropic.cookieReloadFailedWithResult', {
+                result: resultMessage
+              }), 'error');
             }
           }
-          if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
-          if (result.failed === 0) closeOAuthLoginDialogElement();
           return result;
         } catch (error) {
           if (flow.cancelling || activeAnthropicCookieFlow !== flow) return;
           anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
           anthropicSessionKey?.focus?.();
           const message = error?.message || window.t('channels.anthropic.cookieFailed');
-          setCodexAuthStatus(message, 'error');
           setCodexOAuthDialogStatus(message, 'error');
-          if (window.showError) window.showError(message);
         } finally {
           if (activeAnthropicCookieFlow === flow) activeAnthropicCookieFlow = null;
           anthropicMethod.disabled = false;
           authorizeButton.disabled = false;
           authorizeButton.removeAttribute?.('aria-busy');
+          if (loginDialog?.open && sessionFields?.hidden) providerSelect.disabled = false;
         }
       } else {
         await startOAuth(oauthProviderConfig(providerSelect.value).provider, authorizeButton);

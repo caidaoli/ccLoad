@@ -321,9 +321,21 @@ func (s *Server) HandleRefreshAnthropicCredential(c *gin.Context) {
 	}
 	credential, err := s.anthropicCredentials.credential(c.Request.Context(), cfg, true)
 	if err != nil {
-		RespondError(c, http.StatusBadGateway, err)
+		RespondError(c, http.StatusBadGateway, anthropicCredentialRefreshError(err))
 		return
 	}
 	s.InvalidateChannelListCache()
 	RespondJSON(c, http.StatusOK, gin.H{"oauth_credential": credential})
+}
+
+func anthropicCredentialRefreshError(err error) error {
+	var upstreamErr interface{ UpstreamResponseBody() string }
+	if !errors.As(err, &upstreamErr) {
+		return err
+	}
+	body := strings.TrimSpace(upstreamErr.UpstreamResponseBody())
+	if body == "" {
+		return err
+	}
+	return fmt.Errorf("%w: %s", err, body)
 }

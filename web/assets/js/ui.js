@@ -905,6 +905,8 @@ window.WebAuth = window.WebAuth || {
       max-width: 360px;
       box-shadow: 0 10px 25px rgba(0,0,0,0.12);
       overflow: hidden;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
       isolation: isolate;
       pointer-events: auto;
     `;
