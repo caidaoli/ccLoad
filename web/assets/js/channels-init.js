@@ -143,6 +143,7 @@ function initChannelsPageActions() {
         'batch-set-rpm-limit': () => batchSetSelectedChannelsRPMLimit(),
         'batch-set-max-concurrency': () => batchSetSelectedChannelsMaxConcurrency(),
         'batch-set-daily-cost-limit': () => batchSetSelectedChannelsDailyCostLimit(),
+        'batch-clear-cooldowns': () => batchClearSelectedChannelCooldowns(),
         'clear-selected-channels': () => clearSelectedChannels(),
         'close-test-modal': () => closeTestModal(),
         'run-channel-test': () => runChannelTest(),

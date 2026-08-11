@@ -5,11 +5,11 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
-	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -222,9 +222,19 @@ func TestAdminAPI_CSVExportImportOAuthChannelWithFilters(t *testing.T) {
 		t.Fatalf("import status=%d", importW.Code)
 	}
 
-	restored, err := server.store.GetConfig(ctx, desiredID)
+	configs, err := server.store.ListConfigs(ctx)
 	if err != nil {
-		t.Fatalf("get restored OAuth channel: %v", err)
+		t.Fatalf("list restored OAuth channels: %v", err)
+	}
+	var restored *model.Config
+	for _, cfg := range configs {
+		if cfg.Name == "Needle Codex" {
+			restored = cfg
+			break
+		}
+	}
+	if restored == nil {
+		t.Fatal("restored OAuth channel not found by name")
 	}
 	credential, err := codexauth.ParseCredential([]byte(restored.OAuthCredential))
 	if err != nil {
@@ -440,41 +450,81 @@ Import-Test-2,"[{""url"":""https://import2.example.com"",""exact"":true}]",5,0,0
 	}
 }
 
-func TestAdminAPI_ImportChannelsCSV_UsesExplicitIDForRename(t *testing.T) {
+func TestAdminAPI_ImportChannelsCSV_IgnoresIDAndMatchesByName(t *testing.T) {
 	server := newInMemoryServer(t)
 	ctx := context.Background()
 
-	created, err := server.store.CreateConfig(ctx, &model.Config{
-		Name:         "Import-Rename-Source",
-		URLs:         model.ChannelURLs{{URL: "https://old-id.example.com"}},
+	IDOwner, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-ID-Owner",
+		URLs:         model.ChannelURLs{{URL: "https://id-owner.example.com"}},
 		Priority:     10,
-		ModelEntries: []model.ModelEntry{{Model: "old-model", RedirectModel: ""}},
+		ModelEntries: []model.ModelEntry{{Model: "owner-model"}},
 		Enabled:      true,
 	})
 	if err != nil {
-		t.Fatalf("创建现有渠道失败: %v", err)
+		t.Fatalf("创建 ID 占用渠道失败: %v", err)
 	}
 	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
-		ChannelID:   created.ID,
+		ChannelID:   IDOwner.ID,
 		KeyIndex:    0,
-		APIKey:      "sk-old-id-key",
+		APIKey:      "sk-owner-key",
 		KeyStrategy: model.KeyStrategySequential,
 	}}); err != nil {
-		t.Fatalf("创建现有 key 失败: %v", err)
+		t.Fatalf("创建 ID 占用渠道 key 失败: %v", err)
 	}
 
-	csvContent := fmt.Sprintf(`id,name,urls,priority,models,model_redirects,enabled,api_key,key_strategy
-%d,Import-Rename-Target,"[{""url"":""https://new-id.example.com""}]",20,new-model,{},true,sk-new-id-key,sequential
-,Import-Rename-Brand-New,"[{""url"":""https://brand-new.example.com""}]",5,brand-model,{},true,sk-brand-new,sequential
-`, created.ID)
+	nameMatch, err := server.store.CreateConfig(ctx, &model.Config{
+		Name:         "Import-Name-Match",
+		URLs:         model.ChannelURLs{{URL: "https://name-old.example.com"}},
+		Priority:     10,
+		ModelEntries: []model.ModelEntry{{Model: "name-old-model"}},
+		Enabled:      true,
+	})
+	if err != nil {
+		t.Fatalf("创建名称匹配渠道失败: %v", err)
+	}
+	if err := server.store.CreateAPIKeysBatch(ctx, []*model.APIKey{{
+		ChannelID:   nameMatch.ID,
+		KeyIndex:    0,
+		APIKey:      "sk-name-old",
+		KeyStrategy: model.KeyStrategySequential,
+	}}); err != nil {
+		t.Fatalf("创建名称匹配渠道 key 失败: %v", err)
+	}
+
+	var csvContent bytes.Buffer
+	csvWriter := csv.NewWriter(&csvContent)
+	if err := csvWriter.Write([]string{
+		"id", "name", "auth_type", "oauth_credential", "urls", "priority", "models",
+		"model_redirects", "enabled", "api_key", "key_strategy",
+	}); err != nil {
+		t.Fatalf("写入 CSV 表头失败: %v", err)
+	}
+	if err := csvWriter.Write([]string{
+		strconv.FormatInt(IDOwner.ID, 10), "Import-Name-Match", model.AuthTypeAPIKey, "",
+		`[{"url":"https://name-new.example.com"}]`, "20", "name-new-model", "{}", "true", "sk-name-new", model.KeyStrategySequential,
+	}); err != nil {
+		t.Fatalf("写入名称匹配行失败: %v", err)
+	}
+	if err := csvWriter.Write([]string{
+		strconv.FormatInt(nameMatch.ID, 10), "Import-New-Codex", model.AuthTypeCodexOAuth,
+		`{"type":"codex","access_token":"new-access","refresh_token":"new-refresh","expired":"2030-01-01T00:00:00Z"}`,
+		`[{"url":"https://codex-new.example.com"}]`, "5", "gpt-5.4", "{}", "true", "", model.KeyStrategySequential,
+	}); err != nil {
+		t.Fatalf("写入 OAuth 新增行失败: %v", err)
+	}
+	csvWriter.Flush()
+	if err := csvWriter.Error(); err != nil {
+		t.Fatalf("生成 CSV 失败: %v", err)
+	}
 
 	body := &bytes.Buffer{}
 	writer := multipart.NewWriter(body)
-	part, err := writer.CreateFormFile("file", "explicit-id-import.csv")
+	part, err := writer.CreateFormFile("file", "cross-database-import.csv")
 	if err != nil {
 		t.Fatalf("创建表单文件字段失败: %v", err)
 	}
-	if _, err := io.WriteString(part, csvContent); err != nil {
+	if _, err := part.Write(csvContent.Bytes()); err != nil {
 		t.Fatalf("写入CSV内容失败: %v", err)
 	}
 	if err := writer.Close(); err != nil {
@@ -497,45 +547,62 @@ func TestAdminAPI_ImportChannelsCSV_UsesExplicitIDForRename(t *testing.T) {
 		t.Fatalf("期望更新1条并创建1条，实际 summary=%+v", summary)
 	}
 
-	updated, err := server.store.GetConfig(ctx, created.ID)
+	updated, err := server.store.GetConfig(ctx, nameMatch.ID)
 	if err != nil {
-		t.Fatalf("查询按ID更新后的渠道失败: %v", err)
+		t.Fatalf("查询按名称更新后的渠道失败: %v", err)
 	}
-	if updated.Name != "Import-Rename-Target" {
-		t.Fatalf("期望按ID更新名称，实际为 %q", updated.Name)
+	if updated.Name != "Import-Name-Match" {
+		t.Fatalf("名称匹配渠道被错误改名为 %q", updated.Name)
 	}
-	if urls := updated.GetURLs(); len(urls) != 1 || urls[0] != "https://new-id.example.com" {
-		t.Fatalf("期望按ID更新 URL，实际为 %v", urls)
+	if urls := updated.GetURLs(); len(urls) != 1 || urls[0] != "https://name-new.example.com" {
+		t.Fatalf("期望按名称更新 URL，实际为 %v", urls)
 	}
-	if len(updated.ModelEntries) != 1 || updated.ModelEntries[0].Model != "new-model" {
-		t.Fatalf("期望按ID更新模型，实际为 %+v", updated.ModelEntries)
+	if len(updated.ModelEntries) != 1 || updated.ModelEntries[0].Model != "name-new-model" {
+		t.Fatalf("期望按名称更新模型，实际为 %+v", updated.ModelEntries)
 	}
-	keys, err := server.store.GetAPIKeys(ctx, created.ID)
+	keys, err := server.store.GetAPIKeys(ctx, nameMatch.ID)
 	if err != nil {
-		t.Fatalf("查询按ID更新后的 key 失败: %v", err)
+		t.Fatalf("查询按名称更新后的 key 失败: %v", err)
 	}
-	if len(keys) != 1 || keys[0].APIKey != "sk-new-id-key" {
-		t.Fatalf("期望按ID更新 key，实际为 %+v", keys)
+	if len(keys) != 1 || keys[0].APIKey != "sk-name-new" {
+		t.Fatalf("期望按名称更新 key，实际为 %+v", keys)
+	}
+
+	owner, err := server.store.GetConfig(ctx, IDOwner.ID)
+	if err != nil {
+		t.Fatalf("查询 ID 占用渠道失败: %v", err)
+	}
+	if owner.Name != "Import-ID-Owner" || owner.GetURLs()[0] != "https://id-owner.example.com" {
+		t.Fatalf("CSV ID 不应修改占用该 ID 的渠道: %+v", owner)
+	}
+	ownerKeys, err := server.store.GetAPIKeys(ctx, IDOwner.ID)
+	if err != nil || len(ownerKeys) != 1 || ownerKeys[0].APIKey != "sk-owner-key" {
+		t.Fatalf("ID 占用渠道 key 不应被修改: keys=%+v err=%v", ownerKeys, err)
 	}
 
 	configs, err := server.store.ListConfigs(ctx)
 	if err != nil {
 		t.Fatalf("查询渠道列表失败: %v", err)
 	}
-	newCount := 0
+	var newCodex *model.Config
 	for _, cfg := range configs {
-		if cfg.Name == "Import-Rename-Brand-New" {
-			newCount++
-			if cfg.ID == created.ID {
-				t.Fatalf("新渠道不应复用旧 ID")
-			}
-		}
-		if cfg.Name == "Import-Rename-Source" {
-			t.Fatalf("旧名称渠道不应保留为额外记录")
+		if cfg.Name == "Import-New-Codex" {
+			newCodex = cfg
+			break
 		}
 	}
-	if newCount != 1 {
-		t.Fatalf("期望新增渠道1条，实际: %d", newCount)
+	if newCodex == nil {
+		t.Fatal("未找到新增 OAuth 渠道")
+	}
+	if newCodex.ID == IDOwner.ID || newCodex.ID == nameMatch.ID {
+		t.Fatalf("新渠道不应复用 CSV 中的跨库 ID: %d", newCodex.ID)
+	}
+	if newCodex.GetAuthType() != model.AuthTypeCodexOAuth {
+		t.Fatalf("新渠道认证类型错误: %s", newCodex.GetAuthType())
+	}
+	newCodexKeys, err := server.store.GetAPIKeys(ctx, newCodex.ID)
+	if err != nil || len(newCodexKeys) != 0 {
+		t.Fatalf("OAuth 渠道不应导入 API key: keys=%+v err=%v", newCodexKeys, err)
 	}
 }
 

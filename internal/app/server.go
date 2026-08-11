@@ -1200,6 +1200,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
+		admin.POST("/channels/batch-clear-cooldowns", s.HandleBatchClearCooldowns)
 		admin.POST("/channels/batch-advanced", s.HandleBatchPatchChannels)
 		admin.POST("/channels/batch-delete", s.HandleBatchDeleteChannels) // 批量删除渠道
 		admin.POST("/channels/cooldown-detection/test", s.HandleCooldownDetectionTest)

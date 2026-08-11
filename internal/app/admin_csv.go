@@ -327,7 +327,6 @@ func (s *Server) parseChannelImportRow(
 	}
 
 	name := fetch("name")
-	rawID := fetch("id")
 	apiKey := fetch("api_key")
 	rawAuthType := fetch("auth_type")
 	oauthCredential := fetch("oauth_credential")
@@ -375,16 +374,11 @@ func (s *Server) parseChannelImportRow(
 		}
 	}
 
-	channelID, err := parseImportChannelID(rawID)
-	if err != nil {
-		return nil, fmt.Sprintf("第%d行渠道ID格式错误: %v", lineNo, err), true
-	}
-
 	var urls model.ChannelURLs
 	if err := sonic.Unmarshal([]byte(urlsRaw), &urls); err != nil {
 		return nil, fmt.Sprintf("第%d行 urls JSON无效: %v", lineNo, err), true
 	}
-	urls, err = validateChannelURLConfigs(urls)
+	urls, err := validateChannelURLConfigs(urls)
 	if err != nil {
 		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
 	}
@@ -525,8 +519,8 @@ func (s *Server) parseChannelImportRow(
 	}
 
 	// 构建渠道配置
+	// CSV 中的 id 只在导出实例内有意义，跨库导入必须按渠道名称匹配。
 	cfg := &model.Config{
-		ID:                      channelID,
 		Name:                    name,
 		AuthType:                authType,
 		OAuthCredential:         oauthCredential,
@@ -681,20 +675,4 @@ func parseImportModels(raw string) []string {
 // parseImportEnabled 解析CSV中的启用状态
 func parseImportEnabled(raw string) (bool, bool) {
 	return util.ParseBool(raw)
-}
-
-func parseImportChannelID(raw string) (int64, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return 0, nil
-	}
-
-	id, err := strconv.ParseInt(raw, 10, 64)
-	if err != nil {
-		return 0, err
-	}
-	if id <= 0 {
-		return 0, fmt.Errorf("must be a positive integer")
-	}
-	return id, nil
 }

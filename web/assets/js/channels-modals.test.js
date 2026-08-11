@@ -105,7 +105,8 @@ function installBatchProtocolModeGlobals(response) {
     batchDailyCostLimit: makeNumericInput('25.5'),
     batchApplyDailyCostLimitBtn: makeButton(),
     batchDailyCostLimitError: { textContent: '', hidden: true },
-    batchImportModelsBtn: { disabled: false },
+    batchImportModelsBtn: makeButton(),
+    batchClearCooldownsBtn: makeButton(),
     batchAdvancedOptions: { open: true },
     batchRefreshOptions: { open: false },
     batchFloatingMenu: {
@@ -1134,6 +1135,38 @@ test('batch protocol mode submits selected channel IDs and refreshes the list', 
         }
       }
     }]);
+  } finally {
+    fixture.restore();
+  }
+});
+
+test('batch clear cooldowns submits selected channel IDs and refreshes the list', async () => {
+  const fixture = installBatchProtocolModeGlobals({
+    success: true,
+    data: { cleared: 2, not_found_count: 0 }
+  });
+
+  try {
+    const { batchClearSelectedChannelCooldowns } = loadChannelsModals();
+    await batchClearSelectedChannelCooldowns();
+
+    assert.equal(fixture.requests.length, 1);
+    assert.equal(fixture.requests[0].url, '/admin/channels/batch-clear-cooldowns');
+    assert.equal(fixture.requests[0].options.method, 'POST');
+    assert.deepEqual(JSON.parse(fixture.requests[0].options.body), {
+      channel_ids: [11, 22]
+    });
+    assert.equal(fixture.selectedChannelIds.size, 0);
+    assert.equal(fixture.filterSaves, 1);
+    assert.equal(fixture.reloads, 1);
+    assert.deepEqual(fixture.notifications, [{
+      type: 'success',
+      message: {
+        key: 'channels.batchClearCooldownsSummary',
+        params: { cleared: 2, notFound: 0 }
+      }
+    }]);
+    assert.equal(fixture.elements.batchClearCooldownsBtn.getAttribute('aria-busy'), null);
   } finally {
     fixture.restore();
   }

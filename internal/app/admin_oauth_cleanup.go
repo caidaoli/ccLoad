@@ -844,7 +844,12 @@ func oauthRefreshTokenRejected(err error) bool {
 		return false
 	}
 	statusCode := endpointFailure.StatusCode()
-	if statusCode != http.StatusBadRequest && statusCode != http.StatusUnauthorized && statusCode != http.StatusForbidden {
+	// The upstream already rejected the access token before this refresh attempt.
+	// A token endpoint 401 is definitive even when the provider omits a JSON body.
+	if statusCode == http.StatusUnauthorized {
+		return true
+	}
+	if statusCode != http.StatusBadRequest && statusCode != http.StatusForbidden {
 		return false
 	}
 	var payload any

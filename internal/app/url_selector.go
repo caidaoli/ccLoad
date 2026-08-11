@@ -438,6 +438,18 @@ func (s *URLSelector) CooldownURL(channelID int64, url string) {
 	s.cooldowns[key] = cd
 }
 
+// ClearCooldowns 清除指定渠道的全部 URL 冷却，不影响延迟统计和手动禁用状态。
+func (s *URLSelector) ClearCooldowns(channelID int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	for key := range s.cooldowns {
+		if key.channelID == channelID {
+			delete(s.cooldowns, key)
+		}
+	}
+}
+
 // IsCooledDown 检查URL是否在冷却中
 func (s *URLSelector) IsCooledDown(channelID int64, url string) bool {
 	key := urlKey{channelID: channelID, url: url}

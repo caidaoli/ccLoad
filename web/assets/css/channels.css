@@ -4200,7 +4200,6 @@
     }
 
     .channel-batch-action--import {
-      grid-column: 1 / -1;
       color: var(--primary-700);
       background: var(--primary-50);
       border-color: var(--primary-200);
@@ -4210,6 +4209,18 @@
       color: var(--primary-800);
       background: var(--primary-100);
       border-color: var(--primary-300);
+    }
+
+    .channel-batch-action--clear-cooldowns {
+      color: var(--warning-600);
+      background: var(--warning-50);
+      border-color: var(--warning-400);
+    }
+
+    .channel-batch-action--clear-cooldowns:hover {
+      color: var(--neutral-900);
+      background: var(--warning-400);
+      border-color: var(--warning-500);
     }
 
     .channel-batch-select {
@@ -4326,9 +4337,10 @@
     }
 
     .channel-batch-advanced__control {
-      display: flex;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 8.75rem;
       align-items: stretch;
-      gap: 4px;
+      gap: 8px;
       min-width: 0;
       padding: 3px;
       border: 1px solid var(--neutral-200);
@@ -4337,15 +4349,25 @@
     }
 
     .channel-batch-advanced__control .channel-batch-action {
-      width: auto;
-      min-width: max-content;
-      flex: 0 0 auto;
+      width: 100%;
+      min-width: 0;
     }
 
     .channel-batch-advanced__control .channel-batch-select {
+      width: 100%;
       min-width: 0;
       max-width: none;
-      flex: 1 1 0;
+    }
+
+    .channel-batch-advanced__actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .channel-batch-advanced__actions .channel-batch-action {
+      width: 100%;
+      min-width: 0;
     }
 
     .channel-batch-input {
@@ -5716,6 +5738,14 @@
       .channel-batch-advanced__field {
         grid-template-columns: 4.5rem minmax(0, 1fr);
         column-gap: 8px;
+      }
+
+      .channel-batch-advanced__control {
+        grid-template-columns: minmax(0, 1fr) minmax(6.5rem, 42%);
+      }
+
+      .channel-batch-advanced__control .channel-batch-action {
+        white-space: normal;
       }
 
       .channel-batch-option {
