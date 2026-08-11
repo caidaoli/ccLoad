@@ -1074,6 +1074,69 @@ func TestProxy_AntigravityProviderAdapterRequest(t *testing.T) {
 	}
 }
 
+func TestProxy_AntigravityOAuthKeepsClaudeSessionStable(t *testing.T) {
+	var sessionIDs []string
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		wire, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read Antigravity request: %v", err)
+		}
+		sessionIDs = append(sessionIDs, gjson.GetBytes(wire, "request.sessionId").String())
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+	}))
+	t.Cleanup(upstream.Close)
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-claude-session", upstreamProtocol: "gemini", models: "claude-opus-4-6-thinking", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-claude-session"),
+	}}, map[int]string{0: upstream.URL})
+
+	send := func(text, sessionID string, includeHeader bool) {
+		t.Helper()
+		identity, err := json.Marshal(map[string]string{"device_id": "device-1", "session_id": sessionID})
+		if err != nil {
+			t.Fatalf("marshal Claude identity: %v", err)
+		}
+		headers := map[string]string(nil)
+		if includeHeader {
+			headers = map[string]string{"X-Claude-Code-Session-Id": sessionID}
+		}
+		response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+			"model": "claude-opus-4-6-thinking", "max_tokens": 64,
+			"messages": []any{map[string]any{"role": "user", "content": text}},
+			"metadata": map[string]any{"user_id": string(identity)},
+		}, headers)
+		if response.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+		}
+	}
+
+	const firstSession = "3be41d7e-a986-4a57-b84d-e0c53c6f7859"
+	send("first turn", firstSession, true)
+	send("different title request", firstSession, true)
+	send("metadata fallback", firstSession, false)
+	send("first turn", "7ff05b12-10ab-4459-842a-91a7ae24ba73", true)
+
+	if len(sessionIDs) != 4 {
+		t.Fatalf("captured session IDs=%v, want 4", sessionIDs)
+	}
+	if sessionIDs[0] == "" || sessionIDs[0] != sessionIDs[1] || sessionIDs[0] != sessionIDs[2] {
+		t.Fatalf("same Claude session was not stable: %v", sessionIDs)
+	}
+	if sessionIDs[3] == sessionIDs[0] {
+		t.Fatalf("different Claude sessions collided: %v", sessionIDs)
+	}
+	for _, sessionID := range sessionIDs {
+		if !strings.HasPrefix(sessionID, "-") {
+			t.Fatalf("Antigravity sessionId=%q, want negative decimal", sessionID)
+		}
+		if _, err := strconv.ParseUint(strings.TrimPrefix(sessionID, "-"), 10, 63); err != nil {
+			t.Fatalf("Antigravity sessionId=%q, want negative decimal: %v", sessionID, err)
+		}
+	}
+}
+
 func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {

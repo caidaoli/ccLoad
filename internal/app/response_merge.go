@@ -118,6 +118,11 @@ func (b *mergedResponseBuilder) collectPayload(obj map[string]any) {
 	if obj == nil {
 		return
 	}
+	if response, ok := obj["response"].(map[string]any); ok {
+		if _, ok := response["candidates"].([]any); ok {
+			obj = response
+		}
+	}
 	if _, ok := obj["candidates"].([]any); ok {
 		b.collectGeminiContent(obj)
 		return
