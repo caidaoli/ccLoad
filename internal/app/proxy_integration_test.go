@@ -8805,6 +8805,62 @@ func TestProxy_SSEErrorEvent_TriggersCooldown(t *testing.T) {
 	}
 }
 
+func TestProxy_AnthropicSSERateLimitUsesUnifiedResetForModelCooldown(t *testing.T) {
+	resetAt := time.Now().Add(2 * time.Hour).Truncate(time.Second)
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Anthropic-Ratelimit-Unified-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		_, _ = fmt.Fprint(w, "event: error\n")
+		_, _ = fmt.Fprint(w, `data: {"type":"error","error":{"type":"rate_limit_error","message":"This request would exceed your account's rate limit. Please try again later."}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "anthropic-sse-rate-limit", upstreamProtocol: util.ProtocolAnthropic,
+		models: "claude-sonnet-4-6", apiKey: "sk-ant", retryOtherKeysOnFailure: true,
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs()=(%d, %v), want one channel", len(configs), err)
+	}
+	if err := env.store.CreateAPIKeysBatch(context.Background(), []*model.APIKey{{
+		ChannelID: configs[0].ID, KeyIndex: 1, APIKey: "sk-ant-second",
+	}}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch: %v", err)
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-sonnet-4-6", "stream": true, "max_tokens": 16,
+		"messages": []map[string]string{{"role": "user", "content": "hi"}},
+	}, nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s, want 429", response.Code, response.Body.String())
+	}
+	if got := upstreamCalls.Load(); got != 1 {
+		t.Fatalf("upstream calls=%d, want 1 without rotating keys", got)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	got, exists := cooldowns[configs[0].ID]["claude-sonnet-4-6"]
+	if !exists {
+		t.Fatal("expected Anthropic SSE rate limit to cool the model")
+	}
+	if !got.Equal(resetAt) {
+		t.Fatalf("model cooldown=%s, want header reset %s", got, resetAt)
+	}
+	keyCooldowns, err := env.store.GetAllKeyCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllKeyCooldowns: %v", err)
+	}
+	if len(keyCooldowns[configs[0].ID]) != 0 {
+		t.Fatalf("key cooldowns=%v, want none for model-wide Anthropic limit", keyCooldowns[configs[0].ID])
+	}
+}
+
 func TestProxy_SSEErrorRuleMatchesOriginalHTTPStatus(t *testing.T) {
 	t.Parallel()
 
