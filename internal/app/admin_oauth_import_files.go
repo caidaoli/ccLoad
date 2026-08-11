@@ -104,7 +104,7 @@ func parseOAuthCredentialMultipart(reader *multipart.Reader) ([]oauthCredentialI
 			continue
 		}
 		if len(expanded) == 0 {
-			items = append(items, failedOAuthCredentialImportFile(fileName, errors.New("credential archive contains no JSON files")))
+			items = append(items, failedOAuthCredentialImportFile(fileName, errors.New("credential archive contains no JSON or TXT files")))
 			continue
 		}
 		items = append(items, expanded...)
@@ -175,7 +175,7 @@ func expandOAuthCredentialZIP(archiveName string, raw []byte, budget *oauthCrede
 		if err := validateOAuthCredentialArchivePath(entry.Name); err != nil {
 			return nil, err
 		}
-		if !strings.EqualFold(path.Ext(entry.Name), ".json") {
+		if !isOAuthCredentialArchiveEntry(entry.Name) {
 			continue
 		}
 		if entry.UncompressedSize64 > maxOAuthCredentialImportBytes {
@@ -263,7 +263,7 @@ func readOAuthCredentialTar(archiveName string, reader *tar.Reader, budget *oaut
 		if err := validateOAuthCredentialArchivePath(entry.Name); err != nil {
 			return nil, err
 		}
-		if !strings.EqualFold(path.Ext(entry.Name), ".json") {
+		if !isOAuthCredentialArchiveEntry(entry.Name) {
 			continue
 		}
 		if entry.Size > maxOAuthCredentialImportBytes {
@@ -293,6 +293,11 @@ func validateOAuthCredentialArchivePath(name string) error {
 		return fmt.Errorf("credential archive entry path %q is invalid", name)
 	}
 	return nil
+}
+
+func isOAuthCredentialArchiveEntry(name string) bool {
+	extension := path.Ext(name)
+	return strings.EqualFold(extension, ".json") || strings.EqualFold(extension, ".txt")
 }
 
 func newOAuthCredentialImportFile(fileName, sortName string, raw []byte) oauthCredentialImportFile {

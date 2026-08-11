@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -271,8 +270,9 @@ func (s *Server) prepareOAuthCredentialImport(c *gin.Context, forcedProvider str
 	if err != nil {
 		return nil, http.StatusBadRequest, err
 	}
-	if provider == oauthCredentialProviderAuto || provider == xaiauth.ChannelType {
-		credentialFiles = expandXAICredentialContainers(credentialFiles, provider)
+	credentialFiles, err = expandOAuthCredentialContainers(credentialFiles, provider)
+	if err != nil {
+		return nil, http.StatusBadRequest, err
 	}
 	nextPriorityByProvider := map[string]int{
 		codexauth.ChannelType:       0,
@@ -724,59 +724,6 @@ func writeSSEEvent(c *gin.Context, eventName string, payload any) error {
 	return nil
 }
 
-func expandXAICredentialContainers(files []oauthCredentialImportFile, provider string) []oauthCredentialImportFile {
-	expanded := make([]oauthCredentialImportFile, 0, len(files))
-	for _, file := range files {
-		if file.Err != nil {
-			expanded = append(expanded, file)
-			continue
-		}
-		fields, err := decodeOAuthCredentialFields(file.Raw)
-		if err != nil {
-			expanded = append(expanded, file)
-			continue
-		}
-		rawContainer, ok := fields["credentials"]
-		if !ok {
-			expanded = append(expanded, file)
-			continue
-		}
-		var container map[string]json.RawMessage
-		if json.Unmarshal(rawContainer, &container) != nil || len(container) == 0 {
-			expanded = append(expanded, failedOAuthCredentialImportFile(file.FileName, errors.New("xAI credentials must be a non-empty object")))
-			continue
-		}
-		keys := make([]string, 0, len(container))
-		for key := range container {
-			keys = append(keys, key)
-		}
-		slices.Sort(keys)
-		if provider == oauthCredentialProviderAuto {
-			xaiContainer := true
-			for _, key := range keys {
-				detected, detectErr := detectOAuthCredentialProvider(container[key])
-				if detectErr != nil || detected != xaiauth.ChannelType {
-					xaiContainer = false
-					break
-				}
-			}
-			if !xaiContainer {
-				expanded = append(expanded, file)
-				continue
-			}
-		}
-		for index, key := range keys {
-			item := newOAuthCredentialImportFile(
-				fmt.Sprintf("%s#%d", file.FileName, index+1),
-				file.SortName+"\x00"+key,
-				container[key],
-			)
-			expanded = append(expanded, item)
-		}
-	}
-	sortOAuthCredentialImportFiles(expanded)
-	return expanded
-}
 func (s *Server) completeImportedCodexCredential(ctx context.Context, credential *codexauth.Credential) (*codexauth.Credential, error) {
 	if credential == nil {
 		return nil, errors.New("codex credential is nil")

@@ -267,9 +267,9 @@
             <div class="oauth-field">
               <label for="oauthCredentialImportInput" data-i18n="channels.oauth.credentialFiles">凭证文件</label>
               <input id="oauthCredentialImportInput" name="credential_files" type="file" class="form-input"
-                accept=".json,.zip,.tar.gz,.tgz,application/json,application/zip,application/gzip,application/x-gzip" multiple required aria-describedby="oauthCredentialImportHint oauthCredentialImportStatus" />
+                accept=".json,.txt,.zip,.tar.gz,.tgz,application/json,text/plain,application/zip,application/gzip,application/x-gzip" multiple required aria-describedby="oauthCredentialImportHint oauthCredentialImportStatus" />
               <p id="oauthCredentialImportHint" class="oauth-field-hint"
-                data-i18n="channels.oauth.credentialFilesHint">支持同时选择 JSON、ZIP、tar.gz 或 tgz 文件。</p>
+                data-i18n="channels.oauth.credentialFilesHint">支持同时选择 JSON、TXT、ZIP、tar.gz 或 tgz 文件；JSON/TXT 可包含 CLIProxyAPI 或 Sub2API 聚合凭证。</p>
             </div>
             <div class="oauth-actions">
               <button id="oauthCredentialImportSubmit" type="submit" class="btn btn-primary"

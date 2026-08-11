@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -57,28 +58,29 @@ type Service struct {
 	Now              func() time.Time
 }
 
-type tokenEndpointError struct {
+type upstreamResponseError struct {
+	operation    string
 	statusCode   int
 	responseBody string
 }
 
-func (e *tokenEndpointError) Error() string {
+func (e *upstreamResponseError) Error() string {
 	if e == nil {
-		return "anthropic token endpoint request failed"
+		return "anthropic upstream request failed"
 	}
-	return fmt.Sprintf("anthropic token endpoint returned HTTP %d", e.statusCode)
+	return fmt.Sprintf("anthropic %s returned HTTP %d", e.operation, e.statusCode)
 }
 
 // UpstreamResponseBody returns the bounded response body for an explicitly authorized caller.
-func (e *tokenEndpointError) UpstreamResponseBody() string {
+func (e *upstreamResponseError) UpstreamResponseBody() string {
 	if e == nil {
 		return ""
 	}
 	return e.responseBody
 }
 
-// StatusCode exposes the token endpoint status without exposing the private error type.
-func (e *tokenEndpointError) StatusCode() int {
+// StatusCode exposes the upstream status without exposing the private error type.
+func (e *upstreamResponseError) StatusCode() int {
 	if e == nil {
 		return 0
 	}
@@ -196,7 +198,7 @@ func (s *Service) CookieAuth(ctx context.Context, sessionKey string) (*Credentia
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	orgUUID, err := s.cookieOrganizationUUID(requestCtx, &client, sessionKey)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
 	state, err := GenerateState()
 	if err != nil {
@@ -208,12 +210,11 @@ func (s *Service) CookieAuth(ctx context.Context, sessionKey string) (*Credentia
 	}
 	code, err := s.cookieAuthorizationCode(requestCtx, &client, sessionKey, orgUUID, state, pkce.Challenge)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
-	sessionKey = ""
 	credential, err := s.ExchangeCode(requestCtx, code, state, pkce)
 	if err != nil {
-		return nil, err
+		return nil, annotateCookieAuthError(err, sessionKey)
 	}
 	if credential.OrgUUID == "" {
 		credential.OrgUUID = orgUUID
@@ -256,7 +257,7 @@ func (s *Service) cookieOrganizationUUID(ctx context.Context, client *http.Clien
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("anthropic organization endpoint returned HTTP %d", response.StatusCode)
+		return "", newUpstreamResponseError(response, "organization endpoint")
 	}
 	var organizations []struct {
 		UUID      string  `json:"uuid"`
@@ -313,7 +314,7 @@ func (s *Service) cookieAuthorizationCode(
 	}
 	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return "", fmt.Errorf("anthropic Cookie authorization endpoint returned HTTP %d", response.StatusCode)
+		return "", newUpstreamResponseError(response, "Cookie authorization endpoint")
 	}
 	var result struct {
 		RedirectURI string `json:"redirect_uri"`
@@ -362,6 +363,85 @@ func decodeLimitedJSON(reader io.Reader, target any) error {
 	return nil
 }
 
+type upstreamResponseBodyError interface {
+	error
+	UpstreamResponseBody() string
+}
+
+func newUpstreamResponseError(response *http.Response, operation string) error {
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxTokenResponseSize))
+	if err != nil {
+		return fmt.Errorf("read Anthropic %s response: %w", operation, err)
+	}
+	return &upstreamResponseError{
+		operation: operation, statusCode: response.StatusCode, responseBody: string(body),
+	}
+}
+
+func annotateCookieAuthError(err error, sessionKey string) error {
+	var upstreamErr upstreamResponseBodyError
+	if !errors.As(err, &upstreamErr) {
+		return err
+	}
+	body := strings.TrimSpace(upstreamErr.UpstreamResponseBody())
+	if body == "" {
+		return err
+	}
+	if sessionKey != "" {
+		body = sanitizeCookieAuthUpstreamBody(body, sessionKey)
+	}
+	return fmt.Errorf("%w: %s", err, body)
+}
+
+func sanitizeCookieAuthUpstreamBody(body, sessionKey string) string {
+	candidates := []string{body}
+	decoder := json.NewDecoder(strings.NewReader(body))
+	sawJSONToken := false
+	for {
+		token, err := decoder.Token()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			if sawJSONToken || strings.Contains(body, `\u`) || strings.Contains(body, `\/`) {
+				return "[REDACTED]"
+			}
+			break
+		}
+		sawJSONToken = true
+		if value, ok := token.(string); ok {
+			candidates = append(candidates, value)
+		}
+	}
+	for _, candidate := range candidates {
+		if containsCookieAuthSecret(candidate, sessionKey, 3) {
+			return "[REDACTED]"
+		}
+	}
+	return body
+}
+
+func containsCookieAuthSecret(value, sessionKey string, decodeDepth int) bool {
+	if strings.Contains(value, sessionKey) {
+		return true
+	}
+	if decodeDepth == 0 {
+		return false
+	}
+	if decoded := html.UnescapeString(value); decoded != value &&
+		containsCookieAuthSecret(decoded, sessionKey, decodeDepth-1) {
+		return true
+	}
+	if decoded, err := url.PathUnescape(value); err == nil && decoded != value &&
+		containsCookieAuthSecret(decoded, sessionKey, decodeDepth-1) {
+		return true
+	}
+	if decoded, err := url.QueryUnescape(value); err == nil && decoded != value {
+		return containsCookieAuthSecret(decoded, sessionKey, decodeDepth-1)
+	}
+	return false
+}
+
 func (s *Service) requestToken(ctx context.Context, payload map[string]string) (*Credential, error) {
 	if err := s.validate(); err != nil {
 		return nil, err
@@ -392,7 +472,8 @@ func (s *Service) requestToken(ctx context.Context, payload map[string]string) (
 		return nil, fmt.Errorf("read Anthropic token response: %w", err)
 	}
 	if response.StatusCode != http.StatusOK {
-		return nil, &tokenEndpointError{
+		return nil, &upstreamResponseError{
+			operation:    "token endpoint",
 			statusCode:   response.StatusCode,
 			responseBody: string(responseBody),
 		}

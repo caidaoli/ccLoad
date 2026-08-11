@@ -635,7 +635,7 @@ async function submitAnthropicCookieAuth(
     created: 0,
     updated: 0,
     failed: 0,
-    failedLines: []
+    failedDetails: []
   };
   try {
     for (let index = 0; index < entries.length; index++) {
@@ -659,7 +659,10 @@ async function submitAnthropicCookieAuth(
       } catch (error) {
         if (signal?.aborted || error?.name === 'AbortError') throw error;
         summary.failed++;
-        summary.failedLines.push(entry.line);
+        summary.failedDetails.push({
+          line: entry.line,
+          error: String(error?.message || window.t('channels.anthropic.cookieFailed')).trim()
+        });
       } finally {
         body = '';
         entry.sessionKey = '';
@@ -1918,7 +1921,9 @@ function setupOAuthActions() {
           if (result.failed > 0) {
             const message = window.t('channels.anthropic.cookiePartial', {
               ...result,
-              lines: result.failedLines.join(', ')
+              details: result.failedDetails.map(detail => window.t(
+                'channels.anthropic.cookieFailureDetail', detail
+              )).join('; ')
             });
             anthropicSessionKey?.setAttribute?.('aria-invalid', 'true');
             anthropicSessionKey?.focus?.();
