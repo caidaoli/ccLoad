@@ -1363,31 +1363,119 @@ test('failed OAuth usage refresh remains retryable', async () => {
   }
 });
 
-test('batch OAuth usage refresh keeps per-channel results and reloads the list once', async () => {
+function oauthUsageBatchSSE(events) {
+  const body = events.map(event => (
+    `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`
+  )).join('');
+  return {
+    ok: true,
+    status: 200,
+    async text() { return body; }
+  };
+}
+
+test('batch OAuth usage refresh consumes one SSE request, keeps per-channel results, and reloads once', async () => {
   const previousFilterChannels = global.filterChannels;
   const previousLoadChannels = global.loadChannels;
-  const requested = [];
+  let captured;
   let reloads = 0;
   global.filterChannels = () => {};
   global.loadChannels = async () => { reloads++; };
 
   try {
-    const summary = await refreshOAuthUsageBatch([51, 52, 53], async (url) => {
-      requested.push(url);
-      if (url.includes('/52/')) throw new Error('quota unavailable');
-      return { windows: [] };
+    const summary = await refreshOAuthUsageBatch([51, 52, 53], async (url, options) => {
+      captured = { url, options };
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 3, succeeded: 0, failed: 0 },
+        {
+          event: 'progress', processed: 1, total: 3, succeeded: 1, failed: 0,
+          result: { channel_id: 51, status: 'succeeded', usage: { windows: [] } }
+        },
+        {
+          event: 'progress', processed: 2, total: 3, succeeded: 1, failed: 1,
+          result: { channel_id: 52, status: 'failed', error: 'quota unavailable' }
+        },
+        {
+          event: 'progress', processed: 3, total: 3, succeeded: 2, failed: 1,
+          result: { channel_id: 53, status: 'succeeded', usage: { windows: [] } }
+        },
+        { event: 'complete', processed: 3, total: 3, succeeded: 2, failed: 1 }
+      ]);
     });
 
-    assert.deepEqual(requested, [
-      '/admin/channels/51/oauth-usage',
-      '/admin/channels/52/oauth-usage',
-      '/admin/channels/53/oauth-usage'
-    ]);
+    assert.equal(captured.url, '/admin/channels/oauth-usage/batch/stream');
+    assert.equal(captured.options.method, 'POST');
+    assert.equal(captured.options.headers.Accept, 'text/event-stream');
+    assert.deepEqual(JSON.parse(captured.options.body), { channel_ids: [51, 52, 53] });
     assert.deepEqual(summary, { total: 3, succeeded: 2, failed: 1 });
     assert.equal(getOAuthUsageState(51).status, 'ready');
     assert.deepEqual(getOAuthUsageState(52), { status: 'error', error: 'quota unavailable' });
     assert.equal(getOAuthUsageState(53).status, 'ready');
     assert.equal(reloads, 1);
+  } finally {
+    global.filterChannels = previousFilterChannels;
+    if (previousLoadChannels === undefined) delete global.loadChannels;
+    else global.loadChannels = previousLoadChannels;
+  }
+});
+
+test('interrupted batch OAuth usage stream keeps finished results and marks pending channels retryable', async () => {
+  const previousFilterChannels = global.filterChannels;
+  const previousLoadChannels = global.loadChannels;
+  const previousWindow = global.window;
+  global.filterChannels = () => {};
+  global.loadChannels = async () => {};
+  global.window = { t: key => key };
+
+  try {
+    await assert.rejects(
+      refreshOAuthUsageBatch([54, 55, 56], async () => oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 3, succeeded: 0, failed: 0 },
+        {
+          event: 'progress', processed: 1, total: 3, succeeded: 1, failed: 0,
+          result: { channel_id: 54, status: 'succeeded', usage: { windows: [] } }
+        }
+      ])),
+      /channels\.batchOAuthUsageIncomplete/
+    );
+    assert.equal(getOAuthUsageState(54).status, 'ready');
+    assert.deepEqual(getOAuthUsageState(55), {
+      status: 'error', error: 'channels.batchOAuthUsageIncomplete'
+    });
+    assert.deepEqual(getOAuthUsageState(56), {
+      status: 'error', error: 'channels.batchOAuthUsageIncomplete'
+    });
+  } finally {
+    global.window = previousWindow;
+    global.filterChannels = previousFilterChannels;
+    if (previousLoadChannels === undefined) delete global.loadChannels;
+    else global.loadChannels = previousLoadChannels;
+  }
+});
+
+test('newer batch OAuth usage result is not overwritten by an older single refresh', async () => {
+  const previousFilterChannels = global.filterChannels;
+  const previousLoadChannels = global.loadChannels;
+  global.filterChannels = () => {};
+  global.loadChannels = async () => {};
+  let finishSingle;
+
+  try {
+    const singlePromise = refreshOAuthUsage(57, () => new Promise(resolve => { finishSingle = resolve; }));
+    const batchSummary = await refreshOAuthUsageBatch([57], async () => oauthUsageBatchSSE([
+      { event: 'start', processed: 0, total: 1, succeeded: 0, failed: 0 },
+      {
+        event: 'progress', processed: 1, total: 1, succeeded: 0, failed: 1,
+        result: { channel_id: 57, status: 'failed', error: 'newer quota failure' }
+      },
+      { event: 'complete', processed: 1, total: 1, succeeded: 0, failed: 1 }
+    ]));
+    assert.deepEqual(batchSummary, { total: 1, succeeded: 0, failed: 1 });
+    assert.deepEqual(getOAuthUsageState(57), { status: 'error', error: 'newer quota failure' });
+
+    finishSingle({ windows: [{ limit_name: 'stale' }] });
+    await singlePromise;
+    assert.deepEqual(getOAuthUsageState(57), { status: 'error', error: 'newer quota failure' });
   } finally {
     global.filterChannels = previousFilterChannels;
     if (previousLoadChannels === undefined) delete global.loadChannels;
@@ -1441,16 +1529,29 @@ test('selected quota refresh skips non-OAuth channels and reports one batch resu
   setGlobal('updateBatchChannelSelectionUI', () => {});
 
   try {
-    const summary = await batchRefreshSelectedOAuthUsage(async (url) => {
-      requested.push(url);
-      return { windows: [] };
+    const summary = await batchRefreshSelectedOAuthUsage(async (url, options) => {
+      requested.push({ url, options });
+      return oauthUsageBatchSSE([
+        { event: 'start', processed: 0, total: 3, succeeded: 0, failed: 0 },
+        {
+          event: 'progress', processed: 1, total: 3, succeeded: 1, failed: 0,
+          result: { channel_id: 61, status: 'succeeded', usage: { windows: [] } }
+        },
+        {
+          event: 'progress', processed: 2, total: 3, succeeded: 2, failed: 0,
+          result: { channel_id: 63, status: 'succeeded', usage: { windows: [] } }
+        },
+        {
+          event: 'progress', processed: 3, total: 3, succeeded: 3, failed: 0,
+          result: { channel_id: 64, status: 'succeeded', usage: { windows: [] } }
+        },
+        { event: 'complete', processed: 3, total: 3, succeeded: 3, failed: 0 }
+      ]);
     });
 
-    assert.deepEqual(requested, [
-      '/admin/channels/61/oauth-usage',
-      '/admin/channels/63/oauth-usage',
-      '/admin/channels/64/oauth-usage'
-    ]);
+    assert.equal(requested.length, 1);
+    assert.equal(requested[0].url, '/admin/channels/oauth-usage/batch/stream');
+    assert.deepEqual(JSON.parse(requested[0].options.body), { channel_ids: [61, 63, 64] });
     assert.deepEqual(summary, { total: 4, succeeded: 3, failed: 0, skipped: 1 });
     assert.deepEqual(notices, [{
       type: 'success',

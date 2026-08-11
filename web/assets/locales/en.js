@@ -403,6 +403,7 @@ window.I18N_LOCALES['en'] = {
   'channels.batchOAuthUsageNoEligible': 'None of the selected channels support OAuth quota refresh',
   'channels.batchOAuthUsageSummary': 'Batch quota refresh completed: {succeeded} succeeded, {failed} failed, {skipped} skipped',
   'channels.batchOAuthUsageFailed': 'Batch quota refresh failed: {error}',
+  'channels.batchOAuthUsageIncomplete': 'The batch quota refresh connection ended early',
   'channels.batchAdvanced': 'Advanced',
   'channels.batchPriority': 'Priority',
   'channels.batchPriorityHint': 'Higher values are selected first',

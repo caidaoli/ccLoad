@@ -403,6 +403,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchOAuthUsageNoEligible': '所选渠道中没有支持额度刷新的 OAuth 渠道',
   'channels.batchOAuthUsageSummary': '批量额度刷新完成：成功 {succeeded}，失败 {failed}，跳过 {skipped}',
   'channels.batchOAuthUsageFailed': '批量额度刷新失败：{error}',
+  'channels.batchOAuthUsageIncomplete': '批量额度刷新连接提前中断',
   'channels.batchAdvanced': '高级',
   'channels.batchPriority': '优先级',
   'channels.batchPriorityHint': '数值越大优先级越高',
