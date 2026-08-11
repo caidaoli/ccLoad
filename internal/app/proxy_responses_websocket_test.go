@@ -993,6 +993,8 @@ func TestResponsesWebsocketClientDisconnectCancelsUpstreamTurn(t *testing.T) {
 }
 
 func TestResponsesWebsocketNativeClientDisconnectStopsFailover(t *testing.T) {
+	t.Parallel()
+
 	started := make(chan struct{})
 	stopped := make(chan struct{})
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
@@ -4028,6 +4030,8 @@ func testNativeCodexWebsocketReadFailureReconnectsWithReplay(
 }
 
 func TestNativeCodexWebsocketMaxAgeReconnectsWithTranscriptReplay(t *testing.T) {
+	t.Parallel()
+
 	requests := make(chan map[string]any, 2)
 	firstConnectionClosed := make(chan struct{}, 1)
 	var handshakes atomic.Int32
@@ -4121,6 +4125,8 @@ func TestNativeCodexWebsocketMaxAgeReconnectsWithTranscriptReplay(t *testing.T) 
 }
 
 func TestNativeCodexWebsocketMaxAgeDrainsActiveTurnBeforeClosing(t *testing.T) {
+	t.Parallel()
+
 	turnStarted := make(chan struct{}, 1)
 	releaseTurn := make(chan struct{})
 	connectionClosed := make(chan struct{}, 1)
@@ -4705,6 +4711,8 @@ func TestResponsesWebsocketRetryableErrorReplaysTranscriptToNativeFallback(t *te
 }
 
 func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
+	t.Parallel()
+
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	longInputID := strings.Repeat("fallback-item-", 8)
@@ -4856,6 +4864,8 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 }
 
 func TestNativeCodexWebsocketEOFHandshakeFallsBackToSameChannelHTTP(t *testing.T) {
+	t.Parallel()
+
 	var websocketCalls atomic.Int32
 	var httpCalls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5233,6 +5243,8 @@ func TestResponsesWebsocketDoesNotFailOverAfterSemanticOutput(t *testing.T) {
 }
 
 func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTargetCooldown(t *testing.T) {
+	t.Parallel()
+
 	testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBeforeTargetCooldown(
 		t,
 		"1006",
@@ -5241,6 +5253,8 @@ func TestNativeCodexWebsocketAbnormalCloseRequiresTwoPhysicalConnectionsBeforeTa
 }
 
 func TestNativeCodexWebsocketInterruptedEventRequiresTwoPhysicalConnectionsBeforeTargetCooldown(t *testing.T) {
+	t.Parallel()
+
 	testNativeCodexWebsocketTransportFailureRequiresTwoPhysicalConnectionsBeforeTargetCooldown(
 		t,
 		responsesWebsocketInterruptedCode,
@@ -5487,6 +5501,8 @@ func TestNativeCodexWebsocketCompletedTurnResetsAbnormalCloseStreak(t *testing.T
 }
 
 func TestResponsesWebsocketPersistsUsageCostAndRedactedDebugContent(t *testing.T) {
+	t.Parallel()
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	var handshakes atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -5666,6 +5682,8 @@ func TestResponsesWebsocketExposesActualUpstreamTransportWhileActive(t *testing.
 }
 
 func TestNativeCodexWebsocketFailedTerminalPersistsUsageWithoutCost(t *testing.T) {
+	t.Parallel()
+
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		conn, err := upgrader.Upgrade(w, r, nil)
