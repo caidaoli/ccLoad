@@ -390,38 +390,40 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		}
 	}
 
-	if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(responseBody, now); ok {
-		classification := HTTPResponseClassification{Level: level}
-		if reason == "model_cooldown" {
-			if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
-				classification.Model = strings.TrimSpace(quotaErr.model)
+	if quotaErr, parsed := parseStructuredQuotaError(responseBody); parsed {
+		if cooldownUntil, reason, level, ok := parseStructuredQuotaCooldown(quotaErr, now); ok {
+			classification := HTTPResponseClassification{
+				Level: level,
+				Model: strings.TrimSpace(quotaErr.model),
 			}
-			classification.ModelScoped = true
-			classification.ModelCooldownReason = reason
-			if cooldownUntil.After(now) {
+			if reason == "model_cooldown" {
+				classification.ModelScoped = true
+				classification.ModelCooldownReason = reason
+				if cooldownUntil.After(now) {
+					classification.ModelCooldownUntil = cooldownUntil
+					classification.HasModelCooldownUntil = true
+				}
+				return classification
+			}
+			if statusCode == 429 && level == ErrorLevelChannel {
+				classification.ModelScoped = true
 				classification.ModelCooldownUntil = cooldownUntil
 				classification.HasModelCooldownUntil = true
+				classification.ModelCooldownReason = reason
+				return classification
+			}
+			switch level {
+			case ErrorLevelChannel:
+				classification.ChannelCooldownUntil = cooldownUntil
+				classification.HasChannelCooldownUntil = true
+				classification.ChannelCooldownReason = reason
+			default:
+				classification.KeyCooldownUntil = cooldownUntil
+				classification.HasKeyCooldownUntil = true
+				classification.KeyCooldownReason = reason
 			}
 			return classification
 		}
-		if statusCode == 429 && level == ErrorLevelChannel {
-			classification.ModelScoped = true
-			classification.ModelCooldownUntil = cooldownUntil
-			classification.HasModelCooldownUntil = true
-			classification.ModelCooldownReason = reason
-			return classification
-		}
-		switch level {
-		case ErrorLevelChannel:
-			classification.ChannelCooldownUntil = cooldownUntil
-			classification.HasChannelCooldownUntil = true
-			classification.ChannelCooldownReason = reason
-		default:
-			classification.KeyCooldownUntil = cooldownUntil
-			classification.HasKeyCooldownUntil = true
-			classification.KeyCooldownReason = reason
-		}
-		return classification
 	}
 
 	// 上下文超限由当前请求体决定，切换 Key、模型或渠道都不会改变结果。
@@ -678,16 +680,7 @@ func isWebsocketConnectionLimitValue(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), WebsocketConnectionLimitCode)
 }
 
-func parseStructuredQuotaCooldown(responseBody []byte, now time.Time) (time.Time, string, ErrorLevel, bool) {
-	if len(responseBody) == 0 {
-		return time.Time{}, "", ErrorLevelNone, false
-	}
-
-	quotaErr, ok := parseStructuredQuotaError(responseBody)
-	if !ok {
-		return time.Time{}, "", ErrorLevelNone, false
-	}
-
+func parseStructuredQuotaCooldown(quotaErr structuredQuotaError, now time.Time) (time.Time, string, ErrorLevel, bool) {
 	code := quotaErr.code
 	message := quotaErr.message
 	messageUpper := strings.ToUpper(message)

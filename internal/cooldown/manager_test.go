@@ -1927,7 +1927,7 @@ func TestHandleError_UsageLimitReachedMultiKeyCoolsKey(t *testing.T) {
 	}
 }
 
-func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
+func TestHandleError_AntigravityQuotaUsesMetadataModelAndResetTimestamp(t *testing.T) {
 	store, cleanup := setupTestStore(t)
 	defer cleanup()
 	manager := NewManager(store, nil)
@@ -1938,7 +1938,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
 		URLs:    model.ChannelURLs{{URL: "https://cloudcode-pa.googleapis.com"}},
 		Enabled: true,
 		ModelEntries: []model.ModelEntry{
-			{Model: "gemini-3.6-flash-high"},
+			{Model: "claude-sonnet-5", RedirectModel: "claude-sonnet-4-6"},
 			{Model: "gemini-3.5-flash"},
 		},
 	})
@@ -1958,7 +1958,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
 				"metadata": {
 					"quotaResetTimeStamp": %q,
 					"quotaResetDelay": "3h40m30s",
-					"model": "gemini-3.6-flash-high"
+					"model": "claude-sonnet-4-6"
 				}
 			}]
 		}
@@ -1966,7 +1966,7 @@ func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
 
 	action := manager.HandleError(ctx, ErrorInput{
 		ChannelID:  cfg.ID,
-		Model:      "gemini-3.6-flash-high",
+		Model:      "claude-sonnet-5",
 		KeyIndex:   NoKeyIndex,
 		StatusCode: 429,
 		ErrorBody:  body,
@@ -1975,13 +1975,16 @@ func TestHandleError_AntigravityQuotaUsesMetadataResetTimestamp(t *testing.T) {
 		t.Fatalf("action=%v, want ActionRetryModel", action)
 	}
 
-	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "gemini-3.6-flash-high")
+	until, exists := getModelCooldownUntil(ctx, store, cfg.ID, "claude-sonnet-4-6")
 	if !exists {
 		t.Fatal("expected model cooldown")
 	}
 	if !sameTimeSecond(until, resetAt) {
 		t.Fatalf("model cooldownUntil=%s, want metadata reset timestamp %s",
 			until.Format(time.RFC3339), resetAt.Format(time.RFC3339))
+	}
+	if _, exists := getModelCooldownUntil(ctx, store, cfg.ID, "claude-sonnet-5"); exists {
+		t.Fatal("request alias must not be cooled when upstream identifies the quota model")
 	}
 }
 
