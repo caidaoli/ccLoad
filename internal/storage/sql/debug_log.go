@@ -86,11 +86,6 @@ func (s *SQLStore) TruncateDebugLogs(ctx context.Context) error {
 		// SQLite 没有 TRUNCATE TABLE；无条件 DELETE 会触发 truncate optimization。
 		query = `DELETE FROM debug_logs`
 	}
-	result, err := s.ExecContext(ctx, query)
-	if err != nil {
-		return err
-	}
-	affected, _ := result.RowsAffected()
-	s.runSQLiteIncrementalVacuum(ctx, affected)
-	return nil
+	_, err := s.ExecContext(ctx, query)
+	return err
 }
