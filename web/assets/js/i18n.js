@@ -105,7 +105,7 @@
     for (const k in params) {
       if (Object.prototype.hasOwnProperty.call(params, k)) {
         const safeKey = k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        result = result.replace(new RegExp('\\{' + safeKey + '\\}', 'g'), params[k]);
+        result = result.replace(new RegExp('\\{' + safeKey + '\\}', 'g'), () => String(params[k]));
       }
     }
     return result;

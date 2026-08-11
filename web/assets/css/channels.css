@@ -160,9 +160,12 @@
 
     .channel-codex-auth-status {
       flex-basis: 100%;
+      min-inline-size: 0;
       margin: var(--space-2) 0 0;
       color: var(--neutral-600);
       font-size: 0.875rem;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
 
     .channel-codex-auth-status[data-kind="success"] {
@@ -291,6 +294,12 @@
 
     .oauth-dialog-status[data-kind="success"] {
       color: var(--success-600);
+    }
+
+    .oauth-dialog-status {
+      min-inline-size: 0;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
 
     .oauth-dialog-status[data-kind="error"] {
