@@ -25,6 +25,8 @@ let currentOAuthCredentialView = 'decoded';
 let oauthLoginDialogTrigger = null;
 let oauthCredentialImportDialogTrigger = null;
 const oauthUsageStateByChannelID = new Map();
+const oauthUsageOperationByChannelID = new Map();
+let oauthUsageOperationSequence = 0;
 const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   codex: Object.freeze({
     provider: 'codex', label: 'Codex', i18n: 'channels.codex',
@@ -1427,10 +1429,10 @@ function updateOAuthCredentialCleanupProgress(event) {
   }
 }
 
-async function readOAuthCredentialCleanupStream(response, onEvent) {
+async function readAdminSSEStream(response, onEvent, failedKey, incompleteKey, eventErrorStatus = 400) {
   if (!response?.ok) {
-    await parseAdminJobResponse(response, 'channels.oauth.cleanupFailed');
-    throw new Error(window.t('channels.oauth.cleanupFailed'));
+    await parseAdminJobResponse(response, failedKey);
+    throw new Error(window.t(failedKey));
   }
 
   let buffer = '';
@@ -1445,8 +1447,8 @@ async function readOAuthCredentialCleanupStream(response, onEvent) {
     const event = JSON.parse(data);
     if (event.event === 'error') {
       throw new OAuthCredentialImportResponseError(
-        event.error || window.t('channels.oauth.cleanupFailed'),
-        404
+        event.error || window.t(failedKey),
+        eventErrorStatus
       );
     }
     if (event.event === 'complete') complete = event;
@@ -1483,8 +1485,18 @@ async function readOAuthCredentialCleanupStream(response, onEvent) {
     buffer = await response.text();
   }
   drain(true);
-  if (!complete) throw new Error(window.t('channels.oauth.cleanupStreamIncomplete'));
+  if (!complete) throw new Error(window.t(incompleteKey));
   return complete;
+}
+
+async function readOAuthCredentialCleanupStream(response, onEvent) {
+  return readAdminSSEStream(
+    response,
+    onEvent,
+    'channels.oauth.cleanupFailed',
+    'channels.oauth.cleanupStreamIncomplete',
+    404
+  );
 }
 
 async function followOAuthCredentialCleanupJob(jobID, total, fetcher, onEvent, delay = codexOAuthDelay) {
@@ -1626,6 +1638,8 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
   if (!Number.isInteger(numericID) || numericID <= 0) {
     throw new Error('A saved OAuth channel is required');
   }
+  const operationID = ++oauthUsageOperationSequence;
+  oauthUsageOperationByChannelID.set(numericID, operationID);
   oauthUsageStateByChannelID.set(numericID, { status: 'loading' });
   rerenderOAuthUsage();
   try {
@@ -1633,6 +1647,8 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
     if (!result || !Array.isArray(result.windows)) {
       throw new Error(window.t('channels.oauth.usageInvalid'));
     }
+    if (oauthUsageOperationByChannelID.get(numericID) !== operationID) return result;
+    oauthUsageOperationByChannelID.delete(numericID);
     oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: result });
     if (options.reload !== false && typeof loadChannels === 'function') {
       await loadChannels();
@@ -1642,37 +1658,89 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
     return result;
   } catch (error) {
     const message = error?.message || window.t('channels.oauth.usageFailed');
-    oauthUsageStateByChannelID.set(numericID, { status: 'error', error: message });
-    rerenderOAuthUsage();
+    if (oauthUsageOperationByChannelID.get(numericID) === operationID) {
+      oauthUsageOperationByChannelID.delete(numericID);
+      oauthUsageStateByChannelID.set(numericID, { status: 'error', error: message });
+      rerenderOAuthUsage();
+    }
     throw error;
   }
 }
 
-async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchDataWithAuth) {
+async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth) {
   const ids = Array.from(new Set((channelIDs || [])
     .map(id => Number(id))
     .filter(id => Number.isInteger(id) && id > 0)));
   const summary = { total: ids.length, succeeded: 0, failed: 0 };
   if (ids.length === 0) return summary;
 
-  for (const id of ids) {
-    try {
-      await refreshOAuthUsage(id, fetcher, { reload: false });
-      summary.succeeded++;
-    } catch {
-      summary.failed++;
-    }
-  }
+  const idSet = new Set(ids);
+  const operationID = ++oauthUsageOperationSequence;
+  ids.forEach(id => {
+    oauthUsageOperationByChannelID.set(id, operationID);
+    oauthUsageStateByChannelID.set(id, { status: 'loading' });
+  });
+  rerenderOAuthUsage();
+  try {
+    const response = await fetcher('/admin/channels/oauth-usage/batch/stream', {
+      method: 'POST',
+      headers: {
+        Accept: 'text/event-stream',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ channel_ids: ids })
+    });
+    const complete = await readAdminSSEStream(
+      response,
+      event => {
+        if (event.event !== 'progress' || !event.result) return;
+        const result = event.result;
+        const channelID = Number(result.channel_id);
+        if (!idSet.has(channelID) || oauthUsageOperationByChannelID.get(channelID) !== operationID) return;
+        if (result.status === 'succeeded') {
+          if (!result.usage || !Array.isArray(result.usage.windows)) {
+            throw new Error(window.t('channels.oauth.usageInvalid'));
+          }
+          oauthUsageStateByChannelID.set(channelID, { status: 'ready', data: result.usage });
+        } else {
+          oauthUsageStateByChannelID.set(channelID, {
+            status: 'error',
+            error: result.error || window.t('channels.oauth.usageFailed')
+          });
+        }
+        oauthUsageOperationByChannelID.delete(channelID);
+        rerenderOAuthUsage();
+      },
+      'channels.batchOAuthUsageFailed',
+      'channels.batchOAuthUsageIncomplete'
+    );
 
-  if (typeof loadChannels === 'function') {
-    await loadChannels();
-  } else {
+    summary.succeeded = Number(complete.succeeded) || 0;
+    summary.failed = Number(complete.failed) || 0;
+    if (Number(complete.processed) !== ids.length || summary.succeeded + summary.failed !== ids.length) {
+      throw new Error(window.t('channels.batchOAuthUsageIncomplete'));
+    }
+
+    if (typeof loadChannels === 'function') {
+      await loadChannels();
+    } else {
+      rerenderOAuthUsage();
+    }
+    return summary;
+  } catch (error) {
+    const message = error?.message || window.t('channels.batchOAuthUsageIncomplete');
+    ids.forEach(id => {
+      if (oauthUsageOperationByChannelID.get(id) === operationID) {
+        oauthUsageOperationByChannelID.delete(id);
+        oauthUsageStateByChannelID.set(id, { status: 'error', error: message });
+      }
+    });
     rerenderOAuthUsage();
+    throw error;
   }
-  return summary;
 }
 
-async function batchRefreshSelectedOAuthUsage(fetcher = fetchDataWithAuth) {
+async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const selectedIDs = typeof getSelectedChannelIDs === 'function' ? getSelectedChannelIDs() : [];
   if (selectedIDs.length === 0) {
     if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));

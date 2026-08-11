@@ -3605,6 +3605,135 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	}
 }
 
+func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResults(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	channelIDs := make([]int64, 0, oauthUsageBatchWorkers+2)
+	for index := range oauthUsageBatchWorkers + 2 {
+		credential := &codexauth.Credential{
+			Type:         codexauth.ChannelType,
+			AccessToken:  fmt.Sprintf("at-batch-quota-%d", index),
+			RefreshToken: fmt.Sprintf("rt-batch-quota-%d", index),
+			Expired:      time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+			AccountID:    fmt.Sprintf("account-batch-quota-%d", index),
+			PlanType:     "plus",
+		}
+		channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+		if err != nil {
+			t.Fatalf("create batch quota channel %d: %v", index, err)
+		}
+		channelIDs = append(channelIDs, channel.ID)
+	}
+
+	var active, maximum atomic.Int32
+	started := make(chan struct{}, len(channelIDs))
+	release := make(chan struct{})
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		current := active.Add(1)
+		defer active.Add(-1)
+		for observed := maximum.Load(); current > observed && !maximum.CompareAndSwap(observed, current); observed = maximum.Load() {
+		}
+		started <- struct{}{}
+		select {
+		case <-release:
+		case <-request.Context().Done():
+			return nil, request.Context().Err()
+		}
+		if request.Header.Get("Authorization") == fmt.Sprintf("Bearer at-batch-quota-%d", len(channelIDs)-1) {
+			return nil, errors.New("simulated quota failure")
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"plan_type":"pro","rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":604800,"reset_at":1786163635}}}`,
+			)),
+			Request: request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	request := newJSONRequest(t, http.MethodPost, "/admin/channels/oauth-usage/batch/stream", oauthUsageBatchRequest{
+		ChannelIDs: channelIDs,
+	})
+	c, response := newTestContext(t, request)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		server.HandleOAuthUsageBatchStream(c)
+	}()
+
+	for range oauthUsageBatchWorkers {
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("batch quota refresh did not start its worker pool")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatalf("batch quota refresh exceeded %d concurrent requests", oauthUsageBatchWorkers)
+	default:
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("batch quota refresh did not complete")
+	}
+
+	if maximum.Load() != oauthUsageBatchWorkers {
+		t.Fatalf("maximum batch quota concurrency = %d, want %d", maximum.Load(), oauthUsageBatchWorkers)
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("batch quota status=%d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.HasPrefix(contentType, "text/event-stream") {
+		t.Fatalf("batch quota content type=%q", contentType)
+	}
+
+	events := make([]oauthUsageBatchEvent, 0, len(channelIDs)+2)
+	for _, block := range strings.Split(response.Body.String(), "\n\n") {
+		if strings.TrimSpace(block) == "" {
+			continue
+		}
+		_, data := parseSSEEventChunk([]byte(block + "\n\n"))
+		var event oauthUsageBatchEvent
+		if err := json.Unmarshal(data, &event); err != nil {
+			t.Fatalf("decode batch quota SSE event: %v; block=%q", err, block)
+		}
+		events = append(events, event)
+	}
+	if len(events) != len(channelIDs)+2 || events[0].Event != "start" || events[len(events)-1].Event != "complete" {
+		t.Fatalf("batch quota events=%#v", events)
+	}
+	seen := make(map[int64]bool, len(channelIDs))
+	failed := 0
+	for _, event := range events[1 : len(events)-1] {
+		if event.Event != "progress" || event.Result == nil {
+			t.Fatalf("batch quota progress event=%#v", event)
+		}
+		if event.Result.Status == "failed" {
+			failed++
+			if event.Result.Error == "" || event.Result.Usage != nil {
+				t.Fatalf("batch quota failed event=%#v", event)
+			}
+		} else if event.Result.Status != "succeeded" || event.Result.Usage == nil || len(event.Result.Usage.Windows) != 1 {
+			t.Fatalf("batch quota succeeded event=%#v", event)
+		}
+		seen[event.Result.ChannelID] = true
+	}
+	complete := events[len(events)-1]
+	if len(seen) != len(channelIDs) || complete.Processed != len(channelIDs) ||
+		complete.Succeeded != len(channelIDs)-1 || complete.Failed != 1 || failed != 1 {
+		t.Fatalf("batch quota complete event=%#v seen=%v", complete, seen)
+	}
+}
+
 func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

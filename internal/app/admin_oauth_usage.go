@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"ccLoad/internal/anthropicauth"
@@ -29,6 +30,8 @@ const (
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 	antigravityUsageUserAgent  = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
 	oauthUsageTimeout          = 30 * time.Second
+	oauthUsageBatchWorkers     = 8
+	maxOAuthUsageBatchChannels = 1000
 	xaiUsageRequestTimeout     = 15 * time.Second
 	maxOAuthUsageResponseBytes = 1 << 20
 	maxOAuthCredentialBytes    = 1 << 20
@@ -42,7 +45,29 @@ var (
 	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
 	errXAIUsageManagerUnavailable    = errors.New("usage: xAI credential manager is unavailable")
 	errXAIBillingBadCredential       = errors.New("usage: xAI credential was rejected")
+	errOAuthUsageChannelNotFound     = errors.New("channel not found")
+	errOAuthUsagePersistFailed       = errors.New("usage: persist OAuth quota failed")
 )
+
+type oauthUsageBatchRequest struct {
+	ChannelIDs []int64 `json:"channel_ids"`
+}
+
+type oauthUsageBatchResult struct {
+	ChannelID int64              `json:"channel_id"`
+	Status    string             `json:"status"`
+	Usage     *oauthUsageSummary `json:"usage,omitempty"`
+	Error     string             `json:"error,omitempty"`
+}
+
+type oauthUsageBatchEvent struct {
+	Event     string                 `json:"event"`
+	Processed int                    `json:"processed"`
+	Total     int                    `json:"total"`
+	Succeeded int                    `json:"succeeded"`
+	Failed    int                    `json:"failed"`
+	Result    *oauthUsageBatchResult `json:"result,omitempty"`
+}
 
 type oauthUsageRequestError struct {
 	provider string
@@ -1151,37 +1176,158 @@ func (s *Server) HandleOAuthUsage(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "invalid channel id")
 		return
 	}
-	cfg, err := s.store.GetConfig(c.Request.Context(), id)
+	summary, err := s.refreshOAuthUsage(c.Request.Context(), id)
 	if err != nil {
-		RespondErrorMsg(c, http.StatusNotFound, "channel not found")
-		return
-	}
-	requestedAt := time.Now().UTC()
-
-	ctx, cancel := context.WithTimeout(c.Request.Context(), oauthUsageTimeout)
-	defer cancel()
-	summary, err := s.oauthUsageSummary(ctx, cfg)
-	if err != nil {
-		switch {
-		case errors.Is(err, errOAuthUsageUnsupported):
-			RespondError(c, http.StatusConflict, err)
-		case errors.Is(err, errCodexUsageManagerUnavailable),
-			errors.Is(err, errAnthropicManagerUnavailable),
-			errors.Is(err, errAntigravityManagerUnavailable),
-			errors.Is(err, errXAIUsageManagerUnavailable):
-			RespondError(c, http.StatusServiceUnavailable, err)
-		default:
-			RespondError(c, http.StatusBadGateway, err)
-		}
-		return
-	}
-	sampledAt := time.Now().UTC()
-	summary, err = s.persistOAuthUsage(c.Request.Context(), cfg, summary, requestedAt, sampledAt)
-	if err != nil {
-		RespondErrorMsg(c, http.StatusInternalServerError, "usage: persist OAuth quota failed")
+		RespondError(c, oauthUsageHTTPStatus(err), err)
 		return
 	}
 	RespondJSON(c, http.StatusOK, summary)
+}
+
+// HandleOAuthUsageBatchStream refreshes OAuth quota with bounded server-side
+// concurrency and streams per-channel results as SSE events.
+func (s *Server) HandleOAuthUsageBatchStream(c *gin.Context) {
+	var request oauthUsageBatchRequest
+	if err := c.ShouldBindJSON(&request); err != nil {
+		RespondErrorMsg(c, http.StatusBadRequest, "invalid request: "+err.Error())
+		return
+	}
+	channelIDs := normalizeBatchChannelIDs(request.ChannelIDs)
+	if len(channelIDs) == 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "channel_ids must not be empty")
+		return
+	}
+	if len(channelIDs) > maxOAuthUsageBatchChannels {
+		RespondErrorMsg(c, http.StatusBadRequest, fmt.Sprintf("channel_ids must contain at most %d channels", maxOAuthUsageBatchChannels))
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+	c.Header("X-Content-Type-Options", "nosniff")
+	disableResponseWriteTimeout(c.Writer, "OAuth usage batch stream")
+	c.Status(http.StatusOK)
+
+	total := len(channelIDs)
+	if err := writeSSEEvent(c, "start", oauthUsageBatchEvent{Event: "start", Total: total}); err != nil {
+		return
+	}
+
+	ctx, cancel := context.WithCancel(c.Request.Context())
+	defer cancel()
+	processed, succeeded, failed := 0, 0, 0
+	for result := range s.runOAuthUsageBatch(ctx, channelIDs) {
+		processed++
+		if result.Status == "succeeded" {
+			succeeded++
+		} else {
+			failed++
+		}
+		event := oauthUsageBatchEvent{
+			Event:     "progress",
+			Processed: processed,
+			Total:     total,
+			Succeeded: succeeded,
+			Failed:    failed,
+			Result:    &result,
+		}
+		if err := writeSSEEvent(c, "progress", event); err != nil {
+			return
+		}
+	}
+	if ctx.Err() != nil {
+		return
+	}
+	_ = writeSSEEvent(c, "complete", oauthUsageBatchEvent{
+		Event:     "complete",
+		Processed: processed,
+		Total:     total,
+		Succeeded: succeeded,
+		Failed:    failed,
+	})
+}
+
+func (s *Server) refreshOAuthUsage(ctx context.Context, id int64) (*oauthUsageSummary, error) {
+	cfg, err := s.store.GetConfig(ctx, id)
+	if err != nil {
+		return nil, errOAuthUsageChannelNotFound
+	}
+	requestedAt := time.Now().UTC()
+	requestCtx, cancel := context.WithTimeout(ctx, oauthUsageTimeout)
+	defer cancel()
+	summary, err := s.oauthUsageSummary(requestCtx, cfg)
+	if err != nil {
+		return nil, err
+	}
+	sampledAt := time.Now().UTC()
+	summary, err = s.persistOAuthUsage(ctx, cfg, summary, requestedAt, sampledAt)
+	if err != nil {
+		return nil, errOAuthUsagePersistFailed
+	}
+	return summary, nil
+}
+
+func oauthUsageHTTPStatus(err error) int {
+	switch {
+	case errors.Is(err, errOAuthUsageChannelNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errOAuthUsageUnsupported):
+		return http.StatusConflict
+	case errors.Is(err, errCodexUsageManagerUnavailable),
+		errors.Is(err, errAnthropicManagerUnavailable),
+		errors.Is(err, errAntigravityManagerUnavailable),
+		errors.Is(err, errXAIUsageManagerUnavailable):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, errOAuthUsagePersistFailed):
+		return http.StatusInternalServerError
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+func (s *Server) runOAuthUsageBatch(ctx context.Context, channelIDs []int64) <-chan oauthUsageBatchResult {
+	results := make(chan oauthUsageBatchResult)
+	go func() {
+		defer close(results)
+		jobs := make(chan int64)
+		workerCount := min(oauthUsageBatchWorkers, len(channelIDs))
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer workers.Done()
+				for channelID := range jobs {
+					usage, err := s.refreshOAuthUsage(ctx, channelID)
+					result := oauthUsageBatchResult{ChannelID: channelID, Status: "succeeded", Usage: usage}
+					if err != nil {
+						result.Status = "failed"
+						result.Usage = nil
+						result.Error = err.Error()
+					}
+					select {
+					case results <- result:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+		}
+
+		for _, channelID := range channelIDs {
+			select {
+			case jobs <- channelID:
+			case <-ctx.Done():
+				close(jobs)
+				workers.Wait()
+				return
+			}
+		}
+		close(jobs)
+		workers.Wait()
+	}()
+	return results
 }
 
 func (s *Server) persistOAuthUsage(
