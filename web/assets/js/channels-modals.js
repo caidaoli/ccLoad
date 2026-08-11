@@ -1150,7 +1150,8 @@ function updateBatchChannelSelectionUI() {
     'batchApplyRPMLimitBtn',
     'batchApplyMaxConcurrencyBtn',
     'batchApplyDailyCostLimitBtn',
-    'batchImportModelsBtn'
+    'batchImportModelsBtn',
+    'batchClearCooldownsBtn'
   ];
   actionBtnIDs.forEach((id) => {
     const btn = document.getElementById(id);
@@ -1264,6 +1265,41 @@ async function batchSetSelectedChannelsEnabled(enabled) {
     console.error('Batch set enabled failed', e);
     if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
   } finally {
+    setBatchChannelOperationBusy(false);
+  }
+}
+
+async function batchClearSelectedChannelCooldowns() {
+  const channelIDs = getSelectedChannelIDs();
+  if (channelIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+
+  const clearButton = document.getElementById('batchClearCooldownsBtn');
+  if (clearButton) clearButton.setAttribute('aria-busy', 'true');
+  setBatchChannelOperationBusy(true);
+  try {
+    const resp = await fetchAPIWithAuth('/admin/channels/batch-clear-cooldowns', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel_ids: channelIDs })
+    });
+    if (!resp.success) throw new Error(resp.error || window.t('common.failed'));
+
+    const data = resp.data || {};
+    await finishBatchAdvancedUpdate();
+    if (window.showSuccess) {
+      window.showSuccess(window.t('channels.batchClearCooldownsSummary', {
+        cleared: data.cleared || 0,
+        notFound: data.not_found_count || 0
+      }));
+    }
+  } catch (e) {
+    console.error('Batch clear cooldowns failed', e);
+    if (window.showError) window.showError(window.t('channels.batchOperationFailed', { error: e.message }));
+  } finally {
+    if (clearButton) clearButton.removeAttribute('aria-busy');
     setBatchChannelOperationBusy(false);
   }
 }
@@ -3568,6 +3604,7 @@ if (typeof module !== 'undefined' && module.exports) {
     addCommonModels,
     addCommonModelsToRows,
     applyQuickAddChannelSetup,
+    batchClearSelectedChannelCooldowns,
     batchSetSelectedChannelsPriority,
     batchSetSelectedChannelsDailyCostLimit,
     batchSetSelectedChannelsCostMultiplier,

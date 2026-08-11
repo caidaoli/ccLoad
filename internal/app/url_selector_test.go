@@ -255,6 +255,35 @@ func TestURLSelector_RecordLatencyClearsCooldownWindow(t *testing.T) {
 	}
 }
 
+func TestURLSelector_ClearCooldownsOnlyAffectsSelectedChannel(t *testing.T) {
+	sel := NewURLSelector()
+	const (
+		selectedChannelID = int64(1)
+		otherChannelID    = int64(2)
+		selectedURL       = "https://selected.example"
+		otherURL          = "https://other.example"
+	)
+
+	sel.RecordLatency(selectedChannelID, selectedURL, 25*time.Millisecond)
+	sel.RecordRequestResult(selectedChannelID, selectedURL, 200)
+	sel.DisableURL(selectedChannelID, selectedURL)
+	sel.CooldownURL(selectedChannelID, selectedURL)
+	sel.CooldownURL(otherChannelID, otherURL)
+
+	sel.ClearCooldowns(selectedChannelID)
+
+	if sel.IsCooledDown(selectedChannelID, selectedURL) {
+		t.Fatal("selected channel URL cooldown was not cleared")
+	}
+	if !sel.IsCooledDown(otherChannelID, otherURL) {
+		t.Fatal("another channel URL cooldown was cleared")
+	}
+	stats := sel.GetURLStats(selectedChannelID, []string{selectedURL})
+	if len(stats) != 1 || stats[0].LatencyMs <= 0 || stats[0].Requests != 1 || !stats[0].Disabled {
+		t.Fatalf("clearing cooldown changed unrelated URL state: %+v", stats)
+	}
+}
+
 func TestURLSelector_HealthSignalsDoNotCountRequests(t *testing.T) {
 	sel := NewURLSelector()
 	channelID := int64(1)

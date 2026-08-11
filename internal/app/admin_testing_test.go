@@ -288,7 +288,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	releaseHealthy := make(chan struct{})
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/reject", "/transient", "/refreshed-reject":
+		case "/reject", "/reject-empty-401", "/transient", "/refreshed-reject":
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
 			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
@@ -335,6 +335,9 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		statusCode := http.StatusBadRequest
 		responseBody := `{"error":"invalid_grant"}`
 		switch form.Get("refresh_token") {
+		case "rt-cleanup-rejected-empty-401":
+			statusCode = http.StatusUnauthorized
+			responseBody = ""
 		case "rt-cleanup-transient":
 			statusCode = http.StatusServiceUnavailable
 			responseBody = `{"error":"temporarily_unavailable"}`
@@ -385,6 +388,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	}
 
 	rejected := createChannel("cleanup-rejected", upstream.URL+"/reject", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
+	rejectedEmpty401 := createChannel("cleanup-rejected-empty-401", upstream.URL+"/reject-empty-401", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
 	transientRefresh := createChannel("cleanup-transient", upstream.URL+"/transient", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
 	healthyOne := createChannel("cleanup-healthy-1", upstream.URL+"/healthy-1", []model.ModelEntry{{Model: "gpt-5.4"}, {Model: "gpt-preferred"}}, "gpt-preferred")
 	createChannel("cleanup-healthy-2", upstream.URL+"/healthy-2", []model.ModelEntry{{Model: "gpt-5.4"}}, "")
@@ -407,7 +411,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		t.Fatalf("decode cleanup options: %v", err)
 	}
 	if !optionsPayload.Success || optionsPayload.Data.AuthType != model.AuthTypeCodexOAuth ||
-		optionsPayload.Data.ChannelCount != 9 ||
+		optionsPayload.Data.ChannelCount != 10 ||
 		!reflect.DeepEqual(optionsPayload.Data.Models, []string{"gpt-5.4", "gpt-other", "gpt-preferred"}) {
 		t.Fatalf("cleanup options=%+v", optionsPayload)
 	}
@@ -437,7 +441,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		return response.Data
 	}
 	started := startCleanup()
-	if started.Total != 9 || started.AuthType != model.AuthTypeCodexOAuth || started.Model != "gpt-5.4" {
+	if started.Total != 10 || started.AuthType != model.AuthTypeCodexOAuth || started.Model != "gpt-5.4" {
 		t.Fatalf("cleanup selection=%+v", started)
 	}
 	recovered := startCleanup()
@@ -474,11 +478,14 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	if maxInFlight.Load() < 2 {
 		t.Fatalf("healthy channel tests were not concurrent: max_in_flight=%d", maxInFlight.Load())
 	}
-	if refreshAttempts.Load() != 6 {
-		t.Fatalf("refresh attempts=%d, want 6", refreshAttempts.Load())
+	if refreshAttempts.Load() != 7 {
+		t.Fatalf("refresh attempts=%d, want 7", refreshAttempts.Load())
 	}
 	if _, err := srv.store.GetConfig(context.Background(), rejected.ID); err == nil {
 		t.Fatal("channel whose 401 refresh failed was not deleted")
+	}
+	if _, err := srv.store.GetConfig(context.Background(), rejectedEmpty401.ID); err == nil {
+		t.Fatal("channel whose refresh endpoint returned an empty 401 was not deleted")
 	}
 	if _, err := srv.store.GetConfig(context.Background(), networkFailure.ID); err != nil {
 		t.Fatalf("network failure must not delete its channel: %v", err)
@@ -523,7 +530,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	if !foundUnsupportedRetest {
 		t.Fatal("cleanup did not retest the selected model after refreshing a channel that lacks it")
 	}
-	if complete.Deleted != 2 || complete.Healthy != 4 || complete.Refreshed != 1 || complete.Failed != 2 || complete.Processed != 9 {
+	if complete.Deleted != 3 || complete.Healthy != 4 || complete.Refreshed != 1 || complete.Failed != 2 || complete.Processed != 10 {
 		t.Fatalf("cleanup summary=%+v", complete)
 	}
 

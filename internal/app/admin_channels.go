@@ -1087,15 +1087,29 @@ func (s *Server) handleUpdateChannel(c *gin.Context, id int64) {
 	RespondJSON(c, http.StatusOK, upd)
 }
 
-// clearAllChannelCooldowns 清除渠道的全部冷却状态并立即失效选择器相关缓存。
-// 清除失败不回滚已经成功的渠道配置更新，但必须记录并丢弃缓存快照。
-func (s *Server) clearAllChannelCooldowns(ctx context.Context, channelID int64) {
-	if s.cooldownManager != nil {
-		if err := s.cooldownManager.ClearAllCooldowns(ctx, channelID); err != nil {
-			log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", channelID, err)
-		}
+// resetAllChannelCooldowns 清除渠道、Key、模型和 URL 冷却，并立即失效相关缓存。
+func (s *Server) resetAllChannelCooldowns(ctx context.Context, channelID int64) error {
+	if s.cooldownManager == nil {
+		s.invalidateChannelRelatedCache(channelID)
+		return fmt.Errorf("cooldown manager is not initialized")
+	}
+	err := s.cooldownManager.ClearAllCooldowns(ctx, channelID)
+	if err == nil && s.urlSelector != nil {
+		s.urlSelector.ClearCooldowns(channelID)
 	}
 	s.invalidateChannelRelatedCache(channelID)
+	return err
+}
+
+// clearAllChannelCooldowns 用于配置更新后的尽力清理；失败不回滚已提交的配置。
+func (s *Server) clearAllChannelCooldowns(ctx context.Context, channelID int64) {
+	if s.cooldownManager == nil {
+		s.invalidateChannelRelatedCache(channelID)
+		return
+	}
+	if err := s.resetAllChannelCooldowns(ctx, channelID); err != nil {
+		log.Printf("[WARN] 清除渠道全部冷却状态失败 (channel=%d): %v", channelID, err)
+	}
 }
 
 // 删除渠道
@@ -1430,6 +1444,48 @@ func (s *Server) HandleBatchSetEnabled(c *gin.Context) {
 		"total":           len(channelIDs),
 		"updated":         updated,
 		"unchanged":       unchanged,
+		"not_found":       notFound,
+		"not_found_count": len(notFound),
+	})
+}
+
+// HandleBatchClearCooldowns 清除所选渠道的渠道、Key、模型和 URL 冷却状态。
+// POST /admin/channels/batch-clear-cooldowns
+func (s *Server) HandleBatchClearCooldowns(c *gin.Context) {
+	var req struct {
+		ChannelIDs []int64 `json:"channel_ids"`
+	}
+
+	if err := c.ShouldBindJSON(&req); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	channelIDs := normalizeBatchChannelIDs(req.ChannelIDs)
+	if len(channelIDs) == 0 {
+		RespondError(c, http.StatusBadRequest, fmt.Errorf("channel_ids cannot be empty"))
+		return
+	}
+
+	ctx := c.Request.Context()
+	cleared := 0
+	notFound := make([]int64, 0)
+	for _, channelID := range channelIDs {
+		if _, err := s.store.GetConfig(ctx, channelID); err != nil {
+			notFound = append(notFound, channelID)
+			continue
+		}
+		if err := s.resetAllChannelCooldowns(ctx, channelID); err != nil {
+			log.Printf("批量清除渠道 %d 冷却状态失败: %v", channelID, err)
+			RespondError(c, http.StatusInternalServerError, err)
+			return
+		}
+		cleared++
+	}
+
+	RespondJSON(c, http.StatusOK, gin.H{
+		"total":           len(channelIDs),
+		"cleared":         cleared,
 		"not_found":       notFound,
 		"not_found_count": len(notFound),
 	})

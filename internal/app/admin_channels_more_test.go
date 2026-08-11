@@ -569,6 +569,129 @@ func TestHandleBatchSetEnabled(t *testing.T) {
 	})
 }
 
+func TestHandleBatchClearCooldowns(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.channelCache = storage.NewChannelCache(store, time.Minute)
+	server.cooldownManager = cooldown.NewManager(store, server)
+	server.urlSelector = NewURLSelector()
+
+	ctx := context.Background()
+	selected, err := store.CreateConfig(ctx, &model.Config{
+		Name: "selected", URLs: model.ChannelURLs{{URL: "https://selected.example"}},
+		ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig selected failed: %v", err)
+	}
+	other, err := store.CreateConfig(ctx, &model.Config{
+		Name: "other", URLs: model.ChannelURLs{{URL: "https://other.example"}},
+		ModelEntries: []model.ModelEntry{{Model: "m"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig other failed: %v", err)
+	}
+	if err := store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: selected.ID, KeyIndex: 0, APIKey: "sk-selected", KeyStrategy: model.KeyStrategySequential},
+		{ChannelID: other.ID, KeyIndex: 0, APIKey: "sk-other", KeyStrategy: model.KeyStrategySequential},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	cooldownUntil := time.Now().Add(2 * time.Minute)
+	for _, channelID := range []int64{selected.ID, other.ID} {
+		if err := store.SetChannelCooldown(ctx, channelID, cooldownUntil); err != nil {
+			t.Fatalf("SetChannelCooldown(%d) failed: %v", channelID, err)
+		}
+		if err := store.SetKeyCooldown(ctx, channelID, 0, cooldownUntil); err != nil {
+			t.Fatalf("SetKeyCooldown(%d) failed: %v", channelID, err)
+		}
+		if err := store.SetModelCooldown(ctx, channelID, "m", cooldownUntil); err != nil {
+			t.Fatalf("SetModelCooldown(%d) failed: %v", channelID, err)
+		}
+	}
+	server.urlSelector.RecordLatency(selected.ID, "https://selected.example", 25*time.Millisecond)
+	server.urlSelector.DisableURL(selected.ID, "https://selected.example")
+	server.urlSelector.CooldownURL(selected.ID, "https://selected.example")
+	server.urlSelector.CooldownURL(other.ID, "https://other.example")
+
+	if _, err := server.getAllChannelCooldowns(ctx); err != nil {
+		t.Fatalf("prewarm channel cooldowns failed: %v", err)
+	}
+	if _, err := server.getAllKeyCooldowns(ctx); err != nil {
+		t.Fatalf("prewarm key cooldowns failed: %v", err)
+	}
+	if _, err := server.getAllModelCooldowns(ctx); err != nil {
+		t.Fatalf("prewarm model cooldowns failed: %v", err)
+	}
+
+	emptyContext, emptyResponse := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-clear-cooldowns", map[string]any{
+		"channel_ids": []int64{},
+	}))
+	server.HandleBatchClearCooldowns(emptyContext)
+	if emptyResponse.Code != http.StatusBadRequest {
+		t.Fatalf("empty status=%d, want %d", emptyResponse.Code, http.StatusBadRequest)
+	}
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/batch-clear-cooldowns", map[string]any{
+		"channel_ids": []int64{selected.ID, selected.ID, 99999},
+	}))
+	server.HandleBatchClearCooldowns(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[struct {
+		Total         int     `json:"total"`
+		Cleared       int     `json:"cleared"`
+		NotFound      []int64 `json:"not_found"`
+		NotFoundCount int     `json:"not_found_count"`
+	}](t, w.Body.Bytes())
+	if resp.Data.Total != 2 || resp.Data.Cleared != 1 || resp.Data.NotFoundCount != 1 || len(resp.Data.NotFound) != 1 || resp.Data.NotFound[0] != 99999 {
+		t.Fatalf("unexpected summary: %+v", resp.Data)
+	}
+
+	selectedConfig, err := store.GetConfig(ctx, selected.ID)
+	if err != nil {
+		t.Fatalf("GetConfig selected failed: %v", err)
+	}
+	if selectedConfig.CooldownUntil != 0 || selectedConfig.CooldownDurationMs != 0 {
+		t.Fatalf("selected channel cooldown not cleared: %+v", selectedConfig)
+	}
+	selectedKeys, err := store.GetAPIKeys(ctx, selected.ID)
+	if err != nil || len(selectedKeys) != 1 || selectedKeys[0].CooldownUntil != 0 || selectedKeys[0].CooldownDurationMs != 0 {
+		t.Fatalf("selected key cooldown not cleared: keys=%+v err=%v", selectedKeys, err)
+	}
+
+	channelCooldowns, err := server.getAllChannelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get channel cooldowns failed: %v", err)
+	}
+	keyCooldowns, err := server.getAllKeyCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get key cooldowns failed: %v", err)
+	}
+	modelCooldowns, err := server.getAllModelCooldowns(ctx)
+	if err != nil {
+		t.Fatalf("get model cooldowns failed: %v", err)
+	}
+	if _, exists := channelCooldowns[selected.ID]; exists || len(keyCooldowns[selected.ID]) != 0 || len(modelCooldowns[selected.ID]) != 0 {
+		t.Fatalf("selected cooldown caches not cleared: channels=%+v keys=%+v models=%+v", channelCooldowns, keyCooldowns, modelCooldowns)
+	}
+	if _, exists := channelCooldowns[other.ID]; !exists || len(keyCooldowns[other.ID]) != 1 || len(modelCooldowns[other.ID]) != 1 {
+		t.Fatalf("other channel cooldowns changed: channels=%+v keys=%+v models=%+v", channelCooldowns, keyCooldowns, modelCooldowns)
+	}
+	if server.urlSelector.IsCooledDown(selected.ID, "https://selected.example") {
+		t.Fatal("selected URL cooldown not cleared")
+	}
+	if !server.urlSelector.IsCooledDown(other.ID, "https://other.example") {
+		t.Fatal("other channel URL cooldown changed")
+	}
+	selectedStats := server.urlSelector.GetURLStats(selected.ID, []string{"https://selected.example"})
+	if len(selectedStats) != 1 || selectedStats[0].LatencyMs <= 0 || !selectedStats[0].Disabled {
+		t.Fatalf("clearing cooldown changed selected URL metadata: %+v", selectedStats)
+	}
+}
+
 func TestHandleBatchPatchChannels(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

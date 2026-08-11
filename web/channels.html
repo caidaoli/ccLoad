@@ -658,11 +658,18 @@
                       </button>
                     </div>
                   </div>
-                  <button id="batchImportModelsBtn" type="button"
-                    class="btn btn-sm channel-batch-action channel-batch-action--import"
-                    data-action="open-batch-model-import" disabled>
-                    <span data-i18n="channels.batchImportModels">导入模型</span>
-                  </button>
+                  <div class="channel-batch-advanced__actions">
+                    <button id="batchImportModelsBtn" type="button"
+                      class="btn btn-sm channel-batch-action channel-batch-action--import"
+                      data-action="open-batch-model-import" disabled>
+                      <span data-i18n="channels.batchImportModels">导入模型</span>
+                    </button>
+                    <button id="batchClearCooldownsBtn" type="button"
+                      class="btn btn-sm channel-batch-action channel-batch-action--clear-cooldowns"
+                      data-action="batch-clear-cooldowns" disabled>
+                      <span data-i18n="channels.batchClearCooldowns">清除冷却</span>
+                    </button>
+                  </div>
                 </div>
               </details>
               <button id="batchDeleteChannelsBtn" type="button"
