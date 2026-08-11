@@ -1676,6 +1676,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 
 func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 	var calls atomic.Int32
+	var cooldownObserved atomic.Bool
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "antigravity-capacity-retry", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity-retry"),
@@ -1686,6 +1687,25 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 		if calls.Add(1) == 1 {
 			status = http.StatusServiceUnavailable
 			body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"claude-sonnet-4-6"}}]}}`
+		} else {
+			configs, err := env.store.ListConfigs(context.Background())
+			if err != nil || len(configs) != 1 {
+				t.Errorf("ListConfigs during retry=(%d, %v)", len(configs), err)
+			} else {
+				cooldowns, err := env.server.getAllModelCooldowns(context.Background())
+				if err != nil {
+					t.Errorf("GetAllModelCooldowns during retry: %v", err)
+				} else if until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]; !until.After(time.Now()) {
+					t.Errorf("model cooldown was not visible before retry: %v", cooldowns)
+				} else {
+					remaining := time.Until(until)
+					if remaining < util.ServerErrorInitialCooldown-10*time.Second ||
+						remaining > util.ServerErrorInitialCooldown+2*time.Second {
+						t.Errorf("capacity cooldown remaining=%v, want about %v", remaining, util.ServerErrorInitialCooldown)
+					}
+					cooldownObserved.Store(true)
+				}
+			}
 		}
 		return &http.Response{
 			StatusCode: status,
@@ -1704,6 +1724,20 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("calls=%d, want 2", got)
+	}
+	if !cooldownObserved.Load() {
+		t.Fatal("model cooldown was not installed before the URL retry")
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs after retry=(%d, %v)", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := cooldowns[configs[0].ID]["claude-sonnet-4-6"]; until.After(time.Now()) {
+		t.Fatalf("successful retry did not clear model cooldown: %v", cooldowns)
 	}
 
 	entry := waitForProxyLog(t, env, "claude-sonnet-4-6")
@@ -1833,6 +1867,9 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	}
 	if until := cooldowns[configs[0].ID]["claude-opus-4-6-thinking"]; !until.After(time.Now()) {
 		t.Fatalf("capacity exhaustion did not cool model: %v", cooldowns)
+	} else if remaining := time.Until(until); remaining < util.ServerErrorInitialCooldown-10*time.Second ||
+		remaining > util.ServerErrorInitialCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want about %v", remaining, util.ServerErrorInitialCooldown)
 	}
 
 	entry := waitForProxyLog(t, env, "claude-opus-4-6-thinking")

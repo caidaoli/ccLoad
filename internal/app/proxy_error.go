@@ -63,6 +63,26 @@ func (s *Server) decideCooldownAction(
 	return s.cooldownManager.DecideAction(ctx, in)
 }
 
+func (s *Server) applyAntigravityModelCapacityCooldown(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	actualModel string,
+	res *fwResult,
+) {
+	cooldownCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+
+	// MODEL_CAPACITY_EXHAUSTED is a provider-defined model failure. Apply the
+	// original 503 before converting the client response to 429 so the normal
+	// server-error policy starts at two minutes. Bypass channel rules here: this
+	// exact error must never cool a Key, URL, or unrelated model.
+	in := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	in.ChannelModels = s.channelModelCooldownKeys(cfg)
+	s.cooldownManager.HandleError(cooldownCtx, in)
+	s.invalidateChannelRelatedCache(cfg.ID)
+}
+
 func (s *Server) completeCooldownInput(cfg *model.Config, in cooldown.ErrorInput) cooldown.ErrorInput {
 	in.CooldownDetectionRules, _ = s.effectiveChannelCooldownDetectionRules(cfg.CooldownDetectionRules)
 	if strings.TrimSpace(in.Model) != "" && len(in.ChannelModels) == 0 {
@@ -606,7 +626,7 @@ func (s *Server) handleProxyErrorResponse(
 	reqCtx *proxyRequestContext,
 	deferChannelCooldown bool,
 	forceReturnClient bool,
-	deferResultLog bool,
+	modelCapacityRateLimited bool,
 ) (*proxyResult, cooldown.Action) {
 	// 日志改进: 明确标识上游返回的499错误
 	errMsg := ""
@@ -635,7 +655,7 @@ func (s *Server) handleProxyErrorResponse(
 		duration:  duration,
 		succeeded: false,
 	}
-	if deferResultLog {
+	if modelCapacityRateLimited {
 		failure.deferredLog = logEntry
 	} else {
 		s.AddLogAsync(logEntry)
@@ -648,6 +668,14 @@ func (s *Server) handleProxyErrorResponse(
 	}
 
 	input := cooldownInputForModel(httpErrorInput(cfg.ID, keyIndex, res), actualModel)
+	if modelCapacityRateLimited {
+		// The original 503 already installed the model cooldown before URL retry.
+		// Only decide where to continue; applying this converted 429 again would
+		// double the same failure and change the initial two-minute cooldown.
+		action := s.decideCooldownAction(ctx, cfg, input)
+		failure.nextAction = action
+		return failure, action
+	}
 	if deferChannelCooldown {
 		action := s.decideCooldownAction(ctx, cfg, input)
 		if cfg.UsesAntigravityOAuth() && shouldFallbackAntigravityBaseURL(res.Status, res.Body) {
