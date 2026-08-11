@@ -209,7 +209,6 @@ func setupProxyTestEnvWithSettings(
 
 	injectAPIToken(srv.authService, "test-api-key", 0, 1)
 
-	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	srv.SetupRoutes(engine)
 
@@ -1543,6 +1542,8 @@ func TestProxy_AntigravityOAuthClampsAnthropicThinkingLevelOnWire(t *testing.T) 
 }
 
 func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
+	t.Parallel()
+
 	tests := []struct {
 		name         string
 		status       int
@@ -1564,6 +1565,8 @@ func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
 			var firstCalls atomic.Int32
 			var fallbackCalls atomic.Int32
 			first := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -1626,6 +1629,8 @@ func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
+	t.Parallel()
+
 	var mu sync.Mutex
 	requestBaseURLs := make([]string, 0, 3)
 	env := setupProxyTestEnv(t, []testChannel{{
@@ -1675,6 +1680,8 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
+	t.Parallel()
+
 	var calls atomic.Int32
 	var cooldownObserved atomic.Bool
 	env := setupProxyTestEnv(t, []testChannel{{
@@ -1760,6 +1767,8 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthCapacityRetryBlockedBeforeNextRequestPreservesLog(t *testing.T) {
+	t.Parallel()
+
 	var calls atomic.Int32
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "antigravity-capacity-rpm", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
@@ -1814,6 +1823,8 @@ func TestProxy_AntigravityOAuthCapacityRetryBlockedBeforeNextRequestPreservesLog
 }
 
 func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseURLs(t *testing.T) {
+	t.Parallel()
+
 	var mu sync.Mutex
 	requestBaseURLs := make([]string, 0, antigravityModelCapacityAttempts)
 	requestTimes := make([]time.Time, 0, antigravityModelCapacityAttempts)
@@ -1930,6 +1941,8 @@ func TestProxy_AntigravityOAuthSingleURLModelCapacityExhaustionBecomes429(t *tes
 }
 
 func TestProxy_AntigravityOAuthCapacityCountResetsAfterDifferentError(t *testing.T) {
+	t.Parallel()
+
 	baseURLs := []string{
 		"https://capacity-1.test",
 		"https://not-found.test",
@@ -3322,6 +3335,8 @@ func TestProxy_CrossProtocolTranslationDropsClientQuery(t *testing.T) {
 }
 
 func TestProxy_AlphaSearchPassthroughWithRestrictedToken(t *testing.T) {
+	t.Parallel()
+
 	var upstreamHits atomic.Int64
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits.Add(1)
@@ -3601,6 +3616,8 @@ func TestProxy_AlphaSearchExactURLRouting(t *testing.T) {
 }
 
 func TestDashboardProxy_UsesBoundTokenAndStreams(t *testing.T) {
+	t.Parallel()
+
 	var upstreamHits atomic.Int64
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits.Add(1)
@@ -3765,10 +3782,11 @@ func TestDashboardProxy_RejectsRevokedToken(t *testing.T) {
 }
 
 func TestProxy_NoAvailableUpstreamLogKeepsAuthTokenID(t *testing.T) {
+	t.Parallel()
+
 	srv := newInMemoryServer(t)
 	injectAPIToken(srv.authService, "test-api-key", 0, 77)
 
-	gin.SetMode(gin.TestMode)
 	engine := gin.New()
 	srv.SetupRoutes(engine)
 	env := &proxyTestEnv{server: srv, store: srv.store, engine: engine}
@@ -3900,6 +3918,8 @@ func TestProxy_LogsThinkingEffortFromRequestAndSSEOverride(t *testing.T) {
 }
 
 func TestProxy_CodexPriorityRequestBillsFastModeWithoutResponseTier(t *testing.T) {
+	t.Parallel()
+
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -7060,12 +7080,16 @@ func TestProxy_Success_Streaming_OpenAIToCodexTransformWithoutContentType(t *tes
 }
 
 func TestProxy_Success_Streaming_CodexCompletedWithoutEOF(t *testing.T) {
+	t.Parallel()
+
 	sse := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"Hello\"}\n\n" +
 		"event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"model\":\"gpt-5-codex\",\"usage\":{\"input_tokens\":7,\"output_tokens\":4,\"total_tokens\":11}}}\n\n")
 	trailing := []byte("event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"late\"}\n\n")
 
 	for _, contentType := range []string{"text/event-stream", "text/plain; charset=utf-8"} {
 		t.Run(contentType, func(t *testing.T) {
+			t.Parallel()
+
 			upstreamData := append(append([]byte(nil), sse...), trailing...)
 			upstreamBody := newDataThenBlockReadCloser(upstreamData, len(upstreamData))
 			defer func() { _ = upstreamBody.Close() }()
