@@ -27,7 +27,9 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-          cache-dependency-path: go.sum
+          cache-dependency-path: |
+            go.mod
+            go.sum
 
       - name: Set up Node.js
         uses: actions/setup-node@v6
@@ -35,7 +37,9 @@ jobs:
           node-version: '24'
 
       - name: Test backend
-        run: go test -tags sonic ./internal/...
+        env:
+          CGO_ENABLED: 0
+        run: go test -trimpath -tags sonic ./internal/...
 
       - name: Verify web assets
         run: make verify-web

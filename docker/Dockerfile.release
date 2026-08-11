@@ -1,18 +1,24 @@
 # syntax=docker/dockerfile:1
-FROM alpine:3.21
-
-ARG TARGETARCH
+FROM --platform=$BUILDPLATFORM alpine:3.21 AS runtime-files
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1001 -S ccload && \
     adduser -u 1001 -S ccload -G ccload && \
-    mkdir -p /app/data && \
-    chown -R ccload:ccload /app
+    mkdir -p /app/data
+
+FROM alpine:3.21
+
+ARG TARGETARCH
+
+COPY --from=runtime-files /etc/ssl/certs /etc/ssl/certs
+COPY --from=runtime-files /usr/share/zoneinfo /usr/share/zoneinfo
+COPY --from=runtime-files /etc/passwd /etc/passwd
+COPY --from=runtime-files /etc/group /etc/group
+COPY --from=runtime-files --chown=1001:1001 /app/data /app/data
 
 WORKDIR /app
 
-COPY dist/ccload-linux-${TARGETARCH} /app/ccload
-RUN chmod 0755 /app/ccload && chown ccload:ccload /app/ccload
+COPY --chown=1001:1001 --chmod=0755 dist/ccload-linux-${TARGETARCH} /app/ccload
 
 USER ccload
 
