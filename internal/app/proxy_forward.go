@@ -2188,9 +2188,12 @@ func (s *Server) forwardAttempt(
 	modelCapacityRateLimited := err == nil && res != nil && cfg.UsesAntigravityOAuth() &&
 		isAntigravityModelCapacityExhausted(res.Status, res.Body)
 	if modelCapacityRateLimited {
+		if antigravityCapacityRetries == 0 {
+			s.applyAntigravityModelCapacityCooldown(ctx, cfg, keyIndex, actualModel, res)
+		}
 		// 保留 UpstreamStatus=503 供诊断和自定义规则使用；网关侧按模型容量限流处理。
 		res.Status = http.StatusTooManyRequests
-		// 签名/请求体降级重试只能截止请求语义错误，不能吞掉后续的模型容量冷却。
+		// 签名/请求体降级重试只能截止请求语义错误，不能吞掉模型容量重试。
 		forceReturnClient = false
 	}
 
@@ -2986,11 +2989,6 @@ func (s *Server) attemptKeyAcrossURLs(
 				modelCapacityRetries++
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
-			}
-			if result.deferredCooldown != nil {
-				nextAction = s.applyCooldownDecision(ctx, cfg, *result.deferredCooldown)
-				result.nextAction = nextAction
-				result.deferredCooldown = nil
 			}
 			break
 		}
