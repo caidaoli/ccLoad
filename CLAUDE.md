@@ -19,6 +19,18 @@ make verify-web     # 前端验证(含 node:test)
 golangci-lint run ./...   # 提交前必须零警告
 ```
 
+## 测试策略
+
+- 开发迭代优先运行受影响包及相关测试，例如：`go test -tags sonic ./internal/app -run 'TestHandleImportOAuthCredentials'`
+- 提交前必须运行一次：`go test -tags sonic ./internal/...`
+- 独立检查可并行运行：Go 测试、`make verify-web`、`make build`、`golangci-lint run ./...`
+- 除非排查缓存或不稳定测试，否则不要使用 `-count=1`
+- 单包测试应积极使用 `t.Parallel()`；并行测试必须使用独立 Store/Server、随机监听端口和局部 mock，不得共享可变 fixture
+- 调用 `t.Setenv`/`t.Chdir`，或修改进程环境、工作目录、`http.DefaultTransport`、全局模型目录、包级 session/cache、全局 goroutine 计数的测试必须保持串行
+- 优先并行化包含 sleep、deadline、轮询或异步日志等待的高耗时测试；不要为了提高并行数量机械修改纯解析微测试
+- 并行化前后使用同一命令计时：`/usr/bin/time -p go test -tags sonic -count=1 ./internal/app`；收益属于噪声时撤销改动
+- 新增或调整并行测试后运行：`go test -race -tags sonic -count=1 -shuffle=on ./internal/app`
+
 ## 代码规范(硬约束)
 
 - 必须 `-tags sonic`;用 `any`,不用 `interface{}`
