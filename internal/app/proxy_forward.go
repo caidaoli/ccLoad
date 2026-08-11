@@ -423,7 +423,7 @@ func streamAndParseResponse(
 	}
 	copySSE := func(stream io.Reader, parser *sseUsageParser) error {
 		feed := makeFeed(parser)
-		if upstreamProtocol != util.ProtocolCodex {
+		if upstreamProtocol != util.ProtocolCodex && upstreamProtocol != util.ProtocolAnthropic {
 			return streamCopySSE(ctx, stream, w, feed)
 		}
 		return streamCopySSE(ctx, stream, w, func(data []byte) error {
@@ -1202,7 +1202,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return chunks, nil
 		},
 		func() bool {
-			return reqCtx.transformPlan.UpstreamProtocol == protocol.Codex && parser.IsStreamComplete() && translatedComplete
+			terminalProtocol := reqCtx.transformPlan.UpstreamProtocol == protocol.Codex ||
+				reqCtx.transformPlan.UpstreamProtocol == protocol.Anthropic
+			return terminalProtocol && parser.IsStreamComplete() && translatedComplete
 		},
 	)
 

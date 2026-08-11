@@ -507,7 +507,8 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 	}
 
 	payloadType, _ := event["type"].(string)
-	if eventType == "message_stop" || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
+	isAnthropicTerminal := payloadType == "message_stop" || (payloadType == "" && eventType == "message_stop")
+	if isAnthropicTerminal || isSuccessfulResponsesTerminal(eventType) || isSuccessfulResponsesTerminal(payloadType) {
 		p.streamComplete = true
 	}
 	if isSuccessfulResponsesTerminal(payloadType) {
