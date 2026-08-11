@@ -703,31 +703,50 @@ func TestSSEUsageParser_StreamComplete(t *testing.T) {
 	// 测试各种流结束标志是否正确设置 streamComplete
 	// [FIX] 2026-01: 添加 response.completed 检测，修复客户端取消时费用丢失问题
 	tests := []struct {
-		name    string
-		sseData string
+		name             string
+		upstreamProtocol string
+		sseData          string
+		want             bool
 	}{
 		{
-			name:    "OpenAI Chat [DONE]",
-			sseData: "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
+			name:             "OpenAI Chat [DONE]",
+			upstreamProtocol: "openai",
+			sseData:          "data: {\"choices\":[]}\n\ndata: [DONE]\n\n",
+			want:             true,
 		},
 		{
-			name:    "Anthropic message_stop",
-			sseData: "event: message_stop\ndata: {}\n\n",
+			name:             "Anthropic message_stop event fallback",
+			upstreamProtocol: "anthropic",
+			sseData:          "event: message_stop\ndata: {}\n\n",
+			want:             true,
 		},
 		{
-			name:    "OpenAI Responses API response.completed",
-			sseData: "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+			name:             "Anthropic message_stop payload without event",
+			upstreamProtocol: "anthropic",
+			sseData:          "data: {\"type\":\"message_stop\"}\n\n",
+			want:             true,
+		},
+		{
+			name:             "Anthropic mismatched payload wins",
+			upstreamProtocol: "anthropic",
+			sseData:          "event: message_stop\ndata: {\"type\":\"message_delta\"}\n\n",
+		},
+		{
+			name:             "OpenAI Responses API response.completed",
+			upstreamProtocol: "codex",
+			sseData:          "event: response.completed\ndata: {\"type\":\"response.completed\"}\n\n",
+			want:             true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			parser := newSSEUsageParser("openai")
+			parser := newSSEUsageParser(tt.upstreamProtocol)
 			if err := parser.Feed([]byte(tt.sseData)); err != nil {
 				t.Fatalf("Feed 失败: %v", err)
 			}
-			if !parser.IsStreamComplete() {
-				t.Errorf("期望 streamComplete=true，实际为 false")
+			if got := parser.IsStreamComplete(); got != tt.want {
+				t.Fatalf("IsStreamComplete()=%v, want %v", got, tt.want)
 			}
 		})
 	}

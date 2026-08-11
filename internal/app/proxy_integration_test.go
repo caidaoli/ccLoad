@@ -7083,6 +7083,95 @@ func TestProxy_Success_Streaming_CodexCompletedWithoutEOF(t *testing.T) {
 	}
 }
 
+func TestProxy_Success_Streaming_AnthropicMessageStopWithoutEOF(t *testing.T) {
+	sse := []byte("event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[],\"model\":\"claude-3-5-sonnet\",\"stop_reason\":null,\"usage\":{\"input_tokens\":7,\"output_tokens\":0}}}\n\n" +
+		"event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"Hello\"}}\n\n" +
+		"data: {\"type\":\"message_stop\"}\n\n")
+	trailing := []byte("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"late\"}}\n\n")
+
+	tests := []struct {
+		name         string
+		path         string
+		requestBody  map[string]any
+		wantRaw      bool
+		wantTerminal string
+	}{
+		{
+			name: "native Anthropic",
+			path: "/v1/messages",
+			requestBody: map[string]any{
+				"model": "claude-3-5-sonnet", "max_tokens": 64, "stream": true,
+				"messages": []map[string]string{{"role": "user", "content": "hi"}},
+			},
+			wantRaw: true,
+		},
+		{
+			name: "translated Anthropic",
+			path: "/v1/responses",
+			requestBody: map[string]any{
+				"model": "claude-3-5-sonnet", "stream": true,
+				"input": []map[string]any{{
+					"type": "message", "role": "user",
+					"content": []map[string]string{{"type": "input_text", "text": "hi"}},
+				}},
+			},
+			wantTerminal: "event: response.completed",
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			upstreamData := append(append([]byte(nil), sse...), trailing...)
+			upstreamBody := newDataThenBlockReadCloser(upstreamData, len(upstreamData))
+			defer func() { _ = upstreamBody.Close() }()
+
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "anthropic-no-eof", upstreamProtocol: util.ProtocolAnthropic, models: "claude-3-5-sonnet", apiKey: "sk-ant",
+			}}, map[int]string{0: "https://anthropic-upstream.example.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+					Body:       upstreamBody,
+				}, nil
+			})}
+
+			done := make(chan *httptest.ResponseRecorder, 1)
+			go func() {
+				done <- doProxyRequest(t, env.engine, testCase.path, testCase.requestBody, nil)
+			}()
+
+			var response *httptest.ResponseRecorder
+			select {
+			case response = <-done:
+			case <-time.After(2 * time.Second):
+				_ = upstreamBody.Close()
+				<-done
+				t.Fatal("Anthropic stream waited for upstream EOF after message_stop")
+			}
+
+			if response.Code != http.StatusOK {
+				t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+			}
+			body := response.Body.String()
+			if testCase.wantRaw && body != string(sse) {
+				t.Fatalf("forwarded SSE mismatch:\n got: %q\nwant: %q", body, string(sse))
+			}
+			if testCase.wantTerminal != "" && !strings.Contains(body, testCase.wantTerminal) {
+				t.Fatalf("translated terminal event missing: %s", body)
+			}
+			if strings.Contains(body, "late") {
+				t.Fatalf("data after message_stop was forwarded: %s", body)
+			}
+			select {
+			case <-upstreamBody.closed:
+			default:
+				t.Fatal("stream returned without closing the upstream body")
+			}
+		})
+	}
+}
+
 func TestProxy_Success_NonStreaming_CodexToOpenAITransform(t *testing.T) {
 	t.Parallel()
 
