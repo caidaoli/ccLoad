@@ -1471,6 +1471,37 @@ func TestClassifyOrdinaryRateLimitStillModelScoped(t *testing.T) {
 	if !got.ModelScoped {
 		t.Error("ordinary 429 should stay model scoped")
 	}
+	if got.PreventKeyFallback {
+		t.Error("ordinary 429 should preserve independent-key fallback")
+	}
+}
+
+func TestClassifyAnthropicRateLimitUsesUnifiedReset(t *testing.T) {
+	now := time.Date(2026, 8, 11, 12, 43, 49, 0, time.UTC)
+	want := time.Unix(1786462800, 0)
+	body := []byte(`{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+	headers := map[string][]string{
+		"anthropic-ratelimit-unified-reset":     {strconv.FormatInt(want.Unix(), 10)},
+		"Anthropic-Ratelimit-Unified-5h-Reset":  {strconv.FormatInt(want.Unix(), 10)},
+		"Anthropic-Ratelimit-Unified-7d-Reset":  {strconv.FormatInt(want.Add(72*time.Hour).Unix(), 10)},
+		"Anthropic-Ratelimit-Unified-7d-Status": {"allowed"},
+		"Retry-After":                           {"30"},
+	}
+
+	got := classifyHTTPResponseWithMetaAt(http.StatusTooManyRequests, headers, body, now)
+
+	if !got.ModelScoped || !got.HasModelCooldownUntil {
+		t.Fatalf("classification=%+v, want fixed model cooldown", got)
+	}
+	if !got.PreventKeyFallback {
+		t.Fatal("Anthropic unified rate limit must not rotate independent keys")
+	}
+	if !got.ModelCooldownUntil.Equal(want) {
+		t.Fatalf("ModelCooldownUntil=%s, want %s", got.ModelCooldownUntil, want)
+	}
+	if got.ModelCooldownReason != "anthropic_unified_reset" {
+		t.Fatalf("ModelCooldownReason=%q, want anthropic_unified_reset", got.ModelCooldownReason)
+	}
 }
 
 func TestIsWebsocketConnectionLimitErrorRejectsUnrelatedBodies(t *testing.T) {

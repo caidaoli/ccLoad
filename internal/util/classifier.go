@@ -71,6 +71,8 @@ const (
 const (
 	// RetryAfterThresholdSeconds Retry-After超过此值视为渠道级限流
 	RetryAfterThresholdSeconds = 60
+	// anthropicRateLimitUnifiedResetHeader 是 Anthropic 当前被拒绝配额窗口的 Unix 秒重置时间。
+	anthropicRateLimitUnifiedResetHeader = "Anthropic-Ratelimit-Unified-Reset"
 	// WebsocketConnectionLimitCooldown 是上游 WebSocket 并发连接槽耗尽时的渠道冷却时长。
 	// 连接槽是瞬时资源：冷却只需覆盖“切走再回来”的窗口，绝不能走指数退避。
 	WebsocketConnectionLimitCooldown = 5 * time.Second
@@ -109,6 +111,7 @@ type HTTPResponseClassification struct {
 	Level                   ErrorLevel
 	Model                   string
 	ModelScoped             bool
+	PreventKeyFallback      bool
 	ModelCooldownUntil      time.Time
 	HasModelCooldownUntil   bool
 	ModelCooldownReason     string
@@ -457,10 +460,17 @@ func classifyHTTPResponseWithMetaAt(statusCode int, headers map[string][]string,
 		if headers != nil {
 			level = classifyRateLimitError(headers, responseBody)
 		}
-		return HTTPResponseClassification{
+		classification := HTTPResponseClassification{
 			Level:       level,
 			ModelScoped: true,
 		}
+		if until, ok := parseAnthropicRateLimitReset(headers, now); ok {
+			classification.PreventKeyFallback = true
+			classification.ModelCooldownUntil = until
+			classification.HasModelCooldownUntil = true
+			classification.ModelCooldownReason = "anthropic_unified_reset"
+		}
+		return classification
 	}
 
 	// 400 表示当前模型无法接受该请求。切换渠道，但只冷却实际请求的模型。
@@ -589,6 +599,26 @@ func classifyRateLimitError(headers map[string][]string, responseBody []byte) Er
 
 	// 4. 默认标记为窄域限流；冷却仍只作用于当前模型
 	return ErrorLevelKey
+}
+
+func parseAnthropicRateLimitReset(headers map[string][]string, now time.Time) (time.Time, bool) {
+	for name, values := range headers {
+		if !strings.EqualFold(name, anthropicRateLimitUnifiedResetHeader) {
+			continue
+		}
+		for _, value := range values {
+			resetUnix, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if err != nil {
+				continue
+			}
+			until := time.Unix(resetUnix, 0)
+			if until.After(now) {
+				return until, true
+			}
+		}
+		return time.Time{}, false
+	}
+	return time.Time{}, false
 }
 
 // classifySSEError 分析SSE error事件的具体类型
