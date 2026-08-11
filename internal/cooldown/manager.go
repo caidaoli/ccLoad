@@ -124,10 +124,13 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		decision.hasChannelCooldownUntil = classification.HasChannelCooldownUntil
 		decision.channelCooldownReason = classification.ChannelCooldownReason
 
-		// OAuth 渠道没有独立 Key。结构化配额错误给出的精确 Key 截止时间
-		// 必须落到当前模型，否则 NoKeyIndex 会让冷却写入直接丢失。
+		// OAuth 渠道没有独立 Key。结构化配额错误给出的模型和精确 Key 截止时间
+		// 必须落到上游确认的模型；响应未提供模型时才回退请求侧身份。
 		if in.KeyIndex == NoKeyIndex && classification.HasKeyCooldownUntil {
-			decision.model = strings.TrimSpace(in.Model)
+			decision.model = strings.TrimSpace(classification.Model)
+			if decision.model == "" {
+				decision.model = strings.TrimSpace(in.Model)
+			}
 			if decision.model != "" {
 				decision.modelScoped = true
 				decision.modelCooldownUntil = classification.KeyCooldownUntil
@@ -136,9 +139,9 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 		}
 
 		if classification.ModelScoped {
-			decision.model = strings.TrimSpace(in.Model)
+			decision.model = strings.TrimSpace(classification.Model)
 			if decision.model == "" {
-				decision.model = strings.TrimSpace(classification.Model)
+				decision.model = strings.TrimSpace(in.Model)
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
