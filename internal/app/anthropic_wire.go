@@ -207,10 +207,17 @@ func anthropicFirstSystemBlockText(system any) string {
 
 func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, messages []any) error {
 	credential := anthropicCredentialForWire(cfg)
-	if credential == nil || credential.DeviceID == "" || credential.AccountUUID == "" {
+	if credential == nil {
 		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
 	}
-	sessionID := anthropicStableSessionID(credential.AccountUUID, anthropicFirstUserText(messages))
+	identitySeed := credential.AccountUUID
+	if identitySeed == "" {
+		identitySeed = strings.ToLower(credential.EmailAddress)
+	}
+	if credential.DeviceID == "" || identitySeed == "" {
+		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
+	}
+	sessionID := anthropicStableSessionID(identitySeed, anthropicFirstUserText(messages))
 	identity, err := json.Marshal(map[string]string{
 		"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID, "session_id": sessionID,
 	})

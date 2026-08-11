@@ -192,7 +192,7 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.priorityIncrement20': 'Increase priority by 20',
   'channels.oauth.priorityIncrement50': 'Increase priority by 50',
   'channels.oauth.credentialFiles': 'Credential files',
-  'channels.oauth.credentialFilesHint': 'You can select JSON, ZIP, tar.gz, or tgz files together.',
+  'channels.oauth.credentialFilesHint': 'Select JSON, TXT, ZIP, tar.gz, or tgz files; JSON/TXT may contain CLIProxyAPI or Sub2API credential bundles.',
   'channels.oauth.progressTitle': 'Import progress',
   'channels.oauth.progressCounter': '{processed} / {total}',
   'channels.oauth.progressCounts': 'Created {created} · skipped {skipped} · failed {failed}',

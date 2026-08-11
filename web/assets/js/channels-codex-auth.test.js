@@ -1053,6 +1053,27 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     providerSelect.listeners.change();
     anthropicMethod.value = 'cookie';
     anthropicMethod.listeners.change();
+    anthropicSessionKey.value = 'sk-ant-sid01-ui-invalid-first\nsk-ant-sid01-ui-invalid-second';
+    global.fetchDataWithAuth = async (_url, options) => {
+      const { session_key: sessionKey } = JSON.parse(options.body);
+      throw new Error(sessionKey.endsWith('first') ? 'upstream first error' : 'upstream second error');
+    };
+    global.reloadChannelsList = async () => {};
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.equal(anthropicSessionKey.value, '');
+    assert.equal(
+      dialogStatus.textContent,
+      'partial\nline 1: upstream first error\nline 2: upstream second error'
+    );
+    assert.equal(dialogStatus.dataset.kind, 'error');
+    assert.equal(errorNotices.length, noticeCountsBeforeCookie.error);
+    assert.equal(anthropicSessionKey['aria-invalid'], 'true');
+
+    openOAuthLoginDialog(loginButton);
+    providerSelect.value = 'anthropic';
+    providerSelect.listeners.change();
+    anthropicMethod.value = 'cookie';
+    anthropicMethod.listeners.change();
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.equal(dialogStatus.textContent, 'channels.anthropic.cookieRequired');
     assert.equal(successNotices.length, noticeCountsBeforeCookie.success);

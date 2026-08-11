@@ -26,6 +26,26 @@ func TestParseCredentialAcceptsSub2APITimestampsAndCanonicalizes(t *testing.T) {
 	}
 }
 
+func TestParseCredentialAcceptsClaudeEmailIdentity(t *testing.T) {
+	raw := `{"type":"claude","access_token":"access","refresh_token":"refresh","email":" user@example.com ","expired":"2030-01-01T00:00:00Z"}`
+	credential, err := ParseCredential([]byte(raw))
+	if err != nil {
+		t.Fatalf("ParseCredential() error = %v", err)
+	}
+	if credential.Type != ChannelType || credential.EmailAddress != "user@example.com" ||
+		credential.AccountUUID != "" || credential.DeviceID == "" {
+		t.Fatalf("credential identity = type %q, email %q, account %q, device empty %t",
+			credential.Type, credential.EmailAddress, credential.AccountUUID, credential.DeviceID == "")
+	}
+	encoded, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("JSON() error = %v", err)
+	}
+	if !strings.Contains(encoded, `"email_address":"user@example.com"`) || strings.Contains(encoded, `"email":`) {
+		t.Fatalf("canonical JSON did not normalize email alias: %s", encoded)
+	}
+}
+
 func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *testing.T) {
 	current := &Credential{
 		Type: ChannelType, AccessToken: "old-access", RefreshToken: "old-refresh",

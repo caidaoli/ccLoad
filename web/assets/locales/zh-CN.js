@@ -192,7 +192,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.oauth.priorityIncrement20': '优先级递增20',
   'channels.oauth.priorityIncrement50': '优先级递增50',
   'channels.oauth.credentialFiles': '凭证文件',
-  'channels.oauth.credentialFilesHint': '支持同时选择 JSON、ZIP、tar.gz 或 tgz 文件。',
+  'channels.oauth.credentialFilesHint': '支持同时选择 JSON、TXT、ZIP、tar.gz 或 tgz 文件；JSON/TXT 可包含 CLIProxyAPI 或 Sub2API 聚合凭证。',
   'channels.oauth.progressTitle': '导入进度',
   'channels.oauth.progressCounter': '{processed} / {total}',
   'channels.oauth.progressCounts': '创建 {created} · 跳过 {skipped} · 失败 {failed}',
