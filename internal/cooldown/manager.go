@@ -67,6 +67,7 @@ type cooldownDecision struct {
 	keyCooldownReason       string
 	model                   string
 	modelScoped             bool
+	preventKeyFallback      bool
 	modelCooldownUntil      time.Time
 	hasModelCooldownUntil   bool
 	channelCooldownUntil    time.Time
@@ -145,6 +146,7 @@ func (m *Manager) classifyDecision(in ErrorInput) cooldownDecision {
 			}
 			if decision.model != "" {
 				decision.modelScoped = true
+				decision.preventKeyFallback = classification.PreventKeyFallback
 				if classification.HasModelCooldownUntil {
 					decision.modelCooldownUntil = classification.ModelCooldownUntil
 					decision.hasModelCooldownUntil = true
@@ -271,6 +273,7 @@ func (m *Manager) CanFallbackToOtherKey(in ErrorInput) bool {
 func canFallbackToOtherKey(in ErrorInput, decision cooldownDecision) bool {
 	return in.KeyIndex != NoKeyIndex &&
 		(decision.action == ActionRetryModel || decision.action == ActionRetryChannel) &&
+		!decision.preventKeyFallback &&
 		!decision.hasChannelCooldownUntil
 }
 
