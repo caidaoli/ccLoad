@@ -233,7 +233,7 @@ func prepareAntigravityRequestBody(
 	}
 	if requestType != "image_gen" {
 		if _, exists := request["sessionId"]; !exists {
-			request["sessionId"] = antigravitySessionID(headers, body)
+			request["sessionId"] = antigravitySessionID(headers, sourceBody, body)
 		}
 	}
 	envelope := map[string]any{
@@ -532,32 +532,43 @@ func ensureAntigravityValidatedToolMode(request map[string]any) {
 	functionCallingConfig["mode"] = "VALIDATED"
 }
 
-func antigravitySessionID(headers http.Header, body []byte) string {
-	for _, name := range []string{"Session-Id", "Session_id"} {
+func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
+	for _, name := range []string{"Session-Id", "Session_id", "X-Claude-Code-Session-Id"} {
 		if value := strings.TrimSpace(headers.Get(name)); value != "" {
-			return value
+			return antigravityNegativeSessionID(value)
 		}
 	}
-	var request struct {
-		Contents []struct {
-			Role  string `json:"role"`
-			Parts []struct {
-				Text string `json:"text"`
-			} `json:"parts"`
-		} `json:"contents"`
+	if value := anthropicSessionIDFromBody(sourceBody); value != "" {
+		return antigravityNegativeSessionID(value)
 	}
-	if json.Unmarshal(body, &request) == nil {
-		for _, content := range request.Contents {
-			if content.Role != "user" || len(content.Parts) == 0 || content.Parts[0].Text == "" {
+	for _, path := range []string{"session_id", "sessionId", "conversation_id", "prompt_cache_key"} {
+		if value := strings.TrimSpace(gjson.GetBytes(sourceBody, path).String()); value != "" {
+			return antigravityNegativeSessionID(value)
+		}
+	}
+	for _, path := range []string{"contents", "request.contents"} {
+		for _, content := range gjson.GetBytes(body, path).Array() {
+			if content.Get("role").String() != "user" {
 				continue
 			}
-			digest := sha256.Sum256([]byte(content.Parts[0].Text))
-			value := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
-			return "-" + strconv.FormatInt(value, 10)
+			if text := content.Get("parts.0.text").String(); text != "" {
+				return antigravityNegativeSessionID(text)
+			}
 		}
 	}
-	digest := sha256.Sum256([]byte(util.NewUUIDv4()))
-	return "-" + strconv.FormatUint(binary.BigEndian.Uint64(digest[:8])&0x7fffffffffffffff, 10)
+	return antigravityNegativeSessionID(util.NewUUIDv4())
+}
+
+func antigravityNegativeSessionID(seed string) string {
+	seed = strings.TrimSpace(seed)
+	if strings.HasPrefix(seed, "-") {
+		if _, err := strconv.ParseUint(strings.TrimPrefix(seed, "-"), 10, 63); err == nil {
+			return seed
+		}
+	}
+	digest := sha256.Sum256([]byte(seed))
+	value := int64(binary.BigEndian.Uint64(digest[:8]) & 0x7fffffffffffffff)
+	return "-" + strconv.FormatInt(value, 10)
 }
 
 func obfuscateAntigravitySystemInstruction(body []byte, matcher *regexp.Regexp) []byte {

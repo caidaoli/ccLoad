@@ -146,6 +146,39 @@ func TestHandleMergeDebugResponse_AcceptsGzipBody(t *testing.T) {
 	}
 }
 
+func TestHandleMergeDebugResponse_UnwrapsAntigravityGeminiStream(t *testing.T) {
+	t.Parallel()
+
+	srv := newInMemoryServer(t)
+	raw := strings.Join([]string{
+		"HTTP 200",
+		"Content-Type: text/event-stream",
+		"",
+		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"hello "}]}}]},"traceId":"trace-1"}`,
+		"",
+		`data: {"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"world"}]}}]},"traceId":"trace-1"}`,
+		"",
+	}, "\n")
+	payload, err := json.Marshal(map[string]string{"resp_body": raw})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	c, w := newTestContext(t, newJSONRequestBytes(http.MethodPost, "/admin/debug-logs/merged-response", payload))
+	srv.HandleMergeDebugResponse(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d; body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	resp := mustParseAPIResponse[mergedResponseParts](t, w.Body.Bytes())
+	if !resp.Success {
+		t.Fatalf("success=%v, want true", resp.Success)
+	}
+	if resp.Data.Content != "hello world" {
+		t.Fatalf("content=%q, want hello world", resp.Data.Content)
+	}
+}
+
 func TestMergeResponseBody_FormatsConcatenatedCommandToolsAsBash(t *testing.T) {
 	t.Parallel()
 
