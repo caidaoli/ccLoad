@@ -446,7 +446,7 @@ test('Anthropic Cookie authorization processes visible sessionKeys line by line 
       created: 1,
       updated: 1,
       failed: 1,
-      failedLines: [3]
+      failedDetails: [{ line: 3, error: 'invalid cookie' }]
     });
     assert.deepEqual(captured, [
       { url: '/admin/anthropic/oauth/cookie', body: { session_key: 'sk-ant-sid01-first' } },
@@ -882,7 +882,11 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   const successNotices = [];
   const errorNotices = [];
   global.window = {
-    t: key => key,
+    t: (key, values = {}) => {
+      if (key === 'channels.anthropic.cookiePartial') return `partial: ${values.details}`;
+      if (key === 'channels.anthropic.cookieFailureDetail') return `line ${values.line}: ${values.error}`;
+      return key;
+    },
     showSuccess: message => successNotices.push(message),
     showError: message => errorNotices.push(message)
   };
@@ -965,6 +969,24 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(successNotices.at(-1), 'channels.anthropic.cookieComplete');
     assert.equal(errorNotices.at(-1), 'channels.anthropic.cookieReloadFailed');
     assert.equal(anthropicSessionKey['aria-invalid'], undefined);
+
+    openOAuthLoginDialog(loginButton);
+    providerSelect.value = 'anthropic';
+    providerSelect.listeners.change();
+    anthropicMethod.value = 'cookie';
+    anthropicMethod.listeners.change();
+    anthropicSessionKey.value = 'sk-ant-sid01-ui-invalid-first\nsk-ant-sid01-ui-invalid-second';
+    global.fetchDataWithAuth = async (_url, options) => {
+      const { session_key: sessionKey } = JSON.parse(options.body);
+      throw new Error(sessionKey.endsWith('first') ? 'upstream first error' : 'upstream second error');
+    };
+    global.reloadChannelsList = async () => {};
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.equal(anthropicSessionKey.value, '');
+    assert.equal(
+      errorNotices.at(-1),
+      'partial: line 1: upstream first error; line 2: upstream second error'
+    );
 
     openOAuthLoginDialog(loginButton);
     providerSelect.value = 'anthropic';

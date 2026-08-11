@@ -1289,6 +1289,88 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 	}
 }
 
+func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "claude-user@example.com.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credentialBody := fmt.Sprintf(
+		`{"type":"claude","access_token":"anthropic-import-access","refresh_token":"anthropic-import-refresh","email":"user@example.com","expired":%q,"priority":1,"disabled":false}`,
+		time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+	)
+	if _, err := part.Write([]byte(credentialBody)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), "anthropic-import-access") ||
+		strings.Contains(response.Body.String(), "anthropic-import-refresh") {
+		t.Fatalf("import response leaked credential material: %s", response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
+	if result.Data.Created != 1 || result.Data.Failed != 0 {
+		t.Fatalf("import summary = %#v", result.Data)
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 1 {
+		t.Fatalf("channels = (%#v, %v)", channels, err)
+	}
+	channel := channels[0]
+	if channel.Name != "Anthropic-user@example.com" {
+		t.Fatalf("channel name = %q", channel.Name)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(channel.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential.EmailAddress != "user@example.com" || credential.DeviceID == "" {
+		t.Fatalf("persisted Anthropic identity = email %q, device empty %t",
+			credential.EmailAddress, credential.DeviceID == "")
+	}
+
+	finalized, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-haiku-4-5-20251001",
+		"messages":[{"role":"user","content":"hello"}]
+	}`), channel, nil)
+	if err != nil {
+		t.Fatalf("finalize imported Anthropic credential: %v", err)
+	}
+	var payload struct {
+		Metadata struct {
+			UserID string `json:"user_id"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(finalized, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var identity struct {
+		DeviceID    string `json:"device_id"`
+		AccountUUID string `json:"account_uuid"`
+		SessionID   string `json:"session_id"`
+	}
+	if err := json.Unmarshal([]byte(payload.Metadata.UserID), &identity); err != nil {
+		t.Fatal(err)
+	}
+	if identity.DeviceID == "" || identity.SessionID == "" || identity.AccountUUID != "" {
+		t.Fatalf("wire identity = %#v", identity)
+	}
+}
+
 func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCredential(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	store := newCodexAuthTestStore(t)
@@ -1412,6 +1494,234 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatal("import response leaked credential material")
 		}
+	}
+}
+
+func TestHandleImportOAuthCredentialsImportsTextAndAggregateFormats(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	codexClient := newAcceptedCodexImportClient()
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.Method == http.MethodGet && request.URL.String() == xaiauth.CLIBaseURL+"/billing" {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"entitlement_status":"active"}`)),
+				Request:    request,
+			}, nil
+		}
+		return codexClient.Transport.RoundTrip(request)
+	})}
+	server := &Server{store: store, client: client}
+	expiresAt := time.Now().UTC().Add(time.Hour).Truncate(time.Second)
+	expiresMillis := expiresAt.UnixMilli()
+
+	bundle := fmt.Sprintf(`{
+		"type":"cliproxyapi-auth-bundle",
+		"version":1,
+		"accounts":[
+			{"type":"anthropic","access_token":"at-bundle","refresh_token":"rt-bundle","expired":%q,"email_address":"bundle@example.com","account_uuid":"account-bundle"},
+			{"type":"codex","access_token":"at-bundle-invalid","refresh_token":"rt-bundle-invalid","expired":%q}
+		]
+	}`, expiresAt.Format(time.RFC3339), expiresAt.Format(time.RFC3339))
+	sub2API := fmt.Sprintf(`{
+		"exported_at":%q,
+		"proxies":[],
+		"accounts":[
+			{"platform":"openai","type":"oauth","name":"sub2-codex@example.com","priority":20,"credentials":{"accessToken":"at-sub2-codex","refreshToken":"rt-sub2-codex","accountId":"account-sub2-codex","expires_at":"","expiresAt":%d}},
+			{"platform":"anthropic","credentials":{"access_token":"at-sub2-anthropic","refresh_token":"rt-sub2-anthropic","email_address":"sub2-anthropic@example.com","account_uuid":"account-sub2-anthropic","expires_at":%d}},
+			{"platform":"grok","type":"oauth","name":"sub2-xai@example.com","credentials":{"access_token":"at-sub2-xai","refresh_token":"rt-sub2-xai","id_token":"id-sub2-xai","email":"sub2-xai@example.com","sub":"subject-sub2-xai","expires_at":%d,"client_id":"client-sub2-xai","base_url":"https://api.x.ai/v1","team_id":"team-sub2-xai"}},
+			{"platform":"openai","credentials":{"access_token":"at-sub2-codex","refresh_token":"rt-sub2-duplicate","account_id":"account-sub2-codex","email":"duplicate@example.com","expires_at":%d}},
+			{"platform":"google","credentials":{"access_token":"at-sub2-unsupported","refresh_token":"rt-sub2-unsupported","expires_at":%d}}
+		]
+	}`, expiresAt.Add(-time.Hour).Format(time.RFC3339), expiresMillis, expiresAt.Unix(), expiresMillis, expiresMillis, expiresMillis)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	if err := writer.WriteField("provider", "auto"); err != nil {
+		t.Fatal(err)
+	}
+	files := []archiveCredentialTestEntry{
+		{
+			name: "direct.txt",
+			body: fmt.Sprintf(
+				`{"type":"codex","access_token":"at-direct","refresh_token":"rt-direct","account_id":"account-direct","email":"direct@example.com","expired":%q}`,
+				expiresAt.Format(time.RFC3339),
+			),
+		},
+		{name: "bundle.json", body: bundle},
+		{name: "sub2api.json", body: sub2API},
+		{name: "bad-bundle.json", body: `{"type":"cliproxyapi-auth-bundle","version":2,"accounts":[{}]}`},
+	}
+	for _, file := range files {
+		part, err := writer.CreateFormFile("files", file.name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(part, file.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	for _, secret := range []string{
+		"at-direct", "rt-direct", "at-bundle", "rt-bundle", "at-bundle-invalid", "rt-bundle-invalid",
+		"at-sub2-codex", "rt-sub2-codex", "at-sub2-anthropic", "rt-sub2-anthropic",
+		"at-sub2-xai", "rt-sub2-xai", "id-sub2-xai",
+		"rt-sub2-duplicate", "at-sub2-unsupported", "rt-sub2-unsupported",
+	} {
+		if strings.Contains(response.Body.String(), secret) {
+			t.Fatalf("import response leaked %q: %s", secret, response.Body.String())
+		}
+	}
+
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes()).Data
+	if result.Created != 5 || result.Skipped != 0 || result.Failed != 4 || len(result.Results) != 9 {
+		t.Fatalf("import summary = %#v", result)
+	}
+	results := make(map[string]oauthCredentialImportResult, len(result.Results))
+	for _, item := range result.Results {
+		results[item.FileName] = item
+	}
+	if results["direct.txt"].Status != "created" ||
+		results["bundle.json#1"].Status != "created" ||
+		results["sub2api.json#1"].Status != "created" ||
+		results["sub2api.json#2"].Status != "created" ||
+		results["sub2api.json#3"].Status != "created" {
+		t.Fatalf("valid aggregate results = %#v", results)
+	}
+	for fileName, errorPart := range map[string]string{
+		"bad-bundle.json": "unsupported CLIProxyAPI auth bundle version",
+		"bundle.json#2":   "account has no usable",
+		"sub2api.json#4":  "duplicate credential record",
+		"sub2api.json#5":  "unsupported account platform/type",
+	} {
+		item := results[fileName]
+		if item.Status != "failed" || !strings.Contains(item.Error, errorPart) {
+			t.Fatalf("result %q = %#v", fileName, item)
+		}
+	}
+
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChannels := map[string]string{
+		"Codex-direct@example.com":             model.AuthTypeCodexOAuth,
+		"Anthropic-bundle@example.com":         model.AuthTypeAnthropicOAuth,
+		"Codex-sub2-codex@example.com":         model.AuthTypeCodexOAuth,
+		"Anthropic-sub2-anthropic@example.com": model.AuthTypeAnthropicOAuth,
+		"xAI-sub2-xai@example.com":             model.AuthTypeXAIOAuth,
+	}
+	if len(channels) != len(wantChannels) {
+		t.Fatalf("channels = %#v", channels)
+	}
+	for _, channel := range channels {
+		if wantType, ok := wantChannels[channel.Name]; !ok || channel.GetAuthType() != wantType {
+			t.Fatalf("unexpected imported channel %#v", channel)
+		}
+		if channel.Name == "Codex-sub2-codex@example.com" {
+			credential, parseErr := codexauth.ParseCredential([]byte(channel.OAuthCredential))
+			if parseErr != nil {
+				t.Fatalf("converted Codex credential = (%#v, %v)", credential, parseErr)
+			}
+			expiry, expiryErr := credential.Expiry()
+			if credential.AccountID != "account-sub2-codex" || expiryErr != nil || !expiry.Equal(expiresAt) {
+				t.Fatalf("converted Codex credential = (%#v, %v)", credential, expiryErr)
+			}
+		}
+		if channel.Name == "Anthropic-sub2-anthropic@example.com" {
+			credential, parseErr := anthropicauth.ParseCredential([]byte(channel.OAuthCredential))
+			if parseErr != nil {
+				t.Fatalf("converted Anthropic credential = (%#v, %v)", credential, parseErr)
+			}
+			expiry, expiryErr := credential.Expiry()
+			if credential.AccountUUID != "account-sub2-anthropic" || expiryErr != nil || !expiry.Equal(expiresAt) {
+				t.Fatalf("converted Anthropic credential = (%#v, %v)", credential, expiryErr)
+			}
+		}
+		if channel.Name == "xAI-sub2-xai@example.com" {
+			credential, parseErr := xaiauth.ParseCredential([]byte(channel.OAuthCredential))
+			if parseErr != nil {
+				t.Fatalf("converted xAI credential = (%#v, %v)", credential, parseErr)
+			}
+			expiry, expiryErr := credential.Expiry()
+			if credential.Subject != "subject-sub2-xai" || credential.ClientID != "client-sub2-xai" ||
+				credential.TeamID != "team-sub2-xai" || credential.BaseURL != "https://api.x.ai/v1" ||
+				expiryErr != nil || !expiry.Equal(expiresAt) {
+				t.Fatalf("converted xAI credential = (%#v, %v)", credential, expiryErr)
+			}
+		}
+	}
+}
+
+func TestHandleImportOAuthCredentialsRejectsAggregateExpansionOverEntryLimit(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	store := newCodexAuthTestStore(t)
+	server := &Server{store: store, client: newAcceptedCodexImportClient()}
+	accounts := make([]map[string]any, maxOAuthCredentialImportEntries+1)
+	for index := range accounts {
+		accounts[index] = map[string]any{
+			"type":  "codex",
+			"email": fmt.Sprintf("account-%05d@example.com", index),
+		}
+	}
+	bundle, err := json.Marshal(map[string]any{
+		"type": cliProxyAPIAuthBundleType, "version": cliProxyAPIAuthBundleVersion, "accounts": accounts,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bundle) > maxOAuthCredentialImportBytes {
+		t.Fatalf("test bundle size = %d, must exercise expanded entry limit", len(bundle))
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("files", "bundle.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(bundle); err != nil {
+		t.Fatal(err)
+	}
+	direct, err := writer.CreateFormFile("files", "direct.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	if _, err := fmt.Fprintf(direct,
+		`{"type":"codex","access_token":"at-direct-limit","refresh_token":"rt-direct-limit","account_id":"account-direct-limit","email":"direct-limit@example.com","expired":%q}`,
+		expiresAt,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/admin/oauth/credentials/import", &body)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	requestContext, response := newTestContext(t, request)
+	server.HandleImportOAuthCredentials(requestContext)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "exceeds 10000 entries") {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes()).Data
+	if result.Created != 1 || result.Failed != 1 || result.Skipped != 0 {
+		t.Fatalf("import summary = %#v", result)
+	}
+	channels, err := store.ListConfigs(context.Background())
+	if err != nil || len(channels) != 1 || channels[0].Name != "Codex-direct-limit@example.com" {
+		t.Fatalf("channels = (%#v, %v)", channels, err)
 	}
 }
 
@@ -1688,11 +1998,12 @@ func TestHandleImportOAuthCredentialsImportsArchivesByCredentialPriorityThenFile
 	zipBody := makeCredentialZIP(t, []archiveCredentialTestEntry{
 		credential("high", "a-high.json", 30),
 		credential("low-z", "z-low.json", 10),
-		{name: "README.txt", body: "not a credential"},
+		credential("middle-b", "b-middle.txt", 20),
+		{name: "README.md", body: "not a credential"},
 	})
 	tarGzBody := makeCredentialTarGz(t, []archiveCredentialTestEntry{
 		credential("low-a", "a-low.json", 10),
-		credential("middle-a", "middle.json", 20),
+		credential("middle-a", "middle.txt", 20),
 	})
 	direct := credential("middle-z", "z-middle.json", "20")
 
@@ -1729,13 +2040,14 @@ func TestHandleImportOAuthCredentialsImportsArchivesByCredentialPriorityThenFile
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
-	if result.Data.Created != 5 || result.Data.Skipped != 0 || result.Data.Failed != 0 {
+	if result.Data.Created != 6 || result.Data.Skipped != 0 || result.Data.Failed != 0 {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
 	wantFiles := []string{
 		"credentials.tar.gz/a-low.json",
 		"credentials.zip/z-low.json",
-		"credentials.tar.gz/middle.json",
+		"credentials.zip/b-middle.txt",
+		"credentials.tar.gz/middle.txt",
 		"z-middle.json",
 		"credentials.zip/a-high.json",
 	}
@@ -1754,9 +2066,10 @@ func TestHandleImportOAuthCredentialsImportsArchivesByCredentialPriorityThenFile
 	wantPriorityByName := map[string]int{
 		"Codex-low-a@example.com":    10,
 		"Codex-low-z@example.com":    20,
-		"Codex-middle-a@example.com": 30,
-		"Codex-middle-z@example.com": 40,
-		"Codex-high@example.com":     50,
+		"Codex-middle-b@example.com": 30,
+		"Codex-middle-a@example.com": 40,
+		"Codex-middle-z@example.com": 50,
+		"Codex-high@example.com":     60,
 	}
 	if len(channels) != len(wantPriorityByName) {
 		t.Fatalf("channels = %#v", channels)
@@ -4502,28 +4815,80 @@ func TestHandleAnthropicCookieAuthCreatesChannelWithoutReturningOrPersistingCook
 	}
 }
 
-func TestHandleAnthropicCookieAuthDoesNotEchoUpstreamSecrets(t *testing.T) {
-	const sessionKey = "sk-ant-sid01-upstream-secret"
-	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		return &http.Response{
-			StatusCode: http.StatusUnauthorized,
-			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"error":"` + sessionKey + `"}`)),
-			Request:    request,
-		}, nil
-	})}
-	server, _, cleanup := setupAdminTestServer(t)
-	defer cleanup()
-	service := anthropicauth.NewService(client)
-	server.anthropicService = service
+func TestHandleAnthropicCookieAuthReturnsSanitizedUpstreamErrors(t *testing.T) {
+	const sessionKey = "sk-ant-sid01-a/b+c="
+	tests := []struct {
+		name            string
+		failurePath     string
+		statusCode      int
+		message         string
+		reflectedSecret string
+		rawFailureBody  string
+	}{
+		{name: "organization", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "organization authorization denied"},
+		{name: "authorization", failurePath: "/v1/oauth/cookie-org/authorize", statusCode: http.StatusForbidden, message: "organization cannot use this OAuth client"},
+		{name: "token", failurePath: "/token", statusCode: http.StatusBadRequest, message: "authorization code expired"},
+		{name: "query-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: url.QueryEscape(sessionKey)},
+		{name: "path-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "sk-ant-sid01-a%2Fb+c="},
+		{name: "HTML-encoded secret", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "sk-ant-sid01-a&#47;b&#43;c&#61;"},
+		{name: "duplicate JSON key", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "JSON escaped", rawFailureBody: `{"session_key":"sk-ant-sid01-a\/b\u002bc=","session_key":"safe"}`},
+		{name: "multiple JSON values", failurePath: "/api/organizations", statusCode: http.StatusUnauthorized, message: "reflected credential", reflectedSecret: "JSON escaped", rawFailureBody: "{\"error\":\"safe\"}\n{\"session_key\":\"sk-ant-sid01-a\\/b\\u002bc=\"}"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == test.failurePath {
+					w.WriteHeader(test.statusCode)
+					if test.rawFailureBody != "" {
+						_, _ = io.WriteString(w, test.rawFailureBody)
+						return
+					}
+					payload := map[string]string{"error": test.message}
+					if test.reflectedSecret != "" {
+						payload["session_key"] = test.reflectedSecret
+					}
+					_ = json.NewEncoder(w).Encode(payload)
+					return
+				}
+				switch request.URL.Path {
+				case "/api/organizations":
+					_, _ = io.WriteString(w, `[{"uuid":"cookie-org"}]`)
+				case "/v1/oauth/cookie-org/authorize":
+					var payload map[string]string
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatalf("decode authorization request: %v", err)
+					}
+					redirect := anthropicauth.RedirectURI + "?code=cookie-code&state=" + url.QueryEscape(payload["state"])
+					_ = json.NewEncoder(w).Encode(map[string]string{"redirect_uri": redirect})
+				default:
+					http.NotFound(w, request)
+				}
+			}))
+			defer upstream.Close()
 
-	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
-		"session_key": sessionKey,
-	}))
-	server.HandleAnthropicCookieAuth(c)
+			server, _, cleanup := setupAdminTestServer(t)
+			defer cleanup()
+			service := anthropicauth.NewService(upstream.Client())
+			service.ClaudeWebURL = upstream.URL
+			service.TokenURL = upstream.URL + "/token"
+			server.anthropicService = service
 
-	if w.Code != http.StatusBadGateway || strings.Contains(w.Body.String(), sessionKey) {
-		t.Fatalf("cookie auth error status=%d body=%s", w.Code, w.Body.String())
+			c, recorder := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/anthropic/oauth/cookie", map[string]string{
+				"session_key": sessionKey,
+			}))
+			server.HandleAnthropicCookieAuth(c)
+
+			body := recorder.Body.String()
+			if recorder.Code != http.StatusBadGateway || strings.Contains(body, sessionKey) ||
+				strings.Contains(body, url.QueryEscape(sessionKey)) ||
+				!strings.Contains(body, fmt.Sprintf("returned HTTP %d", test.statusCode)) {
+				t.Fatalf("cookie auth error status=%d body=%s", recorder.Code, body)
+			}
+			if (test.reflectedSecret != "") != strings.Contains(body, "[REDACTED]") ||
+				(test.reflectedSecret == "" && !strings.Contains(body, test.message)) {
+				t.Fatalf("cookie auth error status=%d body=%s", recorder.Code, body)
+			}
+		})
 	}
 }
 

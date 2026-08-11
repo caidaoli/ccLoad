@@ -76,6 +76,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		return nil, errors.New("anthropic credential contains trailing JSON")
 	}
 	var credential Credential
+	var emailAlias string
 	if err := json.Unmarshal(raw, &struct {
 		Type         *string          `json:"type"`
 		AccessToken  *string          `json:"access_token"`
@@ -87,6 +88,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		OrgUUID      *string          `json:"org_uuid"`
 		AccountUUID  *string          `json:"account_uuid"`
 		EmailAddress *string          `json:"email_address"`
+		Email        *string          `json:"email"`
 		DeviceID     *string          `json:"device_id"`
 		PlanType     *string          `json:"plan_type"`
 		TrialEndsAt  *string          `json:"claude_code_trial_ends_at"`
@@ -98,11 +100,15 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		Expired: &credential.Expired, LastRefresh: &credential.LastRefresh,
 		Scope: &credential.Scope, OrgUUID: &credential.OrgUUID,
 		AccountUUID: &credential.AccountUUID, EmailAddress: &credential.EmailAddress,
+		Email:    &emailAlias,
 		DeviceID: &credential.DeviceID, PlanType: &credential.PlanType,
 		TrialEndsAt: &credential.ClaudeCodeTrialEndsAt, PassiveUsage: &credential.PassiveUsage,
 		OAuthUsage: &credential.OAuthUsage,
 	}); err != nil {
 		return nil, fmt.Errorf("decode Anthropic credential fields: %w", err)
+	}
+	if strings.TrimSpace(credential.EmailAddress) == "" {
+		credential.EmailAddress = emailAlias
 	}
 	if rawValue := fields["expires_in"]; len(rawValue) > 0 && string(rawValue) != "null" {
 		value, err := parseInt64(rawValue)
@@ -153,8 +159,12 @@ func (c *Credential) Normalize() error {
 	c.AccountUUID = strings.TrimSpace(c.AccountUUID)
 	c.EmailAddress = strings.TrimSpace(c.EmailAddress)
 	c.DeviceID = strings.TrimSpace(c.DeviceID)
-	if c.DeviceID == "" && c.AccountUUID != "" {
-		digest := sha256.Sum256([]byte("ccLoad:anthropic-device:" + c.AccountUUID))
+	identity := c.AccountUUID
+	if identity == "" {
+		identity = strings.ToLower(c.EmailAddress)
+	}
+	if c.DeviceID == "" && identity != "" {
+		digest := sha256.Sum256([]byte("ccLoad:anthropic-device:" + identity))
 		c.DeviceID = fmt.Sprintf("%x", digest[:])
 	}
 	c.PlanType = strings.TrimSpace(c.PlanType)
