@@ -52,6 +52,23 @@ func TestLog_AddAndList(t *testing.T) {
 	if len(logs) > 0 && logs[0].ClientProtocol != "openai" {
 		t.Errorf("client_protocol: got %q, want openai", logs[0].ClientProtocol)
 	}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time:           newJSONTime(now.Add(time.Millisecond)),
+		Model:          "gpt-4",
+		ChannelID:      channelID,
+		ClientProtocol: "anthropic",
+		StatusCode:     200,
+		Message:        "other protocol",
+	}); err != nil {
+		t.Fatalf("add second log: %v", err)
+	}
+	filtered, total, err := store.ListLogsRangeWithCount(ctx, now.Add(-time.Hour), now.Add(time.Hour), 10, 0, &model.LogFilter{ClientProtocol: "openai"})
+	if err != nil {
+		t.Fatalf("list filtered logs: %v", err)
+	}
+	if len(filtered) != 1 || total != 1 || filtered[0].ClientProtocol != "openai" {
+		t.Fatalf("filtered logs=%+v total=%d, want one openai log", filtered, total)
+	}
 }
 
 func TestLog_AddAndListPersistsReasoningTokens(t *testing.T) {

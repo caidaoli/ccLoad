@@ -13,7 +13,7 @@ func TestHandleActiveRequests(t *testing.T) {
 	id := m.BeginAttempt(0, activeRequestAttempt{
 		StartTime: time.Now(), Model: "m1", ClientIP: "1.2.3.4", Streaming: true,
 		ChannelID: 10, ChannelName: "ch", APIKey: "sk-test",
-		TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 1.5,
+		ClientProtocol: "openai", TokenID: 7, BaseURL: "https://upstream.example.com", CostMultiplier: 1.5,
 	})
 	m.SetUpstreamWebsocket(id, true)
 	m.AddBytes(id, 123)
@@ -50,6 +50,9 @@ func TestHandleActiveRequests(t *testing.T) {
 	}
 	if resp.Data[0].CostMultiplier != 1.5 {
 		t.Fatalf("cost_multiplier=%v, want 1.5", resp.Data[0].CostMultiplier)
+	}
+	if resp.Data[0].ClientProtocol != "openai" {
+		t.Fatalf("client_protocol=%q, want openai", resp.Data[0].ClientProtocol)
 	}
 	if !resp.Data[0].UpstreamWebsocket {
 		t.Fatal("upstream_websocket=false, want true")

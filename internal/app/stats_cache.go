@@ -250,6 +250,9 @@ func hashFilter(filter *model.LogFilter) string {
 	if filter.UpstreamProtocol != "" {
 		parts = append(parts, fmt.Sprintf("upstream_protocol:%s", filter.UpstreamProtocol))
 	}
+	if filter.ClientProtocol != "" {
+		parts = append(parts, fmt.Sprintf("client_protocol:%s", filter.ClientProtocol))
+	}
 	if filter.ChannelName != "" {
 		parts = append(parts, fmt.Sprintf("name_exact:%s", filter.ChannelName))
 	}

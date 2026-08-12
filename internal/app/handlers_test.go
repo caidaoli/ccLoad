@@ -335,6 +335,24 @@ func TestBuildLogFilter(t *testing.T) {
 			},
 		},
 		{
+			name:  "client_protocol",
+			query: "client_protocol=OpenAI",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.ClientProtocol != "openai" {
+					t.Errorf("ClientProtocol=%q, want %q", lf.ClientProtocol, "openai")
+				}
+			},
+		},
+		{
+			name:  "all_client_protocols",
+			query: "client_protocol=all",
+			check: func(t *testing.T, lf model.LogFilter) {
+				if lf.ClientProtocol != "" {
+					t.Errorf("ClientProtocol=%q, want no filter", lf.ClientProtocol)
+				}
+			},
+		},
+		{
 			name:  "all_upstream_protocols",
 			query: "upstream_protocol=all",
 			check: func(t *testing.T, lf model.LogFilter) {
