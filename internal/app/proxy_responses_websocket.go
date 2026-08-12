@@ -447,24 +447,26 @@ func (s *Server) executeResponsesWebsocketTurn(
 	header := responsesWebsocketUpstreamHeaders(c.Request.Header)
 	header.Set("Content-Type", "application/json")
 	reqCtx := &proxyRequestContext{
-		originalModel:   modelName,
-		clientProtocol:  protocol.Codex,
-		requestMethod:   http.MethodPost,
-		requestPath:     "/v1/responses",
-		rawQuery:        c.Request.URL.RawQuery,
-		body:            requestBody,
-		translatedBody:  requestBody,
-		header:          header,
-		isStreaming:     true,
-		tokenHash:       tokenHashString,
-		tokenID:         tokenIDInt64,
-		clientIP:        c.ClientIP(),
-		startTime:       startTime,
-		thinkingEffort:  thinkingEffort,
-		routingSession:  executionSession,
-		nativeCodexWS:   nativeCodexWS,
-		nativeCodexBody: bytes.Clone(nativeRequestBody),
+		originalModel:              modelName,
+		clientProtocol:             protocol.Codex,
+		requestMethod:              http.MethodPost,
+		requestPath:                "/v1/responses",
+		rawQuery:                   c.Request.URL.RawQuery,
+		body:                       requestBody,
+		translatedBody:             requestBody,
+		header:                     header,
+		isStreaming:                true,
+		tokenHash:                  tokenHashString,
+		tokenID:                    tokenIDInt64,
+		clientIP:                   c.ClientIP(),
+		startTime:                  startTime,
+		thinkingEffort:             thinkingEffort,
+		routingSession:             executionSession,
+		nativeCodexWS:              nativeCodexWS,
+		nativeCodexBody:            bytes.Clone(nativeRequestBody),
+		codexMultiAgentV2Optimized: executionSession.codexMultiAgentV2StateSnapshot(),
 	}
+	ctx = withCodexMultiAgentV2RequestContext(ctx, reqCtx)
 	reqCtx.observer = &ForwardObserver{
 		OnBytesRead: func(n int64) {
 			s.activeRequests.AddBytes(reqCtx.activeReqID, n)
@@ -500,6 +502,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	lastResult, succeeded := s.runProxyAttemptLoopWithFailureBoundary(
 		ctx, candidates, reqCtx, bridgeWriter, stopBeforeNativeWebsocket,
 	)
+	s.updateCodexMultiAgentV2SessionState(executionSession, reqCtx)
 	if bridgeWriter.closedForMessageTooBig {
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}

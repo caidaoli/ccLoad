@@ -123,6 +123,27 @@ func (s *Server) buildProxyRequest(
 	if err != nil {
 		return nil, err
 	}
+	// Official Codex clients use a collaboration namespace that several
+	// upstream Responses implementations reject. Rename it only on the Codex
+	// wire and remember the decision for the matching response stream.
+	if reqCtx != nil && upstreamProtocol == protocol.Codex {
+		enabled := codexMultiAgentV2Enabled(hdr)
+		conflict := enabled && hasCodexOptimizedCollaborationConflict(body)
+		var models []string
+		if enabled && len(codexSpawnAgentToolPaths(body)) > 0 {
+			models = s.codexMultiAgentV2Models(reqCtx.ctx)
+		}
+		optimizedBody, optimized := optimizeCodexMultiAgentV2Request(
+			hdr, body, models,
+		)
+		body = optimizedBody
+		reqCtx.codexMultiAgentV2Optimized = enabled && !conflict &&
+			(optimized || reqCtx.codexMultiAgentV2Optimized)
+		if outer := codexMultiAgentV2RequestContextFromContext(reqCtx.ctx); outer != nil {
+			outer.codexMultiAgentV2Optimized = reqCtx.codexMultiAgentV2Optimized
+			outer.codexMultiAgentV2Conflict = conflict
+		}
+	}
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfg, upstreamProtocol, requestPath)
 	if xaiResponsesRequest {
 		body, err = finalizeXAIResponsesBody(body, reqCtx.transformPlan.RequestModel(), reqCtx.executionIdentity)
@@ -902,7 +923,7 @@ func (s *Server) handleSuccessResponse(
 
 	if reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) &&
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.codexMultiAgentV2Optimized) &&
 		(strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") ||
 			strings.Contains(resp.Header.Get("Content-Type"), "text/plain")) {
 		return s.handleTranslatedStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats, observer)
@@ -910,7 +931,7 @@ func (s *Server) handleSuccessResponse(
 
 	if !reqCtx.isStreaming &&
 		s.protocolRegistry != nil &&
-		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth) {
+		(reqCtx.transformPlan.NeedsTransform || reqCtx.antigravityOAuth || reqCtx.codexMultiAgentV2Optimized) {
 		return s.handleTranslatedNonStreamSuccessResponse(reqCtx, resp, hdrClone, w, upstreamProtocol, readStats)
 	}
 
@@ -1043,6 +1064,9 @@ func (s *Server) handleTranslatedNonStreamSuccessResponse(
 	}
 	responseBody := rawBody
 	translatedRequestBody := reqCtx.transformPlan.TranslatedBody
+	if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
+		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
+	}
 	if reqCtx.antigravityOAuth {
 		responseBody, err = unwrapAntigravityResponse(rawBody)
 		if err != nil {
@@ -1150,6 +1174,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 		deferredWriter,
 		func(rawEvent []byte) error {
 			parserEvent := rawEvent
+			if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
+				parserEvent = restoreCodexMultiAgentV2SSEEvent(parserEvent, true)
+			}
 			if reqCtx.antigravityOAuth {
 				var err error
 				parserEvent, err = unwrapAntigravitySSEEvent(rawEvent)
@@ -1172,6 +1199,9 @@ func (s *Server) handleTranslatedStreamSuccessResponse(
 			return nil
 		},
 		func(rawEvent []byte) ([][]byte, error) {
+			if reqCtx.codexMultiAgentV2Optimized && reqCtx.transformPlan.UpstreamProtocol == protocol.Codex {
+				rawEvent = restoreCodexMultiAgentV2SSEEvent(rawEvent, true)
+			}
 			translatedRequestBody := reqCtx.transformPlan.TranslatedBody
 			if reqCtx.antigravityOAuth {
 				providerEvent, err := antigravitySSEData(rawEvent)
@@ -1675,6 +1705,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 ) (*fwResult, float64, error) {
 	// 1. 创建请求上下文（处理超时）
 	reqCtx := s.newRequestContextWithTimeouts(ctx, plan.UpstreamPath, plan.TranslatedBody, s.resolveProtocolTimeouts(plan))
+	if outer := codexMultiAgentV2RequestContextFromContext(ctx); outer != nil {
+		reqCtx.codexMultiAgentV2Optimized = outer.codexMultiAgentV2Optimized
+	}
 	reqCtx.transformPlan = plan
 	reqCtx.clientProtocol = plan.ClientProtocol
 	reqCtx.upstreamProtocol = plan.UpstreamProtocol
@@ -1712,12 +1745,20 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 		if translatedRequestOverride != nil {
 			translatedBody = translatedRequestOverride
 		} else if s.protocolRegistry != nil {
+			if plan.ClientProtocol == protocol.Codex && plan.UpstreamProtocol != protocol.Codex {
+				translatedBody = rewriteCodexMultiAgentV2Input(hdr, translatedBody)
+				if codexMultiAgentV2Enabled(hdr) && len(codexSpawnAgentToolPaths(translatedBody)) > 0 {
+					translatedBody = prepareCodexMultiAgentV2Tools(
+						hdr, translatedBody, s.codexMultiAgentV2Models(reqCtx.ctx),
+					)
+				}
+			}
 			var err error
 			translatedBody, err = s.protocolRegistry.TranslateRequest(
 				plan.ClientProtocol,
 				plan.UpstreamProtocol,
 				plan.RequestModel(),
-				plan.TranslatedBody,
+				translatedBody,
 				plan.Streaming,
 			)
 			if err != nil {
@@ -2156,7 +2197,10 @@ func (s *Server) forwardAttempt(
 	retryStrategies := make([]string, 0, 2)
 	for {
 		retrySourcePlan := plan
-		if res != nil && len(res.upstreamRequestBody) > 0 {
+		// Rebuild an optimized Codex multi-agent request from the original plan on
+		// retry. Reusing the wire body would make collaboration-optimize look like
+		// a user-defined reserved namespace and permanently disable restoration.
+		if res != nil && len(res.upstreamRequestBody) > 0 && !reqCtx.codexMultiAgentV2Optimized {
 			retrySourcePlan.TranslatedBody = res.upstreamRequestBody
 		}
 		retryBody, retryStrategy, ok := retryBodyForRejectedRequest(upstreamProtocol, cfg, retrySourcePlan, res)

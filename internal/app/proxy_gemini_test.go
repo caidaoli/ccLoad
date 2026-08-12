@@ -295,7 +295,8 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 
 		var resp struct {
 			Data []struct {
-				ID string `json:"id"`
+				ID                string `json:"id"`
+				MultiAgentVersion string `json:"multi_agent_version"`
 			} `json:"data"`
 		}
 		mustUnmarshalJSON(t, w.Body.Bytes(), &resp)
@@ -308,6 +309,11 @@ func TestProxyGemini_ListModelsHandlers(t *testing.T) {
 		}
 		if !found {
 			t.Fatalf("expected codex-exposed openai model in list, got %+v", resp.Data)
+		}
+		for _, item := range resp.Data {
+			if item.ID == "gpt-5-codex" && item.MultiAgentVersion != "v2" {
+				t.Fatalf("multi_agent_version = %q, want v2", item.MultiAgentVersion)
+			}
 		}
 	})
 

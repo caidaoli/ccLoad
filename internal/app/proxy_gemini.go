@@ -138,10 +138,11 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 
 	// 构造 OpenAI API 响应格式
 	type ModelInfo struct {
-		ID      string `json:"id"`
-		Object  string `json:"object"`
-		Created int64  `json:"created"`
-		OwnedBy string `json:"owned_by"`
+		ID                string `json:"id"`
+		Object            string `json:"object"`
+		Created           int64  `json:"created"`
+		OwnedBy           string `json:"owned_by"`
+		MultiAgentVersion string `json:"multi_agent_version,omitempty"`
 	}
 
 	modelList := make([]ModelInfo, 0, len(models))
@@ -151,6 +152,12 @@ func (s *Server) handleListOpenAIModels(c *gin.Context) {
 			Object:  "model",
 			Created: 0,
 			OwnedBy: "system",
+			MultiAgentVersion: func() string {
+				if clientProtocol == "codex" {
+					return "v2"
+				}
+				return ""
+			}(),
 		})
 	}
 
