@@ -991,14 +991,203 @@ func TestAnthropicOAuthPreservesNativeClaudeCodeBody(t *testing.T) {
 		"metadata":{"user_id":"{\"device_id\":\"%s\",\"account_uuid\":\"account\",\"session_id\":\"e03895ad-8b34-4a84-bbf6-002e8909b17b\"}"},
 		"messages":[{"role":"user","content":"hello"}],"max_tokens":1024
 	}`, parsedCredential.DeviceID))
+	nativeHeaders := http.Header{
+		"User-Agent": {"claude-cli/2.1.220 (external, cli)"},
+		"X-App":      {"cli"}, "Anthropic-Beta": {"claude-code-20250219"},
+		"X-Claude-Code-Session-Id": {"e03895ad-8b34-4a84-bbf6-002e8909b17b"},
+	}
 	finalized, err := finalizeAnthropicOAuthMessagesBody(
-		nativeBody, cfg, http.Header{"User-Agent": []string{"claude-cli/2.1.220 (external, cli)"}},
+		nativeBody, cfg, nativeHeaders,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got := gjson.GetBytes(finalized, "system.0.text").String(); !strings.Contains(got, "cc_entrypoint=cli; cch=") || strings.Contains(got, "cch=00000;") {
 		t.Fatalf("native billing block was not preserved and signed: %q", got)
+	}
+	if bytes.Contains(finalized, []byte(`"cache_control"`)) || gjson.GetBytes(finalized, "temperature").Exists() {
+		t.Fatalf("native body was normalized instead of preserved: %s", finalized)
+	}
+}
+
+func TestAnthropicOAuthPreservesMarkerlessHaikuHelper(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	userID := fmt.Sprintf(`{"device_id":%q,"account_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":%q}`,
+		credential.DeviceID, sessionID)
+	body := []byte(fmt.Sprintf(`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID))
+	betas := "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
+	headers := http.Header{
+		"Accept": {"application/json"}, "Accept-Encoding": {"gzip"}, "Content-Type": {"application/json"},
+		"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {betas},
+		"Anthropic-Version": {"2023-06-01"}, "Anthropic-Dangerous-Direct-Browser-Access": {"true"},
+		"X-Claude-Code-Session-Id": {sessionID}, "X-Client-Request-Id": {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
+		"X-Stainless-Lang": {"js"}, "X-Stainless-Runtime": {"node"}, "X-Stainless-Package-Version": {"0.94.0"},
+		"X-Stainless-Runtime-Version": {"v26.3.0"}, "X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"},
+		"X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+
+	finalized, err := finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(finalized, body) {
+		t.Fatalf("markerless helper body changed:\n got %s\nwant %s", finalized, body)
+	}
+	req, err := http.NewRequest(http.MethodPost, "https://api.anthropic.com/v1/messages", bytes.NewReader(finalized))
+	if err != nil {
+		t.Fatal(err)
+	}
+	injectAnthropicOAuthHeaders(req, cfg, "oauth-access", finalized, headers)
+	if got := req.Header.Get("Anthropic-Beta"); got != betas {
+		t.Fatalf("helper beta profile = %q, want exact %q", got, betas)
+	}
+	if got := req.Header.Get("Accept-Encoding"); got != "gzip" {
+		t.Fatalf("helper Accept-Encoding = %q, want gzip", got)
+	}
+	if strings.Contains(string(finalized), "cache_control") || gjson.GetBytes(finalized, "system").Exists() {
+		t.Fatalf("helper gained synthetic native fields: %s", finalized)
+	}
+	otherCredentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "other-access", RefreshToken: "other-refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pooled, err := finalizeAnthropicOAuthMessagesBody(body, &model.Config{
+		AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: otherCredentialJSON,
+	}, headers)
+	if err != nil || !bytes.Equal(pooled, body) {
+		t.Fatalf("native helper was tied to the selected pool credential: err=%v body=%s", err, pooled)
+	}
+	reordered := []byte(fmt.Sprintf(`{"max_tokens":1,"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`, userID))
+	cloaked, err := finalizeAnthropicOAuthMessagesBody(reordered, cfg, headers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !gjson.GetBytes(cloaked, "system").Exists() {
+		t.Fatalf("non-native helper member order bypassed cloaking: %s", cloaked)
+	}
+}
+
+func TestAnthropicOAuthPreservesStructuredHaikuHelper(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	userID := fmt.Sprintf(`{"device_id":%q,"account_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":%q}`,
+		credential.DeviceID, sessionID)
+	body := []byte(fmt.Sprintf(`{"model":"claude-haiku-4-5-20251001","messages":[{"role":"user","content":[{"type":"text","text":"helper probe"}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.220; cc_entrypoint=cli; cch=00000;"},{"type":"text","text":"You are Claude Code, Anthropic's official CLI for Claude."},{"type":"text","text":"Return a short title."}],"tools":[],"metadata":{"user_id":%q},"max_tokens":32000,"thinking":{"type":"disabled"},"temperature":1,"output_config":{"format":{"type":"json_schema","schema":{"type":"object","properties":{"title":{"type":"string"}},"required":["title"],"additionalProperties":false}}},"stream":true}`, userID))
+	betas := "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15"
+	headers := http.Header{
+		"Accept": {"application/json"}, "Accept-Encoding": {"gzip, deflate, br, zstd"}, "Content-Type": {"application/json"},
+		"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {betas},
+		"Anthropic-Version": {"2023-06-01"}, "Anthropic-Dangerous-Direct-Browser-Access": {"true"},
+		"X-Claude-Code-Session-Id": {sessionID}, "X-Client-Request-Id": {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
+		"X-Stainless-Async": {"async"}, "X-Stainless-Lang": {"js"}, "X-Stainless-Runtime": {"node"},
+		"X-Stainless-Package-Version": {"0.94.0"}, "X-Stainless-Runtime-Version": {"v26.3.0"},
+		"X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"}, "X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
+	}
+	finalized, err := finalizeAnthropicOAuthMessagesBody(
+		body, &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, headers,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(finalized, []byte(`"cache_control"`)) || !gjson.GetBytes(finalized, "thinking.type").Exists() ||
+		gjson.GetBytes(finalized, "temperature").Num != 1 || !gjson.GetBytes(finalized, "stream").Bool() {
+		t.Fatalf("structured helper shape changed: %s", finalized)
+	}
+	if got := gjson.GetBytes(finalized, "system.0.text").String(); strings.Contains(got, "cch=00000") || !strings.Contains(got, " cch=") {
+		t.Fatalf("structured helper CCH was not refreshed: %q", got)
+	}
+}
+
+func TestAnthropicOAuthDropsOnlyAutoContextManagementWithoutThinking(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}
+	autoBody, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-opus-4-6","messages":[{"role":"user","content":"run"}],
+		"tools":[{"name":"run","description":"run","input_schema":{"type":"object"}}],
+		"thinking":{"type":"enabled","budget_tokens":1024},"tool_choice":{"type":"any"}
+	}`), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gjson.GetBytes(autoBody, "thinking").Exists() || gjson.GetBytes(autoBody, "context_management").Exists() {
+		t.Fatalf("forced tool choice retained invalid automatic thinking state: %s", autoBody)
+	}
+
+	callerBody, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-opus-4-6","messages":[{"role":"user","content":"run"}],
+		"context_management":{"edits":[{"type":"caller-owned"}]}
+	}`), cfg, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(callerBody, "context_management.edits.0.type").String(); got != "caller-owned" {
+		t.Fatalf("caller context_management ownership was lost: %s", callerBody)
+	}
+}
+
+func TestAnthropicOAuthCloakOwnsSystemAndRollingMessageCache(t *testing.T) {
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+		"model":"claude-opus-4-6",
+		"messages":[{"role":"user","content":"first"},{"role":"assistant","content":"answer"},{"role":"user","content":"second"}],
+		"tools":[{"name":"search","description":"search","input_schema":{"type":"object"}}]
+	}`), &model.Config{AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := gjson.GetBytes(body, "system.2.cache_control.ttl").String(); got != "1h" {
+		t.Fatalf("system cache ttl = %q, want 1h: %s", got, body)
+	}
+	if got := gjson.GetBytes(body, "messages.2.content.0.cache_control.ttl").String(); got != "1h" {
+		t.Fatalf("rolling message cache ttl = %q, want 1h: %s", got, body)
+	}
+	if bytes.Count(body, []byte(`"cache_control":{"type":"ephemeral","ttl":"1h"}`)) != 2 ||
+		bytes.Contains(body, []byte(`"cache_control":{"ttl":"1h","type":"ephemeral"}`)) {
+		t.Fatalf("cache_control wire order does not match native shape: %s", body)
+	}
+	resigned, err := finalizeAnthropicCCH(body)
+	if err != nil || !bytes.Equal(resigned, body) {
+		t.Fatalf("cache wire rewrite invalidated CCH: err=%v\n got %s\nwant %s", err, resigned, body)
+	}
+	if gjson.GetBytes(body, "tools.0.cache_control").Exists() {
+		t.Fatalf("tools should remain unstamped when system owns the prefix: %s", body)
 	}
 }
 

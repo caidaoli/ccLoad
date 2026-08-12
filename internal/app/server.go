@@ -1,9 +1,13 @@
 package app
 
 import (
+	"container/list"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +16,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -63,6 +68,8 @@ type Server struct {
 	antigravityClient             *http.Client // Antigravity 专用标准 HTTP/1.1 客户端
 	xaiSSOClient                  *http.Client // xAI Web SSO 专用 HTTP/1.1 客户端
 	proxyTransports               sync.Map     // upstreamHTTPClientCacheKey → *http.Client（渠道级代理缓存）
+	antigravityTransports         *antigravityHTTPClientCache
+	antigravityTransportMu        sync.Mutex
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
@@ -208,10 +215,11 @@ func NewServer(store storage.Store) *Server {
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
-		client:            newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		antigravityClient: newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
-		xaiSSOClient:      newXAISSOHTTPClient(transport),
-		skipTLSVerify:     skipTLSVerify,
+		client:                newUpstreamHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		antigravityClient:     newAntigravityHTTPClient(transport, runtimeCfg.UpstreamConnectionMaxAge),
+		antigravityTransports: newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity),
+		xaiSSOClient:          newXAISSOHTTPClient(transport),
+		skipTLSVerify:         skipTLSVerify,
 
 		// 并发控制：使用信号量限制最大并发请求数
 		concurrencySem: make(chan struct{}, maxConcurrency),
@@ -843,24 +851,205 @@ func buildHTTPTransport(skipTLSVerify bool) *http.Transport {
 	return transport // HTTP/2 已通过 ForceAttemptHTTP2 启用
 }
 
-// getClientForChannel 返回渠道对应的 HTTP 客户端。
-// 无代理或空串 → 对应的全局 client；相同 proxyURL 和传输配置共享 Transport 和连接池。
-//
-// 缓存按 proxyURL 和传输配置永久保留：渠道改 proxyURL 后旧 client 不再被引用，
-// 其空闲连接随 IdleConnTimeout 自然回收，进程退出时由 Shutdown 统一关闭。
-// 这是有界泄漏（proxyURL 种类有限），故意不引入 LRU/引用计数（YAGNI）。
+const antigravityHTTPClientCacheCapacity = 8192
+
+var errAntigravityHTTPClientCacheClosed = errors.New("antigravity HTTP client cache is closed")
+
+// antigravityHTTPClientCache is a bounded LRU of Antigravity clients. A client
+// owns a transport and therefore a physical connection pool; evicting it must
+// close idle connections or credential/proxy churn would retain sockets forever.
+type antigravityHTTPClientCache struct {
+	mu       sync.Mutex
+	capacity int
+	entries  map[upstreamHTTPClientCacheKey]*list.Element
+	order    *list.List
+	closed   bool
+}
+
+type antigravityHTTPClientCacheEntry struct {
+	key    upstreamHTTPClientCacheKey
+	client *http.Client
+}
+
+func newAntigravityHTTPClientCache(capacity int) *antigravityHTTPClientCache {
+	if capacity < 1 {
+		capacity = 1
+	}
+	return &antigravityHTTPClientCache{
+		capacity: capacity,
+		entries:  make(map[upstreamHTTPClientCacheKey]*list.Element, capacity),
+		order:    list.New(),
+	}
+}
+
+func (c *antigravityHTTPClientCache) getOrCreate(
+	key upstreamHTTPClientCacheKey,
+	create func() (*http.Client, error),
+) (*http.Client, error) {
+	if c == nil {
+		return create()
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return nil, errAntigravityHTTPClientCacheClosed
+	}
+	if element := c.entries[key]; element != nil {
+		c.order.MoveToFront(element)
+		client := element.Value.(antigravityHTTPClientCacheEntry).client
+		c.mu.Unlock()
+		return client, nil
+	}
+	c.mu.Unlock()
+
+	client, err := create()
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		closeUpstreamHTTPClient(client)
+		return nil, errAntigravityHTTPClientCacheClosed
+	}
+	// Another goroutine may have populated the same key while the transport
+	// was being built. Keep one client and immediately discard the duplicate.
+	if element := c.entries[key]; element != nil {
+		c.order.MoveToFront(element)
+		actual := element.Value.(antigravityHTTPClientCacheEntry).client
+		c.mu.Unlock()
+		closeUpstreamHTTPClient(client)
+		return actual, nil
+	}
+	element := c.order.PushFront(antigravityHTTPClientCacheEntry{key: key, client: client})
+	c.entries[key] = element
+	var evicted *http.Client
+	if c.order.Len() > c.capacity {
+		oldest := c.order.Back()
+		if oldest != nil {
+			entry := oldest.Value.(antigravityHTTPClientCacheEntry)
+			delete(c.entries, entry.key)
+			c.order.Remove(oldest)
+			evicted = entry.client
+		}
+	}
+	c.mu.Unlock()
+	if evicted != nil {
+		closeUpstreamHTTPClient(evicted)
+	}
+	return client, nil
+}
+
+func (c *antigravityHTTPClientCache) closeAll() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.closed = true
+	clients := make([]*http.Client, 0, len(c.entries))
+	for _, element := range c.entries {
+		clients = append(clients, element.Value.(antigravityHTTPClientCacheEntry).client)
+	}
+	c.entries = make(map[upstreamHTTPClientCacheKey]*list.Element, c.capacity)
+	c.order.Init()
+	c.mu.Unlock()
+	for _, client := range clients {
+		closeUpstreamHTTPClient(client)
+	}
+}
+
 type upstreamHTTPClientCacheKey struct {
 	proxyURL              string
 	antigravityHTTP11Only bool
+	credentialScope       string
+}
+
+func (s *Server) getAntigravityHTTPClientCache() *antigravityHTTPClientCache {
+	s.antigravityTransportMu.Lock()
+	defer s.antigravityTransportMu.Unlock()
+	if s.antigravityTransports == nil {
+		s.antigravityTransports = newAntigravityHTTPClientCache(antigravityHTTPClientCacheCapacity)
+	}
+	return s.antigravityTransports
+}
+
+// antigravityCredentialPoolScope deliberately uses the refresh token rather
+// than the access token. Access tokens rotate; the refresh token identifies the
+// OAuth identity whose HTTP/1.1 connection pool must remain isolated.
+func antigravityCredentialPoolScope(cfg *model.Config) string {
+	if cfg == nil || !cfg.UsesAntigravityOAuth() {
+		return ""
+	}
+	if credential, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential)); err == nil && credential.RefreshToken != "" {
+		digest := sha256.Sum256([]byte(credential.RefreshToken))
+		return "refresh:" + hex.EncodeToString(digest[:])
+	}
+	// A malformed/incomplete credential must not make unrelated channels share
+	// a pool. Channel ID is stable and is only a defensive fallback.
+	if cfg.ID != 0 {
+		return fmt.Sprintf("channel:%d", cfg.ID)
+	}
+	return ""
 }
 
 func (s *Server) getClientForChannel(cfg *model.Config) *http.Client {
+	if cfg == nil {
+		return s.client
+	}
 	defaultClient := s.client
 	clientFactory := newUpstreamHTTPClient
 	antigravityHTTP11Only := cfg.UsesAntigravityOAuth()
 	if antigravityHTTP11Only {
 		defaultClient = s.antigravityClient
 		clientFactory = newAntigravityHTTPClient
+		// Tests and embedders may inject a semantic RoundTripper. It already is
+		// the transport boundary; replacing it with a network transport would
+		// silently bypass the injected behavior.
+		if defaultClient != nil {
+			switch defaultClient.Transport.(type) {
+			case *http.Transport, *upstreamConnectionAgeTransport:
+			default:
+				return defaultClient
+			}
+		}
+		credentialScope := antigravityCredentialPoolScope(cfg)
+		// Channels without a parseable credential are retained on the legacy
+		// global client. Real OAuth credentials always receive their own scope.
+		if credentialScope != "" {
+			proxyURL := strings.TrimSpace(cfg.ProxyURL)
+			key := upstreamHTTPClientCacheKey{
+				proxyURL:              proxyURL,
+				antigravityHTTP11Only: true,
+				credentialScope:       credentialScope,
+			}
+			cache := s.getAntigravityHTTPClientCache()
+			client, err := cache.getOrCreate(key, func() (*http.Client, error) {
+				var transport *http.Transport
+				var err error
+				if proxyURL == "" {
+					transport = buildHTTPTransport(s.skipTLSVerify)
+				} else {
+					transport, err = buildChannelProxyTransport(proxyURL, s.skipTLSVerify)
+				}
+				if err != nil {
+					return nil, err
+				}
+				return clientFactory(transport, s.upstreamConnectionMaxAge), nil
+			})
+			if err == nil {
+				return client
+			}
+			log.Printf("[WARN] 渠道 %d 代理 %q 无效，回退凭证隔离的直连池: %v", cfg.ID, cfg.ProxyURL, err)
+			fallbackKey := key
+			fallbackKey.proxyURL = ""
+			fallback, fallbackErr := cache.getOrCreate(fallbackKey, func() (*http.Client, error) {
+				return clientFactory(buildHTTPTransport(s.skipTLSVerify), s.upstreamConnectionMaxAge), nil
+			})
+			if fallbackErr == nil {
+				return fallback
+			}
+		}
 	}
 	if cfg.ProxyURL == "" {
 		return defaultClient
@@ -1508,6 +1697,12 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	closeUpstreamHTTPClient(s.client)
 	closeUpstreamHTTPClient(s.antigravityClient)
 	closeUpstreamHTTPClient(s.xaiSSOClient)
+	s.antigravityTransportMu.Lock()
+	antigravityTransports := s.antigravityTransports
+	s.antigravityTransportMu.Unlock()
+	if antigravityTransports != nil {
+		antigravityTransports.closeAll()
+	}
 	s.proxyTransports.Range(func(_, v any) bool {
 		closeUpstreamHTTPClient(v.(*http.Client))
 		return true

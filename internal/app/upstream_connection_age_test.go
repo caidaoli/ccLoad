@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -17,6 +18,27 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 )
+
+type closeIdleTrackingRoundTripper struct {
+	mu     sync.Mutex
+	closes int
+}
+
+func (t *closeIdleTrackingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (t *closeIdleTrackingRoundTripper) CloseIdleConnections() {
+	t.mu.Lock()
+	t.closes++
+	t.mu.Unlock()
+}
+
+func (t *closeIdleTrackingRoundTripper) closeCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.closes
+}
 
 func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	type observedRequest struct {
@@ -105,6 +127,201 @@ func TestServerUsesStandardHTTP11OnlyForAntigravity(t *testing.T) {
 	}
 	if got := protocols["/default"]; got != 2 {
 		t.Fatalf("default protocol = HTTP/%d, want HTTP/2", got)
+	}
+}
+
+func TestServerIsolatesAntigravityHTTP11PoolByRefreshCredential(t *testing.T) {
+	server := &Server{
+		client:            http.DefaultClient,
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(true), 0),
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.antigravityClient)
+		if server.antigravityTransports != nil {
+			server.antigravityTransports.closeAll()
+		}
+	})
+
+	credential := func(refresh, access string) string {
+		return fmt.Sprintf(`{"type":"antigravity","access_token":%q,"refresh_token":%q,"expired":"2099-01-01T00:00:00Z"}`, access, refresh)
+	}
+	first := &model.Config{ID: 1, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-a", "access-a")}
+	rotated := first.Clone()
+	rotated.OAuthCredential = credential("refresh-a", "access-b")
+	second := &model.Config{ID: 2, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-b", "access-c")}
+
+	firstClient := server.getClientForChannel(first)
+	rotatedClient := server.getClientForChannel(rotated)
+	secondClient := server.getClientForChannel(second)
+	if firstClient != rotatedClient {
+		t.Fatal("access-token rotation should retain the refresh-token scoped client")
+	}
+	if firstClient == secondClient {
+		t.Fatal("different Antigravity refresh credentials must not share an HTTP client")
+	}
+	if got := server.antigravityTransports.order.Len(); got != 2 {
+		t.Fatalf("cache entries=%d, want 2", got)
+	}
+}
+
+func TestServerDoesNotReuseAntigravityConnectionAcrossCredentials(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	t.Cleanup(upstream.Close)
+	server := &Server{
+		client:            http.DefaultClient,
+		antigravityClient: newAntigravityHTTPClient(buildHTTPTransport(false), 0),
+	}
+	t.Cleanup(func() {
+		closeUpstreamHTTPClient(server.antigravityClient)
+		if server.antigravityTransports != nil {
+			server.antigravityTransports.closeAll()
+		}
+	})
+	credential := func(refresh string) string {
+		return fmt.Sprintf(`{"type":"antigravity","access_token":"access","refresh_token":%q,"expired":"2099-01-01T00:00:00Z"}`, refresh)
+	}
+	firstCredential := &model.Config{ID: 1, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-a")}
+	secondCredential := &model.Config{ID: 2, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credential("refresh-b")}
+
+	request := func(cfg *model.Config) httptrace.GotConnInfo {
+		t.Helper()
+		gotConn := make(chan httptrace.GotConnInfo, 1)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, upstream.URL, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+			GotConn: func(info httptrace.GotConnInfo) { gotConn <- info },
+		}))
+		resp, err := server.getClientForChannel(cfg).Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+		return <-gotConn
+	}
+
+	first := request(firstCredential)
+	reused := request(firstCredential)
+	other := request(secondCredential)
+	if !reused.Reused || reused.Conn != first.Conn {
+		t.Fatalf("same credential did not reuse its HTTP/1.1 connection: reused=%t same=%t", reused.Reused, reused.Conn == first.Conn)
+	}
+	if other.Conn == first.Conn {
+		t.Fatal("different Antigravity credentials reused the same physical connection")
+	}
+}
+
+func TestAntigravityHTTPClientCacheIsBounded(t *testing.T) {
+	cache := newAntigravityHTTPClientCache(2)
+	trackers := make([]*closeIdleTrackingRoundTripper, 0, 3)
+	for _, scope := range []string{"a", "b", "c"} {
+		client, err := cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: scope}, func() (*http.Client, error) {
+			tracker := &closeIdleTrackingRoundTripper{}
+			trackers = append(trackers, tracker)
+			return &http.Client{Transport: tracker}, nil
+		})
+		if err != nil || client == nil {
+			t.Fatalf("create %s: client=%v err=%v", scope, client, err)
+		}
+	}
+	if got := cache.order.Len(); got != 2 {
+		t.Fatalf("cache entries=%d, want bounded size 2", got)
+	}
+	if _, ok := cache.entries[upstreamHTTPClientCacheKey{credentialScope: "a"}]; ok {
+		t.Fatal("least-recently-used client was not evicted")
+	}
+	if got := trackers[0].closeCount(); got != 1 {
+		t.Fatalf("evicted client CloseIdleConnections calls=%d, want 1", got)
+	}
+	agingCache := newAntigravityHTTPClientCache(1)
+	agingClient, err := agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "aging"}, func() (*http.Client, error) {
+		return newAntigravityHTTPClient(buildHTTPTransport(false), time.Hour), nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agingTransport, ok := agingClient.Transport.(*upstreamConnectionAgeTransport)
+	if !ok {
+		t.Fatalf("aging transport type=%T", agingClient.Transport)
+	}
+	if _, err = agingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "evict-aging"}, func() (*http.Client, error) {
+		return &http.Client{Transport: &closeIdleTrackingRoundTripper{}}, nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	agingTransport.mu.Lock()
+	agingClosed := agingTransport.closed
+	agingTransport.mu.Unlock()
+	if !agingClosed {
+		t.Fatal("LRU eviction did not stop the connection-age transport lifecycle")
+	}
+	agingCache.closeAll()
+	cache.closeAll()
+	if _, err := cache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "after-close"}, func() (*http.Client, error) {
+		return &http.Client{Transport: &closeIdleTrackingRoundTripper{}}, nil
+	}); !errors.Is(err, errAntigravityHTTPClientCacheClosed) {
+		t.Fatalf("closed cache accepted a new pool: %v", err)
+	}
+
+	closingCache := newAntigravityHTTPClientCache(1)
+	builderStarted := make(chan struct{})
+	releaseBuilder := make(chan struct{})
+	buildResult := make(chan error, 1)
+	inFlightTracker := &closeIdleTrackingRoundTripper{}
+	go func() {
+		_, err := closingCache.getOrCreate(upstreamHTTPClientCacheKey{credentialScope: "in-flight"}, func() (*http.Client, error) {
+			close(builderStarted)
+			<-releaseBuilder
+			return &http.Client{Transport: inFlightTracker}, nil
+		})
+		buildResult <- err
+	}()
+	<-builderStarted
+	closingCache.closeAll()
+	close(releaseBuilder)
+	if err := <-buildResult; !errors.Is(err, errAntigravityHTTPClientCacheClosed) {
+		t.Fatalf("in-flight builder resurrected a closed cache: %v", err)
+	}
+	if got := inFlightTracker.closeCount(); got != 1 {
+		t.Fatalf("discarded in-flight pool close calls=%d, want 1", got)
+	}
+}
+
+func TestAntigravityPoolLimitsMatchNativeReuseProfile(t *testing.T) {
+	base := &http.Transport{MaxIdleConns: 20, MaxIdleConnsPerHost: 20, IdleConnTimeout: 90 * time.Second}
+	client := newAntigravityHTTPClient(base, 0)
+	t.Cleanup(func() { closeUpstreamHTTPClient(client) })
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *http.Transport", client.Transport)
+	}
+	if transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost ||
+		transport.MaxIdleConns < transport.MaxIdleConnsPerHost ||
+		transport.IdleConnTimeout < antigravityIdleConnTimeout {
+		t.Fatalf("Antigravity pool limits = idle %d per-host %d timeout %v",
+			transport.MaxIdleConns, transport.MaxIdleConnsPerHost, transport.IdleConnTimeout)
+	}
+	if base.MaxIdleConnsPerHost != 20 || base.IdleConnTimeout != 90*time.Second {
+		t.Fatal("Antigravity pool tuning mutated the shared base transport")
+	}
+	wide := &http.Transport{MaxIdleConns: 512, MaxIdleConnsPerHost: 256, IdleConnTimeout: time.Hour}
+	applyAntigravityPoolLimits(wide)
+	if wide.MaxIdleConns != 512 || wide.MaxIdleConnsPerHost != 256 || wide.IdleConnTimeout != time.Hour {
+		t.Fatalf("wider operator pool was narrowed: %#v", wide)
+	}
+	unlimited := &http.Transport{MaxIdleConns: 0, IdleConnTimeout: 0}
+	applyAntigravityPoolLimits(unlimited)
+	if unlimited.MaxIdleConns != 0 || unlimited.IdleConnTimeout != 0 || unlimited.MaxIdleConnsPerHost != antigravityMaxIdleConnsPerHost {
+		t.Fatalf("unlimited sentinels/default per-host were mishandled: %#v", unlimited)
+	}
+	disabled := &http.Transport{MaxIdleConnsPerHost: -1}
+	applyAntigravityPoolLimits(disabled)
+	if disabled.MaxIdleConnsPerHost != -1 {
+		t.Fatalf("disabled idle pooling was overwritten: %#v", disabled)
 	}
 }
 
