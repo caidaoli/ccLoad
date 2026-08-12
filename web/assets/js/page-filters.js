@@ -21,7 +21,6 @@
 
   function buildSharedFields(config) {
     const groupClass = config.groupClass || '';
-    const infoClass = config.infoClass || 'filter-info';
     const checkboxGroupClass = config.checkboxGroupClass || groupClass;
     const timeRangeGroupClass = joinClasses(groupClass, config.timeRangeGroupClass);
     const timeRangeControlClass = joinClasses('filter-control--compact', 'filter-control--time-range', config.timeRangeControlClass);
@@ -35,7 +34,6 @@
                 <span data-i18n="stats.hideZeroSuccess">隐藏0成功</span>
               </label>
             </div>`;
-    const statsInfo = `<div class="${infoClass}"><span data-i18n="stats.totalRecordsPrefix">共</span> <span id="statsCount">0</span> <span data-i18n="stats.totalRecordsSuffix">条记录</span></div>`;
     const filterButtonControl = '<button id="btn_filter" type="button" class="btn btn-primary filter-btn" data-i18n="common.filter">筛选</button>';
     const clearButtonControl = '<button id="btn_clear_filters" type="button" class="btn btn-secondary filter-btn" data-i18n="common.clear">清空</button>';
     const filterButton = `<div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
@@ -79,19 +77,30 @@
       ),
       channelNameCombobox: buildFilterGroup(
         `${buildFilterLabel('f_name', 'stats.channelName', '渠道名')}
-        <div class="filter-combobox-wrapper">
+        <div class="filter-combobox-wrapper filter-control--channel-name">
           <input id="f_name" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
           <div id="f_name_dropdown" class="filter-dropdown" role="listbox"></div>
         </div>`,
+        joinClasses(groupClass, 'filter-group--channel-name')
+      ),
+      clientProtocol: buildFilterGroup(
+        `${buildFilterLabel('f_client_protocol', 'modelTest.clientProtocol', '请求协议')}
+        ${buildSelect('f_client_protocol', `
+                <option value="" data-i18n="stats.allClientProtocols">全部协议</option>
+                <option value="anthropic" data-i18n="modelTest.clientProtocolAnthropic">Claude Code</option>
+                <option value="codex" data-i18n="modelTest.clientProtocolCodex">Codex</option>
+                <option value="openai" data-i18n="modelTest.clientProtocolOpenAI">OpenAI</option>
+                <option value="gemini" data-i18n="modelTest.clientProtocolGemini">Gemini</option>
+              `, 'filter-control--compact')}`,
         groupClass
       ),
       modelCombobox: buildFilterGroup(
         `${buildFilterLabel('f_model', 'common.model', '模型')}
-        <div class="filter-combobox-wrapper filter-control--wide">
+        <div class="filter-combobox-wrapper filter-control--wide filter-control--model">
           <input id="f_model" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
           <div id="f_model_dropdown" class="filter-dropdown" role="listbox"></div>
         </div>`,
-        groupClass
+        joinClasses(groupClass, 'filter-group--model')
       ),
       authToken: buildFilterGroup(
         `${buildFilterLabel('f_auth_token', 'stats.token', '令牌')}
@@ -100,11 +109,11 @@
       ),
       status: buildFilterGroup(
         `${buildFilterLabel('f_status', 'logs.statusCode', '状态码')}
-        <div class="filter-combobox-wrapper filter-control--narrow">
+        <div class="filter-combobox-wrapper filter-control--narrow filter-control--status">
           <input id="f_status" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" />
           <div id="f_status_dropdown" class="filter-dropdown" role="listbox"></div>
         </div>`,
-        groupClass
+        joinClasses(groupClass, 'filter-group--status')
       ),
       logSource: buildFilterGroup(
         `${buildFilterLabel('f_log_source', 'logs.logSource', '日志来源')}
@@ -115,14 +124,16 @@
               `, 'filter-control--compact')}`,
         groupClass
       ),
-      statsInfo,
       hideZeroSuccess,
       filterButton,
       logsSummary: `<div class="logs-filter-summary-row"><div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
               ${clearButtonControl}
               ${filterButtonControl}
             </div></div>`,
-      statsSummary: `<div class="stats-filter-summary-row">${hideZeroSuccess}${statsInfo}${filterButton}</div>`
+      statsSummary: `<div class="stats-filter-summary-row">${hideZeroSuccess}<div class="${joinClasses('filter-actions', 'filter-actions--page', config.actionsClass)}">
+              ${clearButtonControl}
+              ${filterButtonControl}
+            </div></div>`
     };
   }
 
@@ -132,9 +143,8 @@
       controlsClass: 'filter-controls stats-filter-controls',
       groupClass: 'stats-filter-group',
       checkboxGroupClass: 'stats-filter-group stats-filter-group--checkbox',
-      infoClass: 'filter-info stats-filter-info',
       actionsClass: 'stats-filter-actions',
-      items: ['timeRange', 'channelNameCombobox', 'modelCombobox', 'authToken', 'statsSummary']
+      items: ['timeRange', 'clientProtocol', 'channelNameCombobox', 'modelCombobox', 'authToken', 'statsSummary']
     },
     logs: {
       barClass: 'filter-bar logs-filter-bar mt-2',
@@ -144,17 +154,15 @@
       timeRangeControlClass: 'logs-filter-control--range',
       authTokenGroupClass: 'logs-filter-group--token',
       authTokenControlClass: 'logs-filter-control--token',
-      infoClass: 'filter-info logs-filter-info',
       actionsClass: 'logs-filter-actions',
-      items: ['timeRange', 'channelNameCombobox', 'modelCombobox', 'logSource', 'status', 'authToken', 'logsSummary']
+      items: ['timeRange', 'clientProtocol', 'channelNameCombobox', 'modelCombobox', 'logSource', 'status', 'authToken', 'logsSummary']
     },
     trend: {
       barClass: 'filter-bar mt-2',
       controlsClass: 'filter-controls trend-filter-controls',
       groupClass: '',
-      infoClass: 'filter-info',
       actionsClass: '',
-      items: ['timeRange', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
+      items: ['timeRange', 'clientProtocol', 'channelNameCombobox', 'modelSelect', 'authToken', 'filterButton']
     }
   };
 

@@ -50,13 +50,13 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// openai: success + error + cancelled(499)
 	// anthropic: success
 	if err := store.BatchAddLogs(ctx, []*model.LogEntry{
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", UpstreamProtocol: "anthropic", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
-		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.05, LogSource: model.LogSourceScheduledCheck},
-		{Time: model.JSONTime{Time: now}, ChannelID: 0, StatusCode: 502, Message: "exhausted backends", LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", ClientProtocol: "openai", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.1, IsStreaming: true, FirstByteTime: 0.01, InputTokens: 10, OutputTokens: 20, Cost: 0.01, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", ClientProtocol: "openai", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.2, IsStreaming: false, InputTokens: 1, OutputTokens: 2, Cost: 0.02, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", ClientProtocol: "openai", UpstreamProtocol: "openai", StatusCode: 499, Duration: 0.3, IsStreaming: true, FirstByteTime: 0.02, InputTokens: 999, OutputTokens: 999, Cost: 9.99, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: anthCfg.ID, Model: "claude-3-5-sonnet-latest", ClientProtocol: "anthropic", UpstreamProtocol: "anthropic", StatusCode: 200, Duration: 0.4, IsStreaming: false, InputTokens: 3, OutputTokens: 4, Cost: 0.03, LogSource: model.LogSourceProxy},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", ClientProtocol: "openai", UpstreamProtocol: "openai", StatusCode: 200, Duration: 0.05, IsStreaming: false, InputTokens: 100, OutputTokens: 200, Cost: 1.23, LogSource: model.LogSourceManualTest},
+		{Time: model.JSONTime{Time: now}, ChannelID: openaiCfg.ID, Model: "gpt-4o", ClientProtocol: "anthropic", UpstreamProtocol: "openai", StatusCode: 500, Duration: 0.05, LogSource: model.LogSourceScheduledCheck},
+		{Time: model.JSONTime{Time: now}, ChannelID: 0, ClientProtocol: "codex", StatusCode: 502, Message: "exhausted backends", LogSource: model.LogSourceProxy},
 	}); err != nil {
 		t.Fatalf("BatchAddLogs failed: %v", err)
 	}
@@ -109,6 +109,16 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	if len(stats) < 2 {
 		t.Fatalf("GetStats len=%d, want >=2", len(stats))
 	}
+	clientStats, err := store.GetStats(ctx, start, end, &model.LogFilter{
+		ClientProtocol: "openai",
+		LogSource:      model.LogSourceProxy,
+	}, false)
+	if err != nil {
+		t.Fatalf("GetStats(client protocol) failed: %v", err)
+	}
+	if len(clientStats) != 1 || clientStats[0].Success != 1 || clientStats[0].Error != 1 || clientStats[0].Total != 2 {
+		t.Fatalf("GetStats(client protocol)=%+v, want one 1/1 proxy entry excluding 499", clientStats)
+	}
 	foundOpenAI := false
 	for _, e := range stats {
 		if e.ChannelID != nil && int64(*e.ChannelID) == openaiCfg.ID && e.Model == "gpt-4o" {
@@ -157,6 +167,7 @@ func TestMetrics_BasicQueriesAndFilters(t *testing.T) {
 	// AggregateRangeWithFilter：覆盖渠道解析，并确保健康指标只统计代理请求。
 	pts, err := store.AggregateRangeWithFilter(ctx, start, end, time.Minute, &model.LogFilter{
 		ChannelNameLike: "openai",
+		ClientProtocol:  "openai",
 		LogSource:       model.LogSourceProxy,
 	})
 	if err != nil {

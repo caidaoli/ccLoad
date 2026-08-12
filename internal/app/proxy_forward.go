@@ -2883,6 +2883,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			Streaming:        reqCtx.isStreaming,
 			ChannelID:        cfg.ID,
 			ChannelName:      cfg.Name,
+			ClientProtocol:   string(clientProtocol),
 			UpstreamProtocol: "",
 			APIKey:           selectedKey,
 			TokenID:          reqCtx.tokenID,

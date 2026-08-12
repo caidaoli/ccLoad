@@ -110,6 +110,7 @@ type LogFilter struct {
 	Model            string
 	ModelLike        string
 	StatusCode       *int
+	ClientProtocol   string // 客户端入口协议过滤
 	UpstreamProtocol string // 实际上游协议过滤
 	AuthTokenID      *int64 // API令牌ID过滤
 	LogSource        string

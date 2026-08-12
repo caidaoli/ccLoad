@@ -64,7 +64,10 @@ func (wb *WhereBuilder) ApplyLogFilter(filter *model.LogFilter) *WhereBuilder {
 	if filter.ChannelID != nil {
 		wb.AddCondition("channel_id = ?", *filter.ChannelID)
 	}
-	// ChannelName/ChannelNameLike 需要先解析为 channel_id；实际协议直接存在日志行中。
+	// ChannelName/ChannelNameLike 需要先解析为 channel_id；协议直接存在日志行中。
+	if filter.ClientProtocol != "" {
+		wb.AddCondition("client_protocol = ?", filter.ClientProtocol)
+	}
 	if filter.UpstreamProtocol != "" {
 		wb.AddCondition("upstream_protocol = ?", filter.UpstreamProtocol)
 	}

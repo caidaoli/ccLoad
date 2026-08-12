@@ -433,6 +433,18 @@
       flex: 0 1 134px;
     }
 
+    .logs-filter-group.filter-group--channel-name {
+      flex-basis: 214px;
+    }
+
+    .logs-filter-group.filter-group--model {
+      flex-basis: 200px;
+    }
+
+    .logs-filter-group.filter-group--status {
+      flex: 0 1 136px;
+    }
+
     .logs-filter-group .filter-input,
     .logs-filter-group .filter-select {
       width: 100%;
@@ -449,6 +461,16 @@
 
     .logs-filter-control--token {
       max-width: 100px;
+    }
+
+    .logs-filter-controls .filter-control--channel-name,
+    .logs-filter-controls .filter-control--model {
+      min-width: 160px;
+    }
+
+    .logs-filter-controls .filter-control--status {
+      min-width: 80px;
+      max-width: 90px;
     }
 
     .logs-filter-info {

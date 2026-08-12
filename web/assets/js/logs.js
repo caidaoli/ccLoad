@@ -768,6 +768,7 @@ function filterActiveRequests(requests) {
   const model = normalizeLogsFilterValue(filters.model);
   const channelNameExact = filters.channelNameExact;
   const modelExact = filters.modelExact;
+  const clientProtocol = normalizeLogsFilterValue(filters.clientProtocol);
   const tokenId = (document.getElementById('f_auth_token')?.value || '').trim();
 
   return requests.filter(req => {
@@ -779,6 +780,7 @@ function filterActiveRequests(requests) {
       const reqModel = normalizeLogsFilterValue(req.model || '');
       if (modelExact ? reqModel !== model : !reqModel.includes(model)) return false;
     }
+    if (clientProtocol && normalizeLogsFilterValue(req.client_protocol) !== clientProtocol) return false;
     // 令牌ID精确匹配
     if (tokenId) {
       if (req.token_id === undefined || req.token_id === null || req.token_id === 0) return false;
@@ -1289,6 +1291,7 @@ async function resetLogsFilters() {
 function applyLogsFilterValues(filters) {
   window.applyFilterControlValues(filters, {
     range: 'f_hours',
+    clientProtocol: 'f_client_protocol',
     logSource: 'f_log_source',
     authToken: 'f_auth_token'
   });
@@ -1515,6 +1518,10 @@ async function initFilters(restoredFilters, preloaded) {
   initLogsModelCombobox(restoredFilters.model || '');
   initLogsStatusCombobox(restoredFilters.status || '');
   applyLogsFilterValues(restoredFilters);
+  const clientProtocolSelect = document.getElementById('f_client_protocol');
+  if (clientProtocolSelect) {
+    clientProtocolSelect.addEventListener('change', applyFilter);
+  }
   // 并行化：三个独立网络请求同时发起（高 RTT 环境下节省 ~2 个往返延迟）
   // 若有 preloaded 数据则跳过对应的网络请求
   const [, tokens] = await Promise.all([
@@ -1544,7 +1551,7 @@ async function initFilters(restoredFilters, preloaded) {
   window.bindFilterApplyInputs({
     apply: applyFilter,
     debounceInputIds: [],
-    enterInputIds: ['f_hours', 'f_auth_token', 'f_log_source']
+    enterInputIds: ['f_hours', 'f_client_protocol', 'f_auth_token', 'f_log_source']
   });
 }
 
@@ -1730,6 +1737,7 @@ const LOGS_FILTER_FIELDS = [
       return false;
     }
   },
+  { key: 'clientProtocol', queryKeys: ['client_protocol'], defaultValue: '' },
   {
     key: 'channelName',
     queryKeys: ['channel_name', 'channel_name_like'],
@@ -1759,6 +1767,7 @@ function getLogsFilters() {
   const status = logsStatusCombobox ? logsStatusCombobox.getValue() : (document.getElementById('f_status')?.value || '').trim();
   const baseValues = window.readFilterControlValues({
     range: { id: 'f_hours', defaultValue: 'today', trim: true },
+    clientProtocol: { id: 'f_client_protocol', trim: true },
     authToken: { id: 'f_auth_token', trim: true }
   });
   const hasCustomRange = baseValues.range === 'custom' && currentLogsCustomTimeRange;

@@ -7,6 +7,7 @@
     window.currentTrendChartType = 'line'; // 默认使用折线图，可切换为柱状图
     window.currentModel = ''; // 当前选中的模型（空字符串表示全部模型）
     window.currentAuthToken = ''; // 当前选中的令牌（空字符串表示全部令牌）
+    window.currentClientProtocol = ''; // 当前选中的客户端入口协议
     window.currentChannelName = ''; // 当前选中的渠道名称
     let currentTrendCustomTimeRange = null;
     window.chartInstance = null;
@@ -76,6 +77,7 @@
           return false;
         }
       },
+      { key: 'clientProtocol', queryKeys: ['client_protocol'], defaultValue: '' },
       { key: 'model', queryKeys: ['model'], defaultValue: '' },
       { key: 'authToken', queryKeys: ['token'], requestKey: 'auth_token_id', defaultValue: '' },
       {
@@ -97,6 +99,7 @@
         customStartTime: hasCustomRange ? String(currentTrendCustomTimeRange.startMs) : '',
         customEndTime: hasCustomRange ? String(currentTrendCustomTimeRange.endMs) : '',
         trendType: window.currentTrendType || 'first_byte',
+        clientProtocol: window.currentClientProtocol || '',
         model: window.currentModel || '',
         authToken: window.currentAuthToken || '',
         channelName: window.currentChannelName || ''
@@ -211,6 +214,11 @@
         const modelSelect = document.getElementById('f_model');
         if (modelSelect) {
           window.currentModel = modelSelect.value || '';
+        }
+
+        const clientProtocolSelect = document.getElementById('f_client_protocol');
+        if (clientProtocolSelect) {
+          window.currentClientProtocol = clientProtocolSelect.value || '';
         }
 
         const tokenSelect = document.getElementById('f_auth_token');
@@ -1633,6 +1641,15 @@ function shouldShowZoom(points, hours, trendType) {
         });
       }
 
+      const clientProtocolSelect = document.getElementById('f_client_protocol');
+      if (clientProtocolSelect) {
+        clientProtocolSelect.addEventListener('change', (e) => {
+          window.currentClientProtocol = e.target.value || '';
+          persistState();
+          loadData();
+        });
+      }
+
       // 令牌选择器
       const tokenSelect = document.getElementById('f_auth_token');
       if (tokenSelect) {
@@ -1719,6 +1736,13 @@ function shouldShowZoom(points, hours, trendType) {
 
         // 恢复模型选择
         window.currentModel = restoredFilters.model || '';
+
+        // 恢复客户端入口协议
+        window.currentClientProtocol = restoredFilters.clientProtocol || '';
+        const clientProtocolSelect = document.getElementById('f_client_protocol');
+        if (clientProtocolSelect) {
+          clientProtocolSelect.value = window.currentClientProtocol;
+        }
 
         // 恢复令牌选择
         window.currentAuthToken = restoredFilters.authToken || '';

@@ -26,6 +26,7 @@ type ActiveRequest struct {
 	Streaming           bool    `json:"is_streaming"`
 	ChannelID           int64   `json:"channel_id,omitempty"`
 	ChannelName         string  `json:"channel_name,omitempty"`
+	ClientProtocol      string  `json:"client_protocol,omitempty"`        // 客户端入口协议
 	UpstreamProtocol    string  `json:"upstream_protocol,omitempty"`      // 当前尝试的实际上游协议
 	APIKeyUsed          string  `json:"api_key_used,omitempty"`           // 脱敏后的key
 	TokenID             int64   `json:"token_id,omitempty"`               // 令牌ID（用于前端筛选，0表示无令牌）
@@ -47,6 +48,7 @@ type activeRequest struct {
 	Streaming        bool
 	ChannelID        int64
 	ChannelName      string
+	ClientProtocol   string
 	UpstreamProtocol string
 	APIKeyUsed       string
 	TokenID          int64
@@ -69,6 +71,7 @@ type activeRequestAttempt struct {
 	Streaming        bool
 	ChannelID        int64
 	ChannelName      string
+	ClientProtocol   string
 	UpstreamProtocol string
 	APIKey           string
 	TokenID          int64
@@ -111,6 +114,7 @@ func (m *activeRequestManager) BeginAttempt(id int64, attempt activeRequestAttem
 	req.Streaming = attempt.Streaming
 	req.ChannelID = attempt.ChannelID
 	req.ChannelName = attempt.ChannelName
+	req.ClientProtocol = attempt.ClientProtocol
 	req.UpstreamProtocol = attempt.UpstreamProtocol
 	req.APIKeyUsed = util.MaskAPIKey(attempt.APIKey)
 	req.TokenID = attempt.TokenID
@@ -242,6 +246,7 @@ func (m *activeRequestManager) List() []*ActiveRequest {
 			Streaming:         req.Streaming,
 			ChannelID:         req.ChannelID,
 			ChannelName:       req.ChannelName,
+			ClientProtocol:    req.ClientProtocol,
 			UpstreamProtocol:  req.UpstreamProtocol,
 			APIKeyUsed:        req.APIKeyUsed,
 			TokenID:           req.TokenID,

@@ -45,6 +45,13 @@ func TestWhereBuilder_ApplyLogFilter(t *testing.T) {
 			expectArgsLen: 2,
 		},
 		{
+			name: "client protocol filter",
+			filter: &model.LogFilter{
+				ClientProtocol: "openai",
+			},
+			expectArgsLen: 2,
+		},
+		{
 			name: "model like match",
 			filter: &model.LogFilter{
 				ModelLike: "claude",

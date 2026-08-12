@@ -125,7 +125,6 @@
         applyDefaultSorting();
 
         renderStatsTable();
-        updateStatsCount();
         updateRpmHeader(); // 更新表头标题
 
         // 如果当前是图表视图，同步更新图表
@@ -612,6 +611,57 @@
       loadStats();
     }
 
+    function getDefaultStatsFilters() {
+      if (window.FilterState && typeof window.FilterState.restore === 'function') {
+        return window.FilterState.restore({
+          search: '',
+          savedFilters: null,
+          fields: STATS_FILTER_FIELDS
+        });
+      }
+
+      return STATS_FILTER_FIELDS.reduce((values, field) => {
+        values[field.key] = Object.prototype.hasOwnProperty.call(field, 'defaultValue')
+          ? field.defaultValue
+          : '';
+        return values;
+      }, {});
+    }
+
+    function resetStatsFilters() {
+      const defaults = getDefaultStatsFilters();
+
+      currentStatsCustomTimeRange = null;
+      hideZeroSuccess = true;
+      rememberExactStatsFilters({
+        ...defaults,
+        channelNameExact: false,
+        modelExact: false
+      });
+
+      window.applyFilterControlValues(defaults, {
+        range: 'f_hours',
+        clientProtocol: 'f_client_protocol',
+        authToken: 'f_auth_token'
+      });
+      statsChannelNameCombobox?.setValue('', t('stats.allChannels'));
+      statsModelCombobox?.setValue('', t('trend.allModels'));
+
+      const hideZeroCheckbox = document.getElementById('f_hide_zero_success');
+      if (hideZeroCheckbox) hideZeroCheckbox.checked = true;
+
+      window.persistFilterState({
+        key: STATS_FILTER_KEY,
+        values: getStatsFilters(),
+        search: location.search,
+        pathname: location.pathname,
+        fields: STATS_FILTER_FIELDS,
+        preserveExistingParams: true,
+        historyMethod: 'replaceState'
+      });
+      loadStats();
+    }
+
     function initStatsChannelNameCombobox(initialValue) {
       statsChannelNameCombobox = window.createSearchableCombobox({
         inputId: 'f_name',
@@ -683,6 +733,7 @@
       const name = restoredFilters.channelName || '';
       const range = restoredFilters.range || 'today';
       const model = restoredFilters.model || '';
+      const clientProtocol = restoredFilters.clientProtocol || '';
       const authToken = restoredFilters.authToken || '';
 
       window.initSavedDateRangeFilter({
@@ -708,6 +759,12 @@
       initStatsChannelNameCombobox(name);
       initStatsModelCombobox(model);
 
+      const clientProtocolSelect = document.getElementById('f_client_protocol');
+      if (clientProtocolSelect) {
+        clientProtocolSelect.value = clientProtocol;
+        clientProtocolSelect.addEventListener('change', applyFilter);
+      }
+
       window.initAuthTokenFilter({
         selectId: 'f_auth_token',
         value: authToken,
@@ -725,23 +782,13 @@
 
       // 事件监听
       document.getElementById('btn_filter').addEventListener('click', applyFilter);
+      document.getElementById('btn_clear_filters')?.addEventListener('click', resetStatsFilters);
 
       window.bindFilterApplyInputs({
         apply: applyFilter,
         debounceInputIds: [],
-        enterInputIds: ['f_hours', 'f_auth_token']
+        enterInputIds: ['f_hours', 'f_client_protocol', 'f_auth_token']
       });
-    }
-
-    function updateStatsCount() {
-      // 更新筛选器统计信息（显示过滤后的记录数）
-      const statsCountEl = document.getElementById('statsCount');
-      if (statsCountEl && statsData && statsData.stats) {
-        const count = hideZeroSuccess
-          ? statsData.stats.filter(entry => (entry.success || 0) > 0).length
-          : statsData.stats.length;
-        statsCountEl.textContent = count;
-      }
     }
 
     // 根据是否本日更新RPM表头标题
@@ -990,6 +1037,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
         }
       },
       { key: 'channelId', queryKeys: ['channel_id'], defaultValue: '' },
+      { key: 'clientProtocol', queryKeys: ['client_protocol'], defaultValue: '' },
       {
         key: 'channelName',
         queryKeys: ['channel_name', 'channel_name_like'],
@@ -1012,6 +1060,7 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
       const model = statsModelCombobox ? statsModelCombobox.getValue() : '';
       const baseValues = window.readFilterControlValues({
         range: { id: 'f_hours', defaultValue: 'today', trim: true },
+        clientProtocol: { id: 'f_client_protocol', trim: true },
         authToken: { id: 'f_auth_token', trim: true }
       });
       const hasCustomRange = baseValues.range === 'custom' && currentStatsCustomTimeRange;
@@ -1095,7 +1144,6 @@ ${t('stats.tooltipCost')}: $${point.cost.toFixed(4)}`;
             getValues: getStatsFilters
           });
           renderStatsTable();
-          updateStatsCount();
         });
       }
 
