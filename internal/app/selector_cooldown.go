@@ -49,6 +49,14 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 		return nil, nil
 	}
 
+	// 渠道可用时段是硬路由约束，必须在冷却兜底前过滤；不在时段内的渠道
+	// 不能因为“所有渠道冷却”而被强行选中。
+	channels = filterAvailableTimeChannels(channels, now)
+	if len(channels) == 0 {
+		log.Print("[INFO] 当前时间没有可用时段内的渠道")
+		return nil, nil
+	}
+
 	// 批量查询冷却状态（优先走缓存层）
 	channelCooldowns, err := s.getAllChannelCooldowns(ctx)
 	if err != nil {
@@ -105,6 +113,16 @@ func (s *Server) filterCooldownChannelsInternal(ctx context.Context, channels []
 
 	// healthCache 关闭时：按优先级分组，使用平滑加权轮询
 	return s.balanceSamePriorityChannels(filtered, keyCooldowns, now), nil
+}
+
+func filterAvailableTimeChannels(channels []*modelpkg.Config, now time.Time) []*modelpkg.Config {
+	filtered := make([]*modelpkg.Config, 0, len(channels))
+	for _, cfg := range channels {
+		if cfg != nil && cfg.IsAvailableAt(now) {
+			filtered = append(filtered, cfg)
+		}
+	}
+	return filtered
 }
 
 func cooldownFallbackCandidate(cfg *modelpkg.Config) *modelpkg.Config {

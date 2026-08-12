@@ -131,6 +131,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	var scheduledCheckModel string
 	var customRequestRules sql.NullString
 	var cooldownDetectionRules sql.NullString
+	var availableTimeStart, availableTimeEnd string
 	var retryOtherKeysOnFailureInt int
 	var createdAtRaw, updatedAtRaw any // 使用any接受任意类型（兼容字符串、整数或RFC3339）
 
@@ -138,7 +139,7 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	// 注意：不再包含 models 和 model_redirects 字段
 	if err := scanner.Scan(&c.ID, &c.Name, &c.URLs, &c.Priority,
 		&c.RPMLimit, &c.MaxConcurrency, &c.AuthType, &c.OAuthCredential, &websocketsInt, &c.ProtocolTransformMode, &enabledInt, &scheduledCheckEnabledInt, &scheduledCheckModel,
-		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &cooldownDetectionRules, &c.ProxyURL, &retryOtherKeysOnFailureInt, &c.KeyCount,
+		&c.CooldownUntil, &c.CooldownDurationMs, &c.DailyCostLimit, &c.CostMultiplier, &customRequestRules, &cooldownDetectionRules, &c.ProxyURL, &availableTimeStart, &availableTimeEnd, &retryOtherKeysOnFailureInt, &c.KeyCount,
 		&createdAtRaw, &updatedAtRaw); err != nil {
 		return nil, err
 	}
@@ -152,6 +153,8 @@ func (cs *ConfigScanner) ScanConfig(scanner interface {
 	c.CustomRequestRules = parseCustomRequestRules(c.ID, customRequestRules)
 	c.CooldownDetectionRules = parseCooldownDetectionRules(c.ID, cooldownDetectionRules)
 	c.RetryOtherKeysOnFailure = retryOtherKeysOnFailureInt != 0
+	c.AvailableTimeStart = availableTimeStart
+	c.AvailableTimeEnd = availableTimeEnd
 	if c.CostMultiplier < 0 {
 		c.CostMultiplier = 1
 	}

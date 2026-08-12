@@ -41,6 +41,8 @@ func TestConfig_CreateAndGet(t *testing.T) {
 		Websockets:              true,
 		ProtocolTransformMode:   model.ProtocolTransformModeLocal,
 		RetryOtherKeysOnFailure: true,
+		AvailableTimeStart:      "22:00",
+		AvailableTimeEnd:        "08:00",
 		RPMLimit:                60,
 		MaxConcurrency:          3,
 		ModelEntries: []model.ModelEntry{
@@ -88,6 +90,9 @@ func TestConfig_CreateAndGet(t *testing.T) {
 	}
 	if !got.RetryOtherKeysOnFailure {
 		t.Error("expected retry_other_keys_on_failure=true")
+	}
+	if got.AvailableTimeStart != "22:00" || got.AvailableTimeEnd != "08:00" {
+		t.Errorf("available time: got %q-%q, want 22:00-08:00", got.AvailableTimeStart, got.AvailableTimeEnd)
 	}
 	if got.RPMLimit != 60 {
 		t.Errorf("rpm_limit: got %d, want 60", got.RPMLimit)

@@ -528,7 +528,12 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.fetchRateTitle': '从 Sub2API 获取当前有效倍率',
   'channels.fetchRateLoading': '获取中...',
   'channels.proxyURL': '代理',
-  'channels.proxyURLPlaceholder': 'http:// | socks5://',
+  'channels.proxyURLPlaceholder': 'http://… | https://… | socks5://… | socks5h://…',
+  'channels.proxyURLHelp': '例如 http://127.0.0.1:8080、https://proxy.example:8443、socks5://127.0.0.1:1080。',
+  'channels.availableTime': '可用时段',
+  'channels.availableTimeStart': '开始时间',
+  'channels.availableTimeEnd': '结束时间',
+  'channels.availableTimeHelp': '格式 HH:MM；留空表示全天可用，支持跨午夜时段，例如 22:00–08:00。',
   'channels.retryOtherKeysOnFailure': '渠道故障优先换 Key',
   'channels.retryOtherKeysOnFailureHelp': '渠道级或模型级上游故障时，先冷却当前 Key 并尝试同渠道的其他 Key；适用于不同 Key 对应不同服务商的中转站。',
 

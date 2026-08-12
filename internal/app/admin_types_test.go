@@ -97,6 +97,29 @@ func TestChannelRequestValidate_RejectsInvalidProtocolTransformMode(t *testing.T
 	}
 }
 
+func TestChannelRequestValidate_NormalizesAvailableTime(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:               "scheduled-channel",
+		APIKey:             "sk-test",
+		URLs:               model.ChannelURLs{{URL: "https://example.com"}},
+		Models:             []model.ModelEntry{{Model: "test-model"}},
+		AvailableTimeStart: " 22:00 ",
+		AvailableTimeEnd:   "08:00",
+	}
+	if err := req.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if req.AvailableTimeStart != "22:00" || req.AvailableTimeEnd != "08:00" {
+		t.Fatalf("normalized available time = %q-%q", req.AvailableTimeStart, req.AvailableTimeEnd)
+	}
+	cfg := req.ToConfig()
+	if cfg.AvailableTimeStart != "22:00" || cfg.AvailableTimeEnd != "08:00" {
+		t.Fatalf("ToConfig available time = %q-%q", cfg.AvailableTimeStart, cfg.AvailableTimeEnd)
+	}
+}
+
 func TestChannelRequestToConfigPreservesRetryOtherKeysOnFailure(t *testing.T) {
 	t.Parallel()
 

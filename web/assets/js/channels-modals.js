@@ -593,6 +593,10 @@ async function editChannel(id) {
 
   const proxyUrlInput = document.getElementById('channelProxyURL');
   if (proxyUrlInput) proxyUrlInput.value = channel.proxy_url || '';
+  const availableTimeStart = document.getElementById('channelAvailableTimeStart');
+  const availableTimeEnd = document.getElementById('channelAvailableTimeEnd');
+  if (availableTimeStart) availableTimeStart.value = channel.available_time_start || '';
+  if (availableTimeEnd) availableTimeEnd.value = channel.available_time_end || '';
 
   resetChannelFormDirty();
   document.getElementById('channelModal').classList.add('show');
@@ -829,6 +833,8 @@ async function saveChannel(event) {
     custom_request_rules: invokeChannelEditorAction('collectCustomRulesForSubmit') || null,
     cooldown_detection_rules: invokeChannelEditorAction('collectCooldownDetectionRulesForSubmit') || null,
     proxy_url: (document.getElementById('channelProxyURL')?.value || '').trim(),
+    available_time_start: (document.getElementById('channelAvailableTimeStart')?.value || '').trim(),
+    available_time_end: (document.getElementById('channelAvailableTimeEnd')?.value || '').trim(),
     retry_other_keys_on_failure: !!document.getElementById('channelRetryOtherKeysOnFailure')?.checked
   };
   if (!isOAuth) formData.key_strategy = keyStrategy;
@@ -1879,6 +1885,12 @@ async function copyChannel(id, name) {
   if (websocketCheckbox) websocketCheckbox.checked = !!channel.websockets;
   document.getElementById('channelScheduledCheckEnabled').checked = !!channel.scheduled_check_enabled;
   document.getElementById('channelScheduledCheckModel').value = channel.scheduled_check_model || '';
+  const proxyUrlInput = document.getElementById('channelProxyURL');
+  if (proxyUrlInput) proxyUrlInput.value = channel.proxy_url || '';
+  const availableTimeStart = document.getElementById('channelAvailableTimeStart');
+  const availableTimeEnd = document.getElementById('channelAvailableTimeEnd');
+  if (availableTimeStart) availableTimeStart.value = channel.available_time_start || '';
+  if (availableTimeEnd) availableTimeEnd.value = channel.available_time_end || '';
   const retryOtherKeysCheckbox = document.getElementById('channelRetryOtherKeysOnFailure');
   if (retryOtherKeysCheckbox) retryOtherKeysCheckbox.checked = !!channel.retry_other_keys_on_failure;
 

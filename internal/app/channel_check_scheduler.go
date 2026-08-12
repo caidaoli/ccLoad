@@ -157,7 +157,7 @@ func (s *Server) runScheduledChannelChecks(ctx context.Context) error {
 }
 
 func shouldRunScheduledChannelCheck(cfg *model.Config) bool {
-	return cfg != nil && cfg.Enabled && cfg.ScheduledCheckEnabled
+	return cfg != nil && cfg.Enabled && cfg.ScheduledCheckEnabled && cfg.IsAvailableAt(time.Now())
 }
 
 func logScheduledChannelCheckResult(cfg *model.Config, keyIndex int, modelName string, result map[string]any) {

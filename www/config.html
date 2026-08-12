@@ -198,6 +198,7 @@
               <li><code>models</code>: each entry can redirect to a different upstream model or be disabled independently. A disabled entry stays persisted but is excluded from routing and fuzzy matching.</li>
               <li><code>priority</code>: higher priority is selected first; equal priority uses smooth weighted round-robin.</li>
               <li><code>proxy_url</code>: optional per-channel proxy. Supports <code>http</code>, <code>https</code>, <code>socks5</code> and <code>socks5h</code>; empty uses the process environment proxy.</li>
+              <li><code>available_time_start</code> / <code>available_time_end</code>: optional server-local daily availability window in <code>HH:MM</code>; leave both empty for all day, and overnight windows such as <code>22:00</code>–<code>08:00</code> are supported.</li>
               <li><code>websockets</code>: for channels with a Codex-capable URL. Reuse a native upstream Responses WebSocket; use the built-in detector before enabling it.</li>
             </ul>
           </article>
