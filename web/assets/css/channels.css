@@ -5929,7 +5929,7 @@
 
     .advanced-settings-other-fields {
       display: grid;
-      grid-template-columns: minmax(0, 420px);
+      grid-template-columns: minmax(0, 1fr);
       align-content: start;
       gap: 16px;
     }
@@ -5956,6 +5956,7 @@
       grid-template-columns: max-content minmax(0, 1fr);
       align-items: center;
       gap: 18px;
+      max-width: 420px;
       min-width: 0;
     }
 
