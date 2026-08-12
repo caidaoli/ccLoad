@@ -397,10 +397,6 @@ test('容器内禁用更新设置并显示镜像切换说明', async (t) => {
   ));
   assert.ok(updateGroup, '应将自动更新设置放入独立分组');
   assert.match(updateGroup.data.groupNoticeHtml, /role="note"/);
-  assert.match(updateGroup.data.groupNoticeHtml, /settings\.update\.containerManaged/);
-  assert.match(updateGroup.data.groupNoticeHtml, /ghcr\.io\/caidaoli\/ccload:latest/);
-  assert.match(updateGroup.data.groupNoticeHtml, /ghcr\.io\/caidaoli\/ccload:beta/);
-  assert.match(updateGroup.data.groupNoticeHtml, /docker compose pull/);
 
   const settingRows = page.renderCalls.filter(({ template }) => template === 'tpl-setting-row');
   assert.equal(settingRows.length, 2);

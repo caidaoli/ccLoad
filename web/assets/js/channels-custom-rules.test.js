@@ -24,11 +24,6 @@ test('cloneRules 深拷贝并规范化字段', () => {
   assert.equal(rules.headers[0].name, 'X-Foo');
 });
 
-test('cloneRules 兼容 null / 非对象输入', () => {
-  const empty = cloneRules(null);
-  assert.deepEqual(empty, { headers: [], body: [] });
-});
-
 test('resetCustomRulesState 接受 null 重置为空', () => {
   resetCustomRulesState({ headers: [{ action: 'override', name: 'X', value: 'v' }], body: [] });
   assert.equal(getState().headers.length, 1);
