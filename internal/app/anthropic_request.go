@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	cliproxysignature "ccLoad/internal/protocol/cliproxy/signature"
@@ -22,6 +23,7 @@ func normalizeAnthropicMessagesBody(body []byte, signCCH bool) ([]byte, error) {
 
 func encodeNormalizedAnthropicRequest(request map[string]any, signCCH bool) ([]byte, error) {
 	normalizeAnthropicMessagesRequest(request)
+	orderAnthropicCacheControlWireShape(request)
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		return nil, errors.New("normalize Anthropic request: encode body")
@@ -61,6 +63,32 @@ func normalizeAnthropicMessagesRequest(request map[string]any) {
 	normalizeAnthropicCacheControlTTL(request)
 	enforceAnthropicCacheControlLimit(request, 4)
 }
+
+func validateAnthropicLegacySystemMessages(request map[string]any) error {
+	if !anthropicUsesLegacySystemReminder(stringValue(request["model"])) {
+		return nil
+	}
+	messages, ok := request["messages"].([]any)
+	if !ok {
+		return nil
+	}
+	for index, raw := range messages {
+		message, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(stringValue(message["role"])), "system") {
+			return &anthropicRequestValidationError{message: fmt.Sprintf(
+				"Anthropic model %q does not support system messages in messages[%d]", stringValue(request["model"]), index,
+			)}
+		}
+	}
+	return nil
+}
+
+type anthropicRequestValidationError struct{ message string }
+
+func (e *anthropicRequestValidationError) Error() string { return e.message }
 
 func countAnthropicCacheControls(request map[string]any) int {
 	count := 0

@@ -471,7 +471,12 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 		"messages":   []any{map[string]any{"role": "user", "content": "hello"}},
 		"thinking":   map[string]any{"type": "enabled", "budget_tokens": 2048},
 		"max_tokens": 4096,
-	}, map[string]string{"User-Agent": "claude-cli/2.1.220 (external, cli)"})
+	}, map[string]string{
+		"User-Agent":               "claude-cli/2.1.220 (external, cli)",
+		"X-App":                    "cli",
+		"Anthropic-Beta":           "claude-code-20250219",
+		"X-Claude-Code-Session-Id": "e03895ad-8b34-4a84-bbf6-002e8909b17b",
+	})
 
 	if response.Code != http.StatusOK || attempts.Load() != 2 || len(bodies) != 2 {
 		t.Fatalf("status=%d attempts=%d bodies=%d response=%s", response.Code, attempts.Load(), len(bodies), response.Body.String())
@@ -489,6 +494,63 @@ func TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry(t *testing.T) {
 	}
 	if !gjson.GetBytes(bodies[0], "thinking").Exists() || gjson.GetBytes(bodies[1], "thinking").Exists() {
 		t.Fatalf("thinking downgrade failed: first=%s second=%s", bodies[0], bodies[1])
+	}
+}
+
+func TestProxy_AnthropicLegacyModelRejectsMidConversationSystemLocally(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "legacy-anthropic", upstreamProtocol: "anthropic", models: "claude-haiku-4-5-20251001", apiKey: "sk-ant",
+	}}, map[int]string{0: "https://api.anthropic.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return nil, errors.New("legacy validation should stop before upstream")
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-haiku-4-5-20251001",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"role": "system", "content": "late system"},
+		},
+		"max_tokens": 64,
+	}, nil)
+	if response.Code != http.StatusBadRequest || upstreamCalls.Load() != 0 {
+		t.Fatalf("status=%d upstream_calls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "does not support system messages") {
+		t.Fatalf("validation response=%s", response.Body.String())
+	}
+}
+
+func TestProxy_AnthropicCompatibleGatewayOwnsLegacySystemTurns(t *testing.T) {
+	t.Parallel()
+	var upstreamCalls atomic.Int32
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "compatible-anthropic", upstreamProtocol: "anthropic", models: "claude-haiku-4-5-20251001", apiKey: "sk-ant",
+	}}, map[int]string{0: "https://anthropic-gateway.example.com"})
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-haiku-4-5-20251001","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+			)),
+		}, nil
+	})}
+
+	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
+		"model": "claude-haiku-4-5-20251001",
+		"messages": []any{
+			map[string]any{"role": "user", "content": "hello"},
+			map[string]any{"role": "system", "content": "gateway-owned turn"},
+		},
+		"max_tokens": 64,
+	}, nil)
+	if response.Code != http.StatusOK || upstreamCalls.Load() != 1 {
+		t.Fatalf("status=%d upstream_calls=%d body=%s", response.Code, upstreamCalls.Load(), response.Body.String())
 	}
 }
 

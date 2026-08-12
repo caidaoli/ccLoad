@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -157,6 +158,11 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
+	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
+		if err = validateAnthropicLegacySystemRequestForUpstream(body, cfg, hdr, parsedUpstreamURL); err != nil {
+			return nil, err
+		}
+	}
 
 	// 1.8 Codex Responses 缓存提示：向 body 注入 prompt_cache_key
 	codexSessionID := ""
@@ -211,7 +217,7 @@ func (s *Server) buildProxyRequest(
 	} else if cfg.UsesAntigravityOAuth() {
 		injectAntigravityOAuthHeaders(req, cfg)
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
-		injectAnthropicOAuthHeaders(req, cfg, apiKey, body)
+		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
 	} else if officialAnthropicAPIKey {
 		injectAnthropicAPIKeyHeaders(req, apiKey, body)
 	}
@@ -249,6 +255,16 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		var err error
 		if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 			if anthropicAlreadyFinalized {
+				var request map[string]any
+				if json.Unmarshal(body, &request) == nil {
+					helperShape := nativeAnthropicHaikuHelperShape(body, request, headers, cfg)
+					if helperShape == anthropicHaikuHelperMinimal {
+						return body, nil
+					}
+					if helperShape == anthropicHaikuHelperStructured || isNativeAnthropicClaudeCodeRequest(request, headers, cfg) {
+						return finalizeAnthropicCCH(body)
+					}
+				}
 				body, err = normalizeAnthropicMessagesBody(body, true)
 			} else {
 				body, err = finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
@@ -2201,6 +2217,16 @@ func (s *Server) forwardAttempt(
 	// [INFO] 修复：handleResponse可能返回err即使StatusCode=200（例如Content-Length=0）
 	// [FIX] 2025-12: 传递 res 和 reqCtx，用于保留 499 场景下已消耗的 token 统计
 	if err != nil {
+		var anthropicValidationErr *anthropicRequestValidationError
+		if errors.As(err, &anthropicValidationErr) {
+			return &proxyResult{
+				status:     http.StatusBadRequest,
+				body:       []byte(anthropicValidationErr.Error()),
+				channelID:  &cfg.ID,
+				succeeded:  false,
+				nextAction: cooldown.ActionReturnClient,
+			}, cooldown.ActionReturnClient, nil
+		}
 		var targetCooldownErr *codexWebsocketTargetCooldownError
 		if errors.As(err, &targetCooldownErr) {
 			return &proxyResult{

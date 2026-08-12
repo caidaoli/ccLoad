@@ -122,6 +122,21 @@ documented adaptations:
   to `high`) for every client protocol before the request is sent.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
+- Executor/runtime parity remains implemented at the app boundary rather than in
+  this snapshot. Antigravity uses refresh-token-scoped HTTP/1.1 pools with native
+  keepalive limits and bounded LRU eviction; its request finalizer performs one
+  object-tree rewrite per attempt. Claude OAuth preserves confirmed native and
+  measured Haiku-helper request shapes, owns cache placement only for cloaked
+  callers, rejects legacy mid-conversation system messages locally for Anthropic's
+  first-party origin, and removes only automatically injected context management
+  that outlives eligible thinking.
+  The excluded plugin registry and Antigravity reasoning replay cache still have
+  no ccLoad runtime equivalent, so plugin-hook and replay-index changes are not
+  copied as translator code.
+- ccLoad has no Kimi OAuth authenticator or executor. The unused top-level Kimi
+  OAuth model catalog is therefore omitted from the embedded registry. Generic
+  API-key channels remain model-agnostic and retain Kimi pricing and wire-format
+  compatibility.
 - `fork/v8.65.0` also rewrites Gemini function-call pairing validation to use
   short-circuiting `gjson.ForEach`; ccLoad carries that pure control-flow update
   while preserving its local `ccLoad/internal/protocol/cliproxy/util` import and

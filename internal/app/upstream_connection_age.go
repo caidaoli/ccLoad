@@ -9,6 +9,11 @@ import (
 
 var errUpstreamConnectionAgeTransportClosed = errors.New("upstream connection age transport is closed")
 
+const (
+	antigravityMaxIdleConnsPerHost = 100
+	antigravityIdleConnTimeout     = 10 * time.Minute
+)
+
 // upstreamConnectionAgeTransport rotates complete HTTP transport generations.
 // That is the only safe boundary shared by HTTP/1.1 and multiplexed HTTP/2:
 // an expired generation receives no new requests, while active responses drain
@@ -64,7 +69,27 @@ func newUpstreamHTTPClient(base *http.Transport, maxAge time.Duration) *http.Cli
 }
 
 func newAntigravityHTTPClient(base *http.Transport, maxAge time.Duration) *http.Client {
-	return newHTTPClientWithRoundTripperFactory(base, maxAge, newAntigravityUpstreamRoundTripper)
+	clone := base.Clone()
+	applyAntigravityPoolLimits(clone)
+	return newHTTPClientWithRoundTripperFactory(clone, maxAge, newAntigravityUpstreamRoundTripper)
+}
+
+// applyAntigravityPoolLimits mirrors the native Google auth transport. A zero
+// total/timeout remains unlimited; a zero per-host value means Go's tiny default
+// and is widened. Negative per-host values keep idle pooling disabled.
+func applyAntigravityPoolLimits(transport *http.Transport) {
+	if transport == nil {
+		return
+	}
+	if transport.MaxIdleConnsPerHost >= 0 && transport.MaxIdleConnsPerHost < antigravityMaxIdleConnsPerHost {
+		transport.MaxIdleConnsPerHost = antigravityMaxIdleConnsPerHost
+	}
+	if transport.MaxIdleConns > 0 && transport.MaxIdleConns < transport.MaxIdleConnsPerHost {
+		transport.MaxIdleConns = transport.MaxIdleConnsPerHost
+	}
+	if transport.IdleConnTimeout > 0 && transport.IdleConnTimeout < antigravityIdleConnTimeout {
+		transport.IdleConnTimeout = antigravityIdleConnTimeout
+	}
 }
 
 func newHTTPClientWithRoundTripperFactory(
