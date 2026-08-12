@@ -6,6 +6,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -373,6 +375,87 @@ func TestServer_HandleChannelKeys(t *testing.T) {
 			t.Fatalf("keys=%v, want 1", len(resp.Data))
 		}
 	})
+}
+
+func TestServer_HandleChannelKeysProjectsOAuthAccessTokens(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	tests := []struct {
+		name       string
+		authType   string
+		credential string
+		wantToken  string
+		wantNote   string
+	}{
+		{
+			name:       "codex",
+			authType:   model.AuthTypeCodexOAuth,
+			credential: `{"type":"codex","access_token":"codex-access","refresh_token":"codex-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			wantToken:  "codex-access",
+			wantNote:   "Codex OAuth AT",
+		},
+		{
+			name:       "antigravity",
+			authType:   model.AuthTypeAntigravityOAuth,
+			credential: `{"type":"antigravity","access_token":"gravity-access","refresh_token":"gravity-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			wantToken:  "gravity-access",
+			wantNote:   "Antigravity OAuth AT",
+		},
+		{
+			name:       "xai",
+			authType:   model.AuthTypeXAIOAuth,
+			credential: `{"type":"xai","auth_kind":"oauth","access_token":"xai-access","refresh_token":"xai-refresh","expired":"2030-01-01T00:00:00Z"}`,
+			wantToken:  "xai-access",
+			wantNote:   "xAI OAuth AT",
+		},
+		{
+			name:       "anthropic",
+			authType:   model.AuthTypeAnthropicOAuth,
+			credential: `{"type":"anthropic","access_token":"anthropic-access","refresh_token":"anthropic-refresh","expired":"2030-01-01T00:00:00Z","account_uuid":"account-1"}`,
+			wantToken:  "anthropic-access",
+			wantNote:   "Anthropic OAuth AT",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg, err := store.CreateConfig(context.Background(), &model.Config{
+				Name:            tt.name,
+				AuthType:        tt.authType,
+				OAuthCredential: tt.credential,
+				URLs:            model.ChannelURLs{{URL: "https://api.example.com"}},
+				Enabled:         true,
+			})
+			if err != nil {
+				t.Fatalf("CreateConfig failed: %v", err)
+			}
+
+			id := strconv.FormatInt(cfg.ID, 10)
+			c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/"+id+"/keys", nil))
+			c.Params = gin.Params{{Key: "id", Value: id}}
+			server.HandleChannelKeys(c)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusOK, w.Body.String())
+			}
+			resp := mustParseAPIResponse[[]*model.APIKey](t, w.Body.Bytes())
+			if !resp.Success || len(resp.Data) != 1 {
+				t.Fatalf("response=%+v, want one OAuth key", resp)
+			}
+			key := resp.Data[0]
+			if key.KeyIndex != 0 || key.APIKey != util.MaskAPIKey(tt.wantToken) || key.Note != tt.wantNote || key.Disabled {
+				t.Fatalf("key=%+v, want token=%q note=%q", key, tt.wantToken, tt.wantNote)
+			}
+			if strings.Contains(w.Body.String(), tt.wantToken) {
+				t.Fatalf("OAuth access token leaked in channel keys response: %s", w.Body.String())
+			}
+			stored, err := store.GetAPIKeys(context.Background(), cfg.ID)
+			if err != nil || len(stored) != 0 {
+				t.Fatalf("projected OAuth key must not be persisted: keys=%+v err=%v", stored, err)
+			}
+		})
+	}
 }
 
 func TestServer_ShutdownCancelsInFlightURLProbe(t *testing.T) {
