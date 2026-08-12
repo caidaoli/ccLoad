@@ -17,6 +17,10 @@ const STORAGE_KEY_CHAT_MESSAGES = 'ccload_model_test_chat_messages';
 
 let channelsList = [];
 let selectedChannel = null;
+let channelKeys = [];
+const channelKeysById = new Map();
+let selectedKeyIndex = null;
+let channelKeyLoadRequestId = 0;
 let selectedModelName = '';
 let selectedProtocol = '';
 let selectedModelModeProtocol = '';
@@ -31,6 +35,10 @@ let chatMessageSummaries = [];
 const chatSessionState = window.ModelTestChatSession.createSessionState(() => crypto.randomUUID());
 let chatChannel = null;
 let chatChannelSelection = null;
+let chatChannelKeys = [];
+let chatSelectedKeyIndex = null;
+let chatChannelKeyLoadRequestId = 0;
+let chatChannelKeyCombobox = null;
 let chatModel = '';
 let isChatSending = false;
 let chatChannelCombobox = null;
@@ -48,6 +56,7 @@ let chatAdvancedOptions = {
 };
 
 let channelSelectCombobox = null;
+let channelKeyCombobox = null;
 let modelSelectCombobox = null;
 let clientProtocolCombobox = null;
 
@@ -55,6 +64,7 @@ const headRow = document.getElementById('model-test-head-row');
 const tbody = document.getElementById('model-test-tbody');
 const toolbar = document.querySelector('.model-test-toolbar');
 const channelSelectorLabel = document.getElementById('channelSelectorLabel');
+const keySelectorLabel = document.getElementById('keySelectorLabel');
 const modelSelectorLabel = document.getElementById('modelSelectorLabel');
 const clientProtocolSelect = document.getElementById('clientProtocolSelect');
 const modelSelect = document.getElementById('testModelSelect');
@@ -1653,6 +1663,9 @@ function updateModeUI() {
   toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
   channelSelectorLabel.style.display = isModelMode ? 'none' : 'flex';
+  if (keySelectorLabel) {
+    keySelectorLabel.style.display = isModelMode ? 'none' : 'flex';
+  }
   if (modelSelectorLabel) {
     modelSelectorLabel.style.display = isModelMode ? 'flex' : 'none';
     modelSelectorLabel.classList.toggle('hidden', !isModelMode);
@@ -1687,7 +1700,8 @@ function getSelectedTargets() {
           row,
           model: row.dataset.model || selectedModelName,
           channelId: channel.id,
-          clientProtocol: selectedProtocol
+          clientProtocol: selectedProtocol,
+          keyIndex: normalizeModelTestKeyIndex(getPreferredModelTestKey(channelKeysById.get(channel.id))?.key_index)
         };
       }
 
@@ -1696,10 +1710,25 @@ function getSelectedTargets() {
         row,
         model: row.dataset.model,
         channelId: selectedChannel.id,
-        clientProtocol: selectedProtocol
+        clientProtocol: selectedProtocol,
+        keyIndex: selectedKeyIndex
       };
     })
     .filter(Boolean);
+}
+
+async function attachModelModeKeySelection(targets) {
+  if (testMode !== TEST_MODE_MODEL || !Array.isArray(targets) || targets.length === 0) {
+    return targets;
+  }
+
+  const channelIDs = [...new Set(targets.map(target => target.channelId).filter(Number.isFinite))];
+  await Promise.all(channelIDs.map(channelId => getModelTestChannelKeys(channelId)));
+
+  return targets.map(target => ({
+    ...target,
+    keyIndex: normalizeModelTestKeyIndex(getPreferredModelTestKey(channelKeysById.get(target.channelId))?.key_index)
+  }));
 }
 
 function resetRowStatus(row) {
@@ -1892,7 +1921,11 @@ async function runBatchTests(targets) {
     row.querySelector('.response').textContent = i18nText('modelTest.testing', '测试中...');
 
     try {
-      const data = await fetchModelTestWithRPMWait(target, { model, stream: streamEnabled, content, client_protocol: selectedProtocol });
+      const payload = { model, stream: streamEnabled, content, client_protocol: selectedProtocol };
+      if (Number.isInteger(target.keyIndex)) {
+        payload.key_index = target.keyIndex;
+      }
+      const data = await fetchModelTestWithRPMWait(target, payload);
       applyTestResultToRow(row, data);
     } catch (e) {
       row.style.background = 'rgba(239, 68, 68, 0.1)';
@@ -1960,7 +1993,7 @@ async function runModelTests() {
     return;
   }
 
-  const targets = getSelectedTargets();
+  let targets = getSelectedTargets();
   if (targets.length === 0) {
     showError(i18nText('modelTest.selectAtLeastOne', '请至少选择一条记录'));
     return;
@@ -1970,6 +2003,7 @@ async function runModelTests() {
   clearProgress();
   setRunTestButtonDisabled(true);
   try {
+    targets = await attachModelModeKeySelection(targets);
     await runBatchTests(targets);
   } catch (error) {
     console.error('runModelTests failed:', error);
@@ -2654,11 +2688,13 @@ async function deleteSelectedModels() {
 
 async function onChannelChange() {
   if (!selectedChannel) {
+    await loadChannelKeys(null);
     syncClientProtocolCombobox();
     renderEmptyRow(i18nText('modelTest.selectChannelFirst', '请先选择渠道'));
     return;
   }
 
+  await loadChannelKeys(selectedChannel.id);
   syncClientProtocolCombobox();
   populateModelSelector();
 
@@ -2677,6 +2713,115 @@ function formatModelTestChannelOptionLabel(ch) {
 
 function getModelTestChannelOptionClass(ch) {
   return ch?.enabled === false ? 'filter-dropdown-item--disabled' : '';
+}
+
+function normalizeModelTestKeyIndex(value) {
+  const index = Number(value);
+  return Number.isInteger(index) && index >= 0 ? index : null;
+}
+
+function formatModelTestKeyLabel(key) {
+  const raw = String(key?.api_key || '').trim();
+  if (!raw) return `#${key?.key_index ?? '?'}`;
+  if (raw.length <= 6) return raw;
+  return `${raw.slice(0, 3)}.${raw.slice(-3)}`;
+}
+
+function getModelTestKeyOptionClass(key) {
+  return key?.disabled === true ? 'filter-dropdown-item--disabled' : '';
+}
+
+function getFirstEnabledModelTestKey(keys) {
+  return (Array.isArray(keys) ? keys : []).find(key => key?.disabled !== true) || null;
+}
+
+function getPreferredModelTestKey(keys) {
+  const list = Array.isArray(keys) ? keys : [];
+  return getFirstEnabledModelTestKey(list) || list[0] || null;
+}
+
+async function fetchModelTestChannelKeys(channelId) {
+  if (!channelId) return [];
+  const keys = (await fetchDataWithAuth(`/admin/channels/${channelId}/keys`)) || [];
+  return Array.isArray(keys) ? keys : [];
+}
+
+async function getModelTestChannelKeys(channelId) {
+  const normalizedId = Number(channelId);
+  if (!Number.isFinite(normalizedId) || normalizedId <= 0) return [];
+  if (channelKeysById.has(normalizedId)) return channelKeysById.get(normalizedId);
+
+  const keys = await fetchModelTestChannelKeys(normalizedId);
+  channelKeysById.set(normalizedId, keys);
+  return keys;
+}
+
+function syncChannelKeyCombobox() {
+  let selectedKey = channelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === selectedKeyIndex);
+  if (!selectedKey) {
+    selectedKeyIndex = normalizeModelTestKeyIndex(getFirstEnabledModelTestKey(channelKeys)?.key_index);
+    selectedKey = channelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === selectedKeyIndex);
+  }
+
+  if (!channelKeyCombobox && typeof window.createSearchableCombobox === 'function') {
+    channelKeyCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'channelKeySelect',
+      dropdownId: 'channelKeySelectDropdown',
+      placeholder: i18nText('channels.selectApiKey', '选择 API Key'),
+      initialValue: selectedKeyIndex === null ? '' : String(selectedKeyIndex),
+      initialLabel: selectedKeyIndex === null
+        ? ''
+        : formatModelTestKeyLabel(selectedKey),
+      getOptions: () => channelKeys.map(key => ({
+        value: String(key.key_index),
+        label: formatModelTestKeyLabel(key),
+        className: getModelTestKeyOptionClass(key)
+      })),
+      onSelect: (value) => {
+        selectedKeyIndex = normalizeModelTestKeyIndex(value);
+        clearProgress();
+      },
+      onCancel: () => syncChannelKeyCombobox()
+    });
+  }
+
+  const currentKey = channelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === selectedKeyIndex);
+  const label = currentKey ? formatModelTestKeyLabel(currentKey) : '';
+  const input = channelKeyCombobox?.getInput?.() || document.getElementById('channelKeySelect');
+  if (input) {
+    input.placeholder = channelKeys.length > 0
+      ? i18nText('channels.selectApiKey', '选择 API Key')
+      : i18nText('channels.test.noApiKey', '没有可用的 API Key');
+  }
+  if (channelKeyCombobox) {
+    channelKeyCombobox.setValue(selectedKeyIndex === null ? '' : String(selectedKeyIndex), label);
+    channelKeyCombobox.refresh();
+  }
+}
+
+async function loadChannelKeys(channelId) {
+  const requestId = ++channelKeyLoadRequestId;
+  if (!channelId) {
+    channelKeys = [];
+    selectedKeyIndex = null;
+    syncChannelKeyCombobox();
+    return;
+  }
+
+  try {
+    const keys = await fetchModelTestChannelKeys(channelId);
+    if (requestId !== channelKeyLoadRequestId) return;
+    channelKeys = Array.isArray(keys) ? keys : [];
+    channelKeysById.set(Number(channelId), channelKeys);
+    selectedKeyIndex = normalizeModelTestKeyIndex(getFirstEnabledModelTestKey(channelKeys)?.key_index);
+  } catch (e) {
+    if (requestId !== channelKeyLoadRequestId) return;
+    console.error('加载渠道 API Key 失败:', e);
+    channelKeys = [];
+    selectedKeyIndex = null;
+  }
+  syncChannelKeyCombobox();
 }
 
 function renderSearchableChannelSelect() {
@@ -2713,6 +2858,7 @@ async function loadChannels(options = {}) {
 
   try {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
+    channelKeysById.clear();
     channelsList = list.sort((a, b) => b.priority - a.priority || String(a.name || '').localeCompare(String(b.name || '')));
 
     // 恢复选择或从 localStorage 加载
@@ -2733,6 +2879,7 @@ async function loadChannels(options = {}) {
     }
 
     renderSearchableChannelSelect();
+    await loadChannelKeys(selectedChannel?.id);
 
     if (preserveSelection && preservedProtocol) {
       selectedProtocol = preservedProtocol;
@@ -3289,6 +3436,71 @@ function getChatThinkingLabel(value) {
   return (options.find(option => option.value === normalized) || options[0]).label;
 }
 
+function syncChatChannelKeyCombobox() {
+  let selectedKey = chatChannelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === chatSelectedKeyIndex);
+  if (!selectedKey) {
+    chatSelectedKeyIndex = normalizeModelTestKeyIndex(getFirstEnabledModelTestKey(chatChannelKeys)?.key_index);
+    selectedKey = chatChannelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === chatSelectedKeyIndex);
+  }
+
+  if (!chatChannelKeyCombobox && typeof window.createSearchableCombobox === 'function') {
+    chatChannelKeyCombobox = window.createSearchableCombobox({
+      attachMode: true,
+      inputId: 'chatChannelKeySelect',
+      dropdownId: 'chatChannelKeySelectDropdown',
+      initialValue: chatSelectedKeyIndex === null ? '' : String(chatSelectedKeyIndex),
+      initialLabel: selectedKey ? formatModelTestKeyLabel(selectedKey) : '',
+      getOptions: () => chatChannelKeys.map(key => ({
+        value: String(key.key_index),
+        label: formatModelTestKeyLabel(key),
+        className: getModelTestKeyOptionClass(key)
+      })),
+      onSelect: (value) => {
+        chatSelectedKeyIndex = normalizeModelTestKeyIndex(value);
+      },
+      onCancel: () => syncChatChannelKeyCombobox()
+    });
+  }
+
+  const currentKey = chatChannelKeys.find(key => normalizeModelTestKeyIndex(key?.key_index) === chatSelectedKeyIndex);
+  const input = chatChannelKeyCombobox?.getInput?.() || document.getElementById('chatChannelKeySelect');
+  if (input) {
+    input.placeholder = chatChannelKeys.length > 0
+      ? i18nText('channels.selectApiKey', '选择 API Key')
+      : i18nText('channels.test.noApiKey', '没有可用的 API Key');
+  }
+  if (chatChannelKeyCombobox) {
+    chatChannelKeyCombobox.setValue(
+      chatSelectedKeyIndex === null ? '' : String(chatSelectedKeyIndex),
+      currentKey ? formatModelTestKeyLabel(currentKey) : ''
+    );
+    chatChannelKeyCombobox.refresh();
+  }
+}
+
+async function loadChatChannelKeys(channelId) {
+  const requestId = ++chatChannelKeyLoadRequestId;
+  if (!channelId) {
+    chatChannelKeys = [];
+    chatSelectedKeyIndex = null;
+    syncChatChannelKeyCombobox();
+    return;
+  }
+
+  try {
+    const keys = await getModelTestChannelKeys(channelId);
+    if (requestId !== chatChannelKeyLoadRequestId) return;
+    chatChannelKeys = keys;
+    chatSelectedKeyIndex = normalizeModelTestKeyIndex(getFirstEnabledModelTestKey(chatChannelKeys)?.key_index);
+  } catch (e) {
+    if (requestId !== chatChannelKeyLoadRequestId) return;
+    console.error('加载对话渠道 API Key 失败:', e);
+    chatChannelKeys = [];
+    chatSelectedKeyIndex = null;
+  }
+  syncChatChannelKeyCombobox();
+}
+
 /**
  * 初始化对话面板：创建渠道/模型 combobox，绑定输入框快捷键。
  * 每次切换到 chat 模式时调用；combobox 只创建一次。
@@ -3365,11 +3577,15 @@ function initChatPanel() {
         const channelId = parseInt(value, 10);
         chatChannel = channelsList.find(c => c.id === channelId) || null;
         chatChannelSelection.select(chatChannel);
+        loadChatChannelKeys(chatChannel?.id);
       }
     });
   } else {
     chatChannelCombobox.refresh();
   }
+
+  // 渠道右侧 Key combobox：默认选择第一个启用的 Key。
+  syncChatChannelKeyCombobox();
 
   // 思考等级 combobox（固定枚举，不允许提交自定义显示文本）
   if (!chatThinkingCombobox) {
@@ -3449,7 +3665,7 @@ function getChannelsForChatModel() {
 }
 
 /** 模型变更后刷新渠道下拉；自动兜底不能覆盖用户持久化的渠道偏好。 */
-function refreshChatChannelsByModel() {
+async function refreshChatChannelsByModel() {
   if (!chatChannelCombobox) return;
   chatChannelCombobox.refresh();
 
@@ -3460,6 +3676,7 @@ function refreshChatChannelsByModel() {
   } else {
     chatChannelCombobox.setValue('', '');
   }
+  await loadChatChannelKeys(chatChannel?.id);
 }
 
 function getChatThinkingEffort() {
@@ -3762,6 +3979,7 @@ async function sendChatMessage() {
     const basePayload = {
       model: chatModel,
       client_protocol: selectedProtocol,
+      ...(Number.isInteger(chatSelectedKeyIndex) ? { key_index: chatSelectedKeyIndex } : {}),
       session_id: chatSessionState.current(),
       stream: chatStreamEnabled,
       thinking_effort: chatThinkingEffort,
