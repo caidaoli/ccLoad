@@ -639,6 +639,15 @@ func ensureChannelsProxyURL(ctx context.Context, db *sql.DB, dialect Dialect) er
 		"TEXT NOT NULL DEFAULT ''")
 }
 
+func ensureChannelsAvailableTime(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	if err := ensureColumn(ctx, db, dialect, "channels", "available_time_start",
+		"VARCHAR(5) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''"); err != nil {
+		return err
+	}
+	return ensureColumn(ctx, db, dialect, "channels", "available_time_end",
+		"VARCHAR(5) NOT NULL DEFAULT ''", "TEXT NOT NULL DEFAULT ''")
+}
+
 func ensureChannelsRetryOtherKeysOnFailure(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	return ensureColumn(ctx, db, dialect, "channels", "retry_other_keys_on_failure",
 		"TINYINT NOT NULL DEFAULT 0",

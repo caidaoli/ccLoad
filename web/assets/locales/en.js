@@ -528,7 +528,12 @@ window.I18N_LOCALES['en'] = {
   'channels.fetchRateTitle': 'Fetch the current effective rate from Sub2API',
   'channels.fetchRateLoading': 'Fetching...',
   'channels.proxyURL': 'Proxy',
-  'channels.proxyURLPlaceholder': 'http:// | socks5://',
+  'channels.proxyURLPlaceholder': 'http://… | https://… | socks5://… | socks5h://…',
+  'channels.proxyURLHelp': 'Examples: http://127.0.0.1:8080, https://proxy.example:8443, socks5://127.0.0.1:1080.',
+  'channels.availableTime': 'Available hours',
+  'channels.availableTimeStart': 'Start time',
+  'channels.availableTimeEnd': 'End time',
+  'channels.availableTimeHelp': 'Use HH:MM; leave both blank for all day. Overnight windows such as 22:00–08:00 are supported.',
   'channels.retryOtherKeysOnFailure': 'Try another key on failure',
   'channels.retryOtherKeysOnFailureHelp': 'On a channel- or model-level upstream failure, cool the current key and try another key in this channel first. Use this when keys route to independent providers behind one relay.',
 

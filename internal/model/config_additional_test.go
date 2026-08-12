@@ -81,6 +81,44 @@ func TestConfig_WildcardModelSupportsAnyModelWithoutRedirect(t *testing.T) {
 	}
 }
 
+func TestConfig_AvailableTimeSupportsAllDayAndOvernightWindows(t *testing.T) {
+	t.Parallel()
+
+	allDay := &Config{}
+	if !allDay.IsAvailableAt(time.Date(2026, 1, 1, 3, 0, 0, 0, time.Local)) {
+		t.Fatal("empty availability must allow all times")
+	}
+
+	cfg := &Config{AvailableTimeStart: "22:00", AvailableTimeEnd: "08:00"}
+	if err := cfg.NormalizeAvailableTime(); err != nil {
+		t.Fatalf("normalize overnight window: %v", err)
+	}
+	for _, tc := range []struct {
+		hour int
+		want bool
+	}{
+		{23, true}, {7, true}, {12, false}, {8, false}, {22, true},
+	} {
+		at := time.Date(2026, 1, 1, tc.hour, 0, 0, 0, time.Local)
+		if got := cfg.IsAvailableAt(at); got != tc.want {
+			t.Fatalf("availability at %02d:00 = %v, want %v", tc.hour, got, tc.want)
+		}
+	}
+}
+
+func TestConfig_AvailableTimeRejectsPartialOrMalformedWindow(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []*Config{
+		{AvailableTimeStart: "22:00"},
+		{AvailableTimeEnd: "08:00"},
+		{AvailableTimeStart: "25:00", AvailableTimeEnd: "08:00"},
+	} {
+		if err := cfg.NormalizeAvailableTime(); err == nil {
+			t.Fatalf("expected invalid availability for %+v", cfg)
+		}
+	}
+}
+
 func TestConfig_AuthTypeIsIndependentFromProtocol(t *testing.T) {
 	t.Parallel()
 	legacy := &Config{}

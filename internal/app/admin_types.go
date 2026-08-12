@@ -37,6 +37,8 @@ type ChannelRequest struct {
 	CustomRequestRules      *model.CustomRequestRules     `json:"custom_request_rules,omitempty"`
 	CooldownDetectionRules  *model.CooldownDetectionRules `json:"cooldown_detection_rules,omitempty"`
 	ProxyURL                string                        `json:"proxy_url,omitempty"` // 渠道级代理（http/https/socks5/socks5h）
+	AvailableTimeStart      string                        `json:"available_time_start,omitempty"`
+	AvailableTimeEnd        string                        `json:"available_time_end,omitempty"`
 	RetryOtherKeysOnFailure bool                          `json:"retry_other_keys_on_failure"`
 }
 
@@ -266,6 +268,17 @@ func (cr *ChannelRequest) Validate() error {
 		return err
 	}
 	cr.ProxyURL = normalizedProxyURL
+	cr.AvailableTimeStart = strings.TrimSpace(cr.AvailableTimeStart)
+	cr.AvailableTimeEnd = strings.TrimSpace(cr.AvailableTimeEnd)
+	available := &model.Config{
+		AvailableTimeStart: cr.AvailableTimeStart,
+		AvailableTimeEnd:   cr.AvailableTimeEnd,
+	}
+	if err := available.NormalizeAvailableTime(); err != nil {
+		return err
+	}
+	cr.AvailableTimeStart = available.AvailableTimeStart
+	cr.AvailableTimeEnd = available.AvailableTimeEnd
 
 	if cr.RPMLimit < 0 {
 		return fmt.Errorf("rpm_limit must be >= 0 (got %d)", cr.RPMLimit)
@@ -314,6 +327,8 @@ func (cr *ChannelRequest) ToConfig() *model.Config {
 		CustomRequestRules:      cr.CustomRequestRules.Clone(),
 		CooldownDetectionRules:  cr.CooldownDetectionRules.Clone(),
 		ProxyURL:                cr.ProxyURL,
+		AvailableTimeStart:      cr.AvailableTimeStart,
+		AvailableTimeEnd:        cr.AvailableTimeEnd,
 		RetryOtherKeysOnFailure: cr.RetryOtherKeysOnFailure,
 	}
 }

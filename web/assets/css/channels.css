@@ -931,8 +931,9 @@
 
     .channel-codex-plan-badge {
       position: absolute;
-      top: -8px;
+      top: 50%;
       inset-inline-end: 8px;
+      transform: translateY(-50%);
       pointer-events: none;
     }
 
@@ -5928,10 +5929,69 @@
     }
 
     .advanced-settings-other-fields {
+      --advanced-settings-label-width: 88px;
+      --advanced-settings-control-width: 320px;
+      --advanced-settings-help-font-size: 12px;
       display: grid;
       grid-template-columns: minmax(0, 1fr);
       align-content: start;
       gap: 16px;
+    }
+
+    .advanced-settings-availability-row {
+      display: grid;
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .advanced-settings-availability-row > .form-label {
+      margin: 0;
+      text-align: end;
+      white-space: nowrap;
+    }
+
+    .advanced-settings-time-fields {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+      align-items: center;
+      gap: 8px;
+      width: min(var(--advanced-settings-control-width), 100%);
+    }
+
+    .advanced-settings-time-field {
+      min-width: 0;
+    }
+
+    .advanced-settings-availability-content {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .advanced-settings-proxy-content {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .advanced-settings-time-field .form-input {
+      width: 100%;
+      text-align: center;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .advanced-settings-field-help {
+      min-width: 0;
+      color: var(--neutral-500);
+      font-size: var(--advanced-settings-help-font-size);
+      line-height: 1.45;
+      overflow-wrap: anywhere;
     }
 
     .advanced-settings-retry-label {
@@ -5946,18 +6006,22 @@
     .advanced-settings-inline-help {
       margin-left: 6px;
       color: var(--neutral-500);
-      font-size: 0.8rem;
+      font-size: var(--advanced-settings-help-font-size);
       font-weight: 400;
       line-height: 1.45;
     }
 
     .advanced-settings-scheduled-row {
       display: grid;
-      grid-template-columns: max-content minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) var(--advanced-settings-control-width);
       align-items: center;
-      gap: 18px;
+      gap: 10px;
       max-width: 420px;
       min-width: 0;
+    }
+
+    #channelScheduledCheckModelWrapper {
+      grid-template-columns: minmax(0, 1fr);
     }
 
     .advanced-settings-other-field {
@@ -5991,20 +6055,22 @@
 
     .advanced-settings-proxy-field {
       display: grid;
-      grid-template-columns: max-content minmax(0, 1fr);
+      grid-template-columns: var(--advanced-settings-label-width) minmax(0, 1fr);
       align-items: center;
       gap: 10px;
       min-width: 0;
       flex: 0 0 auto;
-      margin-bottom: 12px;
+      margin-bottom: 0;
     }
 
     .advanced-settings-proxy-field .form-label {
       margin: 0;
+      text-align: end;
       white-space: nowrap;
     }
 
     .advanced-settings-proxy-field .form-input {
+      width: min(var(--advanced-settings-control-width), 100%);
       min-width: 0;
     }
 
@@ -6506,6 +6572,27 @@
       .advanced-settings-scheduled-row {
         grid-template-columns: 1fr;
         gap: 10px;
+        width: 100%;
+        max-width: none;
+      }
+
+      .advanced-settings-availability-row {
+        grid-template-columns: 1fr;
+        gap: 4px;
+      }
+
+      .advanced-settings-proxy-field .form-label,
+      .advanced-settings-availability-row > .form-label {
+        text-align: start;
+      }
+
+      .advanced-settings-time-fields {
+        width: 100%;
+        justify-content: flex-start;
+      }
+
+      .advanced-settings-proxy-field .form-input {
+        width: 100%;
       }
 
       html[lang^="zh"] .cooldown-detection-rule .cooldown-detection-field,

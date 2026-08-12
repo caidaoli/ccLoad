@@ -10,6 +10,22 @@ import (
 	"ccLoad/internal/testutil"
 )
 
+func TestFilterAvailableTimeChannels_ExcludesOutsideWindow(t *testing.T) {
+	t.Parallel()
+	channels := []*model.Config{
+		{Name: "overnight", AvailableTimeStart: "22:00", AvailableTimeEnd: "08:00"},
+		{Name: "all-day"},
+	}
+	got := filterAvailableTimeChannels(channels, time.Date(2026, 1, 1, 12, 0, 0, 0, time.Local))
+	if len(got) != 1 || got[0].Name != "all-day" {
+		t.Fatalf("outside availability got %+v, want only all-day channel", got)
+	}
+	got = filterAvailableTimeChannels(channels, time.Date(2026, 1, 1, 23, 0, 0, 0, time.Local))
+	if len(got) != 2 {
+		t.Fatalf("inside overnight availability got %d channels, want 2", len(got))
+	}
+}
+
 // TestSelectRouteCandidates_NormalRequest 测试普通请求的路由选择
 func TestSelectRouteCandidates_NormalRequest(t *testing.T) {
 	store, cleanup := setupTestStore(t)
