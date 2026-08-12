@@ -237,6 +237,7 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 		LastRefresh:  time.Now().UTC().Format(time.RFC3339),
 	}
 	if claims, parseErr := parseIDToken(token.IDToken); parseErr == nil {
+		credential.ChatGPTUserID = claims.Auth.ChatGPTUserID
 		credential.AccountID = claims.Auth.ChatGPTAccountID
 		credential.Email = claims.Email
 		credential.PlanType = claims.Auth.ChatGPTPlanType
@@ -247,6 +248,7 @@ func (s *Service) requestToken(ctx context.Context, values url.Values) (*Credent
 type idTokenClaims struct {
 	Email string `json:"email"`
 	Auth  struct {
+		ChatGPTUserID                  string `json:"chatgpt_user_id"`
 		ChatGPTAccountID               string `json:"chatgpt_account_id"`
 		ChatGPTPlanType                string `json:"chatgpt_plan_type"`
 		ChatGPTSubscriptionActiveStart any    `json:"chatgpt_subscription_active_start"`
