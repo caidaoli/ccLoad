@@ -1620,7 +1620,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.batchProtocolModeValue.upstream': '直通',
   'channels.batchProtocolModeValue.local': '转换',
   'channels.batchProtocolModeSummary': '协议处理已设为{mode}：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',
-  'channels.batchPriorityInvalid': '优先级必须是 -99999 到 99999 之间的整数',
+  'channels.batchPriorityInvalid': '优先级必须是 -99999 到 9999999 之间的整数',
   'channels.batchPrioritySummary': '优先级已设为 {value}：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',
   'channels.batchCostMultiplierInvalid': '倍率必须是大于或等于 0 的数字',
   'channels.batchCostMultiplierSummary': '倍率已设为 {multiplier}：更新 {updated}，未变化 {unchanged}，不存在 {notFound}',

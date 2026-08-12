@@ -15,7 +15,7 @@ function buildPriorityRow(rowClass, valueClass, value) {
 }
 
 const CHANNEL_PRIORITY_MIN = -99999;
-const CHANNEL_PRIORITY_MAX = 99999;
+const CHANNEL_PRIORITY_MAX = 9999999;
 let channelPrioritySaveTimers = new Map();
 
 function escapeChannelRefreshText(value) {

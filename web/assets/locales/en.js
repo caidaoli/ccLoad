@@ -1620,7 +1620,7 @@ window.I18N_LOCALES['en'] = {
   'channels.batchProtocolModeValue.upstream': 'Direct',
   'channels.batchProtocolModeValue.local': 'Translate',
   'channels.batchProtocolModeSummary': 'Protocol handling set to {mode}: updated {updated}, unchanged {unchanged}, not found {notFound}',
-  'channels.batchPriorityInvalid': 'Priority must be an integer from -99999 to 99999',
+  'channels.batchPriorityInvalid': 'Priority must be an integer from -99999 to 9999999',
   'channels.batchPrioritySummary': 'Priority set to {value}: updated {updated}, unchanged {unchanged}, not found {notFound}',
   'channels.batchCostMultiplierInvalid': 'Multiplier must be a number greater than or equal to 0',
   'channels.batchCostMultiplierSummary': 'Multiplier set to {multiplier}: updated {updated}, unchanged {unchanged}, not found {notFound}',

@@ -90,7 +90,7 @@ function installBatchProtocolModeGlobals(response) {
   const elements = {
     batchProtocolTransformMode: { value: 'local', disabled: false },
     batchApplyProtocolBtn: makeButton(),
-    batchPriority: makeNumericInput('-20'),
+    batchPriority: makeNumericInput('9999999'),
     batchApplyPriorityBtn: makeButton(),
     batchPriorityError: { textContent: '', hidden: true },
     batchCostMultiplier: makeNumericInput('0.5'),
@@ -1213,7 +1213,7 @@ for (const testCase of [
     name: 'priority',
     exportName: 'batchSetSelectedChannelsPriority',
     field: 'priority',
-    value: -20,
+    value: 9999999,
     summaryKey: 'channels.batchPrioritySummary'
   },
   {
@@ -1293,7 +1293,7 @@ test('batch RPM rejects fractional values without sending a request', async () =
 
 test('batch priority rejects values outside the editor range', async () => {
   const fixture = installBatchProtocolModeGlobals({ success: true, data: {} });
-  fixture.elements.batchPriority.value = '100000';
+  fixture.elements.batchPriority.value = '10000000';
 
   try {
     const { batchSetSelectedChannelsPriority } = loadChannelsModals();
