@@ -73,6 +73,7 @@ Tag 形状固定：
 - 分支推送只能是普通 fast-forward push。推送后以及 `Test` workflow 成功后都必须重新 fetch 并确认本地 `HEAD` 等于 `origin/master`，才能创建 Tag。CI 失败时保留已经推送的提交，不自动回滚。
 - Beta Release 必须是 prerelease 且不得成为 latest；稳定版 Release 必须成为 latest。
 - 每个 Release 都发布 GHCR 多架构镜像。稳定版必须同时打精确版本 Tag 和 `latest`；Beta 必须同时打精确版本 Tag 和 `beta`；精确标签与对应浮动别名必须指向同一镜像摘要。
+- Release Notes 按发布通道比较：稳定版只比较上一个可达稳定版，Beta 只比较上一个可达 Beta（即使两者核心版本号不同）；只有找不到历史 Beta 时，首个 Beta 才回退到上一个稳定版。
 - 分支或发布失败后保留现场并报告本地提交、失败的 Tag/Actions URL。不要自动删提交、Tag、Release 或镜像；回滚必须由用户另行明确授权。
 - 不绕过 `.github/workflows/release.yml` 的 Tag 校验，也不创建 `beta`、`latest` 这类浮动 Git Tag；它们只允许作为 GHCR 镜像别名由发布工作流管理。
 

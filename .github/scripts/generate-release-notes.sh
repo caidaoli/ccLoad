@@ -81,11 +81,24 @@ self_test() {
   assert_contains "$notes" 'feat(api): beta follow-up'
   assert_contains "$notes" 'docs: stable notes'
   assert_contains "$notes" 'compare/v1.0.0...v1.1.0'
+  assert_not_contains "$notes" 'chore: initial'
 
+  printf 'beta three\n' > "$repo/change.txt"
+  git -C "$repo" commit -qam 'fix(core): beta next patch'
   git -C "$repo" tag -a v1.1.1-beta.1 -m 'Release v1.1.1-beta.1'
-  if (
+
+  (
     cd "$repo"
     GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.1-beta.1 "$notes"
+  )
+  assert_contains "$notes" 'fix(core): beta next patch'
+  assert_contains "$notes" 'compare/v1.1.0-beta.2...v1.1.1-beta.1'
+  assert_not_contains "$notes" 'fix(core): direct beta fix'
+
+  git -C "$repo" tag -a v1.1.1-beta.2 -m 'Release v1.1.1-beta.2'
+  if (
+    cd "$repo"
+    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.1-beta.2 "$notes"
   ) >/dev/null 2>&1; then
     fail 'empty release range unexpectedly succeeded'
   fi
@@ -110,41 +123,51 @@ latest_stable_before() {
 }
 
 previous_beta_before() {
-  local release_core=$1
-  local release_number=$2
-  local release_commit=$3
-  local escaped_core candidate candidate_number
-  local previous_tag=
-  local previous_number=0
+  local release_tag=$1
+  local release_commit=$2
+  local release_major release_minor release_patch release_number
+  local candidate candidate_major candidate_minor candidate_patch candidate_number
 
-  escaped_core=${release_core//./\.}
+  [[ "$release_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]*)$ ]] || return 1
+  release_major=${BASH_REMATCH[1]}
+  release_minor=${BASH_REMATCH[2]}
+  release_patch=${BASH_REMATCH[3]}
+  release_number=${BASH_REMATCH[4]}
+
   while IFS= read -r candidate; do
-    if [[ "$candidate" =~ ^v${escaped_core}-beta\.([1-9][0-9]*)$ ]]; then
-      candidate_number=${BASH_REMATCH[1]}
-      if (( candidate_number < release_number && candidate_number > previous_number )); then
-        previous_tag=$candidate
-        previous_number=$candidate_number
-      fi
-    fi
-  done < <(git tag --merged "$release_commit" --list "v$release_core-beta.*")
+    [[ "$candidate" == "$release_tag" ]] && continue
+    [[ "$candidate" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]*)$ ]] || continue
+    candidate_major=${BASH_REMATCH[1]}
+    candidate_minor=${BASH_REMATCH[2]}
+    candidate_patch=${BASH_REMATCH[3]}
+    candidate_number=${BASH_REMATCH[4]}
 
-  [[ -n "$previous_tag" ]] || return 1
-  printf '%s\n' "$previous_tag"
+    # Tags are sorted newest-first, but only a strictly older semantic version
+    # is a valid comparison base. This also handles beta.1 after a patch bump.
+    if (( candidate_major > release_major ||
+          (candidate_major == release_major && candidate_minor > release_minor) ||
+          (candidate_major == release_major && candidate_minor == release_minor && candidate_patch > release_patch) ||
+          (candidate_major == release_major && candidate_minor == release_minor && candidate_patch == release_patch && candidate_number >= release_number) )); then
+      continue
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  done < <(git tag --merged "$release_commit" --list 'v*-beta.*' --sort=-version:refname)
+
+  return 1
 }
 
 resolve_base_tag() {
   local release_tag=$1
   local release_commit=$2
-  local release_core release_number previous_beta
+  local previous_beta
 
   if [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     latest_stable_before "$release_tag" "$release_commit"
     return
   fi
-  if [[ "$release_tag" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)-beta\.([1-9][0-9]*)$ ]]; then
-    release_core=${BASH_REMATCH[1]}
-    release_number=${BASH_REMATCH[2]}
-    if previous_beta=$(previous_beta_before "$release_core" "$release_number" "$release_commit"); then
+  if [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
+    if previous_beta=$(previous_beta_before "$release_tag" "$release_commit"); then
       printf '%s\n' "$previous_beta"
       return
     fi
