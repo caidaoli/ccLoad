@@ -2846,6 +2846,11 @@ body {
   background: rgba(148, 163, 184, 0.18);
 }
 
+.filter-dropdown-item.filter-dropdown-item--disabled.active:not(.selected) {
+  color: var(--color-text-secondary);
+  background: rgba(148, 163, 184, 0.18);
+}
+
 .filter-label {
   flex-shrink: 0;
   font-size: var(--text-xs);
@@ -3292,8 +3297,14 @@ body {
 }
 
 .model-test-protocol-combobox {
+  width: 115px;
+  min-width: 100px;
+  flex: 0 1 115px;
+}
+
+.model-test-key-combobox {
   width: 170px;
-  min-width: 150px;
+  min-width: 140px;
   flex: 0 1 170px;
 }
 
@@ -7414,6 +7425,7 @@ body.web-role-api-token .filter-group--auth-token {
   .model-test-control,
   .model-test-control--model,
   .model-test-control--content,
+  .model-test-control--key,
   .model-test-model-combobox,
   .model-test-protocol-combobox {
     width: 100%;
@@ -7865,9 +7877,16 @@ body.web-role-api-token .filter-group--auth-token {
 }
 
 .chat-protocol-combobox {
-  width: 160px;
-  flex: 0 0 160px;
-  max-width: 160px;
+  width: 107px;
+  flex: 0 0 107px;
+  max-width: 107px;
+  min-width: 0;
+}
+
+.chat-key-combobox {
+  width: 170px;
+  flex: 0 0 170px;
+  max-width: 170px;
   min-width: 0;
 }
 
@@ -8823,7 +8842,8 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
 
   .chat-channel-combobox,
   .chat-model-combobox,
-  .chat-protocol-combobox {
+  .chat-protocol-combobox,
+  .chat-key-combobox {
     width: 100%;
     flex: 1 1 auto;
     max-width: none;

@@ -145,6 +145,25 @@
               <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
               <div id="chatChannelSelectContainer" class="chat-channel-combobox"></div>
             </label>
+            <label class="chat-control chat-control--selector">
+              <span class="chat-control__label" data-i18n="channels.tableApiKey">API Key</span>
+              <div class="filter-combobox-wrapper chat-key-combobox">
+                <input
+                  id="chatChannelKeySelect"
+                  class="filter-select filter-combobox"
+                  type="text"
+                  autocomplete="off"
+                  spellcheck="false"
+                >
+                <div
+                  id="chatChannelKeySelectDropdown"
+                  class="filter-dropdown"
+                  role="listbox"
+                  data-i18n-aria-label="channels.tableApiKey"
+                  aria-label="API Key"
+                ></div>
+              </div>
+            </label>
             <label class="chat-control chat-control--stream">
               <input type="checkbox" id="chatStreamEnabled" class="control-checkbox control-checkbox--sm" checked>
               <span class="chat-control__label" data-i18n="modelTest.stream">流式</span>
@@ -192,6 +211,25 @@
                   <div id="testModelSelectDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
                 </div>
               </label>
+              <div id="keySelectorLabel" class="model-test-control model-test-control--key">
+                <label class="model-test-control__label" for="channelKeySelect" data-i18n="channels.tableApiKey">API Key</label>
+                <div class="filter-combobox-wrapper model-test-key-combobox">
+                  <input
+                    id="channelKeySelect"
+                    class="filter-select filter-combobox"
+                    type="text"
+                    autocomplete="off"
+                    spellcheck="false"
+                  >
+                  <div
+                    id="channelKeySelectDropdown"
+                    class="filter-dropdown"
+                    role="listbox"
+                    data-i18n-aria-label="channels.tableApiKey"
+                    aria-label="API Key"
+                  ></div>
+                </div>
+              </div>
               <div id="clientProtocolContainer" class="model-test-control model-test-control--protocol">
                 <label class="model-test-control__label" for="clientProtocolSelect" data-i18n="modelTest.clientProtocol">请求协议</label>
                 <div class="filter-combobox-wrapper model-test-protocol-combobox">
