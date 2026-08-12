@@ -83,7 +83,7 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
 	return &model.Config{
 		Name: name, AuthType: model.AuthTypeAntigravityOAuth, OAuthCredential: credentialJSON,
-		URLs:                  antigravityOAuthDefaultURLs(),
+		URLs:                  antigravityOAuthPersistedURLs(),
 		ProtocolTransformMode: model.ProtocolTransformModeLocal,
 		Priority:              0, Enabled: true, CostMultiplier: 1,
 		MaxConcurrency: antigravityOAuthMaxConcurrency,
@@ -91,10 +91,19 @@ func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
 	}
 }
 
+// antigravityOAuthPersistedURLs is the single endpoint written for newly
+// created OAuth channels. Runtime fallback for legacy multi-URL channels is
+// kept separate in antigravityOAuthDefaultURLs.
+func antigravityOAuthPersistedURLs() model.ChannelURLs {
+	return model.ChannelURLs{
+		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
+	}
+}
+
 func antigravityOAuthDefaultURLs() model.ChannelURLs {
 	return model.ChannelURLs{
-		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
 		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
+		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
 		{URL: antigravitySandboxDailyBaseURL, Protocols: []string{"gemini"}},
 	}
 }

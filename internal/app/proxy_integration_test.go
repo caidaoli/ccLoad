@@ -1732,7 +1732,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "sandbox ok" {
 		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 	}
-	want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	want := []string{antigravityProdBaseURL, antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
 	mu.Lock()
 	got := append([]string(nil), requestBaseURLs...)
 	mu.Unlock()
@@ -1749,7 +1749,7 @@ func TestProxy_AntigravityOAuthCapacityRetrySuccessWritesOneLog(t *testing.T) {
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "antigravity-capacity-retry", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity-retry"),
-	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	}}, map[int]string{0: antigravityProdBaseURL})
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		status := http.StatusOK
 		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"retry ok"}]},"finishReason":"STOP"}]}}`
@@ -1893,7 +1893,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "antigravity-capacity", upstreamProtocol: "gemini", models: "claude-opus-4-6-thinking", priority: 100,
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-capacity"),
-	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+	}}, map[int]string{0: antigravityProdBaseURL})
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		mu.Lock()
 		requestBaseURLs = append(requestBaseURLs, req.URL.Scheme+"://"+req.URL.Host)
@@ -1920,7 +1920,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	gotURLs := append([]string(nil), requestBaseURLs...)
 	gotTimes := append([]time.Time(nil), requestTimes...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	wantURLs := []string{antigravityProdBaseURL, antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity capacity attempts=%v, want %v", gotURLs, wantURLs)
 	}
