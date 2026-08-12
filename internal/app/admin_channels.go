@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/bytedance/sonic"
@@ -682,15 +683,68 @@ func (s *Server) buildChannelDetail(ctx context.Context, id int64, cfg *model.Co
 // handleGetChannelKeys 获取渠道的所有 API Keys
 // GET /admin/channels/{id}/keys
 func (s *Server) handleGetChannelKeys(c *gin.Context, id int64) {
-	apiKeys, err := s.getAPIKeys(c.Request.Context(), id)
+	ctx := c.Request.Context()
+	cfg, err := s.store.GetConfig(ctx, id)
+	if err != nil {
+		RespondError(c, http.StatusNotFound, fmt.Errorf("channel not found"))
+		return
+	}
+	apiKeys, err := s.getAPIKeys(ctx, id)
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
 	}
-	if apiKeys == nil {
-		apiKeys = make([]*model.APIKey, 0)
+	apiKeys, err = channelKeysForAdmin(cfg, apiKeys)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
 	}
 	RespondJSON(c, http.StatusOK, apiKeys)
+}
+
+func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*model.APIKey, error) {
+	if cfg == nil || !cfg.UsesOAuth() {
+		if storedKeys == nil {
+			return make([]*model.APIKey, 0), nil
+		}
+		return storedKeys, nil
+	}
+
+	var accessToken, note string
+	switch {
+	case cfg.UsesCodexOAuth():
+		credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Codex OAuth AT"
+	case cfg.UsesAntigravityOAuth():
+		credential, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Antigravity OAuth AT"
+	case cfg.UsesXAIOAuth():
+		credential, err := xaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "xAI OAuth AT"
+	case cfg.UsesAnthropicOAuth():
+		credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.AccessToken, "Anthropic OAuth AT"
+	}
+
+	return []*model.APIKey{{
+		ChannelID:   cfg.ID,
+		KeyIndex:    0,
+		APIKey:      util.MaskAPIKey(accessToken),
+		Note:        note,
+		KeyStrategy: model.KeyStrategySequential,
+	}}, nil
 }
 
 // HandleChannelModelStats 返回渠道当天的按模型轻量统计。
