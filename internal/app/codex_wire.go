@@ -106,11 +106,17 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 ) (*fwResult, float64, error) {
 	parser := newSSEUsageParser(string(protocol.Codex))
 	collector := newCodexNonStreamCollector(parser)
+	consume := collector.consume
+	if reqCtx.codexMultiAgentV2Optimized {
+		consume = func(rawEvent []byte) error {
+			return collector.consume(restoreCodexMultiAgentV2SSEEvent(rawEvent, true))
+		}
+	}
 	streamErr := streamTransformSSEEventsUntil(
 		reqCtx.ctx,
 		resp.Body,
 		discardHTTPResponseWriter{},
-		collector.consume,
+		consume,
 		func([]byte) ([][]byte, error) { return nil, nil },
 		collector.done,
 	)
@@ -152,6 +158,9 @@ func (s *Server) handleResponsesSSENonStreamSuccessResponse(
 		return result, reqCtx.Duration().Seconds(), fmt.Errorf("responses terminal event is missing response")
 	}
 	responseBody := []byte(response.Raw)
+	if reqCtx.codexMultiAgentV2Optimized {
+		responseBody = restoreCodexMultiAgentV2Response(responseBody, true)
+	}
 	if reqCtx.transformPlan.NeedsTransform {
 		if s.protocolRegistry == nil {
 			return result, reqCtx.Duration().Seconds(), errors.New("protocol registry unavailable for Responses non-stream response transform")

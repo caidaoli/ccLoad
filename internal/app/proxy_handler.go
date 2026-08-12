@@ -432,6 +432,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	if routingSession != nil {
 		reqCtx.routingSession = routingSession
 	}
+	if executionSession != nil {
+		reqCtx.codexMultiAgentV2Optimized = executionSession.codexMultiAgentV2StateSnapshot()
+	}
+	ctx = withCodexMultiAgentV2RequestContext(ctx, reqCtx)
 	if executionSession != nil && nativeRequestBody != nil {
 		reqCtx.nativeCodexWS = executionSession.upstream
 		reqCtx.nativeCodexBody = nativeRequestBody
@@ -457,6 +461,9 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	}()
 
 	lastResult, succeeded := s.runProxyAttemptLoop(ctx, cands, reqCtx, c.Writer)
+	if executionSession != nil {
+		s.updateCodexMultiAgentV2SessionState(executionSession, reqCtx)
+	}
 	if succeeded {
 		if executionSession != nil && lastResult != nil && lastResult.hasResponsesTurn {
 			s.responsesExecutionSessions.commit(executionSession, executionSessionRequestBody, lastResult.responsesTurn)

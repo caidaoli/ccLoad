@@ -28,11 +28,14 @@ type requestContext struct {
 	responsesSSEUpstreamNonStream bool
 	antigravityOAuth              bool
 	anthropicOAuthBodyFinalized   bool
-	executionIdentity             string
-	firstByteTimer                *time.Timer
-	streamTimer                   *time.Timer
-	firstByteTimedOut             atomic.Bool
-	streamTimedOut                atomic.Bool
+	// codexMultiAgentV2Optimized records that this attempt renamed the
+	// collaboration namespace and therefore needs response restoration.
+	codexMultiAgentV2Optimized bool
+	executionIdentity          string
+	firstByteTimer             *time.Timer
+	streamTimer                *time.Timer
+	firstByteTimedOut          atomic.Bool
+	streamTimedOut             atomic.Bool
 }
 
 // newRequestContext 创建请求上下文（处理超时控制）
