@@ -1375,7 +1375,7 @@ const batchNumericSettingConfigs = {
     summaryValueName: 'value',
     integer: true,
     min: -99999,
-    max: 99999
+    max: 9999999
   },
   cost_multiplier: {
     inputID: 'batchCostMultiplier',

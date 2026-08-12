@@ -562,7 +562,7 @@ function chatStatPart(labelKey, fallback, valueHtml) {
 }
 
 const MODEL_TEST_PRIORITY_MIN = -99999;
-const MODEL_TEST_PRIORITY_MAX = 99999;
+const MODEL_TEST_PRIORITY_MAX = 9999999;
 let modelTestPrioritySaveTimers = new Map();
 
 function normalizeModelTestPriorityValue(value, fallback) {
