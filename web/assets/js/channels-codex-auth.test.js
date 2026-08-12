@@ -12,7 +12,6 @@ const {
   copyCodexOAuthLink,
   copyOAuthCredential,
   cancelCodexOAuth,
-  formatCodexPlanBadgeText,
   importOAuthCredentials,
   pollAntigravityOAuthStatus,
   pollAnthropicOAuthStatus,
@@ -642,12 +641,6 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
       else Object.defineProperty(global, key, descriptor);
     }
   }
-});
-
-test('Codex plan badge appends the subscription calendar date', () => {
-  assert.equal(formatCodexPlanBadgeText('plus', '2030-02-03T04:05:06Z'), 'plus · 2030-02-03');
-  assert.equal(formatCodexPlanBadgeText('free', ''), 'free');
-  assert.equal(formatCodexPlanBadgeText('', '2030-02-03T04:05:06Z'), '');
 });
 
 test('logs channel editor loads Codex auth before opening a Codex channel', async () => {

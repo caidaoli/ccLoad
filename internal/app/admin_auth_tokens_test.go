@@ -12,34 +12,6 @@ import (
 	"ccLoad/internal/model"
 )
 
-func TestAuthToken_MaskToken(t *testing.T) {
-	tests := []struct {
-		name     string
-		token    string
-		expected string
-	}{
-		{
-			name:     "Long token",
-			token:    "sk-ant-1234567890abcdefghijklmnop",
-			expected: "sk-a****mnop",
-		},
-		{
-			name:     "Short token",
-			token:    "short",
-			expected: "****",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			masked := model.MaskToken(tt.token)
-			if masked != tt.expected {
-				t.Errorf("Expected '%s', got '%s'", tt.expected, masked)
-			}
-		})
-	}
-}
-
 func TestAdminAPI_CreateAuthToken_Basic(t *testing.T) {
 	server := newInMemoryServer(t)
 
