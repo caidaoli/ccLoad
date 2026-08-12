@@ -92,8 +92,9 @@ self_test() {
     GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.1.1-beta.1 "$notes"
   )
   assert_contains "$notes" 'fix(core): beta next patch'
-  assert_contains "$notes" 'compare/v1.1.0-beta.2...v1.1.1-beta.1'
-  assert_not_contains "$notes" 'fix(core): direct beta fix'
+  assert_contains "$notes" 'compare/v1.1.0...v1.1.1-beta.1'
+  assert_not_contains "$notes" 'feat(api): beta follow-up'
+  assert_not_contains "$notes" 'docs: stable notes'
 
   git -C "$repo" tag -a v1.1.1-beta.2 -m 'Release v1.1.1-beta.2'
   if (
@@ -102,6 +103,21 @@ self_test() {
   ) >/dev/null 2>&1; then
     fail 'empty release range unexpectedly succeeded'
   fi
+
+  # A stable tag may point at the same commit as the last Beta. That Beta is
+  # still part of the stable release and must not become the next lane's base.
+  git -C "$repo" tag -a v1.2.0 -m 'Release v1.2.0'
+  printf 'beta after stable tag\n' > "$repo/change.txt"
+  git -C "$repo" commit -qam 'fix(core): beta after stable tag'
+  git -C "$repo" tag -a v1.2.1-beta.1 -m 'Release v1.2.1-beta.1'
+
+  (
+    cd "$repo"
+    GITHUB_REPOSITORY=caidaoli/ccLoad bash "$script_path" v1.2.1-beta.1 "$notes"
+  )
+  assert_contains "$notes" 'fix(core): beta after stable tag'
+  assert_contains "$notes" 'compare/v1.2.0...v1.2.1-beta.1'
+  assert_not_contains "$notes" 'fix(core): beta next patch'
 
   printf 'PASS: release notes self-test\n'
 }
@@ -125,10 +141,13 @@ latest_stable_before() {
 previous_beta_before() {
   local release_tag=$1
   local release_commit=$2
+  local stable_tag=$3
+  local stable_commit candidate_commit
   local release_major release_minor release_patch release_number
   local candidate candidate_major candidate_minor candidate_patch candidate_number
 
   [[ "$release_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)-beta\.([1-9][0-9]*)$ ]] || return 1
+  stable_commit=$(git rev-parse -q --verify "$stable_tag^{commit}") || return 1
   release_major=${BASH_REMATCH[1]}
   release_minor=${BASH_REMATCH[2]}
   release_patch=${BASH_REMATCH[3]}
@@ -141,6 +160,13 @@ previous_beta_before() {
     candidate_minor=${BASH_REMATCH[2]}
     candidate_patch=${BASH_REMATCH[3]}
     candidate_number=${BASH_REMATCH[4]}
+    candidate_commit=$(git rev-parse -q --verify "$candidate^{commit}") || continue
+
+    # A new stable tag starts a fresh Beta comparison lane. Require the
+    # candidate Beta to be a strict descendant of that stable commit so a
+    # Beta tag that was used to produce the stable release is not reused.
+    [[ "$candidate_commit" != "$stable_commit" ]] || continue
+    git merge-base --is-ancestor "$stable_commit" "$candidate_commit" || continue
 
     # Tags are sorted newest-first, but only a strictly older semantic version
     # is a valid comparison base. This also handles beta.1 after a patch bump.
@@ -160,18 +186,19 @@ previous_beta_before() {
 resolve_base_tag() {
   local release_tag=$1
   local release_commit=$2
-  local previous_beta
+  local stable_tag previous_beta
 
   if [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
     latest_stable_before "$release_tag" "$release_commit"
     return
   fi
   if [[ "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
-    if previous_beta=$(previous_beta_before "$release_tag" "$release_commit"); then
+    stable_tag=$(latest_stable_before "$release_tag" "$release_commit") || return 1
+    if previous_beta=$(previous_beta_before "$release_tag" "$release_commit" "$stable_tag"); then
       printf '%s\n' "$previous_beta"
       return
     fi
-    latest_stable_before "$release_tag" "$release_commit"
+    printf '%s\n' "$stable_tag"
     return
   fi
   fail "unsupported release tag: $release_tag"
