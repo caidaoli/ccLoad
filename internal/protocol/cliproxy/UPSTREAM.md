@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `957a33eeff89a73972d2d82ee88097934d65789b` (`fork/v8.64.0`)
-- Synchronized at: `2026-08-10`
+- Last synchronized commit: `b6924c1db93fc8926fc43dfe9d95e1e0da76d406` (`fork/v8.65.0`)
+- Synchronized at: `2026-08-12`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -122,6 +122,14 @@ documented adaptations:
   to `high`) for every client protocol before the request is sent.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
+- `fork/v8.65.0` also rewrites Gemini function-call pairing validation to use
+  short-circuiting `gjson.ForEach`; ccLoad carries that pure control-flow update
+  while preserving its local `ccLoad/internal/protocol/cliproxy/util` import and
+  established error strings.
+- The target snapshot's Responses-to-Chat conversion still keeps ccLoad wire
+  extensions for `reasoning.content`, cache-creation usage, `input_file`, and
+  Responses `web_search` to `web_search_options`; these are intentional local
+  contract differences and must survive future upstream syncs.
 
 ## Updating from CLIProxyAPI
 
