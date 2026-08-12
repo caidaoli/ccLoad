@@ -183,6 +183,7 @@ func codexTestIDTokenForPlan(t *testing.T, email, accountID, planType string) st
 	claims, err := json.Marshal(map[string]any{
 		"email": email,
 		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_user_id":                   "user-" + email,
 			"chatgpt_account_id":                accountID,
 			"chatgpt_plan_type":                 planType,
 			"chatgpt_subscription_active_start": codexTestSubscriptionActiveStart,
@@ -2720,12 +2721,12 @@ func TestCodexOAuthCancelInterruptsTokenExchangeWithoutCreatingChannel(t *testin
 	}
 }
 
-func TestImportedOAuthCredentialUpsertsSameAccount(t *testing.T) {
+func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	now := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	first := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-1", RefreshToken: "rt-1", Expired: now,
-		AccountID: "account-1", Email: "user@example.com",
+		ChatGPTUserID: "user-1", AccountID: "account-1", Email: "user@example.com",
 	}
 	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first)
 	if err != nil || !wasCreated {
@@ -2751,7 +2752,7 @@ func TestImportedOAuthCredentialUpsertsSameAccount(t *testing.T) {
 	}
 	second := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-2", RefreshToken: "rt-2", Expired: now,
-		AccountID: "account-1", Email: "renamed@example.com",
+		ChatGPTUserID: first.ChatGPTUserID, AccountID: "renamed-account", Email: "user@example.com",
 	}
 	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second)
 	if err != nil || wasCreated {
@@ -2769,12 +2770,301 @@ func TestImportedOAuthCredentialUpsertsSameAccount(t *testing.T) {
 	}
 }
 
+func TestCodexReauthorizationMigratesLegacyEmailIdentity(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	create := func(name, email, accountID, accessToken string) *model.Config {
+		t.Helper()
+		credential := &codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-" + accessToken,
+			Expired: expiresAt, AccountID: accountID, Email: email, PlanType: "plus",
+		}
+		payload, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		channel, err := store.CreateConfig(context.Background(), newCodexOAuthChannel(name, payload, credential.PlanType))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return channel
+	}
+	accountFallback := create("Codex-legacy", "", "shared-workspace", "at-legacy-old")
+	emailMatch := create("Codex-caidaoli+2@gmail.com", "caidaoli+2@gmail.com", "old-plus-2-account", "at-plus-2-old")
+	reauthorized := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-plus-2-new", RefreshToken: "rt-plus-2-new",
+		Expired: expiresAt, ChatGPTUserID: "user-plus-2", AccountID: "shared-workspace",
+		Email: "caidaoli+2@gmail.com", PlanType: "plus",
+	}
+
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	if err != nil || wasCreated || updated.ID != emailMatch.ID {
+		t.Fatalf("reauthorization = (%#v, %v, %v), want channel %d", updated, wasCreated, err, emailMatch.ID)
+	}
+	updatedCredential, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil || updatedCredential.ChatGPTUserID != reauthorized.ChatGPTUserID {
+		t.Fatalf("migrated credential = (%#v, %v)", updatedCredential, err)
+	}
+	persistedFallback, err := store.GetConfig(context.Background(), accountFallback.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallbackCredential, err := codexauth.ParseCredential([]byte(persistedFallback.OAuthCredential))
+	if err != nil || fallbackCredential.AccessToken != "at-legacy-old" {
+		t.Fatalf("account fallback was overwritten = (%#v, %v)", fallbackCredential, err)
+	}
+}
+
+func TestCodexOAuthCreatesChannelForDifferentUserInSameAccount(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	existing := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-plus-2", RefreshToken: "rt-plus-2",
+		Expired: expiresAt, ChatGPTUserID: "user-plus-2", AccountID: "shared-workspace",
+		Email: "caidaoli+2@gmail.com", PlanType: "plus",
+	}
+	existingJSON, err := existing.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	plusTwo, err := store.CreateConfig(
+		context.Background(),
+		newCodexOAuthChannel("Codex-caidaoli+2@gmail.com", existingJSON, existing.PlanType),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plusFour := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-plus-4", RefreshToken: "rt-plus-4",
+		Expired: expiresAt, ChatGPTUserID: "user-plus-4", AccountID: existing.AccountID,
+		Email: "caidaoli+4@gmail.com", PlanType: "team",
+	}
+
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plusFour)
+	if err != nil || !wasCreated || created.ID == plusTwo.ID || created.Name != "Codex-caidaoli+4@gmail.com" {
+		t.Fatalf("shared-account authorization = (%#v, %v, %v)", created, wasCreated, err)
+	}
+	persistedPlusTwo, err := store.GetConfig(context.Background(), plusTwo.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plusTwoCredential, err := codexauth.ParseCredential([]byte(persistedPlusTwo.OAuthCredential))
+	if err != nil || plusTwoCredential.Email != "caidaoli+2@gmail.com" || plusTwoCredential.AccessToken != "at-plus-2" {
+		t.Fatalf("existing +2 channel was overwritten = (%#v, %v)", plusTwoCredential, err)
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 2 {
+		t.Fatalf("channels after shared-account authorization = (%d, %v), want 2", len(configs), err)
+	}
+}
+
+func TestCodexOAuthDoesNotOverwriteDifferentUserWithSameEmail(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	first := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-first", RefreshToken: "rt-first",
+		Expired: expiresAt, ChatGPTUserID: "user-first", AccountID: "shared-workspace",
+		Email: "shared@example.com", PlanType: "team",
+	}
+	firstChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, first)
+	if err != nil || !wasCreated {
+		t.Fatalf("first authorization = (%#v, %v, %v)", firstChannel, wasCreated, err)
+	}
+	second := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-second", RefreshToken: "rt-second",
+		Expired: expiresAt, ChatGPTUserID: "user-second", AccountID: first.AccountID,
+		Email: first.Email, PlanType: first.PlanType,
+	}
+	secondChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, second)
+	if err != nil || !wasCreated || secondChannel.ID == firstChannel.ID {
+		t.Fatalf("second authorization = (%#v, %v, %v)", secondChannel, wasCreated, err)
+	}
+	persistedFirst, err := store.GetConfig(context.Background(), firstChannel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstCredential, err := codexauth.ParseCredential([]byte(persistedFirst.OAuthCredential))
+	if err != nil || firstCredential.AccessToken != first.AccessToken {
+		t.Fatalf("first user credential was overwritten = (%#v, %v)", firstCredential, err)
+	}
+}
+
+func TestCodexOAuthDoesNotOverwriteUserWhenIncomingUserIDIsMissing(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	existing := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-existing", RefreshToken: "rt-existing",
+		Expired: expiresAt, ChatGPTUserID: "user-existing", AccountID: "shared-workspace",
+		Email: "shared@example.com", PlanType: "team",
+	}
+	existingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, existing)
+	if err != nil || !wasCreated {
+		t.Fatalf("existing authorization = (%#v, %v, %v)", existingChannel, wasCreated, err)
+	}
+	incoming := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-incoming", RefreshToken: "rt-incoming",
+		Expired: expiresAt, AccountID: existing.AccountID, Email: existing.Email, PlanType: existing.PlanType,
+	}
+	incomingChannel, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, incoming)
+	if err != nil || !wasCreated || incomingChannel.ID == existingChannel.ID {
+		t.Fatalf("missing-user-id authorization = (%#v, %v, %v)", incomingChannel, wasCreated, err)
+	}
+	persistedExisting, err := store.GetConfig(context.Background(), existingChannel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	existingCredential, err := codexauth.ParseCredential([]byte(persistedExisting.OAuthCredential))
+	if err != nil || existingCredential.AccessToken != existing.AccessToken ||
+		existingCredential.ChatGPTUserID != existing.ChatGPTUserID {
+		t.Fatalf("existing credential was overwritten = (%#v, %v)", existingCredential, err)
+	}
+}
+
+func TestCodexOAuthDoesNotUseAccountIDAsUserIdentity(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-initial", RefreshToken: "rt-initial",
+		Expired: expiresAt, ChatGPTUserID: "user-initial", AccountID: "shared-workspace",
+		Email: "initial@example.com", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withoutUserIdentity := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-without-identity", RefreshToken: "rt-without-identity",
+		Expired: expiresAt, AccountID: initial.AccountID, PlanType: initial.PlanType,
+	}
+	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, withoutUserIdentity)
+	if err != nil || !wasCreated || created.ID == channel.ID {
+		t.Fatalf("shared account authorization = (%#v, %v, %v)", created, wasCreated, err)
+	}
+	persistedChannel, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := codexauth.ParseCredential([]byte(persistedChannel.OAuthCredential))
+	if err != nil || persisted.AccessToken != initial.AccessToken {
+		t.Fatalf("existing credential was overwritten = (%#v, %v)", persisted, err)
+	}
+	configs, err := store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 2 {
+		t.Fatalf("channels after shared account authorization = (%d, %v), want 2", len(configs), err)
+	}
+}
+
+func TestCodexReauthorizationMatchesUserIDAfterEmailChanges(t *testing.T) {
+	t.Parallel()
+	store := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	create := func(name, userID, email, accountID, accessToken string) *model.Config {
+		t.Helper()
+		credential := &codexauth.Credential{
+			Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: "rt-" + accessToken,
+			Expired: expiresAt, ChatGPTUserID: userID, AccountID: accountID, Email: email, PlanType: "plus",
+		}
+		payload, err := credential.JSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		channel, err := store.CreateConfig(context.Background(), newCodexOAuthChannel(name, payload, credential.PlanType))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return channel
+	}
+	plusFour := create("Codex-caidaoli+4@gmail.com", "user-plus-4", "caidaoli+4@gmail.com", "shared-workspace", "at-plus-4-old")
+	plusTwo := create("Codex-caidaoli+2@gmail.com", "user-plus-2", "caidaoli+2@gmail.com", "old-plus-2-account", "at-plus-2-old")
+	reauthorized := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-plus-2-new", RefreshToken: "rt-plus-2-new",
+		Expired: expiresAt, ChatGPTUserID: "user-plus-2", AccountID: "shared-workspace",
+		Email: "renamed-plus-2@example.com", PlanType: "plus",
+	}
+
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	if err != nil || wasCreated || updated.ID != plusTwo.ID {
+		t.Fatalf("reauthorization = (%#v, %v, %v), want channel %d", updated, wasCreated, err, plusTwo.ID)
+	}
+	persistedPlusTwo, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil || persistedPlusTwo.AccessToken != "at-plus-2-new" {
+		t.Fatalf("+2 credential = (%#v, %v)", persistedPlusTwo, err)
+	}
+	persistedPlusFour, err := store.GetConfig(context.Background(), plusFour.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plusFourCredential, err := codexauth.ParseCredential([]byte(persistedPlusFour.OAuthCredential))
+	if err != nil || plusFourCredential.AccessToken != "at-plus-4-old" {
+		t.Fatalf("+4 credential was overwritten = (%#v, %v)", plusFourCredential, err)
+	}
+}
+
+func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T) {
+	t.Parallel()
+	baseStore := newCodexAuthTestStore(t)
+	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	initial := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-old", RefreshToken: "rt-old", Expired: expiresAt,
+		ChatGPTUserID: "user-reauthorize", AccountID: "account-reauthorize",
+		Email: "reauthorize@example.com", PlanType: "plus",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sampledAt := time.Now().UTC().Format(time.RFC3339Nano)
+	winner := cloneCodexCredential(initial)
+	winner.PassiveUsage = &codexauth.PassiveUsage{
+		SampledAt: sampledAt,
+		Windows: []codexauth.PassiveUsageWindow{{
+			Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 25,
+			LimitWindowSeconds: 604800, ResetAt: time.Now().Add(7 * 24 * time.Hour).Unix(), SampledAt: sampledAt,
+		}},
+	}
+	winner.OAuthUsage = json.RawMessage(`{"provider":"codex","windows":[]}`)
+	winnerJSON, err := winner.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &concurrentOAuthWinnerStore{
+		Store: baseStore, authType: model.AuthTypeCodexOAuth, winnerJSON: winnerJSON,
+	}
+	reauthorized := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-new", RefreshToken: "rt-new", Expired: expiresAt,
+		ChatGPTUserID: initial.ChatGPTUserID, AccountID: initial.AccountID,
+		Email: initial.Email, PlanType: initial.PlanType,
+	}
+
+	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, reauthorized)
+	if err != nil || wasCreated || updated.ID != channel.ID {
+		t.Fatalf("reauthorization = (%#v, %v, %v)", updated, wasCreated, err)
+	}
+	persisted, err := codexauth.ParseCredential([]byte(updated.OAuthCredential))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.AccessToken != "at-new" || persisted.RefreshToken != "rt-new" {
+		t.Fatalf("reauthorization kept stale secrets: %#v", persisted)
+	}
+	if persisted.PassiveUsage == nil || len(persisted.PassiveUsage.Windows) != 1 ||
+		persisted.PassiveUsage.Windows[0].UsedPercent != 25 ||
+		!bytes.Equal(persisted.OAuthUsage, winner.OAuthUsage) {
+		t.Fatalf("reauthorization lost runtime metadata: %#v", persisted)
+	}
+}
+
 func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	plus := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-plus", RefreshToken: "rt-plus", Expired: expiresAt,
-		AccountID: "account-plan", Email: "plan@example.com", PlanType: "plus",
+		ChatGPTUserID: "user-plan", AccountID: "account-plan", Email: "plan@example.com", PlanType: "plus",
 	}
 	created, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, plus)
 	if err != nil || !wasCreated {
@@ -2786,7 +3076,7 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 
 	free := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-free", RefreshToken: "rt-free", Expired: expiresAt,
-		AccountID: "account-plan", Email: "plan@example.com", PlanType: "free",
+		ChatGPTUserID: plus.ChatGPTUserID, AccountID: "account-plan", Email: "plan@example.com", PlanType: "free",
 	}
 	updated, wasCreated, err := createOrUpdateCodexChannel(context.Background(), store, free)
 	if err != nil || wasCreated {
@@ -3559,7 +3849,8 @@ func TestCodexReauthorizationLateModelWriteCannotOverrideWinningPlan(t *testing.
 	expires := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	initial := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-initial", RefreshToken: "rt-initial",
-		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "plus",
+		Expired: expires, ChatGPTUserID: "user-plan-cas", AccountID: "account-plan-cas",
+		Email: "plan-cas@example.com", PlanType: "plus",
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), baseStore, initial)
 	if err != nil {
@@ -3575,7 +3866,8 @@ func TestCodexReauthorizationLateModelWriteCannotOverrideWinningPlan(t *testing.
 	}
 	free := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-free", RefreshToken: "rt-free",
-		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "free",
+		Expired: expires, ChatGPTUserID: initial.ChatGPTUserID, AccountID: "account-plan-cas",
+		Email: "plan-cas@example.com", PlanType: "free",
 	}
 	freeDone := make(chan error, 1)
 	go func() {
@@ -3586,7 +3878,8 @@ func TestCodexReauthorizationLateModelWriteCannotOverrideWinningPlan(t *testing.
 
 	pro := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "at-pro", RefreshToken: "rt-pro",
-		Expired: expires, AccountID: "account-plan-cas", Email: "plan-cas@example.com", PlanType: "pro",
+		Expired: expires, ChatGPTUserID: initial.ChatGPTUserID, AccountID: "account-plan-cas",
+		Email: "plan-cas@example.com", PlanType: "pro",
 	}
 	if _, _, err := createOrUpdateCodexChannel(context.Background(), store, pro); err != nil {
 		t.Fatalf("winning pro reauthorization error = %v", err)

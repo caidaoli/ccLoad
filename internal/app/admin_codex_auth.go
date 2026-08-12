@@ -574,39 +574,61 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 	if err != nil {
 		return nil, false, fmt.Errorf("list channels for Codex credential: %w", err)
 	}
-	for _, cfg := range configs {
-		if cfg == nil || !cfg.UsesCodexOAuth() || cfg.OAuthCredential == "" {
-			continue
-		}
-		existing, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil || !sameCodexIdentity(existing, credential) {
-			continue
-		}
-		credentialUpdated, err := store.CompareAndSwapOAuthCredential(
-			ctx, cfg.ID, model.AuthTypeCodexOAuth, cfg.OAuthCredential, credentialJSON,
-		)
-		if err != nil {
-			return nil, false, err
-		}
-		if !credentialUpdated {
-			cfg, err = store.GetConfig(ctx, cfg.ID)
+	cfg, existing, identity := findCodexOAuthChannel(configs, credential)
+	if cfg != nil {
+		currentCfg := cfg
+		current := existing
+		for {
+			if err := ctx.Err(); err != nil {
+				return nil, false, err
+			}
+			next := cloneCodexCredential(credential)
+			// Quota snapshots are channel runtime state. Reauthorization replaces
+			// OAuth secrets, but must neither erase that state nor lose the new
+			// credential when a concurrent quota sample wins the first CAS.
+			next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
+			next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
+			if next.Email == "" {
+				next.Email = current.Email
+			}
+			if next.ChatGPTUserID == "" {
+				next.ChatGPTUserID = current.ChatGPTUserID
+			}
+			nextJSON, err := next.JSON()
 			if err != nil {
 				return nil, false, err
 			}
-			credential, err = codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+			credentialUpdated, err := store.CompareAndSwapOAuthCredential(
+				ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, nextJSON,
+			)
 			if err != nil {
-				return nil, false, fmt.Errorf("parse concurrent Codex credential: %w", err)
-			}
-			if _, err := applyCodexWinnerModelState(ctx, store, cfg, existing.PlanType, credential); err != nil {
 				return nil, false, err
 			}
-		} else {
-			if _, err := persistCodexModelState(ctx, store, cfg, existing.PlanType, credential, credentialJSON); err != nil {
-				return nil, false, err
+			if credentialUpdated {
+				if _, err := persistCodexModelState(
+					ctx, store, currentCfg, current.PlanType, next, nextJSON,
+				); err != nil {
+					return nil, false, err
+				}
+				updated, err := store.GetConfig(ctx, currentCfg.ID)
+				return updated, false, err
+			}
+
+			currentCfg, err = store.GetConfig(ctx, currentCfg.ID)
+			if err != nil {
+				return nil, false, fmt.Errorf("reload Codex credential after concurrent update: %w", err)
+			}
+			if !currentCfg.UsesCodexOAuth() {
+				return nil, false, errors.New("codex credential changed provider during reauthorization")
+			}
+			current, err = codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if err != nil {
+				return nil, false, fmt.Errorf("parse Codex credential after concurrent update: %w", err)
+			}
+			if !codexIdentityMatches(current, credential, identity) {
+				return nil, false, errors.New("codex credential changed identity during reauthorization")
 			}
 		}
-		updated, err := store.GetConfig(ctx, cfg.ID)
-		return updated, false, err
 	}
 
 	name := uniqueCodexChannelName(configs, credential)
@@ -615,6 +637,44 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 		return nil, false, fmt.Errorf("create Codex channel: %w", err)
 	}
 	return created, true, nil
+}
+
+func findCodexOAuthChannel(
+	configs []*model.Config,
+	credential *codexauth.Credential,
+) (*model.Config, *codexauth.Credential, codexIdentityMatch) {
+	type candidate struct {
+		config     *model.Config
+		credential *codexauth.Credential
+	}
+	candidates := make([]candidate, 0, len(configs))
+	for _, cfg := range configs {
+		if cfg == nil || !cfg.UsesCodexOAuth() || cfg.OAuthCredential == "" {
+			continue
+		}
+		existing, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err == nil {
+			candidates = append(candidates, candidate{config: cfg, credential: existing})
+		}
+	}
+	if credential.ChatGPTUserID != "" {
+		for _, candidate := range candidates {
+			if codexIdentityMatches(candidate.credential, credential, codexIdentityUserID) {
+				return candidate.config, candidate.credential, codexIdentityUserID
+			}
+		}
+		// Existing credentials written before chatgpt_user_id was persisted can
+		// migrate once by email. Never let an email match override a different
+		// persisted user ID.
+		for _, candidate := range candidates {
+			if candidate.credential.ChatGPTUserID == "" &&
+				codexIdentityMatches(candidate.credential, credential, codexIdentityEmail) {
+				return candidate.config, candidate.credential, codexIdentityEmail
+			}
+		}
+		return nil, nil, codexIdentityNone
+	}
+	return nil, nil, codexIdentityNone
 }
 
 func persistCodexModelState(
@@ -765,14 +825,32 @@ func hasWildcardCodexModel(entries []model.ModelEntry) bool {
 	return false
 }
 
-func sameCodexIdentity(a, b *codexauth.Credential) bool {
+type codexIdentityMatch uint8
+
+const (
+	codexIdentityNone codexIdentityMatch = iota
+	codexIdentityUserID
+	codexIdentityEmail
+)
+
+func codexIdentityMatches(a, b *codexauth.Credential, identity codexIdentityMatch) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	if a.AccountID != "" && b.AccountID != "" {
-		return a.AccountID == b.AccountID
+	switch identity {
+	case codexIdentityUserID:
+		return a.ChatGPTUserID != "" && b.ChatGPTUserID != "" && a.ChatGPTUserID == b.ChatGPTUserID
+	case codexIdentityEmail:
+		if a.Email == "" || b.Email == "" {
+			return false
+		}
+		if a.ChatGPTUserID != "" && b.ChatGPTUserID != "" && a.ChatGPTUserID != b.ChatGPTUserID {
+			return false
+		}
+		return strings.EqualFold(a.Email, b.Email)
+	default:
+		return false
 	}
-	return a.Email != "" && b.Email != "" && strings.EqualFold(a.Email, b.Email)
 }
 
 func uniqueCodexChannelName(configs []*model.Config, credential *codexauth.Credential) string {

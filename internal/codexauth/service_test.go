@@ -69,7 +69,8 @@ func TestServiceAuthorizationAndTokenContracts(t *testing.T) {
 	if credential.AccessToken != "at-1" || credential.RefreshToken != "rt-1" {
 		t.Fatalf("exchange credential = %#v", credential)
 	}
-	if credential.Email != "user@example.com" || credential.AccountID != "acct-test" || credential.PlanType != "plus" {
+	if credential.Email != "user@example.com" || credential.ChatGPTUserID != "user-test" ||
+		credential.AccountID != "acct-test" || credential.PlanType != "plus" {
 		t.Fatalf("ID token metadata = %#v", credential)
 	}
 
@@ -115,6 +116,6 @@ func TestServiceRejectsEmptyAccessToken(t *testing.T) {
 
 func testIDToken(t *testing.T) string {
 	t.Helper()
-	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_account_id":"acct-test","chatgpt_plan_type":"plus"}}`))
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_user_id":"user-test","chatgpt_account_id":"acct-test","chatgpt_plan_type":"plus"}}`))
 	return "header." + payload + ".signature"
 }

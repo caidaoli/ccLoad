@@ -19,17 +19,18 @@ const (
 // private channel field. General channel responses omit it; the authenticated
 // single-channel editor response may expose it for read-only inspection.
 type Credential struct {
-	IDToken      string          `json:"id_token,omitempty"`
-	AccessToken  string          `json:"access_token"`
-	RefreshToken string          `json:"refresh_token"`
-	AccountID    string          `json:"account_id,omitempty"`
-	LastRefresh  string          `json:"last_refresh,omitempty"`
-	Email        string          `json:"email,omitempty"`
-	Type         string          `json:"type"`
-	Expired      string          `json:"expired"`
-	PlanType     string          `json:"plan_type,omitempty"`
-	PassiveUsage *PassiveUsage   `json:"passive_usage,omitempty"`
-	OAuthUsage   json.RawMessage `json:"oauth_usage,omitempty"`
+	IDToken       string          `json:"id_token,omitempty"`
+	AccessToken   string          `json:"access_token"`
+	RefreshToken  string          `json:"refresh_token"`
+	ChatGPTUserID string          `json:"chatgpt_user_id,omitempty"`
+	AccountID     string          `json:"account_id,omitempty"`
+	LastRefresh   string          `json:"last_refresh,omitempty"`
+	Email         string          `json:"email,omitempty"`
+	Type          string          `json:"type"`
+	Expired       string          `json:"expired"`
+	PlanType      string          `json:"plan_type,omitempty"`
+	PassiveUsage  *PassiveUsage   `json:"passive_usage,omitempty"`
+	OAuthUsage    json.RawMessage `json:"oauth_usage,omitempty"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Codex upstream
@@ -53,6 +54,7 @@ type PassiveUsageWindow struct {
 // IDTokenInfo is the readable Codex subscription metadata embedded in an ID
 // token. The persisted credential keeps the original JWT string intact.
 type IDTokenInfo struct {
+	ChatGPTUserID                  string `json:"chatgpt_user_id,omitempty"`
 	ChatGPTAccountID               string `json:"chatgpt_account_id,omitempty"`
 	ChatGPTSubscriptionActiveStart any    `json:"chatgpt_subscription_active_start,omitempty"`
 	ChatGPTSubscriptionActiveUntil any    `json:"chatgpt_subscription_active_until,omitempty"`
@@ -89,6 +91,7 @@ func (c *Credential) Normalize() error {
 	c.IDToken = strings.TrimSpace(c.IDToken)
 	c.AccessToken = strings.TrimSpace(c.AccessToken)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
+	c.ChatGPTUserID = strings.TrimSpace(c.ChatGPTUserID)
 	c.AccountID = strings.TrimSpace(c.AccountID)
 	c.LastRefresh = strings.TrimSpace(c.LastRefresh)
 	c.Email = strings.TrimSpace(c.Email)
@@ -132,6 +135,9 @@ func (c *Credential) Normalize() error {
 	}
 	if c.IDToken != "" {
 		if claims, err := parseIDToken(c.IDToken); err == nil {
+			if c.ChatGPTUserID == "" {
+				c.ChatGPTUserID = strings.TrimSpace(claims.Auth.ChatGPTUserID)
+			}
 			if c.AccountID == "" {
 				c.AccountID = strings.TrimSpace(claims.Auth.ChatGPTAccountID)
 			}
@@ -168,12 +174,13 @@ func (c *Credential) DecodedIDToken() *IDTokenInfo {
 		return nil
 	}
 	info := &IDTokenInfo{
+		ChatGPTUserID:                  strings.TrimSpace(claims.Auth.ChatGPTUserID),
 		ChatGPTAccountID:               strings.TrimSpace(claims.Auth.ChatGPTAccountID),
 		ChatGPTSubscriptionActiveStart: claims.Auth.ChatGPTSubscriptionActiveStart,
 		ChatGPTSubscriptionActiveUntil: claims.Auth.ChatGPTSubscriptionActiveUntil,
 		PlanType:                       strings.TrimSpace(claims.Auth.ChatGPTPlanType),
 	}
-	if info.ChatGPTAccountID == "" && info.ChatGPTSubscriptionActiveStart == nil &&
+	if info.ChatGPTUserID == "" && info.ChatGPTAccountID == "" && info.ChatGPTSubscriptionActiveStart == nil &&
 		info.ChatGPTSubscriptionActiveUntil == nil && info.PlanType == "" {
 		return nil
 	}
@@ -220,6 +227,9 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	}
 	if merged.IDToken == "" {
 		merged.IDToken = c.IDToken
+	}
+	if merged.ChatGPTUserID == "" {
+		merged.ChatGPTUserID = c.ChatGPTUserID
 	}
 	if merged.AccountID == "" {
 		merged.AccountID = c.AccountID

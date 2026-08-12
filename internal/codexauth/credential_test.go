@@ -12,6 +12,7 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	claims, err := json.Marshal(map[string]any{
 		"email": "user@example.com",
 		"https://api.openai.com/auth": map[string]any{
+			"chatgpt_user_id":                   "user-1",
 			"chatgpt_account_id":                "account-1",
 			"chatgpt_plan_type":                 "plus",
 			"chatgpt_subscription_active_start": "2030-01-03T04:05:06Z",
@@ -40,7 +41,8 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	if credential.AccessToken != "at" || credential.RefreshToken != "rt" {
 		t.Fatalf("tokens were not normalized: %#v", credential)
 	}
-	if credential.AccountID != "account-1" || credential.Email != "user@example.com" || credential.PlanType != "plus" {
+	if credential.ChatGPTUserID != "user-1" || credential.AccountID != "account-1" ||
+		credential.Email != "user@example.com" || credential.PlanType != "plus" {
 		t.Fatalf("ID token metadata was not populated: %#v", credential)
 	}
 	until, ok := credential.SubscriptionActiveUntil()
@@ -49,7 +51,7 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 		t.Fatalf("SubscriptionActiveUntil() = (%v, %v), want (%v, true)", until, ok, wantUntil)
 	}
 	info := credential.DecodedIDToken()
-	if info == nil || info.ChatGPTAccountID != "account-1" || info.PlanType != "plus" ||
+	if info == nil || info.ChatGPTUserID != "user-1" || info.ChatGPTAccountID != "account-1" || info.PlanType != "plus" ||
 		info.ChatGPTSubscriptionActiveStart != "2030-01-03T04:05:06Z" ||
 		info.ChatGPTSubscriptionActiveUntil != "2030-02-03T04:05:06Z" {
 		t.Fatalf("DecodedIDToken() = %#v", info)
@@ -58,7 +60,8 @@ func TestParseCredentialNormalizesCLIProxyPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("JSON() error = %v", err)
 	}
-	if !strings.Contains(encoded, `"access_token":"at"`) || !strings.Contains(encoded, `"refresh_token":"rt"`) {
+	if !strings.Contains(encoded, `"access_token":"at"`) || !strings.Contains(encoded, `"refresh_token":"rt"`) ||
+		!strings.Contains(encoded, `"chatgpt_user_id":"user-1"`) {
 		t.Fatalf("canonical JSON = %s", encoded)
 	}
 }
@@ -67,7 +70,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	now := time.Date(2030, 1, 2, 3, 0, 0, 0, time.UTC)
 	current := &Credential{
 		AccessToken: "old-at", RefreshToken: "old-rt", IDToken: "old-id",
-		AccountID: "account-1", Email: "user@example.com", Type: ChannelType,
+		ChatGPTUserID: "user-1", AccountID: "account-1", Email: "user@example.com", Type: ChannelType,
 		Expired: now.Add(4 * time.Minute).Format(time.RFC3339), PlanType: "plus",
 		PassiveUsage: &PassiveUsage{
 			Windows: []PassiveUsageWindow{{
@@ -88,7 +91,8 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MergeRefresh() error = %v", err)
 	}
-	if merged.RefreshToken != "old-rt" || merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
+	if merged.RefreshToken != "old-rt" || merged.ChatGPTUserID != "user-1" ||
+		merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
 		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` {
 		t.Fatalf("merged credential = %#v", merged)
