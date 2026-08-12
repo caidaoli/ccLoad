@@ -2911,6 +2911,17 @@ func (s *Server) attemptKeyAcrossURLs(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
+	// Antigravity's provider fallback order is a built-in runtime policy. It
+	// must remain available for capacity retries even when newly created OAuth
+	// channels persist only the production URL.
+	hasAntigravityGlobalBaseURLOverride := s.configService != nil &&
+		strings.TrimSpace(s.configService.GetString(config.AntigravityURLSettingKey, "")) != ""
+	if cfg.UsesAntigravityOAuth() && !hasAntigravityGlobalBaseURLOverride && usesAntigravityDefaultBaseURLs(cfg.URLs) {
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.URLs = antigravityOAuthDefaultURLs()
+		cfg = runtimeCfg
+		urls = cfg.GetURLs()
+	}
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	if cfg.UsesAntigravityOAuth() {
 		// Antigravity owns a fixed provider fallback order. Runtime latency must

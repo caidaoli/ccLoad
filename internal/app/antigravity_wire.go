@@ -636,17 +636,34 @@ func isAntigravityCountTokensPath(path string) bool {
 	return strings.Contains(strings.TrimSpace(path), ":countTokens")
 }
 
+func isAntigravityDefaultBaseURL(rawURL string) bool {
+	baseURL := strings.TrimRight(strings.TrimSpace(model.StripExactUpstreamURLMarker(rawURL)), "/")
+	switch baseURL {
+	case antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURL:
+		return true
+	default:
+		return false
+	}
+}
+
+func usesAntigravityDefaultBaseURLs(urls model.ChannelURLs) bool {
+	if len(urls) == 0 {
+		return false
+	}
+	for _, entry := range urls {
+		if !isAntigravityDefaultBaseURL(entry.URL) {
+			return false
+		}
+	}
+	return true
+}
+
 func withAntigravityDefaultFallbackURLs(cfg *model.Config) *model.Config {
-	if cfg == nil || !cfg.UsesAntigravityOAuth() || len(cfg.URLs) == 0 {
+	if cfg == nil || !cfg.UsesAntigravityOAuth() || len(cfg.URLs) <= 1 {
 		return cfg
 	}
-	for _, entry := range cfg.URLs {
-		baseURL := strings.TrimRight(strings.TrimSpace(model.StripExactUpstreamURLMarker(entry.URL)), "/")
-		switch baseURL {
-		case antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURL:
-		default:
-			return cfg
-		}
+	if !usesAntigravityDefaultBaseURLs(cfg.URLs) {
+		return cfg
 	}
 	runtimeCfg := cfg.Clone()
 	runtimeCfg.URLs = antigravityOAuthDefaultURLs()
