@@ -301,37 +301,6 @@ func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGeminiUsageO
 	}
 }
 
-func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGemini_FragmentedToolCalls(t *testing.T) {
-	t.Parallel()
-
-	reg := protocol.NewRegistry()
-	builtin.Register(reg)
-
-	chunks := []string{
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"lookup","arguments":""}}]}}]}` + "\n\n",
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"query\":"}}]}}]}` + "\n\n",
-		`data: {"id":"chatcmpl_1","object":"chat.completion.chunk","model":"gpt-4o","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"go\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":3,"completion_tokens":5,"total_tokens":8}}` + "\n\n",
-	}
-
-	var state any
-	var outputs [][]byte
-	for _, chunk := range chunks {
-		out, err := reg.TranslateResponseStream(context.Background(), protocol.OpenAI, protocol.Gemini, "gemini-2.5-pro", nil, nil, []byte(chunk), &state)
-		if err != nil {
-			t.Fatalf("TranslateResponseStream failed: %v", err)
-		}
-		outputs = append(outputs, out...)
-	}
-
-	joined := string(bytes.Join(outputs, nil))
-	if !strings.Contains(joined, `"functionCall"`) || !strings.Contains(joined, `"name":"lookup"`) || !strings.Contains(joined, `"query":"go"`) {
-		t.Fatalf("expected assembled Gemini functionCall, got: %s", joined)
-	}
-	if !strings.Contains(joined, `"finishReason":"STOP"`) || !strings.Contains(joined, `"promptTokenCount":3`) {
-		t.Fatalf("expected terminal Gemini usage payload, got: %s", joined)
-	}
-}
-
 func TestRegistry_TranslateResponseStream_OpenAIStructuredOutboundToGemini_FragmentedToolCalls_AllSplitPoints(t *testing.T) {
 	t.Parallel()
 

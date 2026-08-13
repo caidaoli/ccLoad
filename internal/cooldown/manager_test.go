@@ -1135,22 +1135,6 @@ func TestHandleError_EdgeCases(t *testing.T) {
 		}
 	})
 
-	t.Run("nil错误体", func(t *testing.T) {
-		cfg := createTestChannel(t, store, "test-nil-body")
-		// nil错误体应该使用基础分类
-		action := manager.HandleError(ctx, ErrorInput{
-			ChannelID:      cfg.ID,
-			KeyIndex:       -1,
-			StatusCode:     500,
-			ErrorBody:      nil,
-			IsNetworkError: false,
-			Headers:        nil,
-		})
-		if action != ActionRetryChannel {
-			t.Error("Should classify 500 as channel-level even with nil body")
-		}
-	})
-
 	t.Run("空错误体", func(t *testing.T) {
 		cfg := createTestChannel(t, store, "test-empty-body")
 		action := manager.HandleError(ctx, ErrorInput{

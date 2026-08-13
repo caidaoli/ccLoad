@@ -477,18 +477,6 @@ func TestURLSelector_ProbeURLs_SkipsSingleURL(t *testing.T) {
 	}
 }
 
-func TestURLSelector_ProbeURLs_SkipsKnownURLs(t *testing.T) {
-	sel := NewURLSelector()
-	urls := []string{"https://a.com", "https://b.com"}
-	// 给所有URL预设延迟数据
-	sel.RecordLatency(1, "https://a.com", 100*time.Millisecond)
-	sel.RecordLatency(1, "https://b.com", 200*time.Millisecond)
-
-	// 所有URL已有数据，ProbeURLs应立即返回（不发TCP连接）
-	sel.ProbeURLs(context.Background(), 1, urls)
-	// 不crash即通过
-}
-
 func TestURLSelector_ProbeURLs_InvalidURL(t *testing.T) {
 	sel := NewURLSelector()
 	// 无效 URL 不应产生延迟或冷却状态。

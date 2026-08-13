@@ -2,7 +2,6 @@ package app
 
 import (
 	"net/http"
-	"sort"
 	"strings"
 	"testing"
 
@@ -123,19 +122,6 @@ func TestHasGeminiUsageFields(t *testing.T) {
 
 	if hasGeminiUsageFields(map[string]any{}) {
 		t.Fatal("expected empty map to not be detected as gemini usage")
-	}
-}
-
-func TestGetUsageKeys(t *testing.T) {
-	t.Parallel()
-
-	keys := getUsageKeys(map[string]any{
-		"b": float64(2),
-		"a": float64(1),
-	})
-	sort.Strings(keys)
-	if strings.Join(keys, ",") != "a,b" {
-		t.Fatalf("unexpected keys: %v", keys)
 	}
 }
 

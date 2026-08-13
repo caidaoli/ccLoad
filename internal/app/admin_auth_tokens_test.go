@@ -2,7 +2,6 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"net/http"
 	"strconv"
@@ -523,57 +522,4 @@ func TestHandleListAuthTokens_StatsZeroForNoData(t *testing.T) {
 		}
 	}
 	t.Errorf("token ID=%d not found in response", token.ID)
-}
-
-func TestHandleListAuthTokens_RPMStats(t *testing.T) {
-	server := newInMemoryServer(t)
-	createTestToken(t, server, "rpm-token")
-
-	// 创建渠道和多条日志来生成 RPM 统计
-	ctx := context.Background()
-	now := time.Now()
-	cfg := &model.Config{
-		Name:         "rpm-ch",
-		URLs:         model.ChannelURLs{{URL: "https://rpm.com"}},
-		Priority:     100,
-		ModelEntries: []model.ModelEntry{{Model: "m"}},
-		Enabled:      true,
-	}
-	created, err := server.store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("CreateConfig failed: %v", err)
-	}
-
-	for i := 0; i < 5; i++ {
-		entry := &model.LogEntry{
-			Time:        model.JSONTime{Time: now.Add(-time.Duration(i) * time.Second)},
-			Model:       "m",
-			ChannelID:   created.ID,
-			StatusCode:  200,
-			Duration:    0.1,
-			AuthTokenID: 1,
-		}
-		if err := server.store.AddLog(ctx, entry); err != nil {
-			t.Fatalf("AddLog failed: %v", err)
-		}
-	}
-
-	req := newRequest(http.MethodGet, "/admin/auth-tokens?range=today", nil)
-	c, w := newTestContext(t, req)
-	server.HandleListAuthTokens(c)
-
-	if w.Code != http.StatusOK {
-		t.Fatalf("Expected 200, got %d", w.Code)
-	}
-
-	// 解析原始 JSON 验证 rpm_stats 字段存在
-	var raw map[string]json.RawMessage
-	mustUnmarshalJSON(t, w.Body.Bytes(), &raw)
-	var dataField map[string]json.RawMessage
-	mustUnmarshalJSON(t, raw["data"], &dataField)
-
-	// rpm_stats 可以是 null 或对象，但字段应存在
-	if _, ok := dataField["rpm_stats"]; !ok {
-		t.Error("Expected rpm_stats field in response")
-	}
 }

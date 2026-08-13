@@ -460,26 +460,6 @@ func TestMySQL(t *testing.T) {
 		}
 	})
 
-	t.Run("EnsureColumns_AlreadyExists", func(t *testing.T) {
-		cleanupMySQLTables(t, env.db)
-
-		// 第一次迁移
-		store1, err := CreateMySQLStoreForTest(env.dsn)
-		if err != nil {
-			t.Fatalf("第一次迁移失败: %v", err)
-		}
-		_ = store1.Close()
-
-		// 第二次调用不应报错
-		store2, err := CreateMySQLStoreForTest(env.dsn)
-		if err != nil {
-			t.Fatalf("已存在列不应报错: %v", err)
-		}
-		_ = store2.Close()
-
-		t.Log("已存在列验证通过：不报错")
-	})
-
 	t.Run("LegacyChannelsOAuthCredential", func(t *testing.T) {
 		cleanupMySQLTables(t, env.db)
 

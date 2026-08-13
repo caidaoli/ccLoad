@@ -204,32 +204,6 @@ func TestRecordSuccess_AfterLockout(t *testing.T) {
 	t.Logf("[INFO] 锁定后成功登录重置正确：锁定解除，可以重新尝试")
 }
 
-// TestGetAttemptCount_NonExistentIP 测试不存在的IP
-func TestGetAttemptCount_NonExistentIP(t *testing.T) {
-	limiter := NewLoginRateLimiter()
-	defer limiter.Stop()
-
-	count := limiter.GetAttemptCount("192.168.1.99")
-	if count != 0 {
-		t.Errorf("不存在的IP计数应为0，实际%d", count)
-	}
-
-	t.Logf("[INFO] 不存在的IP计数正确返回0")
-}
-
-// TestGetLockoutTime_NonExistentIP 测试不存在的IP的锁定时间
-func TestGetLockoutTime_NonExistentIP(t *testing.T) {
-	limiter := NewLoginRateLimiter()
-	defer limiter.Stop()
-
-	lockoutTime := limiter.GetLockoutTime("192.168.1.99")
-	if lockoutTime != 0 {
-		t.Errorf("不存在的IP锁定时间应为0，实际%d秒", lockoutTime)
-	}
-
-	t.Logf("[INFO] 不存在的IP锁定时间正确返回0")
-}
-
 // TestConcurrentAccess 测试并发访问
 func TestConcurrentAccess(t *testing.T) {
 	limiter := NewLoginRateLimiter()

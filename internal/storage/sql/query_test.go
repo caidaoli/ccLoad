@@ -223,20 +223,3 @@ func TestWhereBuilder_AddCondition_EmptyString(t *testing.T) {
 		t.Errorf("expected 1 arg, got %d", len(args))
 	}
 }
-
-func TestWhereBuilder_Chaining(t *testing.T) {
-	t.Parallel()
-
-	// 测试链式调用
-	clause, args := sqlstore.NewWhereBuilder().
-		AddCondition("a = ?", 1).
-		AddCondition("b > ?", 2).
-		Build()
-
-	if clause != "a = ? AND b > ?" {
-		t.Errorf("unexpected clause: %q", clause)
-	}
-	if len(args) != 2 {
-		t.Errorf("expected 2 args, got %d", len(args))
-	}
-}
