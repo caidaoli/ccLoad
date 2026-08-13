@@ -136,12 +136,14 @@ func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 	if !ok {
 		t.Fatalf("process metrics missing: %#v", resp.Data)
 	}
-	if processMetrics["version"] == "" || processMetrics["concurrency_slots_in_use"] != float64(1) ||
+	if processMetrics["concurrency_slots_in_use"] != float64(1) ||
 		processMetrics["max_concurrency"] != float64(3) {
 		t.Fatalf("unexpected process load metrics: %#v", processMetrics)
 	}
-	if startedAt, okStartedAt := processMetrics["started_at_unix_ms"].(float64); !okStartedAt || startedAt <= 0 {
-		t.Fatalf("unexpected process start time: %#v", processMetrics)
+	for _, key := range []string{"version", "started_at_unix_ms"} {
+		if _, exists := processMetrics[key]; exists {
+			t.Fatalf("%s should be removed from process metrics: %#v", key, processMetrics)
+		}
 	}
 	if uptime, okUptime := processMetrics["uptime_seconds"].(float64); !okUptime || uptime < 119 {
 		t.Fatalf("unexpected process uptime: %#v", processMetrics)
@@ -149,6 +151,15 @@ func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 	for _, key := range []string{"goroutines", "heap_alloc_bytes", "heap_sys_bytes"} {
 		if value, okValue := processMetrics[key].(float64); !okValue || value <= 0 {
 			t.Fatalf("%s=%v, want positive runtime metric; metrics=%#v", key, processMetrics[key], processMetrics)
+		}
+	}
+	// CPU/RSS/GC 指标存在且非负;RSS 与 CPU 的具体值依赖平台,只验证契约
+	for _, key := range []string{
+		"cpu_usage_percent", "cpu_user_seconds", "cpu_system_seconds",
+		"rss_bytes", "max_rss_bytes", "gc_count", "gc_pause_total_ns", "gc_cpu_percent",
+	} {
+		if value, okValue := processMetrics[key].(float64); !okValue || value < 0 {
+			t.Fatalf("%s=%v, want non-negative runtime metric; metrics=%#v", key, processMetrics[key], processMetrics)
 		}
 	}
 	httpMetrics, ok := resp.Data["http_proxy"].(map[string]any)

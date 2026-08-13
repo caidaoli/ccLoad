@@ -5,6 +5,8 @@ let originalSettings = {}; // 保存原始值用于比较
 let settingDefinitions = new Map();
 let runtimeMetricsLoading = false;
 let runtimeMetricsPreviousFocus = null;
+let runtimeMetricsRefreshTimer = null;
+const RUNTIME_METRICS_REFRESH_MS = 3000;
 let globalCooldownRulesPreviousFocus = null;
 
 const globalCooldownRulesSettingKey = 'global_cooldown_detection_rules';
@@ -175,14 +177,27 @@ const runtimeMetricDomains = [
     titleKey: 'settings.runtimeMetrics.group.process',
     descriptionKey: 'settings.runtimeMetrics.processNote',
     metrics: [
-      { key: 'version', labelKey: 'settings.runtimeMetrics.metric.version', format: 'text' },
-      { key: 'started_at_unix_ms', labelKey: 'settings.runtimeMetrics.metric.startedAt', format: 'unixMilliseconds' },
       { key: 'uptime_seconds', labelKey: 'settings.runtimeMetrics.metric.uptime', format: 'duration' },
       { key: 'concurrency_slots_in_use', labelKey: 'settings.runtimeMetrics.metric.concurrencySlotsInUse' },
       { key: 'max_concurrency', labelKey: 'settings.runtimeMetrics.metric.maxConcurrency' },
-      { key: 'goroutines', labelKey: 'settings.runtimeMetrics.metric.goroutines' },
+      { key: 'goroutines', labelKey: 'settings.runtimeMetrics.metric.goroutines' }
+    ]
+  },
+  {
+    sourceKey: 'process',
+    titleKey: 'settings.runtimeMetrics.group.resources',
+    descriptionKey: 'settings.runtimeMetrics.resourcesNote',
+    metrics: [
+      { key: 'cpu_usage_percent', labelKey: 'settings.runtimeMetrics.metric.cpuUsagePercent', format: 'percent' },
+      { key: 'cpu_user_seconds', labelKey: 'settings.runtimeMetrics.metric.cpuUserSeconds', format: 'seconds' },
+      { key: 'cpu_system_seconds', labelKey: 'settings.runtimeMetrics.metric.cpuSystemSeconds', format: 'seconds' },
+      { key: 'rss_bytes', labelKey: 'settings.runtimeMetrics.metric.rssBytes', format: 'bytes', zeroUnavailable: true },
+      { key: 'max_rss_bytes', labelKey: 'settings.runtimeMetrics.metric.maxRssBytes', format: 'bytes', zeroUnavailable: true },
       { key: 'heap_alloc_bytes', labelKey: 'settings.runtimeMetrics.metric.heapAllocBytes', format: 'bytes' },
-      { key: 'heap_sys_bytes', labelKey: 'settings.runtimeMetrics.metric.heapSysBytes', format: 'bytes' }
+      { key: 'heap_sys_bytes', labelKey: 'settings.runtimeMetrics.metric.heapSysBytes', format: 'bytes' },
+      { key: 'gc_count', labelKey: 'settings.runtimeMetrics.metric.gcCount' },
+      { key: 'gc_pause_total_ns', labelKey: 'settings.runtimeMetrics.metric.gcPauseTotal', format: 'durationNs' },
+      { key: 'gc_cpu_percent', labelKey: 'settings.runtimeMetrics.metric.gcCpuPercent', format: 'percent' }
     ]
   },
   {
@@ -440,12 +455,19 @@ function openRuntimeMetricsModal() {
   modal.setAttribute('aria-hidden', 'false');
   modal.querySelector('.close-btn')?.focus();
   loadRuntimeMetrics();
+  if (runtimeMetricsRefreshTimer === null) {
+    runtimeMetricsRefreshTimer = setInterval(() => loadRuntimeMetrics({ silent: true }), RUNTIME_METRICS_REFRESH_MS);
+  }
 }
 
 function closeRuntimeMetricsModal() {
   const modal = document.getElementById('runtimeMetricsModal');
   if (!modal) return;
 
+  if (runtimeMetricsRefreshTimer !== null) {
+    clearInterval(runtimeMetricsRefreshTimer);
+    runtimeMetricsRefreshTimer = null;
+  }
   modal.classList.remove('show');
   modal.setAttribute('aria-hidden', 'true');
   if (runtimeMetricsPreviousFocus?.isConnected) runtimeMetricsPreviousFocus.focus();
@@ -511,9 +533,33 @@ function formatRuntimeTimestamp(value) {
   return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(runtimeMetricsLocale());
 }
 
+function formatRuntimePercent(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+  return `${formatRuntimeDecimal(numeric, 1)}%`;
+}
+
+function formatRuntimeSeconds(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+  if (numeric < 60) return t('common.timeS', { s: formatRuntimeDecimal(numeric, 1) });
+  return formatRuntimeDuration(numeric);
+}
+
+function formatRuntimeDurationNs(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null) return '—';
+  if (numeric < 1e9) return `${formatRuntimeDecimal(numeric / 1e6, 1)} ms`;
+  return formatRuntimeDuration(numeric / 1e9);
+}
+
 function formatRuntimeMetric(metric, stats) {
+  if (metric.zeroUnavailable && normalizeRuntimeMetric(stats[metric.key]) === 0) return '—';
   if (metric.format === 'bytes') return formatRuntimeBytes(stats[metric.key]);
   if (metric.format === 'duration') return formatRuntimeDuration(stats[metric.key]);
+  if (metric.format === 'seconds') return formatRuntimeSeconds(stats[metric.key]);
+  if (metric.format === 'durationNs') return formatRuntimeDurationNs(stats[metric.key]);
+  if (metric.format === 'percent') return formatRuntimePercent(stats[metric.key]);
   if (metric.format === 'boolean') return formatRuntimeBoolean(stats[metric.key]);
   if (metric.format === 'unixMilliseconds') return formatRuntimeTimestamp(stats[metric.key]);
   if (metric.format === 'text') {
@@ -656,17 +702,21 @@ function renderRuntimeMetricsError(error) {
     </div>`;
 }
 
-async function loadRuntimeMetrics() {
+async function loadRuntimeMetrics(options) {
   if (runtimeMetricsLoading) return;
+  // 手动刷新按钮的 click 事件会把 MouseEvent 传进来,此时 silent 恒为 false
+  const silent = options?.silent === true;
 
   const content = document.getElementById('runtime-metrics-content');
   const refreshBtn = document.getElementById('refresh-runtime-metrics-btn');
   const updatedAt = document.getElementById('runtime-metrics-updated-at');
   runtimeMetricsLoading = true;
   if (content) content.setAttribute('aria-busy', 'true');
-  if (refreshBtn) refreshBtn.disabled = true;
-  if (updatedAt) updatedAt.textContent = '';
-  renderRuntimeMetricsLoading();
+  if (!silent) {
+    if (refreshBtn) refreshBtn.disabled = true;
+    if (updatedAt) updatedAt.textContent = '';
+    renderRuntimeMetricsLoading();
+  }
 
   try {
     const data = await fetchDataWithAuth('/admin/runtime-metrics');

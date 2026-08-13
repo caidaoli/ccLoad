@@ -51,6 +51,7 @@ type Server struct {
 	// 核心字段
 	// ============================================================================
 	startedAt                     time.Time
+	cpuUsage                      cpuUsageTracker // 运行状态查询间的 CPU 占用率采样(零值可用)
 	store                         storage.Store
 	channelCache                  *storage.ChannelCache      // 高性能渠道缓存层
 	keySelector                   *KeySelector               // Key选择器（多Key支持）
