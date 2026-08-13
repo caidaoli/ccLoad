@@ -63,8 +63,9 @@ ccLoad handles those cases with:
 - 🔀 **Smart Routing** - Priority + smooth weighted round-robin channel selection, **pre-filters cooled channels**, multi-key load balancing, **health-based dynamic sorting** (confidence factor prevents small sample over-penalization)
 - 🛡️ **Failover** - Key, model, and channel failures share one exponential-backoff policy; explicit upstream reset deadlines take priority, and model-scoped failures switch channels without cooling the whole channel
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
-- 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification
+- 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic token refresh, text/file/aggregate import, batch quota refresh, and invalid-credential cleanup
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
@@ -75,9 +76,11 @@ ccLoad handles those cases with:
 - 💰 **Cost Limits** - Per-channel daily cost limits, per-token cost limits
 - 🚦 **Channel RPM Limits** - Per-channel rolling 60-second request caps, 0=unlimited
 - 🚧 **Channel Concurrency Limits** - Per-channel in-flight request caps, 0=unlimited
+- 🕒 **Channel Time Windows** - Optional HH:MM availability window per channel (server local time, cross-midnight supported); channels outside their window are fully excluded from routing
 - 🔐 **Token Restrictions** - Per-token cost limits, model restrictions, channel allowlist/denylist, and concurrency caps for fine-grained access control
 - ⏱️ **TTFB Monitoring** - Streaming request first byte time tracking for upstream latency diagnosis
 - 🌐 **Multi-URL Load Balancing** - Multiple URLs per channel with latency-weighted random selection
+- 🧭 **Per-Channel Proxy** - Route a channel's upstream traffic through an http/https/socks5/socks5h proxy with isolated connection pools
 - 💵 **service_tier Pricing** - OpenAI priority/flex/default tier multipliers for accurate cost accounting
 - 🖼️ **Image Tool Billing** - Responses image_generation/gpt-image-2 cost accounting
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
