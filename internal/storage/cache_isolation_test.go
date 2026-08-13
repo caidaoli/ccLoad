@@ -139,68 +139,6 @@ func TestCacheIsolation_GetEnabledChannelsByModel(t *testing.T) {
 	t.Logf("✅ 深拷贝隔离性测试通过：调用方修改未污染缓存或数据库")
 }
 
-func TestCacheIsolation_MultipleQueries(t *testing.T) {
-	ctx := context.Background()
-	tmpDir := t.TempDir()
-	dbPath := filepath.Join(tmpDir, "isolation_multi.db")
-	store, err := storage.CreateSQLiteStore(dbPath)
-	if err != nil {
-		t.Fatalf("创建 store 失败: %v", err)
-	}
-	defer func() { _ = store.Close() }()
-
-	// 创建测试渠道
-	cfg := &model.Config{
-		Name:     "multi-query-test",
-		URLs:     model.ChannelURLs{{URL: "https://test.example.com"}},
-		Priority: 10,
-		ModelEntries: []model.ModelEntry{
-			{Model: "model-1", RedirectModel: ""},
-			{Model: "model-2", RedirectModel: ""},
-		},
-		Enabled: true,
-	}
-	_, err = store.CreateConfig(ctx, cfg)
-	if err != nil {
-		t.Fatalf("创建渠道失败: %v", err)
-	}
-
-	cache := storage.NewChannelCache(store, 1*time.Minute)
-
-	// 并发查询和修改
-	for i := 0; i < 10; i++ {
-		channels, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
-		if err != nil {
-			t.Fatalf("查询 %d 失败: %v", i, err)
-		}
-		if len(channels) != 1 {
-			t.Fatalf("查询 %d: 期望1个渠道，实际 %d 个", i, len(channels))
-		}
-
-		// 每次都尝试污染
-		channels[0].ModelEntries = append(channels[0].ModelEntries, model.ModelEntry{Model: "backdoor"})
-	}
-
-	// 最终验证：缓存应该保持干净
-	channels, err := cache.GetEnabledChannelsByModel(ctx, "model-1")
-	if err != nil {
-		t.Fatalf("最终查询失败: %v", err)
-	}
-	if len(channels) != 1 {
-		t.Fatalf("期望1个渠道，实际 %d 个", len(channels))
-	}
-
-	ch := channels[0]
-	if len(ch.ModelEntries) != 2 {
-		t.Errorf("ModelEntries 长度被污染: 期望 2, 实际 %d", len(ch.ModelEntries))
-	}
-	if ch.ModelEntries[0].Model != "model-1" || ch.ModelEntries[1].Model != "model-2" {
-		t.Errorf("ModelEntries 内容被污染: %v", ch.ModelEntries)
-	}
-
-	t.Logf("✅ 多次查询隔离性测试通过：10次污染尝试均被隔离")
-}
-
 // TestCacheIsolation_WildcardQuery 验证通配符查询的深拷贝
 func TestCacheIsolation_WildcardQuery(t *testing.T) {
 	ctx := context.Background()

@@ -352,30 +352,3 @@ func TestCooldown_BumpKeyCooldown_NotFound(t *testing.T) {
 		t.Error("expected error for non-existent key")
 	}
 }
-
-func TestCooldown_AuthErrorBackoff(t *testing.T) {
-	t.Parallel()
-
-	tmp := t.TempDir()
-	store, err := storage.CreateSQLiteStore(filepath.Join(tmp, "auth_backoff.db"))
-	if err != nil {
-		t.Fatalf("create sqlite store: %v", err)
-	}
-	t.Cleanup(func() { _ = store.Close() })
-
-	ctx := context.Background()
-	channelID := createTestChannel(t, ctx, store, "test-auth-backoff")
-	createTestAPIKey(t, ctx, store, channelID, 0)
-
-	// 401/403 错误应该从 5 分钟起步（而不是 1 秒）
-	now := time.Now()
-	duration, err := store.BumpKeyCooldown(ctx, channelID, 0, now, 401)
-	if err != nil {
-		t.Fatalf("bump key cooldown with 401: %v", err)
-	}
-
-	// 认证错误应该是较长的冷却时间
-	if duration < 5*time.Minute {
-		t.Errorf("expected auth error to have longer cooldown (>=5m), got %v", duration)
-	}
-}

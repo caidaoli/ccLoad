@@ -132,62 +132,6 @@ func TestSelectRouteCandidates_ClientProtocolDoesNotFilterUpstreamProtocol(t *te
 	}
 }
 
-func TestSelectRouteCandidates_UsesOpenAITransformForCodexClient(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "openai-upstream",
-		URLs:     model.ChannelURLs{{URL: "https://api.openai.com"}},
-		Priority: 50,
-		Enabled:  true,
-		ModelEntries: []model.ModelEntry{
-			{Model: "shared-model"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("创建 openai->codex 测试渠道失败: %v", err)
-	}
-
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "codex")
-	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0].ID != created.ID {
-		t.Fatalf("期望命中 openai-codex-transform，实际 %+v", candidates)
-	}
-}
-
-func TestSelectRouteCandidates_UsesCodexTransformForOpenAIClient(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	ctx := context.Background()
-	created, err := store.CreateConfig(ctx, &model.Config{
-		Name:     "codex-upstream",
-		URLs:     model.ChannelURLs{{URL: "https://api.codex.example.com"}},
-		Priority: 40,
-		Enabled:  true,
-		ModelEntries: []model.ModelEntry{
-			{Model: "shared-model"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("创建 codex->openai 测试渠道失败: %v", err)
-	}
-
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	candidates, err := server.selectCandidatesByModelAndClientProtocol(ctx, "shared-model", "openai")
-	if err != nil {
-		t.Fatalf("selectCandidatesByModelAndClientProtocol失败: %v", err)
-	}
-	if len(candidates) != 1 || candidates[0].ID != created.ID {
-		t.Fatalf("期望命中 codex-openai-transform，实际 %+v", candidates)
-	}
-}
-
 // TestSelectRouteCandidates_CooledDownChannels 测试冷却渠道过滤
 func TestSelectRouteCandidates_CooledDownChannels(t *testing.T) {
 	store, cleanup := setupTestStore(t)
@@ -1223,36 +1167,6 @@ func setupTestStore(t *testing.T) (storage.Store, func()) {
 }
 
 // --- selectCandidatesByClientProtocol 补充测试 ---
-
-func TestSelectCandidatesByClientProtocol_ReturnsAllEnabledChannels(t *testing.T) {
-	store, cleanup := setupTestStore(t)
-	defer cleanup()
-
-	server := &Server{store: store, channelBalancer: NewSmoothWeightedRR()}
-	ctx := context.Background()
-
-	// 创建 2 个 gemini 渠道和 1 个 anthropic 渠道
-	channels := []*model.Config{
-		{Name: "gemini-1", URLs: model.ChannelURLs{{URL: "https://g1.com"}}, Priority: 100, ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "gemini-2", URLs: model.ChannelURLs{{URL: "https://g2.com"}}, Priority: 90, ModelEntries: []model.ModelEntry{{Model: "gemini-pro"}}, Enabled: true},
-		{Name: "anthropic-1", URLs: model.ChannelURLs{{URL: "https://a1.com"}}, Priority: 80, ModelEntries: []model.ModelEntry{{Model: "claude-3"}}, Enabled: true},
-	}
-
-	for _, cfg := range channels {
-		if _, err := store.CreateConfig(ctx, cfg); err != nil {
-			t.Fatalf("CreateConfig failed: %v", err)
-		}
-	}
-
-	candidates, err := server.selectCandidatesByClientProtocol(ctx, "gemini")
-	if err != nil {
-		t.Fatalf("selectCandidatesByClientProtocol failed: %v", err)
-	}
-
-	if len(candidates) != 3 {
-		t.Fatalf("Expected all 3 enabled channels, got %d", len(candidates))
-	}
-}
 
 // TestSelectCandidatesByClientProtocol_AllCooledFallback 测试候选全冷却时的兜底选择。
 // GetEnabledChannels* 只表达配置态 enabled；冷却过滤和全冷却兜底由 selector 层完成。

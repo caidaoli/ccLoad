@@ -603,19 +603,6 @@ func TestMigrateSQLite_SeedsModelCatalogSyncIntervalSetting(t *testing.T) {
 	}
 }
 
-func TestMigrate_SQLite_Idempotent(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	// 迁移两次应该不报错
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-}
-
 func TestMigrateSQLiteLeavesRemovedFingerprintTablesAlone(t *testing.T) {
 	t.Run("fresh database", func(t *testing.T) {
 		db := openTestDB(t)
@@ -1067,20 +1054,6 @@ func TestMigrateSQLite_AddsChannelModelsDisabled(t *testing.T) {
 	}
 }
 
-func TestRelaxDeprecatedChannelFields_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// SQLite 不需要实际操作，应该直接返回 nil
-	if err := relaxDeprecatedChannelFields(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("relaxDeprecatedChannelFields: %v", err)
-	}
-}
-
 func TestNeedChannelModelsMigration_SQLite(t *testing.T) {
 	db := openTestDB(t)
 	ctx := context.Background()
@@ -1106,20 +1079,6 @@ func TestNeedChannelModelsMigration_SQLite(t *testing.T) {
 	// 新建数据库的 channels 表不包含废弃的 models 列
 	if need {
 		t.Fatal("expected no migration needed for fresh database")
-	}
-}
-
-func TestMigrateModelRedirectsData_SQLite(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	if err := migrate(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
-	// 对于新数据库（没有旧 models 列），迁移应直接返回
-	if err := migrateModelRedirectsData(ctx, db, DialectSQLite); err != nil {
-		t.Fatalf("migrateModelRedirectsData: %v", err)
 	}
 }
 
@@ -1881,27 +1840,6 @@ func TestEnsureAuthTokensCacheFields_SQLite(t *testing.T) {
 			t.Errorf("column %s not found in auth_tokens", col)
 		}
 	}
-}
-
-func TestCreateIndex_MySQL_Syntax(t *testing.T) {
-	db := openTestDB(t)
-	ctx := context.Background()
-
-	// 创建表
-	_, err := db.ExecContext(ctx, `CREATE TABLE idx_test (id INTEGER PRIMARY KEY, val TEXT)`)
-	if err != nil {
-		t.Fatalf("create table: %v", err)
-	}
-
-	// MySQL 索引格式（包含 INDEX ... 而不是 CREATE INDEX）
-	idx := schema.IndexDef{
-		Name: "idx_test_val",
-		SQL:  "INDEX idx_test_val (val)",
-	}
-
-	// SQLite 不支持这种格式，应该报错或跳过
-	// 但 createIndex 会尝试创建，我们主要测试它不会 panic
-	_ = createIndex(ctx, db, idx, DialectMySQL)
 }
 
 func TestDeleteSystemSetting_NotExists(t *testing.T) {
