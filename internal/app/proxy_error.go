@@ -635,7 +635,7 @@ func (s *Server) handleProxyErrorResponse(
 	}
 
 	// Duration 使用「当前渠道开始到现在」的累计耗时（覆盖同渠道多URL尝试，不跨渠道）。
-	// Antigravity 容量错误要等 URL 重试器决定最终结果后再落日志；否则一次逻辑请求会产生多条 429。
+	// Antigravity URL 回退错误要等重试器决定最终结果后再落日志；否则一次逻辑请求会产生多条日志。
 	logEntry := buildProxyLogEntry(
 		reqCtx, cfg, actualModel, selectedKey, res.Status,
 		time.Since(reqCtx.channelStartTime).Seconds(), res, errMsg,
@@ -655,7 +655,9 @@ func (s *Server) handleProxyErrorResponse(
 		duration:  duration,
 		succeeded: false,
 	}
-	if modelCapacityRateLimited {
+	deferAntigravityFallbackLog := cfg.UsesAntigravityOAuth() && deferChannelCooldown &&
+		shouldFallbackAntigravityBaseURL(res.Status, res.Body)
+	if modelCapacityRateLimited || deferAntigravityFallbackLog {
 		failure.deferredLog = logEntry
 	} else {
 		s.AddLogAsync(logEntry)

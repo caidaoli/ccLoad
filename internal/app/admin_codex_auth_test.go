@@ -1110,7 +1110,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 		channel.MaxConcurrency != antigravityOAuthMaxConcurrency {
 		t.Fatalf("created Antigravity channel = %#v", channel)
 	}
-	wantURLs := []string{antigravityProdBaseURL}
+	wantURLs := []string{antigravityDailyBaseURL}
 	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
 		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
@@ -1274,7 +1274,7 @@ func TestHandleImportAntigravityCredentialCreatesSkipsAndDoesNotLeakTokens(t *te
 		}
 	}
 	if imported == nil || !imported.UsesAntigravityOAuth() || imported.MaxConcurrency != antigravityOAuthMaxConcurrency ||
-		len(imported.URLs) != 1 || imported.URLs[0].URL != antigravityProdBaseURL ||
+		len(imported.URLs) != 1 || imported.URLs[0].URL != antigravityDailyBaseURL ||
 		!imported.URLs[0].SupportsProtocol(util.ProtocolGemini) {
 		t.Fatalf("new Antigravity channel was not created with canonical name: %#v", channels)
 	}

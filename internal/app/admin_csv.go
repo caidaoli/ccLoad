@@ -378,7 +378,7 @@ func (s *Server) parseChannelImportRow(
 	if err := sonic.Unmarshal([]byte(urlsRaw), &urls); err != nil {
 		return nil, fmt.Sprintf("第%d行 urls JSON无效: %v", lineNo, err), true
 	}
-	urls, err := validateChannelURLConfigs(urls)
+	urls, err := validateChannelURLConfigs(urls, authType)
 	if err != nil {
 		return nil, fmt.Sprintf("第%d行URL无效: %v", lineNo, err), true
 	}

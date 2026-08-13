@@ -117,7 +117,7 @@ func (s *Server) HandleFetchModelsPreview(c *gin.Context) {
 	}
 
 	var err error
-	req.URLs, err = validateChannelURLConfigs(req.URLs)
+	req.URLs, err = validateChannelURLConfigs(req.URLs, model.AuthTypeAPIKey)
 	if err != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "urls无效: "+err.Error())
 		return

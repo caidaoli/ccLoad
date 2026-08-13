@@ -2267,6 +2267,41 @@ func TestHandleChannelTest_XAIOAuthWithoutAPIKeyUsesProviderWire(t *testing.T) {
 	}
 }
 
+func TestHandleChannelURLTest_XAIOAuthAllowsVersionedBaseURL(t *testing.T) {
+	requests := 0
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("upstream path = %q, want /v1/responses", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_xai_url_test\",\"status\":\"completed\"}}\n\n")
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createXAIOAuthChannelForAdminTest(t, srv, "https://unused.example.com/v1")
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test-url", map[string]any{
+		"model": "grok-4.5", "client_protocol": "codex", "stream": false, "content": "hello",
+		"base_url": upstream.URL + "/v1",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+
+	srv.HandleChannelURLTest(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+	}
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !resp.Success || !success {
+		t.Fatalf("xAI OAuth URL test failed: %+v", resp)
+	}
+	if requests != 1 {
+		t.Fatalf("upstream requests=%d, want 1", requests)
+	}
+}
+
 func TestHandleChannelTest_XAIOAuthUsesCurrentAccessTokenBeforeRefreshing(t *testing.T) {
 	callTest := func(t *testing.T, srv *Server, channelID int64) APIResponse[map[string]any] {
 		t.Helper()

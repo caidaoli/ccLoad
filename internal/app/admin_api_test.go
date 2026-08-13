@@ -16,6 +16,7 @@ import (
 
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -268,7 +269,7 @@ func TestAdminAPI_CSVExportImportSupportsEveryOAuthType(t *testing.T) {
 		{
 			Name: "xAI OAuth", AuthType: model.AuthTypeXAIOAuth,
 			OAuthCredential: `{"type":"xai","auth_kind":"oauth","access_token":"xai-access","refresh_token":"xai-refresh","expired":"2030-01-01T00:00:00Z"}`,
-			URLs:            model.ChannelURLs{{URL: "https://xai.example.com"}}, Enabled: true,
+			URLs:            model.ChannelURLs{{URL: xaiauth.CLIBaseURL}}, Enabled: true,
 			ModelEntries: []model.ModelEntry{{Model: "grok-4.5"}},
 		},
 		{

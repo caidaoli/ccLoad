@@ -2913,7 +2913,7 @@ func (s *Server) attemptKeyAcrossURLs(
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
 	// Antigravity's provider fallback order is a built-in runtime policy. It
 	// must remain available for capacity retries even when newly created OAuth
-	// channels persist only the production URL.
+	// channels persist only the daily URL.
 	hasAntigravityGlobalBaseURLOverride := s.configService != nil &&
 		strings.TrimSpace(s.configService.GetString(config.AntigravityURLSettingKey, "")) != ""
 	if cfg.UsesAntigravityOAuth() && !hasAntigravityGlobalBaseURLOverride && usesAntigravityDefaultBaseURLs(cfg.URLs) {
@@ -2925,8 +2925,12 @@ func (s *Server) attemptKeyAcrossURLs(
 	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
 	if cfg.UsesAntigravityOAuth() {
 		// Antigravity owns a fixed provider fallback order. Runtime latency must
-		// not reorder daily, production, and daily sandbox endpoints.
-		sortedURLs = orderURLsWithSelector(nil, cfg.ID, urls)
+		// not reorder daily, production, and daily sandbox endpoints, but manual
+		// disable state still has to be honored.
+		sortedURLs = orderURLsInConfiguredOrder(selector, cfg.ID, urls)
+	}
+	if len(sortedURLs) == 0 {
+		return nil, nil, fmt.Errorf("no enabled URLs configured for channel %d", cfg.ID)
 	}
 	clientProtocol := reqCtx.clientProtocol
 	transformMode := cfg.GetProtocolTransformMode()
@@ -2946,10 +2950,10 @@ func (s *Server) attemptKeyAcrossURLs(
 	urlsCount := len(urls)
 	modelCapacityFailures := 0
 	modelCapacityRetries := 0
-	var deferredCapacityLog *model.LogEntry
+	var deferredFallbackLog *model.LogEntry
 	defer func() {
-		if deferredCapacityLog != nil {
-			s.AddLogAsync(deferredCapacityLog)
+		if deferredFallbackLog != nil {
+			s.AddLogAsync(deferredFallbackLog)
 		}
 	}()
 	for urlIdx, urlEntry := range sortedURLs {
@@ -3036,11 +3040,11 @@ func (s *Server) attemptKeyAcrossURLs(
 		}
 
 		if result != nil {
-			if result.antigravityCapacity429 {
-				deferredCapacityLog = result.deferredLog
+			if result.deferredLog != nil {
+				deferredFallbackLog = result.deferredLog
 				result.deferredLog = nil
 			} else if result.proxyLogWritten {
-				deferredCapacityLog = nil
+				deferredFallbackLog = nil
 			}
 		}
 
