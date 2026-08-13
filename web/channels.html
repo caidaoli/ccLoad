@@ -67,11 +67,6 @@
                   data-i18n-title="channels.oauth.cleanupTitle" title="打开凭证清理">
                   <span data-i18n="channels.oauth.cleanup">清理凭证</span>
                 </button>
-                <button id="exportCsvBtn" type="button" class="btn btn-secondary channel-page-action-btn"
-                  data-i18n-title="channels.exportCsvTitle"
-                  title="导出渠道列表为CSV">
-                  <span data-i18n="channels.exportCsv">导出 CSV</span>
-                </button>
                 <button id="importCsvBtn" type="button" class="btn btn-secondary channel-page-action-btn"
                   data-i18n-title="channels.importCsvTitle"
                   title="从CSV导入渠道">
@@ -534,34 +529,16 @@
                 </span>
                 <span id="batchRefreshOAuthUsageLabel" data-i18n="channels.oauth.usageRefresh">刷新额度</span>
               </button>
-              <div class="channel-batch-action-group channel-batch-action-group--refresh" role="group"
-                data-i18n-aria-label="channels.batchModelActions" aria-label="模型操作">
-                <button id="batchRefreshMergeBtn" type="button"
-                  class="btn btn-sm channel-batch-action channel-batch-action--refresh"
-                  data-action="batch-refresh-channels-merge" disabled>
-                  <span data-i18n="channels.batchRefreshMerge">增量</span>
-                </button>
-                <button id="batchRefreshReplaceBtn" type="button"
-                  class="btn btn-sm channel-batch-action channel-batch-action--refresh"
-                  data-action="batch-refresh-channels-replace" disabled>
-                  <span data-i18n="channels.batchRefreshReplace">覆盖</span>
-                </button>
-                <details id="batchRefreshOptions" class="channel-batch-refresh-options">
-                  <summary data-i18n="channels.batchRefreshOptions">刷新选项</summary>
-                  <div class="channel-batch-refresh-options__panel">
-                    <label class="channel-batch-option" for="batchRefreshLowercaseModels">
-                      <input id="batchRefreshLowercaseModels" type="checkbox">
-                      <span data-i18n="channels.batchRefreshLowercaseModels">模型转小写</span>
-                    </label>
-                    <label class="channel-batch-option" for="batchRefreshStripModelSourcePrefix">
-                      <input id="batchRefreshStripModelSourcePrefix" type="checkbox">
-                      <span data-i18n="channels.batchRefreshStripModelSourcePrefix">去来源前缀</span>
-                    </label>
-                  </div>
-                </details>
-              </div>
               <details id="batchAdvancedOptions" class="channel-batch-advanced">
-                <summary data-i18n="channels.batchAdvanced">高级</summary>
+                <summary class="btn btn-sm channel-batch-action channel-batch-action--advanced">
+                  <span data-i18n="channels.batchAdvanced">高级</span>
+                  <span class="channel-batch-action__icon channel-batch-action__caret" aria-hidden="true">
+                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M6 8L10 12L14 8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+                        stroke-linejoin="round" />
+                    </svg>
+                  </span>
+                </summary>
                 <div class="channel-batch-advanced__panel">
                   <div class="channel-batch-advanced__field">
                     <label for="batchPriority" data-i18n="channels.batchPriority">优先级</label>
@@ -658,6 +635,29 @@
                       </button>
                     </div>
                   </div>
+                  <div class="channel-batch-advanced__field">
+                    <span class="channel-batch-advanced__label" data-i18n="channels.batchRefreshModels">模型刷新</span>
+                    <div class="channel-batch-advanced__control channel-batch-advanced__control--refresh">
+                      <label class="channel-batch-option" for="batchRefreshLowercaseModels">
+                        <input id="batchRefreshLowercaseModels" type="checkbox">
+                        <span data-i18n="channels.batchRefreshLowercaseModels">模型转小写</span>
+                      </label>
+                      <label class="channel-batch-option" for="batchRefreshStripModelSourcePrefix">
+                        <input id="batchRefreshStripModelSourcePrefix" type="checkbox">
+                        <span data-i18n="channels.batchRefreshStripModelSourcePrefix">去来源前缀</span>
+                      </label>
+                      <button id="batchRefreshMergeBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-refresh-channels-merge" disabled>
+                        <span data-i18n="channels.batchRefreshMerge">增量</span>
+                      </button>
+                      <button id="batchRefreshReplaceBtn" type="button"
+                        class="btn btn-sm channel-batch-action channel-batch-action--apply"
+                        data-action="batch-refresh-channels-replace" disabled>
+                        <span data-i18n="channels.batchRefreshReplace">覆盖</span>
+                      </button>
+                    </div>
+                  </div>
                   <div class="channel-batch-advanced__actions">
                     <button id="batchImportModelsBtn" type="button"
                       class="btn btn-sm channel-batch-action channel-batch-action--import"
@@ -672,6 +672,21 @@
                   </div>
                 </div>
               </details>
+              <button id="batchExportChannelsBtn" type="button"
+                class="btn btn-sm channel-batch-action channel-batch-action--export"
+                data-action="batch-export-channels"
+                data-i18n-title="channels.batchExportChannelsTitle" title="导出选中渠道为CSV" disabled>
+                <span class="channel-batch-action__icon" aria-hidden="true">
+                  <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M10 3.4V12.2" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+                    <path d="M6.8 9L10 12.2L13.2 9" stroke="currentColor" stroke-width="1.8"
+                      stroke-linecap="round" stroke-linejoin="round" />
+                    <path d="M4.6 14.4V15.3C4.6 15.9 5.1 16.4 5.7 16.4H14.3C14.9 16.4 15.4 15.9 15.4 15.3V14.4"
+                      stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                </span>
+                <span data-i18n="channels.batchExportChannels">导出</span>
+              </button>
               <button id="batchDeleteChannelsBtn" type="button"
                 class="btn btn-sm channel-batch-action channel-batch-action--delete"
                 data-action="batch-delete-channels" disabled>

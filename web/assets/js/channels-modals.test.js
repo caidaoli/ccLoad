@@ -108,7 +108,6 @@ function installBatchProtocolModeGlobals(response) {
     batchImportModelsBtn: makeButton(),
     batchClearCooldownsBtn: makeButton(),
     batchAdvancedOptions: { open: true },
-    batchRefreshOptions: { open: false },
     batchFloatingMenu: {
       inert: false,
       attributes: new Map(),

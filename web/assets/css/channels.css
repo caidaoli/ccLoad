@@ -4025,6 +4025,7 @@
     }
 
     .channel-batch-float__content {
+      position: relative;
       display: flex;
       align-items: center;
       gap: 8px;
@@ -4179,12 +4180,6 @@
       border-color: #b91c1c;
     }
 
-    .channel-batch-action--refresh {
-      color: var(--neutral-700);
-      background: transparent;
-      border-color: transparent;
-    }
-
     .channel-batch-action--quota {
       color: var(--primary-700);
       background: var(--primary-50);
@@ -4209,13 +4204,15 @@
       border-color: transparent;
     }
 
-    .channel-batch-action--import {
+    .channel-batch-action--import,
+    .channel-batch-action--export {
       color: var(--primary-700);
       background: var(--primary-50);
       border-color: var(--primary-200);
     }
 
-    .channel-batch-action--import:hover {
+    .channel-batch-action--import:hover,
+    .channel-batch-action--export:hover {
       color: var(--primary-800);
       background: var(--primary-100);
       border-color: var(--primary-300);
@@ -4253,7 +4250,6 @@
     }
 
     .channel-batch-select:focus-visible,
-    .channel-batch-refresh-options > summary:focus-visible,
     .channel-batch-advanced > summary:focus-visible,
     .channel-batch-input:focus-visible,
     .channel-batch-close:focus-visible {
@@ -4265,59 +4261,45 @@
       cursor: not-allowed;
     }
 
-    .channel-batch-refresh-options {
-      position: relative;
-      flex-shrink: 0;
-    }
-
     .channel-batch-advanced {
-      position: relative;
       flex-shrink: 0;
     }
 
-    .channel-batch-refresh-options > summary,
     .channel-batch-advanced > summary {
-      min-height: 32px;
-      padding: 0 8px;
-      border-radius: var(--radius-base);
-      color: var(--neutral-700);
-      display: inline-flex;
-      align-items: center;
-      gap: 4px;
-      font-size: var(--text-sm);
-      font-weight: 600;
-      white-space: nowrap;
-      cursor: pointer;
-      list-style-position: inside;
+      list-style: none;
     }
 
-    .channel-batch-refresh-options > summary:hover,
-    .channel-batch-refresh-options[open] > summary,
-    .channel-batch-advanced > summary:hover,
+    .channel-batch-advanced > summary::-webkit-details-marker {
+      display: none;
+    }
+
+    .channel-batch-action--advanced {
+      padding-inline: 10px 6px;
+    }
+
     .channel-batch-advanced[open] > summary {
-      background: var(--neutral-100);
+      color: var(--primary-700);
+      background: var(--primary-50);
+      border-color: var(--primary-300);
     }
 
-    .channel-batch-refresh-options__panel {
-      position: absolute;
-      inset-inline-end: 0;
-      bottom: calc(100% + 8px);
-      min-width: 190px;
-      padding: 8px;
-      border: 1px solid var(--neutral-200);
-      border-radius: var(--radius-lg);
-      background: var(--surface-bg-strong);
-      box-shadow: var(--shadow-lg);
-      display: grid;
-      gap: 4px;
-      z-index: 2;
+    .channel-batch-action__caret {
+      transition: transform var(--duration-fast) ease-out;
+    }
+
+    .channel-batch-advanced[open] > summary .channel-batch-action__caret {
+      transform: rotate(180deg);
     }
 
     .channel-batch-advanced__panel {
       position: absolute;
-      inset-inline-end: 0;
+      left: 50%;
+      transform: translateX(-50%);
       bottom: calc(100% + 8px);
-      width: min(520px, calc(100vw - 32px));
+      width: min(560px, calc(100vw - 32px));
+      max-height: calc(100dvh - var(--topbar-offset, 0px) - 120px);
+      overflow-y: auto;
+      overscroll-behavior: contain;
       padding: 12px;
       border: 1px solid var(--neutral-200);
       border-radius: var(--radius-lg);
@@ -4338,7 +4320,8 @@
       row-gap: 4px;
     }
 
-    .channel-batch-advanced__field > label {
+    .channel-batch-advanced__field > label,
+    .channel-batch-advanced__field > .channel-batch-advanced__label {
       color: var(--neutral-700);
       font-size: var(--text-sm);
       font-weight: 600;
@@ -4356,6 +4339,27 @@
       border: 1px solid var(--neutral-200);
       border-radius: var(--radius-lg);
       background: var(--neutral-50);
+    }
+
+    .channel-batch-advanced__control.channel-batch-advanced__control--refresh {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .channel-batch-advanced__control--refresh .channel-batch-option {
+      min-height: 32px;
+      padding-inline: 4px;
+    }
+
+    .channel-batch-advanced__control--refresh .channel-batch-option + .channel-batch-action {
+      margin-inline-start: auto;
+    }
+
+    .channel-batch-advanced__control.channel-batch-advanced__control--refresh .channel-batch-action {
+      width: auto;
+      min-width: 4.5rem;
     }
 
     .channel-batch-advanced__control .channel-batch-action {
@@ -5635,7 +5639,6 @@
       }
 
       .channel-batch-float__content {
-        position: relative;
         flex-direction: column;
         gap: 8px;
         align-items: stretch;
@@ -5685,28 +5688,24 @@
         grid-row: 1;
       }
 
-      .channel-batch-action-group--refresh {
-        grid-column: 1 / -1;
-      }
-
-      .channel-batch-action-group--refresh {
-        grid-row: 3;
-      }
-
       #batchRefreshOAuthUsageBtn {
+        grid-column: 2;
+        grid-row: 1;
+      }
+
+      .channel-batch-advanced {
         grid-column: 1 / -1;
         grid-row: 2;
       }
 
-      .channel-batch-advanced {
-        position: static;
-        grid-column: 1 / -1;
-        grid-row: 4;
+      #batchExportChannelsBtn {
+        grid-column: 1;
+        grid-row: 3;
       }
 
       #batchDeleteChannelsBtn {
         grid-column: 2;
-        grid-row: 1;
+        grid-row: 3;
       }
 
       .channel-batch-action {
@@ -5724,25 +5723,9 @@
         flex: 1 1 0;
       }
 
-      .channel-batch-refresh-options {
-        position: static;
-        flex: 1 1 auto;
-      }
-
-      .channel-batch-refresh-options > summary,
-      .channel-batch-advanced > summary {
-        min-height: 40px;
-        justify-content: center;
-      }
-
-      .channel-batch-refresh-options__panel {
-        inset-inline: 0;
-        min-width: 0;
-      }
-
       .channel-batch-advanced__panel {
-        inset-inline: 12px;
-        width: auto;
+        width: calc(100% - 24px);
+        max-height: calc(100dvh - var(--topbar-offset, 0px) - 260px);
       }
 
       .channel-batch-advanced__field {

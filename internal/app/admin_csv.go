@@ -26,9 +26,41 @@ import (
 // ==================== CSV导入导出 ====================
 // 从admin.go拆分CSV功能,遵循SRP原则
 
+// parseChannelIDsQuery 解析 ids=1,2,3 形式的渠道筛选参数。
+// 空参数返回 nil（不过滤）；含非法 ID 时直接报错，避免静默导出到错误的集合。
+func parseChannelIDsQuery(raw string) (map[int64]struct{}, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	ids := make(map[int64]struct{})
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		id, err := strconv.ParseInt(part, 10, 64)
+		if err != nil || id <= 0 {
+			return nil, fmt.Errorf("invalid channel id: %s", part)
+		}
+		ids[id] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil, fmt.Errorf("ids cannot be empty")
+	}
+	return ids, nil
+}
+
 // HandleExportChannelsCSV 导出渠道为CSV
 // GET /admin/channels/export
+// ids=1,2,3 只导出指定渠道；省略时按列表筛选条件导出。
 func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
+	selectedIDs, err := parseChannelIDsQuery(c.Query("ids"))
+	if err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+
 	cfgs, err := s.store.ListConfigs(c.Request.Context())
 	if err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
@@ -40,6 +72,12 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 		s.loadChannelCooldownSnapshot(c.Request.Context()),
 		time.Now(),
 	)
+	if selectedIDs != nil {
+		cfgs = filterConfigs(cfgs, func(cfg *model.Config) bool {
+			_, selected := selectedIDs[cfg.ID]
+			return selected
+		})
+	}
 
 	// 批量查询所有API Keys，消除 N+1
 	allAPIKeys, err := s.store.GetAllAPIKeys(c.Request.Context())
