@@ -260,6 +260,10 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 		s.HandleResponsesWebsocket(c)
 		return
 	}
+	httpMetrics := s.httpRuntime.begin()
+	defer func() {
+		httpMetrics.finish(c.Writer.Status(), c.Writer.Size())
+	}()
 
 	startTime := time.Now()
 
@@ -289,6 +293,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	originalModel := incoming.originalModel
 	all := incoming.body
 	isStreaming := incoming.isStreaming
+	httpMetrics.observeRequest(isStreaming, len(all))
 
 	clientProtocol, effectiveRequestPath := clientRequestMetadata(c)
 	if err := validateClientBodyMatchesProtocol(clientProtocol, all); err != nil {

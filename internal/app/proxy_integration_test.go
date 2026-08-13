@@ -80,6 +80,14 @@ func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
+	malformedRequest := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"model":`))
+	malformedRequest.Header.Set("Content-Type", "application/json")
+	malformedRequest.Header.Set("Authorization", "Bearer test-api-key")
+	malformedResponse := httptest.NewRecorder()
+	env.engine.ServeHTTP(malformedResponse, malformedRequest)
+	if malformedResponse.Code != http.StatusBadRequest {
+		t.Fatalf("malformed request status=%d body=%s, want 400", malformedResponse.Code, malformedResponse.Body.String())
+	}
 
 	configs, err := env.store.ListConfigs(context.Background())
 	if err != nil || len(configs) != 1 {
@@ -88,6 +96,27 @@ func TestProxy_SingleURLRecordsRuntimeStats(t *testing.T) {
 	stats := env.server.urlSelector.GetURLStats(configs[0].ID, configs[0].GetURLs())
 	if len(stats) != 1 || stats[0].Requests != 1 || stats[0].LatencyMs <= 0 {
 		t.Fatalf("unexpected single URL runtime stats: %+v", stats)
+	}
+
+	c, w := newTestContext(t, newRequest(http.MethodGet, "/admin/runtime-metrics", nil))
+	env.server.HandleRuntimeMetrics(c)
+	runtimeResponse := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	httpMetrics, ok := runtimeResponse.Data["http_proxy"].(map[string]any)
+	if !ok {
+		t.Fatalf("HTTP runtime metrics missing: %#v", runtimeResponse.Data)
+	}
+	if httpMetrics["active_requests"] != float64(0) ||
+		httpMetrics["completed_requests"] != float64(2) ||
+		httpMetrics["non_error_responses"] != float64(1) ||
+		httpMetrics["client_error_responses"] != float64(1) ||
+		httpMetrics["streaming_requests"] != float64(0) ||
+		httpMetrics["non_streaming_requests"] != float64(1) {
+		t.Fatalf("unexpected HTTP runtime metrics: %#v", httpMetrics)
+	}
+	requestBodyBytes, requestBytesOK := httpMetrics["request_body_bytes"].(float64)
+	responseBodyBytes, responseBytesOK := httpMetrics["response_body_bytes"].(float64)
+	if !requestBytesOK || !responseBytesOK || requestBodyBytes <= 0 || responseBodyBytes <= 0 {
+		t.Fatalf("HTTP byte metrics missing: %#v", httpMetrics)
 	}
 }
 

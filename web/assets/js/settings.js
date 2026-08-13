@@ -169,7 +169,66 @@ function validateSettingInput(setting, value) {
   return '';
 }
 
-const runtimeMetricGroups = [
+const runtimeMetricDomains = [
+  {
+    sourceKey: 'process',
+    titleKey: 'settings.runtimeMetrics.group.process',
+    descriptionKey: 'settings.runtimeMetrics.processNote',
+    metrics: [
+      { key: 'version', labelKey: 'settings.runtimeMetrics.metric.version', format: 'text' },
+      { key: 'started_at_unix_ms', labelKey: 'settings.runtimeMetrics.metric.startedAt', format: 'unixMilliseconds' },
+      { key: 'uptime_seconds', labelKey: 'settings.runtimeMetrics.metric.uptime', format: 'duration' },
+      { key: 'concurrency_slots_in_use', labelKey: 'settings.runtimeMetrics.metric.concurrencySlotsInUse' },
+      { key: 'max_concurrency', labelKey: 'settings.runtimeMetrics.metric.maxConcurrency' },
+      { key: 'goroutines', labelKey: 'settings.runtimeMetrics.metric.goroutines' },
+      { key: 'heap_alloc_bytes', labelKey: 'settings.runtimeMetrics.metric.heapAllocBytes', format: 'bytes' },
+      { key: 'heap_sys_bytes', labelKey: 'settings.runtimeMetrics.metric.heapSysBytes', format: 'bytes' }
+    ]
+  },
+  {
+    sourceKey: 'http_proxy',
+    titleKey: 'settings.runtimeMetrics.group.httpProxy',
+    descriptionKey: 'settings.runtimeMetrics.httpProxyNote',
+    metrics: [
+      { key: 'active_requests', labelKey: 'settings.runtimeMetrics.metric.httpActiveRequests' },
+      { key: 'completed_requests', labelKey: 'settings.runtimeMetrics.metric.httpCompletedRequests' },
+      { key: 'non_error_responses', labelKey: 'settings.runtimeMetrics.metric.httpNonErrorResponses' },
+      { key: 'client_error_responses', labelKey: 'settings.runtimeMetrics.metric.httpClientErrorResponses' },
+      { key: 'server_error_responses', labelKey: 'settings.runtimeMetrics.metric.httpServerErrorResponses' },
+      { key: 'streaming_requests', labelKey: 'settings.runtimeMetrics.metric.httpStreamingRequests' },
+      { key: 'non_streaming_requests', labelKey: 'settings.runtimeMetrics.metric.httpNonStreamingRequests' },
+      { key: 'request_body_bytes', labelKey: 'settings.runtimeMetrics.metric.httpRequestBodyBytes', format: 'bytes' },
+      { key: 'response_body_bytes', labelKey: 'settings.runtimeMetrics.metric.httpResponseBodyBytes', format: 'bytes' }
+    ]
+  },
+  {
+    sourceKey: 'logs',
+    titleKey: 'settings.runtimeMetrics.group.logs',
+    descriptionKey: 'settings.runtimeMetrics.logsNote',
+    metrics: [
+      { key: 'backlog_entries', labelKey: 'settings.runtimeMetrics.metric.logBacklogEntries' },
+      { key: 'queue_capacity_entries', labelKey: 'settings.runtimeMetrics.metric.logQueueCapacityEntries' },
+      { key: 'dropped_entries', labelKey: 'settings.runtimeMetrics.metric.logDroppedEntries' },
+      { key: 'persistence_failed_entries', labelKey: 'settings.runtimeMetrics.metric.logPersistenceFailedEntries' }
+    ]
+  },
+  {
+    sourceKey: 'storage',
+    titleKey: 'settings.runtimeMetrics.group.storage',
+    descriptionKey: 'settings.runtimeMetrics.storageNote',
+    optional: true,
+    metrics: [
+      { key: 'primary_sync_pending', labelKey: 'settings.runtimeMetrics.metric.primarySyncPending' },
+      { key: 'primary_sync_failures', labelKey: 'settings.runtimeMetrics.metric.primarySyncFailures' },
+      { key: 'primary_sync_dropped', labelKey: 'settings.runtimeMetrics.metric.primarySyncDropped' },
+      { key: 'sqlite_read_failures', labelKey: 'settings.runtimeMetrics.metric.sqliteReadFailures' },
+      { key: 'analytics_reads_primary', labelKey: 'settings.runtimeMetrics.metric.analyticsReadsPrimary', format: 'boolean' },
+      { key: 'primary_sync_last_success_unix_ms', labelKey: 'settings.runtimeMetrics.metric.primarySyncLastSuccess', format: 'unixMilliseconds' }
+    ]
+  }
+];
+
+const responsesRuntimeMetricGroups = [
   {
     titleKey: 'settings.runtimeMetrics.group.sessions',
     metrics: [
@@ -197,6 +256,15 @@ const runtimeMetricGroups = [
       { key: 'upstream_heartbeat_failures', labelKey: 'settings.runtimeMetrics.metric.upstreamHeartbeatFailures' },
       { key: 'upstream_queued_read_bytes', labelKey: 'settings.runtimeMetrics.metric.upstreamQueuedReadBytes', format: 'bytes' },
       { key: 'oldest_upstream_connection_seconds', labelKey: 'settings.runtimeMetrics.metric.oldestUpstreamConnection', format: 'duration' }
+    ]
+  },
+  {
+    titleKey: 'settings.runtimeMetrics.group.responsesEvents',
+    metrics: [
+      { key: 'ttl_expired', labelKey: 'settings.runtimeMetrics.metric.ttlExpired' },
+      { key: 'capacity_rejected', labelKey: 'settings.runtimeMetrics.metric.capacityRejected' },
+      { key: 'budget_rejected', labelKey: 'settings.runtimeMetrics.metric.budgetRejected' },
+      { key: 'previous_response_misses', labelKey: 'settings.runtimeMetrics.metric.previousResponseMisses' }
     ]
   }
 ];
@@ -431,9 +499,27 @@ function formatRuntimeDuration(value) {
   return t('common.timeS', { s: seconds });
 }
 
+function formatRuntimeBoolean(value) {
+  if (typeof value !== 'boolean') return '—';
+  return t(value ? 'common.yes' : 'common.no');
+}
+
+function formatRuntimeTimestamp(value) {
+  const numeric = normalizeRuntimeMetric(value);
+  if (numeric === null || numeric <= 0) return '—';
+  const date = new Date(numeric);
+  return Number.isNaN(date.getTime()) ? '—' : date.toLocaleString(runtimeMetricsLocale());
+}
+
 function formatRuntimeMetric(metric, stats) {
   if (metric.format === 'bytes') return formatRuntimeBytes(stats[metric.key]);
   if (metric.format === 'duration') return formatRuntimeDuration(stats[metric.key]);
+  if (metric.format === 'boolean') return formatRuntimeBoolean(stats[metric.key]);
+  if (metric.format === 'unixMilliseconds') return formatRuntimeTimestamp(stats[metric.key]);
+  if (metric.format === 'text') {
+    const value = stats[metric.key];
+    return value === null || value === undefined || String(value).trim() === '' ? '—' : String(value);
+  }
   return formatRuntimeInteger(stats[metric.key]);
 }
 
@@ -444,6 +530,41 @@ function renderRuntimeMetricCard(metric, stats) {
       <strong class="runtime-metric-value">${escapeHtml(formatRuntimeMetric(metric, stats))}</strong>
       <code class="runtime-metric-key">${escapeHtml(metric.key)}</code>
     </div>`;
+}
+
+function renderRuntimeMetricDomain(domain, payload) {
+  const stats = payload[domain.sourceKey];
+  if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
+    return domain.optional ? '' : `
+      <section class="runtime-metrics-section">
+        <div class="runtime-metrics-section-header">
+          <h3>${escapeHtml(t(domain.titleKey))}</h3>
+        </div>
+        <p class="runtime-metrics-note">${escapeHtml(t('settings.runtimeMetrics.groupUnavailable'))}</p>
+      </section>`;
+  }
+  return `
+    <section class="runtime-metrics-section">
+      <div class="runtime-metrics-section-header">
+        <h3>${escapeHtml(t(domain.titleKey))}</h3>
+      </div>
+      <p class="runtime-metrics-section-description">${escapeHtml(t(domain.descriptionKey))}</p>
+      <div class="runtime-metrics-grid">
+        ${domain.metrics.map((metric) => renderRuntimeMetricCard(metric, stats)).join('')}
+      </div>
+    </section>`;
+}
+
+function renderRuntimeMetricGroup(group, stats) {
+  return `
+    <section class="runtime-metrics-subsection">
+      <div class="runtime-metrics-subsection-header">
+        <h4>${escapeHtml(t(group.titleKey))}</h4>
+      </div>
+      <div class="runtime-metrics-grid">
+        ${group.metrics.map((metric) => renderRuntimeMetricCard(metric, stats)).join('')}
+      </div>
+    </section>`;
 }
 
 function renderTranscriptUsage(stats) {
@@ -468,9 +589,9 @@ function renderTranscriptUsage(stats) {
     : `aria-valuenow="${Math.round(progressValue)}"`;
 
   return `
-    <section class="runtime-metrics-section runtime-transcript-card">
-      <div class="runtime-metrics-section-header">
-        <h3>${escapeHtml(t('settings.runtimeMetrics.group.transcript'))}</h3>
+    <section class="runtime-transcript-card">
+      <div class="runtime-metrics-subsection-header">
+        <h4>${escapeHtml(t('settings.runtimeMetrics.group.transcript'))}</h4>
         <span class="runtime-transcript-status runtime-transcript-status--${state}">${escapeHtml(stateLabel)}</span>
       </div>
       <div class="runtime-transcript-summary">
@@ -492,20 +613,26 @@ function renderRuntimeMetrics(stats) {
   const content = document.getElementById('runtime-metrics-content');
   if (!content) return;
 
-  const sections = runtimeMetricGroups.map((group) => `
-    <section class="runtime-metrics-section">
+  const domains = runtimeMetricDomains.map((domain) => renderRuntimeMetricDomain(domain, stats)).join('');
+  const responses = stats.responses_websocket;
+  let responsesSection = '';
+  if (responses && typeof responses === 'object' && !Array.isArray(responses)) {
+    const groups = responsesRuntimeMetricGroups.map((group) => renderRuntimeMetricGroup(group, responses)).join('');
+    responsesSection = `
+    <section class="runtime-metrics-section runtime-responses-section">
       <div class="runtime-metrics-section-header">
-        <h3>${escapeHtml(t(group.titleKey))}</h3>
+        <h3>${escapeHtml(t('settings.runtimeMetrics.group.responses'))}</h3>
       </div>
-      <div class="runtime-metrics-grid">
-        ${group.metrics.map((metric) => renderRuntimeMetricCard(metric, stats)).join('')}
-      </div>
-    </section>`).join('');
+      <p class="runtime-metrics-section-description">${escapeHtml(t('settings.runtimeMetrics.responsesNote'))}</p>
+      ${renderTranscriptUsage(responses)}
+      ${groups}
+      <p class="runtime-metrics-note runtime-metrics-note--footer">${escapeHtml(t('settings.runtimeMetrics.cumulativeNote'))}</p>
+    </section>`;
+  }
 
   content.innerHTML = `
-    ${renderTranscriptUsage(stats)}
-    ${sections}
-    <p class="runtime-metrics-note runtime-metrics-note--footer">${escapeHtml(t('settings.runtimeMetrics.cumulativeNote'))}</p>`;
+    ${domains}
+    ${responsesSection}`;
 }
 
 function renderRuntimeMetricsLoading() {
@@ -543,12 +670,11 @@ async function loadRuntimeMetrics() {
 
   try {
     const data = await fetchDataWithAuth('/admin/runtime-metrics');
-    const stats = data?.responses_websocket;
-    if (!stats || typeof stats !== 'object' || Array.isArray(stats)) {
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
       throw new Error(t('settings.runtimeMetrics.invalidResponse'));
     }
 
-    renderRuntimeMetrics(stats);
+    renderRuntimeMetrics(data);
     if (updatedAt) {
       const time = new Date().toLocaleString(runtimeMetricsLocale());
       updatedAt.textContent = t('settings.runtimeMetrics.updatedAt', { time });

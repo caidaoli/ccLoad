@@ -3502,6 +3502,13 @@ func TestNativeCodexWebsocketSendsPingBetweenTurns(t *testing.T) {
 	if ws["upstream_handshakes"] != float64(1) || ws["upstream_reuses"] != float64(1) {
 		t.Fatalf("unexpected upstream websocket reuse metrics: %#v", ws)
 	}
+	httpMetrics, ok := metrics.Data["http_proxy"].(map[string]any)
+	if !ok {
+		t.Fatalf("HTTP runtime metrics missing: %#v", metrics.Data)
+	}
+	if httpMetrics["active_requests"] != float64(0) || httpMetrics["completed_requests"] != float64(0) {
+		t.Fatalf("Responses WebSocket must not be counted as HTTP proxy traffic: %#v", httpMetrics)
+	}
 }
 
 func TestNativeCodexWebsocketBackpressuresFullReadQueue(t *testing.T) {
