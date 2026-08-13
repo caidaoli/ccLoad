@@ -61,8 +61,12 @@ func TestHandleActiveRequests_ExposesDebugAvailability(t *testing.T) {
 	}
 }
 
-func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
+func TestHandleRuntimeMetricsExposesRuntimeResources(t *testing.T) {
 	srv := newInMemoryServer(t)
+	srv.startedAt = time.Now().Add(-2 * time.Minute)
+	srv.maxConcurrency = 3
+	srv.concurrencySem = make(chan struct{}, srv.maxConcurrency)
+	srv.concurrencySem <- struct{}{}
 	srv.logService.logDropCount.Store(4)
 	srv.logService.logFailCount.Store(5)
 	srv.store = &runtimeMetricsStore{
@@ -128,6 +132,38 @@ func TestHandleRuntimeMetricsExposesResponsesWebsocketResources(t *testing.T) {
 	}
 
 	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	processMetrics, ok := resp.Data["process"].(map[string]any)
+	if !ok {
+		t.Fatalf("process metrics missing: %#v", resp.Data)
+	}
+	if processMetrics["version"] == "" || processMetrics["concurrency_slots_in_use"] != float64(1) ||
+		processMetrics["max_concurrency"] != float64(3) {
+		t.Fatalf("unexpected process load metrics: %#v", processMetrics)
+	}
+	if startedAt, okStartedAt := processMetrics["started_at_unix_ms"].(float64); !okStartedAt || startedAt <= 0 {
+		t.Fatalf("unexpected process start time: %#v", processMetrics)
+	}
+	if uptime, okUptime := processMetrics["uptime_seconds"].(float64); !okUptime || uptime < 119 {
+		t.Fatalf("unexpected process uptime: %#v", processMetrics)
+	}
+	for _, key := range []string{"goroutines", "heap_alloc_bytes", "heap_sys_bytes"} {
+		if value, okValue := processMetrics[key].(float64); !okValue || value <= 0 {
+			t.Fatalf("%s=%v, want positive runtime metric; metrics=%#v", key, processMetrics[key], processMetrics)
+		}
+	}
+	httpMetrics, ok := resp.Data["http_proxy"].(map[string]any)
+	if !ok {
+		t.Fatalf("http proxy metrics missing: %#v", resp.Data)
+	}
+	for _, key := range []string{
+		"active_requests", "completed_requests", "non_error_responses",
+		"client_error_responses", "server_error_responses", "streaming_requests",
+		"non_streaming_requests", "request_body_bytes", "response_body_bytes",
+	} {
+		if httpMetrics[key] != float64(0) {
+			t.Fatalf("http %s=%v, want 0; metrics=%#v", key, httpMetrics[key], httpMetrics)
+		}
+	}
 	ws, ok := resp.Data["responses_websocket"].(map[string]any)
 	if !ok {
 		t.Fatalf("responses_websocket metrics missing: %#v", resp.Data)

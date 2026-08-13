@@ -50,6 +50,7 @@ type Server struct {
 	// ============================================================================
 	// 核心字段
 	// ============================================================================
+	startedAt                     time.Time
 	store                         storage.Store
 	channelCache                  *storage.ChannelCache      // 高性能渠道缓存层
 	keySelector                   *KeySelector               // Key选择器（多Key支持）
@@ -73,6 +74,7 @@ type Server struct {
 	protocolCapabilities          protocolCapabilityCache
 	skipTLSVerify                 bool                  // 透传给渠道级 Transport
 	activeRequests                *activeRequestManager // 进行中请求（内存状态，不持久化）
+	httpRuntime                   httpProxyRuntimeMetrics
 	restartMu                     sync.RWMutex
 	restartFunc                   func()
 	responsesExecutionSessions    *responsesExecutionSessionStore
@@ -144,6 +146,7 @@ type Server struct {
 
 // NewServer 创建并初始化一个新的 Server 实例
 func NewServer(store storage.Store) *Server {
+	startedAt := time.Now()
 	// 初始化ConfigService（优先从数据库加载配置,环境变量作Fallback）
 	configService := NewConfigService(store)
 	loadCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -197,6 +200,7 @@ func NewServer(store storage.Store) *Server {
 	baseCtx, baseCancel := context.WithCancel(context.Background())
 
 	s := &Server{
+		startedAt:        startedAt,
 		store:            store,
 		configService:    configService,
 		loginRateLimiter: util.NewLoginRateLimiter(),

@@ -3697,9 +3697,10 @@ body {
 .modal-content.runtime-metrics-modal {
   display: flex;
   flex-direction: column;
-  width: min(900px, calc(100vw - 32px));
-  max-width: 900px;
-  max-height: min(90vh, 900px);
+  width: 90vw;
+  max-width: none;
+  height: 90vh;
+  max-height: none;
   padding: 0;
   overflow: hidden;
 }
@@ -3718,13 +3719,14 @@ body {
 }
 
 .runtime-metrics-content {
-  min-height: 220px;
+  flex: 1 1 auto;
+  min-height: 0;
   padding: 18px 22px;
   overflow-y: auto;
 }
 
 .runtime-metrics-section + .runtime-metrics-section {
-  margin-top: 18px;
+  margin-top: 26px;
 }
 
 .runtime-metrics-section-header {
@@ -3739,6 +3741,33 @@ body {
   margin: 0;
   color: var(--color-text);
   font-size: 14px;
+  font-weight: 700;
+}
+
+.runtime-metrics-section-description {
+  margin: -2px 0 12px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.runtime-transcript-card + .runtime-metrics-subsection,
+.runtime-metrics-subsection + .runtime-metrics-subsection {
+  margin-top: 18px;
+}
+
+.runtime-metrics-subsection-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.runtime-metrics-subsection-header h4 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 13px;
   font-weight: 700;
 }
 
@@ -3782,6 +3811,7 @@ body {
 }
 
 .runtime-transcript-card {
+  margin-top: 12px;
   padding: 15px;
   background: rgba(59, 130, 246, 0.06);
   border: 1px solid rgba(59, 130, 246, 0.22);
@@ -3954,11 +3984,6 @@ body {
 
   .settings-save-actions .btn {
     width: 100%;
-  }
-
-  .modal-content.runtime-metrics-modal {
-    width: calc(100vw - 24px);
-    max-height: calc(100vh - 24px);
   }
 
   .runtime-metrics-modal-header,
