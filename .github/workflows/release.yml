@@ -236,6 +236,34 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           tags: ${{ steps.meta.outputs.tags }}
 
+      - name: Promote beta alias for stable releases
+        if: needs.metadata.outputs.channel == 'stable'
+        env:
+          IMAGE: ${{ steps.image.outputs.name }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          # beta 别名与 preview 更新渠道同语义：指向全渠道 SemVer 最高版本。
+          # 存在更高的 beta Tag 时跳过，绝不把先行 beta 用户降级。
+          git fetch --quiet --tags origin
+          while IFS= read -r beta_tag; do
+            [[ "$beta_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]] || continue
+            highest=$(printf '%s\n%s\n' "$RELEASE_TAG" "$beta_tag" | sed 's/-beta\./~beta./' | sort -V | tail -1)
+            if [[ "$highest" != "$RELEASE_TAG" ]]; then
+              echo "Skip beta promotion: $beta_tag is newer than $RELEASE_TAG"
+              exit 0
+            fi
+          done < <(git tag --list 'v*-beta.*')
+          docker buildx imagetools create --tag "$IMAGE:beta" "$IMAGE:$RELEASE_TAG"
+          release_digest=$(docker buildx imagetools inspect "$IMAGE:$RELEASE_TAG" --format '{{.Manifest.Digest}}')
+          beta_digest=$(docker buildx imagetools inspect "$IMAGE:beta" --format '{{.Manifest.Digest}}')
+          if [[ -z "$release_digest" || "$release_digest" != "$beta_digest" ]]; then
+            echo "beta promotion failed: $RELEASE_TAG=$release_digest, beta=$beta_digest" >&2
+            exit 1
+          fi
+          echo "Promoted $IMAGE:beta to $RELEASE_TAG at $release_digest"
+
       - name: Verify published image aliases
         env:
           IMAGE: ${{ steps.image.outputs.name }}
