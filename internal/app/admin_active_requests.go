@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"ccLoad/internal/storage"
-	"ccLoad/internal/version"
 
 	"github.com/gin-gonic/gin"
 )
@@ -21,38 +20,49 @@ type activeRequestsResponse struct {
 }
 
 type processRuntimeMetrics struct {
-	Version               string `json:"version"`
-	StartedAtUnixMs       int64  `json:"started_at_unix_ms"`
-	UptimeSeconds         int64  `json:"uptime_seconds"`
-	ConcurrencySlotsInUse int    `json:"concurrency_slots_in_use"`
-	MaxConcurrency        int    `json:"max_concurrency"`
-	Goroutines            int    `json:"goroutines"`
-	HeapAllocBytes        uint64 `json:"heap_alloc_bytes"`
-	HeapSysBytes          uint64 `json:"heap_sys_bytes"`
+	UptimeSeconds         int64   `json:"uptime_seconds"`
+	ConcurrencySlotsInUse int     `json:"concurrency_slots_in_use"`
+	MaxConcurrency        int     `json:"max_concurrency"`
+	Goroutines            int     `json:"goroutines"`
+	CPUUsagePercent       float64 `json:"cpu_usage_percent"`
+	CPUUserSeconds        float64 `json:"cpu_user_seconds"`
+	CPUSystemSeconds      float64 `json:"cpu_system_seconds"`
+	RSSBytes              uint64  `json:"rss_bytes"`
+	MaxRSSBytes           uint64  `json:"max_rss_bytes"`
+	HeapAllocBytes        uint64  `json:"heap_alloc_bytes"`
+	HeapSysBytes          uint64  `json:"heap_sys_bytes"`
+	GCCount               uint32  `json:"gc_count"`
+	GCPauseTotalNs        uint64  `json:"gc_pause_total_ns"`
+	GCCPUPercent          float64 `json:"gc_cpu_percent"`
 }
 
 func (s *Server) processRuntimeMetrics(now time.Time) processRuntimeMetrics {
 	var memory runtime.MemStats
 	runtime.ReadMemStats(&memory)
 
-	uptimeSeconds := int64(0)
-	startedAtUnixMs := int64(0)
-	if !s.startedAt.IsZero() {
-		startedAtUnixMs = s.startedAt.UnixMilli()
-	}
+	uptime := time.Duration(0)
 	if !s.startedAt.IsZero() && now.After(s.startedAt) {
-		uptimeSeconds = int64(now.Sub(s.startedAt).Seconds())
+		uptime = now.Sub(s.startedAt)
 	}
-	return processRuntimeMetrics{
-		Version:               version.Version,
-		StartedAtUnixMs:       startedAtUnixMs,
-		UptimeSeconds:         uptimeSeconds,
+	metrics := processRuntimeMetrics{
+		UptimeSeconds:         int64(uptime.Seconds()),
 		ConcurrencySlotsInUse: s.activeRequestCount(),
 		MaxConcurrency:        s.maxConcurrency,
 		Goroutines:            runtime.NumGoroutine(),
+		RSSBytes:              readCurrentRSSBytes(),
 		HeapAllocBytes:        memory.HeapAlloc,
 		HeapSysBytes:          memory.HeapSys,
+		GCCount:               memory.NumGC,
+		GCPauseTotalNs:        memory.PauseTotalNs,
+		GCCPUPercent:          memory.GCCPUFraction * 100,
 	}
+	if user, system, maxRSS, ok := readProcessRusage(); ok {
+		metrics.CPUUserSeconds = user
+		metrics.CPUSystemSeconds = system
+		metrics.MaxRSSBytes = maxRSS
+		metrics.CPUUsagePercent = s.cpuUsage.percent(user+system, now, uptime.Seconds())
+	}
+	return metrics
 }
 
 // HandleActiveRequests 返回当前进行中的请求列表（内存状态，不持久化）
