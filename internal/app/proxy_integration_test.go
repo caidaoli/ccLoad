@@ -1732,12 +1732,112 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "sandbox ok" {
 		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
 	}
-	want := []string{antigravityProdBaseURL, antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
+	want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
 	mu.Lock()
 	got := append([]string(nil), requestBaseURLs...)
 	mu.Unlock()
 	if !slices.Equal(got, want) {
 		t.Fatalf("Antigravity base URL order=%v, want %v", got, want)
+	}
+}
+
+func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testing.T) {
+	var mu sync.Mutex
+	requestBaseURLs := make([]string, 0, 2)
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-disabled-fallback", upstreamProtocol: "gemini", models: "gemini-3.6-flash-high", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-disabled-fallback"),
+	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs = (%d, %v)", len(configs), err)
+	}
+	env.server.urlSelector.DisableURL(configs[0].ID, antigravityProdBaseURL)
+	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		baseURL := req.URL.Scheme + "://" + req.URL.Host
+		mu.Lock()
+		requestBaseURLs = append(requestBaseURLs, baseURL)
+		mu.Unlock()
+
+		status := http.StatusOK
+		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"sandbox ok"}]},"finishReason":"STOP"}]}}`
+		switch baseURL {
+		case antigravityDailyBaseURL:
+			status = http.StatusTooManyRequests
+			body = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
+		case antigravitySandboxDailyBaseURLForTest:
+		case antigravityProdBaseURL:
+			t.Errorf("disabled Antigravity URL was called: %s", baseURL)
+		default:
+			t.Errorf("unexpected Antigravity base URL: %s", baseURL)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+	env.server.antigravityClient = env.server.client
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3.6-flash-high:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "sandbox ok" {
+		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	}
+
+	mu.Lock()
+	gotURLs := append([]string(nil), requestBaseURLs...)
+	mu.Unlock()
+	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("Antigravity base URLs=%v, want disabled URL skipped: %v", gotURLs, wantURLs)
+	}
+
+	entry := waitForProxyLog(t, env, "gemini-3.6-flash-high")
+	if entry.StatusCode != http.StatusOK {
+		t.Fatalf("log status=%d, want 200", entry.StatusCode)
+	}
+	logs, err := env.store.ListLogs(
+		context.Background(), time.Now().Add(-time.Minute), 20, 0,
+		&model.LogFilter{LogSource: model.LogSourceProxy},
+	)
+	if err != nil {
+		t.Fatalf("ListLogs: %v", err)
+	}
+	if len(logs) != 1 {
+		t.Fatalf("proxy logs=%d, want only final success log: %+v", len(logs), logs)
+	}
+}
+
+func TestProxy_AntigravityOAuthDoesNotCallDisabledOnlyURL(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"must not be called"}]}}]}}`)
+	}))
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "antigravity-disabled-only-url", upstreamProtocol: "gemini", models: "gemini-3.6-flash-high", priority: 100,
+		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-disabled-only-url"),
+	}}, map[int]string{0: upstream.URL})
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs = (%d, %v)", len(configs), err)
+	}
+	env.server.urlSelector.DisableURL(configs[0].ID, upstream.URL)
+
+	response := doProxyRequest(t, env.engine, "/v1beta/models/gemini-3.6-flash-high:generateContent", map[string]any{
+		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+	}, nil)
+	if response.Code == http.StatusOK {
+		t.Fatalf("request unexpectedly succeeded: %s", response.Body.String())
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("disabled Antigravity URL calls=%d, want 0", got)
 	}
 }
 
@@ -1920,7 +2020,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	gotURLs := append([]string(nil), requestBaseURLs...)
 	gotTimes := append([]time.Time(nil), requestTimes...)
 	mu.Unlock()
-	wantURLs := []string{antigravityProdBaseURL, antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity capacity attempts=%v, want %v", gotURLs, wantURLs)
 	}

@@ -129,6 +129,57 @@ func TestXAIChannelResponsesExposeOnlySafeOAuthMetadata(t *testing.T) {
 	}
 }
 
+func TestXAIChannelUpdateAllowsVersionedProviderBaseURL(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+
+	credential := &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth",
+		AccessToken: "xai-access", RefreshToken: "xai-refresh",
+		Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339), Email: "xai@example.com",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(context.Background(), newXAIOAuthChannel("xAI models", credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	models := append([]model.ModelEntry(nil), created.ModelEntries...)
+	models = append(models, model.ModelEntry{Model: "grok-manual"})
+	path := fmt.Sprintf("/admin/channels/%d", created.ID)
+	update := map[string]any{
+		"name":                    created.Name,
+		"auth_type":               model.AuthTypeXAIOAuth,
+		"urls":                    created.URLs,
+		"models":                  models,
+		"enabled":                 true,
+		"protocol_transform_mode": model.ProtocolTransformModeLocal,
+	}
+	updateContext, updateResponse := newTestContext(t, newJSONRequest(t, http.MethodPut, path, update))
+	updateContext.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	server.HandleChannelByID(updateContext)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updateResponse.Code, updateResponse.Body.String())
+	}
+
+	persisted, err := store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !persisted.SupportsModel("grok-manual") {
+		t.Fatalf("manual model was not persisted: %+v", persisted.ModelEntries)
+	}
+	if len(persisted.URLs) != 1 || persisted.URLs[0].URL != xaiauth.CLIBaseURL || persisted.URLs[0].Exact {
+		t.Fatalf("xAI base URL changed: %+v", persisted.URLs)
+	}
+	if persisted.OAuthCredential != credentialJSON {
+		t.Fatal("xAI OAuth credential changed while saving models")
+	}
+}
+
 func TestDeleteChannelClearsAnthropicCredentialCache(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()

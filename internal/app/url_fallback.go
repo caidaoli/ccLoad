@@ -79,3 +79,16 @@ func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string
 
 	return sortedURLs
 }
+
+// orderURLsInConfiguredOrder preserves provider-defined fallback priority while
+// still honoring the selector's manually disabled URL state.
+func orderURLsInConfiguredOrder(selector *URLSelector, channelID int64, urls []string) []sortedURL {
+	ordered := make([]sortedURL, 0, len(urls))
+	for i, rawURL := range urls {
+		if selector != nil && selector.IsDisabled(channelID, rawURL) {
+			continue
+		}
+		ordered = append(ordered, sortedURL{url: rawURL, idx: i})
+	}
+	return ordered
+}

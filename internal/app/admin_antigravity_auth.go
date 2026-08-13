@@ -92,18 +92,18 @@ func newAntigravityOAuthChannel(name, credentialJSON string) *model.Config {
 }
 
 // antigravityOAuthPersistedURLs is the single endpoint written for newly
-// created OAuth channels. Runtime fallback for legacy multi-URL channels is
-// kept separate in antigravityOAuthDefaultURLs.
+// created OAuth channels. Runtime fallback stays separate so the editor shows
+// only the primary endpoint instead of provider-internal fallback targets.
 func antigravityOAuthPersistedURLs() model.ChannelURLs {
 	return model.ChannelURLs{
-		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
+		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
 	}
 }
 
 func antigravityOAuthDefaultURLs() model.ChannelURLs {
 	return model.ChannelURLs{
-		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
 		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
+		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
 		{URL: antigravitySandboxDailyBaseURL, Protocols: []string{"gemini"}},
 	}
 }

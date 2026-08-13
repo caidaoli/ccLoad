@@ -47,6 +47,21 @@ func TestChannelRequestValidate_StructuredURLs(t *testing.T) {
 	}
 }
 
+func TestChannelRequestValidate_XAIVersionedBaseURLRejectsEndpointPath(t *testing.T) {
+	t.Parallel()
+
+	req := ChannelRequest{
+		Name:     "xAI",
+		AuthType: model.AuthTypeXAIOAuth,
+		URLs:     model.ChannelURLs{{URL: "https://cli-chat-proxy.grok.com/v1/responses"}},
+		Models:   []model.ModelEntry{{Model: "grok"}},
+	}
+	err := req.Validate()
+	if err == nil || !strings.Contains(err.Error(), "API endpoint path") {
+		t.Fatalf("Validate() error=%v, want endpoint path validation error", err)
+	}
+}
+
 func TestChannelRequestValidate_NormalizesProtocolTransformMode(t *testing.T) {
 	t.Parallel()
 
@@ -159,7 +174,7 @@ func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 
 	for raw, want := range tests {
 		t.Run(raw, func(t *testing.T) {
-			got, err := validateChannelBaseURL(raw)
+			got, err := validateChannelBaseURL(raw, model.AuthTypeAPIKey)
 			if err != nil {
 				t.Fatalf("validateChannelBaseURL(%q) error = %v", raw, err)
 			}
@@ -173,7 +188,7 @@ func TestValidateChannelBaseURLAllowsLocalAndPrivateHosts(t *testing.T) {
 func TestValidateChannelBaseURLAllowsPublicHost(t *testing.T) {
 	t.Parallel()
 
-	got, err := validateChannelBaseURL("https://api.example.com/openai/")
+	got, err := validateChannelBaseURL("https://api.example.com/openai/", model.AuthTypeAPIKey)
 	if err != nil {
 		t.Fatalf("validateChannelBaseURL() error = %v", err)
 	}

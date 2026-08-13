@@ -53,7 +53,7 @@ type channelWebsocketProbeRequest struct {
 
 func (r *channelWebsocketProbeRequest) Validate() error {
 	var err error
-	r.URL, err = validateChannelBaseURL(r.URL)
+	r.URL, err = validateChannelBaseURL(r.URL, model.AuthTypeAPIKey)
 	if err != nil {
 		return err
 	}
@@ -562,7 +562,7 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		return
 	}
 	if forcedBaseURL != "" {
-		normalizedBaseURL, err := validateChannelBaseURL(forcedBaseURL)
+		normalizedBaseURL, err := validateChannelBaseURL(forcedBaseURL, cfg.GetAuthType())
 		if err != nil {
 			RespondErrorMsg(c, http.StatusBadRequest, "invalid base_url: "+err.Error())
 			return

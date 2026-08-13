@@ -82,7 +82,7 @@ func apiKeyStrings(keys []ChannelAPIKeyRequest) []string {
 	return values
 }
 
-func validateChannelBaseURL(raw string) (string, error) {
+func validateChannelBaseURL(raw, authType string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return "", fmt.Errorf("url cannot be empty")
@@ -108,9 +108,11 @@ func validateChannelBaseURL(raw string) (string, error) {
 		return "", fmt.Errorf("url must not contain query or fragment")
 	}
 
-	// [FIX] 只禁止包含 /v1 的 path（防止误填 API endpoint 如 /v1/messages）
-	// 允许其他 path（如 /api, /openai 等用于反向代理或 API gateway）
-	if !exactURL && strings.Contains(u.Path, "/v1") {
+	// 普通渠道的 URL 不包含协议端点，运行时会追加 /v1/messages 等路径。
+	// xAI OAuth 是提供商例外：其固定 base URL 本身以 /v1 结尾，运行时只追加 /responses。
+	isXAIVersionedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeXAIOAuth &&
+		strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/v1")
+	if !exactURL && !isXAIVersionedBasePath && strings.Contains(u.Path, "/v1") {
 		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
 	}
 
@@ -141,7 +143,7 @@ func normalizeChannelProxyURL(raw string) (string, error) {
 	}
 }
 
-func validateChannelURLConfigs(urls model.ChannelURLs) (model.ChannelURLs, error) {
+func validateChannelURLConfigs(urls model.ChannelURLs, authType string) (model.ChannelURLs, error) {
 	urls = urls.Clone()
 	if len(urls) == 0 {
 		return nil, fmt.Errorf("urls cannot be empty")
@@ -154,7 +156,7 @@ func validateChannelURLConfigs(urls model.ChannelURLs) (model.ChannelURLs, error
 		if urls[i].Exact {
 			raw += model.ExactUpstreamURLMarker
 		}
-		normalized, err := validateChannelBaseURL(raw)
+		normalized, err := validateChannelBaseURL(raw, authType)
 		if err != nil {
 			return nil, fmt.Errorf("urls[%d]: %w", i, err)
 		}
@@ -227,7 +229,7 @@ func (cr *ChannelRequest) Validate() error {
 
 	// URL 能力属于具体端点；先规范化结构，再逐项验证网络地址。
 	var err error
-	cr.URLs, err = validateChannelURLConfigs(cr.URLs)
+	cr.URLs, err = validateChannelURLConfigs(cr.URLs, authType)
 	if err != nil {
 		return err
 	}
@@ -503,7 +505,7 @@ type CheckDuplicateRequest struct {
 
 // Validate implements RequestValidator.
 func (r *CheckDuplicateRequest) Validate() error {
-	urls, err := validateChannelURLConfigs(r.URLs)
+	urls, err := validateChannelURLConfigs(r.URLs, model.AuthTypeAPIKey)
 	if err != nil {
 		return err
 	}
