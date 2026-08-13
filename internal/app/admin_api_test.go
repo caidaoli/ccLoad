@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/csv"
 	"encoding/json"
+	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -126,6 +127,55 @@ func TestAdminAPI_ExportChannelsCSV(t *testing.T) {
 	}
 	if len(records[1]) >= 16 && records[1][15] != "true" {
 		t.Errorf("retry_other_keys_on_failure 导出值错误: got %q, want true", records[1][15])
+	}
+}
+
+func TestAdminAPI_ExportChannelsCSVSelectedIDs(t *testing.T) {
+	t.Parallel()
+	server := newInMemoryServer(t)
+	ctx := context.Background()
+
+	ids := make([]int64, 0, 3)
+	for _, name := range []string{"Selected-A", "Skipped-B", "Selected-C"} {
+		created, err := server.store.CreateConfig(ctx, &model.Config{
+			Name:         name,
+			URLs:         model.ChannelURLs{{URL: "https://" + strings.ToLower(name) + ".example.com"}},
+			ModelEntries: []model.ModelEntry{{Model: "model-1"}},
+			Enabled:      true,
+		})
+		if err != nil {
+			t.Fatalf("CreateConfig(%s): %v", name, err)
+		}
+		ids = append(ids, created.ID)
+	}
+
+	target := fmt.Sprintf("/admin/channels/export?ids=%d,%d", ids[0], ids[2])
+	c, w := newTestContext(t, newRequest(http.MethodGet, target, nil))
+	server.HandleExportChannelsCSV(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("export status=%d, want 200", w.Code)
+	}
+
+	records, err := csv.NewReader(bytes.NewReader(w.Body.Bytes())).ReadAll()
+	if err != nil {
+		t.Fatalf("parse exported CSV: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("exported row count=%d, want header plus two selected channels", len(records))
+	}
+	headerIndex := buildCSVColumnIndex(records[0])
+	exported := []string{records[1][headerIndex["name"]], records[2][headerIndex["name"]]}
+	if !slices.Contains(exported, "Selected-A") || !slices.Contains(exported, "Selected-C") {
+		t.Fatalf("exported channels=%v, want Selected-A and Selected-C", exported)
+	}
+	if slices.Contains(exported, "Skipped-B") {
+		t.Fatal("unselected channel leaked into the export")
+	}
+
+	badC, badW := newTestContext(t, newRequest(http.MethodGet, "/admin/channels/export?ids=abc", nil))
+	server.HandleExportChannelsCSV(badC)
+	if badW.Code != http.StatusBadRequest {
+		t.Fatalf("invalid ids status=%d, want 400", badW.Code)
 	}
 }
 

@@ -1,11 +1,6 @@
 function setupImportExport() {
-  const exportBtn = document.getElementById('exportCsvBtn');
   const importBtn = document.getElementById('importCsvBtn');
   const importInput = document.getElementById('importCsvInput');
-
-  if (exportBtn) {
-    exportBtn.addEventListener('click', () => exportChannelsCSV(exportBtn));
-  }
 
   if (importBtn && importInput) {
     importBtn.addEventListener('click', () => {
@@ -24,14 +19,18 @@ function setupImportExport() {
   }
 }
 
-async function exportChannelsCSV(buttonEl) {
+async function exportSelectedChannelsCSV() {
+  const channelIDs = typeof getSelectedChannelIDs === 'function' ? getSelectedChannelIDs() : [];
+  if (channelIDs.length === 0) {
+    if (window.showWarning) window.showWarning(window.t('channels.batchNoSelection'));
+    return;
+  }
+
+  const exportButton = document.getElementById('batchExportChannelsBtn');
+  if (exportButton) exportButton.setAttribute('aria-busy', 'true');
+  if (typeof setBatchChannelOperationBusy === 'function') setBatchChannelOperationBusy(true);
   try {
-    if (buttonEl) buttonEl.disabled = true;
-    const params = buildChannelsListParams();
-    params.delete('limit');
-    params.delete('offset');
-    const query = params.toString();
-    const res = await fetchWithAuth(`/admin/channels/export${query ? `?${query}` : ''}`);
+    const res = await fetchWithAuth(`/admin/channels/export?ids=${channelIDs.join(',')}`);
     if (!res.ok) {
       const errorText = await res.text();
       throw new Error(errorText || window.t('channels.import.exportHttpFailed', { status: res.status }));
@@ -52,7 +51,8 @@ async function exportChannelsCSV(buttonEl) {
     console.error('Export CSV failed', err);
     if (window.showError) window.showError(err.message || window.t('channels.msg.exportFailed'));
   } finally {
-    if (buttonEl) buttonEl.disabled = false;
+    if (exportButton) exportButton.removeAttribute('aria-busy');
+    if (typeof setBatchChannelOperationBusy === 'function') setBatchChannelOperationBusy(false);
   }
 }
 
@@ -131,5 +131,5 @@ async function handleImportCSV(event, importBtn) {
 }
 
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { setupImportExport, exportChannelsCSV, handleImportCSV };
+  module.exports = { setupImportExport, exportSelectedChannelsCSV, handleImportCSV };
 }

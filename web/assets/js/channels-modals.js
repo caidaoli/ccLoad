@@ -1100,8 +1100,6 @@ function updateBatchChannelSelectionUI() {
     floatingMenu.setAttribute('aria-hidden', visible ? 'false' : 'true');
     floatingMenu.inert = !visible;
     if (!visible) {
-      const refreshOptions = document.getElementById('batchRefreshOptions');
-      if (refreshOptions) refreshOptions.open = false;
       const advancedOptions = document.getElementById('batchAdvancedOptions');
       if (advancedOptions) advancedOptions.open = false;
     }
@@ -1146,6 +1144,7 @@ function updateBatchChannelSelectionUI() {
   const actionBtnIDs = [
     'batchEnableChannelsBtn',
     'batchDisableChannelsBtn',
+    'batchExportChannelsBtn',
     'batchDeleteChannelsBtn',
     'batchRefreshOAuthUsageBtn',
     'batchRefreshMergeBtn',

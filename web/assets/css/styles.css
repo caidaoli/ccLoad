@@ -8962,7 +8962,6 @@ html[data-theme="dark"] .chat-message .chat-patch-number {
 .channels-readonly .ch-url-line,
 .channels-readonly #batchFloatingMenu,
 .channels-readonly #addChannelBtn,
-.channels-readonly #exportCsvBtn,
 .channels-readonly #importCsvBtn {
   display: none !important;
 }

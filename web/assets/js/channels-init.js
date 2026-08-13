@@ -134,6 +134,7 @@ function initChannelsPageActions() {
         'batch-enable-channels': () => batchEnableSelectedChannels(),
         'batch-disable-channels': () => batchDisableSelectedChannels(),
         'batch-delete-channels': () => batchDeleteSelectedChannels(),
+        'batch-export-channels': () => exportSelectedChannelsCSV(),
         'batch-refresh-oauth-usage': () => batchRefreshSelectedOAuthUsage(),
         'batch-refresh-channels-merge': () => batchRefreshSelectedChannelsMerge(),
         'batch-refresh-channels-replace': () => batchRefreshSelectedChannelsReplace(),
@@ -202,7 +203,7 @@ function initChannelsPageActions() {
 function applyChannelsAccessMode() {
   const readOnly = isTokenChannelsReadOnly();
   document.body.classList.toggle('channels-readonly', readOnly);
-  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'oauthCredentialCleanupOpenBtn', 'exportCsvBtn', 'importCsvBtn', 'batchFloatingMenu']) {
+  for (const id of ['addChannelBtn', 'oauthLoginBtn', 'oauthCredentialImportBtn', 'oauthCredentialCleanupOpenBtn', 'importCsvBtn', 'batchFloatingMenu']) {
     const el = document.getElementById(id);
     if (el) el.hidden = readOnly;
   }
@@ -325,6 +326,20 @@ window.initPageBootstrap({
   }
 });
 
+// 批量「高级」面板：Esc 与点击面板外区域关闭（原生 details 只能靠再次点击 summary 收起）
+function closeBatchAdvancedOptions(restoreFocus) {
+  const advancedOptions = document.getElementById('batchAdvancedOptions');
+  if (!advancedOptions || !advancedOptions.open) return false;
+  advancedOptions.open = false;
+  if (restoreFocus) advancedOptions.querySelector('summary')?.focus();
+  return true;
+}
+
+document.addEventListener('pointerdown', (e) => {
+  if (e.target?.closest?.('#batchAdvancedOptions')) return;
+  closeBatchAdvancedOptions(false);
+});
+
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const customRulesModal = document.getElementById('customRulesModal');
@@ -352,6 +367,9 @@ document.addEventListener('keydown', (e) => {
       closeTestModal();
     } else if (channelModal && channelModal.classList.contains('show')) {
       closeModal();
+    } else {
+      // 无模态框打开时 Esc 才收起高级面板，避免抢走模态框的关闭语义
+      closeBatchAdvancedOptions(true);
     }
   }
 });
