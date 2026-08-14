@@ -686,6 +686,29 @@ curl -X POST http://localhost:8080/admin/channels \
   }'
 ```
 
+**OpenAI-compatible upstream example**:
+
+```bash
+# Add a channel using the OpenAI wire protocol
+curl -X POST http://localhost:8080/admin/channels \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "OpenAI-Compatible",
+    "api_key": "sk-xxx",
+    "urls": [
+      {"url": "https://api.openai.com", "protocols": ["openai"]}
+    ],
+    "protocol_transform_mode": "auto",
+    "priority": 10,
+    "rpm_limit": 0,
+    "max_concurrency": 0,
+    "models": [{"model": "gpt-4o"}],
+    "enabled": true
+  }'
+```
+
+> This works with any OpenAI-compatible provider by changing `urls[].url` to its API base URL. Omit `/v1` and endpoint paths because ccLoad appends them for the selected protocol. The `protocols: ["openai"]` declaration routes the channel as an OpenAI upstream.
+
 > **Protocol behavior**: Each `urls` entry may list `protocols` (`anthropic`, `codex`, `openai`, `gemini`). A non-empty list is authoritative. `upstream` only passes through the client protocol; `auto` starts with the client protocol, then detects OpenAI → Anthropic → Codex → Gemini without retrying the client protocol; `local` prefers declared URLs and their configured protocol order. If every URL is undeclared in `local` mode, ccLoad tries Anthropic → Codex → OpenAI → Gemini.
 
 > **Multi-URL Note**: `urls` is an ordered array of `{url, exact, protocols}` objects. `exact: true` means the URL is already the complete upstream request URL. The system uses latency-weighted selection and independent URL cooldown; local mode first partitions explicitly declared URLs ahead of automatic ones while preserving order inside each group.
