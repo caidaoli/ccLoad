@@ -2911,24 +2911,7 @@ func (s *Server) attemptKeyAcrossURLs(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 ) (immediate *proxyResult, urlLastFailure *proxyResult, err error) {
-	// Antigravity's provider fallback order is a built-in runtime policy. It
-	// must remain available for capacity retries even when newly created OAuth
-	// channels persist only the daily URL.
-	hasAntigravityGlobalBaseURLOverride := s.configService != nil &&
-		strings.TrimSpace(s.configService.GetString(config.AntigravityURLSettingKey, "")) != ""
-	if cfg.UsesAntigravityOAuth() && !hasAntigravityGlobalBaseURLOverride && usesAntigravityDefaultBaseURLs(cfg.URLs) {
-		runtimeCfg := cfg.Clone()
-		runtimeCfg.URLs = antigravityOAuthDefaultURLs()
-		cfg = runtimeCfg
-		urls = cfg.GetURLs()
-	}
-	sortedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
-	if cfg.UsesAntigravityOAuth() {
-		// Antigravity owns a fixed provider fallback order. Runtime latency must
-		// not reorder daily, production, and daily sandbox endpoints, but manual
-		// disable state still has to be honored.
-		sortedURLs = orderURLsInConfiguredOrder(selector, cfg.ID, urls)
-	}
+	sortedURLs := orderChannelAttemptURLs(selector, cfg, urls)
 	if len(sortedURLs) == 0 {
 		return nil, nil, fmt.Errorf("no enabled URLs configured for channel %d", cfg.ID)
 	}
@@ -2947,9 +2930,8 @@ func (s *Server) attemptKeyAcrossURLs(
 	}
 	localProtocolOrder := localUpstreamProtocolOrder(cfg.URLs)
 	requestFamily := protocol.DetectRequestFamily(reqCtx.requestPath)
-	urlsCount := len(urls)
-	modelCapacityFailures := 0
-	modelCapacityRetries := 0
+	urlsCount := len(sortedURLs)
+	var urlPolicy channelURLAttemptPolicy
 	var deferredFallbackLog *model.LogEntry
 	defer func() {
 		if deferredFallbackLog != nil {
@@ -2977,7 +2959,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			ThinkingEffort:   reqCtx.thinkingEffort,
 		})
 
-		shouldDeferChannelCooldown := urlsCount > 1 && urlIdx < len(sortedURLs)-1
+		shouldDeferChannelCooldown := urlIdx < len(sortedURLs)-1
 		capabilityKey := protocolCapabilityKey{
 			channelID: cfg.ID, baseURL: urlEntry.url,
 			clientProtocol: clientProtocol, requestFamily: requestFamily,
@@ -3020,7 +3002,7 @@ func (s *Server) attemptKeyAcrossURLs(
 			var attemptErr error
 			result, nextAction, attemptErr = s.forwardAttempt(
 				ctx, cfg, keyIndex, selectedKey, reqCtx, upstreamProtocol, urlEntry.url, w,
-				shouldDeferChannelCooldown, modelCapacityRetries)
+				shouldDeferChannelCooldown, urlPolicy.antigravityCapacityRetries)
 			if attemptErr != nil {
 				return nil, nil, attemptErr
 			}
@@ -3056,40 +3038,25 @@ func (s *Server) attemptKeyAcrossURLs(
 
 		if result != nil {
 			urlLastFailure = result
-			if result.antigravityCapacity429 {
-				modelCapacityFailures++
-			} else {
-				modelCapacityFailures = 0
-			}
 		}
-		if result != nil && result.antigravityCapacity429 {
-			if shouldDeferChannelCooldown && modelCapacityFailures < antigravityModelCapacityAttempts {
-				timer := time.NewTimer(antigravityBaseURLFallbackDelay)
-				select {
-				case <-ctx.Done():
-					timer.Stop()
-					return buildCtxDoneResult(cfg, ctx.Err()), nil, nil
-				case <-timer.C:
+		if result != nil {
+			decision := urlPolicy.decide(cfg, shouldDeferChannelCooldown, channelURLFailure{
+				statusCode:          result.status,
+				body:                result.body,
+				network:             result.isNetworkError,
+				antigravityCapacity: result.antigravityCapacity429,
+			})
+			if decision.retry {
+				if waitErr := waitForChannelURLRetry(ctx, decision.delay); waitErr != nil {
+					return buildCtxDoneResult(cfg, waitErr), nil, nil
 				}
 				result.deferredCooldown = nil
-				modelCapacityRetries++
 				s.activeRequests.Retry(reqCtx.activeReqID)
 				continue
 			}
-			break
-		}
-		if shouldDeferChannelCooldown && result != nil && cfg.UsesAntigravityOAuth() &&
-			(result.isNetworkError || shouldFallbackAntigravityBaseURL(result.status, result.body)) {
-			result.deferredCooldown = nil
-			timer := time.NewTimer(antigravityBaseURLFallbackDelay)
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return buildCtxDoneResult(cfg, ctx.Err()), nil, nil
-			case <-timer.C:
+			if decision.capacity {
+				break
 			}
-			s.activeRequests.Retry(reqCtx.activeReqID)
-			continue
 		}
 		if result != nil && result.protocolCapabilityMissing {
 			// 能力协商不是 URL 健康故障，不进入通用 URL 冷却。

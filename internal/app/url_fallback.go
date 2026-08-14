@@ -1,6 +1,80 @@
 package app
 
-import "ccLoad/internal/model"
+import (
+	"context"
+	"time"
+
+	"ccLoad/internal/model"
+)
+
+type channelURLFailure struct {
+	statusCode          int
+	body                []byte
+	network             bool
+	antigravityCapacity bool
+}
+
+type channelURLRetryDecision struct {
+	retry         bool
+	delay         time.Duration
+	capacity      bool
+	firstCapacity bool
+}
+
+// channelURLAttemptPolicy owns provider-specific URL fallback state for one
+// logical request. Callers still own transport and response rendering.
+type channelURLAttemptPolicy struct {
+	antigravityCapacityFailures int
+	antigravityCapacityRetries  int
+	antigravityCapacityObserved bool
+}
+
+func (p *channelURLAttemptPolicy) decide(
+	cfg *model.Config,
+	hasNext bool,
+	failure channelURLFailure,
+) channelURLRetryDecision {
+	if cfg == nil || !cfg.UsesAntigravityOAuth() {
+		return channelURLRetryDecision{}
+	}
+
+	capacity := failure.antigravityCapacity ||
+		isAntigravityModelCapacityExhausted(failure.statusCode, failure.body)
+	if capacity {
+		p.antigravityCapacityFailures++
+		decision := channelURLRetryDecision{
+			capacity:      true,
+			firstCapacity: !p.antigravityCapacityObserved,
+		}
+		p.antigravityCapacityObserved = true
+		if hasNext && p.antigravityCapacityFailures < antigravityModelCapacityAttempts {
+			p.antigravityCapacityRetries++
+			decision.retry = true
+			decision.delay = antigravityBaseURLFallbackDelay
+		}
+		return decision
+	}
+
+	p.antigravityCapacityFailures = 0
+	if hasNext && (failure.network || shouldFallbackAntigravityBaseURL(failure.statusCode, failure.body)) {
+		return channelURLRetryDecision{retry: true, delay: antigravityBaseURLFallbackDelay}
+	}
+	return channelURLRetryDecision{}
+}
+
+func waitForChannelURLRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
 
 func configuredURLFrom(configured model.ChannelURLs, index int, runtimeURL string) model.ChannelURL {
 	if index >= 0 && index < len(configured) && configured[index].RuntimeURL() == runtimeURL {
@@ -78,6 +152,20 @@ func orderURLsWithSelector(selector *URLSelector, channelID int64, urls []string
 	}
 
 	return sortedURLs
+}
+
+// orderChannelAttemptURLs is the single ordering policy used by proxy and
+// admin test traffic. Antigravity provider priority is fixed; other channels
+// keep latency-aware selection.
+func orderChannelAttemptURLs(selector *URLSelector, cfg *model.Config, urls []string) []sortedURL {
+	if cfg != nil && cfg.UsesAntigravityOAuth() {
+		return orderURLsInConfiguredOrder(selector, cfg.ID, urls)
+	}
+	channelID := int64(0)
+	if cfg != nil {
+		channelID = cfg.ID
+	}
+	return orderURLsWithSelector(selector, channelID, urls)
 }
 
 // orderURLsInConfiguredOrder preserves provider-defined fallback priority while
