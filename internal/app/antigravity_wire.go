@@ -533,30 +533,47 @@ func ensureAntigravityValidatedToolMode(request map[string]any) {
 }
 
 func antigravitySessionID(headers http.Header, sourceBody, body []byte) string {
+	seed := ""
 	for _, name := range []string{"Session-Id", "Session_id", "X-Claude-Code-Session-Id"} {
 		if value := strings.TrimSpace(headers.Get(name)); value != "" {
-			return antigravityNegativeSessionID(value)
+			seed = value
+			break
 		}
 	}
-	if value := anthropicSessionIDFromBody(sourceBody); value != "" {
-		return antigravityNegativeSessionID(value)
+	if seed == "" {
+		seed = anthropicSessionIDFromBody(sourceBody)
 	}
-	for _, path := range []string{"session_id", "sessionId", "conversation_id", "prompt_cache_key"} {
-		if value := strings.TrimSpace(gjson.GetBytes(sourceBody, path).String()); value != "" {
-			return antigravityNegativeSessionID(value)
-		}
-	}
-	for _, path := range []string{"contents", "request.contents"} {
-		for _, content := range gjson.GetBytes(body, path).Array() {
-			if content.Get("role").String() != "user" {
-				continue
-			}
-			if text := content.Get("parts.0.text").String(); text != "" {
-				return antigravityNegativeSessionID(text)
+	if seed == "" {
+		for _, path := range []string{"session_id", "sessionId", "conversation_id", "prompt_cache_key"} {
+			if value := strings.TrimSpace(gjson.GetBytes(sourceBody, path).String()); value != "" {
+				seed = value
+				break
 			}
 		}
 	}
-	return antigravityNegativeSessionID(util.NewUUIDv4())
+	if seed == "" {
+		for _, path := range []string{"contents", "request.contents"} {
+			for _, content := range gjson.GetBytes(body, path).Array() {
+				if content.Get("role").String() != "user" {
+					continue
+				}
+				if text := content.Get("parts.0.text").String(); text != "" {
+					seed = text
+					break
+				}
+			}
+			if seed != "" {
+				break
+			}
+		}
+	}
+	if seed == "" {
+		seed = util.NewUUIDv4()
+	}
+	if threadID := strings.TrimSpace(headers.Get("Thread-Id")); threadID != "" {
+		seed += "\x00thread\x00" + threadID
+	}
+	return antigravityNegativeSessionID(seed)
 }
 
 func antigravityNegativeSessionID(seed string) string {

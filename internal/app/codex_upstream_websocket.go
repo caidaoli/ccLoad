@@ -56,6 +56,7 @@ var codexWebsocketForwardHeaders = []string{
 	"OpenAI-Beta",
 	"Session_id",
 	"Session-Id",
+	"Thread-Id",
 	"Originator",
 }
 
@@ -1039,22 +1040,16 @@ func codexWebsocketHeaders(source http.Header) http.Header {
 	}
 	header.Set("OpenAI-Beta", betaHeader)
 
-	sessionID := ""
-	for key, values := range header {
-		normalized := strings.ToLower(strings.TrimSpace(key))
-		if normalized != "session_id" && normalized != "session-id" {
-			continue
-		}
-		if sessionID == "" {
-			for _, value := range values {
-				if sessionID = strings.TrimSpace(value); sessionID != "" {
-					break
-				}
-			}
-		}
-		delete(header, key)
+	// Current Codex clients use the canonical Session-Id header. Keep it intact:
+	// a downstream ccLoad instance needs Session-Id + Thread-Id to isolate parent
+	// and subagent execution sessions. The official websocket still receives its
+	// legacy aliases, all normalized from the same canonical value.
+	sessionID := strings.TrimSpace(header.Get("Session-Id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(header.Get("Session_id"))
 	}
 	if sessionID != "" {
+		header.Set("Session-Id", sessionID)
 		header.Set("Session_id", sessionID)
 		if strings.TrimSpace(header.Get("Conversation_id")) == "" {
 			header.Set("Conversation_id", sessionID)

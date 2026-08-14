@@ -1115,7 +1115,7 @@ func TestChannelTestCodexUsesNativeWebsocketWhenEnabled(t *testing.T) {
 		if r.Header.Get("X-Arbitrary-Client") != "" || r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "" {
 			t.Errorf("unapproved HTTP headers leaked into websocket handshake: %v", r.Header)
 		}
-		if r.Header.Get("Session_id") == "" || r.Header.Get("Conversation_id") == "" {
+		if r.Header.Get("Session-Id") == "" || r.Header.Get("Thread-Id") == "" {
 			t.Errorf("Codex websocket session headers are incomplete: %v", r.Header)
 		}
 		conn, err := upgrader.Upgrade(w, r, nil)
@@ -1259,7 +1259,7 @@ func TestHandleChannelWebsocketProbeDetectsSupportedUpstream(t *testing.T) {
 		if r.Header.Get("Accept") != "" || r.Header.Get("Content-Type") != "" {
 			t.Errorf("HTTP-only headers leaked into websocket probe: %v", r.Header)
 		}
-		if r.Header.Get("Session_id") == "" || r.Header.Get("Conversation_id") == "" {
+		if r.Header.Get("Session-Id") == "" || r.Header.Get("Thread-Id") == "" {
 			t.Errorf("Codex websocket session headers are incomplete: %v", r.Header)
 		}
 		if beta := r.Header.Get("OpenAI-Beta"); !strings.Contains(beta, "responses_websockets=") {

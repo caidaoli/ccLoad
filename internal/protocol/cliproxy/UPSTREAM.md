@@ -145,6 +145,11 @@ documented adaptations:
   extensions for `reasoning.content`, cache-creation usage, `input_file`, and
   Responses `web_search` to `web_search_options`; these are intentional local
   contract differences and must survive future upstream syncs.
+- Claude-target request converters never synthesize process-global
+  `metadata.user_id`. Provider session identity belongs to ccLoad's request
+  boundary, where Anthropic credentials and `Session-Id` + `Thread-Id` are
+  available; keeping it out of the pure converters prevents cross-request
+  identity collisions and the upstream package-global initialization race.
 
 ## Updating from CLIProxyAPI
 

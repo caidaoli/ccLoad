@@ -164,7 +164,7 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 				}
 			}
 		}
-		if err := injectAnthropicOAuthMetadata(request, cfg, messages); err != nil {
+		if err := injectAnthropicOAuthMetadata(request, cfg, messages, headers); err != nil {
 			return nil, err
 		}
 		ensureAnthropicCloakedCacheBreakpoints(request, messagePrefixCount)
@@ -621,7 +621,7 @@ func anthropicFirstSystemBlockText(system any) string {
 	return stringValue(block["text"])
 }
 
-func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, messages []any) error {
+func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, messages []any, headers http.Header) error {
 	credential := anthropicCredentialForWire(cfg)
 	if credential == nil {
 		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
@@ -633,7 +633,10 @@ func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, mes
 	if credential.DeviceID == "" || identitySeed == "" {
 		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
 	}
-	sessionID := anthropicStableSessionID(identitySeed, anthropicFirstUserText(messages))
+	sessionID := anthropicSessionIDFromHeaders(headers)
+	if sessionID == "" {
+		sessionID = anthropicStableSessionID(identitySeed, anthropicFirstUserText(messages))
+	}
 	identity, err := json.Marshal(map[string]string{
 		"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID, "session_id": sessionID,
 	})
@@ -662,6 +665,33 @@ func anthropicCredentialForWire(cfg *model.Config) *anthropicauth.Credential {
 
 func anthropicStableSessionID(accountUUID, firstUserText string) string {
 	return uuid.NewSHA1(uuid.NameSpaceOID, []byte(accountUUID+"\x00"+firstUserText)).String()
+}
+
+func anthropicSessionIDFromHeaders(headers http.Header) string {
+	if headers == nil {
+		return ""
+	}
+	if nativeSessionID := strings.TrimSpace(headers.Get("X-Claude-Code-Session-Id")); nativeSessionID != "" {
+		if parsed, err := uuid.Parse(nativeSessionID); err == nil {
+			return parsed.String()
+		}
+	}
+	seed := responsesExecutionSessionID(headers)
+	if seed == "" {
+		seed = strings.TrimSpace(headers.Get("Session_id"))
+		if seed != "" {
+			if threadID := strings.TrimSpace(headers.Get("Thread-Id")); threadID != "" {
+				seed += "\x00thread\x00" + threadID
+			}
+		}
+	}
+	if seed == "" {
+		return ""
+	}
+	if parsed, err := uuid.Parse(seed); err == nil {
+		return parsed.String()
+	}
+	return uuid.NewSHA1(uuid.NameSpaceOID, []byte("ccload:anthropic:session\x00"+seed)).String()
 }
 
 func sanitizeAnthropicOAuthMessages(request map[string]any) {
@@ -1043,7 +1073,7 @@ func injectAnthropicAPIKeyHeaders(req *http.Request, apiKey string, body []byte)
 	setRawHeader(req.Header, "x-api-key", strings.TrimSpace(apiKey))
 	applyAnthropicClaudeCodeHeaders(
 		req, anthropicClaudeCodeBetas(body, false),
-		resolveAnthropicAPIKeySessionID(body, apiKey, req.Header.Get("X-Claude-Code-Session-Id")),
+		resolveAnthropicAPIKeySessionID(body, apiKey, req.Header),
 	)
 }
 
@@ -1152,9 +1182,9 @@ func resolveAnthropicSessionID(body []byte, cfg *model.Config) string {
 	return uuid.NewString()
 }
 
-func resolveAnthropicAPIKeySessionID(body []byte, apiKey, incomingSessionID string) string {
-	if parsed, err := uuid.Parse(strings.TrimSpace(incomingSessionID)); err == nil {
-		return parsed.String()
+func resolveAnthropicAPIKeySessionID(body []byte, apiKey string, headers http.Header) string {
+	if sessionID := anthropicSessionIDFromHeaders(headers); sessionID != "" {
+		return sessionID
 	}
 	if sessionID := anthropicSessionIDFromBody(body); sessionID != "" {
 		return sessionID
