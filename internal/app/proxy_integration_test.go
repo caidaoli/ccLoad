@@ -1905,7 +1905,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 			t.Parallel()
 
 			var mu sync.Mutex
-			requestBaseURLs := make([]string, 0, 3)
+			requestBaseURLs := make([]string, 0, 2)
 			env := setupProxyTestEnv(t, []testChannel{{
 				name: "antigravity-default-fallback-" + tc.name, upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
 				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-default-fallback"),
@@ -1930,11 +1930,9 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 					status = http.StatusServiceUnavailable
 					contentType = "application/json"
 					body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server"}}`
-				case antigravityProdBaseURL:
-					status = http.StatusTooManyRequests
-					contentType = "application/json"
-					body = `{"error":{"code":429,"message":"rate limited"}}`
 				case antigravitySandboxDailyBaseURLForTest:
+				case antigravityProdBaseURL:
+					t.Errorf("production Antigravity URL was called: %s", baseURL)
 				default:
 					t.Errorf("unexpected Antigravity base URL: %s", baseURL)
 				}
@@ -1968,7 +1966,7 @@ func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
 				t.Fatalf("non-stream response text=%q body=%s", got, response.Body.String())
 			}
 
-			want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+			want := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
 			mu.Lock()
 			got := append([]string(nil), requestBaseURLs...)
 			mu.Unlock()
@@ -1991,7 +1989,7 @@ func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testin
 	if err != nil || len(configs) != 1 {
 		t.Fatalf("ListConfigs = (%d, %v)", len(configs), err)
 	}
-	env.server.urlSelector.DisableURL(configs[0].ID, antigravityProdBaseURL)
+	env.server.urlSelector.DisableURL(configs[0].ID, antigravityDailyBaseURL)
 	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		baseURL := req.URL.Scheme + "://" + req.URL.Host
 		mu.Lock()
@@ -2001,11 +1999,8 @@ func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testin
 		status := http.StatusOK
 		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"sandbox ok"}]},"finishReason":"STOP"}]}}`
 		switch baseURL {
-		case antigravityDailyBaseURL:
-			status = http.StatusTooManyRequests
-			body = `{"error":{"code":429,"message":"Resource has been exhausted (e.g. check quota).","status":"RESOURCE_EXHAUSTED"}}`
 		case antigravitySandboxDailyBaseURLForTest:
-		case antigravityProdBaseURL:
+		case antigravityDailyBaseURL, antigravityProdBaseURL:
 			t.Errorf("disabled Antigravity URL was called: %s", baseURL)
 		default:
 			t.Errorf("unexpected Antigravity base URL: %s", baseURL)
@@ -2029,7 +2024,7 @@ func TestProxy_AntigravityOAuthSkipsDisabledURLAndLogsOnlyFinalSuccess(t *testin
 	mu.Lock()
 	gotURLs := append([]string(nil), requestBaseURLs...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
+	wantURLs := []string{antigravitySandboxDailyBaseURLForTest}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity base URLs=%v, want disabled URL skipped: %v", gotURLs, wantURLs)
 	}
@@ -2222,7 +2217,7 @@ func TestProxy_AntigravityOAuthCapacityRetryBlockedBeforeNextRequestPreservesLog
 	}
 }
 
-func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseURLs(t *testing.T) {
+func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterDefaultBaseURLs(t *testing.T) {
 	t.Parallel()
 
 	var mu sync.Mutex
@@ -2258,7 +2253,7 @@ func TestProxy_AntigravityOAuthModelCapacityExhaustionBecomes429AfterThreeBaseUR
 	gotURLs := append([]string(nil), requestBaseURLs...)
 	gotTimes := append([]time.Time(nil), requestTimes...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURLForTest}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity capacity attempts=%v, want %v", gotURLs, wantURLs)
 	}

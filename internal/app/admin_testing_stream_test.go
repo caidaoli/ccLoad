@@ -1423,13 +1423,11 @@ func TestHandleChannelChat_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 		body := `data: {"response":{"responseId":"gravity-chat","candidates":[{"content":{"role":"model","parts":[{"text":"fallback chat answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}` + "\n\n"
 		switch baseURL {
 		case antigravityDailyBaseURL:
-			status = http.StatusNotFound
-			contentType = "application/json"
-			body = `{"error":{"message":"endpoint not found"}}`
-		case antigravityProdBaseURL:
 			status = http.StatusServiceUnavailable
 			contentType = "application/json"
 			body = antigravityCapacityBodyForAdminTest
+		case antigravityProdBaseURL:
+			t.Fatalf("production Antigravity URL was called: %s", baseURL)
 		case antigravitySandboxDailyBaseURL:
 		default:
 			t.Fatalf("unexpected Antigravity fallback URL: %s", baseURL)
@@ -1463,7 +1461,7 @@ func TestHandleChannelChat_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 	gotURLs := append([]string(nil), baseURLs...)
 	gotTimes := append([]time.Time(nil), requestTimes...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURL}
+	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURL}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity chat URLs=%v, want %v", gotURLs, wantURLs)
 	}
@@ -1543,9 +1541,15 @@ func TestHandleChannelChat_AntigravityFallbackBusinessFailureKeepsModelCooldown(
 
 		status := http.StatusServiceUnavailable
 		body := antigravityCapacityBodyForAdminTest
-		if baseURL == antigravityProdBaseURL {
+		switch baseURL {
+		case antigravityDailyBaseURL:
+		case antigravitySandboxDailyBaseURL:
 			status = http.StatusOK
 			body = `{"error":{"message":"upstream overloaded"}}`
+		case antigravityProdBaseURL:
+			t.Fatalf("production Antigravity URL was called: %s", baseURL)
+		default:
+			t.Fatalf("unexpected Antigravity fallback URL: %s", baseURL)
 		}
 		return &http.Response{
 			StatusCode: status,
@@ -1572,7 +1576,7 @@ func TestHandleChannelChat_AntigravityFallbackBusinessFailureKeepsModelCooldown(
 	mu.Lock()
 	gotURLs := append([]string(nil), baseURLs...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL}
+	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURL}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity chat URLs=%v, want %v", gotURLs, wantURLs)
 	}
