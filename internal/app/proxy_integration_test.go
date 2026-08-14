@@ -30,6 +30,7 @@ import (
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/tidwall/gjson"
 	"google.golang.org/protobuf/encoding/protowire"
 )
@@ -345,6 +346,7 @@ func expiredProxyOAuthCredential(t testing.TB, authType, accessToken string) str
 
 func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	t.Parallel()
+	const nativeSessionID = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
 
 	var upstreamBody []byte
 	var upstreamHeaders http.Header
@@ -388,9 +390,11 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 		"diagnostics": map[string]any{"enabled": true},
 		"max_tokens":  8192,
 	}, map[string]string{
-		"anthropic-version": "2023-06-01",
-		"anthropic-beta":    "attacker-beta",
-		"User-Agent":        "third-party-client",
+		"anthropic-version":        "2023-06-01",
+		"anthropic-beta":           "attacker-beta",
+		"User-Agent":               "third-party-client",
+		"X-Claude-Code-Session-Id": nativeSessionID,
+		"Thread-Id":                "must-not-rehash-native-session",
 	})
 
 	if response.Code != http.StatusOK {
@@ -416,7 +420,7 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 			}
 		}
 	}
-	if upstreamHeaders.Get("X-Claude-Code-Session-Id") == "" || headerValueFold(upstreamHeaders, "x-client-request-id") == "" ||
+	if upstreamHeaders.Get("X-Claude-Code-Session-Id") != nativeSessionID || headerValueFold(upstreamHeaders, "x-client-request-id") == "" ||
 		upstreamHeaders.Get("X-Stainless-Runtime-Version") != "v26.3.0" {
 		t.Fatalf("Claude Code identity headers=%v", upstreamHeaders)
 	}
@@ -445,6 +449,88 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 		if got := gjson.GetBytes(upstreamBody, path).String(); got != "ephemeral" {
 			t.Fatalf("cache breakpoint %s=%q body=%s", path, got, upstreamBody)
 		}
+	}
+}
+
+func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
+	tests := []struct {
+		name            string
+		authType        string
+		apiKey          string
+		oauthCredential string
+	}{
+		{name: "official API key", apiKey: "sk-ant-thread-identity"},
+		{
+			name: "Anthropic OAuth", authType: model.AuthTypeAnthropicOAuth,
+			oauthCredential: anthropicProxyTestCredential(t, "oauth-thread-identity"),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			type capturedRequest struct {
+				sessionID string
+				body      []byte
+			}
+			var captured []capturedRequest
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "anthropic-thread-identity", upstreamProtocol: "anthropic", models: "claude-sonnet-4-6",
+				authType: test.authType, apiKey: test.apiKey, oauthCredential: test.oauthCredential,
+			}}, map[int]string{0: "https://api.anthropic.com"})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(r *http.Request) (*http.Response, error) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				captured = append(captured, capturedRequest{
+					sessionID: r.Header.Get("X-Claude-Code-Session-Id"),
+					body:      body,
+				})
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": []string{"application/json"}},
+					Body: io.NopCloser(strings.NewReader(
+						`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`,
+					)),
+				}, nil
+			})}
+
+			const sessionID = "shared-codex-session"
+			send := func(prompt, threadID string) {
+				t.Helper()
+				response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+					"model": "claude-sonnet-4-6", "stream": false,
+					"input": []any{map[string]any{
+						"role": "user", "content": []any{map[string]any{"type": "input_text", "text": prompt}},
+					}},
+				}, map[string]string{"Session-Id": sessionID, "Thread-Id": threadID})
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+
+			send("parent first turn", "parent-thread")
+			send("parent second turn", "parent-thread")
+			send("child turn", "child-thread")
+
+			if len(captured) != 3 || captured[0].sessionID == "" ||
+				captured[0].sessionID != captured[1].sessionID || captured[0].sessionID == captured[2].sessionID {
+				t.Fatalf("thread-scoped Anthropic sessions=%v", captured)
+			}
+			for _, request := range captured {
+				if _, err := uuid.Parse(request.sessionID); err != nil {
+					t.Fatalf("Anthropic session ID=%q, want UUID: %v", request.sessionID, err)
+				}
+				bodySessionID := anthropicSessionIDFromBody(request.body)
+				if test.authType == model.AuthTypeAnthropicOAuth {
+					if bodySessionID != request.sessionID {
+						t.Fatalf("OAuth body session=%q header session=%q body=%s", bodySessionID, request.sessionID, request.body)
+					}
+				} else if gjson.GetBytes(request.body, "metadata.user_id").Exists() {
+					t.Fatalf("API key converter fabricated metadata identity: %s", request.body)
+				}
+			}
+		})
 	}
 }
 
@@ -1224,6 +1310,81 @@ func TestProxy_AntigravityOAuthKeepsClaudeSessionStable(t *testing.T) {
 		if _, err := strconv.ParseUint(strings.TrimPrefix(sessionID, "-"), 10, 63); err != nil {
 			t.Fatalf("Antigravity sessionId=%q, want negative decimal: %v", sessionID, err)
 		}
+	}
+}
+
+func TestProxy_AntigravityOAuthSeparatesThreadsAcrossSessionSources(t *testing.T) {
+	tests := []struct {
+		name       string
+		headerName string
+		metadata   bool
+	}{
+		{name: "canonical session header", headerName: "Session-Id"},
+		{name: "legacy session header", headerName: "Session_id"},
+		{name: "Claude Code session header", headerName: "X-Claude-Code-Session-Id"},
+		{name: "Claude metadata fallback", metadata: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var sessionIDs []string
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Errorf("read Antigravity request: %v", err)
+					return
+				}
+				sessionIDs = append(sessionIDs, gjson.GetBytes(wire, "request.sessionId").String())
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}`)
+			}))
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-thread-identity", upstreamProtocol: "gemini",
+				models: "claude-opus-4-6-thinking", priority: 100,
+				authType:        model.AuthTypeAntigravityOAuth,
+				oauthCredential: antigravityProxyTestCredential(t, "at-thread-identity"),
+			}}, map[int]string{0: upstream.URL})
+
+			const sessionID = "3be41d7e-a986-4a57-b84d-e0c53c6f7859"
+			send := func(prompt, threadID string) {
+				t.Helper()
+				headers := map[string]string{"Thread-Id": threadID}
+				if test.headerName != "" {
+					headers[test.headerName] = sessionID
+				}
+				body := map[string]any{
+					"model": "claude-opus-4-6-thinking", "max_tokens": 64,
+					"messages": []any{map[string]any{"role": "user", "content": prompt}},
+				}
+				if test.metadata {
+					identity, err := json.Marshal(map[string]string{"device_id": "device-1", "session_id": sessionID})
+					if err != nil {
+						t.Fatalf("marshal Claude identity: %v", err)
+					}
+					body["metadata"] = map[string]any{"user_id": string(identity)}
+				}
+				response := doProxyRequest(t, env.engine, "/v1/messages", body, headers)
+				if response.Code != http.StatusOK {
+					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+			}
+
+			send("parent first turn", "parent-thread")
+			send("parent second turn", "parent-thread")
+			send("child turn", "child-thread")
+
+			if len(sessionIDs) != 3 || sessionIDs[0] == "" || sessionIDs[0] != sessionIDs[1] || sessionIDs[0] == sessionIDs[2] {
+				t.Fatalf("thread-scoped Antigravity session IDs=%v", sessionIDs)
+			}
+			for _, providerSessionID := range sessionIDs {
+				if !strings.HasPrefix(providerSessionID, "-") {
+					t.Fatalf("Antigravity sessionId=%q, want negative decimal", providerSessionID)
+				}
+				if _, err := strconv.ParseUint(strings.TrimPrefix(providerSessionID, "-"), 10, 63); err != nil {
+					t.Fatalf("Antigravity sessionId=%q, want negative decimal: %v", providerSessionID, err)
+				}
+			}
+		})
 	}
 }
 

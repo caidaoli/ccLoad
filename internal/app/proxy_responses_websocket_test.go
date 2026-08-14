@@ -2009,7 +2009,9 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 		}
 		for name, want := range map[string]string{
 			"Conversation_id":                       "ws-session",
+			"Session-Id":                            "ws-session",
 			"Session_id":                            "ws-session",
+			"Thread-Id":                             "worker-thread",
 			"Version":                               "1.2.3",
 			"X-Client-Request-Id":                   "request-1",
 			"X-Codex-Beta-Features":                 "feature-1",
@@ -2079,6 +2081,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 			"OpenAI-Beta":                           []string{"other-feature"},
 			"Originator":                            []string{"client-attacker"},
 			"Session-Id":                            []string{"ws-session"},
+			"Thread-Id":                             []string{"worker-thread"},
 			"User-Agent":                            []string{"client-attacker"},
 			"Version":                               []string{"1.2.3"},
 			"X-Arbitrary-Client":                    []string{"drop-me"},
@@ -2856,6 +2859,103 @@ func TestHTTPResponsesCacheHintsDoNotSerializeIndependentRequests(t *testing.T) 
 				}
 			}
 		})
+	}
+}
+
+func TestCodexHTTPGatewayChainPreservesThreadConcurrency(t *testing.T) {
+	type executionIdentity struct {
+		sessionID string
+		threadID  string
+	}
+
+	arrived := make(chan executionIdentity, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseUpstream := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseUpstream)
+
+	finalUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		arrived <- executionIdentity{
+			sessionID: r.Header.Get("Session-Id"),
+			threadID:  r.Header.Get("Thread-Id"),
+		}
+		select {
+		case <-release:
+		case <-r.Context().Done():
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-done\",\"output\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
+	}))
+	defer finalUpstream.Close()
+
+	inner := setupProxyTestEnv(t, []testChannel{{
+		name: "inner-codex", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: finalUpstream.URL})
+	inner.server.client = finalUpstream.Client()
+	innerGateway := httptest.NewServer(inner.engine)
+	defer innerGateway.Close()
+
+	outer := setupProxyTestEnv(t, []testChannel{{
+		name: "outer-codex", upstreamProtocol: "codex", models: "gpt-test",
+		apiKey: "test-api-key", priority: 100,
+	}}, map[int]string{0: innerGateway.URL})
+	outer.server.client = innerGateway.Client()
+
+	responses := make(chan *httptest.ResponseRecorder, 2)
+	for _, threadID := range []string{"parent-thread", "child-thread"} {
+		body, err := json.Marshal(map[string]any{
+			"model": "gpt-test", "stream": true,
+			"input": []any{map[string]any{"role": "user", "content": threadID}},
+		})
+		if err != nil {
+			t.Fatalf("marshal %s request: %v", threadID, err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/responses", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer test-api-key")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Session-Id", "shared-session")
+		req.Header.Set("Thread-Id", threadID)
+		recorder := httptest.NewRecorder()
+		go func() {
+			outer.engine.ServeHTTP(recorder, req)
+			responses <- recorder
+		}()
+	}
+
+	identities := make(map[string]string, 2)
+	serialized := false
+	timer := time.NewTimer(time.Second)
+	for len(identities) < 2 && !serialized {
+		select {
+		case identity := <-arrived:
+			identities[identity.threadID] = identity.sessionID
+		case <-timer.C:
+			serialized = true
+		}
+	}
+	if !serialized && !timer.Stop() {
+		<-timer.C
+	}
+	releaseUpstream()
+
+	for completed := 0; completed < 2; completed++ {
+		select {
+		case recorder := <-responses:
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("gateway-chain response status=%d body=%s", recorder.Code, recorder.Body.String())
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("gateway-chain HTTP response did not finish")
+		}
+	}
+	if serialized {
+		t.Fatalf("final upstream arrivals before release=%d, want 2; inner gateway serialized distinct threads", len(identities))
+	}
+	for _, threadID := range []string{"parent-thread", "child-thread"} {
+		if got := identities[threadID]; got != "shared-session" {
+			t.Errorf("final upstream identity for %s: Session-Id=%q", threadID, got)
+		}
 	}
 }
 

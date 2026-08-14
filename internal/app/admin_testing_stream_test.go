@@ -1537,7 +1537,6 @@ func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T
 	type capturedRequest struct {
 		body      []byte
 		sessionID string
-		threadID  string
 	}
 	var captured []capturedRequest
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1548,7 +1547,6 @@ func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T
 		captured = append(captured, capturedRequest{
 			body:      body,
 			sessionID: r.Header.Get("Session-Id"),
-			threadID:  r.Header.Get("Thread-Id"),
 		})
 		_, _ = io.WriteString(w, "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"status\":\"in_progress\"}}\n\n")
 		_, _ = io.WriteString(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n")
@@ -1612,9 +1610,6 @@ func TestHandleChannelChat_CodexOAuthKeepsConversationCacheIdentity(t *testing.T
 	}
 	if captured[2].sessionID == captured[0].sessionID {
 		t.Fatalf("different conversation reused headers: first=%+v third=%+v", captured[0], captured[2])
-	}
-	if captured[0].threadID != "" || captured[1].threadID != "" || captured[2].threadID != "" {
-		t.Fatalf("Thread-Id is not part of the Codex upstream HTTP contract: %+v", captured)
 	}
 	firstInstallationID := gjson.GetBytes(captured[0].body, "client_metadata.x-codex-installation-id").String()
 	secondInstallationID := gjson.GetBytes(captured[1].body, "client_metadata.x-codex-installation-id").String()

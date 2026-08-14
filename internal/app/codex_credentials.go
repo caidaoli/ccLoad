@@ -30,6 +30,7 @@ var codexHTTPForwardHeaders = []string{
 	"User-Agent",
 	"Session_id",
 	"Session-Id",
+	"Thread-Id",
 	"Originator",
 }
 

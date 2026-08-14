@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 
 	"ccLoad/internal/protocol"
@@ -624,6 +625,64 @@ func TestRegistry_TranslateRequest_OpenAIToAnthropic(t *testing.T) {
 	}
 	if !strings.Contains(string(got), `"stream":false`) {
 		t.Fatalf("expected anthropic stream=false to preserve non-stream request, got %s", got)
+	}
+}
+
+func TestRegistry_TranslateRequestToAnthropicDoesNotFabricateSharedIdentity(t *testing.T) {
+	tests := []struct {
+		name string
+		from protocol.Protocol
+		body []byte
+	}{
+		{
+			name: "openai chat completions",
+			from: protocol.OpenAI,
+			body: []byte(`{"model":"claude-3-5-sonnet","messages":[{"role":"user","content":"hello"}]}`),
+		},
+		{
+			name: "codex responses",
+			from: protocol.Codex,
+			body: []byte(`{"model":"claude-3-5-sonnet","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}`),
+		},
+		{
+			name: "gemini",
+			from: protocol.Gemini,
+			body: []byte(`{"model":"claude-3-5-sonnet","contents":[{"role":"user","parts":[{"text":"hello"}]}]}`),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			reg := protocol.NewRegistry()
+			builtin.Register(reg)
+			const requests = 32
+			results := make(chan []byte, requests)
+			errors := make(chan error, requests)
+			var wg sync.WaitGroup
+			for range requests {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					out, err := reg.TranslateRequest(test.from, protocol.Anthropic, "claude-3-5-sonnet", test.body, false)
+					if err != nil {
+						errors <- err
+						return
+					}
+					results <- out
+				}()
+			}
+			wg.Wait()
+			close(results)
+			close(errors)
+			for err := range errors {
+				t.Fatalf("TranslateRequest failed: %v", err)
+			}
+			for out := range results {
+				if gjson.GetBytes(out, "metadata.user_id").Exists() {
+					t.Fatalf("translator fabricated process-global identity: %s", out)
+				}
+			}
+		})
 	}
 }
 
