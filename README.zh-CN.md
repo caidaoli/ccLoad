@@ -706,25 +706,25 @@ curl -X POST http://localhost:8080/admin/channels \
 **OpenAI 兼容上游示例**：
 
 ```bash
-# 添加指向任意 OpenAI 兼容网关的渠道
+# 添加使用 OpenAI 线协议的渠道
 curl -X POST http://localhost:8080/admin/channels \
   -H "Content-Type: application/json" \
   -d '{
-    "name": "FlowBar",
+    "name": "OpenAI-Compatible",
     "api_key": "sk-xxx",
     "urls": [
-      {"url": "https://api.flowbarai.com/v1", "protocols": ["openai"]}
+      {"url": "https://api.openai.com", "protocols": ["openai"]}
     ],
     "protocol_transform_mode": "auto",
     "priority": 10,
     "rpm_limit": 0,
     "max_concurrency": 0,
-    "models": [{"model": "gpt-5.6-luna"}, {"model": "claude-opus-4-8"}, {"model": "deepseek-v4-pro"}, {"model": "qwen-3-7-max"}, {"model": "kimi-k3"}],
+    "models": [{"model": "gpt-4o"}],
     "enabled": true
   }'
 ```
 
-> 任何 OpenAI 兼容端点均可使用，只需修改 `urls[].url`；`protocols: ["openai"]` 声明将该渠道作为 OpenAI 上游路由。
+> 任何 OpenAI 兼容服务均可使用，只需把 `urls[].url` 改为它的 API 基础地址。不要包含 `/v1` 或具体端点路径，ccLoad 会按所选协议自动追加。`protocols: ["openai"]` 声明将该渠道作为 OpenAI 上游路由。
 
 > **协议行为说明**：每个 `urls` 条目可通过 `protocols` 声明 `anthropic`、`codex`、`openai`、`gemini` 能力，非空列表是权威配置。`upstream` 只直通客户端协议；`auto` 先尝试客户端协议，再按 OpenAI → Anthropic → Codex → Gemini 自动探测并跳过已试协议；`local` 优先显式声明的 URL 和配置顺序。`local` 下仅当全部 URL 都未声明时，才按 Anthropic → Codex → OpenAI → Gemini 尝试。
 
