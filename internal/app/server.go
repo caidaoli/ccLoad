@@ -1390,6 +1390,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/codex/oauth/callback", s.HandleSubmitCodexOAuthCallback)
 		admin.POST("/codex/credentials/import", s.HandleImportCodexCredential)
 		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
+		admin.PUT("/channels/:id/codex-quota-overdraft", s.HandleUpdateCodexQuotaOverdraft)
 		admin.POST("/channels/:id/oauth-usage", s.HandleOAuthUsage)
 		admin.POST("/channels/oauth-usage/batch/stream", s.HandleOAuthUsageBatchStream)
 		admin.POST("/antigravity/oauth/start", s.HandleStartAntigravityOAuth)

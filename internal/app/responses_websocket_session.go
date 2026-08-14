@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/tidwall/gjson"
@@ -58,29 +59,17 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 		return nil, fmt.Errorf("%w: %q", errResponsesWebsocketPreviousResponseNotFound, previousID)
 	}
 	if s.replacementReplayRequired && requestType == responsesWebsocketRequestCreate && previousID == "" {
-		normalized, err := normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
-		if err != nil {
-			return nil, err
-		}
-		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
+		return s.normalizeFullReplacement(payload)
 	}
 	if len(s.pendingToolCallIDs) > 0 && !inputSatisfiesResponsesWebsocketToolCalls(nextInput, s.pendingToolCallIDs) {
 		if previousID != "" || requestType == responsesWebsocketRequestAppend {
 			return nil, errors.New("incremental websocket request is missing output for a pending tool call")
 		}
-		normalized, err := normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
-		if err != nil {
-			return nil, err
-		}
-		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
+		return s.normalizeFullReplacement(payload)
 	}
 
 	if previousID == "" && inputContainsCompletedTranscript(nextInput) {
-		normalized, err := normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
-		if err != nil {
-			return nil, err
-		}
-		return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
+		return s.normalizeFullReplacement(payload)
 	}
 
 	merged, err := mergeResponsesWebsocketInput(
@@ -99,6 +88,18 @@ func (s *responsesWebsocketSession) normalizeRequest(payload []byte) ([]byte, er
 	normalized, err = sjson.SetRawBytes(normalized, "input", merged)
 	if err != nil {
 		return nil, fmt.Errorf("set merged websocket input: %w", err)
+	}
+	return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
+}
+
+func (s *responsesWebsocketSession) normalizeFullReplacement(payload []byte) ([]byte, error) {
+	normalized, err := normalizeReplacementResponsesWebsocketRequest(payload, s.lastRequest)
+	if err != nil {
+		return nil, err
+	}
+	normalized, err = preserveGatewayOwnedResponsesInput(normalized, s.lastRequest)
+	if err != nil {
+		return nil, err
 	}
 	return finalizeResponsesWebsocketRequest(normalized, s.maxBodyBytes)
 }
@@ -238,6 +239,88 @@ func normalizeReplacementResponsesWebsocketRequest(payload []byte, lastRequest [
 		return nil, fmt.Errorf("force streaming request: %w", err)
 	}
 	return normalized, nil
+}
+
+// preserveGatewayOwnedResponsesInput keeps internal completed tool pairs across
+// a client-driven full replay. The client cannot echo items it never received.
+// We only restore them when the client's visible input exactly extends the last
+// committed visible prefix; otherwise replacement semantics win and we do not
+// guess where hidden state belongs.
+func preserveGatewayOwnedResponsesInput(payload, lastRequest []byte) ([]byte, error) {
+	lastInput := gjson.GetBytes(lastRequest, "input")
+	nextInput := gjson.GetBytes(payload, "input")
+	if !lastInput.IsArray() || !nextInput.IsArray() {
+		return payload, nil
+	}
+
+	lastItems := lastInput.Array()
+	visibleItems := make([]gjson.Result, 0, len(lastItems))
+	gatewayCallIDs := make(map[string]struct{})
+	for index := 0; index < len(lastItems); index++ {
+		if index+1 < len(lastItems) {
+			if callID, ok := codexQuotaOverdraftGatewayPair(lastItems[index], lastItems[index+1]); ok {
+				gatewayCallIDs[callID] = struct{}{}
+				index++
+				continue
+			}
+		}
+		visibleItems = append(visibleItems, lastItems[index])
+	}
+	if len(gatewayCallIDs) == 0 {
+		return payload, nil
+	}
+
+	nextItems := nextInput.Array()
+	if len(nextItems) < len(visibleItems) {
+		return payload, nil
+	}
+	for index := range visibleItems {
+		if !responsesWebsocketJSONEqual(visibleItems[index], nextItems[index]) {
+			return payload, nil
+		}
+	}
+	for _, item := range nextItems {
+		if _, exists := gatewayCallIDs[strings.TrimSpace(item.Get("call_id").String())]; exists {
+			return payload, nil
+		}
+	}
+
+	merged := make([]json.RawMessage, 0, len(lastItems)+len(nextItems)-len(visibleItems))
+	for _, item := range lastItems {
+		merged = append(merged, json.RawMessage(bytes.Clone([]byte(item.Raw))))
+	}
+	for _, item := range nextItems[len(visibleItems):] {
+		merged = append(merged, json.RawMessage(bytes.Clone([]byte(item.Raw))))
+	}
+	encoded, err := json.Marshal(merged)
+	if err != nil {
+		return nil, fmt.Errorf("marshal websocket gateway-owned input: %w", err)
+	}
+	updated, err := sjson.SetRawBytes(payload, "input", encoded)
+	if err != nil {
+		return nil, fmt.Errorf("restore websocket gateway-owned input: %w", err)
+	}
+	return updated, nil
+}
+
+func codexQuotaOverdraftGatewayPair(call, output gjson.Result) (string, bool) {
+	if strings.TrimSpace(call.Get("type").String()) != "custom_tool_call" ||
+		strings.TrimSpace(call.Get("name").String()) != "exec" ||
+		strings.TrimSpace(output.Get("type").String()) != "custom_tool_call_output" {
+		return "", false
+	}
+	callID := strings.TrimSpace(call.Get("call_id").String())
+	return callID, strings.HasPrefix(callID, "call_ccload_overdraft_") &&
+		strings.TrimSpace(output.Get("call_id").String()) == callID
+}
+
+func responsesWebsocketJSONEqual(left, right gjson.Result) bool {
+	var leftValue any
+	var rightValue any
+	if json.Unmarshal([]byte(left.Raw), &leftValue) != nil || json.Unmarshal([]byte(right.Raw), &rightValue) != nil {
+		return false
+	}
+	return reflect.DeepEqual(leftValue, rightValue)
 }
 
 func mergeResponsesWebsocketInput(parts ...gjson.Result) ([]byte, error) {

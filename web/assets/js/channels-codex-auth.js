@@ -96,6 +96,32 @@ function renderOAuthCredential(credential, credentialInfo = null, view = 'decode
   renderCurrentOAuthCredential();
 }
 
+function renderCodexQuotaOverdraft(credential, visible) {
+  const settings = document.getElementById('codexQuotaOverdraftSettings');
+  const checkbox = document.getElementById('codexQuotaOverdraftEnabled');
+  const requests = document.getElementById('codexQuotaOverdraftRequests');
+  const cost = document.getElementById('codexQuotaOverdraftCost');
+  const overdraft = credential?.quota_overdraft || {};
+  if (settings) settings.hidden = !visible;
+  if (checkbox) {
+    checkbox.disabled = !visible;
+    checkbox.checked = visible && overdraft.enabled === true;
+  }
+  if (requests) requests.textContent = String(Math.max(0, Number(overdraft.successful_requests) || 0));
+  if (cost) {
+    const costUSD = Math.max(0, Number(overdraft.cost_microusd) || 0) / 1e6;
+    if (costUSD === 0) {
+      cost.textContent = '$0';
+    } else if (costUSD < 0.001) {
+      cost.textContent = `$${costUSD.toFixed(6)}`;
+    } else {
+      cost.textContent = typeof window !== 'undefined' && typeof window.formatCost === 'function'
+        ? window.formatCost(costUSD)
+        : `$${costUSD.toFixed(6)}`;
+    }
+  }
+}
+
 function setOAuthCredentialView(view) {
   currentOAuthCredentialView = view === 'raw' ? 'raw' : 'decoded';
   renderCurrentOAuthCredential();
@@ -165,6 +191,7 @@ function applyChannelAuthEditorMode(
     codexOAuth ? credentialInfo : null,
     credentialView
   );
+  renderCodexQuotaOverdraft(credential, codexOAuth);
 
   document.querySelectorAll('input[name="keyStrategy"]').forEach(input => {
     input.disabled = oauth;
@@ -1629,6 +1656,52 @@ async function refreshOAuthCredential(channelID, fetcher = fetchDataWithAuth, au
   return fetcher(`/admin/channels/${numericID}/${resource}/refresh`, { method: 'POST' });
 }
 
+async function updateCodexQuotaOverdraft(channelID, enabled, fetcher = fetchDataWithAuth) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved Codex channel is required');
+  }
+  return fetcher(`/admin/channels/${numericID}/codex-quota-overdraft`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ enabled: enabled === true })
+  });
+}
+
+function resetCodexQuotaOverdraftDraft() {
+  renderCodexQuotaOverdraft(currentOAuthCredential, editingChannelAuthType === 'codex_oauth');
+}
+
+async function saveCodexQuotaOverdraftFromAdvancedSettings(
+  channelID = editingChannelId,
+  fetcher = fetchDataWithAuth
+) {
+  const settings = document.getElementById('codexQuotaOverdraftSettings');
+  const checkbox = document.getElementById('codexQuotaOverdraftEnabled');
+  if (!settings || settings.hidden || !checkbox) return null;
+
+  const enabled = checkbox.checked === true;
+  const persisted = currentOAuthCredential?.quota_overdraft || {};
+  if (enabled === (persisted.enabled === true)) return persisted;
+
+  try {
+    const result = await updateCodexQuotaOverdraft(channelID, enabled, fetcher);
+    if (!result?.quota_overdraft) {
+      throw new Error(window.t('channels.codex.quotaOverdraftSaveFailed'));
+    }
+    currentOAuthCredential = {
+      ...(currentOAuthCredential || {}),
+      quota_overdraft: result.quota_overdraft
+    };
+    renderCurrentOAuthCredential();
+    renderCodexQuotaOverdraft(currentOAuthCredential, true);
+    return result.quota_overdraft;
+  } catch (error) {
+    renderCodexQuotaOverdraft(currentOAuthCredential, true);
+    throw error;
+  }
+}
+
 function getOAuthUsageState(channelID) {
   const numericID = Number(channelID);
   if (!Number.isInteger(numericID) || numericID <= 0) return null;
@@ -2322,6 +2395,9 @@ if (typeof module !== 'undefined' && module.exports) {
     refreshOAuthUsage,
     refreshOAuthUsageBatch,
     renderOAuthCredential,
+    resetCodexQuotaOverdraftDraft,
+    saveCodexQuotaOverdraftFromAdvancedSettings,
+    updateCodexQuotaOverdraft,
     setOAuthCredentialView,
     setupOAuthActions,
     showOAuthSession,

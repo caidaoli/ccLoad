@@ -612,6 +612,92 @@ func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t
 	}
 }
 
+func TestCodexQuotaOverdraftRetryBody_AppendsCompletedToolPair(t *testing.T) {
+	original := []byte(`{"model":"gpt-5.4","input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}`)
+	before := bytes.Clone(original)
+	cfg := &model.Config{
+		AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: `{"type":"codex","access_token":"at","refresh_token":"rt",` +
+			`"expired":"2030-01-01T00:00:00Z","quota_overdraft":{"enabled":true}}`,
+	}
+	plan := protocol.TransformPlan{
+		ClientProtocol: protocol.Codex, UpstreamProtocol: protocol.Codex,
+		RequestFamily: protocol.RequestFamilyResponses, TranslatedBody: original,
+	}
+	res := &fwResult{
+		Status: http.StatusTooManyRequests,
+		Body:   []byte(`{"error":{"type":"usage_limit_reached","resets_at":4102444800}}`),
+	}
+
+	retryBody, retryTranscript, activeUntil, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPost, plan, res, original)
+	if !ok {
+		t.Fatal("codexQuotaOverdraftRetryBodies returned ok=false")
+	}
+	if activeUntil != 4102444800 {
+		t.Fatalf("activeUntil=%d, want upstream reset", activeUntil)
+	}
+	if !bytes.Equal(retryBody, retryTranscript) {
+		t.Fatalf("wire body and transcript must contain the same tool pair:\nwire=%s\ntranscript=%s", retryBody, retryTranscript)
+	}
+	if !bytes.Equal(original, before) {
+		t.Fatalf("original request body was mutated: %s", original)
+	}
+	items := gjson.GetBytes(retryBody, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("input items=%d body=%s, want 3", len(items), retryBody)
+	}
+	callID := items[1].Get("call_id").String()
+	if items[1].Get("type").String() != "custom_tool_call" || items[1].Get("name").String() != "exec" ||
+		!strings.HasPrefix(callID, "call_ccload_overdraft_") ||
+		items[2].Get("type").String() != "custom_tool_call_output" || items[2].Get("call_id").String() != callID ||
+		items[2].Get("output.0.text").String() != codexQuotaOverdraftExecOutput {
+		t.Fatalf("invalid overdraft tool pair: %s", retryBody)
+	}
+
+	if _, _, _, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPut, plan, res, original); ok {
+		t.Fatal("non-POST Responses request must not be replayed internally")
+	}
+
+	sseResult := &fwResult{
+		Status: http.StatusOK,
+		SSEErrorEvent: []byte(`{"type":"error","error":{"type":"usage_limit_reached"},` +
+			`"status_code":429}`),
+	}
+	if _, _, _, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPost, plan, sseResult, original); !ok {
+		t.Fatal("uncommitted SSE usage_limit_reached must be replayed")
+	}
+	for name, event := range map[string][]byte{
+		"missing embedded status": []byte(`{"type":"error","error":{"type":"usage_limit_reached"}}`),
+		"wrong embedded status":   []byte(`{"type":"error","error":{"type":"usage_limit_reached"},"status_code":401}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := &fwResult{Status: http.StatusOK, SSEErrorEvent: event}
+			if _, _, _, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPost, plan, result, original); ok {
+				t.Fatal("SSE usage limit without embedded 429 must not be replayed")
+			}
+		})
+	}
+	sseResult.ResponseCommitted = true
+	if _, _, _, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPost, plan, sseResult, original); ok {
+		t.Fatal("committed SSE error must not be replayed")
+	}
+
+	for name, body := range map[string][]byte{
+		"implicit message type": []byte(`{"model":"gpt-5.4","input":[{"role":"user","content":"hello"}]}`),
+		"trailing Responses Lite tools": []byte(`{"model":"gpt-5.4","input":[` +
+			`{"role":"user","content":"hello"},{"type":"additional_tools","tools":[]}]}`),
+	} {
+		t.Run(name, func(t *testing.T) {
+			variantPlan := plan
+			variantPlan.TranslatedBody = body
+			retryBody, _, _, ok := codexQuotaOverdraftRetryBodies(cfg, http.MethodPost, variantPlan, res, body)
+			if !ok || len(gjson.GetBytes(retryBody, "input").Array()) != len(gjson.GetBytes(body, "input").Array())+2 {
+				t.Fatalf("valid Responses user turn was not replayed: ok=%v body=%s", ok, retryBody)
+			}
+		})
+	}
+}
+
 func TestPrepareCodexResponsesBodyForUpstream_StripsAnyrouterUnsupportedInputBeforeForward(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-5.5",

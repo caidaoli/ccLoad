@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
@@ -18,7 +19,10 @@ import (
 // 错误处理核心函数
 // ============================================================================
 
-const cooldownWriteTimeout = 3 * time.Second
+const (
+	cooldownWriteTimeout                 = 3 * time.Second
+	codexQuotaOverdraftStatisticsTimeout = 3 * time.Second
+)
 
 var cooldownClearChannelFailCount atomic.Uint64
 var cooldownClearKeyFailCount atomic.Uint64
@@ -525,8 +529,38 @@ func (s *Server) handleProxySuccess(
 		reqCtx.routingSession.rememberPreferredChannel(cfg.ID)
 	}
 
-	// 记录成功日志
-	s.logProxyResult(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
+	// 日志与超额统计必须复用同一次成本计算，避免两个记账口径漂移。
+	entry := buildProxyLogEntry(reqCtx, cfg, actualModel, selectedKey, res.Status, duration, res, "")
+	overdraftEnabled, persistedOverdraftActive := codexQuotaOverdraftState(cfg, time.Now().Unix())
+	overdraftUsed := res.QuotaOverdraftReplayed
+	if res.QuotaOverdraftReplayed || overdraftEnabled {
+		if s.codexCredentials == nil {
+			log.Printf("[WARN] Codex 超额使用统计未写入: channel_id=%d credential manager unavailable", cfg.ID)
+			overdraftUsed = overdraftUsed || persistedOverdraftActive
+		} else {
+			statisticsCtx, statisticsCancel := context.WithTimeout(
+				context.WithoutCancel(ctx), codexQuotaOverdraftStatisticsTimeout,
+			)
+			_, recorded, err := s.codexCredentials.recordQuotaOverdraftSuccess(
+				statisticsCtx, cfg.ID, util.USDToMicroUSD(entry.Cost),
+				res.QuotaOverdraftReplayed, res.QuotaOverdraftActiveUntil,
+			)
+			statisticsCancel()
+			if err != nil {
+				// 统计失败不允许把已经成功的上游请求改成客户端失败。
+				log.Printf("[WARN] Codex 超额使用统计写入失败: channel_id=%d err=%v", cfg.ID, err)
+				// active_until 是已持久化的超额周期证据。本次记账失败不应
+				// 把真实超额请求的日志降级成普通 ok。
+				overdraftUsed = overdraftUsed || persistedOverdraftActive
+			} else {
+				overdraftUsed = overdraftUsed || recorded
+			}
+		}
+	}
+	if overdraftUsed && !res.QuotaOverdraftReplayed {
+		entry.Message = appendRetryStrategyToMessage(entry.Message, codexQuotaOverdraftRetryStrategy)
+	}
+	s.AddLogAsync(entry)
 
 	// 异步更新Token统计
 	s.updateTokenStatsForProxy(reqCtx, cfg, true, duration, res, actualModel)
@@ -543,6 +577,17 @@ func (s *Server) handleProxySuccess(
 		responsesTurn:    res.ResponsesTurnResult,
 		hasResponsesTurn: res.HasResponsesTurnResult,
 	}, cooldown.ActionReturnClient
+}
+
+func codexQuotaOverdraftState(cfg *model.Config, now int64) (enabled bool, active bool) {
+	if cfg == nil || !cfg.UsesCodexOAuth() {
+		return false, false
+	}
+	credential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil || credential.QuotaOverdraft == nil || !credential.QuotaOverdraft.Enabled {
+		return false, false
+	}
+	return true, credential.QuotaOverdraft.ActiveUntil > now
 }
 
 // handleStreamingErrorNoRetry 处理流式响应中途检测到的错误（597/599）

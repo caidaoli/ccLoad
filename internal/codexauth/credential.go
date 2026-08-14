@@ -19,18 +19,29 @@ const (
 // private channel field. General channel responses omit it; the authenticated
 // single-channel editor response may expose it for read-only inspection.
 type Credential struct {
-	IDToken       string          `json:"id_token,omitempty"`
-	AccessToken   string          `json:"access_token"`
-	RefreshToken  string          `json:"refresh_token"`
-	ChatGPTUserID string          `json:"chatgpt_user_id,omitempty"`
-	AccountID     string          `json:"account_id,omitempty"`
-	LastRefresh   string          `json:"last_refresh,omitempty"`
-	Email         string          `json:"email,omitempty"`
-	Type          string          `json:"type"`
-	Expired       string          `json:"expired"`
-	PlanType      string          `json:"plan_type,omitempty"`
-	PassiveUsage  *PassiveUsage   `json:"passive_usage,omitempty"`
-	OAuthUsage    json.RawMessage `json:"oauth_usage,omitempty"`
+	IDToken        string          `json:"id_token,omitempty"`
+	AccessToken    string          `json:"access_token"`
+	RefreshToken   string          `json:"refresh_token"`
+	ChatGPTUserID  string          `json:"chatgpt_user_id,omitempty"`
+	AccountID      string          `json:"account_id,omitempty"`
+	LastRefresh    string          `json:"last_refresh,omitempty"`
+	Email          string          `json:"email,omitempty"`
+	Type           string          `json:"type"`
+	Expired        string          `json:"expired"`
+	PlanType       string          `json:"plan_type,omitempty"`
+	PassiveUsage   *PassiveUsage   `json:"passive_usage,omitempty"`
+	OAuthUsage     json.RawMessage `json:"oauth_usage,omitempty"`
+	QuotaOverdraft *QuotaOverdraft `json:"quota_overdraft,omitempty"`
+}
+
+// QuotaOverdraft controls the one-shot usage_limit_reached replay and keeps
+// its active quota window plus cumulative successful usage in the private
+// credential payload.
+type QuotaOverdraft struct {
+	Enabled            bool  `json:"enabled"`
+	ActiveUntil        int64 `json:"active_until,omitempty"`
+	SuccessfulRequests int64 `json:"successful_requests,omitempty"`
+	CostMicroUSD       int64 `json:"cost_microusd,omitempty"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Codex upstream
@@ -116,6 +127,11 @@ func (c *Credential) Normalize() error {
 				return errors.New("codex credential has invalid passive_usage window")
 			}
 		}
+	}
+	if c.QuotaOverdraft != nil &&
+		(c.QuotaOverdraft.ActiveUntil < 0 || c.QuotaOverdraft.SuccessfulRequests < 0 ||
+			c.QuotaOverdraft.CostMicroUSD < 0) {
+		return errors.New("codex credential has invalid quota_overdraft state")
 	}
 
 	if c.Type == "" {
@@ -244,10 +260,20 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
 	}
 	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
+	merged.QuotaOverdraft = CloneQuotaOverdraft(c.QuotaOverdraft)
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}
 	return &merged, nil
+}
+
+// CloneQuotaOverdraft returns an independent settings and statistics snapshot.
+func CloneQuotaOverdraft(overdraft *QuotaOverdraft) *QuotaOverdraft {
+	if overdraft == nil {
+		return nil
+	}
+	clone := *overdraft
+	return &clone
 }
 
 // ClonePassiveUsage returns an independent quota snapshot.

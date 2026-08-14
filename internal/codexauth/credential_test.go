@@ -81,6 +81,9 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 			SampledAt: now.Format(time.RFC3339Nano),
 		},
 		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-02T03:00:00Z"}`),
+		QuotaOverdraft: &QuotaOverdraft{
+			Enabled: true, ActiveUntil: now.Add(2 * time.Hour).Unix(), SuccessfulRequests: 2, CostMicroUSD: 1250,
+		},
 	}
 	needsRefresh, err := current.NeedsRefresh(now, 5*time.Minute)
 	if err != nil || !needsRefresh {
@@ -94,12 +97,19 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	if merged.RefreshToken != "old-rt" || merged.ChatGPTUserID != "user-1" ||
 		merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
 		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 ||
-		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` {
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
+		merged.QuotaOverdraft == nil || !merged.QuotaOverdraft.Enabled ||
+		merged.QuotaOverdraft.ActiveUntil != now.Add(2*time.Hour).Unix() ||
+		merged.QuotaOverdraft.SuccessfulRequests != 2 || merged.QuotaOverdraft.CostMicroUSD != 1250 {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
+	current.QuotaOverdraft.SuccessfulRequests = 99
 	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
+	}
+	if merged.QuotaOverdraft.SuccessfulRequests != 2 {
+		t.Fatalf("merged quota overdraft shares mutable state with the old credential: %#v", merged.QuotaOverdraft)
 	}
 }
 
@@ -108,6 +118,8 @@ func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 		`{}`,
 		`{"type":"api_key","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"bad"}`,
+		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"successful_requests":-1}}`,
+		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"active_until":-1}}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} {}`,
 	}
 	for _, raw := range tests {

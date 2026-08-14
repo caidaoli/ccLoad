@@ -459,6 +459,37 @@
       display: none !important;
     }
 
+    .codex-quota-overdraft-settings {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      justify-content: space-between;
+      gap: var(--space-4);
+      margin-bottom: var(--space-4);
+      padding: var(--space-3) var(--space-4);
+      border: 1px solid var(--surface-border);
+      border-radius: 8px;
+      background: var(--field-bg);
+    }
+
+    .codex-quota-overdraft-settings[hidden] {
+      display: none !important;
+    }
+
+    .codex-quota-overdraft-summary {
+      display: flex;
+      flex: 0 0 auto;
+      align-items: center;
+      gap: var(--space-4);
+      color: var(--neutral-600);
+      font-size: 0.8125rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .codex-quota-overdraft-summary strong {
+      color: var(--neutral-900);
+    }
+
     .codex-credential-toolbar {
       display: flex;
       flex: 0 0 auto;
@@ -6527,6 +6558,12 @@
       }
 
       .codex-credential-toolbar {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .codex-quota-overdraft-settings,
+      .codex-quota-overdraft-summary {
         align-items: stretch;
         flex-direction: column;
       }

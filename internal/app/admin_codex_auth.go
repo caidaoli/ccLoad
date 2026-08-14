@@ -588,6 +588,7 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 			// credential when a concurrent quota sample wins the first CAS.
 			next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
 			next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
+			next.QuotaOverdraft = codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
 			if next.Email == "" {
 				next.Email = current.Email
 			}

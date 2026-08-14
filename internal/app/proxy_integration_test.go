@@ -49,6 +49,7 @@ type testChannel struct {
 	customRequestRules      *model.CustomRequestRules
 	cooldownDetectionRules  *model.CooldownDetectionRules
 	retryOtherKeysOnFailure bool
+	codexQuotaOverdraft     bool
 	models                  string // 逗号分隔的模型列表
 	apiKey                  string
 	authType                string
@@ -201,10 +202,22 @@ func setupProxyTestEnvWithSettings(
 				urls[urlIndex].Protocols = []string{upstreamProtocol}
 			}
 		}
+		oauthCredential := ch.oauthCredential
+		if ch.codexQuotaOverdraft {
+			credential, err := codexauth.ParseCredential([]byte(oauthCredential))
+			if err != nil {
+				t.Fatalf("parse Codex overdraft credential for %s: %v", ch.name, err)
+			}
+			credential.QuotaOverdraft = &codexauth.QuotaOverdraft{Enabled: true}
+			oauthCredential, err = credential.JSON()
+			if err != nil {
+				t.Fatalf("encode Codex overdraft credential for %s: %v", ch.name, err)
+			}
+		}
 		cfg := &model.Config{
 			Name:                    ch.name,
 			AuthType:                ch.authType,
-			OAuthCredential:         ch.oauthCredential,
+			OAuthCredential:         oauthCredential,
 			URLs:                    urls,
 			Websockets:              ch.websockets,
 			ProtocolTransformMode:   transformMode,
@@ -3131,6 +3144,322 @@ func TestProxy_CodexOAuthUsageLimitCoolsActualModel(t *testing.T) {
 		persistedCredential.PassiveUsage.Windows[0].LimitWindowSeconds != 7*24*60*60 ||
 		persistedCredential.PassiveUsage.Windows[0].ResetAt < before.Add(7250*time.Second).Unix() {
 		t.Fatalf("HTTP 429 Codex quota = (%#v, %v)", persistedCredential, err)
+	}
+}
+
+func TestProxy_CodexOAuthQuotaOverdraftReplaysSSEUsageLimitWithoutCooldown(t *testing.T) {
+	var attempts atomic.Int64
+	secondBody := make(chan []byte, 1)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if attempts.Add(1) == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, `event: error`+"\n"+
+				`data: {"type":"error","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"team","resets_in_seconds":7260},"status_code":429}`+"\n\n")
+			return
+		}
+		if attempts.Load() == 2 {
+			secondBody <- body
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-overdraft","object":"response","status":"completed","model":"gpt-5.4-mini","output":[],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-overdraft-success", upstreamProtocol: "codex", models: "gpt-5.4-mini,gpt-5.6-luna", priority: 100,
+		authType:            model.AuthTypeCodexOAuth,
+		oauthCredential:     codexProxyTestCredential(t, "at-overdraft-success", "rt-overdraft-success", "account-overdraft-success"),
+		codexQuotaOverdraft: true,
+	}}, map[int]string{0: upstream.URL})
+	seedConfigs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(seedConfigs) != 1 {
+		t.Fatalf("ListConfigs before request: configs=%d err=%v", len(seedConfigs), err)
+	}
+	if err := env.store.SetModelCooldown(context.Background(), seedConfigs[0].ID, "gpt-5.4-mini", time.Now().Add(time.Minute)); err != nil {
+		t.Fatalf("seed model cooldown: %v", err)
+	}
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.4-mini",
+		"input": []any{map[string]any{
+			"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "hello"}},
+		}},
+		"stream": true,
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("upstream attempts=%d, want 2", attempts.Load())
+	}
+
+	replayed := <-secondBody
+	items := gjson.GetBytes(replayed, "input").Array()
+	if len(items) != 3 {
+		t.Fatalf("replayed input items=%d body=%s, want original message plus tool pair", len(items), replayed)
+	}
+	callID := items[1].Get("call_id").String()
+	if items[1].Get("type").String() != "custom_tool_call" || items[1].Get("name").String() != "exec" ||
+		!strings.HasPrefix(callID, "call_ccload_overdraft_") ||
+		items[2].Get("type").String() != "custom_tool_call_output" || items[2].Get("call_id").String() != callID {
+		t.Fatalf("invalid overdraft tool pair: %s", replayed)
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	if len(cooldowns[configs[0].ID]) != 0 {
+		t.Fatalf("successful overdraft replay left model cooldowns: %+v", cooldowns[configs[0].ID])
+	}
+	entry := waitForProxyLog(t, env, "gpt-5.4-mini")
+	if entry.StatusCode != http.StatusOK || entry.Message != "ok [quota_overdraft]" {
+		t.Fatalf("proxy log status/message=%d/%q, want 200 overdraft success", entry.StatusCode, entry.Message)
+	}
+	if entry.Cost <= 0 {
+		t.Fatalf("overdraft success cost=%v, want priced request", entry.Cost)
+	}
+	persisted, err := env.store.GetConfig(context.Background(), configs[0].ID)
+	if err != nil {
+		t.Fatalf("GetConfig after overdraft success: %v", err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse persisted overdraft credential: %v", err)
+	}
+	if persistedCredential.QuotaOverdraft == nil || !persistedCredential.QuotaOverdraft.Enabled ||
+		persistedCredential.QuotaOverdraft.ActiveUntil <= time.Now().Unix() ||
+		persistedCredential.QuotaOverdraft.SuccessfulRequests != 1 ||
+		persistedCredential.QuotaOverdraft.CostMicroUSD != util.USDToMicroUSD(entry.Cost) {
+		t.Fatalf("persisted overdraft stats=%#v, want requests=1 cost_microusd=%d",
+			persistedCredential.QuotaOverdraft, util.USDToMicroUSD(entry.Cost))
+	}
+	logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("proxy logs=%d err=%v, want one final success log", len(logs), err)
+	}
+
+	followUp := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.6-luna",
+		"input": []any{map[string]any{
+			"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "follow up"}},
+		}},
+		"stream": true,
+	}, nil)
+	if followUp.Code != http.StatusOK || attempts.Load() != 3 {
+		t.Fatalf("follow-up status=%d attempts=%d body=%s, want direct active-cycle success",
+			followUp.Code, attempts.Load(), followUp.Body.String())
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		logs, err = env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+		if err == nil && len(logs) == 2 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err != nil || len(logs) != 2 || logs[0].Message != "ok [quota_overdraft]" || logs[1].Message != "ok [quota_overdraft]" {
+		t.Fatalf("active-cycle logs=%#v err=%v, want both successes marked overdraft", logs, err)
+	}
+	persisted, err = env.store.GetConfig(context.Background(), configs[0].ID)
+	if err != nil {
+		t.Fatalf("GetConfig after active-cycle follow-up: %v", err)
+	}
+	persistedCredential, err = codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	wantCost := util.USDToMicroUSD(logs[0].Cost) + util.USDToMicroUSD(logs[1].Cost)
+	if err != nil || persistedCredential.QuotaOverdraft == nil ||
+		persistedCredential.QuotaOverdraft.SuccessfulRequests != 2 ||
+		persistedCredential.QuotaOverdraft.CostMicroUSD != wantCost {
+		t.Fatalf("active-cycle stats=%#v err=%v, want requests=2 cost=%d",
+			persistedCredential.QuotaOverdraft, err, wantCost)
+	}
+}
+
+func TestProxy_CodexOAuthQuotaOverdraftRecoversLegacyActiveCycle(t *testing.T) {
+	now := time.Now().UTC()
+	resetAt := now.Add(time.Hour).Unix()
+	credential, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-overdraft-legacy", RefreshToken: "rt-overdraft-legacy",
+		Expired: now.Add(time.Hour).Format(time.RFC3339), AccountID: "account-overdraft-legacy",
+		QuotaOverdraft: &codexauth.QuotaOverdraft{Enabled: true, SuccessfulRequests: 1, CostMicroUSD: 100},
+		PassiveUsage: &codexauth.PassiveUsage{
+			SampledAt: now.Format(time.RFC3339Nano),
+			Windows: []codexauth.PassiveUsageWindow{{
+				Scope: codexauth.ChannelType, LimitName: "codex", Kind: "primary", UsedPercent: 100,
+				LimitWindowSeconds: 7 * 24 * 60 * 60, ResetAt: resetAt, SampledAt: now.Format(time.RFC3339Nano),
+			}},
+		},
+	}).JSON()
+	if err != nil {
+		t.Fatalf("encode legacy overdraft credential: %v", err)
+	}
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-overdraft-legacy",`+
+			`"status":"completed","model":"gpt-5.4-mini","output":[],`+
+			`"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-overdraft-legacy", upstreamProtocol: "codex", models: "gpt-5.4-mini", priority: 100,
+		authType: model.AuthTypeCodexOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.4-mini", "stream": true,
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "continue"}},
+	}, nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("legacy active-cycle status=%d body=%s", response.Code, response.Body.String())
+	}
+	entry := waitForProxyLog(t, env, "gpt-5.4-mini")
+	if entry.Message != "ok [quota_overdraft]" || entry.Cost <= 0 {
+		t.Fatalf("legacy active-cycle log=%#v", entry)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("legacy active-cycle configs=%d err=%v", len(configs), err)
+	}
+	persisted, err := codexauth.ParseCredential([]byte(configs[0].OAuthCredential))
+	wantCost := int64(100) + util.USDToMicroUSD(entry.Cost)
+	if err != nil || persisted.QuotaOverdraft == nil || persisted.QuotaOverdraft.ActiveUntil != resetAt ||
+		persisted.QuotaOverdraft.SuccessfulRequests != 2 || persisted.QuotaOverdraft.CostMicroUSD != wantCost {
+		t.Fatalf("legacy active-cycle stats=%#v err=%v, want requests=2 cost=%d", persisted, err, wantCost)
+	}
+}
+
+func TestProxy_CodexOAuthQuotaOverdraftDoesNotReplayCommittedSSEUsageLimit(t *testing.T) {
+	var attempts atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `event: response.output_text.delta`+"\n"+
+			`data: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"partial"}`+"\n\n")
+		_, _ = io.WriteString(w, `event: error`+"\n"+
+			`data: {"type":"error","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"team","resets_in_seconds":7260},"status_code":429}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-overdraft-committed", upstreamProtocol: "codex", models: "gpt-5.4-mini", priority: 100,
+		authType:            model.AuthTypeCodexOAuth,
+		oauthCredential:     codexProxyTestCredential(t, "at-overdraft-committed", "rt-overdraft-committed", "account-overdraft-committed"),
+		codexQuotaOverdraft: true,
+	}}, map[int]string{0: upstream.URL})
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.4-mini",
+		"input": []any{map[string]any{
+			"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "hello"}},
+		}},
+		"stream": true,
+	}, nil)
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "partial") {
+		t.Fatalf("committed response status/body=%d/%q, want HTTP 200 with partial output", response.Code, response.Body.String())
+	}
+	if attempts.Load() != 1 {
+		t.Fatalf("upstream attempts=%d, committed SSE error must not be replayed", attempts.Load())
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	if _, exists := cooldowns[configs[0].ID]["gpt-5.4-mini"]; !exists {
+		t.Fatal("committed SSE usage limit must still cool the affected model")
+	}
+	entry := waitForProxyLog(t, env, "gpt-5.4-mini")
+	if entry.StatusCode != http.StatusTooManyRequests || strings.Contains(entry.Message, "quota_overdraft") {
+		t.Fatalf("proxy log status/message=%d/%q, want ordinary 429 without overdraft marker", entry.StatusCode, entry.Message)
+	}
+	persisted, err := env.store.GetConfig(context.Background(), configs[0].ID)
+	if err != nil {
+		t.Fatalf("GetConfig after committed SSE error: %v", err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.QuotaOverdraft == nil ||
+		persistedCredential.QuotaOverdraft.SuccessfulRequests != 0 ||
+		persistedCredential.QuotaOverdraft.CostMicroUSD != 0 {
+		t.Fatalf("committed SSE error changed overdraft stats: credential=%#v err=%v", persistedCredential, err)
+	}
+}
+
+func TestProxy_CodexOAuthQuotaOverdraftReplayFailureAppliesCooldownOnce(t *testing.T) {
+	var attempts atomic.Int64
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"usage_limit_reached","message":"The usage limit has been reached","resets_in_seconds":7260}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-oauth-overdraft-failure", upstreamProtocol: "codex", models: "gpt-5.4-mini", priority: 100,
+		authType:            model.AuthTypeCodexOAuth,
+		oauthCredential:     codexProxyTestCredential(t, "at-overdraft-failure", "rt-overdraft-failure", "account-overdraft-failure"),
+		codexQuotaOverdraft: true,
+	}}, map[int]string{0: upstream.URL})
+
+	before := time.Now()
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-5.4-mini",
+		"input": []any{map[string]any{
+			"type": "message", "role": "user",
+			"content": []any{map[string]any{"type": "input_text", "text": "hello"}},
+		}},
+		"stream": false,
+	}, nil)
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("status=%d body=%s, want 429", response.Code, response.Body.String())
+	}
+	if attempts.Load() != 2 {
+		t.Fatalf("upstream attempts=%d, want exactly 2", attempts.Load())
+	}
+
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 {
+		t.Fatalf("ListConfigs: configs=%d err=%v", len(configs), err)
+	}
+	cooldowns, err := env.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatalf("GetAllModelCooldowns: %v", err)
+	}
+	duration := cooldowns[configs[0].ID]["gpt-5.4-mini"].Sub(before)
+	if duration < 7250*time.Second || duration > 7270*time.Second {
+		t.Fatalf("model cooldown duration=%v, want about 7260s", duration)
+	}
+	entry := waitForProxyLog(t, env, "gpt-5.4-mini")
+	if entry.StatusCode != http.StatusTooManyRequests || !strings.HasSuffix(entry.Message, "[quota_overdraft]") {
+		t.Fatalf("proxy log status/message=%d/%q, want final 429 overdraft marker", entry.StatusCode, entry.Message)
+	}
+	persisted, err := env.store.GetConfig(context.Background(), configs[0].ID)
+	if err != nil {
+		t.Fatalf("GetConfig after overdraft failure: %v", err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse persisted overdraft credential: %v", err)
+	}
+	if persistedCredential.QuotaOverdraft == nil || persistedCredential.QuotaOverdraft.SuccessfulRequests != 0 ||
+		persistedCredential.QuotaOverdraft.CostMicroUSD != 0 {
+		t.Fatalf("failed replay changed overdraft stats: %#v", persistedCredential.QuotaOverdraft)
+	}
+	logs, err := env.store.ListLogs(context.Background(), time.Now().Add(-time.Minute), 20, 0, &model.LogFilter{LogSource: model.LogSourceProxy})
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("proxy logs=%d err=%v, want one final failure log", len(logs), err)
 	}
 }
 
