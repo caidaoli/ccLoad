@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -458,6 +459,31 @@ func TestAdminSettingsHandlers(t *testing.T) {
 
 		if w.Code != http.StatusBadRequest {
 			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("AdminUpdateSetting_rejects_duplicated_oauth_url_scheme", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(
+			http.MethodPut,
+			"/admin/settings/ANTIGRAVITY_URL",
+			[]byte(`{"value":"https://https://antigravity.hz-dao.deno.net"}`),
+		))
+		c.Params = gin.Params{{Key: "key", Value: "ANTIGRAVITY_URL"}}
+
+		server.AdminUpdateSetting(c)
+
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+		if !strings.Contains(w.Body.String(), "use https://antigravity.hz-dao.deno.net") {
+			t.Fatalf("body=%s, want corrected URL", w.Body.String())
+		}
+		setting, err := store.GetSetting(context.Background(), "ANTIGRAVITY_URL")
+		if err != nil {
+			t.Fatalf("GetSetting() error = %v", err)
+		}
+		if setting.Value != "" {
+			t.Fatalf("ANTIGRAVITY_URL=%q, want unchanged empty default", setting.Value)
 		}
 	})
 

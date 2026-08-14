@@ -61,8 +61,21 @@ async function loadSettingsPage(t, settings, inputValues) {
       id: key,
       type: definitions.get(key)?.value_type === 'string' ? 'text' : 'number',
       value,
+      attributes: new Map(),
       closest() {
         return row;
+      },
+      setAttribute(name, attributeValue) {
+        this.attributes.set(name, String(attributeValue));
+      },
+      getAttribute(name) {
+        return this.attributes.get(name) ?? null;
+      },
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      },
+      focus() {
+        global.document.activeElement = this;
       }
     };
     inputs[key] = input;
@@ -78,8 +91,10 @@ async function loadSettingsPage(t, settings, inputValues) {
   const errors = [];
 
   global.window = {
-    t(key) {
+    t(key, params = {}) {
       if (key === 'settings.msg.confirmSave') return confirmMessage;
+      if (key === 'settings.msg.invalidValue') return `请检查 ${params.key}：${params.reason}`;
+      if (key === 'settings.validation.oauthURLDuplicatedScheme') return `协议头重复，请改为 ${params.url}。`;
       return key;
     },
     showNotification(message, type) {
@@ -197,6 +212,30 @@ test('保存设置须经用户确认', async (t) => {
 
   assert.deepEqual(page.prompts, [confirmMessage, confirmMessage]);
   assert.equal(saveRequests(page).length, 1);
+});
+
+test('OAuth 地址协议头重复时提示正确值且不提交', async (t) => {
+  const key = 'ANTIGRAVITY_URL';
+  const page = await loadSettingsPage(t, [{
+    key,
+    value: '',
+    value_type: 'string',
+    description: ''
+  }], {
+    [key]: 'https://https://antigravity.hz-dao.deno.net'
+  });
+  page.setAllowSave(true);
+
+  page.saveButton.click();
+  await flushAsyncWork();
+
+  assert.equal(saveRequests(page).length, 0);
+  assert.equal(page.prompts.length, 0);
+  assert.deepEqual(page.errors, [
+    '请检查 ANTIGRAVITY_URL：协议头重复，请改为 https://antigravity.hz-dao.deno.net。'
+  ]);
+  assert.equal(page.inputs[key].getAttribute('aria-invalid'), 'true');
+  assert.equal(global.document.activeElement, page.inputs[key]);
 });
 
 test('字节型设置以 MiB 数值编辑并以字节保存', async (t) => {
