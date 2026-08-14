@@ -3222,14 +3222,6 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	}
 	selector := s.urlSelector
 
-	// 多URL场景：异步做TCP连接探测预热
-	// 目的：通过TCP连接耗时（纯网络延迟，与模型推理无关）为URLSelector提供初始EWMA种子，
-	// 避免首次请求随机选到网络延迟更高的URL。
-	if len(urls) > 1 && selector != nil {
-		urlsSnapshot := append([]string(nil), urls...)
-		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
-	}
-
 	// Key重试循环
 	for range maxKeyRetries {
 		// 检查context是否已取消/超时
@@ -3300,10 +3292,6 @@ func (s *Server) tryOAuthChannel(
 		return nil, fmt.Errorf("no valid URLs configured for channel %d", cfg.ID)
 	}
 	selector := s.urlSelector
-	if len(urls) > 1 && selector != nil {
-		urlsSnapshot := append([]string(nil), urls...)
-		go selector.ProbeURLs(s.baseCtx, cfg.ID, urlsSnapshot)
-	}
 
 	var rejectedAccessToken string
 	var rejectedResult *proxyResult
