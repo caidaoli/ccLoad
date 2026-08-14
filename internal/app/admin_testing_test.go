@@ -2228,7 +2228,9 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 		if baseURL == antigravityDailyBaseURL {
 			status = http.StatusServiceUnavailable
 			body = antigravityCapacityBodyForAdminTest
-		} else if baseURL != antigravityProdBaseURL {
+		} else if baseURL == antigravityProdBaseURL {
+			t.Fatalf("production Antigravity URL was called: %s", baseURL)
+		} else if baseURL != antigravitySandboxDailyBaseURL {
 			t.Fatalf("unexpected Antigravity fallback URL: %s", baseURL)
 		}
 		return &http.Response{
@@ -2264,7 +2266,7 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 	gotURLs := append([]string(nil), baseURLs...)
 	gotTimes := append([]time.Time(nil), requestTimes...)
 	mu.Unlock()
-	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL}
+	wantURLs := []string{antigravityDailyBaseURL, antigravitySandboxDailyBaseURL}
 	if !slices.Equal(gotURLs, wantURLs) {
 		t.Fatalf("Antigravity test URLs=%v, want %v", gotURLs, wantURLs)
 	}
@@ -2299,11 +2301,11 @@ func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *t
 	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
 		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
 	}
-	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 2 次" {
+	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 1 次" {
 		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)
 	}
-	if got := calls.Load(); got != antigravityModelCapacityAttempts {
-		t.Fatalf("capacity calls=%d, want %d", got, antigravityModelCapacityAttempts)
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("capacity calls=%d, want 2", got)
 	}
 	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
 	if err != nil {

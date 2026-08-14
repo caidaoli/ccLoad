@@ -104,7 +104,6 @@ func antigravityOAuthPersistedURLs() model.ChannelURLs {
 func antigravityOAuthDefaultURLs() model.ChannelURLs {
 	return model.ChannelURLs{
 		{URL: antigravityDailyBaseURL, Protocols: []string{"gemini"}},
-		{URL: antigravityProdBaseURL, Protocols: []string{"gemini"}},
 		{URL: antigravitySandboxDailyBaseURL, Protocols: []string{"gemini"}},
 	}
 }
