@@ -23,6 +23,7 @@
     let currentAllowedModelFilter = '';
     let selectedChannelsForAdd = new Set();   // 渠道选择对话框中已选的渠道ID
     let currentVisibleChannels = [];          // 当前可见的渠道列表（用于全选功能）
+    let initialEditExpiryState = { type: 'never', value: '' };
 
     // 对话框栈，用于 ESC 键层级关闭
     const modalStack = [];
@@ -722,15 +723,18 @@
       document.getElementById('editTokenValue').value = token.token || '';
       document.getElementById('editTokenDescription').value = token.description;
       document.getElementById('editTokenActive').checked = token.is_active;
+      const expiryTypeInput = document.getElementById('editTokenExpiry');
+      const customExpiryInput = document.getElementById('editCustomExpiry');
       if (!token.expires_at) {
-        document.getElementById('editTokenExpiry').value = 'never';
+        expiryTypeInput.value = 'never';
+        customExpiryInput.value = '';
         document.getElementById('editCustomExpiryContainer').style.display = 'none';
       } else {
-        document.getElementById('editTokenExpiry').value = 'custom';
+        expiryTypeInput.value = 'custom';
         document.getElementById('editCustomExpiryContainer').style.display = 'block';
-        document.getElementById('editCustomExpiry').value =
-          TokenExpiry.formatDateTimeLocal(token.expires_at);
+        customExpiryInput.value = TokenExpiry.formatDateTimeLocal(token.expires_at);
       }
+      initialEditExpiryState = { type: expiryTypeInput.value, value: customExpiryInput.value };
 
       // 初始化费用限额状态（2026-01新增）
       const costLimitInput = document.getElementById('editCostLimitUSD');
@@ -775,7 +779,9 @@
     function closeEditModal() {
       document.getElementById('editModal').style.display = 'none';
       document.getElementById('editTokenValue').value = '';
+      document.getElementById('editCustomExpiry').value = '';
       document.getElementById('editCustomExpiryContainer').style.display = 'none';
+      initialEditExpiryState = { type: 'never', value: '' };
       // 清理模型限制状态
       editAllowedModels = [];
       selectedAllowedModelIndices.clear();
@@ -807,10 +813,11 @@
         return;
       }
       const maxConcurrency = maxConcurrencyResult.value;
+      let customDate = '';
       let expiresAt = null;
       if (expiryType !== 'never') {
         if (expiryType === 'custom') {
-          const customDate = document.getElementById('editCustomExpiry').value;
+          customDate = document.getElementById('editCustomExpiry').value;
           if (!customDate) {
             window.showNotification(t('tokens.msg.selectExpiry'), 'error');
             return;
@@ -821,6 +828,11 @@
           expiresAt = Date.now() + days * 24 * 60 * 60 * 1000;
         }
       }
+      const expiryUpdate = TokenExpiry.buildUpdatePayload(
+        initialEditExpiryState,
+        { type: expiryType, value: customDate },
+        expiresAt
+      );
       try {
         await fetchDataWithAuth(`${API_BASE}/auth-tokens/${id}`, {
           method: 'PUT',
@@ -830,7 +842,7 @@
           body: JSON.stringify({
             description,
             is_active: isActive,
-            expires_at: expiresAt,
+            ...expiryUpdate,
             allowed_channel_ids: editAllowedChannelIDs,
             channel_restriction_mode: normalizeChannelRestrictionMode(editChannelRestrictionMode),
             allowed_models: editAllowedModels,  // 2026-01新增：模型限制
