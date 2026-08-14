@@ -362,6 +362,7 @@ func (e *responsesWebsocketTerminalError) Error() string {
 }
 
 type responsesWebsocketClientRetryError struct {
+	status  int
 	code    string
 	message string
 }
@@ -378,6 +379,13 @@ func (e *responsesWebsocketClientRetryError) responseCode() string {
 		return e.code
 	}
 	return responsesWebsocketRetryCode
+}
+
+func (e *responsesWebsocketClientRetryError) responseStatus() int {
+	if e != nil && e.status != 0 {
+		return e.status
+	}
+	return http.StatusBadGateway
 }
 
 func (s *Server) executeResponsesWebsocketTurn(
@@ -453,6 +461,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 	reqCtx := &proxyRequestContext{
 		originalModel:              modelName,
 		clientProtocol:             protocol.Codex,
+		codexClient:                isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
 		requestMethod:              http.MethodPost,
 		requestPath:                "/v1/responses",
 		rawQuery:                   c.Request.URL.RawQuery,
@@ -546,7 +555,15 @@ func (s *Server) executeResponsesWebsocketTurn(
 			committedRequest:    committedRequest,
 		}, nil
 	}
-	status := determineFinalClientStatus(lastResult)
+	originalStatus := determineFinalClientStatus(lastResult)
+	status := s.clientFacingFinalStatus(reqCtx.codexClient, lastResult)
+	if originalStatus == http.StatusTooManyRequests && status == http.StatusServiceUnavailable {
+		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
+			status:  http.StatusServiceUnavailable,
+			code:    "upstream_rate_limited",
+			message: "all upstream channels were rate limited; reconnect and retry the request",
+		}
+	}
 	if lastResult != nil && status == http.StatusRequestEntityTooLarge &&
 		isResponsesWebsocketMessageTooBigPayload(lastResult.body) {
 		if errClose := conn.WriteControl(
@@ -994,7 +1011,7 @@ func writeResponsesWebsocketClientRetryError(
 	conn *websocket.Conn,
 	retryErr *responsesWebsocketClientRetryError,
 ) error {
-	return writeResponsesWebsocketErrorPayload(conn, http.StatusBadGateway, responsesWebsocketErrorBody{
+	return writeResponsesWebsocketErrorPayload(conn, retryErr.responseStatus(), responsesWebsocketErrorBody{
 		Type: "server_error", Code: retryErr.responseCode(), Message: retryErr.Error(),
 	})
 }

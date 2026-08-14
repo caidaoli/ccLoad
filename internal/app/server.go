@@ -117,6 +117,7 @@ type Server struct {
 	// 模型匹配配置（启动时从数据库加载，修改后重启生效）
 	modelFuzzyMatch           bool // 未命中时启用模糊匹配（子串匹配+版本排序）
 	activeRequestTitleEnabled bool
+	codexMap429To503          bool
 	// 渠道未配置专属规则时使用的进程级默认规则。
 	globalCooldownDetectionRules *model.CooldownDetectionRules
 
@@ -217,6 +218,7 @@ func NewServer(store storage.Store) *Server {
 		// 模型匹配配置（启动时加载，修改后重启生效）
 		modelFuzzyMatch:              runtimeCfg.ModelFuzzyMatch,
 		activeRequestTitleEnabled:    runtimeCfg.ActiveRequestTitleEnabled,
+		codexMap429To503:             runtimeCfg.CodexMap429To503,
 		globalCooldownDetectionRules: runtimeCfg.GlobalCooldownDetectionRules,
 
 		// HTTP客户端：不设置请求总超时，连接复用时限只轮换连接池，不中断在途请求。
@@ -485,6 +487,7 @@ type serverRuntimeConfig struct {
 	LogRetentionDays             int
 	ModelFuzzyMatch              bool
 	ActiveRequestTitleEnabled    bool
+	CodexMap429To503             bool
 	GlobalCooldownDetectionRules *model.CooldownDetectionRules
 	Cooldown                     util.CooldownSettings
 }
@@ -592,6 +595,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		LogRetentionDays:             logRetentionDays,
 		ModelFuzzyMatch:              modelFuzzyMatch,
 		ActiveRequestTitleEnabled:    cs.GetBool(config.ActiveRequestTitleEnabledSettingKey, false),
+		CodexMap429To503:             cs.GetBool(config.CodexMap429To503SettingKey, false),
 		GlobalCooldownDetectionRules: loadGlobalCooldownDetectionRules(cs),
 		Cooldown:                     loadCooldownSettings(cs),
 	}

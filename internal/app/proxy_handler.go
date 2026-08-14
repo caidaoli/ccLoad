@@ -421,6 +421,7 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 	reqCtx := &proxyRequestContext{
 		originalModel:  originalModel,
 		clientProtocol: clientProtocol,
+		codexClient:    isCodexMultiAgentClient(codexMultiAgentUserAgent(c.Request.Header)),
 		requestMethod:  requestMethod,
 		requestPath:    effectiveRequestPath,
 		rawQuery:       c.Request.URL.RawQuery,
@@ -496,6 +497,14 @@ func determineFinalClientStatus(lastResult *proxyResult) int {
 
 	// 仅映射内部状态码（596-599），其他全部透传
 	return util.ClientStatusFor(status)
+}
+
+func (s *Server) clientFacingFinalStatus(codexClient bool, lastResult *proxyResult) int {
+	status := determineFinalClientStatus(lastResult)
+	if s.codexMap429To503 && codexClient && status == http.StatusTooManyRequests {
+		return http.StatusServiceUnavailable
+	}
+	return status
 }
 
 func shouldStopTryingChannels(result *proxyResult) bool {
@@ -648,7 +657,8 @@ func (s *Server) writeFinalProxyResponse(
 	candidateCount int,
 ) {
 	// 所有渠道都失败：返回“最后一次实际失败”的状态码（并映射内部状态码），避免一律伪装成503。
-	finalStatus := determineFinalClientStatus(lastResult)
+	upstreamFinalStatus := determineFinalClientStatus(lastResult)
+	finalStatus := s.clientFacingFinalStatus(reqCtx.codexClient, lastResult)
 
 	msg := "exhausted backends"
 	if lastResult != nil && lastResult.isClientCanceled {
@@ -656,6 +666,8 @@ func (s *Server) writeFinalProxyResponse(
 	} else if lastResult != nil && lastResult.status == 499 && finalStatus != 499 {
 		// 上游返回 499 没有任何“客户端取消”的语义价值：对外统一视为网关错误。
 		msg = "upstream returned 499 (mapped)"
+	} else if upstreamFinalStatus != finalStatus {
+		msg = fmt.Sprintf("upstream status %d (mapped to %d for Codex)", upstreamFinalStatus, finalStatus)
 	} else if finalStatus != http.StatusServiceUnavailable {
 		msg = fmt.Sprintf("upstream status %d", finalStatus)
 	}
@@ -672,7 +684,7 @@ func (s *Server) writeFinalProxyResponse(
 			Model:          originalModel,
 			LogSource:      model.LogSourceProxy,
 			ClientProtocol: string(reqCtx.clientProtocol),
-			StatusCode:     finalStatus,
+			StatusCode:     upstreamFinalStatus,
 			Message:        msg,
 			Duration:       time.Since(reqCtx.startTime).Seconds(),
 			IsStreaming:    isStreaming,

@@ -1025,6 +1025,7 @@ export CCLOAD_ENABLE_SQLITE_REPLICA=1
 | `cooldown_server_seconds` | `120` | 服务器错误（5xx）初始冷却时间（秒） |
 | `cooldown_timeout_seconds` | `60` | 超时错误（597/598）初始冷却时间（秒） |
 | `cooldown_rate_limit_seconds` | `60` | 限流错误（429）初始冷却时间（秒） |
+| `codex_map_429_to_503` | `false` | 将返回给官方 Codex 客户端的最终上游 429 映射为 503，使其按 5xx 重试；不影响其他 Responses 客户端和 ccLoad 自身限额 |
 | `cooldown_min_seconds` | `10` | 指数退避冷却下限（秒） |
 | `cooldown_max_seconds` | `1800` | 指数退避冷却上限（秒；下限大于上限时整对回退默认值） |
 | `cooldown_fallback_enabled` | `true` | 所有渠道都在冷却时，兜底选取「最早恢复」的渠道继续服务（Key 同样选最早恢复的）；设为 `false` 则直接拒绝请求 |

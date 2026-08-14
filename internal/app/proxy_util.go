@@ -153,6 +153,7 @@ type ForwardObserver struct {
 type proxyRequestContext struct {
 	originalModel              string
 	clientProtocol             protocol.Protocol
+	codexClient                bool
 	upstreamProtocol           protocol.Protocol
 	requestMethod              string
 	requestPath                string
