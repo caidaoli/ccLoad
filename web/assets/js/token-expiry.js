@@ -21,5 +21,12 @@
     ].join(':');
   }
 
-  return { formatDateTimeLocal };
+  function buildUpdatePayload(initial, current, expiresAt) {
+    const unchanged = initial.type === current.type &&
+      (current.type !== 'custom' || initial.value === current.value);
+
+    return unchanged ? {} : { expires_at: expiresAt };
+  }
+
+  return { formatDateTimeLocal, buildUpdatePayload };
 });
