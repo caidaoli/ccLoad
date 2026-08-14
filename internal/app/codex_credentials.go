@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"strings"
 	"sync"
@@ -18,8 +19,9 @@ import (
 )
 
 const (
-	codexCredentialRefreshLead = 5 * time.Minute
-	codexUserAgent             = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
+	codexCredentialRefreshLead       = 5 * time.Minute
+	codexUserAgent                   = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
+	codexQuotaOverdraftWriteAttempts = 3
 )
 
 var codexHTTPForwardHeaders = []string{
@@ -296,7 +298,198 @@ func cloneCodexCredential(credential *codexauth.Credential) *codexauth.Credentia
 	clone := *credential
 	clone.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
+	clone.QuotaOverdraft = codexauth.CloneQuotaOverdraft(credential.QuotaOverdraft)
 	return &clone
+}
+
+func (m *codexCredentialManager) updateQuotaOverdraft(
+	ctx context.Context,
+	channelID int64,
+	mutate func(*codexauth.QuotaOverdraft, bool, *codexauth.Credential) (bool, error),
+) (*codexauth.QuotaOverdraft, error) {
+	if m == nil || m.store == nil || mutate == nil {
+		return nil, errors.New("codex credential manager is unavailable")
+	}
+	transientFailures := 0
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		currentCfg, err := m.store.GetConfig(ctx, channelID)
+		if err != nil {
+			transientFailures++
+			if transientFailures < codexQuotaOverdraftWriteAttempts && isRetryableCodexCredentialStoreError(err) {
+				if err := waitCodexQuotaOverdraftRetry(ctx, transientFailures); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, fmt.Errorf("reload Codex quota overdraft: %w", err)
+		}
+		if !currentCfg.UsesCodexOAuth() {
+			return nil, errors.New("codex credential changed provider")
+		}
+		current, err := codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+		if err != nil {
+			return nil, fmt.Errorf("parse Codex quota overdraft: %w", err)
+		}
+		existed := current.QuotaOverdraft != nil
+		next := codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
+		if next == nil {
+			next = &codexauth.QuotaOverdraft{}
+		}
+		changed, err := mutate(next, existed, current)
+		if err != nil {
+			return nil, err
+		}
+		if !changed {
+			return codexauth.CloneQuotaOverdraft(next), nil
+		}
+		updatedCredential := *current
+		updatedCredential.QuotaOverdraft = next
+		payload, err := updatedCredential.JSON()
+		if err != nil {
+			return nil, err
+		}
+		updated, err := m.store.CompareAndSwapOAuthCredential(
+			ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, payload,
+		)
+		if err != nil {
+			transientFailures++
+			if transientFailures < codexQuotaOverdraftWriteAttempts && isRetryableCodexCredentialStoreError(err) {
+				if err := waitCodexQuotaOverdraftRetry(ctx, transientFailures); err != nil {
+					return nil, err
+				}
+				continue
+			}
+			return nil, err
+		}
+		if !updated {
+			continue
+		}
+		m.invalidateCredentialCache(currentCfg.ID)
+		if m.invalidateConfig != nil {
+			m.invalidateConfig(currentCfg.ID)
+		}
+		return codexauth.CloneQuotaOverdraft(next), nil
+	}
+}
+
+func waitCodexQuotaOverdraftRetry(ctx context.Context, transientFailures int) error {
+	timer := time.NewTimer(time.Duration(transientFailures) * 25 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isRetryableCodexCredentialStoreError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, pattern := range []string{
+		"database is locked",
+		"database is deadlocked",
+		"database table is locked",
+		"sqlite_busy",
+		"sqlite_locked",
+		"deadlock found",
+		"lock wait timeout",
+		"serialization failure",
+		"could not serialize access",
+		"try restarting transaction",
+	} {
+		if strings.Contains(message, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *codexCredentialManager) setQuotaOverdraftEnabled(
+	ctx context.Context,
+	channelID int64,
+	enabled bool,
+) (*codexauth.QuotaOverdraft, error) {
+	return m.updateQuotaOverdraft(ctx, channelID, func(overdraft *codexauth.QuotaOverdraft, existed bool, _ *codexauth.Credential) (bool, error) {
+		changed := !existed || overdraft.Enabled != enabled
+		overdraft.Enabled = enabled
+		if !enabled && overdraft.ActiveUntil != 0 {
+			overdraft.ActiveUntil = 0
+			changed = true
+		}
+		if !changed {
+			return false, nil
+		}
+		return true, nil
+	})
+}
+
+func (m *codexCredentialManager) recordQuotaOverdraftSuccess(
+	ctx context.Context,
+	channelID int64,
+	costMicroUSD int64,
+	replayed bool,
+	activeUntil int64,
+) (*codexauth.QuotaOverdraft, bool, error) {
+	if costMicroUSD < 0 {
+		return nil, false, errors.New("codex quota overdraft cost cannot be negative")
+	}
+	recorded := false
+	stats, err := m.updateQuotaOverdraft(ctx, channelID, func(
+		overdraft *codexauth.QuotaOverdraft,
+		_ bool,
+		credential *codexauth.Credential,
+	) (bool, error) {
+		// updateQuotaOverdraft may invoke the mutation again after a CAS miss.
+		// The returned decision must describe the winning snapshot only.
+		recorded = false
+		if !overdraft.Enabled {
+			return false, nil
+		}
+		now := time.Now().Unix()
+		if replayed && activeUntil > now && activeUntil > overdraft.ActiveUntil {
+			overdraft.ActiveUntil = activeUntil
+		}
+		if !replayed && overdraft.ActiveUntil <= now {
+			if overdraft.ActiveUntil != 0 || overdraft.SuccessfulRequests <= 0 {
+				return false, nil
+			}
+			// Legacy credentials created before active_until existed can recover an
+			// already-confirmed cycle from the latest persisted primary quota window.
+			overdraft.ActiveUntil = legacyCodexQuotaOverdraftActiveUntil(credential, now)
+			if overdraft.ActiveUntil <= now {
+				return false, nil
+			}
+		}
+		if overdraft.SuccessfulRequests == math.MaxInt64 || costMicroUSD > math.MaxInt64-overdraft.CostMicroUSD {
+			return false, errors.New("codex quota overdraft statistics overflow")
+		}
+		overdraft.SuccessfulRequests++
+		overdraft.CostMicroUSD += costMicroUSD
+		recorded = true
+		return true, nil
+	})
+	return stats, recorded, err
+}
+
+func legacyCodexQuotaOverdraftActiveUntil(credential *codexauth.Credential, now int64) int64 {
+	if credential == nil || credential.PassiveUsage == nil {
+		return 0
+	}
+	var activeUntil int64
+	for _, window := range credential.PassiveUsage.Windows {
+		if strings.EqualFold(strings.TrimSpace(window.Scope), codexauth.ChannelType) &&
+			strings.EqualFold(strings.TrimSpace(window.Kind), "primary") &&
+			window.UsedPercent >= 100 && window.ResetAt > now && window.ResetAt > activeUntil {
+			activeUntil = window.ResetAt
+		}
+	}
+	return activeUntil
 }
 
 func (m *codexCredentialManager) updatePassiveUsage(

@@ -237,6 +237,9 @@
     if (hasWindow && typeof window.beginCooldownDetectionDraft === 'function') {
       window.beginCooldownDetectionDraft();
     }
+    if (hasWindow && typeof window.resetCodexQuotaOverdraftDraft === 'function') {
+      window.resetCodexQuotaOverdraftDraft();
+    }
     switchAdvancedSettingsTab('custom-rules');
     const modal = document.getElementById('customRulesModal');
     if (modal) modal.classList.add('show');
@@ -489,7 +492,7 @@
     return true;
   }
 
-  function applyAdvancedSettingsFromForm() {
+  async function applyAdvancedSettingsFromForm() {
     const customRulesValid = validateCustomRulesDraft();
     const cooldownRulesValid = !hasWindow || typeof window.validateCooldownDetectionDraft !== 'function'
       || window.validateCooldownDetectionDraft();
@@ -505,12 +508,37 @@
       }
       return false;
     }
-    if (!commitCustomRulesDraft()) return false;
-    if (hasWindow && typeof window.commitCooldownDetectionRules === 'function' && !window.commitCooldownDetectionRules()) {
+    const confirmButton = hasDocument
+      ? document.querySelector('[data-action="apply-advanced-settings"]')
+      : null;
+    try {
+      if (confirmButton) {
+        confirmButton.disabled = true;
+        confirmButton.setAttribute('aria-busy', 'true');
+      }
+      if (hasWindow && typeof window.saveCodexQuotaOverdraftFromAdvancedSettings === 'function') {
+        await window.saveCodexQuotaOverdraftFromAdvancedSettings();
+      }
+      if (!commitCustomRulesDraft()) return false;
+      if (hasWindow && typeof window.commitCooldownDetectionRules === 'function' && !window.commitCooldownDetectionRules()) {
+        return false;
+      }
+      closeCustomRulesModal();
+      return true;
+    } catch (error) {
+      switchAdvancedSettingsTab('credential');
+      const message = error?.message || t(
+        'channels.codex.quotaOverdraftSaveFailed',
+        'Failed to save quota overage setting'
+      );
+      if (hasWindow && typeof window.showError === 'function') window.showError(message);
       return false;
+    } finally {
+      if (confirmButton) {
+        confirmButton.disabled = false;
+        confirmButton.removeAttribute('aria-busy');
+      }
     }
-    closeCustomRulesModal();
-    return true;
   }
 
   function showCustomRulesHelp(target) {
@@ -590,6 +618,7 @@
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       validateRulesLocally,
+      applyAdvancedSettingsFromForm,
       collectCustomRulesForSubmit,
       resetCustomRulesState,
       cloneRules,

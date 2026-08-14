@@ -1327,6 +1327,19 @@
       </section>
 
       <section id="advancedSettingsPanelCredential" class="advanced-settings-panel hidden" role="tabpanel">
+        <div id="codexQuotaOverdraftSettings" class="codex-quota-overdraft-settings" hidden>
+          <label class="channel-editor-checkbox-label" for="codexQuotaOverdraftEnabled">
+            <input type="checkbox" id="codexQuotaOverdraftEnabled">
+            <span>
+              <strong data-i18n="channels.codex.quotaOverdraftEnabled">启用配额超额使用(有未知风险谨慎使用)</strong>
+              <span class="advanced-settings-inline-help" data-i18n="channels.codex.quotaOverdraftHelp">遇到 usage_limit_reached 时追加一组已完成工具调用并重放一次；仍失败才进入冷却。</span>
+            </span>
+          </label>
+          <div class="codex-quota-overdraft-summary">
+            <span><span data-i18n="channels.codex.quotaOverdraftRequests">成功超额请求</span> <strong id="codexQuotaOverdraftRequests">0</strong></span>
+            <span><span data-i18n="channels.codex.quotaOverdraftCost">累计标准成本</span> <strong id="codexQuotaOverdraftCost">$0</strong></span>
+          </div>
+        </div>
         <div class="codex-credential-toolbar">
           <p class="codex-credential-description" data-i18n="channels.oauthCredentialFullDescription">默认显示解码视图；如需备份或复制用于重新导入，请切换到原始视图。</p>
           <div class="codex-credential-toolbar-actions">

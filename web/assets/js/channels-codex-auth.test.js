@@ -21,6 +21,9 @@ const {
   refreshOAuthUsageBatch,
   batchRefreshSelectedOAuthUsage,
   refreshOAuthCredential,
+  renderOAuthCredential,
+  saveCodexQuotaOverdraftFromAdvancedSettings,
+  updateCodexQuotaOverdraft,
   openOAuthCredentialImportDialog,
   openOAuthLoginDialog,
   setOAuthCredentialView,
@@ -1391,6 +1394,79 @@ test('manual Codex credential refresh targets the saved channel', async () => {
   await assert.rejects(() => refreshOAuthCredential(0, async () => response), /saved Codex channel/);
 });
 
+test('Codex quota overdraft setting updates only the saved credential endpoint', async () => {
+  let captured;
+  const response = { quota_overdraft: { enabled: true, successful_requests: 2, cost_microusd: 1250 } };
+  const result = await updateCodexQuotaOverdraft(42, true, async (url, options) => {
+    captured = { url, options };
+    return response;
+  });
+
+  assert.equal(result, response);
+  assert.equal(captured.url, '/admin/channels/42/codex-quota-overdraft');
+  assert.equal(captured.options.method, 'PUT');
+  assert.equal(captured.options.headers['Content-Type'], 'application/json');
+  assert.deepEqual(JSON.parse(captured.options.body), { enabled: true });
+  await assert.rejects(() => updateCodexQuotaOverdraft(0, true, async () => response), /saved Codex channel/);
+});
+
+test('advanced settings confirmation persists only a changed Codex quota overdraft draft', async () => {
+  const content = {
+    textContent: '',
+    removeAttribute() {},
+    classList: { add() {}, remove() {} }
+  };
+  const elements = new Map([
+    ['codexCredentialContent', content],
+    ['codexQuotaOverdraftSettings', { hidden: false }],
+    ['codexQuotaOverdraftEnabled', { checked: true, disabled: false }],
+    ['codexQuotaOverdraftRequests', { textContent: '' }],
+    ['codexQuotaOverdraftCost', { textContent: '' }]
+  ]);
+  const previousDocument = global.document;
+  const previousWindow = global.window;
+  global.document = {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => []
+  };
+  global.window = { t: key => key };
+  try {
+    renderOAuthCredential({
+      type: 'codex', access_token: 'at', refresh_token: 'rt',
+      quota_overdraft: { enabled: true, successful_requests: 2, cost_microusd: 1250 }
+    });
+    elements.get('codexQuotaOverdraftEnabled').checked = false;
+
+    let writes = 0;
+    const saved = await saveCodexQuotaOverdraftFromAdvancedSettings(42, async (url, options) => {
+      writes++;
+      assert.equal(url, '/admin/channels/42/codex-quota-overdraft');
+      assert.deepEqual(JSON.parse(options.body), { enabled: false });
+      return { quota_overdraft: { enabled: false, successful_requests: 2, cost_microusd: 1250 } };
+    });
+    assert.equal(saved.enabled, false);
+    assert.equal(writes, 1);
+    assert.equal(elements.get('codexQuotaOverdraftEnabled').checked, false);
+    assert.match(content.textContent, /"enabled": false/);
+
+    await saveCodexQuotaOverdraftFromAdvancedSettings(42, async () => {
+      writes++;
+      throw new Error('unchanged draft must not be written');
+    });
+    assert.equal(writes, 1);
+
+    elements.get('codexQuotaOverdraftEnabled').checked = true;
+    await assert.rejects(
+      () => saveCodexQuotaOverdraftFromAdvancedSettings(42, async () => { throw new Error('write failed'); }),
+      /write failed/
+    );
+    assert.equal(elements.get('codexQuotaOverdraftEnabled').checked, false);
+  } finally {
+    global.document = previousDocument;
+    global.window = previousWindow;
+  }
+});
+
 test('manual Antigravity credential refresh targets the saved channel', async () => {
   let captured;
   const response = { oauth_credential: { access_token: 'gravity-at' } };
@@ -1684,7 +1760,11 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     'codexCredentialTab',
     'codexCredentialContent',
     'codexCredentialRefreshButton',
-    'channelCodexPlanBadge'
+    'channelCodexPlanBadge',
+    'codexQuotaOverdraftSettings',
+    'codexQuotaOverdraftEnabled',
+    'codexQuotaOverdraftRequests',
+    'codexQuotaOverdraftCost'
   ]) {
     elements.set(id, { hidden: false, required: true, value: 'must-not-remain' });
   }
@@ -1712,7 +1792,10 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     })[selector] || []
   };
   try {
-    const credential = { type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus' };
+    const credential = {
+      type: 'codex', access_token: 'at-secret', refresh_token: 'rt-secret', plan_type: 'plus',
+      quota_overdraft: { enabled: true, successful_requests: 2, cost_microusd: 12 }
+    };
     const credentialInfo = {
       chatgpt_account_id: 'account-1',
       chatgpt_subscription_active_start: '2030-01-03T04:05:06Z',
@@ -1733,6 +1816,10 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').textContent, 'plus · 2030-02-03');
+    assert.equal(elements.get('codexQuotaOverdraftSettings').hidden, false);
+    assert.equal(elements.get('codexQuotaOverdraftEnabled').checked, true);
+    assert.equal(elements.get('codexQuotaOverdraftRequests').textContent, '2');
+    assert.equal(elements.get('codexQuotaOverdraftCost').textContent, '$0.000012');
     const decodedCredential = { ...credential, id_token: credentialInfo };
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(decodedCredential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
@@ -1757,6 +1844,7 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(elements.get('channelApiKey').required, false);
     assert.equal(elements.get('codexCredentialTab').hidden, false);
     assert.equal(elements.get('channelCodexPlanBadge').hidden, true);
+    assert.equal(elements.get('codexQuotaOverdraftSettings').hidden, true);
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(antigravityCredential, null, 2));
     assert.ok(strategyInputs.every(input => input.disabled));
 
