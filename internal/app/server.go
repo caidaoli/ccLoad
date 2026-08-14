@@ -400,6 +400,24 @@ func NewServer(store storage.Store) *Server {
 
 }
 
+// RefreshAntigravityUserAgent resolves the Antigravity Hub version before the
+// HTTP server starts accepting requests. The returned value is always usable;
+// on failure it is the fixed production fallback.
+func (s *Server) RefreshAntigravityUserAgent(ctx context.Context) (string, error) {
+	if s == nil || s.antigravityService == nil {
+		return antigravityauth.DefaultUserAgent, errors.New("antigravity service is unavailable")
+	}
+	err := s.antigravityService.RefreshUserAgent(ctx)
+	return s.antigravityUserAgent(), err
+}
+
+func (s *Server) antigravityUserAgent() string {
+	if s == nil {
+		return antigravityauth.DefaultUserAgent
+	}
+	return s.antigravityService.RequestUserAgent()
+}
+
 func loadAntigravityPromptMatcher(configService *ConfigService) *regexp.Regexp {
 	if configService == nil {
 		return nil

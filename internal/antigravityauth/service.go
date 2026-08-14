@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/goccy/go-yaml"
 )
 
 // Production Antigravity OAuth endpoints and public client configuration.
@@ -25,10 +27,13 @@ const (
 	DefaultClientID         = "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com"
 	DefaultClientSecret     = "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"
 	DefaultRedirectURI      = "http://localhost:51121/oauth-callback"
-	DefaultUserAgent        = "antigravity/hub/2.5.0 darwin/arm64"
+	DefaultUserAgent        = "antigravity/hub/2.8.1 darwin/arm64"
+	DefaultManifestURL      = "https://antigravity-hub-auto-updater-974169037036.us-central1.run.app/manifest/latest-arm64-mac.yml"
 	defaultRequestTimeout   = 30 * time.Second
 	maxResponseBytes        = 1 << 20
+	maxManifestBytes        = 4096
 	apiVersion              = "v1internal"
+	antigravityHubPlatform  = "darwin/arm64"
 )
 
 var defaultScopes = []string{
@@ -66,8 +71,13 @@ type Service struct {
 	ClientSecret        string
 	RedirectURI         string
 	UserAgent           string
+	ManifestURL         string
 	Sleep               func(context.Context, time.Duration) error
 	OnboardPollAttempts int
+}
+
+type updaterManifest struct {
+	Version string `yaml:"version"`
 }
 
 type tokenEndpointError struct {
@@ -107,8 +117,76 @@ func NewService(client *http.Client) *Service {
 		Client: client, AuthorizationURL: DefaultAuthorizationURL, TokenURL: DefaultTokenURL,
 		UserInfoURL: DefaultUserInfoURL, APIBaseURL: DefaultAPIBaseURL, DailyAPIBaseURL: DefaultDailyAPIBaseURL,
 		ClientID: DefaultClientID, ClientSecret: DefaultClientSecret, RedirectURI: DefaultRedirectURI,
-		UserAgent: DefaultUserAgent, Sleep: sleepContext, OnboardPollAttempts: 5,
+		UserAgent: DefaultUserAgent, ManifestURL: DefaultManifestURL, Sleep: sleepContext, OnboardPollAttempts: 5,
 	}
+}
+
+// RefreshUserAgent loads the current Antigravity Hub version. Call it during
+// startup, before the service is used concurrently. A failed refresh leaves the
+// existing User-Agent unchanged so the production fallback remains usable.
+func (s *Service) RefreshUserAgent(ctx context.Context) error {
+	if s == nil || s.Client == nil {
+		return errors.New("antigravity manifest client is unavailable")
+	}
+	manifestURL := strings.TrimSpace(s.ManifestURL)
+	if manifestURL == "" {
+		return errors.New("antigravity manifest URL is empty")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, manifestURL, nil)
+	if err != nil {
+		return fmt.Errorf("build Antigravity manifest request: %w", err)
+	}
+	req.Header.Set("User-Agent", "electron-builder")
+	req.Header.Set("Cache-Control", "no-cache")
+
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch Antigravity manifest: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("antigravity manifest returned HTTP %d", resp.StatusCode)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxManifestBytes))
+	if err != nil {
+		return fmt.Errorf("read Antigravity manifest: %w", err)
+	}
+	var manifest updaterManifest
+	if err := yaml.Unmarshal(raw, &manifest); err != nil {
+		return fmt.Errorf("decode Antigravity manifest: %w", err)
+	}
+	version := strings.TrimSpace(manifest.Version)
+	if !validVersion(version) {
+		return fmt.Errorf("antigravity manifest returned invalid version %q", version)
+	}
+	s.UserAgent = fmt.Sprintf("antigravity/hub/%s %s", version, antigravityHubPlatform)
+	return nil
+}
+
+// RequestUserAgent returns the discovered User-Agent or the production fallback.
+func (s *Service) RequestUserAgent() string {
+	if s == nil || strings.TrimSpace(s.UserAgent) == "" {
+		return DefaultUserAgent
+	}
+	return strings.TrimSpace(s.UserAgent)
+}
+
+func validVersion(version string) bool {
+	parts := strings.Split(version, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" {
+			return false
+		}
+		for _, ch := range part {
+			if ch < '0' || ch > '9' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // GenerateState returns an unguessable OAuth state value.
@@ -474,7 +552,7 @@ func (s *Service) doJSON(ctx context.Context, method, endpoint, accessToken stri
 	req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(accessToken))
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Content-Type", "application/json")
-	userAgent := s.UserAgent
+	userAgent := s.RequestUserAgent()
 	if onboard {
 		userAgent += " google-api-nodejs-client/10.3.0"
 		req.Header.Set("X-Goog-Api-Client", "gl-node/22.21.1")

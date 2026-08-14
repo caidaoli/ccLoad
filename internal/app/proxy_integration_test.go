@@ -1005,8 +1005,8 @@ func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 
 	t.Run("Antigravity", func(t *testing.T) {
 		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path != "/v1internal:generateContent" {
-				t.Errorf("Antigravity override path = %q, want /v1internal:generateContent", r.URL.Path)
+			if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
+				t.Errorf("Antigravity override URL = %s?%s", r.URL.Path, r.URL.RawQuery)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"override ok"}]},"finishReason":"STOP"}]}}`)
@@ -1032,6 +1032,7 @@ func TestProxy_OAuthBaseURLSettingsOverrideChannelURLs(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *testing.T) {
+	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
 			t.Errorf("Antigravity URL = %s?%s", r.URL.Path, r.URL.RawQuery)
@@ -1039,7 +1040,7 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 		if got := r.Header.Get("Authorization"); got != "Bearer at-antigravity" {
 			t.Errorf("Authorization = %q", got)
 		}
-		if got := r.Header.Get("User-Agent"); got != antigravityauth.DefaultUserAgent {
+		if got := r.Header.Get("User-Agent"); got != discoveredUserAgent {
 			t.Errorf("User-Agent = %q", got)
 		}
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
@@ -1106,6 +1107,7 @@ func TestProxy_AntigravityOAuthWrapsGeminiWireAndTranslatesOpenAIResponse(t *tes
 		name: "antigravity-openai", upstreamProtocol: "gemini", models: "gemini-3-flash", priority: 100,
 		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-antigravity"),
 	}}, map[int]string{0: upstream.URL}, nil)
+	env.server.antigravityService.UserAgent = discoveredUserAgent
 
 	response := doProxyRequest(t, env.engine, "/v1/chat/completions", map[string]any{
 		"model": "gemini-3-flash", "max_tokens": 100,
@@ -1391,7 +1393,10 @@ func TestProxy_AntigravityOAuthSeparatesThreadsAcrossSessionSources(t *testing.T
 func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {
-			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" {
+					t.Errorf("Antigravity non-stream client used URL %s?%s", r.URL.Path, r.URL.RawQuery)
+				}
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = io.WriteString(w, `{"response":{"responseId":"gravity-response","candidates":[{"content":{"role":"model","parts":[{"text":"provider response"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`)
 			}))
@@ -1421,7 +1426,10 @@ func TestProxy_AntigravityProviderAdapterNonStreamResponse(t *testing.T) {
 func TestProxy_AntigravityProviderAdapterStreamResponse(t *testing.T) {
 	for _, testCase := range antigravityProviderAdapterCases() {
 		t.Run(testCase.name, func(t *testing.T) {
-			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != "/v1internal:streamGenerateContent" || r.URL.RawQuery != "alt=sse" {
+					t.Errorf("Antigravity stream client used URL %s?%s", r.URL.Path, r.URL.RawQuery)
+				}
 				w.Header().Set("Content-Type", "text/event-stream")
 				_, _ = io.WriteString(w, `data: {"response":{"responseId":"gravity-stream","candidates":[{"content":{"role":"model","parts":[{"text":"provider stream"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":3,"candidatesTokenCount":2,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}`+"\n\n")
 			}))
@@ -1881,53 +1889,93 @@ func TestProxy_AntigravityOAuthBaseURLFallbackConditions(t *testing.T) {
 }
 
 func TestProxy_AntigravityOAuthUsesDefaultBaseURLFallbackOrder(t *testing.T) {
-	t.Parallel()
-
-	var mu sync.Mutex
-	requestBaseURLs := make([]string, 0, 3)
-	env := setupProxyTestEnv(t, []testChannel{{
-		name: "antigravity-default-fallback", upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
-		authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-default-fallback"),
-	}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
-	env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		baseURL := req.URL.Scheme + "://" + req.URL.Host
-		mu.Lock()
-		requestBaseURLs = append(requestBaseURLs, baseURL)
-		mu.Unlock()
-		status := http.StatusOK
-		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"sandbox ok"}]},"finishReason":"STOP"}]}}`
-		switch baseURL {
-		case antigravityDailyBaseURL:
-			status = http.StatusServiceUnavailable
-			body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server"}}`
-		case antigravityProdBaseURL:
-			status = http.StatusTooManyRequests
-			body = `{"error":{"code":429,"message":"rate limited"}}`
-		case antigravitySandboxDailyBaseURLForTest:
-		default:
-			t.Fatalf("unexpected Antigravity base URL: %s", baseURL)
-		}
-		return &http.Response{
-			StatusCode: status,
-			Header:     http.Header{"Content-Type": []string{"application/json"}},
-			Body:       io.NopCloser(strings.NewReader(body)),
-			Request:    req,
-		}, nil
-	})}
-	env.server.antigravityClient = env.server.client
-
-	response := doProxyRequest(t, env.engine, "/v1beta/models/claude-sonnet-4-6:generateContent", map[string]any{
-		"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
-	}, nil)
-	if response.Code != http.StatusOK || gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String() != "sandbox ok" {
-		t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+	tests := []struct {
+		name          string
+		requestPath   string
+		upstreamPath  string
+		upstreamQuery string
+		streaming     bool
+	}{
+		{name: "non-stream", requestPath: "/v1beta/models/claude-sonnet-4-6:generateContent", upstreamPath: "/v1internal:generateContent"},
+		{name: "stream", requestPath: "/v1beta/models/claude-sonnet-4-6:streamGenerateContent?alt=sse", upstreamPath: "/v1internal:streamGenerateContent", upstreamQuery: "alt=sse", streaming: true},
 	}
-	want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
-	mu.Lock()
-	got := append([]string(nil), requestBaseURLs...)
-	mu.Unlock()
-	if !slices.Equal(got, want) {
-		t.Fatalf("Antigravity base URL order=%v, want %v", got, want)
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var mu sync.Mutex
+			requestBaseURLs := make([]string, 0, 3)
+			env := setupProxyTestEnv(t, []testChannel{{
+				name: "antigravity-default-fallback-" + tc.name, upstreamProtocol: "gemini", models: "claude-sonnet-4-6", priority: 100,
+				authType: model.AuthTypeAntigravityOAuth, oauthCredential: antigravityProxyTestCredential(t, "at-default-fallback"),
+			}}, map[int]string{0: antigravityDailyBaseURL + "\n" + antigravityProdBaseURL})
+			env.server.client = &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.Path != tc.upstreamPath || req.URL.RawQuery != tc.upstreamQuery {
+					t.Errorf("Antigravity %s fallback URL = %s?%s", tc.name, req.URL.Path, req.URL.RawQuery)
+				}
+				baseURL := req.URL.Scheme + "://" + req.URL.Host
+				mu.Lock()
+				requestBaseURLs = append(requestBaseURLs, baseURL)
+				mu.Unlock()
+				status := http.StatusOK
+				contentType := "application/json"
+				body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"sandbox ok"}]},"finishReason":"STOP"}]}}`
+				if tc.streaming {
+					contentType = "text/event-stream"
+					body = "data: " + body + "\n\n"
+				}
+				switch baseURL {
+				case antigravityDailyBaseURL:
+					status = http.StatusServiceUnavailable
+					contentType = "application/json"
+					body = `{"error":{"code":503,"message":"No capacity available for model claude-sonnet-4-6 on the server"}}`
+				case antigravityProdBaseURL:
+					status = http.StatusTooManyRequests
+					contentType = "application/json"
+					body = `{"error":{"code":429,"message":"rate limited"}}`
+				case antigravitySandboxDailyBaseURLForTest:
+				default:
+					t.Errorf("unexpected Antigravity base URL: %s", baseURL)
+				}
+				return &http.Response{
+					StatusCode: status,
+					Header:     http.Header{"Content-Type": []string{contentType}},
+					Body:       io.NopCloser(strings.NewReader(body)),
+					Request:    req,
+				}, nil
+			})}
+			env.server.antigravityClient = env.server.client
+
+			response := doProxyRequest(t, env.engine, tc.requestPath, map[string]any{
+				"contents": []any{map[string]any{"role": "user", "parts": []any{map[string]any{"text": "hello"}}}},
+			}, nil)
+			if response.Code != http.StatusOK {
+				t.Fatalf("response=%d body=%s", response.Code, response.Body.String())
+			}
+			if tc.streaming {
+				found := false
+				for _, block := range strings.Split(response.Body.String(), "\n\n") {
+					_, data := parseSSEEventChunk([]byte(block))
+					if gjson.ValidBytes(data) && gjson.GetBytes(data, "candidates.0.content.parts.0.text").String() == "sandbox ok" {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("stream response missing sandbox payload: %s", response.Body.String())
+				}
+			} else if got := gjson.Get(response.Body.String(), "candidates.0.content.parts.0.text").String(); got != "sandbox ok" {
+				t.Fatalf("non-stream response text=%q body=%s", got, response.Body.String())
+			}
+
+			want := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURLForTest}
+			mu.Lock()
+			got := append([]string(nil), requestBaseURLs...)
+			mu.Unlock()
+			if !slices.Equal(got, want) {
+				t.Fatalf("Antigravity %s base URL order=%v, want %v", tc.name, got, want)
+			}
+		})
 	}
 }
 

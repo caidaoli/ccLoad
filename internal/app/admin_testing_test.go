@@ -2169,7 +2169,8 @@ func TestHandleChannelTest_CodexOAuthPersistsQuotaFromSSE(t *testing.T) {
 func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	var upstreamBody []byte
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/v1internal:generateContent" || r.Header.Get("Authorization") != "Bearer at-gravity-admin" {
+		if r.URL.Path != "/v1internal:generateContent" || r.URL.RawQuery != "" ||
+			r.Header.Get("Authorization") != "Bearer at-gravity-admin" {
 			t.Errorf("unexpected Antigravity request: %s %v", r.URL.String(), r.Header)
 		}
 		upstreamBody, _ = io.ReadAll(r.Body)

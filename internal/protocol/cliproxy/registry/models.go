@@ -26,14 +26,15 @@ type ModelInfo struct {
 }
 
 type modelCatalog struct {
-	Claude    []*ModelInfo `json:"claude"`
-	Gemini    []*ModelInfo `json:"gemini"`
-	Vertex    []*ModelInfo `json:"vertex"`
-	AIStudio  []*ModelInfo `json:"aistudio"`
-	CodexFree []*ModelInfo `json:"codex-free"`
-	CodexTeam []*ModelInfo `json:"codex-team"`
-	CodexPlus []*ModelInfo `json:"codex-plus"`
-	CodexPro  []*ModelInfo `json:"codex-pro"`
+	Claude      []*ModelInfo `json:"claude"`
+	Gemini      []*ModelInfo `json:"gemini"`
+	Vertex      []*ModelInfo `json:"vertex"`
+	AIStudio    []*ModelInfo `json:"aistudio"`
+	Antigravity []*ModelInfo `json:"antigravity"`
+	CodexFree   []*ModelInfo `json:"codex-free"`
+	CodexTeam   []*ModelInfo `json:"codex-team"`
+	CodexPlus   []*ModelInfo `json:"codex-plus"`
+	CodexPro    []*ModelInfo `json:"codex-pro"`
 }
 
 var staticModels modelCatalog
@@ -69,12 +70,16 @@ func modelsForProvider(provider string) [][]*ModelInfo {
 	switch provider {
 	case "claude", "anthropic":
 		return [][]*ModelInfo{staticModels.Claude}
-	case "gemini", "vertex", "aistudio":
+	case "gemini":
+		return [][]*ModelInfo{staticModels.Gemini, staticModels.Vertex, staticModels.AIStudio, staticModels.Antigravity}
+	case "vertex", "aistudio":
 		return [][]*ModelInfo{staticModels.Gemini, staticModels.Vertex, staticModels.AIStudio}
+	case "antigravity":
+		return [][]*ModelInfo{staticModels.Antigravity}
 	case "codex", "openai":
 		return [][]*ModelInfo{staticModels.CodexFree, staticModels.CodexTeam, staticModels.CodexPlus, staticModels.CodexPro}
 	default:
-		return [][]*ModelInfo{staticModels.Claude, staticModels.Gemini, staticModels.Vertex, staticModels.AIStudio, staticModels.CodexFree, staticModels.CodexTeam, staticModels.CodexPlus, staticModels.CodexPro}
+		return [][]*ModelInfo{staticModels.Claude, staticModels.Gemini, staticModels.Vertex, staticModels.AIStudio, staticModels.Antigravity, staticModels.CodexFree, staticModels.CodexTeam, staticModels.CodexPlus, staticModels.CodexPro}
 	}
 }
 

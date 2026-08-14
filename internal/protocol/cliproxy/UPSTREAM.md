@@ -122,9 +122,15 @@ documented adaptations:
   to `high`) for every client protocol before the request is sent.
 - Antigravity stream payloads are framed at the app boundary because the upstream
   executor normally supplies SSE delimiters; ccLoad writes provider chunks directly.
+  The app boundary preserves the client's streaming mode when choosing
+  `generateContent` versus `streamGenerateContent`; both modes share the same
+  ordered provider base-URL fallback policy.
 - Executor/runtime parity remains implemented at the app boundary rather than in
   this snapshot. Antigravity uses refresh-token-scoped HTTP/1.1 pools with native
-  keepalive limits and bounded LRU eviction; its request finalizer performs one
+  keepalive limits and bounded LRU eviction. Its runtime User-Agent is resolved
+  once at startup from the official Hub updater manifest, falls back to Hub 2.8.1,
+  and is shared by data, project/model, and quota requests (the OAuth token
+  endpoint retains its native client UA); its request finalizer performs one
   object-tree rewrite per attempt. Claude OAuth preserves confirmed native and
   measured Haiku-helper request shapes, owns cache placement only for cloaked
   callers, rejects legacy mid-conversation system messages locally for Anthropic's
@@ -150,6 +156,10 @@ documented adaptations:
   boundary, where Anthropic credentials and `Session-Id` + `Thread-Id` are
   available; keeping it out of the pure converters prevents cross-request
   identity collisions and the upstream package-global initialization race.
+- The embedded capability catalog exposes Antigravity models to Gemini wire
+  conversion. `gemini-3.7-flash-high` follows the canonical entry added by
+  `router-for-me/models` commit `cbe1e6c59429bc92dd8d6654873670fc0c274cad`;
+  the CLIProxyAPI snapshot commit above remains unchanged.
 
 ## Updating from CLIProxyAPI
 
