@@ -93,7 +93,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 	writer := csv.NewWriter(buf)
 	defer writer.Flush()
 
-	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential"}
+	header := []string{"id", "name", "api_key", "urls", "priority", "rpm_limit", "max_concurrency", "models", "model_redirects", "protocol_transform_mode", "key_strategy", "enabled", "scheduled_check_enabled", "scheduled_check_model", "cooldown_detection_rules", "retry_other_keys_on_failure", "auth_type", "oauth_credential", "websockets"}
 	if err := writer.Write(header); err != nil {
 		RespondError(c, http.StatusInternalServerError, err)
 		return
@@ -167,6 +167,7 @@ func (s *Server) HandleExportChannelsCSV(c *gin.Context) {
 			strconv.FormatBool(cfg.RetryOtherKeysOnFailure),
 			cfg.GetAuthType(),
 			cfg.OAuthCredential,
+			strconv.FormatBool(cfg.Websockets),
 		}
 		if err := writer.Write(record); err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -229,11 +230,13 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 	_, hasScheduledCheckModelColumn := columnIndex["scheduled_check_model"]
 	_, hasCooldownDetectionRulesColumn := columnIndex["cooldown_detection_rules"]
 	_, hasRetryOtherKeysOnFailureColumn := columnIndex["retry_other_keys_on_failure"]
+	_, hasWebsocketsColumn := columnIndex["websockets"]
 	existingScheduledCheckByName := make(map[string]bool)
 	existingScheduledCheckModelByName := make(map[string]string)
 	existingCooldownDetectionRulesByName := make(map[string]*model.CooldownDetectionRules)
 	existingRetryOtherKeysOnFailureByName := make(map[string]bool)
-	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn {
+	existingWebsocketsByName := make(map[string]bool)
+	if !hasScheduledCheckColumn || !hasScheduledCheckModelColumn || !hasCooldownDetectionRulesColumn || !hasRetryOtherKeysOnFailureColumn || !hasWebsocketsColumn {
 		existingConfigs, err := s.store.ListConfigs(c.Request.Context())
 		if err != nil {
 			RespondError(c, http.StatusInternalServerError, err)
@@ -244,6 +247,7 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			existingScheduledCheckModelByName[cfg.Name] = cfg.ScheduledCheckModel
 			existingCooldownDetectionRulesByName[cfg.Name] = cfg.CooldownDetectionRules.Clone()
 			existingRetryOtherKeysOnFailureByName[cfg.Name] = cfg.RetryOtherKeysOnFailure
+			existingWebsocketsByName[cfg.Name] = cfg.Websockets
 		}
 	}
 
@@ -274,10 +278,12 @@ func (s *Server) HandleImportChannelsCSV(c *gin.Context) {
 			hasScheduledCheckModelColumn,
 			hasCooldownDetectionRulesColumn,
 			hasRetryOtherKeysOnFailureColumn,
+			hasWebsocketsColumn,
 			existingScheduledCheckByName,
 			existingScheduledCheckModelByName,
 			existingCooldownDetectionRulesByName,
 			existingRetryOtherKeysOnFailureByName,
+			existingWebsocketsByName,
 		)
 		if skip {
 			if errMsg != "" {
@@ -347,10 +353,12 @@ func (s *Server) parseChannelImportRow(
 	hasScheduledCheckModelColumn bool,
 	hasCooldownDetectionRulesColumn bool,
 	hasRetryOtherKeysOnFailureColumn bool,
+	hasWebsocketsColumn bool,
 	existingScheduledCheckByName map[string]bool,
 	existingScheduledCheckModelByName map[string]string,
 	existingCooldownDetectionRulesByName map[string]*model.CooldownDetectionRules,
 	existingRetryOtherKeysOnFailureByName map[string]bool,
+	existingWebsocketsByName map[string]bool,
 ) (channel *model.ChannelWithKeys, errMsg string, skip bool) {
 	if isCSVRecordEmpty(record) {
 		return nil, "", true
@@ -531,6 +539,17 @@ func (s *Server) parseChannelImportRow(
 		retryOtherKeysOnFailure = false
 	}
 
+	websockets := existingWebsocketsByName[name]
+	if raw := fetch("websockets"); raw != "" {
+		val, ok := parseImportEnabled(raw)
+		if !ok {
+			return nil, fmt.Sprintf("第%d行 websockets 格式错误: %s", lineNo, raw), true
+		}
+		websockets = val
+	} else if hasWebsocketsColumn {
+		websockets = false
+	}
+
 	// 构建模型条目（合并models和modelRedirects）
 	modelEntries := make([]model.ModelEntry, 0, len(models))
 	for _, m := range models {
@@ -562,6 +581,7 @@ func (s *Server) parseChannelImportRow(
 		Name:                    name,
 		AuthType:                authType,
 		OAuthCredential:         oauthCredential,
+		Websockets:              websockets,
 		URLs:                    urls,
 		Priority:                priority,
 		RPMLimit:                rpmLimit,
