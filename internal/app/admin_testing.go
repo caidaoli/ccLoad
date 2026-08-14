@@ -598,7 +598,10 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 	}
 
 	requestedModel := testReq.Model
-	testResult := s.testChannelAPI(c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq)
+	testResult := s.testChannelAPIWithCooldownTarget(
+		c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq,
+		keySelection.keyIndex, keySelection.updatePersistedCooldown,
+	)
 	statusCode, _ := getResultInt(testResult["status_code"])
 	if cfg.UsesOAuth() && statusCode == http.StatusUnauthorized {
 		refreshedCfg, refreshedSelection, handled, refreshErr := s.prepareRejectedOAuthChannelTestAuth(
@@ -616,8 +619,9 @@ func (s *Server) handleChannelTestRequest(c *gin.Context, requireBaseURL bool) {
 		} else {
 			runtimeCfg = refreshedCfg
 			keySelection = refreshedSelection
-			testResult = s.testChannelAPI(
+			testResult = s.testChannelAPIWithCooldownTarget(
 				c.Request.Context(), runtimeCfg, keySelection.requestCredential, &testReq,
+				keySelection.keyIndex, keySelection.updatePersistedCooldown,
 			)
 		}
 	}
@@ -662,6 +666,7 @@ func (s *Server) prepareChannelTestAuth(
 	requestAPIKey string,
 	oauthMode oauthCredentialLoadMode,
 ) (*model.Config, channelTestKeySelection, error) {
+	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	if runtimeCfg, selection, handled, err := s.prepareOAuthChannelTestAuth(ctx, cfg, oauthMode); handled {
 		return runtimeCfg, selection, err
@@ -706,6 +711,7 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 		return nil, selection, false, nil
 	}
 
+	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
 	switch {
 	case cfg.UsesCodexOAuth():
@@ -845,7 +851,7 @@ func (s *Server) executeChannelTest(ctx context.Context, cfg *model.Config, keyI
 }
 
 func (s *Server) executeChannelTestWithCooldown(ctx context.Context, cfg *model.Config, keyIndex int, apiKey string, testReq *testutil.TestChannelRequest, updatePersistedCooldown bool) map[string]any {
-	result := s.testChannelAPI(ctx, cfg, apiKey, testReq)
+	result := s.testChannelAPIWithCooldownTarget(ctx, cfg, apiKey, testReq, keyIndex, updatePersistedCooldown)
 	return s.applyChannelTestResultCooldown(ctx, cfg, keyIndex, testReq, updatePersistedCooldown, result)
 }
 
@@ -882,6 +888,11 @@ func (s *Server) applyChannelTestResultCooldown(ctx context.Context, cfg *model.
 
 	if !updatePersistedCooldown {
 		result["cooldown_action"] = "request_key_no_cooldown"
+		return result
+	}
+	if capacity, _ := result["antigravity_model_capacity"].(bool); capacity && cfg.UsesAntigravityOAuth() {
+		s.applyChannelTestCapacityCooldown(ctx, cfg, keyIndex, testReq, result)
+		result["cooldown_action"] = "model_cooldown_applied"
 		return result
 	}
 
@@ -972,6 +983,17 @@ func configuredURLAt(cfg *model.Config, index int, runtimeURL string) model.Chan
 
 // 测试渠道API连通性
 func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKey string, testReq *testutil.TestChannelRequest) map[string]any {
+	return s.testChannelAPIWithCooldownTarget(reqCtx, cfg, apiKey, testReq, cooldown.NoKeyIndex, false)
+}
+
+func (s *Server) testChannelAPIWithCooldownTarget(
+	reqCtx context.Context,
+	cfg *model.Config,
+	apiKey string,
+	testReq *testutil.TestChannelRequest,
+	keyIndex int,
+	updatePersistedCooldown bool,
+) map[string]any {
 	// 设置默认测试内容（从配置读取）
 	if strings.TrimSpace(testReq.Content) == "" {
 		testReq.Content = configuredChannelTestContent(s.configService)
@@ -991,7 +1013,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	if len(urls) > 1 && s != nil && s.urlSelector != nil {
 		selector = s.urlSelector
 	}
-	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	orderedURLs := orderChannelAttemptURLs(selector, cfg, urls)
 	switch cfg.GetProtocolTransformMode() {
 	case model.ProtocolTransformModeAuto:
 		orderedURLs = prioritizeAutomaticProtocolURLs(orderedURLs, cfg.URLs)
@@ -1000,6 +1022,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 	}
 
 	var lastResult map[string]any
+	var urlPolicy channelURLAttemptPolicy
 	for idx, entry := range orderedURLs {
 		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
 			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
@@ -1021,6 +1044,7 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 			lastResult["base_url"] = entry.url
 			success, _ := lastResult["success"].(bool)
 			if success {
+				annotateChannelTestCapacityRetries(lastResult, urlPolicy.antigravityCapacityRetries)
 				if selector != nil {
 					latency := pickURLSelectorLatency(lastResult)
 					selector.RecordLatency(cfg.ID, entry.url, latency)
@@ -1032,7 +1056,23 @@ func (s *Server) testChannelAPI(reqCtx context.Context, cfg *model.Config, apiKe
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
 		}
-		if idx == len(orderedURLs)-1 {
+		hasNextURL := idx < len(orderedURLs)-1
+		decision := urlPolicy.decide(cfg, hasNextURL, channelURLFailureFromTestResult(lastResult))
+		if decision.firstCapacity && updatePersistedCooldown {
+			s.applyChannelTestCapacityCooldown(reqCtx, cfg, keyIndex, testReq, lastResult)
+		}
+		if decision.retry {
+			if err := waitForChannelURLRetry(reqCtx, decision.delay); err != nil {
+				lastResult["error"] = "渠道测试已取消: " + err.Error()
+				return lastResult
+			}
+			continue
+		}
+		if decision.capacity {
+			lastResult["antigravity_capacity_cooldown_applied"] = urlPolicy.antigravityCapacityObserved
+			markChannelTestCapacityExhausted(lastResult, urlPolicy.antigravityCapacityRetries)
+		}
+		if !hasNextURL {
 			break
 		}
 		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
@@ -2069,6 +2109,72 @@ func shouldFallbackToNextURL(result map[string]any) (continueFallback bool, shou
 	default:
 		return false, false
 	}
+}
+
+func channelURLFailureFromTestResult(result map[string]any) channelURLFailure {
+	if result == nil {
+		return channelURLFailure{}
+	}
+	statusCode, errorBody, _ := buildTestFailureClassificationInput(result)
+	errMsg, _ := result["error"].(string)
+	return channelURLFailure{
+		statusCode: statusCode,
+		body:       errorBody,
+		network: strings.HasPrefix(errMsg, "网络请求失败:") ||
+			strings.HasPrefix(errMsg, "读取响应失败:"),
+	}
+}
+
+func annotateChannelTestCapacityRetries(result map[string]any, retries int) {
+	if result == nil || retries <= 0 {
+		return
+	}
+	result["retry_strategy"] = fmt.Sprintf("模型容量重试 %d 次", retries)
+}
+
+func markChannelTestCapacityExhausted(result map[string]any, retries int) {
+	if result == nil {
+		return
+	}
+	if statusCode, ok := getResultInt(result["status_code"]); ok {
+		result["upstream_status_code"] = statusCode
+	}
+	result["status_code"] = http.StatusTooManyRequests
+	result["antigravity_model_capacity"] = true
+	annotateChannelTestCapacityRetries(result, retries)
+}
+
+func (s *Server) applyChannelTestCapacityCooldown(
+	ctx context.Context,
+	cfg *model.Config,
+	keyIndex int,
+	testReq *testutil.TestChannelRequest,
+	result map[string]any,
+) {
+	if s == nil || cfg == nil || result == nil {
+		return
+	}
+	if applied, _ := result["antigravity_capacity_cooldown_applied"].(bool); applied {
+		return
+	}
+	upstreamStatus, ok := getResultInt(result["upstream_status_code"])
+	if !ok {
+		upstreamStatus, ok = getResultInt(result["status_code"])
+	}
+	if !ok {
+		upstreamStatus = http.StatusServiceUnavailable
+	}
+	_, errorBody, headers := buildTestFailureClassificationInput(result)
+	actualModel := ""
+	if testReq != nil {
+		actualModel = channelTestActualModel(result, testReq.Model)
+	}
+	s.applyAntigravityModelCapacityCooldown(ctx, cfg, keyIndex, actualModel, &fwResult{
+		Status: upstreamStatus,
+		Body:   errorBody,
+		Header: headers,
+	})
+	result["antigravity_capacity_cooldown_applied"] = true
 }
 
 func isChannelTestProtocolEndpointMissing(result map[string]any) bool {

@@ -675,7 +675,7 @@ func usesAntigravityDefaultBaseURLs(urls model.ChannelURLs) bool {
 }
 
 func withAntigravityDefaultFallbackURLs(cfg *model.Config) *model.Config {
-	if cfg == nil || !cfg.UsesAntigravityOAuth() || len(cfg.URLs) <= 1 {
+	if cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return cfg
 	}
 	if !usesAntigravityDefaultBaseURLs(cfg.URLs) {

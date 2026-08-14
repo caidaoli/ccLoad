@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1403,6 +1404,185 @@ func TestHandleChannelChat_CodexOAuthWithoutAPIKeyOrSSEContentType(t *testing.T)
 
 	if got := w.Body.String(); !strings.Contains(got, `"delta":"oauth answer"`) || !strings.Contains(got, "data: [DONE]") || strings.Contains(got, `"error"`) {
 		t.Fatalf("Codex OAuth chat failed: %s", got)
+	}
+}
+
+func TestHandleChannelChat_AntigravityCapacityUsesProviderFallbackPolicy(t *testing.T) {
+	var mu sync.Mutex
+	var baseURLs []string
+	var requestTimes []time.Time
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		baseURL := req.URL.Scheme + "://" + req.URL.Host
+		mu.Lock()
+		baseURLs = append(baseURLs, baseURL)
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+
+		status := http.StatusOK
+		contentType := "text/event-stream"
+		body := `data: {"response":{"responseId":"gravity-chat","candidates":[{"content":{"role":"model","parts":[{"text":"fallback chat answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5},"modelVersion":"gemini-3-flash"}}` + "\n\n"
+		switch baseURL {
+		case antigravityDailyBaseURL:
+			status = http.StatusNotFound
+			contentType = "application/json"
+			body = `{"error":{"message":"endpoint not found"}}`
+		case antigravityProdBaseURL:
+			status = http.StatusServiceUnavailable
+			contentType = "application/json"
+			body = antigravityCapacityBodyForAdminTest
+		case antigravitySandboxDailyBaseURL:
+		default:
+			t.Fatalf("unexpected Antigravity fallback URL: %s", baseURL)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = client
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	started := time.Now()
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": true,
+		"messages": []map[string]string{{"role": "user", "content": "hello"}},
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelChat(c)
+
+	body := w.Body.String()
+	if !strings.Contains(body, `"delta":"fallback chat answer"`) || strings.Contains(body, `"error"`) {
+		t.Fatalf("unexpected chat SSE: %s", body)
+	}
+	mu.Lock()
+	gotURLs := append([]string(nil), baseURLs...)
+	gotTimes := append([]time.Time(nil), requestTimes...)
+	mu.Unlock()
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL, antigravitySandboxDailyBaseURL}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("Antigravity chat URLs=%v, want %v", gotURLs, wantURLs)
+	}
+	for i := 1; i < len(gotTimes); i++ {
+		if delay := gotTimes[i].Sub(gotTimes[i-1]); delay < antigravityBaseURLFallbackDelay {
+			t.Fatalf("fallback delay[%d]=%v, want >= %v", i, delay, antigravityBaseURLFallbackDelay)
+		}
+	}
+
+	logs, err := srv.store.ListLogsRange(
+		context.Background(), started.Add(-time.Second), time.Now().Add(time.Second), 10, 0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(logs) != 1 || logs[0].LogSource != model.LogSourceManualChat || logs[0].StatusCode != http.StatusOK {
+		t.Fatalf("manual chat logs=%+v", logs)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if until := cooldowns[created.ID]["gemini-3-flash"]; until.After(time.Now()) {
+		t.Fatalf("successful fallback must clear model cooldown, until=%v", until)
+	}
+}
+
+func TestHandleChannelChat_AntigravityCapacityCancellationKeepsModelCooldown(t *testing.T) {
+	var calls atomic.Int32
+	reqCtx, cancel := context.WithCancel(context.Background())
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		if calls.Add(1) != 1 {
+			t.Fatalf("unexpected request after cancellation: %s", req.URL)
+		}
+		time.AfterFunc(20*time.Millisecond, cancel)
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(antigravityCapacityBodyForAdminTest)),
+			Request:    req,
+		}, nil
+	})}
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = client
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": true, "content": "hello",
+	}).WithContext(reqCtx)
+	c, _ := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelChat(c)
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("calls=%d, want 1", got)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(cooldowns[created.ID]["gemini-3-flash"])
+	if remaining < util.ServerErrorInitialCooldown-10*time.Second || remaining > util.ServerErrorInitialCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want about %v", remaining, util.ServerErrorInitialCooldown)
+	}
+}
+
+func TestHandleChannelChat_AntigravityFallbackBusinessFailureKeepsModelCooldown(t *testing.T) {
+	var mu sync.Mutex
+	var baseURLs []string
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		baseURL := req.URL.Scheme + "://" + req.URL.Host
+		mu.Lock()
+		baseURLs = append(baseURLs, baseURL)
+		mu.Unlock()
+
+		status := http.StatusServiceUnavailable
+		body := antigravityCapacityBodyForAdminTest
+		if baseURL == antigravityProdBaseURL {
+			status = http.StatusOK
+			body = `{"error":{"message":"upstream overloaded"}}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = client
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	req := newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/chat", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelChat(c)
+
+	if body := w.Body.String(); !strings.Contains(body, `"error"`) || strings.Contains(body, `"delta"`) {
+		t.Fatalf("business failure must remain a chat error: %s", body)
+	}
+	mu.Lock()
+	gotURLs := append([]string(nil), baseURLs...)
+	mu.Unlock()
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("Antigravity chat URLs=%v, want %v", gotURLs, wantURLs)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(cooldowns[created.ID]["gemini-3-flash"])
+	if remaining < util.ServerErrorInitialCooldown-10*time.Second || remaining > util.ServerErrorInitialCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want about %v", remaining, util.ServerErrorInitialCooldown)
 	}
 }
 

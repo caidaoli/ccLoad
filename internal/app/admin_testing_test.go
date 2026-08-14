@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,6 +22,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/testutil"
@@ -31,6 +33,8 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/tidwall/gjson"
 )
+
+const antigravityCapacityBodyForAdminTest = `{"error":{"code":503,"message":"No capacity available for model gemini-3-flash on the server","status":"UNAVAILABLE","details":[{"@type":"type.googleapis.com/google.rpc.ErrorInfo","reason":"MODEL_CAPACITY_EXHAUSTED","domain":"cloudcode-pa.googleapis.com","metadata":{"error_number":"2010","model":"gemini-3-flash"}}]}}`
 
 func createCodexOAuthChannelForAdminTest(t testing.TB, srv *Server, upstreamURL string) *model.Config {
 	t.Helper()
@@ -2204,6 +2208,179 @@ func TestHandleChannelTest_AntigravityOAuthWithoutAPIKey(t *testing.T) {
 	}
 	if got, _ := resp.Data["total_keys"].(float64); got != 0 {
 		t.Fatalf("total_keys=%v, want 0", resp.Data["total_keys"])
+	}
+}
+
+func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *testing.T) {
+	var mu sync.Mutex
+	var baseURLs []string
+	var requestTimes []time.Time
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		baseURL := req.URL.Scheme + "://" + req.URL.Host
+		mu.Lock()
+		baseURLs = append(baseURLs, baseURL)
+		requestTimes = append(requestTimes, time.Now())
+		mu.Unlock()
+
+		status := http.StatusOK
+		contentType := "application/json"
+		body := `{"response":{"candidates":[{"content":{"role":"model","parts":[{"text":"fallback test answer"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":2,"candidatesTokenCount":3,"totalTokenCount":5}}}`
+		if baseURL == antigravityDailyBaseURL {
+			status = http.StatusServiceUnavailable
+			body = antigravityCapacityBodyForAdminTest
+		} else if baseURL != antigravityProdBaseURL {
+			t.Fatalf("unexpected Antigravity fallback URL: %s", baseURL)
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{contentType}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    req,
+		}, nil
+	})}
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = client
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := resp.Data["success"].(bool); !resp.Success || !success {
+		t.Fatalf("Antigravity fallback test failed: %+v", resp)
+	}
+	if got, _ := resp.Data["response_text"].(string); got != "fallback test answer" {
+		t.Fatalf("response_text=%q data=%+v", got, resp.Data)
+	}
+	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 1 次" {
+		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)
+	}
+
+	mu.Lock()
+	gotURLs := append([]string(nil), baseURLs...)
+	gotTimes := append([]time.Time(nil), requestTimes...)
+	mu.Unlock()
+	wantURLs := []string{antigravityDailyBaseURL, antigravityProdBaseURL}
+	if !slices.Equal(gotURLs, wantURLs) {
+		t.Fatalf("Antigravity test URLs=%v, want %v", gotURLs, wantURLs)
+	}
+	if delay := gotTimes[1].Sub(gotTimes[0]); delay < antigravityBaseURLFallbackDelay {
+		t.Fatalf("fallback delay=%v, want >= %v", delay, antigravityBaseURLFallbackDelay)
+	}
+}
+
+func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *testing.T) {
+	var calls atomic.Int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		calls.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(antigravityCapacityBodyForAdminTest)),
+			Request:    req,
+		}, nil
+	})}
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = client
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
+		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
+	}
+	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 2 次" {
+		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)
+	}
+	if got := calls.Load(); got != antigravityModelCapacityAttempts {
+		t.Fatalf("capacity calls=%d, want %d", got, antigravityModelCapacityAttempts)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	remaining := time.Until(cooldowns[created.ID]["gemini-3-flash"])
+	if remaining < util.ServerErrorInitialCooldown-10*time.Second || remaining > util.ServerErrorInitialCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want one %v cooldown", remaining, util.ServerErrorInitialCooldown)
+	}
+}
+
+func TestHandleChannelTest_AntigravityCustomURLDoesNotExpandCapacityFallback(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, antigravityCapacityBodyForAdminTest)
+	}))
+	t.Cleanup(upstream.Close)
+
+	srv := newInMemoryServer(t)
+	srv.antigravityClient = upstream.Client()
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
+		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("custom Antigravity URL calls=%d, want 1", got)
+	}
+	cooldowns, err := srv.store.GetAllModelCooldowns(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	until := cooldowns[created.ID]["gemini-3-flash"]
+	remaining := time.Until(until)
+	if remaining < util.ServerErrorInitialCooldown-10*time.Second || remaining > util.ServerErrorInitialCooldown+2*time.Second {
+		t.Fatalf("capacity cooldown remaining=%v, want about %v", remaining, util.ServerErrorInitialCooldown)
+	}
+}
+
+func TestHandleChannelTest_AntigravityGlobalOverrideDoesNotExpandCapacityFallback(t *testing.T) {
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, antigravityCapacityBodyForAdminTest)
+	}))
+	t.Cleanup(upstream.Close)
+
+	srv := newInMemoryServerWithSettings(t, map[string]string{
+		config.AntigravityURLSettingKey: upstream.URL,
+	})
+	srv.antigravityClient = upstream.Client()
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, antigravityDailyBaseURL)
+	channelID := fmt.Sprintf("%d", created.ID)
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/channels/"+channelID+"/test", map[string]any{
+		"model": "gemini-3-flash", "client_protocol": "gemini", "stream": false, "content": "hello",
+	}))
+	c.Params = gin.Params{{Key: "id", Value: channelID}}
+	srv.HandleChannelTest(c)
+
+	resp := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
+		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("Antigravity global override calls=%d, want 1", got)
 	}
 }
 

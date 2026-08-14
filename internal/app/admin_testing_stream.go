@@ -80,7 +80,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	if len(urls) > 1 && s.urlSelector != nil {
 		selector = s.urlSelector
 	}
-	orderedURLs := orderURLsWithSelector(selector, cfg.ID, urls)
+	orderedURLs := orderChannelAttemptURLs(selector, cfg, urls)
 	switch cfg.GetProtocolTransformMode() {
 	case model.ProtocolTransformModeAuto:
 		orderedURLs = prioritizeAutomaticProtocolURLs(orderedURLs, cfg.URLs)
@@ -96,6 +96,7 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 	disableResponseWriteTimeout(c.Writer, "聊天流式")
 
 	var lastResult map[string]any
+	var urlPolicy channelURLAttemptPolicy
 	for idx, entry := range orderedURLs {
 		upstreamProtocols := resolveConfiguredURLUpstreamProtocols(
 			cfg, configuredURLAt(cfg, entry.idx, entry.url), clientProtocol,
@@ -115,6 +116,17 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 				c, cfg, keySelection.requestCredential, &testReq, clientProtocol, upstreamProtocol, entry.url, originalModel,
 			)
 			if attempt.handled {
+				if attempt.streamResult != nil {
+					attempt.streamResult.capacityRetries = urlPolicy.antigravityCapacityRetries
+				}
+				if attempt.succeeded && urlPolicy.antigravityCapacityRetries > 0 {
+					s.applyChannelTestResultCooldown(
+						c.Request.Context(), cfg, keySelection.keyIndex, &testReq,
+						keySelection.updatePersistedCooldown, map[string]any{
+							"success": true, "status_code": http.StatusOK, "actual_model": attempt.actualModel,
+						},
+					)
+				}
 				// Write chat log from stream result
 				s.writeChatStreamLog(c, persistedCfg, &testReq, keySelection.apiKey, attempt.streamResult, originalModel)
 				return
@@ -125,7 +137,25 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 			}
 			capabilityExhausted = protocolIdx == len(upstreamProtocols)-1
 		}
-		if idx == len(orderedURLs)-1 {
+		hasNextURL := idx < len(orderedURLs)-1
+		decision := urlPolicy.decide(cfg, hasNextURL, channelURLFailureFromTestResult(lastResult))
+		if decision.firstCapacity && keySelection.updatePersistedCooldown {
+			s.applyChannelTestCapacityCooldown(
+				c.Request.Context(), cfg, keySelection.keyIndex, &testReq, lastResult,
+			)
+		}
+		if decision.retry {
+			if err := waitForChannelURLRetry(c.Request.Context(), decision.delay); err != nil {
+				lastResult["error"] = "渠道测试已取消: " + err.Error()
+				break
+			}
+			continue
+		}
+		if decision.capacity {
+			lastResult["antigravity_capacity_cooldown_applied"] = urlPolicy.antigravityCapacityObserved
+			markChannelTestCapacityExhausted(lastResult, urlPolicy.antigravityCapacityRetries)
+		}
+		if !hasNextURL {
 			break
 		}
 		if capabilityExhausted && cfg.GetProtocolTransformMode() != model.ProtocolTransformModeUpstream {
@@ -143,6 +173,12 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 	if lastResult != nil {
 		writeChatErrorEvent(c, chatErrorMessageFromResult(lastResult))
+		if capacity, _ := lastResult["antigravity_model_capacity"].(bool); capacity {
+			lastResult = s.applyChannelTestResultCooldown(
+				c.Request.Context(), cfg, keySelection.keyIndex, &testReq,
+				keySelection.updatePersistedCooldown, lastResult,
+			)
+		}
 		s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(persistedCfg, model.LogSourceManualChat, originalModel, channelTestActualModel(lastResult, testReq.Model), keySelection.apiKey, c.ClientIP(), testReq.ThinkingEffort, lastResult))
 		return
 	}
@@ -151,6 +187,8 @@ func (s *Server) HandleChannelChat(c *gin.Context) {
 
 type chatURLAttemptResult struct {
 	handled      bool
+	succeeded    bool
+	actualModel  string
 	result       map[string]any
 	streamResult *chatStreamResult
 }
@@ -165,6 +203,7 @@ type chatStreamResult struct {
 	upstreamProtocol string
 	statusCode       int
 	requestThinking  string
+	capacityRetries  int
 	errorResult      map[string]any
 	debugData        *model.DebugLogEntry
 }
@@ -230,6 +269,7 @@ func (s *Server) streamChatWithURLForProtocol(
 	attemptReq.Model = s.resolveFinalUpstreamModel(cfg, originalModel, upstreamProtocol)
 	testReq = &attemptReq
 	defer func() {
+		out.actualModel = attemptReq.Model
 		if out.result == nil {
 			return
 		}
@@ -292,8 +332,8 @@ func (s *Server) streamChatWithURLForProtocol(
 	}
 
 	if !isSSE {
-		s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey, requestThinking, originalModel)
-		return chatURLAttemptResult{handled: true}
+		succeeded := s.streamChatNonStreamResponse(c, resp, requestPlan, testReq, contentType, start, cfg, apiKey, requestThinking, originalModel)
+		return chatURLAttemptResult{handled: true, succeeded: succeeded, actualModel: attemptReq.Model}
 	}
 
 	sr := &chatStreamResult{
@@ -331,6 +371,8 @@ func (s *Server) streamChatWithURLForProtocol(
 		}
 		sr.errorResult = result
 		writeChatErrorEvent(c, chatErrorMessageFromResult(result))
+	} else if errorEvent := sr.usageParser.GetLastError(); len(errorEvent) > 0 {
+		sr.errorResult = chatSSEErrorResult(start, resp.StatusCode, errorEvent)
 	}
 
 	// Write summary event after stream ends
@@ -340,7 +382,30 @@ func (s *Server) streamChatWithURLForProtocol(
 	if requestPlan.debugCapture != nil {
 		sr.debugData = requestPlan.debugCapture.buildEntry(resp)
 	}
-	return chatURLAttemptResult{handled: true, streamResult: sr}
+	return chatURLAttemptResult{handled: true, succeeded: sr.errorResult == nil, actualModel: attemptReq.Model, streamResult: sr}
+}
+
+func chatSSEErrorResult(start time.Time, upstreamStatus int, errorEvent []byte) map[string]any {
+	errorMsg := "上游返回错误"
+	var obj map[string]any
+	if err := sonic.Unmarshal(errorEvent, &obj); err == nil {
+		if msg, _, matched := extractSSEErrorMessage(obj); matched && strings.TrimSpace(msg) != "" {
+			errorMsg = msg
+		}
+	}
+	statusCode := classifySSEErrorStatus(errorEvent)
+	if statusCode <= 0 {
+		statusCode = upstreamStatus
+	}
+	return map[string]any{
+		"success":                false,
+		"status_code":            statusCode,
+		"is_streaming":           true,
+		"duration_ms":            time.Since(start).Milliseconds(),
+		"error":                  errorMsg,
+		"raw_response":           string(errorEvent),
+		"upstream_response_body": string(errorEvent),
+	}
 }
 
 func chatRequestErrorResult(start time.Time, testReq *testutil.TestChannelRequest, timeout *channelTestTimeout, err error) map[string]any {
@@ -422,7 +487,7 @@ func (s *Server) streamChatNonStreamResponse(
 	apiKey string,
 	requestThinking string,
 	originalModel string,
-) {
+) bool {
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
 		errorMsg := "读取响应失败: " + err.Error()
@@ -430,7 +495,7 @@ func (s *Server) streamChatNonStreamResponse(
 			errorMsg = timeoutMsg
 		}
 		writeChatErrorEvent(c, errorMsg)
-		return
+		return false
 	}
 
 	result := map[string]any{
@@ -445,9 +510,19 @@ func (s *Server) streamChatNonStreamResponse(
 	}
 	result = s.parseTestNonStreamResponse(c.Request.Context(), requestPlan, testReq, resp, contentType, start, respBody, result)
 	result = attachTestDebugData(requestPlan, resp, result)
+	succeeded, _ := result["success"].(bool)
+	responseText, _ := result["response_text"].(string)
+	if strings.TrimSpace(responseText) == "" {
+		succeeded = false
+		result["success"] = false
+		if msg, _ := result["error"].(string); strings.TrimSpace(msg) == "" {
+			result["error"] = "上游响应中没有可显示文本"
+		}
+	}
 	writeChatNonStreamResult(c, result)
 	writeChatNonStreamSummary(c, result)
 	s.persistDetectionLog(c.Request.Context(), detectionLogFromResult(cfg, model.LogSourceManualChat, originalModel, testReq.Model, apiKey, c.ClientIP(), requestThinking, result))
+	return succeeded
 }
 
 func writeChatNonStreamResult(c *gin.Context, result map[string]any) {
@@ -550,6 +625,7 @@ func (s *Server) writeChatStreamLog(c *gin.Context, cfg *model.Config, testReq *
 	}
 	result["client_protocol"] = sr.clientProtocol
 	result["upstream_protocol"] = sr.upstreamProtocol
+	annotateChannelTestCapacityRetries(result, sr.capacityRetries)
 	if !sr.firstContentTime.IsZero() {
 		result["first_byte_duration_ms"] = sr.firstContentTime.Sub(sr.start).Milliseconds()
 	}
