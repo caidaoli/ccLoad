@@ -728,8 +728,8 @@
       } else {
         document.getElementById('editTokenExpiry').value = 'custom';
         document.getElementById('editCustomExpiryContainer').style.display = 'block';
-        const date = new Date(token.expires_at);
-        document.getElementById('editCustomExpiry').value = date.toISOString().slice(0, 16);
+        document.getElementById('editCustomExpiry').value =
+          TokenExpiry.formatDateTimeLocal(token.expires_at);
       }
 
       // 初始化费用限额状态（2026-01新增）
