@@ -23,6 +23,7 @@ import (
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/storage"
@@ -6193,6 +6194,111 @@ func TestProxy_AutomaticProtocolFallback_DoesNotTranslateOrdinaryErrors(t *testi
 			}
 		})
 	}
+}
+
+func TestProxy_CodexMap429To503Setting(t *testing.T) {
+	tests := []struct {
+		name             string
+		clientProtocol   string
+		upstreamProtocol string
+		path             string
+		body             map[string]any
+		headers          map[string]string
+		settings         map[string]string
+		wantStatus       int
+	}{
+		{
+			name: "disabled by default for Codex", clientProtocol: util.ProtocolCodex,
+			upstreamProtocol: util.ProtocolCodex, path: "/v1/responses",
+			body:       map[string]any{"model": "gpt-test", "input": "hello", "stream": false},
+			headers:    map[string]string{"User-Agent": "codex_cli_rs/0.147.0"},
+			wantStatus: http.StatusTooManyRequests,
+		},
+		{
+			name: "enabled for Codex", clientProtocol: util.ProtocolCodex,
+			upstreamProtocol: util.ProtocolCodex, path: "/v1/responses",
+			body:       map[string]any{"model": "gpt-test", "input": "hello", "stream": false},
+			headers:    map[string]string{"User-Agent": "codex_cli_rs/0.147.0"},
+			settings:   map[string]string{config.CodexMap429To503SettingKey: "true"},
+			wantStatus: http.StatusServiceUnavailable,
+		},
+		{
+			name: "enabled does not affect other Responses clients", clientProtocol: util.ProtocolCodex,
+			upstreamProtocol: util.ProtocolCodex, path: "/v1/responses",
+			body:       map[string]any{"model": "gpt-test", "input": "hello", "stream": false},
+			headers:    map[string]string{"User-Agent": "openai-python/2.21.0"},
+			settings:   map[string]string{config.CodexMap429To503SettingKey: "true"},
+			wantStatus: http.StatusTooManyRequests,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			upstreamBody := `{"error":{"type":"rate_limit_error","message":"retry later"}}`
+			upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.Header().Set("Retry-After", "60")
+				w.WriteHeader(http.StatusTooManyRequests)
+				_, _ = io.WriteString(w, upstreamBody)
+			}))
+			defer upstream.Close()
+
+			env := setupProxyTestEnvWithSettings(t, []testChannel{{
+				name: "final-429", upstreamProtocol: tt.upstreamProtocol, models: "gpt-test",
+			}}, map[int]string{0: upstream.URL}, tt.settings)
+			response := doProxyRequest(t, env.engine, tt.path, tt.body, tt.headers)
+
+			if response.Code != tt.wantStatus {
+				t.Fatalf("client protocol %s status=%d, want %d; body=%s",
+					tt.clientProtocol, response.Code, tt.wantStatus, response.Body.String())
+			}
+			if response.Header().Get("Retry-After") != "60" || response.Body.String() != upstreamBody {
+				t.Fatalf("upstream response changed: headers=%v body=%s", response.Header(), response.Body.String())
+			}
+		})
+	}
+
+	t.Run("summary log preserves upstream 429", func(t *testing.T) {
+		upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"error":{"message":"retry later"}}`)
+		}))
+		defer upstream.Close()
+
+		env := setupProxyTestEnvWithSettings(t, []testChannel{
+			{name: "first-429", upstreamProtocol: util.ProtocolCodex, models: "gpt-log-test", priority: 100},
+			{name: "second-429", upstreamProtocol: util.ProtocolCodex, models: "gpt-log-test", priority: 90},
+		}, map[int]string{0: upstream.URL, 1: upstream.URL}, map[string]string{
+			config.CodexMap429To503SettingKey: "true",
+		})
+		response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+			"model": "gpt-log-test", "input": "hello", "stream": false,
+		}, map[string]string{"User-Agent": "codex_cli_rs/0.147.0"})
+		if response.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status=%d, want 503; body=%s", response.Code, response.Body.String())
+		}
+
+		deadline := time.Now().Add(2 * time.Second)
+		for time.Now().Before(deadline) {
+			logs, err := env.store.ListLogs(
+				context.Background(), time.Now().Add(-time.Minute), 20, 0,
+				&model.LogFilter{LogSource: model.LogSourceProxy},
+			)
+			if err != nil {
+				t.Fatalf("ListLogs failed: %v", err)
+			}
+			for _, entry := range logs {
+				if entry.Model == "gpt-log-test" && entry.ChannelID == 0 {
+					if entry.StatusCode != http.StatusTooManyRequests {
+						t.Fatalf("summary log status=%d, want upstream 429", entry.StatusCode)
+					}
+					return
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatal("proxy summary log not found within deadline")
+	})
 }
 
 func TestProxy_AutomaticProtocolFallback_UnsupportedAnthropicBeta(t *testing.T) {

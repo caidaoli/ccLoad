@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"ccLoad/internal/codexauth"
+	"ccLoad/internal/config"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -4543,6 +4544,85 @@ func TestNativeCodexWebsocketPreservesFinalFailedEvent(t *testing.T) {
 		t.Fatalf("response.failed was forwarded twice: %s", duplicate)
 	} else if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
 		t.Fatalf("unexpected websocket state after response.failed: %v", err)
+	}
+}
+
+func TestResponsesWebsocketMapsFinal429To503ForCodexRetry(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"retry later"}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "websocket-final-429", upstreamProtocol: util.ProtocolCodex, models: "gpt-test",
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		config.CodexMap429To503SettingKey: "true",
+	})
+	conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"User-Agent": {"codex_cli_rs/0.147.0"},
+	})
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set websocket deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write websocket request: %v", err)
+	}
+
+	var event map[string]any
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read websocket retry event: %v", err)
+	}
+	errorBody, _ := event["error"].(map[string]any)
+	if event["type"] != "error" || event["status"] != float64(http.StatusServiceUnavailable) ||
+		errorBody["type"] != "server_error" || errorBody["code"] != "upstream_rate_limited" {
+		t.Fatalf("websocket retry event=%#v, want 503 server_error/upstream_rate_limited", event)
+	}
+	if _, _, err := conn.ReadMessage(); !websocket.IsCloseError(err, websocket.CloseInternalServerErr) {
+		t.Fatalf("websocket close error=%v, want 1011", err)
+	}
+}
+
+func TestResponsesWebsocketDoesNotMapFinal429ForOtherResponsesClients(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = io.WriteString(w, `{"error":{"type":"rate_limit_error","message":"retry later"}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnvWithSettings(t, []testChannel{{
+		name: "websocket-final-429", upstreamProtocol: util.ProtocolCodex, models: "gpt-test",
+	}}, map[int]string{0: upstream.URL}, map[string]string{
+		config.CodexMap429To503SettingKey: "true",
+	})
+	conn := dialResponsesWebsocketWithTokenAndHeaders(t, env.engine, "test-api-key", http.Header{
+		"User-Agent": {"openai-python/2.21.0"},
+	})
+	if err := conn.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set websocket deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"role": "user", "content": "hello"}},
+	}); err != nil {
+		t.Fatalf("write websocket request: %v", err)
+	}
+
+	var event map[string]any
+	if err := conn.ReadJSON(&event); err != nil {
+		t.Fatalf("read websocket error event: %v", err)
+	}
+	errorBody, _ := event["error"].(map[string]any)
+	message, _ := errorBody["message"].(string)
+	if event["type"] != "error" || event["status"] != float64(http.StatusBadRequest) ||
+		errorBody["type"] != "invalid_request_error" || errorBody["code"] != "upstream_error" ||
+		!strings.Contains(message, "upstream status 429") {
+		t.Fatalf("non-Codex websocket response was remapped: %#v", event)
 	}
 }
 

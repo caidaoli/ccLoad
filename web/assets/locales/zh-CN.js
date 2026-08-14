@@ -1431,6 +1431,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'settings.desc.anthropic_non_stream_timeout': 'Anthropic非流式请求超时(秒,0=使用全局非流超时)',
   'settings.desc.codex_first_byte_timeout': 'Codex流式请求首个有效内容超时(秒,0=使用全局首字超时)',
   'settings.desc.codex_non_stream_timeout': 'Codex非流式请求超时(秒,0=使用全局非流超时)',
+  'settings.desc.codex_map_429_to_503': '所有上游候选均失败时，将返回给官方 Codex 客户端的最终 429 映射为 503，使其按 5xx 重试',
   'settings.desc.openai_first_byte_timeout': 'OpenAI流式请求首个有效内容超时(秒,0=使用全局首字超时)',
   'settings.desc.openai_non_stream_timeout': 'OpenAI非流式请求超时(秒,0=使用全局非流超时)',
   'settings.desc.gemini_first_byte_timeout': 'Gemini流式请求首个有效内容超时(秒,0=使用全局首字超时)',

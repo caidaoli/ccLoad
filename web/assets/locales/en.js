@@ -1431,6 +1431,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.anthropic_non_stream_timeout': 'Anthropic non-stream request timeout (seconds, 0 = use global non-stream timeout)',
   'settings.desc.codex_first_byte_timeout': 'Codex first valid stream content timeout (seconds, 0 = use global first-byte timeout)',
   'settings.desc.codex_non_stream_timeout': 'Codex non-stream request timeout (seconds, 0 = use global non-stream timeout)',
+  'settings.desc.codex_map_429_to_503': 'Return final 429s to official Codex clients as 503s to trigger retries',
   'settings.desc.openai_first_byte_timeout': 'OpenAI first valid stream content timeout (seconds, 0 = use global first-byte timeout)',
   'settings.desc.openai_non_stream_timeout': 'OpenAI non-stream request timeout (seconds, 0 = use global non-stream timeout)',
   'settings.desc.gemini_first_byte_timeout': 'Gemini first valid stream content timeout (seconds, 0 = use global first-byte timeout)',

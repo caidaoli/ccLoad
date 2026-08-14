@@ -1004,6 +1004,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `cooldown_server_seconds` | `120` | Server error (5xx) initial cooldown in seconds |
 | `cooldown_timeout_seconds` | `60` | Timeout error (597/598) initial cooldown in seconds |
 | `cooldown_rate_limit_seconds` | `60` | Rate limit error (429) initial cooldown in seconds |
+| `codex_map_429_to_503` | `false` | Map the final upstream 429 returned to official Codex clients to 503 so they retry it as a 5xx; other Responses clients and ccLoad's own limits are unaffected |
 | `cooldown_min_seconds` | `10` | Exponential backoff cooldown floor in seconds |
 | `cooldown_max_seconds` | `1800` | Exponential backoff cooldown ceiling in seconds (an inverted floor/ceiling pair falls back to both defaults) |
 | `cooldown_fallback_enabled` | `true` | When every channel is cooling down, fall back to the channel that recovers soonest instead of failing (keys follow the same earliest-recovery rule); set to `false` to reject the request outright |

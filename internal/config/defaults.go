@@ -10,6 +10,7 @@ const (
 	AntigravityURLSettingKey            = "ANTIGRAVITY_URL"
 	AnthropicBaseURLSettingKey          = "ANTHROPIC_BASE_URL"
 	ActiveRequestTitleEnabledSettingKey = "active_request_title_enabled"
+	CodexMap429To503SettingKey          = "codex_map_429_to_503"
 )
 
 // HTTP服务器配置常量
