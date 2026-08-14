@@ -17,7 +17,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	antigravityclaude "ccLoad/internal/protocol/cliproxy/providers/antigravity/claude"
@@ -726,14 +725,14 @@ func shouldFallbackAntigravityBaseURL(statusCode int, body []byte) bool {
 	}
 }
 
-func injectAntigravityOAuthHeaders(req *http.Request, cfg *model.Config) {
+func injectAntigravityOAuthHeaders(req *http.Request, cfg *model.Config, userAgent string) {
 	if req == nil || cfg == nil || !cfg.UsesAntigravityOAuth() {
 		return
 	}
 	req.Header = make(http.Header, 3)
 	req.Header.Set("Authorization", "Bearer "+cfg.AntigravityAccessToken)
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", antigravityauth.DefaultUserAgent)
+	req.Header.Set("User-Agent", strings.TrimSpace(userAgent))
 }
 
 func unwrapAntigravityResponse(raw []byte) ([]byte, error) {

@@ -1532,7 +1532,7 @@ func (s *Server) newTestUpstreamRequest(
 	} else if requestProtocol == protocol.Codex {
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
-		injectAntigravityOAuthHeaders(req, cfgForBuild)
+		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
 		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 	}

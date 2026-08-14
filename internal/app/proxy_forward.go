@@ -236,7 +236,7 @@ func (s *Server) buildProxyRequest(
 		}
 		injectCodexHeaders(req, cfg, apiKey, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
-		injectAntigravityOAuthHeaders(req, cfg)
+		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
 	} else if officialAnthropicAPIKey {

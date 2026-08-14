@@ -28,7 +28,6 @@ const (
 	codexUsageUserAgent        = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
 	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
-	antigravityUsageUserAgent  = "antigravity/cli/1.0.13 (aidev_client; os_type=darwin; arch=arm64)"
 	oauthUsageTimeout          = 30 * time.Second
 	oauthUsageBatchWorkers     = 8
 	maxOAuthUsageBatchChannels = 1000
@@ -755,7 +754,12 @@ func newAnthropicOAuthMetadataRequest(ctx context.Context, targetURL, accessToke
 	return req, nil
 }
 
-func requestAntigravityUsage(ctx context.Context, client *http.Client, credential *antigravityauth.Credential) (*oauthUsageSummary, error) {
+func requestAntigravityUsage(
+	ctx context.Context,
+	client *http.Client,
+	credential *antigravityauth.Credential,
+	userAgent string,
+) (*oauthUsageSummary, error) {
 	if client == nil || credential == nil || strings.TrimSpace(credential.AccessToken) == "" || strings.TrimSpace(credential.ProjectID) == "" {
 		return nil, errors.New("usage: Antigravity request is unavailable")
 	}
@@ -772,7 +776,7 @@ func requestAntigravityUsage(ctx context.Context, client *http.Client, credentia
 	req.Header.Set("Authorization", "Bearer "+credential.AccessToken)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", antigravityUsageUserAgent)
+	req.Header.Set("User-Agent", strings.TrimSpace(userAgent))
 
 	body, err := executeOAuthUsageRequest(client, req, "Antigravity")
 	if err != nil {
@@ -1548,7 +1552,7 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 		if err != nil {
 			return nil, oauthUsageCredentialRefreshError(err, "usage: Antigravity credential refresh failed")
 		}
-		return requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential)
+		return requestAntigravityUsage(ctx, s.getClientForChannel(cfg), credential, s.antigravityUserAgent())
 	case cfg.UsesXAIOAuth():
 		if s.xaiCredentials == nil {
 			return nil, errXAIUsageManagerUnavailable

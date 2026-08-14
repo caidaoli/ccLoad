@@ -106,6 +106,14 @@ func main() {
 	// 渠道仅从数据库管理与读取；不再从本地文件初始化。
 
 	srv := app.NewServer(store)
+	antigravityVersionCtx, cancelAntigravityVersion := context.WithTimeout(context.Background(), 10*time.Second)
+	antigravityUserAgent, antigravityVersionErr := srv.RefreshAntigravityUserAgent(antigravityVersionCtx)
+	cancelAntigravityVersion()
+	if antigravityVersionErr != nil {
+		log.Printf("[WARN] 获取 Antigravity Hub 版本失败，使用回退 User-Agent %q: %v", antigravityUserAgent, antigravityVersionErr)
+	} else {
+		log.Printf("[INFO] Antigravity User-Agent: %s", antigravityUserAgent)
+	}
 	srv.StartModelCatalogSync()
 
 	// 注入重启函数（避免循环依赖）

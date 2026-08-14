@@ -1112,6 +1112,7 @@ func TestAntigravityOAuthCreatesDatabaseChannel(t *testing.T) {
 	}
 	wantURLs := []string{antigravityDailyBaseURL}
 	if len(channel.URLs) != len(wantURLs) || !channel.SupportsModel("gemini-3-flash") ||
+		!channel.SupportsModel("gemini-3.7-flash-high") ||
 		!strings.Contains(channel.OAuthCredential, `"project_id":"gravity-project"`) ||
 		!strings.Contains(channel.OAuthCredential, `"paid_tier":{"id":"g1-pro-tier","name":"Google AI Pro"}`) {
 		t.Fatalf("created Antigravity channel contract = %#v", channel)
@@ -4818,6 +4819,7 @@ func TestAnthropicModelResponsePersistsPassiveQuotaInCredentialAndChannelList(t 
 func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
+	const discoveredUserAgent = "antigravity/hub/9.8.7 darwin/arm64"
 	credential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "at-gravity-quota-secret", RefreshToken: "rt-gravity-quota-secret",
 		Expired: time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), Email: "quota@example.com", ProjectID: "forward-bonus-fjkxm",
@@ -4847,12 +4849,12 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 		responseBody := ""
 		switch request.URL.String() {
 		case antigravityauth.DefaultDailyAPIBaseURL + "/v1internal:loadCodeAssist":
-			if got := request.Header.Get("User-Agent"); got != antigravityauth.DefaultUserAgent {
+			if got := request.Header.Get("User-Agent"); got != discoveredUserAgent {
 				t.Errorf("loadCodeAssist User-Agent = %q", got)
 			}
 			responseBody = `{"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"}}`
 		case antigravityUsageURL:
-			if got := request.Header.Get("User-Agent"); got != antigravityUsageUserAgent {
+			if got := request.Header.Get("User-Agent"); got != discoveredUserAgent {
 				t.Errorf("quota User-Agent = %q", got)
 			}
 			var body struct {
@@ -4887,6 +4889,7 @@ func TestHandleOAuthUsageReturnsAntigravityQuotaWithoutLeakingCredential(t *test
 	})}
 	server.antigravityClient = server.client
 	server.antigravityService = antigravityauth.NewService(server.client)
+	server.antigravityService.UserAgent = discoveredUserAgent
 	server.antigravityCredentials = newAntigravityCredentialManager(
 		server.antigravityService, store,
 		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,

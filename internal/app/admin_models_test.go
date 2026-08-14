@@ -468,6 +468,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 		_, _ = w.Write([]byte(`{"models":{
 			"claude-opus-4-6-thinking":{},
 			"claude-sonnet-4-6":{},
+			"gemini-3.7-flash-high":{},
 			"gemini-3.6-flash-high":{},
 			"gemini-3-flash":{},
 			"gemini-3-flash-agent":{},
@@ -520,6 +521,7 @@ func TestAdminModels_HandleFetchModels_AntigravityOAuth(t *testing.T) {
 	want := []model.ModelEntry{
 		{Model: "claude-opus-4-6-thinking", RedirectModel: "claude-opus-4-6-thinking"},
 		{Model: "claude-sonnet-4-6", RedirectModel: "claude-sonnet-4-6"},
+		{Model: "gemini-3.7-flash-high", RedirectModel: "gemini-3.7-flash-high"},
 		{Model: "gemini-3.6-flash-high", RedirectModel: "gemini-3.6-flash-high"},
 		{Model: "gemini-3-flash", RedirectModel: "gemini-3-flash"},
 		{Model: "gemini-3-flash-agent", RedirectModel: "gemini-3-flash-agent"},

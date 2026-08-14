@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/protocol/builtin"
+	modelregistry "ccLoad/internal/protocol/cliproxy/registry"
 
 	"github.com/tidwall/gjson"
 )
@@ -119,6 +121,7 @@ func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testi
 		{name: "low stays low", model: "gemini-3.6-flash-high", effort: "low", want: "low"},
 		{name: "medium stays medium", model: "gemini-3.6-flash-high", effort: "medium", want: "medium"},
 		{name: "high stays high", model: "gemini-3.6-flash-high", effort: "high", want: "high"},
+		{name: "Gemini 3.7 minimal stays minimal", model: "gemini-3.7-flash-high", effort: "minimal", want: "minimal"},
 		{name: "xhigh clamps to maximum", model: "gemini-3.6-flash-high", effort: "xhigh", want: "high"},
 		{name: "max clamps to maximum", model: "gemini-3.6-flash-high", effort: "max", want: "high"},
 		{name: "pro minimal clamps to minimum", model: "gemini-3.1-pro-low", effort: "minimal", want: "low"},
@@ -176,6 +179,19 @@ func TestRegistry_TranslateRequest_AnthropicToGemini3_UsesThinkingLevel(t *testi
 				t.Fatalf("expected includeThoughts=true, body=%s", got)
 			}
 		})
+	}
+}
+
+func TestEmbeddedModelCatalog_AntigravityGemini37Flash(t *testing.T) {
+	for _, provider := range []string{"antigravity", "gemini"} {
+		info := modelregistry.LookupModelInfo("gemini-3.7-flash-high", provider)
+		if info == nil || info.Thinking == nil {
+			t.Fatalf("provider %q missing Gemini 3.7 Flash capabilities: %#v", provider, info)
+		}
+		if info.Name != "gemini-3.7-flash-high" || info.Thinking.Min != 1 || info.Thinking.Max != 65535 ||
+			!info.Thinking.DynamicAllowed || !slices.Equal(info.Thinking.Levels, []string{"minimal", "low", "medium", "high"}) {
+			t.Fatalf("provider %q Gemini 3.7 Flash capabilities = %#v", provider, info)
+		}
 	}
 }
 

@@ -12,6 +12,64 @@ import (
 	"time"
 )
 
+func TestServiceRefreshUserAgentFromHubManifest(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/latest-arm64-mac.yml" {
+			t.Errorf("manifest request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("User-Agent"); got != "electron-builder" {
+			t.Errorf("manifest User-Agent = %q", got)
+		}
+		if got := r.Header.Get("Cache-Control"); got != "no-cache" {
+			t.Errorf("manifest Cache-Control = %q", got)
+		}
+		_, _ = w.Write([]byte("version: 2.9.3\nfiles: []\n"))
+	}))
+	defer server.Close()
+
+	service := NewService(server.Client())
+	if service.RequestUserAgent() != "antigravity/hub/2.8.1 darwin/arm64" {
+		t.Fatalf("fallback User-Agent = %q", service.RequestUserAgent())
+	}
+	service.ManifestURL = server.URL + "/latest-arm64-mac.yml"
+	if err := service.RefreshUserAgent(context.Background()); err != nil {
+		t.Fatalf("RefreshUserAgent: %v", err)
+	}
+	if got := service.RequestUserAgent(); got != "antigravity/hub/2.9.3 darwin/arm64" {
+		t.Fatalf("discovered User-Agent = %q", got)
+	}
+}
+
+func TestServiceRefreshUserAgentKeepsFallbackAfterInvalidManifest(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "upstream error", status: http.StatusServiceUnavailable, body: "unavailable"},
+		{name: "missing version", status: http.StatusOK, body: "files: []\n"},
+		{name: "invalid version", status: http.StatusOK, body: "version: 2.8.1-beta\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.status)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer server.Close()
+
+			service := NewService(server.Client())
+			service.ManifestURL = server.URL
+			if err := service.RefreshUserAgent(context.Background()); err == nil {
+				t.Fatal("RefreshUserAgent succeeded for an invalid manifest")
+			}
+			if got := service.RequestUserAgent(); got != DefaultUserAgent {
+				t.Fatalf("User-Agent changed after refresh failure: %q", got)
+			}
+		})
+	}
+}
+
 func TestServiceAuthorizationExchangeAndRefreshContracts(t *testing.T) {
 	var grants []url.Values
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
