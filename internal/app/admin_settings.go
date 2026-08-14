@@ -511,6 +511,12 @@ func validateOptionalOAuthBaseURL(value string) error {
 	if value == "" {
 		return nil
 	}
+	if separator := strings.Index(value, "://"); separator >= 0 {
+		correction := value[separator+3:]
+		if strings.HasPrefix(correction, "http://") || strings.HasPrefix(correction, "https://") {
+			return fmt.Errorf("URL contains a duplicated scheme; use %s", correction)
+		}
+	}
 	parsed, err := neturl.Parse(value)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
 		return fmt.Errorf("must be empty or a valid HTTP(S) URL")

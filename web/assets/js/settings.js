@@ -126,6 +126,36 @@ function numericInputAttributes(setting) {
   return attributes.join(' ');
 }
 
+function validateOptionalOAuthURLInput(value) {
+  const normalizedValue = String(value ?? '').trim();
+  if (normalizedValue === '') return '';
+
+  const schemeSeparator = normalizedValue.indexOf('://');
+  if (schemeSeparator >= 0) {
+    const correction = normalizedValue.slice(schemeSeparator + 3);
+    if (/^https?:\/\//.test(correction)) {
+      return t('settings.validation.oauthURLDuplicatedScheme', { url: correction });
+    }
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(normalizedValue);
+  } catch (_) {
+    return t('settings.validation.oauthURLInvalid');
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return t('settings.validation.oauthURLInvalid');
+  }
+  if (parsed.username || parsed.password) {
+    return t('settings.validation.oauthURLCredentials');
+  }
+  if (parsed.search || parsed.hash) {
+    return t('settings.validation.oauthURLQueryOrFragment');
+  }
+  return '';
+}
+
 function validateSettingInput(setting, value) {
   const normalizedValue = String(value ?? '');
   if (selectSettingOptions.has(setting.key)) {
@@ -134,6 +164,9 @@ function validateSettingInput(setting, value) {
   }
   if (setting.key === 'channel_test_content' && normalizedValue.trim() === '') {
     return t('settings.validation.testContentRequired');
+  }
+  if (oauthBaseURLSettingKeys.has(String(setting.key || '').toLowerCase())) {
+    return validateOptionalOAuthURLInput(normalizedValue);
   }
 
   const numeric = setting.value_type === 'int'
