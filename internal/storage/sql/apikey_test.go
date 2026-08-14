@@ -476,6 +476,7 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 			URLs:                  model.ChannelURLs{{URL: "https://api.example.com"}},
 			Priority:              5,
 			Enabled:               true,
+			Websockets:            true,
 			ScheduledCheckEnabled: true,
 			ModelEntries: []model.ModelEntry{
 				{Model: "gpt-4o-mini"},
@@ -500,6 +501,9 @@ func TestAPIKey_ImportChannelBatchPreservesScheduledCheckWithExplicitID(t *testi
 	}
 	if !config.ScheduledCheckEnabled {
 		t.Fatalf("expected scheduled_check_enabled to persist for explicit id import")
+	}
+	if !config.Websockets {
+		t.Fatalf("expected websockets to persist for explicit id import")
 	}
 }
 
