@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"bytes"
 	"encoding/json"
 	"log"
 
@@ -19,7 +20,6 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 	if inputResult.Type == gjson.String {
 		input, _ := sjson.SetBytes([]byte(`[{"type":"message","role":"user","content":[{"type":"input_text","text":""}]}]`), "0.content.0.text", inputResult.String())
 		rawJSON, _ = sjson.SetRawBytes(rawJSON, "input", input)
-		inputResult = util.GetGJSONBytesNoCopy(rawJSON, "input")
 	}
 
 	rawJSON = setCodexRequiredBool(rawJSON, "stream", true)
@@ -32,14 +32,15 @@ func ConvertOpenAIResponsesRequestToCodex(modelName string, inputRawJSON []byte,
 		rawJSON = deleteCodexRequestFields(rawJSON, "service_tier")
 	}
 
-	rawJSON = deleteCodexRequestFields(rawJSON, "truncation")
+	rawJSON = deleteCodexRequestFields(rawJSON, "truncation", "prompt_cache_options")
+	rawJSON = stripCodexResponsesCacheBreakpoints(rawJSON)
 	rawJSON = applyResponsesCompactionCompatibility(rawJSON)
 
 	// Delete the user field as it is not supported by the Codex upstream.
 	rawJSON = deleteCodexRequestFields(rawJSON, "user")
 
 	// Convert role "system" to "developer" in input array to comply with Codex API requirements.
-	rawJSON = convertSystemRoleToDeveloperWithInput(rawJSON, inputResult)
+	rawJSON = convertSystemRoleToDeveloper(rawJSON)
 	rawJSON = normalizeCodexBuiltinTools(rawJSON)
 
 	return rawJSON
@@ -101,6 +102,81 @@ func deleteCodexRequestFields(rawJSON []byte, paths ...string) []byte {
 	return rawJSON
 }
 
+// stripCodexResponsesCacheBreakpoints removes cache hints attached to
+// input[].content[] items. Codex Responses rejects this client-side extension.
+func stripCodexResponsesCacheBreakpoints(rawJSON []byte) []byte {
+	if !bytes.Contains(rawJSON, []byte(`"prompt_cache_breakpoint"`)) {
+		return rawJSON
+	}
+
+	input := util.GetGJSONBytesNoCopy(rawJSON, "input")
+	if !input.IsArray() {
+		return rawJSON
+	}
+
+	inputItems := input.Array()
+	if len(inputItems) == 0 {
+		return rawJSON
+	}
+
+	changed := false
+	rebuiltInput := make([][]byte, 0, len(inputItems))
+	for _, item := range inputItems {
+		itemRaw := []byte(item.Raw)
+		content := item.Get("content")
+		if content.IsArray() {
+			updatedContent, contentChanged := stripPromptCacheBreakpointFromContent(content)
+			if contentChanged {
+				if updatedItem, errSet := sjson.SetRawBytes(itemRaw, "content", updatedContent); errSet == nil {
+					itemRaw = updatedItem
+					changed = true
+				}
+			}
+		}
+		rebuiltInput = append(rebuiltInput, itemRaw)
+	}
+	if !changed {
+		return rawJSON
+	}
+
+	updated, errSet := sjson.SetRawBytes(rawJSON, "input", translatorcommon.JoinRawArray(rebuiltInput))
+	if errSet != nil {
+		return rawJSON
+	}
+	return updated
+}
+
+func stripPromptCacheBreakpointFromContent(content gjson.Result) ([]byte, bool) {
+	parts := content.Array()
+	hasBreakpoint := false
+	for _, part := range parts {
+		if part.Get("prompt_cache_breakpoint").Exists() {
+			hasBreakpoint = true
+			break
+		}
+	}
+	if !hasBreakpoint {
+		return nil, false
+	}
+
+	changed := false
+	rebuiltParts := make([][]byte, 0, len(parts))
+	for _, part := range parts {
+		partRaw := []byte(part.Raw)
+		if part.Get("prompt_cache_breakpoint").Exists() {
+			if updated, errDelete := sjson.DeleteBytes(partRaw, "prompt_cache_breakpoint"); errDelete == nil {
+				partRaw = updated
+				changed = true
+			}
+		}
+		rebuiltParts = append(rebuiltParts, partRaw)
+	}
+	if !changed {
+		return nil, false
+	}
+	return translatorcommon.JoinRawArray(rebuiltParts), true
+}
+
 // applyResponsesCompactionCompatibility handles OpenAI Responses context_management.compaction
 // for Codex upstream compatibility.
 //
@@ -116,6 +192,10 @@ func applyResponsesCompactionCompatibility(rawJSON []byte) []byte {
 
 	rawJSON, _ = sjson.DeleteBytes(rawJSON, "context_management")
 	return rawJSON
+}
+
+func convertSystemRoleToDeveloper(rawJSON []byte) []byte {
+	return convertSystemRoleToDeveloperWithInput(rawJSON, util.GetGJSONBytesNoCopy(rawJSON, "input"))
 }
 
 func convertSystemRoleToDeveloperWithInput(rawJSON []byte, inputResult gjson.Result) []byte {

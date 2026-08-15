@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `b6924c1db93fc8926fc43dfe9d95e1e0da76d406` (`fork/v8.65.0`)
-- Synchronized at: `2026-08-12`
+- Last synchronized commit: `edeeeb67dd820632f06f5c69cdbd68f96b04a959` (`fork/v8.67.0`)
+- Synchronized at: `2026-08-15`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -92,10 +92,14 @@ documented adaptations:
   carriers; readable reasoning summaries remain available as `reasoning_content`.
 - Codex-to-Gemini requests keep the caller's `stream` flag and do not force
   `reasoning.summary`.
-- OpenAI Chat Completions-to-Responses streaming synthesizes a terminal choice
-  when `[DONE]` arrives without `finish_reason`, so item-level done events are
-  emitted before `response.completed`; upstream `fork/v8.61.0` emits only the
-  completed response in that case.
+- OpenAI Chat Completions-to-Responses keeps ccLoad's custom-tool namespace and
+  usage extensions around the synchronized terminal state machine. Plain-text
+  streams may still complete on `[DONE]` without `finish_reason`; reasoning-only
+  streams without an explicit finish and partial/invalid tool streams do not
+  report false completion. All buffered tool states participate in that guard,
+  even before an ID or name arrives. An explicit reasoning stop still completes,
+  while `length` and `content_filter` terminate as `response.incomplete` even
+  when no message or tool item was emitted.
 - OpenAI Chat Completions-to-Codex maps `web_search_options` to a Responses
   `web_search` tool while preserving its search context and user location.
 - Claude-to-Codex keeps top-level system text in `instructions`, supports the
@@ -159,7 +163,7 @@ documented adaptations:
 - The embedded capability catalog exposes Antigravity models to Gemini wire
   conversion. `gemini-3.7-flash-high` follows the canonical entry added by
   `router-for-me/models` commit `cbe1e6c59429bc92dd8d6654873670fc0c274cad`;
-  the CLIProxyAPI snapshot commit above remains unchanged.
+  that catalog provenance is independent of the CLIProxyAPI snapshot commit above.
 
 ## Updating from CLIProxyAPI
 

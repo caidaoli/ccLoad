@@ -119,6 +119,9 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 		arr := sysParts.Array()
 		for i := 0; i < len(arr); i++ {
 			p := arr[i]
+			if translatorcommon.IsGeminiThoughtPart(p) {
+				continue
+			}
 			if t := p.Get("text"); t.Exists() {
 				if instructions.Len() > 0 {
 					instructions.WriteByte('\n')
@@ -146,6 +149,10 @@ func ConvertGeminiRequestToCodex(modelName string, inputRawJSON []byte, stream b
 			parr := parts.Array()
 			for j := 0; j < len(parr); j++ {
 				p := parr[j]
+				if translatorcommon.IsGeminiThoughtPart(p) {
+					continue
+				}
+
 				// text part
 				if t := p.Get("text"); t.Exists() {
 					partType := "input_text"

@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/tidwall/gjson"
@@ -461,5 +462,51 @@ func TestTruncationRemovedForCodexCompatibility(t *testing.T) {
 
 	if gjson.Get(outputStr, "truncation").Exists() {
 		t.Fatalf("truncation should be removed for Codex compatibility")
+	}
+}
+
+func TestStripCodexResponsesCacheBreakpoints(t *testing.T) {
+	inputJSON := []byte(`{
+		"model":"gpt-5.2",
+		"prompt_cache_options":{"mode":"implicit"},
+		"input":[{"type":"message","role":"user","content":[
+			{"type":"input_text","text":"Hello world","prompt_cache_breakpoint":{"mode":"explicit"}},
+			{"type":"input_text","text":"Second part"}
+		]}]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+	if strings.Contains(string(output), "prompt_cache") {
+		t.Fatalf("cache hints should not exist in output: %s", string(output))
+	}
+	if got := gjson.GetBytes(output, "input.0.content.0.text").String(); got != "Hello world" {
+		t.Fatalf("first text = %q, want Hello world", got)
+	}
+	if got := gjson.GetBytes(output, "input.0.content.1.text").String(); got != "Second part" {
+		t.Fatalf("second text = %q, want Second part", got)
+	}
+}
+
+func TestStripCodexResponsesCacheBreakpoints_WithSystemRole(t *testing.T) {
+	inputJSON := []byte(`{
+		"model":"gpt-5.2",
+		"input":[
+			{"type":"message","role":"system","content":[{"type":"input_text","text":"System prompt","prompt_cache_breakpoint":{"mode":"explicit"}}]},
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"User query","prompt_cache_breakpoint":{"mode":"explicit"}}]}
+		]
+	}`)
+
+	output := ConvertOpenAIResponsesRequestToCodex("gpt-5.2", inputJSON, false)
+	if got := gjson.GetBytes(output, "input.0.role").String(); got != "developer" {
+		t.Fatalf("role = %q, want developer", got)
+	}
+	if strings.Contains(string(output), "prompt_cache_breakpoint") {
+		t.Fatalf("prompt_cache_breakpoint should not exist in output: %s", string(output))
+	}
+	if got := gjson.GetBytes(output, "input.0.content.0.text").String(); got != "System prompt" {
+		t.Fatalf("system text = %q, want System prompt", got)
+	}
+	if got := gjson.GetBytes(output, "input.1.content.0.text").String(); got != "User query" {
+		t.Fatalf("user text = %q, want User query", got)
 	}
 }
