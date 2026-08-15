@@ -1837,6 +1837,34 @@ func TestDetectRequestFamily_GeminiCountTokens(t *testing.T) {
 	}
 }
 
+func TestDetectRequestFamily_CodexResponsesPaths(t *testing.T) {
+	t.Parallel()
+
+	// omp/pi Codex flavor: baseUrl + "/codex/responses" (e.g. https://host/v1 -> /v1/codex/responses)
+	for _, path := range []string{
+		"/v1/codex/responses",
+		"/backend-api/codex/responses",
+		"/prefix/v1/codex/responses",
+		"/v1/codex/responses/extra",
+	} {
+		if got := protocol.DetectRequestFamily(path); got != protocol.RequestFamilyResponses {
+			t.Fatalf("DetectRequestFamily(%q) = %q, want %q", path, got, protocol.RequestFamilyResponses)
+		}
+	}
+
+	// 子串误匹配：codex responses 前缀下的无关路径不得命中
+	for _, path := range []string{
+		"/v1/codex/responsesXYZ",
+		"/v1/codex/responses-extra",
+		"/v1/codex",
+		"/v1/codex/response",
+	} {
+		if got := protocol.DetectRequestFamily(path); got != protocol.RequestFamilyUnknown {
+			t.Fatalf("DetectRequestFamily(%q) = %q, want unknown", path, got)
+		}
+	}
+}
+
 func TestBuildTransformPlan_CodexAlphaSearchPassthroughOnly(t *testing.T) {
 	t.Parallel()
 
