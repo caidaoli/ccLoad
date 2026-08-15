@@ -133,3 +133,38 @@ func TestConvertClaudeResponseToOpenAINonStream_UsageIncludesCacheCreationAndRea
 		t.Fatalf("expected reasoning_tokens %d, got %d", 9, gotReasoningTokens)
 	}
 }
+
+func TestConvertClaudeResponseToOpenAI_RefusalStopReason(t *testing.T) {
+	for _, stopReason := range []string{"refusal", "sensitive"} {
+		t.Run(stopReason, func(t *testing.T) {
+			var param any
+			out := ConvertClaudeResponseToOpenAI(
+				context.Background(),
+				"claude-opus-4-6",
+				nil,
+				nil,
+				[]byte(`data: {"type":"message_delta","delta":{"stop_reason":"`+stopReason+`"},"usage":{"output_tokens":10}}`),
+				&param,
+			)
+			if len(out) != 1 {
+				t.Fatalf("expected 1 chunk, got %d", len(out))
+			}
+			if got := gjson.GetBytes(out[0], "choices.0.finish_reason").String(); got != "content_filter" {
+				t.Fatalf("finish_reason = %q, want content_filter; payload=%s", got, string(out[0]))
+			}
+		})
+	}
+}
+
+func TestConvertClaudeResponseToOpenAINonStream_RefusalStopReason(t *testing.T) {
+	for _, stopReason := range []string{"refusal", "sensitive"} {
+		t.Run(stopReason, func(t *testing.T) {
+			rawJSON := []byte(`{"id":"msg_123","type":"message","role":"assistant","content":[{"type":"text","text":"blocked"}],"model":"claude-opus-4-6","stop_reason":"` + stopReason + `","usage":{"input_tokens":10,"output_tokens":20}}`)
+
+			out := ConvertClaudeResponseToOpenAINonStream(context.Background(), "", nil, nil, rawJSON, nil)
+			if got := gjson.GetBytes(out, "choices.0.finish_reason").String(); got != "content_filter" {
+				t.Fatalf("finish_reason = %q, want content_filter; payload=%s", got, string(out))
+			}
+		})
+	}
+}
