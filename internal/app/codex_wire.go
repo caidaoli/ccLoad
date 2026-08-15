@@ -19,6 +19,19 @@ import (
 
 const maxCodexNonStreamOutputBytes = 32 << 20
 
+// normalizeCodexClientPath maps Codex client alias paths (/v1/codex/responses,
+// /backend-api/codex/responses) to the canonical upstream /v1/responses, so a
+// plain HTTP forward does not leak the alias into the upstream URL. Official
+// OAuth channels carry the full URL via the Exact marker, so they are
+// unaffected: buildUpstreamURL skips path appending for Exact URLs.
+func normalizeCodexClientPath(path string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(path), "/")
+	if trimmed == "/v1/codex/responses" || trimmed == "/backend-api/codex/responses" {
+		return "/v1/responses"
+	}
+	return path
+}
+
 func isCodexOAuthResponsesRequest(cfg *model.Config, upstreamProtocol protocol.Protocol, requestPath string) bool {
 	if cfg == nil || !cfg.UsesCodexOAuth() || upstreamProtocol != protocol.Codex {
 		return false

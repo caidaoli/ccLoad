@@ -148,7 +148,9 @@ func DetectRequestFamily(path string) RequestFamily {
 	switch {
 	case matchesCanonicalEndpoint(path, "/v1/chat/completions"):
 		return RequestFamilyChatCompletions
-	case matchesCanonicalEndpoint(path, "/v1/responses"):
+	case matchesCanonicalEndpoint(path, "/v1/responses"),
+		matchesCanonicalEndpoint(path, "/v1/codex/responses"),
+		matchesCanonicalEndpoint(path, "/backend-api/codex/responses"):
 		return RequestFamilyResponses
 	case matchesCanonicalEndpoint(path, "/v1/messages"):
 		return RequestFamilyMessages

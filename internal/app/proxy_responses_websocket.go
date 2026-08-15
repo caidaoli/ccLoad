@@ -38,8 +38,9 @@ const (
 // responsesWebsocketUpgradePaths lists every downstream path that terminates a
 // Responses WebSocket. /backend-api/codex/responses is the Codex CLI direct
 // route alias (chatgpt_base_url compatible), mirrored from CLIProxyAPI
-// (internal/api/server.go's codexDirect route group).
-var responsesWebsocketUpgradePaths = []string{"/v1/responses", "/backend-api/codex/responses"}
+// (internal/api/server.go's codexDirect route group). /v1/codex/responses is
+// the omp/pi Codex flavor path (baseUrl + "/codex/responses").
+var responsesWebsocketUpgradePaths = []string{"/v1/responses", "/v1/codex/responses", "/backend-api/codex/responses"}
 
 var responsesWebsocketUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
