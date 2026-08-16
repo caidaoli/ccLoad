@@ -1,7 +1,6 @@
 package responses
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -580,7 +579,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			itemDone, _ = sjson.SetBytes(itemDone, "item.encrypted_content", st.ReasoningSignature)
 			summary := []byte(`{"type":"summary_text","text":""}`)
 			summary, _ = sjson.SetBytes(summary, "text", full)
-			itemDone, _ = sjson.SetRawBytes(itemDone, "item.summary.-1", summary)
+			itemDone = translatorcommon.SetRawArrayItems(itemDone, "item.summary", [][]byte{summary})
 			out = append(out, emitEvent("response.output_item.done", itemDone))
 			st.ReasoningItems = append(st.ReasoningItems, claudeResponsesReasoningItem{
 				ID:          st.ReasoningItemID,
@@ -681,7 +680,7 @@ func ConvertClaudeResponseToOpenAIResponses(ctx context.Context, modelName strin
 			item, _ = sjson.SetBytes(item, "encrypted_content", reasoning.Signature)
 			summary := []byte(`{"type":"summary_text","text":""}`)
 			summary, _ = sjson.SetBytes(summary, "text", reasoning.Text)
-			item, _ = sjson.SetRawBytes(item, "summary.-1", summary)
+			item = translatorcommon.SetRawArrayItems(item, "summary", [][]byte{summary})
 			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", reasoning.OutputIndex), item)
 		}
 		// assistant message items
@@ -867,19 +866,22 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 
 	// Collect SSE data: lines start with "data: "; ignore others
 	var chunks [][]byte
-	{
-		// Use a simple scanner to iterate through raw bytes
-		// Note: extremely large responses may require increasing the buffer
-		scanner := bufio.NewScanner(bytes.NewReader(rawJSON))
-		buf := make([]byte, 52_428_800) // 50MB
-		scanner.Buffer(buf, 52_428_800)
-		for scanner.Scan() {
-			line := scanner.Bytes()
-			if !bytes.HasPrefix(line, dataTag) {
-				continue
-			}
-			chunks = append(chunks, line[len(dataTag):])
+	remaining := rawJSON
+	for len(remaining) > 0 {
+		var line []byte
+		idx := bytes.IndexByte(remaining, '\n')
+		if idx >= 0 {
+			line = remaining[:idx]
+			remaining = remaining[idx+1:]
+		} else {
+			line = remaining
+			remaining = nil
 		}
+		line = bytes.TrimRight(line, "\r")
+		if !bytes.HasPrefix(line, dataTag) {
+			continue
+		}
+		chunks = append(chunks, line[len(dataTag):])
 	}
 
 	reqBytes := pickRequestJSON(originalRequestRawJSON, requestRawJSON)
@@ -1103,7 +1105,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 	}
 
 	// Build output array in the order of the original content blocks.
-	outputsWrapper := []byte(`{"arr":[]}`)
+	outputs := make([][]byte, 0, len(outputItems))
 	for _, outputItem := range outputItems {
 		var item []byte
 		switch outputItem.itemType {
@@ -1113,7 +1115,7 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			item, _ = sjson.SetBytes(item, "encrypted_content", outputItem.signature)
 			summary := []byte(`{"type":"summary_text","text":""}`)
 			summary, _ = sjson.SetBytes(summary, "text", outputItem.text.String())
-			item, _ = sjson.SetRawBytes(item, "summary.-1", summary)
+			item, _ = sjson.SetRawBytes(item, "summary", translatorcommon.JoinRawArray([][]byte{summary}))
 		case "message":
 			item = []byte(`{"id":"","type":"message","status":"completed","content":[{"type":"output_text","annotations":[],"logprobs":[],"text":""}],"role":"assistant"}`)
 			item, _ = sjson.SetBytes(item, "id", outputItem.id)
@@ -1141,11 +1143,11 @@ func ConvertClaudeResponseToOpenAIResponsesNonStream(_ context.Context, modelNam
 			item = applyResponsesFunctionCallNamespaceFields(item, reqBytes, outputItem.name, "")
 		}
 		if len(item) > 0 {
-			outputsWrapper, _ = sjson.SetRawBytes(outputsWrapper, fmt.Sprintf("arr.%d", outputItem.outputIndex), item)
+			outputs = append(outputs, item)
 		}
 	}
-	if gjson.GetBytes(outputsWrapper, "arr.#").Int() > 0 {
-		out, _ = sjson.SetRawBytes(out, "output", []byte(gjson.GetBytes(outputsWrapper, "arr").Raw))
+	if len(outputs) > 0 {
+		out, _ = sjson.SetRawBytes(out, "output", translatorcommon.JoinRawArray(outputs))
 	}
 
 	// Usage

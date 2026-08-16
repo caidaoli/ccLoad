@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `edeeeb67dd820632f06f5c69cdbd68f96b04a959` (`fork/v8.67.0`)
-- Synchronized at: `2026-08-15`
+- Last synchronized commit: `ea378e94446ad63b8b082aca294e62af74a62268` (`fork/v8.68.0`)
+- Synchronized at: `2026-08-16`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -13,6 +13,14 @@ share the same upstream commit and synchronization date. Authentication,
 configuration, routing, cache services, plugins, dynamic registries, executors,
 and network refreshers are intentionally excluded. ccLoad-specific generic wire
 adaptation lives in `internal/protocol/builtin`.
+
+The machine-readable core scope and the reviewed core/provider per-file delta
+for the latest atomic synchronization live in
+`.agents/skills/sync-cliproxy-core/references/core-snapshot.manifest`. Full sync
+verification compares the previous immutable commit with the commit above and
+fails on every unclassified or unstamped core change. The manifest deliberately
+does not carry a second commit or date; the previous commit is anchored to the
+version of this file stored in Git `HEAD` before the synchronization edits.
 
 ## Provider adapter snapshot
 
@@ -184,7 +192,9 @@ canonical skill under `.agents/skills/sync-cliproxy-core`.
    domain cannot be integrated or tested, leave the whole synchronization incomplete.
 6. After core, all providers, production wiring, and tests pass, update the single
    shared commit and date above once.
-7. Run `go test -tags sonic ./internal/protocol/cliproxy/...`,
+7. Run the core scope verifier self-test, then run the atomic verifier with the
+   previous synchronized commit as `--base-commit`.
+8. Run `go test -tags sonic ./internal/protocol/cliproxy/...`,
    `go test -tags sonic ./internal/protocol`, and the repository verification
    commands from `CLAUDE.md`.
 

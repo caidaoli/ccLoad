@@ -18,7 +18,7 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 
 ## 权威边界
 
-1. 先读仓库根目录 `CLAUDE.md`、`internal/protocol/cliproxy/UPSTREAM.md`、[provider adapter 语义边界](references/provider-adapters.md)和[机器可读 manifest](references/provider-adapters.manifest)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
+1. 先读仓库根目录 `CLAUDE.md`、`internal/protocol/cliproxy/UPSTREAM.md`、[core snapshot manifest](references/core-snapshot.manifest)、[provider adapter 语义边界](references/provider-adapters.md)和[provider manifest](references/provider-adapters.manifest)。`UPSTREAM.md` 是来源、固定提交和已落地状态的唯一事实源；core manifest 记录直接映射根、特殊映射、明确排除和最近一次 core/provider 原子差异的审查 blob，provider manifest 是 provider、逐文件映射、生产接线和契约测试的唯一 allowlist。
 2. `internal/protocol/registry.go` 定义四协议契约；`internal/protocol/builtin/cliproxy_adapter.go` 处理通用输入验证、JSON/SSE 规范化和流帧封装；`internal/protocol/cliproxy/providers/` 保存 provider-specific 纯转换。
 3. provider 选择留在 ccLoad 请求上下文边界，按实际 wire dialect/AuthType 决定；不要把 provider 注册成第五种通用客户端协议。
 4. 不引入 CLIProxyAPI 的认证、配置、路由、缓存服务、插件、动态 Registry、executor 或网络刷新代码。Interactions 只有在 ccLoad 正式支持其线协议后才可登记。
@@ -46,7 +46,7 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 
 - 一次生成目标 commit 相对当前记录 commit 的联合差异：四协议 core、allowlist 中每个 provider 的生产源码及对应 `_test.go`，不要分两次比较。
 - 先生成目录级和文件级变化清单，再确认新增文件是纯转换语义。provider 的 `init.go`、动态 Registry 和 noop/分配实现测试按 allowlist 排除。
-- 新增 core 顶层目录时更新 `scripts/verify.sh` 的显式 core 目录清单；新增 provider 时更新 manifest、语义边界和 `UPSTREAM.md`。脚本只从 manifest 读取 provider/file/exclusion/wiring/contract 清单，不复制第二份。审计失败不能靠跳过检查解决。
+- 每个上游 core 变更必须由 core manifest 分类为直接映射、特殊映射、明确删除、明确排除或已登记 provider，并为本次所有非排除 core/provider 差异刷新 review blob。新增 core 源根或本地特例时更新 core manifest；上游删除已同步文件时登记 `delete` 行并删除本地映射；新增 provider 时更新 provider manifest、语义边界和 `UPSTREAM.md`。脚本只从 manifest 读取这些清单，不复制第二份。审计失败不能靠跳过检查解决。
 - 明确列出排除的上游包。不要因为编译缺失就搬入 runtime；删除副作用依赖，或在同步包内用已有纯 `common`/`signature`/`util` 能力替代。
 - 复查 `UPSTREAM.md` 已排除项的排除理由是否仍成立：上游重构可能使旧理由失效（该同步的补回来），也可能采纳了本地契约（删掉过期的本地差异注记）。
 
@@ -62,7 +62,7 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 ### 5. 更新来源记录
 
 - 只有 core 和全部已登记 provider 的生产源码、对应测试、生产接线都完成后，才一次性更新 `internal/protocol/cliproxy/UPSTREAM.md` 的完整 commit、标签说明和同步日期。
-- 在 `UPSTREAM.md` 分别记录 core 与 provider 的上游源目录、本地目录和实际落地状态；逐文件事实只保留在 manifest。它们共享同一个 commit/date，不维护第二套版本号。
+- 在 `UPSTREAM.md` 分别记录 core 与 provider 的上游源目录、本地目录和实际落地状态；逐文件事实和本次差异审查 blob 只保留在 manifest。它们共享同一个 commit/date，不在 manifest 维护第二套版本号。
 - 保留 `internal/protocol/cliproxy/LICENSE`。许可证或上游归属变化必须显式审查。
 - 不在 Skill 中复制 commit、日期或测试数量；这些易变事实只写入 `UPSTREAM.md`。
 
@@ -71,10 +71,13 @@ description: Use when asked to 同步、更新、升级或审计 CLIProxyAPI、c
 先运行确定性审计：
 
 ```bash
-bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests --require-providers --upstream-repo /path/to/CLIProxyAPI
+bash .agents/skills/sync-cliproxy-core/scripts/verify_core_scope.sh --self-test
+bash .agents/skills/sync-cliproxy-core/scripts/verify.sh --tests --require-providers \
+  --upstream-repo /path/to/CLIProxyAPI \
+  --base-commit <previous-synchronized-commit>
 ```
 
-`--require-providers` 是完整同步的完成门禁：任一 allowlist provider 尚未落地时必须失败。日常审计历史快照可以省略该参数，但不得据此报告完整同步成功。
+`--require-providers` 是完整同步的完成门禁：它同时要求 `--upstream-repo` 和完整的 `--base-commit`。该 base 必须等于 Git `HEAD` 中修改前 `UPSTREAM.md` 记录的同步 SHA，调用者不能跳过较早变更；脚本随后强制 base 到工作区 `UPSTREAM.md` 目标提交的每个 core/provider 变更都已映射、删除或明确排除。若 base 已等于目标，说明快照本来就是最新版本，脚本改做目标树、review blob 和 provider 的确定性审计，不伪造空同步差异。任一 allowlist provider 尚未落地、review blob 陈旧或出现未知上游文件时必须失败。日常审计历史快照可以省略这些参数，但不得据此报告完整同步成功。
 
 再运行仓库级检查：
 
@@ -99,6 +102,7 @@ git diff --check
 - 「上游 diff 删了转换器里的某个字段注入，跟着删」→ 先确认该行为是消失了，还是迁进了被排除的 runtime 层；后者必须在转换核心保留，只有 Registry 边界测试能抓住这种丢失（权威边界）
 - 「provider 代码先复制但不接生产路径」→ 死代码不算同步；补 provider 边界接线与契约测试（集成变更）
 - 「先更新 UPSTREAM.md 占位，测试晚点补」→ core、provider、接线与测试全部完成后才更新来源记录（更新来源记录）
+- 「文件已经存在，测试数量也没少，应该同步到了」→ 用旧/目标提交差异和 core review blob 证明，不用存在性或数量猜测（验证）
 
 ## 完成报告
 
