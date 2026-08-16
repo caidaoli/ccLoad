@@ -2204,6 +2204,9 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 		if got := r.Header.Get("ChatGPT-Account-ID"); got != "account-ws" {
 			t.Errorf("ChatGPT-Account-ID = %q", got)
 		}
+		if got := r.Header.Get("X-OpenAI-FedRAMP"); got != "true" {
+			t.Errorf("X-OpenAI-FedRAMP = %q", got)
+		}
 		if r.Header.Get("User-Agent") != codexUserAgent || r.Header.Get("Originator") != "codex-tui" {
 			t.Errorf("Codex identity headers = %v", r.Header)
 		}
@@ -2243,7 +2246,7 @@ func TestNativeCodexWebsocketUsesOAuthCredentialAndIdentityHeaders(t *testing.T)
 	env := setupProxyTestEnv(t, []testChannel{{
 		name: "native-codex-oauth", upstreamProtocol: "codex", websockets: true,
 		models: "gpt-test", authType: model.AuthTypeCodexOAuth,
-		oauthCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws"), priority: 100,
+		oauthCredential: codexProxyTestCredential(t, "at-ws", "rt-ws", "account-ws", true), priority: 100,
 	}}, map[int]string{0: upstream.URL})
 	downstream := dialResponsesWebsocket(t, env.engine)
 	if err := downstream.WriteJSON(map[string]any{

@@ -755,6 +755,75 @@ func TestOAuthCredentialCleanupCancelDuringRefreshKeepsChannel(t *testing.T) {
 	}
 }
 
+func TestOAuthCredentialCleanupDeletesRejectedPersonalAccessToken(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer at-cleanup-pat" {
+			t.Errorf("PAT cleanup authorization = %q", r.Header.Get("Authorization"))
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"revoked"}}`)
+	}))
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	credential, err := (&codexauth.Credential{
+		Type:          codexauth.ChannelType,
+		AuthMode:      codexauth.AuthModePersonalAccessToken,
+		AccessToken:   "at-cleanup-pat",
+		ChatGPTUserID: "cleanup-pat-user",
+		AccountID:     "cleanup-pat-account",
+		Email:         "cleanup-pat@example.com",
+		PlanType:      "plus",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "cleanup-pat", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credential,
+		URLs:                  model.ChannelURLs{{URL: upstream.URL, Exact: true, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-pat"}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	request := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-pat"}`,
+	))
+	request.Header.Set("Content-Type", "application/json")
+	requestContext, response := newTestContext(t, request)
+	srv.HandleStartOAuthCredentialCleanupJob(requestContext)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("start PAT cleanup status=%d body=%s", response.Code, response.Body.String())
+	}
+	var started struct {
+		Data oauthCredentialCleanupJobStart `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	var view oauthCredentialCleanupJobView
+	for time.Now().Before(deadline) {
+		view, _, err = srv.oauthCredentialCleanupJobs.Get(started.Data.JobID, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if view.Status != oauthCredentialCleanupJobRunning {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if view.Status != oauthCredentialCleanupJobSucceeded || len(view.Events) == 0 ||
+		view.Events[len(view.Events)-1].Deleted != 1 {
+		t.Fatalf("PAT cleanup view=%+v", view)
+	}
+	if _, err := srv.store.GetConfig(context.Background(), created.ID); err == nil {
+		t.Fatal("cleanup kept a revoked personal access token channel")
+	}
+}
+
 func TestOAuthCredentialCleanupConcurrentEditKeepsCurrentChannel(t *testing.T) {
 	requestStarted := make(chan struct{})
 	releaseRequest := make(chan struct{})

@@ -34,6 +34,7 @@ const {
   submitAnthropicCookieAuth,
   submitAnthropicOAuthCode,
   submitCodexOAuthCallback,
+  submitCodexPersonalAccessToken,
   submitXAIOAuthCallback
 } = require('./channels-codex-auth.js');
 
@@ -415,6 +416,41 @@ test('xAI refresh-token and SSO jobs survive progress read errors and clear subm
   }
 });
 
+test('Codex Personal Access Token submission clears the secret and uses the dedicated contract', async () => {
+  const previousWindow = global.window;
+  global.window = { t: key => key };
+  let captured;
+  const input = {
+    value: '  at-secret-value  ',
+    focused: false,
+    setAttribute(name, value) { this[name] = value; },
+    removeAttribute(name) { delete this[name]; },
+    focus() { this.focused = true; }
+  };
+  try {
+    const result = await submitCodexPersonalAccessToken(input, async (url, options) => {
+      assert.equal(input.value, '');
+      captured = { url, options };
+      return { status: 'complete', channel_id: 17, created: true };
+    });
+    assert.deepEqual(result, { status: 'complete', channel_id: 17, created: true });
+    assert.equal(captured.url, '/admin/codex/personal-access-token');
+    assert.equal(captured.options.method, 'POST');
+    assert.deepEqual(JSON.parse(captured.options.body), { access_token: 'at-secret-value' });
+    assert.equal(input.value, '');
+
+    input.value = 'not-a-personal-access-token';
+    await assert.rejects(
+      submitCodexPersonalAccessToken(input, async () => assert.fail('invalid token reached the network')),
+      /personalAccessTokenInvalid/
+    );
+    assert.equal(input['aria-invalid'], 'true');
+    assert.equal(input.focused, true);
+  } finally {
+    global.window = previousWindow;
+  }
+});
+
 test('Anthropic Cookie authorization reports each failed source line with its upstream error', async () => {
   const previousWindow = global.window;
   const storageWrites = [];
@@ -560,7 +596,7 @@ test('xAI credential import renders streamed item progress in the OAuth dialog',
   }
 });
 
-test('closing and pagehide abort active xAI imports and clear browser-held secrets', async () => {
+test('closing and pagehide abort active OAuth secret submissions and clear browser-held secrets', async () => {
   const makeTarget = properties => ({
     dataset: {}, listeners: {},
     addEventListener(type, listener) { this.listeners[type] = listener; },
@@ -569,6 +605,8 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
   const dialog = makeTarget({ open: true, close() { this.open = false; } });
   const form = makeTarget({});
   const provider = { value: 'xai', disabled: false };
+  const codexMethod = makeTarget({ value: 'oauth', disabled: false });
+  const codexPersonalAccessToken = { value: '', removeAttribute() {}, setAttribute() {}, focus() {} };
   const method = makeTarget({ value: 'refresh_token' });
   const textarea = { value: 'rt-hanging', removeAttribute() {}, setAttribute() {}, focus() {} };
   const button = { disabled: false, setAttribute() {}, removeAttribute() {} };
@@ -581,6 +619,8 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
     ['oauthLoginDialog', dialog],
     ['oauthLoginForm', form],
     ['oauthProviderSelect', provider],
+    ['codexOAuthMethod', codexMethod],
+    ['codexPersonalAccessToken', codexPersonalAccessToken],
     ['xaiOAuthMethod', method],
     ['xaiCredentialValues', textarea],
     ['oauthAuthorizeButton', button],
@@ -605,6 +645,10 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
     showError() {}
   });
   setGlobal('fetchWithAuth', (_url, options) => new Promise((resolve, reject) => {
+    signals.push(options.signal);
+    options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+  }));
+  setGlobal('fetchDataWithAuth', (_url, options) => new Promise((resolve, reject) => {
     signals.push(options.signal);
     options.signal?.addEventListener('abort', () => reject(new Error('aborted')));
   }));
@@ -634,10 +678,24 @@ test('closing and pagehide abort active xAI imports and clear browser-held secre
     assert.equal(reloads, 0);
     assert.equal(provider.disabled, false);
 
+    dialog.open = true;
+    provider.value = 'codex';
+    codexMethod.value = 'personalAccessToken';
+    codexPersonalAccessToken.value = 'at-hanging-secret';
+    const patSubmit = form.listeners.submit({ preventDefault() {} });
+    await new Promise(resolve => setImmediate(resolve));
+    dialog.listeners.cancel({ preventDefault() {} });
+    await patSubmit;
+    assert.equal(signals[2]?.aborted, true);
+    assert.equal(codexPersonalAccessToken.value, '');
+    assert.equal(reloads, 0);
+
     textarea.value = 'unsubmitted-secret';
+    codexPersonalAccessToken.value = 'at-unsubmitted-secret';
     pageListeners.pagehide();
     await new Promise(resolve => setImmediate(resolve));
     assert.equal(textarea.value, '');
+    assert.equal(codexPersonalAccessToken.value, '');
   } finally {
     for (const [key, descriptor] of previous) {
       if (descriptor === undefined) delete global[key];
@@ -827,6 +885,13 @@ test('OAuth login toolbar waits for explicit authorization after provider select
   });
   const loginForm = makeTarget({});
   const providerSelect = makeTarget({ value: 'codex', disabled: false, focus() { this.focused = true; } });
+  const codexMethod = makeTarget({ value: 'oauth', disabled: false });
+  const codexPersonalAccessToken = makeTarget({
+    value: '', required: false,
+    focus() { this.focused = true; },
+    removeAttribute(name) { delete this[name]; },
+    setAttribute(name, value) { this[name] = value; }
+  });
   const xaiMethod = makeTarget({ value: 'manual' });
   const anthropicMethod = makeTarget({ value: 'code', disabled: false });
   const anthropicSessionKey = makeTarget({
@@ -852,6 +917,10 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     ['oauthLoginDialog', dialog],
     ['oauthLoginForm', loginForm],
     ['oauthProviderSelect', providerSelect],
+    ['codexOAuthControls', { hidden: true }],
+    ['codexOAuthMethod', codexMethod],
+    ['codexPersonalAccessTokenField', { hidden: true }],
+    ['codexPersonalAccessToken', codexPersonalAccessToken],
     ['xaiOAuthMethod', xaiMethod],
     ['xaiOAuthControls', { hidden: true }],
     ['xaiCredentialSecretField', secretField],
@@ -916,14 +985,39 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     assert.equal(sessionFields.hidden, true);
     assert.deepEqual(requests, []);
 
+    codexMethod.value = 'personalAccessToken';
+    codexMethod.listeners.change();
+    assert.equal(elements.get('codexPersonalAccessTokenField').hidden, false);
+    assert.equal(codexPersonalAccessToken.required, true);
+    assert.equal(authorizeButton.textContent, 'channels.codex.personalAccessTokenSubmit');
+    assert.equal(dialogDescription.textContent, 'channels.codex.personalAccessTokenDescription');
+    codexPersonalAccessToken.value = 'at-browser-held-secret';
+    const patReloadOptions = [];
+    global.reloadChannelsList = async options => {
+      patReloadOptions.push(options);
+      throw new Error('PAT list reload failed');
+    };
+    await loginForm.listeners.submit({ preventDefault() {} });
+    assert.equal(dialog.open, false);
+    assert.equal(codexPersonalAccessToken.value, '');
+    assert.equal(codexPersonalAccessToken['aria-invalid'], undefined);
+    assert.equal(successNotices.at(-1), 'channels.codex.personalAccessTokenComplete');
+    assert.equal(errorNotices.at(-1), 'channels.codex.personalAccessTokenReloadFailed');
+    assert.deepEqual(patReloadOptions, [{ throwOnError: true }]);
+    assert.deepEqual(requests, ['/admin/codex/personal-access-token']);
+    global.reloadChannelsList = async () => {};
+    openOAuthLoginDialog(loginButton);
+
     providerSelect.value = 'xai';
     providerSelect.listeners.change();
+    assert.equal(codexPersonalAccessToken.value, '');
     assert.equal(secretField.hidden, true);
     assert.equal(authorizeButton.hidden, false);
     assert.equal(authorizeButton.textContent, 'channels.xai.generateLink');
     assert.equal(dialogDescription.textContent, 'channels.xai.manualDescription');
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.deepEqual(requests, [
+      '/admin/codex/personal-access-token',
       '/admin/xai/oauth/start',
       '/admin/xai/oauth/status?state=gravity-state'
     ]);
@@ -945,6 +1039,7 @@ test('OAuth login toolbar waits for explicit authorization after provider select
     providerSelect.value = 'antigravity';
     await loginForm.listeners.submit({ preventDefault() {} });
     assert.deepEqual(requests, [
+      '/admin/codex/personal-access-token',
       '/admin/xai/oauth/start',
       '/admin/xai/oauth/status?state=gravity-state',
       '/admin/antigravity/oauth/start',
@@ -1830,6 +1925,7 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
     assert.equal(rowToggleButton.hidden, false);
     assert.equal(rowToggleButton.disabled, true);
     assert.equal(row.draggable, false);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, false);
 
     let copiedCredential = '';
     await copyOAuthCredential(async text => { copiedCredential = text; });
@@ -1837,6 +1933,12 @@ test('OAuth editor keeps credentials read-only and applies provider-specific con
 
     setOAuthCredentialView('raw');
     assert.equal(elements.get('codexCredentialContent').textContent, JSON.stringify(credential, null, 2));
+
+    const personalAccessTokenCredential = {
+      type: 'codex', auth_mode: 'personalAccessToken', access_token: 'at-static', plan_type: 'plus'
+    };
+    applyChannelAuthEditorMode('codex_oauth', personalAccessTokenCredential);
+    assert.equal(elements.get('codexCredentialRefreshButton').hidden, true);
 
     const antigravityCredential = { type: 'antigravity', access_token: 'gravity-at', refresh_token: 'gravity-rt', project_id: 'project-1' };
     applyChannelAuthEditorMode('antigravity_oauth', antigravityCredential);

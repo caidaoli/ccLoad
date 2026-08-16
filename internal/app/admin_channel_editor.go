@@ -70,7 +70,7 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 			ChannelID:   cfg.ID,
 			KeyIndex:    0,
 			APIKey:      credential.AccessToken,
-			Note:        "Codex OAuth AT",
+			Note:        codexCredentialKeyNote(credential),
 			KeyStrategy: model.KeyStrategySequential,
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)

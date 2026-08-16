@@ -512,6 +512,7 @@ type Config struct {
 	OAuthCredential        string `json:"-"`
 	CodexAccessToken       string `json:"-"`
 	CodexAccountID         string `json:"-"`
+	CodexAccountFedRAMP    bool   `json:"-"`
 	AntigravityAccessToken string `json:"-"`
 	AntigravityProjectID   string `json:"-"`
 
@@ -562,6 +563,7 @@ func (c *Config) Clone() *Config {
 		OAuthCredential:         c.OAuthCredential,
 		CodexAccessToken:        c.CodexAccessToken,
 		CodexAccountID:          c.CodexAccountID,
+		CodexAccountFedRAMP:     c.CodexAccountFedRAMP,
 		AntigravityAccessToken:  c.AntigravityAccessToken,
 		AntigravityProjectID:    c.AntigravityProjectID,
 		CreatedAt:               c.CreatedAt,

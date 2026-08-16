@@ -118,6 +118,24 @@
                   <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
                 </select>
               </div>
+              <div id="codexOAuthControls">
+                <div class="oauth-field">
+                  <label for="codexOAuthMethod" data-i18n="channels.codex.methodLabel">Codex 授权方式</label>
+                  <select id="codexOAuthMethod" name="codex_oauth_method" class="form-input">
+                    <option value="oauth" data-i18n="channels.codex.methodOAuth">浏览器 OAuth</option>
+                    <option value="personalAccessToken" data-i18n="channels.codex.methodPersonalAccessToken">Personal Access Token</option>
+                  </select>
+                </div>
+                <div id="codexPersonalAccessTokenField" class="oauth-field" hidden>
+                  <label for="codexPersonalAccessToken" data-i18n="channels.codex.personalAccessTokenLabel">Codex Personal Access Token</label>
+                  <input id="codexPersonalAccessToken" name="codex_personal_access_token" type="password"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    placeholder="at-..."
+                    aria-describedby="codexPersonalAccessTokenHint oauthLoginDialogStatus">
+                  <p id="codexPersonalAccessTokenHint" class="oauth-field-hint"
+                    data-i18n="channels.codex.personalAccessTokenHint">输入以 at- 开头的令牌。提交后输入会立即清除；令牌到期或被撤销后需要重新授权。</p>
+                </div>
+              </div>
               <div id="xaiOAuthControls" hidden>
                 <div class="oauth-field">
                   <label for="xaiOAuthMethod" data-i18n="channels.xai.methodLabel">xAI 授权方式</label>

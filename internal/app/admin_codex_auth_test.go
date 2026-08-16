@@ -28,6 +28,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
+	"ccLoad/internal/cooldown"
 	"ccLoad/internal/model"
 	"ccLoad/internal/storage"
 	sqlstore "ccLoad/internal/storage/sql"
@@ -837,6 +838,59 @@ func TestXAIOAuthConcurrentInteractivePersistenceCreatesOneStableIdentity(t *tes
 	}
 }
 
+func TestCodexPersonalAccessTokenConcurrentPersistenceCreatesOneStableIdentity(t *testing.T) {
+	baseStore := newCodexAuthTestStore(t)
+	store := &snapshotBarrierStore{Store: baseStore, ready: make(chan struct{}), release: make(chan struct{})}
+	credential := &codexauth.Credential{
+		Type:          codexauth.ChannelType,
+		AuthMode:      codexauth.AuthModePersonalAccessToken,
+		AccessToken:   "at-concurrent-pat",
+		ChatGPTUserID: "concurrent-pat-user",
+		AccountID:     "concurrent-pat-account",
+		Email:         "concurrent-pat@example.com",
+		PlanType:      "plus",
+	}
+	type persistenceResult struct {
+		channel *model.Config
+		created bool
+		err     error
+	}
+	results := make(chan persistenceResult, 2)
+	for range 2 {
+		candidate := cloneCodexCredential(credential)
+		go func() {
+			channel, created, err := createOrUpdateCodexChannel(context.Background(), store, candidate)
+			results <- persistenceResult{channel: channel, created: created, err: err}
+		}()
+	}
+	select {
+	case <-store.ready:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent PAT persistence did not reach shared snapshot")
+	}
+	close(store.release)
+	createdCount := 0
+	var channelID int64
+	for range 2 {
+		result := <-results
+		if result.err != nil || result.channel == nil {
+			t.Fatalf("PAT persistence result = %#v", result)
+		}
+		if result.created {
+			createdCount++
+		}
+		if channelID == 0 {
+			channelID = result.channel.ID
+		} else if result.channel.ID != channelID {
+			t.Fatalf("concurrent PAT persistence returned channel IDs %d and %d", channelID, result.channel.ID)
+		}
+	}
+	configs, err := baseStore.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || createdCount != 1 {
+		t.Fatalf("concurrent PAT channels=%d created=%d error=%v", len(configs), createdCount, err)
+	}
+}
+
 func TestXAIFilePersistenceIsCreateOnlyAndCaseInsensitive(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
@@ -1424,6 +1478,17 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 	var transientProbeAttempts atomic.Int32
 	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
 		switch {
+		case request.Method == http.MethodGet && request.URL.String() == codexauth.DefaultWhoAmIURL:
+			if request.Header.Get("Authorization") != "Bearer at-personal-import" {
+				return nil, fmt.Errorf("unexpected PAT whoami authorization")
+			}
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{
+				"email":"verified-pat@example.com",
+				"chatgpt_user_id":"verified-pat-user",
+				"chatgpt_account_id":"verified-pat-account",
+				"chatgpt_plan_type":"plus",
+				"chatgpt_account_is_fedramp":true
+			}`)), Request: request}, nil
 		case request.Method == http.MethodGet && request.URL.String() == codexUsageURL:
 			status := http.StatusUnauthorized
 			authorization := request.Header.Get("Authorization")
@@ -1457,6 +1522,19 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 	server := &Server{store: store, client: client}
 	expiresAt := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
 	idToken := codexTestIDToken(t, "refreshable@example.com", "account-refreshable")
+	existingCredential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "at-existing", RefreshToken: "rt-existing",
+		Expired: expiresAt, ChatGPTUserID: "existing-user", AccountID: "existing-account",
+	}
+	existingCredentialJSON, err := existingCredential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateConfig(context.Background(), newCodexOAuthChannel(
+		"Codex-forged@example.com", existingCredentialJSON, "",
+	)); err != nil {
+		t.Fatal(err)
+	}
 
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
@@ -1466,11 +1544,13 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		refreshToken string
 		accountID    string
 		idToken      string
+		personal     bool
 	}{
 		{name: "refreshable.json", accessToken: "at-stale", refreshToken: "rt-refreshable", accountID: "account-refreshable", idToken: idToken},
 		{name: "short-lived.json", accessToken: "at-short-lived", refreshToken: "rt-short-lived-invalid", accountID: "account-short-lived", idToken: codexTestIDToken(t, "short-lived@example.com", "account-short-lived")},
 		{name: "transient.json", accessToken: "at-transient", refreshToken: "rt-transient", accountID: "account-transient", idToken: codexTestIDToken(t, "transient@example.com", "account-transient")},
 		{name: "unusable.json", accessToken: "at-unusable", refreshToken: "rt-unusable", accountID: "account-unusable", idToken: codexTestIDToken(t, "unusable@example.com", "account-unusable")},
+		{name: "personal.json", accessToken: "at-personal-import", accountID: "forged-account", personal: true},
 	}
 	for _, file := range files {
 		part, err := writer.CreateFormFile("files", file.name)
@@ -1481,6 +1561,12 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 			`{"type":"codex","access_token":%q,"refresh_token":%q,"id_token":%q,"account_id":%q,"expired":%q}`,
 			file.accessToken, file.refreshToken, file.idToken, file.accountID, expiresAt,
 		)
+		if file.personal {
+			credential = fmt.Sprintf(
+				`{"type":"codex","auth_mode":"personalAccessToken","access_token":%q,"chatgpt_user_id":"forged-user","account_id":%q,"email":"forged@example.com","plan_type":"free","quota_overdraft":{"enabled":true}}`,
+				file.accessToken, file.accountID,
+			)
+		}
 		if _, err := part.Write([]byte(credential)); err != nil {
 			t.Fatal(err)
 		}
@@ -1497,7 +1583,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
 	result := mustParseAPIResponse[oauthCredentialImportSummary](t, response.Body.Bytes())
-	if result.Data.Created != 3 || result.Data.Skipped != 0 || result.Data.Failed != 1 {
+	if result.Data.Created != 4 || result.Data.Skipped != 0 || result.Data.Failed != 1 {
 		t.Fatalf("import summary = %#v", result.Data)
 	}
 	if attempts := transientProbeAttempts.Load(); attempts != 2 {
@@ -1514,7 +1600,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		t.Fatalf("unusable result = %#v, want failed result with upstream status", unusableResult)
 	}
 	channels, err := store.ListConfigs(context.Background())
-	if err != nil || len(channels) != 3 {
+	if err != nil || len(channels) != 5 {
 		t.Fatalf("persisted channel count = %d, error = %v", len(channels), err)
 	}
 	persisted := make(map[string]*codexauth.Credential, len(channels))
@@ -1537,7 +1623,13 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 	if transient == nil || transient.AccessToken != "at-transient" || transient.RefreshToken != "rt-transient" {
 		t.Fatal("persisted Codex credential did not survive a transient validation failure")
 	}
-	for _, secret := range []string{"at-stale", "rt-refreshable", "at-short-lived", "rt-short-lived-invalid", "at-transient", "rt-transient", "at-unusable", "rt-unusable", "at-refreshed", "rt-rotated"} {
+	personal := persisted["verified-pat-account"]
+	if personal == nil || !personal.IsPersonalAccessToken() || personal.ChatGPTUserID != "verified-pat-user" ||
+		personal.Email != "verified-pat@example.com" || personal.PlanType != "plus" || !personal.AccountFedRAMP ||
+		personal.QuotaOverdraft == nil || !personal.QuotaOverdraft.Enabled {
+		t.Fatalf("persisted PAT did not use whoami identity and local quota state: %#v", personal)
+	}
+	for _, secret := range []string{"at-stale", "rt-refreshable", "at-short-lived", "rt-short-lived-invalid", "at-transient", "rt-transient", "at-unusable", "rt-unusable", "at-refreshed", "rt-rotated", "at-personal-import"} {
 		if strings.Contains(response.Body.String(), secret) {
 			t.Fatal("import response leaked credential material")
 		}
@@ -4086,6 +4178,46 @@ func TestCodexCredentialManagerReloadsPersistedCredentialBeforeRefresh(t *testin
 	})
 }
 
+func TestCodexCredentialManagerNeverRefreshesPersonalAccessToken(t *testing.T) {
+	store := newCodexAuthTestStore(t)
+	credential := &codexauth.Credential{
+		Type:          codexauth.ChannelType,
+		AuthMode:      codexauth.AuthModePersonalAccessToken,
+		AccessToken:   "at-static-manager",
+		ChatGPTUserID: "pat-manager-user",
+		AccountID:     "pat-manager-account",
+		Email:         "pat-manager@example.com",
+		PlanType:      "plus",
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, err := store.CreateConfig(context.Background(), newCodexOAuthChannel("Codex-PAT", credentialJSON, "plus"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var tokenEndpointCalls atomic.Int32
+	client := &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		tokenEndpointCalls.Add(1)
+		return nil, fmt.Errorf("unexpected token endpoint request: %s", request.URL)
+	})}
+	service := codexauth.NewService(client)
+	manager := newCodexCredentialManager(service, store, nil, nil)
+
+	got, err := manager.credential(context.Background(), channel, false)
+	if err != nil || got.AccessToken != credential.AccessToken {
+		t.Fatalf("credential() = (%+v, %v)", got, err)
+	}
+	if _, err := manager.credentialAfterUnauthorized(context.Background(), channel, credential.AccessToken); err == nil ||
+		!strings.Contains(err.Error(), "cannot be refreshed") {
+		t.Fatalf("credentialAfterUnauthorized() error = %v", err)
+	}
+	if tokenEndpointCalls.Load() != 0 {
+		t.Fatalf("PAT triggered %d token endpoint calls", tokenEndpointCalls.Load())
+	}
+}
+
 func TestCodexCredentialManagerCachesSQLiteWinnerWhenPrimarySyncFails(t *testing.T) {
 	primaryStore, err := storage.CreateSQLiteStore(filepath.Join(t.TempDir(), "primary.db"))
 	if err != nil {
@@ -4447,13 +4579,115 @@ func TestHandleRefreshCodexCredentialForcesDatabaseRefresh(t *testing.T) {
 	}
 }
 
+func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing.T) {
+	const accessToken = "at-handler-secret"
+	whoami := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer "+accessToken ||
+			r.Header.Get("Originator") != "codex-tui" {
+			t.Errorf("whoami request method=%s headers=%v", r.Method, r.Header)
+		}
+		_, _ = io.WriteString(w, `{
+			"email":"pat@example.com",
+			"chatgpt_user_id":"pat-user",
+			"chatgpt_account_id":"pat-account",
+			"chatgpt_plan_type":"plus",
+			"chatgpt_account_is_fedramp":true
+		}`)
+	}))
+	defer whoami.Close()
+
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	server.cooldownManager = cooldown.NewManager(store, server)
+	service := codexauth.NewService(whoami.Client())
+	service.WhoAmIURL = whoami.URL
+	server.codexService = service
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/codex/personal-access-token", map[string]string{
+		"access_token": accessToken,
+	}))
+	server.HandleCreateCodexPersonalAccessToken(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PAT authorization status=%d body=%s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), accessToken) {
+		t.Fatalf("PAT authorization response leaked access token: %s", w.Body.String())
+	}
+	response := mustParseAPIResponse[struct {
+		Status    string `json:"status"`
+		ChannelID int64  `json:"channel_id"`
+		Created   bool   `json:"created"`
+	}](t, w.Body.Bytes())
+	if response.Data.Status != "complete" || !response.Data.Created || response.Data.ChannelID == 0 {
+		t.Fatalf("PAT authorization response = %#v", response.Data)
+	}
+	channel, err := store.GetConfig(context.Background(), response.Data.ChannelID)
+	if err != nil {
+		t.Fatalf("get PAT channel: %v", err)
+	}
+	credential, err := codexauth.ParseCredential([]byte(channel.OAuthCredential))
+	if err != nil {
+		t.Fatalf("parse stored PAT credential: %v", err)
+	}
+	if !channel.UsesCodexOAuth() || !credential.IsPersonalAccessToken() || credential.AccessToken != accessToken ||
+		credential.RefreshToken != "" || credential.Expired != "" || credential.ChatGPTUserID != "pat-user" ||
+		credential.AccountID != "pat-account" || !credential.AccountFedRAMP {
+		t.Fatalf("stored PAT channel=%+v credential=%+v", channel, credential)
+	}
+	if err := store.SetChannelCooldown(context.Background(), channel.ID, time.Now().Add(24*time.Hour)); err != nil {
+		t.Fatalf("set stale PAT cooldown: %v", err)
+	}
+	const preservedModel = "gpt-preserved-cooldown"
+	if err := store.SetModelCooldown(context.Background(), channel.ID, preservedModel, time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("set PAT model cooldown: %v", err)
+	}
+	const preservedURL = "https://preserved.example.test"
+	server.urlSelector = NewURLSelector()
+	server.urlSelector.CooldownURL(channel.ID, preservedURL)
+	reauthorizeContext, reauthorizeResponse := newTestContext(t, newJSONRequest(
+		t, http.MethodPost, "/admin/codex/personal-access-token", map[string]string{"access_token": accessToken},
+	))
+	server.HandleCreateCodexPersonalAccessToken(reauthorizeContext)
+	if reauthorizeResponse.Code != http.StatusOK {
+		t.Fatalf("PAT reauthorization status=%d body=%s", reauthorizeResponse.Code, reauthorizeResponse.Body.String())
+	}
+	reauthorized := mustParseAPIResponse[struct {
+		ChannelID int64 `json:"channel_id"`
+		Created   bool  `json:"created"`
+	}](t, reauthorizeResponse.Body.Bytes())
+	if reauthorized.Data.Created || reauthorized.Data.ChannelID != channel.ID {
+		t.Fatalf("PAT reauthorization duplicated channel: %#v", reauthorized.Data)
+	}
+	refreshedChannel, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil || refreshedChannel.CooldownUntil != 0 {
+		t.Fatalf("PAT reauthorization left stale cooldown: channel=%+v err=%v", refreshedChannel, err)
+	}
+	modelCooldowns, err := store.GetAllModelCooldowns(context.Background())
+	if err != nil || modelCooldowns[channel.ID][preservedModel].IsZero() {
+		t.Fatalf("PAT reauthorization cleared model cooldown: cooldowns=%+v err=%v", modelCooldowns, err)
+	}
+	if !server.urlSelector.IsCooledDown(channel.ID, preservedURL) {
+		t.Fatal("PAT reauthorization cleared URL cooldown")
+	}
+
+	path := fmt.Sprintf("/admin/channels/%d/codex-credential/refresh", channel.ID)
+	refreshContext, refreshResponse := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	refreshContext.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleRefreshCodexCredential(refreshContext)
+	if refreshResponse.Code != http.StatusConflict {
+		t.Fatalf("PAT refresh status=%d body=%s", refreshResponse.Code, refreshResponse.Body.String())
+	}
+}
+
 func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T) {
 	server, store, cleanup := setupAdminTestServer(t)
 	defer cleanup()
 	credential := &codexauth.Credential{
 		Type: "codex", AccessToken: "at-quota-secret", RefreshToken: "rt-quota-secret",
-		Expired:   time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
-		AccountID: "account-quota", PlanType: "plus",
+		Expired:        time.Now().UTC().Add(time.Hour).Format(time.RFC3339),
+		AccountID:      "account-quota",
+		PlanType:       "plus",
+		AccountFedRAMP: true,
 	}
 	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
 	if err != nil {
@@ -4469,6 +4703,9 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 		}
 		if got := request.Header.Get("Chatgpt-Account-Id"); got != "account-quota" {
 			t.Errorf("Chatgpt-Account-Id = %q", got)
+		}
+		if got := request.Header.Get("X-OpenAI-FedRAMP"); got != "true" {
+			t.Errorf("X-OpenAI-FedRAMP = %q", got)
 		}
 		if got := request.Header.Get("User-Agent"); got != codexUsageUserAgent {
 			t.Errorf("User-Agent = %q", got)

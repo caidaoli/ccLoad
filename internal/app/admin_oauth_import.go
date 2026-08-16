@@ -482,13 +482,19 @@ func (s *Server) prepareOAuthCredentialImportFile(
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
 			return prepared
 		}
-		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(codexChannelBaseName(credential))]; exists {
-			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
-			return prepared
+		if !credential.IsPersonalAccessToken() {
+			if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(codexChannelBaseName(credential))]; exists {
+				prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
+				return prepared
+			}
 		}
 		credential, err = s.completeImportedCodexCredential(ctx, credential)
 		if err != nil {
 			prepared.Result.Status, prepared.Result.Error = "failed", err.Error()
+			return prepared
+		}
+		if existingName, exists := existingNames[normalizeOAuthCredentialChannelName(codexChannelBaseName(credential))]; exists {
+			prepared.Result.Status, prepared.Result.ChannelName = "skipped", existingName
 			return prepared
 		}
 		credentialJSON, err := credential.JSON()
@@ -734,6 +740,16 @@ func (s *Server) completeImportedCodexCredential(ctx context.Context, credential
 	}
 	if service == nil || service.Client == nil {
 		return nil, errors.New("codex credential validation is unavailable")
+	}
+	if credential.IsPersonalAccessToken() {
+		validated, validateErr := service.ValidatePersonalAccessToken(ctx, credential.AccessToken)
+		if validateErr != nil {
+			return nil, fmt.Errorf("%w: Codex personal access token validation failed: %v", errOAuthCredentialUnusable, validateErr)
+		}
+		validated.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
+		validated.OAuthUsage = append(json.RawMessage(nil), credential.OAuthUsage...)
+		validated.QuotaOverdraft = codexauth.CloneQuotaOverdraft(credential.QuotaOverdraft)
+		return validated, nil
 	}
 
 	needsRefresh, err := credential.NeedsRefresh(time.Now(), codexCredentialRefreshLead)

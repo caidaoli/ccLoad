@@ -72,6 +72,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		AccessToken: "old-at", RefreshToken: "old-rt", IDToken: "old-id",
 		ChatGPTUserID: "user-1", AccountID: "account-1", Email: "user@example.com", Type: ChannelType,
 		Expired: now.Add(4 * time.Minute).Format(time.RFC3339), PlanType: "plus",
+		AccountFedRAMP: true,
 		PassiveUsage: &PassiveUsage{
 			Windows: []PassiveUsageWindow{{
 				Scope: "codex", LimitName: "codex", Kind: "primary", UsedPercent: 6,
@@ -100,7 +101,8 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
 		merged.QuotaOverdraft == nil || !merged.QuotaOverdraft.Enabled ||
 		merged.QuotaOverdraft.ActiveUntil != now.Add(2*time.Hour).Unix() ||
-		merged.QuotaOverdraft.SuccessfulRequests != 2 || merged.QuotaOverdraft.CostMicroUSD != 1250 {
+		merged.QuotaOverdraft.SuccessfulRequests != 2 || merged.QuotaOverdraft.CostMicroUSD != 1250 ||
+		!merged.AccountFedRAMP {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
@@ -113,6 +115,45 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	}
 }
 
+func TestPersonalAccessTokenCredentialHasNoOAuthRefreshLifecycle(t *testing.T) {
+	credential := &Credential{
+		Type:          ChannelType,
+		AuthMode:      AuthModePersonalAccessToken,
+		AccessToken:   " at-static ",
+		RefreshToken:  "must-not-survive",
+		IDToken:       "must-not-survive",
+		Expired:       "2030-01-02T03:04:05Z",
+		LastRefresh:   "2030-01-02T02:04:05Z",
+		Email:         " user@example.com ",
+		ChatGPTUserID: " user-1 ",
+		AccountID:     " account-1 ",
+		PlanType:      " plus ",
+	}
+
+	raw, err := credential.JSON()
+	if err != nil {
+		t.Fatalf("JSON() error = %v", err)
+	}
+	if !credential.IsPersonalAccessToken() || credential.AccessToken != "at-static" {
+		t.Fatalf("normalized PAT credential = %#v", credential)
+	}
+	for _, forbidden := range []string{"refresh_token", "id_token", "expired", "last_refresh"} {
+		if strings.Contains(raw, `"`+forbidden+`"`) {
+			t.Fatalf("PAT JSON contains OAuth-only field %q: %s", forbidden, raw)
+		}
+	}
+	if !strings.Contains(raw, `"auth_mode":"personalAccessToken"`) {
+		t.Fatalf("PAT JSON = %s", raw)
+	}
+	needsRefresh, err := credential.NeedsRefresh(time.Now(), 5*time.Minute)
+	if err != nil || needsRefresh {
+		t.Fatalf("NeedsRefresh() = (%v, %v), want (false, nil)", needsRefresh, err)
+	}
+	if _, err := credential.MergeRefresh(&Credential{}); err == nil {
+		t.Fatal("MergeRefresh() accepted a personal access token")
+	}
+}
+
 func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 	tests := []string{
 		`{}`,
@@ -121,6 +162,8 @@ func TestParseCredentialRejectsInvalidImport(t *testing.T) {
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"successful_requests":-1}}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z","quota_overdraft":{"active_until":-1}}`,
 		`{"type":"codex","access_token":"at","refresh_token":"rt","expired":"2030-01-01T00:00:00Z"} {}`,
+		`{"type":"codex","auth_mode":"personalAccessToken","access_token":"not-an-at-token"}`,
+		`{"type":"codex","auth_mode":"unknown","access_token":"at-token"}`,
 	}
 	for _, raw := range tests {
 		if _, err := ParseCredential([]byte(raw)); err == nil {

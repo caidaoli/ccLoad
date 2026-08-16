@@ -671,6 +671,9 @@ func newCodexUsageRequest(ctx context.Context, credential *codexauth.Credential)
 	if credential.AccountID != "" {
 		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
 	}
+	if credential.AccountFedRAMP {
+		req.Header.Set("X-OpenAI-FedRAMP", "true")
+	}
 	return req, nil
 }
 

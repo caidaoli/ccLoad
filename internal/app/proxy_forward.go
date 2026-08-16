@@ -3531,6 +3531,7 @@ func (s *Server) tryCodexOAuthChannel(
 		runtimeCfg := cfg.Clone()
 		runtimeCfg.CodexAccessToken = credential.AccessToken
 		runtimeCfg.CodexAccountID = credential.AccountID
+		runtimeCfg.CodexAccountFedRAMP = credential.AccountFedRAMP
 		return runtimeCfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && result.status == http.StatusUnauthorized

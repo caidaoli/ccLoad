@@ -114,6 +114,75 @@ func TestServiceRejectsEmptyAccessToken(t *testing.T) {
 	}
 }
 
+func TestServiceValidatesPersonalAccessTokenWhoAmIContract(t *testing.T) {
+	t.Parallel()
+
+	whoamiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.Header.Get("Authorization") != "Bearer at-test-token" ||
+			r.Header.Get("Accept") != "application/json" || r.Header.Get("Originator") != DefaultOriginator ||
+			r.Header.Get("User-Agent") != DefaultUserAgent {
+			t.Fatalf("unexpected whoami request: method=%s headers=%v", r.Method, r.Header)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"email":"user@example.com",
+			"chatgpt_user_id":"user-123",
+			"chatgpt_account_id":"acct-123",
+			"chatgpt_plan_type":"plus",
+			"chatgpt_account_is_fedramp":true
+		}`))
+	}))
+	defer whoamiServer.Close()
+
+	service := NewService(whoamiServer.Client())
+	service.WhoAmIURL = whoamiServer.URL
+	credential, err := service.ValidatePersonalAccessToken(context.Background(), " at-test-token ")
+	if err != nil {
+		t.Fatalf("ValidatePersonalAccessToken() error = %v", err)
+	}
+	if credential.AuthMode != AuthModePersonalAccessToken || credential.AccessToken != "at-test-token" ||
+		credential.Email != "user@example.com" || credential.ChatGPTUserID != "user-123" ||
+		credential.AccountID != "acct-123" || credential.PlanType != "plus" || !credential.AccountFedRAMP ||
+		credential.RefreshToken != "" || credential.Expired != "" {
+		t.Fatalf("PAT credential = %#v", credential)
+	}
+}
+
+func TestServiceRejectsInvalidPersonalAccessTokenResponses(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"error":"invalid"}`},
+		{name: "missing identity", status: http.StatusOK, body: `{"email":"user@example.com"}`},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			}))
+			defer server.Close()
+			service := NewService(server.Client())
+			service.WhoAmIURL = server.URL
+			if _, err := service.ValidatePersonalAccessToken(context.Background(), "at-test"); err == nil {
+				t.Fatal("ValidatePersonalAccessToken() succeeded")
+			}
+		})
+	}
+
+	service := NewService(http.DefaultClient)
+	if _, err := service.ValidatePersonalAccessToken(context.Background(), "eyJ.jwt"); err == nil ||
+		!strings.Contains(err.Error(), "at-") {
+		t.Fatalf("invalid prefix error = %v", err)
+	}
+}
+
 func testIDToken(t *testing.T) string {
 	t.Helper()
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"email":"user@example.com","https://api.openai.com/auth":{"chatgpt_user_id":"user-test","chatgpt_account_id":"acct-test","chatgpt_plan_type":"plus"}}`))
