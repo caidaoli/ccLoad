@@ -20,9 +20,9 @@ import (
 
 const (
 	codexCredentialRefreshLead       = 5 * time.Minute
-	codexVersion                     = "0.147.0"
-	codexOriginator                  = "codex-tui"
-	codexUserAgent                   = codexOriginator + "/" + codexVersion + " (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (" + codexOriginator + "; " + codexVersion + ")"
+	codexVersion                     = codexauth.DefaultClientVersion
+	codexOriginator                  = codexauth.DefaultOriginator
+	codexUserAgent                   = codexauth.DefaultUserAgent
 	codexQuotaOverdraftWriteAttempts = 3
 )
 
@@ -97,6 +97,12 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	credential, err := m.cachedOrParse(cfg)
 	if err != nil {
 		return nil, err
+	}
+	if credential.IsPersonalAccessToken() {
+		if forceRefresh {
+			return cloneCodexCredential(credential), codexauth.ErrPersonalAccessTokenCannotRefresh
+		}
+		return cloneCodexCredential(credential), nil
 	}
 	needsRefresh, err := credential.NeedsRefresh(m.now(), codexCredentialRefreshLead)
 	if err != nil {
@@ -696,5 +702,10 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 		req.Header.Set("ChatGPT-Account-ID", cfg.CodexAccountID)
 	} else {
 		req.Header.Del("ChatGPT-Account-ID")
+	}
+	if cfg.UsesCodexOAuth() && cfg.CodexAccountFedRAMP {
+		req.Header.Set("X-OpenAI-FedRAMP", "true")
+	} else {
+		req.Header.Del("X-OpenAI-FedRAMP")
 	}
 }

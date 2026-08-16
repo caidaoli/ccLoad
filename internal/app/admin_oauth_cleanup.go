@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/testutil"
@@ -839,6 +840,9 @@ type oauthTokenEndpointFailure interface {
 }
 
 func oauthRefreshTokenRejected(err error) bool {
+	if errors.Is(err, codexauth.ErrPersonalAccessTokenCannotRefresh) {
+		return true
+	}
 	var endpointFailure oauthTokenEndpointFailure
 	if !errors.As(err, &endpointFailure) {
 		return false

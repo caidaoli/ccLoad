@@ -11,9 +11,15 @@ import (
 
 const (
 	// ChannelType is the CLIProxyAPI provider type stored in Codex credentials.
-	ChannelType       = "codex"
-	maxCredentialSize = 1 << 20
+	ChannelType = "codex"
+	// AuthModePersonalAccessToken identifies a static Codex access token.
+	AuthModePersonalAccessToken = "personalAccessToken"
+	personalAccessTokenPrefix   = "at-"
+	maxCredentialSize           = 1 << 20
 )
+
+// ErrPersonalAccessTokenCannotRefresh marks a rejected static PAT as terminal.
+var ErrPersonalAccessTokenCannotRefresh = errors.New("codex personal access token cannot be refreshed")
 
 // Credential is the CLIProxyAPI-compatible Codex OAuth payload persisted as a
 // private channel field. General channel responses omit it; the authenticated
@@ -21,14 +27,16 @@ const (
 type Credential struct {
 	IDToken        string          `json:"id_token,omitempty"`
 	AccessToken    string          `json:"access_token"`
-	RefreshToken   string          `json:"refresh_token"`
+	RefreshToken   string          `json:"refresh_token,omitempty"`
+	AuthMode       string          `json:"auth_mode,omitempty"`
 	ChatGPTUserID  string          `json:"chatgpt_user_id,omitempty"`
 	AccountID      string          `json:"account_id,omitempty"`
 	LastRefresh    string          `json:"last_refresh,omitempty"`
 	Email          string          `json:"email,omitempty"`
 	Type           string          `json:"type"`
-	Expired        string          `json:"expired"`
+	Expired        string          `json:"expired,omitempty"`
 	PlanType       string          `json:"plan_type,omitempty"`
+	AccountFedRAMP bool            `json:"chatgpt_account_is_fedramp,omitempty"`
 	PassiveUsage   *PassiveUsage   `json:"passive_usage,omitempty"`
 	OAuthUsage     json.RawMessage `json:"oauth_usage,omitempty"`
 	QuotaOverdraft *QuotaOverdraft `json:"quota_overdraft,omitempty"`
@@ -102,6 +110,7 @@ func (c *Credential) Normalize() error {
 	c.IDToken = strings.TrimSpace(c.IDToken)
 	c.AccessToken = strings.TrimSpace(c.AccessToken)
 	c.RefreshToken = strings.TrimSpace(c.RefreshToken)
+	c.AuthMode = strings.TrimSpace(c.AuthMode)
 	c.ChatGPTUserID = strings.TrimSpace(c.ChatGPTUserID)
 	c.AccountID = strings.TrimSpace(c.AccountID)
 	c.LastRefresh = strings.TrimSpace(c.LastRefresh)
@@ -143,6 +152,19 @@ func (c *Credential) Normalize() error {
 	if c.AccessToken == "" {
 		return errors.New("codex credential is missing access_token")
 	}
+	if c.AuthMode != "" && c.AuthMode != AuthModePersonalAccessToken {
+		return fmt.Errorf("unsupported Codex auth_mode %q", c.AuthMode)
+	}
+	if c.IsPersonalAccessToken() {
+		if !strings.HasPrefix(c.AccessToken, personalAccessTokenPrefix) {
+			return errors.New("codex personal access token must start with at-")
+		}
+		c.IDToken = ""
+		c.RefreshToken = ""
+		c.LastRefresh = ""
+		c.Expired = ""
+		return nil
+	}
 	if c.RefreshToken == "" {
 		return errors.New("codex credential is missing refresh_token")
 	}
@@ -166,6 +188,12 @@ func (c *Credential) Normalize() error {
 		}
 	}
 	return nil
+}
+
+// IsPersonalAccessToken reports whether this credential uses a static Codex
+// access token instead of the refreshable browser OAuth lifecycle.
+func (c *Credential) IsPersonalAccessToken() bool {
+	return c != nil && strings.TrimSpace(c.AuthMode) == AuthModePersonalAccessToken
 }
 
 // Expiry returns the absolute credential expiration time.
@@ -224,6 +252,9 @@ func (c *Credential) SubscriptionActiveUntil() (time.Time, bool) {
 
 // NeedsRefresh reports whether the access token is inside the refresh window.
 func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, error) {
+	if c.IsPersonalAccessToken() {
+		return false, nil
+	}
 	expiresAt, err := c.Expiry()
 	if err != nil {
 		return false, err
@@ -236,6 +267,9 @@ func (c *Credential) NeedsRefresh(now time.Time, lead time.Duration) (bool, erro
 func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	if c == nil || refreshed == nil {
 		return nil, errors.New("codex refresh credential is nil")
+	}
+	if c.IsPersonalAccessToken() {
+		return nil, ErrPersonalAccessTokenCannotRefresh
 	}
 	merged := *refreshed
 	if merged.RefreshToken == "" {
@@ -255,6 +289,9 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 	}
 	if merged.PlanType == "" {
 		merged.PlanType = c.PlanType
+	}
+	if !merged.AccountFedRAMP {
+		merged.AccountFedRAMP = c.AccountFedRAMP
 	}
 	if merged.PassiveUsage == nil {
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)

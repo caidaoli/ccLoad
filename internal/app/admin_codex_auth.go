@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -54,6 +55,8 @@ var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
 	},
 }
 
+var codexChannelCreateMu sync.Mutex
+
 type codexOAuthResult struct {
 	code     string
 	state    string
@@ -87,9 +90,24 @@ type codexOAuthCallbackRequest struct {
 	CallbackURL string `json:"callback_url"`
 }
 
+type codexPersonalAccessTokenRequest struct {
+	AccessToken string `json:"access_token"`
+}
+
 func (r *codexOAuthCallbackRequest) Validate() error {
 	if strings.TrimSpace(r.CallbackURL) == "" {
 		return errors.New("callback_url is required")
+	}
+	return nil
+}
+
+func (r *codexPersonalAccessTokenRequest) Validate() error {
+	if r == nil {
+		return errors.New("codex personal access token request is required")
+	}
+	r.AccessToken = strings.TrimSpace(r.AccessToken)
+	if !strings.HasPrefix(r.AccessToken, "at-") {
+		return errors.New("codex personal access token must start with at-")
 	}
 	return nil
 }
@@ -578,68 +596,86 @@ func createOrUpdateCodexChannel(ctx context.Context, store storage.Store, creden
 	}
 	cfg, existing, identity := findCodexOAuthChannel(configs, credential)
 	if cfg != nil {
-		currentCfg := cfg
-		current := existing
-		for {
-			if err := ctx.Err(); err != nil {
-				return nil, false, err
-			}
-			next := cloneCodexCredential(credential)
-			// Quota snapshots are channel runtime state. Reauthorization replaces
-			// OAuth secrets, but must neither erase that state nor lose the new
-			// credential when a concurrent quota sample wins the first CAS.
-			next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
-			next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
-			next.QuotaOverdraft = codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
-			if next.Email == "" {
-				next.Email = current.Email
-			}
-			if next.ChatGPTUserID == "" {
-				next.ChatGPTUserID = current.ChatGPTUserID
-			}
-			nextJSON, err := next.JSON()
-			if err != nil {
-				return nil, false, err
-			}
-			credentialUpdated, err := store.CompareAndSwapOAuthCredential(
-				ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, nextJSON,
-			)
-			if err != nil {
-				return nil, false, err
-			}
-			if credentialUpdated {
-				if _, err := persistCodexModelState(
-					ctx, store, currentCfg, current.PlanType, next, nextJSON,
-				); err != nil {
-					return nil, false, err
-				}
-				updated, err := store.GetConfig(ctx, currentCfg.ID)
-				return updated, false, err
-			}
-
-			currentCfg, err = store.GetConfig(ctx, currentCfg.ID)
-			if err != nil {
-				return nil, false, fmt.Errorf("reload Codex credential after concurrent update: %w", err)
-			}
-			if !currentCfg.UsesCodexOAuth() {
-				return nil, false, errors.New("codex credential changed provider during reauthorization")
-			}
-			current, err = codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if err != nil {
-				return nil, false, fmt.Errorf("parse Codex credential after concurrent update: %w", err)
-			}
-			if !codexIdentityMatches(current, credential, identity) {
-				return nil, false, errors.New("codex credential changed identity during reauthorization")
-			}
-		}
+		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential)
 	}
 
+	codexChannelCreateMu.Lock()
+	defer codexChannelCreateMu.Unlock()
+	configs, err = store.ListConfigs(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("reload channels for Codex credential: %w", err)
+	}
+	if cfg, existing, identity = findCodexOAuthChannel(configs, credential); cfg != nil {
+		return updateExistingCodexChannel(ctx, store, cfg, existing, identity, credential)
+	}
 	name := uniqueCodexChannelName(configs, credential)
 	created, err := store.CreateConfig(ctx, newCodexOAuthChannel(name, credentialJSON, credential.PlanType))
 	if err != nil {
 		return nil, false, fmt.Errorf("create Codex channel: %w", err)
 	}
 	return created, true, nil
+}
+
+func updateExistingCodexChannel(
+	ctx context.Context,
+	store storage.Store,
+	currentCfg *model.Config,
+	current *codexauth.Credential,
+	identity codexIdentityMatch,
+	credential *codexauth.Credential,
+) (*model.Config, bool, error) {
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		next := cloneCodexCredential(credential)
+		// Quota snapshots are channel runtime state. Reauthorization replaces
+		// secrets, but must neither erase that state nor lose the new credential
+		// when a concurrent quota sample wins the first CAS.
+		next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
+		next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
+		next.QuotaOverdraft = codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
+		if next.Email == "" {
+			next.Email = current.Email
+		}
+		if next.ChatGPTUserID == "" {
+			next.ChatGPTUserID = current.ChatGPTUserID
+		}
+		nextJSON, err := next.JSON()
+		if err != nil {
+			return nil, false, err
+		}
+		credentialUpdated, err := store.CompareAndSwapOAuthCredential(
+			ctx, currentCfg.ID, model.AuthTypeCodexOAuth, currentCfg.OAuthCredential, nextJSON,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+		if credentialUpdated {
+			if _, err := persistCodexModelState(
+				ctx, store, currentCfg, current.PlanType, next, nextJSON,
+			); err != nil {
+				return nil, false, err
+			}
+			updated, err := store.GetConfig(ctx, currentCfg.ID)
+			return updated, false, err
+		}
+
+		currentCfg, err = store.GetConfig(ctx, currentCfg.ID)
+		if err != nil {
+			return nil, false, fmt.Errorf("reload Codex credential after concurrent update: %w", err)
+		}
+		if !currentCfg.UsesCodexOAuth() {
+			return nil, false, errors.New("codex credential changed provider during reauthorization")
+		}
+		current, err = codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+		if err != nil {
+			return nil, false, fmt.Errorf("parse Codex credential after concurrent update: %w", err)
+		}
+		if !codexIdentityMatches(current, credential, identity) {
+			return nil, false, errors.New("codex credential changed identity during reauthorization")
+		}
+	}
 }
 
 func findCodexOAuthChannel(
@@ -950,6 +986,54 @@ func (s *Server) HandleImportCodexCredential(c *gin.Context) {
 	s.handleImportOAuthCredentials(c, codexauth.ChannelType)
 }
 
+// HandleCreateCodexPersonalAccessToken validates one static Codex token and
+// creates or updates the channel identified by the returned OpenAI account.
+func (s *Server) HandleCreateCodexPersonalAccessToken(c *gin.Context) {
+	var request codexPersonalAccessTokenRequest
+	if err := BindAndValidate(c, &request); err != nil {
+		RespondError(c, http.StatusBadRequest, err)
+		return
+	}
+	if s.codexService == nil || s.store == nil {
+		RespondErrorMsg(c, http.StatusServiceUnavailable, "Codex personal access token authorization is unavailable")
+		return
+	}
+	credential, err := s.codexService.ValidatePersonalAccessToken(c.Request.Context(), request.AccessToken)
+	request.AccessToken = ""
+	if err != nil {
+		status := http.StatusBadGateway
+		var upstream interface{ StatusCode() int }
+		if errors.As(err, &upstream) &&
+			(upstream.StatusCode() == http.StatusUnauthorized || upstream.StatusCode() == http.StatusForbidden) {
+			status = http.StatusBadRequest
+		}
+		RespondError(c, status, err)
+		return
+	}
+	channel, created, err := createOrUpdateCodexChannel(c.Request.Context(), s.store, credential)
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if s.codexCredentials != nil {
+		s.codexCredentials.invalidate(channel.ID)
+	}
+	s.clearCodexRejectedCredentialCooldown(c.Request.Context(), channel.ID)
+	s.InvalidateChannelListCache()
+	RespondJSON(c, http.StatusOK, gin.H{
+		"status": "complete", "channel_id": channel.ID, "created": created,
+	})
+}
+
+func (s *Server) clearCodexRejectedCredentialCooldown(ctx context.Context, channelID int64) {
+	if s.cooldownManager != nil {
+		if err := s.cooldownManager.ClearChannelCooldown(ctx, channelID); err != nil {
+			log.Printf("[WARN] 清除 Codex 失效凭据渠道冷却失败 (channel=%d): %v", channelID, err)
+		}
+	}
+	s.invalidateChannelRelatedCache(channelID)
+}
+
 // HandleRefreshCodexCredential forces one Codex OAuth refresh through the same
 // database-backed lifecycle used by proxy requests.
 func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
@@ -965,6 +1049,15 @@ func (s *Server) HandleRefreshCodexCredential(c *gin.Context) {
 	}
 	if !cfg.UsesCodexOAuth() {
 		RespondErrorMsg(c, http.StatusConflict, "channel does not use Codex OAuth")
+		return
+	}
+	storedCredential, err := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+	if err != nil {
+		RespondError(c, http.StatusInternalServerError, err)
+		return
+	}
+	if storedCredential.IsPersonalAccessToken() {
+		RespondErrorMsg(c, http.StatusConflict, "Codex personal access token cannot be refreshed")
 		return
 	}
 	if s.codexCredentials == nil {

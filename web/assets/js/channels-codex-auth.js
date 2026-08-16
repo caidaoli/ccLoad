@@ -9,6 +9,7 @@ class OAuthCredentialImportResponseError extends Error {
   }
 }
 let activeCodexOAuthFlow = null;
+let activeCodexPersonalAccessTokenFlow = null;
 let codexOAuthStopPromise = null;
 let activeXAIImportFlow = null;
 let xaiImportStopPromise = null;
@@ -141,6 +142,7 @@ function applyChannelAuthEditorMode(
   credentialView = 'decoded'
 ) {
   const codexOAuth = authType === 'codex_oauth';
+  const codexPersonalAccessToken = codexOAuth && credential?.auth_mode === 'personalAccessToken';
   const xaiOAuth = authType === 'xai_oauth';
   const anthropicOAuth = authType === 'anthropic_oauth';
   const credentialVisible = codexOAuth || authType === 'antigravity_oauth' || xaiOAuth || anthropicOAuth;
@@ -164,7 +166,9 @@ function applyChannelAuthEditorMode(
     ? formatCodexPlanBadgeText(planType, channel?.codex_subscription_active_until)
     : ((xaiOAuth || anthropicOAuth) ? planType : '');
   if (notice) {
-    const noticeKey = xaiOAuth ? 'channels.xai.editorReadOnly' : 'channels.oauthCredentialReadOnly';
+    const noticeKey = xaiOAuth
+      ? 'channels.xai.editorReadOnly'
+      : (codexPersonalAccessToken ? 'channels.codex.personalAccessTokenReadOnly' : 'channels.oauthCredentialReadOnly');
     notice.hidden = !oauth;
     notice.setAttribute?.('data-i18n', noticeKey);
     if (oauth && typeof window !== 'undefined' && typeof window.t === 'function') {
@@ -185,7 +189,7 @@ function applyChannelAuthEditorMode(
   if (batchDeleteButton) batchDeleteButton.disabled = oauth;
   if (selectAll) selectAll.disabled = oauth;
   if (credentialTab) credentialTab.hidden = !credentialVisible;
-  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth;
+  if (credentialRefreshButton) credentialRefreshButton.hidden = xaiOAuth || codexPersonalAccessToken;
   renderOAuthCredential(
     credentialVisible ? credential : null,
     codexOAuth ? credentialInfo : null,
@@ -398,6 +402,7 @@ function openOAuthLoginDialog(trigger = null) {
   callbackURL.value = '';
   callbackURL.removeAttribute?.('aria-invalid');
   resetXAIOAuthDialog();
+  resetCodexPersonalAccessTokenDialog();
   resetAnthropicCookieDialog();
   syncOAuthProviderFields();
   setCodexAuthStatus('');
@@ -411,6 +416,7 @@ function closeOAuthLoginDialogElement() {
   const dialog = document.getElementById('oauthLoginDialog');
   if (dialog?.open) dialog.close();
   resetXAIOAuthDialog();
+  resetCodexPersonalAccessTokenDialog();
   resetAnthropicCookieDialog();
   const trigger = oauthLoginDialogTrigger;
   oauthLoginDialogTrigger = null;
@@ -442,6 +448,27 @@ function clearXAICredentialSecrets(textarea = document.getElementById('xaiCreden
   textarea.removeAttribute?.('aria-invalid');
 }
 
+function resetCodexPersonalAccessTokenDialog() {
+  const controls = document.getElementById('codexOAuthControls');
+  const method = document.getElementById('codexOAuthMethod');
+  const field = document.getElementById('codexPersonalAccessTokenField');
+  const input = document.getElementById('codexPersonalAccessToken');
+  if (controls) controls.hidden = false;
+  if (method) {
+    method.value = 'oauth';
+    method.disabled = false;
+  }
+  if (field) field.hidden = true;
+  clearCodexPersonalAccessToken(input);
+  if (input) input.required = false;
+}
+
+function clearCodexPersonalAccessToken(input = document.getElementById('codexPersonalAccessToken')) {
+  if (!input) return;
+  input.value = '';
+  input.removeAttribute?.('aria-invalid');
+}
+
 function resetAnthropicCookieDialog() {
   const controls = document.getElementById('anthropicOAuthControls');
   const method = document.getElementById('anthropicOAuthMethod');
@@ -465,10 +492,13 @@ function clearAnthropicCookieSecret(input = document.getElementById('anthropicSe
 
 function syncOAuthProviderFields() {
   const provider = document.getElementById('oauthProviderSelect')?.value || 'codex';
+  const codexMethod = document.getElementById('codexOAuthMethod')?.value || 'oauth';
   const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
   const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
   const xai = provider === 'xai';
   const anthropic = provider === 'anthropic';
+  const codex = provider === 'codex';
+  const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
   const anthropicCookie = anthropic && anthropicMethod === 'cookie';
   const controls = document.getElementById('xaiOAuthControls');
   const secretField = document.getElementById('xaiCredentialSecretField');
@@ -476,13 +506,22 @@ function syncOAuthProviderFields() {
   const anthropicControls = document.getElementById('anthropicOAuthControls');
   const anthropicCookieField = document.getElementById('anthropicCookieField');
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
+  const codexControls = document.getElementById('codexOAuthControls');
+  const codexPersonalAccessTokenField = document.getElementById('codexPersonalAccessTokenField');
+  const codexPersonalAccessTokenInput = document.getElementById('codexPersonalAccessToken');
   const sessionFields = document.getElementById('oauthSessionFields');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const description = document.getElementById('oauthLoginDialogDescription');
   resetOAuthCredentialImportProgress('xaiCredentialImport');
   if (controls) controls.hidden = !xai;
+  if (codexControls) codexControls.hidden = !codex;
   if (anthropicControls) anthropicControls.hidden = !anthropic;
-  if (sessionFields && (xai || anthropicCookie)) sessionFields.hidden = true;
+  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken)) sessionFields.hidden = true;
+  if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
+  if (codexPersonalAccessTokenInput) {
+    codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
+    if (!codexPersonalAccessToken) clearCodexPersonalAccessToken(codexPersonalAccessTokenInput);
+  }
   if (secretField) secretField.hidden = !xai || xaiMethod === 'manual';
   if (textarea) {
     textarea.required = xai && xaiMethod !== 'manual';
@@ -495,7 +534,9 @@ function syncOAuthProviderFields() {
     if (!anthropicCookie) clearAnthropicCookieSecret(anthropicSessionKey);
   }
   if (description) {
-    const descriptionKey = xai
+    const descriptionKey = codexPersonalAccessToken
+      ? 'channels.codex.personalAccessTokenDescription'
+      : xai
       ? (xaiMethod === 'manual' ? 'channels.xai.manualDescription' : 'channels.xai.importDescription')
       : (anthropic
           ? (anthropicCookie ? 'channels.anthropic.cookieDescription' : 'channels.anthropic.codeDescription')
@@ -507,7 +548,8 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    setOAuthAuthorizeButtonLabel(provider, xai ? xaiMethod : anthropicMethod, authorizeButton);
+    const method = codex ? codexMethod : (xai ? xaiMethod : anthropicMethod);
+    setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
 
@@ -515,7 +557,9 @@ function setOAuthAuthorizeButtonLabel(provider, method, button = document.getEle
   if (!button) return;
   const key = provider === 'xai'
     ? (method === 'manual' ? 'channels.xai.generateLink' : 'channels.xai.importSecrets')
-    : (provider === 'anthropic' && method === 'cookie'
+    : (provider === 'codex' && method === 'personalAccessToken'
+        ? 'channels.codex.personalAccessTokenSubmit'
+        : provider === 'anthropic' && method === 'cookie'
         ? 'channels.anthropic.authorizeWithCookie'
         : 'channels.oauth.startAuthorization');
   button.setAttribute?.('data-i18n', key);
@@ -786,6 +830,33 @@ async function submitXAICredentialBatch(
   }
 }
 
+async function submitCodexPersonalAccessToken(input, fetcher = fetchDataWithAuth, signal = undefined) {
+  let accessToken = String(input?.value || '').trim();
+  if (!accessToken) {
+    input?.setAttribute?.('aria-invalid', 'true');
+    input?.focus?.();
+    throw new Error(window.t('channels.codex.personalAccessTokenRequired'));
+  }
+  if (!accessToken.startsWith('at-')) {
+    input?.setAttribute?.('aria-invalid', 'true');
+    input?.focus?.();
+    throw new Error(window.t('channels.codex.personalAccessTokenInvalid'));
+  }
+  let body = JSON.stringify({ access_token: accessToken });
+  accessToken = '';
+  clearCodexPersonalAccessToken(input);
+  try {
+    return await fetcher('/admin/codex/personal-access-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal
+    });
+  } finally {
+    body = '';
+  }
+}
+
 async function pollOAuthStatus(provider, state, options = {}) {
   const config = oauthProviderConfig(provider);
   const fetchStatus = options.fetchStatus || (url => fetchDataWithAuth(url));
@@ -899,6 +970,7 @@ async function stopActiveXAIImport(options = {}) {
 async function stopActiveOAuth(options = {}) {
   await Promise.all([
     stopActiveCodexOAuth({ closeDialog: false }),
+    stopActiveCodexPersonalAccessToken(),
     stopActiveXAIImport({ closeDialog: false }),
     stopActiveAnthropicCookieAuth()
   ]);
@@ -907,6 +979,22 @@ async function stopActiveOAuth(options = {}) {
     setCodexAuthStatus('');
     setCodexOAuthDialogStatus('');
   }
+}
+
+function stopActiveCodexPersonalAccessToken() {
+  const flow = activeCodexPersonalAccessTokenFlow;
+  if (flow) {
+    flow.cancelling = true;
+    flow.controller?.abort?.();
+    if (activeCodexPersonalAccessTokenFlow === flow) activeCodexPersonalAccessTokenFlow = null;
+    if (flow.button) {
+      flow.button.disabled = false;
+      flow.button.removeAttribute?.('aria-busy');
+    }
+  }
+  clearCodexPersonalAccessToken(flow?.input);
+  const method = document.getElementById('codexOAuthMethod');
+  if (method) method.disabled = false;
 }
 
 function stopActiveAnthropicCookieAuth() {
@@ -1898,6 +1986,8 @@ function setupOAuthActions() {
   const loginDialog = document.getElementById('oauthLoginDialog');
   const loginForm = document.getElementById('oauthLoginForm');
   const providerSelect = document.getElementById('oauthProviderSelect');
+  const codexMethod = document.getElementById('codexOAuthMethod');
+  const codexPersonalAccessToken = document.getElementById('codexPersonalAccessToken');
   const xaiMethod = document.getElementById('xaiOAuthMethod');
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const anthropicMethod = document.getElementById('anthropicOAuthMethod');
@@ -1938,6 +2028,10 @@ function setupOAuthActions() {
     xaiMethod.addEventListener('change', syncOAuthProviderFields);
     xaiMethod.dataset.bound = '1';
   }
+  if (codexMethod && !codexMethod.dataset.bound) {
+    codexMethod.addEventListener('change', syncOAuthProviderFields);
+    codexMethod.dataset.bound = '1';
+  }
   if (anthropicMethod && !anthropicMethod.dataset.bound) {
     anthropicMethod.addEventListener('change', syncOAuthProviderFields);
     anthropicMethod.dataset.bound = '1';
@@ -1945,9 +2039,46 @@ function setupOAuthActions() {
   if (loginForm && providerSelect && authorizeButton && !loginForm.dataset.bound) {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
-      if (activeCodexOAuthFlow || activeXAIImportFlow || activeAnthropicCookieFlow) return;
+      if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow || activeAnthropicCookieFlow) return;
       providerSelect.disabled = true;
-      if (providerSelect.value === 'xai') {
+      if (providerSelect.value === 'codex' && codexMethod?.value === 'personalAccessToken') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const flow = {
+          button: authorizeButton, input: codexPersonalAccessToken, cancelling: false, controller
+        };
+        activeCodexPersonalAccessTokenFlow = flow;
+        codexMethod.disabled = true;
+        authorizeButton.disabled = true;
+        authorizeButton.setAttribute?.('aria-busy', 'true');
+        try {
+          setCodexOAuthDialogStatus(window.t('channels.codex.personalAccessTokenValidating'));
+          await submitCodexPersonalAccessToken(codexPersonalAccessToken, fetchDataWithAuth, controller?.signal);
+          if (flow.cancelling || activeCodexPersonalAccessTokenFlow !== flow) return;
+          closeOAuthLoginDialogElement();
+          setCodexAuthStatus(window.t('channels.codex.personalAccessTokenComplete'), 'success');
+          if (window.showSuccess) window.showSuccess(window.t('channels.codex.personalAccessTokenComplete'));
+          try {
+            await reloadChannelsList({ throwOnError: true });
+          } catch {
+            if (flow.cancelling || activeCodexPersonalAccessTokenFlow !== flow) return;
+            const message = window.t('channels.codex.personalAccessTokenReloadFailed');
+            setCodexAuthStatus(message, 'error');
+            if (window.showError) window.showError(message);
+          }
+        } catch (error) {
+          if (flow.cancelling || activeCodexPersonalAccessTokenFlow !== flow) return;
+          codexPersonalAccessToken?.setAttribute?.('aria-invalid', 'true');
+          codexPersonalAccessToken?.focus?.();
+          const message = error?.message || window.t('channels.codex.personalAccessTokenFailed');
+          setCodexOAuthDialogStatus(message, 'error');
+          if (window.showError) window.showError(message);
+        } finally {
+          if (activeCodexPersonalAccessTokenFlow === flow) activeCodexPersonalAccessTokenFlow = null;
+          codexMethod.disabled = false;
+          authorizeButton.disabled = false;
+          authorizeButton.removeAttribute?.('aria-busy');
+        }
+      } else if (providerSelect.value === 'xai') {
         const method = xaiMethod?.value || 'manual';
         if (method === 'manual') {
           await startOAuth('xai', authorizeButton);
@@ -2112,6 +2243,7 @@ function setupOAuthActions() {
   }
   if (!oauthPagehideBound && typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
     window.addEventListener('pagehide', () => {
+      clearCodexPersonalAccessToken();
       clearXAICredentialSecrets();
       void stopActiveOAuth({ closeDialog: false }).catch(() => {});
     });
@@ -2404,6 +2536,7 @@ if (typeof module !== 'undefined' && module.exports) {
     submitAntigravityOAuthCallback,
     submitAnthropicCookieAuth,
     submitAnthropicOAuthCode,
+    submitCodexPersonalAccessToken,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,
     submitXAICredentialBatch

@@ -66,7 +66,7 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	cfg := &model.Config{
 		ID: 1, Name: "codex", AuthType: model.AuthTypeCodexOAuth,
 		URLs:             model.ChannelURLs{{URL: "https://chatgpt.example.test/backend-api/codex/responses", Exact: true, Protocols: []string{"codex"}}},
-		CodexAccessToken: "at-secret", CodexAccountID: "account-1",
+		CodexAccessToken: "at-secret", CodexAccountID: "account-1", CodexAccountFedRAMP: true,
 		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
 			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer attacker"},
 			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "attacker"},
@@ -102,6 +102,9 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	}
 	if got := req.Header.Get("ChatGPT-Account-ID"); got != "account-1" {
 		t.Fatalf("ChatGPT-Account-ID = %q", got)
+	}
+	if got := req.Header.Get("X-OpenAI-FedRAMP"); got != "true" {
+		t.Fatalf("X-OpenAI-FedRAMP = %q", got)
 	}
 	if req.Header.Get("User-Agent") != codexUserAgent ||
 		req.Header.Get("Originator") != codexOriginator ||

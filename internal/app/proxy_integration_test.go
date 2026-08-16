@@ -263,11 +263,14 @@ func setupProxyTestEnvWithSettings(
 	}
 }
 
-func codexProxyTestCredential(t testing.TB, accessToken, refreshToken, accountID string) string {
+func codexProxyTestCredential(t testing.TB, accessToken, refreshToken, accountID string, accountFedRAMP ...bool) string {
 	t.Helper()
 	credential := &codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: accessToken, RefreshToken: refreshToken,
 		AccountID: accountID, Expired: time.Now().UTC().Add(10 * 24 * time.Hour).Format(time.RFC3339),
+	}
+	if len(accountFedRAMP) > 0 {
+		credential.AccountFedRAMP = accountFedRAMP[0]
 	}
 	payload, err := credential.JSON()
 	if err != nil {

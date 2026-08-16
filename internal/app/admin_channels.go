@@ -717,7 +717,7 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 		if err != nil {
 			return nil, err
 		}
-		accessToken, note = credential.AccessToken, "Codex OAuth AT"
+		accessToken, note = credential.AccessToken, codexCredentialKeyNote(credential)
 	case cfg.UsesAntigravityOAuth():
 		credential, err := antigravityauth.ParseCredential([]byte(cfg.OAuthCredential))
 		if err != nil {
@@ -745,6 +745,13 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 		Note:        note,
 		KeyStrategy: model.KeyStrategySequential,
 	}}, nil
+}
+
+func codexCredentialKeyNote(credential *codexauth.Credential) string {
+	if credential != nil && credential.IsPersonalAccessToken() {
+		return "Codex Personal Access Token"
+	}
+	return "Codex OAuth AT"
 }
 
 // HandleChannelModelStats 返回渠道当天的按模型轻量统计。

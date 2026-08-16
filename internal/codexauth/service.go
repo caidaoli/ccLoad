@@ -1,5 +1,5 @@
-// Package codexauth implements the Codex OAuth credential lifecycle used by
-// Codex channels. The wire contract follows CLIProxyAPI's Codex OAuth flow.
+// Package codexauth implements the refreshable OAuth and static access-token
+// credential lifecycles used by Codex channels.
 package codexauth
 
 import (
@@ -21,8 +21,12 @@ import (
 const (
 	DefaultAuthorizationURL = "https://auth.openai.com/oauth/authorize"
 	DefaultTokenURL         = "https://auth.openai.com/oauth/token"
+	DefaultWhoAmIURL        = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 	DefaultClientID         = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultRedirectURI      = "http://localhost:1455/auth/callback"
+	DefaultClientVersion    = "0.147.0"
+	DefaultOriginator       = "codex-tui"
+	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
 	defaultTokenTimeout     = 30 * time.Second
 	maxTokenResponseBytes   = 1 << 20
 )
@@ -33,11 +37,12 @@ type PKCE struct {
 	Challenge string
 }
 
-// Service exchanges authorization codes and refresh tokens with OpenAI.
+// Service exchanges OAuth tokens and validates static Codex access tokens.
 type Service struct {
 	Client           *http.Client
 	AuthorizationURL string
 	TokenURL         string
+	WhoAmIURL        string
 	ClientID         string
 	RedirectURI      string
 }
@@ -45,6 +50,35 @@ type Service struct {
 type tokenEndpointError struct {
 	statusCode   int
 	responseBody string
+}
+
+type personalAccessTokenEndpointError struct {
+	statusCode   int
+	responseBody string
+}
+
+func (e *personalAccessTokenEndpointError) Error() string {
+	if e == nil {
+		return "Codex personal access token validation failed"
+	}
+	if e.statusCode == http.StatusUnauthorized || e.statusCode == http.StatusForbidden {
+		return "Codex personal access token is invalid or expired"
+	}
+	return fmt.Sprintf("Codex personal access token validation returned HTTP %d", e.statusCode)
+}
+
+func (e *personalAccessTokenEndpointError) UpstreamResponseBody() string {
+	if e == nil {
+		return ""
+	}
+	return e.responseBody
+}
+
+func (e *personalAccessTokenEndpointError) StatusCode() int {
+	if e == nil {
+		return 0
+	}
+	return e.statusCode
 }
 
 func (e *tokenEndpointError) Error() string {
@@ -79,9 +113,89 @@ func NewService(client *http.Client) *Service {
 		Client:           client,
 		AuthorizationURL: DefaultAuthorizationURL,
 		TokenURL:         DefaultTokenURL,
+		WhoAmIURL:        DefaultWhoAmIURL,
 		ClientID:         DefaultClientID,
 		RedirectURI:      DefaultRedirectURI,
 	}
+}
+
+// ValidatePersonalAccessToken resolves the immutable account identity attached
+// to an at-* Codex token. PAT credentials intentionally contain no OAuth
+// refresh token or expiry metadata.
+func (s *Service) ValidatePersonalAccessToken(ctx context.Context, accessToken string) (*Credential, error) {
+	if s == nil || s.Client == nil || strings.TrimSpace(s.WhoAmIURL) == "" {
+		return nil, errors.New("codex personal access token validation is unavailable")
+	}
+	accessToken = strings.TrimSpace(accessToken)
+	if !strings.HasPrefix(accessToken, personalAccessTokenPrefix) {
+		return nil, errors.New("codex personal access token must start with at-")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	requestCtx, cancel := context.WithTimeout(ctx, defaultTokenTimeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodGet, s.WhoAmIURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build Codex personal access token validation request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Originator", DefaultOriginator)
+	req.Header.Set("User-Agent", DefaultUserAgent)
+
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("validate Codex personal access token: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxTokenResponseBytes))
+	if err != nil {
+		return nil, fmt.Errorf("read Codex personal access token validation response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, &personalAccessTokenEndpointError{statusCode: resp.StatusCode, responseBody: string(body)}
+	}
+
+	var whoami struct {
+		Email                   string `json:"email"`
+		ChatGPTUserID           string `json:"chatgpt_user_id"`
+		ChatGPTAccountID        string `json:"chatgpt_account_id"`
+		ChatGPTPlanType         string `json:"chatgpt_plan_type"`
+		ChatGPTAccountIsFedRAMP *bool  `json:"chatgpt_account_is_fedramp"`
+	}
+	if err := json.Unmarshal(body, &whoami); err != nil {
+		return nil, fmt.Errorf("decode Codex personal access token validation response: %w", err)
+	}
+	required := map[string]string{
+		"email":              whoami.Email,
+		"chatgpt_user_id":    whoami.ChatGPTUserID,
+		"chatgpt_account_id": whoami.ChatGPTAccountID,
+		"chatgpt_plan_type":  whoami.ChatGPTPlanType,
+	}
+	for name, value := range required {
+		if strings.TrimSpace(value) == "" {
+			return nil, fmt.Errorf("codex personal access token validation response is missing %s", name)
+		}
+	}
+	if whoami.ChatGPTAccountIsFedRAMP == nil {
+		return nil, errors.New("codex personal access token validation response is missing chatgpt_account_is_fedramp")
+	}
+	credential := &Credential{
+		Type:           ChannelType,
+		AuthMode:       AuthModePersonalAccessToken,
+		AccessToken:    accessToken,
+		Email:          whoami.Email,
+		ChatGPTUserID:  whoami.ChatGPTUserID,
+		AccountID:      whoami.ChatGPTAccountID,
+		PlanType:       whoami.ChatGPTPlanType,
+		AccountFedRAMP: *whoami.ChatGPTAccountIsFedRAMP,
+	}
+	if err := credential.Normalize(); err != nil {
+		return nil, err
+	}
+	return credential, nil
 }
 
 // GeneratePKCE returns a high-entropy S256 verifier/challenge pair.
