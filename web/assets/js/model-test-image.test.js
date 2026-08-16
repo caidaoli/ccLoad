@@ -62,16 +62,20 @@ test('image generation response accepts URL and base64 images but rejects empty 
 
 test('image option controls reuse searchable comboboxes and keep API capability linkage', () => {
   const elements = new Map();
-  const makeElement = () => ({
-    value: '',
-    disabled: false,
-    placeholder: '',
-    classList: { toggle() {} },
-    setAttribute() {},
-    addEventListener() {},
-    focus() {},
-    querySelector() { return null; }
-  });
+  const makeElement = () => {
+    const listeners = new Map();
+    return {
+      value: '',
+      disabled: false,
+      placeholder: '',
+      classList: { toggle() {} },
+      setAttribute() {},
+      addEventListener(type, listener) { listeners.set(type, listener); },
+      dispatch(type, event = {}) { listeners.get(type)?.(event); },
+      focus() {},
+      querySelector() { return null; }
+    };
+  };
   const document = {
     getElementById(id) {
       if (!elements.has(id)) elements.set(id, makeElement());
@@ -79,7 +83,14 @@ test('image option controls reuse searchable comboboxes and keep API capability 
     }
   };
   const comboboxes = new Map();
-  const storage = new Map([['ccload_model_test_image_generation_api', 'images']]);
+  const storage = new Map([
+    ['ccload_model_test_image_generation_api', 'images'],
+    ['ccload_model_test_image_size_images', '1536x1024'],
+    ['ccload_model_test_image_quality', 'hd'],
+    ['ccload_model_test_image_background', 'transparent'],
+    ['ccload_model_test_image_output_format', 'webp'],
+    ['ccload_model_test_image_prompt', 'persisted prompt']
+  ]);
   const fakeWindow = {
     document,
     localStorage: {
@@ -129,6 +140,15 @@ test('image option controls reuse searchable comboboxes and keep API capability 
     ]) {
       assert.ok(comboboxes.has(id), `${id} must use the shared searchable combobox`);
     }
+    assert.equal(comboboxes.get('imageSizeSelect').getValue(), '1536x1024');
+    assert.equal(comboboxes.get('imageQualitySelect').getValue(), 'hd');
+    assert.equal(comboboxes.get('imageBackgroundSelect').getValue(), 'transparent');
+    assert.equal(comboboxes.get('imageOutputFormatSelect').getValue(), 'webp');
+    assert.equal(elements.get('imagePrompt').value, 'persisted prompt');
+
+    elements.get('imagePrompt').value = 'updated prompt';
+    elements.get('imagePrompt').dispatch('input');
+    assert.equal(storage.get('ccload_model_test_image_prompt'), 'updated prompt');
 
     comboboxes.get('imageGenerationAPISelect').select('chat_completions');
     const chatSizes = comboboxes.get('imageSizeSelect').config.getOptions().map(option => option.value);
