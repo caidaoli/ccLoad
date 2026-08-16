@@ -1258,7 +1258,13 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 		}
 	}
 	if requestPlan.debugCapture != nil {
-		requestPlan.debugCapture.wrapResponseBody(resp)
+		if testReq.ImageGeneration != nil {
+			// 图片成功响应通常携带数 MiB base64。调试日志保留响应元数据，
+			// 但不能把整张图片再复制进 SQLite。
+			requestPlan.debugCapture.captureResponseMeta(resp)
+		} else {
+			requestPlan.debugCapture.wrapResponseBody(resp)
+		}
 	}
 
 	// 判断是否为SSE响应，以及是否请求了流式
@@ -1302,21 +1308,33 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 
 	// 非流式或非SSE响应：按原逻辑读取完整响应（即便前端请求了流式，但上游未返回SSE，也按普通响应处理，确保能展示完整错误体）
-	respBody, err := io.ReadAll(resp.Body)
+	var respBody []byte
+	if testReq.ImageGeneration != nil {
+		respBody, err = readLimitedImageGenerationResponse(resp.Body, s.bodyLimits.maxForPath(imageGenerationPath))
+	} else {
+		respBody, err = io.ReadAll(resp.Body)
+	}
 	if err != nil {
-		errorMsg := "读取响应失败: " + err.Error()
+		errorMsg := err.Error()
+		if !strings.HasPrefix(errorMsg, "读取响应失败:") {
+			errorMsg = "读取响应失败: " + errorMsg
+		}
 		statusCode := resp.StatusCode
 		if timeoutStatus, timeoutMsg, ok := s.describeChannelTestTimeoutError(start, testReq, requestPlan.timeout, err); ok {
 			errorMsg = timeoutMsg
 			statusCode = timeoutStatus
 		}
-		return attachTestDebugData(requestPlan, resp, map[string]any{
+		failureResult := map[string]any{
 			"success":      false,
 			"error":        errorMsg,
 			"duration_ms":  time.Since(start).Milliseconds(),
 			"status_code":  statusCode,
 			"is_streaming": testReq.Stream,
-		})
+		}
+		if testReq.ImageGeneration != nil {
+			captureImageGenerationFailureDebug(requestPlan, failureResult, respBody, nil)
+		}
+		return attachTestDebugData(requestPlan, resp, failureResult)
 	}
 	return attachTestDebugData(requestPlan, resp, s.parseTestNonStreamResponse(ctx, requestPlan, testReq, resp, contentType, start, respBody, result))
 }
@@ -1377,6 +1395,12 @@ func (s *Server) parseTestNonStreamResponse(
 	bodyBytes []byte,
 	result map[string]any,
 ) map[string]any {
+	var translatedImageBody []byte
+	if testReq.ImageGeneration != nil {
+		defer func() {
+			captureImageGenerationFailureDebug(requestPlan, result, bodyBytes, translatedImageBody)
+		}()
+	}
 	result["duration_ms"] = time.Since(start).Milliseconds()
 
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
@@ -1417,11 +1441,14 @@ func (s *Server) parseTestNonStreamResponse(
 				return result
 			}
 			parseBody = translatedBody
+			translatedImageBody = translatedBody
 			translatedHeader := resp.Header.Clone()
 			translatedHeader.Set("Content-Type", "application/json")
 			translatedHeader.Del("Content-Encoding")
 			requestPlan.debugCapture.captureTranslatedResponseMeta(resp.StatusCode, translatedHeader)
-			requestPlan.debugCapture.captureTranslatedResponse(translatedBody)
+			if testReq.ImageGeneration == nil {
+				requestPlan.debugCapture.captureTranslatedResponse(translatedBody)
+			}
 		}
 
 		parsed := requestPlan.clientTester.Parse(resp.StatusCode, parseBody)
@@ -1467,6 +1494,25 @@ func (s *Server) parseTestNonStreamResponse(
 	result["error"] = errorMsg
 	result["upstream_response_body"] = string(bodyBytes)
 	return result
+}
+
+func captureImageGenerationFailureDebug(
+	requestPlan *channelTestRequestPlan,
+	result map[string]any,
+	upstreamBody, translatedBody []byte,
+) {
+	if requestPlan == nil || requestPlan.debugCapture == nil || result == nil {
+		return
+	}
+	if success, _ := result["success"].(bool); success {
+		return
+	}
+	if len(upstreamBody) > 0 && requestPlan.debugCapture.respBuf != nil {
+		_, _ = requestPlan.debugCapture.respBuf.Write([]byte(imageGenerationDiagnosticBody(upstreamBody)))
+	}
+	if len(translatedBody) > 0 {
+		requestPlan.debugCapture.captureTranslatedResponse([]byte(imageGenerationDiagnosticBody(translatedBody)))
+	}
 }
 
 func (s *Server) buildTestUpstreamRequestPlan(
@@ -1576,6 +1622,9 @@ func (s *Server) newTestUpstreamRequest(
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
 		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 	}
+	// Some compatibility gateways decompress the response but leave the gzip marker.
+	// Admin tests need the wire body for diagnostics, so never negotiate compression.
+	req.Header.Set("Accept-Encoding", "identity")
 	requestPlan.debugCapture = s.captureDebugRequest(req, requestPlan.requestBody)
 	if requestPlan.clientProtocol != requestPlan.upstreamProtocol {
 		originalHeaders := cloneHeaders(requestPlan.clientHeaders)

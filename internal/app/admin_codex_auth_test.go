@@ -1065,7 +1065,8 @@ func TestCodexOAuthCreatesDatabaseChannel(t *testing.T) {
 		t.Fatalf("ListConfigs() = (%d, %v), want one channel", len(channels), err)
 	}
 	channel := channels[0]
-	if channel.Name != "Codex-user@example.com" || !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 || !channel.SupportsModel("gpt-5.4") {
+	if channel.Name != "Codex-user@example.com" || !channel.UsesCodexOAuth() || !channel.Websockets || channel.KeyCount != 0 ||
+		!channel.SupportsModel("gpt-5.4") || !channel.SupportsModel("gpt-image-1.5") || !channel.SupportsModel("gpt-image-2") {
 		t.Fatalf("created channel = %#v", channel)
 	}
 	if len(channel.URLs) != 1 || channel.URLs[0].URL != codexUpstreamURL || !channel.URLs[0].Exact || strings.Contains(channel.OAuthCredential, "code-1") {
@@ -2786,6 +2787,8 @@ func TestImportedOAuthCredentialUpsertsSameEmail(t *testing.T) {
 		"gpt-5.4-mini",
 		"gpt-5.3-codex-spark",
 		"codex-auto-review",
+		"gpt-image-1.5",
+		"gpt-image-2",
 	}
 	if got := created.GetModels(); !slices.Equal(got, wantModels) {
 		t.Fatalf("imported channel models = %v, want %v", got, wantModels)
@@ -3138,6 +3141,8 @@ func TestImportedOAuthCredentialRemovesModelsUnsupportedByPlan(t *testing.T) {
 		"gpt-5.5",
 		"gpt-5.4-mini",
 		"codex-auto-review",
+		"gpt-image-1.5",
+		"gpt-image-2",
 	}
 	if got := updated.GetModels(); !slices.Equal(got, want) {
 		t.Fatalf("free channel models = %v, want %v", got, want)
@@ -3148,13 +3153,15 @@ func TestImportedOAuthCredentialModelsFollowPlanType(t *testing.T) {
 	allModels := []string{
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
 		"gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark", "codex-auto-review",
+		"gpt-image-1.5", "gpt-image-2",
 	}
 	teamModels := []string{
 		"gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
-		"gpt-5.4", "gpt-5.4-mini", "codex-auto-review",
+		"gpt-5.4", "gpt-5.4-mini", "codex-auto-review", "gpt-image-1.5", "gpt-image-2",
 	}
 	freeModels := []string{
 		"gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4-mini", "codex-auto-review",
+		"gpt-image-1.5", "gpt-image-2",
 	}
 	tests := []struct {
 		plan string

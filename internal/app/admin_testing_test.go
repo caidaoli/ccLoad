@@ -4732,3 +4732,775 @@ func TestExtractSSEErrorMessage_ResponseFailedNestedError(t *testing.T) {
 		t.Fatal("raw payload must be returned")
 	}
 }
+
+func TestHandleChannelImageGeneration_ForwardsImagesWireContract(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotAuthorization string
+	var gotAPIKeyHeader string
+	var gotBody map[string]any
+
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		gotAPIKeyHeader = r.Header.Get("x-api-key")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode image request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"created": 1720000000,
+			"background": "transparent",
+			"output_format": "webp",
+			"quality": "high",
+			"size": "1024x1024",
+			"data": [
+				{"b64_json": "aW1hZ2U=", "revised_prompt": "A white cat"},
+				{"url": "https://example.com/generated.webp"}
+			],
+			"usage": {"input_tokens": 4, "output_tokens": 7}
+		}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name:                  "openai-images-admin-test",
+		URLs:                  model.ChannelURLs{{URL: upstream.URL, Protocols: []string{util.ProtocolOpenAI}}},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries: []model.ModelEntry{{
+			Model:         "image-alias",
+			RedirectModel: "gpt-image-2",
+		}},
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-unused"},
+		{ChannelID: created.ID, KeyIndex: 3, APIKey: "sk-image-test"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "image-alias",
+		"prompt":         "A white cat",
+		"size":           "auto",
+		"quality":        "high",
+		"background":     "transparent",
+		"output_format":  "webp",
+		"key_index":      3,
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/images/generations" {
+		t.Fatalf("upstream request=%s %s", gotMethod, gotPath)
+	}
+	if gotAuthorization != "Bearer sk-image-test" {
+		t.Fatalf("Authorization=%q", gotAuthorization)
+	}
+	if gotAPIKeyHeader != "sk-image-test" {
+		t.Fatalf("x-api-key=%q", gotAPIKeyHeader)
+	}
+	if gotBody["model"] != "gpt-image-2" || gotBody["prompt"] != "A white cat" {
+		t.Fatalf("upstream body=%v", gotBody)
+	}
+	if _, exists := gotBody["size"]; exists {
+		t.Fatalf("automatic size must be omitted, body=%v", gotBody)
+	}
+	if gotBody["quality"] != "high" || gotBody["background"] != "transparent" || gotBody["output_format"] != "webp" {
+		t.Fatalf("upstream image options=%v", gotBody)
+	}
+	if _, exists := gotBody["n"]; exists {
+		t.Fatalf("image test must use the upstream single-image default, body=%v", gotBody)
+	}
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("image generation failed: %v", response.Data)
+	}
+	if response.Data["actual_model"] != "gpt-image-2" || response.Data["tested_key_index"] != float64(3) {
+		t.Fatalf("response routing metadata=%v", response.Data)
+	}
+	images, ok := response.Data["images"].([]any)
+	if !ok || len(images) != 2 {
+		t.Fatalf("response images=%v", response.Data["images"])
+	}
+	if _, exists := response.Data["upstream_response_body"]; exists {
+		t.Fatal("successful base64 response must not be duplicated in upstream_response_body")
+	}
+}
+
+func TestHandleChannelImageGeneration_RejectsUnsupportedOAuthChannel(t *testing.T) {
+	var upstreamCalls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		upstreamCalls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "gemini-3-flash",
+		"prompt":         "A white cat",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); success {
+		t.Fatalf("OAuth Images request unexpectedly succeeded: %v", response.Data)
+	}
+	if message, _ := response.Data["error"].(string); !strings.Contains(message, "Chat Completions") {
+		t.Fatalf("error=%q, want Chat Completions guidance", message)
+	}
+	if upstreamCalls.Load() != 0 {
+		t.Fatalf("OAuth Images request reached upstream %d times", upstreamCalls.Load())
+	}
+}
+
+func TestHandleChannelImageGeneration_CodexOAuthUsesDirectImagesAPI(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotAuthorization string
+	var gotAccountID string
+	var gotOriginator string
+	var gotVersion string
+	var gotUserAgent string
+	var gotSessionID string
+	var gotAcceptEncoding string
+	var gotBody map[string]any
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		gotAccountID = r.Header.Get("ChatGPT-Account-ID")
+		gotOriginator = r.Header.Get("Originator")
+		gotVersion = r.Header.Get("Version")
+		gotUserAgent = r.Header.Get("User-Agent")
+		gotSessionID = r.Header.Get("Session_id")
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode Codex Images request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}],"output_format":"png","size":"1024x1024"}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createCodexOAuthChannelForAdminTest(t, srv, upstream.URL+"/backend-api/codex/responses")
+	updated := created.Clone()
+	updated.ModelEntries = []model.ModelEntry{{Model: "gpt-image-2"}}
+	if _, err := srv.store.UpdateConfig(context.Background(), created.ID, updated); err != nil {
+		t.Fatalf("enable Codex image model: %v", err)
+	}
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "codex/gpt-image-2",
+		"prompt":         "A white cat",
+		"size":           "1024x1024",
+		"quality":        "high",
+		"background":     "transparent",
+		"output_format":  "png",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotMethod != http.MethodPost || gotPath != "/backend-api/codex/images/generations" {
+		t.Fatalf("Codex upstream request=%s %s", gotMethod, gotPath)
+	}
+	if gotAuthorization != "Bearer at-admin-test" || gotAccountID != "account-admin-test" {
+		t.Fatalf("Codex auth headers: Authorization=%q Account-ID=%q", gotAuthorization, gotAccountID)
+	}
+	if gotOriginator != codexOriginator || gotVersion != codexVersion || gotUserAgent != codexUserAgent || gotSessionID == "" {
+		t.Fatalf("Codex identity headers: Originator=%q Version=%q User-Agent=%q Session_id=%q", gotOriginator, gotVersion, gotUserAgent, gotSessionID)
+	}
+	if gotAcceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding=%q, want identity", gotAcceptEncoding)
+	}
+	if gotBody["model"] != "gpt-image-2" || gotBody["prompt"] != "A white cat" || gotBody["size"] != "1024x1024" {
+		t.Fatalf("Codex Images body=%v", gotBody)
+	}
+	if gotBody["quality"] != "high" || gotBody["background"] != "transparent" || gotBody["output_format"] != "png" {
+		t.Fatalf("Codex Images options=%v", gotBody)
+	}
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("Codex image generation failed: %v", response.Data)
+	}
+	if response.Data["actual_model"] != "gpt-image-2" || response.Data["tested_key_index"] != float64(cooldown.NoKeyIndex) {
+		t.Fatalf("Codex response routing metadata=%v", response.Data)
+	}
+}
+
+func TestHandleChannelImageGeneration_AntigravityUsesChatCompletions(t *testing.T) {
+	var gotPath string
+	var gotAuthorization string
+	var gotAcceptEncoding string
+	var gotBody []byte
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = io.WriteString(w, `{
+			"response": {
+				"modelVersion": "gemini-3.1-flash-image",
+				"candidates": [{
+					"index": 0,
+					"content": {"role": "model", "parts": [{
+						"inlineData": {"mimeType": "image/webp", "data": "aW1hZ2U="}
+					}]},
+					"finishReason": "STOP"
+				}],
+				"usageMetadata": {"promptTokenCount": 2, "candidatesTokenCount": 3, "totalTokenCount": 5}
+			}
+		}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	created.ModelEntries = []model.ModelEntry{{Model: "gemini-3.1-flash-image"}}
+	updated, err := srv.store.UpdateConfig(context.Background(), created.ID, created)
+	if err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	created = updated
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIChatCompletions,
+		"model":          "gemini-3.1-flash-image",
+		"prompt":         "A white cat",
+		"size":           "3:2@2k",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotPath != "/v1internal:generateContent" {
+		t.Fatalf("Antigravity path=%q, want /v1internal:generateContent", gotPath)
+	}
+	if gotAuthorization != "Bearer at-gravity-admin" {
+		t.Fatalf("Authorization=%q", gotAuthorization)
+	}
+	if gotAcceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding=%q, want identity", gotAcceptEncoding)
+	}
+	if got := gjson.GetBytes(gotBody, "model").String(); got != "gemini-3.1-flash-image" {
+		t.Fatalf("upstream model=%q body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "requestType").String(); got != "image_gen" {
+		t.Fatalf("requestType=%q body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "request.generationConfig.responseModalities.0").String(); got != "IMAGE" {
+		t.Fatalf("response modality=%q body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "request.generationConfig.imageConfig.aspectRatio").String(); got != "3:2" {
+		t.Fatalf("aspectRatio=%q body=%s", got, gotBody)
+	}
+	if got := gjson.GetBytes(gotBody, "request.generationConfig.imageConfig.imageSize").String(); got != "2K" {
+		t.Fatalf("imageSize=%q body=%s", got, gotBody)
+	}
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("Antigravity image generation failed: %v", response.Data)
+	}
+	if response.Data["generation_api"] != imageGenerationAPIChatCompletions || response.Data["upstream_protocol"] != util.ProtocolGemini {
+		t.Fatalf("response routing metadata=%v", response.Data)
+	}
+	images, ok := response.Data["images"].([]any)
+	if !ok || len(images) != 1 {
+		t.Fatalf("response images=%v", response.Data["images"])
+	}
+	image, _ := images[0].(map[string]any)
+	if image["b64_json"] != "aW1hZ2U=" || image["mime_type"] != "image/webp" || response.Data["output_format"] != "webp" {
+		t.Fatalf("normalized image=%v response=%v", image, response.Data)
+	}
+	for _, duplicatedField := range []string{"api_response", "upstream_response_body", "cost_usd"} {
+		if _, exists := response.Data[duplicatedField]; exists {
+			t.Fatalf("image response must omit %s: %v", duplicatedField, response.Data)
+		}
+	}
+}
+
+func TestHandleChannelImageGeneration_AntigravityNoImagePersistsDebugBody(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{
+			"response": {
+				"modelVersion": "gemini-3.1-flash-image",
+				"candidates": [{
+					"content": {"role": "model", "parts": [{"text": "No image produced"}]},
+					"finishReason": "STOP"
+				}]
+			}
+		}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	srv.configService.mu.Lock()
+	srv.configService.cache["debug_log_enabled"] = &model.SystemSetting{Key: "debug_log_enabled", Value: "true"}
+	srv.configService.mu.Unlock()
+	created := createAntigravityOAuthChannelForAdminTest(t, srv, upstream.URL)
+	created.ModelEntries = []model.ModelEntry{{Model: "gemini-3.1-flash-image"}}
+	updated, err := srv.store.UpdateConfig(context.Background(), created.ID, created)
+	if err != nil {
+		t.Fatalf("UpdateConfig failed: %v", err)
+	}
+	created = updated
+
+	started := time.Now()
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIChatCompletions,
+		"model":          "gemini-3.1-flash-image",
+		"prompt":         "A white cat",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); w.Code != http.StatusOK || success {
+		t.Fatalf("status=%d response=%v, want failed upstream result", w.Code, response.Data)
+	}
+	logs, err := srv.store.ListLogsRange(
+		context.Background(), started.Add(-time.Second), time.Now().Add(time.Second), 10, 0,
+		&model.LogFilter{LogSource: model.LogSourceDetection},
+	)
+	if err != nil || len(logs) != 1 {
+		t.Fatalf("ListLogsRange logs=%v err=%v", logs, err)
+	}
+	debugLog, err := srv.store.GetDebugLogByLogID(context.Background(), logs[0].ID)
+	if err != nil || debugLog == nil {
+		t.Fatalf("GetDebugLogByLogID debug=%v err=%v", debugLog, err)
+	}
+	if !strings.Contains(string(debugLog.RespBody), "No image produced") {
+		t.Fatalf("debug response body=%q", debugLog.RespBody)
+	}
+	if !strings.Contains(string(debugLog.TranslatedRespBody), "No image produced") {
+		t.Fatalf("translated debug response body=%q", debugLog.TranslatedRespBody)
+	}
+}
+
+func TestHandleChannelImageGeneration_RejectsUnsupportedInterfaceOptions(t *testing.T) {
+	t.Run("chat completions", func(t *testing.T) {
+		srv := newInMemoryServer(t)
+		req := newJSONRequest(t, http.MethodPost, "/admin/channels/1/images/generations", map[string]any{
+			"generation_api": imageGenerationAPIChatCompletions,
+			"model":          "gemini-3.1-flash-image",
+			"prompt":         "A white cat",
+			"quality":        "high",
+		})
+		c, w := newTestContext(t, req)
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+		srv.HandleChannelImageGeneration(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+		}
+	})
+
+	t.Run("xAI Images", func(t *testing.T) {
+		srv := newInMemoryServer(t)
+		created := createXAIOAuthChannelForAdminTest(t, srv, "https://unused.example.com/v1")
+		req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+			"generation_api": imageGenerationAPIImages,
+			"model":          "grok-imagine-image",
+			"prompt":         "A white cat",
+			"output_format":  "webp",
+		})
+		c, w := newTestContext(t, req)
+		c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+		srv.HandleChannelImageGeneration(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want 400; body=%s", w.Code, w.Body.String())
+		}
+	})
+}
+
+func TestHandleChannelImageGeneration_XAIOAuthUsesNativeImagesAPI(t *testing.T) {
+	var gotMethod string
+	var gotPath string
+	var gotAuthorization string
+	var gotContentType string
+	var gotAccept string
+	var gotAcceptEncoding string
+	var gotProhibitedHeaders map[string]string
+	var gotBody map[string]any
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuthorization = r.Header.Get("Authorization")
+		gotContentType = r.Header.Get("Content-Type")
+		gotAccept = r.Header.Get("Accept")
+		gotAcceptEncoding = r.Header.Get("Accept-Encoding")
+		gotProhibitedHeaders = make(map[string]string)
+		for _, name := range []string{
+			"x-api-key", xaiauth.CLITokenAuthHeader, xaiauth.CLIClientVersionHeader,
+			"x-grok-client-identifier", "x-authenticateresponse", "x-grok-conv-id",
+		} {
+			gotProhibitedHeaders[name] = r.Header.Get(name)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("decode xAI Images request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// Reproduce gateways that already decompressed JSON but forgot to remove
+		// the upstream gzip marker. The client must not try to decompress it again.
+		w.Header().Set("Content-Encoding", "gzip")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"iVBORw0KGgo="}]}`)
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServerWithSettings(t, map[string]string{
+		config.XAIBaseURLSettingKey: upstream.URL + "/v1",
+	})
+	srv.client = upstream.Client()
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "xai-image-token", RefreshToken: "refresh",
+		TokenType: "Bearer", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		TokenEndpoint: xaiauth.TokenURL, BaseURL: xaiauth.CLIBaseURL,
+	})
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "xai-images-admin-test", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: credential,
+		URLs: model.ChannelURLs{{
+			URL: "https://cli-chat-proxy.grok.com/v1", Protocols: []string{util.ProtocolCodex},
+		}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "grok-imagine-image-quality"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "XAI/Grok-Imagine-Image-Quality",
+		"prompt":         "A white cat",
+		"size":           "3:2@1k",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+	if gotMethod != http.MethodPost || gotPath != "/v1/images/generations" {
+		t.Fatalf("upstream request=%s %s", gotMethod, gotPath)
+	}
+	if gotAuthorization != "Bearer xai-image-token" {
+		t.Fatalf("Authorization=%q", gotAuthorization)
+	}
+	if gotContentType != "application/json" || gotAccept != "application/json" {
+		t.Fatalf("content negotiation: Content-Type=%q Accept=%q", gotContentType, gotAccept)
+	}
+	if gotAcceptEncoding != "identity" {
+		t.Fatalf("Accept-Encoding=%q, want identity", gotAcceptEncoding)
+	}
+	for name, value := range gotProhibitedHeaders {
+		if value != "" {
+			t.Fatalf("unexpected xAI Images header %s=%q", name, value)
+		}
+	}
+	if gotBody["model"] != "grok-imagine-image-quality" || gotBody["prompt"] != "A white cat" {
+		t.Fatalf("xAI Images body=%v", gotBody)
+	}
+	if gotBody["response_format"] != "b64_json" || gotBody["aspect_ratio"] != "3:2" || gotBody["resolution"] != "1k" {
+		t.Fatalf("xAI Images native options=%v", gotBody)
+	}
+	for _, unsupported := range []string{"size", "quality", "background", "output_format"} {
+		if _, exists := gotBody[unsupported]; exists {
+			t.Fatalf("xAI Images body contains unsupported %q: %v", unsupported, gotBody)
+		}
+	}
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); !success {
+		t.Fatalf("xAI image generation failed: %v", response.Data)
+	}
+	if response.Data["actual_model"] != "grok-imagine-image-quality" || response.Data["tested_key_index"] != float64(cooldown.NoKeyIndex) {
+		t.Fatalf("response routing metadata=%v", response.Data)
+	}
+	if response.Data["output_format"] != "png" {
+		t.Fatalf("xAI response must report the detected output format: %v", response.Data)
+	}
+	images, _ := response.Data["images"].([]any)
+	image, _ := images[0].(map[string]any)
+	if image["mime_type"] != "image/png" {
+		t.Fatalf("xAI response must report the detected MIME type: %v", response.Data)
+	}
+}
+
+func TestHandleChannelImageGeneration_XAIOAuthRefreshesRejectedTokenOnce(t *testing.T) {
+	var orderMu sync.Mutex
+	order := make([]string, 0, 3)
+	record := func(stage string) {
+		orderMu.Lock()
+		order = append(order, stage)
+		orderMu.Unlock()
+	}
+	var upstreamRequests atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		switch r.Header.Get("Authorization") {
+		case "Bearer rejected-image-token":
+			record("test-current")
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+		case "Bearer refreshed-image-token":
+			record("test-refreshed")
+			_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}]}`)
+		default:
+			t.Errorf("unexpected Authorization=%q", r.Header.Get("Authorization"))
+			w.WriteHeader(http.StatusUnauthorized)
+		}
+	}))
+	defer upstream.Close()
+
+	srv := newInMemoryServerWithSettings(t, map[string]string{
+		config.XAIBaseURLSettingKey: upstream.URL + "/v1",
+	})
+	srv.client = upstream.Client()
+	credential := mustXAICredentialJSON(t, &xaiauth.Credential{
+		Type: xaiauth.ChannelType, AuthKind: "oauth", AccessToken: "rejected-image-token", RefreshToken: "refresh-image-token",
+		TokenType: "Bearer", Expired: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		TokenEndpoint: xaiauth.TokenURL, BaseURL: xaiauth.CLIBaseURL,
+	})
+	created, err := srv.store.CreateConfig(context.Background(), &model.Config{
+		Name: "xai-images-refresh-admin-test", AuthType: model.AuthTypeXAIOAuth, OAuthCredential: credential,
+		URLs:                  model.ChannelURLs{{URL: xaiauth.CLIBaseURL, Protocols: []string{util.ProtocolCodex}}},
+		ProtocolTransformMode: model.ProtocolTransformModeLocal,
+		ModelEntries:          []model.ModelEntry{{Model: "grok-imagine-image"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	var refreshRequests atomic.Int32
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		refreshRequests.Add(1)
+		record("refresh")
+		if req.URL.String() != xaiauth.TokenURL {
+			t.Errorf("refresh URL=%s", req.URL)
+		}
+		if err := req.ParseForm(); err != nil || req.Form.Get("refresh_token") != "refresh-image-token" {
+			t.Errorf("refresh form=%v err=%v", req.Form, err)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"access_token":"refreshed-image-token","refresh_token":"refreshed-image-refresh","expires_in":3600}`,
+			)),
+			Request: req,
+		}, nil
+	})}
+	srv.xaiCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "grok-imagine-image", "prompt": "A white cat",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); w.Code != http.StatusOK || !success {
+		t.Fatalf("image generation after refresh failed: status=%d response=%v", w.Code, response.Data)
+	}
+	if upstreamRequests.Load() != 2 || refreshRequests.Load() != 1 {
+		t.Fatalf("upstream=%d refresh=%d, want 2/1", upstreamRequests.Load(), refreshRequests.Load())
+	}
+	if !reflect.DeepEqual(order, []string{"test-current", "refresh", "test-refreshed"}) {
+		t.Fatalf("request order=%v", order)
+	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := xaiauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || refreshed.AccessToken != "refreshed-image-token" || refreshed.RefreshToken != "refreshed-image-refresh" {
+		t.Fatalf("persisted refreshed credential=%v err=%v", refreshed, err)
+	}
+}
+
+func TestHandleChannelImageGeneration_ClientCancellationDoesNotCooldown(t *testing.T) {
+	requestStarted := make(chan struct{})
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-r.Context().Done()
+	}))
+	defer upstream.Close()
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}]}`)
+	}))
+	defer fallback.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	srv.urlSelector = nil
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "cancelled-openai-images-admin-test",
+		URLs: model.ChannelURLs{
+			{URL: upstream.URL, Protocols: []string{util.ProtocolOpenAI}},
+			{URL: fallback.URL, Protocols: []string{util.ProtocolOpenAI}},
+		},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-image-1"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-image-test"},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-image-spare"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	requestContext, cancel := context.WithCancel(context.Background())
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "gpt-image-1",
+		"prompt":         "A white cat",
+	}).WithContext(requestContext)
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	done := make(chan struct{})
+	go func() {
+		srv.HandleChannelImageGeneration(c)
+		close(done)
+	}()
+
+	select {
+	case <-requestStarted:
+		cancel()
+	case <-time.After(3 * time.Second):
+		cancel()
+		t.Fatal("image request did not reach upstream")
+	}
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancelled image request did not finish")
+	}
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if response.Data["status_code"] != float64(util.StatusClientClosedRequest) {
+		t.Fatalf("status_code=%v, want %d", response.Data["status_code"], util.StatusClientClosedRequest)
+	}
+	if response.Data["cooldown_action"] != "client_error_no_cooldown" {
+		t.Fatalf("cooldown_action=%v", response.Data["cooldown_action"])
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("cancelled request fell back to another URL %d times", fallbackCalls.Load())
+	}
+}
+
+func TestHandleChannelImageGeneration_ClassifiesHTTP200StructuredError(t *testing.T) {
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"error":{"type":"1308","message":"已达到 5 小时的使用上限。您的限额将在 2099-12-09 18:08:11 重置。"}}`)
+	}))
+	defer upstream.Close()
+	var fallbackCalls atomic.Int32
+	fallback := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fallbackCalls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"data":[{"b64_json":"aW1hZ2U="}]}`)
+	}))
+	defer fallback.Close()
+
+	srv := newInMemoryServer(t)
+	srv.client = upstream.Client()
+	srv.urlSelector = nil
+	ctx := context.Background()
+	created, err := srv.store.CreateConfig(ctx, &model.Config{
+		Name: "soft-error-openai-images-admin-test",
+		URLs: model.ChannelURLs{
+			{URL: upstream.URL, Protocols: []string{util.ProtocolOpenAI}},
+			{URL: fallback.URL, Protocols: []string{util.ProtocolOpenAI}},
+		},
+		Priority:              1,
+		ProtocolTransformMode: model.ProtocolTransformModeUpstream,
+		ModelEntries:          []model.ModelEntry{{Model: "gpt-image-1"}},
+		Enabled:               true,
+	})
+	if err != nil {
+		t.Fatalf("CreateConfig failed: %v", err)
+	}
+	if err := srv.store.CreateAPIKeysBatch(ctx, []*model.APIKey{
+		{ChannelID: created.ID, KeyIndex: 0, APIKey: "sk-image-test"},
+		{ChannelID: created.ID, KeyIndex: 1, APIKey: "sk-image-spare"},
+	}); err != nil {
+		t.Fatalf("CreateAPIKeysBatch failed: %v", err)
+	}
+
+	req := newJSONRequest(t, http.MethodPost, fmt.Sprintf("/admin/channels/%d/images/generations", created.ID), map[string]any{
+		"generation_api": imageGenerationAPIImages,
+		"model":          "gpt-image-1",
+		"prompt":         "A white cat",
+	})
+	c, w := newTestContext(t, req)
+	c.Params = gin.Params{{Key: "id", Value: fmt.Sprintf("%d", created.ID)}}
+	srv.HandleChannelImageGeneration(c)
+
+	response := mustParseAPIResponse[map[string]any](t, w.Body.Bytes())
+	if success, _ := response.Data["success"].(bool); success {
+		t.Fatalf("structured error unexpectedly succeeded: %v", response.Data)
+	}
+	if _, ok := response.Data["api_error"].(map[string]any); !ok {
+		t.Fatalf("structured error missing api_error: %v", response.Data)
+	}
+	if response.Data["cooldown_action"] != "key_cooldown_applied" {
+		t.Fatalf("cooldown_action=%v, want key_cooldown_applied", response.Data["cooldown_action"])
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("key-scoped structured error fell back to another URL %d times", fallbackCalls.Load())
+	}
+}

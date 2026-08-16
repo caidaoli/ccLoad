@@ -1,6 +1,7 @@
 const TEST_MODE_CHANNEL = 'channel';
 const TEST_MODE_MODEL = 'model';
 const TEST_MODE_CHAT = 'chat';
+const TEST_MODE_IMAGE = 'image';
 
 // localStorage keys
 const STORAGE_KEY_TEST_MODE = 'ccload_model_test_mode';
@@ -1352,7 +1353,10 @@ function selectClientProtocol(value) {
 
 function isModelSupported(channel, modelName) {
   if (!channel || !modelName || !Array.isArray(channel.models)) return false;
-  return channel.models.some(entry => getModelName(entry) === modelName);
+  return channel.models.some(entry => {
+    const configuredModel = getModelName(entry);
+    return configuredModel === '*' || configuredModel === modelName;
+  });
 }
 
 function getChannelsSupportingModel(modelName) {
@@ -1633,32 +1637,77 @@ function renderRowsByMode() {
   }
 }
 
+const MODEL_TEST_MODE_TABS = [
+  { id: 'modeTabChat', mode: TEST_MODE_CHAT },
+  { id: 'modeTabImage', mode: TEST_MODE_IMAGE },
+  { id: 'modeTabChannel', mode: TEST_MODE_CHANNEL },
+  { id: 'modeTabModel', mode: TEST_MODE_MODEL }
+];
+
+function syncModeTabState() {
+  MODEL_TEST_MODE_TABS.forEach(({ id, mode }) => {
+    const tab = document.getElementById(id);
+    if (!tab) return;
+    const active = testMode === mode;
+    tab.classList.toggle('active', active);
+    tab.setAttribute('aria-selected', active ? 'true' : 'false');
+    tab.tabIndex = active ? 0 : -1;
+  });
+
+  const tablePanel = document.getElementById('modelTestTablePanel');
+  if (tablePanel && (testMode === TEST_MODE_CHANNEL || testMode === TEST_MODE_MODEL)) {
+    tablePanel.setAttribute('aria-labelledby', testMode === TEST_MODE_MODEL ? 'modeTabModel' : 'modeTabChannel');
+  }
+}
+
+function initModeTabKeyboard() {
+  const tablist = document.querySelector('.model-test-tabs[role="tablist"]');
+  if (!tablist) return;
+  tablist.addEventListener('keydown', (event) => {
+    const currentTab = event.target.closest('[role="tab"]');
+    if (!currentTab || !tablist.contains(currentTab)) return;
+    const tabs = MODEL_TEST_MODE_TABS
+      .map(({ id }) => document.getElementById(id))
+      .filter(tab => tab && !tab.disabled);
+    const currentIndex = tabs.indexOf(currentTab);
+    if (currentIndex < 0) return;
+
+    let nextIndex;
+    if (event.key === 'ArrowRight') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else return;
+
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    setTestMode(nextTab.dataset.mode || '');
+    nextTab.focus();
+  });
+}
+
 function updateModeUI() {
   const isModelMode = testMode === TEST_MODE_MODEL;
   const isChatMode = testMode === TEST_MODE_CHAT;
+  const isImageMode = testMode === TEST_MODE_IMAGE;
+  const isStandaloneMode = isChatMode || isImageMode;
   const fetchModelsBtn = getFetchModelsBtn();
   const addModelsBtn = getAddModelsBtn();
   const deleteModelsBtn = getDeleteModelsBtn();
 
-  const modeTabChannel = document.getElementById('modeTabChannel');
-  const modeTabModel = document.getElementById('modeTabModel');
-  const modeTabChat = document.getElementById('modeTabChat');
-  modeTabChannel.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
-  modeTabModel.classList.toggle('active', isModelMode);
-  if (modeTabChat) modeTabChat.classList.toggle('active', isChatMode);
+  syncModeTabState();
 
-  // chat 模式：隐藏测试工具栏与表格
-  const tableContainer = document.querySelector('.model-test-table-container');
+  const tablePanel = document.getElementById('modelTestTablePanel');
   const chatPanel = document.getElementById('chatPanel');
+  const imagePanel = document.getElementById('imagePanel');
   const modelTestCard = document.getElementById('modelTestCard');
-  const hideToolbar = isChatMode;
-  if (toolbar) toolbar.style.display = hideToolbar ? 'none' : '';
-  if (tableContainer) tableContainer.style.display = hideToolbar ? 'none' : '';
+  tablePanel?.classList.toggle('hidden', isStandaloneMode);
   chatToolbar?.classList.toggle('hidden', !isChatMode);
-  if (chatPanel) chatPanel.classList.toggle('hidden', !isChatMode);
+  chatPanel?.classList.toggle('hidden', !isChatMode);
+  imagePanel?.classList.toggle('hidden', !isImageMode);
   modelTestCard?.classList.toggle('model-test-card--chat-mode', isChatMode);
 
-  if (isChatMode) return;
+  if (isStandaloneMode) return;
 
   toolbar?.classList.toggle('model-test-toolbar--model-mode', isModelMode);
 
@@ -2860,6 +2909,7 @@ async function loadChannels(options = {}) {
     const list = (await fetchDataWithAuth('/admin/channels')) || [];
     channelKeysById.clear();
     channelsList = list.sort((a, b) => b.priority - a.priority || String(a.name || '').localeCompare(String(b.name || '')));
+    window.ModelTestImage?.setChannels(channelsList);
 
     // 恢复选择或从 localStorage 加载
     if (preserveSelection && preservedChannelId !== null) {
@@ -3068,7 +3118,7 @@ function bindEvents() {
 }
 
 function setTestMode(mode) {
-  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT) return;
+  if (mode !== TEST_MODE_CHANNEL && mode !== TEST_MODE_MODEL && mode !== TEST_MODE_CHAT && mode !== TEST_MODE_IMAGE) return;
   if (testMode === mode) return;
 
   const previousMode = testMode;
@@ -3083,6 +3133,11 @@ function setTestMode(mode) {
   if (testMode === TEST_MODE_CHAT) {
     updateModeUI();
     initChatPanel();
+    return;
+  }
+  if (testMode === TEST_MODE_IMAGE) {
+    updateModeUI();
+    window.ModelTestImage?.open();
     return;
   }
 
@@ -3123,7 +3178,7 @@ function saveTestModeToStorage(mode) {
 function loadTestModeFromStorage() {
   try {
     const mode = localStorage.getItem(STORAGE_KEY_TEST_MODE);
-    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT) {
+    if (mode === TEST_MODE_CHANNEL || mode === TEST_MODE_MODEL || mode === TEST_MODE_CHAT || mode === TEST_MODE_IMAGE) {
       return mode;
     }
   } catch (_) { /* ignore */ }
@@ -3652,7 +3707,7 @@ function getAllChatModelOptions() {
   channelsList.forEach(ch => {
     (ch.models || []).forEach(entry => {
       const m = getModelName(entry);
-      if (m) set.add(m);
+      if (m && m !== '*') set.add(m);
     });
   });
   return Array.from(set).sort((a, b) => a.localeCompare(b));
@@ -4500,6 +4555,21 @@ async function bootstrap() {
   initModelTestActions();
   bindEvents();
   initChatExportDropdown();
+  initModeTabKeyboard();
+  window.ModelTestImage?.init({
+    t: i18nText,
+    getModelName,
+    getModelOptions: getAllChatModelOptions,
+    getChannelsForModel: model => model
+      ? channelsList.filter(channel => isModelSupported(channel, model))
+      : channelsList.slice(),
+    isModelSupported,
+    getChannelKeys: getModelTestChannelKeys,
+    formatChannelLabel: formatModelTestChannelOptionLabel,
+    getChannelOptionClass: getModelTestChannelOptionClass,
+    formatKeyLabel: formatModelTestKeyLabel,
+    getKeyOptionClass: getModelTestKeyOptionClass
+  });
 
   // 从 localStorage 恢复测试模式
   testMode = loadTestModeFromStorage();
@@ -4543,16 +4613,10 @@ async function bootstrap() {
   updateModeUI();
   renderRowsByMode();
 
-  // 根据恢复的模式初始化 UI
-  const modeTabChannel = document.getElementById('modeTabChannel');
-  const modeTabModel = document.getElementById('modeTabModel');
-  const modeTabChat = document.getElementById('modeTabChat');
-  modeTabChannel?.classList.toggle('active', testMode === TEST_MODE_CHANNEL);
-  modeTabModel?.classList.toggle('active', testMode === TEST_MODE_MODEL);
-  modeTabChat?.classList.toggle('active', testMode === TEST_MODE_CHAT);
-
   if (testMode === TEST_MODE_CHAT) {
     initChatPanel();
+  } else if (testMode === TEST_MODE_IMAGE) {
+    window.ModelTestImage?.open();
   }
 }
 

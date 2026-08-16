@@ -22,6 +22,10 @@ const (
 	xaiCredentialProbeTimeout   = 30 * time.Second
 	xaiSSOResponseHeaderTimeout = 30 * time.Second
 	maxXAIBillingResponseBytes  = 1 << 20
+
+	xaiImageModelDefault = "grok-imagine-image"
+	xaiImageModelQuality = "grok-imagine-image-quality"
+	xaiImageModel20      = "grok-imagine-image-2.0"
 )
 
 var xaiOAuthDefaultModels = []string{
@@ -35,6 +39,9 @@ var xaiOAuthDefaultModels = []string{
 	"grok-3-mini",
 	"grok-3-mini-fast",
 	"grok-composer-2.5-fast",
+	xaiImageModelDefault,
+	xaiImageModelQuality,
+	xaiImageModel20,
 }
 
 var xaiChannelCreateMu sync.Mutex
