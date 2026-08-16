@@ -343,6 +343,7 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 	out, _ = sjson.SetBytes(out, "modelVersion", modelName)
 	out, _ = sjson.SetBytes(out, "responseId", root.Get("id").String())
 
+	parts := make([][]byte, 0, len(root.Get("content").Array()))
 	for _, block := range root.Get("content").Array() {
 		var part []byte
 		switch block.Get("type").String() {
@@ -368,7 +369,10 @@ func ConvertClaudeResponseToGeminiNonStream(_ context.Context, modelName string,
 		default:
 			return nil
 		}
-		out, _ = sjson.SetRawBytes(out, "candidates.0.content.parts.-1", part)
+		parts = append(parts, part)
+	}
+	if len(parts) > 0 {
+		out, _ = sjson.SetRawBytes(out, "candidates.0.content.parts", translatorcommon.JoinRawArray(parts))
 	}
 
 	finishReason := "STOP"

@@ -9,12 +9,12 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"sync/atomic"
 	"time"
 
-	"log"
-
+	translatorcommon "ccLoad/internal/protocol/cliproxy/common"
 	"ccLoad/internal/protocol/cliproxy/util"
 
 	"github.com/tidwall/gjson"
@@ -345,6 +345,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 	// Process the main content part of the response for all candidates.
 	candidates := gjson.GetBytes(rawJSON, "candidates")
 	if candidates.IsArray() {
+		var choicesList [][]byte
 		candidates.ForEach(func(_, candidate gjson.Result) bool {
 			// Construct a single Choice object.
 			choiceTemplate := []byte(`{"index":0,"message":{"role":"assistant","content":null,"reasoning_content":null,"tool_calls":null},"finish_reason":null,"native_finish_reason":null}`)
@@ -364,6 +365,13 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 			hasFunctionCall := false
 			if partsResult.IsArray() {
 				partsResults := partsResult.Array()
+				var toolCalls [][]byte
+				var images [][]byte
+				var textContent strings.Builder
+				var reasoningContent strings.Builder
+				hasTextContent := false
+				hasReasoningContent := false
+
 				for i := 0; i < len(partsResults); i++ {
 					partResult := partsResults[i]
 					partTextResult := partResult.Get("text")
@@ -376,19 +384,15 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 					if partTextResult.Exists() {
 						// Append text content, distinguishing between regular content and reasoning.
 						if partResult.Get("thought").Bool() {
-							oldVal := gjson.GetBytes(choiceTemplate, "message.reasoning_content").String()
-							choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.reasoning_content", oldVal+partTextResult.String())
+							hasReasoningContent = true
+							reasoningContent.WriteString(partTextResult.String())
 						} else {
-							oldVal := gjson.GetBytes(choiceTemplate, "message.content").String()
-							choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.content", oldVal+partTextResult.String())
+							hasTextContent = true
+							textContent.WriteString(partTextResult.String())
 						}
 					} else if functionCallResult.Exists() {
 						// Append function call content to the tool_calls array.
 						hasFunctionCall = true
-						toolCallsResult := gjson.GetBytes(choiceTemplate, "message.tool_calls")
-						if !toolCallsResult.Exists() || !toolCallsResult.IsArray() {
-							choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.tool_calls", []byte(`[]`))
-						}
 						functionCallItemTemplate := []byte(`{"id":"","type":"function","function":{"name":"","arguments":""}}`)
 						fcName := util.RestoreSanitizedToolName(sanitizedNameMap, functionCallResult.Get("name").String())
 						functionCallID := geminiFunctionCallID(functionCallResult)
@@ -400,7 +404,7 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 						if fcArgsResult := functionCallResult.Get("args"); fcArgsResult.Exists() {
 							functionCallItemTemplate, _ = sjson.SetBytes(functionCallItemTemplate, "function.arguments", fcArgsResult.Raw)
 						}
-						choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.tool_calls.-1", functionCallItemTemplate)
+						toolCalls = append(toolCalls, functionCallItemTemplate)
 					} else if inlineDataResult.Exists() {
 						data := inlineDataResult.Get("data").String()
 						if data != "" {
@@ -412,17 +416,29 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 								mimeType = "image/png"
 							}
 							imageURL := fmt.Sprintf("data:%s;base64,%s", mimeType, data)
-							imagesResult := gjson.GetBytes(choiceTemplate, "message.images")
-							if !imagesResult.Exists() || !imagesResult.IsArray() {
-								choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.images", []byte(`[]`))
-							}
-							imageIndex := len(gjson.GetBytes(choiceTemplate, "message.images").Array())
 							imagePayload := []byte(`{"type":"image_url","image_url":{"url":""}}`)
-							imagePayload, _ = sjson.SetBytes(imagePayload, "index", imageIndex)
+							imagePayload, _ = sjson.SetBytes(imagePayload, "index", len(images))
 							imagePayload, _ = sjson.SetBytes(imagePayload, "image_url.url", imageURL)
-							choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.images.-1", imagePayload)
+							images = append(images, imagePayload)
 						}
 					}
+				}
+
+				if hasTextContent {
+					if !hasReasoningContent && len(partsResults) == 1 && len(toolCalls) == 0 && len(images) == 0 {
+						choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.content", partsResults[0].Get("text").String())
+					} else {
+						choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.content", textContent.String())
+					}
+				}
+				if hasReasoningContent {
+					choiceTemplate, _ = sjson.SetBytes(choiceTemplate, "message.reasoning_content", reasoningContent.String())
+				}
+				if len(toolCalls) > 0 {
+					choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.tool_calls", translatorcommon.JoinRawArray(toolCalls))
+				}
+				if len(images) > 0 {
+					choiceTemplate, _ = sjson.SetRawBytes(choiceTemplate, "message.images", translatorcommon.JoinRawArray(images))
 				}
 			}
 
@@ -432,9 +448,12 @@ func ConvertGeminiResponseToOpenAINonStream(_ context.Context, modelName string,
 			}
 
 			// Append the constructed choice to the main choices array.
-			template, _ = sjson.SetRawBytes(template, "choices.-1", choiceTemplate)
+			choicesList = append(choicesList, choiceTemplate)
 			return true
 		})
+		if len(choicesList) > 0 {
+			template = translatorcommon.SetRawArrayItems(template, "choices", choicesList)
+		}
 	}
 
 	return template

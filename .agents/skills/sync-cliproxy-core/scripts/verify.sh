@@ -4,9 +4,10 @@ set -euo pipefail
 run_tests=0
 require_providers=0
 upstream_repo=""
+base_commit=""
 
 usage() {
-  printf 'Usage: %s [--tests] [--require-providers] [--upstream-repo PATH]\n' "$0"
+  printf 'Usage: %s [--tests] [--require-providers] [--upstream-repo PATH] [--base-commit SHA]\n' "$0"
   printf 'Audits the atomic core + provider-adapter snapshot.\n'
 }
 
@@ -28,6 +29,14 @@ while (($# > 0)); do
       upstream_repo="$2"
       shift 2
       ;;
+    --base-commit)
+      if (($# < 2)); then
+        usage >&2
+        exit 2
+      fi
+      base_commit="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -40,8 +49,16 @@ while (($# > 0)); do
   esac
 done
 
-if ((require_providers == 1)) && [[ -z "$upstream_repo" ]]; then
-  printf 'FAIL: --require-providers requires --upstream-repo for source and test provenance checks\n' >&2
+if ((require_providers == 1)) && [[ -z "$upstream_repo" || -z "$base_commit" ]]; then
+  printf 'FAIL: --require-providers requires --upstream-repo and --base-commit for atomic source provenance checks\n' >&2
+  exit 2
+fi
+if [[ -n "$base_commit" && -z "$upstream_repo" ]]; then
+  printf 'FAIL: --base-commit requires --upstream-repo\n' >&2
+  exit 2
+fi
+if [[ -n "$base_commit" && ! "$base_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'FAIL: --base-commit must be a full 40-character commit SHA\n' >&2
   exit 2
 fi
 
@@ -136,6 +153,8 @@ registry_file="internal/protocol/registry.go"
 canonical_skill=".agents/skills/sync-cliproxy-core"
 provider_reference="$canonical_skill/references/provider-adapters.md"
 provider_manifest="$canonical_skill/references/provider-adapters.manifest"
+core_manifest="$canonical_skill/references/core-snapshot.manifest"
+core_scope_verifier="$canonical_skill/scripts/verify_core_scope.sh"
 provider_test_lister="$canonical_skill/scripts/list_go_tests.go"
 claude_skill=".claude/skills/sync-cliproxy-core"
 
@@ -150,7 +169,9 @@ require_file "$canonical_skill/SKILL.md"
 require_file "$canonical_skill/agents/openai.yaml"
 require_file "$provider_reference"
 require_file "$provider_manifest"
+require_file "$core_manifest"
 require_file "$canonical_skill/scripts/verify.sh"
+require_file "$core_scope_verifier"
 require_file "$provider_test_lister"
 
 providers_snapshot_is_symlink=0
@@ -453,6 +474,27 @@ else
   synchronized_commit=""
 fi
 
+base_commit_is_anchored=1
+if [[ -n "$base_commit" ]]; then
+  base_commit_is_anchored=0
+  if ! previous_upstream_doc="$(git show "HEAD:$upstream_doc" 2>/dev/null)"; then
+    fail "cannot read the pre-sync provenance from HEAD:$upstream_doc"
+  else
+    previous_commit_count="$(printf '%s\n' "$previous_upstream_doc" | grep -Ec "^- Last synchronized commit: \`[0-9a-f]{40}\`" || true)"
+    previous_commit_line="$(printf '%s\n' "$previous_upstream_doc" | grep -E "^- Last synchronized commit: \`[0-9a-f]{40}\`" || true)"
+    if [[ "$previous_commit_count" != "1" ]]; then
+      fail "the pre-sync UPSTREAM.md in HEAD must record one full commit SHA"
+    else
+      previous_synchronized_commit="$(printf '%s\n' "$previous_commit_line" | sed -E "s/.*\`([0-9a-f]{40})\`.*/\\1/")"
+      if [[ "$base_commit" != "$previous_synchronized_commit" ]]; then
+        fail "--base-commit must match the pre-sync UPSTREAM.md commit: expected $previous_synchronized_commit"
+      else
+        base_commit_is_anchored=1
+      fi
+    fi
+  fi
+fi
+
 runtime_imports="$(grep -R -n --include='*.go' -E 'github.com/(router-for-me|caidaoli)/CLIProxyAPI' "$snapshot" "$adapter_file" 2>/dev/null || true)"
 if [[ -n "$runtime_imports" ]]; then
   printf '%s\n' "$runtime_imports" >&2
@@ -500,6 +542,21 @@ if [[ -n "$upstream_repo" ]]; then
   elif ! git -C "$upstream_repo" cat-file -e "${synchronized_commit}^{commit}" 2>/dev/null; then
     fail "recorded commit $synchronized_commit is absent from $upstream_repo"
   else
+    core_scope_args=(
+      --upstream-repo "$upstream_repo"
+      --target-commit "$synchronized_commit"
+      --core-manifest "$core_manifest"
+      --provider-manifest "$provider_manifest"
+    )
+    if [[ -n "$base_commit" && "$base_commit" != "$synchronized_commit" ]]; then
+      core_scope_args+=(--base-commit "$base_commit")
+    fi
+    if ((base_commit_is_anchored == 1)); then
+      if ! bash "$core_scope_verifier" "${core_scope_args[@]}"; then
+        fail "core source scope audit failed"
+      fi
+    fi
+
     while IFS= read -r provider; do
       [[ -n "$provider" ]] || continue
       provider_root="$(awk -F '|' -v provider="$provider" '$1 == "provider" && $2 == provider { print $4 }' "$provider_manifest")"
