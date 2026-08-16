@@ -3018,7 +3018,7 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 		"content":         "hello",
 		"headers": map[string]string{
 			"X-Client-Request-Id": "admin-test-request",
-			"X-Codex-Turn-State":  "must-not-leak-over-http",
+			"X-Codex-Turn-State":  "turn-state",
 			"X-Arbitrary-Client":  "must-not-leak",
 		},
 	}))
@@ -3041,11 +3041,16 @@ func TestHandleChannelTest_UsesSelectedCodexProtocolWithBasePathPrefix(t *testin
 	if got := gotHeaders.Get("Authorization"); got != "Bearer sk-test-key" {
 		t.Fatalf("Authorization=%q, want bearer channel key", got)
 	}
-	if gotHeaders.Get("X-Api-Key") != "" || gotHeaders.Get("X-Arbitrary-Client") != "" || gotHeaders.Get("X-Codex-Turn-State") != "" {
+	if gotHeaders.Get("X-Api-Key") != "" || gotHeaders.Get("X-Arbitrary-Client") != "" {
 		t.Fatalf("unapproved Codex HTTP headers leaked upstream: %v", gotHeaders)
 	}
-	if gotHeaders.Get("User-Agent") != codexUserAgent || gotHeaders.Get("Originator") != "codex-tui" {
+	if gotHeaders.Get("User-Agent") != codexUserAgent ||
+		gotHeaders.Get("Originator") != codexOriginator ||
+		gotHeaders.Get("Version") != codexVersion {
 		t.Fatalf("Codex identity headers=%v", gotHeaders)
+	}
+	if got := gotHeaders.Get("X-Codex-Turn-State"); got != "turn-state" {
+		t.Fatalf("X-Codex-Turn-State=%q, want allowed downstream value", got)
 	}
 	if got := gotHeaders.Get("X-Client-Request-Id"); got != "admin-test-request" {
 		t.Fatalf("X-Client-Request-Id=%q, want allowed downstream value", got)

@@ -20,13 +20,16 @@ import (
 
 const (
 	codexCredentialRefreshLead       = 5 * time.Minute
-	codexUserAgent                   = "codex-tui/0.146.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.146.0)"
+	codexVersion                     = "0.147.0"
+	codexOriginator                  = "codex-tui"
+	codexUserAgent                   = codexOriginator + "/" + codexVersion + " (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (" + codexOriginator + "; " + codexVersion + ")"
 	codexQuotaOverdraftWriteAttempts = 3
 )
 
 var codexHTTPForwardHeaders = []string{
 	"X-Codex-Beta-Features",
 	"Version",
+	"X-Codex-Turn-State",
 	"X-Codex-Turn-Metadata",
 	"X-Client-Request-Id",
 	"User-Agent",
@@ -684,7 +687,8 @@ func injectCodexHeaders(req *http.Request, cfg *model.Config, apiKey string, str
 	}
 	req.Header.Set("Connection", "Keep-Alive")
 	req.Header.Set("User-Agent", codexUserAgent)
-	req.Header.Set("Originator", "codex-tui")
+	req.Header.Set("Originator", codexOriginator)
+	req.Header.Set("Version", codexVersion)
 	if cfg.UsesCodexOAuth() && req.Header.Get("Session_id") == "" && req.Header.Get("Session-Id") == "" {
 		req.Header.Set("Session_id", util.NewUUIDv4())
 	}

@@ -724,7 +724,7 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 			"X-Client-Request-Id":                   []string{"request-1"},
 			"X-Codex-Beta-Features":                 []string{"feature-1"},
 			"X-Codex-Turn-Metadata":                 []string{`{"turn_id":"turn-1"}`},
-			"X-Codex-Turn-State":                    []string{"http-must-drop"},
+			"X-Codex-Turn-State":                    []string{"turn-state-1"},
 			"X-Forwarded-For":                       []string{"203.0.113.10"},
 			"X-ResponsesAPI-Include-Timing-Metrics": []string{"http-must-drop"},
 		},
@@ -748,9 +748,10 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"Originator":            "codex-tui",
 		"Session_id":            "session-1",
 		"User-Agent":            codexUserAgent,
-		"Version":               "1.2.3",
+		"Version":               codexVersion,
 		"X-Client-Request-Id":   "request-1",
 		"X-Codex-Beta-Features": "feature-1",
+		"X-Codex-Turn-State":    "turn-state-1",
 		"X-Codex-Turn-Metadata": `{"turn_id":"turn-1"}`,
 		"X-Configured":          "kept",
 	}
@@ -764,7 +765,6 @@ func TestForwardOnceAsync_CodexStaticKeyUsesDedicatedHeaderContract(t *testing.T
 		"X-Api-Key",
 		"x-goog-api-key",
 		"X-Arbitrary-Client",
-		"X-Codex-Turn-State",
 		"X-Forwarded-For",
 		"X-ResponsesAPI-Include-Timing-Metrics",
 	} {

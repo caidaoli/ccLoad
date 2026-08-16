@@ -2071,7 +2071,7 @@ func TestNativeCodexWebsocketReusesUpstreamConnection(t *testing.T) {
 			"Session-Id":                            "ws-session",
 			"Session_id":                            "ws-session",
 			"Thread-Id":                             "worker-thread",
-			"Version":                               "1.2.3",
+			"Version":                               codexVersion,
 			"X-Client-Request-Id":                   "request-1",
 			"X-Codex-Beta-Features":                 "feature-1",
 			"X-Codex-Turn-Metadata":                 `{"turn_id":"turn-1"}`,
@@ -5537,10 +5537,13 @@ func TestNativeCodexWebsocketRejectedHandshakeFallsBackToSameChannelHTTP(t *test
 			return
 		}
 		httpCalls.Add(1)
-		for _, name := range []string{"OpenAI-Beta", "X-Codex-Turn-State", "X-ResponsesAPI-Include-Timing-Metrics"} {
+		for _, name := range []string{"OpenAI-Beta", "X-ResponsesAPI-Include-Timing-Metrics"} {
 			if got := r.Header.Get(name); got != "" {
 				t.Errorf("websocket-only header leaked into HTTP fallback: %s=%q; headers=%v", name, got, r.Header)
 			}
+		}
+		if got := r.Header.Get("X-Codex-Turn-State"); got != "turn-state" {
+			t.Errorf("HTTP fallback X-Codex-Turn-State=%q, want %q; headers=%v", got, "turn-state", r.Header)
 		}
 		body, err := io.ReadAll(r.Body)
 		if err != nil || !json.Valid(body) {
