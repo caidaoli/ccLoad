@@ -25,7 +25,7 @@ import (
 
 const (
 	codexUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
-	codexUsageUserAgent        = "codex_cli_rs/0.76.0 (Debian 13.0.0; x86_64) WindowsTerminal"
+	codexUsageUserAgent        = codexUserAgent
 	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
 	oauthUsageTimeout          = 30 * time.Second

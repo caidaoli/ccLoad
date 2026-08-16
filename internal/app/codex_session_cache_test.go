@@ -362,3 +362,53 @@ func TestBuildProxyRequest_CodexSessionInjection_ClientHeaderNotOverwritten(t *t
 		t.Fatalf("expected client Session_id preserved, got %q", got)
 	}
 }
+
+func TestBuildProxyRequest_CodexIdentityHeadersAndTurnState(t *testing.T) {
+	resetCodexSessionCache()
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "codex-ch",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+	}
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Codex,
+		upstreamProtocol: protocol.Codex,
+		originalModel:    "gpt-5-codex",
+		originalBody:     []byte(`{"model":"gpt-5-codex","input":[]}`),
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx,
+		cfg,
+		"sk-test",
+		http.MethodPost,
+		reqCtx.originalBody,
+		http.Header{
+			"User-Agent":         []string{"codex-tui/9.9.9"},
+			"Originator":         []string{"other-client"},
+			"Version":            []string{"9.9.9"},
+			"X-Codex-Turn-State": []string{"turn-state-token"},
+		},
+		"",
+		"/v1/responses",
+		cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	for name, want := range map[string]string{
+		"User-Agent":         "codex-tui/0.147.0 (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.147.0)",
+		"Originator":         "codex-tui",
+		"Version":            "0.147.0",
+		"X-Codex-Turn-State": "turn-state-token",
+	} {
+		if got := req.Header.Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}

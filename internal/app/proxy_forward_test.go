@@ -103,7 +103,9 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 	if got := req.Header.Get("ChatGPT-Account-ID"); got != "account-1" {
 		t.Fatalf("ChatGPT-Account-ID = %q", got)
 	}
-	if req.Header.Get("User-Agent") != codexUserAgent || req.Header.Get("Originator") != "codex-tui" {
+	if req.Header.Get("User-Agent") != codexUserAgent ||
+		req.Header.Get("Originator") != codexOriginator ||
+		req.Header.Get("Version") != codexVersion {
 		t.Fatalf("Codex identity headers = %v", req.Header)
 	}
 	if req.Header.Get("Session_id") == "" {
@@ -116,14 +118,14 @@ func TestCodexOAuthRequestUsesRuntimeCredentialAndCodexWireContract(t *testing.T
 		t.Fatalf("static key headers leaked: %v", req.Header)
 	}
 	for _, name := range []string{
-		"X-Codex-Beta-Features", "Version", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Configured",
+		"X-Codex-Beta-Features", "X-Codex-Turn-State", "X-Codex-Turn-Metadata", "X-Client-Request-Id", "X-Configured",
 	} {
 		if req.Header.Get(name) == "" {
 			t.Fatalf("missing passthrough header %s: %v", name, req.Header)
 		}
 	}
 	for _, name := range []string{
-		"OpenAI-Beta", "X-Codex-Turn-State", "X-Forwarded-For", "X-Arbitrary-Client",
+		"OpenAI-Beta", "X-Forwarded-For", "X-Arbitrary-Client",
 		"X-ResponsesAPI-Include-Timing-Metrics",
 	} {
 		if got := req.Header.Get(name); got != "" {
