@@ -579,6 +579,7 @@
 
     const payload = buildRequestPayload(values);
     storageSet('model', payload.model);
+    storageSet('prompt', values.prompt);
     storageSet(`key_index_${values.channelID}`, values.keyIndex);
     storageSet('generation_api', values.generationAPI);
     storageSet(imageSizeStorageKey(), values.size);
@@ -617,6 +618,8 @@
       storedAPI,
       'images'
     );
+    const prompt = element('imagePrompt');
+    if (prompt) prompt.value = storageGet('prompt');
     syncGenerationAPIControls();
   }
 
@@ -628,7 +631,9 @@
     initOptionComboboxes();
     restoreOptions();
     element('imageGenerationForm')?.addEventListener('submit', submit);
-    element('imagePrompt')?.addEventListener('keydown', (event) => {
+    const prompt = element('imagePrompt');
+    prompt?.addEventListener('input', () => storageSet('prompt', prompt.value));
+    prompt?.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
         event.preventDefault();
         element('imageGenerationForm')?.requestSubmit();
