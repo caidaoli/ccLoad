@@ -25,6 +25,7 @@
   <script defer src="/web/assets/js/model-test-advanced-options.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-chat-channel-state.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test-chat-session.js?v=__VERSION__"></script>
+  <script defer src="/web/assets/js/model-test-image.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-entry-parser.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/token-model-test.js?v=__VERSION__"></script>
   <script defer src="/web/assets/js/model-test.js?v=__VERSION__"></script>
@@ -77,14 +78,23 @@
         <section id="modelTestCard" class="glass-card mt-2 mb-2 overflow-visible">
           <!-- 模式切换 -->
           <div class="model-test-mode-header">
-            <div class="model-test-tabs">
-              <button id="modeTabChat" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="chat">
+            <div class="model-test-tabs" role="tablist" data-i18n-aria-label="modelTest.mode.label" aria-label="测试模式">
+              <button id="modeTabChat" type="button" class="mode-tab-btn" role="tab" aria-selected="false" aria-controls="chatToolbar chatPanel" tabindex="-1" data-action="set-test-mode" data-mode="chat">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>
                 </svg>
                 <span data-i18n="modelTest.mode.chat">对话</span>
               </button>
-              <button id="modeTabChannel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="channel">
+              <button id="modeTabImage" type="button" class="mode-tab-btn" role="tab" aria-selected="false" aria-controls="imagePanel" tabindex="-1" data-action="set-test-mode" data-mode="image">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="3" y="3" width="18" height="18" rx="2"></rect>
+                  <circle cx="8.5" cy="8.5" r="1.5"></circle>
+                  <path d="m21 15-5-5L5 21"></path>
+                  <path d="m14 14-2-2-5 5"></path>
+                </svg>
+                <span data-i18n="modelTest.mode.image">生图</span>
+              </button>
+              <button id="modeTabChannel" type="button" class="mode-tab-btn" role="tab" aria-selected="true" aria-controls="modelTestTablePanel" tabindex="0" data-action="set-test-mode" data-mode="channel">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
                   <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
@@ -93,7 +103,7 @@
                 </svg>
                 <span data-i18n="modelTest.mode.channel">按渠道测试</span>
               </button>
-              <button id="modeTabModel" type="button" class="mode-tab-btn" data-action="set-test-mode" data-mode="model">
+              <button id="modeTabModel" type="button" class="mode-tab-btn" role="tab" aria-selected="false" aria-controls="modelTestTablePanel" tabindex="-1" data-action="set-test-mode" data-mode="model">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
                   <rect x="3" y="3" width="7" height="7"></rect>
                   <rect x="14" y="3" width="7" height="7"></rect>
@@ -189,6 +199,7 @@
             <button id="chatClearBtn" type="button" class="btn btn-secondary" data-action="clear-chat" data-i18n="modelTest.chat.clear">清空</button>
           </div>
 
+          <div id="modelTestTablePanel" role="tabpanel" aria-labelledby="modeTabChannel">
           <!-- 控制栏 -->
           <div class="model-test-toolbar">
             <div class="model-test-toolbar-section model-test-toolbar-section--filters">
@@ -312,9 +323,10 @@
               </tbody>
             </table>
           </div>
+          </div>
 
           <!-- 对话面板（chat 模式时替换测试表格区域） -->
-          <div id="chatPanel" class="chat-panel hidden">
+          <div id="chatPanel" class="chat-panel hidden" role="tabpanel" aria-labelledby="modeTabChat">
             <div id="chatMessages" class="chat-messages"></div>
             <div class="chat-input-area">
               <div class="chat-input-stack">
@@ -388,6 +400,91 @@
               </div>
               <button id="chatSendBtn" type="button" class="btn btn-primary chat-send-btn" data-action="send-chat-message" data-i18n="modelTest.chat.send">发送</button>
             </div>
+          </div>
+
+          <!-- 生图面板（独立于多轮对话状态） -->
+          <div id="imagePanel" class="image-test-panel hidden" role="tabpanel" aria-labelledby="modeTabImage">
+            <form id="imageGenerationForm" class="image-test-form" aria-busy="false">
+              <div class="image-test-controls-grid">
+                <label class="chat-control chat-control--selector image-test-target-control">
+                  <span class="chat-control__label" data-i18n="common.model">模型</span>
+                  <div class="filter-combobox-wrapper image-test-model-combobox">
+                    <input id="imageModelInput" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" required data-i18n-placeholder="modelTest.modelInputPlaceholder" placeholder="输入或选择模型">
+                    <div id="imageModelDropdown" class="filter-dropdown" role="listbox" aria-label="模型"></div>
+                  </div>
+                </label>
+                <label class="chat-control chat-control--selector image-test-target-control">
+                  <span class="chat-control__label" data-i18n="modelTest.channel">渠道</span>
+                  <div class="filter-combobox-wrapper image-test-channel-combobox">
+                    <input id="imageChannelSelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false" required data-i18n-placeholder="modelTest.searchChannel" placeholder="搜索渠道...">
+                    <div id="imageChannelDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.channel" aria-label="渠道"></div>
+                  </div>
+                </label>
+                <label class="chat-control chat-control--selector image-test-option-control">
+                  <span class="chat-control__label" data-i18n="channels.tableApiKey">API Key</span>
+                  <div class="filter-combobox-wrapper image-test-key-combobox">
+                    <input id="imageKeySelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageKeyDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="channels.tableApiKey" aria-label="API Key"></div>
+                  </div>
+                </label>
+                <label class="chat-control image-test-option-control">
+                  <span class="chat-control__label" data-i18n="modelTest.image.generationApi">生图接口</span>
+                  <div class="filter-combobox-wrapper image-test-option-combobox">
+                    <input id="imageGenerationAPISelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageGenerationAPISelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.image.generationApi" aria-label="生图接口"></div>
+                  </div>
+                </label>
+                <label class="chat-control image-test-option-control">
+                  <span class="chat-control__label" data-i18n="modelTest.image.size">尺寸</span>
+                  <div class="filter-combobox-wrapper image-test-option-combobox">
+                    <input id="imageSizeSelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageSizeSelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.image.size" aria-label="尺寸"></div>
+                  </div>
+                </label>
+                <label class="chat-control image-test-option-control">
+                  <span class="chat-control__label" data-i18n="modelTest.image.quality">质量</span>
+                  <div class="filter-combobox-wrapper image-test-option-combobox">
+                    <input id="imageQualitySelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageQualitySelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.image.quality" aria-label="质量"></div>
+                  </div>
+                </label>
+                <label class="chat-control image-test-option-control">
+                  <span class="chat-control__label" data-i18n="modelTest.image.background">背景</span>
+                  <div class="filter-combobox-wrapper image-test-option-combobox">
+                    <input id="imageBackgroundSelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageBackgroundSelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.image.background" aria-label="背景"></div>
+                  </div>
+                </label>
+                <label class="chat-control image-test-option-control">
+                  <span class="chat-control__label" data-i18n="modelTest.image.outputFormat">格式</span>
+                  <div class="filter-combobox-wrapper image-test-option-combobox">
+                    <input id="imageOutputFormatSelect" class="filter-select filter-combobox" type="text" autocomplete="off" spellcheck="false">
+                    <div id="imageOutputFormatSelectDropdown" class="filter-dropdown" role="listbox" data-i18n-aria-label="modelTest.image.outputFormat" aria-label="格式"></div>
+                  </div>
+                </label>
+              </div>
+
+              <div class="image-test-prompt-block">
+                <div class="image-test-prompt-header">
+                  <label class="image-test-label" for="imagePrompt" data-i18n="modelTest.image.prompt">提示词</label>
+                  <div class="image-test-prompt-actions">
+                    <span id="imagePromptHint" class="image-test-hint" data-i18n="modelTest.image.promptHint">按 Ctrl/⌘ + Enter 生成</span>
+                    <button id="imageGenerateBtn" type="submit" class="btn btn-primary image-test-generate-btn"><span data-i18n="modelTest.image.generate">生成图片</span></button>
+                  </div>
+                </div>
+                <textarea id="imagePrompt" class="form-input image-test-prompt" rows="3" maxlength="32768" required aria-describedby="imagePromptHint" data-i18n-placeholder="modelTest.image.promptPlaceholder" placeholder="描述你想生成的图片..."></textarea>
+              </div>
+
+              <div id="imageGenerationFeedback" class="image-test-feedback" hidden>
+                <p id="imageGenerationStatus" class="image-test-status" role="status" aria-live="polite"></p>
+                <p id="imageGenerationError" class="image-test-error" role="alert"></p>
+              </div>
+            </form>
+
+            <section class="image-test-results-section" aria-live="polite">
+              <span id="imageGenerationSummary" class="image-test-summary"></span>
+              <div id="imageGenerationResults" class="image-test-results" aria-busy="false"></div>
+            </section>
           </div>
         </section>
       </div>

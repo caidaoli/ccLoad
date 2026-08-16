@@ -3465,6 +3465,235 @@ body {
   padding: 40px;
 }
 
+.image-test-panel {
+  padding: 24px;
+  border-top: 1px solid var(--color-border);
+}
+
+.image-test-panel.hidden {
+  display: none !important;
+}
+
+.image-test-form {
+  display: grid;
+  gap: 12px;
+}
+
+.image-test-controls-grid {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1.25fr)
+    minmax(160px, 1.25fr)
+    minmax(130px, 1fr)
+    minmax(165px, 1.15fr)
+    minmax(115px, 0.85fr)
+    minmax(115px, 0.8fr)
+    minmax(115px, 0.8fr)
+    minmax(105px, 0.75fr);
+  align-items: center;
+  gap: 12px;
+}
+
+.image-test-target-control,
+.image-test-option-control {
+  min-width: 0;
+}
+
+.image-test-model-combobox,
+.image-test-channel-combobox,
+.image-test-key-combobox,
+.image-test-option-combobox {
+  width: auto;
+  min-width: 0;
+  max-width: none;
+  flex: 1 1 auto;
+}
+
+.image-test-prompt-block {
+  display: grid;
+  min-width: 0;
+  gap: 7px;
+}
+
+.image-test-prompt-header,
+.image-test-prompt-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+}
+
+.image-test-prompt-header {
+  justify-content: space-between;
+}
+
+.image-test-prompt-actions {
+  flex: 0 0 auto;
+}
+
+.image-test-label {
+  color: var(--color-text-secondary);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.image-test-prompt {
+  width: 100%;
+  min-width: 0;
+  min-height: 88px;
+  flex: 1 1 auto;
+  resize: vertical;
+  line-height: 1.55;
+}
+
+.image-test-hint,
+.image-test-summary {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.image-test-generate-btn {
+  min-width: 116px;
+  min-height: 42px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.image-test-feedback {
+  min-height: 0;
+}
+
+.image-test-status,
+.image-test-error {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.image-test-status {
+  color: var(--color-text-secondary);
+}
+
+.image-test-error {
+  color: var(--error-500);
+}
+
+.image-test-results-section {
+  margin: 0;
+}
+
+.image-test-summary:empty,
+.image-test-results:empty {
+  display: none;
+}
+
+.image-test-summary:not(:empty) {
+  display: block;
+  padding-block-start: 12px;
+  border-top: 1px solid var(--color-border);
+}
+
+.image-test-results {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
+  gap: 18px;
+}
+
+.image-test-results:not(:empty) {
+  margin-block-start: 8px;
+}
+
+.image-test-result-card {
+  display: flex;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  flex-direction: column;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-bg-secondary);
+}
+
+.image-test-result-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: var(--color-bg-primary);
+}
+
+.image-test-result-caption {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+}
+
+.image-test-revised-prompt {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.image-test-download {
+  min-height: 40px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+@media (max-width: 768px) {
+  .image-test-panel {
+    padding: 18px 14px;
+  }
+
+  .image-test-prompt-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .image-test-prompt-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
+@media (max-width: 1199px) {
+  .image-test-controls-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 480px) {
+  .image-test-controls-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .image-test-target-control,
+  .image-test-option-control {
+    width: 100%;
+  }
+
+  .image-test-target-control .filter-combobox-wrapper,
+  .image-test-option-control .filter-combobox-wrapper {
+    width: auto;
+    max-width: none;
+    flex: 1 1 auto;
+  }
+
+  .image-test-result-caption {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .image-test-download {
+    width: 100%;
+  }
+}
+
 @media (max-width: 1680px) and (min-width: 1281px) {
   .model-test-toolbar {
     display: grid;

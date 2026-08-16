@@ -675,6 +675,8 @@ func TestAdminModels_HandleFetchModels_CodexOAuth(t *testing.T) {
 		{Model: "gpt-5.5", RedirectModel: "gpt-5.5"},
 		{Model: "gpt-5.4-mini", RedirectModel: "gpt-5.4-mini"},
 		{Model: "codex-auto-review", RedirectModel: "codex-auto-review"},
+		{Model: "gpt-image-1.5", RedirectModel: "gpt-image-1.5"},
+		{Model: "gpt-image-2", RedirectModel: "gpt-image-2"},
 	}
 	resp := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
 	if !resp.Success || !reflect.DeepEqual(resp.Data.Models, want) || resp.Data.Protocol != "codex" || resp.Data.Source != "predefined" {
@@ -740,6 +742,9 @@ func TestAdminModels_HandleFetchModels_XAIOAuthUsesFixedCatalog(t *testing.T) {
 		"grok-3-mini",
 		"grok-3-mini-fast",
 		"grok-composer-2.5-fast",
+		"grok-imagine-image",
+		"grok-imagine-image-quality",
+		"grok-imagine-image-2.0",
 	}
 	response := mustParseAPIResponse[FetchModelsResponse](t, w.Body.Bytes())
 	if !response.Success || response.Data.Protocol != "codex" || response.Data.Source != "predefined" {

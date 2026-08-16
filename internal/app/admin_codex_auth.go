@@ -39,6 +39,8 @@ var codexOAuthDefaultModels = []string{
 	"gpt-5.4-mini",
 	"gpt-5.3-codex-spark",
 	"codex-auto-review",
+	"gpt-image-1.5",
+	"gpt-image-2",
 }
 
 var codexOAuthExcludedModelsByPlan = map[string]map[string]struct{}{
