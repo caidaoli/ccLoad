@@ -1689,6 +1689,7 @@ window.I18N_LOCALES['en'] = {
   'channels.oauth.usageOnDemand': 'Pay as you go',
   'channels.oauth.usageOnDemandDisabled': 'Not enabled',
   'channels.oauth.usageMonthlyCredits': 'Monthly credits',
+  'channels.oauth.usageAccumulated': 'Accumulated {cost}',
   'channels.oauth.usageReset': 'Reset {time}',
   'channels.oauth.resetCredits': '{count} resets available',
   'channels.oauth.resetCreditExpiresEarliest': 'Earliest expiry {time}',

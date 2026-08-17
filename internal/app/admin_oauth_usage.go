@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -189,6 +190,7 @@ type oauthUsageSummary struct {
 	RateLimitResetCredits *codexQuotaResetCredits `json:"rate_limit_reset_credits,omitempty"`
 	Warnings              []string                `json:"warnings,omitempty"`
 	XAIBilling            *xaiBillingSummary      `json:"xai_billing,omitempty"`
+	QuotaCostUsage        *oauthcost.Usage        `json:"quota_cost_usage,omitempty"`
 }
 
 type persistedOAuthUsageSnapshot struct {
@@ -1373,14 +1375,6 @@ func (s *Server) persistOAuthUsage(
 	if s == nil || s.store == nil || cfg == nil || summary == nil {
 		return nil, errors.New("OAuth usage persistence is unavailable")
 	}
-	snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
-		RequestedAt: requestedAt.UTC().Format(time.RFC3339Nano),
-		SampledAt:   sampledAt.UTC().Format(time.RFC3339Nano),
-		Summary:     *summary,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("encode OAuth usage snapshot: %w", err)
-	}
 
 	for {
 		if err := ctx.Err(); err != nil {
@@ -1391,64 +1385,32 @@ func (s *Server) persistOAuthUsage(
 			return nil, fmt.Errorf("reload OAuth credential: %w", err)
 		}
 
-		var authType string
-		var payload string
-		switch {
-		case currentCfg.UsesCodexOAuth() && summary.Provider == codexauth.ChannelType:
-			authType = model.AuthTypeCodexOAuth
-			credential, parseErr := codexauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			if persisted, ok := s.currentOAuthUsageAtOrAfter(
-				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
-			); ok {
-				return persisted, nil
-			}
-			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
-			payload, err = credential.JSON()
-		case currentCfg.UsesAnthropicOAuth() && summary.Provider == anthropicauth.ChannelType:
-			authType = model.AuthTypeAnthropicOAuth
-			credential, parseErr := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			if persisted, ok := s.currentOAuthUsageAtOrAfter(
-				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
-			); ok {
-				return persisted, nil
-			}
-			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
-			payload, err = credential.JSON()
-		case currentCfg.UsesAntigravityOAuth() && summary.Provider == antigravityauth.ChannelType:
-			authType = model.AuthTypeAntigravityOAuth
-			credential, parseErr := antigravityauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			if persisted, ok := s.currentOAuthUsageAtOrAfter(
-				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
-			); ok {
-				return persisted, nil
-			}
-			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
-			payload, err = credential.JSON()
-		case currentCfg.UsesXAIOAuth() && summary.Provider == xaiauth.ChannelType:
-			authType = model.AuthTypeXAIOAuth
-			credential, parseErr := xaiauth.ParseCredential([]byte(currentCfg.OAuthCredential))
-			if parseErr != nil {
-				return nil, parseErr
-			}
-			if persisted, ok := s.currentOAuthUsageAtOrAfter(
-				currentCfg.ID, credential.OAuthUsage, summary.Provider, requestedAt,
-			); ok {
-				return persisted, nil
-			}
-			credential.OAuthUsage = append(json.RawMessage(nil), snapshot...)
-			payload, err = credential.JSON()
-		default:
+		state, err := parseOAuthUsageCredentialState(currentCfg)
+		if err != nil {
+			return nil, err
+		}
+		if state.provider != summary.Provider {
 			return nil, errors.New("OAuth credential changed provider while persisting usage")
 		}
+		persisted, _, persistedRequestAt := persistedOAuthUsage(state.oauthUsage, summary.Provider)
+		if persisted != nil && !persistedRequestAt.Before(requestedAt) {
+			s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
+			s.InvalidateChannelListCache()
+			return attachOAuthQuotaCostUsage(persisted, state.quotaCostUsage), nil
+		}
+
+		nextQuotaCostUsage := reconcileOAuthQuotaCostUsage(state.quotaCostUsage, summary, sampledAt)
+		storedSummary := *summary
+		storedSummary.QuotaCostUsage = nil
+		snapshot, err := json.Marshal(persistedOAuthUsageSnapshot{
+			RequestedAt: requestedAt.UTC().Format(time.RFC3339Nano),
+			SampledAt:   sampledAt.UTC().Format(time.RFC3339Nano),
+			Summary:     storedSummary,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("encode OAuth usage snapshot: %w", err)
+		}
+		payload, err := state.encode(snapshot, nextQuotaCostUsage)
 		if err != nil {
 			return nil, err
 		}
@@ -1456,7 +1418,7 @@ func (s *Server) persistOAuthUsage(
 			return nil, errors.New("OAuth credential exceeds persistence limit")
 		}
 		updated, err := s.store.CompareAndSwapOAuthCredential(
-			ctx, currentCfg.ID, authType, currentCfg.OAuthCredential, payload,
+			ctx, currentCfg.ID, state.authType, currentCfg.OAuthCredential, payload,
 		)
 		if err != nil {
 			return nil, err
@@ -1467,7 +1429,7 @@ func (s *Server) persistOAuthUsage(
 
 		s.invalidateOAuthCredential(currentCfg.ID, summary.Provider)
 		s.InvalidateChannelListCache()
-		return summary, nil
+		return attachOAuthQuotaCostUsage(summary, nextQuotaCostUsage), nil
 	}
 }
 
@@ -1501,21 +1463,6 @@ func persistedOAuthUsage(raw json.RawMessage, provider string) (*oauthUsageSumma
 		return nil, time.Time{}, time.Time{}
 	}
 	return &snapshot.Summary, sampledAt, requestedAt
-}
-
-func (s *Server) currentOAuthUsageAtOrAfter(
-	channelID int64,
-	raw json.RawMessage,
-	provider string,
-	requestedAt time.Time,
-) (*oauthUsageSummary, bool) {
-	persisted, _, persistedRequestAt := persistedOAuthUsage(raw, provider)
-	if persisted == nil || persistedRequestAt.Before(requestedAt) {
-		return nil, false
-	}
-	s.invalidateOAuthCredential(channelID, provider)
-	s.InvalidateChannelListCache()
-	return persisted, true
 }
 
 func latestOAuthUsage(

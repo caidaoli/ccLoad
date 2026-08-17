@@ -80,6 +80,7 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         'channels.oauth.usageRefresh': '刷新额度',
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageAccumulated': `累计${values.cost}`,
         'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
         'channels.oauth.resetCreditExpiresEarliest': `最早过期 ${values.time}`,
         'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
@@ -97,6 +98,7 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         limit_name: 'codex', kind: 'primary', remaining_percent: 25,
         limit_window_seconds: 604800, reset_at: 4070908800
       }],
+      quota_cost_usage: { weekly: { standard_cost_microusd: 12000000 } },
       rate_limit_reset_credits: {
         available_count: 2,
         credits: [
@@ -112,6 +114,8 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
   try {
     const html = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
     assert.match(html, /可重置 2 次/);
+    assert.match(html, /累计12\.0/);
+    assert.match(html, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?累计12\.0[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
     assert.match(html, /最早过期 01\/03/);
     assert.match(html, /查看全部 2 个过期时间/);
     assert.match(html, /data-action="reset-codex-quota" data-channel-id="92"/);
@@ -153,6 +157,7 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
         'channels.oauth.usageOnDemand': '按量付费',
         'channels.oauth.usageOnDemandDisabled': '未启用',
         'channels.oauth.usageMonthlyCredits': '月度积分',
+        'channels.oauth.usageAccumulated': `累计${values.cost}`,
         'channels.oauth.usageReset': `重置 ${values.time}`
       })[key] || key;
     }
@@ -173,6 +178,10 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
         included_used_cents: 4000.5,
         monthly_reset_at: '2026-09-01T00:00:00Z',
         monthly_present: true
+      },
+      quota_cost_usage: {
+        weekly: { standard_cost_microusd: 3450000 },
+        monthly: { standard_cost_microusd: 7800000 }
       },
       warnings: ['Monthly unavailable <retry>']
     }
@@ -196,6 +205,8 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
     assert.match(usage, /周额度/);
     assert.match(usage, /Pro &lt;safe&gt;/);
     assert.match(usage, /已用25\.5%/);
+    assert.match(usage, /累计3\.5/);
+    assert.match(usage, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?累计3\.5[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
     assert.match(usage, /aria-label="周额度剩余74\.5%"[^>]*aria-valuenow="74\.5"/);
     assert.match(usage, /产品使用 · grok&lt;fast&gt;/);
     assert.match(usage, /已用12\.25%/);
@@ -203,6 +214,7 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
     assert.match(usage, /已用25\.09%/);
     assert.match(usage, /US\$1\.26 \/ US\$5\.00/);
     assert.match(usage, /月度积分/);
+    assert.match(usage, /累计7\.8/);
     assert.match(usage, /40%/);
     assert.match(usage, /US\$40\.01 \/ US\$100\.01/);
     assert.match(usage, /重置/);

@@ -246,6 +246,7 @@ func (s *Server) HandleResetCodexQuota(c *gin.Context) {
 		RespondError(c, http.StatusConflict, errCodexQuotaResetUnavailable)
 		return
 	}
+	quotaResetAt := time.Now().UTC()
 	if err := s.consumeCodexResetCredit(requestCtx, client, credential); err != nil {
 		RespondError(c, http.StatusBadGateway, err)
 		return
@@ -253,7 +254,10 @@ func (s *Server) HandleResetCodexQuota(c *gin.Context) {
 
 	postCtx, postCancel := context.WithTimeout(context.WithoutCancel(c.Request.Context()), oauthUsageTimeout)
 	defer postCancel()
-	warnings := make([]string, 0, 3)
+	warnings := make([]string, 0, 4)
+	if err := s.resetOAuthQuotaCostUsage(postCtx, id, quotaResetAt); err != nil {
+		warnings = append(warnings, "Codex quota was reset, but local cost usage reset failed")
+	}
 	if err := s.resetAllChannelCooldowns(postCtx, id); err != nil {
 		warnings = append(warnings, "Codex quota was reset, but local cooldown cleanup failed")
 	}

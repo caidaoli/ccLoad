@@ -18,6 +18,7 @@ type Store interface {
 	CreateConfig(ctx context.Context, c *model.Config) (*model.Config, error)
 	UpdateConfig(ctx context.Context, id int64, upd *model.Config) (*model.Config, error)
 	CompareAndSwapOAuthCredential(ctx context.Context, channelID int64, expectedAuthType, expectedCredential, nextCredential string) (bool, error)
+	ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error
 	DisableOAuthChannelIfCredentialMatches(ctx context.Context, channelID int64, expectedAuthType, expectedCredential string) (bool, error)
 	DisableConfigIfOAuthSnapshotMatches(ctx context.Context, expected *model.Config) (bool, error)
 	DeleteConfigIfOAuthSnapshotMatches(ctx context.Context, expected *model.Config) (bool, error)

@@ -542,6 +542,22 @@ function formatOAuthUsagePercent(value) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(1).replace(/\.0$/, '');
 }
 
+function formatOAuthAccumulatedCost(costWindow) {
+  const microUSD = Number(costWindow?.standard_cost_microusd);
+  if (!Number.isFinite(microUSD) || microUSD < 0) return '';
+  return window.t('channels.oauth.usageAccumulated', { cost: (microUSD / 1_000_000).toFixed(1) });
+}
+
+function oauthAccumulatedCostForDuration(seconds, quotaCostUsage) {
+  const duration = Math.max(0, Number(seconds) || 0);
+  const day = 24 * 60 * 60;
+  if (duration === 7 * day) return formatOAuthAccumulatedCost(quotaCostUsage?.weekly);
+  if (duration >= 28 * day && duration <= 31 * day) {
+    return formatOAuthAccumulatedCost(quotaCostUsage?.monthly);
+  }
+  return '';
+}
+
 function formatOAuthUsageResetAt(resetAt) {
   const timestamp = Number(resetAt);
   if (!Number.isFinite(timestamp) || timestamp <= 0) return '';
@@ -569,6 +585,8 @@ function formatOAuthUsageLimitName(limitName) {
   const normalized = String(limitName || '').trim().toLowerCase();
   if (!normalized || normalized === 'codex') return '';
   if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
+  if (normalized === 'gemini models') return 'Gemini';
+  if (normalized === 'claude and gpt models') return 'Claude';
   return String(limitName).trim();
 }
 
@@ -694,9 +712,10 @@ function buildXAIUsageInlineRow(label, value) {
   </div>`;
 }
 
-function buildXAIUsageRow(label, usedPercent, amount, resetAt) {
+function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostWindow) {
   const percent = formatXAIUsagePercent(usedPercent);
   const reset = formatXAIUsageReset(resetAt);
+  const accumulatedCost = formatOAuthAccumulatedCost(accumulatedCostWindow);
   const numericUsed = xaiUsageNumber(usedPercent);
   const remaining = numericUsed !== null ? Math.min(100, Math.max(0, 100 - numericUsed)) : 0;
   const ariaLabel = numericUsed === null
@@ -707,7 +726,10 @@ function buildXAIUsageRow(label, usedPercent, amount, resetAt) {
     });
   return `<div class="ch-oauth-usage__window">
     <div class="ch-oauth-usage__meta">
-      <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+      <span class="ch-oauth-usage__heading">
+        <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+        ${accumulatedCost ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(accumulatedCost)}</span>` : ''}
+      </span>
       <span class="ch-oauth-usage__details">
         <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(window.t('channels.oauth.usageUsed', { percent }))}</span>
         ${amount ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(amount)}</span>` : ''}
@@ -732,7 +754,8 @@ function buildXAIUsageRows(data) {
       window.t('channels.oauth.usageWeekly'),
       billing.weekly_usage_percent,
       '',
-      billing.weekly_reset_at
+      billing.weekly_reset_at,
+      data?.quota_cost_usage?.weekly
     ));
   }
   const products = Array.isArray(billing.product_usage) ? billing.product_usage : [];
@@ -770,7 +793,8 @@ function buildXAIUsageRows(data) {
       window.t('channels.oauth.usageMonthlyCredits'),
       monthlyPercent,
       `${formatXAIUsageMoney(billing.included_used_cents)} / ${formatXAIUsageMoney(billing.monthly_limit_cents)}`,
-      billing.monthly_reset_at
+      billing.monthly_reset_at,
+      data?.quota_cost_usage?.monthly
     ));
   }
   return rows;
@@ -808,13 +832,21 @@ function buildOAuthUsageStatusHtml(channel) {
     const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
     const label = limitName ? `${limitName} · ${duration}` : duration;
     const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
+    const accumulatedCost = oauthAccumulatedCostForDuration(
+      windowInfo?.limit_window_seconds,
+      state.data?.quota_cost_usage
+    );
     const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });
     return `<div class="ch-oauth-usage__window">
       <div class="ch-oauth-usage__meta">
-        <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
-        <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
-        ${isXAI ? `<span>${escapeChannelRefreshText(window.t('channels.oauth.usageAvailable'))}</span>` : ''}
-        ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+        <span class="ch-oauth-usage__heading">
+          <span class="ch-oauth-usage__label" title="${escapeChannelRefreshText(label)}">${escapeChannelRefreshText(label)}</span>
+          ${accumulatedCost ? `<span class="ch-oauth-usage__amount">${escapeChannelRefreshText(accumulatedCost)}</span>` : ''}
+        </span>
+        <span class="ch-oauth-usage__details">
+          <span class="ch-oauth-usage__percent">${escapeChannelRefreshText(percent)}%</span>
+          ${resetAt ? `<span class="ch-oauth-usage__reset">${escapeChannelRefreshText(resetAt)}</span>` : ''}
+        </span>
       </div>
       <div class="ch-oauth-usage__track" role="progressbar" aria-label="${escapeChannelRefreshText(ariaLabel)}" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${escapeChannelRefreshText(percent)}">
         <span class="ch-oauth-usage__fill ch-oauth-usage__fill--${oauthUsageLevel(remaining)}" style="width:${remaining}%"></span>

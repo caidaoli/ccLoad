@@ -119,26 +119,35 @@ func createOrUpdateAnthropicChannel(
 		if parseErr != nil || !sameAnthropicIdentity(existing, credential) {
 			continue
 		}
-		merged, mergeErr := existing.MergeRefresh(credential)
-		if mergeErr != nil {
-			return nil, false, mergeErr
-		}
-		mergedJSON, encodeErr := merged.JSON()
-		if encodeErr != nil {
-			return nil, false, encodeErr
-		}
-		updated, updateErr := store.CompareAndSwapOAuthCredential(
-			ctx, cfg.ID, model.AuthTypeAnthropicOAuth, cfg.OAuthCredential, mergedJSON,
-		)
-		if updateErr != nil {
-			return nil, false, updateErr
-		}
-		if !updated {
-			winner, getErr := store.GetConfig(ctx, cfg.ID)
+		for {
+			currentCfg, getErr := store.GetConfig(ctx, cfg.ID)
+			if getErr != nil {
+				return nil, false, getErr
+			}
+			current, parseErr := anthropicauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil || !currentCfg.UsesAnthropicOAuth() || !sameAnthropicIdentity(current, credential) {
+				return nil, false, errors.New("anthropic credential changed identity during reauthorization")
+			}
+			merged, mergeErr := current.MergeRefresh(credential)
+			if mergeErr != nil {
+				return nil, false, mergeErr
+			}
+			mergedJSON, encodeErr := merged.JSON()
+			if encodeErr != nil {
+				return nil, false, encodeErr
+			}
+			updated, updateErr := store.CompareAndSwapOAuthCredential(
+				ctx, currentCfg.ID, model.AuthTypeAnthropicOAuth, currentCfg.OAuthCredential, mergedJSON,
+			)
+			if updateErr != nil {
+				return nil, false, updateErr
+			}
+			if !updated {
+				continue
+			}
+			winner, getErr := store.GetConfig(ctx, currentCfg.ID)
 			return winner, false, getErr
 		}
-		winner, getErr := store.GetConfig(ctx, cfg.ID)
-		return winner, false, getErr
 	}
 	name := uniqueAnthropicChannelName(configs, credential)
 	created, err := store.CreateConfig(ctx, newAnthropicOAuthChannel(name, credentialJSON))

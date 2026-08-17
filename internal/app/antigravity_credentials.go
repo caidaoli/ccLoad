@@ -10,6 +10,7 @@ import (
 
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 
 	"golang.org/x/sync/singleflight"
@@ -275,5 +276,6 @@ func cloneAntigravityCredential(credential *antigravityauth.Credential) *antigra
 		clone.PaidTier = &paidTier
 	}
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
+	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
 	return &clone
 }

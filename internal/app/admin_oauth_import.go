@@ -17,6 +17,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
 
 	"github.com/gin-gonic/gin"
@@ -748,6 +749,7 @@ func (s *Server) completeImportedCodexCredential(ctx context.Context, credential
 		}
 		validated.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
 		validated.OAuthUsage = append(json.RawMessage(nil), credential.OAuthUsage...)
+		validated.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
 		validated.QuotaOverdraft = codexauth.CloneQuotaOverdraft(credential.QuotaOverdraft)
 		return validated, nil
 	}

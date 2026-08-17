@@ -6,12 +6,14 @@ import (
 	"fmt"
 	"math"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
 
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/util"
 
@@ -347,6 +349,7 @@ func cloneCodexCredential(credential *codexauth.Credential) *codexauth.Credentia
 	clone := *credential
 	clone.PassiveUsage = codexauth.ClonePassiveUsage(credential.PassiveUsage)
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
+	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
 	clone.QuotaOverdraft = codexauth.CloneQuotaOverdraft(credential.QuotaOverdraft)
 	return &clone
 }
@@ -596,7 +599,12 @@ func (m *codexCredentialManager) updatePassiveUsage(
 		updatedCredential := *current
 		var changed bool
 		updatedCredential.PassiveUsage, changed = mergeCodexPassiveUsage(current.PassiveUsage, update.Windows, updateTime)
-		if !changed {
+		nextQuotaCostUsage := reconcileOAuthQuotaCostUsage(
+			current.QuotaCostUsage, codexPassiveUsageSummary(&updatedCredential), updateTime,
+		)
+		quotaCostChanged := !reflect.DeepEqual(current.QuotaCostUsage, nextQuotaCostUsage)
+		updatedCredential.QuotaCostUsage = nextQuotaCostUsage
+		if !changed && !quotaCostChanged {
 			return false, nil
 		}
 		payload, err := updatedCredential.JSON()

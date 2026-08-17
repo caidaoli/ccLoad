@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 	"ccLoad/internal/xaiauth"
 
@@ -245,5 +246,6 @@ func cloneXAICredential(credential *xaiauth.Credential) *xaiauth.Credential {
 	}
 	clone := *credential
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
+	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
 	return &clone
 }
