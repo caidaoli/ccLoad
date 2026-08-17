@@ -15,8 +15,11 @@ import (
 	"ccLoad/internal/xaiauth"
 )
 
-const monthlyUsageWindowMinimumSeconds = 28 * 24 * 60 * 60
-const monthlyUsageWindowMaximumSeconds = 31 * 24 * 60 * 60
+// xAI 的额度不在 windows 数组里，按固定标识合成窗口槽位。
+const (
+	xaiQuotaWindowLimitName = "xai"
+	xaiMonthlyWindowSeconds = 30 * 24 * 60 * 60
+)
 
 type oauthUsageCredentialState struct {
 	provider       string
@@ -97,37 +100,80 @@ func reconcileOAuthQuotaCostUsage(
 	summary *oauthUsageSummary,
 	observedAt time.Time,
 ) *oauthcost.Usage {
-	weeklyReset, monthlyReset := oauthQuotaResetTimes(summary)
-	return oauthcost.Reconcile(current, weeklyReset, monthlyReset, observedAt)
+	return oauthcost.Reconcile(current, oauthQuotaSamples(summary), observedAt)
 }
 
-func oauthQuotaResetTimes(summary *oauthUsageSummary) (*time.Time, *time.Time) {
+// oauthQuotaSamples 把一次上游额度采样转成持久化槽位。槽位身份是上游的
+// (limit_name, kind)，同一时长可以对应多个互不相干的窗口（Antigravity 的
+// gemini/3p 周额度、Anthropic 的三个 7 天窗口），只按时长归并必然错位。
+func oauthQuotaSamples(summary *oauthUsageSummary) []oauthcost.Sample {
 	if summary == nil {
-		return nil, nil
+		return nil
 	}
-	var weeklyReset, monthlyReset *time.Time
+	samples := make([]oauthcost.Sample, 0, len(summary.Windows)+2)
 	for _, window := range summary.Windows {
-		if window.ResetAt <= 0 {
+		key := oauthcost.Key(window.LimitName, window.Kind)
+		if key == "" || window.ResetAt <= 0 || window.LimitWindowSeconds <= 0 {
 			continue
 		}
-		resetAt := time.Unix(window.ResetAt, 0).UTC()
-		switch {
-		case weeklyReset == nil && window.LimitWindowSeconds == weeklyUsageWindowSeconds:
-			weeklyReset = &resetAt
-		case monthlyReset == nil && window.LimitWindowSeconds >= monthlyUsageWindowMinimumSeconds &&
-			window.LimitWindowSeconds <= monthlyUsageWindowMaximumSeconds:
-			monthlyReset = &resetAt
-		}
+		samples = append(samples, oauthcost.Sample{
+			Key:           key,
+			Family:        oauthQuotaWindowFamily(summary.Provider, window.LimitName, window.Kind),
+			WindowSeconds: window.LimitWindowSeconds,
+			ResetAt:       time.Unix(window.ResetAt, 0).UTC(),
+		})
 	}
 	if summary.XAIBilling != nil {
-		if weeklyReset == nil && summary.XAIBilling.WeeklyPresent {
-			weeklyReset = parseOAuthQuotaResetTime(summary.XAIBilling.WeeklyResetAt)
+		if summary.XAIBilling.WeeklyPresent {
+			if resetAt := parseOAuthQuotaResetTime(summary.XAIBilling.WeeklyResetAt); resetAt != nil {
+				samples = append(samples, oauthcost.Sample{
+					Key:           oauthcost.Key(xaiQuotaWindowLimitName, "weekly"),
+					WindowSeconds: weeklyUsageWindowSeconds,
+					ResetAt:       *resetAt,
+				})
+			}
 		}
-		if monthlyReset == nil && summary.XAIBilling.MonthlyPresent {
-			monthlyReset = parseOAuthQuotaResetTime(summary.XAIBilling.MonthlyResetAt)
+		if summary.XAIBilling.MonthlyPresent {
+			if resetAt := parseOAuthQuotaResetTime(summary.XAIBilling.MonthlyResetAt); resetAt != nil {
+				samples = append(samples, oauthcost.Sample{
+					Key:           oauthcost.Key(xaiQuotaWindowLimitName, "monthly"),
+					WindowSeconds: xaiMonthlyWindowSeconds,
+					ResetAt:       *resetAt,
+				})
+			}
 		}
 	}
-	return weeklyReset, monthlyReset
+	return samples
+}
+
+// oauthQuotaWindowFamily 把 provider 的窗口标识映射到模型族：只覆盖部分模型的
+// 窗口不能累加其他模型的消耗。
+func oauthQuotaWindowFamily(provider, limitName, kind string) string {
+	limitName = strings.ToLower(strings.TrimSpace(limitName))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	switch provider {
+	case antigravityauth.ChannelType:
+		// Antigravity 的 bucketId 带族前缀（gemini-* / 3p-*）。
+		switch {
+		case strings.HasPrefix(kind, "gemini"):
+			return oauthcost.FamilyGemini
+		case strings.HasPrefix(kind, "3p"):
+			return oauthcost.FamilyNonGemini
+		}
+	case anthropicauth.ChannelType:
+		switch kind {
+		case "seven_day_sonnet":
+			return oauthcost.FamilySonnet
+		case "seven_day_fable":
+			return oauthcost.FamilyFable
+		}
+	case codexauth.ChannelType:
+		// codex-spark 是附加额度窗口，只覆盖 Spark 模型；主 codex 窗口覆盖全部。
+		if strings.Contains(limitName, "spark") {
+			return oauthcost.FamilySpark
+		}
+	}
+	return oauthcost.FamilyAll
 }
 
 func parseOAuthQuotaResetTime(raw string) *time.Time {
@@ -139,12 +185,26 @@ func parseOAuthQuotaResetTime(raw string) *time.Time {
 	return &parsed
 }
 
+// attachOAuthQuotaCostUsage 把每个上游窗口的累计成本内联到窗口本身，
+// 前端按窗口渲染即可，不必再从时长反查槽位。
 func attachOAuthQuotaCostUsage(summary *oauthUsageSummary, usage *oauthcost.Usage) *oauthUsageSummary {
 	if summary == nil {
 		return nil
 	}
 	clone := *summary
 	clone.QuotaCostUsage = oauthcost.Clone(usage)
+	if len(summary.Windows) > 0 {
+		windows := make([]oauthUsageWindow, len(summary.Windows))
+		copy(windows, summary.Windows)
+		for i := range windows {
+			windows[i].StandardCostMicroUSD = nil
+			if window := oauthcost.Find(usage, oauthcost.Key(windows[i].LimitName, windows[i].Kind)); window != nil {
+				cost := window.StandardCostMicroUSD
+				windows[i].StandardCostMicroUSD = &cost
+			}
+		}
+		clone.Windows = windows
+	}
 	return &clone
 }
 

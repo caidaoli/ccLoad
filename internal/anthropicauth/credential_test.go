@@ -55,9 +55,10 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 		AccountUUID: "account", EmailAddress: "user@example.com", PlanType: "Pro",
 		ClaudeCodeTrialEndsAt: "2030-02-03T04:05:06Z",
 		OAuthUsage:            []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`),
-		QuotaCostUsage: &oauthcost.Usage{Weekly: &oauthcost.Window{
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "|seven_day", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: 1_893_456_000, ResetAt: 1_894_060_800, StandardCostMicroUSD: 3_500_000,
-		}},
+		}}},
 	}
 	refreshed := &Credential{
 		Type: ChannelType, AccessToken: "new-access", RefreshToken: "rotated-refresh",
@@ -70,7 +71,8 @@ func TestCredentialMergeRefreshPreservesIdentityAndUsesRotatedRefreshToken(t *te
 	if merged.RefreshToken != "rotated-refresh" || merged.AccountUUID != "account" || merged.Scope != "scope" ||
 		merged.PlanType != "Pro" || merged.ClaudeCodeTrialEndsAt != "2030-02-03T04:05:06Z" ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` ||
-		merged.QuotaCostUsage == nil || merged.QuotaCostUsage.Weekly.StandardCostMicroUSD != 3_500_000 {
+		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
+		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 3_500_000 {
 		t.Fatalf("merged = %+v", merged)
 	}
 	needsRefresh, err := merged.NeedsRefresh(time.Date(2030, 1, 1, 23, 56, 0, 0, time.UTC), 5*time.Minute)

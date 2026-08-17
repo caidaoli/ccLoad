@@ -96,9 +96,12 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
       provider: 'codex',
       windows: [{
         limit_name: 'codex', kind: 'primary', remaining_percent: 25,
-        limit_window_seconds: 604800, reset_at: 4070908800
+        limit_window_seconds: 604800, reset_at: 4070908800,
+        standard_cost_microusd: 12000000
       }],
-      quota_cost_usage: { weekly: { standard_cost_microusd: 12000000 } },
+      quota_cost_usage: {
+        windows: [{ key: 'codex|primary', window_seconds: 604800, standard_cost_microusd: 12000000 }]
+      },
       rate_limit_reset_credits: {
         available_count: 2,
         credits: [
@@ -180,8 +183,10 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
         monthly_present: true
       },
       quota_cost_usage: {
-        weekly: { standard_cost_microusd: 3450000 },
-        monthly: { standard_cost_microusd: 7800000 }
+        windows: [
+          { key: 'xai|weekly', window_seconds: 604800, standard_cost_microusd: 3450000 },
+          { key: 'xai|monthly', window_seconds: 2592000, standard_cost_microusd: 7800000 }
+        ]
       },
       warnings: ['Monthly unavailable <retry>']
     }
@@ -315,6 +320,61 @@ test('xAI 只渲染 API 标记实际存在的周期', () => {
     assert.match(weeklyUsage, /周额度/);
     assert.match(weeklyUsage, /已用0%/);
     assert.doesNotMatch(weeklyUsage, /月度积分/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
+test('Antigravity 同时长的两个额度窗口各自显示自己的累计成本', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周额度',
+        'channels.oauth.usageHours': `${values.count}小时额度`,
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.usageAccumulated': `累计${values.cost}`
+      })[key] || key;
+    }
+  };
+  global.getOAuthUsageState = () => ({
+    status: 'ready',
+    data: {
+      provider: 'antigravity',
+      windows: [
+        {
+          limit_name: 'Gemini Models', kind: 'gemini-weekly', remaining_percent: 31,
+          limit_window_seconds: 604800, standard_cost_microusd: 300000
+        },
+        {
+          limit_name: 'Gemini Models', kind: 'gemini-5h', remaining_percent: 92,
+          limit_window_seconds: 18000, standard_cost_microusd: 120000
+        },
+        {
+          limit_name: 'Claude and GPT models', kind: '3p-weekly', remaining_percent: 100,
+          limit_window_seconds: 604800, standard_cost_microusd: 0
+        },
+        {
+          limit_name: 'Claude and GPT models', kind: '3p-5h', remaining_percent: 100,
+          limit_window_seconds: 18000, standard_cost_microusd: 0
+        }
+      ]
+    }
+  });
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 31, auth_type: 'antigravity_oauth' });
+    // 同为 604800 秒的两行必须各贴各的值，不能共用同一个累计成本。
+    assert.match(html, /Gemini · 周额度[\s\S]*?累计0\.3/);
+    assert.match(html, /Gemini · 5小时额度[\s\S]*?累计0\.1/);
+    assert.match(html, /Claude · 周额度[\s\S]*?累计0\.0/);
+    assert.match(html, /Claude · 5小时额度[\s\S]*?累计0\.0/);
+    assert.equal(html.match(/累计0\.3/g).length, 1);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

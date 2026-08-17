@@ -251,6 +251,11 @@ func (s *SQLStore) queryRowTx(ctx context.Context, tx *sql.Tx, query string, arg
 	return tx.QueryRowContext(ctx, s.q(query), normalizeSQLArgs(args)...)
 }
 
+// queryTx 在事务中查多行（自动 rebind）
+func (s *SQLStore) queryTx(ctx context.Context, tx *sql.Tx, query string, args ...any) (*sql.Rows, error) {
+	return tx.QueryContext(ctx, s.q(query), normalizeSQLArgs(args)...)
+}
+
 // prepareTx 在事务中预处理（自动 rebind）
 func (s *SQLStore) prepareTx(ctx context.Context, tx *sql.Tx, query string) (*normalizedStmt, error) {
 	stmt, err := tx.PrepareContext(ctx, s.q(query))
