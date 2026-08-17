@@ -83,6 +83,7 @@ type Server struct {
 	codexOAuth                    *codexOAuthManager
 	codexService                  *codexauth.Service
 	codexCredentials              *codexCredentialManager
+	codexQuotaResetInFlight       sync.Map
 	antigravityOAuth              *codexOAuthManager
 	antigravityCredentials        *antigravityCredentialManager
 	antigravityService            *antigravityauth.Service
@@ -1398,6 +1399,7 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/channels/:id/codex-credential/refresh", s.HandleRefreshCodexCredential)
 		admin.PUT("/channels/:id/codex-quota-overdraft", s.HandleUpdateCodexQuotaOverdraft)
 		admin.POST("/channels/:id/oauth-usage", s.HandleOAuthUsage)
+		admin.POST("/channels/:id/codex-quota-reset", s.HandleResetCodexQuota)
 		admin.POST("/channels/oauth-usage/batch/stream", s.HandleOAuthUsageBatchStream)
 		admin.POST("/antigravity/oauth/start", s.HandleStartAntigravityOAuth)
 		admin.GET("/antigravity/oauth/status", s.HandleAntigravityOAuthStatus)

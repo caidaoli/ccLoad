@@ -25,6 +25,8 @@ import (
 
 const (
 	codexUsageURL              = "https://chatgpt.com/backend-api/wham/usage"
+	codexResetCreditsURL       = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+	codexResetCreditConsumeURL = codexResetCreditsURL + "/consume"
 	codexUsageUserAgent        = codexUserAgent
 	anthropicUsageUserAgent    = "claude-code/" + anthropicCLIVersion
 	antigravityUsageURL        = "https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"
@@ -111,9 +113,10 @@ type codexAdditionalRateLimit struct {
 }
 
 type codexUsagePayload struct {
-	PlanType             string                     `json:"plan_type"`
-	RateLimit            *codexUsageRateLimit       `json:"rate_limit"`
-	AdditionalRateLimits []codexAdditionalRateLimit `json:"additional_rate_limits"`
+	PlanType              string                     `json:"plan_type"`
+	RateLimit             *codexUsageRateLimit       `json:"rate_limit"`
+	AdditionalRateLimits  []codexAdditionalRateLimit `json:"additional_rate_limits"`
+	RateLimitResetCredits *codexQuotaResetCredits    `json:"rate_limit_reset_credits"`
 }
 
 type anthropicUsageRawWindow struct {
@@ -178,13 +181,14 @@ type oauthUsageWindow struct {
 }
 
 type oauthUsageSummary struct {
-	Provider          string             `json:"provider"`
-	PlanType          string             `json:"plan_type,omitempty"`
-	SubscriptionTier  string             `json:"subscription_tier,omitempty"`
-	EntitlementStatus string             `json:"entitlement_status,omitempty"`
-	Windows           []oauthUsageWindow `json:"windows"`
-	Warnings          []string           `json:"warnings,omitempty"`
-	XAIBilling        *xaiBillingSummary `json:"xai_billing,omitempty"`
+	Provider              string                  `json:"provider"`
+	PlanType              string                  `json:"plan_type,omitempty"`
+	SubscriptionTier      string                  `json:"subscription_tier,omitempty"`
+	EntitlementStatus     string                  `json:"entitlement_status,omitempty"`
+	Windows               []oauthUsageWindow      `json:"windows"`
+	RateLimitResetCredits *codexQuotaResetCredits `json:"rate_limit_reset_credits,omitempty"`
+	Warnings              []string                `json:"warnings,omitempty"`
+	XAIBilling            *xaiBillingSummary      `json:"xai_billing,omitempty"`
 }
 
 type persistedOAuthUsageSnapshot struct {
@@ -653,14 +657,34 @@ func requestCodexUsage(ctx context.Context, client *http.Client, credential *cod
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, errors.New("usage: Codex response is invalid")
 	}
-	return normalizeCodexUsage(&payload, credential.PlanType)
+	summary, err := normalizeCodexUsage(&payload, credential.PlanType)
+	if err != nil {
+		return nil, err
+	}
+	resetCredits, resetErr := requestCodexResetCredits(ctx, client, credential, time.Now())
+	if resetErr != nil {
+		summary.RateLimitResetCredits = cloneCodexQuotaResetCredits(payload.RateLimitResetCredits)
+		return summary, nil
+	}
+	summary.RateLimitResetCredits = resetCredits
+	return summary, nil
 }
 
 func newCodexUsageRequest(ctx context.Context, credential *codexauth.Credential) (*http.Request, error) {
+	return newCodexQuotaRequest(ctx, http.MethodGet, codexUsageURL, nil, credential)
+}
+
+func newCodexQuotaRequest(
+	ctx context.Context,
+	method string,
+	target string,
+	body io.Reader,
+	credential *codexauth.Credential,
+) (*http.Request, error) {
 	if credential == nil || strings.TrimSpace(credential.AccessToken) == "" {
 		return nil, errors.New("usage: Codex request is unavailable")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, codexUsageURL, nil)
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
 		return nil, err
 	}
@@ -668,6 +692,8 @@ func newCodexUsageRequest(ctx context.Context, credential *codexauth.Credential)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", codexUsageUserAgent)
+	req.Header.Set("OpenAI-Beta", "codex-1")
+	req.Header.Set("Originator", codexOriginator)
 	if credential.AccountID != "" {
 		req.Header.Set("Chatgpt-Account-Id", credential.AccountID)
 	}
@@ -1506,7 +1532,9 @@ func latestOAuthUsage(
 	}
 	passiveTime, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(passiveSampledAt))
 	if err == nil && passiveTime.After(activeSampledAt) {
-		return passive
+		merged := *passive
+		merged.RateLimitResetCredits = cloneCodexQuotaResetCredits(active.RateLimitResetCredits)
+		return &merged
 	}
 	return active
 }

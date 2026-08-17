@@ -602,11 +602,61 @@ function oauthUsageLevel(remainingPercent) {
   return 'empty';
 }
 
-function buildOAuthUsageRefreshButton(channelID, loading = false) {
+function buildOAuthUsageRefreshButton(channelID, loading = false, disabled = false) {
   const text = loading
     ? window.t('channels.oauth.usageRefreshing')
     : window.t('channels.oauth.usageRefresh');
-  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading ? ' disabled aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+  return `<button type="button" class="ch-oauth-usage__refresh channel-action-btn" data-action="refresh-oauth-usage" data-channel-id="${channelID}"${loading || disabled ? ' disabled' : ''}${loading ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(text)}</button>`;
+}
+
+function formatCodexResetCreditExpiry(expiresAt) {
+  const date = new Date(String(expiresAt || '').trim());
+  if (Number.isNaN(date.getTime()) || date.getTime() <= Date.now()) return null;
+  const pad = value => String(value).padStart(2, '0');
+  return {
+    timestamp: date.getTime(),
+    text: `${pad(date.getMonth() + 1)}/${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`
+  };
+}
+
+function buildCodexResetCreditsHtml(data, state, channelID) {
+  const resetCredits = data?.rate_limit_reset_credits || {};
+  const rawCount = Number(resetCredits.available_count);
+  const normalizedCount = Number.isInteger(rawCount) && rawCount > 0 ? rawCount : 0;
+  const hasCreditList = Array.isArray(resetCredits.credits);
+  const expiries = (hasCreditList ? resetCredits.credits : [])
+    .map(credit => formatCodexResetCreditExpiry(credit?.expires_at))
+    .filter(Boolean)
+    .sort((left, right) => left.timestamp - right.timestamp);
+  const availableCount = hasCreditList ? Math.min(normalizedCount, expiries.length) : normalizedCount;
+  if (availableCount <= 0) return '';
+  const visibleExpiries = expiries.slice(0, availableCount);
+  const earliest = visibleExpiries[0]?.text || '';
+  const resetting = state?.reset_status === 'loading';
+  const stale = state?.reset_status === 'stale';
+  const disabled = resetting || stale;
+  const buttonText = resetting
+    ? window.t('channels.oauth.resettingQuota')
+    : window.t('channels.oauth.resetQuota');
+  const expiryText = earliest
+    ? window.t('channels.oauth.resetCreditExpiresEarliest', { time: earliest })
+    : window.t('channels.oauth.resetCreditExpiresUnknown');
+  const resetError = String(state?.reset_error || '').trim();
+  const expiryDetails = visibleExpiries.length > 1
+    ? `<details class="ch-oauth-usage__credit-expiries">
+        <summary>${escapeChannelRefreshText(window.t('channels.oauth.resetCreditExpiresAll', { count: visibleExpiries.length }))}</summary>
+        <ul>${visibleExpiries.map(expiry => `<li>${escapeChannelRefreshText(expiry.text)}</li>`).join('')}</ul>
+      </details>`
+    : '';
+  return `<div class="ch-oauth-usage__credits">
+    <div class="ch-oauth-usage__credits-summary">
+      <span class="ch-oauth-usage__credit-count">${escapeChannelRefreshText(window.t('channels.oauth.resetCredits', { count: availableCount }))}</span>
+      <span class="ch-oauth-usage__credit-expiry">${escapeChannelRefreshText(expiryText)}</span>
+      <button type="button" class="ch-oauth-usage__reset-action channel-action-btn" data-action="reset-codex-quota" data-channel-id="${channelID}" data-reset-count="${availableCount}" data-reset-expiry="${escapeChannelRefreshText(earliest)}"${disabled ? ' disabled' : ''}${resetting ? ' aria-busy="true"' : ''}>${escapeChannelRefreshText(buttonText)}</button>
+    </div>
+    ${expiryDetails}
+    ${resetError ? `<div class="ch-oauth-usage__error" role="status">${escapeChannelRefreshText(resetError)}</div>` : ''}
+  </div>`;
 }
 
 function formatXAIUsagePercent(value) {
@@ -750,6 +800,7 @@ function buildOAuthUsageStatusHtml(channel) {
 
   const windows = Array.isArray(state.data?.windows) ? state.data.windows : [];
   const isXAI = channel?.auth_type === 'xai_oauth' || state.data?.provider === 'xai';
+  const isCodex = channel?.auth_type === 'codex_oauth';
   const rows = isXAI ? buildXAIUsageRows(state.data) : windows.map(windowInfo => {
     const remaining = Math.min(100, Math.max(0, Number(windowInfo?.remaining_percent) || 0));
     const percent = formatOAuthUsagePercent(remaining);
@@ -774,8 +825,9 @@ function buildOAuthUsageStatusHtml(channel) {
     ? state.data.warnings.filter(Boolean).map(warning => `<li>${escapeChannelRefreshText(warning)}</li>`).join('')
     : '';
   return `<div class="ch-oauth-usage">
-    <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id)}</div>
+    <div class="ch-oauth-usage__toolbar">${buildOAuthUsageRefreshButton(channel.id, false, state.reset_status === 'loading')}</div>
     ${rows.join('')}
+    ${isCodex ? buildCodexResetCreditsHtml(state.data, state, channel.id) : ''}
     ${warnings ? `<div role="status"><span>${escapeChannelRefreshText(window.t('channels.oauth.usageWarnings'))}</span><ul>${warnings}</ul></div>` : ''}
   </div>`;
 }
@@ -1037,7 +1089,7 @@ function initChannelEventDelegation() {
     if (!btn) return;
 
     const action = btn.dataset.action;
-    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
+    if (isTokenChannelsReadOnly() && ['edit', 'edit-cooling-keys', 'refresh-oauth-usage', 'reset-codex-quota', 'test', 'copy', 'delete', 'toggle'].includes(action)) {
       return;
     }
     const channelId = parseInt(btn.dataset.channelId);
@@ -1055,6 +1107,23 @@ function initChannelEventDelegation() {
         if (typeof refreshOAuthUsage === 'function') {
           refreshOAuthUsage(channelId).catch(error => {
             if (window.showError) window.showError(error?.message || window.t('channels.oauth.usageFailed'));
+          });
+        }
+        break;
+      case 'reset-codex-quota':
+        if (typeof resetCodexQuota === 'function') {
+          const count = Math.max(0, Number(btn.dataset.resetCount) || 0);
+          const expiry = btn.dataset.resetExpiry || window.t('channels.oauth.resetCreditExpiresUnknown');
+          const confirmed = window.confirm(window.t('channels.oauth.resetConfirm', { count, time: expiry }));
+          if (!confirmed) break;
+          resetCodexQuota(channelId).then(result => {
+            const hasWarnings = Array.isArray(result?.warnings) && result.warnings.length > 0;
+            const message = !result?.usage || hasWarnings
+              ? window.t('channels.oauth.resetSuccessNeedsRefresh')
+              : window.t('channels.oauth.resetSuccess');
+            if (window.showSuccess) window.showSuccess(message);
+          }).catch(error => {
+            if (window.showError) window.showError(error?.message || window.t('channels.oauth.resetFailed'));
           });
         }
         break;
