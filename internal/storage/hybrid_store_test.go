@@ -362,6 +362,26 @@ func TestHybridStore_OAuthCASHasSingleSQLiteWinner(t *testing.T) {
 		return primaryErr == nil && primaryConfig.OAuthCredential == got.OAuthCredential &&
 			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
+	if err := hybrid.SetChannelCooldown(ctx, created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := hybrid.DisableConfigIfOAuthSnapshotMatches(ctx, snapshot)
+	if err != nil || !disabled {
+		t.Fatalf("disable OAuth winner = (%v, %v), want (true, nil)", disabled, err)
+	}
+	local, err := hybrid.GetConfig(ctx, created.ID)
+	if err != nil || local.Enabled || local.CooldownUntil != 0 || local.CooldownDurationMs != 0 {
+		t.Fatalf("SQLite rejected OAuth state = (%+v, %v)", local, err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		primaryConfig, primaryErr := primary.GetConfig(ctx, created.ID)
+		return primaryErr == nil && !primaryConfig.Enabled && primaryConfig.CooldownUntil == 0 &&
+			primaryConfig.CooldownDurationMs == 0 && hybrid.RuntimeMetrics().PrimarySyncPending == 0
+	})
 }
 
 func TestHybridStore_ChannelAuthTypeChangeConvergesByReplacingPrimaryAggregate(t *testing.T) {

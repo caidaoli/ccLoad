@@ -30,6 +30,9 @@ const (
 	oauthCredentialCleanupJobRetention   = time.Hour
 	oauthCredentialCleanupMaxRunningJobs = 1
 	oauthCredentialCleanupWorkers        = 8
+
+	oauthCredentialCleanupActionDisable = "disable"
+	oauthCredentialCleanupActionDelete  = "delete"
 )
 
 var (
@@ -43,11 +46,13 @@ type oauthCredentialCleanupJobStart struct {
 	Total    int    `json:"total"`
 	AuthType string `json:"auth_type"`
 	Model    string `json:"model"`
+	Action   string `json:"action"`
 }
 
 type oauthCredentialCleanupJobRequest struct {
 	AuthType string `json:"auth_type"`
 	Model    string `json:"model"`
+	Action   string `json:"action"`
 	// Reject stale clients explicitly: silently ignoring channel_id would
 	// unexpectedly broaden a single-channel request to every provider channel.
 	ChannelID *int64 `json:"channel_id"`
@@ -62,6 +67,7 @@ type oauthCredentialCleanupOptions struct {
 type oauthCredentialCleanupCounts struct {
 	Healthy   int `json:"healthy"`
 	Refreshed int `json:"refreshed"`
+	Disabled  int `json:"disabled"`
 	Deleted   int `json:"deleted"`
 	Failed    int `json:"failed"`
 	Skipped   int `json:"skipped"`
@@ -99,6 +105,7 @@ type oauthCredentialCleanupJob struct {
 	requestID       string
 	authType        string
 	model           string
+	action          string
 	status          string
 	total           int
 	processed       int
@@ -129,7 +136,7 @@ func (j *oauthCredentialCleanupJob) appendEventLocked(event oauthCredentialClean
 func (j *oauthCredentialCleanupJob) finishChannel(event oauthCredentialCleanupEvent) bool {
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	if j.cancelRequested && event.Status != "deleted" {
+	if j.cancelRequested && event.Status != "deleted" && event.Status != "disabled" {
 		return false
 	}
 
@@ -139,6 +146,8 @@ func (j *oauthCredentialCleanupJob) finishChannel(event oauthCredentialCleanupEv
 		j.counts.Healthy++
 	case "refreshed":
 		j.counts.Refreshed++
+	case "disabled":
+		j.counts.Disabled++
 	case "deleted":
 		j.counts.Deleted++
 	case "skipped":
@@ -174,7 +183,7 @@ func (j *oauthCredentialCleanupJob) finishRun(err error) {
 	})
 }
 
-func (j *oauthCredentialCleanupJob) deleteIfNotCancelled(
+func (j *oauthCredentialCleanupJob) mutateIfNotCancelled(
 	action func() (bool, error),
 ) (bool, error) {
 	j.destructiveMu.Lock()
@@ -230,6 +239,7 @@ func (m *oauthCredentialCleanupJobManager) Start(
 	requestID string,
 	authType string,
 	modelName string,
+	action string,
 ) (oauthCredentialCleanupJobStart, error) {
 	if server == nil {
 		return oauthCredentialCleanupJobStart{}, errors.New("OAuth credential cleanup is unavailable")
@@ -242,7 +252,7 @@ func (m *oauthCredentialCleanupJobManager) Start(
 	}
 	now := time.Now()
 	m.evictExpiredLocked(now)
-	if started, ok, err := m.startForRequestLocked(requestID, authType, modelName); ok || err != nil {
+	if started, ok, err := m.startForRequestLocked(requestID, authType, modelName, action); ok || err != nil {
 		return started, err
 	}
 	if m.running >= oauthCredentialCleanupMaxRunningJobs {
@@ -255,6 +265,7 @@ func (m *oauthCredentialCleanupJobManager) Start(
 		requestID: requestID,
 		authType:  authType,
 		model:     modelName,
+		action:    action,
 		status:    oauthCredentialCleanupJobRunning,
 		total:     len(configs),
 		events:    make([]oauthCredentialCleanupEvent, 0, len(configs)*2+2),
@@ -279,12 +290,12 @@ func (m *oauthCredentialCleanupJobManager) Start(
 
 func (j *oauthCredentialCleanupJob) start() oauthCredentialCleanupJobStart {
 	return oauthCredentialCleanupJobStart{
-		JobID: j.id, Total: j.total, AuthType: j.authType, Model: j.model,
+		JobID: j.id, Total: j.total, AuthType: j.authType, Model: j.model, Action: j.action,
 	}
 }
 
 func (m *oauthCredentialCleanupJobManager) startForRequest(
-	requestID, authType, modelName string,
+	requestID, authType, modelName, action string,
 ) (oauthCredentialCleanupJobStart, bool, error) {
 	if requestID == "" {
 		return oauthCredentialCleanupJobStart{}, false, nil
@@ -292,11 +303,11 @@ func (m *oauthCredentialCleanupJobManager) startForRequest(
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.evictExpiredLocked(time.Now())
-	return m.startForRequestLocked(requestID, authType, modelName)
+	return m.startForRequestLocked(requestID, authType, modelName, action)
 }
 
 func (m *oauthCredentialCleanupJobManager) startForRequestLocked(
-	requestID, authType, modelName string,
+	requestID, authType, modelName, action string,
 ) (oauthCredentialCleanupJobStart, bool, error) {
 	id, ok := m.requests[requestID]
 	if !ok {
@@ -307,7 +318,7 @@ func (m *oauthCredentialCleanupJobManager) startForRequestLocked(
 		delete(m.requests, requestID)
 		return oauthCredentialCleanupJobStart{}, false, nil
 	}
-	if job.authType != authType || job.model != modelName {
+	if job.authType != authType || job.model != modelName || job.action != action {
 		return oauthCredentialCleanupJobStart{}, false, errOAuthCredentialCleanupRequestConflict
 	}
 	return job.start(), true, nil
@@ -330,8 +341,8 @@ func (m *oauthCredentialCleanupJobManager) Cancel(id string) (string, bool) {
 	job.cancel()
 	job.mu.Unlock()
 
-	// Wait for any delete that crossed the gate before cancellation. Once this
-	// returns, no later channel deletion can begin for this job.
+	// Wait for any mutation that crossed the gate before cancellation. Once this
+	// returns, no later channel mutation can begin for this job.
 	job.destructiveMu.Lock()
 	job.mu.Lock()
 	status := job.status
@@ -445,6 +456,17 @@ func normalizeOAuthCredentialCleanupModel(value string) string {
 	return modelName
 }
 
+func normalizeOAuthCredentialCleanupAction(value string) string {
+	switch strings.TrimSpace(strings.ToLower(value)) {
+	case "", oauthCredentialCleanupActionDisable:
+		return oauthCredentialCleanupActionDisable
+	case oauthCredentialCleanupActionDelete:
+		return oauthCredentialCleanupActionDelete
+	default:
+		return ""
+	}
+}
+
 func oauthCredentialCleanupScope(
 	configs []*model.Config,
 	authType string,
@@ -523,15 +545,16 @@ func (s *Server) HandleStartOAuthCredentialCleanupJob(c *gin.Context) {
 	}
 	authType := normalizeOAuthCredentialCleanupAuthType(input.AuthType)
 	modelName := normalizeOAuthCredentialCleanupModel(input.Model)
-	if authType == "" || modelName == "" {
-		RespondErrorMsg(c, http.StatusBadRequest, "a supported OAuth auth_type and concrete model are required")
+	action := normalizeOAuthCredentialCleanupAction(input.Action)
+	if authType == "" || modelName == "" || action == "" {
+		RespondErrorMsg(c, http.StatusBadRequest, "auth_type must be a supported OAuth type, model must be concrete, and action must be disable or delete when provided")
 		return
 	}
 	if input.ChannelID != nil {
 		RespondErrorMsg(c, http.StatusBadRequest, "channel_id is not supported; cleanup always tests every channel for the selected OAuth auth_type")
 		return
 	}
-	if started, ok, err := manager.startForRequest(requestID, authType, modelName); err != nil {
+	if started, ok, err := manager.startForRequest(requestID, authType, modelName, action); err != nil {
 		RespondError(c, http.StatusConflict, err)
 		return
 	} else if ok {
@@ -549,7 +572,7 @@ func (s *Server) HandleStartOAuthCredentialCleanupJob(c *gin.Context) {
 		RespondErrorMsg(c, http.StatusBadRequest, "the selected model is not configured on any channel for this OAuth auth_type")
 		return
 	}
-	started, err := manager.Start(s, oauthConfigs, requestID, authType, modelName)
+	started, err := manager.Start(s, oauthConfigs, requestID, authType, modelName, action)
 	if err != nil {
 		status := http.StatusServiceUnavailable
 		if errors.Is(err, errOAuthCredentialCleanupRequestConflict) {
@@ -564,7 +587,7 @@ func (s *Server) HandleStartOAuthCredentialCleanupJob(c *gin.Context) {
 }
 
 // HandleCancelOAuthCredentialCleanupJob cancels queued tests and prevents an
-// in-flight refresh from performing a later delete once it returns.
+// in-flight refresh from mutating a channel once it returns.
 func (s *Server) HandleCancelOAuthCredentialCleanupJob(c *gin.Context) {
 	manager := s.currentOAuthCredentialCleanupJobs()
 	if manager == nil {
@@ -690,6 +713,12 @@ func (s *Server) runOAuthCredentialCleanup(
 					ChannelID: cfg.ID, ChannelName: cfg.Name, AuthType: cfg.GetAuthType(),
 					Models: cfg.GetModels(), Model: modelName,
 				}
+				if job.action == oauthCredentialCleanupActionDisable && !cfg.Enabled {
+					baseEvent.Status = "skipped"
+					baseEvent.Error = "channel is already disabled"
+					job.finishChannel(baseEvent)
+					continue
+				}
 				job.appendEvent(withOAuthCredentialCleanupStage(baseEvent, "testing"))
 				outcome := s.cleanupOAuthCredentialChannel(ctx, job, cfg, baseEvent, finalizeDeletion)
 				job.finishChannel(outcome)
@@ -768,30 +797,40 @@ func (s *Server) cleanupOAuthCredentialChannel(
 			event.Error = ctx.Err().Error()
 			return event
 		}
-		deletingEvent := withOAuthCredentialCleanupStage(event, "deleting")
-		deletingEvent.Error = refreshErr.Error()
-		wasDeleted, deleteErr := job.deleteIfNotCancelled(func() (bool, error) {
-			job.appendEvent(deletingEvent)
-			return s.deleteChannelIfOAuthCredentialMatches(ctx, cfg)
+		stage := "disabling"
+		if job.action == oauthCredentialCleanupActionDelete {
+			stage = "deleting"
+		}
+		mutationEvent := withOAuthCredentialCleanupStage(event, stage)
+		mutationEvent.Error = refreshErr.Error()
+		mutated, mutationErr := job.mutateIfNotCancelled(func() (bool, error) {
+			job.appendEvent(mutationEvent)
+			if job.action == oauthCredentialCleanupActionDelete {
+				return s.deleteChannelIfOAuthCredentialMatches(ctx, cfg)
+			}
+			return s.disableChannelIfOAuthSnapshotMatches(ctx, cfg)
 		})
-		if deleteErr != nil {
-			if errors.Is(deleteErr, context.Canceled) {
+		if mutationErr != nil {
+			if errors.Is(mutationErr, context.Canceled) {
 				event.Status = "failed"
-				event.Error = deleteErr.Error()
+				event.Error = mutationErr.Error()
 				return event
 			}
 			event.Status = "failed"
-			event.Error = fmt.Sprintf("refresh failed: %v; delete channel: %v", refreshErr, deleteErr)
+			event.Error = fmt.Sprintf("refresh failed: %v; %s channel: %v", refreshErr, job.action, mutationErr)
 			return event
 		}
-		if !wasDeleted {
+		if !mutated {
 			event.Status = "skipped"
 			event.Error = "channel configuration changed while cleanup was running; kept current channel"
 			return event
 		}
-		event.Status = "deleted"
+		event.Status = "disabled"
+		if job.action == oauthCredentialCleanupActionDelete {
+			event.Status = "deleted"
+		}
 		event.Error = refreshErr.Error()
-		if finalizeDeletion != nil {
+		if job.action == oauthCredentialCleanupActionDelete && finalizeDeletion != nil {
 			if finalizeErr := finalizeDeletion(); finalizeErr != nil {
 				event.Error += "; synchronize deleted channel state: " + finalizeErr.Error()
 			}
@@ -901,7 +940,7 @@ func (s *Server) testOAuthCredentialChannel(
 		oauthCredentialMatchesTestRuntime(currentCfg, runtimeCfg, keySelection) {
 		// Keep the persisted routing/model snapshot that actually produced this
 		// request. Only adopt the credential and revision written by an automatic
-		// refresh. A concurrent admin edit must make the later conditional delete
+		// refresh. A concurrent admin edit must make the later conditional mutation
 		// fail even when it deliberately preserves the OAuth credential.
 		testedCfg.OAuthCredential = currentCfg.OAuthCredential
 		testedCfg.UpdatedAt = currentCfg.UpdatedAt

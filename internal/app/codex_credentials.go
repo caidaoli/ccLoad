@@ -53,6 +53,41 @@ type codexCredentialManager struct {
 	passiveSamples   map[int64]map[string]time.Time
 }
 
+// codexCredentialRefreshError keeps the exact persisted credential snapshot
+// used by a failed refresh. Runtime rejection handling can then disable that
+// snapshot atomically without touching a concurrently reauthorized channel.
+type codexCredentialRefreshError struct {
+	cause      error
+	authType   string
+	credential string
+}
+
+func (e *codexCredentialRefreshError) Error() string {
+	if e == nil || e.cause == nil {
+		return "Codex credential refresh failed"
+	}
+	return e.cause.Error()
+}
+
+func (e *codexCredentialRefreshError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+func newCodexCredentialRefreshError(cfg *model.Config, cause error) error {
+	if cause == nil {
+		return nil
+	}
+	if cfg == nil {
+		return cause
+	}
+	return &codexCredentialRefreshError{
+		cause: cause, authType: cfg.GetAuthType(), credential: cfg.OAuthCredential,
+	}
+}
+
 type codexPassiveUsageUpdate struct {
 	Windows   []codexauth.PassiveUsageWindow
 	SampledAt string
@@ -100,7 +135,9 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 	}
 	if credential.IsPersonalAccessToken() {
 		if forceRefresh {
-			return cloneCodexCredential(credential), codexauth.ErrPersonalAccessTokenCannotRefresh
+			return cloneCodexCredential(credential), newCodexCredentialRefreshError(
+				cfg, codexauth.ErrPersonalAccessTokenCannotRefresh,
+			)
 		}
 		return cloneCodexCredential(credential), nil
 	}
@@ -164,7 +201,10 @@ func (m *codexCredentialManager) credentialForRejectedAccessToken(
 					return cloneCodexCredential(winner), nil
 				}
 			}
-			return nil, fmt.Errorf("refresh Codex credential for channel %d: %w", currentCfg.ID, refreshErr)
+			return nil, newCodexCredentialRefreshError(
+				currentCfg,
+				fmt.Errorf("refresh Codex credential for channel %d: %w", currentCfg.ID, refreshErr),
+			)
 		}
 		return m.persistRefreshResult(refreshCtx, currentCfg, current, refreshed)
 	})

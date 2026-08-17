@@ -1390,6 +1390,7 @@ function setOAuthCredentialCleanupButtonState(button, state) {
   if (button.dataset) button.dataset.i18nTitle = 'channels.oauth.cleanupTitle';
   label.textContent = window.t('channels.oauth.cleanupStart');
   button.title = window.t('channels.oauth.cleanupTitle');
+  button.disabled = false;
 }
 
 function replaceOAuthCredentialCleanupModelOptions(select, models, placeholderKey) {
@@ -1414,6 +1415,7 @@ async function loadOAuthCredentialCleanupModels(
   cleanupButton,
   fetcher = fetchDataWithAuth
 ) {
+  const selectedModel = String(modelSelect?.value || '').trim();
   const sequence = ++oauthCredentialCleanupModelLoadSequence;
   replaceOAuthCredentialCleanupModelOptions(modelSelect, [], 'channels.oauth.cleanupModelsLoading');
   modelSelect.disabled = true;
@@ -1434,8 +1436,9 @@ async function loadOAuthCredentialCleanupModels(
         ? 'channels.oauth.cleanupSelectModel'
         : 'channels.oauth.cleanupNoModelsForType'
     );
+    if (models.includes(selectedModel)) modelSelect.value = selectedModel;
     modelSelect.disabled = models.length === 0 || Boolean(activeOAuthCredentialCleanup);
-    if (!activeOAuthCredentialCleanup) cleanupButton.disabled = true;
+    if (!activeOAuthCredentialCleanup) cleanupButton.disabled = modelSelect.value.trim() === '';
     return result;
   } catch (error) {
     if (sequence !== oauthCredentialCleanupModelLoadSequence) return null;
@@ -1471,7 +1474,7 @@ function resetOAuthCredentialCleanupProgress() {
   if (counter) counter.textContent = window.t('channels.oauth.cleanupCounter', { processed: 0, total: 0 });
   if (detail) detail.textContent = window.t('channels.oauth.cleanupStarting');
   if (counts) counts.textContent = window.t('channels.oauth.cleanupCounts', {
-    healthy: 0, refreshed: 0, deleted: 0, failed: 0, skipped: 0
+    healthy: 0, refreshed: 0, disabled: 0, deleted: 0, failed: 0, skipped: 0
   });
   if (results) results.replaceChildren();
 }
@@ -1497,6 +1500,7 @@ function updateOAuthCredentialCleanupProgress(event) {
   const summary = {
     healthy: Math.max(0, Number(event.healthy) || 0),
     refreshed: Math.max(0, Number(event.refreshed) || 0),
+    disabled: Math.max(0, Number(event.disabled) || 0),
     deleted: Math.max(0, Number(event.deleted) || 0),
     failed: Math.max(0, Number(event.failed) || 0),
     skipped: Math.max(0, Number(event.skipped) || 0)
@@ -1521,6 +1525,7 @@ function updateOAuthCredentialCleanupProgress(event) {
       break;
     case 'testing':
     case 'refreshing':
+    case 'disabling':
     case 'deleting':
     case 'retesting':
       detail.textContent = window.t(`channels.oauth.cleanupStage.${event.event}`, stageData);
@@ -1623,7 +1628,7 @@ async function readOAuthCredentialCleanupStream(response, onEvent) {
 async function followOAuthCredentialCleanupJob(jobID, total, fetcher, onEvent, delay = codexOAuthDelay) {
   let cursor = 0;
   let consecutiveNetworkErrors = 0;
-  let latest = { processed: 0, total, healthy: 0, refreshed: 0, deleted: 0, failed: 0, skipped: 0 };
+  let latest = { processed: 0, total, healthy: 0, refreshed: 0, disabled: 0, deleted: 0, failed: 0, skipped: 0 };
   for (;;) {
     try {
       const response = await fetcher(
@@ -1645,6 +1650,7 @@ async function followOAuthCredentialCleanupJob(jobID, total, fetcher, onEvent, d
       const summary = {
         healthy: Number(complete.healthy) || 0,
         refreshed: Number(complete.refreshed) || 0,
+        disabled: Number(complete.disabled) || 0,
         deleted: Number(complete.deleted) || 0,
         failed: Number(complete.failed) || 0,
         skipped: Number(complete.skipped) || 0,
@@ -1666,11 +1672,13 @@ async function followOAuthCredentialCleanupJob(jobID, total, fetcher, onEvent, d
 async function cleanupOAuthCredentials(
   authType,
   modelName,
+  action = 'disable',
   fetcher = fetchWithAuth,
   onEvent = updateOAuthCredentialCleanupProgress,
   delay = codexOAuthDelay,
   onStarted = null
 ) {
+  action = action === 'delete' ? 'delete' : 'disable';
   const requestID = typeof globalThis.crypto?.randomUUID === 'function'
     ? globalThis.crypto.randomUUID()
     : `cleanup-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -1684,7 +1692,7 @@ async function cleanupOAuthCredentials(
           'Content-Type': 'application/json',
           'Idempotency-Key': requestID
         },
-        body: JSON.stringify({ auth_type: authType, model: modelName })
+        body: JSON.stringify({ auth_type: authType, model: modelName, action })
       });
       const started = await parseAdminJobResponse(response, 'channels.oauth.cleanupFailed');
       if (!started?.job_id) {
@@ -2007,6 +2015,7 @@ function setupOAuthActions() {
   const cleanupButton = document.getElementById('oauthCredentialCleanupBtn');
   const cleanupAuthType = document.getElementById('oauthCredentialCleanupAuthType');
   const cleanupModel = document.getElementById('oauthCredentialCleanupModel');
+  const cleanupAction = document.getElementById('oauthCredentialCleanupAction');
   const importDialog = document.getElementById('oauthCredentialImportDialog');
   const importForm = document.getElementById('oauthCredentialImportForm');
   const importProviderSelect = document.getElementById('oauthImportProviderSelect');
@@ -2253,7 +2262,7 @@ function setupOAuthActions() {
     importButton.addEventListener('click', () => openOAuthCredentialImportDialog(importButton));
     importButton.dataset.bound = '1';
   }
-  if (cleanupForm && cleanupButton && cleanupAuthType && cleanupModel && !cleanupForm.dataset.bound) {
+  if (cleanupForm && cleanupButton && cleanupAuthType && cleanupModel && cleanupAction && !cleanupForm.dataset.bound) {
     const requestCleanupStop = async flow => {
       if (!flow?.jobID || flow.cancelPromise) return flow?.cancelPromise;
       flow.cancelPromise = cancelOAuthCredentialCleanup(
@@ -2315,6 +2324,7 @@ function setupOAuthActions() {
 
       const authType = cleanupAuthType.value;
       const modelName = cleanupModel.value.trim();
+      const action = cleanupAction.value === 'delete' ? 'delete' : 'disable';
       if (!modelName) {
         cleanupModel.setAttribute?.('aria-invalid', 'true');
         cleanupModel.focus?.();
@@ -2327,7 +2337,10 @@ function setupOAuthActions() {
       }
       const provider = cleanupAuthType.selectedOptions?.[0]?.textContent?.trim() ||
         oauthCredentialCleanupProviderLabel(authType);
-      if (typeof window.confirm === 'function' && !window.confirm(window.t('channels.oauth.cleanupConfirm', {
+      const confirmKey = action === 'delete'
+        ? 'channels.oauth.cleanupConfirmDelete'
+        : 'channels.oauth.cleanupConfirmDisable';
+      if (typeof window.confirm === 'function' && !window.confirm(window.t(confirmKey, {
         provider,
         model: modelName
       }))) return;
@@ -2341,12 +2354,14 @@ function setupOAuthActions() {
       activeOAuthCredentialCleanup = flow;
       cleanupAuthType.disabled = true;
       cleanupModel.disabled = true;
+      cleanupAction.disabled = true;
       setOAuthCredentialCleanupButtonState(cleanupButton, 'running');
       resetOAuthCredentialCleanupProgress();
       try {
         const result = await cleanupOAuthCredentials(
           authType,
           modelName,
+          action,
           fetchWithAuth,
           updateOAuthCredentialCleanupProgress,
           codexOAuthDelay,
@@ -2360,7 +2375,7 @@ function setupOAuthActions() {
           ? window.t('channels.oauth.cleanupStopped')
           : window.t('channels.oauth.cleanupSummary', result);
         let reloadFailed = false;
-        if (result.deleted > 0 && typeof reloadChannelsList === 'function') {
+        if ((result.disabled > 0 || result.deleted > 0) && typeof reloadChannelsList === 'function') {
           try {
             await reloadChannelsList({ throwOnError: true });
           } catch (error) {
@@ -2389,6 +2404,7 @@ function setupOAuthActions() {
         flow.cancelController?.abort();
         activeOAuthCredentialCleanup = null;
         cleanupAuthType.disabled = false;
+        cleanupAction.disabled = false;
         setOAuthCredentialCleanupButtonState(cleanupButton, 'idle');
         await refreshCleanupModels();
       }

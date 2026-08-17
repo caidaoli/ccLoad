@@ -3426,7 +3426,8 @@ func (s *Server) tryOAuthChannel(
 	reqCtx *proxyRequestContext,
 	w http.ResponseWriter,
 	provider string,
-	loadCredential func(forceRefresh bool) (*model.Config, string, error),
+	disableRejectedCredential bool,
+	loadCredential func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error),
 	credentialRejected func(*proxyResult) bool,
 ) (*proxyResult, error) {
 	urls := cfg.GetURLs()
@@ -3438,7 +3439,7 @@ func (s *Server) tryOAuthChannel(
 	var rejectedAccessToken string
 	var rejectedResult *proxyResult
 	for attempt := 0; attempt < 2; attempt++ {
-		runtimeCfg, accessToken, credentialErr := loadCredential(attempt == 1)
+		runtimeCfg, accessToken, credentialErr := loadCredential(attempt == 1, rejectedAccessToken)
 		accessToken = strings.TrimSpace(accessToken)
 		if runtimeCfg == nil {
 			runtimeCfg = cfg
@@ -3446,6 +3447,13 @@ func (s *Server) tryOAuthChannel(
 		if credentialErr != nil {
 			log.Printf("[WARN] %s OAuth credential refresh failed: channel_id=%d err=%v", provider, cfg.ID, credentialErr)
 			if accessToken == "" || (rejectedResult != nil && accessToken == rejectedAccessToken) {
+				if disableRejectedCredential && s.disableTerminalOAuthCredential(ctx, cfg, provider, credentialErr) {
+					if rejectedResult != nil {
+						rejectedResult.nextAction = cooldown.ActionRetryChannel
+						return rejectedResult, nil
+					}
+					return oauthCredentialUnavailableResult(cfg, provider), nil
+				}
 				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
 				if rejectedResult != nil {
 					rejectedResult.nextAction = cooldown.ActionRetryChannel
@@ -3468,6 +3476,11 @@ func (s *Server) tryOAuthChannel(
 		}
 		if result != nil && credentialRejected(result) {
 			if credentialErr != nil || attempt == 1 {
+				if disableRejectedCredential && credentialErr != nil &&
+					s.disableTerminalOAuthCredential(ctx, cfg, provider, credentialErr) {
+					result.nextAction = cooldown.ActionRetryChannel
+					return result, nil
+				}
 				s.cooldownRejectedOAuthCredential(ctx, cfg, provider)
 				result.nextAction = cooldown.ActionRetryChannel
 				return result, nil
@@ -3489,6 +3502,39 @@ func (s *Server) tryOAuthChannel(
 		break
 	}
 	return nil, ErrAllKeysExhausted
+}
+
+func (s *Server) disableTerminalOAuthCredential(
+	ctx context.Context,
+	cfg *model.Config,
+	provider string,
+	refreshErr error,
+) bool {
+	if !oauthRefreshTokenRejected(refreshErr) {
+		return false
+	}
+	var failedRefresh *codexCredentialRefreshError
+	if !errors.As(refreshErr, &failedRefresh) || strings.TrimSpace(failedRefresh.credential) == "" {
+		return false
+	}
+
+	disableCtx, cancel := cooldownWriteContext(ctx)
+	defer cancel()
+	disabled, err := s.store.DisableOAuthChannelIfCredentialMatches(
+		disableCtx, cfg.ID, failedRefresh.authType, failedRefresh.credential,
+	)
+	if err != nil {
+		log.Printf("[ERROR] 禁用 OAuth 凭证失效渠道失败: provider=%s channel_id=%d err=%v", provider, cfg.ID, err)
+		return false
+	}
+	if disabled {
+		log.Printf("[DISABLED] OAuth 凭证已被上游永久拒绝: provider=%s channel_id=%d", provider, cfg.ID)
+	} else {
+		log.Printf("[INFO] OAuth 凭证快照已变化，跳过禁用: provider=%s channel_id=%d", provider, cfg.ID)
+	}
+	s.invalidateChannelRelatedCache(cfg.ID)
+	s.InvalidateChannelListCache()
+	return true
 }
 
 func (s *Server) cooldownRejectedOAuthCredential(ctx context.Context, cfg *model.Config, provider string) {
@@ -3523,8 +3569,14 @@ func (s *Server) tryCodexOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Codex", func(forceRefresh bool) (*model.Config, string, error) {
-		credential, err := s.codexCredentials.credential(ctx, cfg, forceRefresh)
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Codex", true, func(forceRefresh bool, rejectedAccessToken string) (*model.Config, string, error) {
+		var credential *codexauth.Credential
+		var err error
+		if forceRefresh {
+			credential, err = s.codexCredentials.credentialAfterUnauthorized(ctx, cfg, rejectedAccessToken)
+		} else {
+			credential, err = s.codexCredentials.credential(ctx, cfg, false)
+		}
 		if credential == nil {
 			return cfg, "", err
 		}
@@ -3545,7 +3597,7 @@ func (s *Server) tryXAIOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "xAI", func(forceRefresh bool) (*model.Config, string, error) {
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "xAI", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
 		credential, err := s.xaiCredentials.credential(ctx, cfg, forceRefresh)
 		if credential == nil {
 			return cfg, "", err
@@ -3563,7 +3615,7 @@ func (s *Server) tryAnthropicOAuthChannel(
 	w http.ResponseWriter,
 ) (*proxyResult, error) {
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Anthropic", func(forceRefresh bool) (*model.Config, string, error) {
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Anthropic", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
 		credential, err := s.anthropicCredentials.credential(ctx, cfg, forceRefresh)
 		if credential == nil {
 			return cfg, "", err
@@ -3592,7 +3644,7 @@ func (s *Server) tryAntigravityOAuthChannel(
 	}
 	cfg = withAntigravityDefaultFallbackURLs(cfg)
 	cfg = s.withOAuthBaseURLOverride(cfg)
-	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Antigravity", func(forceRefresh bool) (*model.Config, string, error) {
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Antigravity", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
 		credential, err := s.antigravityCredentials.credential(ctx, cfg, forceRefresh)
 		if credential == nil {
 			return cfg, "", err

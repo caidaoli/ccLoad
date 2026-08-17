@@ -3003,6 +3003,9 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 					if response.Code != http.StatusOK {
 						t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 					}
+					if !configs[0].Enabled {
+						t.Fatal("usable existing access token disabled channel")
+					}
 					if cooling {
 						t.Fatalf("usable existing access token caused cooldown until %s", until)
 					}
@@ -3010,6 +3013,25 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				}
 				if response.Code != http.StatusUnauthorized {
 					t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+				}
+				if tt.authType == model.AuthTypeCodexOAuth {
+					if configs[0].Enabled {
+						t.Fatal("terminally rejected Codex credential left channel enabled")
+					}
+					if cooling {
+						t.Fatalf("disabled Codex channel retained cooldown until %s", until)
+					}
+					_ = doProxyRequest(t, env.engine, tt.path, tt.request, nil)
+					if got := refreshAttempts.Load(); got != 1 {
+						t.Fatalf("disabled channel refresh attempts=%d, want 1", got)
+					}
+					if got := upstreamAttempts.Load(); got != 1 {
+						t.Fatalf("disabled channel upstream attempts=%d, want 1", got)
+					}
+					return
+				}
+				if !configs[0].Enabled {
+					t.Fatal("non-Codex refresh failure disabled channel")
 				}
 				if !cooling {
 					t.Fatal("rejected existing access token did not cool channel")
@@ -3019,6 +3041,113 @@ func TestProxy_OAuthRefreshFailureChecksExistingAccessToken(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestProxy_CodexTransientRefreshFailureCoolsInsteadOfDisables(t *testing.T) {
+	const accessToken = "stale-access-token"
+	var upstreamAttempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAttempts.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-transient-refresh", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType:        model.AuthTypeCodexOAuth,
+		oauthCredential: expiredProxyOAuthCredential(t, model.AuthTypeCodexOAuth, accessToken),
+	}}, map[int]string{0: upstream.URL})
+	var refreshAttempts atomic.Int32
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		refreshAttempts.Add(1)
+		return &http.Response{
+			StatusCode: http.StatusInternalServerError,
+			Header:     http.Header{"Content-Type": {"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(`{"error":"temporarily_unavailable"}`)),
+			Request:    req,
+		}, nil
+	})}
+	service := codexauth.NewService(refreshClient)
+	service.TokenURL = "https://oauth.test/token"
+	env.server.codexCredentials.service = service
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": false, "input": "hello",
+	}, nil)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := refreshAttempts.Load(); got != 1 {
+		t.Fatalf("refresh attempts=%d, want 1", got)
+	}
+	if got := upstreamAttempts.Load(); got != 1 {
+		t.Fatalf("upstream attempts=%d, want 1", got)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || !configs[0].Enabled {
+		t.Fatalf("transient refresh failure disabled channel: configs=%+v err=%v", configs, err)
+	}
+	cooldowns, err := env.store.GetAllChannelCooldowns(context.Background())
+	if err != nil || cooldowns[configs[0].ID].IsZero() {
+		t.Fatalf("transient refresh failure did not cool channel: cooldowns=%+v err=%v", cooldowns, err)
+	}
+}
+
+func TestProxy_RejectedCodexPersonalAccessTokenDisablesChannel(t *testing.T) {
+	const accessToken = "at-static-rejected"
+	var upstreamAttempts atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAttempts.Add(1)
+		if got := r.Header.Get("Authorization"); got != "Bearer "+accessToken {
+			t.Errorf("Authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = io.WriteString(w, `{"error":{"type":"authentication_error","message":"expired"}}`)
+	}))
+	defer upstream.Close()
+
+	credential, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AuthMode: codexauth.AuthModePersonalAccessToken,
+		AccessToken: accessToken, ChatGPTUserID: "pat-user", AccountID: "pat-account",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "codex-pat-rejected", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+		authType: model.AuthTypeCodexOAuth, oauthCredential: credential,
+	}}, map[int]string{0: upstream.URL})
+	var tokenEndpointCalls atomic.Int32
+	refreshClient := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		tokenEndpointCalls.Add(1)
+		return nil, fmt.Errorf("unexpected token endpoint request: %s", req.URL)
+	})}
+	env.server.codexCredentials.service = codexauth.NewService(refreshClient)
+	env.server.codexCredentials.clientFor = func(*model.Config) *http.Client { return refreshClient }
+
+	response := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": false, "input": "hello",
+	}, nil)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := upstreamAttempts.Load(); got != 1 {
+		t.Fatalf("upstream attempts=%d, want 1", got)
+	}
+	if got := tokenEndpointCalls.Load(); got != 0 {
+		t.Fatalf("PAT token endpoint calls=%d, want 0", got)
+	}
+	configs, err := env.store.ListConfigs(context.Background())
+	if err != nil || len(configs) != 1 || configs[0].Enabled {
+		t.Fatalf("rejected PAT channel was not disabled: configs=%+v err=%v", configs, err)
 	}
 }
 
