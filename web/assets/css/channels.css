@@ -1947,6 +1947,22 @@
       white-space: nowrap;
     }
 
+    .ch-oauth-usage__heading {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: baseline;
+      gap: 2px 4px;
+      min-width: 0;
+    }
+
+    .ch-oauth-usage__heading .ch-oauth-usage__label {
+      min-width: 0;
+    }
+
+    .ch-oauth-usage__heading .ch-oauth-usage__amount {
+      color: var(--neutral-800);
+    }
+
     .ch-oauth-usage__percent {
       color: var(--neutral-900);
       font-variant-numeric: tabular-nums;
@@ -1956,7 +1972,7 @@
     .ch-oauth-usage__details {
       grid-column: 2 / -1;
       display: flex;
-      flex-wrap: nowrap;
+      flex-wrap: wrap;
       align-items: baseline;
       justify-content: flex-end;
       gap: 2px;

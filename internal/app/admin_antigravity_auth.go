@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -54,17 +55,37 @@ func createAntigravityChannel(ctx context.Context, store storage.Store, credenti
 		if parseErr != nil || !sameAntigravityIdentity(existing, credential) {
 			continue
 		}
-		credentialUpdated, err := store.CompareAndSwapOAuthCredential(
-			ctx, cfg.ID, model.AuthTypeAntigravityOAuth, cfg.OAuthCredential, credentialJSON,
-		)
-		if err != nil {
-			return nil, err
-		}
-		if !credentialUpdated {
-			cfg, err = store.GetConfig(ctx, cfg.ID)
+		for {
+			currentCfg, getErr := store.GetConfig(ctx, cfg.ID)
+			if getErr != nil {
+				return nil, getErr
+			}
+			current, parseErr := antigravityauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil || !currentCfg.UsesAntigravityOAuth() || !sameAntigravityIdentity(current, credential) {
+				return nil, errors.New("antigravity credential changed identity during reauthorization")
+			}
+			merged, mergeErr := current.MergeRefresh(credential)
+			if mergeErr != nil {
+				return nil, mergeErr
+			}
+			mergedJSON, encodeErr := merged.JSON()
+			if encodeErr != nil {
+				return nil, encodeErr
+			}
+			credentialUpdated, updateErr := store.CompareAndSwapOAuthCredential(
+				ctx, currentCfg.ID, model.AuthTypeAntigravityOAuth, currentCfg.OAuthCredential, mergedJSON,
+			)
+			if updateErr != nil {
+				return nil, updateErr
+			}
+			if !credentialUpdated {
+				continue
+			}
+			cfg, err = store.GetConfig(ctx, currentCfg.ID)
 			if err != nil {
 				return nil, err
 			}
+			break
 		}
 		cfg.ModelEntries = antigravityOAuthModelEntries()
 		cfg.MaxConcurrency = antigravityOAuthMaxConcurrency

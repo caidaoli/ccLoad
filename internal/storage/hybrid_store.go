@@ -215,6 +215,16 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	return true, nil
 }
 
+func (h *HybridStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64, resetAt time.Time) error {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+	if err := h.sqlite.ResetOAuthQuotaCostUsage(ctx, channelID, resetAt); err != nil {
+		return err
+	}
+	h.markChannelDirty(channelID, false)
+	return nil
+}
+
 func (h *HybridStore) DisableOAuthChannelIfCredentialMatches(
 	ctx context.Context,
 	channelID int64,
@@ -574,12 +584,19 @@ func (h *HybridStore) AddLog(ctx context.Context, e *model.LogEntry) error {
 	if e.Time.IsZero() {
 		e.Time = model.JSONTime{Time: time.Now()}
 	}
-	if err := h.sqlite.AddLog(ctx, e); err != nil {
+	h.oauthCredentialMu.Lock()
+	updatedChannelIDs, err := h.sqlite.AddLogWithOAuthQuotaCost(ctx, e)
+	if err != nil {
+		h.oauthCredentialMu.Unlock()
 		return err
 	}
+	for _, channelID := range updatedChannelIDs {
+		h.markChannelDirty(channelID, false)
+	}
+	h.oauthCredentialMu.Unlock()
 	entry := cloneLogEntryForSync(e)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
-		return h.primary.AddLog(syncCtx, entry)
+		return h.primary.AddLogReplica(syncCtx, entry)
 	})
 	return nil
 }
@@ -591,12 +608,19 @@ func (h *HybridStore) BatchAddLogs(ctx context.Context, logs []*model.LogEntry) 
 			entry.Time = model.JSONTime{Time: now}
 		}
 	}
-	if err := h.sqlite.BatchAddLogs(ctx, logs); err != nil {
+	h.oauthCredentialMu.Lock()
+	updatedChannelIDs, err := h.sqlite.BatchAddLogsWithOAuthQuotaCost(ctx, logs)
+	if err != nil {
+		h.oauthCredentialMu.Unlock()
 		return err
 	}
+	for _, channelID := range updatedChannelIDs {
+		h.markChannelDirty(channelID, false)
+	}
+	h.oauthCredentialMu.Unlock()
 	entries := cloneLogEntriesForSync(logs)
 	h.primarySync.enqueueBestEffort("logs/latest", "logs", func(syncCtx context.Context) error {
-		return h.primary.BatchAddLogs(syncCtx, entries)
+		return h.primary.BatchAddLogsReplica(syncCtx, entries)
 	})
 	return nil
 }

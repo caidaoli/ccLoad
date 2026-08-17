@@ -11,7 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	sqlstore "ccLoad/internal/storage/sql"
 )
 
@@ -149,6 +151,65 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 		t.Fatalf("模型冷却终态不一致: local=(%d,%d) primary=(%d,%d)",
 			localUntil, localDuration, primaryUntil, primaryDuration)
 	}
+}
+
+func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing.T) {
+	primary := createTestSQLiteStore(t)
+	sqlite := createTestSQLiteStore(t)
+	hybrid := NewHybridStore(sqlite, primary)
+	t.Cleanup(func() { _ = hybrid.Close() })
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	credentialJSON, err := (&codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: now.Add(time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: &oauthcost.Usage{Weekly: &oauthcost.Window{
+			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
+		}},
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := hybrid.CreateConfig(ctx, &model.Config{
+		Name: "oauth-cost", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}}, Enabled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		_, getErr := primary.GetConfig(ctx, created.ID)
+		return getErr == nil
+	})
+
+	if err := hybrid.AddLog(ctx, &model.LogEntry{
+		Time: model.JSONTime{Time: now}, ChannelID: created.ID, StatusCode: 200,
+		Cost: 2.25, CostMultiplier: 9,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	readCost := func(store *sqlstore.SQLStore) (int64, bool) {
+		cfg, getErr := store.GetConfig(ctx, created.ID)
+		if getErr != nil {
+			return 0, false
+		}
+		credential, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil || credential.QuotaCostUsage == nil || credential.QuotaCostUsage.Weekly == nil {
+			return 0, false
+		}
+		return credential.QuotaCostUsage.Weekly.StandardCostMicroUSD, true
+	}
+	if cost, ok := readCost(sqlite); !ok || cost != 2_250_000 {
+		t.Fatalf("SQLite quota cost = (%d, %t), want 2250000", cost, ok)
+	}
+	waitForCondition(t, 3*time.Second, func() bool {
+		cost, ok := readCost(primary)
+		if !ok || cost != 2_250_000 {
+			return false
+		}
+		logs, listErr := primary.ListLogs(ctx, now.Add(-time.Minute), 10, 0, nil)
+		return listErr == nil && len(logs) == 1
+	})
 }
 
 func TestHybridStore_CreateUpdateDeleteKeepsTombstone(t *testing.T) {

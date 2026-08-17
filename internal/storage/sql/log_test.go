@@ -6,7 +6,10 @@ import (
 	"testing"
 	"time"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
+	sqlstore "ccLoad/internal/storage/sql"
 )
 
 func newJSONTime(t time.Time) model.JSONTime {
@@ -68,6 +71,130 @@ func TestLog_AddAndList(t *testing.T) {
 	}
 	if len(filtered) != 1 || total != 1 || filtered[0].ClientProtocol != "openai" {
 		t.Fatalf("filtered logs=%+v total=%d, want one openai log", filtered, total)
+	}
+}
+
+func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
+	t.Parallel()
+
+	store := newTestStore(t, "oauth-quota-cost.db")
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	resetAt := now.Add(time.Hour)
+	credential := &codexauth.Credential{
+		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: now.Add(24 * time.Hour).Format(time.RFC3339),
+		QuotaCostUsage: &oauthcost.Usage{
+			Weekly: &oauthcost.Window{
+				StartedAt: resetAt.Add(-7 * 24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
+			},
+			Monthly: &oauthcost.Window{
+				StartedAt: resetAt.AddDate(0, -1, 0).Unix(), ResetAt: resetAt.Unix(),
+			},
+		},
+	}
+	credentialJSON, err := credential.JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "oauth-quota-cost", AuthType: model.AuthTypeCodexOAuth,
+		OAuthCredential: credentialJSON,
+		URLs:            model.ChannelURLs{{URL: "https://api.example.com", Protocols: []string{"codex"}}},
+		Enabled:         true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	logs := []*model.LogEntry{
+		{Time: newJSONTime(now), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1.25, CostMultiplier: 10},
+		{Time: newJSONTime(now.Add(time.Second)), ChannelID: created.ID, StatusCode: http.StatusNoContent, Cost: 0.75, CostMultiplier: 0.1},
+		{Time: newJSONTime(now.Add(2 * time.Second)), ChannelID: created.ID, StatusCode: http.StatusBadGateway, Cost: 9},
+		{Time: newJSONTime(now.Add(3 * time.Second)), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 9, LogSource: model.LogSourceManualTest},
+	}
+	if err := store.BatchAddLogs(ctx, logs); err != nil {
+		t.Fatal(err)
+	}
+	assertCosts := func(want int64) *codexauth.Credential {
+		t.Helper()
+		cfg, getErr := store.GetConfig(ctx, created.ID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		got, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			t.Fatal(parseErr)
+		}
+		if got.QuotaCostUsage == nil || got.QuotaCostUsage.Weekly == nil || got.QuotaCostUsage.Monthly == nil {
+			t.Fatalf("quota cost usage missing: %#v", got.QuotaCostUsage)
+		}
+		if got.QuotaCostUsage.Weekly.StandardCostMicroUSD != want ||
+			got.QuotaCostUsage.Monthly.StandardCostMicroUSD != want {
+			t.Fatalf("quota costs = weekly %d monthly %d, want %d",
+				got.QuotaCostUsage.Weekly.StandardCostMicroUSD,
+				got.QuotaCostUsage.Monthly.StandardCostMicroUSD, want)
+		}
+		return got
+	}
+	assertCosts(20_000_000)
+
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(resetAt), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 0.5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rolled := assertCosts(500_000)
+	if rolled.QuotaCostUsage.Weekly.StartedAt != resetAt.Unix() ||
+		rolled.QuotaCostUsage.Monthly.StartedAt != resetAt.Unix() {
+		t.Fatalf("period did not roll at reset: %#v", rolled.QuotaCostUsage)
+	}
+
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(resetAt.Add(-time.Second)), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCosts(500_000)
+
+	manualResetAt := resetAt.Add(time.Minute)
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(manualResetAt.Add(time.Second)), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 0.25,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ResetOAuthQuotaCostUsage(ctx, created.ID, manualResetAt); err != nil {
+		t.Fatal(err)
+	}
+	reset := assertCosts(250_000)
+	if reset.QuotaCostUsage.Weekly.CountFromAt != manualResetAt.Unix() ||
+		reset.QuotaCostUsage.Monthly.CountFromAt != manualResetAt.Unix() {
+		t.Fatalf("manual reset cutoff missing: %#v", reset.QuotaCostUsage)
+	}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(manualResetAt.Add(-time.Second)), ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertCosts(250_000)
+
+	db := store.(*sqlstore.SQLStore)
+	if _, err := db.ExecContext(ctx, `UPDATE channels SET oauth_credential = ? WHERE id = ?`,
+		`{"quota_cost_usage":`, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddLog(ctx, &model.LogEntry{
+		Time: newJSONTime(resetAt.Add(time.Second)), Model: "rollback-marker",
+		ChannelID: created.ID, StatusCode: http.StatusOK, Cost: 1,
+	}); err == nil {
+		t.Fatal("invalid credential should roll back the log and quota update")
+	}
+	var rollbackLogs int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM logs WHERE model = ?`, "rollback-marker").Scan(&rollbackLogs); err != nil {
+		t.Fatal(err)
+	}
+	if rollbackLogs != 0 {
+		t.Fatalf("rolled back log count = %d, want 0", rollbackLogs)
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 
 	"ccLoad/internal/anthropicauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 
 	"golang.org/x/sync/singleflight"
@@ -323,6 +324,7 @@ func cloneAnthropicCredential(credential *anthropicauth.Credential) *anthropicau
 	clone := *credential
 	clone.PassiveUsage = anthropicauth.ClonePassiveUsage(credential.PassiveUsage)
 	clone.OAuthUsage = append([]byte(nil), credential.OAuthUsage...)
+	clone.QuotaCostUsage = oauthcost.Clone(credential.QuotaCostUsage)
 	return &clone
 }
 
@@ -383,6 +385,9 @@ func (m *anthropicCredentialManager) updatePassiveUsage(
 		}
 		usage.SampledAt = strings.TrimSpace(update.SampledAt)
 		updatedCredential.PassiveUsage = usage
+		updatedCredential.QuotaCostUsage = reconcileOAuthQuotaCostUsage(
+			current.QuotaCostUsage, anthropicPassiveUsageSummary(&updatedCredential), updateSampledAt,
+		)
 		payload, err := updatedCredential.JSON()
 		if err != nil {
 			return false, err

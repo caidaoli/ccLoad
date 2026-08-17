@@ -17,6 +17,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
+	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/storage"
 
 	"github.com/gin-gonic/gin"
@@ -634,6 +635,7 @@ func updateExistingCodexChannel(
 		// when a concurrent quota sample wins the first CAS.
 		next.PassiveUsage = codexauth.ClonePassiveUsage(current.PassiveUsage)
 		next.OAuthUsage = append([]byte(nil), current.OAuthUsage...)
+		next.QuotaCostUsage = oauthcost.Clone(current.QuotaCostUsage)
 		next.QuotaOverdraft = codexauth.CloneQuotaOverdraft(current.QuotaOverdraft)
 		if next.Email == "" {
 			next.Email = current.Email

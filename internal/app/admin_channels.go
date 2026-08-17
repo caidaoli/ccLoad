@@ -411,6 +411,7 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, antigravityauth.ChannelType)
+		usage = attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage)
 		return channelOAuthMetadata{
 			antigravityPaidTier: credential.PaidTier.DisplayName(),
 			oauthUsage:          usage,
@@ -422,6 +423,7 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			return channelOAuthMetadata{}
 		}
 		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, xaiauth.ChannelType)
+		usage = attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage)
 		return channelOAuthMetadata{
 			xaiEmail:             credential.Identity().Email,
 			xaiSubscriptionTier:  strings.TrimSpace(credential.SubscriptionTier),
@@ -439,11 +441,12 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 		if credential.PassiveUsage != nil {
 			passiveSampledAt = credential.PassiveUsage.SampledAt
 		}
+		usage := latestOAuthUsage(
+			active, activeSampledAt, anthropicPassiveUsageSummary(credential), passiveSampledAt,
+		)
 		return channelOAuthMetadata{
 			anthropicPlanType: strings.TrimSpace(credential.PlanType),
-			oauthUsage: latestOAuthUsage(
-				active, activeSampledAt, anthropicPassiveUsageSummary(credential), passiveSampledAt,
-			),
+			oauthUsage:        attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
 		}
 	}
 	if !cfg.UsesCodexOAuth() {
@@ -458,11 +461,12 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 	if credential.PassiveUsage != nil {
 		passiveSampledAt = credential.PassiveUsage.SampledAt
 	}
+	usage := latestOAuthUsage(
+		active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt,
+	)
 	metadata := channelOAuthMetadata{
-		planType: credential.PlanType,
-		oauthUsage: latestOAuthUsage(
-			active, activeSampledAt, codexPassiveUsageSummary(credential), passiveSampledAt,
-		),
+		planType:   credential.PlanType,
+		oauthUsage: attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
 	}
 	if until, ok := credential.SubscriptionActiveUntil(); ok {
 		metadata.subscriptionActiveUntil = &until

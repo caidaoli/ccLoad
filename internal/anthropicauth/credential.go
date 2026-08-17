@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"ccLoad/internal/oauthcost"
 )
 
 const (
@@ -38,9 +40,10 @@ type Credential struct {
 	PlanType     string `json:"plan_type,omitempty"`
 	// ClaudeCodeTrialEndsAt is a trial boundary reported by /api/oauth/profile.
 	// It is not a general subscription expiration time.
-	ClaudeCodeTrialEndsAt string          `json:"claude_code_trial_ends_at,omitempty"`
-	PassiveUsage          *PassiveUsage   `json:"passive_usage,omitempty"`
-	OAuthUsage            json.RawMessage `json:"oauth_usage,omitempty"`
+	ClaudeCodeTrialEndsAt string           `json:"claude_code_trial_ends_at,omitempty"`
+	PassiveUsage          *PassiveUsage    `json:"passive_usage,omitempty"`
+	OAuthUsage            json.RawMessage  `json:"oauth_usage,omitempty"`
+	QuotaCostUsage        *oauthcost.Usage `json:"quota_cost_usage,omitempty"`
 }
 
 // PassiveUsage is the latest quota snapshot sampled from Anthropic model
@@ -78,22 +81,23 @@ func ParseCredential(raw []byte) (*Credential, error) {
 	var credential Credential
 	var emailAlias string
 	if err := json.Unmarshal(raw, &struct {
-		Type         *string          `json:"type"`
-		AccessToken  *string          `json:"access_token"`
-		RefreshToken *string          `json:"refresh_token"`
-		TokenType    *string          `json:"token_type"`
-		Expired      *string          `json:"expired"`
-		LastRefresh  *string          `json:"last_refresh"`
-		Scope        *string          `json:"scope"`
-		OrgUUID      *string          `json:"org_uuid"`
-		AccountUUID  *string          `json:"account_uuid"`
-		EmailAddress *string          `json:"email_address"`
-		Email        *string          `json:"email"`
-		DeviceID     *string          `json:"device_id"`
-		PlanType     *string          `json:"plan_type"`
-		TrialEndsAt  *string          `json:"claude_code_trial_ends_at"`
-		PassiveUsage **PassiveUsage   `json:"passive_usage"`
-		OAuthUsage   *json.RawMessage `json:"oauth_usage"`
+		Type           *string           `json:"type"`
+		AccessToken    *string           `json:"access_token"`
+		RefreshToken   *string           `json:"refresh_token"`
+		TokenType      *string           `json:"token_type"`
+		Expired        *string           `json:"expired"`
+		LastRefresh    *string           `json:"last_refresh"`
+		Scope          *string           `json:"scope"`
+		OrgUUID        *string           `json:"org_uuid"`
+		AccountUUID    *string           `json:"account_uuid"`
+		EmailAddress   *string           `json:"email_address"`
+		Email          *string           `json:"email"`
+		DeviceID       *string           `json:"device_id"`
+		PlanType       *string           `json:"plan_type"`
+		TrialEndsAt    *string           `json:"claude_code_trial_ends_at"`
+		PassiveUsage   **PassiveUsage    `json:"passive_usage"`
+		OAuthUsage     *json.RawMessage  `json:"oauth_usage"`
+		QuotaCostUsage **oauthcost.Usage `json:"quota_cost_usage"`
 	}{
 		Type: &credential.Type, AccessToken: &credential.AccessToken,
 		RefreshToken: &credential.RefreshToken, TokenType: &credential.TokenType,
@@ -103,7 +107,7 @@ func ParseCredential(raw []byte) (*Credential, error) {
 		Email:    &emailAlias,
 		DeviceID: &credential.DeviceID, PlanType: &credential.PlanType,
 		TrialEndsAt: &credential.ClaudeCodeTrialEndsAt, PassiveUsage: &credential.PassiveUsage,
-		OAuthUsage: &credential.OAuthUsage,
+		OAuthUsage: &credential.OAuthUsage, QuotaCostUsage: &credential.QuotaCostUsage,
 	}); err != nil {
 		return nil, fmt.Errorf("decode Anthropic credential fields: %w", err)
 	}
@@ -185,6 +189,9 @@ func (c *Credential) Normalize() error {
 			}
 			c.PassiveUsage.SampledAt = sampledAt.UTC().Format(time.RFC3339Nano)
 		}
+	}
+	if err := oauthcost.Validate(c.QuotaCostUsage); err != nil {
+		return fmt.Errorf("anthropic credential has invalid quota_cost_usage: %w", err)
 	}
 	if c.AccessToken == "" {
 		return errors.New("anthropic credential is missing access_token")
@@ -290,6 +297,7 @@ func (c *Credential) MergeRefresh(refreshed *Credential) (*Credential, error) {
 		merged.PassiveUsage = ClonePassiveUsage(c.PassiveUsage)
 	}
 	merged.OAuthUsage = append(json.RawMessage(nil), c.OAuthUsage...)
+	merged.QuotaCostUsage = oauthcost.Clone(c.QuotaCostUsage)
 	if err := merged.Normalize(); err != nil {
 		return nil, err
 	}

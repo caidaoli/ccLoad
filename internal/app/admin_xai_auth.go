@@ -527,7 +527,7 @@ func createOrUpdateXAIChannel(ctx context.Context, store storage.Store, credenti
 	}
 	identity := credential.Identity()
 	if identity.Email != "" || identity.Subject != "" {
-		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential, credentialJSON); found || updateErr != nil {
+		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential); found || updateErr != nil {
 			return existing, false, updateErr
 		}
 	}
@@ -539,7 +539,7 @@ func createOrUpdateXAIChannel(ctx context.Context, store storage.Store, credenti
 		return nil, false, fmt.Errorf("reload channels for xAI credential: %w", err)
 	}
 	if identity.Email != "" || identity.Subject != "" {
-		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential, credentialJSON); found || updateErr != nil {
+		if existing, found, updateErr := updateExistingXAIIdentity(ctx, store, configs, credential); found || updateErr != nil {
 			return existing, false, updateErr
 		}
 	}
@@ -556,7 +556,6 @@ func updateExistingXAIIdentity(
 	store storage.Store,
 	configs []*model.Config,
 	credential *xaiauth.Credential,
-	credentialJSON string,
 ) (*model.Config, bool, error) {
 	for _, cfg := range configs {
 		if cfg == nil || !cfg.UsesXAIOAuth() || strings.TrimSpace(cfg.OAuthCredential) == "" {
@@ -566,14 +565,35 @@ func updateExistingXAIIdentity(
 		if parseErr != nil || !sameXAIIdentity(existing, credential) {
 			continue
 		}
-		_, updateErr := store.CompareAndSwapOAuthCredential(
-			ctx, cfg.ID, model.AuthTypeXAIOAuth, cfg.OAuthCredential, credentialJSON,
-		)
-		if updateErr != nil {
-			return nil, true, updateErr
+		for {
+			currentCfg, getErr := store.GetConfig(ctx, cfg.ID)
+			if getErr != nil {
+				return nil, true, getErr
+			}
+			current, parseErr := xaiauth.ParseCredential([]byte(currentCfg.OAuthCredential))
+			if parseErr != nil || !currentCfg.UsesXAIOAuth() || !sameXAIIdentity(current, credential) {
+				return nil, true, errors.New("xAI credential changed identity during reauthorization")
+			}
+			merged, mergeErr := current.MergeRefresh(credential)
+			if mergeErr != nil {
+				return nil, true, mergeErr
+			}
+			mergedJSON, encodeErr := merged.JSON()
+			if encodeErr != nil {
+				return nil, true, encodeErr
+			}
+			updated, updateErr := store.CompareAndSwapOAuthCredential(
+				ctx, currentCfg.ID, model.AuthTypeXAIOAuth, currentCfg.OAuthCredential, mergedJSON,
+			)
+			if updateErr != nil {
+				return nil, true, updateErr
+			}
+			if !updated {
+				continue
+			}
+			persisted, getErr := store.GetConfig(ctx, currentCfg.ID)
+			return persisted, true, getErr
 		}
-		persisted, getErr := store.GetConfig(ctx, cfg.ID)
-		return persisted, true, getErr
 	}
 	return nil, false, nil
 }

@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ccLoad/internal/oauthcost"
 )
 
 func TestParseCredentialAndRefreshMerge(t *testing.T) {
@@ -19,6 +21,9 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 		t.Fatalf("credential = %#v", credential)
 	}
 	credential.OAuthUsage = []byte(`{"sampled_at":"2030-01-01T00:00:00Z"}`)
+	credential.QuotaCostUsage = &oauthcost.Usage{Weekly: &oauthcost.Window{
+		StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), StandardCostMicroUSD: 4_500_000,
+	}}
 	needsRefresh, err := credential.NeedsRefresh(now, 2*time.Hour)
 	if err != nil || !needsRefresh {
 		t.Fatalf("NeedsRefresh = (%v, %v)", needsRefresh, err)
@@ -30,7 +35,8 @@ func TestParseCredentialAndRefreshMerge(t *testing.T) {
 	}
 	if merged.RefreshToken != "rt" || merged.Email != "user@example.com" || merged.ProjectID != "project-1" ||
 		merged.PaidTier == nil || merged.PaidTier.DisplayName() != "Google AI Pro" ||
-		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` {
+		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-01T00:00:00Z"}` ||
+		merged.QuotaCostUsage == nil || merged.QuotaCostUsage.Weekly.StandardCostMicroUSD != 4_500_000 {
 		t.Fatalf("merged = %#v", merged)
 	}
 	raw, err := merged.JSON()
