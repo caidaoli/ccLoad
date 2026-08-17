@@ -65,7 +65,8 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
-- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic token refresh, text/file/aggregate import, batch quota refresh, and invalid-credential cleanup
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic token refresh, Codex personal access token (PAT) authorization, text/file/aggregate import, batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
+- 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
 - 🔒 **Secure Authentication** - Token-based admin interface and API access control
@@ -86,6 +87,7 @@ ccLoad handles those cases with:
 - 📉 **Tiered Pricing** - GPT-5.4/Qwen-Plus/Gemini long-context step pricing, auto-applies lower rate at token thresholds
 - 🔄 **Per-URL Protocol Routing** - Explicit Anthropic/OpenAI/Codex/Gemini capability per URL, with native-first automatic detection when left empty
 - 💬 **Conversational Model Testing** - Channel/model/chat testing modes with image upload, reasoning level, built-in search, and chat export
+- 🎨 **Image Generation Testing** - Dedicated tab that renders generated images through either the Images API or Chat Completions, with size/quality/background/output-format controls
 - 🔍 **Debug Logs** - Upstream request/response raw data capture with sensitive header masking, essential for troubleshooting
 - 🕐 **Scheduled Checks** - Background periodic channel availability probing, auto-detect failed channels
 - 🔄 **Release Channels** - Stable updates by default, with an opt-in preview channel; check interval is configurable from the admin settings page
@@ -812,6 +814,7 @@ Check out the awesome admin dashboard 👇
   - Upload or paste images in chat mode to verify multimodal requests directly
   - Toggle reasoning level, built-in search, and streaming to inspect transformed upstream behavior
   - Export conversations as Markdown or HTML for review, incident notes, or regression records
+  - Generate images in a dedicated tab via the Images API or Chat Completions, with the prompt preserved across page reloads
 - ⚡ **Performance Metrics** - Latency, success rates, and bottleneck detection
 - 💰 **Token Usage Stats** - Know exactly where your budget goes:
   - Custom time range selector for flexible analysis

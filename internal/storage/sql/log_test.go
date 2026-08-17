@@ -85,11 +85,15 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
 		Expired: now.Add(24 * time.Hour).Format(time.RFC3339),
 		QuotaCostUsage: &oauthcost.Usage{
-			Weekly: &oauthcost.Window{
-				StartedAt: resetAt.Add(-7 * 24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
-			},
-			Monthly: &oauthcost.Window{
-				StartedAt: resetAt.AddDate(0, -1, 0).Unix(), ResetAt: resetAt.Unix(),
+			Windows: []*oauthcost.Window{
+				{
+					Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
+					StartedAt: resetAt.Add(-7 * 24 * time.Hour).Unix(), ResetAt: resetAt.Unix(),
+				},
+				{
+					Key: "codex|monthly", WindowSeconds: 30 * 24 * 60 * 60,
+					StartedAt: resetAt.AddDate(0, -1, 0).Unix(), ResetAt: resetAt.Unix(),
+				},
 			},
 		},
 	}
@@ -126,14 +130,14 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		if parseErr != nil {
 			t.Fatal(parseErr)
 		}
-		if got.QuotaCostUsage == nil || got.QuotaCostUsage.Weekly == nil || got.QuotaCostUsage.Monthly == nil {
+		weekly := oauthcost.Find(got.QuotaCostUsage, "codex|secondary")
+		monthly := oauthcost.Find(got.QuotaCostUsage, "codex|monthly")
+		if weekly == nil || monthly == nil {
 			t.Fatalf("quota cost usage missing: %#v", got.QuotaCostUsage)
 		}
-		if got.QuotaCostUsage.Weekly.StandardCostMicroUSD != want ||
-			got.QuotaCostUsage.Monthly.StandardCostMicroUSD != want {
+		if weekly.StandardCostMicroUSD != want || monthly.StandardCostMicroUSD != want {
 			t.Fatalf("quota costs = weekly %d monthly %d, want %d",
-				got.QuotaCostUsage.Weekly.StandardCostMicroUSD,
-				got.QuotaCostUsage.Monthly.StandardCostMicroUSD, want)
+				weekly.StandardCostMicroUSD, monthly.StandardCostMicroUSD, want)
 		}
 		return got
 	}
@@ -145,8 +149,8 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		t.Fatal(err)
 	}
 	rolled := assertCosts(500_000)
-	if rolled.QuotaCostUsage.Weekly.StartedAt != resetAt.Unix() ||
-		rolled.QuotaCostUsage.Monthly.StartedAt != resetAt.Unix() {
+	if oauthcost.Find(rolled.QuotaCostUsage, "codex|secondary").StartedAt != resetAt.Unix() ||
+		oauthcost.Find(rolled.QuotaCostUsage, "codex|monthly").StartedAt != resetAt.Unix() {
 		t.Fatalf("period did not roll at reset: %#v", rolled.QuotaCostUsage)
 	}
 
@@ -167,8 +171,8 @@ func TestLog_BatchAccumulatesOAuthQuotaStandardCostByPeriod(t *testing.T) {
 		t.Fatal(err)
 	}
 	reset := assertCosts(250_000)
-	if reset.QuotaCostUsage.Weekly.CountFromAt != manualResetAt.Unix() ||
-		reset.QuotaCostUsage.Monthly.CountFromAt != manualResetAt.Unix() {
+	if oauthcost.Find(reset.QuotaCostUsage, "codex|secondary").CountFromAt != manualResetAt.Unix() ||
+		oauthcost.Find(reset.QuotaCostUsage, "codex|monthly").CountFromAt != manualResetAt.Unix() {
 		t.Fatalf("manual reset cutoff missing: %#v", reset.QuotaCostUsage)
 	}
 	if err := store.AddLog(ctx, &model.LogEntry{

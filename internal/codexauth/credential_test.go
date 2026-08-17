@@ -84,9 +84,10 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 			SampledAt: now.Format(time.RFC3339Nano),
 		},
 		OAuthUsage: json.RawMessage(`{"sampled_at":"2030-01-02T03:00:00Z"}`),
-		QuotaCostUsage: &oauthcost.Usage{Weekly: &oauthcost.Window{
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: now.Unix(), ResetAt: now.Add(7 * 24 * time.Hour).Unix(), StandardCostMicroUSD: 2_500_000,
-		}},
+		}}},
 		QuotaOverdraft: &QuotaOverdraft{
 			Enabled: true, ActiveUntil: now.Add(2 * time.Hour).Unix(), SuccessfulRequests: 2, CostMicroUSD: 1250,
 		},
@@ -104,8 +105,8 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		merged.AccountID != "account-1" || merged.AccessToken != "new-at" ||
 		merged.PassiveUsage == nil || len(merged.PassiveUsage.Windows) != 1 || merged.PassiveUsage.Windows[0].UsedPercent != 6 ||
 		string(merged.OAuthUsage) != `{"sampled_at":"2030-01-02T03:00:00Z"}` ||
-		merged.QuotaCostUsage == nil || merged.QuotaCostUsage.Weekly == nil ||
-		merged.QuotaCostUsage.Weekly.StandardCostMicroUSD != 2_500_000 ||
+		merged.QuotaCostUsage == nil || len(merged.QuotaCostUsage.Windows) != 1 ||
+		merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 ||
 		merged.QuotaOverdraft == nil || !merged.QuotaOverdraft.Enabled ||
 		merged.QuotaOverdraft.ActiveUntil != now.Add(2*time.Hour).Unix() ||
 		merged.QuotaOverdraft.SuccessfulRequests != 2 || merged.QuotaOverdraft.CostMicroUSD != 1250 ||
@@ -113,7 +114,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 		t.Fatalf("merged credential = %#v", merged)
 	}
 	current.PassiveUsage.Windows[0].UsedPercent = 99
-	current.QuotaCostUsage.Weekly.StandardCostMicroUSD = 99
+	current.QuotaCostUsage.Windows[0].StandardCostMicroUSD = 99
 	current.QuotaOverdraft.SuccessfulRequests = 99
 	if merged.PassiveUsage.Windows[0].UsedPercent != 6 {
 		t.Fatalf("merged passive usage shares mutable state with the old credential: %#v", merged.PassiveUsage)
@@ -121,7 +122,7 @@ func TestCredentialRefreshWindowAndMerge(t *testing.T) {
 	if merged.QuotaOverdraft.SuccessfulRequests != 2 {
 		t.Fatalf("merged quota overdraft shares mutable state with the old credential: %#v", merged.QuotaOverdraft)
 	}
-	if merged.QuotaCostUsage.Weekly.StandardCostMicroUSD != 2_500_000 {
+	if merged.QuotaCostUsage.Windows[0].StandardCostMicroUSD != 2_500_000 {
 		t.Fatalf("merged quota cost usage shares mutable state with the old credential: %#v", merged.QuotaCostUsage)
 	}
 }

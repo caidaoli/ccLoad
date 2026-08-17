@@ -542,20 +542,17 @@ function formatOAuthUsagePercent(value) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(1).replace(/\.0$/, '');
 }
 
-function formatOAuthAccumulatedCost(costWindow) {
-  const microUSD = Number(costWindow?.standard_cost_microusd);
+function formatOAuthAccumulatedCost(standardCostMicroUSD) {
+  const microUSD = Number(standardCostMicroUSD);
   if (!Number.isFinite(microUSD) || microUSD < 0) return '';
   return window.t('channels.oauth.usageAccumulated', { cost: (microUSD / 1_000_000).toFixed(1) });
 }
 
-function oauthAccumulatedCostForDuration(seconds, quotaCostUsage) {
-  const duration = Math.max(0, Number(seconds) || 0);
-  const day = 24 * 60 * 60;
-  if (duration === 7 * day) return formatOAuthAccumulatedCost(quotaCostUsage?.weekly);
-  if (duration >= 28 * day && duration <= 31 * day) {
-    return formatOAuthAccumulatedCost(quotaCostUsage?.monthly);
-  }
-  return '';
+// 累计成本按上游窗口标识（limit_name|kind）取用：同一时长可能对应多个互不相干的窗口。
+function oauthAccumulatedCostByKey(quotaCostUsage, key) {
+  const windows = Array.isArray(quotaCostUsage?.windows) ? quotaCostUsage.windows : [];
+  const match = windows.find(item => item?.key === key);
+  return match ? match.standard_cost_microusd : null;
 }
 
 function formatOAuthUsageResetAt(resetAt) {
@@ -712,10 +709,10 @@ function buildXAIUsageInlineRow(label, value) {
   </div>`;
 }
 
-function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostWindow) {
+function buildXAIUsageRow(label, usedPercent, amount, resetAt, accumulatedCostMicroUSD) {
   const percent = formatXAIUsagePercent(usedPercent);
   const reset = formatXAIUsageReset(resetAt);
-  const accumulatedCost = formatOAuthAccumulatedCost(accumulatedCostWindow);
+  const accumulatedCost = formatOAuthAccumulatedCost(accumulatedCostMicroUSD);
   const numericUsed = xaiUsageNumber(usedPercent);
   const remaining = numericUsed !== null ? Math.min(100, Math.max(0, 100 - numericUsed)) : 0;
   const ariaLabel = numericUsed === null
@@ -755,7 +752,7 @@ function buildXAIUsageRows(data) {
       billing.weekly_usage_percent,
       '',
       billing.weekly_reset_at,
-      data?.quota_cost_usage?.weekly
+      oauthAccumulatedCostByKey(data?.quota_cost_usage, 'xai|weekly')
     ));
   }
   const products = Array.isArray(billing.product_usage) ? billing.product_usage : [];
@@ -794,7 +791,7 @@ function buildXAIUsageRows(data) {
       monthlyPercent,
       `${formatXAIUsageMoney(billing.included_used_cents)} / ${formatXAIUsageMoney(billing.monthly_limit_cents)}`,
       billing.monthly_reset_at,
-      data?.quota_cost_usage?.monthly
+      oauthAccumulatedCostByKey(data?.quota_cost_usage, 'xai|monthly')
     ));
   }
   return rows;
@@ -832,10 +829,7 @@ function buildOAuthUsageStatusHtml(channel) {
     const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
     const label = limitName ? `${limitName} · ${duration}` : duration;
     const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
-    const accumulatedCost = oauthAccumulatedCostForDuration(
-      windowInfo?.limit_window_seconds,
-      state.data?.quota_cost_usage
-    );
+    const accumulatedCost = formatOAuthAccumulatedCost(windowInfo?.standard_cost_microusd);
     const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });
     return `<div class="ch-oauth-usage__window">
       <div class="ch-oauth-usage__meta">

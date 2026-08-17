@@ -779,10 +779,11 @@ func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	store := newCodexAuthTestStore(t)
 	first := xaiTestCredential("access-first", "refresh-first", time.Now().Add(time.Hour))
 	first.IDToken = xaiTestJWT("first@example.com", "stable-subject")
-	first.QuotaCostUsage = &oauthcost.Usage{Weekly: &oauthcost.Window{
+	first.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 		StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
 		StandardCostMicroUSD: 8_500_000,
-	}}
+	}}}
 	if err := first.Normalize(); err != nil {
 		t.Fatal(err)
 	}
@@ -802,8 +803,8 @@ func TestXAIOAuthInteractivePersistenceUpdatesStableIdentity(t *testing.T) {
 	}
 	persisted, err := xaiauth.ParseCredential([]byte(updated.OAuthCredential))
 	if err != nil || persisted.AccessToken != "access-rotated" || persisted.RefreshToken != "refresh-rotated" ||
-		persisted.QuotaCostUsage == nil || persisted.QuotaCostUsage.Weekly == nil ||
-		persisted.QuotaCostUsage.Weekly.StandardCostMicroUSD != 8_500_000 {
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 8_500_000 {
 		t.Fatalf("persisted credential = %s, error=%v", persisted, err)
 	}
 }
@@ -1233,10 +1234,11 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 	existingCredential := &antigravityauth.Credential{
 		Type: antigravityauth.ChannelType, AccessToken: "old-at", RefreshToken: "old-rt",
 		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), Email: "existing@example.com", ProjectID: "old-project",
-		QuotaCostUsage: &oauthcost.Usage{Weekly: &oauthcost.Window{
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
 			StandardCostMicroUSD: 9_500_000,
-		}},
+		}}},
 	}
 	existingPayload, err := existingCredential.JSON()
 	if err != nil {
@@ -1267,8 +1269,8 @@ func TestCreateAntigravityChannelUpdatesExistingConcurrency(t *testing.T) {
 	persistedCredential, parseErr := antigravityauth.ParseCredential([]byte(persisted.OAuthCredential))
 	if persisted.MaxConcurrency != antigravityOAuthMaxConcurrency || parseErr != nil ||
 		persistedCredential.AccessToken != "new-at" || persistedCredential.QuotaCostUsage == nil ||
-		persistedCredential.QuotaCostUsage.Weekly == nil ||
-		persistedCredential.QuotaCostUsage.Weekly.StandardCostMicroUSD != 9_500_000 {
+		oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|secondary") == nil ||
+		oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 9_500_000 {
 		t.Fatalf("persisted Antigravity channel = %#v", persisted)
 	}
 }
@@ -1304,8 +1306,8 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		}
 		persisted, err := anthropicauth.ParseCredential([]byte(updated.OAuthCredential))
 		if err != nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" ||
-			persisted.QuotaCostUsage == nil || persisted.QuotaCostUsage.Weekly == nil ||
-			persisted.QuotaCostUsage.Weekly.StandardCostMicroUSD != 1_250_000 {
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 1_250_000 {
 			t.Fatalf("persisted Anthropic credential = (%#v, %v)", persisted, err)
 		}
 	})
@@ -1340,8 +1342,8 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		}
 		persisted, err := antigravityauth.ParseCredential([]byte(updated.OAuthCredential))
 		if err != nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" ||
-			persisted.QuotaCostUsage == nil || persisted.QuotaCostUsage.Weekly == nil ||
-			persisted.QuotaCostUsage.Weekly.StandardCostMicroUSD != 2_250_000 {
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 2_250_000 {
 			t.Fatalf("persisted Antigravity credential = (%#v, %v)", persisted, err)
 		}
 	})
@@ -1379,8 +1381,8 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 		}
 		persisted, err := xaiauth.ParseCredential([]byte(updated.OAuthCredential))
 		if err != nil || persisted.AccessToken != "new-at" || persisted.RefreshToken != "new-rt" ||
-			persisted.QuotaCostUsage == nil || persisted.QuotaCostUsage.Weekly == nil ||
-			persisted.QuotaCostUsage.Weekly.StandardCostMicroUSD != 3_250_000 {
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+			oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 3_250_000 {
 			t.Fatalf("persisted xAI credential = (%#v, %v)", persisted, err)
 		}
 	})
@@ -1388,10 +1390,11 @@ func TestOAuthReauthorizationRetriesConcurrentQuotaCostUpdate(t *testing.T) {
 
 func testQuotaCostUsage(costMicroUSD int64) *oauthcost.Usage {
 	now := time.Now().UTC()
-	return &oauthcost.Usage{Weekly: &oauthcost.Window{
+	return &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 		StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
 		StandardCostMicroUSD: costMicroUSD,
-	}}
+	}}}
 }
 
 func TestAntigravityChannelEditorExposesCredentialOnlyInEditor(t *testing.T) {
@@ -1698,7 +1701,7 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 		)
 		if file.personal {
 			credential = fmt.Sprintf(
-				`{"type":"codex","auth_mode":"personalAccessToken","access_token":%q,"chatgpt_user_id":"forged-user","account_id":%q,"email":"forged@example.com","plan_type":"free","quota_overdraft":{"enabled":true},"quota_cost_usage":{"weekly":{"started_at":1893456000,"reset_at":1894060800,"standard_cost_microusd":6500000}}}`,
+				`{"type":"codex","auth_mode":"personalAccessToken","access_token":%q,"chatgpt_user_id":"forged-user","account_id":%q,"email":"forged@example.com","plan_type":"free","quota_overdraft":{"enabled":true},"quota_cost_usage":{"windows":[{"key":"codex|secondary","window_seconds":604800,"started_at":1893456000,"reset_at":1894060800,"standard_cost_microusd":6500000}]}}`,
 				file.accessToken, file.accountID,
 			)
 		}
@@ -1762,7 +1765,8 @@ func TestHandleImportCodexCredentialUsesAcceptedAccessTokenAndFailsUnusableCrede
 	if personal == nil || !personal.IsPersonalAccessToken() || personal.ChatGPTUserID != "verified-pat-user" ||
 		personal.Email != "verified-pat@example.com" || personal.PlanType != "plus" || !personal.AccountFedRAMP ||
 		personal.QuotaOverdraft == nil || !personal.QuotaOverdraft.Enabled || personal.QuotaCostUsage == nil ||
-		personal.QuotaCostUsage.Weekly == nil || personal.QuotaCostUsage.Weekly.StandardCostMicroUSD != 6_500_000 {
+		oauthcost.Find(personal.QuotaCostUsage, "codex|secondary") == nil ||
+		oauthcost.Find(personal.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 6_500_000 {
 		t.Fatalf("persisted PAT did not use whoami identity and local quota state: %#v", personal)
 	}
 	for _, secret := range []string{"at-stale", "rt-refreshable", "at-short-lived", "rt-short-lived-invalid", "at-transient", "rt-transient", "at-unusable", "rt-unusable", "at-refreshed", "rt-rotated", "at-personal-import"} {
@@ -3304,10 +3308,11 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 		}},
 	}
 	winner.OAuthUsage = json.RawMessage(`{"provider":"codex","windows":[]}`)
-	winner.QuotaCostUsage = &oauthcost.Usage{Weekly: &oauthcost.Window{
+	winner.QuotaCostUsage = &oauthcost.Usage{Windows: []*oauthcost.Window{{
+		Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 		StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
 		StandardCostMicroUSD: 7_500_000,
-	}}
+	}}}
 	winner.QuotaOverdraft = &codexauth.QuotaOverdraft{
 		Enabled: true, SuccessfulRequests: 3, CostMicroUSD: 2500,
 	}
@@ -3338,8 +3343,8 @@ func TestCodexReauthorizationRetriesConcurrentRuntimeMetadataUpdate(t *testing.T
 	if persisted.PassiveUsage == nil || len(persisted.PassiveUsage.Windows) != 1 ||
 		persisted.PassiveUsage.Windows[0].UsedPercent != 25 ||
 		!bytes.Equal(persisted.OAuthUsage, winner.OAuthUsage) ||
-		persisted.QuotaCostUsage == nil || persisted.QuotaCostUsage.Weekly == nil ||
-		persisted.QuotaCostUsage.Weekly.StandardCostMicroUSD != 7_500_000 ||
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary") == nil ||
+		oauthcost.Find(persisted.QuotaCostUsage, "codex|secondary").StandardCostMicroUSD != 7_500_000 ||
 		persisted.QuotaOverdraft == nil || persisted.QuotaOverdraft.SuccessfulRequests != 3 ||
 		persisted.QuotaOverdraft.CostMicroUSD != 2500 {
 		t.Fatalf("reauthorization lost runtime metadata: %#v", persisted)
@@ -4918,8 +4923,9 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	if response.Data.Provider != codexauth.ChannelType || response.Data.PlanType != "pro" || len(response.Data.Windows) != 3 {
 		t.Fatalf("usage summary = %#v", response.Data)
 	}
-	if response.Data.QuotaCostUsage == nil || response.Data.QuotaCostUsage.Weekly == nil ||
-		response.Data.QuotaCostUsage.Weekly.StandardCostMicroUSD != 0 {
+	if oauthcost.Find(response.Data.QuotaCostUsage, "codex|primary") == nil ||
+		oauthcost.Find(response.Data.QuotaCostUsage, "codex|primary").StandardCostMicroUSD != 0 ||
+		len(response.Data.QuotaCostUsage.Windows) != 3 {
 		t.Fatalf("quota cost usage = %#v", response.Data.QuotaCostUsage)
 	}
 	if response.Data.RateLimitResetCredits == nil || response.Data.RateLimitResetCredits.AvailableCount != 2 ||
@@ -4942,7 +4948,7 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
 	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil ||
 		list.Data[0].OAuthUsage.Provider != codexauth.ChannelType || len(list.Data[0].OAuthUsage.Windows) != 3 ||
-		list.Data[0].OAuthUsage.QuotaCostUsage == nil || list.Data[0].OAuthUsage.QuotaCostUsage.Weekly == nil ||
+		oauthcost.Find(list.Data[0].OAuthUsage.QuotaCostUsage, "codex|primary") == nil ||
 		list.Data[0].OAuthUsage.RateLimitResetCredits == nil ||
 		list.Data[0].OAuthUsage.RateLimitResetCredits.AvailableCount != 2 {
 		t.Fatalf("persisted Codex usage = %+v", list.Data)
@@ -5007,13 +5013,17 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 			Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix(), SuccessfulRequests: 3, CostMicroUSD: 45,
 		},
 		QuotaCostUsage: &oauthcost.Usage{
-			Weekly: &oauthcost.Window{
-				StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
-				StandardCostMicroUSD: 12_500_000,
-			},
-			Monthly: &oauthcost.Window{
-				StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(29 * 24 * time.Hour).Unix(),
-				StandardCostMicroUSD: 18_500_000,
+			Windows: []*oauthcost.Window{
+				{
+					Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
+					StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(6 * 24 * time.Hour).Unix(),
+					StandardCostMicroUSD: 12_500_000,
+				},
+				{
+					Key: "codex|monthly", WindowSeconds: 30 * 24 * 60 * 60,
+					StartedAt: time.Now().Add(-24 * time.Hour).Unix(), ResetAt: time.Now().Add(29 * 24 * time.Hour).Unix(),
+					StandardCostMicroUSD: 18_500_000,
+				},
 			},
 		},
 	}
@@ -5090,10 +5100,9 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 		result.Data.Usage.RateLimitResetCredits.AvailableCount != 0 || len(result.Data.Warnings) != 0 {
 		t.Fatalf("reset response = %#v", result.Data)
 	}
-	if result.Data.Usage.QuotaCostUsage == nil || result.Data.Usage.QuotaCostUsage.Weekly == nil ||
-		result.Data.Usage.QuotaCostUsage.Monthly == nil ||
-		result.Data.Usage.QuotaCostUsage.Weekly.StandardCostMicroUSD != 0 ||
-		result.Data.Usage.QuotaCostUsage.Monthly.StandardCostMicroUSD != 0 {
+	resultPrimary := oauthcost.Find(result.Data.Usage.QuotaCostUsage, "codex|primary")
+	if resultPrimary == nil || len(result.Data.Usage.QuotaCostUsage.Windows) != 1 ||
+		resultPrimary.StandardCostMicroUSD != 0 {
 		t.Fatalf("quota cost usage after reset = %#v", result.Data.Usage.QuotaCostUsage)
 	}
 	if consumeRequests.Load() != 1 || detailRequests.Load() != 2 {
@@ -5108,10 +5117,9 @@ func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
 		persistedCredential.QuotaOverdraft.SuccessfulRequests != 3 || persistedCredential.QuotaOverdraft.CostMicroUSD != 45 {
 		t.Fatalf("quota overdraft after reset = (%#v, %v)", persistedCredential.QuotaOverdraft, err)
 	}
-	if persistedCredential.QuotaCostUsage == nil || persistedCredential.QuotaCostUsage.Weekly == nil ||
-		persistedCredential.QuotaCostUsage.Monthly == nil ||
-		persistedCredential.QuotaCostUsage.Weekly.StandardCostMicroUSD != 0 ||
-		persistedCredential.QuotaCostUsage.Monthly.StandardCostMicroUSD != 0 {
+	persistedPrimary := oauthcost.Find(persistedCredential.QuotaCostUsage, "codex|primary")
+	if persistedPrimary == nil || len(persistedCredential.QuotaCostUsage.Windows) != 1 ||
+		persistedPrimary.StandardCostMicroUSD != 0 {
 		t.Fatalf("quota cost usage after reset = %#v", persistedCredential.QuotaCostUsage)
 	}
 	if persisted.CooldownUntil != 0 {

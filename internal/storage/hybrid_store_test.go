@@ -163,9 +163,10 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 	credentialJSON, err := (&codexauth.Credential{
 		Type: codexauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
 		Expired: now.Add(time.Hour).Format(time.RFC3339),
-		QuotaCostUsage: &oauthcost.Usage{Weekly: &oauthcost.Window{
+		QuotaCostUsage: &oauthcost.Usage{Windows: []*oauthcost.Window{{
+			Key: "codex|secondary", WindowSeconds: 7 * 24 * 60 * 60,
 			StartedAt: now.Add(-24 * time.Hour).Unix(), ResetAt: now.Add(6 * 24 * time.Hour).Unix(),
-		}},
+		}}},
 	}).JSON()
 	if err != nil {
 		t.Fatal(err)
@@ -194,10 +195,14 @@ func TestHybridStore_OAuthQuotaCostConvergesWithoutReplicaDoubleCount(t *testing
 			return 0, false
 		}
 		credential, parseErr := codexauth.ParseCredential([]byte(cfg.OAuthCredential))
-		if parseErr != nil || credential.QuotaCostUsage == nil || credential.QuotaCostUsage.Weekly == nil {
+		if parseErr != nil {
 			return 0, false
 		}
-		return credential.QuotaCostUsage.Weekly.StandardCostMicroUSD, true
+		window := oauthcost.Find(credential.QuotaCostUsage, "codex|secondary")
+		if window == nil {
+			return 0, false
+		}
+		return window.StandardCostMicroUSD, true
 	}
 	if cost, ok := readCost(sqlite); !ok || cost != 2_250_000 {
 		t.Fatalf("SQLite quota cost = (%d, %t), want 2250000", cost, ok)

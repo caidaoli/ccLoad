@@ -70,7 +70,7 @@ func (s *SQLStore) updateOAuthQuotaCostsTx(
 			if err != nil {
 				return nil, fmt.Errorf("convert OAuth quota standard cost for channel %d: %w", channelID, err)
 			}
-			entryChanged, err := oauthcost.AddStandardCost(next, entry.Time.Time, costMicroUSD)
+			entryChanged, err := oauthcost.AddStandardCost(next, entry.Time.Time, quotaCostModel(entry), costMicroUSD)
 			if err != nil {
 				return nil, fmt.Errorf("accumulate OAuth quota standard cost for channel %d: %w", channelID, err)
 			}
@@ -120,18 +120,11 @@ func (s *SQLStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64
 	if envelope.QuotaCostUsage == nil {
 		return tx.Commit()
 	}
-	var costUSD float64
-	if err := s.queryRowTx(ctx, tx, `
-		SELECT COALESCE(SUM(cost), 0) FROM logs
-		WHERE channel_id = ? AND time >= ? AND cost > 0
-	`, channelID, resetAt.UnixMilli()).Scan(&costUSD); err != nil {
-		return err
-	}
-	costMicroUSD, err := util.USDToMicroUSDSafe(costUSD)
+	costByFamily, err := s.sumOAuthQuotaCostByFamily(ctx, tx, channelID, resetAt, envelope.QuotaCostUsage)
 	if err != nil {
 		return err
 	}
-	next := oauthcost.Reset(envelope.QuotaCostUsage, resetAt, costMicroUSD)
+	next := oauthcost.Reset(envelope.QuotaCostUsage, resetAt, costByFamily)
 	if err := oauthcost.Validate(next); err != nil {
 		return err
 	}
@@ -145,6 +138,66 @@ func (s *SQLStore) ResetOAuthQuotaCostUsage(ctx context.Context, channelID int64
 		return err
 	}
 	return tx.Commit()
+}
+
+// quotaCostModel 返回该条日志实际消耗的上游模型；额度窗口按实际上游模型分族。
+func quotaCostModel(entry *model.LogEntry) string {
+	if actual := strings.TrimSpace(entry.ActualModel); actual != "" {
+		return actual
+	}
+	return entry.Model
+}
+
+// sumOAuthQuotaCostByFamily 按模型族汇总 resetAt 之后已落盘的标准成本——
+// 只覆盖部分模型的窗口不能吃下其他模型的消耗。
+func (s *SQLStore) sumOAuthQuotaCostByFamily(
+	ctx context.Context,
+	tx *sql.Tx,
+	channelID int64,
+	resetAt time.Time,
+	usage *oauthcost.Usage,
+) (map[string]int64, error) {
+	families := oauthcost.Families(usage)
+	if len(families) == 0 {
+		return nil, nil
+	}
+	rows, err := s.queryTx(ctx, tx, `
+		SELECT model, actual_model, COALESCE(SUM(cost), 0) FROM logs
+		WHERE channel_id = ? AND time >= ? AND cost > 0
+		GROUP BY model, actual_model
+	`, channelID, resetAt.UnixMilli())
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	costUSDByFamily := make(map[string]float64, len(families))
+	for rows.Next() {
+		var modelName, actualModel string
+		var costUSD float64
+		if err := rows.Scan(&modelName, &actualModel, &costUSD); err != nil {
+			return nil, err
+		}
+		if actual := strings.TrimSpace(actualModel); actual != "" {
+			modelName = actual
+		}
+		for _, family := range families {
+			if oauthcost.FamilyMatches(family, modelName) {
+				costUSDByFamily[family] += costUSD
+			}
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	costByFamily := make(map[string]int64, len(costUSDByFamily))
+	for family, costUSD := range costUSDByFamily {
+		costMicroUSD, err := util.USDToMicroUSDSafe(costUSD)
+		if err != nil {
+			return nil, err
+		}
+		costByFamily[family] = costMicroUSD
+	}
+	return costByFamily, nil
 }
 
 func replaceOAuthQuotaCostUsage(credentialJSON string, usage *oauthcost.Usage) (string, error) {

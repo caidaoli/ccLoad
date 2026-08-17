@@ -179,6 +179,8 @@ type oauthUsageWindow struct {
 	RemainingPercent   float64 `json:"remaining_percent"`
 	LimitWindowSeconds int64   `json:"limit_window_seconds"`
 	ResetAt            int64   `json:"reset_at"`
+	// StandardCostMicroUSD 是该窗口自身的累计标准成本，仅在响应中内联，不入持久化快照。
+	StandardCostMicroUSD *int64 `json:"standard_cost_microusd,omitempty"`
 }
 
 type oauthUsageSummary struct {
