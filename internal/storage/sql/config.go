@@ -401,6 +401,38 @@ func (s *SQLStore) CompareAndSwapOAuthCredential(
 	return matched, nil
 }
 
+// DisableOAuthChannelIfCredentialMatches disables an OAuth channel only while
+// the persisted provider and complete credential still match the rejected
+// snapshot. A stale proxy request must never disable a concurrently
+// reauthorized channel.
+func (s *SQLStore) DisableOAuthChannelIfCredentialMatches(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential string,
+) (bool, error) {
+	authType := model.NormalizeAuthType(expectedAuthType)
+	if authType == "" || authType == model.AuthTypeAPIKey {
+		return false, errors.New("OAuth auth type is invalid")
+	}
+	if strings.TrimSpace(expectedCredential) == "" {
+		return false, errors.New("expected OAuth credential cannot be empty")
+	}
+
+	result, err := s.ExecContext(ctx, `
+		UPDATE channels
+		SET enabled = 0, cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
+		WHERE id = ? AND enabled = 1 AND auth_type = ? AND oauth_credential = ?
+	`, timeToUnix(time.Now()), channelID, authType, expectedCredential)
+	if err != nil {
+		return false, fmt.Errorf("disable rejected OAuth channel: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read disabled OAuth channel result: %w", err)
+	}
+	return rowsAffected > 0, nil
+}
+
 func (s *SQLStore) loadOAuthCredentialForUpdate(ctx context.Context, tx *sql.Tx, channelID int64) (string, string, error) {
 	query := `SELECT auth_type, COALESCE(oauth_credential, '') FROM channels WHERE id = ?`
 	if s.supportsRowLock() {
@@ -850,17 +882,59 @@ func (s *SQLStore) DeleteConfigIfOAuthSnapshotMatches(
 	ctx context.Context,
 	expected *model.Config,
 ) (bool, error) {
+	if err := validateOAuthChannelSnapshot(expected); err != nil {
+		return false, err
+	}
+	return s.deleteConfig(ctx, expected.ID, expected.Clone())
+}
+
+// DisableConfigIfOAuthSnapshotMatches atomically disables a channel only when
+// the complete persisted configuration still matches the failed test input.
+func (s *SQLStore) DisableConfigIfOAuthSnapshotMatches(
+	ctx context.Context,
+	expected *model.Config,
+) (bool, error) {
+	if err := validateOAuthChannelSnapshot(expected); err != nil {
+		return false, err
+	}
+	matched := false
+	err := s.WithTransaction(ctx, func(tx *sql.Tx) error {
+		current, err := s.loadConfigSnapshotForUpdate(ctx, tx, expected.ID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if !reflect.DeepEqual(oauthDeletionSnapshot(current), oauthDeletionSnapshot(expected)) {
+			return nil
+		}
+		matched = true
+		_, err = s.execTx(ctx, tx, `
+			UPDATE channels
+			SET enabled = 0, cooldown_until = 0, cooldown_duration_ms = 0, updated_at = ?
+			WHERE id = ?
+		`, timeToUnix(time.Now()), expected.ID)
+		return err
+	})
+	if err != nil {
+		return false, fmt.Errorf("disable OAuth channel snapshot: %w", err)
+	}
+	return matched, nil
+}
+
+func validateOAuthChannelSnapshot(expected *model.Config) error {
 	if expected == nil || expected.ID <= 0 {
-		return false, errors.New("expected OAuth channel snapshot is invalid")
+		return errors.New("expected OAuth channel snapshot is invalid")
 	}
 	authType := expected.GetAuthType()
 	if authType == "" || authType == model.AuthTypeAPIKey {
-		return false, errors.New("OAuth auth type is invalid")
+		return errors.New("OAuth auth type is invalid")
 	}
 	if strings.TrimSpace(expected.OAuthCredential) == "" {
-		return false, errors.New("expected OAuth credential cannot be empty")
+		return errors.New("expected OAuth credential cannot be empty")
 	}
-	return s.deleteConfig(ctx, expected.ID, expected.Clone())
+	return nil
 }
 
 func (s *SQLStore) deleteConfig(

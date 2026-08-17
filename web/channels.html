@@ -326,7 +326,7 @@
           <form id="oauthCredentialCleanupForm" class="oauth-dialog-body">
             <p id="oauthCredentialCleanupDialogDescription" class="oauth-dialog-description"
               data-i18n="channels.oauth.cleanupDialogDescription">
-              选择凭证类型和去重后的模型，将测试该类型的全部渠道。关闭窗口不会中断正在运行的任务。
+              选择凭证类型、模型和失效渠道的处理方式。关闭窗口不会中断正在运行的任务。
             </p>
             <div class="credential-cleanup-selection">
               <div class="oauth-field">
@@ -344,6 +344,14 @@
                   data-i18n="channels.oauth.cleanupModel">模型</label>
                 <select id="oauthCredentialCleanupModel" class="form-input" name="model" required disabled>
                   <option value="" data-i18n="channels.oauth.cleanupModelsLoading">正在加载模型…</option>
+                </select>
+              </div>
+              <div class="oauth-field credential-cleanup-action">
+                <label for="oauthCredentialCleanupAction"
+                  data-i18n="channels.oauth.cleanupAction">失效渠道处理</label>
+                <select id="oauthCredentialCleanupAction" class="form-input" name="action">
+                  <option value="disable" selected data-i18n="channels.oauth.cleanupActionDisable">禁用渠道</option>
+                  <option value="delete" data-i18n="channels.oauth.cleanupActionDelete">删除渠道</option>
                 </select>
               </div>
             </div>

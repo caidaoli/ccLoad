@@ -4637,6 +4637,9 @@ func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing
 	if err := store.SetChannelCooldown(context.Background(), channel.ID, time.Now().Add(24*time.Hour)); err != nil {
 		t.Fatalf("set stale PAT cooldown: %v", err)
 	}
+	if _, err := store.UpdateChannelEnabled(context.Background(), channel.ID, false); err != nil {
+		t.Fatalf("disable rejected PAT channel: %v", err)
+	}
 	const preservedModel = "gpt-preserved-cooldown"
 	if err := store.SetModelCooldown(context.Background(), channel.ID, preservedModel, time.Now().Add(time.Hour)); err != nil {
 		t.Fatalf("set PAT model cooldown: %v", err)
@@ -4659,8 +4662,8 @@ func TestHandleCreateCodexPersonalAccessTokenPersistsStaticCredential(t *testing
 		t.Fatalf("PAT reauthorization duplicated channel: %#v", reauthorized.Data)
 	}
 	refreshedChannel, err := store.GetConfig(context.Background(), channel.ID)
-	if err != nil || refreshedChannel.CooldownUntil != 0 {
-		t.Fatalf("PAT reauthorization left stale cooldown: channel=%+v err=%v", refreshedChannel, err)
+	if err != nil || !refreshedChannel.Enabled || refreshedChannel.CooldownUntil != 0 {
+		t.Fatalf("PAT reauthorization did not reactivate channel: channel=%+v err=%v", refreshedChannel, err)
 	}
 	modelCooldowns, err := store.GetAllModelCooldowns(context.Background())
 	if err != nil || modelCooldowns[channel.ID][preservedModel].IsZero() {

@@ -1740,6 +1740,22 @@ func (s *Server) deleteChannelIfOAuthCredentialMatches(
 	return true, nil
 }
 
+func (s *Server) disableChannelIfOAuthSnapshotMatches(
+	ctx context.Context,
+	cfg *model.Config,
+) (bool, error) {
+	if cfg == nil || cfg.ID <= 0 || !cfg.UsesOAuth() || strings.TrimSpace(cfg.OAuthCredential) == "" {
+		return false, nil
+	}
+	disabled, err := s.store.DisableConfigIfOAuthSnapshotMatches(ctx, cfg)
+	if err != nil || !disabled {
+		return disabled, err
+	}
+	s.invalidateChannelRelatedCache(cfg.ID)
+	s.InvalidateChannelListCache()
+	return true, nil
+}
+
 func (s *Server) removeDeletedChannelRuntimeState(cfg *model.Config) {
 	id := cfg.ID
 	if s.keySelector != nil {

@@ -215,6 +215,24 @@ func (h *HybridStore) CompareAndSwapOAuthCredential(
 	return true, nil
 }
 
+func (h *HybridStore) DisableOAuthChannelIfCredentialMatches(
+	ctx context.Context,
+	channelID int64,
+	expectedAuthType, expectedCredential string,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	disabled, err := h.sqlite.DisableOAuthChannelIfCredentialMatches(
+		ctx, channelID, expectedAuthType, expectedCredential,
+	)
+	if err != nil || !disabled {
+		return disabled, err
+	}
+	h.markChannelDirty(channelID, false)
+	return true, nil
+}
+
 func (h *HybridStore) UpdateOAuthModelStateIfCredentialMatches(
 	ctx context.Context,
 	channelID int64,
@@ -287,6 +305,21 @@ func (h *HybridStore) DeleteConfigIfOAuthSnapshotMatches(
 		return deleted, err
 	}
 	h.markChannelDirty(expected.ID, true)
+	return true, nil
+}
+
+func (h *HybridStore) DisableConfigIfOAuthSnapshotMatches(
+	ctx context.Context,
+	expected *model.Config,
+) (bool, error) {
+	h.oauthCredentialMu.Lock()
+	defer h.oauthCredentialMu.Unlock()
+
+	disabled, err := h.sqlite.DisableConfigIfOAuthSnapshotMatches(ctx, expected)
+	if err != nil || !disabled {
+		return disabled, err
+	}
+	h.markChannelDirty(expected.ID, false)
 	return true, nil
 }
 

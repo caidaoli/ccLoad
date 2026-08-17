@@ -657,7 +657,10 @@ func updateExistingCodexChannel(
 			); err != nil {
 				return nil, false, err
 			}
-			updated, err := store.GetConfig(ctx, currentCfg.ID)
+			if err := store.ResetChannelCooldown(ctx, currentCfg.ID); err != nil {
+				return nil, false, fmt.Errorf("clear Codex channel cooldown after reauthorization: %w", err)
+			}
+			updated, err := store.UpdateChannelEnabled(ctx, currentCfg.ID, true)
 			return updated, false, err
 		}
 

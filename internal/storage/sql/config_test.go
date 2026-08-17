@@ -195,6 +195,94 @@ func TestConfig_OAuthCredentialRoundTripAndPrivateJSON(t *testing.T) {
 	}
 }
 
+func TestConfig_DisableOAuthChannelIfCredentialMatches(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t, "disable-rejected-oauth.db")
+	ctx := context.Background()
+	original := `{"type":"codex","access_token":"rejected-at","refresh_token":"rejected-rt"}`
+	created, err := store.CreateConfig(ctx, &model.Config{
+		Name: "rejected-codex", AuthType: model.AuthTypeCodexOAuth, OAuthCredential: original,
+		URLs:    model.ChannelURLs{{URL: "https://example.com", Protocols: []string{"codex"}}},
+		Enabled: true, ModelEntries: []model.ModelEntry{{Model: "gpt-test"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+
+	disabled, err := store.DisableOAuthChannelIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, original+" ",
+	)
+	if err != nil || disabled {
+		t.Fatalf("stale disable = (%v, %v), want (false, nil)", disabled, err)
+	}
+	current, err := store.GetConfig(ctx, created.ID)
+	if err != nil || !current.Enabled || current.CooldownUntil == 0 {
+		t.Fatalf("stale disable changed channel: config=%+v err=%v", current, err)
+	}
+
+	disabled, err = store.DisableOAuthChannelIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, original,
+	)
+	if err != nil || !disabled {
+		t.Fatalf("matching disable = (%v, %v), want (true, nil)", disabled, err)
+	}
+	current, err = store.GetConfig(ctx, created.ID)
+	if err != nil || current.Enabled || current.CooldownUntil != 0 || current.CooldownDurationMs != 0 {
+		t.Fatalf("matching disable did not clear availability state: config=%+v err=%v", current, err)
+	}
+
+	if _, err := store.UpdateChannelEnabled(ctx, created.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	renewed := `{"type":"codex","access_token":"renewed-at","refresh_token":"renewed-rt"}`
+	swapped, err := store.CompareAndSwapOAuthCredential(
+		ctx, created.ID, model.AuthTypeCodexOAuth, original, renewed,
+	)
+	if err != nil || !swapped {
+		t.Fatalf("renew credential = (%v, %v), want (true, nil)", swapped, err)
+	}
+	disabled, err = store.DisableOAuthChannelIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeCodexOAuth, original,
+	)
+	if err != nil || disabled {
+		t.Fatalf("old snapshot disable after renewal = (%v, %v), want (false, nil)", disabled, err)
+	}
+	current, err = store.GetConfig(ctx, created.ID)
+	if err != nil || !current.Enabled || current.OAuthCredential != renewed {
+		t.Fatalf("old snapshot disabled renewed credential: config=%+v err=%v", current, err)
+	}
+	if err := store.SetChannelCooldown(ctx, created.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := store.GetConfig(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleSnapshot := snapshot.Clone()
+	staleSnapshot.URLs = model.ChannelURLs{{URL: "https://edited.example.com", Protocols: []string{"codex"}}}
+	disabled, err = store.DisableConfigIfOAuthSnapshotMatches(ctx, staleSnapshot)
+	if err != nil || disabled {
+		t.Fatalf("stale snapshot disable = (%v, %v), want (false, nil)", disabled, err)
+	}
+	disabled, err = store.DisableConfigIfOAuthSnapshotMatches(ctx, snapshot)
+	if err != nil || !disabled {
+		t.Fatalf("matching snapshot disable = (%v, %v), want (true, nil)", disabled, err)
+	}
+	current, err = store.GetConfig(ctx, created.ID)
+	if err != nil || current.Enabled || current.CooldownUntil != 0 || current.CooldownDurationMs != 0 {
+		t.Fatalf("matching snapshot did not disable channel: config=%+v err=%v", current, err)
+	}
+
+	if _, err := store.DisableOAuthChannelIfCredentialMatches(
+		ctx, created.ID, model.AuthTypeAPIKey, renewed,
+	); err == nil {
+		t.Fatal("DisableOAuthChannelIfCredentialMatches() accepted API key auth type")
+	}
+}
+
 func TestConfig_CreateWithExistingExplicitOAuthIDCannotReplaceCredential(t *testing.T) {
 	store := newTestStore(t, "explicit-oauth-credential.db")
 	ctx := context.Background()

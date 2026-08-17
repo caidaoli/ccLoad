@@ -50,6 +50,7 @@ test('OAuth credential cleanup resumes its SSE stream without restarting the des
     const result = await cleanupOAuthCredentials(
       'codex_oauth',
       'gpt-test',
+      'delete',
       async (url, options) => {
         requests.push({ url, options });
         if (url === '/admin/oauth/credentials/cleanup/jobs') {
@@ -126,7 +127,7 @@ test('OAuth credential cleanup resumes its SSE stream without restarting the des
     );
 
     assert.deepEqual(result, {
-      healthy: 1, refreshed: 0, deleted: 1, failed: 0, skipped: 0, total: 2
+      healthy: 1, refreshed: 0, disabled: 0, deleted: 1, failed: 0, skipped: 0, total: 2
     });
     const starts = requests.filter(request => request.url === '/admin/oauth/credentials/cleanup/jobs');
     assert.equal(starts.length, 3);
@@ -136,7 +137,8 @@ test('OAuth credential cleanup resumes its SSE stream without restarting the des
     for (const start of starts) {
       assert.deepEqual(JSON.parse(start.options.body), {
         auth_type: 'codex_oauth',
-        model: 'gpt-test'
+        model: 'gpt-test',
+        action: 'delete'
       });
     }
     assert.equal(terminalReads, 1);
@@ -157,6 +159,7 @@ test('OAuth credential cleanup does not start after another cleanup reports busy
       cleanupOAuthCredentials(
         'anthropic_oauth',
         'claude-sonnet-4',
+        'disable',
         async () => {
           requests++;
           return {
@@ -185,6 +188,7 @@ test('OAuth credential cleanup resolves cancelled SSE with partial progress', as
     const result = await cleanupOAuthCredentials(
       'xai_oauth',
       'grok-4',
+      'disable',
       async url => {
         if (url === '/admin/oauth/credentials/cleanup/jobs') {
           return {
@@ -217,6 +221,7 @@ test('OAuth credential cleanup resolves cancelled SSE with partial progress', as
     assert.deepEqual(result, {
       healthy: 1,
       refreshed: 0,
+      disabled: 0,
       deleted: 0,
       failed: 0,
       skipped: 0,
@@ -238,6 +243,7 @@ test('OAuth credential cleanup follows SSE without waiting for a lost stop respo
     const result = await cleanupOAuthCredentials(
       'codex_oauth',
       'gpt-5',
+      'disable',
       async url => {
         if (url === '/admin/oauth/credentials/cleanup/jobs') {
           return {
@@ -303,6 +309,110 @@ test('OAuth credential cleanup cancellation retries a lost successful response',
     assert.equal(requests[0].options.method, 'POST');
   } finally {
     global.window = previousWindow;
+  }
+});
+
+test('completed OAuth credential cleanup keeps a valid model selected and can start again', async () => {
+  const previous = new Map();
+  const setGlobal = (key, value) => {
+    previous.set(key, Object.getOwnPropertyDescriptor(global, key));
+    Object.defineProperty(global, key, { configurable: true, writable: true, value });
+  };
+  const makeTarget = properties => ({
+    dataset: {}, listeners: {},
+    addEventListener(type, listener) { this.listeners[type] = listener; },
+    removeAttribute(name) { delete this[name]; },
+    setAttribute(name, value) { this[name] = value; },
+    ...properties
+  });
+  const form = makeTarget({});
+  const label = { dataset: {}, textContent: '' };
+  const button = makeTarget({
+    disabled: false,
+    querySelector() { return label; }
+  });
+  const authType = makeTarget({
+    value: 'codex_oauth',
+    disabled: false,
+    selectedOptions: [{ textContent: 'Codex' }]
+  });
+  const model = makeTarget({
+    value: 'gpt-test',
+    disabled: false,
+    options: [{ value: '' }, { value: 'gpt-test' }],
+    replaceChildren(...options) { this.options = options; },
+    focus() {}
+  });
+  const action = makeTarget({ value: 'disable', disabled: false });
+  const results = {
+    children: [],
+    append(item) { this.children.push(item); },
+    replaceChildren() { this.children = []; }
+  };
+  const elements = new Map([
+    ['oauthCredentialCleanupForm', form],
+    ['oauthCredentialCleanupBtn', button],
+    ['oauthCredentialCleanupAuthType', authType],
+    ['oauthCredentialCleanupModel', model],
+    ['oauthCredentialCleanupAction', action],
+    ['oauthCredentialCleanupProgress', { hidden: true, dataset: {} }],
+    ['oauthCredentialCleanupProgressBar', { max: 1, value: 0 }],
+    ['oauthCredentialCleanupProgressCounter', { textContent: '' }],
+    ['oauthCredentialCleanupProgressDetail', { textContent: '' }],
+    ['oauthCredentialCleanupProgressCounts', { textContent: '' }],
+    ['oauthCredentialCleanupResults', results]
+  ]);
+  let starts = 0;
+  setGlobal('document', {
+    getElementById: id => elements.get(id) || null,
+    querySelectorAll: () => [],
+    createElement: () => ({ value: '', textContent: '' })
+  });
+  setGlobal('window', {
+    t: key => key,
+    confirm: () => true,
+    showSuccess() {},
+    showError() {}
+  });
+  setGlobal('fetchDataWithAuth', async () => ({ models: ['gpt-test'] }));
+  setGlobal('fetchWithAuth', async url => {
+    if (url === '/admin/oauth/credentials/cleanup/jobs') {
+      starts++;
+      return {
+        ok: true,
+        status: 202,
+        async text() {
+          return JSON.stringify({ success: true, data: { job_id: `cleanup-${starts}`, total: 1 } });
+        }
+      };
+    }
+    return {
+      ok: true,
+      status: 200,
+      async text() {
+        return 'event: complete\ndata: {"event":"complete","sequence":1,"processed":1,"total":1,"healthy":1,"status":"succeeded"}\n\n';
+      }
+    };
+  });
+  setGlobal('reloadChannelsList', async () => {});
+
+  try {
+    setupOAuthActions();
+    authType.listeners.change();
+    await new Promise(resolve => setImmediate(resolve));
+    await form.listeners.submit({ preventDefault() {} });
+
+    assert.equal(model.value, 'gpt-test');
+    assert.equal(model.disabled, false);
+    assert.equal(button.disabled, false);
+
+    await form.listeners.submit({ preventDefault() {} });
+    assert.equal(starts, 2);
+  } finally {
+    for (const [key, descriptor] of previous) {
+      if (descriptor === undefined) delete global[key];
+      else Object.defineProperty(global, key, descriptor);
+    }
   }
 });
 

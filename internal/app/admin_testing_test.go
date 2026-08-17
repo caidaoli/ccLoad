@@ -423,7 +423,7 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	startCleanup := func() oauthCredentialCleanupJobStart {
 		t.Helper()
 		req := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
-			`{"auth_type":"codex_oauth","model":"gpt-5.4"}`,
+			`{"auth_type":"codex_oauth","model":"gpt-5.4","action":"delete"}`,
 		))
 		req.Header.Set("Idempotency-Key", "cleanup-test-request")
 		req.Header.Set("Content-Type", "application/json")
@@ -445,15 +445,26 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 		return response.Data
 	}
 	started := startCleanup()
-	if started.Total != 10 || started.AuthType != model.AuthTypeCodexOAuth || started.Model != "gpt-5.4" {
+	if started.Total != 10 || started.AuthType != model.AuthTypeCodexOAuth || started.Model != "gpt-5.4" ||
+		started.Action != oauthCredentialCleanupActionDelete {
 		t.Fatalf("cleanup selection=%+v", started)
 	}
 	recovered := startCleanup()
 	if recovered != started {
 		t.Fatalf("idempotent start=%+v, want %+v", recovered, started)
 	}
+	actionConflictReq := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-5.4","action":"disable"}`,
+	))
+	actionConflictReq.Header.Set("Idempotency-Key", "cleanup-test-request")
+	actionConflictReq.Header.Set("Content-Type", "application/json")
+	actionConflictContext, actionConflictResponse := newTestContext(t, actionConflictReq)
+	srv.HandleStartOAuthCredentialCleanupJob(actionConflictContext)
+	if actionConflictResponse.Code != http.StatusConflict {
+		t.Fatalf("idempotency action conflict status=%d body=%s", actionConflictResponse.Code, actionConflictResponse.Body.String())
+	}
 	conflictReq := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
-		`{"auth_type":"codex_oauth","model":"gpt-other"}`,
+		`{"auth_type":"codex_oauth","model":"gpt-other","action":"delete"}`,
 	))
 	conflictReq.Header.Set("Idempotency-Key", "cleanup-test-request")
 	conflictReq.Header.Set("Content-Type", "application/json")
@@ -563,6 +574,15 @@ func TestOAuthCredentialCleanupRunsConcurrentlyAndDeletesOnlyRefreshFailures(t *
 	srv.HandleStartOAuthCredentialCleanupJob(unknownModelContext)
 	if unknownModelResponse.Code != http.StatusBadRequest {
 		t.Fatalf("unknown cleanup model status=%d body=%s", unknownModelResponse.Code, unknownModelResponse.Body.String())
+	}
+	invalidActionRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
+		`{"auth_type":"codex_oauth","model":"gpt-other","action":"archive"}`,
+	))
+	invalidActionRequest.Header.Set("Content-Type", "application/json")
+	invalidActionContext, invalidActionResponse := newTestContext(t, invalidActionRequest)
+	srv.HandleStartOAuthCredentialCleanupJob(invalidActionContext)
+	if invalidActionResponse.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cleanup action status=%d body=%s", invalidActionResponse.Code, invalidActionResponse.Body.String())
 	}
 
 	secondRequest := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
@@ -755,8 +775,10 @@ func TestOAuthCredentialCleanupCancelDuringRefreshKeepsChannel(t *testing.T) {
 	}
 }
 
-func TestOAuthCredentialCleanupDeletesRejectedPersonalAccessToken(t *testing.T) {
+func TestOAuthCredentialCleanupDisablesRejectedPersonalAccessTokenByDefault(t *testing.T) {
+	var upstreamAttempts atomic.Int32
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamAttempts.Add(1)
 		if r.Header.Get("Authorization") != "Bearer at-cleanup-pat" {
 			t.Errorf("PAT cleanup authorization = %q", r.Header.Get("Authorization"))
 		}
@@ -788,39 +810,70 @@ func TestOAuthCredentialCleanupDeletesRejectedPersonalAccessToken(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	request := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(
-		`{"auth_type":"codex_oauth","model":"gpt-pat"}`,
-	))
-	request.Header.Set("Content-Type", "application/json")
-	requestContext, response := newTestContext(t, request)
-	srv.HandleStartOAuthCredentialCleanupJob(requestContext)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("start PAT cleanup status=%d body=%s", response.Code, response.Body.String())
-	}
-	var started struct {
-		Data oauthCredentialCleanupJobStart `json:"data"`
-	}
-	if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
-		t.Fatal(err)
-	}
-	deadline := time.Now().Add(3 * time.Second)
-	var view oauthCredentialCleanupJobView
-	for time.Now().Before(deadline) {
-		view, _, err = srv.oauthCredentialCleanupJobs.Get(started.Data.JobID, 0)
-		if err != nil {
+	runCleanup := func(action string) (oauthCredentialCleanupJobStart, oauthCredentialCleanupJobView) {
+		t.Helper()
+		body := `{"auth_type":"codex_oauth","model":"gpt-pat"}`
+		if action != "" {
+			body = fmt.Sprintf(`{"auth_type":"codex_oauth","model":"gpt-pat","action":%q}`, action)
+		}
+		request := newRequest(http.MethodPost, "/admin/oauth/credentials/cleanup/jobs", strings.NewReader(body))
+		request.Header.Set("Content-Type", "application/json")
+		requestContext, response := newTestContext(t, request)
+		srv.HandleStartOAuthCredentialCleanupJob(requestContext)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("start PAT cleanup status=%d body=%s", response.Code, response.Body.String())
+		}
+		var started struct {
+			Data oauthCredentialCleanupJobStart `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &started); err != nil {
 			t.Fatal(err)
 		}
-		if view.Status != oauthCredentialCleanupJobRunning {
-			break
+		deadline := time.Now().Add(3 * time.Second)
+		var view oauthCredentialCleanupJobView
+		for time.Now().Before(deadline) {
+			var err error
+			view, _, err = srv.oauthCredentialCleanupJobs.Get(started.Data.JobID, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if view.Status != oauthCredentialCleanupJobRunning {
+				break
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
+		return started.Data, view
+	}
+
+	started, view := runCleanup("")
+	if started.Action != oauthCredentialCleanupActionDisable {
+		t.Fatalf("default cleanup action=%q, want disable", started.Action)
 	}
 	if view.Status != oauthCredentialCleanupJobSucceeded || len(view.Events) == 0 ||
-		view.Events[len(view.Events)-1].Deleted != 1 {
+		view.Events[len(view.Events)-1].Disabled != 1 || view.Events[len(view.Events)-1].Deleted != 0 {
 		t.Fatalf("PAT cleanup view=%+v", view)
 	}
+	persisted, err := srv.store.GetConfig(context.Background(), created.ID)
+	if err != nil || persisted.Enabled {
+		t.Fatalf("default cleanup did not disable revoked personal access token: channel=%+v err=%v", persisted, err)
+	}
+
+	_, repeated := runCleanup("")
+	if repeated.Status != oauthCredentialCleanupJobSucceeded || len(repeated.Events) == 0 ||
+		repeated.Events[len(repeated.Events)-1].Skipped != 1 || repeated.Events[len(repeated.Events)-1].Disabled != 0 {
+		t.Fatalf("repeated disable cleanup view=%+v", repeated)
+	}
+	if got := upstreamAttempts.Load(); got != 1 {
+		t.Fatalf("repeated disable cleanup upstream attempts=%d, want 1", got)
+	}
+
+	deletedStart, deleted := runCleanup(oauthCredentialCleanupActionDelete)
+	if deletedStart.Action != oauthCredentialCleanupActionDelete || deleted.Status != oauthCredentialCleanupJobSucceeded ||
+		len(deleted.Events) == 0 || deleted.Events[len(deleted.Events)-1].Deleted != 1 {
+		t.Fatalf("delete cleanup start=%+v view=%+v", deletedStart, deleted)
+	}
 	if _, err := srv.store.GetConfig(context.Background(), created.ID); err == nil {
-		t.Fatal("cleanup kept a revoked personal access token channel")
+		t.Fatal("delete cleanup kept the disabled revoked PAT channel")
 	}
 }
 
