@@ -70,6 +70,71 @@ test('OAuth 计划徽标支持 Antigravity paidTier 并转义内容', () => {
   }
 });
 
+test('Codex 在额度进度条下方显示可重置次数、到期时间和安全操作状态', () => {
+  const previousWindow = global.window;
+  const previousGetUsageState = global.getOAuthUsageState;
+  const previousReadOnly = global.isTokenChannelsReadOnly;
+  global.window = {
+    t(key, values = {}) {
+      return ({
+        'channels.oauth.usageRefresh': '刷新额度',
+        'channels.oauth.usageWeekly': '周额度',
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
+        'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
+        'channels.oauth.resetCreditExpiresEarliest': `最早过期 ${values.time}`,
+        'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
+        'channels.oauth.resetCreditExpiresAll': `查看全部 ${values.count} 个过期时间`,
+        'channels.oauth.resetQuota': '重置额度',
+        'channels.oauth.resettingQuota': '重置中…'
+      })[key] || key;
+    }
+  };
+  let state = {
+    status: 'ready',
+    data: {
+      provider: 'codex',
+      windows: [{
+        limit_name: 'codex', kind: 'primary', remaining_percent: 25,
+        limit_window_seconds: 604800, reset_at: 4070908800
+      }],
+      rate_limit_reset_credits: {
+        available_count: 2,
+        credits: [
+          { expires_at: '2099-02-03T04:05:06Z' },
+          { expires_at: '2099-01-03T04:05:06Z' },
+          { expires_at: '2000-01-03T04:05:06Z' }
+        ]
+      }
+    }
+  };
+  global.getOAuthUsageState = () => state;
+  global.isTokenChannelsReadOnly = () => false;
+  try {
+    const html = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
+    assert.match(html, /可重置 2 次/);
+    assert.match(html, /最早过期 01\/03/);
+    assert.match(html, /查看全部 2 个过期时间/);
+    assert.match(html, /data-action="reset-codex-quota" data-channel-id="92"/);
+    assert.doesNotMatch(html, /data-action="reset-codex-quota"[^>]*disabled/);
+    assert.ok(html.indexOf('role="progressbar"') < html.indexOf('可重置 2 次'));
+
+    state = { ...state, reset_status: 'loading', reset_error: '' };
+    const loading = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
+    assert.match(loading, /role="progressbar"/);
+    assert.match(loading, /data-action="refresh-oauth-usage"[^>]*disabled/);
+    assert.match(loading, /data-action="reset-codex-quota"[^>]*disabled aria-busy="true"[^>]*>重置中…/);
+
+    state = { ...state, reset_status: 'error', reset_error: '重置失败 <retry>' };
+    const failed = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
+    assert.match(failed, /重置失败 &lt;retry&gt;/);
+    assert.doesNotMatch(failed, /重置失败 <retry>/);
+  } finally {
+    global.window = previousWindow;
+    global.getOAuthUsageState = previousGetUsageState;
+    global.isTokenChannelsReadOnly = previousReadOnly;
+  }
+});
+
 test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => {
   const previousWindow = global.window;
   const previousGetUsageState = global.getOAuthUsageState;

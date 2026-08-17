@@ -4698,8 +4698,8 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	}
 
 	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
-		if request.Method != http.MethodGet || request.URL.String() != codexUsageURL {
-			t.Errorf("usage request = %s %s", request.Method, request.URL)
+		if request.Method != http.MethodGet {
+			t.Errorf("usage request method = %s", request.Method)
 		}
 		if got := request.Header.Get("Authorization"); got != "Bearer at-quota-secret" {
 			t.Errorf("Authorization = %q", got)
@@ -4713,8 +4713,33 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 		if got := request.Header.Get("User-Agent"); got != codexUsageUserAgent {
 			t.Errorf("User-Agent = %q", got)
 		}
+		if got := request.Header.Get("OpenAI-Beta"); got != "codex-1" {
+			t.Errorf("OpenAI-Beta = %q", got)
+		}
+		if got := request.Header.Get("Originator"); got != codexOriginator {
+			t.Errorf("Originator = %q", got)
+		}
+		if request.URL.String() == codexResetCreditsURL {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body: io.NopCloser(strings.NewReader(`{
+					"availableCount":"2",
+					"credits":[
+						{"resetType":"codex_rate_limits","status":"available","expiresAt":"2030-02-03T04:05:06Z"},
+						{"reset_type":"codex_rate_limits","status":"available","expires_at":"2030-01-03T04:05:06Z"},
+						{"reset_type":"codex_rate_limits","status":"redeemed","expires_at":"2030-03-03T04:05:06Z"}
+					]
+				}`)),
+				Request: request,
+			}, nil
+		}
+		if request.URL.String() != codexUsageURL {
+			t.Fatalf("usage request URL = %s", request.URL)
+		}
 		body := `{
 			"plan_type":"pro",
+			"rate_limit_reset_credits":{"available_count":3},
 			"rate_limit":{"primary_window":{"used_percent":29,"limit_window_seconds":604800,"reset_at":1786163635}},
 			"additional_rate_limits":[{
 				"limit_name":"codex-spark",
@@ -4751,6 +4776,11 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	if response.Data.Provider != codexauth.ChannelType || response.Data.PlanType != "pro" || len(response.Data.Windows) != 3 {
 		t.Fatalf("usage summary = %#v", response.Data)
 	}
+	if response.Data.RateLimitResetCredits == nil || response.Data.RateLimitResetCredits.AvailableCount != 2 ||
+		len(response.Data.RateLimitResetCredits.Credits) != 2 ||
+		response.Data.RateLimitResetCredits.Credits[1].ExpiresAt != "2030-01-03T04:05:06Z" {
+		t.Fatalf("reset credits = %#v", response.Data.RateLimitResetCredits)
+	}
 	windows := response.Data.Windows
 	if windows[0].LimitName != "codex" || windows[0].Kind != "primary" || windows[0].UsedPercent != 29 || windows[0].RemainingPercent != 71 {
 		t.Fatalf("primary window = %#v", windows[0])
@@ -4765,8 +4795,235 @@ func TestHandleOAuthUsageReturnsCodexQuotaWithoutLeakingCredential(t *testing.T)
 	server.HandleChannels(listContext)
 	list := mustParseAPIResponse[[]ChannelWithCooldown](t, listResponse.Body.Bytes())
 	if len(list.Data) != 1 || list.Data[0].OAuthUsage == nil ||
-		list.Data[0].OAuthUsage.Provider != codexauth.ChannelType || len(list.Data[0].OAuthUsage.Windows) != 3 {
+		list.Data[0].OAuthUsage.Provider != codexauth.ChannelType || len(list.Data[0].OAuthUsage.Windows) != 3 ||
+		list.Data[0].OAuthUsage.RateLimitResetCredits == nil ||
+		list.Data[0].OAuthUsage.RateLimitResetCredits.AvailableCount != 2 {
 		t.Fatalf("persisted Codex usage = %+v", list.Data)
+	}
+}
+
+func TestHandleOAuthUsageSilentlyFallsBackWhenCodexResetCreditDetailsAreUnavailable(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-reset-fallback", RefreshToken: "rt-reset-fallback",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset-fallback",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		status := http.StatusOK
+		body := `{
+			"rate_limit":{"primary_window":{"used_percent":25,"limit_window_seconds":18000}},
+			"rate_limit_reset_credits":{"available_count":1}
+		}`
+		if request.URL.String() == codexResetCreditsURL {
+			status = http.StatusNotFound
+			body = `{"error":"reset credit details unavailable"}`
+		}
+		return &http.Response{
+			StatusCode: status,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	path := fmt.Sprintf("/admin/channels/%d/oauth-usage", channel.ID)
+	c, response := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleOAuthUsage(c)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("usage status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[oauthUsageSummary](t, response.Body.Bytes())
+	if result.Data.RateLimitResetCredits == nil || result.Data.RateLimitResetCredits.AvailableCount != 1 ||
+		len(result.Data.Warnings) != 0 {
+		t.Fatalf("fallback usage = %#v", result.Data)
+	}
+}
+
+func TestHandleResetCodexQuotaConsumesOnceAndRefreshesUsage(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-reset-secret", RefreshToken: "rt-reset-secret",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset",
+		QuotaOverdraft: &codexauth.QuotaOverdraft{
+			Enabled: true, ActiveUntil: time.Now().Add(time.Hour).Unix(), SuccessfulRequests: 3, CostMicroUSD: 45,
+		},
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetChannelCooldown(context.Background(), channel.ID, time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetModelCooldown(context.Background(), channel.ID, "gpt-5.4", time.Now().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	server.cooldownManager = cooldown.NewManager(store, server)
+
+	var detailRequests, consumeRequests atomic.Int32
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		response := func(body string) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(body)),
+				Request:    request,
+			}, nil
+		}
+		switch request.URL.String() {
+		case codexResetCreditsURL:
+			if detailRequests.Add(1) == 1 {
+				return response(`[{"reset_type":"codex_rate_limits","status":"available","expires_at":"2030-01-03T04:05:06Z"}]`)
+			}
+			return response(`[]`)
+		case codexResetCreditConsumeURL:
+			consumeRequests.Add(1)
+			if request.Method != http.MethodPost {
+				t.Errorf("consume method = %s", request.Method)
+			}
+			var payload map[string]string
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode consume request: %v", err)
+			}
+			requestID := payload["redeem_request_id"]
+			if len(requestID) != 36 || strings.Count(requestID, "-") != 4 {
+				t.Errorf("redeem_request_id = %q", requestID)
+			}
+			return response(`{"code":"success","windows_reset":2}`)
+		case codexUsageURL:
+			return response(`{
+				"plan_type":"pro",
+				"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000,"reset_at":1786163635}},
+				"rate_limit_reset_credits":{"available_count":0}
+			}`)
+		default:
+			t.Fatalf("unexpected Codex reset request: %s %s", request.Method, request.URL)
+			return nil, nil
+		}
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+
+	path := fmt.Sprintf("/admin/channels/%d/codex-quota-reset", channel.ID)
+	c, response := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	c.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleResetCodexQuota(c)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("reset status=%d body=%s", response.Code, response.Body.String())
+	}
+	result := mustParseAPIResponse[codexQuotaResetResponse](t, response.Body.Bytes())
+	if !result.Data.Reset || result.Data.Usage == nil || len(result.Data.Usage.Windows) != 1 ||
+		result.Data.Usage.Windows[0].RemainingPercent != 100 ||
+		result.Data.Usage.RateLimitResetCredits == nil ||
+		result.Data.Usage.RateLimitResetCredits.AvailableCount != 0 || len(result.Data.Warnings) != 0 {
+		t.Fatalf("reset response = %#v", result.Data)
+	}
+	if consumeRequests.Load() != 1 || detailRequests.Load() != 2 {
+		t.Fatalf("reset requests: consume=%d details=%d", consumeRequests.Load(), detailRequests.Load())
+	}
+	persisted, err := store.GetConfig(context.Background(), channel.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	persistedCredential, err := codexauth.ParseCredential([]byte(persisted.OAuthCredential))
+	if err != nil || persistedCredential.QuotaOverdraft == nil || persistedCredential.QuotaOverdraft.ActiveUntil != 0 ||
+		persistedCredential.QuotaOverdraft.SuccessfulRequests != 3 || persistedCredential.QuotaOverdraft.CostMicroUSD != 45 {
+		t.Fatalf("quota overdraft after reset = (%#v, %v)", persistedCredential.QuotaOverdraft, err)
+	}
+	if persisted.CooldownUntil != 0 {
+		t.Fatalf("channel cooldown was not cleared: %d", persisted.CooldownUntil)
+	}
+	modelCooldowns, err := store.GetAllModelCooldowns(context.Background())
+	if err != nil || len(modelCooldowns[channel.ID]) != 0 {
+		t.Fatalf("model cooldowns after reset = (%#v, %v)", modelCooldowns[channel.ID], err)
+	}
+}
+
+func TestHandleResetCodexQuotaRejectsConcurrentConsume(t *testing.T) {
+	server, store, cleanup := setupAdminTestServer(t)
+	defer cleanup()
+	credential := &codexauth.Credential{
+		Type: "codex", AccessToken: "at-reset-concurrent", RefreshToken: "rt-reset-concurrent",
+		Expired: time.Now().UTC().Add(time.Hour).Format(time.RFC3339), AccountID: "account-reset-concurrent",
+	}
+	channel, _, err := createOrUpdateCodexChannel(context.Background(), store, credential)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumeStarted := make(chan struct{})
+	releaseConsume := make(chan struct{})
+	var consumeRequests atomic.Int32
+	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		body := `[]`
+		switch request.URL.String() {
+		case codexResetCreditsURL:
+			body = `[{"status":"available","expires_at":"2030-01-03T04:05:06Z"}]`
+		case codexResetCreditConsumeURL:
+			consumeRequests.Add(1)
+			close(consumeStarted)
+			select {
+			case <-releaseConsume:
+			case <-request.Context().Done():
+				return nil, request.Context().Err()
+			}
+			body = `{"code":"success"}`
+		case codexUsageURL:
+			body = `{"rate_limit":{"primary_window":{"used_percent":0,"limit_window_seconds":18000}}}`
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body:       io.NopCloser(strings.NewReader(body)),
+			Request:    request,
+		}, nil
+	})}
+	server.codexCredentials = newCodexCredentialManager(
+		codexauth.NewService(server.client), store,
+		func(cfg *model.Config) *http.Client { return server.getClientForChannel(cfg) }, nil,
+	)
+	path := fmt.Sprintf("/admin/channels/%d/codex-quota-reset", channel.ID)
+	firstContext, firstResponse := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	firstContext.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		server.HandleResetCodexQuota(firstContext)
+	}()
+	select {
+	case <-consumeStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Codex quota reset did not reach consume")
+	}
+
+	secondContext, secondResponse := newTestContext(t, newRequest(http.MethodPost, path, nil))
+	secondContext.Params = gin.Params{{Key: "id", Value: strconv.FormatInt(channel.ID, 10)}}
+	server.HandleResetCodexQuota(secondContext)
+	if secondResponse.Code != http.StatusConflict {
+		t.Fatalf("concurrent reset status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	close(releaseConsume)
+	select {
+	case <-firstDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first Codex quota reset did not finish")
+	}
+	if firstResponse.Code != http.StatusOK || consumeRequests.Load() != 1 {
+		t.Fatalf("first reset status=%d consumes=%d body=%s", firstResponse.Code, consumeRequests.Load(), firstResponse.Body.String())
 	}
 }
 
@@ -4795,6 +5052,14 @@ func TestHandleOAuthUsageBatchStreamUsesBoundedConcurrencyAndEmitsPerChannelResu
 	started := make(chan struct{}, len(channelIDs))
 	release := make(chan struct{})
 	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == codexResetCreditsURL {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`[]`)),
+				Request:    request,
+			}, nil
+		}
 		current := active.Add(1)
 		defer active.Add(-1)
 		for observed := maximum.Load(); current > observed && !maximum.CompareAndSwap(observed, current); observed = maximum.Load() {
@@ -4934,6 +5199,14 @@ func TestHandleOAuthUsageDoesNotOverwriteNewerSnapshotAfterCASConflict(t *testin
 	}
 	server.store = raceStore
 	server.client = &http.Client{Transport: oauthUsageRoundTripper(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() == codexResetCreditsURL {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": []string{"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(`[]`)),
+				Request:    request,
+			}, nil
+		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"application/json"}},

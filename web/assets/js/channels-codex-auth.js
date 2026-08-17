@@ -1842,6 +1842,69 @@ async function refreshOAuthUsage(channelID, fetcher = fetchDataWithAuth, options
   }
 }
 
+async function resetCodexQuota(channelID, fetcher = fetchDataWithAuth, options = {}) {
+  const numericID = Number(channelID);
+  if (!Number.isInteger(numericID) || numericID <= 0) {
+    throw new Error('A saved Codex channel is required');
+  }
+  const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
+  const persistedUsage = channelList.find(channel => Number(channel?.id) === numericID)?.oauth_usage;
+  const previous = oauthUsageStateByChannelID.get(numericID) ||
+    (persistedUsage ? { status: 'ready', data: persistedUsage } : null);
+  const operationID = ++oauthUsageOperationSequence;
+  oauthUsageOperationByChannelID.set(numericID, operationID);
+  oauthUsageStateByChannelID.set(numericID, {
+    ...(previous || {}),
+    status: previous?.data ? 'ready' : (previous?.status || 'loading'),
+    reset_status: 'loading',
+    reset_error: ''
+  });
+  rerenderOAuthUsage();
+  try {
+    const result = await fetcher(`/admin/channels/${numericID}/codex-quota-reset`, { method: 'POST' });
+    if (!result || result.reset !== true) {
+      throw new Error(window.t('channels.oauth.resetInvalid'));
+    }
+    if (oauthUsageOperationByChannelID.get(numericID) !== operationID) return result;
+    oauthUsageOperationByChannelID.delete(numericID);
+    const usage = result.usage;
+    if (usage && Array.isArray(usage.windows)) {
+      oauthUsageStateByChannelID.set(numericID, { status: 'ready', data: usage, reset_status: 'ready' });
+    } else {
+      oauthUsageStateByChannelID.set(numericID, {
+        ...(previous || {}),
+        status: previous?.data ? 'ready' : 'error',
+        error: previous?.data ? previous.error : window.t('channels.oauth.resetNeedsRefresh'),
+        reset_status: 'stale',
+        reset_error: window.t('channels.oauth.resetNeedsRefresh')
+      });
+    }
+    if (options.reload !== false && typeof loadChannels === 'function') {
+      await loadChannels();
+    } else {
+      rerenderOAuthUsage();
+    }
+    return result;
+  } catch (error) {
+    const message = error?.message || window.t('channels.oauth.resetFailed');
+    if (oauthUsageOperationByChannelID.get(numericID) === operationID) {
+      oauthUsageOperationByChannelID.delete(numericID);
+      if (previous?.data) {
+        oauthUsageStateByChannelID.set(numericID, {
+          ...previous,
+          status: 'ready',
+          reset_status: 'error',
+          reset_error: message
+        });
+      } else {
+        oauthUsageStateByChannelID.set(numericID, { status: 'error', error: message });
+      }
+      rerenderOAuthUsage();
+    }
+    throw error;
+  }
+}
+
 async function refreshOAuthUsageBatch(channelIDs, fetcher = fetchWithAuth) {
   const ids = Array.from(new Set((channelIDs || [])
     .map(id => Number(id))
@@ -2542,6 +2605,7 @@ if (typeof module !== 'undefined' && module.exports) {
     refreshOAuthCredential,
     refreshOAuthUsage,
     refreshOAuthUsageBatch,
+    resetCodexQuota,
     renderOAuthCredential,
     resetCodexQuotaOverdraftDraft,
     saveCodexQuotaOverdraftFromAdvancedSettings,

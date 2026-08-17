@@ -19,6 +19,7 @@ const {
   getOAuthUsageState,
   refreshOAuthUsage,
   refreshOAuthUsageBatch,
+  resetCodexQuota,
   batchRefreshSelectedOAuthUsage,
   refreshOAuthCredential,
   renderOAuthCredential,
@@ -1740,6 +1741,80 @@ test('failed OAuth usage refresh remains retryable', async () => {
     assert.deepEqual(getOAuthUsageState(43), { status: 'error', error: 'quota unavailable' });
   } finally {
     global.filterChannels = previousFilterChannels;
+  }
+});
+
+test('Codex quota reset preserves current usage while consuming and replaces it with refreshed usage', async () => {
+  const previousFilterChannels = global.filterChannels;
+  const previousWindow = global.window;
+  global.filterChannels = () => {};
+  global.window = { t: key => key };
+  try {
+    const currentUsage = {
+      provider: 'codex',
+      windows: [{ limit_name: 'codex', remaining_percent: 0 }],
+      rate_limit_reset_credits: {
+        available_count: 1,
+        credits: [{ expires_at: '2099-01-03T04:05:06Z' }]
+      }
+    };
+    await refreshOAuthUsage(44, async () => currentUsage, { reload: false });
+
+    let resolveReset;
+    let captured;
+    const resetPromise = resetCodexQuota(44, (url, options) => {
+      captured = { url, options };
+      return new Promise(resolve => { resolveReset = resolve; });
+    }, { reload: false });
+    assert.deepEqual(getOAuthUsageState(44), {
+      status: 'ready', data: currentUsage, reset_status: 'loading', reset_error: ''
+    });
+
+    const refreshedUsage = {
+      provider: 'codex',
+      windows: [{ limit_name: 'codex', remaining_percent: 100 }],
+      rate_limit_reset_credits: { available_count: 0 }
+    };
+    resolveReset({ reset: true, usage: refreshedUsage });
+    const result = await resetPromise;
+    assert.deepEqual(captured, {
+      url: '/admin/channels/44/codex-quota-reset',
+      options: { method: 'POST' }
+    });
+    assert.equal(result.usage.windows[0].remaining_percent, 100);
+    assert.deepEqual(getOAuthUsageState(44), {
+      status: 'ready', data: refreshedUsage, reset_status: 'ready'
+    });
+  } finally {
+    global.filterChannels = previousFilterChannels;
+    global.window = previousWindow;
+  }
+});
+
+test('failed Codex quota reset keeps the last good usage and remains retryable', async () => {
+  const previousFilterChannels = global.filterChannels;
+  const previousWindow = global.window;
+  global.filterChannels = () => {};
+  global.window = { t: key => key };
+  try {
+    const currentUsage = {
+      provider: 'codex', windows: [],
+      rate_limit_reset_credits: { available_count: 1 }
+    };
+    await refreshOAuthUsage(45, async () => currentUsage, { reload: false });
+    await assert.rejects(
+      resetCodexQuota(45, async () => { throw new Error('consume unavailable'); }, { reload: false }),
+      /consume unavailable/
+    );
+    assert.deepEqual(getOAuthUsageState(45), {
+      status: 'ready',
+      data: currentUsage,
+      reset_status: 'error',
+      reset_error: 'consume unavailable'
+    });
+  } finally {
+    global.filterChannels = previousFilterChannels;
+    global.window = previousWindow;
   }
 });
 

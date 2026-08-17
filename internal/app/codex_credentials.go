@@ -478,6 +478,21 @@ func (m *codexCredentialManager) setQuotaOverdraftEnabled(
 	})
 }
 
+func (m *codexCredentialManager) clearQuotaOverdraftWindow(ctx context.Context, channelID int64) error {
+	_, err := m.updateQuotaOverdraft(ctx, channelID, func(
+		overdraft *codexauth.QuotaOverdraft,
+		existed bool,
+		_ *codexauth.Credential,
+	) (bool, error) {
+		if !existed || overdraft.ActiveUntil == 0 {
+			return false, nil
+		}
+		overdraft.ActiveUntil = 0
+		return true, nil
+	})
+	return err
+}
+
 func (m *codexCredentialManager) recordQuotaOverdraftSuccess(
 	ctx context.Context,
 	channelID int64,
