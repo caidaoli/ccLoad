@@ -80,7 +80,6 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
         'channels.oauth.usageRefresh': '刷新额度',
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
-        'channels.oauth.usageAccumulated': `累计${values.cost}`,
         'channels.oauth.resetCredits': `可重置 ${values.count} 次`,
         'channels.oauth.resetCreditExpiresEarliest': `最早过期 ${values.time}`,
         'channels.oauth.resetCreditExpiresUnknown': '过期时间不可用',
@@ -117,8 +116,8 @@ test('Codex 在额度进度条下方显示可重置次数、到期时间和安�
   try {
     const html = buildOAuthUsageStatusHtml({ id: 92, auth_type: 'codex_oauth' });
     assert.match(html, /可重置 2 次/);
-    assert.match(html, /累计12\.0/);
-    assert.match(html, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?累计12\.0[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
+    assert.match(html, /\$12\.0/);
+    assert.match(html, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?\$12\.0[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
     assert.match(html, /最早过期 01\/03/);
     assert.match(html, /查看全部 2 个过期时间/);
     assert.match(html, /data-action="reset-codex-quota" data-channel-id="92"/);
@@ -160,7 +159,6 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
         'channels.oauth.usageOnDemand': '按量付费',
         'channels.oauth.usageOnDemandDisabled': '未启用',
         'channels.oauth.usageMonthlyCredits': '月度积分',
-        'channels.oauth.usageAccumulated': `累计${values.cost}`,
         'channels.oauth.usageReset': `重置 ${values.time}`
       })[key] || key;
     }
@@ -210,8 +208,8 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
     assert.match(usage, /周额度/);
     assert.match(usage, /Pro &lt;safe&gt;/);
     assert.match(usage, /已用25\.5%/);
-    assert.match(usage, /累计3\.5/);
-    assert.match(usage, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?累计3\.5[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
+    assert.match(usage, /\$3\.5/);
+    assert.match(usage, /ch-oauth-usage__heading">[\s\S]*?周额度[\s\S]*?\$3\.5[\s\S]*?<\/span>\s*<span class="ch-oauth-usage__details">/);
     assert.match(usage, /aria-label="周额度剩余74\.5%"[^>]*aria-valuenow="74\.5"/);
     assert.match(usage, /产品使用 · grok&lt;fast&gt;/);
     assert.match(usage, /已用12\.25%/);
@@ -219,7 +217,7 @@ test('xAI 按 Management Center 语义渲染原值额度并转义内容', () => 
     assert.match(usage, /已用25\.09%/);
     assert.match(usage, /US\$1\.26 \/ US\$5\.00/);
     assert.match(usage, /月度积分/);
-    assert.match(usage, /累计7\.8/);
+    assert.match(usage, /\$7\.8/);
     assert.match(usage, /40%/);
     assert.match(usage, /US\$40\.01 \/ US\$100\.01/);
     assert.match(usage, /重置/);
@@ -337,8 +335,8 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
         'channels.oauth.usageRefresh': '刷新额度',
         'channels.oauth.usageWeekly': '周额度',
         'channels.oauth.usageHours': `${values.count}小时额度`,
-        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`,
-        'channels.oauth.usageAccumulated': `累计${values.cost}`
+        'channels.oauth.usageLabel': `${values.name}${values.duration}`,
+        'channels.oauth.usageRemaining': `${values.label}剩余 ${values.percent}%`
       })[key] || key;
     }
   };
@@ -370,11 +368,11 @@ test('Antigravity 同时长的两个额度窗口各自显示自己的累计成�
   try {
     const html = buildOAuthUsageStatusHtml({ id: 31, auth_type: 'antigravity_oauth' });
     // 同为 604800 秒的两行必须各贴各的值，不能共用同一个累计成本。
-    assert.match(html, /Gemini · 周额度[\s\S]*?累计0\.3/);
-    assert.match(html, /Gemini · 5小时额度[\s\S]*?累计0\.1/);
-    assert.match(html, /Claude · 周额度[\s\S]*?累计0\.0/);
-    assert.match(html, /Claude · 5小时额度[\s\S]*?累计0\.0/);
-    assert.equal(html.match(/累计0\.3/g).length, 1);
+    assert.match(html, /Gemini周额度[\s\S]*?\$0\.3/);
+    assert.match(html, /Gemini5小时额度[\s\S]*?\$0\.1/);
+    assert.match(html, /Claude周额度[\s\S]*?\$0\.0/);
+    assert.match(html, /Claude5小时额度[\s\S]*?\$0\.0/);
+    assert.equal(html.match(/\$0\.3/g).length, 1);
   } finally {
     global.window = previousWindow;
     global.getOAuthUsageState = previousGetUsageState;

@@ -542,10 +542,11 @@ function formatOAuthUsagePercent(value) {
   return Number.isInteger(percent) ? String(percent) : percent.toFixed(1).replace(/\.0$/, '');
 }
 
+// 累计标准成本按美元显示，与渠道日消费同一形状，无需本地化前缀。
 function formatOAuthAccumulatedCost(standardCostMicroUSD) {
   const microUSD = Number(standardCostMicroUSD);
   if (!Number.isFinite(microUSD) || microUSD < 0) return '';
-  return window.t('channels.oauth.usageAccumulated', { cost: (microUSD / 1_000_000).toFixed(1) });
+  return `$${(microUSD / 1_000_000).toFixed(1)}`;
 }
 
 // 累计成本按上游窗口标识（limit_name|kind）取用：同一时长可能对应多个互不相干的窗口。
@@ -827,7 +828,10 @@ function buildOAuthUsageStatusHtml(channel) {
     const percent = formatOAuthUsagePercent(remaining);
     const duration = formatOAuthUsageWindowDuration(windowInfo?.limit_window_seconds);
     const limitName = formatOAuthUsageLimitName(windowInfo?.limit_name);
-    const label = limitName ? `${limitName} · ${duration}` : duration;
+    // 名称与时长的连接方式交给语言包：中文直接相连，英文才需要空格。
+    const label = limitName
+      ? window.t('channels.oauth.usageLabel', { name: limitName, duration })
+      : duration;
     const resetAt = formatOAuthUsageResetAt(windowInfo?.reset_at);
     const accumulatedCost = formatOAuthAccumulatedCost(windowInfo?.standard_cost_microusd);
     const ariaLabel = window.t('channels.oauth.usageRemaining', { label, percent });

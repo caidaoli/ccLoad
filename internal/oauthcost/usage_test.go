@@ -257,3 +257,61 @@ func TestSparkWindowOnlyAccumulatesSparkModels(t *testing.T) {
 		t.Fatalf("spark window = %d, want 100000", got)
 	}
 }
+
+func TestReconcileKeepsCostWhenSampledResetJitters(t *testing.T) {
+	t.Parallel()
+	// 同一个上游周期会被两种精度表达：Codex 响应头给绝对 reset-at，SSE
+	// rate_limits 事件只给 resets_in_seconds（换算成 sampledAt+n，每次都不同）。
+	// 逐秒比较边界会把每一次相对值采样都当成新周期，把已累计成本清零。
+	resetAt := time.Date(2026, time.August, 19, 3, 25, 0, 0, time.UTC)
+	start := resetAt.Add(-6 * 24 * time.Hour)
+	usage := Reconcile(nil, []Sample{
+		{Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt},
+	}, start)
+
+	total := int64(0)
+	for i, jitter := range []time.Duration{0, 7 * time.Second, -3 * time.Second, 41 * time.Second, 0} {
+		at := start.Add(time.Duration(i) * time.Minute)
+		usage = Reconcile(usage, []Sample{
+			{Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt.Add(jitter)},
+		}, at)
+		if changed, err := AddStandardCost(usage, at, "gpt-5.4", 100_000); err != nil || !changed {
+			t.Fatalf("sample %d cost = (%t, %v)", i, changed, err)
+		}
+		total += 100_000
+		if got := Find(usage, "codex|primary").StandardCostMicroUSD; got != total {
+			t.Fatalf("sample %d (jitter %s) left cost %d, want %d", i, jitter, got, total)
+		}
+	}
+}
+
+func TestReconcileZeroesCostWhenPeriodRolls(t *testing.T) {
+	t.Parallel()
+	resetAt := time.Date(2026, time.August, 19, 3, 25, 0, 0, time.UTC)
+	seed := func() *Usage {
+		usage := Reconcile(nil, []Sample{
+			{Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt},
+		}, resetAt.Add(-time.Hour))
+		if changed, err := AddStandardCost(usage, resetAt.Add(-time.Hour), "gpt-5.4", 900_000); err != nil || !changed {
+			t.Fatalf("seed cost = (%t, %v)", changed, err)
+		}
+		return usage
+	}
+
+	// 上游报告下一个周期的边界：容差不能吞掉整整一个窗口的推进。
+	ahead := Reconcile(seed(), []Sample{
+		{Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt.Add(7 * 24 * time.Hour)},
+	}, resetAt.Add(-time.Hour))
+	if got := Find(ahead, "codex|primary").StandardCostMicroUSD; got != 0 {
+		t.Fatalf("rolled window kept cost %d, want 0", got)
+	}
+	// 本地时间越过 reset 后，即便采样边界不变也必须开新周期。
+	after := resetAt.Add(time.Minute)
+	rolled := Reconcile(seed(), []Sample{
+		{Key: "codex|primary", WindowSeconds: 604800, ResetAt: resetAt},
+	}, after)
+	window := Find(rolled, "codex|primary")
+	if window.StandardCostMicroUSD != 0 || window.ResetAt != resetAt.Add(7*24*time.Hour).Unix() {
+		t.Fatalf("expired window = %#v", window)
+	}
+}

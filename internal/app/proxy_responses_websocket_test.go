@@ -1942,6 +1942,196 @@ func TestResponsesWebsocketClientRetryAfterInterruptedTextStream(t *testing.T) {
 	}
 }
 
+// TestResponsesWebsocketClientRetryAfterUpstreamErrorEvent locks down turn
+// termination for a bare upstream `error` event that carries no upstream HTTP
+// status (HTTP 200 + SSE error body, e.g. server_is_overloaded). Such an event
+// terminates nothing: forwarding it verbatim leaves the client waiting for
+// response.completed / response.failed forever. It must be handled exactly like
+// an interrupted stream — 502 upstream_stream_interrupted plus close 1011 — so
+// the client reconnects and replays the full turn. An error event that DOES
+// carry a status (usage_limit_reached + 429) stays a verbatim terminal answer;
+// TestNativeCodexWebsocketQuotaOverdraftReplayFailureCoolsOnce guards that side.
+func TestResponsesWebsocketClientRetryAfterUpstreamErrorEvent(t *testing.T) {
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turn.Add(1) == 1 {
+			_, _ = io.WriteString(w, `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":2}`+"\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-replayed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "upstream-error-event", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "upstream-error-event-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set upstream error deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write overloaded turn: %v", err)
+	}
+
+	// 第一条消息就必须是网关的中断事件；读到裸 error 事件说明它泄漏给了客户端。
+	var retryEvent map[string]any
+	if err := conn.ReadJSON(&retryEvent); err != nil {
+		t.Fatalf("read upstream error retry event: %v", err)
+	}
+	errorObject, _ := retryEvent["error"].(map[string]any)
+	if retryEvent["type"] != "error" || retryEvent["status"] != float64(http.StatusBadGateway) ||
+		errorObject["type"] != "server_error" || errorObject["code"] != "upstream_stream_interrupted" {
+		t.Fatalf("upstream error retry event=%#v", retryEvent)
+	}
+	message, _ := errorObject["message"].(string)
+	if !strings.Contains(message, "Our servers are currently overloaded") {
+		t.Fatalf("retry message=%q, want the upstream reason", message)
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("upstream error close=%v, want websocket 1011", errClose)
+	}
+
+	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "upstream-error-event-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set upstream error replay deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("replay overloaded turn: %v", err)
+	}
+	recovered := readWebsocketUntilType(t, conn, "response.completed")
+	if response, _ := recovered["response"].(map[string]any); response["id"] != "resp-replayed" {
+		t.Fatalf("replayed response=%#v", recovered)
+	}
+}
+
+// TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent covers the
+// reported production shape: the upstream streams real output first (so the
+// response is already committed downstream and failover is off the table) and
+// only then emits a bare `error` event. The client must not receive that event
+// — it terminates nothing — and the turn must end with 502
+// upstream_stream_interrupted plus close 1011.
+func TestResponsesWebsocketClientRetryAfterCommittedUpstreamErrorEvent(t *testing.T) {
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turn.Add(1) > 1 {
+			_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-committed-replayed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.created","response":{"id":"resp-committed-error","output":[]}}`+"\n\n")
+		_, _ = io.WriteString(w, `data: {"type":"response.output_text.delta","delta":"partial answer"}`+"\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		_, _ = io.WriteString(w, `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later.","param":null},"sequence_number":7}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "committed-upstream-error", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set committed upstream error deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write committed overloaded turn: %v", err)
+	}
+	readWebsocketUntilType(t, conn, "response.output_text.delta")
+
+	// 已提交输出之后紧跟的第一条消息必须是网关的中断事件，不能是上游那条裸 error。
+	var retryEvent map[string]any
+	if err := conn.ReadJSON(&retryEvent); err != nil {
+		t.Fatalf("read committed upstream error retry event: %v", err)
+	}
+	errorObject, _ := retryEvent["error"].(map[string]any)
+	if retryEvent["type"] != "error" || retryEvent["status"] != float64(http.StatusBadGateway) ||
+		errorObject["type"] != "server_error" || errorObject["code"] != "upstream_stream_interrupted" {
+		t.Fatalf("committed upstream error retry event=%#v", retryEvent)
+	}
+	_, _, errClose := conn.ReadMessage()
+	var closeErr *websocket.CloseError
+	if !errors.As(errClose, &closeErr) || closeErr.Code != websocket.CloseInternalServerErr {
+		t.Fatalf("committed upstream error close=%v, want websocket 1011", errClose)
+	}
+
+	conn = dialResponsesWebsocketWithSessionID(t, env.engine, "committed-upstream-error-retry")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set committed upstream error replay deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("replay committed overloaded turn: %v", err)
+	}
+	recovered := readWebsocketUntilType(t, conn, "response.completed")
+	if response, _ := recovered["response"].(map[string]any); response["id"] != "resp-committed-replayed" {
+		t.Fatalf("replayed committed response=%#v", recovered)
+	}
+}
+
+// TestResponsesWebsocketForwardsUpstreamResponseFailed keeps response.failed on
+// its existing path: it IS a Responses turn terminator, so it reaches the client
+// verbatim and the connection stays open for the next turn.
+func TestResponsesWebsocketForwardsUpstreamResponseFailed(t *testing.T) {
+	var turn atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if turn.Add(1) == 1 {
+			_, _ = io.WriteString(w, `data: {"type":"response.failed","response":{"id":"resp-failed","status":"failed","error":{"code":"server_error","message":"upstream gave up"}}}`+"\n\n")
+			return
+		}
+		_, _ = io.WriteString(w, `data: {"type":"response.completed","response":{"id":"resp-after-failed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "response-failed-event", upstreamProtocol: "codex", models: "gpt-test", priority: 100,
+	}}, map[int]string{0: upstream.URL})
+	conn := dialResponsesWebsocketWithSessionID(t, env.engine, "response-failed-terminal")
+	if err := conn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set response.failed deadline: %v", err)
+	}
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "first"}},
+	}); err != nil {
+		t.Fatalf("write response.failed turn: %v", err)
+	}
+	failed := readWebsocketUntilType(t, conn, "response.failed")
+	if response, _ := failed["response"].(map[string]any); response["id"] != "resp-failed" {
+		t.Fatalf("forwarded response.failed=%#v", failed)
+	}
+
+	// 终结事件之后连接必须仍然可用，下一回合照常执行。
+	if err := conn.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test",
+		"input": []any{map[string]any{"type": "message", "role": "user", "content": "second"}},
+	}); err != nil {
+		t.Fatalf("write turn after response.failed: %v", err)
+	}
+	recovered := readWebsocketUntilType(t, conn, "response.completed")
+	if response, _ := recovered["response"].(map[string]any); response["id"] != "resp-after-failed" {
+		t.Fatalf("turn after response.failed=%#v", recovered)
+	}
+}
+
 // TestResponsesWebsocketRejectsOrphanToolCallOutputOnInitialRequest locks down
 // local rejection of a function_call_output whose call_id has no matching
 // function_call anywhere in the same input array. Upstream would hard-reject

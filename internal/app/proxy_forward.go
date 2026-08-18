@@ -2288,7 +2288,7 @@ func (s *Server) forwardAttempt(
 		res.ServiceTier = "priority"
 	}
 	if res != nil && antigravityCapacityRetries > 0 {
-		capacityRetryStrategy := fmt.Sprintf("模型容量重试 %d 次", antigravityCapacityRetries)
+		capacityRetryStrategy := modelCapacityRetryStrategy(antigravityCapacityRetries)
 		if res.RetryStrategy == "" {
 			res.RetryStrategy = capacityRetryStrategy
 		} else {
@@ -2651,6 +2651,12 @@ func codexRetryBodyFor400(
 		}
 	}
 	return nil, "", false
+}
+
+// modelCapacityRetryStrategy 与其余重试策略保持同一形状：英文 snake_case 标识符，
+// 便于日志和渠道测试结果按前缀统一解析。
+func modelCapacityRetryStrategy(retries int) string {
+	return fmt.Sprintf("model_capacity_retry_%d", retries)
 }
 
 func hasRetryStrategy(strategies []string, strategy string) bool {

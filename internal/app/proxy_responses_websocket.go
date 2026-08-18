@@ -526,10 +526,16 @@ func (s *Server) executeResponsesWebsocketTurn(
 	}
 	if succeeded {
 		if !bridgeWriter.completed {
-			if bridgeWriter.failed {
+			if bridgeWriter.failed && isResponsesWebsocketTerminalPayload(bridgeWriter.failedPayload) {
 				return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{
 					payload: bytes.Clone(bridgeWriter.failedPayload), forwarded: true,
 				}
+			}
+			// 裸 error 事件（server_is_overloaded 等）终结不了回合，和流被截断是同一种
+			// 故障：回合没有终结事件，只能中断连接让客户端完整重放。
+			message := responsesWebsocketInterruptedMessage
+			if bridgeWriter.failed {
+				message = responsesWebsocketUpstreamErrorMessage(bridgeWriter.failedPayload)
 			}
 			interruptedOutput := bridgeWriter.collectedOutput()
 			pendingToolCallIDs := responsesWebsocketPendingToolCallIDs(interruptedOutput)
@@ -546,7 +552,7 @@ func (s *Server) executeResponsesWebsocketTurn(
 			}
 			return turnResult, &responsesWebsocketClientRetryError{
 				code:    responsesWebsocketInterruptedCode,
-				message: responsesWebsocketInterruptedMessage,
+				message: message,
 			}
 		}
 		return responsesWebsocketTurnResult{
@@ -577,7 +583,15 @@ func (s *Server) executeResponsesWebsocketTurn(
 		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{forwarded: true}
 	}
 	if lastResult != nil && isResponsesWebsocketFailurePayload(lastResult.body) {
-		return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: bytes.Clone(lastResult.body)}
+		if isResponsesWebsocketTerminalPayload(lastResult.body) {
+			return responsesWebsocketTurnResult{}, &responsesWebsocketTerminalError{payload: bytes.Clone(lastResult.body)}
+		}
+		// 候选全部失败后剩下的裸 error 事件同样终结不了回合，转发给客户端只会让它
+		// 一直等下去，必须按中断处理。
+		return responsesWebsocketTurnResult{}, &responsesWebsocketClientRetryError{
+			code:    responsesWebsocketInterruptedCode,
+			message: responsesWebsocketUpstreamErrorMessage(lastResult.body),
+		}
 	}
 	if lastResult != nil && len(lastResult.body) > 0 {
 		return responsesWebsocketTurnResult{}, fmt.Errorf("upstream status %d: %s", status, safeBodyToString(lastResult.body))
@@ -651,6 +665,33 @@ func isResponsesWebsocketFailurePayload(payload []byte) bool {
 	default:
 		return false
 	}
+}
+
+// isResponsesWebsocketTerminalPayload 判断 payload 能否终结客户端的一个回合。
+// response.failed 是协议定义的终结事件；裸 error 事件只有携带上游 HTTP 状态
+// （usage_limit_reached 这类明确裁决，判据同 websocketErrorStatusAndHeaders）时
+// 才是客户端认得出的最终答案。不带状态的裸 error（server_is_overloaded 等）终结
+// 不了回合，客户端收下之后仍在等终结事件，只有连接断开才会重放当前回合。
+func isResponsesWebsocketTerminalPayload(payload []byte) bool {
+	switch strings.TrimSpace(gjson.GetBytes(payload, "type").String()) {
+	case "response.failed":
+		return true
+	case "error":
+		status, _ := websocketErrorStatusAndHeaders(payload)
+		return status != 0
+	default:
+		return false
+	}
+}
+
+// responsesWebsocketUpstreamErrorMessage 把上游错误事件的原因带进中断提示，
+// 客户端重放前才能看到真实故障，而不是只有一句通用的中断说明。
+func responsesWebsocketUpstreamErrorMessage(payload []byte) string {
+	message := strings.TrimSpace(gjson.GetBytes(payload, "error.message").String())
+	if message == "" {
+		return responsesWebsocketInterruptedMessage
+	}
+	return message + "; " + responsesWebsocketInterruptedMessage
 }
 
 func isResponsesWebsocketMessageTooBigPayload(payload []byte) bool {
@@ -773,15 +814,21 @@ func (w *responsesWebsocketBridgeWriter) Write(data []byte) (int, error) {
 			w.closedForMessageTooBig = true
 			continue
 		}
+		if eventType == "error" || eventType == "response.failed" {
+			w.failed = true
+			w.failedPayload = bytes.Clone(payload)
+		}
+		// 终结不了回合的裸 error 事件不转发：客户端收下之后只会继续等终结事件，
+		// 而网关这时还可能切下一个候选，泄漏出去的错误会污染重试出来的回合。
+		// 回合层把它翻译成 upstream_stream_interrupted + close 1011。
+		if eventType == "error" && !isResponsesWebsocketTerminalPayload(payload) {
+			continue
+		}
 		if err := w.conn.SetWriteDeadline(time.Now().Add(responsesWebsocketWriteTimeout)); err != nil {
 			return 0, err
 		}
 		if err := w.conn.WriteMessage(websocket.TextMessage, payload); err != nil {
 			return 0, err
-		}
-		if eventType == "error" || eventType == "response.failed" {
-			w.failed = true
-			w.failedPayload = bytes.Clone(payload)
 		}
 	}
 	return originalLen, nil
