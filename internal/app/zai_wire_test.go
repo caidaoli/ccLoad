@@ -212,3 +212,70 @@ func decodeZAIRequestIdentity(t *testing.T, body []byte) zaiRequestIdentity {
 	}
 	return identity
 }
+
+func TestNormalizeZAIUsageProjectsCodingPlanWindows(t *testing.T) {
+	t.Parallel()
+	summary, err := normalizeZAIUsage([]zaiauth.QuotaLimit{
+		{Type: "TOKENS_LIMIT", Unit: 3, Number: 5, UsedPercent: 42.5, ResetAtMillis: 1787040000000},
+		{Type: "TOKENS_LIMIT", Unit: 6, Number: 1, UsedPercent: 120, ResetAtMillis: 0},
+		{Type: "MCP_LIMIT", UsedPercent: -1},
+	})
+	if err != nil {
+		t.Fatalf("normalizeZAIUsage() error = %v", err)
+	}
+	if summary.Provider != zaiauth.ChannelType || summary.PlanType != zaiCodingPlanName {
+		t.Fatalf("summary = %+v", summary)
+	}
+	if len(summary.Windows) != 3 {
+		t.Fatalf("windows = %+v", summary.Windows)
+	}
+	five := summary.Windows[0]
+	if five.LimitName != "five_hour" || five.Kind != string(zaiauth.QuotaLimitTokens) ||
+		five.UsedPercent != 42.5 || five.RemainingPercent != 57.5 ||
+		five.LimitWindowSeconds != 5*3600 || five.ResetAt != 1787040000 {
+		t.Fatalf("five hour window = %+v", five)
+	}
+	// Upstream percentages are clamped: a window is never over 100 or below 0.
+	if summary.Windows[1].UsedPercent != 100 || summary.Windows[1].RemainingPercent != 0 {
+		t.Fatalf("weekly window = %+v", summary.Windows[1])
+	}
+	if summary.Windows[2].UsedPercent != 0 || summary.Windows[2].ResetAt != 0 {
+		t.Fatalf("mcp window = %+v", summary.Windows[2])
+	}
+}
+
+func TestNormalizeZAIUsageRejectsEmptyQuota(t *testing.T) {
+	t.Parallel()
+	if _, err := normalizeZAIUsage(nil); err == nil {
+		t.Fatal("normalizeZAIUsage() expected an error")
+	}
+}
+
+// The usage snapshot must round-trip through the credential so the channel list
+// can render it without another upstream call.
+func TestZAIUsageSnapshotPersistsOnCredential(t *testing.T) {
+	t.Parallel()
+	cfg := newZAITestChannel()
+	state, err := parseOAuthUsageCredentialState(cfg)
+	if err != nil {
+		t.Fatalf("parseOAuthUsageCredentialState() error = %v", err)
+	}
+	if state.provider != zaiauth.ChannelType || state.authType != model.AuthTypeZAIOAuth {
+		t.Fatalf("state = %+v", state)
+	}
+	snapshot := []byte(`{"requested_at":"2026-08-18T00:00:00Z","sampled_at":"2026-08-18T00:00:01Z",` +
+		`"summary":{"provider":"zai","windows":[{"limit_name":"five_hour","kind":"tokens","used_percent":42.5,` +
+		`"remaining_percent":57.5,"limit_window_seconds":18000,"reset_at":1787040000}]}}`)
+	payload, err := state.encode(snapshot, nil)
+	if err != nil {
+		t.Fatalf("encode() error = %v", err)
+	}
+	stored, err := zaiauth.ParseCredential([]byte(payload))
+	if err != nil {
+		t.Fatalf("ParseCredential() error = %v", err)
+	}
+	usage, _, _ := persistedOAuthUsage(stored.OAuthUsage, zaiauth.ChannelType)
+	if usage == nil || len(usage.Windows) != 1 || usage.Windows[0].LimitName != "five_hour" {
+		t.Fatalf("persisted usage = %+v", usage)
+	}
+}

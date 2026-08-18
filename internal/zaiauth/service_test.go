@@ -22,6 +22,7 @@ func newTestService(t *testing.T, handler http.Handler) (*Service, *httptest.Ser
 	service.ModelsURL = server.URL + "/api/paas/v4/models"
 	service.AgentConfigsURL = server.URL + "/api/v1/agent/configs"
 	service.CommunityURL = server.URL + "/api.json"
+	service.QuotaLimitURL = server.URL + "/api/monitor/usage/quota/limit"
 	return service, server
 }
 

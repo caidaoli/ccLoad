@@ -23,7 +23,12 @@ import (
 // Coding Plan key — end here, so every Z.ai channel is created with the same
 // upstream contract.
 
-const maxZAICredentialImportBytes = 1 << 16
+const (
+	maxZAICredentialImportBytes = 1 << 16
+	// zaiCodingPlanName labels the plan in usage summaries. Z.ai exposes no
+	// plan tier on the quota endpoint, so the label is the plan itself.
+	zaiCodingPlanName = "Coding Plan"
+)
 
 var zaiChannelCreateMu sync.Mutex
 
