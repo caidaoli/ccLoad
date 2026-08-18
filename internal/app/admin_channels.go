@@ -450,6 +450,14 @@ func channelOAuthMetadataFromCredential(cfg *model.Config) channelOAuthMetadata 
 			oauthUsage:        attachOAuthQuotaCostUsage(usage, credential.QuotaCostUsage),
 		}
 	}
+	if cfg.UsesZAIOAuth() {
+		credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return channelOAuthMetadata{}
+		}
+		usage, _, _ := persistedOAuthUsage(credential.OAuthUsage, zaiauth.ChannelType)
+		return channelOAuthMetadata{oauthUsage: usage}
+	}
 	if !cfg.UsesCodexOAuth() {
 		return channelOAuthMetadata{}
 	}

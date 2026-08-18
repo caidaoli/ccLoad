@@ -20,6 +20,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/oauthcost"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -42,6 +43,7 @@ const (
 
 var (
 	errOAuthUsageUnsupported         = errors.New("usage: channel does not use a supported OAuth provider")
+	errZAIUsageManagerUnavailable    = errors.New("usage: Z.ai credential manager is unavailable")
 	errCodexUsageManagerUnavailable  = errors.New("usage: Codex credential manager is unavailable")
 	errAnthropicManagerUnavailable   = errors.New("usage: Anthropic credential manager is unavailable")
 	errAntigravityManagerUnavailable = errors.New("usage: Antigravity credential manager is unavailable")
@@ -1315,7 +1317,8 @@ func oauthUsageHTTPStatus(err error) int {
 	case errors.Is(err, errCodexUsageManagerUnavailable),
 		errors.Is(err, errAnthropicManagerUnavailable),
 		errors.Is(err, errAntigravityManagerUnavailable),
-		errors.Is(err, errXAIUsageManagerUnavailable):
+		errors.Is(err, errXAIUsageManagerUnavailable),
+		errors.Is(err, errZAIUsageManagerUnavailable):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, errOAuthUsagePersistFailed):
 		return http.StatusInternalServerError
@@ -1560,7 +1563,65 @@ func (s *Server) oauthUsageSummary(ctx context.Context, cfg *model.Config) (*oau
 			}
 		}
 		return nil, errors.New("usage: xAI credential was rejected")
+	case cfg.UsesZAIOAuth():
+		if s.zaiCredentials == nil {
+			return nil, errZAIUsageManagerUnavailable
+		}
+		credential, err := s.zaiCredentials.credential(ctx, cfg, false)
+		if err != nil {
+			return nil, oauthUsageCredentialRefreshError(err, "usage: Z.ai credential refresh failed")
+		}
+		return requestZAIUsage(ctx, s.zaiUsageService(cfg), credential.APIKey)
 	default:
 		return nil, errOAuthUsageUnsupported
 	}
+}
+
+// zaiUsageService reuses the channel's transport so a channel proxy applies to
+// quota reads too.
+func (s *Server) zaiUsageService(cfg *model.Config) *zaiauth.Service {
+	service := zaiauth.NewService(s.getClientForChannel(cfg))
+	if s.zaiService != nil {
+		service.QuotaLimitURL = s.zaiService.QuotaLimitURL
+	}
+	return service
+}
+
+// requestZAIUsage reads the Coding Plan allowance windows.
+func requestZAIUsage(ctx context.Context, service *zaiauth.Service, apiKey string) (*oauthUsageSummary, error) {
+	limits, err := service.FetchQuotaLimits(ctx, apiKey)
+	if err != nil {
+		return nil, fmt.Errorf("usage: Z.ai quota request failed: %w", err)
+	}
+	return normalizeZAIUsage(limits)
+}
+
+// normalizeZAIUsage projects the Coding Plan windows onto ccLoad's summary.
+// Upstream reports a consumed percentage per window and no token counts, so the
+// summary carries percentages only.
+func normalizeZAIUsage(limits []zaiauth.QuotaLimit) (*oauthUsageSummary, error) {
+	summary := &oauthUsageSummary{
+		Provider: zaiauth.ChannelType,
+		PlanType: zaiCodingPlanName,
+		Windows:  make([]oauthUsageWindow, 0, len(limits)),
+	}
+	for _, limit := range limits {
+		usedPercent := min(max(limit.UsedPercent, 0), 100)
+		resetAt := int64(0)
+		if limit.ResetAtMillis > 0 {
+			resetAt = limit.ResetAtMillis / 1000
+		}
+		summary.Windows = append(summary.Windows, oauthUsageWindow{
+			LimitName:          limit.Name(),
+			Kind:               string(limit.Kind()),
+			UsedPercent:        usedPercent,
+			RemainingPercent:   100 - usedPercent,
+			LimitWindowSeconds: limit.WindowSeconds(),
+			ResetAt:            resetAt,
+		})
+	}
+	if len(summary.Windows) == 0 {
+		return nil, errors.New("usage: Z.ai response has no quota windows")
+	}
+	return summary, nil
 }
