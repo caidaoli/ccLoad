@@ -21,6 +21,7 @@ type Service struct {
 	Client          *http.Client
 	OAuthBaseURL    string
 	BizBaseURL      string
+	CodingModelsURL string
 	ModelsURL       string
 	AgentConfigsURL string
 	Now             func() time.Time
@@ -33,7 +34,8 @@ func NewService(client *http.Client) *Service {
 	}
 	return &Service{
 		Client: client, OAuthBaseURL: OAuthAPIBaseURL, BizBaseURL: BizBaseURL,
-		ModelsURL: ModelsURL, AgentConfigsURL: AgentConfigsURL, Now: time.Now,
+		CodingModelsURL: CodingModelsURL, ModelsURL: ModelsURL,
+		AgentConfigsURL: AgentConfigsURL, Now: time.Now,
 	}
 }
 
@@ -200,6 +202,121 @@ func (s *Service) ResolveCodingPlanAPIKey(ctx context.Context, accessToken strin
 		return "", identity, err
 	}
 	return apiKeyID + "." + secret, identity, nil
+}
+
+// ListModels returns the model ids the account can call, newest catalog first.
+//
+// The Coding Plan keeps its own catalog: models reach it before the general API
+// lists them (glm-5.3 did), so the plan endpoint is authoritative and the
+// general one only fills in what it misses. Discovery is live on purpose — the
+// lineup changes without a ccLoad release.
+func (s *Service) ListModels(ctx context.Context, apiKey string) ([]string, error) {
+	if err := s.validate(); err != nil {
+		return nil, err
+	}
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
+		return nil, errors.New("z.ai API key is required")
+	}
+	models := make([]string, 0, 8)
+	seen := make(map[string]struct{}, 8)
+	var lastErr error
+	for _, catalog := range []string{s.CodingModelsURL, s.ModelsURL} {
+		if strings.TrimSpace(catalog) == "" {
+			continue
+		}
+		listed, err := s.listCatalogModels(ctx, catalog, apiKey)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		for _, id := range listed {
+			if _, exists := seen[id]; exists {
+				continue
+			}
+			seen[id] = struct{}{}
+			models = append(models, id)
+		}
+	}
+	if len(models) == 0 {
+		if lastErr != nil {
+			return nil, lastErr
+		}
+		return nil, errors.New("z.ai model catalog is empty")
+	}
+	return models, nil
+}
+
+func (s *Service) listCatalogModels(ctx context.Context, catalogURL, apiKey string) ([]string, error) {
+	requestCtx, cancel := requestContext(ctx)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, catalogURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build z.ai model list request: %w", err)
+	}
+	request.Header.Set("Authorization", "Bearer "+apiKey)
+	request.Header.Set("Accept", "application/json")
+	ApplySourceHeaders(request.Header)
+	response, err := s.Client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("z.ai model list request: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseSize))
+	if err != nil {
+		return nil, fmt.Errorf("read z.ai model list response: %w", err)
+	}
+	if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
+		return nil, errors.New("z.ai rejected the Coding Plan API key")
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("z.ai model list returned HTTP %d", response.StatusCode)
+	}
+	return parseModelCatalog(body)
+}
+
+// parseModelCatalog accepts the OpenAI-shaped catalog and the `{code,data}`
+// envelope the Z.ai business APIs use, with either a list of objects or a plain
+// list of ids.
+func parseModelCatalog(body []byte) ([]string, error) {
+	raw := body
+	var envelope struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if json.Unmarshal(body, &envelope) == nil && len(envelope.Data) > 0 {
+		raw = envelope.Data
+	}
+	var entries []struct {
+		ID      string `json:"id"`
+		Model   string `json:"model"`
+		ModelID string `json:"modelId"`
+	}
+	models := make([]string, 0, 8)
+	if json.Unmarshal(raw, &entries) == nil {
+		for _, entry := range entries {
+			for _, candidate := range []string{entry.ID, entry.Model, entry.ModelID} {
+				if id := strings.TrimSpace(candidate); id != "" {
+					models = append(models, id)
+					break
+				}
+			}
+		}
+		if len(models) > 0 {
+			return models, nil
+		}
+	}
+	var ids []string
+	if json.Unmarshal(raw, &ids) == nil {
+		for _, id := range ids {
+			if trimmed := strings.TrimSpace(id); trimmed != "" {
+				models = append(models, trimmed)
+			}
+		}
+	}
+	if len(models) == 0 {
+		return nil, errors.New("z.ai model list response has no models")
+	}
+	return models, nil
 }
 
 // ValidateAPIKey confirms a Coding Plan key is accepted without spending quota.

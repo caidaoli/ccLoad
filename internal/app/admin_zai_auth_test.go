@@ -12,7 +12,7 @@ import (
 
 func TestNewZAIOAuthChannelUsesZCodeRoutedEndpoint(t *testing.T) {
 	t.Parallel()
-	channel := newZAIOAuthChannel("Z.ai-user@example.com", `{"type":"zai","api_key":"key.secret"}`, "")
+	channel := newZAIOAuthChannel("Z.ai-user@example.com", `{"type":"zai","api_key":"key.secret"}`, "", nil)
 	if channel.AuthType != model.AuthTypeZAIOAuth || !channel.Enabled || channel.CostMultiplier != 1 {
 		t.Fatalf("channel = %+v", channel)
 	}
@@ -28,9 +28,16 @@ func TestNewZAIOAuthChannelUsesZCodeRoutedEndpoint(t *testing.T) {
 	if len(channel.ModelEntries) != len(zaiauth.DefaultModels) {
 		t.Fatalf("models = %+v", channel.ModelEntries)
 	}
-	routed := newZAIOAuthChannel("name", `{"type":"zai","api_key":"key.secret"}`, "https://zcode.z.ai/api/v1/next/anthropic")
+	routed := newZAIOAuthChannel(
+		"name", `{"type":"zai","api_key":"key.secret"}`,
+		"https://zcode.z.ai/api/v1/next/anthropic", []string{"glm-9.9", "glm-4.7"},
+	)
 	if routed.URLs[0].URL != "https://zcode.z.ai/api/v1/next/anthropic" {
 		t.Fatalf("routed url = %q", routed.URLs[0].URL)
+	}
+	// A live catalog wins over the built-in lineup.
+	if len(routed.ModelEntries) != 2 || routed.ModelEntries[0].Model != "glm-9.9" {
+		t.Fatalf("models = %+v", routed.ModelEntries)
 	}
 }
 
@@ -56,7 +63,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 	ctx := context.Background()
 
 	first := &zaiauth.Credential{APIKey: "key-1.secret", AccessToken: "access-1", Email: "user@example.com", UserID: "u-1"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, first, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
@@ -66,7 +73,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// The same account reauthorizing must land on the same channel.
 	second := &zaiauth.Credential{APIKey: "key-2.secret", Email: "USER@example.com"}
-	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, "")
+	updated, isNew, err := createOrUpdateZAIChannel(ctx, store, second, "", nil)
 	if err != nil || isNew {
 		t.Fatalf("reauthorization created=%v err=%v", isNew, err)
 	}
@@ -86,7 +93,7 @@ func TestCreateOrUpdateZAIChannelReauthorizesSameAccount(t *testing.T) {
 
 	// A different account gets its own channel.
 	other := &zaiauth.Credential{APIKey: "key-3.secret", Email: "other@example.com", UserID: "u-2"}
-	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, "")
+	otherChannel, isNew, err := createOrUpdateZAIChannel(ctx, store, other, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("second account created=%v err=%v", isNew, err)
 	}
@@ -102,14 +109,14 @@ func TestCreateOrUpdateZAIChannelMatchesAnonymousKey(t *testing.T) {
 	ctx := context.Background()
 
 	credential := &zaiauth.Credential{APIKey: "key-1.secret"}
-	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, "")
+	created, isNew, err := createOrUpdateZAIChannel(ctx, store, credential, "", nil)
 	if err != nil || !isNew {
 		t.Fatalf("createOrUpdateZAIChannel() created=%v err=%v", isNew, err)
 	}
 	if !strings.HasPrefix(created.Name, "Z.ai-") {
 		t.Fatalf("name = %q", created.Name)
 	}
-	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, "")
+	again, isNew, err := createOrUpdateZAIChannel(ctx, store, &zaiauth.Credential{APIKey: "key-1.secret"}, "", nil)
 	if err != nil || isNew {
 		t.Fatalf("re-import created=%v err=%v", isNew, err)
 	}
