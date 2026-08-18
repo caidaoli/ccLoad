@@ -25,8 +25,21 @@ const (
 	CodingPlanProxyBaseURL = "https://zcode.z.ai/api/v1/ultra-zai/anthropic"
 	// AgentConfigsURL publishes the current ZCode endpoint routing table.
 	AgentConfigsURL = "https://zcode.z.ai/api/v1/agent/configs"
-	// ModelsURL validates a Coding Plan API key without consuming quota.
+	// CodingModelsURL is the Coding Plan model catalog. It is the plan's own
+	// endpoint, so it lists models that ship to Coding Plan before the general
+	// API exposes them.
+	CodingModelsURL = "https://api.z.ai/api/coding/paas/v4/models"
+	// ModelsURL is the general API catalog, used as a fallback and to validate
+	// a key without spending quota.
 	ModelsURL = "https://api.z.ai/api/paas/v4/models"
+
+	// CommunityCatalogURL is models.dev, the third-party catalog ccLoad already
+	// syncs for pricing. Its Coding Plan provider tracks the plan lineup without
+	// an account key, which makes it the keyless fallback for model discovery.
+	CommunityCatalogURL = "https://models.dev/api.json"
+	// CommunityCatalogProvider is the models.dev provider that mirrors the Z.ai
+	// Coding Plan (api.z.ai/api/coding/paas/v4).
+	CommunityCatalogProvider = "zai-coding-plan"
 
 	// AppVersion is the ZCode client version ccLoad reports upstream.
 	AppVersion = "3.7.7"
@@ -51,10 +64,14 @@ const (
 	// PollTimeout bounds one browser authorization.
 	PollTimeout = 5 * time.Minute
 
-	maxResponseSize   = 1 << 20
-	maxCredentialSize = 1 << 20
-	pollTokenBytes    = 32
+	maxResponseSize         = 1 << 20
+	maxCommunityCatalogSize = 24 << 20
+	maxCredentialSize       = 1 << 20
+	pollTokenBytes          = 32
 )
 
-// DefaultModels are the Coding Plan models ZCode configures out of the box.
-var DefaultModels = []string{"glm-5.1", "glm-4.7"}
+// DefaultModels is the last-resort lineup, used only when both the account
+// catalog and models.dev are unreachable. It is never the source of truth: the
+// Coding Plan lineup changes without a ccLoad release (glm-5.3 shipped to the
+// plan two months before the general API listed it).
+var DefaultModels = []string{"glm-5.3", "glm-5.2", "glm-5.2-highspeed", "glm-5-turbo", "glm-5.1", "glm-4.7"}

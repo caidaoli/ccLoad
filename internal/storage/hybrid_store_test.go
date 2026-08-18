@@ -127,9 +127,12 @@ func TestHybridStore_ChannelFinalStateConvergesToPrimary(t *testing.T) {
 		cfg, cfgErr := primary.GetConfig(ctx, created.ID)
 		keys, keysErr := primary.GetAPIKeys(ctx, created.ID)
 		disabled, disabledErr := primary.LoadDisabledURLs(ctx)
+		// The model cooldown replicates as its own queued entity, so waiting on
+		// the channel state alone can observe a queue that is still draining.
 		return cfgErr == nil && cfg.Name == "final" &&
 			keysErr == nil && len(keys) == 1 && keys[0].Disabled &&
-			disabledErr == nil && len(disabled[created.ID]) == 1
+			disabledErr == nil && len(disabled[created.ID]) == 1 &&
+			hybrid.RuntimeMetrics().PrimarySyncPending == 0
 	})
 	if pending := hybrid.RuntimeMetrics().PrimarySyncPending; pending != 0 {
 		t.Fatalf("同步后仍有 %d 个待处理任务", pending)
