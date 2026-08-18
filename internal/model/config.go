@@ -19,6 +19,7 @@ const (
 	AuthTypeAntigravityOAuth = "antigravity_oauth"
 	AuthTypeXAIOAuth         = "xai_oauth"
 	AuthTypeAnthropicOAuth   = "anthropic_oauth"
+	AuthTypeZAIOAuth         = "zai_oauth"
 
 	// ProtocolTransformModeAuto tries the client protocol first, then falls back through
 	// Anthropic, OpenAI, Codex, Gemini while skipping the native protocol already attempted.
@@ -45,6 +46,8 @@ func NormalizeAuthType(value string) string {
 		return AuthTypeXAIOAuth
 	case AuthTypeAnthropicOAuth:
 		return AuthTypeAnthropicOAuth
+	case AuthTypeZAIOAuth:
+		return AuthTypeZAIOAuth
 	default:
 		return ""
 	}
@@ -515,6 +518,8 @@ type Config struct {
 	CodexAccountFedRAMP    bool   `json:"-"`
 	AntigravityAccessToken string `json:"-"`
 	AntigravityProjectID   string `json:"-"`
+	// ZAIDeviceID is the ZCode device fingerprint reported in metadata.user_id.
+	ZAIDeviceID string `json:"-"`
 
 	CreatedAt JSONTime `json:"created_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
 	UpdatedAt JSONTime `json:"updated_at"` // 使用JSONTime确保序列化格式一致（RFC3339）
@@ -566,6 +571,7 @@ func (c *Config) Clone() *Config {
 		CodexAccountFedRAMP:     c.CodexAccountFedRAMP,
 		AntigravityAccessToken:  c.AntigravityAccessToken,
 		AntigravityProjectID:    c.AntigravityProjectID,
+		ZAIDeviceID:             c.ZAIDeviceID,
 		CreatedAt:               c.CreatedAt,
 		UpdatedAt:               c.UpdatedAt,
 		KeyCount:                c.KeyCount,
@@ -608,6 +614,11 @@ func (c *Config) UsesXAIOAuth() bool {
 // UsesAnthropicOAuth reports whether this channel is backed by an Anthropic credential.
 func (c *Config) UsesAnthropicOAuth() bool {
 	return c != nil && c.GetAuthType() == AuthTypeAnthropicOAuth
+}
+
+// UsesZAIOAuth reports whether this channel is backed by a Z.ai Coding Plan credential.
+func (c *Config) UsesZAIOAuth() bool {
+	return c != nil && c.GetAuthType() == AuthTypeZAIOAuth
 }
 
 // UsesOAuth reports whether API keys are replaced by a private OAuth credential.

@@ -17,6 +17,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -740,6 +741,12 @@ func channelKeysForAdmin(cfg *model.Config, storedKeys []*model.APIKey) ([]*mode
 			return nil, err
 		}
 		accessToken, note = credential.AccessToken, "Anthropic OAuth AT"
+	case cfg.UsesZAIOAuth():
+		credential, err := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil, err
+		}
+		accessToken, note = credential.APIKey, "Z.ai Coding Plan Key"
 	}
 
 	return []*model.APIKey{{

@@ -34,6 +34,7 @@ import (
 	"ccLoad/internal/util"
 	"ccLoad/internal/version"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -93,6 +94,9 @@ type Server struct {
 	anthropicService              *anthropicauth.Service
 	anthropicCredentials          *anthropicCredentialManager
 	anthropicOAuth                *codexOAuthManager
+	zaiService                    *zaiauth.Service
+	zaiCredentials                *zaiCredentialManager
+	zaiOAuth                      *zaiOAuthManager
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -325,6 +329,25 @@ func NewServer(store storage.Store) *Server {
 		s.anthropicCredentials.invalidate(channelID)
 		s.InvalidateChannelListCache()
 	})
+	s.zaiService = zaiauth.NewService(s.client)
+	s.zaiCredentials = newZAICredentialManager(store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.zaiCredentials.refreshTracker = s.oauthCredentialRefreshes
+	s.zaiOAuth = newZAIOAuthManager(
+		s.baseCtx,
+		s.zaiService,
+		func(ctx context.Context, accessToken string) (*zaiauth.Credential, error) {
+			return s.buildZAICredential(ctx, zaiCredentialImportRequest{AccessToken: accessToken})
+		},
+		func(ctx context.Context, credential *zaiauth.Credential) (int64, string, error) {
+			cfg, _, err := s.commitZAICredential(ctx, credential)
+			if err != nil {
+				return 0, "", err
+			}
+			return cfg.ID, cfg.Name, nil
+		},
+	)
 
 	// 初始化冷却管理器（统一管理渠道级和Key级冷却）
 	// 传入Server作为configGetter，利用缓存层查询渠道配置
@@ -1419,6 +1442,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.POST("/anthropic/oauth/callback", s.HandleSubmitAnthropicOAuthCode)
 		admin.POST("/anthropic/oauth/cookie", s.HandleAnthropicCookieAuth)
 		admin.POST("/channels/:id/anthropic-credential/refresh", s.HandleRefreshAnthropicCredential)
+		admin.POST("/zai/oauth/start", s.HandleStartZAIOAuth)
+		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
+		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
+		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1662,6 +1689,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.anthropicOAuth != nil {
 		s.anthropicOAuth.close()
+	}
+	if s.zaiOAuth != nil {
+		s.zaiOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

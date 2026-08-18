@@ -14,6 +14,7 @@ let codexOAuthStopPromise = null;
 let activeXAIImportFlow = null;
 let xaiImportStopPromise = null;
 let activeAnthropicCookieFlow = null;
+let activeZAIKeyFlow = null;
 let oauthPagehideBound = false;
 let activeOAuthCredentialCleanup = null;
 let oauthCredentialCleanupModelLoadSequence = 0;
@@ -44,6 +45,12 @@ const OAUTH_PROVIDER_CONFIGS = Object.freeze({
   anthropic: Object.freeze({
     provider: 'anthropic', label: 'Anthropic', i18n: 'channels.anthropic',
     callbackPlaceholder: 'code#state', authorizationCode: true
+  }),
+  // Z.ai (ZCode) approves in the browser and ccLoad polls for the result, so
+  // there is no callback for the administrator to paste back.
+  zai: Object.freeze({
+    provider: 'zai', label: 'Z.ai', i18n: 'channels.zai',
+    callbackPlaceholder: '', pollOnly: true
   })
 });
 
@@ -495,9 +502,12 @@ function syncOAuthProviderFields() {
   const codexMethod = document.getElementById('codexOAuthMethod')?.value || 'oauth';
   const xaiMethod = document.getElementById('xaiOAuthMethod')?.value || 'manual';
   const anthropicMethod = document.getElementById('anthropicOAuthMethod')?.value || 'code';
+  const zaiMethod = document.getElementById('zaiOAuthMethod')?.value || 'oauth';
   const xai = provider === 'xai';
   const anthropic = provider === 'anthropic';
   const codex = provider === 'codex';
+  const zai = provider === 'zai';
+  const zaiAPIKey = zai && zaiMethod === 'api_key';
   const codexPersonalAccessToken = codex && codexMethod === 'personalAccessToken';
   const anthropicCookie = anthropic && anthropicMethod === 'cookie';
   const controls = document.getElementById('xaiOAuthControls');
@@ -506,6 +516,9 @@ function syncOAuthProviderFields() {
   const anthropicControls = document.getElementById('anthropicOAuthControls');
   const anthropicCookieField = document.getElementById('anthropicCookieField');
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
+  const zaiControls = document.getElementById('zaiOAuthControls');
+  const zaiAPIKeyField = document.getElementById('zaiAPIKeyField');
+  const zaiAPIKeyInput = document.getElementById('zaiCodingPlanKey');
   const codexControls = document.getElementById('codexOAuthControls');
   const codexPersonalAccessTokenField = document.getElementById('codexPersonalAccessTokenField');
   const codexPersonalAccessTokenInput = document.getElementById('codexPersonalAccessToken');
@@ -516,7 +529,13 @@ function syncOAuthProviderFields() {
   if (controls) controls.hidden = !xai;
   if (codexControls) codexControls.hidden = !codex;
   if (anthropicControls) anthropicControls.hidden = !anthropic;
-  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken)) sessionFields.hidden = true;
+  if (zaiControls) zaiControls.hidden = !zai;
+  if (zaiAPIKeyField) zaiAPIKeyField.hidden = !zaiAPIKey;
+  if (zaiAPIKeyInput) {
+    zaiAPIKeyInput.required = zaiAPIKey;
+    if (!zaiAPIKey) clearZAICodingPlanKey(zaiAPIKeyInput);
+  }
+  if (sessionFields && (xai || anthropicCookie || codexPersonalAccessToken || zaiAPIKey)) sessionFields.hidden = true;
   if (codexPersonalAccessTokenField) codexPersonalAccessTokenField.hidden = !codexPersonalAccessToken;
   if (codexPersonalAccessTokenInput) {
     codexPersonalAccessTokenInput.required = codexPersonalAccessToken;
@@ -536,6 +555,8 @@ function syncOAuthProviderFields() {
   if (description) {
     const descriptionKey = codexPersonalAccessToken
       ? 'channels.codex.personalAccessTokenDescription'
+      : zai
+      ? (zaiAPIKey ? 'channels.zai.apiKeyDescription' : 'channels.zai.oauthDescription')
       : xai
       ? (xaiMethod === 'manual' ? 'channels.xai.manualDescription' : 'channels.xai.importDescription')
       : (anthropic
@@ -548,14 +569,16 @@ function syncOAuthProviderFields() {
   }
   if (authorizeButton) {
     authorizeButton.hidden = false;
-    const method = codex ? codexMethod : (xai ? xaiMethod : anthropicMethod);
+    const method = codex ? codexMethod : (xai ? xaiMethod : (zai ? zaiMethod : anthropicMethod));
     setOAuthAuthorizeButtonLabel(provider, method, authorizeButton);
   }
 }
 
 function setOAuthAuthorizeButtonLabel(provider, method, button = document.getElementById('oauthAuthorizeButton')) {
   if (!button) return;
-  const key = provider === 'xai'
+  const key = provider === 'zai'
+    ? (method === 'api_key' ? 'channels.zai.apiKeySubmit' : 'channels.oauth.startAuthorization')
+    : provider === 'xai'
     ? (method === 'manual' ? 'channels.xai.generateLink' : 'channels.xai.importSecrets')
     : (provider === 'codex' && method === 'personalAccessToken'
         ? 'channels.codex.personalAccessTokenSubmit'
@@ -618,7 +641,9 @@ function showOAuthSession(session, provider = 'codex') {
   if (loginActions) loginActions.hidden = true;
   else if (authorizeButton) authorizeButton.hidden = true;
   sessionFields.hidden = false;
-  const sessionKey = config.authorizationCode ? 'channels.anthropic.sessionDescription' : 'channels.oauth.sessionDescription';
+  const sessionKey = config.pollOnly
+    ? 'channels.zai.sessionDescription'
+    : (config.authorizationCode ? 'channels.anthropic.sessionDescription' : 'channels.oauth.sessionDescription');
   if (sessionDescription) sessionDescription.textContent = window.t(sessionKey);
   const callbackKey = config.authorizationCode ? 'channels.anthropic.authorizationCode' : 'channels.oauth.callbackURL';
   const hintKey = config.authorizationCode ? 'channels.anthropic.authorizationCodeHint' : 'channels.oauth.callbackHint';
@@ -635,6 +660,8 @@ function showOAuthSession(session, provider = 'codex') {
     callbackButton.setAttribute?.('data-i18n', submitKey);
     callbackButton.textContent = window.t(submitKey);
   }
+  const callbackFormElement = document.getElementById('oauthCallbackForm');
+  if (callbackFormElement) callbackFormElement.hidden = Boolean(config.pollOnly);
   callbackURL.placeholder = config.callbackPlaceholder;
   authorizationURL.value = session.url;
   openLink.href = session.url;
@@ -776,6 +803,40 @@ async function cancelAnthropicOAuth(state, fetcher = fetchDataWithAuth) {
   return cancelOAuth('anthropic', state, fetcher);
 }
 
+async function cancelZAIOAuth(state, fetcher = fetchDataWithAuth) {
+  return cancelOAuth('zai', state, fetcher);
+}
+
+// submitZAICodingPlanKey imports a Coding Plan key without a browser round trip.
+// The secret is cleared from the page before the request is awaited.
+async function submitZAICodingPlanKey(input, fetcher = fetchDataWithAuth, signal = undefined) {
+  let apiKey = String(input?.value || '').trim();
+  if (!apiKey) {
+    input?.setAttribute?.('aria-invalid', 'true');
+    input?.focus?.();
+    throw new Error(window.t('channels.zai.apiKeyRequired'));
+  }
+  let body = JSON.stringify({ api_key: apiKey });
+  apiKey = '';
+  clearZAICodingPlanKey(input);
+  try {
+    return await fetcher('/admin/zai/credentials/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal
+    });
+  } finally {
+    body = '';
+  }
+}
+
+function clearZAICodingPlanKey(input = document.getElementById('zaiCodingPlanKey')) {
+  if (!input) return;
+  input.value = '';
+  input.removeAttribute?.('aria-invalid');
+}
+
 async function submitXAICredentialBatch(
   method,
   textarea,
@@ -889,6 +950,10 @@ async function pollAnthropicOAuthStatus(state, options = {}) {
   return pollOAuthStatus('anthropic', state, options);
 }
 
+async function pollZAIOAuthStatus(state, options = {}) {
+  return pollOAuthStatus('zai', state, options);
+}
+
 async function startOAuth(provider, button) {
   const config = oauthProviderConfig(provider);
   let resolveReady;
@@ -972,13 +1037,30 @@ async function stopActiveOAuth(options = {}) {
     stopActiveCodexOAuth({ closeDialog: false }),
     stopActiveCodexPersonalAccessToken(),
     stopActiveXAIImport({ closeDialog: false }),
-    stopActiveAnthropicCookieAuth()
+    stopActiveAnthropicCookieAuth(),
+    stopActiveZAIKeyImport()
   ]);
   if (options.closeDialog !== false) {
     closeOAuthLoginDialogElement();
     setCodexAuthStatus('');
     setCodexOAuthDialogStatus('');
   }
+}
+
+function stopActiveZAIKeyImport() {
+  const flow = activeZAIKeyFlow;
+  if (flow) {
+    flow.cancelling = true;
+    flow.controller?.abort?.();
+    if (activeZAIKeyFlow === flow) activeZAIKeyFlow = null;
+    if (flow.button) {
+      flow.button.disabled = false;
+      flow.button.removeAttribute?.('aria-busy');
+    }
+  }
+  clearZAICodingPlanKey(flow?.input);
+  const method = document.getElementById('zaiOAuthMethod');
+  if (method) method.disabled = false;
 }
 
 function stopActiveCodexPersonalAccessToken() {
@@ -1340,7 +1422,8 @@ function oauthCredentialCleanupProviderLabel(authType) {
     codex_oauth: 'Codex',
     antigravity_oauth: 'Antigravity',
     xai_oauth: 'xAI',
-    anthropic_oauth: 'Anthropic'
+    anthropic_oauth: 'Anthropic',
+    zai_oauth: 'Z.ai'
   })[authType] || authType;
 }
 
@@ -1988,7 +2071,7 @@ async function batchRefreshSelectedOAuthUsage(fetcher = fetchWithAuth) {
   const channelList = typeof channels !== 'undefined' && Array.isArray(channels) ? channels : [];
   const eligibleIDs = selectedIDs.filter(id => {
     const channel = channelList.find(item => Number(item.id) === id);
-    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth'].includes(channel.auth_type);
+    return channel && ['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth'].includes(channel.auth_type);
   });
   const skipped = selectedIDs.length - eligibleIDs.length;
   if (eligibleIDs.length === 0) {
@@ -2063,6 +2146,8 @@ function setupOAuthActions() {
   const xaiCredentialValues = document.getElementById('xaiCredentialValues');
   const anthropicMethod = document.getElementById('anthropicOAuthMethod');
   const anthropicSessionKey = document.getElementById('anthropicSessionKey');
+  const zaiMethod = document.getElementById('zaiOAuthMethod');
+  const zaiCodingPlanKey = document.getElementById('zaiCodingPlanKey');
   const authorizeButton = document.getElementById('oauthAuthorizeButton');
   const sessionFields = document.getElementById('oauthSessionFields');
   const copyButton = document.getElementById('oauthCopyLink');
@@ -2108,10 +2193,15 @@ function setupOAuthActions() {
     anthropicMethod.addEventListener('change', syncOAuthProviderFields);
     anthropicMethod.dataset.bound = '1';
   }
+  if (zaiMethod && !zaiMethod.dataset.bound) {
+    zaiMethod.addEventListener('change', syncOAuthProviderFields);
+    zaiMethod.dataset.bound = '1';
+  }
   if (loginForm && providerSelect && authorizeButton && !loginForm.dataset.bound) {
     loginForm.addEventListener('submit', async event => {
       event.preventDefault();
-      if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow || activeAnthropicCookieFlow) return;
+      if (activeCodexOAuthFlow || activeCodexPersonalAccessTokenFlow || activeXAIImportFlow ||
+        activeAnthropicCookieFlow || activeZAIKeyFlow) return;
       providerSelect.disabled = true;
       if (providerSelect.value === 'codex' && codexMethod?.value === 'personalAccessToken') {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -2178,6 +2268,35 @@ function setupOAuthActions() {
           } finally {
             if (activeXAIImportFlow === flow) activeXAIImportFlow = null;
           }
+        }
+      } else if (providerSelect.value === 'zai' && zaiMethod?.value === 'api_key') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const flow = { button: authorizeButton, input: zaiCodingPlanKey, cancelling: false, controller };
+        activeZAIKeyFlow = flow;
+        zaiMethod.disabled = true;
+        authorizeButton.disabled = true;
+        authorizeButton.setAttribute?.('aria-busy', 'true');
+        try {
+          setCodexOAuthDialogStatus(window.t('channels.zai.apiKeyValidating'));
+          const result = await submitZAICodingPlanKey(zaiCodingPlanKey, fetchDataWithAuth, controller?.signal);
+          if (flow.cancelling || activeZAIKeyFlow !== flow) return;
+          closeOAuthLoginDialogElement();
+          const message = window.t('channels.zai.apiKeyComplete', { channel: result?.channel_name || '' });
+          setCodexAuthStatus(message, 'success');
+          if (window.showSuccess) window.showSuccess(message);
+          await reloadChannelsList();
+        } catch (error) {
+          if (flow.cancelling || activeZAIKeyFlow !== flow) return;
+          zaiCodingPlanKey?.setAttribute?.('aria-invalid', 'true');
+          zaiCodingPlanKey?.focus?.();
+          const message = error?.message || window.t('channels.zai.apiKeyFailed');
+          setCodexOAuthDialogStatus(message, 'error');
+          if (window.showError) window.showError(message);
+        } finally {
+          if (activeZAIKeyFlow === flow) activeZAIKeyFlow = null;
+          zaiMethod.disabled = false;
+          authorizeButton.disabled = false;
+          authorizeButton.removeAttribute?.('aria-busy');
         }
       } else if (providerSelect.value === 'anthropic' && anthropicMethod?.value === 'cookie') {
         const controller = typeof AbortController === 'function' ? new AbortController() : null;
@@ -2589,6 +2708,7 @@ if (typeof module !== 'undefined' && module.exports) {
     cancelCodexOAuth,
     cancelOAuthCredentialCleanup,
     cancelXAIOAuth,
+    cancelZAIOAuth,
     cleanupOAuthCredentials,
     copyOAuthCredential,
     copyCodexOAuthLink,
@@ -2619,6 +2739,8 @@ if (typeof module !== 'undefined' && module.exports) {
     submitCodexPersonalAccessToken,
     submitCodexOAuthCallback,
     submitXAIOAuthCallback,
-    submitXAICredentialBatch
+    submitXAICredentialBatch,
+    submitZAICodingPlanKey,
+    pollZAIOAuthStatus
   };
 }

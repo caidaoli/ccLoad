@@ -116,6 +116,7 @@
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
                   <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
+                  <option value="zai" data-i18n="channels.oauth.providerZAI">Z.ai Coding Plan</option>
                 </select>
               </div>
               <div id="codexOAuthControls">
@@ -191,6 +192,23 @@
                     placeholder="sk-ant-sid01-xxxxx...&#10;sk-ant-sid01-yyyyy..."></textarea>
                   <p id="anthropicCookieHint" class="oauth-field-hint"
                     data-i18n="channels.anthropic.cookieHint">每行粘贴一个完整的 sessionKey。提交后输入会立即从页面清除，ccLoad 不保存这些 Cookie。</p>
+                </div>
+              </div>
+              <div id="zaiOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="zaiOAuthMethod" data-i18n="channels.zai.methodLabel">Z.ai 授权方式</label>
+                  <select id="zaiOAuthMethod" name="zai_oauth_method" class="form-input">
+                    <option value="oauth" data-i18n="channels.zai.methodOAuth">浏览器授权（ZCode 登录）</option>
+                    <option value="api_key" data-i18n="channels.zai.methodAPIKey">Coding Plan API Key</option>
+                  </select>
+                </div>
+                <div id="zaiAPIKeyField" class="oauth-field" hidden>
+                  <label for="zaiCodingPlanKey" data-i18n="channels.zai.apiKeyLabel">Coding Plan API Key</label>
+                  <input id="zaiCodingPlanKey" name="zai_coding_plan_key" type="password"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="zaiAPIKeyHint oauthLoginDialogStatus">
+                  <p id="zaiAPIKeyHint" class="oauth-field-hint"
+                    data-i18n="channels.zai.apiKeyHint">提交后输入会立即从页面清除。ccLoad 只把它保存在渠道凭证中。</p>
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">
@@ -337,6 +355,7 @@
                   <option value="antigravity_oauth">Antigravity</option>
                   <option value="xai_oauth">xAI</option>
                   <option value="anthropic_oauth">Anthropic</option>
+                  <option value="zai_oauth">Z.ai Coding Plan</option>
                 </select>
               </div>
               <div class="oauth-field">
