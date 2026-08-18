@@ -9,7 +9,9 @@ import (
 	"log"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -24,7 +26,12 @@ import (
 )
 
 var errUnknownClientProtocol = errors.New("unknown client protocol for path")
-var errBodyTooLarge = errors.New("request body too large")
+
+// errBodyTooLarge 与 errBodyReadTimeout 是两种完全不同的失败：前者是请求体超过
+// 配置的大小上限（立即拒绝），后者是客户端在读取超时内没把请求体传完。二者的处置
+// 手段不同（调大小上限 vs 调读取超时），错误文案必须区分，否则会被误判。
+var errBodyTooLarge = errors.New("request body exceeds the configured size limit (settings: max_body_bytes / max_image_body_bytes)")
+var errBodyReadTimeout = errors.New("timed out reading the request body before the client finished uploading (setting: http_read_timeout_seconds)")
 
 // ErrAllKeysUnavailable 表示所有渠道密钥都不可用
 var ErrAllKeysUnavailable = errors.New("all channel keys unavailable")
@@ -84,6 +91,16 @@ func (r incomingRequest) authorizationModel() string {
 	return r.originalModel
 }
 
+// isRequestReadTimeout 判断读取失败是否来自读取截止时间（HTTP Server ReadTimeout），
+// 而不是客户端断开或其它 I/O 故障。
+func isRequestReadTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
 func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomingRequest, error) {
 	requestPath := c.Request.URL.Path
 	requestMethod := c.Request.Method
@@ -93,6 +110,9 @@ func parseIncomingRequest(c *gin.Context, bodyLimits requestBodyLimits) (incomin
 	limited := io.LimitReader(c.Request.Body, maxBody+1)
 	all, err := io.ReadAll(limited)
 	if err != nil {
+		if isRequestReadTimeout(err) {
+			return incomingRequest{}, fmt.Errorf("%w: %v", errBodyReadTimeout, err)
+		}
 		return incomingRequest{}, fmt.Errorf("failed to read body: %w", err)
 	}
 	_ = c.Request.Body.Close()
@@ -283,11 +303,15 @@ func (s *Server) HandleProxyRequest(c *gin.Context) {
 
 	incoming, err := parseIncomingRequest(c, s.bodyLimits)
 	if err != nil {
-		if errors.Is(err, errBodyTooLarge) {
+		switch {
+		case errors.Is(err, errBodyTooLarge):
 			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": err.Error()})
-			return
+		case errors.Is(err, errBodyReadTimeout):
+			// 408 而不是 400：请求本身没问题，是客户端没在读取超时内传完。
+			c.JSON(http.StatusRequestTimeout, gin.H{"error": err.Error()})
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
 	originalModel := incoming.originalModel
