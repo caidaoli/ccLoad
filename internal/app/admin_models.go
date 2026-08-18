@@ -12,6 +12,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	"ccLoad/internal/util"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -318,6 +319,9 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 	if cfg.UsesAnthropicOAuth() {
 		return fetchAnthropicOAuthModels(cfg, overrideProtocol)
 	}
+	if cfg.UsesZAIOAuth() {
+		return fetchZAIOAuthModels(cfg, overrideProtocol)
+	}
 	if cfg.UsesAntigravityOAuth() {
 		return s.fetchAntigravityModelsWithURLFallback(ctx, cfg, overrideProtocol)
 	}
@@ -334,6 +338,33 @@ func (s *Server) fetchModelsForChannel(ctx context.Context, cfg *model.Config, o
 		return nil, fmt.Errorf("该渠道没有可用的API Key")
 	}
 	return s.fetchModelsWithURLFallback(ctx, cfg.ID, cfg.URLs, overrideProtocol, apiKeys)
+}
+
+func fetchZAIOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
+	overrideProtocol = strings.ToLower(strings.TrimSpace(overrideProtocol))
+	if overrideProtocol != "" {
+		if !protocol.IsValid(protocol.Protocol(overrideProtocol)) {
+			return nil, fmt.Errorf("不支持的上游协议: %s", overrideProtocol)
+		}
+		if util.NormalizeProtocol(overrideProtocol) != util.ProtocolAnthropic {
+			return nil, fmt.Errorf("模型发现: Z.ai Coding Plan 仅支持 anthropic 协议")
+		}
+	}
+	models := make([]model.ModelEntry, len(zaiauth.DefaultModels))
+	for i, name := range zaiauth.DefaultModels {
+		models[i] = model.ModelEntry{Model: name}
+	}
+	channelURL := ""
+	if len(cfg.URLs) > 0 {
+		channelURL = cfg.URLs[0].RuntimeURL()
+	}
+	return &FetchModelsResponse{
+		Models: models, Protocol: util.ProtocolAnthropic, Source: "predefined",
+		Debug: &FetchModelsDebug{
+			NormalizedProtocol: util.ProtocolAnthropic,
+			Fetcher:            "zai_coding_plan_catalog", ChannelURL: channelURL,
+		},
+	}, nil
 }
 
 func fetchAnthropicOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {

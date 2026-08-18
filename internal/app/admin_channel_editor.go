@@ -11,6 +11,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 )
@@ -105,6 +106,17 @@ func (s *Server) HandleChannelEditor(c *gin.Context) {
 		apiKeys = []*model.APIKey{{
 			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.AccessToken,
 			Note: "Anthropic OAuth AT", KeyStrategy: model.KeyStrategySequential,
+		}}
+		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
+	} else if cfg.UsesZAIOAuth() {
+		credential, parseErr := zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if parseErr != nil {
+			RespondError(c, http.StatusInternalServerError, parseErr)
+			return
+		}
+		apiKeys = []*model.APIKey{{
+			ChannelID: cfg.ID, KeyIndex: 0, APIKey: credential.APIKey,
+			Note: "Z.ai Coding Plan Key", KeyStrategy: model.KeyStrategySequential,
 		}}
 		oauthCredential = append(json.RawMessage(nil), cfg.OAuthCredential...)
 	}
