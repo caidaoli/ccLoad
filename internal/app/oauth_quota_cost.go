@@ -15,12 +15,6 @@ import (
 	"ccLoad/internal/xaiauth"
 )
 
-// xAI 的额度不在 windows 数组里，按固定标识合成窗口槽位。
-const (
-	xaiQuotaWindowLimitName = "xai"
-	xaiMonthlyWindowSeconds = 30 * 24 * 60 * 60
-)
-
 type oauthUsageCredentialState struct {
 	provider       string
 	authType       string
@@ -103,86 +97,40 @@ func reconcileOAuthQuotaCostUsage(
 	return oauthcost.Reconcile(current, oauthQuotaSamples(summary), observedAt)
 }
 
-// oauthQuotaSamples 把一次上游额度采样转成持久化槽位。槽位身份是上游的
-// (limit_name, kind)，同一时长可以对应多个互不相干的窗口（Antigravity 的
-// gemini/3p 周额度、Anthropic 的三个 7 天窗口），只按时长归并必然错位。
+// oauthQuotaSamples 把一次上游额度采样转成持久化槽位。转换规则与凭证里
+// oauth_usage 快照的重建路径共用 oauthcost 的实现，避免两处漂移。
 func oauthQuotaSamples(summary *oauthUsageSummary) []oauthcost.Sample {
 	if summary == nil {
 		return nil
 	}
-	samples := make([]oauthcost.Sample, 0, len(summary.Windows)+2)
-	for _, window := range summary.Windows {
-		key := oauthcost.Key(window.LimitName, window.Kind)
-		if key == "" || window.ResetAt <= 0 || window.LimitWindowSeconds <= 0 {
-			continue
+	snapshot := oauthQuotaSnapshotSummary(summary)
+	return snapshot.Samples()
+}
+
+// oauthQuotaSnapshotSummary 把内存里的采样摘要投影成 oauthcost 的快照形状，
+// 只保留重建窗口边界所需的字段。
+func oauthQuotaSnapshotSummary(summary *oauthUsageSummary) oauthcost.SnapshotSummary {
+	snapshot := oauthcost.SnapshotSummary{Provider: summary.Provider}
+	if len(summary.Windows) > 0 {
+		snapshot.Windows = make([]oauthcost.SnapshotWindow, 0, len(summary.Windows))
+		for _, window := range summary.Windows {
+			snapshot.Windows = append(snapshot.Windows, oauthcost.SnapshotWindow{
+				LimitName:          window.LimitName,
+				Kind:               window.Kind,
+				LimitWindowSeconds: window.LimitWindowSeconds,
+				ResetAt:            window.ResetAt,
+			})
 		}
-		samples = append(samples, oauthcost.Sample{
-			Key:           key,
-			Family:        oauthQuotaWindowFamily(summary.Provider, window.LimitName, window.Kind),
-			WindowSeconds: window.LimitWindowSeconds,
-			ResetAt:       time.Unix(window.ResetAt, 0).UTC(),
-		})
 	}
 	if summary.XAIBilling != nil {
-		if summary.XAIBilling.WeeklyPresent {
-			if resetAt := parseOAuthQuotaResetTime(summary.XAIBilling.WeeklyResetAt); resetAt != nil {
-				samples = append(samples, oauthcost.Sample{
-					Key:           oauthcost.Key(xaiQuotaWindowLimitName, "weekly"),
-					WindowSeconds: weeklyUsageWindowSeconds,
-					ResetAt:       *resetAt,
-				})
-			}
-		}
-		if summary.XAIBilling.MonthlyPresent {
-			if resetAt := parseOAuthQuotaResetTime(summary.XAIBilling.MonthlyResetAt); resetAt != nil {
-				samples = append(samples, oauthcost.Sample{
-					Key:           oauthcost.Key(xaiQuotaWindowLimitName, "monthly"),
-					WindowSeconds: xaiMonthlyWindowSeconds,
-					ResetAt:       *resetAt,
-				})
-			}
+		snapshot.XAIBilling = &oauthcost.SnapshotBilling{
+			WeeklyPresent:  summary.XAIBilling.WeeklyPresent,
+			WeeklyResetAt:  summary.XAIBilling.WeeklyResetAt,
+			MonthlyPresent: summary.XAIBilling.MonthlyPresent,
+			MonthlyResetAt: summary.XAIBilling.MonthlyResetAt,
 		}
 	}
-	return samples
-}
-
-// oauthQuotaWindowFamily 把 provider 的窗口标识映射到模型族：只覆盖部分模型的
-// 窗口不能累加其他模型的消耗。
-func oauthQuotaWindowFamily(provider, limitName, kind string) string {
-	limitName = strings.ToLower(strings.TrimSpace(limitName))
-	kind = strings.ToLower(strings.TrimSpace(kind))
-	switch provider {
-	case antigravityauth.ChannelType:
-		// Antigravity 的 bucketId 带族前缀（gemini-* / 3p-*）。
-		switch {
-		case strings.HasPrefix(kind, "gemini"):
-			return oauthcost.FamilyGemini
-		case strings.HasPrefix(kind, "3p"):
-			return oauthcost.FamilyNonGemini
-		}
-	case anthropicauth.ChannelType:
-		switch kind {
-		case "seven_day_sonnet":
-			return oauthcost.FamilySonnet
-		case "seven_day_fable":
-			return oauthcost.FamilyFable
-		}
-	case codexauth.ChannelType:
-		// codex-spark 是附加额度窗口，只覆盖 Spark 模型；主 codex 窗口覆盖全部。
-		if strings.Contains(limitName, "spark") {
-			return oauthcost.FamilySpark
-		}
-	}
-	return oauthcost.FamilyAll
-}
-
-func parseOAuthQuotaResetTime(raw string) *time.Time {
-	parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(raw))
-	if err != nil {
-		return nil
-	}
-	parsed = parsed.UTC()
-	return &parsed
+	return snapshot
 }
 
 // attachOAuthQuotaCostUsage 把每个上游窗口的累计成本内联到窗口本身，

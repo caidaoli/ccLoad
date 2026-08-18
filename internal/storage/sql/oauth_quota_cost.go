@@ -16,7 +16,19 @@ import (
 )
 
 type oauthQuotaCostCredentialEnvelope struct {
+	// OAuthUsage 是上一次额度采样的持久化快照，窗口边界的唯一来源。
+	OAuthUsage     json.RawMessage  `json:"oauth_usage"`
 	QuotaCostUsage *oauthcost.Usage `json:"quota_cost_usage"`
+}
+
+// quotaCostWindows 返回可用于累加的窗口集合：持久化计数器为空时，
+// 从同一份凭证的额度采样快照 bootstrap。采样落盘即可累加，不必等人工刷新——
+// 否则采样与首次刷新之间的全部消耗会被静默丢弃。
+func quotaCostWindows(envelope *oauthQuotaCostCredentialEnvelope) *oauthcost.Usage {
+	if envelope.QuotaCostUsage != nil && len(envelope.QuotaCostUsage.Windows) > 0 {
+		return oauthcost.Clone(envelope.QuotaCostUsage)
+	}
+	return oauthcost.BootstrapFromSnapshot(envelope.OAuthUsage)
 }
 
 func (s *SQLStore) updateOAuthQuotaCostsTx(
@@ -53,10 +65,10 @@ func (s *SQLStore) updateOAuthQuotaCostsTx(
 		if err := json.Unmarshal([]byte(credentialJSON), &envelope); err != nil {
 			return nil, fmt.Errorf("decode OAuth quota cost credential for channel %d: %w", channelID, err)
 		}
-		if envelope.QuotaCostUsage == nil {
+		next := quotaCostWindows(&envelope)
+		if next == nil {
 			continue
 		}
-		next := oauthcost.Clone(envelope.QuotaCostUsage)
 		if err := oauthcost.Validate(next); err != nil {
 			return nil, fmt.Errorf("validate OAuth quota cost credential for channel %d: %w", channelID, err)
 		}
