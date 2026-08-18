@@ -2,8 +2,8 @@
 
 - Repository: `https://github.com/caidaoli/CLIProxyAPI`
 - Module source path: `github.com/router-for-me/CLIProxyAPI/v7`
-- Last synchronized commit: `ea378e94446ad63b8b082aca294e62af74a62268` (`fork/v8.68.0`)
-- Synchronized at: `2026-08-16`
+- Last synchronized commit: `930fdc7796354afa86bfb161cf34d95f18a306dc` (`fork/v8.69.0`)
+- Synchronized at: `2026-08-19`
 
 This directory is maintained by one atomic synchronization operation. It currently
 contains the four-protocol conversion core. Allowlisted provider-specific pure
@@ -40,7 +40,7 @@ Antigravity is the first eligible provider adapter:
 
 ## Synchronized tests
 
-The core snapshot includes 53 `_test.go` files from the same commit as the
+The core snapshot includes 54 `_test.go` files from the same commit as the
 production sources:
 
 - `claude/gemini`: 2
@@ -58,7 +58,7 @@ production sources:
 - `openai/gemini`: 2
 - `openai/openai/responses`: 2
 - `signature`: 8
-- `util`: 4
+- `util`: 5
 
 Tests for excluded packages are not copied. Performance-only benchmarks are
 also excluded: the translator-wide benchmark requires the excluded dynamic
@@ -172,6 +172,23 @@ documented adaptations:
   conversion. `gemini-3.7-flash-high` follows the canonical entry added by
   `router-for-me/models` commit `cbe1e6c59429bc92dd8d6654873670fc0c274cad`;
   that catalog provenance is independent of the CLIProxyAPI snapshot commit above.
+- `util/gemini_schema.go` and its test carry four lint-forced equivalent
+  rewrites required by ccLoad's zero-warning `golangci-lint` gate:
+  `escapeGJSONPathKey` uses `strings.ContainsAny` instead of upstream's
+  `strings.IndexAny(...) == -1` (staticcheck S1003), `mergeDescriptionRaw` uses a
+  tagged `switch` (QF1002), and the test's two `json.Unmarshal` calls check their
+  error (errcheck). Behavior is identical to upstream; each site is annotated
+  in place.
+- `util/claude_attribution.go` and its test are now part of the snapshot. The
+  previous `private-helper-test` exclusion no longer holds: the file is an
+  exported pure string transform on Claude system prompts, and its test asserts
+  that public contract. Its sole upstream caller stays in the excluded runtime
+  executor layer, so the function has no ccLoad call site yet, exactly like
+  `CleanJSONSchemaForAntigravityTool`.
+- `util/header_helpers.go` and its test are excluded as runtime HTTP helpers.
+  The target revision makes the file depend on `github.com/gin-gonic/gin`, which
+  confirms it belongs to upstream's HTTP serving layer rather than the pure
+  conversion core.
 
 ## Updating from CLIProxyAPI
 
