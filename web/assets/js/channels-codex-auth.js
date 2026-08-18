@@ -990,7 +990,10 @@ async function startOAuth(provider, button) {
       rejectReady(error);
     }
     if (flow.cancelling) return null;
-    const message = error?.message || window.t(`${config.i18n}.oauthFailed`);
+    const unavailable = config.provider === 'zai' && /unavailable/i.test(error?.message);
+    const message = unavailable
+      ? window.t(`${config.i18n}.oauthUnavailable`)
+      : (error?.message || window.t(`${config.i18n}.oauthFailed`));
     setCodexAuthStatus(message, 'error');
     setCodexOAuthDialogStatus(message, 'error');
     if (window.showError) window.showError(message);

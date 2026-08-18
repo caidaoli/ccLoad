@@ -355,6 +355,7 @@ window.I18N_LOCALES['zh-CN'] = {
   'channels.zai.oauthCancelled': 'Z.ai 授权已取消。',
   'channels.zai.oauthTimedOut': 'Z.ai 授权已超时，请重新生成链接。',
   'channels.zai.oauthFailed': '无法完成 Z.ai 授权，请重试。',
+  'channels.zai.oauthUnavailable': 'Z.ai 的 ZCode CLI OAuth 端点尚未对当前客户端版本开放（上游按版本灰度发布）。请切换到「Coding Plan API Key」方式，从 Z.ai 控制台复制 Key 后直接导入。',
   'channels.zai.oauthRestarting': '当前授权已停止，正在生成新的 Z.ai 授权链接…',
   'channels.zai.oauthCancelFailed': '无法停止当前 Z.ai 授权，请重试。',
   'channels.zai.methodLabel': 'Z.ai 授权方式',

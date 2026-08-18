@@ -355,6 +355,7 @@ window.I18N_LOCALES['en'] = {
   'channels.zai.oauthCancelled': 'Z.ai authorization cancelled.',
   'channels.zai.oauthTimedOut': 'Z.ai authorization timed out. Generate a new link.',
   'channels.zai.oauthFailed': 'Could not complete the Z.ai authorization. Try again.',
+  'channels.zai.oauthUnavailable': 'The ZCode CLI OAuth endpoint is not yet available for the current client version (upstream is rolling it out gradually). Switch to "Coding Plan API Key" and import a key from the Z.ai console instead.',
   'channels.zai.oauthRestarting': 'Stopped the current authorization; generating a new Z.ai link…',
   'channels.zai.oauthCancelFailed': 'Could not stop the current Z.ai authorization. Try again.',
   'channels.zai.methodLabel': 'Z.ai authorization method',
