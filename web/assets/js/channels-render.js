@@ -799,7 +799,7 @@ function buildXAIUsageRows(data) {
 }
 
 function buildOAuthUsageStatusHtml(channel) {
-  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth'].includes(channel?.auth_type) ||
+  if (!['codex_oauth', 'antigravity_oauth', 'xai_oauth', 'anthropic_oauth', 'zai_oauth'].includes(channel?.auth_type) ||
       (typeof isTokenChannelsReadOnly === 'function' && isTokenChannelsReadOnly())) {
     return '';
   }

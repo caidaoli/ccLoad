@@ -26,6 +26,7 @@ import (
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -807,6 +808,30 @@ func (s *Server) prepareOAuthChannelTestAuthForRejectedToken(
 			return cfg.Clone(), selection, true, fmt.Errorf("加载 Anthropic OAuth 凭证失败: %w", err)
 		}
 		return cfg.Clone(), selection, true, nil
+	case cfg.UsesZAIOAuth():
+		var credential *zaiauth.Credential
+		var err error
+		switch mode {
+		case oauthCredentialUseCurrent:
+			credential, err = zaiauth.ParseCredential([]byte(cfg.OAuthCredential))
+		case oauthCredentialForceRefresh:
+			credential, err = s.zaiCredentials.credential(ctx, cfg, true)
+		default:
+			credential, err = s.zaiCredentials.credential(ctx, cfg, false)
+		}
+		if credential == nil {
+			if err == nil {
+				err = errors.New("z.ai Coding Plan credential is unavailable")
+			}
+			return nil, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", err)
+		}
+		selection.requestCredential = credential.APIKey
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.ZAIDeviceID = credential.DeviceID
+		if err != nil {
+			return runtimeCfg, selection, true, fmt.Errorf("加载 Z.ai Coding Plan 凭证失败: %w", err)
+		}
+		return runtimeCfg, selection, true, nil
 	default:
 		return nil, selection, true, fmt.Errorf("不支持的 OAuth 认证类型 %q", cfg.GetAuthType())
 	}

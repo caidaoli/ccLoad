@@ -18,6 +18,7 @@ import (
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/bytedance/sonic"
 	"github.com/gin-gonic/gin"
@@ -634,6 +635,12 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 		return credential.JSON()
 	case model.AuthTypeAnthropicOAuth:
 		credential, err := anthropicauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeZAIOAuth:
+		credential, err := zaiauth.ParseCredential([]byte(raw))
 		if err != nil {
 			return "", err
 		}

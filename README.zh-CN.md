@@ -68,7 +68,7 @@ ccLoad 直接处理这些问题：
 | 🛡️ **故障秒切** | Key/模型/渠道统一指数退避，优先尊重上游精确恢复时间 | 单模型故障不误伤整个渠道 |
 | 📊 **数据大屏** | 趋势图+日志+Token统计+进程指标(CPU/RSS/GC) | 一眼看清用量与运行状态 |
 | 🎯 **多API兼容** | Claude Code/Codex/Gemini/OpenAI | 一套配置走天下 |
-| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI OAuth 凭证 + Codex 个人访问令牌(PAT) | 自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
+| 🔑 **OAuth 渠道** | Codex(ChatGPT)/Anthropic(Claude)/Antigravity/xAI/Z.ai Coding Plan(ZCode) OAuth 凭证 + Codex 个人访问令牌(PAT) | 自动刷新令牌，支持文本/文件/聚合导入、批量额度刷新、失效凭证清理，凭证被上游永久拒绝时自动禁用渠道 |
 | 📅 **OAuth 额度成本** | 按凭证累计周/月标准成本，对齐上游额度窗口 | 有重置额度时可手动重置 Codex 配额 |
 | 🔌 **Responses WebSocket** | 下游长连接+原生 WS/HTTP-SSE 桥接 | 保留会话并按安全边界故障切换 |
 | 📦 **开箱即用** | 单文件+嵌入式SQLite | 零依赖，下载就能跑 |

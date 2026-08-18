@@ -157,6 +157,13 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
+	// Z.ai Coding Plan traffic carries ZCode's device fingerprint in the body.
+	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		body, err = finalizeZAICodingPlanBody(body, cfg)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
@@ -245,6 +252,8 @@ func (s *Server) buildProxyRequest(
 		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
+	} else if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		injectZAICodingPlanHeaders(req, cfg, apiKey, body, hdr)
 	} else if officialAnthropicAPIKey {
 		injectAnthropicAPIKeyHeaders(req, apiKey, body)
 	}
@@ -3341,6 +3350,9 @@ func (s *Server) tryChannelWithKeys(ctx context.Context, cfg *model.Config, reqC
 	if cfg.UsesAnthropicOAuth() {
 		return s.tryAnthropicOAuthChannel(ctx, cfg, reqCtx, w)
 	}
+	if cfg.UsesZAIOAuth() {
+		return s.tryZAIOAuthChannel(ctx, cfg, reqCtx, w)
+	}
 
 	// 查询渠道的API Keys（缓存优先，缓存不可用自动降级到数据库查询）
 	apiKeys, err := s.getAPIKeys(ctx, cfg.ID)
@@ -3629,6 +3641,28 @@ func (s *Server) tryAnthropicOAuthChannel(
 		return cfg, credential.AccessToken, err
 	}, func(result *proxyResult) bool {
 		return result != nil && result.status == http.StatusUnauthorized
+	})
+}
+
+// tryZAIOAuthChannel forwards through a Z.ai Coding Plan credential. The
+// Coding Plan key is static, so a rejection re-derives it from the stored
+// account authorization instead of refreshing a token.
+func (s *Server) tryZAIOAuthChannel(
+	ctx context.Context,
+	cfg *model.Config,
+	reqCtx *proxyRequestContext,
+	w http.ResponseWriter,
+) (*proxyResult, error) {
+	return s.tryOAuthChannel(ctx, cfg, reqCtx, w, "Z.ai", false, func(forceRefresh bool, _ string) (*model.Config, string, error) {
+		credential, err := s.zaiCredentials.credential(ctx, cfg, forceRefresh)
+		if credential == nil {
+			return cfg, "", err
+		}
+		runtimeCfg := cfg.Clone()
+		runtimeCfg.ZAIDeviceID = credential.DeviceID
+		return runtimeCfg, credential.APIKey, err
+	}, func(result *proxyResult) bool {
+		return result != nil && !result.succeeded && zaiCredentialRejected(result.status)
 	})
 }
 
