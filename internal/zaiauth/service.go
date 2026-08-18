@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -24,6 +25,7 @@ type Service struct {
 	CodingModelsURL string
 	ModelsURL       string
 	AgentConfigsURL string
+	CommunityURL    string
 	Now             func() time.Time
 }
 
@@ -35,7 +37,7 @@ func NewService(client *http.Client) *Service {
 	return &Service{
 		Client: client, OAuthBaseURL: OAuthAPIBaseURL, BizBaseURL: BizBaseURL,
 		CodingModelsURL: CodingModelsURL, ModelsURL: ModelsURL,
-		AgentConfigsURL: AgentConfigsURL, Now: time.Now,
+		AgentConfigsURL: AgentConfigsURL, CommunityURL: CommunityCatalogURL, Now: time.Now,
 	}
 }
 
@@ -317,6 +319,76 @@ func parseModelCatalog(body []byte) ([]string, error) {
 		return nil, errors.New("z.ai model list response has no models")
 	}
 	return models, nil
+}
+
+// ListCommunityModels reads the Coding Plan lineup from models.dev. It needs no
+// account key, so it answers even when the account catalog is unreachable or
+// the key was rejected.
+func (s *Service) ListCommunityModels(ctx context.Context) ([]string, error) {
+	if s == nil || s.Client == nil || strings.TrimSpace(s.CommunityURL) == "" {
+		return nil, errors.New("z.ai community catalog is unavailable")
+	}
+	requestCtx, cancel := requestContext(ctx)
+	defer cancel()
+	request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, s.CommunityURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build z.ai community catalog request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	response, err := s.Client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("z.ai community catalog request: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, maxCommunityCatalogSize))
+	if err != nil {
+		return nil, fmt.Errorf("read z.ai community catalog: %w", err)
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return nil, fmt.Errorf("z.ai community catalog returned HTTP %d", response.StatusCode)
+	}
+	return parseCommunityCatalog(body, CommunityCatalogProvider)
+}
+
+// parseCommunityCatalog returns the provider's models newest first, so a
+// channel seeded from it lists the current flagship before the older ones.
+func parseCommunityCatalog(body []byte, provider string) ([]string, error) {
+	var catalog map[string]struct {
+		Models map[string]struct {
+			ReleaseDate string `json:"release_date"`
+		} `json:"models"`
+	}
+	if err := json.Unmarshal(body, &catalog); err != nil {
+		return nil, fmt.Errorf("decode z.ai community catalog: %w", err)
+	}
+	entry, ok := catalog[provider]
+	if !ok || len(entry.Models) == 0 {
+		return nil, fmt.Errorf("z.ai community catalog has no provider %q", provider)
+	}
+	type catalogModel struct {
+		id          string
+		releaseDate string
+	}
+	models := make([]catalogModel, 0, len(entry.Models))
+	for id, meta := range entry.Models {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			models = append(models, catalogModel{id: trimmed, releaseDate: strings.TrimSpace(meta.ReleaseDate)})
+		}
+	}
+	if len(models) == 0 {
+		return nil, fmt.Errorf("z.ai community catalog provider %q has no models", provider)
+	}
+	sort.Slice(models, func(i, j int) bool {
+		if models[i].releaseDate != models[j].releaseDate {
+			return models[i].releaseDate > models[j].releaseDate
+		}
+		return models[i].id < models[j].id
+	})
+	ids := make([]string, len(models))
+	for i, entry := range models {
+		ids[i] = entry.id
+	}
+	return ids, nil
 }
 
 // ValidateAPIKey confirms a Coding Plan key is accepted without spending quota.

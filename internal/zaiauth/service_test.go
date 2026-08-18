@@ -21,6 +21,7 @@ func newTestService(t *testing.T, handler http.Handler) (*Service, *httptest.Ser
 	service.CodingModelsURL = server.URL + "/api/coding/paas/v4/models"
 	service.ModelsURL = server.URL + "/api/paas/v4/models"
 	service.AgentConfigsURL = server.URL + "/api/v1/agent/configs"
+	service.CommunityURL = server.URL + "/api.json"
 	return service, server
 }
 
@@ -222,6 +223,37 @@ func TestListModelsSurvivesOneUnavailableCatalog(t *testing.T) {
 	}
 	if len(models) != 1 || models[0] != "glm-4.7" {
 		t.Fatalf("models = %v", models)
+	}
+}
+
+// models.dev is the keyless tier: it tracks the plan lineup (glm-5.3 landed
+// there on release day) and answers newest first.
+func TestListCommunityModelsReadsCodingPlanProvider(t *testing.T) {
+	t.Parallel()
+	payload := `{"zai":{"models":{"glm-5.2":{"release_date":"2026-06-13"}}},` +
+		`"zai-coding-plan":{"models":{` +
+		`"glm-4.7":{"release_date":"2025-12-22"},` +
+		`"glm-5.3":{"release_date":"2026-08-14"},` +
+		`"glm-5.2":{"release_date":"2026-06-13"}}}}`
+	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, payload)
+	}))
+	models, err := service.ListCommunityModels(context.Background())
+	if err != nil {
+		t.Fatalf("ListCommunityModels() error = %v", err)
+	}
+	if len(models) != 3 || models[0] != "glm-5.3" || models[1] != "glm-5.2" || models[2] != "glm-4.7" {
+		t.Fatalf("models = %v", models)
+	}
+}
+
+func TestParseCommunityCatalogRejectsMissingProvider(t *testing.T) {
+	t.Parallel()
+	if _, err := parseCommunityCatalog([]byte(`{"openai":{"models":{"gpt":{}}}}`), CommunityCatalogProvider); err == nil {
+		t.Fatal("a catalog without the provider must be an error")
+	}
+	if _, err := parseCommunityCatalog([]byte(`{"zai-coding-plan":{"models":{}}}`), CommunityCatalogProvider); err == nil {
+		t.Fatal("an empty provider must be an error")
 	}
 }
 

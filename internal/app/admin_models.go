@@ -388,12 +388,27 @@ func (s *Server) fetchZAIOAuthModels(
 	}, nil
 }
 
-// zaiCodingPlanModels reads the account catalog with the channel's own key.
+// zaiCodingPlanModels resolves the Coding Plan lineup, newest source first:
+// the account catalog (authoritative), then models.dev (keyless, tracks the
+// plan without a ccLoad release), and only then the built-in lineup.
 func (s *Server) zaiCodingPlanModels(ctx context.Context, apiKey string) ([]string, error) {
 	if s == nil || s.zaiService == nil {
 		return nil, errors.New("z.ai model discovery is unavailable")
 	}
-	return s.zaiService.ListModels(ctx, apiKey)
+	models, err := s.zaiService.ListModels(ctx, apiKey)
+	if err == nil && len(models) > 0 {
+		return models, nil
+	}
+	accountErr := err
+	models, err = s.zaiService.ListCommunityModels(ctx)
+	if err == nil && len(models) > 0 {
+		log.Printf("[INFO] Z.ai 账号目录不可用，改用 models.dev 目录: %v", accountErr)
+		return models, nil
+	}
+	if accountErr != nil {
+		return nil, accountErr
+	}
+	return nil, err
 }
 
 func fetchAnthropicOAuthModels(cfg *model.Config, overrideProtocol string) (*FetchModelsResponse, error) {
