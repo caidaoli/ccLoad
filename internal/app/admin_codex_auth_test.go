@@ -6412,3 +6412,42 @@ func TestAnthropicCredentialManagerMergesRepeatedMetadataWinnersWithoutRefreshin
 		t.Fatalf("persisted credential = %+v, %v", winner, err)
 	}
 }
+
+func TestMergeCodexPassiveUsageIgnoresResetJitterWithinSamePeriod(t *testing.T) {
+	t.Parallel()
+	base := time.Date(2026, time.August, 18, 3, 0, 0, 0, time.UTC)
+	resetAt := base.Add(6 * 24 * time.Hour).Unix()
+	window := func(usedPercent float64, resetAt int64, sampledAt time.Time) codexauth.PassiveUsageWindow {
+		return codexauth.PassiveUsageWindow{
+			Scope: "codex", LimitName: "codex", Kind: "primary",
+			UsedPercent: usedPercent, LimitWindowSeconds: 604800, ResetAt: resetAt,
+			SampledAt: sampledAt.UTC().Format(time.RFC3339Nano),
+		}
+	}
+	current, changed := mergeCodexPassiveUsage(nil, []codexauth.PassiveUsageWindow{window(53, resetAt, base)}, base)
+	if !changed {
+		t.Fatal("first sample must be recorded")
+	}
+
+	// SSE rate_limits 事件只给 resets_in_seconds，换算出的绝对时间每次都差几秒，
+	// 但指的是同一个周期——不能因此重写一遍凭证。
+	for i, jitter := range []int64{7, -3, 41} {
+		at := base.Add(time.Duration(i+1) * time.Minute)
+		next, changed := mergeCodexPassiveUsage(current, []codexauth.PassiveUsageWindow{window(53, resetAt+jitter, at)}, at)
+		if changed {
+			t.Fatalf("jitter %ds rewrote the credential", jitter)
+		}
+		if got := next.Windows[0].ResetAt; got != resetAt {
+			t.Fatalf("jitter %ds moved the anchored reset to %d", jitter, got)
+		}
+	}
+
+	// 真实变化仍然必须落库：用量前进、周期滚动。
+	at := base.Add(time.Hour)
+	if _, changed := mergeCodexPassiveUsage(current, []codexauth.PassiveUsageWindow{window(54, resetAt+7, at)}, at); !changed {
+		t.Fatal("used percent change must be recorded")
+	}
+	if _, changed := mergeCodexPassiveUsage(current, []codexauth.PassiveUsageWindow{window(53, resetAt+604800, at)}, at); !changed {
+		t.Fatal("period rollover must be recorded")
+	}
+}

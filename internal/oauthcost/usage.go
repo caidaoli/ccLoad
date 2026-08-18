@@ -232,16 +232,30 @@ func reconcileWindow(current *Window, sample Sample, observedAt time.Time) *Wind
 	}
 	current = cloneWindow(current)
 	advanceWindow(current, observedAt)
-	if current.StartedAt == next.StartedAt && current.ResetAt == next.ResetAt {
-		next.StandardCostMicroUSD = current.StandardCostMicroUSD
-		next.CountFromAt = current.CountFromAt
-		return next
+	if sameQuotaPeriod(current, next) {
+		// 边界一经确立就锚住，只更新采样权威的模型族：上游同一个周期会用两种精度
+		// 表达 reset 时间（Codex 响应头给绝对 reset-at，SSE rate_limits 事件只给
+		// resets_in_seconds，换算成 sampledAt+n 每次都不同），逐秒比较必然把同一
+		// 周期判成新周期并清空已累计成本。
+		current.Family = next.Family
+		return current
 	}
 	if current.CountFromAt > 0 && current.CountFromAt < next.ResetAt && observedAt.Before(time.Unix(next.ResetAt, 0)) {
 		next.StandardCostMicroUSD = current.StandardCostMicroUSD
 		next.CountFromAt = current.CountFromAt
 	}
 	return next
+}
+
+// sameQuotaPeriod 判断两次采样是否落在同一个上游额度周期。真正的周期滚动会把
+// reset 时间整整推进一个窗口时长，而采样噪声只有秒级（相对剩余秒数换算、上游取整、
+// 时钟漂移），半个窗口的容差足以把两者区分开。
+func sameQuotaPeriod(current, next *Window) bool {
+	delta := next.ResetAt - current.ResetAt
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta*2 < current.WindowSeconds
 }
 
 func newWindow(sample Sample, observedAt time.Time, resetDay int) *Window {

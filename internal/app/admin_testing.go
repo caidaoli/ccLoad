@@ -2179,7 +2179,7 @@ func annotateChannelTestCapacityRetries(result map[string]any, retries int) {
 	if result == nil || retries <= 0 {
 		return
 	}
-	result["retry_strategy"] = fmt.Sprintf("模型容量重试 %d 次", retries)
+	result["retry_strategy"] = modelCapacityRetryStrategy(retries)
 }
 
 func markChannelTestCapacityExhausted(result map[string]any, retries int) {

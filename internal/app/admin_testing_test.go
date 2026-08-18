@@ -2380,7 +2380,7 @@ func TestHandleChannelTest_AntigravityCapacityUsesProviderFallbackPolicy(t *test
 	if got, _ := resp.Data["response_text"].(string); got != "fallback test answer" {
 		t.Fatalf("response_text=%q data=%+v", got, resp.Data)
 	}
-	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 1 次" {
+	if got, _ := resp.Data["retry_strategy"].(string); got != "model_capacity_retry_1" {
 		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)
 	}
 
@@ -2423,7 +2423,7 @@ func TestHandleChannelTest_AntigravityCapacityExhaustionAppliesCooldownOnce(t *t
 	if got, _ := resp.Data["status_code"].(float64); got != http.StatusTooManyRequests {
 		t.Fatalf("status_code=%v data=%+v", resp.Data["status_code"], resp.Data)
 	}
-	if got, _ := resp.Data["retry_strategy"].(string); got != "模型容量重试 1 次" {
+	if got, _ := resp.Data["retry_strategy"].(string); got != "model_capacity_retry_1" {
 		t.Fatalf("retry_strategy=%q data=%+v", got, resp.Data)
 	}
 	if got := calls.Load(); got != 2 {
