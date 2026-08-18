@@ -26,6 +26,7 @@ type Service struct {
 	ModelsURL       string
 	AgentConfigsURL string
 	CommunityURL    string
+	QuotaLimitURL   string
 	Now             func() time.Time
 }
 
@@ -37,7 +38,8 @@ func NewService(client *http.Client) *Service {
 	return &Service{
 		Client: client, OAuthBaseURL: OAuthAPIBaseURL, BizBaseURL: BizBaseURL,
 		CodingModelsURL: CodingModelsURL, ModelsURL: ModelsURL,
-		AgentConfigsURL: AgentConfigsURL, CommunityURL: CommunityCatalogURL, Now: time.Now,
+		AgentConfigsURL: AgentConfigsURL, CommunityURL: CommunityCatalogURL,
+		QuotaLimitURL: QuotaLimitURL, Now: time.Now,
 	}
 }
 

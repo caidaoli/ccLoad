@@ -584,6 +584,9 @@ function formatOAuthUsageLimitName(limitName) {
   if (!normalized || normalized === 'codex') return '';
   if (normalized === 'codex-spark') return 'GPT-5.3-Codex-Spark';
   if (normalized === 'gemini models') return 'Gemini';
+  // Z.ai 的 token 窗口只有时长有信息量，时长已单独渲染，避免出现「five_hour 5小时」。
+  if (normalized === 'five_hour' || normalized === 'weekly') return '';
+  if (normalized === 'mcp_limit') return 'MCP';
   if (normalized === 'claude and gpt models') return 'Claude';
   return String(limitName).trim();
 }

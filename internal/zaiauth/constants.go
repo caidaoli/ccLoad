@@ -32,6 +32,9 @@ const (
 	// ModelsURL is the general API catalog, used as a fallback and to validate
 	// a key without spending quota.
 	ModelsURL = "https://api.z.ai/api/paas/v4/models"
+	// QuotaLimitURL reports the Coding Plan allowance windows. It backs Z.ai's
+	// own subscription panel and is undocumented, but takes the Coding Plan key.
+	QuotaLimitURL = "https://api.z.ai/api/monitor/usage/quota/limit"
 
 	// CommunityCatalogURL is models.dev, the third-party catalog ccLoad already
 	// syncs for pricing. Its Coding Plan provider tracks the plan lineup without
