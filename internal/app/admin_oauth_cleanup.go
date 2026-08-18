@@ -984,7 +984,7 @@ func oauthCredentialTestAccessToken(
 		return runtimeCfg.CodexAccessToken
 	case persisted.UsesAntigravityOAuth():
 		return runtimeCfg.AntigravityAccessToken
-	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth():
+	case persisted.UsesXAIOAuth(), persisted.UsesAnthropicOAuth(), persisted.UsesZAIOAuth():
 		return selection.requestCredential
 	}
 	return ""

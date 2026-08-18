@@ -112,7 +112,10 @@ func validateChannelBaseURL(raw, authType string) (string, error) {
 	// xAI OAuth 是提供商例外：其固定 base URL 本身以 /v1 结尾，运行时只追加 /responses。
 	isXAIVersionedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeXAIOAuth &&
 		strings.HasSuffix(strings.TrimRight(u.Path, "/"), "/v1")
-	if !exactURL && !isXAIVersionedBasePath && strings.Contains(u.Path, "/v1") {
+	// Z.ai Coding Plan is a second exception: ZCode publishes the routed
+	// endpoint (…/api/v1/ultra-zai/anthropic) and runtime appends /v1/messages.
+	isZAIRoutedBasePath := model.NormalizeAuthType(authType) == model.AuthTypeZAIOAuth
+	if !exactURL && !isXAIVersionedBasePath && !isZAIRoutedBasePath && strings.Contains(u.Path, "/v1") {
 		return "", fmt.Errorf("url should not contain API endpoint path like /v1 (current path: %q)", u.Path)
 	}
 

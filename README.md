@@ -65,7 +65,7 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
-- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic token refresh, Codex personal access token (PAT) authorization, text/file/aggregate import, batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, xAI, and Z.ai Coding Plan (ZCode) OAuth credentials with automatic token refresh, Codex personal access token (PAT) authorization, text/file/aggregate import, batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
 - 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
