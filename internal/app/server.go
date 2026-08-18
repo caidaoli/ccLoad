@@ -110,6 +110,7 @@ type Server struct {
 	maxKeyRetries    int // 单个渠道内最大Key重试次数
 	bodyLimits       requestBodyLimits
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	httpReadTimeout  time.Duration // 下游请求读取超时（HTTP Server ReadTimeout）
 	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
@@ -216,6 +217,7 @@ func NewServer(store storage.Store) *Server {
 		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
 		bodyLimits:               bodyLimits,
 		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
+		httpReadTimeout:          runtimeCfg.HTTPReadTimeout,
 		streamTimeout:            runtimeCfg.StreamTimeout,
 		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
@@ -503,6 +505,7 @@ type serverRuntimeConfig struct {
 	MaxConcurrency               int
 	MaxBodyBytes                 int
 	MaxImageBodyBytes            int
+	HTTPReadTimeout              time.Duration
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
@@ -526,6 +529,20 @@ func loadGlobalCooldownDetectionRules(cs *ConfigService) *model.CooldownDetectio
 }
 
 // loadPositiveInt 读取必须为正数的配置项，非法值回退默认并告警。
+// loadHTTPReadTimeout 读取下游请求读取超时。0 表示使用内建默认值，负数非法。
+func loadHTTPReadTimeout(cs *ConfigService) time.Duration {
+	value := cs.GetDuration(config.HTTPReadTimeoutSettingKey, 0)
+	if value < 0 {
+		log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已使用默认值 %v",
+			config.HTTPReadTimeoutSettingKey, value, config.DefaultHTTPReadTimeout)
+		return config.DefaultHTTPReadTimeout
+	}
+	if value == 0 {
+		return config.DefaultHTTPReadTimeout
+	}
+	return value
+}
+
 func loadPositiveInt(cs *ConfigService, key string, defaultValue int) int {
 	value := cs.GetInt(key, defaultValue)
 	if value <= 0 {
@@ -611,6 +628,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
 		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
 		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
@@ -1296,6 +1314,15 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	// 因为渠道列表本身未变更，只是冷却状态变更
 	s.InvalidateAPIKeysCache(channelID)
 	s.invalidateCooldownCache()
+}
+
+// GetReadTimeout 返回 HTTP ReadTimeout：读取请求头与请求体的整段上限。
+// 它决定慢速上传何时被传输层切断，与请求体大小上限是两件事。
+func (s *Server) GetReadTimeout() time.Duration {
+	if s == nil || s.httpReadTimeout <= 0 {
+		return config.DefaultHTTPReadTimeout
+	}
+	return s.httpReadTimeout
 }
 
 // GetWriteTimeout 返回建议的 HTTP WriteTimeout

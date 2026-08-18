@@ -10,7 +10,9 @@ const (
 	AntigravityURLSettingKey            = "ANTIGRAVITY_URL"
 	AnthropicBaseURLSettingKey          = "ANTHROPIC_BASE_URL"
 	ActiveRequestTitleEnabledSettingKey = "active_request_title_enabled"
-	CodexMap429To503SettingKey          = "codex_map_429_to_503"
+	// HTTPReadTimeoutSettingKey 控制下游请求读取超时（0 = 内建默认值）。
+	HTTPReadTimeoutSettingKey  = "http_read_timeout_seconds"
+	CodexMap429To503SettingKey = "codex_map_429_to_503"
 )
 
 // HTTP服务器配置常量
@@ -20,6 +22,10 @@ const (
 
 	// DefaultMaxKeyRetries 单个渠道内最大Key重试次数
 	DefaultMaxKeyRetries = 3
+
+	// DefaultHTTPReadTimeout 默认下游请求读取超时（HTTP Server ReadTimeout）。
+	// 覆盖请求头与请求体的整段读取：上传慢或客户端中途停顿超过它，读取即失败。
+	DefaultHTTPReadTimeout = 120 * time.Second
 
 	// DefaultMaxBodyBytes 默认最大请求体字节数（用于代理入口的解析）
 	DefaultMaxBodyBytes = 10 * 1024 * 1024 // 10MB

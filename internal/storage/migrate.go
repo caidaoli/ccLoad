@@ -440,6 +440,7 @@ func initDefaultSettings(ctx context.Context, db *sql.DB, dialect Dialect) error
 		{"log_retention_days", "7", "int", "日志保留天数(-1永久保留,1-365天)", "7"},
 		{"max_key_retries", "3", "int", "单渠道最大Key重试次数", "3"},
 		{"max_concurrency", "1000", "int", "最大并发请求数(限制同时处理的代理请求数量)", "1000"},
+		{"http_read_timeout_seconds", "0", "duration", "下游请求读取超时(秒,覆盖请求头+请求体的整段读取,0=使用内建默认值120秒)", "0"},
 		{"max_body_bytes", "10485760", "int", "请求体最大字节数(默认10MB)", "10485760"},
 		{"max_image_body_bytes", "20971520", "int", "Images API 请求体最大字节数(默认20MB)", "20971520"},
 		{"cooldown_auth_seconds", "300", "int", "认证错误(401/402/403)初始冷却时间(秒)", "300"},
