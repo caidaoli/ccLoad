@@ -1499,6 +1499,7 @@ window.I18N_LOCALES['en'] = {
   'settings.desc.max_concurrency': 'Max concurrent proxy requests',
   'settings.desc.max_body_bytes': 'Max request body size (in MiB; default 10 MiB)',
   'settings.desc.max_image_body_bytes': 'Max Images API request body size (in MiB; default 20 MiB)',
+  'settings.desc.http_read_timeout_seconds': 'Downstream request read timeout (in seconds; covers reading headers and body; 0 uses the built-in 120 seconds). Raise this when a large upload is cut off mid-transfer — the body size limits are a different control',
   'settings.desc.upstream_connection_reuse_limit_seconds': 'Maximum upstream connection reuse time (seconds; applies to HTTP/1.1, HTTP/2, and WebSocket; 0 = unlimited; connections stop accepting new requests at the limit and close after active requests finish)',
   'settings.desc.CODEX_BASE_URL': 'Full Codex OAuth Responses URL. Leave empty to use the channel URL; a value overrides it',
   'settings.desc.XAI_BASE_URL': 'xAI OAuth API base URL (usually ending in /v1). Leave empty to use the channel URL; a value overrides it',

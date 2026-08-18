@@ -176,18 +176,19 @@ func main() {
 	// 使用http.Server支持优雅关闭
 	// WriteTimeout 动态计算：确保不早于流式/非流式业务总超时
 	writeTimeout := srv.GetWriteTimeout()
+	readTimeout := srv.GetReadTimeout()
 	httpServer := &http.Server{
 		Addr:    addr,
 		Handler: r,
 
 		// ✅ 深度防御：传输层超时保护（抵御slowloris等慢速攻击）
 		// 即使绕过应用层并发控制，也会在HTTP层被杀死
-		ReadHeaderTimeout: 5 * time.Second,   // 防止慢速发送header（slowloris攻击）
-		ReadTimeout:       120 * time.Second, // 防止慢速发送body（兼容长请求）
-		WriteTimeout:      writeTimeout,      // 动态值，>= 业务层请求总超时
-		IdleTimeout:       60 * time.Second,  // 防止keep-alive连接占用fd
+		ReadHeaderTimeout: 5 * time.Second,  // 防止慢速发送header（slowloris攻击）
+		ReadTimeout:       readTimeout,      // 系统设置 http_read_timeout_seconds（0=默认120秒）
+		WriteTimeout:      writeTimeout,     // 动态值，>= 业务层请求总超时
+		IdleTimeout:       60 * time.Second, // 防止keep-alive连接占用fd
 	}
-	log.Printf("[CONFIG] HTTP WriteTimeout: %v", writeTimeout)
+	log.Printf("[CONFIG] HTTP ReadTimeout: %v, WriteTimeout: %v", readTimeout, writeTimeout)
 
 	// 启动HTTP服务器（在goroutine中）
 	go func() {
