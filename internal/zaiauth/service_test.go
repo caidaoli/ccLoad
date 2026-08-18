@@ -18,6 +18,7 @@ func newTestService(t *testing.T, handler http.Handler) (*Service, *httptest.Ser
 	service := NewService(server.Client())
 	service.OAuthBaseURL = server.URL + "/api/v1"
 	service.BizBaseURL = server.URL
+	service.CodingModelsURL = server.URL + "/api/coding/paas/v4/models"
 	service.ModelsURL = server.URL + "/api/paas/v4/models"
 	service.AgentConfigsURL = server.URL + "/api/v1/agent/configs"
 	return service, server
@@ -177,6 +178,82 @@ func TestResolveCodingPlanAPIKeyCreatesMissingKey(t *testing.T) {
 	}
 	if apiKey != "created-id.created-secret" {
 		t.Fatalf("api key = %q", apiKey)
+	}
+}
+
+// The Coding Plan catalog is authoritative and the general API only fills in
+// what it misses: models reach the plan before the general API lists them.
+func TestListModelsPrefersCodingPlanCatalog(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer key.secret" {
+			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/api/coding/paas/v4/models":
+			_, _ = io.WriteString(w, `{"object":"list","data":[{"id":"glm-5.3"},{"id":"glm-4.7"}]}`)
+		case "/api/paas/v4/models":
+			_, _ = io.WriteString(w, `{"data":[{"id":"glm-4.7"},{"id":"glm-4.6"}]}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	models, err := service.ListModels(context.Background(), "key.secret")
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 3 || models[0] != "glm-5.3" || models[1] != "glm-4.7" || models[2] != "glm-4.6" {
+		t.Fatalf("models = %v", models)
+	}
+}
+
+func TestListModelsSurvivesOneUnavailableCatalog(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/coding/paas/v4/models" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"code":0,"data":[{"model":"glm-4.7"}]}`)
+	}))
+	models, err := service.ListModels(context.Background(), "key.secret")
+	if err != nil {
+		t.Fatalf("ListModels() error = %v", err)
+	}
+	if len(models) != 1 || models[0] != "glm-4.7" {
+		t.Fatalf("models = %v", models)
+	}
+}
+
+func TestListModelsReportsRejectedKey(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	if _, err := service.ListModels(context.Background(), "key.secret"); err == nil {
+		t.Fatal("ListModels() expected an error")
+	}
+}
+
+func TestParseModelCatalogAcceptsUpstreamShapes(t *testing.T) {
+	t.Parallel()
+	cases := map[string]string{
+		"openai list":      `{"object":"list","data":[{"id":"glm-5.3"}]}`,
+		"envelope objects": `{"code":0,"data":[{"modelId":"glm-5.3"}]}`,
+		"envelope ids":     `{"code":0,"data":["glm-5.3"]}`,
+		"bare list":        `[{"id":"glm-5.3"}]`,
+	}
+	for name, payload := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			models, err := parseModelCatalog([]byte(payload))
+			if err != nil || len(models) != 1 || models[0] != "glm-5.3" {
+				t.Fatalf("models = %v err = %v", models, err)
+			}
+		})
+	}
+	if _, err := parseModelCatalog([]byte(`{"data":[]}`)); err == nil {
+		t.Fatal("an empty catalog must be an error")
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -119,7 +120,9 @@ func (s *Server) commitZAICredential(
 	ctx context.Context,
 	credential *zaiauth.Credential,
 ) (*model.Config, bool, error) {
-	cfg, created, err := createOrUpdateZAIChannel(ctx, s.store, credential, s.zaiCodingPlanBaseURL(ctx))
+	cfg, created, err := createOrUpdateZAIChannel(
+		ctx, s.store, credential, s.zaiCodingPlanBaseURL(ctx), s.zaiChannelModels(ctx, credential.APIKey),
+	)
 	if err != nil {
 		return nil, false, err
 	}
@@ -127,6 +130,19 @@ func (s *Server) commitZAICredential(
 	s.invalidateChannelRelatedCache(cfg.ID)
 	s.InvalidateChannelListCache()
 	return cfg, created, nil
+}
+
+// zaiChannelModels seeds a new channel from the live Coding Plan catalog so it
+// starts with whatever the account can actually call today.
+func (s *Server) zaiChannelModels(ctx context.Context, apiKey string) []string {
+	models, err := s.zaiCodingPlanModels(ctx, apiKey)
+	if err != nil || len(models) == 0 {
+		if err != nil {
+			log.Printf("[WARN] Z.ai 模型目录不可用，新渠道使用内置列表: %v", err)
+		}
+		return zaiauth.DefaultModels
+	}
+	return models
 }
 
 // zaiCodingPlanBaseURL resolves the endpoint ZCode currently routes Coding Plan
@@ -148,6 +164,7 @@ func createOrUpdateZAIChannel(
 	store storage.Store,
 	credential *zaiauth.Credential,
 	baseURL string,
+	models []string,
 ) (*model.Config, bool, error) {
 	if store == nil || credential == nil {
 		return nil, false, errors.New("persist z.ai credential: unavailable")
@@ -167,7 +184,7 @@ func createOrUpdateZAIChannel(
 		return existing, false, updateErr
 	}
 	name := uniqueZAIChannelName(configs, zaiChannelBaseName(credential))
-	created, err := store.CreateConfig(ctx, newZAIOAuthChannel(name, credentialJSON, baseURL))
+	created, err := store.CreateConfig(ctx, newZAIOAuthChannel(name, credentialJSON, baseURL, models))
 	if err != nil {
 		return nil, false, fmt.Errorf("create z.ai channel: %w", err)
 	}
@@ -250,12 +267,15 @@ func uniqueZAIChannelName(configs []*model.Config, base string) string {
 	}
 }
 
-func newZAIOAuthChannel(name, credentialJSON, baseURL string) *model.Config {
+func newZAIOAuthChannel(name, credentialJSON, baseURL string, modelNames []string) *model.Config {
 	if strings.TrimSpace(baseURL) == "" {
 		baseURL = zaiauth.CodingPlanProxyBaseURL
 	}
-	models := make([]model.ModelEntry, len(zaiauth.DefaultModels))
-	for i, modelName := range zaiauth.DefaultModels {
+	if len(modelNames) == 0 {
+		modelNames = zaiauth.DefaultModels
+	}
+	models := make([]model.ModelEntry, len(modelNames))
+	for i, modelName := range modelNames {
 		models[i] = model.ModelEntry{Model: modelName}
 	}
 	return &model.Config{
