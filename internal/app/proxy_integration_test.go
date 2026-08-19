@@ -426,23 +426,32 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 	if got := upstreamHeaders.Get("User-Agent"); got != "claude-cli/2.1.220 (external, cli)" {
 		t.Fatalf("User-Agent=%q", got)
 	}
-	if got := headerValueFold(upstreamHeaders, "Anthropic-Beta"); strings.Contains(got, "oauth-2025-04-20") {
-		t.Fatalf("Anthropic-Beta=%q contains OAuth capability", got)
-	} else {
-		for _, required := range []string{
-			"claude-code-20250219", "advanced-tool-use-2025-11-20", "fast-mode-2026-02-01", "cache-diagnosis-2026-04-07",
-		} {
-			if !strings.Contains(got, required) {
-				t.Fatalf("Anthropic-Beta=%q missing %q", got, required)
-			}
+	betas := headerValueFold(upstreamHeaders, "Anthropic-Beta")
+	// 指纹只由「是不是 Claude Code CLI 线协议」决定，与凭证形态无关：API Key 渠道
+	// 同样声明 OAuth 三件套。
+	for _, required := range []string{
+		"claude-code-20250219", "oauth-2025-04-20", "fallback-credit-2026-06-01",
+		"advanced-tool-use-2025-11-20", "fast-mode-2026-02-01", "cache-diagnosis-2026-04-07",
+	} {
+		if !strings.Contains(betas, required) {
+			t.Fatalf("Anthropic-Beta=%q missing %q", betas, required)
 		}
+	}
+	// 调用方没声明 cache_control.ttl，网关不主动开 1h 窗口，也就不声明对应的 beta。
+	if strings.Contains(betas, "extended-cache-ttl-2025-04-11") {
+		t.Fatalf("Anthropic-Beta=%q declared extended cache TTL for a caller that never asked", betas)
 	}
 	if upstreamHeaders.Get("X-Claude-Code-Session-Id") != nativeSessionID || headerValueFold(upstreamHeaders, "x-client-request-id") == "" ||
 		upstreamHeaders.Get("X-Stainless-Runtime-Version") != "v26.3.0" {
 		t.Fatalf("Claude Code identity headers=%v", upstreamHeaders)
 	}
-	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != "keep this native prompt" {
-		t.Fatalf("native prompt=%q body=%s", got, upstreamBody)
+	// 下游 UA 不是 claude-cli，网关按 Claude Code CLI 指纹重写 body：system 换成
+	// 三段式 CLI 提示，调用方原本的 system 降级为 messages 前缀而不是被丢弃。
+	if got := gjson.GetBytes(upstreamBody, "system.1.text").String(); got != anthropicClaudeCodeIdentityPrompt {
+		t.Fatalf("CLI identity prompt=%q body=%s", got, upstreamBody)
+	}
+	if got := gjson.GetBytes(upstreamBody, "messages.0.content").String(); !strings.Contains(got, "keep this native prompt") {
+		t.Fatalf("caller system prompt was dropped: %s", upstreamBody)
 	}
 	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
 		t.Fatalf("CCH was not rebuilt: %q", got)
@@ -456,16 +465,19 @@ func TestProxy_NativeAnthropicAPIKeyRebuildsAndNormalizesWire(t *testing.T) {
 		gjson.GetBytes(upstreamBody, "output_config.effort").String() != "medium" {
 		t.Fatalf("thinking was not normalized: %s", upstreamBody)
 	}
-	if gjson.GetBytes(upstreamBody, "messages.1.content.0.signature").Exists() ||
-		gjson.GetBytes(upstreamBody, "messages.1.content.0.type").String() != "tool_use" {
+	if gjson.GetBytes(upstreamBody, "messages.3.content.0.signature").Exists() ||
+		gjson.GetBytes(upstreamBody, "messages.3.content.0.type").String() != "tool_use" {
 		t.Fatalf("tool history provenance was not sanitized: %s", upstreamBody)
 	}
-	for _, path := range []string{
-		"tools.0.cache_control.type", "system.1.cache_control.type", "messages.0.content.0.cache_control.type",
-	} {
-		if got := gjson.GetBytes(upstreamBody, path).String(); got != "ephemeral" {
-			t.Fatalf("cache breakpoint %s=%q body=%s", path, got, upstreamBody)
-		}
+	// 断点落在 system 尾段与最后一条可缓存消息上；调用方没要 1h，两处都是默认 5m
+	// 窗口（无 ttl 字段），与 header 里缺席的 extended-cache-ttl beta 同源。
+	if !gjson.GetBytes(upstreamBody, "system.2.cache_control").Exists() ||
+		gjson.GetBytes(upstreamBody, "system.2.cache_control.ttl").Exists() {
+		t.Fatalf("system cache breakpoint=%s", upstreamBody)
+	}
+	if !gjson.GetBytes(upstreamBody, "messages.4.content.0.cache_control").Exists() ||
+		gjson.GetBytes(upstreamBody, "messages.4.content.0.cache_control.ttl").Exists() {
+		t.Fatalf("rolling cache breakpoint=%s", upstreamBody)
 	}
 }
 
@@ -538,13 +550,10 @@ func TestProxy_AnthropicCredentialsSeparateCodexThreads(t *testing.T) {
 				if _, err := uuid.Parse(request.sessionID); err != nil {
 					t.Fatalf("Anthropic session ID=%q, want UUID: %v", request.sessionID, err)
 				}
-				bodySessionID := anthropicSessionIDFromBody(request.body)
-				if test.authType == model.AuthTypeAnthropicOAuth {
-					if bodySessionID != request.sessionID {
-						t.Fatalf("OAuth body session=%q header session=%q body=%s", bodySessionID, request.sessionID, request.body)
-					}
-				} else if gjson.GetBytes(request.body, "metadata.user_id").Exists() {
-					t.Fatalf("API key converter fabricated metadata identity: %s", request.body)
+				// header 与 body 的会话身份必须同值，OAuth 与 API Key 同构：
+				// isNativeAnthropicClaudeCodeRequest 正是按这个等式识别原生请求。
+				if bodySessionID := anthropicSessionIDFromBody(request.body); bodySessionID != request.sessionID {
+					t.Fatalf("body session=%q header session=%q body=%s", bodySessionID, request.sessionID, request.body)
 				}
 			}
 		})
@@ -686,8 +695,22 @@ func TestProxy_AnthropicCompatibleGatewayOwnsLegacySystemTurns(t *testing.T) {
 	}
 }
 
-func TestProxy_NativeAnthropicPreservesExplicitCachePolicy(t *testing.T) {
+// TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy 守住原生 Claude Code
+// 请求的直通契约：调用方已经自带完整 CLI 指纹时，网关只重签 CCH，不重写 body。
+// 与 TestProxy_AnthropicOAuthPreservesNativePromptAcross400Retry 对称——直通判定
+// 看的是请求形态，不是凭证形态，API Key 渠道同样适用。
+func TestProxy_NativeAnthropicAPIKeyPreservesExplicitCachePolicy(t *testing.T) {
 	t.Parallel()
+	const nativeSessionID = "e03895ad-8b34-4a84-bbf6-002e8909b17b"
+
+	identity, err := json.Marshal(map[string]string{
+		"device_id":    "3934be64e8c64eca962e5841b999eeebb24c7f889371b4d95306f39301f07bc9",
+		"account_uuid": "9b079a70-8780-5404-bbaf-d74217f5adfd",
+		"session_id":   nativeSessionID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	var upstreamBody []byte
 	env := setupProxyTestEnv(t, []testChannel{{
@@ -706,10 +729,14 @@ func TestProxy_NativeAnthropicPreservesExplicitCachePolicy(t *testing.T) {
 
 	response := doProxyRequest(t, env.engine, "/v1/messages", map[string]any{
 		"model": "claude-sonnet-4-6",
-		"system": []any{map[string]any{
-			"type": "text", "text": "explicit cache only",
-			"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
-		}},
+		"system": []any{
+			map[string]any{"type": "text", "text": "x-anthropic-billing-header: cc_version=2.1.220.abc; cc_entrypoint=cli; cch=00000;"},
+			map[string]any{
+				"type": "text", "text": "explicit cache only",
+				"cache_control": map[string]any{"type": "ephemeral", "ttl": "1h"},
+			},
+		},
+		"metadata": map[string]any{"user_id": string(identity)},
 		"messages": []any{
 			map[string]any{"role": "user", "content": "first"},
 			map[string]any{"role": "assistant", "content": "ok"},
@@ -717,17 +744,29 @@ func TestProxy_NativeAnthropicPreservesExplicitCachePolicy(t *testing.T) {
 		},
 		"tools":      []any{map[string]any{"name": "lookup", "input_schema": map[string]any{"type": "object"}}},
 		"max_tokens": 1024,
-	}, map[string]string{"anthropic-version": "2023-06-01"})
+	}, map[string]string{
+		"anthropic-version":        "2023-06-01",
+		"User-Agent":               "claude-cli/2.1.220 (external, cli)",
+		"X-App":                    "cli",
+		"Anthropic-Beta":           "claude-code-20250219",
+		"X-Claude-Code-Session-Id": nativeSessionID,
+	})
 
 	if response.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 	}
-	if gjson.GetBytes(upstreamBody, "system.0.cache_control.ttl").String() != "1h" {
+	if got := gjson.GetBytes(upstreamBody, "system.#").Int(); got != 2 {
+		t.Fatalf("native system blocks=%d body=%s", got, upstreamBody)
+	}
+	if gjson.GetBytes(upstreamBody, "system.1.cache_control.ttl").String() != "1h" {
 		t.Fatalf("explicit cache breakpoint changed: %s", upstreamBody)
 	}
 	if gjson.GetBytes(upstreamBody, "tools.0.cache_control").Exists() ||
-		gjson.GetBytes(upstreamBody, "messages.0.content.0.cache_control").Exists() {
+		gjson.GetBytes(upstreamBody, "messages.2.content.0.cache_control").Exists() {
 		t.Fatalf("automatic cache breakpoints were added beside explicit policy: %s", upstreamBody)
+	}
+	if got := gjson.GetBytes(upstreamBody, "system.0.text").String(); strings.Contains(got, "cch=00000;") || !strings.Contains(got, " cch=") {
+		t.Fatalf("CCH was not rebuilt: %q", got)
 	}
 }
 

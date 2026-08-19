@@ -1272,9 +1272,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	s.persistCodexPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
-	if isAnthropicOAuthMessagesRequest(
-		cfg, protocol.Protocol(requestPlan.upstreamProtocol), req.URL.Path,
-	) {
+	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), req.URL.Path) {
 		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
 			return attachTestDebugData(requestPlan, resp, map[string]any{
 				"success": false, "error": "解码 Anthropic 测试响应失败: " + decodeErr.Error(),
@@ -1573,7 +1571,8 @@ func (s *Server) buildTestUpstreamRequestPlan(
 	}
 	requestedStreaming := isStreamingRequest(requestPath, requestPlan.requestBody)
 	requestPlan.requestBody, err = s.prepareTranslatedUpstreamBody(
-		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody, requestPlan.headers, false,
+		cfgForBuild, upstreamProtocolValue, requestPath, requestPlan.requestBody, requestPlan.clientBody,
+		requestPlan.apiKey, requestPlan.headers, false,
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("finalize test request body: %w", err)
@@ -1639,6 +1638,7 @@ func (s *Server) newTestUpstreamRequest(
 		}
 	}
 	applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+	wireRebuilt := false
 	if requestPlan.xaiOAuth {
 		injectXAIResponsesHeaders(req, requestPlan.apiKey, requestPlan.xaiConversationID)
 	} else if requestProtocol == protocol.Codex {
@@ -1647,6 +1647,19 @@ func (s *Server) newTestUpstreamRequest(
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
 		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
+		wireRebuilt = true
+	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
+		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
+		wireRebuilt = true
+	}
+	// 指纹路径清空并重建了整个请求头，规则产物随之丢失；与代理链路一样重跑一次，
+	// 渠道测试才能反映真实上游请求头。
+	if wireRebuilt {
+		applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
+	}
+	// anyrouter 渠道：确保 anthropic-beta 包含 context-1m，与代理链路步骤 6.2 对齐。
+	if requestProtocol == protocol.Anthropic && isAnyrouterChannel(cfgForBuild) {
+		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
 	// Some compatibility gateways decompress the response but leave the gzip marker.
 	// Admin tests need the wire body for diagnostics, so never negotiate compression.

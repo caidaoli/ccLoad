@@ -27,7 +27,7 @@ type requestContext struct {
 	nonStreamTimeout              time.Duration
 	responsesSSEUpstreamNonStream bool
 	antigravityOAuth              bool
-	anthropicOAuthBodyFinalized   bool
+	anthropicClaudeCodeWire       bool
 	// codexMultiAgentV2Optimized records that this attempt renamed the
 	// collaboration namespace and therefore needs response restoration.
 	codexMultiAgentV2Optimized bool

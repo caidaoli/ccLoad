@@ -362,10 +362,10 @@ func injectAPIKeyHeaders(req *http.Request, apiKey string, upstreamProtocol stri
 		req.Header.Set("x-goog-api-key", apiKey)
 	case util.ProtocolAnthropic:
 		req.Header.Set("x-api-key", apiKey)
-		if isOfficialAnthropicURL(req.URL) {
-			req.Header.Del("Authorization")
-		} else {
+		if anthropicAPIKeyAuthorizationAllowed(req.URL) {
 			req.Header.Set("Authorization", "Bearer "+apiKey)
+		} else {
+			req.Header.Del("Authorization")
 		}
 	default:
 		// OpenAI/Codex API: 同时设置两个头

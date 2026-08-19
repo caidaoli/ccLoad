@@ -1582,10 +1582,10 @@ func TestHandleImportAnthropicClaudeCredentialUsesEmailIdentity(t *testing.T) {
 			credential.EmailAddress, credential.DeviceID == "")
 	}
 
-	finalized, err := finalizeAnthropicOAuthMessagesBody([]byte(`{
+	finalized, err := finalizeAnthropicClaudeCodeMessagesBody([]byte(`{
 		"model":"claude-haiku-4-5-20251001",
 		"messages":[{"role":"user","content":"hello"}]
-	}`), channel, nil)
+	}`), channel, "", nil)
 	if err != nil {
 		t.Fatalf("finalize imported Anthropic credential: %v", err)
 	}

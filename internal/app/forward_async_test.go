@@ -180,7 +180,11 @@ func TestBuildProxyRequest_ExactURLMarkerSkipsEndpointPath(t *testing.T) {
 	}
 }
 
-func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *testing.T) {
+// TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream 守住
+// Claude Code CLI 指纹路径的 header 契约：Anthropic Messages 上游的请求头由网关
+// 整体重建，调用方声明的 anthropic-beta 不透传——否则 body 已按 CLI 形态重写，
+// header 却还是调用方的旧能力集，两边必然对不上。
+func TestBuildProxyRequest_RebuildsClaudeCodeWireForAnthropicMessagesUpstream(t *testing.T) {
 	srv := newInMemoryServer(t)
 
 	cfg := &model.Config{
@@ -219,11 +223,80 @@ func TestBuildProxyRequest_KeepsAnthropicHeadersForRuntimeAnthropicUpstream(t *t
 		t.Fatalf("buildProxyRequest failed: %v", err)
 	}
 
-	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
-		t.Fatalf("anthropic-version = %q, want preserved runtime Anthropic upstream header", got)
+	if got := headerValueFold(req.Header, "anthropic-version"); got != "2023-06-01" {
+		t.Fatalf("anthropic-version = %q, want rebuilt Claude Code wire header", got)
 	}
-	if got := req.Header.Get("anthropic-beta"); got != "messages-2023-12-15" {
-		t.Fatalf("anthropic-beta = %q, want preserved runtime Anthropic upstream header", got)
+	betas := headerValueFold(req.Header, "anthropic-beta")
+	if strings.Contains(betas, "messages-2023-12-15") || !strings.Contains(betas, "claude-code-20250219") {
+		t.Fatalf("anthropic-beta = %q, want rebuilt Claude Code beta set", betas)
+	}
+	if got := headerValueFold(req.Header, "User-Agent"); got != "claude-cli/2.1.220 (external, cli)" {
+		t.Fatalf("User-Agent = %q, want Claude Code CLI fingerprint", got)
+	}
+}
+
+func TestBuildProxyRequest_KeepsCustomHeaderRulesOnClaudeCodeWire(t *testing.T) {
+	srv := newInMemoryServer(t)
+
+	cfg := &model.Config{
+		ID:   1,
+		Name: "anthropic-with-header-rules",
+		URLs: model.ChannelURLs{{URL: "https://api.example.com"}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "X-Gateway-Tag", Value: "ccload"},
+			{Action: model.RuleActionOverride, Name: "User-Agent", Value: "custom-agent"},
+			{Action: model.RuleActionAppend, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+			{Action: model.RuleActionRemove, Name: "Anthropic-Beta", Value: "claude-code-20250219"},
+			{Action: model.RuleActionOverride, Name: "X-Api-Key", Value: "hijack"},
+		}},
+	}
+
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.Anthropic,
+			UpstreamPath:     "/v1/messages",
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx, cfg, "sk-test-key", http.MethodPost,
+		[]byte(`{"model":"claude-3","messages":[{"role":"user","content":"hi"}]}`),
+		http.Header{"anthropic-version": []string{"2023-06-01"}},
+		"", "/v1/messages", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	// 指纹路径清空并重建了整个请求头，规则必须在重建之后仍然生效。
+	if got := headerValueFold(req.Header, "X-Gateway-Tag"); got != "ccload" {
+		t.Fatalf("X-Gateway-Tag = %q, want the custom rule to survive the wire rebuild", got)
+	}
+	if got := headerValueFold(req.Header, "User-Agent"); got != "custom-agent" {
+		t.Fatalf("User-Agent = %q, want the custom rule to override the CLI fingerprint", got)
+	}
+	// append 产生独立的一条头值（applyHeaderRules 既有语义），断言要看全部值。
+	var betaValues []string
+	for name, values := range req.Header {
+		if strings.EqualFold(name, "anthropic-beta") {
+			betaValues = append(betaValues, values...)
+		}
+	}
+	betas := strings.Join(betaValues, ", ")
+	if strings.Contains(betas, "claude-code-20250219") || !strings.Contains(betas, "context-1m-2025-08-07") {
+		t.Fatalf("anthropic-beta = %q, want the remove/append rules applied", betas)
+	}
+	if strings.Count(betas, "context-1m-2025-08-07") != 1 {
+		t.Fatalf("anthropic-beta = %q, append rule must not run twice", betas)
+	}
+	// 认证头黑名单在该路径上同样不可被规则改写。
+	if got := headerValueFold(req.Header, "x-api-key"); got != "sk-test-key" {
+		t.Fatalf("x-api-key = %q, want the auth header protected from custom rules", got)
 	}
 }
 
@@ -314,7 +387,7 @@ func TestBuildProxyRequest_AddsAnthropicVersionForRuntimeAnthropicUpstream(t *te
 		t.Fatalf("buildProxyRequest failed: %v", err)
 	}
 
-	if got := req.Header.Get("anthropic-version"); got != "2023-06-01" {
+	if got := headerValueFold(req.Header, "anthropic-version"); got != "2023-06-01" {
 		t.Fatalf("anthropic-version = %q, want %q", got, "2023-06-01")
 	}
 }
@@ -388,7 +461,8 @@ func TestForwardOnceAsync_Integration(t *testing.T) {
 	// 创建测试服务器
 	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// 验证认证头
-		if r.Header.Get("x-api-key") != "sk-test" {
+		// Claude Code CLI 指纹路径写的是原样小写头名，进程内测试传输不做 canonical 化。
+		if headerValueFold(r.Header, "x-api-key") != "sk-test" {
 			w.WriteHeader(401)
 			_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
 			return

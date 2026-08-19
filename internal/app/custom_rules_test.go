@@ -110,6 +110,61 @@ func TestApplyHeaderRules_RemoveTokenNoMatchKeepsHeader(t *testing.T) {
 	}
 }
 
+// rawHeaderValues 按原样大小写读取请求头，绕开 http.Header 的 canonical 语义 ——
+// Claude Code CLI / ZCode 指纹路径刻意写小写头名。
+func rawHeaderValues(h http.Header, name string) []string {
+	return h[name]
+}
+
+func TestApplyHeaderRules_RewritesRawLowercaseHeaderKeysInPlace(t *testing.T) {
+	// 指纹路径按线上原样大小写写头，规则必须就地改写，不能再 canonical 化出第二个同名头。
+	h := http.Header{}
+	setRawHeader(h, "anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+	setRawHeader(h, "x-app", "cli")
+	setRawHeader(h, "user-agent", "claude-cli/2.1.220 (external, cli)")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionRemove, Name: "Anthropic-Beta", Value: "oauth-2025-04-20"},
+		{Action: model.RuleActionAppend, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+		{Action: model.RuleActionOverride, Name: "User-Agent", Value: "custom-agent"},
+		{Action: model.RuleActionRemove, Name: "X-App"},
+	})
+
+	for _, canonical := range []string{"Anthropic-Beta", "User-Agent"} {
+		if len(rawHeaderValues(h, canonical)) != 0 {
+			t.Fatalf("rule canonicalized a raw header key: %v", h)
+		}
+	}
+	if got := rawHeaderValues(h, "anthropic-beta"); len(got) != 2 ||
+		got[0] != "claude-code-20250219" || got[1] != "context-1m-2025-08-07" {
+		t.Fatalf("anthropic-beta = %v", got)
+	}
+	if got := rawHeaderValues(h, "user-agent"); len(got) != 1 || got[0] != "custom-agent" {
+		t.Fatalf("user-agent = %v", got)
+	}
+	if len(rawHeaderValues(h, "x-app")) != 0 {
+		t.Fatalf("x-app should be removed: %v", h)
+	}
+}
+
+func TestApplyHeaderRules_ProtectsRawLowercaseAuthHeaders(t *testing.T) {
+	h := http.Header{}
+	setRawHeader(h, "x-api-key", "sk-real")
+	setRawHeader(h, "authorization", "Bearer real")
+
+	applyHeaderRules(h, []model.CustomHeaderRule{
+		{Action: model.RuleActionOverride, Name: "X-Api-Key", Value: "hijack"},
+		{Action: model.RuleActionRemove, Name: "Authorization"},
+	})
+
+	if got := rawHeaderValues(h, "x-api-key"); len(got) != 1 || got[0] != "sk-real" {
+		t.Fatalf("x-api-key = %v", got)
+	}
+	if got := rawHeaderValues(h, "authorization"); len(got) != 1 || got[0] != "Bearer real" {
+		t.Fatalf("authorization = %v", got)
+	}
+}
+
 func TestApplyHeaderRules_RemoveTokenAcrossMultiValues(t *testing.T) {
 	h := http.Header{}
 	h.Add("X-Multi", "a, b")

@@ -23,6 +23,9 @@ import (
 const (
 	anthropicCLIVersion  = "2.1.220"
 	anthropicBillingSalt = "59cf53e54c78"
+
+	// anthropicClaudeCodeIdentityPrompt 是 Claude Code CLI system 三段式的第二段。
+	anthropicClaudeCodeIdentityPrompt = "You are Claude Code, Anthropic's official CLI for Claude."
 )
 
 const anthropicClaudeCodePrompt = `You are an interactive agent that helps users with software engineering tasks. Use the instructions below and the tools available to you to assist the user.
@@ -39,6 +42,16 @@ IMPORTANT: You must NEVER generate or guess URLs for the user unless you are con
 
 func isAnthropicOAuthMessagesRequest(cfg *model.Config, upstream protocol.Protocol, requestPath string) bool {
 	return cfg != nil && cfg.UsesAnthropicOAuth() && isAnthropicMessagesRequest(upstream, requestPath)
+}
+
+// isAnthropicClaudeCodeMessagesRequest 判断本次请求要不要套 Claude Code CLI 指纹。
+//
+// 判据只有「是不是 Anthropic Messages 上游」——OAuth、第一方 API Key、第三方网关
+// 同构，认证方式的差异只落在认证头上。唯一例外是 Z.ai Coding Plan：它也走 anthropic
+// 协议，却有自己的 ZCode 设备指纹契约，两套指纹叠加会互相破坏（ZCode 覆盖
+// metadata.user_id，而 Claude Code 的 1h cache TTL 配不上 ZCode 的 beta 头）。
+func isAnthropicClaudeCodeMessagesRequest(cfg *model.Config, upstream protocol.Protocol, requestPath string) bool {
+	return isAnthropicMessagesRequest(upstream, requestPath) && !isZAICodingPlanRequest(cfg, upstream, requestPath)
 }
 
 func isAnthropicMessagesRequest(upstream protocol.Protocol, requestPath string) bool {
@@ -58,21 +71,13 @@ func isOfficialAnthropicURL(target *url.URL) bool {
 	return port == "" || port == "443"
 }
 
-func isOfficialAnthropicAPIKeyMessagesRequest(
-	cfg *model.Config,
-	upstream protocol.Protocol,
-	requestPath string,
-	target *url.URL,
-) bool {
-	return cfg != nil && !cfg.UsesOAuth() && isAnthropicMessagesRequest(upstream, requestPath) && isOfficialAnthropicURL(target)
-}
-
 // validateAnthropicLegacySystemRequestForUpstream runs on the finished wire
 // body. The incompatibility was measured only on Anthropic's first-party API;
 // compatible gateways and confirmed native Claude Code callers own their wire.
 func validateAnthropicLegacySystemRequestForUpstream(
 	body []byte,
 	cfg *model.Config,
+	apiKey string,
 	headers http.Header,
 	target *url.URL,
 ) error {
@@ -83,11 +88,9 @@ func validateAnthropicLegacySystemRequestForUpstream(
 	if json.Unmarshal(body, &request) != nil {
 		return nil
 	}
-	if cfg != nil && cfg.UsesAnthropicOAuth() {
-		if nativeAnthropicHaikuHelperShape(body, request, headers, cfg) != anthropicHaikuHelperNone ||
-			isNativeAnthropicClaudeCodeRequest(request, headers, cfg) {
-			return nil
-		}
+	if nativeAnthropicHaikuHelperShape(body, request, headers) != anthropicHaikuHelperNone ||
+		isNativeAnthropicClaudeCodeRequest(request, headers, cfg, apiKey) {
+		return nil
 	}
 	return validateAnthropicLegacySystemMessages(request)
 }
@@ -104,12 +107,22 @@ func buildAnthropicOAuthURL(baseURL, requestPath, rawQuery string) string {
 	return parsed.String()
 }
 
-func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers http.Header) ([]byte, error) {
+// finalizeAnthropicClaudeCodeMessagesBody 是 Anthropic Messages 上游 body 的唯一
+// 最终化入口，OAuth 与 API Key 渠道共用。指纹只由「是不是 Anthropic Messages 请求」
+// 决定，不由认证方式决定：拆成两套 body 形态，就必然要拆两套 anthropic-beta，
+// 两边迟早对不上（body 用 cache_control.ttl=1h 而 header 少了
+// extended-cache-ttl-2025-04-11 就是 400）。认证差异只落在认证头上。
+func finalizeAnthropicClaudeCodeMessagesBody(
+	body []byte,
+	cfg *model.Config,
+	apiKey string,
+	headers http.Header,
+) ([]byte, error) {
 	var request map[string]any
 	if err := json.Unmarshal(body, &request); err != nil {
-		return nil, errors.New("finalize Anthropic OAuth request: invalid JSON body")
+		return nil, errors.New("finalize Anthropic Claude Code request: invalid JSON body")
 	}
-	helperShape := nativeAnthropicHaikuHelperShape(body, request, headers, cfg)
+	helperShape := nativeAnthropicHaikuHelperShape(body, request, headers)
 	if helperShape != anthropicHaikuHelperNone {
 		if helperShape == anthropicHaikuHelperStructured {
 			return finalizeAnthropicCCH(body)
@@ -118,10 +131,19 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 	}
 	normalizeAnthropicOAuthModel(request)
 	messages, _ := request["messages"].([]any)
-	if isNativeAnthropicClaudeCodeRequest(request, headers, cfg) {
+	if isNativeAnthropicClaudeCodeRequest(request, headers, cfg, apiKey) {
 		// Native Claude Code owns sampling, prompt-cache placement and JSON member
 		// order. Only refresh the CCH digits in place.
 		return finalizeAnthropicCCH(body)
+	}
+	// 缓存窗口归调用方：调用方自己声明了 1h，网关注入的 breakpoint 就跟到 1h，否则
+	// 保持默认 5m。Anthropic 按 tools → system → messages 顺序评估，网关注入的
+	// system breakpoint 排在调用方 block 前面，不跟随就会被
+	// normalizeAnthropicCacheControlTTL 连带把调用方的 1h 降级。跟随是对齐调用方
+	// 已经做出的选择，不是替它升窗口——调用方没要 1h 时这里一律是 5m。
+	cloakCacheTTL := ""
+	if anthropicRequestHasCacheControl(request, anthropicCacheControlIsLongTTL) {
+		cloakCacheTTL = "1h"
 	}
 	{
 		originalSystem := anthropicSystemText(request["system"])
@@ -129,8 +151,8 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 		firstUserText := anthropicFirstUserText(messages)
 		request["system"] = []any{
 			map[string]any{"type": "text", "text": anthropicBillingHeader(firstUserText)},
-			map[string]any{"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."},
-			map[string]any{"type": "text", "text": anthropicClaudeCodePrompt, "cache_control": anthropicEphemeralCacheControl()},
+			map[string]any{"type": "text", "text": anthropicClaudeCodeIdentityPrompt},
+			map[string]any{"type": "text", "text": anthropicClaudeCodePrompt, "cache_control": anthropicCloakCacheControl(cloakCacheTTL)},
 		}
 		if originalSystem != "" {
 			prefix := []any{
@@ -164,11 +186,10 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 				}
 			}
 		}
-		if err := injectAnthropicOAuthMetadata(request, cfg, messages, headers); err != nil {
+		if err := injectAnthropicClaudeCodeMetadata(request, cfg, apiKey, messages, headers); err != nil {
 			return nil, err
 		}
-		ensureAnthropicCloakedCacheBreakpoints(request, messagePrefixCount)
-		upgradeAnthropicCacheControlTTL(request, "1h")
+		ensureAnthropicCloakedCacheBreakpoints(request, messagePrefixCount, cloakCacheTTL)
 		// Forced tool choice strips thinking during normalization. Only withdraw
 		// the object ccLoad injected; caller-owned context_management keeps its
 		// ownership and is left untouched.
@@ -178,13 +199,13 @@ func finalizeAnthropicOAuthMessagesBody(body []byte, cfg *model.Config, headers 
 			delete(request, "context_management")
 		}
 	}
-	encoded, err := encodeNormalizedAnthropicRequest(request, true)
+	encoded, err := encodeNormalizedAnthropicRequest(request)
 	if err != nil {
 		var validationErr *anthropicRequestValidationError
 		if errors.As(err, &validationErr) {
 			return nil, validationErr
 		}
-		return nil, errors.New("finalize Anthropic OAuth request: normalize body")
+		return nil, errors.New("finalize Anthropic Claude Code request: normalize body")
 	}
 	return encoded, nil
 }
@@ -216,14 +237,15 @@ var anthropicHaikuHelperBetaProfiles = map[string]anthropicHaikuHelperShape{
 	"oauth-2025-04-20,interleaved-thinking-2025-05-14,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05,structured-outputs-2025-12-15":                                                                               anthropicHaikuHelperStructured,
 }
 
+// nativeAnthropicHaikuHelperShape 识别 Claude Code 的内部 Haiku 辅助请求。
+// 判定只看下游请求形态（UA、x-app、beta 组合指纹、JSON 键序、身份形态），与本渠道
+// 用什么凭证无关——辅助请求经 OAuth 还是 API Key 渠道转发，形态都是同一份。
 func nativeAnthropicHaikuHelperShape(
 	body []byte,
 	request map[string]any,
 	headers http.Header,
-	cfg *model.Config,
 ) anthropicHaikuHelperShape {
-	if cfg == nil || !cfg.UsesAnthropicOAuth() ||
-		!validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
+	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
 		anthropicHeaderValue(headers, "X-App") != "cli" {
 		return anthropicHaikuHelperNone
 	}
@@ -555,15 +577,30 @@ func normalizeAnthropicOAuthModel(request map[string]any) {
 	}
 }
 
-func isNativeAnthropicClaudeCodeRequest(request map[string]any, headers http.Header, cfg *model.Config) bool {
-	credential := anthropicCredentialForWire(cfg)
-	if credential == nil || credential.AccountUUID == "" || credential.DeviceID == "" ||
-		!validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
+// isNativeAnthropicClaudeCodeRequest 判断下游送来的是否已经是完整的原生 Claude Code
+// 请求——是就整体直通、只补 CCH，绝不重写。
+//
+// 身份校验按凭证种类分。OAuth 渠道要求与本渠道账号严格一致，防止把别人的身份转发
+// 出去；API Key 渠道的身份本来就是网关自己合成的，下游真实 Claude Code 带的
+// device_id 才是可信的那个，拿合成值去比对只会把本该直通的请求降级重写。
+func isNativeAnthropicClaudeCodeRequest(
+	request map[string]any,
+	headers http.Header,
+	cfg *model.Config,
+	apiKey string,
+) bool {
+	if !validAnthropicClaudeCLIUserAgent(anthropicHeaderValue(headers, "User-Agent")) ||
 		anthropicHeaderValue(headers, "X-App") != "cli" ||
 		!strings.Contains(normalizedAnthropicBetaHeader(headers), "claude-code-20250219") {
 		return false
 	}
-	if !anthropicCredentialIdentityMatches(request, credential) {
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		credential := anthropicCredentialForWire(cfg, apiKey)
+		if credential == nil || credential.AccountUUID == "" || credential.DeviceID == "" ||
+			!anthropicCredentialIdentityMatches(request, credential) {
+			return false
+		}
+	} else if !anthropicRequestCarriesClaudeCodeIdentity(request) {
 		return false
 	}
 	billing := anthropicFirstSystemBlockText(request["system"])
@@ -571,31 +608,42 @@ func isNativeAnthropicClaudeCodeRequest(request map[string]any, headers http.Hea
 		anthropicHeaderValue(headers, "X-Claude-Code-Session-Id") == anthropicSessionIDFromRequest(request)
 }
 
-func anthropicCredentialIdentityMatches(request map[string]any, credential *anthropicauth.Credential) bool {
-	if credential == nil {
-		return false
+// anthropicRequestIdentity 解出 metadata.user_id 里的 Claude Code 身份三元组。
+// session_id 必须是合法 UUID，否则整体判定为非身份 JSON。
+func anthropicRequestIdentity(request map[string]any) (deviceID, accountUUID string, ok bool) {
+	metadata, isObject := request["metadata"].(map[string]any)
+	if !isObject {
+		return "", "", false
 	}
-	metadata, ok := request["metadata"].(map[string]any)
-	if !ok {
-		return false
-	}
-	userID, ok := metadata["user_id"].(string)
-	if !ok {
-		return false
+	userID, isString := metadata["user_id"].(string)
+	if !isString {
+		return "", "", false
 	}
 	var identity struct {
 		DeviceID    string `json:"device_id"`
 		AccountUUID string `json:"account_uuid"`
 		SessionID   string `json:"session_id"`
 	}
-	if json.Unmarshal([]byte(userID), &identity) != nil || identity.DeviceID != credential.DeviceID ||
-		identity.AccountUUID != credential.AccountUUID {
-		return false
+	if json.Unmarshal([]byte(userID), &identity) != nil {
+		return "", "", false
 	}
 	if _, err := uuid.Parse(identity.SessionID); err != nil {
+		return "", "", false
+	}
+	return identity.DeviceID, identity.AccountUUID, true
+}
+
+func anthropicCredentialIdentityMatches(request map[string]any, credential *anthropicauth.Credential) bool {
+	if credential == nil {
 		return false
 	}
-	return true
+	deviceID, accountUUID, ok := anthropicRequestIdentity(request)
+	return ok && deviceID == credential.DeviceID && accountUUID == credential.AccountUUID
+}
+
+func anthropicRequestCarriesClaudeCodeIdentity(request map[string]any) bool {
+	deviceID, accountUUID, ok := anthropicRequestIdentity(request)
+	return ok && strings.TrimSpace(deviceID) != "" && strings.TrimSpace(accountUUID) != ""
 }
 
 func validAnthropicClaudeCLIUserAgent(userAgent string) bool {
@@ -621,17 +669,23 @@ func anthropicFirstSystemBlockText(system any) string {
 	return stringValue(block["text"])
 }
 
-func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, messages []any, headers http.Header) error {
-	credential := anthropicCredentialForWire(cfg)
+func injectAnthropicClaudeCodeMetadata(
+	request map[string]any,
+	cfg *model.Config,
+	apiKey string,
+	messages []any,
+	headers http.Header,
+) error {
+	credential := anthropicCredentialForWire(cfg, apiKey)
 	if credential == nil {
-		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
+		return errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
 	}
 	identitySeed := credential.AccountUUID
 	if identitySeed == "" {
 		identitySeed = strings.ToLower(credential.EmailAddress)
 	}
 	if credential.DeviceID == "" || identitySeed == "" {
-		return errors.New("finalize Anthropic OAuth request: credential identity is incomplete")
+		return errors.New("finalize Anthropic Claude Code request: credential identity is incomplete")
 	}
 	sessionID := anthropicSessionIDFromHeaders(headers)
 	if sessionID == "" {
@@ -641,7 +695,7 @@ func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, mes
 		"device_id": credential.DeviceID, "account_uuid": credential.AccountUUID, "session_id": sessionID,
 	})
 	if err != nil {
-		return errors.New("finalize Anthropic OAuth request: encode credential identity")
+		return errors.New("finalize Anthropic Claude Code request: encode credential identity")
 	}
 	metadata, _ := request["metadata"].(map[string]any)
 	if metadata == nil {
@@ -652,15 +706,36 @@ func injectAnthropicOAuthMetadata(request map[string]any, cfg *model.Config, mes
 	return nil
 }
 
-func anthropicCredentialForWire(cfg *model.Config) *anthropicauth.Credential {
-	if cfg == nil || !cfg.UsesAnthropicOAuth() || strings.TrimSpace(cfg.OAuthCredential) == "" {
+// anthropicCredentialForWire 解析 Claude Code 指纹使用的凭证身份。
+//
+// OAuth 渠道用凭证里真实的账号与设备；API Key 渠道（含第三方网关）没有这两个字段，
+// 按 Key 稳定派生一份。身份必须随 Key 稳定：每次请求换设备，上游看到的就是一台
+// 反复重装的机器。合成身份复用 anthropicauth.Credential，下游所有身份逻辑因此只有
+// 一份实现。
+func anthropicCredentialForWire(cfg *model.Config, apiKey string) *anthropicauth.Credential {
+	if cfg != nil && cfg.UsesAnthropicOAuth() {
+		if strings.TrimSpace(cfg.OAuthCredential) == "" {
+			return nil
+		}
+		credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
+		if err != nil {
+			return nil
+		}
+		return credential
+	}
+	return synthesizeAnthropicAPIKeyCredential(apiKey)
+}
+
+func synthesizeAnthropicAPIKeyCredential(apiKey string) *anthropicauth.Credential {
+	apiKey = strings.TrimSpace(apiKey)
+	if apiKey == "" {
 		return nil
 	}
-	credential, err := anthropicauth.ParseCredential([]byte(cfg.OAuthCredential))
-	if err != nil {
-		return nil
+	device := sha256.Sum256([]byte("ccload:anthropic:device\x00" + apiKey))
+	return &anthropicauth.Credential{
+		AccountUUID: uuid.NewSHA1(uuid.NameSpaceOID, []byte("ccload:anthropic:account\x00"+apiKey)).String(),
+		DeviceID:    hex.EncodeToString(device[:]),
 	}
-	return credential
 }
 
 func anthropicStableSessionID(accountUUID, firstUserText string) string {
@@ -743,7 +818,8 @@ func stripEmptyAnthropicTextBlocks(blocks []any) []any {
 // ensureAnthropicCloakedCacheBreakpoints mirrors Claude Code's independent
 // system and rolling-message selectors. Tools remain unstamped because cloaking
 // always installs a usable system prompt that already covers the shared prefix.
-func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessagePrefix int) {
+// cacheTTL 跟随调用方声明的缓存窗口（空即默认 5m），见 anthropicCloakCacheControl。
+func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessagePrefix int, cacheTTL string) {
 	system, ok := request["system"].([]any)
 	if ok && len(system) > 0 {
 		hasSystemBreakpoint := false
@@ -762,7 +838,7 @@ func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessageP
 					continue
 				}
 				if _, exists := block["cache_control"]; !exists {
-					block["cache_control"] = anthropicEphemeralCacheControl()
+					block["cache_control"] = anthropicCloakCacheControl(cacheTTL)
 				}
 				break
 			}
@@ -797,7 +873,7 @@ func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessageP
 			strings.EqualFold(stringValue(final["role"]), "system") {
 			if content, ok := final["content"].(string); ok && strings.TrimSpace(content) != "" {
 				final["content"] = []any{map[string]any{
-					"type": "text", "text": content, "cache_control": anthropicEphemeralCacheControl(),
+					"type": "text", "text": content, "cache_control": anthropicCloakCacheControl(cacheTTL),
 				}}
 				return
 			}
@@ -810,7 +886,7 @@ func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessageP
 	switch content := message["content"].(type) {
 	case string:
 		message["content"] = []any{map[string]any{
-			"type": "text", "text": content, "cache_control": anthropicEphemeralCacheControl(),
+			"type": "text", "text": content, "cache_control": anthropicCloakCacheControl(cacheTTL),
 		}}
 	case []any:
 		for _, raw := range content {
@@ -822,7 +898,7 @@ func ensureAnthropicCloakedCacheBreakpoints(request map[string]any, skipMessageP
 		}
 		for index := len(content) - 1; index >= 0; index-- {
 			if block, ok := content[index].(map[string]any); ok {
-				block["cache_control"] = anthropicEphemeralCacheControl()
+				block["cache_control"] = anthropicCloakCacheControl(cacheTTL)
 				break
 			}
 		}
@@ -896,16 +972,38 @@ func (cache orderedAnthropicCacheControl) MarshalJSON() ([]byte, error) {
 	return output.Bytes(), nil
 }
 
-func upgradeAnthropicCacheControlTTL(request map[string]any, ttl string) {
+// anthropicCloakCacheControl 生成网关注入 breakpoint 用的 cache_control。
+// ttl 为空即 Anthropic 默认的 5m 窗口；只有调用方自己声明了 1h 才会传 "1h"。
+func anthropicCloakCacheControl(ttl string) map[string]any {
+	cache := anthropicEphemeralCacheControl()
+	if ttl != "" {
+		cache["ttl"] = ttl
+	}
+	return cache
+}
+
+// anthropicRequestHasCacheControl 判断 body 里是否存在满足 match 的 cache_control。
+// 缓存窗口归调用方所有：网关不主动改写 5m/1h，所以既要按 body 实际用到的 ttl 决定
+// beta，也要按调用方声明的 1h 决定自己注入的 breakpoint 跟到哪个窗口。
+func anthropicRequestHasCacheControl(request map[string]any, match func(cache map[string]any) bool) bool {
+	found := false
 	visitAnthropicCacheBlocks(request, func(block map[string]any) {
-		cache, ok := block["cache_control"].(map[string]any)
-		if !ok || stringValue(cache["type"]) != "ephemeral" {
-			return
-		}
-		if _, callerOwnedTTL := cache["ttl"]; !callerOwnedTTL {
-			cache["ttl"] = ttl
+		if cache, ok := block["cache_control"].(map[string]any); ok && match(cache) {
+			found = true
 		}
 	})
+	return found
+}
+
+// anthropicCacheControlHasTTL 命中任何显式 ttl 字段。
+func anthropicCacheControlHasTTL(cache map[string]any) bool {
+	_, exists := cache["ttl"]
+	return exists
+}
+
+// anthropicCacheControlIsLongTTL 只命中 1h 窗口。
+func anthropicCacheControlIsLongTTL(cache map[string]any) bool {
+	return stringValue(cache["ttl"]) == "1h"
 }
 
 func stringValue(value any) string {
@@ -1029,26 +1127,85 @@ func injectAnthropicOAuthHeaders(
 	if req == nil {
 		return
 	}
-	incoming := req.Header.Clone()
-	if len(incomingHeaders) > 0 && incomingHeaders[0] != nil {
-		incoming = incomingHeaders[0]
-	}
-	var request map[string]any
-	if json.Unmarshal(body, &request) == nil {
-		helperShape := nativeAnthropicHaikuHelperShape(body, request, incoming, cfg)
-		if helperShape != anthropicHaikuHelperNone || isNativeAnthropicClaudeCodeRequest(request, incoming, cfg) {
-			applyAnthropicNativeHeaders(req, incoming, accessToken)
-			return
-		}
+	incoming := anthropicIncomingHeaders(req, incomingHeaders)
+	if anthropicRequestOwnsItsWire(body, incoming, cfg, "") {
+		applyAnthropicNativeHeaders(req, incoming)
+		setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
+		return
 	}
 	for name := range req.Header {
 		delete(req.Header, name)
 	}
 	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
-	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeBetas(body, true), resolveAnthropicSessionID(body, cfg))
+	applyAnthropicClaudeCodeHeaders(req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, "", incoming))
 }
 
-func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header, accessToken string) {
+// injectAnthropicAPIKeyHeaders 为 API Key 渠道重建 Claude Code CLI 请求头，与
+// injectAnthropicOAuthHeaders 严格对称：同一份 body 形态必须配同一份 header 形态。
+// 唯一的差别是认证头——OAuth 用 Bearer，API Key 走 applyAnthropicAPIKeyAuth。
+func injectAnthropicAPIKeyHeaders(
+	req *http.Request,
+	cfg *model.Config,
+	apiKey string,
+	body []byte,
+	incomingHeaders ...http.Header,
+) {
+	if req == nil {
+		return
+	}
+	incoming := anthropicIncomingHeaders(req, incomingHeaders)
+	if anthropicRequestOwnsItsWire(body, incoming, cfg, apiKey) {
+		applyAnthropicNativeHeaders(req, incoming)
+		applyAnthropicAPIKeyAuth(req, apiKey)
+		return
+	}
+	for name := range req.Header {
+		delete(req.Header, name)
+	}
+	applyAnthropicAPIKeyAuth(req, apiKey)
+	applyAnthropicClaudeCodeHeaders(
+		req, anthropicClaudeCodeBetas(body), resolveAnthropicSessionID(body, cfg, apiKey, incoming),
+	)
+}
+
+func anthropicIncomingHeaders(req *http.Request, override []http.Header) http.Header {
+	if len(override) > 0 && override[0] != nil {
+		return override[0]
+	}
+	return req.Header.Clone()
+}
+
+// anthropicRequestOwnsItsWire 判断下游已经是原生 Claude Code（含内部 Haiku 辅助
+// 请求），此时它自己的 header 就是正确的指纹，网关只做透传。
+func anthropicRequestOwnsItsWire(body []byte, incoming http.Header, cfg *model.Config, apiKey string) bool {
+	var request map[string]any
+	if json.Unmarshal(body, &request) != nil {
+		return false
+	}
+	return nativeAnthropicHaikuHelperShape(body, request, incoming) != anthropicHaikuHelperNone ||
+		isNativeAnthropicClaudeCodeRequest(request, incoming, cfg, apiKey)
+}
+
+// anthropicAPIKeyAuthorizationAllowed 判断 x-api-key 之外能否再带 Bearer。第一方
+// API 只认 x-api-key，多带一个 Authorization 会被拒；第三方网关两种形态都可能认，
+// 都给才不挑上游。策略与写法分离：通用转发路径用 canonical 头，Claude Code 指纹
+// 路径用 raw 头，两边共用这一条判定。
+func anthropicAPIKeyAuthorizationAllowed(target *url.URL) bool {
+	return !isOfficialAnthropicURL(target)
+}
+
+// applyAnthropicAPIKeyAuth 以 Claude Code CLI 的 raw 头形态重建 API Key 认证头。
+func applyAnthropicAPIKeyAuth(req *http.Request, apiKey string) {
+	apiKey = strings.TrimSpace(apiKey)
+	setRawHeader(req.Header, "x-api-key", apiKey)
+	if !anthropicAPIKeyAuthorizationAllowed(req.URL) {
+		deleteRawHeader(req.Header, "Authorization")
+		return
+	}
+	setRawHeader(req.Header, "Authorization", "Bearer "+apiKey)
+}
+
+func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header) {
 	for name := range req.Header {
 		delete(req.Header, name)
 	}
@@ -1062,29 +1219,20 @@ func applyAnthropicNativeHeaders(req *http.Request, incoming http.Header, access
 			setRawHeader(req.Header, name, value)
 		}
 	}
-	setRawHeader(req.Header, "Authorization", "Bearer "+strings.TrimSpace(accessToken))
 }
 
-func injectAnthropicAPIKeyHeaders(req *http.Request, apiKey string, body []byte) {
-	if req == nil {
-		return
-	}
-	req.Header.Del("Authorization")
-	setRawHeader(req.Header, "x-api-key", strings.TrimSpace(apiKey))
-	applyAnthropicClaudeCodeHeaders(
-		req, anthropicClaudeCodeBetas(body, false),
-		resolveAnthropicAPIKeySessionID(body, apiKey, req.Header),
-	)
-}
-
-func anthropicClaudeCodeBetas(body []byte, oauth bool) string {
+// anthropicClaudeCodeBetas 组装 Claude Code CLI 的 Anthropic-Beta 集合。
+//
+// 这里没有「OAuth 版」和「API Key 版」两套集合：betas 必须与
+// finalizeAnthropicClaudeCodeMessagesBody 产出的 body 形态严格对应，拆成两套就会
+// 出现 body 用了某能力、header 没声明对应 beta 的 400。认证方式的差异只体现在认证
+// 头上，不体现在指纹上。同源是双向的：extended-cache-ttl-2025-04-11 跟随 body 里
+// 实际存在的 cache_control.ttl——缓存窗口由调用方的原始请求决定，网关不主动升级
+// 到 1h，也就不替它声明这个 beta。
+func anthropicClaudeCodeBetas(body []byte) string {
 	request, _ := decodeAnthropicRequest(body)
 	betas := make([]string, 0, 14)
-	betas = append(betas, "claude-code-20250219")
-	if oauth {
-		betas = append(betas, "oauth-2025-04-20")
-	}
-	betas = append(betas, "interleaved-thinking-2025-05-14")
+	betas = append(betas, "claude-code-20250219", "oauth-2025-04-20", "interleaved-thinking-2025-05-14")
 	thinking, _ := request["thinking"].(map[string]any)
 	if strings.TrimSpace(stringValue(thinking["display"])) == "" {
 		betas = append(betas, "redact-thinking-2026-02-12")
@@ -1100,14 +1248,11 @@ func anthropicClaudeCodeBetas(body []byte, oauth bool) string {
 	if tools, ok := request["tools"].([]any); ok && len(tools) > 0 {
 		betas = append(betas, "advanced-tool-use-2025-11-20")
 	}
-	betas = append(betas, "effort-2025-11-24")
-	if oauth {
-		betas = append(betas, "fallback-credit-2026-06-01")
-	}
+	betas = append(betas, "effort-2025-11-24", "fallback-credit-2026-06-01")
 	if strings.EqualFold(strings.TrimSpace(stringValue(request["speed"])), "fast") {
 		betas = append(betas, "fast-mode-2026-02-01")
 	}
-	if oauth {
+	if anthropicRequestHasCacheControl(request, anthropicCacheControlHasTTL) {
 		betas = append(betas, "extended-cache-ttl-2025-04-11")
 	}
 	if _, ok := request["diagnostics"].(map[string]any); ok {
@@ -1158,41 +1303,41 @@ func applyAnthropicClaudeCodeHeaders(req *http.Request, betas, sessionID string)
 	setRawHeader(req.Header, "Accept-Encoding", "gzip, deflate, br, zstd")
 }
 
+// setRawHeader 以给定大小写写入请求头。Claude Code CLI 的线上头名全部小写，Go 的
+// http.Header.Set 会做 canonical 化，所以指纹路径必须直接操作 map。
 func setRawHeader(headers http.Header, name, value string) {
+	deleteRawHeader(headers, name)
+	headers[name] = []string{value}
+}
+
+// deleteRawHeader 按大小写不敏感删除请求头（http.Header.Del 只认 canonical 键）。
+func deleteRawHeader(headers http.Header, name string) {
 	for existing := range headers {
 		if strings.EqualFold(existing, name) {
 			delete(headers, existing)
 		}
 	}
-	headers[name] = []string{value}
 }
 
-func resolveAnthropicSessionID(body []byte, cfg *model.Config) string {
-	if sessionID := anthropicSessionIDFromBody(body); sessionID != "" {
-		return sessionID
-	}
-	var request map[string]any
-	if json.Unmarshal(body, &request) == nil {
-		credential := anthropicCredentialForWire(cfg)
-		if credential != nil && credential.AccountUUID != "" {
-			messages, _ := request["messages"].([]any)
-			return anthropicStableSessionID(credential.AccountUUID, anthropicFirstUserText(messages))
-		}
-	}
-	return uuid.NewString()
-}
-
-func resolveAnthropicAPIKeySessionID(body []byte, apiKey string, headers http.Header) string {
+// resolveAnthropicSessionID 解析写入 X-Claude-Code-Session-Id 的会话 ID。
+//
+// 优先级：下游显式声明的 header → body 的 metadata.user_id.session_id → 凭证身份
+// 与首条用户消息稳定派生 → 随机。body 这一级不能省：finalizeAnthropicOAuthMessages
+// Body 先把 session_id 写进 metadata.user_id，这里读回来才能保证 header 与 body 同值，
+// 而 isNativeAnthropicClaudeCodeRequest 正是按这个等式识别原生 Claude Code 请求的。
+func resolveAnthropicSessionID(body []byte, cfg *model.Config, apiKey string, headers http.Header) string {
 	if sessionID := anthropicSessionIDFromHeaders(headers); sessionID != "" {
 		return sessionID
 	}
 	if sessionID := anthropicSessionIDFromBody(body); sessionID != "" {
 		return sessionID
 	}
-	request, _ := decodeAnthropicRequest(body)
-	messages, _ := request["messages"].([]any)
-	keyHash := sha256.Sum256([]byte(strings.TrimSpace(apiKey)))
-	return anthropicStableSessionID(hex.EncodeToString(keyHash[:]), anthropicFirstUserText(messages))
+	if credential := anthropicCredentialForWire(cfg, apiKey); credential != nil && credential.AccountUUID != "" {
+		request, _ := decodeAnthropicRequest(body)
+		messages, _ := request["messages"].([]any)
+		return anthropicStableSessionID(credential.AccountUUID, anthropicFirstUserText(messages))
+	}
+	return uuid.NewString()
 }
 
 func anthropicSessionIDFromBody(body []byte) string {

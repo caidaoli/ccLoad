@@ -13,15 +13,19 @@ import (
 // normalizeAnthropicMessagesBody is the single native Claude body boundary.
 // Protocol conversion produces the shape; this function only enforces Anthropic
 // wire invariants shared by API-key and OAuth attempts.
-func normalizeAnthropicMessagesBody(body []byte, signCCH bool) ([]byte, error) {
+func normalizeAnthropicMessagesBody(body []byte) ([]byte, error) {
 	request, err := decodeAnthropicRequest(body)
 	if err != nil {
 		return nil, errors.New("normalize Anthropic request: invalid JSON body")
 	}
-	return encodeNormalizedAnthropicRequest(request, signCCH)
+	return encodeNormalizedAnthropicRequest(request)
 }
 
-func encodeNormalizedAnthropicRequest(request map[string]any, signCCH bool) ([]byte, error) {
+// encodeNormalizedAnthropicRequest 收尾 Anthropic Messages body 并重签 CCH。
+// CCH 无条件重签：签名值嵌在 body 自己的 billing header 里，finalizeAnthropicCCH
+// 对没有 billing header 的 body 是 no-op，所以「签不签」不需要第二个谓词——一旦
+// 有条件跳过，就会出现 body 改了而 cch 还是旧值的静默错签。
+func encodeNormalizedAnthropicRequest(request map[string]any) ([]byte, error) {
 	normalizeAnthropicMessagesRequest(request)
 	orderAnthropicCacheControlWireShape(request)
 	encoded, err := json.Marshal(request)
@@ -29,9 +33,6 @@ func encodeNormalizedAnthropicRequest(request map[string]any, signCCH bool) ([]b
 		return nil, errors.New("normalize Anthropic request: encode body")
 	}
 	encoded, _ = cliproxysignature.SanitizeClaudeMessagesForClaudeUpstream(encoded, stringValue(request["model"]))
-	if !signCCH {
-		return encoded, nil
-	}
 	encoded, err = finalizeAnthropicCCH(encoded)
 	if err != nil {
 		return nil, errors.New("normalize Anthropic request: sign Claude CCH")

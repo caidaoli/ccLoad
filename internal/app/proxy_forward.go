@@ -123,8 +123,8 @@ func (s *Server) buildProxyRequest(
 		sourceBody = reqCtx.transformPlan.OriginalBody
 	}
 	body, err := s.prepareTranslatedUpstreamBody(
-		cfg, upstreamProtocol, requestPath, body, sourceBody, hdr,
-		reqCtx != nil && reqCtx.anthropicOAuthBodyFinalized,
+		cfg, upstreamProtocol, requestPath, body, sourceBody, apiKey, hdr,
+		reqCtx != nil && reqCtx.anthropicClaudeCodeWire,
 	)
 	if err != nil {
 		return nil, err
@@ -183,17 +183,9 @@ func (s *Server) buildProxyRequest(
 	if err != nil {
 		return nil, err
 	}
-	officialAnthropicAPIKey := isOfficialAnthropicAPIKeyMessagesRequest(
-		cfg, upstreamProtocol, requestPath, parsedUpstreamURL,
-	)
-	if officialAnthropicAPIKey {
-		body, err = finalizeAnthropicCCH(body)
-		if err != nil {
-			return nil, err
-		}
-	}
+	anthropicClaudeCodeWire := isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
-		if err = validateAnthropicLegacySystemRequestForUpstream(body, cfg, hdr, parsedUpstreamURL); err != nil {
+		if err = validateAnthropicLegacySystemRequestForUpstream(body, cfg, apiKey, hdr, parsedUpstreamURL); err != nil {
 			return nil, err
 		}
 	}
@@ -226,13 +218,7 @@ func (s *Server) buildProxyRequest(
 		injectAPIKeyHeaders(req, apiKey, runtimeUpstreamProtocol(reqCtx, cfg))
 	}
 
-	// 5. anyrouter渠道：确保anthropic-beta包含context-1m
-	if runtimeUpstreamProtocol(reqCtx, cfg) == util.ProtocolAnthropic &&
-		strings.Contains(strings.ToLower(cfg.Name), "anyrouter") {
-		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
-	}
-
-	// 5.1 本地协议转换到 Anthropic 上游时，OpenAI/Codex/Gemini 客户端不会携带
+	// 5. 本地协议转换到 Anthropic 上游时，OpenAI/Codex/Gemini 客户端不会携带
 	// anthropic-version。缺失该头会让部分 Claude Code 兼容上游按 OpenAI body 解析。
 	ensureAnthropicVersionHeader(req, runtimeUpstreamProtocol(reqCtx, cfg))
 
@@ -241,6 +227,7 @@ func (s *Server) buildProxyRequest(
 
 	// 6. 自定义请求头规则（认证头黑名单保护）
 	applyHeaderRules(req.Header, cfg.HeaderRules())
+	wireRebuilt := false
 	if cfg.UsesXAIOAuth() {
 		injectXAIResponsesHeaders(req, apiKey, reqCtx.executionIdentity)
 	} else if upstreamProtocol == protocol.Codex {
@@ -252,18 +239,36 @@ func (s *Server) buildProxyRequest(
 		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
+		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
 		injectZAICodingPlanHeaders(req, cfg, apiKey, body, hdr)
-	} else if officialAnthropicAPIKey {
-		injectAnthropicAPIKeyHeaders(req, apiKey, body)
+		wireRebuilt = true
+	} else if anthropicClaudeCodeWire {
+		injectAnthropicAPIKeyHeaders(req, cfg, apiKey, body, hdr)
+		wireRebuilt = true
+	}
+
+	// 6.1 Claude Code CLI / ZCode 指纹路径清空了整个请求头再重建，步骤 6 的规则产物
+	// 随之丢失。渠道自定义 header 规则必须最终生效，所以在重建之后重跑一次：认证头
+	// 仍由 authHeaderBlacklist 拦下，override/remove 幂等，append 也不会重复
+	// （前一次的产物已被清空）。
+	if wireRebuilt {
+		applyHeaderRules(req.Header, cfg.HeaderRules())
+	}
+
+	// 6.2 anyrouter 渠道：确保 anthropic-beta 包含 context-1m。必须排在指纹重建
+	// 之后——重建清空了整个请求头，之前注入的 beta flag 会随之丢失。
+	if runtimeUpstreamProtocol(reqCtx, cfg) == util.ProtocolAnthropic &&
+		isAnyrouterChannel(cfg) {
+		injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
 	}
 
 	// 7. 非 Anthropic 上游：移除 Anthropic 协议专属头（anthropic-version/anthropic-beta 等）
 	stripAnthropicProtocolHeaders(req, runtimeUpstreamProtocol(reqCtx, cfg))
 
 	if reqCtx != nil {
-		if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
-			reqCtx.anthropicOAuthBodyFinalized = true
+		if anthropicClaudeCodeWire {
+			reqCtx.anthropicClaudeCodeWire = true
 		}
 		reqCtx.translatedBody = body
 		reqCtx.transformPlan.TranslatedBody = body
@@ -280,6 +285,7 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	requestPath string,
 	body []byte,
 	sourceBody []byte,
+	apiKey string,
 	headers http.Header,
 	anthropicAlreadyFinalized bool,
 ) ([]byte, error) {
@@ -289,24 +295,25 @@ func (s *Server) prepareTranslatedUpstreamBody(
 	body = prepareCodexOAuthResponsesBody(cfg, upstreamProtocol, requestPath, body, headers)
 	if isAnthropicMessagesRequest(upstreamProtocol, requestPath) {
 		var err error
-		if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
-			if anthropicAlreadyFinalized {
-				var request map[string]any
-				if json.Unmarshal(body, &request) == nil {
-					helperShape := nativeAnthropicHaikuHelperShape(body, request, headers, cfg)
-					if helperShape == anthropicHaikuHelperMinimal {
-						return body, nil
-					}
-					if helperShape == anthropicHaikuHelperStructured || isNativeAnthropicClaudeCodeRequest(request, headers, cfg) {
-						return finalizeAnthropicCCH(body)
-					}
+		switch {
+		case !isAnthropicClaudeCodeMessagesRequest(cfg, upstreamProtocol, requestPath):
+			// Z.ai Coding Plan 自带 ZCode 指纹，只做 Anthropic 线协议归一。
+			body, err = normalizeAnthropicMessagesBody(body)
+		case anthropicAlreadyFinalized:
+			var request map[string]any
+			if json.Unmarshal(body, &request) == nil {
+				helperShape := nativeAnthropicHaikuHelperShape(body, request, headers)
+				if helperShape == anthropicHaikuHelperMinimal {
+					return body, nil
 				}
-				body, err = normalizeAnthropicMessagesBody(body, true)
-			} else {
-				body, err = finalizeAnthropicOAuthMessagesBody(body, cfg, headers)
+				if helperShape == anthropicHaikuHelperStructured ||
+					isNativeAnthropicClaudeCodeRequest(request, headers, cfg, apiKey) {
+					return finalizeAnthropicCCH(body)
+				}
 			}
-		} else {
-			body, err = normalizeAnthropicMessagesBody(body, false)
+			body, err = normalizeAnthropicMessagesBody(body)
+		default:
+			body, err = finalizeAnthropicClaudeCodeMessagesBody(body, cfg, apiKey, headers)
 		}
 		if err != nil {
 			return nil, err
@@ -1730,8 +1737,8 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	reqCtx.translatedBody = plan.TranslatedBody
 	reqCtx.originalModel = plan.ResponseModel()
 	reqCtx.antigravityOAuth = cfg.UsesAntigravityOAuth()
-	reqCtx.anthropicOAuthBodyFinalized = translatedRequestOverride != nil &&
-		isAnthropicOAuthMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
+	reqCtx.anthropicClaudeCodeWire = translatedRequestOverride != nil &&
+		isAnthropicClaudeCodeMessagesRequest(cfg, plan.UpstreamProtocol, plan.UpstreamPath)
 	reqCtx.executionIdentity = executionIdentity
 	defer reqCtx.cleanup() // [INFO] 统一清理：定时器 + context（总是安全）
 
@@ -1860,7 +1867,9 @@ func (s *Server) forwardOnceAsyncWithNativeCodexWebsocket(
 	if resp != nil {
 		s.persistCodexPassiveUsage(reqCtx.ctx, cfg, resp)
 		s.persistAnthropicPassiveUsage(reqCtx.ctx, cfg, resp)
-		if err == nil && cfg.UsesAnthropicOAuth() {
+		// Claude Code 的 Accept-Encoding 声明了 br/zstd，Go transport 只会自动解 gzip，
+		// 剩下的必须自己解——发了那个头就得负责解码。
+		if err == nil && reqCtx.anthropicClaudeCodeWire {
 			err = decodeAnthropicResponse(resp)
 		}
 	}
