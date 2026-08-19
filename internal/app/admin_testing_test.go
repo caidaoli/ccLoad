@@ -5626,3 +5626,61 @@ func TestHandleChannelImageGeneration_ClassifiesHTTP200StructuredError(t *testin
 		t.Fatalf("key-scoped structured error fell back to another URL %d times", fallbackCalls.Load())
 	}
 }
+
+// TestDownstreamEndpointPath 锁住渠道基础 URL 带子路径时的端点还原：协议族谓词
+// 判定的是下游端点，拿上游完整路径去判定会让 ZCode 这类渠道的指纹路径整体失效。
+func TestDownstreamEndpointPath(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		fullURL string
+		baseURL string
+		want    string
+	}{
+		{
+			name:    "zcode base url carries a sub path",
+			fullURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic/v1/messages?beta=true",
+			baseURL: "https://zcode.z.ai/api/v1/ultra-zai/anthropic",
+			want:    "/v1/messages",
+		},
+		{
+			name:    "plain base url",
+			fullURL: "https://api.anthropic.com/v1/messages?beta=true",
+			baseURL: "https://api.anthropic.com",
+			want:    "/v1/messages",
+		},
+		{
+			name:    "base url with trailing slash",
+			fullURL: "https://gw.example.test/claude/v1/messages",
+			baseURL: "https://gw.example.test/claude/",
+			want:    "/v1/messages",
+		},
+		{
+			name:    "xai base url already ends with /v1",
+			fullURL: "https://cli-chat-proxy.grok.com/v1/v1/responses",
+			baseURL: "https://cli-chat-proxy.grok.com/v1",
+			want:    "/v1/responses",
+		},
+		{
+			name:    "exact url is the endpoint itself",
+			fullURL: "https://chatgpt.com/backend-api/codex/responses",
+			baseURL: "https://chatgpt.com/backend-api/codex/responses#",
+			want:    "/backend-api/codex/responses",
+		},
+		{
+			name:    "base url path is not a prefix",
+			fullURL: "https://api.example.test/v1/messages",
+			baseURL: "https://other.example.test/mismatch",
+			want:    "/v1/messages",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := downstreamEndpointPath(test.fullURL, test.baseURL); got != test.want {
+				t.Fatalf("downstreamEndpointPath(%q, %q) = %q, want %q",
+					test.fullURL, test.baseURL, got, test.want)
+			}
+		})
+	}
+}

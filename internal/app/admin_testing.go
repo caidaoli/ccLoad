@@ -150,13 +150,16 @@ type channelTestRequestPlan struct {
 	clientURL         string
 	clientHeaders     http.Header
 	fullURL           string
-	headers           http.Header
-	upstreamHeaders   http.Header
-	requestBody       []byte
-	clientBody        []byte
-	timeout           *channelTestTimeout
-	debugCapture      *debugCapture
-	antigravityOAuth  bool
+	// endpointPath 是下游端点路径，协议族判定一律用它，不能用 fullURL 的完整
+	// 路径——渠道基础 URL 带子路径时两者不等，见 downstreamEndpointPath。
+	endpointPath     string
+	headers          http.Header
+	upstreamHeaders  http.Header
+	requestBody      []byte
+	clientBody       []byte
+	timeout          *channelTestTimeout
+	debugCapture     *debugCapture
+	antigravityOAuth bool
 }
 
 type channelTestTimeout struct {
@@ -259,6 +262,33 @@ func extractRequestPath(fullURL string) string {
 		return path + "?" + parsed.RawQuery
 	}
 	return path
+}
+
+// downstreamEndpointPath 还原 tester 拼在渠道基础 URL 之后的下游端点路径。
+//
+// 协议族谓词（isAnthropicMessagesRequest / isZAICodingPlanRequest /
+// isXAIOAuthResponsesRequest 等）判定的是**下游端点**，不是上游完整路径。渠道基础
+// URL 自带子路径时两者不等：ZCode 是 https://zcode.z.ai/api/v1/ultra-zai/anthropic，
+// 完整路径成了 /api/v1/ultra-zai/anthropic/v1/messages，直接拿去判定必然落空，
+// 管理测试就会发出一份和真实转发不同形态的请求。
+func downstreamEndpointPath(fullURL, baseURL string) string {
+	parsed, err := neturl.Parse(fullURL)
+	if err != nil {
+		return ""
+	}
+	base, err := neturl.Parse(strings.TrimSpace(model.StripExactUpstreamURLMarker(baseURL)))
+	if err != nil {
+		return parsed.Path
+	}
+	prefix := strings.TrimRight(base.Path, "/")
+	if prefix == "" || !strings.HasPrefix(parsed.Path, prefix) {
+		return parsed.Path
+	}
+	// Exact 标记的 URL 不拼后缀，剥完是空串，此时完整路径本身就是端点。
+	if suffix := strings.TrimPrefix(parsed.Path, prefix); suffix != "" {
+		return suffix
+	}
+	return parsed.Path
 }
 
 func (s *Server) newChannelTestTimeoutContextWithTimeouts(parent context.Context, stream bool, timeouts protocolTimeoutConfig) (context.Context, *channelTestTimeout) {
@@ -1272,7 +1302,7 @@ func (s *Server) testChannelAPIWithURLForProtocol(
 	}
 	s.persistCodexPassiveUsage(ctx, cfg, resp)
 	defer func() { _ = resp.Body.Close() }()
-	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), req.URL.Path) {
+	if isAnthropicClaudeCodeMessagesRequest(cfg, protocol.Protocol(requestPlan.upstreamProtocol), requestPlan.endpointPath) {
 		if decodeErr := decodeAnthropicResponse(resp); decodeErr != nil {
 			return attachTestDebugData(requestPlan, resp, map[string]any{
 				"success": false, "error": "解码 Anthropic 测试响应失败: " + decodeErr.Error(),
@@ -1556,15 +1586,12 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		return nil, nil, fmt.Errorf("构造测试请求失败: %w", err)
 	}
 
-	requestPath := extractRequestPath(requestPlan.fullURL)
-	if parsed, parseErr := neturl.Parse(requestPlan.fullURL); parseErr == nil {
-		requestPath = parsed.Path
-	}
+	requestPath := downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	upstreamProtocolValue := protocol.Protocol(requestPlan.upstreamProtocol)
 	xaiResponsesRequest := isXAIOAuthResponsesRequest(cfgForBuild, upstreamProtocolValue, requestPath)
 	if xaiResponsesRequest {
 		requestPlan.fullURL = buildXAIResponsesURL(selectedURL, "")
-		requestPath = extractRequestPath(requestPlan.fullURL)
+		requestPath = downstreamEndpointPath(requestPlan.fullURL, selectedURL)
 	}
 	if isAnthropicOAuthMessagesRequest(cfgForBuild, upstreamProtocolValue, requestPath) {
 		requestPlan.fullURL = buildAnthropicOAuthURL(selectedURL, requestPath, "")
@@ -1603,6 +1630,7 @@ func (s *Server) buildTestUpstreamRequestPlan(
 		requestPlan.requestBody = injectCodexPromptCacheKey(requestPlan.requestBody, sessionID)
 		ensureCodexSessionHeader(requestPlan.headers, sessionID)
 	}
+	requestPlan.endpointPath = requestPath
 	return cfgForBuild, requestPlan, nil
 }
 
@@ -1647,10 +1675,13 @@ func (s *Server) newTestUpstreamRequest(
 		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
 		wireRebuilt = true
-	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
+	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
 		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 		wireRebuilt = true
-	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
+	} else if isZAICodingPlanRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
+		injectZAICodingPlanHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
+		wireRebuilt = true
+	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
 		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 		wireRebuilt = true
 	}

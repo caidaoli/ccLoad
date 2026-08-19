@@ -157,13 +157,6 @@ func (s *Server) buildProxyRequest(
 			return nil, err
 		}
 	}
-	// Z.ai Coding Plan traffic carries ZCode's device fingerprint in the body.
-	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
-		body, err = finalizeZAICodingPlanBody(body, cfg)
-		if err != nil {
-			return nil, err
-		}
-	}
 
 	upstreamQuery := upstreamQueryForAttempt(reqCtx, rawQuery)
 	upstreamURL := buildUpstreamURL(baseURL, requestPath, upstreamQuery)
@@ -320,6 +313,11 @@ func (s *Server) prepareTranslatedUpstreamBody(
 		if err != nil {
 			return nil, err
 		}
+	}
+	// Z.ai Coding Plan 的 ZCode 设备指纹走 body 的 metadata.user_id。必须留在这个
+	// 共享入口里：挂在代理链路的独立分支上，管理测试就会发出没有指纹的请求。
+	if isZAICodingPlanRequest(cfg, upstreamProtocol, requestPath) {
+		return finalizeZAICodingPlanBody(body, cfg)
 	}
 	if cfg != nil && cfg.UsesAntigravityOAuth() {
 		return prepareAntigravityRequestBody(
