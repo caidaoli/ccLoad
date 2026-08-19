@@ -706,12 +706,9 @@ func (s *codexUpstreamWebsocketSession) writeRequest(conn *websocket.Conn, body 
 }
 
 func isCodexWebsocketSemanticEvent(eventType string) bool {
-	switch eventType {
-	case "", "response.created", "response.queued", "response.in_progress":
-		return false
-	default:
-		return true
-	}
+	// eventType != "" 不能省：isResponsesMetadataEvent("") == false，
+	// 省掉后未解析出 type 的 WS 帧会被当成语义输出。
+	return eventType != "" && !isResponsesMetadataEvent(eventType)
 }
 
 func isCodexWebsocketTerminalEvent(eventType string) bool {

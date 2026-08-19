@@ -1388,3 +1388,83 @@ func TestSSEUsageParser_SpeedInMessageUsage(t *testing.T) {
 		t.Errorf("ServiceTier = %q, 期望 %q", parser.ServiceTier, "fast")
 	}
 }
+
+// TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput 验证 Responses 元数据事件
+// （response.created/queued/in_progress）不设 hasStreamOutput，确保后续 error 到来时
+// deferredWriter 仍可阻止 commit 并允许切换渠道重试。语义事件仍正常标记。
+func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name          string
+		payloadType   string
+		wantStreamOut bool
+	}{
+		{"response.created", "response.created", false},
+		{"response.queued", "response.queued", false},
+		{"response.in_progress", "response.in_progress", false},
+		{"response.output_item.added", "response.output_item.added", true},
+		{"response.output_text.delta", "response.output_text.delta", true},
+		{"response.content_part.added", "response.content_part.added", true},
+		{"message_start", "message_start", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			parser := newSSEUsageParser("codex")
+			data := `data: {"type":"` + tt.payloadType + `"}` + "\n\n"
+			if err := parser.Feed([]byte(data)); err != nil {
+				t.Fatalf("Feed failed: %v", err)
+			}
+			if parser.HasStreamOutput() != tt.wantStreamOut {
+				t.Errorf("HasStreamOutput() = %v after %q, want %v",
+					parser.HasStreamOutput(), tt.payloadType, tt.wantStreamOut)
+			}
+		})
+	}
+}
+
+// TestSSEUsageParser_ErrorAfterMetadataAllowsRetry 验证整个序列：
+// 元数据事件 → error 事件 → hasStreamOutput 仍为 false，允许切换。
+func TestSSEUsageParser_ErrorAfterMetadataAllowsRetry(t *testing.T) {
+	t.Parallel()
+	parser := newSSEUsageParser("codex")
+
+	created := "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-1\"}}\n\n"
+	if err := parser.Feed([]byte(created)); err != nil {
+		t.Fatalf("Feed response.created: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatal("HasStreamOutput() should be false after response.created")
+	}
+
+	errEvent := `data: {"type":"error","error":{"type":"service_unavailable_error","code":"server_is_overloaded","message":"overloaded"}}` + "\n\n"
+	if err := parser.Feed([]byte(errEvent)); err != nil {
+		t.Fatalf("Feed error: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatal("HasStreamOutput() should be false after error following metadata-only events")
+	}
+	if parser.GetLastError() == nil {
+		t.Fatal("GetLastError() should capture the error event")
+	}
+}
+
+func TestSSEUsageParser_ResponsesMetadataEventLineWithoutPayloadType(t *testing.T) {
+	t.Parallel()
+	parser := newSSEUsageParser("codex")
+	frame := "event: response.created\ndata: {\"response\":{\"id\":\"resp-1\"}}\n\n"
+	if err := parser.Feed([]byte(frame)); err != nil {
+		t.Fatalf("Feed failed: %v", err)
+	}
+	if parser.HasStreamOutput() {
+		t.Fatal("HasStreamOutput() should be false when only the SSE event line names response.created")
+	}
+
+	delta := `data: {"type":"response.output_text.delta","delta":"partial"}` + "\n\n"
+	if err := parser.Feed([]byte(delta)); err != nil {
+		t.Fatalf("Feed delta: %v", err)
+	}
+	if !parser.HasStreamOutput() {
+		t.Fatal("HasStreamOutput() should be true after a semantic event following metadata")
+	}
+}
