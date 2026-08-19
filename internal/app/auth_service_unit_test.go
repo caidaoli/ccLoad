@@ -169,14 +169,146 @@ func TestAuthService_CostLimit(t *testing.T) {
 		t.Fatalf("t1 before add: got (%d,%d,%v), want (50,100,false)", used, limit, exceeded)
 	}
 
-	s.AddCostToCache("t1", 0)
-	s.AddCostToCache("t1", -1)
-	s.AddCostToCache("missing", 100)
-	s.AddCostToCache("t1", 60)
+	s.AddCostToCache("t1", 0, time.Now())
+	s.AddCostToCache("t1", -1, time.Now())
+	s.AddCostToCache("missing", 100, time.Now())
+	s.AddCostToCache("t1", 60, time.Now())
 
 	used, limit, exceeded = s.IsCostLimitExceeded("t1")
 	if used != 110 || limit != 100 || !exceeded {
 		t.Fatalf("t1 after add: got (%d,%d,%v), want (110,100,true)", used, limit, exceeded)
+	}
+}
+
+func TestAuthService_PeriodCostLimits(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	dayStart, monthStart := model.AuthTokenCostPeriodStarts(now)
+	yesterdayAt := now.AddDate(0, 0, -1)
+	yesterday, _ := model.AuthTokenCostPeriodStarts(yesterdayAt)
+
+	s := &AuthService{
+		authTokenCostLimits: map[string]tokenCostLimit{
+			"daily": {
+				dailyUsedMicroUSD:  90,
+				dailyLimitMicroUSD: 100,
+				dailyPeriodStart:   dayStart,
+			},
+			"stale-day": {
+				dailyUsedMicroUSD:  90,
+				dailyLimitMicroUSD: 100,
+				dailyPeriodStart:   yesterday,
+			},
+			"late-old-day": {
+				dailyUsedMicroUSD:  50,
+				dailyLimitMicroUSD: 100,
+				dailyPeriodStart:   dayStart,
+			},
+		},
+	}
+
+	used, limit, exceeded := s.IsCostLimitExceeded("daily")
+	if used != 90 || limit != 100 || exceeded {
+		t.Fatalf("daily before add: got (%d,%d,%v), want (90,100,false)", used, limit, exceeded)
+	}
+
+	s.AddCostToCache("daily", 20, now)
+	used, limit, exceeded = s.IsCostLimitExceeded("daily")
+	if used != 110 || limit != 100 || !exceeded {
+		t.Fatalf("daily after add: got (%d,%d,%v), want (110,100,true)", used, limit, exceeded)
+	}
+
+	used, limit, exceeded = s.IsCostLimitExceeded("stale-day")
+	if used != 0 || limit != 100 || exceeded {
+		t.Fatalf("stale day should not count yesterday usage: got (%d,%d,%v), want (0,100,false)", used, limit, exceeded)
+	}
+	s.AddCostToCache("stale-day", 20, now)
+	used, limit, exceeded = s.IsCostLimitExceeded("stale-day")
+	if used != 20 || limit != 100 || exceeded {
+		t.Fatalf("stale day after add: got (%d,%d,%v), want (20,100,false)", used, limit, exceeded)
+	}
+
+	s.AddCostToCache("late-old-day", 20, yesterdayAt)
+	used, limit, exceeded = s.IsCostLimitExceeded("late-old-day")
+	if used != 50 || limit != 100 || exceeded {
+		t.Fatalf("late old-period cost polluted current day: got (%d,%d,%v), want (50,100,false)", used, limit, exceeded)
+	}
+
+	s.authTokenCostLimits["monthly"] = tokenCostLimit{
+		monthlyUsedMicroUSD:  50,
+		monthlyLimitMicroUSD: 60,
+		monthlyPeriodStart:   monthStart,
+	}
+	s.AddCostToCache("monthly", 10, now)
+	used, limit, exceeded = s.IsCostLimitExceeded("monthly")
+	if used != 60 || limit != 60 || !exceeded {
+		t.Fatalf("monthly after add: got (%d,%d,%v), want (60,60,true)", used, limit, exceeded)
+	}
+}
+
+func TestReloadAuthTokens_DoesNotRegressPeriodUsage(t *testing.T) {
+	t.Parallel()
+
+	const hash = "period-token-hash"
+	now := time.Now()
+	dayStart, monthStart := model.AuthTokenCostPeriodStarts(now)
+
+	stub := &reloadStubStore{
+		tokens: []*model.AuthToken{{
+			Token:                    hash,
+			ID:                       1,
+			CostDailyUsedMicroUSD:    40,
+			CostDailyLimitMicroUSD:   100,
+			CostDailyPeriodStart:     dayStart,
+			CostMonthlyUsedMicroUSD:  80,
+			CostMonthlyLimitMicroUSD: 200,
+			CostMonthlyPeriodStart:   monthStart,
+			MaxConcurrency:           1,
+		}},
+	}
+
+	s := newTestAuthService(t)
+	s.store = stub
+	if err := s.ReloadAuthTokens(); err != nil {
+		t.Fatalf("initial reload: %v", err)
+	}
+	s.AddCostToCache(hash, 15, now)
+	if err := s.ReloadAuthTokens(); err != nil {
+		t.Fatalf("second reload: %v", err)
+	}
+	used, limit, exceeded := s.IsCostLimitExceeded(hash)
+	if used != 55 || limit != 100 || exceeded {
+		t.Fatalf("same-period reload: got (%d,%d,%v), want (55,100,false)", used, limit, exceeded)
+	}
+}
+
+func TestReloadAuthTokens_ResetsStalePeriodUsage(t *testing.T) {
+	t.Parallel()
+
+	const hash = "stale-period-token-hash"
+	now := time.Now()
+	yesterday, _ := model.AuthTokenCostPeriodStarts(now.AddDate(0, 0, -1))
+
+	stub := &reloadStubStore{
+		tokens: []*model.AuthToken{{
+			Token:                  hash,
+			ID:                     1,
+			CostDailyUsedMicroUSD:  90,
+			CostDailyLimitMicroUSD: 100,
+			CostDailyPeriodStart:   yesterday,
+			MaxConcurrency:         1,
+		}},
+	}
+
+	s := newTestAuthService(t)
+	s.store = stub
+	if err := s.ReloadAuthTokens(); err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	used, limit, exceeded := s.IsCostLimitExceeded(hash)
+	if used != 0 || limit != 100 || exceeded {
+		t.Fatalf("stale-period reload: got (%d,%d,%v), want (0,100,false)", used, limit, exceeded)
 	}
 }
 
@@ -220,7 +352,7 @@ func TestReloadAuthTokens_DoesNotRegressUsage(t *testing.T) {
 	}
 
 	// 请求完成 → 内存累加 +50；此时 DB 仍滞后为 100（stub 返回值不变）
-	s.AddCostToCache(hash, 50)
+	s.AddCostToCache(hash, 50, time.Now())
 	if used, _, _ := s.IsCostLimitExceeded(hash); used != 150 {
 		t.Fatalf("after AddCostToCache used=%d, want 150", used)
 	}

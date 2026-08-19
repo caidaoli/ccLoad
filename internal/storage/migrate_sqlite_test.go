@@ -782,12 +782,19 @@ func TestEnsureAuthTokensCostLimit_SQLite(t *testing.T) {
 	if err := ensureAuthTokensCostLimit(ctx, db, DialectSQLite); err != nil {
 		t.Fatalf("ensureAuthTokensCostLimit: %v", err)
 	}
+	if err := ensureAuthTokensPeriodCostLimits(ctx, db, DialectSQLite); err != nil {
+		t.Fatalf("ensureAuthTokensPeriodCostLimits: %v", err)
+	}
 
 	cols, err := sqliteExistingColumns(ctx, db, "auth_tokens")
 	if err != nil {
 		t.Fatalf("sqliteExistingColumns: %v", err)
 	}
-	for _, col := range []string{"cost_used_microusd", "cost_limit_microusd"} {
+	for _, col := range []string{
+		"cost_used_microusd", "cost_limit_microusd",
+		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
+		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
+	} {
 		if !cols[col] {
 			t.Errorf("column %s not found in auth_tokens", col)
 		}
@@ -858,6 +865,19 @@ func TestMigrateSQLite_LegacyCostLimitedAuthTokenGetsDefaultMaxConcurrency(t *te
 	}
 	if unlimitedMaxConcurrency != 0 {
 		t.Fatalf("unlimited max_concurrency=%d, want 0", unlimitedMaxConcurrency)
+	}
+
+	cols, err := sqliteExistingColumns(ctx, db, "auth_tokens")
+	if err != nil {
+		t.Fatalf("sqliteExistingColumns: %v", err)
+	}
+	for _, col := range []string{
+		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
+		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
+	} {
+		if !cols[col] {
+			t.Errorf("legacy migrate missing column %s", col)
+		}
 	}
 }
 

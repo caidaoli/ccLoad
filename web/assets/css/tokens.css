@@ -620,6 +620,14 @@
       border-radius: 10px;
       background: var(--surface-bg-muted);
     }
+    .token-edit-section--basic,
+    .token-edit-section--quota {
+      gap: 6px;
+    }
+    .token-edit-section--basic .form-group,
+    .token-edit-section--quota .form-group {
+      margin-bottom: 0;
+    }
     .token-edit-section--models {
       flex: 1 1 auto;
       min-height: 0;

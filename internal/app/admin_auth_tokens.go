@@ -159,7 +159,9 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 		AllowedModels          []string `json:"allowed_models"`           // 允许的模型列表，空表示无限制
 		AllowedChannelIDs      []int64  `json:"allowed_channel_ids"`      // 渠道限制列表，空表示无限制
 		ChannelRestrictionMode string   `json:"channel_restriction_mode"` // allow|deny，默认 allow
-		CostLimitUSD           *float64 `json:"cost_limit_usd"`           // 费用上限（0=无限制）
+		CostLimitUSD           *float64 `json:"cost_limit_usd"`           // 总限额（0=无限制）
+		CostDailyLimitUSD      *float64 `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
+		CostMonthlyLimitUSD    *float64 `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
 		MaxConcurrency         *int     `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
 	}
 
@@ -169,6 +171,14 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.CostDailyLimitUSD != nil && *req.CostDailyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_daily_limit_usd must be >= 0")
+		return
+	}
+	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
 		return
 	}
 	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
@@ -209,6 +219,12 @@ func (s *Server) HandleCreateAuthToken(c *gin.Context) {
 	}
 	if req.CostLimitUSD != nil {
 		authToken.SetCostLimitUSD(*req.CostLimitUSD)
+	}
+	if req.CostDailyLimitUSD != nil {
+		authToken.SetCostDailyLimitUSD(*req.CostDailyLimitUSD)
+	}
+	if req.CostMonthlyLimitUSD != nil {
+		authToken.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
 	}
 	if req.MaxConcurrency != nil {
 		authToken.MaxConcurrency = *req.MaxConcurrency
@@ -265,7 +281,9 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 		AllowedModels          *[]string         `json:"allowed_models"`           // nil=不更新，空数组=清除限制
 		AllowedChannelIDs      *[]int64          `json:"allowed_channel_ids"`      // nil=不更新，空数组=清除限制
 		ChannelRestrictionMode *string           `json:"channel_restriction_mode"` // nil=不更新
-		CostLimitUSD           *float64          `json:"cost_limit_usd"`           // 费用上限（0=无限制）
+		CostLimitUSD           *float64          `json:"cost_limit_usd"`           // 总限额（0=无限制）
+		CostDailyLimitUSD      *float64          `json:"cost_daily_limit_usd"`     // 日限额（0=无限制）
+		CostMonthlyLimitUSD    *float64          `json:"cost_monthly_limit_usd"`   // 月限额（0=无限制）
 		MaxConcurrency         *int              `json:"max_concurrency"`          // 最大并发请求数（0=无限制）
 	}
 
@@ -275,6 +293,14 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	}
 	if req.CostLimitUSD != nil && *req.CostLimitUSD < 0 {
 		RespondErrorMsg(c, http.StatusBadRequest, "cost_limit_usd must be >= 0")
+		return
+	}
+	if req.CostDailyLimitUSD != nil && *req.CostDailyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_daily_limit_usd must be >= 0")
+		return
+	}
+	if req.CostMonthlyLimitUSD != nil && *req.CostMonthlyLimitUSD < 0 {
+		RespondErrorMsg(c, http.StatusBadRequest, "cost_monthly_limit_usd must be >= 0")
 		return
 	}
 	if req.MaxConcurrency != nil && *req.MaxConcurrency < 0 {
@@ -319,9 +345,15 @@ func (s *Server) HandleUpdateAuthToken(c *gin.Context) {
 	if req.ChannelRestrictionMode != nil {
 		token.ChannelRestrictionMode = channelRestrictionMode
 	}
-	// cost_limit_usd 只有传入时才更新
+	// cost_*_limit_usd 只有传入时才更新
 	if req.CostLimitUSD != nil {
 		token.SetCostLimitUSD(*req.CostLimitUSD)
+	}
+	if req.CostDailyLimitUSD != nil {
+		token.SetCostDailyLimitUSD(*req.CostDailyLimitUSD)
+	}
+	if req.CostMonthlyLimitUSD != nil {
+		token.SetCostMonthlyLimitUSD(*req.CostMonthlyLimitUSD)
 	}
 	if req.MaxConcurrency != nil {
 		token.MaxConcurrency = *req.MaxConcurrency

@@ -119,6 +119,12 @@ func DefineAuthTokensTable() *TableBuilder {
 		Column("effective_cost_usd DOUBLE NOT NULL DEFAULT 0.0").
 		Column("cost_used_microusd BIGINT NOT NULL DEFAULT 0").
 		Column("cost_limit_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_daily_used_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_daily_limit_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_daily_period_start BIGINT NOT NULL DEFAULT 0").
+		Column("cost_monthly_used_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_monthly_limit_microusd BIGINT NOT NULL DEFAULT 0").
+		Column("cost_monthly_period_start BIGINT NOT NULL DEFAULT 0").
 		Column("allowed_models VARCHAR(2000) NOT NULL DEFAULT ''").
 		Column("allowed_channel_ids VARCHAR(2000) NOT NULL DEFAULT ''").
 		Column("channel_restriction_mode VARCHAR(16) NOT NULL DEFAULT 'allow'").

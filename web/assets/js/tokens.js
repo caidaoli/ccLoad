@@ -547,6 +547,19 @@
       return { value: parsed };
     }
 
+    function fillCostLimitField(inputId, usedDisplayId, limitUSD, usedUSD) {
+      const input = document.getElementById(inputId);
+      const usedDisplay = document.getElementById(usedDisplayId);
+      if (input) {
+        input.value = limitUSD || 0;
+      }
+      if (usedDisplay) {
+        const costUsed = Number(usedUSD);
+        const used = Number.isFinite(costUsed) ? costUsed : 0;
+        usedDisplay.textContent = `${t('tokens.costUsedPrefix')}: $${used.toFixed(4)}`;
+      }
+    }
+
     /**
      * 构建响应时间HTML
      */
@@ -633,6 +646,8 @@
     function showCreateModal() {
       document.getElementById('tokenDescription').value = '';
       document.getElementById('tokenExpiry').value = 'never';
+      document.getElementById('tokenDailyCostLimitUSD').value = 0;
+      document.getElementById('tokenMonthlyCostLimitUSD').value = 0;
       document.getElementById('tokenCostLimitUSD').value = 0;
       document.getElementById('tokenMaxConcurrency').value = 0;
       document.getElementById('tokenActive').checked = true;
@@ -667,9 +682,11 @@
         }
       }
       const isActive = document.getElementById('tokenActive').checked;
+      const dailyCostLimitUSD = parseFloat(document.getElementById('tokenDailyCostLimitUSD').value) || 0;
+      const monthlyCostLimitUSD = parseFloat(document.getElementById('tokenMonthlyCostLimitUSD').value) || 0;
       const costLimitUSD = parseFloat(document.getElementById('tokenCostLimitUSD').value) || 0;
       const maxConcurrencyResult = parseMaxConcurrencyInput(document.getElementById('tokenMaxConcurrency').value);
-      if (costLimitUSD < 0) {
+      if (dailyCostLimitUSD < 0 || monthlyCostLimitUSD < 0 || costLimitUSD < 0) {
         window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
         return;
       }
@@ -684,7 +701,15 @@
           headers: {
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({ description, expires_at: expiresAt, is_active: isActive, cost_limit_usd: costLimitUSD, max_concurrency: maxConcurrency })
+          body: JSON.stringify({
+            description,
+            expires_at: expiresAt,
+            is_active: isActive,
+            cost_daily_limit_usd: dailyCostLimitUSD,
+            cost_monthly_limit_usd: monthlyCostLimitUSD,
+            cost_limit_usd: costLimitUSD,
+            max_concurrency: maxConcurrency
+          })
         });
 
         closeCreateModal();
@@ -736,15 +761,9 @@
       }
       initialEditExpiryState = { type: expiryTypeInput.value, value: customExpiryInput.value };
 
-      // 初始化费用限额状态（2026-01新增）
-      const costLimitInput = document.getElementById('editCostLimitUSD');
-      const costUsedDisplay = document.getElementById('editCostUsedDisplay');
-      costLimitInput.value = token.cost_limit_usd || 0;
-
-      // 显示已消耗费用
-      const costUsed = token.cost_used_usd || 0;
-      
-      costUsedDisplay.textContent = costUsed > 0 ? `${t('tokens.costUsedPrefix')}: $${costUsed.toFixed(4)}` : '';
+      fillCostLimitField('editDailyCostLimitUSD', 'editDailyCostUsedDisplay', token.cost_daily_limit_usd, token.cost_daily_used_usd);
+      fillCostLimitField('editMonthlyCostLimitUSD', 'editMonthlyCostUsedDisplay', token.cost_monthly_limit_usd, token.cost_monthly_used_usd);
+      fillCostLimitField('editCostLimitUSD', 'editCostUsedDisplay', token.cost_limit_usd, token.cost_used_usd);
 
       const maxConcurrencyInput = document.getElementById('editMaxConcurrency');
       maxConcurrencyInput.value = token.max_concurrency || 0;
@@ -802,9 +821,11 @@
       const description = document.getElementById('editTokenDescription').value.trim();
       const isActive = document.getElementById('editTokenActive').checked;
       const expiryType = document.getElementById('editTokenExpiry').value;
+      const dailyCostLimitUSD = parseFloat(document.getElementById('editDailyCostLimitUSD').value) || 0;
+      const monthlyCostLimitUSD = parseFloat(document.getElementById('editMonthlyCostLimitUSD').value) || 0;
       const costLimitUSD = parseFloat(document.getElementById('editCostLimitUSD').value) || 0;
       const maxConcurrencyResult = parseMaxConcurrencyInput(document.getElementById('editMaxConcurrency').value);
-      if (costLimitUSD < 0) {
+      if (dailyCostLimitUSD < 0 || monthlyCostLimitUSD < 0 || costLimitUSD < 0) {
         window.showNotification(t('tokens.msg.costLimitNegative'), 'error');
         return;
       }
@@ -846,7 +867,9 @@
             allowed_channel_ids: editAllowedChannelIDs,
             channel_restriction_mode: normalizeChannelRestrictionMode(editChannelRestrictionMode),
             allowed_models: editAllowedModels,  // 2026-01新增：模型限制
-            cost_limit_usd: costLimitUSD,        // 2026-01新增：费用上限
+            cost_daily_limit_usd: dailyCostLimitUSD,
+            cost_monthly_limit_usd: monthlyCostLimitUSD,
+            cost_limit_usd: costLimitUSD,        // 总限额
             max_concurrency: maxConcurrency      // 2026-04新增：并发上限
           })
         });

@@ -123,6 +123,58 @@ func TestAdminAPI_CreateAuthToken_CostLimitRequiresMaxConcurrency(t *testing.T) 
 	}
 }
 
+func TestAdminAPI_CreateAuthToken_DailyLimitRequiresMaxConcurrency(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":          "daily limited token",
+		"cost_daily_limit_usd": 1.0,
+	}))
+
+	server.HandleCreateAuthToken(c)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+	}
+}
+
+func TestAdminAPI_CreateAuthToken_PeriodCostLimits(t *testing.T) {
+	server := newInMemoryServer(t)
+
+	c, w := newTestContext(t, newJSONRequest(t, http.MethodPost, "/admin/auth-tokens", map[string]any{
+		"description":            "period limited token",
+		"cost_daily_limit_usd":   1.25,
+		"cost_monthly_limit_usd": 8.5,
+		"max_concurrency":        2,
+	}))
+
+	server.HandleCreateAuthToken(c)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var response struct {
+		Success bool `json:"success"`
+		Data    struct {
+			ID int64 `json:"id"`
+		} `json:"data"`
+	}
+	mustUnmarshalJSON(t, w.Body.Bytes(), &response)
+	stored, err := server.store.GetAuthToken(context.Background(), response.Data.ID)
+	if err != nil {
+		t.Fatalf("GetAuthToken: %v", err)
+	}
+	if stored.CostDailyLimitMicroUSD != 1_250_000 {
+		t.Fatalf("CostDailyLimitMicroUSD=%d, want 1250000", stored.CostDailyLimitMicroUSD)
+	}
+	if stored.CostMonthlyLimitMicroUSD != 8_500_000 {
+		t.Fatalf("CostMonthlyLimitMicroUSD=%d, want 8500000", stored.CostMonthlyLimitMicroUSD)
+	}
+	if stored.MaxConcurrency != 2 {
+		t.Fatalf("MaxConcurrency=%d, want 2", stored.MaxConcurrency)
+	}
+}
+
 func TestAdminAPI_ListAuthTokens_ResponseShape(t *testing.T) {
 	server := newInMemoryServer(t)
 
@@ -305,7 +357,7 @@ func TestHandleListAuthTokens_RangeAll_SkipsStats(t *testing.T) {
 	server := newInMemoryServer(t)
 	token := createTestToken(t, server, "all-token")
 
-	if err := server.store.UpdateTokenStats(context.Background(), token.Token, true, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25); err != nil {
+	if err := server.store.UpdateTokenStats(context.Background(), token.Token, true, 1.0, false, 0, 10, 20, 0, 0, 1.0, 0.25, time.Now()); err != nil {
 		t.Fatalf("UpdateTokenStats failed: %v", err)
 	}
 

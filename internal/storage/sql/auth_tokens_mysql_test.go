@@ -97,7 +97,10 @@ func (r *foundRowsRows) Columns() []string {
 		"id", "token", "description", "created_at", "expires_at", "last_used_at", "is_active",
 		"success_count", "failure_count", "stream_avg_ttfb", "non_stream_avg_rt", "stream_count", "non_stream_count",
 		"prompt_tokens_total", "completion_tokens_total", "cache_read_tokens_total", "cache_creation_tokens_total", "total_cost_usd", "effective_cost_usd",
-		"cost_used_microusd", "cost_limit_microusd", "allowed_models", "allowed_channel_ids", "channel_restriction_mode", "max_concurrency",
+		"cost_used_microusd", "cost_limit_microusd",
+		"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
+		"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
+		"allowed_models", "allowed_channel_ids", "channel_restriction_mode", "max_concurrency",
 	}
 }
 
@@ -141,6 +144,12 @@ func authTokenDriverValues(token *model.AuthToken) []driver.Value {
 		token.EffectiveCostUSD,
 		token.CostUsedMicroUSD,
 		token.CostLimitMicroUSD,
+		token.CostDailyUsedMicroUSD,
+		token.CostDailyLimitMicroUSD,
+		token.CostDailyPeriodStart,
+		token.CostMonthlyUsedMicroUSD,
+		token.CostMonthlyLimitMicroUSD,
+		token.CostMonthlyPeriodStart,
 		`["gpt-4o"]`,
 		`[42]`,
 		mode,

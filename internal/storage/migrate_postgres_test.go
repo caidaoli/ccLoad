@@ -270,7 +270,11 @@ func TestPostgres(t *testing.T) {
 		for _, col := range []string{"auth_token_id", "client_protocol", "client_ip", "minute_bucket", "cache_read_input_tokens", "actual_model", "log_source", "upstream_websocket"} {
 			checkCol("logs", col)
 		}
-		for _, col := range []string{"allowed_models", "cost_used_microusd", "cost_limit_microusd"} {
+		for _, col := range []string{
+			"allowed_models", "cost_used_microusd", "cost_limit_microusd",
+			"cost_daily_used_microusd", "cost_daily_limit_microusd", "cost_daily_period_start",
+			"cost_monthly_used_microusd", "cost_monthly_limit_microusd", "cost_monthly_period_start",
+		} {
 			checkCol("auth_tokens", col)
 		}
 		for _, col := range []string{"daily_cost_limit", "scheduled_check_model", "cost_multiplier"} {
@@ -1063,7 +1067,7 @@ func TestPostgres(t *testing.T) {
 			if err := store.UpdateTokenLastUsed(ctx, tokenValue, time.Now()); err != nil {
 				t.Fatalf("UpdateTokenLastUsed: %v", err)
 			}
-			if err := store.UpdateTokenStats(ctx, tokenValue, true, 0.5, false, 0, 10, 20, 3, 4, 0.01, 0.02); err != nil {
+			if err := store.UpdateTokenStats(ctx, tokenValue, true, 0.5, false, 0, 10, 20, 3, 4, 0.01, 0.02, time.Now()); err != nil {
 				t.Fatalf("UpdateTokenStats: %v", err)
 			}
 

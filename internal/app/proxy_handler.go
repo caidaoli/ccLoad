@@ -563,13 +563,22 @@ func (s *Server) enforceTokenLimits(c *gin.Context, tokenHash, originalModel str
 	// 原因：费用只有在请求完成后才能精确计算（token数量由上游返回），此处只能做预检查。
 	// 严格“先扣费后请求”需复杂的预估+退款机制，不值得（YAGNI）。
 	if tokenHash != "" {
-		usedMicro, limitMicro, exceeded := s.authService.IsCostLimitExceeded(tokenHash)
+		usedMicro, limitMicro, window, exceeded := s.authService.costLimitState(tokenHash)
 		if exceeded {
 			used := util.MicroUSDToUSD(usedMicro)
 			limit := util.MicroUSDToUSD(limitMicro)
+			prefix := "Cost"
+			switch window {
+			case "daily":
+				prefix = "Daily cost"
+			case "monthly":
+				prefix = "Monthly cost"
+			case "total":
+				prefix = "Total cost"
+			}
 			c.JSON(http.StatusTooManyRequests, gin.H{
 				"error": gin.H{
-					"message": fmt.Sprintf("Cost limit exceeded: $%.2f used of $%.2f limit", used, limit),
+					"message": fmt.Sprintf("%s limit exceeded: $%.2f used of $%.2f limit", prefix, used, limit),
 					"type":    "insufficient_quota",
 					"code":    "cost_limit_exceeded",
 				},

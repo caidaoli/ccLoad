@@ -21,7 +21,10 @@ const authTokenSelectColumns = `
 	id, token, description, created_at, expires_at, last_used_at, is_active,
 	success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 	prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-	cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+	cost_used_microusd, cost_limit_microusd,
+	cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
+	cost_monthly_used_microusd, cost_monthly_limit_microusd, cost_monthly_period_start,
+	allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 `
 
 func marshalJSONList[T any](field string, values []T) (string, error) {
@@ -67,6 +70,30 @@ const updateTokenStatsQuery = `
 		total_cost_usd = total_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
 		effective_cost_usd = effective_cost_usd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
 		cost_used_microusd = cost_used_microusd + CASE WHEN ? = 1 THEN ? ELSE 0 END,
+		cost_daily_used_microusd = CASE
+			WHEN ? = 1 THEN CASE
+				WHEN cost_daily_period_start = ? THEN cost_daily_used_microusd + ?
+				WHEN cost_daily_period_start < ? THEN ?
+				ELSE cost_daily_used_microusd
+			END
+			ELSE cost_daily_used_microusd
+		END,
+		cost_daily_period_start = CASE
+			WHEN ? = 1 AND cost_daily_period_start < ? THEN ?
+			ELSE cost_daily_period_start
+		END,
+		cost_monthly_used_microusd = CASE
+			WHEN ? = 1 THEN CASE
+				WHEN cost_monthly_period_start = ? THEN cost_monthly_used_microusd + ?
+				WHEN cost_monthly_period_start < ? THEN ?
+				ELSE cost_monthly_used_microusd
+			END
+			ELSE cost_monthly_used_microusd
+		END,
+		cost_monthly_period_start = CASE
+			WHEN ? = 1 AND cost_monthly_period_start < ? THEN ?
+			ELSE cost_monthly_period_start
+		END,
 
 		-- 增量更新平均值（new_avg = (old_avg*old_count + v)/(old_count+1)）
 		stream_avg_ttfb = CASE
@@ -80,7 +107,10 @@ const updateTokenStatsQuery = `
 		END,
 		non_stream_count = non_stream_count + CASE WHEN ? = 1 THEN 1 ELSE 0 END,
 
-		last_used_at = ?
+		last_used_at = CASE
+			WHEN last_used_at IS NULL OR last_used_at < ? THEN ?
+			ELSE last_used_at
+		END
 	WHERE token = ?
 `
 
@@ -119,6 +149,12 @@ func scanAuthToken(scanner interface {
 		&token.EffectiveCostUSD,
 		&costUsedMicroUSD,
 		&costLimitMicroUSD,
+		&token.CostDailyUsedMicroUSD,
+		&token.CostDailyLimitMicroUSD,
+		&token.CostDailyPeriodStart,
+		&token.CostMonthlyUsedMicroUSD,
+		&token.CostMonthlyLimitMicroUSD,
+		&token.CostMonthlyPeriodStart,
 		&allowedModelsJSON,
 		&allowedChannelIDsJSON,
 		&channelRestrictionMode,
@@ -211,9 +247,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				id, token, description, created_at, expires_at, last_used_at, is_active,
 				success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 				prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-				cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+				cost_used_microusd, cost_limit_microusd,
+				cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
+				cost_monthly_used_microusd, cost_monthly_limit_microusd, cost_monthly_period_start,
+				allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 			)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			ON CONFLICT(id) DO UPDATE SET
 				token = excluded.token,
 				description = excluded.description,
@@ -235,6 +274,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 				effective_cost_usd = excluded.effective_cost_usd,
 				cost_used_microusd = excluded.cost_used_microusd,
 				cost_limit_microusd = excluded.cost_limit_microusd,
+				cost_daily_used_microusd = excluded.cost_daily_used_microusd,
+				cost_daily_limit_microusd = excluded.cost_daily_limit_microusd,
+				cost_daily_period_start = excluded.cost_daily_period_start,
+				cost_monthly_used_microusd = excluded.cost_monthly_used_microusd,
+				cost_monthly_limit_microusd = excluded.cost_monthly_limit_microusd,
+				cost_monthly_period_start = excluded.cost_monthly_period_start,
 				allowed_models = excluded.allowed_models,
 				allowed_channel_ids = excluded.allowed_channel_ids,
 				channel_restriction_mode = excluded.channel_restriction_mode,
@@ -261,6 +306,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.EffectiveCostUSD,
 			token.CostUsedMicroUSD,
 			token.CostLimitMicroUSD,
+			token.CostDailyUsedMicroUSD,
+			token.CostDailyLimitMicroUSD,
+			token.CostDailyPeriodStart,
+			token.CostMonthlyUsedMicroUSD,
+			token.CostMonthlyLimitMicroUSD,
+			token.CostMonthlyPeriodStart,
 			allowedModelsJSON,
 			allowedChannelIDsJSON,
 			channelRestrictionMode,
@@ -298,9 +349,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			id, token, description, created_at, expires_at, last_used_at, is_active,
 			success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 			prompt_tokens_total, completion_tokens_total, cache_read_tokens_total, cache_creation_tokens_total, total_cost_usd, effective_cost_usd,
-			cost_used_microusd, cost_limit_microusd, allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
+			cost_used_microusd, cost_limit_microusd,
+			cost_daily_used_microusd, cost_daily_limit_microusd, cost_daily_period_start,
+			cost_monthly_used_microusd, cost_monthly_limit_microusd, cost_monthly_period_start,
+			allowed_models, allowed_channel_ids, channel_restriction_mode, max_concurrency
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON DUPLICATE KEY UPDATE
 			token = VALUES(token),
 			description = VALUES(description),
@@ -322,6 +376,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			effective_cost_usd = VALUES(effective_cost_usd),
 			cost_used_microusd = VALUES(cost_used_microusd),
 			cost_limit_microusd = VALUES(cost_limit_microusd),
+			cost_daily_used_microusd = VALUES(cost_daily_used_microusd),
+			cost_daily_limit_microusd = VALUES(cost_daily_limit_microusd),
+			cost_daily_period_start = VALUES(cost_daily_period_start),
+			cost_monthly_used_microusd = VALUES(cost_monthly_used_microusd),
+			cost_monthly_limit_microusd = VALUES(cost_monthly_limit_microusd),
+			cost_monthly_period_start = VALUES(cost_monthly_period_start),
 			allowed_models = VALUES(allowed_models),
 			allowed_channel_ids = VALUES(allowed_channel_ids),
 			channel_restriction_mode = VALUES(channel_restriction_mode),
@@ -348,6 +408,12 @@ func (s *SQLStore) UpsertAuthTokenAllFields(ctx context.Context, token *model.Au
 			token.EffectiveCostUSD,
 			token.CostUsedMicroUSD,
 			token.CostLimitMicroUSD,
+			token.CostDailyUsedMicroUSD,
+			token.CostDailyLimitMicroUSD,
+			token.CostDailyPeriodStart,
+			token.CostMonthlyUsedMicroUSD,
+			token.CostMonthlyLimitMicroUSD,
+			token.CostMonthlyPeriodStart,
 			allowedModelsJSON,
 			allowedChannelIDsJSON,
 			channelRestrictionMode,
@@ -371,9 +437,10 @@ const (
 	authTokenInsertCommonCols = `token, description, created_at, expires_at, last_used_at, is_active,
 		success_count, failure_count, stream_avg_ttfb, non_stream_avg_rt, stream_count, non_stream_count,
 		prompt_tokens_total, completion_tokens_total, total_cost_usd, effective_cost_usd, allowed_models, allowed_channel_ids,
-		channel_restriction_mode, cost_used_microusd, cost_limit_microusd, max_concurrency`
+		channel_restriction_mode, cost_used_microusd, cost_limit_microusd,
+		cost_daily_limit_microusd, cost_monthly_limit_microusd, max_concurrency`
 
-	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, ?, ?, ?, 0, ?, ?`
+	authTokenInsertCommonValues = `?, ?, ?, ?, ?, ?, 0, 0, 0.0, 0.0, 0, 0, 0, 0, 0.0, 0.0, ?, ?, ?, 0, ?, ?, ?, ?`
 )
 
 // authTokenInsertCommonArgs builds auth_tokens INSERT arguments.
@@ -421,7 +488,7 @@ func authTokenInsertCommonArgs(token *model.AuthToken) ([]any, error) {
 		expiresAt, lastUsedAt, token.IsActive,
 		allowedModelsJSON, allowedChannelIDsJSON,
 		channelRestrictionMode,
-		token.CostLimitMicroUSD, token.MaxConcurrency,
+		token.CostLimitMicroUSD, token.CostDailyLimitMicroUSD, token.CostMonthlyLimitMicroUSD, token.MaxConcurrency,
 	}, nil
 }
 
@@ -712,12 +779,14 @@ func (s *SQLStore) UpdateAuthToken(ctx context.Context, token *model.AuthToken) 
 		    last_used_at = ?,
 		    is_active = ?,
 		    cost_limit_microusd = ?,
+		    cost_daily_limit_microusd = ?,
+		    cost_monthly_limit_microusd = ?,
 		    allowed_models = ?,
 		    allowed_channel_ids = ?,
 		    channel_restriction_mode = ?,
 		    max_concurrency = ?
 		WHERE id = ?
-	`, token.Description, expiresAt, lastUsedAt, token.IsActive, token.CostLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
+	`, token.Description, expiresAt, lastUsedAt, token.IsActive, token.CostLimitMicroUSD, token.CostDailyLimitMicroUSD, token.CostMonthlyLimitMicroUSD, allowedModelsJSON, allowedChannelIDsJSON, channelRestrictionMode, token.MaxConcurrency, token.ID)
 
 	if err != nil {
 		return fmt.Errorf("update auth token: %w", err)
@@ -805,6 +874,7 @@ func (s *SQLStore) UpdateTokenStats(
 	cacheCreationTokens int64,
 	costUSD float64,
 	effectiveCostUSD float64,
+	completedAt time.Time,
 ) error {
 	// 单条 UPDATE 保证原子性：避免每次请求都做 BEGIN+SELECT+UPDATE+COMMIT
 	// 这对 SQLite（减少写锁持有时间/往返）和 MySQL（减少往返/行锁竞争）都更友好。
@@ -812,8 +882,8 @@ func (s *SQLStore) UpdateTokenStats(
 	failureFlag := !isSuccess
 	streamUpdateFlag := isStreaming && firstByteTime > 0
 	nonStreamUpdateFlag := !isStreaming
-	nowMs := time.Now().UnixMilli()
 	costMicroUSD := util.USDToMicroUSD(effectiveCostUSD)
+	dayStartMs, monthStartMs := model.AuthTokenCostPeriodStarts(completedAt)
 
 	result, err := s.ExecContext(ctx, updateTokenStatsQuery,
 		successFlag,
@@ -825,11 +895,15 @@ func (s *SQLStore) UpdateTokenStats(
 		successFlag, costUSD,
 		successFlag, effectiveCostUSD,
 		successFlag, costMicroUSD,
+		successFlag, dayStartMs, costMicroUSD, dayStartMs, costMicroUSD,
+		successFlag, dayStartMs, dayStartMs,
+		successFlag, monthStartMs, costMicroUSD, monthStartMs, costMicroUSD,
+		successFlag, monthStartMs, monthStartMs,
 		streamUpdateFlag, firstByteTime,
 		streamUpdateFlag,
 		nonStreamUpdateFlag, duration,
 		nonStreamUpdateFlag,
-		nowMs,
+		completedAt.UnixMilli(), completedAt.UnixMilli(),
 		tokenHash,
 	)
 	if err != nil {

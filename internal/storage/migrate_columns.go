@@ -566,6 +566,39 @@ func ensureAuthTokensCostLimit(ctx context.Context, db *sql.DB, dialect Dialect)
 	}
 }
 
+// ensureAuthTokensPeriodCostLimits 确保auth_tokens表有日/月限额字段（2026-08新增）
+func ensureAuthTokensPeriodCostLimits(ctx context.Context, db *sql.DB, dialect Dialect) error {
+	switch dialect {
+	case DialectMySQL:
+		return ensureMySQLColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "cost_daily_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_daily_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_daily_period_start", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_period_start", definition: "BIGINT NOT NULL DEFAULT 0"},
+		})
+	case DialectPostgres:
+		return ensurePostgresColumns(ctx, db, "auth_tokens", []mysqlColumnDef{
+			{name: "cost_daily_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_daily_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_daily_period_start", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_used_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_limit_microusd", definition: "BIGINT NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_period_start", definition: "BIGINT NOT NULL DEFAULT 0"},
+		})
+	default:
+		return ensureSQLiteColumns(ctx, db, "auth_tokens", []sqliteColumnDef{
+			{name: "cost_daily_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "cost_daily_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "cost_daily_period_start", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_used_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_limit_microusd", definition: "INTEGER NOT NULL DEFAULT 0"},
+			{name: "cost_monthly_period_start", definition: "INTEGER NOT NULL DEFAULT 0"},
+		})
+	}
+}
+
 // ensureAuthTokensMaxConcurrency 确保auth_tokens表有令牌并发限制字段（2026-04新增）
 func ensureAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB, dialect Dialect) error {
 	switch dialect {

@@ -230,6 +230,9 @@ func migrate(ctx context.Context, db *sql.DB, dialect Dialect) error {
 			if err := ensureAuthTokensCostLimit(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens cost_limit: %w", err)
 			}
+			if err := ensureAuthTokensPeriodCostLimits(ctx, db, dialect); err != nil {
+				return fmt.Errorf("migrate auth_tokens period cost limits: %w", err)
+			}
 			if err := ensureAuthTokensMaxConcurrency(ctx, db, dialect); err != nil {
 				return fmt.Errorf("migrate auth_tokens max_concurrency: %w", err)
 			}

@@ -47,7 +47,15 @@ type AuthToken struct {
 	// 使用微美元整数存储，避免浮点误差。JSON序列化时自动转换为USD浮点数。
 	// 1 USD = 1,000,000 微美元
 	CostUsedMicroUSD  int64 `json:"-"` // 已消耗费用（微美元）
-	CostLimitMicroUSD int64 `json:"-"` // 费用上限（微美元；0=无限制）
+	CostLimitMicroUSD int64 `json:"-"` // 总限额（微美元；0=无限制）
+
+	// 日/月限额（2026-08新增）。周期起点是服务器本地日历日/自然月 0 点的 Unix 毫秒。
+	CostDailyUsedMicroUSD    int64 `json:"-"`
+	CostDailyLimitMicroUSD   int64 `json:"-"`
+	CostDailyPeriodStart     int64 `json:"-"`
+	CostMonthlyUsedMicroUSD  int64 `json:"-"`
+	CostMonthlyLimitMicroUSD int64 `json:"-"`
+	CostMonthlyPeriodStart   int64 `json:"-"`
 
 	// RPM统计（2025-12新增，用于tokens.html显示）
 	PeakRPM   float64 `json:"peak_rpm,omitempty"`   // 峰值RPM
@@ -210,23 +218,81 @@ func (t *AuthToken) IsModelAllowed(model string) bool {
 	return false
 }
 
+// AuthTokenCostPeriodStarts 返回服务器本地日历日/自然月的周期起点（Unix 毫秒）。
+func AuthTokenCostPeriodStarts(now time.Time) (dayStartMs, monthStartMs int64) {
+	loc := now.Location()
+	dayStart := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, loc)
+	monthStart := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, loc)
+	return dayStart.UnixMilli(), monthStart.UnixMilli()
+}
+
+func usdToLimitMicroUSD(usd float64) int64 {
+	if usd <= 0 {
+		return 0
+	}
+	return util.USDToMicroUSD(usd)
+}
+
 // CostUsedUSD 返回已消耗费用（美元）
 func (t *AuthToken) CostUsedUSD() float64 {
 	return util.MicroUSDToUSD(t.CostUsedMicroUSD)
 }
 
-// CostLimitUSD 返回费用上限（美元）
+// CostLimitUSD 返回总限额（美元）
 func (t *AuthToken) CostLimitUSD() float64 {
 	return util.MicroUSDToUSD(t.CostLimitMicroUSD)
 }
 
-// SetCostLimitUSD 设置费用上限（从美元转换为微美元）
+// CostDailyUsedUSD 返回当日已消耗费用（美元，未按当前周期校正）
+func (t *AuthToken) CostDailyUsedUSD() float64 {
+	return util.MicroUSDToUSD(t.CostDailyUsedMicroUSD)
+}
+
+// CostDailyLimitUSD 返回日限额（美元）
+func (t *AuthToken) CostDailyLimitUSD() float64 {
+	return util.MicroUSDToUSD(t.CostDailyLimitMicroUSD)
+}
+
+// CostMonthlyUsedUSD 返回当月已消耗费用（美元，未按当前周期校正）
+func (t *AuthToken) CostMonthlyUsedUSD() float64 {
+	return util.MicroUSDToUSD(t.CostMonthlyUsedMicroUSD)
+}
+
+// CostMonthlyLimitUSD 返回月限额（美元）
+func (t *AuthToken) CostMonthlyLimitUSD() float64 {
+	return util.MicroUSDToUSD(t.CostMonthlyLimitMicroUSD)
+}
+
+// SetCostLimitUSD 设置总限额（从美元转换为微美元）
 func (t *AuthToken) SetCostLimitUSD(usd float64) {
-	if usd <= 0 {
-		t.CostLimitMicroUSD = 0
-		return
+	t.CostLimitMicroUSD = usdToLimitMicroUSD(usd)
+}
+
+// SetCostDailyLimitUSD 设置日限额（从美元转换为微美元）
+func (t *AuthToken) SetCostDailyLimitUSD(usd float64) {
+	t.CostDailyLimitMicroUSD = usdToLimitMicroUSD(usd)
+}
+
+// SetCostMonthlyLimitUSD 设置月限额（从美元转换为微美元）
+func (t *AuthToken) SetCostMonthlyLimitUSD(usd float64) {
+	t.CostMonthlyLimitMicroUSD = usdToLimitMicroUSD(usd)
+}
+
+// HasCostLimit 报告令牌是否启用了任一费用限额。
+func (t *AuthToken) HasCostLimit() bool {
+	return t.CostLimitMicroUSD > 0 || t.CostDailyLimitMicroUSD > 0 || t.CostMonthlyLimitMicroUSD > 0
+}
+
+// CurrentPeriodCostUsed 返回按当前本地日/月校正后的窗口用量；周期不一致视为 0。
+func (t *AuthToken) CurrentPeriodCostUsed(now time.Time) (dailyUsed, monthlyUsed int64) {
+	dayStart, monthStart := AuthTokenCostPeriodStarts(now)
+	if t.CostDailyPeriodStart == dayStart {
+		dailyUsed = t.CostDailyUsedMicroUSD
 	}
-	t.CostLimitMicroUSD = util.USDToMicroUSD(usd)
+	if t.CostMonthlyPeriodStart == monthStart {
+		monthlyUsed = t.CostMonthlyUsedMicroUSD
+	}
+	return dailyUsed, monthlyUsed
 }
 
 // ValidateUsageLimits enforces invariants that keep limit checks bounded.
@@ -234,10 +300,16 @@ func (t *AuthToken) ValidateUsageLimits() error {
 	if t.CostLimitMicroUSD < 0 {
 		return errors.New("cost_limit_usd must be >= 0")
 	}
+	if t.CostDailyLimitMicroUSD < 0 {
+		return errors.New("cost_daily_limit_usd must be >= 0")
+	}
+	if t.CostMonthlyLimitMicroUSD < 0 {
+		return errors.New("cost_monthly_limit_usd must be >= 0")
+	}
 	if t.MaxConcurrency < 0 {
 		return errors.New("max_concurrency must be >= 0")
 	}
-	if t.CostLimitMicroUSD > 0 && t.MaxConcurrency <= 0 {
+	if t.HasCostLimit() && t.MaxConcurrency <= 0 {
 		return errors.New("cost-limited auth token requires max_concurrency > 0")
 	}
 	return nil
@@ -266,6 +338,10 @@ type authTokenJSON struct {
 	EffectiveCostUSD         float64   `json:"effective_cost_usd"`
 	CostUsedUSD              float64   `json:"cost_used_usd"`
 	CostLimitUSD             float64   `json:"cost_limit_usd"`
+	CostDailyUsedUSD         float64   `json:"cost_daily_used_usd"`
+	CostDailyLimitUSD        float64   `json:"cost_daily_limit_usd"`
+	CostMonthlyUsedUSD       float64   `json:"cost_monthly_used_usd"`
+	CostMonthlyLimitUSD      float64   `json:"cost_monthly_limit_usd"`
 	PeakRPM                  float64   `json:"peak_rpm,omitempty"`
 	AvgRPM                   float64   `json:"avg_rpm,omitempty"`
 	RecentRPM                float64   `json:"recent_rpm,omitempty"`
@@ -282,6 +358,7 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		return nil, err
 	}
 
+	dailyUsed, monthlyUsed := t.CurrentPeriodCostUsed(time.Now())
 	return json.Marshal(authTokenJSON{
 		ID:                       t.ID,
 		Token:                    t.Token,
@@ -304,6 +381,10 @@ func (t AuthToken) MarshalJSON() ([]byte, error) {
 		EffectiveCostUSD:         t.EffectiveCostUSD,
 		CostUsedUSD:              t.CostUsedUSD(),
 		CostLimitUSD:             t.CostLimitUSD(),
+		CostDailyUsedUSD:         util.MicroUSDToUSD(dailyUsed),
+		CostDailyLimitUSD:        t.CostDailyLimitUSD(),
+		CostMonthlyUsedUSD:       util.MicroUSDToUSD(monthlyUsed),
+		CostMonthlyLimitUSD:      t.CostMonthlyLimitUSD(),
 		PeakRPM:                  t.PeakRPM,
 		AvgRPM:                   t.AvgRPM,
 		RecentRPM:                t.RecentRPM,

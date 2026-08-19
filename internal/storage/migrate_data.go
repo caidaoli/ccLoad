@@ -723,7 +723,8 @@ func validateAuthTokensMaxConcurrency(ctx context.Context, db *sql.DB) error {
 		SELECT id, cost_limit_microusd, max_concurrency
 		FROM auth_tokens
 		WHERE max_concurrency < 0
-		   OR (cost_limit_microusd > 0 AND max_concurrency <= 0)
+		   OR ((cost_limit_microusd > 0 OR cost_daily_limit_microusd > 0 OR cost_monthly_limit_microusd > 0)
+		       AND max_concurrency <= 0)
 	`)
 	if err != nil {
 		return fmt.Errorf("query auth_tokens.max_concurrency: %w", err)
@@ -761,7 +762,7 @@ func backfillAuthTokensCostLimitMaxConcurrency(ctx context.Context, db *sql.DB, 
 	res, err := db.ExecContext(ctx, rebindIfPostgres(dialect, `
 		UPDATE auth_tokens
 		SET max_concurrency = ?
-		WHERE cost_limit_microusd > 0
+		WHERE (cost_limit_microusd > 0 OR cost_daily_limit_microusd > 0 OR cost_monthly_limit_microusd > 0)
 		  AND max_concurrency = 0
 	`), authTokenCostLimitDefaultMaxConcurrency)
 	if err != nil {

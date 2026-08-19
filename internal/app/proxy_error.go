@@ -323,6 +323,7 @@ func hasConsumedTokens(res *fwResult) bool {
 
 type tokenStatsUpdate struct {
 	tokenHash           string
+	completedAt         time.Time
 	isSuccess           bool
 	duration            float64
 	isStreaming         bool
@@ -378,10 +379,10 @@ func (s *Server) applyTokenStatsUpdate(upd tokenStatsUpdate) {
 
 	// 内存缓存是费用限额的实时权威来源。DB 落盘失败不能让限额 fail-open。
 	if upd.isSuccess && upd.costUSD > 0 && s.authService != nil {
-		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD))
+		s.authService.AddCostToCache(upd.tokenHash, util.USDToMicroUSD(effectiveCostUSD), upd.completedAt)
 	}
 
-	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD); err != nil {
+	if err := s.store.UpdateTokenStats(updateCtx, upd.tokenHash, upd.isSuccess, upd.duration, upd.isStreaming, upd.firstByteTime, upd.promptTokens, upd.completionTokens, upd.cacheReadTokens, upd.cacheCreationTokens, upd.costUSD, effectiveCostUSD, upd.completedAt); err != nil {
 		// Token 被删除是正常的并发场景（请求进行中 token 被删除），静默忽略
 		if strings.Contains(err.Error(), "token not found") {
 			return
@@ -404,6 +405,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 	if tokenHash == "" || s.tokenStatsCh == nil {
 		return
 	}
+	completedAt := time.Now()
 
 	var promptTokens, completionTokens, cacheReadTokens, cacheCreationTokens int64
 	var costUSD float64
@@ -429,6 +431,7 @@ func (s *Server) updateTokenStatsAsync(tokenHash string, costMultiplier float64,
 
 	upd := tokenStatsUpdate{
 		tokenHash:           tokenHash,
+		completedAt:         completedAt,
 		isSuccess:           isSuccess,
 		duration:            duration,
 		isStreaming:         isStreaming,

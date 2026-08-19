@@ -71,8 +71,75 @@ type AuthService struct {
 }
 
 type tokenCostLimit struct {
-	usedMicroUSD  int64
-	limitMicroUSD int64
+	usedMicroUSD         int64
+	limitMicroUSD        int64
+	dailyUsedMicroUSD    int64
+	dailyLimitMicroUSD   int64
+	dailyPeriodStart     int64
+	monthlyUsedMicroUSD  int64
+	monthlyLimitMicroUSD int64
+	monthlyPeriodStart   int64
+}
+
+func (v tokenCostLimit) applyPeriod(now time.Time) tokenCostLimit {
+	dayStart, monthStart := model.AuthTokenCostPeriodStarts(now)
+	if v.dailyPeriodStart != dayStart {
+		v.dailyUsedMicroUSD = 0
+		v.dailyPeriodStart = dayStart
+	}
+	if v.monthlyPeriodStart != monthStart {
+		v.monthlyUsedMicroUSD = 0
+		v.monthlyPeriodStart = monthStart
+	}
+	return v
+}
+
+func (v tokenCostLimit) addCost(deltaMicroUSD int64, completedAt time.Time) tokenCostLimit {
+	v.usedMicroUSD += deltaMicroUSD
+	dayStart, monthStart := model.AuthTokenCostPeriodStarts(completedAt)
+	if v.dailyPeriodStart <= dayStart {
+		if v.dailyPeriodStart < dayStart {
+			v.dailyUsedMicroUSD = 0
+			v.dailyPeriodStart = dayStart
+		}
+		v.dailyUsedMicroUSD += deltaMicroUSD
+	}
+	if v.monthlyPeriodStart <= monthStart {
+		if v.monthlyPeriodStart < monthStart {
+			v.monthlyUsedMicroUSD = 0
+			v.monthlyPeriodStart = monthStart
+		}
+		v.monthlyUsedMicroUSD += deltaMicroUSD
+	}
+	return v
+}
+
+func (v tokenCostLimit) exceededWindow() (usedMicroUSD, limitMicroUSD int64, window string, exceeded bool) {
+	type costWindow struct {
+		used, limit int64
+		name        string
+	}
+	windows := []costWindow{
+		{v.dailyUsedMicroUSD, v.dailyLimitMicroUSD, "daily"},
+		{v.monthlyUsedMicroUSD, v.monthlyLimitMicroUSD, "monthly"},
+		{v.usedMicroUSD, v.limitMicroUSD, "total"},
+	}
+	var first costWindow
+	for _, w := range windows {
+		if w.limit <= 0 {
+			continue
+		}
+		if first.name == "" {
+			first = w
+		}
+		if w.used >= w.limit {
+			return w.used, w.limit, w.name, true
+		}
+	}
+	if first.name == "" {
+		return 0, 0, "", false
+	}
+	return first.used, first.limit, first.name, false
 }
 
 var authPasswordHashCost = bcrypt.DefaultCost
@@ -782,6 +849,7 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 	if err != nil {
 		return fmt.Errorf("reload auth tokens: %w", err)
 	}
+	periodNow := time.Now()
 
 	// 构建新的令牌映射（存储过期时间而非bool）
 	newTokens := make(map[string]int64, len(tokens))
@@ -815,11 +883,18 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 			newTokenChannels[t.Token] = channelRestriction
 		}
 		// 费用限额：只为“有限额”的令牌维护状态（避免无谓内存占用）
-		limitMicro := t.CostLimitMicroUSD
-		if limitMicro > 0 {
+		if t.HasCostLimit() {
+			dailyUsed, monthlyUsed := t.CurrentPeriodCostUsed(periodNow)
+			dayStart, monthStart := model.AuthTokenCostPeriodStarts(periodNow)
 			newTokenCostLimits[t.Token] = tokenCostLimit{
-				usedMicroUSD:  t.CostUsedMicroUSD,
-				limitMicroUSD: limitMicro,
+				usedMicroUSD:         t.CostUsedMicroUSD,
+				limitMicroUSD:        t.CostLimitMicroUSD,
+				dailyUsedMicroUSD:    dailyUsed,
+				dailyLimitMicroUSD:   t.CostDailyLimitMicroUSD,
+				dailyPeriodStart:     dayStart,
+				monthlyUsedMicroUSD:  monthlyUsed,
+				monthlyLimitMicroUSD: t.CostMonthlyLimitMicroUSD,
+				monthlyPeriodStart:   monthStart,
 			}
 		}
 		if t.MaxConcurrency > 0 {
@@ -843,10 +918,20 @@ func (s *AuthService) reloadAuthTokensLocked() error {
 	// 可能落后于内存累加。内存累加恒 ≥ 已落盘值，故取 max 保留未落盘的记账，避免限额被绕过。
 	// （管理员清零额度应走专门接口同步清内存，不依赖 reload 路径。）
 	for tok, lim := range newTokenCostLimits {
-		if old, ok := s.authTokenCostLimits[tok]; ok && old.usedMicroUSD > lim.usedMicroUSD {
-			lim.usedMicroUSD = old.usedMicroUSD
-			newTokenCostLimits[tok] = lim
+		old, ok := s.authTokenCostLimits[tok]
+		if !ok {
+			continue
 		}
+		if old.usedMicroUSD > lim.usedMicroUSD {
+			lim.usedMicroUSD = old.usedMicroUSD
+		}
+		if old.dailyPeriodStart == lim.dailyPeriodStart && old.dailyUsedMicroUSD > lim.dailyUsedMicroUSD {
+			lim.dailyUsedMicroUSD = old.dailyUsedMicroUSD
+		}
+		if old.monthlyPeriodStart == lim.monthlyPeriodStart && old.monthlyUsedMicroUSD > lim.monthlyUsedMicroUSD {
+			lim.monthlyUsedMicroUSD = old.monthlyUsedMicroUSD
+		}
+		newTokenCostLimits[tok] = lim
 	}
 	s.authTokens = newTokens
 	s.authTokenIDs = newTokenIDs
@@ -1039,29 +1124,32 @@ func (s *AuthService) acquireTokenConcurrencySlot(tokenHash string) (release fun
 // IsCostLimitExceeded 检查令牌是否超过费用限额（微美元，整数比较）
 // 若令牌无限额/未启用限额：exceeded=false 且 used/limit=0
 func (s *AuthService) IsCostLimitExceeded(tokenHash string) (usedMicroUSD, limitMicroUSD int64, exceeded bool) {
+	usedMicroUSD, limitMicroUSD, _, exceeded = s.costLimitState(tokenHash)
+	return usedMicroUSD, limitMicroUSD, exceeded
+}
+
+func (s *AuthService) costLimitState(tokenHash string) (usedMicroUSD, limitMicroUSD int64, window string, exceeded bool) {
 	s.authTokensMux.RLock()
 	v, ok := s.authTokenCostLimits[tokenHash]
 	s.authTokensMux.RUnlock()
 
-	if !ok || v.limitMicroUSD <= 0 {
-		return 0, 0, false
+	if !ok {
+		return 0, 0, "", false
 	}
-
-	return v.usedMicroUSD, v.limitMicroUSD, v.usedMicroUSD >= v.limitMicroUSD
+	return v.applyPeriod(time.Now()).exceededWindow()
 }
 
-// AddCostToCache 原子更新令牌的已消耗费用缓存
-// 仅更新内存缓存，数据库更新由 UpdateTokenStats 异步处理
-func (s *AuthService) AddCostToCache(tokenHash string, deltaMicroUSD int64) {
+// AddCostToCache 原子更新令牌的已消耗费用缓存。
+// completedAt 决定日/月周期归属，数据库更新由 UpdateTokenStats 异步处理。
+func (s *AuthService) AddCostToCache(tokenHash string, deltaMicroUSD int64, completedAt time.Time) {
 	if deltaMicroUSD <= 0 {
 		return
 	}
 
 	s.authTokensMux.Lock()
 	v, ok := s.authTokenCostLimits[tokenHash]
-	if ok && v.limitMicroUSD > 0 {
-		v.usedMicroUSD += deltaMicroUSD
-		s.authTokenCostLimits[tokenHash] = v
+	if ok {
+		s.authTokenCostLimits[tokenHash] = v.addCost(deltaMicroUSD, completedAt)
 	}
 	s.authTokensMux.Unlock()
 }

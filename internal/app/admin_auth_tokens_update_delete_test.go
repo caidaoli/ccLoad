@@ -102,6 +102,26 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 	})
 
+	t.Run("negative daily cost limit", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/1", []byte(`{"cost_daily_limit_usd":-1}`)))
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d", w.Code, http.StatusBadRequest)
+		}
+	})
+
+	t.Run("daily cost limit requires max concurrency", func(t *testing.T) {
+		c, w := newTestContext(t, newJSONRequestBytes(http.MethodPut, "/admin/auth-tokens/1", []byte(`{"cost_daily_limit_usd":1.5}`)))
+		c.Params = gin.Params{{Key: "id", Value: "1"}}
+
+		server.HandleUpdateAuthToken(c)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status=%d, want %d, body=%s", w.Code, http.StatusBadRequest, w.Body.String())
+		}
+	})
+
 	t.Run("deny mode persists and reloads", func(t *testing.T) {
 		body := map[string]any{
 			"allowed_channel_ids":      []int64{11, 22},
@@ -132,14 +152,16 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 
 	t.Run("success", func(t *testing.T) {
 		body := map[string]any{
-			"description":         "new-desc",
-			"is_active":           false,
-			"expires_at":          expiresAt,
-			"allowed_models":      []string{"m1", "m2"},
-			"allowed_channel_ids": []int64{11, 22},
-			"cost_limit_usd":      1.5,
-			"max_concurrency":     3,
-			"unknown_ignored":     "x",
+			"description":            "new-desc",
+			"is_active":              false,
+			"expires_at":             expiresAt,
+			"allowed_models":         []string{"m1", "m2"},
+			"allowed_channel_ids":    []int64{11, 22},
+			"cost_limit_usd":         1.5,
+			"cost_daily_limit_usd":   0.4,
+			"cost_monthly_limit_usd": 9,
+			"max_concurrency":        3,
+			"unknown_ignored":        "x",
 		}
 		c, w := newTestContext(t, newJSONRequest(t, http.MethodPut, "/admin/auth-tokens/1", body))
 		c.Params = gin.Params{{Key: "id", Value: "1"}}
@@ -150,13 +172,15 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 
 		type respData struct {
-			Description       string  `json:"description"`
-			IsActive          bool    `json:"is_active"`
-			Token             string  `json:"token"`
-			ExpiresAt         *int64  `json:"expires_at,omitempty"`
-			CostLimitUSD      float64 `json:"cost_limit_usd"`
-			AllowedChannelIDs []int64 `json:"allowed_channel_ids"`
-			MaxConcurrency    int     `json:"max_concurrency"`
+			Description         string  `json:"description"`
+			IsActive            bool    `json:"is_active"`
+			Token               string  `json:"token"`
+			ExpiresAt           *int64  `json:"expires_at,omitempty"`
+			CostLimitUSD        float64 `json:"cost_limit_usd"`
+			CostDailyLimitUSD   float64 `json:"cost_daily_limit_usd"`
+			CostMonthlyLimitUSD float64 `json:"cost_monthly_limit_usd"`
+			AllowedChannelIDs   []int64 `json:"allowed_channel_ids"`
+			MaxConcurrency      int     `json:"max_concurrency"`
 		}
 		resp := mustParseAPIResponse[respData](t, w.Body.Bytes())
 		if !resp.Success {
@@ -177,6 +201,12 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		if resp.Data.CostLimitUSD < 1.49 || resp.Data.CostLimitUSD > 1.51 {
 			t.Fatalf("cost_limit_usd=%v, want ~1.5", resp.Data.CostLimitUSD)
 		}
+		if resp.Data.CostDailyLimitUSD < 0.39 || resp.Data.CostDailyLimitUSD > 0.41 {
+			t.Fatalf("cost_daily_limit_usd=%v, want ~0.4", resp.Data.CostDailyLimitUSD)
+		}
+		if resp.Data.CostMonthlyLimitUSD < 8.99 || resp.Data.CostMonthlyLimitUSD > 9.01 {
+			t.Fatalf("cost_monthly_limit_usd=%v, want ~9", resp.Data.CostMonthlyLimitUSD)
+		}
 		if len(resp.Data.AllowedChannelIDs) != 2 || resp.Data.AllowedChannelIDs[0] != 11 || resp.Data.AllowedChannelIDs[1] != 22 {
 			t.Fatalf("allowed_channel_ids=%v, want [11 22]", resp.Data.AllowedChannelIDs)
 		}
@@ -196,6 +226,12 @@ func TestHandleUpdateAuthToken(t *testing.T) {
 		}
 		if updated.CostLimitMicroUSD != 1_500_000 {
 			t.Fatalf("CostLimitMicroUSD=%d, want %d", updated.CostLimitMicroUSD, 1_500_000)
+		}
+		if updated.CostDailyLimitMicroUSD != 400_000 {
+			t.Fatalf("CostDailyLimitMicroUSD=%d, want %d", updated.CostDailyLimitMicroUSD, 400_000)
+		}
+		if updated.CostMonthlyLimitMicroUSD != 9_000_000 {
+			t.Fatalf("CostMonthlyLimitMicroUSD=%d, want %d", updated.CostMonthlyLimitMicroUSD, 9_000_000)
 		}
 		if len(updated.AllowedModels) != 2 {
 			t.Fatalf("AllowedModels=%v, want 2 items", updated.AllowedModels)
