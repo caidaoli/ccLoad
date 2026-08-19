@@ -918,6 +918,93 @@ func TestReplaceModelInPath_GeminiAPI(t *testing.T) {
 	}
 }
 
+func TestInjectAnthropicBetaFlag_MergesIntoRawLowercaseKey(t *testing.T) {
+	t.Parallel()
+
+	req, err := http.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRawHeader(req.Header, "anthropic-beta", "claude-code-20250219,oauth-2025-04-20")
+
+	injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
+
+	var keys []string
+	var values []string
+	for name, vs := range req.Header {
+		if strings.EqualFold(name, "anthropic-beta") {
+			keys = append(keys, name)
+			values = append(values, vs...)
+		}
+	}
+	if len(keys) != 1 || keys[0] != "anthropic-beta" {
+		t.Fatalf("anthropic-beta keys = %v, want a single raw key", keys)
+	}
+	joined := strings.Join(values, ",")
+	if !strings.Contains(joined, "claude-code-20250219") || !strings.Contains(joined, "context-1m-2025-08-07") {
+		t.Fatalf("anthropic-beta = %v, want CLI betas plus context-1m", values)
+	}
+	if strings.Count(joined, "context-1m-2025-08-07") != 1 {
+		t.Fatalf("context-1m duplicated: %v", values)
+	}
+
+	injectAnthropicBetaFlag(req, "context-1m-2025-08-07")
+	if strings.Count(joinedHeaderValuesFold(req.Header, "anthropic-beta"), "context-1m-2025-08-07") != 1 {
+		t.Fatalf("second inject duplicated the flag: %v", req.Header)
+	}
+}
+
+func TestInjectAnthropicBetaFlagUsesExactTokensAndDropsEmptyValues(t *testing.T) {
+	t.Parallel()
+
+	const flag = "context-1m-2025-08-07"
+	req, err := http.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRawHeader(req.Header, "anthropic-beta", "  foo-"+flag+"-bar, , oauth-2025-04-20  ")
+
+	injectAnthropicBetaFlag(req, flag)
+
+	got := joinedHeaderValuesFold(req.Header, "anthropic-beta")
+	if got != "foo-"+flag+"-bar,oauth-2025-04-20,"+flag {
+		t.Fatalf("anthropic-beta = %q, want exact token append without empty values", got)
+	}
+	for _, token := range strings.Split(got, ",") {
+		if token == flag {
+			return
+		}
+	}
+	t.Fatalf("anthropic-beta = %q, exact flag token missing", got)
+}
+
+func TestInjectAnthropicBetaFlagHandlesEmptyExistingHeader(t *testing.T) {
+	t.Parallel()
+
+	const flag = "context-1m-2025-08-07"
+	req, err := http.NewRequest(http.MethodPost, "https://anyrouter.top/v1/messages", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	setRawHeader(req.Header, "anthropic-beta", "")
+
+	injectAnthropicBetaFlag(req, flag)
+
+	if got := joinedHeaderValuesFold(req.Header, "anthropic-beta"); got != flag {
+		t.Fatalf("anthropic-beta = %q, want %q without a leading comma", got, flag)
+	}
+}
+
+func joinedHeaderValuesFold(h http.Header, name string) string {
+	var values []string
+	for key, vs := range h {
+		if strings.EqualFold(key, name) {
+			values = append(values, vs...)
+		}
+	}
+	return strings.Join(values, ",")
+}
+
 func TestStripAnthropicProtocolHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -960,6 +1047,26 @@ func TestStripAnthropicProtocolHeaders(t *testing.T) {
 			}
 		})
 	}
+
+	t.Run("openai upstream strips raw lowercase fingerprint keys", func(t *testing.T) {
+		t.Parallel()
+		req, _ := http.NewRequest("POST", "http://example.com/v1/chat/completions", nil)
+		setRawHeader(req.Header, "anthropic-version", "2023-06-01")
+		setRawHeader(req.Header, "anthropic-beta", "claude-code-20250219")
+		setRawHeader(req.Header, "anthropic-dangerous-direct-browser-access", "true")
+		setRawHeader(req.Header, "Content-Type", "application/json")
+		stripAnthropicProtocolHeaders(req, "openai")
+		for name := range req.Header {
+			if strings.EqualFold(name, "anthropic-version") ||
+				strings.EqualFold(name, "anthropic-beta") ||
+				strings.EqualFold(name, "anthropic-dangerous-direct-browser-access") {
+				t.Fatalf("raw Anthropic header %q survived strip: %v", name, req.Header)
+			}
+		}
+		if rawHeaderValues(req.Header, "Content-Type")[0] != "application/json" {
+			t.Fatalf("Content-Type should be kept: %v", req.Header)
+		}
+	})
 }
 
 func anyrouterAnthropicCfg() *model.Config {

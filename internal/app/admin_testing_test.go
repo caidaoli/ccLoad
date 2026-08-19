@@ -28,6 +28,7 @@ import (
 	"ccLoad/internal/testutil"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
+	"ccLoad/internal/zaiauth"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"
@@ -5673,6 +5674,12 @@ func TestDownstreamEndpointPath(t *testing.T) {
 			baseURL: "https://other.example.test/mismatch",
 			want:    "/v1/messages",
 		},
+		{
+			name:    "base path /v1 does not steal /v1beta",
+			fullURL: "https://host.example.test/v1beta/models/x:generateContent",
+			baseURL: "https://host.example.test/v1",
+			want:    "/v1beta/models/x:generateContent",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -5682,5 +5689,115 @@ func TestDownstreamEndpointPath(t *testing.T) {
 					test.fullURL, test.baseURL, got, test.want)
 			}
 		})
+	}
+}
+
+func TestAdminTestZAICodingPlanEmitsZCodeWireContract(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := newZAITestChannel()
+	cfg.ModelEntries = []model.ModelEntry{{Model: "glm-4.7"}}
+	testReq := &testutil.TestChannelRequest{
+		Model: "glm-4.7", Content: "hello", ClientProtocol: util.ProtocolAnthropic,
+	}
+
+	cfgForBuild, plan, err := srv.buildTestUpstreamRequestPlan(
+		cfg, "key-id.secret", testReq, util.ProtocolAnthropic, util.ProtocolAnthropic, zaiauth.CodingPlanProxyBaseURL,
+	)
+	if err != nil {
+		t.Fatalf("buildTestUpstreamRequestPlan: %v", err)
+	}
+	if plan.endpointPath != "/v1/messages" {
+		t.Fatalf("endpointPath = %q, want /v1/messages after stripping the ZCode base path", plan.endpointPath)
+	}
+	identity := decodeZAIRequestIdentity(t, plan.requestBody)
+	if identity.DeviceID != cfg.ZAIDeviceID {
+		t.Fatalf("metadata.user_id device = %q, want ZCode fingerprint %q", identity.DeviceID, cfg.ZAIDeviceID)
+	}
+
+	req, cancel, err := srv.newTestUpstreamRequest(context.Background(), cfgForBuild, testReq, plan)
+	if err != nil {
+		t.Fatalf("newTestUpstreamRequest: %v", err)
+	}
+	defer cancel()
+
+	if got := headerValueFold(req.Header, "x-api-key"); got != "key-id.secret" {
+		t.Fatalf("x-api-key = %q", got)
+	}
+	if got := headerValueFold(req.Header, "User-Agent"); got != "ZCode/"+zaiauth.AppVersion {
+		t.Fatalf("User-Agent = %q, want ZCode identity", got)
+	}
+	if got := headerValueFold(req.Header, "x-session-id"); got == "" {
+		t.Fatal("x-session-id missing")
+	}
+	if got := headerValueFold(req.Header, "Authorization"); got != "" {
+		t.Fatalf("Authorization = %q, ZCode authenticates with x-api-key only", got)
+	}
+}
+
+func TestAdminTestNativeAnthropicDoesNotDoubleAppendHeaderRules(t *testing.T) {
+	srv := newInMemoryServer(t)
+	credentialJSON, err := (&anthropicauth.Credential{
+		Type: anthropicauth.ChannelType, AccessToken: "access", RefreshToken: "refresh",
+		Expired: "2030-01-01T00:00:00Z", AccountUUID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+	}).JSON()
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := anthropicauth.ParseCredential([]byte(credentialJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const sessionID = "11111111-2222-4333-8444-555555555555"
+	userID := fmt.Sprintf(`{"device_id":%q,"account_uuid":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb","session_id":%q}`,
+		credential.DeviceID, sessionID)
+	const helperBetas = "oauth-2025-04-20,interleaved-thinking-2025-05-14,redact-thinking-2026-02-12,thinking-token-count-2026-05-13,context-management-2025-06-27,prompt-caching-scope-2026-01-05"
+	cfg := &model.Config{
+		AuthType: model.AuthTypeAnthropicOAuth, OAuthCredential: credentialJSON,
+		URLs: model.ChannelURLs{{URL: "https://api.anthropic.com"}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionAppend, Name: "Anthropic-Beta", Value: "context-1m-2025-08-07"},
+		}},
+	}
+	plan := &channelTestRequestPlan{
+		upstreamProtocol: util.ProtocolAnthropic,
+		apiKey:           "oauth-access",
+		fullURL:          "https://api.anthropic.com/v1/messages",
+		endpointPath:     "/v1/messages",
+		requestBody: []byte(fmt.Sprintf(
+			`{"model":"claude-haiku-4-5-20251001","max_tokens":1,"messages":[{"role":"user","content":"helper probe"}],"metadata":{"user_id":%q}}`,
+			userID,
+		)),
+		headers: http.Header{
+			"Accept": {"application/json"}, "Accept-Encoding": {"gzip"}, "Content-Type": {"application/json"},
+			"User-Agent": {"claude-cli/2.1.220 (external, cli)"}, "X-App": {"cli"}, "Anthropic-Beta": {helperBetas},
+			"Anthropic-Version": {"2023-06-01"}, "Anthropic-Dangerous-Direct-Browser-Access": {"true"},
+			"X-Claude-Code-Session-Id": {sessionID}, "X-Client-Request-Id": {"66666666-7777-4888-8999-aaaaaaaaaaaa"},
+			"X-Stainless-Lang": {"js"}, "X-Stainless-Runtime": {"node"}, "X-Stainless-Package-Version": {"0.94.0"},
+			"X-Stainless-Runtime-Version": {"v26.3.0"}, "X-Stainless-OS": {"MacOS"}, "X-Stainless-Arch": {"arm64"},
+			"X-Stainless-Retry-Count": {"0"}, "X-Stainless-Timeout": {"600"},
+		},
+	}
+
+	req, cancel, err := srv.newTestUpstreamRequest(context.Background(), cfg, &testutil.TestChannelRequest{Model: "claude-haiku-4-5-20251001"}, plan)
+	if err != nil {
+		t.Fatalf("newTestUpstreamRequest: %v", err)
+	}
+	defer cancel()
+
+	var betaValues []string
+	for name, values := range req.Header {
+		if strings.EqualFold(name, "anthropic-beta") {
+			betaValues = append(betaValues, values...)
+		}
+	}
+	betas := strings.Join(betaValues, ", ")
+	if !strings.Contains(betas, helperBetas) {
+		t.Fatalf("anthropic-beta = %q, want the native helper profile preserved", betas)
+	}
+	if strings.Contains(betas, "claude-code-20250219") {
+		t.Fatalf("anthropic-beta = %q, helper request was rebuilt as a cloaked CLI fingerprint", betas)
+	}
+	if strings.Count(betas, "context-1m-2025-08-07") != 1 {
+		t.Fatalf("anthropic-beta = %q, append rule must not run twice on the native admin-test path", betas)
 	}
 }

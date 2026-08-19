@@ -64,8 +64,10 @@ func finalizeZAICodingPlanBody(body []byte, cfg *model.Config) ([]byte, error) {
 }
 
 // injectZAICodingPlanHeaders rebuilds the request headers as ZCode sends them.
-// It runs after the channel's custom header rules so the client identity cannot
-// be rewritten by a rule, matching the Codex contract.
+// The proxy and admin-test paths mark this as a wire rebuild, then re-run
+// applyHeaderRules so channel header rules still apply. Auth headers stay
+// blocked by the blacklist; ZCode identity headers (UA, x-session-id, ...)
+// can be overridden, matching the Claude Code CLI fingerprint contract.
 func injectZAICodingPlanHeaders(req *http.Request, cfg *model.Config, apiKey string, body []byte, incoming http.Header) {
 	if req == nil {
 		return

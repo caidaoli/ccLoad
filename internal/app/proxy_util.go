@@ -392,21 +392,42 @@ func stripAnthropicProtocolHeaders(req *http.Request, upstreamType string) {
 		return
 	}
 	for _, h := range anthropicProtocolHeaders {
-		req.Header.Del(h)
+		deleteRawHeader(req.Header, h)
 	}
 }
 
-// injectAnthropicBetaFlag 确保 anthropic-beta 头包含指定 flag
+// injectAnthropicBetaFlag 确保 anthropic-beta 头包含指定 flag。
+// 指纹路径用 setRawHeader 写小写键，http.Header.Get/Set 只认 canonical 键，
+// 必须就地改写已有键，否则会拆出第二份同名头。
 func injectAnthropicBetaFlag(req *http.Request, flag string) {
-	existing := req.Header.Get("anthropic-beta")
-	if existing == "" {
-		req.Header.Set("anthropic-beta", flag)
+	flag = strings.TrimSpace(flag)
+	if req == nil || flag == "" {
 		return
 	}
-	if strings.Contains(existing, flag) {
+	h := req.Header
+	key, exists := existingHeaderKey(h, "anthropic-beta")
+	if !exists {
+		h.Set("anthropic-beta", flag)
 		return
 	}
-	req.Header.Set("anthropic-beta", existing+","+flag)
+	tokens := make([]string, 0, len(h[key])+1)
+	found := false
+	for _, value := range h[key] {
+		for _, token := range strings.Split(value, ",") {
+			token = strings.TrimSpace(token)
+			if token == "" {
+				continue
+			}
+			if token == flag {
+				found = true
+			}
+			tokens = append(tokens, token)
+		}
+	}
+	if !found {
+		tokens = append(tokens, flag)
+	}
+	h[key] = []string{strings.Join(tokens, ",")}
 }
 
 func ensureAnthropicVersionHeader(req *http.Request, upstreamType string) {

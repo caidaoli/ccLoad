@@ -300,6 +300,92 @@ func TestBuildProxyRequest_KeepsCustomHeaderRulesOnClaudeCodeWire(t *testing.T) 
 	}
 }
 
+func TestBuildProxyRequest_AnyrouterMergesContext1mIntoClaudeCodeBeta(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := anyrouterAnthropicCfg()
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Anthropic,
+		upstreamProtocol: protocol.Anthropic,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Anthropic,
+			UpstreamProtocol: protocol.Anthropic,
+			UpstreamPath:     "/v1/messages",
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx, cfg, "sk-test-key", http.MethodPost,
+		[]byte(`{"model":"claude-3","messages":[{"role":"user","content":"hi"}]}`),
+		http.Header{"anthropic-version": []string{"2023-06-01"}},
+		"", "/v1/messages", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+
+	var keys []string
+	var values []string
+	for name, vs := range req.Header {
+		if strings.EqualFold(name, "anthropic-beta") {
+			keys = append(keys, name)
+			values = append(values, vs...)
+		}
+	}
+	if len(keys) != 1 {
+		t.Fatalf("anthropic-beta keys = %v, want exactly one map key", keys)
+	}
+	betas := strings.Join(values, ",")
+	if !strings.Contains(betas, "claude-code-20250219") || !strings.Contains(betas, "context-1m-2025-08-07") {
+		t.Fatalf("anthropic-beta = %q, want CLI betas plus context-1m", betas)
+	}
+}
+
+func TestBuildProxyRequest_KeepsCustomHeaderRulesOnAntigravityWire(t *testing.T) {
+	srv := newInMemoryServer(t)
+	cfg := &model.Config{
+		ID:                     1,
+		Name:                   "antigravity",
+		AuthType:               model.AuthTypeAntigravityOAuth,
+		AntigravityAccessToken: "at-gravity",
+		AntigravityProjectID:   "gravity-project",
+		URLs:                   model.ChannelURLs{{URL: "https://daily-cloudcode-pa.googleapis.com"}},
+		CustomRequestRules: &model.CustomRequestRules{Headers: []model.CustomHeaderRule{
+			{Action: model.RuleActionOverride, Name: "X-Configured", Value: "kept"},
+			{Action: model.RuleActionOverride, Name: "Authorization", Value: "Bearer hijack"},
+		}},
+	}
+	body := []byte(`{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`)
+	reqCtx := &requestContext{
+		ctx:              context.Background(),
+		startTime:        time.Now(),
+		clientProtocol:   protocol.Gemini,
+		upstreamProtocol: protocol.Gemini,
+		transformPlan: protocol.TransformPlan{
+			ClientProtocol:   protocol.Gemini,
+			UpstreamProtocol: protocol.Gemini,
+			UpstreamPath:     "/v1beta/models/gemini-3-flash:generateContent",
+			OriginalBody:     body,
+		},
+	}
+
+	req, err := srv.buildProxyRequest(
+		reqCtx, cfg, "unused", http.MethodPost, body,
+		http.Header{"Content-Type": []string{"application/json"}},
+		"", "/v1beta/models/gemini-3-flash:generateContent", cfg.GetURLs()[0],
+	)
+	if err != nil {
+		t.Fatalf("buildProxyRequest failed: %v", err)
+	}
+	if got := headerValueFold(req.Header, "X-Configured"); got != "kept" {
+		t.Fatalf("X-Configured = %q, want the custom rule to survive the Antigravity header rebuild", got)
+	}
+	if got := headerValueFold(req.Header, "Authorization"); got != "Bearer at-gravity" {
+		t.Fatalf("Authorization = %q, want the auth header protected from custom rules", got)
+	}
+}
+
 func TestBuildProxyRequest_AuthHeadersUseRuntimeUpstreamProtocol(t *testing.T) {
 	srv := newInMemoryServer(t)
 

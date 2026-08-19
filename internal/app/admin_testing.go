@@ -281,7 +281,7 @@ func downstreamEndpointPath(fullURL, baseURL string) string {
 		return parsed.Path
 	}
 	prefix := strings.TrimRight(base.Path, "/")
-	if prefix == "" || !strings.HasPrefix(parsed.Path, prefix) {
+	if prefix == "" || (parsed.Path != prefix && !strings.HasPrefix(parsed.Path, prefix+"/")) {
 		return parsed.Path
 	}
 	// Exact 标记的 URL 不拼后缀，剥完是空串，此时完整路径本身就是端点。
@@ -1676,13 +1676,13 @@ func (s *Server) newTestUpstreamRequest(
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
 		wireRebuilt = true
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
-		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
+		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
 		wireRebuilt = true
 	} else if isZAICodingPlanRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
 		injectZAICodingPlanHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
 		wireRebuilt = true
 	} else if isAnthropicClaudeCodeMessagesRequest(cfgForBuild, requestProtocol, requestPlan.endpointPath) {
-		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
+		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody, sourceHeaders)
 		wireRebuilt = true
 	}
 	// 指纹路径清空（或整体替换）并重建了请求头，规则产物随之丢失；与代理链路一样重跑

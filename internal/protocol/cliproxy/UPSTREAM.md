@@ -151,10 +151,11 @@ documented adaptations:
   The excluded plugin registry and Antigravity reasoning replay cache still have
   no ccLoad runtime equivalent, so plugin-hook and replay-index changes are not
   copied as translator code.
-- ccLoad has no Kimi OAuth authenticator or executor. The unused top-level Kimi
-  OAuth model catalog is therefore omitted from the embedded registry. Generic
-  API-key channels remain model-agnostic and retain Kimi pricing and wire-format
-  compatibility.
+- ccLoad has no Kimi OAuth authenticator or executor. The upstream
+  `models.json` may still include a top-level kimi catalog; ccLoad's
+  `modelCatalog` does not deserialize that key, so Lookup never sees those
+  models. Generic API-key channels remain model-agnostic and retain Kimi
+  pricing and wire-format compatibility.
 - `fork/v8.65.0` also rewrites Gemini function-call pairing validation to use
   short-circuiting `gjson.ForEach`; ccLoad carries that pure control-flow update
   while preserving its local `ccLoad/internal/protocol/cliproxy/util` import and
