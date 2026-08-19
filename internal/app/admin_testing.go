@@ -1644,7 +1644,9 @@ func (s *Server) newTestUpstreamRequest(
 	} else if requestProtocol == protocol.Codex {
 		injectCodexHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.upstreamStreaming)
 	} else if cfgForBuild.UsesAntigravityOAuth() {
+		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfgForBuild, s.antigravityUserAgent())
+		wireRebuilt = true
 	} else if isAnthropicOAuthMessagesRequest(cfgForBuild, requestProtocol, req.URL.Path) {
 		injectAnthropicOAuthHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 		wireRebuilt = true
@@ -1652,8 +1654,8 @@ func (s *Server) newTestUpstreamRequest(
 		injectAnthropicAPIKeyHeaders(req, cfgForBuild, requestPlan.apiKey, requestPlan.requestBody)
 		wireRebuilt = true
 	}
-	// 指纹路径清空并重建了整个请求头，规则产物随之丢失；与代理链路一样重跑一次，
-	// 渠道测试才能反映真实上游请求头。
+	// 指纹路径清空（或整体替换）并重建了请求头，规则产物随之丢失；与代理链路一样重跑
+	// 一次，渠道测试才能反映真实上游请求头。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfgForBuild.HeaderRules())
 	}

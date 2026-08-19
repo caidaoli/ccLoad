@@ -236,7 +236,9 @@ func (s *Server) buildProxyRequest(
 		}
 		injectCodexHeaders(req, cfg, apiKey, upstreamStreaming)
 	} else if cfg.UsesAntigravityOAuth() {
+		// injectAntigravityOAuthHeaders 整体替换 req.Header，同样属于重建路径。
 		injectAntigravityOAuthHeaders(req, cfg, s.antigravityUserAgent())
+		wireRebuilt = true
 	} else if isAnthropicOAuthMessagesRequest(cfg, upstreamProtocol, requestPath) {
 		injectAnthropicOAuthHeaders(req, cfg, apiKey, body, hdr)
 		wireRebuilt = true
@@ -248,10 +250,10 @@ func (s *Server) buildProxyRequest(
 		wireRebuilt = true
 	}
 
-	// 6.1 Claude Code CLI / ZCode 指纹路径清空了整个请求头再重建，步骤 6 的规则产物
-	// 随之丢失。渠道自定义 header 规则必须最终生效，所以在重建之后重跑一次：认证头
-	// 仍由 authHeaderBlacklist 拦下，override/remove 幂等，append 也不会重复
-	// （前一次的产物已被清空）。
+	// 6.1 Claude Code CLI / ZCode / Antigravity 指纹路径清空（或整体替换）了请求头再
+	// 重建，步骤 6 的规则产物随之丢失。渠道自定义 header 规则必须最终生效，所以在重建
+	// 之后重跑一次：认证头仍由 authHeaderBlacklist 拦下，override/remove 幂等，append
+	// 也不会重复（前一次的产物已被清空）。
 	if wireRebuilt {
 		applyHeaderRules(req.Header, cfg.HeaderRules())
 	}
