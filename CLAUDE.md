@@ -141,7 +141,7 @@ www/                 独立介绍站(`make www-setup` 复制共享资源后可�
 ## 计费与限额
 
 - **渠道倍率** `cost_multiplier`(≤0 归 1):× 标准成本 = `effective_cost`,写日志时快照到 `logs.cost_multiplier` 避免历史污染
-- **Auth Token**:`cost_*_microusd`(微美元整数避浮点);仅 2xx 累加费用,失败只计次,允许「超额一个请求」;`CCLOAD_API_TOKENS` 启动预置
+- **Auth Token**:`cost_*_microusd`(微美元整数避浮点);`cost_limit` 是总限额,`cost_daily_*`/`cost_monthly_*` 按服务器本地自然日/自然月累计,任一限额启用时必须同时设正数 `max_concurrency`;仅 2xx 累加费用,失败只计次,允许「超额一个请求」;`CCLOAD_API_TOKENS` 启动预置
 - **Auth Token 访问控制**(`model/auth_token.go`、`auth_service.go`):`allowed_models` 模型白名单(空=无限制);`allowed_channel_ids`+`channel_restriction_mode`(`allow` 白名单/`deny` 黑名单,空 mode 视为 allow,空列表始终无限制),`ChannelRestriction.Allows` 封装极性,选择链路走 `FilterAllowedChannels`;`max_concurrency` 令牌级并发上限(0=无限),`acquireTokenConcurrencySlot` 获取槽位
 - **渠道每日限额** `daily_cost_limit`(美元,0=无限);`CostCache` 内存缓存按天重置
 - **OAuth 配额成本**(`internal/oauthcost/usage.go`+`app/oauth_quota_cost.go`+`sql/log.go:AddLogWithOAuthQuotaCost`):Codex/Anthropic/Antigravity/xAI 凭证 JSON 的 `quota_cost_usage.windows[]` 内持久化**每个上游额度窗口**的**标准成本**(不乘 `cost_multiplier`,与 `effective_cost` 无关),随日志写入在**同一事务**累加,失败即整条日志回滚。槽位身份是上游的 `limit_name|kind`(`oauthcost.Key`),**不是窗口时长**——同一时长可以对应多个互不相干的窗口(Antigravity 的 gemini/3p 周额度、Anthropic 的三个 7 天窗口),按时长归并必然错位。每个槽位带模型族 `Family`,`AddStandardCost` 按日志的实际上游模型(`ActualModel` 优先)逐槽判族累加:Antigravity 按模型名前缀分 `gemini`/`non_gemini`,Anthropic 的 `seven_day_sonnet`/`seven_day_fable` 各自成族,Codex 的 `codex-spark` 只吃 Spark 模型,其余窗口是 `FamilyAll` 吃全部。窗口边界只来自上游额度采样(月=28–31 天区间,按自然月+`ResetDay` 锚点推进)后由 `Reconcile` 对账,没采到就没有窗口、不累加;采样里消失的槽位丢弃,但**一个有效窗口都没采到时保留已累计数据**(缺信息≠窗口消失)。只有落在 `[max(StartedAt, CountFromAt), ResetAt)` 半开区间的日志计入,迟到的旧日志不会污染新周期。混合存储副本走 `AddLogReplica` 不累加,凭证由 `markChannelDirty`→`syncChannelReplica` 异步复制到主库
