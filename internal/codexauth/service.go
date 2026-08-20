@@ -24,7 +24,7 @@ const (
 	DefaultWhoAmIURL        = "https://auth.openai.com/api/accounts/v1/user-auth-credential/whoami"
 	DefaultClientID         = "app_EMoamEEZ73f0CkXaXp7hrann"
 	DefaultRedirectURI      = "http://localhost:1455/auth/callback"
-	DefaultClientVersion    = "0.147.0"
+	DefaultClientVersion    = "0.148.0"
 	DefaultOriginator       = "codex-tui"
 	DefaultUserAgent        = DefaultOriginator + "/" + DefaultClientVersion + " (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (" + DefaultOriginator + "; " + DefaultClientVersion + ")"
 	defaultTokenTimeout     = 30 * time.Second

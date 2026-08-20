@@ -402,9 +402,9 @@ func TestBuildProxyRequest_CodexIdentityHeadersAndTurnState(t *testing.T) {
 	}
 
 	for name, want := range map[string]string{
-		"User-Agent":         "codex-tui/0.147.0 (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.147.0)",
-		"Originator":         "codex-tui",
-		"Version":            "0.147.0",
+		"User-Agent":         codexUserAgent,
+		"Originator":         codexOriginator,
+		"Version":            codexVersion,
 		"X-Codex-Turn-State": "turn-state-token",
 	} {
 		if got := req.Header.Get(name); got != want {

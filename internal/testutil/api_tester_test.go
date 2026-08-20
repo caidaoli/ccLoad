@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"ccLoad/internal/codexauth"
 	"ccLoad/internal/model"
 
 	"github.com/bytedance/sonic"
@@ -222,8 +223,8 @@ func TestCodexTesterBuild_UsesCurrentCodexClientHeaders(t *testing.T) {
 	if got := headers.Get("Openai-Beta"); got != "" {
 		t.Fatalf("Openai-Beta header should be omitted, got %q", got)
 	}
-	if got := headers.Get("User-Agent"); got != "codex-tui/0.147.0 (Mac OS 26.5.2; arm64) Apple_Terminal/470.2 (codex-tui; 0.147.0)" {
-		t.Fatalf("User-Agent = %q, want current Codex TUI identity", got)
+	if got := headers.Get("User-Agent"); got != codexauth.DefaultUserAgent {
+		t.Fatalf("User-Agent = %q, want current Codex TUI identity %q", got, codexauth.DefaultUserAgent)
 	}
 	if got := headers.Get("Accept"); got != "text/event-stream" {
 		t.Fatalf("Accept = %q, want text/event-stream", got)
