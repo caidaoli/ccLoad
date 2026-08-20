@@ -588,6 +588,227 @@ func TestCodexBodyWithoutThinking_RemovesReasoningControls(t *testing.T) {
 	}
 }
 
+func TestResponsesRetryBodyForMissingRequiredParameter_DropsInputItem(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{
+		"model":"gpt-5.6-sol",
+		"input":[
+			{"type":"message","role":"user","content":[{"type":"input_text","text":"keep-user"}]},
+			{"type":"message","id":"msg_item_empty","role":"assistant","content":[{"type":"output_text"}],"status":"completed"},
+			{"type":"agent_message","content":[{"type":"input_text","text":"follow-up"}]}
+		]
+	}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"code":"missing_required_parameter","message":"Missing required parameter: 'input[1].content[0].text'.","param":"input[1].content[0].text","type":"invalid_request_error"}}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	got, strategy, ok := responsesRetryBodyForMissingRequiredParameter(plan, res)
+	if !ok {
+		t.Fatal("responsesRetryBodyForMissingRequiredParameter returned ok=false")
+	}
+	if strategy != stripMissingRequiredInputStrategy {
+		t.Fatalf("strategy=%q, want %s", strategy, stripMissingRequiredInputStrategy)
+	}
+	items := gjson.GetBytes(got, "input").Array()
+	if len(items) != 2 {
+		t.Fatalf("input items=%d body=%s, want 2", len(items), got)
+	}
+	if items[0].Get("role").String() != "user" || items[0].Get("content.0.text").String() != "keep-user" {
+		t.Fatalf("user item lost: %s", got)
+	}
+	if items[1].Get("type").String() != "agent_message" || items[1].Get("content.0.text").String() != "follow-up" {
+		t.Fatalf("follow-up item lost: %s", got)
+	}
+}
+
+func TestResponsesRetryBodyForMissingRequiredParameter_IgnoresNonMatchingErrors(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]}]}`)
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	cases := []struct {
+		name string
+		res  *fwResult
+	}{
+		{
+			name: "not 400",
+			res:  &fwResult{Status: http.StatusUnprocessableEntity, Body: []byte(`{"error":{"code":"missing_required_parameter","param":"input[0].content[0].text"}}`)},
+		},
+		{
+			name: "other code",
+			res:  &fwResult{Status: http.StatusBadRequest, Body: []byte(`{"error":{"code":"unsupported_parameter","param":"input[0].content[0].text"}}`)},
+		},
+		{
+			name: "committed",
+			res: &fwResult{
+				Status: http.StatusBadRequest, ResponseCommitted: true,
+				Body: []byte(`{"error":{"code":"missing_required_parameter","param":"input[0].content[0].text"}}`),
+			},
+		},
+		{
+			name: "param not input",
+			res:  &fwResult{Status: http.StatusBadRequest, Body: []byte(`{"error":{"code":"missing_required_parameter","param":"reasoning.effort"}}`)},
+		},
+		{
+			name: "index out of range",
+			res:  &fwResult{Status: http.StatusBadRequest, Body: []byte(`{"error":{"code":"missing_required_parameter","param":"input[9].content[0].text"}}`)},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, ok := responsesRetryBodyForMissingRequiredParameter(plan, tc.res); ok {
+				t.Fatalf("%s: expected no retry", tc.name)
+			}
+		})
+	}
+}
+
+func TestRetryBodyForRejectedRequest_StripsMissingRequiredInput(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]},{"type":"message","role":"assistant","content":[{"type":"output_text"}]}]}`)
+	res := &fwResult{
+		Status: http.StatusBadRequest,
+		Body:   []byte(`{"error":{"code":"missing_required_parameter","message":"Missing required parameter: 'input[1].content[0].text'."}}`),
+	}
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	got, strategy, ok := retryBodyForRejectedRequest(protocol.OpenAI, nil, plan, res)
+	if !ok {
+		t.Fatal("retryBodyForRejectedRequest returned ok=false")
+	}
+	if strategy != stripMissingRequiredInputStrategy {
+		t.Fatalf("strategy=%q, want %s", strategy, stripMissingRequiredInputStrategy)
+	}
+	if gjson.GetBytes(got, "input.#").Int() != 1 {
+		t.Fatalf("expected one remaining input item, got %s", got)
+	}
+}
+
+func TestResponsesRetryBodyForMissingStoredInputItem_StripsNamedReasoning(t *testing.T) {
+	t.Parallel()
+	const missingID = "rs_item_813dd000e22bc4aa5ed48884"
+	body := []byte(`{"store":false,"input":[` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"keep"}]},` +
+		`{"type":"reasoning","id":"` + missingID + `","summary":[{"type":"summary_text","text":"think"}],"encrypted_content":null},` +
+		`{"type":"message","id":"msg_item_keep","role":"assistant","content":[{"type":"output_text","text":"ok"}]}` +
+		`]}`)
+	errorEvent := []byte(`{"type":"error","error":{"type":"invalid_request_error","code":null,"message":"Item with id '` + missingID + `' not found. Items are not persisted when store is set to false.","param":"input"},"status":404}`)
+	plan := protocol.TransformPlan{TranslatedBody: body}
+
+	got, strategy, ok := responsesRetryBodyForMissingStoredInputItem(plan, &fwResult{
+		Status:        http.StatusOK,
+		SSEErrorEvent: errorEvent,
+	})
+	if !ok {
+		t.Fatal("expected SSE 404 missing-item retry")
+	}
+	if strategy != stripMissingStoredInputItemStrategy+":"+missingID {
+		t.Fatalf("strategy=%q", strategy)
+	}
+	if gjson.GetBytes(got, "input.#").Int() != 2 {
+		t.Fatalf("expected two remaining input items, got %s", got)
+	}
+	if bytes.Contains(got, []byte(missingID)) {
+		t.Fatalf("missing stored item survived retry body: %s", got)
+	}
+	if gjson.GetBytes(got, "input.1.id").String() != "msg_item_keep" {
+		t.Fatalf("unrelated item lost: %s", got)
+	}
+
+	got, strategy, ok = retryBodyForRejectedRequest(protocol.Codex, nil, plan, &fwResult{
+		Status: http.StatusNotFound,
+		Body:   errorEvent,
+	})
+	if !ok {
+		t.Fatal("retryBodyForRejectedRequest returned ok=false for HTTP 404")
+	}
+	if strategy != stripMissingStoredInputItemStrategy+":"+missingID {
+		t.Fatalf("strategy=%q", strategy)
+	}
+	if gjson.GetBytes(got, "input.#").Int() != 2 {
+		t.Fatalf("HTTP 404 retry body=%s", got)
+	}
+}
+
+func TestResponsesRetryBodyForMissingStoredInputItem_IgnoresNonMatchingErrors(t *testing.T) {
+	t.Parallel()
+	body := []byte(`{"input":[{"type":"reasoning","id":"rs_item_813dd000e22bc4aa5ed48884","summary":[]}]}`)
+	plan := protocol.TransformPlan{TranslatedBody: body}
+	missing := []byte(`{"error":{"message":"Item with id 'rs_item_813dd000e22bc4aa5ed48884' not found"}}`)
+
+	cases := []struct {
+		name string
+		res  *fwResult
+	}{
+		{
+			name: "committed",
+			res:  &fwResult{Status: http.StatusNotFound, ResponseCommitted: true, Body: missing},
+		},
+		{
+			name: "other status",
+			res:  &fwResult{Status: http.StatusTooManyRequests, Body: missing},
+		},
+		{
+			name: "previous_response_not_found",
+			res: &fwResult{
+				Status: http.StatusBadRequest,
+				Body:   []byte(`{"error":{"code":"previous_response_not_found","message":"No response found for previous_response_id resp-1"}}`),
+			},
+		},
+		{
+			name: "id not in body",
+			res: &fwResult{
+				Status: http.StatusNotFound,
+				Body:   []byte(`{"error":{"message":"Item with id 'rs_item_missing' not found"}}`),
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, ok := responsesRetryBodyForMissingStoredInputItem(plan, tc.res); ok {
+				t.Fatalf("%s: expected no retry", tc.name)
+			}
+		})
+	}
+}
+
+func TestWriteSyntheticSSEFrameRoundTripsMultilineJSON(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": null,
+    "message": "Item with id 'rs_item_813dd000e22bc4aa5ed48884' not found",
+    "param": "input"
+  },
+  "status": 404
+}`)
+	var buf bytes.Buffer
+	if err := writeSyntheticSSEFrame(&buf, payload); err != nil {
+		t.Fatalf("writeSyntheticSSEFrame: %v", err)
+	}
+	raw, ok := nextSSEEvent(&buf)
+	if !ok {
+		t.Fatal("expected one SSE event")
+	}
+	got := sseEventData(raw)
+	if !gjson.ValidBytes(got) {
+		t.Fatalf("reconstructed SSE payload is not JSON: %q", got)
+	}
+	if gjson.GetBytes(got, "type").String() != "error" || gjson.GetBytes(got, "status").Int() != 404 {
+		t.Fatalf("reconstructed payload=%s", got)
+	}
+	id, ok := parseMissingStoredInputItemID(gjson.GetBytes(got, "error.message").String())
+	if !ok || id != "rs_item_813dd000e22bc4aa5ed48884" {
+		t.Fatalf("id=%q ok=%v", id, ok)
+	}
+}
+
 func TestCodexRetryBodyFor400_FallsThroughToThinkingWhenAnyrouterBodyUnchanged(t *testing.T) {
 	body := []byte(`{
 		"model":"gpt-5-codex",

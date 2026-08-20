@@ -5549,6 +5549,102 @@ func TestNativeCodexWebsocketPreviousResponseNotFoundReconnectsWithReplay(t *tes
 	}
 }
 
+func TestNativeCodexWebsocketMissingStoredInputItemReconnectsWithStrippedReplay(t *testing.T) {
+	const missingID = "rs_item_813dd000e22bc4aa5ed48884"
+	requests := make(chan []byte, 2)
+	var handshakes atomic.Int32
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection := handshakes.Add(1)
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			t.Errorf("upgrade missing-stored-item websocket: %v", err)
+			return
+		}
+		defer func() { _ = conn.Close() }()
+		_, payload, err := conn.ReadMessage()
+		if err != nil {
+			t.Errorf("read missing-stored-item request: %v", err)
+			return
+		}
+		requests <- bytes.Clone(payload)
+		if connection == 1 {
+			_ = conn.WriteJSON(map[string]any{"type": "codex.rate_limits", "plan_type": "team"})
+			_ = conn.WriteJSON(map[string]any{
+				"type": "codex.response.metadata",
+				"headers": map[string]any{
+					"x-models-etag": `W/"049c5ac287d558ad890fafdc6480d0e9"`,
+				},
+			})
+			_ = conn.WriteMessage(websocket.TextMessage, []byte(`{
+  "type": "error",
+  "error": {
+    "type": "invalid_request_error",
+    "code": null,
+    "message": "Item with id '`+missingID+`' not found. Items are not persisted when store is set to false.",
+    "param": "input"
+  },
+  "status": 404
+}`))
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{
+			"type": "response.completed",
+			"response": map[string]any{
+				"id": "resp-stripped", "output": []any{},
+				"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+			},
+		})
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "missing-stored-item-replay", upstreamProtocol: "codex", websockets: true,
+		models: "gpt-test", priority: 100, authType: model.AuthTypeCodexOAuth,
+		oauthCredential: codexProxyTestCredential(t, "at-missing-item", "rt-missing-item", "account-missing-item"),
+	}}, map[int]string{0: upstream.URL})
+	downstream := dialResponsesWebsocketWithSessionID(t, env.engine, "missing-stored-item")
+	if err := downstream.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+		t.Fatalf("set missing-stored-item deadline: %v", err)
+	}
+	if err := downstream.WriteJSON(map[string]any{
+		"type": "response.create", "model": "gpt-test", "store": false,
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "keep going"},
+			map[string]any{
+				"type": "reasoning", "id": missingID,
+				"summary": []any{map[string]any{"type": "summary_text", "text": "prior"}},
+			},
+			map[string]any{
+				"type": "message", "id": "msg_item_keep", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "ok"}},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("write missing-stored-item request: %v", err)
+	}
+	completed := readWebsocketUntilType(t, downstream, "response.completed")
+	completedJSON, _ := json.Marshal(completed)
+	if gjson.GetBytes(completedJSON, "response.id").String() != "resp-stripped" {
+		t.Fatalf("unexpected stripped replay completion: %#v", completed)
+	}
+
+	first := <-requests
+	replay := <-requests
+	if !bytes.Contains(first, []byte(missingID)) {
+		t.Fatalf("first upstream request dropped the missing item too early: %s", first)
+	}
+	if bytes.Contains(replay, []byte(missingID)) {
+		t.Fatalf("replay still contained missing stored item: %s", replay)
+	}
+	if gjson.GetBytes(replay, "input.#").Int() != 2 || handshakes.Load() != 2 {
+		t.Fatalf("replay input=%s handshakes=%d, want two remaining items and two handshakes", replay, handshakes.Load())
+	}
+	if gjson.GetBytes(replay, "input.1.id").String() != "msg_item_keep" {
+		t.Fatalf("unrelated input item lost on replay: %s", replay)
+	}
+}
+
 func TestNativeCodexWebsocketFailsOverToAnotherWebsocketAfterReconnectExhausted(t *testing.T) {
 	var primaryHandshakes atomic.Int32
 	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}

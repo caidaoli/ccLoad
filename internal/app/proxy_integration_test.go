@@ -10035,6 +10035,227 @@ func TestProxy_ResponsesMetadataThenSSEError_RetriesNextChannel(t *testing.T) {
 	}
 }
 
+func TestProxy_ResponsesMissingRequiredParameterRetriesWithPrunedInput(t *testing.T) {
+	t.Parallel()
+
+	requests := make(chan []byte, 2)
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		requests <- bytes.Clone(body)
+		if calls.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = fmt.Fprint(w, `{"error":{"code":"missing_required_parameter","message":"Missing required parameter: 'input[1].content[0].text'.","param":"input[1].content[0].text","type":"invalid_request_error"}}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-after-pruning","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-missing-required", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1",
+	}}, map[int]string{0: upstream.URL})
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true,
+		"input": []any{
+			map[string]any{"type": "message", "role": "user", "content": "keep-user"},
+			map[string]any{"type": "message", "role": "assistant", "content": []any{
+				map[string]any{"type": "output_text"},
+			}},
+			map[string]any{"type": "message", "role": "user", "content": "keep-follow-up"},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "resp-after-pruning") {
+		t.Fatalf("status=%d body=%s, want completed retried response", w.Code, w.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want 2", calls.Load())
+	}
+	first := <-requests
+	retry := <-requests
+	if gjson.GetBytes(first, "input.#").Int() != 3 {
+		t.Fatalf("first request input=%s, want three items", first)
+	}
+	if gjson.GetBytes(retry, "input.#").Int() != 2 ||
+		gjson.GetBytes(retry, "input.0.content").String() != "keep-user" ||
+		gjson.GetBytes(retry, "input.1.content").String() != "keep-follow-up" {
+		t.Fatalf("retry did not remove only invalid input item: %s", retry)
+	}
+}
+
+func TestProxy_ResponsesSSEMissingStoredItemRetriesOnceWithStrippedBody(t *testing.T) {
+	t.Parallel()
+
+	const missingID = "rs_item_missing"
+	requests := make(chan []byte, 2)
+	var calls atomic.Int32
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		requests <- bytes.Clone(body)
+		call := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		if call == 1 {
+			_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", fmt.Sprintf(
+				`{"type":"error","error":{"type":"invalid_request_error","code":null,"message":"Item with id '%s' not found. Items are not persisted when store is set to false.","param":"input"},"status":404}`,
+				missingID,
+			))
+			return
+		}
+		_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-after-strips","status":"completed","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}`+"\n\n")
+	}))
+	defer upstream.Close()
+
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-missing-items", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1",
+	}}, map[int]string{0: upstream.URL})
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "store": false,
+		"input": []any{
+			map[string]any{"type": "reasoning", "id": missingID, "summary": []any{}},
+			map[string]any{"type": "message", "id": "msg_keep", "role": "user", "content": "keep"},
+		},
+	}, nil)
+
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), "resp-after-strips") {
+		t.Fatalf("status=%d body=%s, want completed response", w.Code, w.Body.String())
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("upstream calls=%d, want initial request plus one retry", calls.Load())
+	}
+	first := <-requests
+	second := <-requests
+	if !gjson.GetBytes(first, "input.#(id==\""+missingID+"\").id").Exists() {
+		t.Fatalf("initial request lost missing item: %s", first)
+	}
+	if gjson.GetBytes(second, "input.#").Int() != 1 ||
+		gjson.GetBytes(second, "input.0.id").String() != "msg_keep" {
+		t.Fatalf("retry did not remove only %s: %s", missingID, second)
+	}
+}
+
+func TestProxy_ResponsesSSEMissingStoredItemRetriesOnce(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	requests := make(chan []byte, responsesMissingStoredItemRetryLimit+2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		requests <- bytes.Clone(body)
+		calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		missingID := gjson.GetBytes(body, "input.0.id").String()
+		if missingID == "" {
+			_, _ = fmt.Fprint(w, `data: {"type":"response.completed","response":{"id":"resp-after-unbounded-retries","status":"completed","output":[]}}`+"\n\n")
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", fmt.Sprintf(
+			`{"type":"error","error":{"type":"invalid_request_error","code":null,"message":"Item with id '%s' not found. Items are not persisted when store is set to false.","param":"input"},"status":404}`,
+			missingID,
+		))
+	}))
+	defer upstream.Close()
+
+	input := make([]any, 0, responsesMissingStoredItemRetryLimit+1)
+	for index := range responsesMissingStoredItemRetryLimit + 1 {
+		input = append(input, map[string]any{
+			"type": "reasoning", "id": fmt.Sprintf("rs_item_missing_%02d", index), "summary": []any{},
+		})
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-missing-item-limit", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1",
+	}}, map[int]string{0: upstream.URL})
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "stream": true, "store": false, "input": input,
+	}, nil)
+
+	wantCalls := int32(responsesMissingStoredItemRetryLimit + 1)
+	if calls.Load() != wantCalls {
+		t.Fatalf("upstream calls=%d, want initial request plus %d retries (%d total); status=%d body=%s",
+			calls.Load(), responsesMissingStoredItemRetryLimit, wantCalls, w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "resp-after-unbounded-retries") {
+		t.Fatalf("retry loop stripped beyond the fixed limit: %s", w.Body.String())
+	}
+	var last []byte
+	for range wantCalls {
+		last = <-requests
+	}
+	if gjson.GetBytes(last, "input.#").Int() != 1 ||
+		gjson.GetBytes(last, "input.0.id").String() != fmt.Sprintf("rs_item_missing_%02d", responsesMissingStoredItemRetryLimit) {
+		t.Fatalf("last bounded retry body=%s, want final unstripped item", last)
+	}
+}
+
+func TestProxy_ResponsesHTTPMissingStoredItemRetriesOnce(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int32
+	requests := make(chan []byte, responsesMissingStoredItemRetryLimit+2)
+	upstream := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read upstream request: %v", err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		requests <- bytes.Clone(body)
+		calls.Add(1)
+		missingID := gjson.GetBytes(body, "input.0.id").String()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprintf(w,
+			`{"error":{"type":"invalid_request_error","code":null,"message":"Item with id '%s' not found. Items are not persisted when store is set to false.","param":"input"}}`,
+			missingID,
+		)
+	}))
+	defer upstream.Close()
+
+	input := make([]any, 0, responsesMissingStoredItemRetryLimit+1)
+	for index := range responsesMissingStoredItemRetryLimit + 1 {
+		input = append(input, map[string]any{
+			"type": "reasoning", "id": fmt.Sprintf("rs_item_missing_%02d", index), "summary": []any{},
+		})
+	}
+	env := setupProxyTestEnv(t, []testChannel{{
+		name: "responses-http-missing-item-limit", upstreamProtocol: "codex", models: "gpt-test", apiKey: "sk-1",
+	}}, map[int]string{0: upstream.URL})
+	w := doProxyRequest(t, env.engine, "/v1/responses", map[string]any{
+		"model": "gpt-test", "store": false, "input": input,
+	}, nil)
+
+	wantCalls := int32(responsesMissingStoredItemRetryLimit + 1)
+	if calls.Load() != wantCalls {
+		t.Fatalf("upstream calls=%d, want initial request plus %d retries (%d total); status=%d body=%s",
+			calls.Load(), responsesMissingStoredItemRetryLimit, wantCalls, w.Code, w.Body.String())
+	}
+	var last []byte
+	for range wantCalls {
+		last = <-requests
+	}
+	if gjson.GetBytes(last, "input.#").Int() != 1 ||
+		gjson.GetBytes(last, "input.0.id").String() != fmt.Sprintf("rs_item_missing_%02d", responsesMissingStoredItemRetryLimit) {
+		t.Fatalf("last bounded retry body=%s, want final unstripped item", last)
+	}
+}
+
 func TestProxy_SSEContextLengthExceededReturns400WithoutRetryOrCooldown(t *testing.T) {
 	var firstCalls atomic.Int32
 	upstream1 := newTestHTTPServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

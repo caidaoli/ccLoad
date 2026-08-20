@@ -2263,6 +2263,7 @@ func (s *Server) forwardAttempt(
 
 	forceReturnClient := false
 	retryStrategies := make([]string, 0, 2)
+	missingStoredItemRetries := 0
 	for !quotaOverdraftReplayed {
 		retrySourcePlan := plan
 		// Rebuild an optimized Codex multi-agent request from the original plan on
@@ -2275,6 +2276,12 @@ func (s *Server) forwardAttempt(
 		if !ok || hasRetryStrategy(retryStrategies, retryStrategy) {
 			break
 		}
+		if strings.HasPrefix(retryStrategy, stripMissingStoredInputItemStrategy+":") {
+			if missingStoredItemRetries >= responsesMissingStoredItemRetryLimit {
+				break
+			}
+			missingStoredItemRetries++
+		}
 		retryStrategies = append(retryStrategies, retryStrategy)
 		retryPlan := plan
 		retryPlan.TranslatedBody = retryBody
@@ -2284,17 +2291,20 @@ func (s *Server) forwardAttempt(
 			retryPlan, reqCtx.header, reqCtx.rawQuery, baseURL, w, reqCtx.observer, nativeAttempt, executionIdentity,
 			retryBody,
 		)
+		plan = retryPlan
 		if res != nil && res.DebugData != nil {
 			reqCtx.debugData = res.DebugData
 		}
 		if err == nil && res != nil && res.Status >= 200 && res.Status < 300 {
 			res.RetryStrategy = strings.Join(retryStrategies, ",")
-			break
+			if len(res.SSEErrorEvent) == 0 {
+				break
+			}
+			continue
 		}
 		if upstreamProtocol != protocol.Anthropic {
 			forceReturnClient = true
 		}
-		plan = retryPlan
 		if err != nil || res == nil {
 			break
 		}
@@ -2637,6 +2647,12 @@ func retryBodyForRejectedRequest(
 	res *fwResult,
 ) ([]byte, string, bool) {
 	if retryBody, strategy, ok := anthropicRetryBodyFor400(upstreamProtocol, plan, res); ok {
+		return retryBody, strategy, true
+	}
+	if retryBody, strategy, ok := responsesRetryBodyForMissingRequiredParameter(plan, res); ok {
+		return retryBody, strategy, true
+	}
+	if retryBody, strategy, ok := responsesRetryBodyForMissingStoredInputItem(plan, res); ok {
 		return retryBody, strategy, true
 	}
 	if cfg != nil && cfg.UsesAntigravityOAuth() && res != nil && !res.ResponseCommitted {

@@ -496,11 +496,10 @@ func (p *sseUsageParser) parseEvent(eventType, data string) error {
 
 	payloadType, _ := event["type"].(string)
 
-	// Responses 元数据事件（response.created/queued/in_progress）不构成语义输出：
-	// 客户端可以在这些事件后重新开始回合，与原生 WS 路径的
-	// isCodexWebsocketSemanticEvent 判定对齐。event: 行与 JSON type 都要认，
-	// 和 isSuccessfulResponsesTerminal 一样。只有真正的内容事件才标记为有流输出，
-	// 以便 deferredWriter 在 error 到来前不会过早 commit。
+	// Responses 元数据事件不构成语义输出：客户端可以在这些事件后重新开始回合，
+	// 与原生 WS 路径的 isCodexWebsocketSemanticEvent 判定对齐。event: 行与
+	// JSON type 都要认，和 isSuccessfulResponsesTerminal 一样。只有真正的内容
+	// 事件才标记为有流输出，以便 deferredWriter 在 error 到来前不会过早 commit。
 	if !isResponsesMetadataEvent(payloadType) && !isResponsesMetadataEvent(eventType) {
 		p.hasStreamOutput = true
 	}
@@ -617,7 +616,8 @@ func (p *sseUsageParser) GetResponsesTurnResult() (responsesWebsocketTurnResult,
 // 空字符串不是元数据：Chat Completions 没有 type，必须算有流输出。
 func isResponsesMetadataEvent(payloadType string) bool {
 	switch payloadType {
-	case "response.created", "response.queued", "response.in_progress":
+	case "response.created", "response.queued", "response.in_progress",
+		"codex.rate_limits", "codex.response.metadata":
 		return true
 	default:
 		return false

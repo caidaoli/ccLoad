@@ -1402,6 +1402,8 @@ func TestSSEUsageParser_ResponsesMetadataDoesNotCommitStreamOutput(t *testing.T)
 		{"response.created", "response.created", false},
 		{"response.queued", "response.queued", false},
 		{"response.in_progress", "response.in_progress", false},
+		{"codex.rate_limits", "codex.rate_limits", false},
+		{"codex.response.metadata", "codex.response.metadata", false},
 		{"response.output_item.added", "response.output_item.added", true},
 		{"response.output_text.delta", "response.output_text.delta", true},
 		{"response.content_part.added", "response.content_part.added", true},
