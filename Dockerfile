@@ -8,7 +8,7 @@
 FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS base
 
 # 安装交叉编译工具链（这层很少变，缓存命中率高）
-COPY --from=tonistiigi/xx:1.6.1 / /
+COPY --from=tonistiigi/xx:1.9.0 / /
 RUN apk add --no-cache git ca-certificates tzdata clang lld
 
 WORKDIR /app
@@ -63,7 +63,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
 # ============================================
 # 阶段4: 运行时镜像 (最小化)
 # ============================================
-FROM alpine:3.21
+FROM alpine:3.24.1
 
 # 安装运行时依赖
 RUN apk --no-cache add ca-certificates tzdata

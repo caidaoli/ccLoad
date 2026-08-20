@@ -27,7 +27,7 @@ jobs:
       make_latest: ${{ steps.release.outputs.make_latest }}
     steps:
       - name: Checkout release tag
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.release_tag) || github.ref }}
 
@@ -95,12 +95,12 @@ jobs:
             output: ccload-windows-amd64.exe
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.metadata.outputs.tag }}
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: '1.26.x'
           cache: false
@@ -142,7 +142,7 @@ jobs:
       contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.metadata.outputs.tag }}
           fetch-depth: 0
@@ -190,7 +190,7 @@ jobs:
       packages: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           ref: refs/tags/${{ needs.metadata.outputs.tag }}
 

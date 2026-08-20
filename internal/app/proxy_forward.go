@@ -1021,19 +1021,17 @@ func (s *Server) handleSuccessResponse(
 
 	// 提取usage数据和错误事件
 	var streamComplete bool
-	if parser != nil {
-		result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
-		result.ReasoningTokens = parser.GetReasoningTokens()
-		result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
-		result.ToolCostUSD = parser.GetToolCostUSD()
-		result.ThinkingEffort = parser.GetThinkingEffort()
+	result.InputTokens, result.OutputTokens, result.CacheReadInputTokens, result.CacheCreationInputTokens = parser.GetUsage()
+	result.ReasoningTokens = parser.GetReasoningTokens()
+	result.Cache5mInputTokens, result.Cache1hInputTokens, result.ServiceTier = parser.GetCacheBreakdown()
+	result.ToolCostUSD = parser.GetToolCostUSD()
+	result.ThinkingEffort = parser.GetThinkingEffort()
 
-		if errorEvent := parser.GetLastError(); errorEvent != nil {
-			result.SSEErrorEvent = errorEvent
-		}
-		streamComplete = parser.IsStreamComplete()
-		result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
+	if errorEvent := parser.GetLastError(); errorEvent != nil {
+		result.SSEErrorEvent = errorEvent
 	}
+	streamComplete = parser.IsStreamComplete()
+	result.ResponsesTurnResult, result.HasResponsesTurnResult = parser.GetResponsesTurnResult()
 
 	// 生成流诊断消息（仅流请求）
 	if reqCtx.isStreaming {

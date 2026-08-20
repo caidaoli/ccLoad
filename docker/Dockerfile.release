@@ -1,12 +1,12 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM alpine:3.21 AS runtime-files
+FROM --platform=$BUILDPLATFORM alpine:3.24.1 AS runtime-files
 
 RUN apk add --no-cache ca-certificates tzdata && \
     addgroup -g 1001 -S ccload && \
     adduser -u 1001 -S ccload -G ccload && \
     mkdir -p /app/data
 
-FROM alpine:3.21
+FROM alpine:3.24.1
 
 ARG TARGETARCH
 
