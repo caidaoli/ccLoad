@@ -750,7 +750,7 @@ ccLoad 会在创建或刷新渠道时优先读取账号的 Coding Plan 模型目
 
 在渠道管理中选择 **Cursor**，可完成浏览器 CLI 登录（`loginDeepControl`），导入 Cursor User API Key，或粘贴 Cursor CLI `auth.json` 里的 `accessToken`。登录、身份、模型目录和额度刷新走 `api2.cursor.sh` 的 HTTP 接口。对话仍在本机调用 `cursor-agent`（`--print --trust --mode ask`），需要安装 Cursor CLI（`https://cursor.com/install`）并保证 `cursor-agent` 在 `PATH` 上（或设置 `CURSOR_AGENT_PATH`）。
 
-行为对齐 [cursor2Oauth](https://github.com/ChenYCL/cursor2Oauth)：只吃文本、只回文本。客户端 `tools` / `tool_use` 不会转发给 Cursor，响应里也不会出现工具调用。官方 `AgentService/RunSSE` 的 protobuf 仍在变动，本渠道不实现那条工具循环。
+对话仍用 `cursor-agent --mode ask`，避免 Cursor 在网关本机跑 shell 或写文件。客户端 `tools`、`tool_use`、`function_call`、`tool_result` 走 prompt 映射：模型输出 `<cc_tool_call>` 块，ccLoad 再译成 Anthropic `tool_use` 或 OpenAI `tool_calls`。工具由客户端执行，下一轮把结果送回来。这不是 Cursor `AgentService/RunSSE`。
 
 渠道卡片可刷新包含额度 / API / Auto 三个花费窗口（`DashboardService/GetCurrentPeriodUsage`）。
 
