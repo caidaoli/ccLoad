@@ -15,6 +15,7 @@ import (
 	"ccLoad/internal/antigravityauth"
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/util"
 	"ccLoad/internal/xaiauth"
@@ -641,6 +642,12 @@ func normalizeCSVImportOAuthCredential(authType, raw string) (string, error) {
 		return credential.JSON()
 	case model.AuthTypeZAIOAuth:
 		credential, err := zaiauth.ParseCredential([]byte(raw))
+		if err != nil {
+			return "", err
+		}
+		return credential.JSON()
+	case model.AuthTypeCursorOAuth:
+		credential, err := cursorauth.ParseCredential([]byte(raw))
 		if err != nil {
 			return "", err
 		}

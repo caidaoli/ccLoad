@@ -116,7 +116,8 @@
                   <option value="antigravity" data-i18n="channels.oauth.providerAntigravity">Antigravity</option>
                   <option value="xai" data-i18n="channels.oauth.providerXAI">xAI</option>
                   <option value="anthropic" data-i18n="channels.oauth.providerAnthropic">Anthropic</option>
-                  <option value="zai" data-i18n="channels.oauth.providerZAI">Z.ai Coding Plan</option>
+                  <option value="zai" data-i18n="channels.oauth.providerZAI">Z.ai</option>
+                  <option value="cursor" data-i18n="channels.oauth.providerCursor">Cursor</option>
                 </select>
               </div>
               <div id="codexOAuthControls">
@@ -209,6 +210,32 @@
                     aria-describedby="zaiAPIKeyHint oauthLoginDialogStatus">
                   <p id="zaiAPIKeyHint" class="oauth-field-hint"
                     data-i18n="channels.zai.apiKeyHint">提交后输入会立即从页面清除。ccLoad 只把它保存在渠道凭证中。</p>
+                </div>
+              </div>
+              <div id="cursorOAuthControls" hidden>
+                <div class="oauth-field">
+                  <label for="cursorOAuthMethod" data-i18n="channels.cursor.methodLabel">Cursor 授权方式</label>
+                  <select id="cursorOAuthMethod" name="cursor_oauth_method" class="form-input">
+                    <option value="oauth" data-i18n="channels.cursor.methodOAuth">浏览器授权（Cursor CLI 登录）</option>
+                    <option value="api_key" data-i18n="channels.cursor.methodAPIKey">Cursor User API Key</option>
+                    <option value="session" data-i18n="channels.cursor.methodSession">粘贴 accessToken</option>
+                  </select>
+                </div>
+                <div id="cursorAPIKeyField" class="oauth-field" hidden>
+                  <label for="cursorUserAPIKey" data-i18n="channels.cursor.apiKeyLabel">Cursor User API Key</label>
+                  <input id="cursorUserAPIKey" name="cursor_user_api_key" type="password"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="cursorAPIKeyHint oauthLoginDialogStatus">
+                  <p id="cursorAPIKeyHint" class="oauth-field-hint"
+                    data-i18n="channels.cursor.apiKeyHint">提交后输入会立即从页面清除。ccLoad 用它换取 CLI 会话令牌。</p>
+                </div>
+                <div id="cursorSessionField" class="oauth-field" hidden>
+                  <label for="cursorSessionToken" data-i18n="channels.cursor.sessionLabel">accessToken</label>
+                  <input id="cursorSessionToken" name="cursor_session_token" type="password"
+                    class="form-input" autocomplete="off" autocapitalize="none" spellcheck="false"
+                    aria-describedby="cursorSessionHint oauthLoginDialogStatus">
+                  <p id="cursorSessionHint" class="oauth-field-hint"
+                    data-i18n="channels.cursor.sessionHint">粘贴 Cursor CLI auth.json 里的 accessToken。提交后输入会立即从页面清除。</p>
                 </div>
               </div>
               <div id="oauthLoginActions" class="oauth-actions">
@@ -355,7 +382,8 @@
                   <option value="antigravity_oauth">Antigravity</option>
                   <option value="xai_oauth">xAI</option>
                   <option value="anthropic_oauth">Anthropic</option>
-                  <option value="zai_oauth">Z.ai Coding Plan</option>
+                  <option value="zai_oauth">Z.ai</option>
+                  <option value="cursor_oauth">Cursor</option>
                 </select>
               </div>
               <div class="oauth-field">

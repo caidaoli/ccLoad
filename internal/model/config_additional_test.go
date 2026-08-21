@@ -306,3 +306,11 @@ func TestConfig_AnthropicOAuthAuthType(t *testing.T) {
 		t.Fatalf("Anthropic OAuth auth type was not isolated: %+v", cfg)
 	}
 }
+
+func TestConfig_CursorOAuthAuthType(t *testing.T) {
+	cfg := &Config{AuthType: AuthTypeCursorOAuth}
+	if NormalizeAuthType(AuthTypeCursorOAuth) != AuthTypeCursorOAuth ||
+		!cfg.UsesCursorOAuth() || !cfg.UsesOAuth() || cfg.UsesZAIOAuth() {
+		t.Fatalf("Cursor OAuth auth type was not isolated: %+v", cfg)
+	}
+}

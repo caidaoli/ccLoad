@@ -27,6 +27,7 @@ import (
 	"ccLoad/internal/codexauth"
 	"ccLoad/internal/config"
 	"ccLoad/internal/cooldown"
+	"ccLoad/internal/cursorauth"
 	"ccLoad/internal/model"
 	"ccLoad/internal/protocol"
 	protocolbuiltin "ccLoad/internal/protocol/builtin"
@@ -97,6 +98,10 @@ type Server struct {
 	zaiService                    *zaiauth.Service
 	zaiCredentials                *zaiCredentialManager
 	zaiOAuth                      *zaiOAuthManager
+	cursorService                 *cursorauth.Service
+	cursorCredentials             *cursorCredentialManager
+	cursorOAuth                   *cursorOAuthManager
+	cursorRunner                  cursorauth.Runner
 	antigravityPromptMatcher      *regexp.Regexp
 	scheduledChannelChecksRunning atomic.Bool
 
@@ -110,6 +115,7 @@ type Server struct {
 	maxKeyRetries    int // 单个渠道内最大Key重试次数
 	bodyLimits       requestBodyLimits
 	firstByteTimeout time.Duration // 上游首字节超时（流式请求）
+	httpReadTimeout  time.Duration // 下游请求读取超时（HTTP Server ReadTimeout）
 	streamTimeout    time.Duration // 流式请求总超时
 	nonStreamTimeout time.Duration // 非流式请求超时
 	// 上游 HTTP/1.1、HTTP/2 和 WebSocket 物理连接最长复用时间；0 表示不限制。
@@ -216,6 +222,7 @@ func NewServer(store storage.Store) *Server {
 		maxKeyRetries:            runtimeCfg.MaxKeyRetries,
 		bodyLimits:               bodyLimits,
 		firstByteTimeout:         runtimeCfg.FirstByteTimeout,
+		httpReadTimeout:          runtimeCfg.HTTPReadTimeout,
 		streamTimeout:            runtimeCfg.StreamTimeout,
 		nonStreamTimeout:         runtimeCfg.NonStreamTimeout,
 		upstreamConnectionMaxAge: runtimeCfg.UpstreamConnectionMaxAge,
@@ -342,6 +349,23 @@ func NewServer(store storage.Store) *Server {
 		},
 		func(ctx context.Context, credential *zaiauth.Credential) (int64, string, error) {
 			cfg, _, err := s.commitZAICredential(ctx, credential)
+			if err != nil {
+				return 0, "", err
+			}
+			return cfg.ID, cfg.Name, nil
+		},
+	)
+	s.cursorService = cursorauth.NewService(s.client)
+	s.cursorCredentials = newCursorCredentialManager(store, s.getClientForChannel, func(int64) {
+		s.InvalidateChannelListCache()
+	})
+	s.cursorCredentials.refreshTracker = s.oauthCredentialRefreshes
+	s.cursorRunner = cursorauth.NewCLIRunner()
+	s.cursorOAuth = newCursorOAuthManager(
+		s.baseCtx,
+		s.cursorService,
+		func(ctx context.Context, credential *cursorauth.Credential) (int64, string, error) {
+			cfg, _, err := s.commitCursorCredential(ctx, credential)
 			if err != nil {
 				return 0, "", err
 			}
@@ -503,6 +527,7 @@ type serverRuntimeConfig struct {
 	MaxConcurrency               int
 	MaxBodyBytes                 int
 	MaxImageBodyBytes            int
+	HTTPReadTimeout              time.Duration
 	FirstByteTimeout             time.Duration
 	StreamTimeout                time.Duration
 	NonStreamTimeout             time.Duration
@@ -526,6 +551,20 @@ func loadGlobalCooldownDetectionRules(cs *ConfigService) *model.CooldownDetectio
 }
 
 // loadPositiveInt 读取必须为正数的配置项，非法值回退默认并告警。
+// loadHTTPReadTimeout 读取下游请求读取超时。0 表示使用内建默认值，负数非法。
+func loadHTTPReadTimeout(cs *ConfigService) time.Duration {
+	value := cs.GetDuration(config.HTTPReadTimeoutSettingKey, 0)
+	if value < 0 {
+		log.Printf("[WARN] 无效的 %s=%v（必须 >= 0），已使用默认值 %v",
+			config.HTTPReadTimeoutSettingKey, value, config.DefaultHTTPReadTimeout)
+		return config.DefaultHTTPReadTimeout
+	}
+	if value == 0 {
+		return config.DefaultHTTPReadTimeout
+	}
+	return value
+}
+
 func loadPositiveInt(cs *ConfigService, key string, defaultValue int) int {
 	value := cs.GetInt(key, defaultValue)
 	if value <= 0 {
@@ -611,6 +650,7 @@ func loadServerRuntimeConfig(cs *ConfigService) serverRuntimeConfig {
 		MaxConcurrency:               loadPositiveInt(cs, "max_concurrency", config.DefaultMaxConcurrency),
 		MaxBodyBytes:                 loadPositiveInt(cs, "max_body_bytes", config.DefaultMaxBodyBytes),
 		MaxImageBodyBytes:            loadPositiveInt(cs, "max_image_body_bytes", config.DefaultMaxImageBodyBytes),
+		HTTPReadTimeout:              loadHTTPReadTimeout(cs),
 		FirstByteTimeout:             firstByteTimeout,
 		StreamTimeout:                streamTimeout,
 		NonStreamTimeout:             nonStreamTimeout,
@@ -1298,6 +1338,15 @@ func (s *Server) invalidateChannelRelatedCache(channelID int64) {
 	s.invalidateCooldownCache()
 }
 
+// GetReadTimeout 返回 HTTP ReadTimeout：读取请求头与请求体的整段上限。
+// 它决定慢速上传何时被传输层切断，与请求体大小上限是两件事。
+func (s *Server) GetReadTimeout() time.Duration {
+	if s == nil || s.httpReadTimeout <= 0 {
+		return config.DefaultHTTPReadTimeout
+	}
+	return s.httpReadTimeout
+}
+
 // GetWriteTimeout 返回建议的 HTTP WriteTimeout
 // 基于请求总超时动态计算，确保传输层不会早于业务层截断响应
 func (s *Server) GetWriteTimeout() time.Duration {
@@ -1446,6 +1495,10 @@ func (s *Server) SetupRoutes(r *gin.Engine) {
 		admin.GET("/zai/oauth/status", s.HandleZAIOAuthStatus)
 		admin.POST("/zai/oauth/cancel", s.HandleCancelZAIOAuth)
 		admin.POST("/zai/credentials/import", s.HandleImportZAICredential)
+		admin.POST("/cursor/oauth/start", s.HandleStartCursorOAuth)
+		admin.GET("/cursor/oauth/status", s.HandleCursorOAuthStatus)
+		admin.POST("/cursor/oauth/cancel", s.HandleCancelCursorOAuth)
+		admin.POST("/cursor/credentials/import", s.HandleImportCursorCredential)
 		admin.POST("/channels/check-duplicate", s.HandleCheckDuplicateChannel)
 		admin.POST("/channels/batch-priority", s.HandleBatchUpdatePriority) // 批量更新渠道优先级
 		admin.POST("/channels/batch-enabled", s.HandleBatchSetEnabled)      // 批量启用/禁用渠道
@@ -1692,6 +1745,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	if s.zaiOAuth != nil {
 		s.zaiOAuth.close()
+	}
+	if s.cursorOAuth != nil {
+		s.cursorOAuth.close()
 	}
 	if s.responsesExecutionSessions != nil {
 		s.responsesExecutionSessions.close()

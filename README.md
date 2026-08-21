@@ -65,7 +65,7 @@ ccLoad handles those cases with:
 - 🔒 **Race-Safe** - Key selector race condition protection, startup config validation, automatic resource cleanup
 - 📊 **Real-time Monitoring** - Built-in trend analysis, logging, and stats dashboard, **Token usage stats** with time range selection and per-token classification, runtime status panel with process metrics (CPU, RSS, GC)
 - 🎯 **Transparent Proxy** - Supports Claude Code, Codex, Gemini, and OpenAI compatible APIs with smart auth detection
-- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, xAI, and Z.ai Coding Plan (ZCode) OAuth credentials with automatic token refresh, Codex personal access token (PAT) authorization, text/file/aggregate import, batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
+- 🔑 **OAuth Channels** - Codex (ChatGPT), Anthropic (Claude), Antigravity, and xAI OAuth credentials with automatic refresh where supported; Codex personal access token (PAT) authorization; Z.ai Coding Plan (ZCode) browser authorization or API-key import; and Cursor CLI browser login, user API key, or session-token import, with batch quota refresh, invalid-credential cleanup, and auto-disable for permanently rejected credentials
 - 📅 **OAuth Quota Cost Tracking** - Per-credential weekly/monthly standard-cost accumulation aligned to upstream quota windows, plus manual Codex quota reset when a reset credit is available
 - 🔌 **Responses WebSocket** - Downstream Codex WebSocket sessions bridge to native Codex WebSocket or HTTP/SSE candidates with transcript-aware failover
 - 📦 **Single Binary Deployment** - No external dependencies, embedded SQLite included
@@ -723,6 +723,20 @@ curl -X POST http://localhost:8080/admin/channels \
 
 > **Concurrency Limit Note**: `max_concurrency` is a per-channel cap on simultaneous in-flight upstream requests; `0` means unlimited. A slot is acquired before the upstream request starts and released when the response body is closed, so streaming requests hold the slot until the stream ends. Over-limit channels are skipped without cooldown. The counter is in-memory and per instance.
 
+#### Z.ai Coding Plan (ZCode)
+
+In the channel manager, choose **Z.ai Coding Plan** and either complete the browser authorization flow or import an existing Coding Plan API key. API-key import remains available when the provider's browser OAuth flow is unavailable.
+
+ccLoad loads the Coding Plan model catalog from the account when creating or refreshing the channel, falls back to models.dev, then uses its built-in list only as a last resort. The channel card can also refresh and show the Coding Plan quota windows.
+
+#### Cursor CLI
+
+In the channel manager, choose **Cursor** and complete the browser CLI login (`loginDeepControl`), import a Cursor user API key, or paste the `accessToken` from Cursor CLI `auth.json`. Login, identity, model discovery, and quota refresh talk to `api2.cursor.sh` over HTTP. Chat still runs `cursor-agent` on the ccLoad host (`--print --trust --mode ask`), so install the Cursor CLI (`https://cursor.com/install`) and keep `cursor-agent` on `PATH` (or set `CURSOR_AGENT_PATH`).
+
+This matches [cursor2Oauth](https://github.com/ChenYCL/cursor2Oauth): last-turn text in, text out. Client `tools` / `tool_use` are not forwarded, and responses never contain tool calls. Official Cursor `AgentService/RunSSE` is a moving protobuf target; this channel does not implement that loop.
+
+The channel card can refresh included / API / Auto spend windows from `DashboardService/GetCurrentPeriodUsage`.
+
 ### Custom Request Rules (Advanced)
 
 The "Advanced" button in the channel editor opens a secondary modal that lets you rewrite the **HTTP headers** and **JSON request body** forwarded upstream at channel granularity. Typical use cases include `User-Agent` override, forcing API version headers, or tweaking fields like `thinking` / `max_tokens`. Rules apply in configured order and take effect for all subsequent requests on that channel as soon as they are saved.
@@ -1001,6 +1015,7 @@ These settings live in the database and are managed from `/web/settings.html`. S
 | `log_retention_days` | `7` | Log retention days (-1 for permanent, 1-365 days) |
 | `max_key_retries` | `3` | Max key retries within single channel |
 | `max_concurrency` | `1000` | Max concurrent proxy requests |
+| `http_read_timeout_seconds` | `0` | Downstream request read timeout in seconds; `0` uses the built-in 120-second default. It covers the complete request header/body read, returns 408 on timeout, and is independent of body-size limits. |
 | `max_body_bytes` | `10485760` | Max request body bytes, 10MB by default |
 | `max_image_body_bytes` | `20971520` | Max Images API request body bytes, 20MB by default |
 | `cooldown_auth_seconds` | `300` | Auth error (401/402/403) initial cooldown in seconds |
@@ -1106,7 +1121,7 @@ Base priority order: A > B > C > D
 - Restrict access to container inspect output, orchestration dashboards, and deployment configuration
 
 **Advanced Token Features**:
-- **Cost Limits**: Set cost limits per token (USD), requests rejected with 429 when exceeded
+- **Cost Limits**: Set independent total, daily, and monthly USD limits with `cost_limit_usd`, `cost_daily_limit_usd`, and `cost_monthly_limit_usd`; `0` means unlimited. A request is rejected with 429 when any enabled limit is reached. Cost-limited tokens also require `max_concurrency > 0`.
 - **Model Restrictions**: Restrict which models a token can access for fine-grained access control
 - **Channel Restrictions**: Combine `allowed_channel_ids` with `channel_restriction_mode` — `allow` treats the list as an allowlist, `deny` as a denylist; an empty list is unrestricted in either mode
 - **Concurrency Limit**: `max_concurrency` caps a token's simultaneous in-flight requests (`0` = unlimited)
